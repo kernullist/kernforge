@@ -1,0 +1,993 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+const userConfigDirName = ".kernforge"
+
+type PlanReviewConfig struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"base_url,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+}
+
+type Config struct {
+	Provider            string            `json:"provider"`
+	Model               string            `json:"model"`
+	BaseURL             string            `json:"base_url"`
+	APIKey              string            `json:"api_key"`
+	ProviderKeys        map[string]string `json:"provider_keys,omitempty"`
+	Temperature         float64           `json:"temperature"`
+	MaxTokens           int               `json:"max_tokens"`
+	MaxToolIterations   int               `json:"max_tool_iterations"`
+	PermissionMode      string            `json:"permission_mode"`
+	Shell               string            `json:"shell"`
+	SessionDir          string            `json:"session_dir"`
+	AutoCompactChars    int               `json:"auto_compact_chars"`
+	AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
+	AutoLocale          *bool             `json:"auto_locale,omitempty"`
+	MemoryFiles         []string          `json:"memory_files"`
+	SkillPaths          []string          `json:"skill_paths,omitempty"`
+	EnabledSkills       []string          `json:"enabled_skills,omitempty"`
+	MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
+	Profiles            []Profile         `json:"profiles,omitempty"`
+	PlanReview          *PlanReviewConfig `json:"plan_review,omitempty"`
+	ReviewProfiles      []Profile         `json:"review_profiles,omitempty"`
+}
+
+type Profile struct {
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	BaseURL  string `json:"base_url,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	Pinned   bool   `json:"pinned,omitempty"`
+}
+
+func DefaultConfig(cwd string) Config {
+	return Config{
+		Provider:            "",
+		Model:               "",
+		Temperature:         0.2,
+		MaxTokens:           4096,
+		MaxToolIterations:   16,
+		PermissionMode:      "default",
+		Shell:               defaultShell(),
+		SessionDir:          filepath.Join(userConfigDir(), "sessions"),
+		AutoCompactChars:    45000,
+		AutoCheckpointEdits: boolPtr(true),
+		AutoVerifyDocsOnly:  boolPtr(false),
+		AutoLocale:          boolPtr(true),
+	}
+}
+
+func LoadConfig(cwd string) (Config, error) {
+	cfg := DefaultConfig(cwd)
+	for _, path := range configSearchPaths(cwd) {
+		if err := mergeConfigFile(&cfg, path); err != nil {
+			return cfg, err
+		}
+	}
+	applyEnv(&cfg)
+	normalizeConfigPaths(&cfg)
+	if err := EnsureUserConfig(cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func configSearchPaths(cwd string) []string {
+	return []string{
+		userConfigPath(),
+		workspaceConfigPath(cwd),
+	}
+}
+
+func userConfigDir() string {
+	return filepath.Join(platformUserConfigBaseDir(), userConfigDirName)
+}
+
+func userConfigPath() string {
+	return filepath.Join(userConfigDir(), "config.json")
+}
+
+func workspaceConfigPath(cwd string) string {
+	return filepath.Join(cwd, userConfigDirName, "config.json")
+}
+
+func mergeConfigFile(cfg *Config, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var patch Config
+	if err := json.Unmarshal(data, &patch); err != nil {
+		return fmt.Errorf("parse %s: %w", path, err)
+	}
+	mergeConfig(cfg, patch)
+	return nil
+}
+
+func mergeConfig(dst *Config, src Config) {
+	if src.Provider != "" {
+		dst.Provider = src.Provider
+	}
+	if src.Model != "" {
+		dst.Model = src.Model
+	}
+	if src.BaseURL != "" {
+		dst.BaseURL = src.BaseURL
+	}
+	if src.APIKey != "" {
+		dst.APIKey = src.APIKey
+	}
+	if len(src.ProviderKeys) > 0 {
+		if dst.ProviderKeys == nil {
+			dst.ProviderKeys = make(map[string]string)
+		}
+		for k, v := range src.ProviderKeys {
+			if v != "" {
+				dst.ProviderKeys[k] = v
+			}
+		}
+	}
+	if src.Temperature != 0 {
+		dst.Temperature = src.Temperature
+	}
+	if src.MaxTokens != 0 {
+		dst.MaxTokens = src.MaxTokens
+	}
+	if src.MaxToolIterations != 0 {
+		dst.MaxToolIterations = src.MaxToolIterations
+	}
+	if src.PermissionMode != "" {
+		dst.PermissionMode = src.PermissionMode
+	}
+	if src.Shell != "" {
+		dst.Shell = src.Shell
+	}
+	if src.SessionDir != "" {
+		dst.SessionDir = src.SessionDir
+	}
+	if src.AutoCompactChars != 0 {
+		dst.AutoCompactChars = src.AutoCompactChars
+	}
+	if src.AutoCheckpointEdits != nil {
+		value := *src.AutoCheckpointEdits
+		dst.AutoCheckpointEdits = &value
+	}
+	if src.AutoVerifyDocsOnly != nil {
+		value := *src.AutoVerifyDocsOnly
+		dst.AutoVerifyDocsOnly = &value
+	}
+	if src.AutoLocale != nil {
+		value := *src.AutoLocale
+		dst.AutoLocale = &value
+	}
+	if len(src.MemoryFiles) > 0 {
+		dst.MemoryFiles = append([]string(nil), src.MemoryFiles...)
+	}
+	if len(src.SkillPaths) > 0 {
+		dst.SkillPaths = append([]string(nil), src.SkillPaths...)
+	}
+	if len(src.EnabledSkills) > 0 {
+		dst.EnabledSkills = append([]string(nil), src.EnabledSkills...)
+	}
+	if len(src.MCPServers) > 0 {
+		dst.MCPServers = append([]MCPServerConfig(nil), src.MCPServers...)
+	}
+	if len(src.Profiles) > 0 {
+		dst.Profiles = append([]Profile(nil), src.Profiles...)
+	}
+	if src.PlanReview != nil {
+		copy := *src.PlanReview
+		dst.PlanReview = &copy
+	}
+	if len(src.ReviewProfiles) > 0 {
+		dst.ReviewProfiles = append([]Profile(nil), src.ReviewProfiles...)
+	}
+}
+
+func applyEnv(cfg *Config) {
+	envString("KERNFORGE_PROVIDER", &cfg.Provider)
+	envString("KERNFORGE_MODEL", &cfg.Model)
+	envString("KERNFORGE_BASE_URL", &cfg.BaseURL)
+	envString("KERNFORGE_API_KEY", &cfg.APIKey)
+	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
+	envString("KERNFORGE_SHELL", &cfg.Shell)
+	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
+	envBool("KERNFORGE_AUTO_CHECKPOINT_EDITS", &cfg.AutoCheckpointEdits)
+	envBool("KERNFORGE_AUTO_LOCALE", &cfg.AutoLocale)
+
+	switch strings.ToLower(cfg.Provider) {
+	case "anthropic":
+		if cfg.APIKey == "" {
+			envString("ANTHROPIC_API_KEY", &cfg.APIKey)
+		}
+	case "openrouter":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeOpenRouterBaseURL("")
+		}
+		if cfg.APIKey == "" {
+			envString("OPENROUTER_API_KEY", &cfg.APIKey)
+		}
+	case "ollama":
+		if cfg.BaseURL == "" {
+			envString("OLLAMA_HOST", &cfg.BaseURL)
+		}
+		if cfg.APIKey == "" {
+			envString("OLLAMA_API_KEY", &cfg.APIKey)
+		}
+	case "openai", "openai-compatible":
+		if cfg.APIKey == "" {
+			envString("OPENAI_API_KEY", &cfg.APIKey)
+		}
+	}
+}
+
+func normalizeConfigPaths(cfg *Config) {
+	if cfg.SessionDir != "" {
+		cfg.SessionDir = expandHome(cfg.SessionDir)
+	}
+	if cfg.SessionDir == "" {
+		cfg.SessionDir = filepath.Join(userConfigDir(), "sessions")
+	}
+	for i, item := range cfg.MemoryFiles {
+		cfg.MemoryFiles[i] = expandHome(item)
+	}
+	for i, item := range cfg.SkillPaths {
+		cfg.SkillPaths[i] = expandHome(item)
+	}
+	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeOllamaBaseURL("")
+	}
+	if strings.EqualFold(cfg.Provider, "openrouter") && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	}
+	for i, server := range cfg.MCPServers {
+		cfg.MCPServers[i].Name = strings.TrimSpace(server.Name)
+		cfg.MCPServers[i].Command = strings.TrimSpace(server.Command)
+		if strings.TrimSpace(server.Cwd) != "" {
+			cfg.MCPServers[i].Cwd = expandHome(server.Cwd)
+		}
+	}
+	for i, profile := range cfg.Profiles {
+		cfg.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	}
+}
+
+func SaveUserConfig(cfg Config) error {
+	normalizeConfigPaths(&cfg)
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(userConfigPath(), data, 0o644)
+}
+
+func normalizeProfileBaseURL(provider, baseURL string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "ollama":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeOllamaBaseURL("")
+		}
+		return normalizeOllamaBaseURL(baseURL)
+	case "openrouter":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeOpenRouterBaseURL("")
+		}
+		return normalizeOpenRouterBaseURL(baseURL)
+	default:
+		return strings.TrimSpace(baseURL)
+	}
+}
+
+func profileName(provider, model string) string {
+	return strings.TrimSpace(provider) + " / " + strings.TrimSpace(model)
+}
+
+func EnsureUserConfig(cfg Config) error {
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(userConfigPath()); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return SaveUserConfig(cfg)
+}
+
+func envString(key string, dst *string) {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		*dst = value
+	}
+}
+
+func envBool(key string, dst **bool) {
+	value := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if value == "" {
+		return
+	}
+	parsed, ok := parseBoolString(value)
+	if !ok {
+		return
+	}
+	*dst = boolPtr(parsed)
+}
+
+func boolPtr(value bool) *bool {
+	v := value
+	return &v
+}
+
+func configAutoCheckpointEdits(cfg Config) bool {
+	if cfg.AutoCheckpointEdits == nil {
+		return true
+	}
+	return *cfg.AutoCheckpointEdits
+}
+
+func configAutoVerifyDocsOnly(cfg Config) bool {
+	if cfg.AutoVerifyDocsOnly == nil {
+		return false
+	}
+	return *cfg.AutoVerifyDocsOnly
+}
+
+func configMaxToolIterations(cfg Config) int {
+	if cfg.MaxToolIterations <= 0 {
+		return 16
+	}
+	return cfg.MaxToolIterations
+}
+
+func configAutoLocale(cfg Config) bool {
+	if cfg.AutoLocale == nil {
+		return true
+	}
+	return *cfg.AutoLocale
+}
+
+func parseBoolString(value string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "on", "yes", "y":
+		return true, true
+	case "0", "false", "off", "no", "n":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func defaultShell() string {
+	if runtime.GOOS == "windows" {
+		return "powershell"
+	}
+	return "sh"
+}
+
+func platformUserConfigBaseDir() string {
+	home, _ := os.UserHomeDir()
+	return home
+}
+
+func expandHome(path string) string {
+	if path == "" || !strings.HasPrefix(path, "~") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+}
+
+type MemoryFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+type MemoryBundle struct {
+	Files []MemoryFile `json:"files"`
+}
+
+func LoadMemory(cwd string, extra []string) (MemoryBundle, error) {
+	paths := defaultMemoryPaths(cwd)
+	for _, item := range extra {
+		paths = append(paths, expandHome(item))
+	}
+
+	seen := map[string]bool{}
+	var out MemoryBundle
+	for _, path := range paths {
+		if path == "" || seen[path] {
+			continue
+		}
+		seen[path] = true
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return out, err
+		}
+		out.Files = append(out.Files, MemoryFile{
+			Path:    path,
+			Content: string(data),
+		})
+	}
+	return out, nil
+}
+
+func (b MemoryBundle) Combined() string {
+	if len(b.Files) == 0 {
+		return ""
+	}
+	var sections []string
+	for _, file := range b.Files {
+		sections = append(sections, fmt.Sprintf("### %s\n%s", file.Path, strings.TrimSpace(file.Content)))
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func defaultMemoryPaths(cwd string) []string {
+	paths := []string{}
+	paths = append(paths,
+		filepath.Join(userConfigDir(), "MEMORY.md"),
+	)
+	for _, dir := range ancestorDirs(cwd) {
+		paths = append(paths,
+			filepath.Join(dir, userConfigDirName, "KERNFORGE.md"),
+			filepath.Join(dir, "KERNFORGE.md"),
+		)
+	}
+	return paths
+}
+
+func ancestorDirs(cwd string) []string {
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for {
+		out = append([]string{abs}, out...)
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		abs = parent
+	}
+	return out
+}
+
+func InitMemoryTemplate(projectName string) string {
+	return fmt.Sprintf(`# %s
+
+## Project overview
+- Describe the product, users, and high-level architecture.
+
+## Commands
+- Build:
+- Test:
+- Lint:
+- Run:
+
+## Conventions
+- Coding style:
+- Review expectations:
+- Safety notes:
+
+## Current priorities
+- 
+`, projectName)
+}
+
+func InitWorkspaceConfigTemplate() string {
+	sample := struct {
+		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
+		AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
+		SkillPaths          []string          `json:"skill_paths,omitempty"`
+		EnabledSkills       []string          `json:"enabled_skills,omitempty"`
+		MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
+	}{
+		AutoCheckpointEdits: boolPtr(true),
+		AutoVerifyDocsOnly:  boolPtr(false),
+		SkillPaths:          []string{"./.kernforge/skills"},
+		EnabledSkills:       []string{},
+		MCPServers: []MCPServerConfig{{
+			Name:     "example",
+			Command:  "node",
+			Args:     []string{"path/to/server.js"},
+			Cwd:      ".",
+			Disabled: true,
+		}},
+	}
+	data, err := json.MarshalIndent(sample, "", "  ")
+	if err != nil {
+		return "{\n  \"skill_paths\": [\"./.kernforge/skills\"]\n}\n"
+	}
+	return string(data) + "\n"
+}
+
+type Command struct {
+	Name string
+	Args string
+}
+
+func ParseCommand(input string) (Command, bool) {
+	line := strings.TrimSpace(input)
+	if !strings.HasPrefix(line, "/") {
+		return Command{}, false
+	}
+	line = strings.TrimPrefix(line, "/")
+	if line == "" {
+		return Command{Name: "help"}, true
+	}
+	parts := strings.SplitN(line, " ", 2)
+	cmd := Command{Name: strings.ToLower(strings.TrimSpace(parts[0]))}
+	if len(parts) == 2 {
+		cmd.Args = strings.TrimSpace(parts[1])
+	}
+	return cmd, true
+}
+
+func HelpText() string {
+	return strings.TrimSpace(`
+General:
+/config                Show effective runtime config
+/context               Show context usage summary
+/exit                  Exit the CLI
+/help                  Show available commands
+/reload                Reload config, memory, skills, and MCP extensions
+/status                Show current provider, model, session, and memory info
+/version               Show the current application version
+
+Conversation And Sessions:
+/clear                 Clear conversation history for the current session
+/compact [focus]       Summarize older messages and shrink context
+/export [file]         Export the conversation as markdown
+/rename <name>         Rename the current session
+/resume <session-id>   Resume a saved session
+/session               Show the current session id and storage path
+/sessions              List recent sessions
+/tasks                 Show the current task list
+
+Provider And Models:
+/do-plan-review <task> Generate and iteratively review an implementation plan, then execute
+/model [name]          Show or change the active model
+/permissions [mode]    Show or change permissions: default, acceptEdits, plan, bypassPermissions
+/profile               Show recent provider/model profiles and switch to one
+/profile-review        Show and manage saved review profiles
+/provider              Choose and configure a provider
+/set-plan-review [provider] Configure the reviewer model for plan review (interactive)
+
+Verification And Checkpoints:
+/checkpoint [note]     Create a workspace checkpoint snapshot, optionally with a note
+/checkpoint-auto [on|off] Show or change automatic checkpoint creation before edits
+/checkpoint-diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
+/checkpoints           List checkpoints for the current workspace
+/rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
+/verify [path,...|--full] Run adaptive or full verification for this workspace or selected paths
+/verify-dashboard [all] Show recent verification history and failure trends
+/verify-dashboard-html [all] Generate and open an HTML verification dashboard report
+
+Memory:
+/mem                   Show recent persistent memory entries for this workspace
+/mem-confirm <id>      Mark a memory as confirmed
+/mem-dashboard [query] Show a persistent memory dashboard with optional filters
+/mem-dashboard-html [query] Generate and open an HTML persistent memory dashboard
+/mem-demote <id>       Lower a memory's importance tier
+/mem-promote <id>      Raise a memory's importance tier
+/mem-prune [all]       Prune persistent memory using the current retention policy
+/mem-search <query>    Search persistent memory across past sessions
+/mem-show <id>         Show a detailed persistent memory record by citation id
+/mem-stats             Show persistent memory storage stats
+/mem-tentative <id>    Mark a memory as tentative
+/memory                Show loaded memory files
+
+Selection And Review:
+/clear-selection       Clear the current selected code range
+/clear-selections      Clear all saved selections
+/diff-selection        Show git diff limited to the current selected range
+/drop-selection <n>    Remove one saved selection by number
+/edit-selection <task> Run an edit-focused prompt on the current selection
+/note-selection <text> Set or replace the note on the active selection
+/open <path>           Open a workspace file in a separate viewer window
+/review-selection [...] Run a review-focused prompt on the current selection
+/review-selections [...] Run a review-focused prompt across saved selections
+/selection             Show the current selected code range
+/selections            List saved selections and show the active one
+/tag-selection <tags>  Set comma-separated tags on the active selection
+/use-selection <n>     Switch the active selection by number
+
+Workspace Setup:
+/init                  Create a starter KERNFORGE.md in the current workspace
+/init config           Create a workspace .kernforge/config.json template
+/init memory-policy    Create a workspace .kernforge/memory-policy.json template
+/init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
+/init verify           Create a workspace .kernforge/verify.json template
+/locale-auto [on|off]  Show or change automatic locale insertion in prompts
+
+MCP And Skills:
+/mcp                   Show configured MCP servers and tool status
+/prompt <target> [...] Resolve an MCP prompt by server:name and optional JSON args
+/prompts               Show discovered MCP prompts
+/resource <target>     Read an MCP resource by server:uri-or-name
+/resources             Show discovered MCP resources
+/skills                Show discovered local skills
+
+Git:
+/diff                  Show git diff
+
+Use /help <command-or-topic> for detailed help.
+
+Special input:
+!<command>             Run a shell command in the current workspace
+@path/to/file          Mention a text file to inject its contents
+@path/to/image.png     Mention an image file to attach it as vision input
+@mcp:server:target     Mention an MCP resource by server and uri/name
+\ at end of line       Continue to the next line for multiline input
+`)
+}
+
+func HelpDetail(topic string) (string, bool) {
+	key := normalizeHelpTopic(topic)
+	switch key {
+	case "":
+		return "", false
+	case "general":
+		return strings.TrimSpace(`
+General commands cover high-level runtime inspection and app control.
+
+/config
+- Show the effective runtime configuration after global config, workspace config, env vars, and flags are merged.
+
+/context
+- Show approximate context size, message count, summary size, and plan item count.
+
+/exit
+- Exit the CLI.
+
+/help [topic]
+- Show the grouped command list or detailed help for one command or topic.
+
+/reload
+- Reload config, memory files, skills, and MCP extensions without restarting the app.
+
+/status
+- Show current provider, model, workspace, session id, memory counts, verification summary, and extension counts.
+
+/version
+- Show the current application version.
+`), true
+	case "conversation", "sessions", "session":
+		return strings.TrimSpace(`
+Conversation and session commands manage chat history and saved sessions.
+
+/clear
+- Clear the current conversation history for this session.
+
+/compact [focus]
+- Summarize older messages and shrink context. Add an optional focus to bias the summary.
+
+/export [file]
+- Export the current conversation as Markdown. Without a file path, print the export to the terminal.
+
+/rename <name>
+- Rename the current session.
+
+/resume <session-id>
+- Resume a previously saved session by id.
+
+/session
+- Show the current session id and save location.
+
+/sessions
+- List recent saved sessions.
+
+/tasks
+- Show the current shared task list / plan items.
+`), true
+	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "set-plan-review":
+		return strings.TrimSpace(`
+Provider and model commands control which model is active and how planning/review flows work.
+
+/model [name]
+- Show the active model or switch to a new one.
+
+/permissions [mode]
+- Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
+
+/profile
+- Show saved provider/model profiles and switch to one interactively.
+
+/profile-review
+- Show and manage saved reviewer profiles for plan review.
+
+/provider
+- Choose and configure a provider interactively.
+
+/set-plan-review [provider]
+- Configure the reviewer model used by /do-plan-review.
+
+/do-plan-review <task>
+- Ask one model to produce a plan, have a reviewer model critique it, iterate, then optionally execute the final plan.
+`), true
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff":
+		return strings.TrimSpace(`
+Verification and checkpoint commands help you validate changes and recover safely.
+
+/verify [path,...|--full]
+- Run adaptive or full verification for the current workspace.
+- Paths are optional overrides used to target verification planning.
+- Supports plain paths and mention-style paths such as @src/foo.cpp or @src/foo.cpp:10-40.
+- Examples:
+  /verify
+  /verify --full
+  /verify src/foo.cpp,src/bar.cpp
+  /verify @Common/PEreloc.cpp --full
+
+/verify-dashboard [all]
+- Show recent verification history and failure trends in the terminal.
+
+/verify-dashboard-html [all]
+- Generate an HTML verification dashboard and try to open it.
+
+/checkpoint [note]
+- Create a workspace checkpoint snapshot. In interactive mode, Kernforge prompts for an optional note when none is provided.
+
+/checkpoint-auto [on|off]
+- Show or change automatic checkpoint creation before edits.
+
+/checkpoint-diff [target] [-- path[,path2]]
+- Compare the current workspace to a checkpoint, optionally limited to specific paths.
+
+/checkpoints
+- List checkpoints for the current workspace.
+
+/rollback [target]
+- Restore the workspace to a selected checkpoint by default, or a specific target if provided.
+`), true
+	case "memory", "mem", "mem-search", "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative", "mem-dashboard", "mem-dashboard-html", "mem-prune", "mem-stats":
+		return strings.TrimSpace(`
+Memory commands inspect and manage loaded memory files plus persistent memory records from past sessions.
+
+/memory
+- Show loaded memory files.
+
+/mem
+- Show recent persistent memory entries relevant to this workspace.
+
+/mem-search <query>
+- Search persistent memory across past sessions.
+
+/mem-show <id>
+- Show one persistent memory record in detail.
+
+/mem-promote <id>
+/mem-demote <id>
+- Raise or lower a memory record's importance tier.
+
+/mem-confirm <id>
+/mem-tentative <id>
+- Mark a memory record as confirmed or tentative.
+
+/mem-dashboard [query]
+- Show a dashboard-style memory summary in the terminal.
+
+/mem-dashboard-html [query]
+- Generate an HTML dashboard and try to open it.
+
+/mem-prune [all]
+- Apply retention policy pruning to persistent memory.
+
+/mem-stats
+- Show persistent memory storage stats.
+`), true
+	case "selection", "selections", "review", "review-selection", "review-selections", "edit-selection", "open":
+		return strings.TrimSpace(`
+Selection and review commands let you work on a focused code region instead of the whole workspace.
+
+/open <path>
+- Open a workspace file in the viewer window.
+
+/selection
+- Show the active selection.
+
+/selections
+- List saved selections and show which one is active.
+
+/use-selection <n>
+- Switch the active selection by index.
+
+/drop-selection <n>
+- Remove one saved selection.
+
+/clear-selection
+/clear-selections
+- Clear the active selection or all saved selections.
+
+/note-selection <text>
+- Set or replace the note attached to the active selection.
+
+/tag-selection <tags>
+- Set comma-separated tags on the active selection.
+
+/diff-selection
+- Show git diff limited to the selected range.
+
+/review-selection [...]
+/review-selections [...]
+- Run review-focused prompts on the active selection or multiple saved selections.
+
+/edit-selection <task>
+- Run an edit-focused prompt scoped to the active selection.
+`), true
+	case "init", "workspace", "workspace-setup", "locale-auto":
+		return strings.TrimSpace(`
+Workspace setup commands generate starter files and adjust workspace-level behavior.
+
+/init
+- Create a starter KERNFORGE.md in the current workspace.
+
+/init config
+- Create a starter .kernforge/config.json template.
+
+/init memory-policy
+- Create a starter .kernforge/memory-policy.json template.
+
+/init skill <name>
+- Create a starter SKILL.md in .kernforge/skills/<name>.
+
+/init verify
+- Create a starter .kernforge/verify.json template.
+
+/locale-auto [on|off]
+- Show or change automatic locale insertion in prompts.
+`), true
+	case "mcp", "resource", "resources", "prompt", "prompts", "skills":
+		return strings.TrimSpace(`
+MCP and skills commands expose local skills plus external MCP tools, resources, and prompts.
+
+/skills
+- Show discovered local skills.
+
+/mcp
+- Show configured MCP servers and their tool/resource/prompt counts.
+
+/resources
+- List discovered MCP resources.
+
+/resource <target>
+- Read one MCP resource by server and uri/name.
+
+/prompts
+- List discovered MCP prompts.
+
+/prompt <target> [json]
+- Resolve an MCP prompt by server:name, with optional JSON arguments.
+`), true
+	case "git", "diff":
+		return strings.TrimSpace(`
+Git commands expose lightweight repository inspection helpers.
+
+/diff
+- Show the current git diff for the workspace.
+`), true
+	case "help":
+		return strings.TrimSpace(`
+/help [topic]
+
+- Without arguments, show the grouped command list.
+- With a command name, command path, or topic, show detailed help.
+
+Examples:
+- /help verify
+- /help /verify
+- /help selection
+- /help memory
+- /help mcp
+`), true
+	}
+	return "", false
+}
+
+func normalizeHelpTopic(topic string) string {
+	value := strings.TrimSpace(strings.ToLower(topic))
+	value = strings.TrimPrefix(value, "/")
+	return value
+}
+
+type Mode string
+
+const (
+	ModeDefault     Mode = "default"
+	ModeAcceptEdits Mode = "acceptEdits"
+	ModePlan        Mode = "plan"
+	ModeBypass      Mode = "bypassPermissions"
+)
+
+type Action string
+
+const (
+	ActionRead  Action = "read"
+	ActionWrite Action = "write"
+	ActionShell Action = "shell"
+)
+
+type PromptFunc func(question string) (bool, error)
+
+type PermissionManager struct {
+	mode   Mode
+	prompt PromptFunc
+}
+
+func ParseMode(value string) Mode {
+	switch strings.TrimSpace(value) {
+	case "", string(ModeDefault):
+		return ModeDefault
+	case string(ModeAcceptEdits):
+		return ModeAcceptEdits
+	case string(ModePlan):
+		return ModePlan
+	case string(ModeBypass):
+		return ModeBypass
+	default:
+		return ModeDefault
+	}
+}
+
+func NewPermissionManager(mode Mode, prompt PromptFunc) *PermissionManager {
+	return &PermissionManager{mode: mode, prompt: prompt}
+}
+
+func (m *PermissionManager) Mode() Mode {
+	return m.mode
+}
+
+func (m *PermissionManager) SetMode(mode Mode) {
+	m.mode = mode
+}
+
+func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
+	switch m.mode {
+	case ModeBypass:
+		return true, nil
+	case ModePlan:
+		if action == ActionRead {
+			return true, nil
+		}
+		return false, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
+	case ModeAcceptEdits:
+		if action == ActionRead || action == ActionWrite {
+			return true, nil
+		}
+	case ModeDefault:
+		if action == ActionRead {
+			return true, nil
+		}
+	}
+	if m.prompt == nil {
+		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
+	}
+	return m.prompt(fmt.Sprintf("Allow %s? %s", action, detail))
+}

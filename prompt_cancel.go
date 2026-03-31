@@ -1,0 +1,9 @@
+package main
+
+import "errors"
+
+var ErrPromptCanceled = errors.New("prompt canceled")
+var ErrEditCanceled = errors.New("edit canceled")
+var ErrInvalidEditPayload = errors.New("invalid edit payload")
+var ErrInvalidPatchFormat = errors.New("invalid patch format")
+var ErrWriteDenied = errors.New("write denied")
