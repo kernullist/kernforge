@@ -1,7 +1,7 @@
 # Kernforge
 
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
-![Kernforge screenshot](./branding/kernforge.png)
+![Kernforge demo](./branding/kernforge_demo.gif)
 
 `Kernforge` is a terminal-based AI coding CLI written in Go. It is designed for a practical local-first workflow with:
 
