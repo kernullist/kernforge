@@ -24,7 +24,8 @@ type Agent struct {
 	LongMem       *PersistentMemoryStore
 	VerifyHistory *VerificationHistoryStore
 	VerifyChanges func(context.Context) (VerificationReport, bool)
-	EmitAssistant func(string)
+	EmitAssistant   func(string)
+	lastEmittedText string
 }
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
@@ -118,8 +119,11 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 			if a.EmitAssistant != nil {
 				if preamble != "" {
 					a.EmitAssistant(preamble)
+					a.lastEmittedText = preamble
 				} else {
-					a.EmitAssistant(synthesizeToolPreambleText(resp.Message.ToolCalls))
+					synth := synthesizeToolPreambleText(resp.Message.ToolCalls)
+					a.EmitAssistant(synth)
+					a.lastEmittedText = synth
 				}
 			}
 		}
@@ -136,6 +140,9 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 						return "", err
 					}
 					continue
+				}
+				if reply == a.lastEmittedText {
+					return "", nil
 				}
 				return reply, nil
 			}
