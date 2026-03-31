@@ -59,7 +59,12 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		return "", err
 	}
 	if a.LongMem != nil {
-		_ = a.LongMem.CaptureTurn(a.Workspace, a.Session, userText, reply, a.Session.Messages[startIndex:])
+		// completeLoop() 내에서 Compact()가 호출되어 메시지가 축소되었을 수 있음
+		safeStart := startIndex
+		if safeStart > len(a.Session.Messages) {
+			safeStart = len(a.Session.Messages)
+		}
+		_ = a.LongMem.CaptureTurn(a.Workspace, a.Session, userText, reply, a.Session.Messages[safeStart:])
 	}
 	return reply, nil
 }
