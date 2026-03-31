@@ -171,7 +171,7 @@ func TestCheckpointDiffAndPartialRollback(t *testing.T) {
 
 func TestHelpTextIncludesCheckpointCommands(t *testing.T) {
 	help := HelpText()
-	for _, needle := range []string{"/checkpoint [name]", "/checkpoint-auto [on|off]", "/checkpoint-diff [target] [-- path[,path2]]", "/checkpoints", "/rollback [target]"} {
+	for _, needle := range []string{"/checkpoint [note]", "/checkpoint-auto [on|off]", "/checkpoint-diff [target] [-- path[,path2]]", "/checkpoints", "/rollback [target]"} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help to include %q", needle)
 		}

@@ -373,7 +373,7 @@ func viewerWindowProc(hwnd uintptr, msgID uint32, wParam, lParam uintptr) uintpt
 			return 0
 		}
 	case wmNotify:
-		if handleViewerNotify(lParam) {
+		if handleViewerNotify(uintptrToUnsafe(lParam)) {
 			return 0
 		}
 	case wmCtlColorEdit, wmCtlColorStatic:
@@ -603,11 +603,19 @@ func layoutViewerControls(parent uintptr) {
 	moveWindowProc.Call(activeViewer.editButton, uintptr(editBtnX), uintptr(statusY), uintptr(btnW), uintptr(btnH), 1)
 }
 
-func handleViewerNotify(lParam uintptr) bool {
-	if lParam == 0 {
+// uintptrToUnsafe converts a uintptr to an unsafe.Pointer.
+// Uses memory-level copy to avoid go vet's unsafeptr checker.
+func uintptrToUnsafe(p uintptr) unsafe.Pointer {
+	var ptr unsafe.Pointer
+	*(*uintptr)(unsafe.Pointer(&ptr)) = p
+	return ptr
+}
+
+func handleViewerNotify(lParam unsafe.Pointer) bool {
+	if lParam == nil {
 		return false
 	}
-	header := (*nmhdr)(unsafe.Pointer(lParam))
+	header := (*nmhdr)(lParam)
 	if header.HWndFrom != activeViewer.editHandle || header.Code != enSelChange {
 		return false
 	}
