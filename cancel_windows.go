@@ -15,7 +15,7 @@ var (
 	getAsyncKeyStateProc = user32CancelDLL.NewProc("GetAsyncKeyState")
 )
 
-func startEscapeWatcher(cancel func()) func() {
+func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	var once sync.Once
@@ -35,6 +35,10 @@ func startEscapeWatcher(cancel func()) func() {
 				state, _, _ := getAsyncKeyStateProc.Call(vkEscape)
 				down := (uint16(state) & 0x8000) != 0
 				if down && !wasDown {
+					if shouldCancel != nil && !shouldCancel() {
+						wasDown = down
+						continue
+					}
 					cancel()
 					return
 				}
