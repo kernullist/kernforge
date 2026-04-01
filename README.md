@@ -3,51 +3,65 @@
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
 ![Kernforge demo](./branding/kernforge_demo.gif)
 
-`Kernforge` is a terminal-based AI coding CLI written in Go. It is designed for a practical local-first workflow with:
+`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, while keeping the core runtime portable.
 
-- an interactive REPL
-- one-shot prompt mode
-- file/search/patch/shell/git tools
-- sessions with resume and transcript export
-- project memory files and cross-session persistent memory
-- local `SKILL.md` skills
-- stdio-based MCP servers
-- a separate text viewer and diff preview windows on Windows
-- automatic verification, checkpoints, and rollback
-- a plan-review workflow with a dedicated reviewer model
+## What It Currently Supports
 
-It is especially friendly to Windows development environments, while keeping the core architecture portable.
+- Interactive REPL and one-shot `-prompt` mode
+- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
+- File, patch, shell, and git-oriented tool use
+- Local file mentions, image mentions, and MCP resource mentions
+- Session persistence, resume, rename, clear, compact, and Markdown export
+- Project memory files plus cross-session persistent memory with trust/importance metadata
+- Local `SKILL.md` skills with discovery and per-request activation
+- Stdio MCP servers with tools, resources, and prompts
+- Windows viewer and diff-preview windows for selection-first workflows
+- Adaptive verification, verification history dashboards, checkpoints, and rollback
+- Plan-review workflow with a separate reviewer model
 
 ## Highlights
 
-- Providers: `ollama`, `anthropic`, `openai`, `openrouter`
-- Additional alias: `openai-compatible`
-- Input modes:
-  - interactive REPL
-  - one-shot mode with `-prompt`
-  - image attachments with `-image`, `-i`, or `@image.png`
-  - file and line-range mentions like `@main.go` or `@main.go:120-150`
-  - MCP resource mentions like `@mcp:docs:getting-started`
-- Editing workflow:
-  - automatic code scouting when no explicit file mention is provided
-  - diff preview before applying edits
-  - automatic verification after edits
-  - workspace checkpoint / rollback
-  - selection-first review and edit flow from `/open`
-- Interactive ergonomics:
-  - `Up` / `Down` history recall in the Windows console
-  - `Tab` completion for slash commands, paths, mentions, and MCP targets
-  - `Esc` to cancel the current input or in-flight request
-- Persistence:
-  - saved sessions
-  - recent provider/model profiles
-  - persistent memory with importance and trust metadata
-  - Markdown transcript export including verification and selections
-- Extensibility:
-  - local skills via `SKILL.md`
-  - MCP tools, resources, and prompts
-- Planning:
-  - plan-review workflow using a planner model and a separately configured reviewer model
+### Input And Prompting
+
+- Interactive chat REPL
+- One-shot prompt mode with `-prompt`
+- Image attachments with `-image`, `-i`, or `@path/to/image.png`
+- File mentions like `@main.go`
+- Line-range mentions like `@main.go:120-150`
+- MCP mentions like `@mcp:docs:getting-started`
+- Multiline input by ending a line with `\`
+- Automatic code scouting when no explicit file mention is provided
+
+### Editing Workflow
+
+- Diff preview before file writes
+- Selection-aware edit previews
+- Automatic verification after edits when applicable
+- Automatic checkpoint creation before the first edit in a request
+- Manual checkpoints, checkpoint diff, and rollback
+- Selection-first edit and review flow through `/open`
+
+### Interactive Ergonomics
+
+- `Tab` completion for commands, paths, mentions, MCP targets, and `/open`
+- `Esc` to cancel current input
+- `Esc` to cancel an in-flight request
+- Windows console input history with `Up` and `Down`
+
+### Persistence And Context
+
+- Saved sessions with `/resume`
+- Session rename and transcript export
+- Persistent memory with citation ids, trust, importance, and search
+- Project guidance files loaded from `KERNFORGE.md` and `.kernforge/KERNFORGE.md`
+- Auto locale injection based on system locale
+
+### Extensibility
+
+- Local skills from `SKILL.md`
+- MCP tools
+- MCP resources
+- MCP prompts
 
 ## Quick Start
 
@@ -63,15 +77,14 @@ go build -o kernforge.exe .
 .\kernforge.exe
 ```
 
-On the first run, if no provider/model is configured, Kernforge can:
+If no provider/model is configured yet, Kernforge can:
 
-1. try to detect a local Ollama server
-2. ask whether you want to connect to it
-3. otherwise ask you to choose a provider
-4. collect the model, API key, and base URL
-5. save the result for future runs
+1. Try to detect a local Ollama server.
+2. Offer to use it if found.
+3. Otherwise walk through provider setup.
+4. Save the chosen provider, model, API key, and base URL for future runs.
 
-### One-shot Prompt Mode
+### One-Shot Prompt Mode
 
 ```powershell
 .\kernforge.exe -prompt "Explain the structure of this project"
@@ -80,7 +93,7 @@ On the first run, if no provider/model is configured, Kernforge can:
 With one image:
 
 ```powershell
-.\kernforge.exe -prompt "Explain the cause of the error in this screenshot" -image .\screenshot.png
+.\kernforge.exe -prompt "Explain the error in this screenshot" -image .\screenshot.png
 ```
 
 With multiple images:
@@ -89,7 +102,7 @@ With multiple images:
 .\kernforge.exe -prompt "Compare these screenshots" -image .\before.png,.\after.png
 ```
 
-### Run With a Specific Provider and Model
+### Run With A Specific Provider
 
 Anthropic:
 
@@ -141,71 +154,37 @@ $env:OPENAI_API_KEY = "your_key"
 
 Notes:
 
-- `-image` only works with `-prompt`.
-- In interactive mode, you can also attach images with `@path/to/image.png`.
+- `-image` requires `-prompt`.
+- `-preview-file`, `-preview-result-file`, `-viewer-file`, and `-viewer-result-file` are internal window helper flags.
 
-## Workspace Root vs Working Directory
+## Workspace And Configuration
+
+### Workspace Root vs Current Directory
 
 Kernforge tracks:
 
-- the workspace root
-- the current working directory inside the REPL
+- The workspace root
+- The current working directory inside the REPL
 
 The workspace root is set from `-cwd` or the process working directory at startup. File tools stay within that root.
 
-Inside the REPL, `!cd` changes the current working directory but not the workspace boundary.
+Inside the REPL, `!cd` changes the current working directory, but it does not expand the workspace boundary.
 
-## Supported Providers
+### Config Locations
 
-### Ollama
-
-- Default base URL: `http://localhost:11434`
-- Reads `OLLAMA_HOST` and `OLLAMA_API_KEY`
-- Supports first-run local server detection
-- Fetches model lists directly from the server
-
-### Anthropic
-
-- Default base URL: `https://api.anthropic.com`
-- Reads `ANTHROPIC_API_KEY`
-
-### OpenAI
-
-- Default base URL: `https://api.openai.com`
-- Reads `OPENAI_API_KEY`
-
-### OpenRouter
-
-- Default base URL: `https://openrouter.ai/api/v1`
-- Reads `OPENROUTER_API_KEY`
-- Interactive picker supports paging, filtering, curated models, reasoning-only filtering, and sorting by recommended/price/context
-
-## Configuration
-
-### Global Config Locations
-
-Windows:
-
-- `~/.kernforge/config.json`
-
-macOS/Linux:
-
-- `~/.kernforge/config.json`
-
-### Workspace Config Location
-
-- `.kernforge/config.json`
+- Global config: `~/.kernforge/config.json`
+- Workspace config: `.kernforge/config.json`
 
 ### Merge Order
 
 Later sources override earlier ones:
 
-1. global config
-2. workspace config
-3. environment variables
-4. command-line flags
+1. Global config
+2. Workspace config
+3. Environment variables
+4. Command-line flags
 
-### Example
+### Example Config
 
 ```json
 {
@@ -231,22 +210,22 @@ Later sources override earlier ones:
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
 | `temperature` | Model temperature |
-| `max_tokens` | Max tokens for completion |
-| `max_tool_iterations` | Max tool-call loop count per request |
+| `max_tokens` | Max completion tokens |
+| `max_tool_iterations` | Max tool loop count per request |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
 | `session_dir` | Directory for saved session JSON files |
 | `auto_compact_chars` | Approximate context threshold before auto-compacting |
-| `auto_checkpoint_edits` | Create one safety checkpoint before the first edit in a request |
-| `auto_verify_docs_only` | If `false`, auto verification ignores docs-only changes; if `true`, docs-only changes can still trigger verification |
-| `auto_locale` | Automatically instruct the model to answer in the detected system locale |
+| `auto_checkpoint_edits` | Create a safety checkpoint before the first edit in a request |
+| `auto_verify_docs_only` | Allow docs-only changes to still trigger auto verification |
+| `auto_locale` | Inject the detected system locale into prompts |
 | `memory_files` | Extra memory file paths |
 | `skill_paths` | Extra skill search paths |
-| `enabled_skills` | Skills always injected into the system prompt |
+| `enabled_skills` | Skills always injected into prompts |
 | `mcp_servers` | MCP server definitions |
-| `profiles` | Saved recent/pinned provider profiles |
-| `plan_review` | Dedicated reviewer model config for `/do-plan-review` |
-| `review_profiles` | Saved reviewer profiles for plan review |
+| `profiles` | Saved recent or pinned provider/model profiles |
+| `plan_review` | Reviewer model config used by `/do-plan-review` |
+| `review_profiles` | Saved reviewer profiles |
 
 ### Environment Variables
 
@@ -270,6 +249,37 @@ Provider-specific:
 - `OLLAMA_HOST`
 - `OLLAMA_API_KEY`
 
+## Providers
+
+### Ollama
+
+- Default base URL: `http://localhost:11434`
+- Reads `OLLAMA_HOST` and `OLLAMA_API_KEY`
+- Supports first-run local server detection
+- Fetches model lists directly from the server
+
+### Anthropic
+
+- Default base URL: `https://api.anthropic.com`
+- Reads `ANTHROPIC_API_KEY`
+
+### OpenAI
+
+- Default base URL: `https://api.openai.com`
+- Reads `OPENAI_API_KEY`
+
+### OpenRouter
+
+- Default base URL: `https://openrouter.ai/api/v1`
+- Reads `OPENROUTER_API_KEY`
+- Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
+
+### OpenAI-compatible
+
+- Uses OpenAI-style chat completions
+- Reads `OPENAI_API_KEY` unless overridden by config/env
+- Requires an explicit `base_url`
+
 ## Memory
 
 ### Memory Files
@@ -278,34 +288,34 @@ Memory files are injected into the system prompt as project guidance.
 
 Automatic search locations:
 
-- Global:
-  - `~/.kernforge/MEMORY.md`
-- Workspace ancestry:
-  - `.kernforge/KERNFORGE.md`
-  - `KERNFORGE.md`
+- Global: `~/.kernforge/MEMORY.md`
+- Workspace ancestry: `.kernforge/KERNFORGE.md`
+- Workspace ancestry: `KERNFORGE.md`
 
-Create a starter workspace memory file:
+Starter commands:
 
 ```text
 /init
+/init memory-policy
 ```
 
 ### Persistent Memory
 
-Kernforge includes persistent memory across sessions. It captures compressed turn summaries and can re-inject relevant historical context in future sessions.
+Kernforge stores cross-session compressed memories and can re-inject relevant context in future sessions.
 
 Memory metadata includes:
 
-- citation id
-- date
-- session name or id
-- provider/model when available
-- importance: `low`, `medium`, `high`
-- trust: `tentative`, `confirmed`
+- Citation id
+- Date
+- Session name or id
+- Provider and model when available
+- Importance: `low`, `medium`, `high`
+- Trust: `tentative`, `confirmed`
 
 Useful commands:
 
 ```text
+/memory
 /mem
 /mem-search <query>
 /mem-show <id>
@@ -319,18 +329,6 @@ Useful commands:
 /mem-stats
 ```
 
-### Memory Retention Policy
-
-Generate a workspace policy with:
-
-```text
-/init memory-policy
-```
-
-Policy file:
-
-- `.kernforge/memory-policy.json`
-
 ## Skills And MCP
 
 ### Skills
@@ -340,8 +338,6 @@ Create a starter skill:
 ```text
 /init skill checks
 ```
-
-Skill discovery paths include global skill directories, workspace `.kernforge/skills`, and `skills`.
 
 Useful commands:
 
@@ -354,7 +350,7 @@ Use `$checks` in a prompt to activate a skill for the current request.
 
 ### MCP
 
-Kernforge supports stdio-based MCP servers and exposes their tools, resources, and prompts inside the CLI.
+Kernforge supports stdio-based MCP servers and exposes their tools, resources, and prompts in the CLI.
 
 Useful commands:
 
@@ -380,13 +376,41 @@ Mention syntax:
 Explain the structure of this repository
 ```
 
-### Multiline Input
-
-End a line with `\` to continue:
+### Useful Runtime Commands
 
 ```text
-Find the auth-related flow and \
-summarize the key files
+/config
+/context
+/status
+/version
+/help
+/reload
+```
+
+### Conversation And Session Commands
+
+```text
+/clear
+/compact [focus]
+/export [file]
+/rename <name>
+/resume <session-id>
+/session
+/sessions
+/tasks
+```
+
+### Provider And Planning Commands
+
+```text
+/provider
+/model [name]
+/profile
+/profile-review
+/set-plan-review [provider]
+/do-plan-review <task>
+/permissions [mode]
+/locale-auto [on|off]
 ```
 
 ### Canceling And History
@@ -399,7 +423,7 @@ summarize the key files
 
 `Tab` completion supports:
 
-- slash commands
+- Slash commands
 - `@file` mentions
 - `/open <path>`
 - `/resource <server:...>`
@@ -414,13 +438,14 @@ Open a file in the separate text viewer:
 /open main.go
 ```
 
-Viewer features:
+Viewer and selection workflow features:
 
-- line numbers
-- themed header and live footer
-- text selection
-- automatic prompt prefill from the selected line range
-- persisted selection stack
+- Separate viewer window on Windows
+- Line numbers and footer status
+- Text selection
+- Prompt prefill from selected lines
+- Saved selection stack
+- Review-only and edit-only prompts scoped to the selection
 
 Selection commands:
 
@@ -439,7 +464,7 @@ Selection commands:
 /edit-selection <task>
 ```
 
-## Shell Commands
+## Shell And Git Commands
 
 Run shell commands with `!`:
 
@@ -448,7 +473,7 @@ Run shell commands with `!`:
 !go test ./...
 ```
 
-Built-in shortcuts:
+Built-in shell shortcuts:
 
 ```text
 !cd src
@@ -459,14 +484,20 @@ Built-in shortcuts:
 !clear
 ```
 
+Git command:
+
+```text
+/diff
+```
+
 ## Permission Modes
 
 | Mode | Meaning |
 | --- | --- |
-| `default` | reads auto-allowed, writes and shell require confirmation |
-| `acceptEdits` | reads and writes auto-allowed, shell requires confirmation |
-| `plan` | read-only mode |
-| `bypassPermissions` | everything auto-approved |
+| `default` | Reads auto-allowed, writes and shell require confirmation |
+| `acceptEdits` | Reads and writes auto-allowed, shell requires confirmation |
+| `plan` | Read-only mode |
+| `bypassPermissions` | Everything auto-approved |
 
 Change it in the REPL:
 
@@ -481,7 +512,7 @@ Change it in the REPL:
 
 After successful edits, Kernforge can run automatic verification.
 
-Supported verification detection includes:
+Implemented verification detection includes:
 
 - Go: targeted `go test` plus `go vet ./...`
 - Cargo: `cargo check`, `cargo test`
@@ -495,178 +526,15 @@ Useful commands:
 /verify [path,...|--full]
 /verify-dashboard [all]
 /verify-dashboard-html [all]
-/checkpoint [name]
+/checkpoint [note]
 /checkpoint-auto [on|off]
 /checkpoint-diff [target] [-- path[,path2]]
 /checkpoints
 /rollback [target]
-```
-
-Generate a workspace verification policy:
-
-```text
 /init verify
 ```
 
-## Sessions, Profiles, And Planning
+## Notes
 
-Session commands:
-
-```text
-/session
-/sessions
-/resume <session-id>
-/rename <name>
-/export [file]
-/tasks
-```
-
-Provider profile commands:
-
-```text
-/provider
-/provider status
-/profile
-/model <name>
-```
-
-Plan-review workflow:
-
-```text
-/set-plan-review [provider]
-/set-plan-review status
-/profile-review
-/do-plan-review <task>
-```
-
-This lets you keep a separate reviewer model configuration, save reviewer profiles, and run an iterative plan-review loop before execution.
-
-## Slash Commands
-
-```text
-/help
-/status
-/config
-/context
-/reload
-/version
-/provider
-/profile
-/model <name>
-/permissions <mode>
-/verify [path,...|--full]
-/verify-dashboard [all]
-/verify-dashboard-html [all]
-/clear
-/reset
-/new
-/compact [focus]
-/memory
-/mem
-/mem-search <query>
-/mem-show <id>
-/mem-promote <id>
-/mem-demote <id>
-/mem-confirm <id>
-/mem-tentative <id>
-/mem-dashboard [query]
-/mem-dashboard-html [query]
-/mem-prune [all]
-/mem-stats
-/checkpoint [name]
-/checkpoint-auto [on|off]
-/checkpoint-diff [target] [-- path[,path2]]
-/locale-auto [on|off]
-/checkpoints
-/rollback [target]
-/skills
-/mcp
-/resources
-/resource <server:uri-or-name>
-/prompts
-/prompt <server:name> {"arg":"value"}
-/init
-/init config
-/init verify
-/init memory-policy
-/init skill <name>
-/open <path>
-/selection
-/selections
-/use-selection <n>
-/drop-selection <n>
-/note-selection <text>
-/tag-selection <tag[,tag2,...]>
-/clear-selection
-/clear-selections
-/diff-selection
-/review-selection [...]
-/review-selections [...]
-/edit-selection <task>
-/session
-/sessions
-/resume <session-id>
-/rename <name>
-/tasks
-/diff
-/export [file]
-/set-plan-review [provider]
-/do-plan-review <task>
-/profile-review
-/exit
-/quit
-```
-
-## Troubleshooting
-
-### `provider/model are not configured`
-
-- run the CLI interactively once
-- or pass `-provider` and `-model`
-- or store them in config
-
-### `-image requires -prompt`
-
-`-image` only works in one-shot mode. In interactive mode, use:
-
-```text
-@screenshot.png explain this image
-```
-
-### Config, Skills, Or MCP Changes Are Not Reflected
-
-```text
-/reload
-```
-
-### `no Ollama models were returned`
-
-Check:
-
-- whether the Ollama server is running
-- whether the base URL is correct
-- whether the model has been pulled locally
-
-## Related Docs
-
-- MCP and skills quick guide: [MCP-SKILLS.md](./MCP-SKILLS.md)
-
-## Current Scope Summary
-
-- Go 1.21 single-binary CLI
-- interactive REPL and one-shot prompt mode
-- Anthropic / OpenAI / OpenRouter / Ollama / OpenAI-compatible support
-- image input support
-- file, image, line-range, and MCP mentions
-- automatic code scouting
-- text viewer with persisted selections
-- selection-first review and edit workflow
-- session save / resume / export
-- cross-session persistent memory with dashboards and retention policy
-- workspace checkpoint / rollback
-- provider profiles and reviewer profiles
-- local skills
-- stdio MCP tools / resources / prompts
-- automatic verification and verification dashboards
-- workspace verification policy
-- plan-review workflow with a dedicated reviewer model
+- The viewer and diff preview windows are primarily implemented for Windows.
+- The CLI core, sessions, providers, memory, skills, MCP support, and verification logic are designed to remain portable where possible.
