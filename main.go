@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 func main() {
@@ -494,7 +495,23 @@ func (rt *runtimeState) printWhileThinking(lines ...string) {
 }
 
 func normalizeAssistantDisplayText(text string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	normalized := strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsSpace(r):
+			return ' '
+		case r == '`':
+			return -1
+		case unicode.IsPunct(r):
+			return ' '
+		default:
+			return unicode.ToLower(r)
+		}
+	}, trimmed)
+	return strings.Join(strings.Fields(normalized), " ")
 }
 
 func (rt *runtimeState) resetAssistantDedup() {
