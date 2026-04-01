@@ -51,6 +51,8 @@ type runtimeState struct {
 	interactive   bool
 	thinkingMu    sync.Mutex
 	thinkingStop  func()
+	requestCancelMu     sync.Mutex
+	requestCancelPauses int
 }
 
 func run(args []string) error {
@@ -283,7 +285,13 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if !rt.interactive {
 		return true, nil
 	}
-	openPreview, err := rt.confirm("Open diff preview?")
+	var (
+		openPreview bool
+		err         error
+	)
+	rt.withRequestCancelSuspended(func() {
+		openPreview, err = rt.confirm("Open diff preview?")
+	})
 	if err != nil {
 		return false, err
 	}
@@ -399,7 +407,7 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 	rt.armAutoCheckpoint()
 	defer rt.clearAutoCheckpoint()
 
-	stopEscapeWatcher := startEscapeWatcher(cancel)
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
 	defer stopEscapeWatcher()
 
 	rt.startThinkingIndicator()
@@ -485,6 +493,32 @@ func (rt *runtimeState) printWhileThinking(lines ...string) {
 		fmt.Fprintln(rt.writer, line)
 	}
 	rt.startThinkingIndicator()
+}
+
+func (rt *runtimeState) shouldHonorRequestCancel() bool {
+	rt.requestCancelMu.Lock()
+	defer rt.requestCancelMu.Unlock()
+	return rt.requestCancelPauses == 0
+}
+
+func (rt *runtimeState) suspendRequestCancel() func() {
+	rt.requestCancelMu.Lock()
+	rt.requestCancelPauses++
+	rt.requestCancelMu.Unlock()
+
+	return func() {
+		rt.requestCancelMu.Lock()
+		if rt.requestCancelPauses > 0 {
+			rt.requestCancelPauses--
+		}
+		rt.requestCancelMu.Unlock()
+	}
+}
+
+func (rt *runtimeState) withRequestCancelSuspended(fn func()) {
+	resumeRequestCancel := rt.suspendRequestCancel()
+	defer resumeRequestCancel()
+	fn()
 }
 
 func (rt *runtimeState) suspendThinkingIndicator() func() {
@@ -2872,7 +2906,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stopEscapeWatcher := startEscapeWatcher(cancel)
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
 	defer stopEscapeWatcher()
 
 	result, err := RunPlanReview(

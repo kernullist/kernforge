@@ -36,6 +36,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if a.Client == nil {
 		return "", fmt.Errorf("no model provider is configured")
 	}
+	a.lastEmittedText = ""
 	startIndex := len(a.Session.Messages)
 	enriched, mentionImages := a.expandMentions(ctx, userText)
 	enriched = a.Skills.InjectPromptContext(enriched)
@@ -94,6 +95,8 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 	patchFormatRetries := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
+	consecutiveEditTurns := 0
+	postEditFinalAnswerNudges := 0
 	for iterations := 0; iterations < configMaxToolIterations(a.Config); iterations++ {
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
 			a.Compact("Auto-compacted due to context growth.")
@@ -118,13 +121,27 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
 				if preamble != "" {
-					a.EmitAssistant(preamble)
-					a.lastEmittedText = preamble
+					if preamble != a.lastEmittedText {
+						a.EmitAssistant(preamble)
+						a.lastEmittedText = preamble
+					}
 				} else {
 					synth := synthesizeToolPreambleText(resp.Message.ToolCalls)
-					a.EmitAssistant(synth)
-					a.lastEmittedText = synth
+					if synth != a.lastEmittedText {
+						a.EmitAssistant(synth)
+						a.lastEmittedText = synth
+					}
 				}
+			}
+			if postEditFinalAnswerNudges > 0 && allToolCallsAreEditTools(resp.Message.ToolCalls) {
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: "You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient. If the requested work is complete, provide the final answer now and summarize what changed.",
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
 			}
 		}
 		if len(resp.Message.ToolCalls) == 0 {
@@ -265,6 +282,22 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 			} else {
 				unresolvedVerification = false
 			}
+			if !unresolvedVerification {
+				consecutiveEditTurns++
+				if consecutiveEditTurns >= 2 && postEditFinalAnswerNudges < 1 {
+					postEditFinalAnswerNudges++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: "You have already completed multiple edit rounds. If there is no specific remaining issue to fix, stop editing and provide the final answer now. Only continue editing if the earlier changes are clearly insufficient.",
+					})
+				}
+			} else {
+				consecutiveEditTurns = 0
+				postEditFinalAnswerNudges = 0
+			}
+		} else {
+			consecutiveEditTurns = 0
+			postEditFinalAnswerNudges = 0
 		}
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
@@ -274,6 +307,18 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
 	return "", fmt.Errorf("tool loop limit exceeded")
+}
+
+func allToolCallsAreEditTools(calls []ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		if !isEditTool(call.Name) {
+			return false
+		}
+	}
+	return true
 }
 
 func (a *Agent) systemPrompt() string {
