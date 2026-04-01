@@ -53,6 +53,8 @@ type runtimeState struct {
 	thinkingStop  func()
 	requestCancelMu     sync.Mutex
 	requestCancelPauses int
+	lastAssistantMu      sync.Mutex
+	lastAssistantPrinted string
 }
 
 func run(args []string) error {
@@ -211,12 +213,7 @@ func run(args []string) error {
 		LongMem:       rt.longMem,
 		VerifyHistory: rt.verifyHistory,
 		EmitAssistant: func(text string) {
-			if strings.TrimSpace(text) == "" {
-				return
-			}
-			rt.stopThinkingIndicator()
-			fmt.Fprintln(rt.writer, rt.ui.assistant(text))
-			rt.startThinkingIndicator()
+			rt.printAssistantWhileThinking(text)
 		},
 	}
 	rt.reloadExtensions()
@@ -277,7 +274,7 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+	rt.printAssistant(reply)
 	return nil
 }
 
@@ -392,7 +389,7 @@ func (rt *runtimeState) runREPL() error {
 			continue
 		}
 		if strings.TrimSpace(reply) != "" {
-			fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+			rt.printAssistant(reply)
 		}
 	}
 }
@@ -404,6 +401,7 @@ func (rt *runtimeState) runAgentReply(ctx context.Context, input string) (string
 func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input string, images []MessageImage) (string, error) {
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	rt.resetAssistantDedup()
 	rt.armAutoCheckpoint()
 	defer rt.clearAutoCheckpoint()
 
@@ -492,6 +490,46 @@ func (rt *runtimeState) printWhileThinking(lines ...string) {
 	for _, line := range lines {
 		fmt.Fprintln(rt.writer, line)
 	}
+	rt.startThinkingIndicator()
+}
+
+func normalizeAssistantDisplayText(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func (rt *runtimeState) resetAssistantDedup() {
+	rt.lastAssistantMu.Lock()
+	rt.lastAssistantPrinted = ""
+	rt.lastAssistantMu.Unlock()
+}
+
+func (rt *runtimeState) shouldPrintAssistant(text string) bool {
+	normalized := normalizeAssistantDisplayText(text)
+	if normalized == "" {
+		return false
+	}
+	rt.lastAssistantMu.Lock()
+	defer rt.lastAssistantMu.Unlock()
+	if normalized == rt.lastAssistantPrinted {
+		return false
+	}
+	rt.lastAssistantPrinted = normalized
+	return true
+}
+
+func (rt *runtimeState) printAssistant(text string) {
+	if !rt.shouldPrintAssistant(text) {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
+}
+
+func (rt *runtimeState) printAssistantWhileThinking(text string) {
+	if !rt.shouldPrintAssistant(text) {
+		return
+	}
+	rt.stopThinkingIndicator()
+	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
 	rt.startThinkingIndicator()
 }
 
@@ -2967,7 +3005,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+	rt.printAssistant(reply)
 	return nil
 }
 
@@ -3420,7 +3458,7 @@ func (rt *runtimeState) handleSelectionReviewCommand(extra string) error {
 		return err
 	}
 	if strings.TrimSpace(reply) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+		rt.printAssistant(reply)
 	}
 	return nil
 }
@@ -3445,7 +3483,7 @@ func (rt *runtimeState) handleSelectionsReviewCommand(args string) error {
 		return err
 	}
 	if strings.TrimSpace(reply) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+		rt.printAssistant(reply)
 	}
 	return nil
 }
@@ -3466,7 +3504,7 @@ func (rt *runtimeState) handleSelectionEditCommand(task string) error {
 		return err
 	}
 	if strings.TrimSpace(reply) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.assistant(reply))
+		rt.printAssistant(reply)
 	}
 	return nil
 }
