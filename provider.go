@@ -343,7 +343,6 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		Messages:    make([]openAIMessage, 0, len(req.Messages)+1),
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
-		ToolChoice:  "auto",
 	}
 
 	if strings.TrimSpace(req.System) != "" {
@@ -414,6 +413,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		item.Function.Description = tool.Description
 		item.Function.Parameters = tool.InputSchema
 		payload.Tools = append(payload.Tools, item)
+	}
+	if len(payload.Tools) > 0 {
+		payload.ToolChoice = "auto"
 	}
 
 	body, err := json.Marshal(payload)
