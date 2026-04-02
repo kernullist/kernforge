@@ -517,7 +517,8 @@ func NewOllamaClient(baseURL, apiKey string) *OllamaClient {
 		apiKey:  apiKey,
 		baseURL: normalizeOllamaBaseURL(baseURL),
 		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			// Ollama 는 로컬 실행 시 응답이 느릴 수 있으므로 긴 타임아웃 설정
+			Timeout: 10 * time.Minute,
 		},
 	}
 }
@@ -703,7 +704,10 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 		req.Header.Set("authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	// 모델 목록 조회에도 충분한 타임아웃 설정
+	client := &http.Client{
+		Timeout: 60 * time.Second,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, normalized, err

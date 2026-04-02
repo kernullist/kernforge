@@ -26,34 +26,34 @@ func main() {
 }
 
 type runtimeState struct {
-	cfg           Config
-	reader        *bufio.Reader
-	writer        io.Writer
-	ui            UI
-	bannerShown   bool
-	prefillInput  string
-	inputHistory  []string
-	store         *SessionStore
-	session       *Session
-	agent         *Agent
-	perms         *PermissionManager
-	memory        MemoryBundle
-	longMem       *PersistentMemoryStore
-	checkpoints   *CheckpointManager
-	autoCP        *AutoCheckpointController
-	verifyHistory *VerificationHistoryStore
-	skills        SkillCatalog
-	skillWarns    []string
-	mcp           *MCPManager
-	mcpWarns      []string
-	ollamaModels  []OllamaModelInfo
-	clientErr     error
-	workspace     Workspace
-	interactive   bool
-	thinkingMu    sync.Mutex
-	thinkingStop  func()
-	requestCancelMu     sync.Mutex
-	requestCancelPauses int
+	cfg                  Config
+	reader               *bufio.Reader
+	writer               io.Writer
+	ui                   UI
+	bannerShown          bool
+	prefillInput         string
+	inputHistory         []string
+	store                *SessionStore
+	session              *Session
+	agent                *Agent
+	perms                *PermissionManager
+	memory               MemoryBundle
+	longMem              *PersistentMemoryStore
+	checkpoints          *CheckpointManager
+	autoCP               *AutoCheckpointController
+	verifyHistory        *VerificationHistoryStore
+	skills               SkillCatalog
+	skillWarns           []string
+	mcp                  *MCPManager
+	mcpWarns             []string
+	ollamaModels         []OllamaModelInfo
+	clientErr            error
+	workspace            Workspace
+	interactive          bool
+	thinkingMu           sync.Mutex
+	thinkingStop         func()
+	requestCancelMu      sync.Mutex
+	requestCancelPauses  int
 	lastAssistantMu      sync.Mutex
 	lastAssistantPrinted string
 }
@@ -255,6 +255,10 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewWriteFileTool(ws),
 		NewReplaceInFileTool(ws),
 		NewRunShellTool(ws),
+		NewGitAddTool(ws),
+		NewGitCommitTool(ws),
+		NewGitPushTool(ws),
+		NewGitCreatePRTool(ws),
 		NewGitStatusTool(ws),
 		NewGitDiffTool(ws),
 		NewUpdatePlanTool(ws),
@@ -306,7 +310,7 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(preview.Title))
 	}
 	fmt.Fprintln(rt.writer, preview.Preview)
-	return rt.confirm("Apply these changes?")
+	return true, nil
 }
 
 func (rt *runtimeState) showBanner() {
@@ -383,7 +387,9 @@ func (rt *runtimeState) runREPL() error {
 				fmt.Fprintln(rt.writer, rt.ui.warnLine(err.Error()))
 				continue
 			}
-			fmt.Fprintln(rt.writer, rt.ui.errorLine("assistant error: "+err.Error()))
+			for _, line := range rt.formatAssistantError(err) {
+				fmt.Fprintln(rt.writer, line)
+			}
 			if isAuthError(err) {
 				_ = rt.handleAuthError()
 			}
@@ -397,6 +403,88 @@ func (rt *runtimeState) runREPL() error {
 
 func (rt *runtimeState) runAgentReply(ctx context.Context, input string) (string, error) {
 	return rt.runAgentReplyWithImages(ctx, input, nil)
+}
+
+func (rt *runtimeState) formatAssistantError(err error) []string {
+	text := strings.TrimSpace(err.Error())
+	lines := []string{rt.ui.errorLine("assistant error: " + text)}
+	switch {
+	case strings.HasPrefix(text, "tool loop limit exceeded"):
+		toolSummary, stopReason, recentTurns := parseToolLoopDiagnostics(text)
+		if toolSummary != "" {
+			lines = append(lines, rt.ui.hintLine("Last tool sequence: "+toolSummary))
+		}
+		if stopReason != "" {
+			lines = append(lines, rt.ui.hintLine("Model stop reason: "+stopReason))
+		}
+		if recentTurns != "" {
+			lines = append(lines, rt.ui.hintLine("Recent tool turns: "+recentTurns))
+		}
+		lines = append(lines, rt.ui.hintLine("Try tightening the prompt, reducing unnecessary tools, or increasing max_tokens if the model is getting stuck planning."))
+	case strings.HasPrefix(text, "stopped after repeated identical tool calls"):
+		lines = append(lines, rt.ui.hintLine("The model kept asking for the same tool calls. This usually means it is stuck on the same observation without making progress."))
+	case strings.HasPrefix(text, "stopped after repeated tool failure:"):
+		lines = append(lines, rt.ui.hintLine("The same tool failure repeated. Fix the failing command or permission issue before retrying."))
+		if strings.Contains(text, ErrEditTargetMismatch.Error()) {
+			rejectedPath := parseRejectedEditTargetPath(text)
+			lines = append(lines, rt.ui.hintLine("Active workspace root: "+rt.session.WorkingDir))
+			if rejectedPath != "" {
+				lines = append(lines, rt.ui.hintLine("Rejected target path: "+rejectedPath))
+			}
+			lines = append(lines, rt.ui.hintLine("Re-read the file from the exact same path before editing again, and avoid crossing into a different worktree."))
+		}
+	case strings.Contains(text, "token limit"):
+		_, stopReason, _ := parseToolLoopDiagnostics(text)
+		if stopReason != "" {
+			lines = append(lines, rt.ui.hintLine("Model stop reason: "+stopReason))
+		}
+		lines = append(lines, rt.ui.hintLine("Increase max_tokens, reduce prompt bloat, or ask for a shorter intermediate answer."))
+	}
+	return lines
+}
+
+func parseRejectedEditTargetPath(text string) string {
+	markers := []string{
+		"outside the active workspace root: ",
+		"search text not found in ",
+	}
+	for _, marker := range markers {
+		index := strings.Index(text, marker)
+		if index < 0 {
+			continue
+		}
+		path := strings.TrimSpace(text[index+len(marker):])
+		path = strings.TrimSuffix(path, ")")
+		return path
+	}
+	return ""
+}
+
+func parseToolLoopDiagnostics(text string) (string, string, string) {
+	start := strings.Index(text, "(")
+	end := strings.LastIndex(text, ")")
+	if start < 0 || end <= start {
+		return "", "", ""
+	}
+	inside := strings.TrimSpace(text[start+1 : end])
+	if inside == "" {
+		return "", "", ""
+	}
+	var toolSummary string
+	var stopReason string
+	var recentTurns string
+	for _, part := range strings.Split(inside, ";") {
+		item := strings.TrimSpace(part)
+		switch {
+		case strings.HasPrefix(item, "last_tools="):
+			toolSummary = strings.TrimSpace(strings.TrimPrefix(item, "last_tools="))
+		case strings.HasPrefix(item, "stop_reason="):
+			stopReason = strings.TrimSpace(strings.TrimPrefix(item, "stop_reason="))
+		case strings.HasPrefix(item, "recent_turns="):
+			recentTurns = strings.TrimSpace(strings.TrimPrefix(item, "recent_turns="))
+		}
+	}
+	return toolSummary, stopReason, recentTurns
 }
 
 func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input string, images []MessageImage) (string, error) {
@@ -988,9 +1076,9 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 
 	switch provider {
 	case "ollama":
-		defaultURL := nextBaseURL
-		if strings.TrimSpace(defaultURL) == "" {
-			defaultURL = normalizeOllamaBaseURL("")
+		defaultURL := normalizeOllamaBaseURL("")
+		if strings.TrimSpace(nextBaseURL) != "" && strings.Contains(nextBaseURL, "localhost") {
+			defaultURL = normalizeOllamaBaseURL(nextBaseURL)
 		}
 		url, err := rt.promptValue("Ollama URL", defaultURL)
 		if err != nil {
@@ -2145,6 +2233,20 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+string(mode)))
+	case "set_max_tool_iterations":
+		if cmd.Args == "" {
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))))
+			return false, nil
+		}
+		val, err := strconv.Atoi(strings.TrimSpace(cmd.Args))
+		if err != nil || val < 1 {
+			return false, fmt.Errorf("invalid value: must be a positive integer")
+		}
+		rt.cfg.MaxToolIterations = val
+		if err := rt.saveUserConfig(); err != nil {
+			return false, err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+fmt.Sprintf("%d", val)))
 	case "verify":
 		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
 			return false, err
@@ -2507,6 +2609,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.section("Config"))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.cfg.Provider))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.cfg.Model))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", rt.cfg.BaseURL))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("shell", rt.cfg.Shell))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("permission_mode", string(rt.perms.Mode())))

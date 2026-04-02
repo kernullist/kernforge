@@ -107,6 +107,9 @@ func (w Workspace) Resolve(path string) (string, error) {
 }
 
 func (w Workspace) EnsureWrite(path string) error {
+	if err := w.ensureProtectedEditPath(path); err != nil {
+		return err
+	}
 	if w.Perms == nil {
 		return nil
 	}
@@ -118,6 +121,49 @@ func (w Workspace) EnsureWrite(path string) error {
 		return fmt.Errorf("%w: user denied write approval for %s", ErrWriteDenied, path)
 	}
 	return nil
+}
+
+func (w Workspace) ensureProtectedEditPath(path string) error {
+	targetAbs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	rootAbs, err := filepath.Abs(w.Root)
+	if err != nil {
+		return err
+	}
+	targetScope, targetProtected := protectedWorktreeScope(targetAbs)
+	if !targetProtected {
+		return nil
+	}
+	rootScope, rootProtected := protectedWorktreeScope(rootAbs)
+	if rootProtected && strings.EqualFold(rootScope, targetScope) {
+		return nil
+	}
+	return fmt.Errorf("%w: refusing to edit nested worktree-managed path outside the active workspace root: %s", ErrEditTargetMismatch, targetAbs)
+}
+
+func protectedWorktreeScope(path string) (string, bool) {
+	cleaned := filepath.Clean(path)
+	volume := filepath.VolumeName(cleaned)
+	trimmed := strings.TrimPrefix(cleaned, volume)
+	trimmed = strings.TrimLeft(trimmed, string(filepath.Separator))
+	parts := strings.Split(trimmed, string(filepath.Separator))
+	for i := 0; i+1 < len(parts); i++ {
+		first := strings.ToLower(strings.TrimSpace(parts[i]))
+		second := strings.ToLower(strings.TrimSpace(parts[i+1]))
+		if (first == ".claude" || first == ".git") && second == "worktrees" {
+			scopeParts := parts[:i+2]
+			prefix := filepath.Join(scopeParts...)
+			if volume != "" {
+				prefix = volume + string(filepath.Separator) + prefix
+			} else {
+				prefix = string(filepath.Separator) + prefix
+			}
+			return filepath.Clean(prefix), true
+		}
+	}
+	return "", false
 }
 
 func (w Workspace) EnsureShell(command string) error {
@@ -592,7 +638,7 @@ func NewReplaceInFileTool(ws Workspace) ReplaceInFileTool { return ReplaceInFile
 func (t ReplaceInFileTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "replace_in_file",
-		Description: "Replace exact text inside a file. Safer than rewriting the entire file.",
+		Description: "Replace an exact text match in a file. Use this only for very small single-location substitutions when you have just read the same file path and confirmed the exact search text.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -621,7 +667,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	content := string(data)
 	count := strings.Count(content, search)
 	if count == 0 {
-		return "", fmt.Errorf("search text not found in %s", path)
+		return "", fmt.Errorf("%w: search text not found in %s", ErrEditTargetMismatch, path)
 	}
 	all := boolValue(args, "all", false)
 	if !all && count > 1 {
@@ -725,6 +771,263 @@ type GitStatusTool struct{ ws Workspace }
 
 func NewGitStatusTool(ws Workspace) GitStatusTool { return GitStatusTool{ws: ws} }
 
+type GitAddTool struct{ ws Workspace }
+
+func NewGitAddTool(ws Workspace) GitAddTool { return GitAddTool{ws: ws} }
+
+func (t GitAddTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "git_add",
+		Description: "Stage specific paths or all tracked and untracked changes in the current workspace.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"paths": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string"},
+				},
+				"all": map[string]any{"type": "boolean"},
+			},
+		},
+	}
+}
+
+func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
+	args := input.(map[string]any)
+	all := boolValue(args, "all", false)
+	paths := stringSliceValue(args, "paths")
+	if all && len(paths) > 0 {
+		return "", fmt.Errorf("provide either all=true or paths, not both")
+	}
+	if !all && len(paths) == 0 {
+		return "", fmt.Errorf("paths are required unless all=true")
+	}
+	if err := t.ws.EnsureWrite("git add"); err != nil {
+		return "", err
+	}
+	cmdArgs := []string{"add"}
+	if all {
+		cmdArgs = append(cmdArgs, "--all")
+	} else {
+		for _, rawPath := range paths {
+			resolved, err := t.ws.Resolve(rawPath)
+			if err != nil {
+				return "", err
+			}
+			rel, err := filepath.Rel(t.ws.Root, resolved)
+			if err != nil {
+				return "", err
+			}
+			cmdArgs = append(cmdArgs, rel)
+		}
+	}
+	if _, err := runGitCommand(ctx, t.ws.Root, cmdArgs...); err != nil {
+		return "", err
+	}
+	status, err := runGitCommand(ctx, t.ws.Root, "status", "--short")
+	if err != nil {
+		return "", err
+	}
+	summary := "staged changes"
+	if all {
+		summary = "staged all changes"
+	} else {
+		summary = fmt.Sprintf("staged %d path(s)", len(paths))
+	}
+	if status == "(no output)" {
+		status = "(no staged or unstaged changes remain)"
+	}
+	return joinNonEmpty(summary, status), nil
+}
+
+type GitCommitTool struct{ ws Workspace }
+
+func NewGitCommitTool(ws Workspace) GitCommitTool { return GitCommitTool{ws: ws} }
+
+func (t GitCommitTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "git_commit",
+		Description: "Create a git commit from currently staged changes.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message":     map[string]any{"type": "string"},
+				"allow_empty": map[string]any{"type": "boolean"},
+			},
+			"required": []string{"message"},
+		},
+	}
+}
+
+func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
+	args := input.(map[string]any)
+	message := stringValue(args, "message")
+	if strings.TrimSpace(message) == "" {
+		return "", fmt.Errorf("message is required")
+	}
+	if err := t.ws.EnsureWrite("git commit"); err != nil {
+		return "", err
+	}
+	cmdArgs := []string{"commit", "-m", message}
+	if boolValue(args, "allow_empty", false) {
+		cmdArgs = append(cmdArgs, "--allow-empty")
+	}
+	out, err := runGitCommand(ctx, t.ws.Root, cmdArgs...)
+	if err != nil {
+		return out, err
+	}
+	shortSHA, err := runGitCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
+	if err != nil {
+		return out, err
+	}
+	subject, err := runGitCommand(ctx, t.ws.Root, "log", "-1", "--pretty=%s")
+	if err != nil {
+		return out, err
+	}
+	return joinNonEmpty(
+		fmt.Sprintf("created commit %s: %s", shortSHA, subject),
+		out,
+	), nil
+}
+
+type GitPushTool struct{ ws Workspace }
+
+func NewGitPushTool(ws Workspace) GitPushTool { return GitPushTool{ws: ws} }
+
+func (t GitPushTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "git_push",
+		Description: "Push the current or specified branch to a remote and optionally set upstream.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"remote":       map[string]any{"type": "string"},
+				"branch":       map[string]any{"type": "string"},
+				"set_upstream": map[string]any{"type": "boolean"},
+			},
+		},
+	}
+}
+
+func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
+	args := input.(map[string]any)
+	remote := stringValue(args, "remote")
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	branch := stringValue(args, "branch")
+	if strings.TrimSpace(branch) == "" {
+		currentBranch, err := gitCurrentBranch(ctx, t.ws.Root)
+		if err != nil {
+			return "", err
+		}
+		branch = currentBranch
+	}
+	if err := t.ws.EnsureShell(fmt.Sprintf("git push %s %s", remote, branch)); err != nil {
+		return "", err
+	}
+	cmdArgs := []string{"push"}
+	if boolValue(args, "set_upstream", true) {
+		hasUpstream, err := gitHasUpstream(ctx, t.ws.Root)
+		if err != nil {
+			return "", err
+		}
+		if !hasUpstream {
+			cmdArgs = append(cmdArgs, "-u")
+		}
+	}
+	cmdArgs = append(cmdArgs, remote, branch)
+	out, err := runGitCommand(ctx, t.ws.Root, cmdArgs...)
+	if err != nil {
+		return out, err
+	}
+	return joinNonEmpty(
+		fmt.Sprintf("pushed %s to %s", branch, remote),
+		out,
+	), nil
+}
+
+type GitCreatePRTool struct{ ws Workspace }
+
+func NewGitCreatePRTool(ws Workspace) GitCreatePRTool { return GitCreatePRTool{ws: ws} }
+
+func (t GitCreatePRTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "git_create_pr",
+		Description: "Create a GitHub pull request for the current branch using the gh CLI. By default this pushes the branch first.",
+		InputSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":       map[string]any{"type": "string"},
+				"body":        map[string]any{"type": "string"},
+				"base_branch": map[string]any{"type": "string"},
+				"remote":      map[string]any{"type": "string"},
+				"branch":      map[string]any{"type": "string"},
+				"draft":       map[string]any{"type": "boolean"},
+				"fill":        map[string]any{"type": "boolean"},
+				"push":        map[string]any{"type": "boolean"},
+			},
+		},
+	}
+}
+
+func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error) {
+	args := input.(map[string]any)
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh CLI is required to create a pull request: %w", err)
+	}
+	branch := stringValue(args, "branch")
+	if strings.TrimSpace(branch) == "" {
+		currentBranch, err := gitCurrentBranch(ctx, t.ws.Root)
+		if err != nil {
+			return "", err
+		}
+		branch = currentBranch
+	}
+	remote := stringValue(args, "remote")
+	if strings.TrimSpace(remote) == "" {
+		remote = "origin"
+	}
+	fill := boolValue(args, "fill", false)
+	title := stringValue(args, "title")
+	if !fill && strings.TrimSpace(title) == "" {
+		return "", fmt.Errorf("title is required unless fill=true")
+	}
+	if boolValue(args, "push", true) {
+		pushTool := NewGitPushTool(t.ws)
+		if _, err := pushTool.Execute(ctx, map[string]any{
+			"remote":       remote,
+			"branch":       branch,
+			"set_upstream": true,
+		}); err != nil {
+			return "", err
+		}
+	}
+	if err := t.ws.EnsureShell("gh pr create"); err != nil {
+		return "", err
+	}
+	cmdArgs := []string{"pr", "create", "--head", branch}
+	if base := stringValue(args, "base_branch"); strings.TrimSpace(base) != "" {
+		cmdArgs = append(cmdArgs, "--base", base)
+	}
+	if boolValue(args, "draft", false) {
+		cmdArgs = append(cmdArgs, "--draft")
+	}
+	if fill {
+		cmdArgs = append(cmdArgs, "--fill")
+	} else {
+		cmdArgs = append(cmdArgs, "--title", title, "--body", stringValue(args, "body"))
+	}
+	out, err := runCommand(ctx, t.ws.Root, "gh", cmdArgs...)
+	if err != nil {
+		return out, err
+	}
+	return joinNonEmpty(
+		fmt.Sprintf("created pull request for %s", branch),
+		out,
+	), nil
+}
+
 func (t GitStatusTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "git_status",
@@ -796,6 +1099,66 @@ func (t GitDiffTool) Execute(ctx context.Context, input any) (string, error) {
 		return "(no diff)", nil
 	}
 	return text, nil
+}
+
+func runCommand(ctx context.Context, dir string, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("%s failed: %w", summarizeExec(name, args...), err)
+	}
+	if text == "" {
+		return "(no output)", nil
+	}
+	return text, nil
+}
+
+func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := runCommand(ctx, dir, "git", args...)
+	if err != nil {
+		return out, fmt.Errorf("git command failed: %w", err)
+	}
+	return out, nil
+}
+
+func summarizeExec(name string, args ...string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, name)
+	parts = append(parts, args...)
+	return summarizeShellCommand(strings.Join(parts, " "))
+}
+
+func gitCurrentBranch(ctx context.Context, dir string) (string, error) {
+	branch, err := runGitCommand(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	if branch == "HEAD" {
+		return "", fmt.Errorf("git repository is in detached HEAD state")
+	}
+	return branch, nil
+}
+
+func gitHasUpstream(ctx context.Context, dir string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		text := strings.TrimSpace(string(out))
+		if strings.Contains(text, "no upstream configured") || strings.Contains(text, "HEAD branch has no upstream branch") {
+			return false, nil
+		}
+		if text == "" {
+			text = err.Error()
+		}
+		return false, fmt.Errorf("failed to inspect upstream branch: %s", text)
+	}
+	return true, nil
 }
 
 type UpdatePlanTool struct{ ws Workspace }
@@ -888,4 +1251,27 @@ func intValue(m map[string]any, key string, def int) int {
 		}
 	}
 	return def
+}
+
+func stringSliceValue(m map[string]any, key string) []string {
+	if v, ok := m[key]; ok {
+		switch x := v.(type) {
+		case []string:
+			return append([]string(nil), x...)
+		case []any:
+			out := make([]string, 0, len(x))
+			for _, item := range x {
+				s, ok := item.(string)
+				if !ok {
+					continue
+				}
+				if strings.TrimSpace(s) == "" {
+					continue
+				}
+				out = append(out, s)
+			}
+			return out
+		}
+	}
+	return nil
 }

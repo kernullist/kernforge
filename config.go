@@ -27,6 +27,7 @@ type Config struct {
 	Temperature         float64           `json:"temperature"`
 	MaxTokens           int               `json:"max_tokens"`
 	MaxToolIterations   int               `json:"max_tool_iterations"`
+	Command             string            `json:"command,omitempty"`
 	PermissionMode      string            `json:"permission_mode"`
 	Shell               string            `json:"shell"`
 	SessionDir          string            `json:"session_dir"`
@@ -574,7 +575,8 @@ Conversation And Sessions:
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
 /model [name]          Show or change the active model
-/permissions [mode]    Show or change permissions: default, acceptEdits, plan, bypassPermissions
+/permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
+/set_max_tool_iterations <n> Set the maximum tool iteration count per request
 /profile               Show recent provider/model profiles and switch to one
 /profile-review        Show and manage saved review profiles
 /provider              Choose and configure a provider
@@ -937,8 +939,9 @@ const (
 type PromptFunc func(question string) (bool, error)
 
 type PermissionManager struct {
-	mode   Mode
-	prompt PromptFunc
+	mode         Mode
+	prompt       PromptFunc
+	shellAllowed bool
 }
 
 func ParseMode(value string) Mode {
@@ -986,8 +989,21 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 			return true, nil
 		}
 	}
+	if action == ActionShell && m.shellAllowed {
+		return true, nil
+	}
+
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
-	return m.prompt(fmt.Sprintf("Allow %s? %s", action, detail))
+	allowed, err := m.prompt(fmt.Sprintf("Allow %s? %s (add 'always' to allow for entire session)", action, detail))
+	if allowed && action == ActionShell {
+		m.shellAllowed = true
+	}
+	return allowed, err
+}
+
+// IsShellAllowed returns whether shell permissions have been granted for this session.
+func (m *PermissionManager) IsShellAllowed() bool {
+	return m.shellAllowed
 }

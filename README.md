@@ -10,6 +10,7 @@
 - Interactive REPL and one-shot `-prompt` mode
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
 - File, patch, shell, and git-oriented tool use
+- Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
 - Project memory files plus cross-session persistent memory with trust/importance metadata
@@ -336,6 +337,7 @@ Useful commands:
 Create a starter skill:
 
 ```text
+/init config
 /init skill checks
 ```
 
@@ -489,6 +491,15 @@ Git command:
 ```text
 /diff
 ```
+
+Built-in AI git tools available to the model include:
+
+- `git_status`
+- `git_diff`
+- `git_add`
+- `git_commit`
+- `git_push`
+- `git_create_pr`
 
 ## Permission Modes
 

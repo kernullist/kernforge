@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -364,5 +365,224 @@ func TestAgentSuppressesDuplicateToolPreambleEmitsWithinATurn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(emitted, []string{"Checking the workspace."}) {
 		t.Fatalf("expected duplicate preamble emit to be suppressed, got %#v", emitted)
+	}
+}
+
+func TestAgentNudgesAfterRepeatedIdenticalToolCalls(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{}),
+			toolCallResponse("list_files", map[string]any{}),
+			toolCallResponse("list_files", map[string]any{}),
+			{Message: Message{Role: "assistant", Text: "I kept seeing the same workspace state, so I am stopping here."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "I kept seeing the same workspace state, so I am stopping here." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected 4 model turns, got %d", len(provider.requests))
+	}
+	lastTurn := provider.requests[3]
+	if len(lastTurn.Messages) == 0 {
+		t.Fatalf("expected repeated-tool warning before final answer")
+	}
+	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "repeating the same tool call sequence") {
+		t.Fatalf("expected repeated-tool nudge, got %#v", lastMessage)
+	}
+}
+
+func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterNudge(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{}),
+			toolCallResponse("list_files", map[string]any{}),
+			toolCallResponse("list_files", map[string]any{}),
+			toolCallResponse("list_files", map[string]any{}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err == nil {
+		t.Fatalf("expected repeated identical tool calls to stop the loop")
+	}
+	if !strings.Contains(err.Error(), "repeated identical tool calls") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAgentReportsTokenLimitWhenModelStopsWithEmptyResponse(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant"},
+				StopReason: "length",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err == nil {
+		t.Fatalf("expected token limit error")
+	}
+	if !strings.Contains(err.Error(), "token limit") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "stop_reason=length") {
+		t.Fatalf("expected stop_reason in error, got %v", err)
+	}
+}
+
+func TestAgentToolLoopLimitIncludesLastToolSummaryAndStopReason(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "list_files",
+						Arguments: `{}`,
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-2",
+						Name:      "list_files",
+						Arguments: `{"path":"."}`,
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+		},
+	}
+	cfg := Config{MaxToolIterations: 2}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err == nil {
+		t.Fatalf("expected tool loop limit error")
+	}
+	if !strings.Contains(err.Error(), "tool loop limit exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "last_tools=list_files") {
+		t.Fatalf("expected last tool summary, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "stop_reason=tool_calls") {
+		t.Fatalf("expected stop reason, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "iteration=2") {
+		t.Fatalf("expected iteration count, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "max_iterations=2") {
+		t.Fatalf("expected max iteration count, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "recent_turns=") {
+		t.Fatalf("expected recent tool turns summary, got %v", err)
+	}
+}
+
+func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "completion.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("replace_in_file", map[string]any{
+				"path":    "completion.go",
+				"search":  "missing",
+				"replace": "found",
+			}),
+			{Message: Message{Role: "assistant", Text: "I need to re-read the file before editing it."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReplaceInFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update completion.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "I need to re-read the file before editing it." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected a follow-up turn after edit target mismatch, got %d", len(provider.requests))
+	}
+	lastTurn := provider.requests[1]
+	if len(lastTurn.Messages) == 0 {
+		t.Fatalf("expected reread guidance before second turn")
+	}
+	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First read the exact file again from the same path") {
+		t.Fatalf("expected reread guidance, got %#v", lastMessage)
 	}
 }

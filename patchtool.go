@@ -14,7 +14,7 @@ func NewApplyPatchTool(ws Workspace) ApplyPatchTool { return ApplyPatchTool{ws: 
 func (t ApplyPatchTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply a precise multi-file patch using a Begin/End Patch format. Prefer this for non-trivial code edits.",
+		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. This is the default edit tool for most code changes after reading the current file contents.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -219,12 +219,6 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 			target = relOrAbs(ws.Root, change.srcPath)
 		}
 		previewBlocks = append(previewBlocks, buildSelectionAwareEditPreview(ws, target, change.before, change.after))
-	}
-	if err := ws.ConfirmEdit(EditPreview{
-		Title:   fmt.Sprintf("Apply patch touching %d file(s)", len(planned)),
-		Preview: strings.Join(previewBlocks, "\n\n"),
-	}); err != nil {
-		return "", err
 	}
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
 		return "", err
@@ -444,7 +438,7 @@ func locatePatchChunk(lines, oldChunk []string, cursor int) (int, error) {
 	if idx := findChunkAtOrAfter(lines, oldChunk, 0); idx >= 0 {
 		return idx, nil
 	}
-	return -1, fmt.Errorf("expected context not found")
+	return -1, fmt.Errorf("%w: expected context not found", ErrEditTargetMismatch)
 }
 
 func findChunkAtOrAfter(lines, chunk []string, start int) int {

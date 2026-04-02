@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -93,11 +95,20 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 	unresolvedVerification := false
 	finalAnswerNudges := 0
 	patchFormatRetries := 0
+	editTargetMismatchRetries := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
+	lastToolCallSignature := ""
+	lastToolCallSignatureCount := 0
+	repeatedToolCallNudges := 0
+	lastToolCallSummary := ""
+	lastStopReason := ""
+	lastIteration := 0
+	lastRecentToolTurns := ""
 	consecutiveEditTurns := 0
 	postEditFinalAnswerNudges := 0
 	for iterations := 0; iterations < configMaxToolIterations(a.Config); iterations++ {
+		lastIteration = iterations + 1
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
 			a.Compact("Auto-compacted due to context growth.")
 		}
@@ -113,11 +124,37 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		lastStopReason = normalizeStopReason(resp.StopReason)
 		a.Session.AddMessage(resp.Message)
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
 		if len(resp.Message.ToolCalls) > 0 {
+			currentSignature := toolCallSignature(resp.Message.ToolCalls)
+			if currentSignature != "" {
+				lastToolCallSummary = summarizeToolCalls(resp.Message.ToolCalls)
+				if currentSignature == lastToolCallSignature {
+					lastToolCallSignatureCount++
+				} else {
+					lastToolCallSignature = currentSignature
+					lastToolCallSignatureCount = 1
+					repeatedToolCallNudges = 0
+				}
+				if lastToolCallSignatureCount >= 3 {
+					if repeatedToolCallNudges < 1 {
+						repeatedToolCallNudges++
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: "You are repeating the same tool call sequence with the same arguments. Do not repeat it again unless the previous tool result explicitly requires it. Use a different next step or provide the final answer now.",
+						})
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+					return "", fmt.Errorf("stopped after repeated identical tool calls")
+				}
+			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
 				if preamble != "" {
@@ -145,6 +182,9 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 			}
 		}
 		if len(resp.Message.ToolCalls) == 0 {
+			lastToolCallSignature = ""
+			lastToolCallSignatureCount = 0
+			repeatedToolCallNudges = 0
 			reply := strings.TrimSpace(resp.Message.Text)
 			if reply != "" {
 				if unresolvedVerification && finalAnswerNudges < 1 {
@@ -163,8 +203,14 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 				}
 				return reply, nil
 			}
+			if isTokenLimitStopReason(lastStopReason) {
+				return "", fmt.Errorf("model stopped before producing a usable response due to token limit (stop_reason=%s)", lastStopReason)
+			}
 			emptyFinalReplies++
 			if emptyFinalReplies >= 2 {
+				if lastStopReason != "" {
+					return "", fmt.Errorf("model returned an empty response (stop_reason=%s)", lastStopReason)
+				}
 				return "", fmt.Errorf("model returned an empty response")
 			}
 			a.Session.AddMessage(Message{
@@ -215,6 +261,26 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 					return "", saveErr
 				}
 				return "", err
+			}
+			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
+				toolMsg.IsError = true
+				if out == "" {
+					toolMsg.Text = err.Error()
+				} else {
+					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+				}
+				a.Session.AddMessage(toolMsg)
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: "Your last edit targeted stale or mismatched file contents. Do not repeat the same edit immediately. First read the exact file again from the same path, confirm the current contents, and then build a new edit against that fresh text. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
+				})
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				editTargetMismatchRetries++
+				lastToolError = ""
+				lastToolErrorCount = 0
+				continue
 			}
 			if err != nil {
 				toolMsg.IsError = true
@@ -302,11 +368,163 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
+		lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 	}
 	if lastToolError != "" {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
-	return "", fmt.Errorf("tool loop limit exceeded")
+	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, configMaxToolIterations(a.Config), lastRecentToolTurns))
+}
+
+func toolCallSignature(calls []ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(calls))
+	for _, call := range calls {
+		parts = append(parts, strings.TrimSpace(call.Name)+"\x1f"+normalizeToolArguments(call.Arguments))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\x1e")
+}
+
+func normalizeToolArguments(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return trimmed
+	}
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		return trimmed
+	}
+	return string(canonical)
+}
+
+func summarizeToolCalls(calls []ToolCall) string {
+	if len(calls) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			name = "unknown"
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+func normalizeStopReason(reason string) string {
+	return strings.ToLower(strings.TrimSpace(reason))
+}
+
+func isTokenLimitStopReason(reason string) bool {
+	switch normalizeStopReason(reason) {
+	case "length", "max_tokens":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatToolLoopDiagnostic(toolSummary, stopReason string, iteration, maxIterations int, recentToolTurns string) string {
+	parts := make([]string, 0, 5)
+	if strings.TrimSpace(toolSummary) != "" {
+		parts = append(parts, "last_tools="+toolSummary)
+	}
+	if strings.TrimSpace(stopReason) != "" {
+		parts = append(parts, "stop_reason="+stopReason)
+	}
+	if iteration > 0 {
+		parts = append(parts, "iteration="+strconv.Itoa(iteration))
+	}
+	if maxIterations > 0 {
+		parts = append(parts, "max_iterations="+strconv.Itoa(maxIterations))
+	}
+	if strings.TrimSpace(recentToolTurns) != "" {
+		parts = append(parts, "recent_turns="+recentToolTurns)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+func summarizeRecentToolTurns(messages []Message, limit int) string {
+	if limit <= 0 || len(messages) == 0 {
+		return ""
+	}
+	turns := make([]string, 0, limit)
+	for i := len(messages) - 1; i >= 0 && len(turns) < limit; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		turns = append(turns, summarizeToolTurn(messages, i))
+	}
+	if len(turns) == 0 {
+		return ""
+	}
+	for i, j := 0, len(turns)-1; i < j; i, j = i+1, j-1 {
+		turns[i], turns[j] = turns[j], turns[i]
+	}
+	return strings.Join(turns, " | ")
+}
+
+func summarizeToolTurn(messages []Message, assistantIndex int) string {
+	msg := messages[assistantIndex]
+	parts := make([]string, 0, len(msg.ToolCalls))
+	toolResults := collectToolResults(messages, assistantIndex, len(msg.ToolCalls))
+	for i, call := range msg.ToolCalls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			name = "unknown"
+		}
+		status := "pending"
+		if i < len(toolResults) && toolResults[i] != "" {
+			status = toolResults[i]
+		}
+		parts = append(parts, sanitizeDiagnosticValue(name+":"+status))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func collectToolResults(messages []Message, assistantIndex, expected int) []string {
+	results := make([]string, 0, expected)
+	for i := assistantIndex + 1; i < len(messages) && len(results) < expected; i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			results = append(results, summarizeToolResultStatus(msg))
+			continue
+		}
+		break
+	}
+	return results
+}
+
+func summarizeToolResultStatus(msg Message) string {
+	text := strings.TrimSpace(msg.Text)
+	switch {
+	case strings.HasPrefix(text, "CANCELED:"):
+		return "canceled"
+	case msg.IsError:
+		return "error"
+	case text == "":
+		return "empty"
+	default:
+		return "ok"
+	}
+}
+
+func sanitizeDiagnosticValue(value string) string {
+	replacer := strings.NewReplacer(";", ",", "(", "[", ")", "]", "\n", " ", "\r", " ")
+	return strings.TrimSpace(replacer.Replace(value))
 }
 
 func allToolCallsAreEditTools(calls []ToolCall) bool {
@@ -387,9 +605,12 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("\nTool rules:\n")
 	b.WriteString("- Prefer read_file, list_files, grep, and git tools to inspect the codebase.\n")
 	b.WriteString("- Prefer apply_patch for precise edits to existing files.\n")
+	b.WriteString("- Before editing a file, read that exact file path first unless the current contents were already read very recently in this turn.\n")
 	b.WriteString("- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.\n")
 	b.WriteString("- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.\n")
-	b.WriteString("- Use replace_in_file only for very small exact substitutions.\n")
+	b.WriteString("- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.\n")
+	b.WriteString("- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.\n")
+	b.WriteString("- If an edit fails because search text or patch context is not found, do not repeat the same edit. Re-read the file from the same path and build a fresh edit.\n")
 	b.WriteString("- Use write_file for creating new files or fully rewriting a file when necessary.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
 	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")

@@ -71,6 +71,7 @@ var slashCommands = []string{
 	"set-plan-review",
 	"do-plan-review",
 	"profile-review",
+	"set_max_tool_iterations",
 	"exit",
 }
 
