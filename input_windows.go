@@ -138,10 +138,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			fmt.Fprint(rt.writer, "\n")
 			return string(buffer), true, nil
 		case inputVKEscape:
-			if prevLines > 0 {
-				fmt.Fprintf(rt.writer, "\x1b[%dA", prevLines)
-			}
-			fmt.Fprint(rt.writer, "\r\x1b[J\n")
+			fmt.Fprint(rt.writer, cancelInteractiveLine(prevLines))
 			return "", true, ErrPromptCanceled
 		case inputVKBack:
 			for i := 0; i < repeatCount && cursorPos > 0; i++ {
@@ -226,6 +223,14 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			}
 		}
 	}
+}
+
+func cancelInteractiveLine(prevLines int) string {
+	var out string
+	if prevLines > 0 {
+		out = fmt.Sprintf("\x1b[%dA", prevLines)
+	}
+	return out + "\r\x1b[J"
 }
 
 func readConsoleKeyEvent(handle syscall.Handle) (keyEventRecord, error) {

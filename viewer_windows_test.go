@@ -49,3 +49,38 @@ func TestCompactViewerPath(t *testing.T) {
 		t.Fatalf("expected compacted path to preserve suffix, got %q", got)
 	}
 }
+
+func TestViewerFindPanelLayout(t *testing.T) {
+	editW, prevW, nextW := viewerFindPanelLayout(420, 8, 84)
+	if editW != 180 {
+		t.Fatalf("expected remaining edit width, got %d", editW)
+	}
+	if prevW != 84 || nextW != 84 {
+		t.Fatalf("expected fixed navigation widths, got prev=%d next=%d", prevW, nextW)
+	}
+
+	editW, prevW, nextW = viewerFindPanelLayout(160, 8, 84)
+	if editW != 0 || prevW != 84 || nextW != 84 {
+		t.Fatalf("expected narrow panel to shrink edit only, got edit=%d prev=%d next=%d", editW, prevW, nextW)
+	}
+}
+
+func TestViewerFindAllMatches(t *testing.T) {
+	got := viewerFindAllMatches("alpha beta alpha", "alpha")
+	if len(got) != 2 {
+		t.Fatalf("expected two matches, got %d", len(got))
+	}
+	if got[0] != 0 || got[1] != 11 {
+		t.Fatalf("unexpected match offsets: %v", got)
+	}
+}
+
+func TestViewerSelectionFromOffsets(t *testing.T) {
+	selection, ok := viewerSelectionFromOffsets("1 | alpha\r\n2 | beta\r\n3 | gamma", 10, 18)
+	if !ok {
+		t.Fatal("expected selection")
+	}
+	if selection.StartLine != 1 || selection.EndLine != 2 {
+		t.Fatalf("unexpected selection range: %+v", selection)
+	}
+}

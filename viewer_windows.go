@@ -17,81 +17,97 @@ import (
 )
 
 const (
-	viewerClassName    = "KernforgeViewerWindow"
-	msfteditClassName  = "RICHEDIT50W"
-	staticClassName    = "STATIC"
-	wsOverlappedWindow = 0x00CF0000
-	wsVisible          = 0x10000000
-	wsChild            = 0x40000000
-	wsVScroll          = 0x00200000
-	wsHScroll          = 0x00100000
-	wsExClientEdge     = 0x00000200
-	esMultiline        = 0x0004
-	esAutoVScroll      = 0x0040
-	esAutoHScroll      = 0x0080
-	esNoHideSel        = 0x0100
-	esReadOnly         = 0x0800
-	ssRight            = 0x00000002
-	wmCreate           = 0x0001
-	wmDestroy          = 0x0002
-	wmSize             = 0x0005
-	wmClose            = 0x0010
-	wmNotify           = 0x004E
-	wmSetIcon          = 0x0080
-	wmSetFont          = 0x0030
-	wmSetText          = 0x000C
-	wmCtlColorEdit     = 0x0133
-	wmCtlColorStatic   = 0x0138
-	emExGetSel         = 0x0434
-	emSetBkgndColor    = 0x0443
-	emSetCharFormat    = 0x0444
-	emSetEventMask     = 0x0445
-	emSetReadOnly      = 0x00CF
-	emUndo             = 0x00C7
-	wmGettextlength    = 0x000E
-	wmGettext          = 0x000D
-	enmSelChange       = 0x00080000
-	enSelChange        = 0x0702
-	scfAll             = 0x0004
-	scfDefault         = 0x0000
-	cfmColor           = 0x40000000
-	swShow             = 5
-	swHide             = 0
-	colorWindow        = 5
-	idcArrow           = 32512
-	imageIcon          = 1
-	iconSmall          = 0
-	iconBig            = 1
-	smCxScreen         = 0
-	smCyScreen         = 1
-	fwNormal           = 400
-	fwMedium           = 500
-	fwSemiBold         = 600
-	defaultCharset     = 1
-	outDefaultPrecis   = 0
-	clipDefaultPrecis  = 0
-	cleartypeQuality   = 5
-	fixedPitchFFModern = 49
-	variablePitchSwiss = 34
-	transparentBkMode  = 1
-	lrLoadFromFile     = 0x0010
-	lrDefaultSize      = 0x0040
+	viewerClassName       = "KernforgeViewerWindow"
+	msfteditClassName     = "RICHEDIT50W"
+	staticClassName       = "STATIC"
+	wsOverlappedWindow    = 0x00CF0000
+	wsVisible             = 0x10000000
+	wsChild               = 0x40000000
+	wsClipSiblings        = 0x04000000
+	wsVScroll             = 0x00200000
+	wsHScroll             = 0x00100000
+	wsExClientEdge        = 0x00000200
+	esMultiline           = 0x0004
+	esAutoVScroll         = 0x0040
+	esAutoHScroll         = 0x0080
+	esNoHideSel           = 0x0100
+	esReadOnly            = 0x0800
+	ssRight               = 0x00000002
+	ssCenter              = 0x00000001
+	ssLeft                = 0x00000000
+	wmCreate              = 0x0001
+	wmDestroy             = 0x0002
+	wmSize                = 0x0005
+	wmClose               = 0x0010
+	wmNotify              = 0x004E
+	wmSetIcon             = 0x0080
+	wmSetFont             = 0x0030
+	wmSetText             = 0x000C
+	wmCtlColorEdit        = 0x0133
+	wmCtlColorStatic      = 0x0138
+	emExGetSel            = 0x0434
+	emExSetSel            = 0x0432
+	emSetBkgndColor       = 0x0443
+	emSetCharFormat       = 0x0444
+	emSetEventMask        = 0x0445
+	emFindTextExW         = 0x047C
+	emGetFirstVisibleLine = 0x00CE
+	emLineFromChar        = 0x00C9
+	emLineScroll          = 0x00B6
+	emSetReadOnly         = 0x00CF
+	emUndo                = 0x00C7
+	wmGettextlength       = 0x000E
+	wmGettext             = 0x000D
+	enmSelChange          = 0x00080000
+	enSelChange           = 0x0702
+	frDown                = 0x00000001
+	scfAll                = 0x0004
+	scfSelection          = 0x0001
+	enChange              = 0x0300
+	idFindEdit            = 2005
+	idFindPanel           = 2006
+	idFindPrevButton      = 2007
+	idFindNextButton      = 2008
+	scfDefault            = 0x0000
+	cfmColor              = 0x40000000
+	swShow                = 5
+	swHide                = 0
+	colorWindow           = 5
+	idcArrow              = 32512
+	imageIcon             = 1
+	iconSmall             = 0
+	iconBig               = 1
+	smCxScreen            = 0
+	smCyScreen            = 1
+	fwNormal              = 400
+	fwMedium              = 500
+	fwSemiBold            = 600
+	defaultCharset        = 1
+	outDefaultPrecis      = 0
+	clipDefaultPrecis     = 0
+	cleartypeQuality      = 5
+	fixedPitchFFModern    = 49
+	variablePitchSwiss    = 34
+	transparentBkMode     = 1
+	lrLoadFromFile        = 0x0010
+	lrDefaultSize         = 0x0040
 
 	viewerWindowWidth  = 1220
 	viewerWindowHeight = 860
 
-	idEditButton      = 2001
-	idSaveButton      = 2002
-	idUndoButton      = 2003
-	viewerButtonWidth = 84
+	idEditButton       = 2001
+	idSaveButton       = 2002
+	idUndoButton       = 2003
+	idFindButton       = 2004
+	viewerButtonWidth  = 84
 	viewerButtonHeight = 26
-	viewerButtonGap   = 8
+	viewerButtonGap    = 8
 )
 
 type fileEncoding int
 
 const (
-	encodingUTF8    fileEncoding = iota
+	encodingUTF8 fileEncoding = iota
 	encodingUTF8BOM
 	encodingUTF16LE
 	encodingUTF16BE
@@ -106,36 +122,37 @@ var (
 	viewerAccentTextColor  = rgb(245, 166, 76)
 	viewerStrongTextColor  = rgb(255, 220, 174)
 
-	user32ViewerDLL       = syscall.NewLazyDLL("user32.dll")
-	gdi32ViewerDLL        = syscall.NewLazyDLL("gdi32.dll")
-	kernel32ViewerDLL     = syscall.NewLazyDLL("kernel32.dll")
-	msfteditDLL           = syscall.NewLazyDLL("Msftedit.dll")
-	registerClassExWProc  = user32ViewerDLL.NewProc("RegisterClassExW")
-	createWindowExWProc   = user32ViewerDLL.NewProc("CreateWindowExW")
-	defWindowProcWProc    = user32ViewerDLL.NewProc("DefWindowProcW")
-	dispatchMessageWProc  = user32ViewerDLL.NewProc("DispatchMessageW")
-	getClientRectProc     = user32ViewerDLL.NewProc("GetClientRect")
-	getMessageWProc       = user32ViewerDLL.NewProc("GetMessageW")
-	getSystemMetricsProc  = user32ViewerDLL.NewProc("GetSystemMetrics")
-	loadCursorWProc       = user32ViewerDLL.NewProc("LoadCursorW")
-	loadImageWProc        = user32ViewerDLL.NewProc("LoadImageW")
-	moveWindowProc        = user32ViewerDLL.NewProc("MoveWindow")
-	postQuitMessageProc   = user32ViewerDLL.NewProc("PostQuitMessage")
-	sendMessageWProc      = user32ViewerDLL.NewProc("SendMessageW")
-	setFocusProc          = user32ViewerDLL.NewProc("SetFocus")
-	showWindowProc        = user32ViewerDLL.NewProc("ShowWindow")
-	translateMessageProc  = user32ViewerDLL.NewProc("TranslateMessage")
-	hideCaretProc         = user32ViewerDLL.NewProc("HideCaret")
-	createFontWProc       = gdi32ViewerDLL.NewProc("CreateFontW")
-	createSolidBrushProc  = gdi32ViewerDLL.NewProc("CreateSolidBrush")
-	deleteObjectProc      = gdi32ViewerDLL.NewProc("DeleteObject")
-	setBkColorProc        = gdi32ViewerDLL.NewProc("SetBkColor")
-	setBkModeProc         = gdi32ViewerDLL.NewProc("SetBkMode")
-	setTextColorProc      = gdi32ViewerDLL.NewProc("SetTextColor")
-	getModuleHandleWProc      = kernel32ViewerDLL.NewProc("GetModuleHandleW")
-	multiByteToWideCharProc   = kernel32ViewerDLL.NewProc("MultiByteToWideChar")
-	wideCharToMultiByteProc   = kernel32ViewerDLL.NewProc("WideCharToMultiByte")
-	viewerWndProcCallback     = syscall.NewCallback(viewerWindowProc)
+	user32ViewerDLL         = syscall.NewLazyDLL("user32.dll")
+	gdi32ViewerDLL          = syscall.NewLazyDLL("gdi32.dll")
+	kernel32ViewerDLL       = syscall.NewLazyDLL("kernel32.dll")
+	msfteditDLL             = syscall.NewLazyDLL("Msftedit.dll")
+	registerClassExWProc    = user32ViewerDLL.NewProc("RegisterClassExW")
+	createWindowExWProc     = user32ViewerDLL.NewProc("CreateWindowExW")
+	defWindowProcWProc      = user32ViewerDLL.NewProc("DefWindowProcW")
+	dispatchMessageWProc    = user32ViewerDLL.NewProc("DispatchMessageW")
+	getClientRectProc       = user32ViewerDLL.NewProc("GetClientRect")
+	getWindowRectProc       = user32ViewerDLL.NewProc("GetWindowRect")
+	getMessageWProc         = user32ViewerDLL.NewProc("GetMessageW")
+	getSystemMetricsProc    = user32ViewerDLL.NewProc("GetSystemMetrics")
+	loadCursorWProc         = user32ViewerDLL.NewProc("LoadCursorW")
+	loadImageWProc          = user32ViewerDLL.NewProc("LoadImageW")
+	moveWindowProc          = user32ViewerDLL.NewProc("MoveWindow")
+	postQuitMessageProc     = user32ViewerDLL.NewProc("PostQuitMessage")
+	sendMessageWProc        = user32ViewerDLL.NewProc("SendMessageW")
+	setFocusProc            = user32ViewerDLL.NewProc("SetFocus")
+	showWindowProc          = user32ViewerDLL.NewProc("ShowWindow")
+	translateMessageProc    = user32ViewerDLL.NewProc("TranslateMessage")
+	hideCaretProc           = user32ViewerDLL.NewProc("HideCaret")
+	createFontWProc         = gdi32ViewerDLL.NewProc("CreateFontW")
+	createSolidBrushProc    = gdi32ViewerDLL.NewProc("CreateSolidBrush")
+	deleteObjectProc        = gdi32ViewerDLL.NewProc("DeleteObject")
+	setBkColorProc          = gdi32ViewerDLL.NewProc("SetBkColor")
+	setBkModeProc           = gdi32ViewerDLL.NewProc("SetBkMode")
+	setTextColorProc        = gdi32ViewerDLL.NewProc("SetTextColor")
+	getModuleHandleWProc    = kernel32ViewerDLL.NewProc("GetModuleHandleW")
+	multiByteToWideCharProc = kernel32ViewerDLL.NewProc("MultiByteToWideChar")
+	wideCharToMultiByteProc = kernel32ViewerDLL.NewProc("WideCharToMultiByte")
+	viewerWndProcCallback   = syscall.NewCallback(viewerWindowProc)
 )
 
 type point struct {
@@ -192,6 +209,12 @@ type charFormat struct {
 	SzFaceName      [32]uint16
 }
 
+type findTextEx struct {
+	Chrg      charRange
+	LpstrText *uint16
+	ChrgText  charRange
+}
+
 type nmhdr struct {
 	HWndFrom uintptr
 	IDFrom   uintptr
@@ -211,16 +234,21 @@ type viewerState struct {
 	useCRLF    bool
 	editMode   bool
 
-	brandHandle  uintptr
-	titleHandle  uintptr
-	metaHandle   uintptr
-	hintHandle   uintptr
-	badgeHandle  uintptr
-	statusHandle uintptr
-	editHandle   uintptr
-	editButton   uintptr
-	saveButton   uintptr
-	undoButton   uintptr
+	brandHandle    uintptr
+	titleHandle    uintptr
+	metaHandle     uintptr
+	hintHandle     uintptr
+	badgeHandle    uintptr
+	statusHandle   uintptr
+	editHandle     uintptr
+	editButton     uintptr
+	saveButton     uintptr
+	undoButton     uintptr
+	findButton     uintptr
+	findEdit       uintptr
+	findPanel      uintptr
+	findPrevButton uintptr
+	findNextButton uintptr
 
 	codeFontHandle   uintptr
 	titleFontHandle  uintptr
@@ -234,6 +262,17 @@ type viewerState struct {
 	editorBrush     uintptr
 	iconBig         uintptr
 	iconSmall       uintptr
+
+	// Find state
+	findText     string
+	findMatches  []int
+	findIndex    int
+	findActive   bool
+	findVisible  bool
+	findStartPos int
+	findEndPos   int
+	findStartLine int
+	findEndLine   int
 }
 
 var activeViewer viewerState
@@ -354,7 +393,12 @@ func viewerWindowProc(hwnd uintptr, msgID uint32, wParam, lParam uintptr) uintpt
 		return 0
 	case wmCommand:
 		switch lowWord(wParam) {
+		case idFindEdit:
+			break
 		case idEditButton:
+			if highWord(wParam) != 0 {
+				break
+			}
 			if activeViewer.editMode {
 				exitViewerEditMode()
 			} else {
@@ -362,6 +406,9 @@ func viewerWindowProc(hwnd uintptr, msgID uint32, wParam, lParam uintptr) uintpt
 			}
 			return 0
 		case idSaveButton:
+			if highWord(wParam) != 0 {
+				break
+			}
 			if err := saveViewerFile(); err != nil {
 				sendViewerText(activeViewer.statusHandle, "Save failed: "+err.Error())
 			} else {
@@ -369,7 +416,36 @@ func viewerWindowProc(hwnd uintptr, msgID uint32, wParam, lParam uintptr) uintpt
 			}
 			return 0
 		case idUndoButton:
+			if highWord(wParam) != 0 {
+				break
+			}
 			sendMessageWProc.Call(activeViewer.editHandle, emUndo, 0, 0)
+			return 0
+		case idFindButton:
+			if highWord(wParam) != 0 {
+				break
+			}
+			if activeViewer.editMode {
+				if err := saveViewerFile(); err != nil {
+					sendViewerText(activeViewer.statusHandle, "Save failed: "+err.Error())
+				} else {
+					sendViewerText(activeViewer.statusHandle, "Saved successfully.")
+				}
+			} else {
+				toggleViewerFind()
+			}
+			return 0
+		case idFindPrevButton:
+			if highWord(wParam) != 0 {
+				break
+			}
+			navigateViewerFind(-1)
+			return 0
+		case idFindNextButton:
+			if highWord(wParam) != 0 {
+				break
+			}
+			navigateViewerFind(1)
 			return 0
 		}
 	case wmNotify:
@@ -406,6 +482,11 @@ func createViewerControls(parent uintptr) {
 	activeViewer.editButton = createViewerButton(parent, "Edit", idEditButton, true)
 	activeViewer.saveButton = createViewerButton(parent, "Save", idSaveButton, false)
 	activeViewer.undoButton = createViewerButton(parent, "Undo", idUndoButton, false)
+	activeViewer.findButton = createViewerButton(parent, "Find..", idFindButton, true)
+	activeViewer.findPanel = createViewerPanel(parent)
+	activeViewer.findEdit = createViewerEdit(parent, idFindEdit)
+	activeViewer.findPrevButton = createViewerButton(parent, "Prev", idFindPrevButton, false)
+	activeViewer.findNextButton = createViewerButton(parent, "Next", idFindNextButton, false)
 
 	activeViewer.codeFontHandle = createViewerFont("Consolas", -18, fwNormal, fixedPitchFFModern)
 	activeViewer.titleFontHandle = createViewerFont("Segoe UI", -26, fwSemiBold, variablePitchSwiss)
@@ -425,6 +506,14 @@ func createViewerControls(parent uintptr) {
 	applyViewerFont(activeViewer.editButton, activeViewer.buttonFontHandle)
 	applyViewerFont(activeViewer.saveButton, activeViewer.buttonFontHandle)
 	applyViewerFont(activeViewer.undoButton, activeViewer.buttonFontHandle)
+	applyViewerFont(activeViewer.findButton, activeViewer.buttonFontHandle)
+	applyViewerFont(activeViewer.findEdit, activeViewer.buttonFontHandle)
+	applyViewerFont(activeViewer.findPrevButton, activeViewer.buttonFontHandle)
+	applyViewerFont(activeViewer.findNextButton, activeViewer.buttonFontHandle)
+	showWindowProc.Call(activeViewer.findPanel, swHide)
+	showWindowProc.Call(activeViewer.findEdit, swHide)
+	showWindowProc.Call(activeViewer.findPrevButton, swHide)
+	showWindowProc.Call(activeViewer.findNextButton, swHide)
 
 	if activeViewer.editHandle != 0 {
 		sendMessageWProc.Call(activeViewer.editHandle, emSetBkgndColor, 0, viewerEditorColor)
@@ -446,7 +535,7 @@ func createViewerRichEdit(parent uintptr) uintptr {
 		0,
 		uintptr(unsafe.Pointer(classPtr)),
 		uintptr(unsafe.Pointer(emptyPtr)),
-		uintptr(wsChild|wsVisible|wsVScroll|wsHScroll|esMultiline|esAutoVScroll|esAutoHScroll|esNoHideSel|esReadOnly),
+		uintptr(wsChild|wsVisible|wsClipSiblings|wsVScroll|wsHScroll|esMultiline|esAutoVScroll|esAutoHScroll|esNoHideSel|esReadOnly),
 		0,
 		0,
 		100,
@@ -467,6 +556,7 @@ func createViewerButton(parent uintptr, text string, id uintptr, visible bool) u
 	if visible {
 		style |= wsVisible
 	}
+	style |= wsClipSiblings
 	handle, _, _ := createWindowExWProc.Call(
 		0,
 		uintptr(unsafe.Pointer(classPtr)),
@@ -491,13 +581,55 @@ func createViewerStatic(parent uintptr, text string, style uintptr) uintptr {
 		0,
 		uintptr(unsafe.Pointer(classPtr)),
 		uintptr(unsafe.Pointer(textPtr)),
-		uintptr(wsChild|wsVisible)|style,
+		uintptr(wsChild|wsVisible|wsClipSiblings)|style,
 		0,
 		0,
 		100,
 		24,
 		parent,
 		0,
+		instance,
+		0,
+	)
+	return handle
+}
+
+func createViewerPanel(parent uintptr) uintptr {
+	instance, _, _ := getModuleHandleWProc.Call(0)
+	classPtr, _ := syscall.UTF16PtrFromString(staticClassName)
+	textPtr, _ := syscall.UTF16PtrFromString("")
+	handle, _, _ := createWindowExWProc.Call(
+		0,
+		uintptr(unsafe.Pointer(classPtr)),
+		uintptr(unsafe.Pointer(textPtr)),
+		uintptr(wsChild|wsClipSiblings)|ssCenter,
+		0,
+		0,
+		200,
+		30,
+		parent,
+		0,
+		instance,
+		0,
+	)
+	return handle
+}
+
+func createViewerEdit(parent uintptr, id uintptr) uintptr {
+	instance, _, _ := getModuleHandleWProc.Call(0)
+	classPtr, _ := syscall.UTF16PtrFromString("EDIT")
+	textPtr, _ := syscall.UTF16PtrFromString("")
+	handle, _, _ := createWindowExWProc.Call(
+		0,
+		uintptr(unsafe.Pointer(classPtr)),
+		uintptr(unsafe.Pointer(textPtr)),
+		uintptr(wsChild|wsVisible|wsClipSiblings)|esAutoHScroll,
+		0,
+		0,
+		150,
+		24,
+		parent,
+		id,
 		instance,
 		0,
 	)
@@ -569,10 +701,15 @@ func layoutViewerControls(parent uintptr) {
 	btnW := int32(viewerButtonWidth)
 	btnH := int32(viewerButtonHeight)
 	btnGap := int32(viewerButtonGap)
+	findRowGap := int32(10)
 
 	statusH := btnH
 	statusY := height - padding - statusH
-	contentH := statusY - contentY - 16
+	contentBottomY := statusY - 16
+	if !activeViewer.editMode {
+		contentBottomY = statusY - btnH - findRowGap - 8
+	}
+	contentH := contentBottomY - contentY
 	if contentH < 120 {
 		contentH = 120
 	}
@@ -580,6 +717,13 @@ func layoutViewerControls(parent uintptr) {
 	editBtnX := width - padding - btnW
 
 	var statusW int32
+	findBtnX := editBtnX - btnGap - btnW
+	findPanelX := padding
+	findPanelY := statusY - btnH - findRowGap
+	findPanelW := findBtnX - padding - btnGap
+	if findPanelW < 0 {
+		findPanelW = 0
+	}
 	if activeViewer.editMode {
 		saveBtnX := editBtnX - btnGap - btnW
 		undoBtnX := saveBtnX - btnGap - btnW
@@ -587,11 +731,23 @@ func layoutViewerControls(parent uintptr) {
 		moveWindowProc.Call(activeViewer.saveButton, uintptr(saveBtnX), uintptr(statusY), uintptr(btnW), uintptr(btnH), 1)
 		moveWindowProc.Call(activeViewer.undoButton, uintptr(undoBtnX), uintptr(statusY), uintptr(btnW), uintptr(btnH), 1)
 	} else {
-		statusW = editBtnX - padding - btnGap
+		statusW = findBtnX - padding - btnGap
 	}
 	if statusW < 0 {
 		statusW = 0
 	}
+
+	findEditW, findPrevW, findNextW := viewerFindPanelLayout(findPanelW, btnGap, btnW)
+	findGroupW := findEditW + btnGap + findPrevW + btnGap + findNextW
+	findGroupX := width - padding - findGroupW
+	if findGroupX < padding {
+		findGroupX = padding
+	}
+	moveWindowProc.Call(activeViewer.findPanel, uintptr(findPanelX), uintptr(findPanelY), uintptr(findPanelW), uintptr(btnH), 1)
+	moveWindowProc.Call(activeViewer.findButton, uintptr(findBtnX), uintptr(statusY), uintptr(btnW), uintptr(btnH), 1)
+	moveWindowProc.Call(activeViewer.findEdit, uintptr(findGroupX), uintptr(findPanelY), uintptr(findEditW), uintptr(btnH), 1)
+	moveWindowProc.Call(activeViewer.findPrevButton, uintptr(findGroupX+findEditW+btnGap), uintptr(findPanelY), uintptr(findPrevW), uintptr(btnH), 1)
+	moveWindowProc.Call(activeViewer.findNextButton, uintptr(findGroupX+findEditW+btnGap+findPrevW+btnGap), uintptr(findPanelY), uintptr(findNextW), uintptr(btnH), 1)
 
 	moveWindowProc.Call(activeViewer.brandHandle, uintptr(padding), uintptr(brandY), uintptr(width-padding*2-badgeW-12), uintptr(brandH), 1)
 	moveWindowProc.Call(activeViewer.badgeHandle, uintptr(width-padding-badgeW), uintptr(brandY), uintptr(badgeW), uintptr(badgeH), 1)
@@ -667,9 +823,29 @@ func viewerLabelColor(handle uintptr) uintptr {
 	}
 }
 
+func viewerFindPanelLayout(panelWidth, gap, buttonWidth int32) (int32, int32, int32) {
+	findEditW := int32(180)
+	if panelWidth <= 0 {
+		return 0, 0, 0
+	}
+	totalWidth := findEditW + buttonWidth*2 + gap*2
+	if totalWidth > panelWidth {
+		findEditW = panelWidth - buttonWidth*2 - gap*2
+		if findEditW < 0 {
+			findEditW = 0
+		}
+	}
+	return findEditW, buttonWidth, buttonWidth
+}
+
 func enterViewerEditMode() {
 	if activeViewer.editHandle == 0 {
 		return
+	}
+	firstVisibleLine, _, _ := sendMessageWProc.Call(activeViewer.editHandle, emGetFirstVisibleLine, 0, 0)
+	targetLine := 0
+	if activeViewer.findVisible && strings.TrimSpace(activeViewer.findText) != "" {
+		targetLine = lineNumberFromUTF16Offset(activeViewer.displayed, activeViewer.findStartPos)
 	}
 	sendMessageWProc.Call(activeViewer.editHandle, emSetReadOnly, 0, 0)
 
@@ -685,10 +861,23 @@ func enterViewerEditMode() {
 	sendViewerText(activeViewer.editButton, "View")
 	showWindowProc.Call(activeViewer.saveButton, swShow)
 	showWindowProc.Call(activeViewer.undoButton, swShow)
+	showWindowProc.Call(activeViewer.findButton, swHide)
+	showWindowProc.Call(activeViewer.findEdit, swHide)
+	showWindowProc.Call(activeViewer.findPrevButton, swHide)
+	showWindowProc.Call(activeViewer.findNextButton, swHide)
 
 	activeViewer.editMode = true
 	if activeViewer.hwnd != 0 {
 		layoutViewerControls(activeViewer.hwnd)
+	}
+	if targetLine > 0 && strings.TrimSpace(activeViewer.findText) != "" {
+		if !restoreViewerFindSelection(activeViewer.findText, targetLine, true) {
+			targetOffset := utf16OffsetForLineStart(raw, targetLine)
+			sendMessageWProc.Call(activeViewer.editHandle, emSetSel, uintptr(targetOffset), uintptr(targetOffset))
+			sendMessageWProc.Call(activeViewer.editHandle, emScrollCaret, 0, 0)
+		}
+	} else {
+		sendMessageWProc.Call(activeViewer.editHandle, emLineScroll, 0, firstVisibleLine)
 	}
 	updateViewerStatus()
 }
@@ -696,6 +885,11 @@ func enterViewerEditMode() {
 func exitViewerEditMode() {
 	if activeViewer.editHandle == 0 {
 		return
+	}
+	firstVisibleLine, _, _ := sendMessageWProc.Call(activeViewer.editHandle, emGetFirstVisibleLine, 0, 0)
+	targetLine := 0
+	if activeViewer.findVisible && strings.TrimSpace(activeViewer.findText) != "" {
+		targetLine = currentViewerCaretLine(activeViewer.rawContent)
 	}
 	sendMessageWProc.Call(activeViewer.editHandle, emSetReadOnly, 1, 0)
 
@@ -716,10 +910,23 @@ func exitViewerEditMode() {
 	sendViewerText(activeViewer.editButton, "Edit")
 	showWindowProc.Call(activeViewer.saveButton, swHide)
 	showWindowProc.Call(activeViewer.undoButton, swHide)
+	showWindowProc.Call(activeViewer.findButton, swShow)
+	if activeViewer.findVisible {
+		showWindowProc.Call(activeViewer.findEdit, swShow)
+		showWindowProc.Call(activeViewer.findPrevButton, swShow)
+		showWindowProc.Call(activeViewer.findNextButton, swShow)
+	}
 
 	activeViewer.editMode = false
 	if activeViewer.hwnd != 0 {
 		layoutViewerControls(activeViewer.hwnd)
+	}
+	if targetLine > 0 && strings.TrimSpace(activeViewer.findText) != "" {
+		if !restoreViewerFindSelection(activeViewer.findText, targetLine, true) {
+			sendMessageWProc.Call(activeViewer.editHandle, emLineScroll, 0, firstVisibleLine)
+		}
+	} else {
+		sendMessageWProc.Call(activeViewer.editHandle, emLineScroll, 0, firstVisibleLine)
 	}
 	updateViewerStatus()
 }
@@ -882,7 +1089,7 @@ func writeViewerSelectionResult() error {
 		return nil
 	}
 
-	selection, ok := currentViewerSelection()
+	selection, ok := currentViewerCloseSelection()
 	if !ok {
 		return os.WriteFile(activeViewer.resultPath, []byte(""), 0o644)
 	}
@@ -893,8 +1100,22 @@ func writeViewerSelectionResult() error {
 	return os.WriteFile(activeViewer.resultPath, data, 0o644)
 }
 
-func currentViewerSelection() (ViewerSelection, bool) {
-	if activeViewer.editHandle == 0 || activeViewer.editMode {
+func currentViewerCloseSelection() (ViewerSelection, bool) {
+	if selection, ok := currentViewerControlSelection(); ok {
+		return selection, true
+	}
+	if activeViewer.findActive && activeViewer.findStartLine > 0 && activeViewer.findEndLine >= activeViewer.findStartLine {
+		return ViewerSelection{
+			FilePath:  activeViewer.filePath,
+			StartLine: activeViewer.findStartLine,
+			EndLine:   activeViewer.findEndLine,
+		}, true
+	}
+	return currentViewerSelection()
+}
+
+func currentViewerControlSelection() (ViewerSelection, bool) {
+	if activeViewer.editHandle == 0 {
 		return ViewerSelection{}, false
 	}
 	var cr charRange
@@ -902,8 +1123,30 @@ func currentViewerSelection() (ViewerSelection, bool) {
 	if cr.Max <= cr.Min {
 		return ViewerSelection{}, false
 	}
-	start := lineNumberFromUTF16Offset(activeViewer.displayed, int(cr.Min))
-	end := lineNumberFromUTF16Offset(activeViewer.displayed, int(cr.Max)-1)
+	return viewerSelectionFromControlRange(int(cr.Min), int(cr.Max))
+}
+
+func currentViewerSelection() (ViewerSelection, bool) {
+	if activeViewer.editHandle == 0 || activeViewer.editMode {
+		return ViewerSelection{}, false
+	}
+	if activeViewer.findVisible {
+		return ViewerSelection{}, false
+	}
+	var cr charRange
+	sendMessageWProc.Call(activeViewer.editHandle, emExGetSel, 0, uintptr(unsafe.Pointer(&cr)))
+	if cr.Max <= cr.Min {
+		return ViewerSelection{}, false
+	}
+	return viewerSelectionFromOffsets(activeViewer.displayed, int(cr.Min), int(cr.Max))
+}
+
+func viewerSelectionFromOffsets(content string, startOffset, endOffset int) (ViewerSelection, bool) {
+	if endOffset <= startOffset {
+		return ViewerSelection{}, false
+	}
+	start := lineNumberFromUTF16Offset(content, startOffset)
+	end := lineNumberFromUTF16Offset(content, endOffset-1)
 	if end < start {
 		end = start
 	}
@@ -911,6 +1154,19 @@ func currentViewerSelection() (ViewerSelection, bool) {
 		FilePath:  activeViewer.filePath,
 		StartLine: start,
 		EndLine:   end,
+	}, true
+}
+
+func viewerSelectionFromControlRange(startOffset, endOffset int) (ViewerSelection, bool) {
+	if activeViewer.editHandle == 0 || endOffset <= startOffset {
+		return ViewerSelection{}, false
+	}
+	startLine, _, _ := sendMessageWProc.Call(activeViewer.editHandle, emLineFromChar, uintptr(startOffset), 0)
+	endLine, _, _ := sendMessageWProc.Call(activeViewer.editHandle, emLineFromChar, uintptr(endOffset-1), 0)
+	return ViewerSelection{
+		FilePath:  activeViewer.filePath,
+		StartLine: int(startLine) + 1,
+		EndLine:   int(endLine) + 1,
 	}, true
 }
 
@@ -949,6 +1205,33 @@ func lineNumberFromUTF16Offset(content string, offset int) int {
 		}
 	}
 	return line
+}
+
+func utf16OffsetForLineStart(content string, line int) int {
+	if line <= 1 {
+		return 0
+	}
+	currentLine := 1
+	offset := 0
+	for _, r := range content {
+		if currentLine >= line {
+			break
+		}
+		offset += len(utf16.Encode([]rune{r}))
+		if r == '\n' {
+			currentLine++
+		}
+	}
+	return offset
+}
+
+func currentViewerCaretLine(content string) int {
+	if activeViewer.editHandle == 0 {
+		return 0
+	}
+	var cr charRange
+	sendMessageWProc.Call(activeViewer.editHandle, emExGetSel, 0, uintptr(unsafe.Pointer(&cr)))
+	return lineNumberFromUTF16Offset(content, int(cr.Min))
 }
 
 func viewerLineCount(content string) int {
@@ -1098,4 +1381,254 @@ func viewerWindowPosition(width, height int32) (int32, int32) {
 		y = margin
 	}
 	return x, y
+}
+func toggleViewerFind() {
+	if activeViewer.findPanel == 0 {
+		return
+	}
+	activeViewer.findVisible = !activeViewer.findVisible
+	if activeViewer.findVisible {
+		showWindowProc.Call(activeViewer.findEdit, swShow)
+		showWindowProc.Call(activeViewer.findPrevButton, swShow)
+		showWindowProc.Call(activeViewer.findNextButton, swShow)
+		setFocusProc.Call(activeViewer.findEdit)
+	} else {
+		showWindowProc.Call(activeViewer.findEdit, swHide)
+		showWindowProc.Call(activeViewer.findPrevButton, swHide)
+		showWindowProc.Call(activeViewer.findNextButton, swHide)
+		updateViewerStatus()
+	}
+}
+
+func clearViewerFindState() {
+	activeViewer.findText = ""
+	activeViewer.findMatches = nil
+	activeViewer.findIndex = -1
+	activeViewer.findActive = false
+	activeViewer.findStartPos = 0
+	activeViewer.findEndPos = 0
+	activeViewer.findStartLine = 0
+	activeViewer.findEndLine = 0
+	if activeViewer.editHandle != 0 {
+		sendMessageWProc.Call(activeViewer.editHandle, emSetSel, 0, 0)
+	}
+	updateViewerStatus()
+}
+
+func updateViewerFindMatches(searchText string) {
+	if activeViewer.editHandle == 0 {
+		clearViewerFindState()
+		return
+	}
+	editText := getEditControlText()
+	matches := viewerFindAllMatches(editText, searchText)
+
+	activeViewer.findText = searchText
+	activeViewer.findMatches = matches
+	activeViewer.findActive = len(matches) > 0
+	activeViewer.findStartPos = 0
+	activeViewer.findEndPos = 0
+
+	if len(matches) == 0 {
+		activeViewer.findIndex = -1
+		return
+	}
+	activeViewer.findIndex = 0
+}
+
+func viewerFindAllMatches(content, needle string) []int {
+	if content == "" || needle == "" {
+		return nil
+	}
+	contentLower := strings.ToLower(content)
+	needleLower := strings.ToLower(needle)
+	matches := make([]int, 0, 8)
+	searchFrom := 0
+	for {
+		relative := strings.Index(contentLower[searchFrom:], needleLower)
+		if relative < 0 {
+			break
+		}
+		byteOffset := searchFrom + relative
+		matches = append(matches, utf16OffsetFromByteIndex(content, byteOffset))
+		searchFrom = byteOffset + len(needleLower)
+		if searchFrom >= len(contentLower) {
+			break
+		}
+	}
+	return matches
+}
+
+func utf16OffsetFromByteIndex(content string, byteIndex int) int {
+	if byteIndex <= 0 {
+		return 0
+	}
+	if byteIndex > len(content) {
+		byteIndex = len(content)
+	}
+	return len(utf16.Encode([]rune(content[:byteIndex])))
+}
+
+func selectViewerFindMatch(index int, focusEditor bool) {
+	if activeViewer.editHandle == 0 || len(activeViewer.findMatches) == 0 {
+		return
+	}
+	if index < 0 || index >= len(activeViewer.findMatches) {
+		return
+	}
+	matchStart := activeViewer.findMatches[index]
+	matchLen := len(utf16.Encode([]rune(activeViewer.findText)))
+	matchEnd := matchStart + matchLen
+
+	activeViewer.findIndex = index
+	activeViewer.findActive = true
+	activeViewer.findStartPos = matchStart
+	activeViewer.findEndPos = matchEnd
+
+	sendMessageWProc.Call(activeViewer.editHandle, emSetSel, uintptr(matchStart), uintptr(matchEnd))
+	if focusEditor {
+		setFocusProc.Call(activeViewer.editHandle)
+	}
+	sendMessageWProc.Call(activeViewer.editHandle, emScrollCaret, 0, 0)
+	updateViewerStatus()
+}
+
+func navigateViewerFind(direction int) {
+	if !activeViewer.findVisible {
+		return
+	}
+	searchText := strings.TrimSpace(getFindEditText())
+	if searchText == "" {
+		clearViewerFindState()
+		return
+	}
+	forward := direction >= 0
+	if found := navigateViewerFindNative(searchText, forward); found {
+		return
+	}
+}
+
+func getFindEditText() string {
+	if activeViewer.findEdit == 0 {
+		return ""
+	}
+	n, _, _ := sendMessageWProc.Call(activeViewer.findEdit, wmGettextlength, 0, 0)
+	if n == 0 {
+		return ""
+	}
+	buf := make([]uint16, n+1)
+	sendMessageWProc.Call(activeViewer.findEdit, wmGettext, n+1, uintptr(unsafe.Pointer(&buf[0])))
+	return syscall.UTF16ToString(buf)
+}
+
+func navigateViewerFindNative(searchText string, forward bool) bool {
+	if activeViewer.editHandle == 0 {
+		return false
+	}
+	textPtr, err := syscall.UTF16PtrFromString(searchText)
+	if err != nil {
+		return false
+	}
+
+	textLen, _, _ := sendMessageWProc.Call(activeViewer.editHandle, wmGettextlength, 0, 0)
+	fullLen := int32(textLen)
+	start, end, flags := viewerFindRange(fullLen, searchText, forward)
+
+	ft := findTextEx{
+		Chrg: charRange{
+			Min: start,
+			Max: end,
+		},
+		LpstrText: textPtr,
+	}
+	result, _, _ := sendMessageWProc.Call(
+		activeViewer.editHandle,
+		emFindTextExW,
+		flags,
+		uintptr(unsafe.Pointer(&ft)),
+	)
+	if int32(result) == -1 {
+		return false
+	}
+
+	activeViewer.findText = searchText
+	activeViewer.findActive = true
+	activeViewer.findStartPos = int(ft.ChrgText.Min)
+	activeViewer.findEndPos = int(ft.ChrgText.Max)
+	sendMessageWProc.Call(activeViewer.editHandle, emSetSel, uintptr(ft.ChrgText.Min), uintptr(ft.ChrgText.Max))
+	setFocusProc.Call(activeViewer.editHandle)
+	sendMessageWProc.Call(activeViewer.editHandle, emScrollCaret, 0, 0)
+	updateViewerStatus()
+	return true
+}
+
+func restoreViewerFindSelection(searchText string, preferredLine int, focusEditor bool) bool {
+	if activeViewer.editHandle == 0 || strings.TrimSpace(searchText) == "" {
+		return false
+	}
+	content := getEditControlText()
+	start := int32(utf16OffsetForLineStart(content, preferredLine))
+	if start < 0 {
+		start = 0
+	}
+	if found := findAndSelectInRange(searchText, start, -1, frDown, focusEditor); found {
+		return true
+	}
+	return findAndSelectInRange(searchText, 0, start, frDown, focusEditor)
+}
+
+func findAndSelectInRange(searchText string, start, end int32, flags uintptr, focusEditor bool) bool {
+	textPtr, err := syscall.UTF16PtrFromString(searchText)
+	if err != nil {
+		return false
+	}
+	ft := findTextEx{
+		Chrg: charRange{
+			Min: start,
+			Max: end,
+		},
+		LpstrText: textPtr,
+	}
+	result, _, _ := sendMessageWProc.Call(
+		activeViewer.editHandle,
+		emFindTextExW,
+		flags,
+		uintptr(unsafe.Pointer(&ft)),
+	)
+	if int32(result) == -1 {
+		return false
+	}
+	activeViewer.findText = searchText
+	activeViewer.findActive = true
+	activeViewer.findStartPos = int(ft.ChrgText.Min)
+	activeViewer.findEndPos = int(ft.ChrgText.Max)
+	if selection, ok := viewerSelectionFromOffsets(getEditControlText(), int(ft.ChrgText.Min), int(ft.ChrgText.Max)); ok {
+		activeViewer.findStartLine = selection.StartLine
+		activeViewer.findEndLine = selection.EndLine
+	}
+	sendMessageWProc.Call(activeViewer.editHandle, emSetSel, uintptr(ft.ChrgText.Min), uintptr(ft.ChrgText.Max))
+	if focusEditor {
+		setFocusProc.Call(activeViewer.editHandle)
+	}
+	sendMessageWProc.Call(activeViewer.editHandle, emScrollCaret, 0, 0)
+	return true
+}
+
+func viewerFindRange(fullLen int32, searchText string, forward bool) (int32, int32, uintptr) {
+	if forward {
+		start := int32(0)
+		if activeViewer.findActive && activeViewer.findText == searchText {
+			start = int32(activeViewer.findEndPos)
+		}
+		return start, fullLen, frDown
+	}
+	end := fullLen
+	if activeViewer.findActive && activeViewer.findText == searchText {
+		end = int32(activeViewer.findStartPos)
+	}
+	return 0, end, 0
+}
+
+func highWord(value uintptr) uint16 {
+	return uint16(value >> 16)
 }
