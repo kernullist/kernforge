@@ -39,9 +39,15 @@ type runtimeState struct {
 	perms                *PermissionManager
 	memory               MemoryBundle
 	longMem              *PersistentMemoryStore
+	evidence             *EvidenceStore
+	investigations       *InvestigationStore
+	simulations          *SimulationStore
+	hookOverrides        *HookOverrideStore
 	checkpoints          *CheckpointManager
 	autoCP               *AutoCheckpointController
 	verifyHistory        *VerificationHistoryStore
+	hooks                *HookRuntime
+	hookWarns            []string
 	skills               SkillCatalog
 	skillWarns           []string
 	mcp                  *MCPManager
@@ -159,18 +165,22 @@ func run(args []string) error {
 	}
 
 	rt := &runtimeState{
-		cfg:           cfg,
-		reader:        bufio.NewReader(os.Stdin),
-		writer:        os.Stdout,
-		ui:            NewUI(),
-		store:         store,
-		session:       sess,
-		memory:        mem,
-		longMem:       NewPersistentMemoryStore(),
-		checkpoints:   NewCheckpointManager(),
-		autoCP:        &AutoCheckpointController{},
-		verifyHistory: NewVerificationHistoryStore(),
-		interactive:   promptFlag == "",
+		cfg:            cfg,
+		reader:         bufio.NewReader(os.Stdin),
+		writer:         os.Stdout,
+		ui:             NewUI(),
+		store:          store,
+		session:        sess,
+		memory:         mem,
+		longMem:        NewPersistentMemoryStore(),
+		evidence:       NewEvidenceStore(),
+		investigations: NewInvestigationStore(),
+		simulations:    NewSimulationStore(),
+		hookOverrides:  NewHookOverrideStore(),
+		checkpoints:    NewCheckpointManager(),
+		autoCP:         &AutoCheckpointController{},
+		verifyHistory:  NewVerificationHistoryStore(),
+		interactive:    promptFlag == "",
 	}
 	defer rt.closeExtensions()
 
@@ -196,6 +206,7 @@ func run(args []string) error {
 		GetPlan: func() []PlanItem {
 			return append([]PlanItem(nil), rt.session.Plan...)
 		},
+		RunHook: rt.runHook,
 	}
 	if err := rt.ensureConfigured(); err != nil {
 		return err
@@ -212,6 +223,7 @@ func run(args []string) error {
 		Store:         rt.store,
 		Memory:        rt.memory,
 		LongMem:       rt.longMem,
+		Evidence:      rt.evidence,
 		VerifyHistory: rt.verifyHistory,
 		EmitAssistant: func(text string) {
 			rt.printAssistantWhileThinking(text)
@@ -488,6 +500,13 @@ func parseToolLoopDiagnostics(text string) (string, string, string) {
 }
 
 func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input string, images []MessageImage) (string, error) {
+	if verdict, err := rt.runHook(ctx, HookUserPromptSubmit, HookPayload{
+		"user_text": input,
+	}); err != nil {
+		return "", err
+	} else if len(verdict.ContextAdds) > 0 {
+		input = strings.TrimSpace(input) + "\n\nAdditional hook guidance:\n- " + strings.Join(verdict.ContextAdds, "\n- ")
+	}
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rt.resetAssistantDedup()
@@ -2186,8 +2205,41 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("persistent_memory", fmt.Sprintf("%d", rt.persistentMemoryCount())))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("evidence_records", fmt.Sprintf("%d", rt.evidenceCount())))
+		if rt.investigations != nil {
+			if count, active, last, err := rt.investigations.Stats(rt.workspace.BaseRoot); err == nil {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("investigation_sessions", fmt.Sprintf("%d", count)))
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("active_investigation", fmt.Sprintf("%t", active)))
+				if !last.IsZero() {
+					fmt.Fprintln(rt.writer, rt.ui.statusKV("last_investigation_update", last.Format(time.RFC3339)))
+				}
+			}
+		}
+		if rt.simulations != nil {
+			if count, last, err := rt.simulations.Stats(rt.workspace.BaseRoot); err == nil {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("simulation_results", fmt.Sprintf("%d", count)))
+				if !last.IsZero() {
+					fmt.Fprintln(rt.writer, rt.ui.statusKV("last_simulation", last.Format(time.RFC3339)))
+				}
+			}
+		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hooks_enabled", fmt.Sprintf("%t", configHooksEnabled(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_presets", fmt.Sprintf("%d", len(rt.cfg.HookPresets))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())))
+		if rt.hookOverrides != nil {
+			if items, err := rt.hookOverrides.List(rt.workspace.BaseRoot); err == nil {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_overrides", fmt.Sprintf("%d", len(items))))
+				for _, item := range items {
+					line := fmt.Sprintf("%s  expires=%s", item.RuleID, item.ExpiresAt.Format(time.RFC3339))
+					if strings.TrimSpace(item.Reason) != "" {
+						line += "  " + item.Reason
+					}
+					fmt.Fprintln(rt.writer, rt.ui.dim(line))
+				}
+			}
+		}
 		if rt.session.LastVerification != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", rt.session.LastVerification.SummaryLine()))
 		}
@@ -2199,7 +2251,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_tools", fmt.Sprintf("%d", rt.mcpToolCount())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_resources", fmt.Sprintf("%d", rt.mcpResourceCount())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_prompts", fmt.Sprintf("%d", rt.mcpPromptCount())))
-		for _, warning := range append(append([]string(nil), rt.skillWarns...), rt.mcpWarns...) {
+		for _, warning := range append(append(append([]string(nil), rt.skillWarns...), rt.mcpWarns...), rt.hookWarns...) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warning))
 		}
 		if rt.clientErr != nil {
@@ -2259,6 +2311,18 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleVerifyDashboardHTMLCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "override":
+		if err := rt.handleHookOverridesCommand(); err != nil {
+			return false, err
+		}
+	case "override-add":
+		if err := rt.handleHookOverrideAddCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "override-clear":
+		if err := rt.handleHookOverrideClearCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "clear", "reset", "new":
 		rt.session.Messages = nil
 		rt.session.Summary = ""
@@ -2286,6 +2350,50 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "mem":
 		if err := rt.handlePersistentMemoryRecent(cmd.Args); err != nil {
+			return false, err
+		}
+	case "evidence":
+		if err := rt.handleEvidenceRecent(cmd.Args); err != nil {
+			return false, err
+		}
+	case "evidence-search":
+		if err := rt.handleEvidenceSearch(cmd.Args); err != nil {
+			return false, err
+		}
+	case "evidence-show":
+		if err := rt.handleEvidenceShow(cmd.Args); err != nil {
+			return false, err
+		}
+	case "evidence-dashboard":
+		if err := rt.handleEvidenceDashboard(cmd.Args, false); err != nil {
+			return false, err
+		}
+	case "evidence-dashboard-html":
+		if err := rt.handleEvidenceDashboard(cmd.Args, true); err != nil {
+			return false, err
+		}
+	case "investigate":
+		if err := rt.handleInvestigateCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "investigate-dashboard":
+		if err := rt.handleInvestigationDashboard(false); err != nil {
+			return false, err
+		}
+	case "investigate-dashboard-html":
+		if err := rt.handleInvestigationDashboard(true); err != nil {
+			return false, err
+		}
+	case "simulate":
+		if err := rt.handleSimulateCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "simulate-dashboard":
+		if err := rt.handleSimulationDashboard(false); err != nil {
+			return false, err
+		}
+	case "simulate-dashboard-html":
+		if err := rt.handleSimulationDashboard(true); err != nil {
 			return false, err
 		}
 	case "mem-search":
@@ -2462,7 +2570,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.reloadRuntimeConfig(); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Reloaded config, memory, skills, and MCP extensions"))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Reloaded config, memory, skills, hooks, and MCP extensions"))
+	case "hook-reload":
+		rt.reloadHooks()
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Reloaded hook configuration"))
+	case "hooks":
+		rt.handleHooksCommand()
 	case "init":
 		if err := rt.handleInitCommand(cmd.Args); err != nil {
 			return false, err
@@ -3073,7 +3186,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 		rt.session.Model,
 		reviewerClient,
 		rt.cfg.PlanReview.Model,
-		args,
+		rt.appendSimulationPlanningContext(args, args),
 		rt.session.WorkingDir,
 		memoryContext,
 		rt.cfg.MaxTokens,
@@ -3120,6 +3233,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 
 	// Execute the plan via the planner model through the normal agent flow
 	executionPrompt := fmt.Sprintf("Execute the following implementation plan. Follow it step by step.\n\n%s", result.FinalPlan)
+	executionPrompt = rt.appendSimulationPlanningContext(executionPrompt, args+"\n"+result.FinalPlan)
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Executing plan..."))
 	reply, err := rt.runAgentReply(requestCtx, executionPrompt)
 	if err != nil {
@@ -3172,6 +3286,7 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	if err != nil {
 		return err
 	}
+	rt.reloadHooks()
 	if rt.agent != nil {
 		rt.agent.Config = rt.cfg
 		rt.agent.Memory = rt.memory
@@ -3198,6 +3313,55 @@ func (rt *runtimeState) reloadExtensions() {
 		rt.agent.MCP = rt.mcp
 		rt.agent.Tools = buildRegistry(rt.workspace, rt.mcp)
 	}
+}
+
+func (rt *runtimeState) reloadHooks() {
+	engine, warns := LoadHookEngine(rt.workspace.BaseRoot, rt.cfg)
+	rt.hookWarns = warns
+	for _, warn := range warns {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Hook config: "+warn))
+	}
+	if engine == nil {
+		rt.hooks = nil
+		return
+	}
+	rt.hooks = &HookRuntime{
+		Engine: engine,
+		Ask:    rt.confirm,
+		Print:  func(text string) { fmt.Fprintln(rt.writer, rt.ui.warnLine(text)) },
+		CreateCheckpoint: func(note string) (CheckpointMetadata, error) {
+			if rt.checkpoints == nil {
+				return CheckpointMetadata{}, fmt.Errorf("checkpoint manager is not configured")
+			}
+			return rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), note)
+		},
+		FailClosed: configHooksFailClosed(rt.cfg),
+		Workspace:  rt.workspace,
+		Session:    rt.session,
+		Config:     rt.cfg,
+		Evidence:   rt.evidence,
+		Overrides:  rt.hookOverrides,
+	}
+}
+
+func joinHookEvents(events []HookEvent) string {
+	var parts []string
+	for _, event := range events {
+		parts = append(parts, string(event))
+	}
+	return strings.Join(parts, ",")
+}
+
+func (rt *runtimeState) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+	if rt.hooks == nil {
+		return HookVerdict{Allow: true}, nil
+	}
+	rt.hooks.Workspace = rt.workspace
+	rt.hooks.Session = rt.session
+	rt.hooks.Config = rt.cfg
+	rt.hooks.FailClosed = configHooksFailClosed(rt.cfg)
+	rt.hooks.Evidence = rt.evidence
+	return rt.hooks.Run(ctx, event, payload)
 }
 
 func (rt *runtimeState) mcpStatus() []MCPServerStatus {
@@ -3277,6 +3441,17 @@ func (rt *runtimeState) persistentMemoryCount() int {
 	return stats.Count
 }
 
+func (rt *runtimeState) evidenceCount() int {
+	if rt.evidence == nil {
+		return 0
+	}
+	stats, err := rt.evidence.Stats()
+	if err != nil {
+		return 0
+	}
+	return stats.Count
+}
+
 func (rt *runtimeState) verificationHistoryCount() int {
 	if rt.verifyHistory == nil {
 		return 0
@@ -3286,347 +3461,6 @@ func (rt *runtimeState) verificationHistoryCount() int {
 		return 0
 	}
 	return summary.TotalReports
-}
-
-func (rt *runtimeState) handlePersistentMemoryRecent(args string) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	if strings.TrimSpace(args) != "" {
-		return rt.handlePersistentMemorySearch(args)
-	}
-	records, err := rt.longMem.ListRecent(rt.workspace.BaseRoot, 8)
-	if err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No persistent memory records found for this workspace."))
-		return nil
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Persistent Memory"))
-	for _, record := range records {
-		fmt.Fprintf(rt.writer, "%s  importance=%s  trust=%s  %s\n", rt.ui.dim(record.Citation()), record.ImportanceLabel(), record.TrustLabel(), compactPersistentMemoryText(record.Summary, 220))
-	}
-	return nil
-}
-
-func (rt *runtimeState) handlePersistentMemorySearch(query string) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("usage: /mem-search <query>")
-	}
-	records, err := rt.longMem.SearchHits(query, rt.workspace.BaseRoot, rt.session.ID, 8)
-	if err != nil {
-		return err
-	}
-	if len(records) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No persistent memory matched that query."))
-		return nil
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Memory Search"))
-	for _, hit := range records {
-		fmt.Fprintf(rt.writer, "%s  importance=%s  trust=%s  score=%d  %s\n", rt.ui.dim(hit.Citation), hit.Record.ImportanceLabel(), hit.Record.TrustLabel(), hit.Score, compactPersistentMemoryText(hit.Record.Summary, 260))
-	}
-	return nil
-}
-
-func (rt *runtimeState) handlePersistentMemoryShow(id string) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("usage: /mem-show <id>")
-	}
-	record, ok, err := rt.longMem.Get(id)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("persistent memory record not found: %s", id)
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Memory Record"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("citation", record.Citation()))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("importance", record.ImportanceLabel()))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("trust", record.TrustLabel()))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", record.Workspace))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("request", valueOrUnset(record.Request)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("reply", valueOrUnset(record.Reply)))
-	if strings.TrimSpace(record.VerificationSummary) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("verification", record.VerificationSummary))
-	}
-	if len(record.Files) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("refs", strings.Join(record.Files, ", ")))
-	}
-	if len(record.ToolNames) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("tools", strings.Join(record.ToolNames, ", ")))
-	}
-	return nil
-}
-
-func (rt *runtimeState) handlePersistentMemoryAdjust(id, action string) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	if strings.TrimSpace(id) == "" {
-		return fmt.Errorf("usage: /mem-%s <id>", action)
-	}
-	var (
-		record PersistentMemoryRecord
-		ok     bool
-		err    error
-	)
-	switch action {
-	case "promote":
-		record, ok, err = rt.longMem.Promote(id)
-	case "demote":
-		record, ok, err = rt.longMem.Demote(id)
-	case "confirm":
-		record, ok, err = rt.longMem.SetTrust(id, PersistentMemoryConfirmed)
-	case "tentative":
-		record, ok, err = rt.longMem.SetTrust(id, PersistentMemoryTentative)
-	default:
-		return fmt.Errorf("unsupported memory action: %s", action)
-	}
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("persistent memory record not found: %s", id)
-	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Updated %s -> importance=%s trust=%s", record.Citation(), record.ImportanceLabel(), record.TrustLabel())))
-	return nil
-}
-
-func (rt *runtimeState) handlePersistentMemoryDashboard(query string, html bool) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	summary, err := rt.longMem.Dashboard(workspaceSnapshotRoot(rt.workspace), query, 12)
-	if err != nil {
-		return err
-	}
-	if html {
-		outputPath, err := createPersistentMemoryDashboardHTML(summary)
-		if err != nil {
-			return err
-		}
-		if err := OpenExternalURL(outputPath); err != nil {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("Generated HTML memory dashboard but could not open it automatically: "+err.Error()))
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Generated memory dashboard: "+outputPath))
-		return nil
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Memory Dashboard"))
-	fmt.Fprintln(rt.writer, renderPersistentMemoryDashboard(summary))
-	return nil
-}
-
-func (rt *runtimeState) handlePersistentMemoryPrune(args string) error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	all := strings.EqualFold(strings.TrimSpace(args), "all")
-	workspace := workspaceSnapshotRoot(rt.workspace)
-	policy, err := LoadPersistentMemoryPolicy(workspace)
-	if err != nil {
-		return err
-	}
-	result, err := rt.longMem.Prune(workspace, policy, all)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Memory Prune"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("scope", result.Scope))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("before", fmt.Sprintf("%d", result.Before)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("after", fmt.Sprintf("%d", result.After)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("deleted", fmt.Sprintf("%d", result.Deleted)))
-	for i := range result.DeletedIDs {
-		fmt.Fprintf(rt.writer, "%s  %s\n", rt.ui.dim(result.DeletedIDs[i]), result.DeletedReason[i])
-	}
-	return nil
-}
-
-func (rt *runtimeState) requireSelection() (ViewerSelection, error) {
-	selection := rt.session.CurrentSelection()
-	if selection == nil || !selection.HasSelection() {
-		return ViewerSelection{}, fmt.Errorf("no current selection. Use /open and select a range first")
-	}
-	return *selection, nil
-}
-
-func (rt *runtimeState) handleSelectionCommand() error {
-	selection, err := rt.requireSelection()
-	if err != nil {
-		return err
-	}
-	preview, err := loadSelectionPreview(rt.workspace.Root, selection)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Selection"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("range", selection.Summary(rt.workspace.Root)))
-	fmt.Fprintln(rt.writer, preview)
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionsCommand() error {
-	rt.session.normalizeSelectionState()
-	if len(rt.session.Selections) == 0 {
-		return fmt.Errorf("no saved selections. Use /open and select a range first")
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Selections"))
-	for i, selection := range rt.session.Selections {
-		suffix := ""
-		if i == rt.session.ActiveSelection {
-			suffix = " [active]"
-		}
-		fmt.Fprintf(rt.writer, "%d. %s%s\n", i+1, selection.Summary(rt.workspace.Root), suffix)
-	}
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionNoteCommand(note string) error {
-	selection := rt.session.CurrentSelection()
-	if selection == nil || !selection.HasSelection() {
-		return fmt.Errorf("no current selection. Use /open and select a range first")
-	}
-	if strings.TrimSpace(note) == "" {
-		return fmt.Errorf("usage: /note-selection <text>")
-	}
-	rt.session.Selections[rt.session.ActiveSelection].Note = strings.TrimSpace(note)
-	active := rt.session.Selections[rt.session.ActiveSelection]
-	rt.session.LastSelection = &active
-	_ = rt.store.Save(rt.session)
-	_ = SyncWorkspaceSelections(rt.workspace.Root, rt.session.Selections)
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Updated note on active selection and synced to workspace"))
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionTagCommand(tags string) error {
-	selection := rt.session.CurrentSelection()
-	if selection == nil || !selection.HasSelection() {
-		return fmt.Errorf("no current selection. Use /open and select a range first")
-	}
-	if strings.TrimSpace(tags) == "" {
-		return fmt.Errorf("usage: /tag-selection <tag[,tag2,...]>")
-	}
-	rt.session.Selections[rt.session.ActiveSelection].SetTags(tags)
-	active := rt.session.Selections[rt.session.ActiveSelection]
-	rt.session.LastSelection = &active
-	_ = rt.store.Save(rt.session)
-	_ = SyncWorkspaceSelections(rt.workspace.Root, rt.session.Selections)
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Updated tags on active selection and synced to workspace"))
-	return nil
-}
-
-func (rt *runtimeState) handleUseSelectionCommand(arg string) error {
-	index, err := parsePositiveInt(strings.TrimSpace(arg))
-	if err != nil || index < 1 {
-		return fmt.Errorf("usage: /use-selection <n>")
-	}
-	if !rt.session.SetActiveSelection(index - 1) {
-		return fmt.Errorf("selection index out of range: %d", index)
-	}
-	_ = rt.store.Save(rt.session)
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Active selection set to "+rt.session.CurrentSelection().Summary(rt.workspace.Root)))
-	return nil
-}
-
-func (rt *runtimeState) handleDropSelectionCommand(arg string) error {
-	index, err := parsePositiveInt(strings.TrimSpace(arg))
-	if err != nil || index < 1 {
-		return fmt.Errorf("usage: /drop-selection <n>")
-	}
-	if !rt.session.RemoveSelection(index - 1) {
-		return fmt.Errorf("selection index out of range: %d", index)
-	}
-	_ = rt.store.Save(rt.session)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Dropped selection %d", index)))
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionDiffCommand() error {
-	selection, err := rt.requireSelection()
-	if err != nil {
-		return err
-	}
-	diff, err := renderSelectionGitDiff(rt.workspace.Root, selection)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Selection Diff"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("range", selection.Summary(rt.workspace.Root)))
-	fmt.Fprintln(rt.writer, diff)
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionReviewCommand(extra string) error {
-	selection, err := rt.requireSelection()
-	if err != nil {
-		return err
-	}
-	prompt := selection.RelativePrompt(rt.workspace.Root) + " review only this selected code. Focus on bugs, risks, regressions, and missing tests."
-	if strings.TrimSpace(extra) != "" {
-		prompt += " " + strings.TrimSpace(extra)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	reply, err := rt.runAgentReply(ctx, prompt)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(reply) != "" {
-		rt.printAssistant(reply)
-	}
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionsReviewCommand(args string) error {
-	rt.session.normalizeSelectionState()
-	if len(rt.session.Selections) == 0 {
-		return fmt.Errorf("no saved selections. Use /open and select a range first")
-	}
-	selected, extra, err := parseSelectionReviewArgs(rt.session, args)
-	if err != nil {
-		return err
-	}
-	prompt := buildSelectionContextPrompt(rt.workspace.Root, selected) + " review only these selected code regions together. Focus on bugs, risks, regressions, duplication, and missing tests across the selected regions."
-	if strings.TrimSpace(extra) != "" {
-		prompt += " " + strings.TrimSpace(extra)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	reply, err := rt.runAgentReply(ctx, prompt)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(reply) != "" {
-		rt.printAssistant(reply)
-	}
-	return nil
-}
-
-func (rt *runtimeState) handleSelectionEditCommand(task string) error {
-	selection, err := rt.requireSelection()
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(task) == "" {
-		return fmt.Errorf("usage: /edit-selection <task>")
-	}
-	prompt := selection.RelativePrompt(rt.workspace.Root) + " edit this selected code. Keep the change strictly focused on the selected range unless adjacent lines must change for correctness. Avoid unrelated edits outside the selection. If you must touch code outside the selection, keep it minimal and explain why in the final answer. Task: " + strings.TrimSpace(task)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-	reply, err := rt.runAgentReply(ctx, prompt)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(reply) != "" {
-		rt.printAssistant(reply)
-	}
-	return nil
 }
 
 func parseSelectionReviewArgs(sess *Session, raw string) ([]ViewerSelection, string, error) {
@@ -3659,100 +3493,6 @@ func parseSelectionReviewArgs(sess *Session, raw string) ([]ViewerSelection, str
 		return nil, "", fmt.Errorf("no selections chosen")
 	}
 	return selected, extra, nil
-}
-
-func (rt *runtimeState) handlePersistentMemoryStats() error {
-	if rt.longMem == nil {
-		return fmt.Errorf("persistent memory is not configured")
-	}
-	stats, err := rt.longMem.Stats()
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Memory Stats"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("path", stats.Path))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("records", fmt.Sprintf("%d", stats.Count)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspaces", fmt.Sprintf("%d", stats.WorkspaceSet)))
-	if !stats.LastUpdated.IsZero() {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_updated", stats.LastUpdated.Format(time.RFC3339)))
-	}
-	return nil
-}
-
-func (rt *runtimeState) handleVerifyCommand(args string) error {
-	changed := collectVerificationChangedPaths(rt.workspace.Root, rt.session)
-	mode := VerificationAdaptive
-	if strings.TrimSpace(args) != "" {
-		override := []string{}
-		for _, item := range strings.Fields(args) {
-			if strings.EqualFold(strings.TrimSpace(item), "--full") {
-				mode = VerificationFull
-				continue
-			}
-			for _, path := range strings.Split(item, ",") {
-				if value := normalizeVerificationOverridePath(path); value != "" {
-					override = append(override, value)
-				}
-			}
-		}
-		if len(override) > 0 {
-			changed = override
-		}
-	}
-	tuning := VerificationTuning{}
-	if rt.verifyHistory != nil {
-		if loaded, err := rt.verifyHistory.PlannerTuning(rt.workspace.Root); err == nil {
-			tuning = loaded
-		}
-	}
-	plan := buildVerificationPlanWithTuning(rt.workspace.Root, changed, mode, tuning)
-	if len(plan.Steps) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No recommended verification steps were found for this workspace."))
-		return nil
-	}
-	report := executeVerificationSteps(context.Background(), rt.workspace, "manual", plan)
-	rt.session.LastVerification = &report
-	_ = rt.store.Save(rt.session)
-	if rt.verifyHistory != nil {
-		_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
-	fmt.Fprintln(rt.writer, report.RenderDetailed())
-	return nil
-}
-
-func (rt *runtimeState) handleVerifyDashboardCommand(args string) error {
-	if rt.verifyHistory == nil {
-		return fmt.Errorf("verification history is not configured")
-	}
-	all, tags := parseVerificationDashboardArgs(args)
-	summary, err := rt.verifyHistory.Dashboard(workspaceSnapshotRoot(rt.workspace), all, tags, 10)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Verification Dashboard"))
-	fmt.Fprintln(rt.writer, renderVerificationDashboard(summary))
-	return nil
-}
-
-func (rt *runtimeState) handleVerifyDashboardHTMLCommand(args string) error {
-	if rt.verifyHistory == nil {
-		return fmt.Errorf("verification history is not configured")
-	}
-	all, tags := parseVerificationDashboardArgs(args)
-	summary, err := rt.verifyHistory.Dashboard(workspaceSnapshotRoot(rt.workspace), all, tags, 20)
-	if err != nil {
-		return err
-	}
-	outputPath, err := createVerificationDashboardHTML(summary, all)
-	if err != nil {
-		return err
-	}
-	if err := OpenExternalURL(outputPath); err != nil {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Generated HTML dashboard but could not open it automatically: "+err.Error()))
-	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Generated verification dashboard: "+outputPath))
-	return nil
 }
 
 func parseVerificationDashboardArgs(raw string) (bool, []string) {
@@ -3806,218 +3546,6 @@ func workspaceSnapshotRoot(ws Workspace) string {
 		return ws.BaseRoot
 	}
 	return ws.Root
-}
-
-func parseCheckpointTargetAndPaths(raw string) (string, []string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "latest", nil, nil
-	}
-	target := trimmed
-	var paths []string
-	if idx := strings.Index(trimmed, " -- "); idx >= 0 {
-		target = strings.TrimSpace(trimmed[:idx])
-		pathPart := strings.TrimSpace(trimmed[idx+4:])
-		for _, item := range strings.Split(pathPart, ",") {
-			if value := strings.TrimSpace(item); value != "" {
-				paths = append(paths, value)
-			}
-		}
-	}
-	if target == "" {
-		target = "latest"
-	}
-	return target, paths, nil
-}
-
-func (rt *runtimeState) handleCheckpointCommand(args string) error {
-	if rt.checkpoints == nil {
-		return fmt.Errorf("checkpoint manager is not configured")
-	}
-	name := strings.TrimSpace(args)
-	if name == "" && rt.interactive {
-		value, err := rt.promptValueAllowEmpty("Checkpoint note (optional)", "")
-		if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return fmt.Errorf("checkpoint creation canceled")
-			}
-			return err
-		}
-		name = strings.TrimSpace(value)
-	}
-	ok, err := rt.perms.Allow(ActionWrite, "create checkpoint for "+workspaceSnapshotRoot(rt.workspace))
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("checkpoint creation canceled")
-	}
-	meta, err := rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), name)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Created checkpoint %s (%s)", meta.ID, meta.Name)))
-	return nil
-}
-
-func (rt *runtimeState) handleCheckpointAutoCommand(args string) error {
-	if strings.TrimSpace(args) == "" {
-		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("Automatic checkpoint before edits: %t", configAutoCheckpointEdits(rt.cfg))))
-		return nil
-	}
-	value, ok := parseBoolString(args)
-	if !ok {
-		return fmt.Errorf("usage: /checkpoint-auto [on|off]")
-	}
-	rt.cfg.AutoCheckpointEdits = boolPtr(value)
-	if err := rt.saveUserConfig(); err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Automatic checkpoint before edits set to %t", value)))
-	return nil
-}
-
-func (rt *runtimeState) handleCheckpointsCommand() error {
-	if rt.checkpoints == nil {
-		return fmt.Errorf("checkpoint manager is not configured")
-	}
-	items, err := rt.checkpoints.List(workspaceSnapshotRoot(rt.workspace))
-	if err != nil {
-		return err
-	}
-	if len(items) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No checkpoints found for this workspace."))
-		return nil
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Checkpoints"))
-	for _, item := range items {
-		fmt.Fprintf(rt.writer, "%s  %s  files=%d  size=%dB\n", rt.ui.dim(item.ID), item.Name, item.FileCount, item.TotalBytes)
-	}
-	return nil
-}
-
-func (rt *runtimeState) handleCheckpointDiffCommand(args string) error {
-	if rt.checkpoints == nil {
-		return fmt.Errorf("checkpoint manager is not configured")
-	}
-	target, paths, err := parseCheckpointTargetAndPaths(args)
-	if err != nil {
-		return err
-	}
-	meta, diffs, err := rt.checkpoints.Diff(workspaceSnapshotRoot(rt.workspace), target, paths)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Checkpoint Diff"))
-	fmt.Fprintln(rt.writer, rt.ui.dim(fmt.Sprintf("%s  %s", meta.ID, meta.Name)))
-	fmt.Fprintln(rt.writer, renderCheckpointDiff(diffs))
-	return nil
-}
-
-func (rt *runtimeState) handleRollbackCommand(args string) error {
-	if rt.checkpoints == nil {
-		return fmt.Errorf("checkpoint manager is not configured")
-	}
-	trimmedArgs := strings.TrimSpace(args)
-	if trimmedArgs == "" || strings.EqualFold(trimmedArgs, "pick") || strings.EqualFold(trimmedArgs, "choose") {
-		selected, err := rt.pickRollbackCheckpoint()
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(selected) == "" {
-			return fmt.Errorf("rollback canceled")
-		}
-		args = selected
-	}
-	target, paths, err := parseCheckpointTargetAndPaths(args)
-	if err != nil {
-		return err
-	}
-	meta, _, err := rt.checkpoints.Resolve(workspaceSnapshotRoot(rt.workspace), target)
-	if err != nil {
-		return err
-	}
-	ok, err := rt.perms.Allow(ActionWrite, "rollback workspace to checkpoint "+meta.ID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("rollback canceled")
-	}
-	if rt.interactive {
-		scope := "workspace"
-		if len(paths) > 0 {
-			scope = strings.Join(paths, ", ")
-		}
-		confirm, err := rt.confirm(fmt.Sprintf("Rollback %s to checkpoint %s (%s)? This will overwrite current files.", scope, meta.ID, meta.Name))
-		if err != nil {
-			return err
-		}
-		if !confirm {
-			return fmt.Errorf("rollback canceled")
-		}
-	}
-	safetyName := "pre-rollback-" + time.Now().Format("20060102-150405")
-	if safety, err := rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), safetyName); err == nil {
-		fmt.Fprintln(rt.writer, rt.ui.infoLine("Created safety checkpoint "+safety.ID))
-	}
-	var restored CheckpointMetadata
-	if len(paths) > 0 {
-		restored, err = rt.checkpoints.RollbackPaths(workspaceSnapshotRoot(rt.workspace), meta.ID, paths)
-	} else {
-		restored, err = rt.checkpoints.Rollback(workspaceSnapshotRoot(rt.workspace), meta.ID)
-	}
-	if err != nil {
-		return err
-	}
-	if err := rt.reloadRuntimeConfig(); err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Rolled back to checkpoint %s (%s)", restored.ID, restored.Name)))
-	return nil
-}
-
-func (rt *runtimeState) pickRollbackCheckpoint() (string, error) {
-	items, err := rt.checkpoints.List(workspaceSnapshotRoot(rt.workspace))
-	if err != nil {
-		return "", err
-	}
-	if len(items) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No checkpoints found for this workspace."))
-		return "", nil
-	}
-
-	fmt.Fprintln(rt.writer, rt.ui.section("Choose Checkpoint"))
-	for i, item := range items {
-		fmt.Fprintf(rt.writer, "%s  %s  %s  files=%d  size=%dB\n",
-			rt.ui.accent(fmt.Sprintf("%2d.", i+1)),
-			rt.ui.dim(item.ID),
-			item.Name,
-			item.FileCount,
-			item.TotalBytes,
-		)
-	}
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a checkpoint number, or press Enter to cancel."))
-
-	for {
-		answer, err := rt.readInput(rt.ui.accent("rollback pick") + rt.ui.dim(" > "))
-		if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return "", nil
-			}
-			return "", err
-		}
-		answer = strings.TrimSpace(answer)
-		if answer == "" {
-			return "", nil
-		}
-		index, convErr := strconv.Atoi(answer)
-		if convErr != nil || index < 1 || index > len(items) {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf("Choose a number between 1 and %d.", len(items))))
-			continue
-		}
-		return items[index-1].ID, nil
-	}
 }
 
 func (rt *runtimeState) handleInitCommand(args string) error {
@@ -4074,6 +3602,20 @@ func (rt *runtimeState) handleInitCommand(args string) error {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Created "+path))
 		return nil
+	case "hooks":
+		path := filepath.Join(rt.workspace.BaseRoot, userConfigDirName, "hooks.json")
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists", path)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(InitHooksTemplate()), 0o644); err != nil {
+			return err
+		}
+		rt.reloadHooks()
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Created "+path))
+		return nil
 	case "verify":
 		path := filepath.Join(rt.workspace.BaseRoot, userConfigDirName, "verify.json")
 		if _, err := os.Stat(path); err == nil {
@@ -4101,6 +3643,6 @@ func (rt *runtimeState) handleInitCommand(args string) error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Created "+path))
 		return nil
 	default:
-		return fmt.Errorf("usage: /init [memory-policy|skill <name>|config|verify]")
+		return fmt.Errorf("usage: /init [memory-policy|skill <name>|config|hooks|verify]")
 	}
 }

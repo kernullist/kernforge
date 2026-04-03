@@ -14,18 +14,19 @@ import (
 )
 
 type Agent struct {
-	Config        Config
-	Client        ProviderClient
-	Tools         *ToolRegistry
-	Workspace     Workspace
-	Session       *Session
-	Store         *SessionStore
-	Memory        MemoryBundle
-	Skills        SkillCatalog
-	MCP           *MCPManager
-	LongMem       *PersistentMemoryStore
-	VerifyHistory *VerificationHistoryStore
-	VerifyChanges func(context.Context) (VerificationReport, bool)
+	Config          Config
+	Client          ProviderClient
+	Tools           *ToolRegistry
+	Workspace       Workspace
+	Session         *Session
+	Store           *SessionStore
+	Memory          MemoryBundle
+	Skills          SkillCatalog
+	MCP             *MCPManager
+	LongMem         *PersistentMemoryStore
+	Evidence        *EvidenceStore
+	VerifyHistory   *VerificationHistoryStore
+	VerifyChanges   func(context.Context) (VerificationReport, bool)
 	EmitAssistant   func(string)
 	lastEmittedText string
 }
@@ -69,6 +70,9 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 			safeStart = len(a.Session.Messages)
 		}
 		_ = a.LongMem.CaptureTurn(a.Workspace, a.Session, userText, reply, a.Session.Messages[safeStart:])
+	}
+	if a.Evidence != nil {
+		_ = a.Evidence.CaptureVerification(a.Workspace, a.Session)
 	}
 	return reply, nil
 }

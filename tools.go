@@ -64,6 +64,7 @@ type Workspace struct {
 	PreviewEdit      func(EditPreview) (bool, error)
 	UpdatePlan       func([]PlanItem)
 	GetPlan          func() []PlanItem
+	RunHook          func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
 }
 
 type EditPreview struct {
@@ -206,6 +207,13 @@ func (w Workspace) Selection() *ViewerSelection {
 		return nil
 	}
 	return w.CurrentSelection()
+}
+
+func (w Workspace) Hook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+	if w.RunHook == nil {
+		return HookVerdict{Allow: true}, nil
+	}
+	return w.RunHook(ctx, event, payload)
 }
 
 func shellInvocation(shell, command string) (string, []string) {
@@ -528,6 +536,15 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	after := content
 	if boolValue(args, "append", false) {
 		after = before + content
+		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
+			"path":          relOrAbs(t.ws.Root, path),
+			"absolute_path": path,
+			"operation":     "write_file",
+			"reason":        reason,
+			"file_tags":     hookFileTags(path),
+		}); err != nil {
+			return "", err
+		}
 		if err := t.ws.ConfirmEdit(EditPreview{
 			Title:   "Append to " + relOrAbs(t.ws.Root, path),
 			Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), before, after),
@@ -549,6 +566,15 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 			return "", err
 		}
 	} else {
+		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
+			"path":          relOrAbs(t.ws.Root, path),
+			"absolute_path": path,
+			"operation":     "write_file",
+			"reason":        reason,
+			"file_tags":     hookFileTags(path),
+		}); err != nil {
+			return "", err
+		}
 		if err := t.ws.ConfirmEdit(EditPreview{
 			Title:   "Write " + relOrAbs(t.ws.Root, path),
 			Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), before, after),
@@ -564,6 +590,15 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return "", err
 		}
+	}
+	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
+		"path":          relOrAbs(t.ws.Root, path),
+		"absolute_path": path,
+		"operation":     "write_file",
+		"reason":        reason,
+		"file_tags":     hookFileTags(path),
+	}); err != nil {
+		return "", err
 	}
 	return joinNonEmpty(
 		fmt.Sprintf("wrote %d bytes to %s", len(content), relOrAbs(t.ws.Root, path)),
@@ -687,6 +722,15 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 		return "", ctx.Err()
 	default:
 	}
+	if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
+		"path":          relOrAbs(t.ws.Root, path),
+		"absolute_path": path,
+		"operation":     "replace_in_file",
+		"reason":        "replace in " + relOrAbs(t.ws.Root, path),
+		"file_tags":     hookFileTags(path),
+	}); err != nil {
+		return "", err
+	}
 	if err := t.ws.ConfirmEdit(EditPreview{
 		Title:   "Update " + relOrAbs(t.ws.Root, path),
 		Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), content, updated),
@@ -700,6 +744,15 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 		return "", err
 	}
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+		return "", err
+	}
+	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
+		"path":          relOrAbs(t.ws.Root, path),
+		"absolute_path": path,
+		"operation":     "replace_in_file",
+		"reason":        "replace in " + relOrAbs(t.ws.Root, path),
+		"file_tags":     hookFileTags(path),
+	}); err != nil {
 		return "", err
 	}
 	return joinNonEmpty(
@@ -733,6 +786,15 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
 	}
+	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+		"tool_name": "run_shell",
+		"tool_kind": "shell",
+		"command":   command,
+		"risk_tags": hookCommandRiskTags(command),
+		"file_tags": []string{},
+	}); err != nil {
+		return "", err
+	}
 	if err := t.ws.EnsureShell(command); err != nil {
 		return "", err
 	}
@@ -751,10 +813,27 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		if text == "" {
 			text = err.Error()
 		}
+		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+			"tool_name": "run_shell",
+			"tool_kind": "shell",
+			"command":   command,
+			"risk_tags": hookCommandRiskTags(command),
+			"output":    text,
+			"error":     err.Error(),
+		})
 		return text, fmt.Errorf("command failed [%s]: %w", summarizeShellCommand(command), err)
 	}
 	if text == "" {
 		text = "(no output)"
+	}
+	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		"tool_name": "run_shell",
+		"tool_kind": "shell",
+		"command":   command,
+		"risk_tags": hookCommandRiskTags(command),
+		"output":    text,
+	}); err != nil {
+		return "", err
 	}
 	return text, nil
 }
@@ -765,6 +844,41 @@ func summarizeShellCommand(command string) string {
 		return command
 	}
 	return command[:120] + "..."
+}
+
+func hookCommandRiskTags(command string) []string {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	var tags []string
+	if strings.Contains(lower, "bcdedit") || strings.Contains(lower, "verifier") {
+		tags = append(tags, "windows")
+	}
+	if strings.Contains(lower, "signtool") || strings.Contains(lower, "symchk") {
+		tags = append(tags, "signing")
+	}
+	if strings.Contains(lower, "fltmc") || strings.Contains(lower, ".sys") {
+		tags = append(tags, "driver")
+	}
+	return uniqueStrings(tags)
+}
+
+func hookFileTags(path string) []string {
+	lower := strings.ToLower(filepath.ToSlash(path))
+	var tags []string
+	switch filepath.Ext(lower) {
+	case ".c", ".cc", ".cpp", ".h", ".hpp":
+		tags = append(tags, "cpp")
+	case ".go":
+		tags = append(tags, "go")
+	case ".sys", ".inf", ".cat":
+		tags = append(tags, "driver")
+	}
+	if strings.Contains(lower, "/driver/") || strings.HasSuffix(lower, ".sys") || strings.HasSuffix(lower, ".inf") || strings.HasSuffix(lower, ".cat") {
+		tags = append(tags, "driver")
+	}
+	if strings.Contains(lower, "kernel") || strings.Contains(lower, "/driver/") || strings.HasSuffix(lower, ".sys") {
+		tags = append(tags, "kernel")
+	}
+	return uniqueStrings(tags)
 }
 
 type GitStatusTool struct{ ws Workspace }
@@ -923,6 +1037,23 @@ func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		branch = currentBranch
 	}
+	changedFiles, _ := gitChangedFiles(ctx, t.ws.Root)
+	if _, err := t.ws.Hook(ctx, HookPreGitPush, HookPayload{
+		"remote":        remote,
+		"branch":        branch,
+		"changed_files": changedFiles,
+	}); err != nil {
+		return "", err
+	}
+	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+		"tool_name":     "git_push",
+		"tool_kind":     "git",
+		"command":       fmt.Sprintf("git push %s %s", remote, branch),
+		"branch":        branch,
+		"changed_files": changedFiles,
+	}); err != nil {
+		return "", err
+	}
 	if err := t.ws.EnsureShell(fmt.Sprintf("git push %s %s", remote, branch)); err != nil {
 		return "", err
 	}
@@ -940,6 +1071,15 @@ func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
 	out, err := runGitCommand(ctx, t.ws.Root, cmdArgs...)
 	if err != nil {
 		return out, err
+	}
+	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		"tool_name": "git_push",
+		"tool_kind": "git",
+		"command":   strings.Join(append([]string{"git"}, cmdArgs...), " "),
+		"branch":    branch,
+		"output":    out,
+	}); err != nil {
+		return "", err
 	}
 	return joinNonEmpty(
 		fmt.Sprintf("pushed %s to %s", branch, remote),
@@ -1003,6 +1143,24 @@ func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error)
 			return "", err
 		}
 	}
+	changedFiles, _ := gitChangedFiles(ctx, t.ws.Root)
+	if _, err := t.ws.Hook(ctx, HookPreCreatePR, HookPayload{
+		"remote":        remote,
+		"branch":        branch,
+		"changed_files": changedFiles,
+		"title":         title,
+	}); err != nil {
+		return "", err
+	}
+	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+		"tool_name":     "git_create_pr",
+		"tool_kind":     "git",
+		"command":       "gh pr create",
+		"branch":        branch,
+		"changed_files": changedFiles,
+	}); err != nil {
+		return "", err
+	}
 	if err := t.ws.EnsureShell("gh pr create"); err != nil {
 		return "", err
 	}
@@ -1021,6 +1179,15 @@ func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error)
 	out, err := runCommand(ctx, t.ws.Root, "gh", cmdArgs...)
 	if err != nil {
 		return out, err
+	}
+	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		"tool_name": "git_create_pr",
+		"tool_kind": "git",
+		"command":   strings.Join(append([]string{"gh"}, cmdArgs...), " "),
+		"branch":    branch,
+		"output":    out,
+	}); err != nil {
+		return "", err
 	}
 	return joinNonEmpty(
 		fmt.Sprintf("created pull request for %s", branch),
@@ -1159,6 +1326,27 @@ func gitHasUpstream(ctx context.Context, dir string) (bool, error) {
 		return false, fmt.Errorf("failed to inspect upstream branch: %s", text)
 	}
 	return true, nil
+}
+
+func gitChangedFiles(ctx context.Context, dir string) ([]string, error) {
+	out, err := runGitCommand(ctx, dir, "status", "--short")
+	if err != nil {
+		return nil, err
+	}
+	if out == "(no output)" || strings.TrimSpace(out) == "" {
+		return nil, nil
+	}
+	var files []string
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > 3 {
+			files = append(files, strings.TrimSpace(trimmed[3:]))
+		}
+	}
+	return uniqueStrings(files), nil
 }
 
 type UpdatePlanTool struct{ ws Workspace }

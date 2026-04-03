@@ -71,6 +71,8 @@ func LoadPersistentMemoryPolicy(root string) (PersistentMemoryPolicy, error) {
 }
 
 func (s *PersistentMemoryStore) Prune(workspace string, policy PersistentMemoryPolicy, all bool) (PersistentMemoryPruneResult, error) {
+	unlock := lockFilePath(s.Path)
+	defer unlock()
 	records, err := s.load()
 	if err != nil {
 		return PersistentMemoryPruneResult{}, err

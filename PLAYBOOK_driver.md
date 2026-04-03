@@ -1,0 +1,70 @@
+# Kernforge Driver Playbook
+
+This playbook explains how to use Kernforge effectively for driver, signing, symbols, packaging, and verifier-readiness work.
+
+## 1. When To Use This Playbook
+
+1. `.sys`, `.inf`, or `.cat` artifacts are involved.
+2. Signing, symbols, packaging, or verifier readiness matters.
+3. Integrity, registration, or load-path hardening matters.
+4. Recent driver-related failed evidence already exists.
+
+## 2. Recommended Baseline Flow
+
+```text
+/investigate start driver-load guard.sys
+/investigate snapshot
+/simulate tamper-surface guard.sys
+/open driver/guard.cpp
+/review-selection integrity bypass paths and verifier interactions
+/edit-selection harden registration and signing assumptions
+/verify
+/evidence-dashboard category:driver
+/mem-search category:driver signal:signing
+```
+
+## 3. What Each Stage Does
+
+1. `/investigate start driver-load guard.sys`
+Captures the current driver load state, verifier state, and filter stack.
+
+2. `/simulate tamper-surface guard.sys`
+Surfaces likely integrity, signing, and bypass pressure points.
+
+3. `/review-selection ...`
+If simulation findings match the selected range, adversarial context is injected automatically.
+
+4. `/verify`
+Adds driver-focused verification steps and recent investigation or simulation follow-up review steps.
+
+5. `/evidence-dashboard category:driver`
+Shows recent failed signing, symbol, package, or verifier-related evidence.
+
+## 4. Signals Worth Watching Closely
+
+1. `signal:signing`
+2. `signal:symbols`
+3. `severity:critical`
+4. `risk:>=80`
+
+Useful examples:
+
+```text
+/evidence-search category:driver signal:signing
+/mem-search category:driver signal:symbols
+/evidence-search severity:critical risk:>=80
+```
+
+## 5. Recommended Pre-PR Check
+
+1. `/verify`
+2. `/evidence-dashboard category:driver`
+3. `/override`
+4. Let hook policy evaluate the final push or PR path
+
+## 6. Good Team Habits
+
+1. Capture a live snapshot before risky driver changes.
+2. Run `tamper-surface` before large hardening work.
+3. Check both evidence and memory for signing and symbol issues.
+4. Treat repeated failures as a workflow problem first, not just an override problem.

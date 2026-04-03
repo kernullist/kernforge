@@ -35,6 +35,9 @@ type Config struct {
 	AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
 	AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
 	AutoLocale          *bool             `json:"auto_locale,omitempty"`
+	HooksEnabled        *bool             `json:"hooks_enabled,omitempty"`
+	HookPresets         []string          `json:"hook_presets,omitempty"`
+	HooksFailClosed     *bool             `json:"hooks_fail_closed,omitempty"`
 	MemoryFiles         []string          `json:"memory_files"`
 	SkillPaths          []string          `json:"skill_paths,omitempty"`
 	EnabledSkills       []string          `json:"enabled_skills,omitempty"`
@@ -67,6 +70,8 @@ func DefaultConfig(cwd string) Config {
 		AutoCheckpointEdits: boolPtr(true),
 		AutoVerifyDocsOnly:  boolPtr(false),
 		AutoLocale:          boolPtr(true),
+		HooksEnabled:        boolPtr(true),
+		HooksFailClosed:     boolPtr(false),
 	}
 }
 
@@ -176,6 +181,17 @@ func mergeConfig(dst *Config, src Config) {
 		value := *src.AutoLocale
 		dst.AutoLocale = &value
 	}
+	if src.HooksEnabled != nil {
+		value := *src.HooksEnabled
+		dst.HooksEnabled = &value
+	}
+	if len(src.HookPresets) > 0 {
+		dst.HookPresets = append([]string(nil), src.HookPresets...)
+	}
+	if src.HooksFailClosed != nil {
+		value := *src.HooksFailClosed
+		dst.HooksFailClosed = &value
+	}
 	if len(src.MemoryFiles) > 0 {
 		dst.MemoryFiles = append([]string(nil), src.MemoryFiles...)
 	}
@@ -210,6 +226,8 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
 	envBool("KERNFORGE_AUTO_CHECKPOINT_EDITS", &cfg.AutoCheckpointEdits)
 	envBool("KERNFORGE_AUTO_LOCALE", &cfg.AutoLocale)
+	envBool("KERNFORGE_HOOKS_ENABLED", &cfg.HooksEnabled)
+	envBool("KERNFORGE_HOOKS_FAIL_CLOSED", &cfg.HooksFailClosed)
 
 	switch strings.ToLower(cfg.Provider) {
 	case "anthropic":
@@ -341,6 +359,20 @@ func configAutoCheckpointEdits(cfg Config) bool {
 		return true
 	}
 	return *cfg.AutoCheckpointEdits
+}
+
+func configHooksEnabled(cfg Config) bool {
+	if cfg.HooksEnabled == nil {
+		return true
+	}
+	return *cfg.HooksEnabled
+}
+
+func configHooksFailClosed(cfg Config) bool {
+	if cfg.HooksFailClosed == nil {
+		return false
+	}
+	return *cfg.HooksFailClosed
 }
 
 func configAutoVerifyDocsOnly(cfg Config) bool {
@@ -506,12 +538,16 @@ func InitWorkspaceConfigTemplate() string {
 	sample := struct {
 		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
 		AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
+		HooksEnabled        *bool             `json:"hooks_enabled,omitempty"`
+		HookPresets         []string          `json:"hook_presets,omitempty"`
 		SkillPaths          []string          `json:"skill_paths,omitempty"`
 		EnabledSkills       []string          `json:"enabled_skills,omitempty"`
 		MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
 	}{
 		AutoCheckpointEdits: boolPtr(true),
 		AutoVerifyDocsOnly:  boolPtr(false),
+		HooksEnabled:        boolPtr(true),
+		HookPresets:         []string{},
 		SkillPaths:          []string{"./.kernforge/skills"},
 		EnabledSkills:       []string{},
 		MCPServers: []MCPServerConfig{{
@@ -558,7 +594,12 @@ General:
 /context               Show context usage summary
 /exit                  Exit the CLI
 /help                  Show available commands
-/reload                Reload config, memory, skills, and MCP extensions
+/reload                Reload config, memory, skills, hooks, and MCP extensions
+/hook-reload           Reload hook configuration only
+/hooks                 Show loaded hook rules and warnings
+/override              Show active hook overrides for this workspace
+/override-add ...      Create a temporary hook override with a reason
+/override-clear ...    Remove one override, all overrides, or all for a rule
 /status                Show current provider, model, session, and memory info
 /version               Show the current application version
 
@@ -587,12 +628,23 @@ Verification And Checkpoints:
 /checkpoint-auto [on|off] Show or change automatic checkpoint creation before edits
 /checkpoint-diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
 /checkpoints           List checkpoints for the current workspace
+/investigate [subcommand] Manage live investigation sessions and snapshots
+/investigate-dashboard  Show an investigation dashboard for this workspace
+/investigate-dashboard-html Generate and open an HTML investigation dashboard
+/simulate [profile]   Run adversarial simulation profiles against recent evidence and investigations
+/simulate-dashboard    Show a simulation dashboard for this workspace
+/simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
 /verify [path,...|--full] Run adaptive or full verification for this workspace or selected paths
 /verify-dashboard [all] Show recent verification history and failure trends
 /verify-dashboard-html [all] Generate and open an HTML verification dashboard report
 
 Memory:
+/evidence              Show recent evidence records for this workspace
+/evidence-search <query> Search evidence records with optional filters
+/evidence-show <id>    Show one evidence record in detail
+/evidence-dashboard [query] Show an evidence dashboard with optional filters
+/evidence-dashboard-html [query] Generate and open an HTML evidence dashboard
 /mem                   Show recent persistent memory entries for this workspace
 /mem-confirm <id>      Mark a memory as confirmed
 /mem-dashboard [query] Show a persistent memory dashboard with optional filters
@@ -624,6 +676,7 @@ Selection And Review:
 Workspace Setup:
 /init                  Create a starter KERNFORGE.md in the current workspace
 /init config           Create a workspace .kernforge/config.json template
+/init hooks            Create a workspace .kernforge/hooks.json template
 /init memory-policy    Create a workspace .kernforge/memory-policy.json template
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
@@ -656,7 +709,7 @@ func HelpDetail(topic string) (string, bool) {
 	switch key {
 	case "":
 		return "", false
-	case "general":
+	case "general", "hooks", "hook-reload", "override", "override-add", "override-clear":
 		return strings.TrimSpace(`
 General commands cover high-level runtime inspection and app control.
 
@@ -674,6 +727,23 @@ General commands cover high-level runtime inspection and app control.
 
 /reload
 - Reload config, memory files, skills, and MCP extensions without restarting the app.
+
+/hook-reload
+- Reload hook configuration only.
+
+/hooks
+- Show the loaded hook engine state, presets, warnings, and rule list.
+
+/override
+- Show active hook overrides for the current workspace.
+
+/override-add <rule-id> <hours> <reason>
+- Create a temporary hook override for one rule in the current workspace.
+- Example:
+  /override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix with manual verification completed
+
+/override-clear <override-id|rule-id|all>
+- Remove one hook override by override id, remove all overrides for a rule, or clear all overrides in the current workspace.
 
 /status
 - Show current provider, model, workspace, session id, memory counts, verification summary, and extension counts.
@@ -769,9 +839,88 @@ Verification and checkpoint commands help you validate changes and recover safel
 /rollback [target]
 - Restore the workspace to a selected checkpoint by default, or a specific target if provided.
 `), true
-	case "memory", "mem", "mem-search", "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative", "mem-dashboard", "mem-dashboard-html", "mem-prune", "mem-stats":
+	case "investigate", "investigation":
 		return strings.TrimSpace(`
-Memory commands inspect and manage loaded memory files plus persistent memory records from past sessions.
+Investigation commands capture live Windows state and store the result as investigation sessions, evidence, and memory.
+
+/investigate
+- Show the active investigation and recent investigation status for this workspace.
+
+/investigate start <preset> [target]
+- Start a new investigation session.
+- MVP presets: driver-load, process-attach, telemetry-provider
+
+/investigate snapshot [target]
+- Capture a live snapshot for the active investigation.
+
+/investigate note <text>
+- Add a note to the active investigation.
+
+/investigate stop [summary]
+- Complete the active investigation and write a summary to evidence/memory.
+
+/investigate list
+- Show recent investigation sessions for this workspace.
+
+/investigate show <id>
+- Show one investigation session in detail.
+
+/investigate dashboard
+- Show a dashboard-style summary of recent investigation sessions.
+
+/investigate dashboard-html
+- Generate an HTML investigation dashboard and try to open it.
+`), true
+	case "simulate", "simulation":
+		return strings.TrimSpace(`
+Simulation commands evaluate recent evidence and investigation state from an adversarial point of view.
+
+/simulate
+- Show available simulation profiles and the most recent simulation status.
+
+/simulate <profile> [target]
+- Run one simulation profile.
+- MVP profiles: tamper-surface, stealth-surface, forensic-blind-spot
+
+/simulate list
+- Show recent simulation runs for the current workspace.
+
+/simulate show <id>
+- Show one simulation result in detail.
+
+/simulate dashboard
+- Show a dashboard-style summary of recent simulation runs.
+
+/simulate dashboard-html
+- Generate an HTML simulation dashboard and try to open it.
+`), true
+	case "memory", "mem", "mem-search", "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative", "mem-dashboard", "mem-dashboard-html", "mem-prune", "mem-stats", "evidence", "evidence-search", "evidence-show", "evidence-dashboard", "evidence-dashboard-html":
+		return strings.TrimSpace(`
+Memory commands inspect and manage loaded memory files, persistent memory records from past sessions, and structured evidence extracted from verification.
+
+/evidence
+- Show recent evidence records for the current workspace.
+
+/evidence-search <query>
+- Search evidence records.
+- Filters:
+  kind:<verification_category|verification_artifact|verification_failure|hook_override|investigation_session|investigation_snapshot|investigation_finding|simulation_run|simulation_finding>
+  category:<driver|telemetry|unreal|memory-scan>
+  tag:<name>
+  outcome:<passed|failed>
+  severity:<low|medium|high|critical>
+  signal:<name>
+  risk:>=<score>
+
+/evidence-show <id>
+- Show one evidence record in detail.
+
+/evidence-dashboard [query]
+- Show a dashboard-style evidence summary in the terminal.
+- Accepts the same filters as /evidence-search.
+
+/evidence-dashboard-html [query]
+- Generate an HTML evidence dashboard and try to open it.
 
 /memory
 - Show loaded memory files.
@@ -781,6 +930,16 @@ Memory commands inspect and manage loaded memory files plus persistent memory re
 
 /mem-search <query>
 - Search persistent memory across past sessions.
+- Filters:
+  importance:<low|medium|high>
+  trust:<tentative|confirmed>
+  category:<driver|telemetry|unreal|memory-scan>
+  tag:<name>
+  artifact:<path-or-file>
+  failure:<kind>
+  severity:<low|medium|high|critical>
+  signal:<name>
+  risk:>=<score>
 
 /mem-show <id>
 - Show one persistent memory record in detail.
@@ -795,6 +954,7 @@ Memory commands inspect and manage loaded memory files plus persistent memory re
 
 /mem-dashboard [query]
 - Show a dashboard-style memory summary in the terminal.
+- Accepts the same filters as /mem-search.
 
 /mem-dashboard-html [query]
 - Generate an HTML dashboard and try to open it.
@@ -853,6 +1013,9 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 
 /init config
 - Create a starter .kernforge/config.json template.
+
+/init hooks
+- Create a starter .kernforge/hooks.json template.
 
 /init memory-policy
 - Create a starter .kernforge/memory-policy.json template.

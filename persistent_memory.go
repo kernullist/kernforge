@@ -35,22 +35,29 @@ const (
 )
 
 type PersistentMemoryRecord struct {
-	ID                  string                     `json:"id"`
-	SessionID           string                     `json:"session_id"`
-	SessionName         string                     `json:"session_name,omitempty"`
-	Provider            string                     `json:"provider,omitempty"`
-	Model               string                     `json:"model,omitempty"`
-	Workspace           string                     `json:"workspace"`
-	CreatedAt           time.Time                  `json:"created_at"`
-	Request             string                     `json:"request"`
-	Reply               string                     `json:"reply"`
-	Summary             string                     `json:"summary"`
-	Importance          PersistentMemoryImportance `json:"importance,omitempty"`
-	Trust               PersistentMemoryTrust      `json:"trust,omitempty"`
-	VerificationSummary string                     `json:"verification_summary,omitempty"`
-	ToolNames           []string                   `json:"tool_names,omitempty"`
-	Files               []string                   `json:"files,omitempty"`
-	Keywords            []string                   `json:"keywords,omitempty"`
+	ID                     string                     `json:"id"`
+	SessionID              string                     `json:"session_id"`
+	SessionName            string                     `json:"session_name,omitempty"`
+	Provider               string                     `json:"provider,omitempty"`
+	Model                  string                     `json:"model,omitempty"`
+	Workspace              string                     `json:"workspace"`
+	CreatedAt              time.Time                  `json:"created_at"`
+	Request                string                     `json:"request"`
+	Reply                  string                     `json:"reply"`
+	Summary                string                     `json:"summary"`
+	Importance             PersistentMemoryImportance `json:"importance,omitempty"`
+	Trust                  PersistentMemoryTrust      `json:"trust,omitempty"`
+	VerificationSummary    string                     `json:"verification_summary,omitempty"`
+	VerificationCategories []string                   `json:"verification_categories,omitempty"`
+	VerificationTags       []string                   `json:"verification_tags,omitempty"`
+	VerificationArtifacts  []string                   `json:"verification_artifacts,omitempty"`
+	VerificationFailures   []string                   `json:"verification_failures,omitempty"`
+	VerificationSeverities []string                   `json:"verification_severities,omitempty"`
+	VerificationSignals    []string                   `json:"verification_signals,omitempty"`
+	VerificationMaxRisk    int                        `json:"verification_max_risk,omitempty"`
+	ToolNames              []string                   `json:"tool_names,omitempty"`
+	Files                  []string                   `json:"files,omitempty"`
+	Keywords               []string                   `json:"keywords,omitempty"`
 }
 
 type PersistentMemoryStats struct {
@@ -80,17 +87,30 @@ type PersistentMemoryQuery struct {
 	Text       string
 	Importance string
 	Trust      string
+	Category   string
+	Tag        string
+	Artifact   string
+	Failure    string
+	Severity   string
+	Signal     string
+	MinRisk    int
 }
 
 type PersistentMemoryDashboardSummary struct {
-	Scope        string
-	FilterText   string
-	TotalRecords int
-	ByImportance []NamedCount
-	ByTrust      []NamedCount
-	TopFiles     []NamedCount
-	Recent       []PersistentMemoryRecord
-	LastUpdated  time.Time
+	Scope                     string
+	FilterText                string
+	TotalRecords              int
+	ByImportance              []NamedCount
+	ByTrust                   []NamedCount
+	TopFiles                  []NamedCount
+	TopVerificationCategories []NamedCount
+	TopVerificationTags       []NamedCount
+	TopVerificationArtifacts  []NamedCount
+	TopVerificationSeverities []NamedCount
+	TopVerificationSignals    []NamedCount
+	TopFailureKinds           []NamedCount
+	Recent                    []PersistentMemoryRecord
+	LastUpdated               time.Time
 }
 
 func NewPersistentMemoryStore() *PersistentMemoryStore {
@@ -117,12 +137,34 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 	tools := uniqueStrings(extractPersistentMemoryTools(turnMessages))
 	files := uniqueStrings(extractPersistentMemoryReferences(rawUserText))
 	verificationSummary := ""
+	verificationCategories := []string{}
+	verificationTags := []string{}
+	verificationArtifacts := []string{}
+	verificationFailures := []string{}
+	verificationSeverities := []string{}
+	verificationSignals := []string{}
+	verificationMaxRisk := 0
 	if sess.LastVerification != nil {
 		verificationSummary = compactPersistentMemoryText(sess.LastVerification.SummaryLine(), 220)
+		verificationCategories = append([]string(nil), sess.LastVerification.SecurityCategories()...)
+		verificationTags = append([]string(nil), sess.LastVerification.VerificationTags()...)
+		verificationArtifacts = append([]string(nil), sess.LastVerification.VerificationArtifacts()...)
+		verificationFailures = append([]string(nil), sess.LastVerification.FailureKinds()...)
+		for _, record := range buildEvidenceRecords(ws, sess) {
+			if strings.TrimSpace(record.Severity) != "" {
+				verificationSeverities = append(verificationSeverities, record.Severity)
+			}
+			if strings.TrimSpace(record.SignalClass) != "" {
+				verificationSignals = append(verificationSignals, record.SignalClass)
+			}
+			if record.RiskScore > verificationMaxRisk {
+				verificationMaxRisk = record.RiskScore
+			}
+		}
 	}
 	keywords := uniqueStrings(append(
 		append(extractPersistentMemoryTokens(request), extractPersistentMemoryTokens(reply)...),
-		append(append(tools, files...), extractPersistentMemoryTokens(verificationSummary)...)...,
+		append(append(append(append(append(tools, files...), verificationCategories...), verificationTags...), append(verificationSeverities, verificationSignals...)...), extractPersistentMemoryTokens(verificationSummary)...)...,
 	))
 	if request == "" && reply == "" && len(tools) == 0 {
 		return PersistentMemoryRecord{}, false
@@ -136,26 +178,33 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 	id := fmt.Sprintf("mem-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000)
 	importance := derivePersistentMemoryImportance(request, reply, tools, files, verificationSummary)
 	return PersistentMemoryRecord{
-		ID:                  id,
-		SessionID:           sess.ID,
-		SessionName:         sess.Name,
-		Provider:            sess.Provider,
-		Model:               sess.Model,
-		Workspace:           workspace,
-		CreatedAt:           now,
-		Request:             request,
-		Reply:               reply,
-		Summary:             buildPersistentMemorySummary(request, reply, tools, files, verificationSummary),
-		Importance:          importance,
-		Trust:               derivePersistentMemoryTrust(verificationSummary),
-		VerificationSummary: verificationSummary,
-		ToolNames:           tools,
-		Files:               files,
-		Keywords:            keywords,
+		ID:                     id,
+		SessionID:              sess.ID,
+		SessionName:            sess.Name,
+		Provider:               sess.Provider,
+		Model:                  sess.Model,
+		Workspace:              workspace,
+		CreatedAt:              now,
+		Request:                request,
+		Reply:                  reply,
+		Summary:                buildPersistentMemorySummary(request, reply, tools, files, verificationSummary, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals, verificationMaxRisk),
+		Importance:             importance,
+		Trust:                  derivePersistentMemoryTrust(verificationSummary),
+		VerificationSummary:    verificationSummary,
+		VerificationCategories: verificationCategories,
+		VerificationTags:       verificationTags,
+		VerificationArtifacts:  verificationArtifacts,
+		VerificationFailures:   verificationFailures,
+		VerificationSeverities: uniqueStrings(verificationSeverities),
+		VerificationSignals:    uniqueStrings(verificationSignals),
+		VerificationMaxRisk:    verificationMaxRisk,
+		ToolNames:              tools,
+		Files:                  files,
+		Keywords:               keywords,
 	}, true
 }
 
-func buildPersistentMemorySummary(request, reply string, tools, files []string, verification string) string {
+func buildPersistentMemorySummary(request, reply string, tools, files []string, verification string, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals []string, verificationMaxRisk int) string {
 	var parts []string
 	if request != "" {
 		parts = append(parts, "Request: "+request)
@@ -171,6 +220,27 @@ func buildPersistentMemorySummary(request, reply string, tools, files []string, 
 	}
 	if verification != "" {
 		parts = append(parts, "Verification: "+verification)
+	}
+	if len(verificationCategories) > 0 {
+		parts = append(parts, "Verification categories: "+strings.Join(verificationCategories, ", "))
+	}
+	if len(verificationTags) > 0 {
+		parts = append(parts, "Verification tags: "+strings.Join(verificationTags, ", "))
+	}
+	if len(verificationArtifacts) > 0 {
+		parts = append(parts, "Verification artifacts: "+strings.Join(verificationArtifacts, ", "))
+	}
+	if len(verificationFailures) > 0 {
+		parts = append(parts, "Verification failures: "+strings.Join(verificationFailures, ", "))
+	}
+	if len(verificationSeverities) > 0 {
+		parts = append(parts, "Verification severities: "+strings.Join(verificationSeverities, ", "))
+	}
+	if len(verificationSignals) > 0 {
+		parts = append(parts, "Verification signals: "+strings.Join(verificationSignals, ", "))
+	}
+	if verificationMaxRisk > 0 {
+		parts = append(parts, fmt.Sprintf("Verification max risk: %d", verificationMaxRisk))
 	}
 	return joinNonEmpty(parts...)
 }
@@ -289,20 +359,27 @@ func (s *PersistentMemoryStore) Append(record PersistentMemoryRecord) error {
 	if s == nil {
 		return nil
 	}
-	record = normalizePersistentMemoryRecord(record)
-	records, err := s.load()
-	if err != nil {
-		return err
-	}
-	records = append(records, record)
-	maxEntries := s.MaxEntries
-	if maxEntries <= 0 {
-		maxEntries = defaultPersistentMemoryMaxEntries
-	}
-	if len(records) > maxEntries {
-		records = append([]PersistentMemoryRecord(nil), records[len(records)-maxEntries:]...)
-	}
-	if err := s.save(records); err != nil {
+	if err := func() error {
+		unlock := lockFilePath(s.Path)
+		defer unlock()
+		record = normalizePersistentMemoryRecord(record)
+		records, err := s.load()
+		if err != nil {
+			return err
+		}
+		records = append(records, record)
+		maxEntries := s.MaxEntries
+		if maxEntries <= 0 {
+			maxEntries = defaultPersistentMemoryMaxEntries
+		}
+		if len(records) > maxEntries {
+			records = append([]PersistentMemoryRecord(nil), records[len(records)-maxEntries:]...)
+		}
+		if err := s.save(records); err != nil {
+			return err
+		}
+		return nil
+	}(); err != nil {
 		return err
 	}
 	policy, err := LoadPersistentMemoryPolicy(record.Workspace)
@@ -322,6 +399,15 @@ func normalizePersistentMemoryRecord(record PersistentMemoryRecord) PersistentMe
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now()
 	}
+	record.VerificationCategories = uniqueStrings(record.VerificationCategories)
+	record.VerificationTags = uniqueStrings(record.VerificationTags)
+	record.VerificationArtifacts = uniqueStrings(record.VerificationArtifacts)
+	record.VerificationFailures = uniqueStrings(record.VerificationFailures)
+	record.VerificationSeverities = uniqueStrings(record.VerificationSeverities)
+	record.VerificationSignals = uniqueStrings(record.VerificationSignals)
+	record.Keywords = uniqueStrings(append(record.Keywords,
+		append(append(append(record.VerificationCategories, record.VerificationTags...), append(record.VerificationArtifacts, record.VerificationFailures...)...), append(record.VerificationSeverities, record.VerificationSignals...)...)...,
+	))
 	return record
 }
 
@@ -363,6 +449,8 @@ func (s *PersistentMemoryStore) Get(id string) (PersistentMemoryRecord, bool, er
 }
 
 func (s *PersistentMemoryStore) Update(id string, mutate func(*PersistentMemoryRecord) error) (PersistentMemoryRecord, bool, error) {
+	unlock := lockFilePath(s.Path)
+	defer unlock()
 	records, err := s.load()
 	if err != nil {
 		return PersistentMemoryRecord{}, false, err
@@ -491,6 +579,20 @@ func parsePersistentMemoryQuery(raw string) PersistentMemoryQuery {
 			query.Importance = strings.TrimSpace(token[len("importance:"):])
 		case strings.HasPrefix(lower, "trust:"):
 			query.Trust = strings.TrimSpace(token[len("trust:"):])
+		case strings.HasPrefix(lower, "category:"):
+			query.Category = strings.TrimSpace(token[len("category:"):])
+		case strings.HasPrefix(lower, "tag:"):
+			query.Tag = strings.TrimSpace(token[len("tag:"):])
+		case strings.HasPrefix(lower, "artifact:"):
+			query.Artifact = strings.TrimSpace(token[len("artifact:"):])
+		case strings.HasPrefix(lower, "failure:"):
+			query.Failure = strings.TrimSpace(token[len("failure:"):])
+		case strings.HasPrefix(lower, "severity:"):
+			query.Severity = strings.TrimSpace(token[len("severity:"):])
+		case strings.HasPrefix(lower, "signal:"):
+			query.Signal = strings.TrimSpace(token[len("signal:"):])
+		case strings.HasPrefix(lower, "risk:>="):
+			query.MinRisk = parseIntLoose(strings.TrimSpace(token[len("risk:>="):]))
 		default:
 			textParts = append(textParts, token)
 		}
@@ -506,7 +608,47 @@ func persistentMemoryRecordMatchesFilters(record PersistentMemoryRecord, query P
 	if strings.TrimSpace(query.Trust) != "" && !strings.EqualFold(record.TrustLabel(), query.Trust) {
 		return false
 	}
+	if strings.TrimSpace(query.Category) != "" && !sliceContainsFold(record.VerificationCategories, query.Category) {
+		return false
+	}
+	if strings.TrimSpace(query.Tag) != "" && !sliceContainsFold(record.VerificationTags, query.Tag) {
+		return false
+	}
+	if strings.TrimSpace(query.Artifact) != "" && !persistentMemorySliceContainsPathLike(record.VerificationArtifacts, query.Artifact) {
+		return false
+	}
+	if strings.TrimSpace(query.Failure) != "" && !sliceContainsFold(record.VerificationFailures, query.Failure) {
+		return false
+	}
+	if strings.TrimSpace(query.Severity) != "" && !sliceContainsFold(record.VerificationSeverities, query.Severity) {
+		return false
+	}
+	if strings.TrimSpace(query.Signal) != "" && !sliceContainsFold(record.VerificationSignals, query.Signal) {
+		return false
+	}
+	if query.MinRisk > 0 && record.VerificationMaxRisk < query.MinRisk {
+		return false
+	}
 	return true
+}
+
+func persistentMemorySliceContainsPathLike(items []string, needle string) bool {
+	query := strings.ToLower(strings.TrimSpace(needle))
+	if query == "" {
+		return false
+	}
+	for _, item := range items {
+		lower := strings.ToLower(strings.TrimSpace(item))
+		switch {
+		case lower == query:
+			return true
+		case filepath.Base(lower) == filepath.Base(query):
+			return true
+		case strings.Contains(lower, query) || strings.Contains(query, lower):
+			return true
+		}
+	}
+	return false
 }
 
 func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace, loweredQuery string, queryTokens, queryRefs []string) int {
@@ -519,6 +661,12 @@ func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace
 	lowerRequest := strings.ToLower(record.Request)
 	lowerReply := strings.ToLower(record.Reply)
 	lowerVerification := strings.ToLower(record.VerificationSummary)
+	lowerCategories := lowerJoined(record.VerificationCategories)
+	lowerTags := lowerJoined(record.VerificationTags)
+	lowerArtifacts := lowerJoined(record.VerificationArtifacts)
+	lowerFailures := lowerJoined(record.VerificationFailures)
+	lowerSeverities := lowerJoined(record.VerificationSeverities)
+	lowerSignals := lowerJoined(record.VerificationSignals)
 	if loweredQuery != "" {
 		if strings.Contains(lowerSummary, loweredQuery) {
 			score += 28
@@ -528,6 +676,24 @@ func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace
 		}
 		if strings.Contains(lowerReply, loweredQuery) {
 			score += 14
+		}
+		if strings.Contains(lowerCategories, loweredQuery) {
+			score += 18
+		}
+		if strings.Contains(lowerTags, loweredQuery) {
+			score += 16
+		}
+		if strings.Contains(lowerArtifacts, loweredQuery) {
+			score += 22
+		}
+		if strings.Contains(lowerFailures, loweredQuery) {
+			score += 18
+		}
+		if strings.Contains(lowerSeverities, loweredQuery) {
+			score += 16
+		}
+		if strings.Contains(lowerSignals, loweredQuery) {
+			score += 16
 		}
 	}
 	for _, token := range queryTokens {
@@ -546,6 +712,24 @@ func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace
 		if strings.Contains(lowerVerification, token) {
 			score += 12
 		}
+		if strings.Contains(lowerCategories, token) {
+			score += 18
+		}
+		if strings.Contains(lowerTags, token) {
+			score += 16
+		}
+		if strings.Contains(lowerArtifacts, token) {
+			score += 20
+		}
+		if strings.Contains(lowerFailures, token) {
+			score += 16
+		}
+		if strings.Contains(lowerSeverities, token) {
+			score += 16
+		}
+		if strings.Contains(lowerSignals, token) {
+			score += 16
+		}
 		for _, ref := range record.Files {
 			lowerRef := strings.ToLower(ref)
 			if strings.Contains(lowerRef, token) {
@@ -562,6 +746,17 @@ func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace
 				score += 10
 			}
 		}
+		for _, artifact := range record.VerificationArtifacts {
+			lowerArtifact := strings.ToLower(artifact)
+			if strings.Contains(lowerArtifact, token) {
+				score += 18
+				break
+			}
+			if strings.Contains(strings.ToLower(filepath.Base(artifact)), token) {
+				score += 10
+				break
+			}
+		}
 	}
 	for _, refQuery := range queryRefs {
 		lowerQueryRef := strings.ToLower(refQuery)
@@ -574,6 +769,17 @@ func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace
 				score += 22
 			case strings.Contains(lowerRef, lowerQueryRef) || strings.Contains(lowerQueryRef, lowerRef):
 				score += 16
+			}
+		}
+		for _, ref := range record.VerificationArtifacts {
+			lowerRef := strings.ToLower(ref)
+			switch {
+			case lowerRef == lowerQueryRef:
+				score += 42
+			case filepath.Base(lowerRef) == filepath.Base(lowerQueryRef):
+				score += 24
+			case strings.Contains(lowerRef, lowerQueryRef) || strings.Contains(lowerQueryRef, lowerRef):
+				score += 18
 			}
 		}
 	}
@@ -753,6 +959,12 @@ func (s *PersistentMemoryStore) Dashboard(workspace string, query string, limit 
 	byImportance := map[string]int{}
 	byTrust := map[string]int{}
 	topFiles := map[string]int{}
+	topCategories := map[string]int{}
+	topTags := map[string]int{}
+	topArtifacts := map[string]int{}
+	topSeverities := map[string]int{}
+	topSignals := map[string]int{}
+	topFailures := map[string]int{}
 	for i := len(records) - 1; i >= 0; i-- {
 		record := records[i]
 		if workspace != "" && workspaceAffinityScore(workspace, record.Workspace) == 0 {
@@ -767,6 +979,24 @@ func (s *PersistentMemoryStore) Dashboard(workspace string, query string, limit 
 		for _, file := range record.Files {
 			topFiles[file]++
 		}
+		for _, item := range record.VerificationCategories {
+			topCategories[item]++
+		}
+		for _, item := range record.VerificationTags {
+			topTags[item]++
+		}
+		for _, item := range record.VerificationArtifacts {
+			topArtifacts[item]++
+		}
+		for _, item := range record.VerificationSeverities {
+			topSeverities[item]++
+		}
+		for _, item := range record.VerificationSignals {
+			topSignals[item]++
+		}
+		for _, item := range record.VerificationFailures {
+			topFailures[item]++
+		}
 		if record.CreatedAt.After(summary.LastUpdated) {
 			summary.LastUpdated = record.CreatedAt
 		}
@@ -777,6 +1007,12 @@ func (s *PersistentMemoryStore) Dashboard(workspace string, query string, limit 
 	summary.ByImportance = sortNamedCounts(byImportance)
 	summary.ByTrust = sortNamedCounts(byTrust)
 	summary.TopFiles = sortNamedCounts(topFiles)
+	summary.TopVerificationCategories = sortNamedCounts(topCategories)
+	summary.TopVerificationTags = sortNamedCounts(topTags)
+	summary.TopVerificationArtifacts = sortNamedCounts(topArtifacts)
+	summary.TopVerificationSeverities = sortNamedCounts(topSeverities)
+	summary.TopVerificationSignals = sortNamedCounts(topSignals)
+	summary.TopFailureKinds = sortNamedCounts(topFailures)
 	return summary, nil
 }
 
@@ -814,6 +1050,48 @@ func renderPersistentMemoryDashboard(summary PersistentMemoryDashboardSummary) s
 			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
 		}
 	}
+	if len(summary.TopVerificationCategories) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification categories:")
+		for _, item := range summary.TopVerificationCategories {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
+	if len(summary.TopVerificationTags) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification tags:")
+		for _, item := range summary.TopVerificationTags {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
+	if len(summary.TopVerificationArtifacts) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification artifacts:")
+		for _, item := range summary.TopVerificationArtifacts {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
+	if len(summary.TopVerificationSeverities) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification severities:")
+		for _, item := range summary.TopVerificationSeverities {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
+	if len(summary.TopVerificationSignals) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification signals:")
+		for _, item := range summary.TopVerificationSignals {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
+	if len(summary.TopFailureKinds) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Top verification failure kinds:")
+		for _, item := range summary.TopFailureKinds {
+			lines = append(lines, fmt.Sprintf("- %s: %d", item.Name, item.Count))
+		}
+	}
 	if len(summary.Recent) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, "Recent memories:")
@@ -828,18 +1106,34 @@ func renderPersistentMemoryDashboardHTML(summary PersistentMemoryDashboardSummar
 	importanceBlocks := renderDashboardBars(summary.ByImportance)
 	trustBlocks := renderDashboardBars(summary.ByTrust)
 	fileBlocks := renderDashboardBars(summary.TopFiles)
+	categoryBlocks := renderDashboardBars(summary.TopVerificationCategories)
+	tagBlocks := renderDashboardBars(summary.TopVerificationTags)
+	severityBlocks := renderDashboardBars(summary.TopVerificationSeverities)
+	signalBlocks := renderDashboardBars(summary.TopVerificationSignals)
+	artifactBlocks := renderDashboardBars(summary.TopVerificationArtifacts)
+	failureBlocks := renderDashboardBars(summary.TopFailureKinds)
 	var recent []string
 	for _, record := range summary.Recent {
 		var refs []string
 		for _, ref := range record.Files {
 			refs = append(refs, `<span class="tag">`+htmlEscape(ref)+`</span>`)
 		}
+		for _, ref := range record.VerificationArtifacts {
+			refs = append(refs, `<span class="tag">artifact:`+htmlEscape(ref)+`</span>`)
+		}
+		for _, tag := range record.VerificationTags {
+			refs = append(refs, `<span class="tag">tag:`+htmlEscape(tag)+`</span>`)
+		}
 		recent = append(recent, fmt.Sprintf(
-			`<details class="report-detail"><summary><span>%s</span><span>%s / %s</span></summary><div class="report-body"><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="tags">%s</div><pre>%s</pre></div></details>`,
+			`<details class="report-detail"><summary><span>%s</span><span>%s / %s</span></summary><div class="report-body"><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="subtle">%s</div><div class="tags">%s</div><pre>%s</pre></div></details>`,
 			htmlEscape(record.Citation()),
 			htmlEscape(record.ImportanceLabel()),
 			htmlEscape(record.TrustLabel()),
 			htmlEscape(valueOrDefault(record.VerificationSummary, "No verification summary")),
+			htmlEscape(valueOrDefault(strings.Join(record.VerificationCategories, ", "), "No verification categories")),
+			htmlEscape(valueOrDefault(strings.Join(record.VerificationSeverities, ", "), "No verification severities")),
+			htmlEscape(valueOrDefault(strings.Join(record.VerificationSignals, ", "), "No verification signals")),
+			htmlEscape(valueOrDefault(fmt.Sprintf("max_risk=%d", record.VerificationMaxRisk), "No verification risk")),
 			htmlEscape(valueOrDefault(record.Request, "")),
 			htmlEscape(valueOrDefault(record.Reply, "")),
 			strings.Join(refs, " "),
@@ -919,7 +1213,13 @@ func renderPersistentMemoryDashboardHTML(summary PersistentMemoryDashboardSummar
       <article class="card" style="grid-column: span 4;"><h2 class="section-title">Importance</h2><ul class="metric-list">%s</ul></article>
       <article class="card" style="grid-column: span 4;"><h2 class="section-title">Trust</h2><ul class="metric-list">%s</ul></article>
       <article class="card" style="grid-column: span 4;"><h2 class="section-title">Most referenced files</h2><ul class="metric-list">%s</ul></article>
-      <article class="card" style="grid-column: span 12;"><h2 class="section-title">Recent memory drill-down</h2><div class="subtle">Each record includes its citation, importance, trust label, verification summary, and referenced files.</div><div class="recent-list">%s</div></article>
+      <article class="card" style="grid-column: span 3;"><h2 class="section-title">Verification categories</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 3;"><h2 class="section-title">Verification tags</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 3;"><h2 class="section-title">Verification severities</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 3;"><h2 class="section-title">Verification signals</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 6;"><h2 class="section-title">Failure kinds</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 6;"><h2 class="section-title">Verification artifacts</h2><ul class="metric-list">%s</ul></article>
+      <article class="card" style="grid-column: span 12;"><h2 class="section-title">Recent memory drill-down</h2><div class="subtle">Each record includes its citation, importance, trust label, verification summary, verification categories, and referenced artifacts.</div><div class="recent-list">%s</div></article>
     </section>
     <div class="footer">Last updated: %s</div>
   </div>
@@ -931,9 +1231,28 @@ func renderPersistentMemoryDashboardHTML(summary PersistentMemoryDashboardSummar
 		valueOrDefault(importanceBlocks, "<li><span>No records</span><strong>0</strong></li>"),
 		valueOrDefault(trustBlocks, "<li><span>No records</span><strong>0</strong></li>"),
 		valueOrDefault(fileBlocks, "<li><span>No references</span><strong>0</strong></li>"),
+		valueOrDefault(categoryBlocks, "<li><span>No categories</span><strong>0</strong></li>"),
+		valueOrDefault(tagBlocks, "<li><span>No tags</span><strong>0</strong></li>"),
+		valueOrDefault(severityBlocks, "<li><span>No severities</span><strong>0</strong></li>"),
+		valueOrDefault(signalBlocks, "<li><span>No signals</span><strong>0</strong></li>"),
+		valueOrDefault(failureBlocks, "<li><span>No failures</span><strong>0</strong></li>"),
+		valueOrDefault(artifactBlocks, "<li><span>No artifacts</span><strong>0</strong></li>"),
 		joinOrFallback(recent, `<article class="report-card"><div class="report-summary">No recent memories found.</div></article>`),
 		htmlEscape(summary.LastUpdated.Format(time.RFC3339)),
 	)
+}
+
+func lowerJoined(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var lowered []string
+	for _, item := range items {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			lowered = append(lowered, strings.ToLower(trimmed))
+		}
+	}
+	return strings.Join(lowered, " ")
 }
 
 func createPersistentMemoryDashboardHTML(summary PersistentMemoryDashboardSummary) (string, error) {
@@ -974,12 +1293,9 @@ func (s *PersistentMemoryStore) save(records []PersistentMemoryRecord) error {
 	if s == nil || strings.TrimSpace(s.Path) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(records, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.Path, data, 0o644)
+	return atomicWriteFile(s.Path, data, 0o644)
 }

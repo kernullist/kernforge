@@ -3,7 +3,50 @@
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
 ![Kernforge demo](./branding/kernforge_demo.gif)
 
-`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, while keeping the core runtime portable.
+`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, and is especially tuned for Windows security, anti-cheat, telemetry, and driver-oriented workflows.
+
+Its strongest current value is not just code generation, but a `protection loop for sensitive engineering changes`.  
+In particular, Kernforge is now shaped around `adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
+
+## Documentation
+
+Quick Start:
+- [English Quickstart](./QUICKSTART.md)
+- [한국어 빠른 시작](./QUICKSTART_kor.md)
+
+Guides:
+- [English Feature Usage Guide](./FEATURE_USAGE_GUIDE.md)
+- [한국어 기능 활용 가이드](./FEATURE_USAGE_GUIDE_kor.md)
+
+Playbooks:
+- [Driver Playbook](./PLAYBOOK_driver.md)
+- [Telemetry Playbook](./PLAYBOOK_telemetry.md)
+- [Memory-Scan Playbook](./PLAYBOOK_memory_scan.md)
+
+Specs And Roadmap:
+- [Korean Roadmap](./ROADMAP_kor.md)
+- [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
+- [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
+- [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
+
+The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
+
+## Why Kernforge
+
+Kernforge is especially strong when you need to make risky engineering changes with better operational safety.
+
+It is a good fit for:
+
+1. Driver, signing, symbol, and package readiness work
+2. Telemetry, provider, and manifest compatibility work
+3. Memory-scan and Unreal integrity work that needs both security review and practical guardrails
+
+Its current differentiators are:
+
+1. It builds deeper verification plans from the type of change.
+2. It stores verification output as structured evidence and long-lived memory.
+3. It feeds that history back into push and PR policy.
+4. It can create safety checkpoints before blocking high-risk flows.
 
 ## What It Currently Supports
 
@@ -14,10 +57,12 @@
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
 - Project memory files plus cross-session persistent memory with trust/importance metadata
+- Evidence store, evidence search, and evidence dashboards
 - Local `SKILL.md` skills with discovery and per-request activation
 - Stdio MCP servers with tools, resources, and prompts
 - Windows viewer and diff-preview windows for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
+- Hook engine, workspace hook rules, and evidence-aware push/PR policy
 - Plan-review workflow with a separate reviewer model
 
 ## Highlights
@@ -42,6 +87,15 @@
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
 
+### Security Verification And Policy Loop
+
+- Security-aware verification for driver, telemetry, Unreal, and memory-scan changes
+- Verification history and verification dashboards
+- Structured evidence capture from verification
+- Evidence search and evidence dashboards
+- Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
+- Automatic safety checkpoint creation for repeated high-risk failure patterns
+
 ### Interactive Ergonomics
 
 - `Tab` completion for commands, paths, mentions, MCP targets, and `/open`
@@ -54,6 +108,7 @@
 - Saved sessions with `/resume`
 - Session rename and transcript export
 - Persistent memory with citation ids, trust, importance, and search
+- Memory search over verification categories, tags, artifacts, and failures
 - Project guidance files loaded from `KERNFORGE.md` and `.kernforge/KERNFORGE.md`
 - Auto locale injection based on system locale
 
@@ -138,6 +193,56 @@ OpenAI-compatible:
 $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
+
+### Windows Security Workflow Example
+
+Basic safe flow for driver changes:
+
+1. Edit driver-related files.
+2. Run `/verify` to build a verification plan biased toward signing, symbols, packaging, and verifier readiness.
+3. Run `/evidence-dashboard` or `/evidence-search category:driver` to inspect recent failed evidence.
+4. If needed, run `/mem-search category:driver` to pull in older session context.
+5. During push or PR creation, hook policy can re-check recent evidence and respond with warnings, confirmations, blocks, or automatic checkpoints.
+
+Recommended flow with live state and adversarial context:
+
+1. `/investigate start driver-load guard.sys`
+2. `/investigate snapshot`
+3. `/simulate tamper-surface guard.sys`
+4. `/open driver/guard.cpp`
+5. `/review-selection integrity bypass paths`
+6. `/edit-selection harden the selected integrity checks`
+7. `/verify`
+8. `/evidence-dashboard category:driver`
+
+The full explanation of this loop is in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md).
+
+Basic flow for telemetry regressions:
+
+1. Edit provider, manifest, or XML-related files.
+2. Run `/verify`.
+3. Run `/evidence-search category:telemetry outcome:failed` to inspect recent provider or XML failures.
+4. Run `/mem-search category:telemetry tag:provider` to recall earlier reasoning and regression context.
+5. Before push or PR, hooks may inject extra review context or require confirmation.
+
+### Frequently Used Command Cheat Sheet
+
+Verification:
+- `/verify`
+- `/verify-dashboard`
+
+Evidence:
+- `/evidence`
+- `/evidence-search category:driver outcome:failed`
+- `/evidence-dashboard`
+
+Memory:
+- `/mem-search category:telemetry tag:provider`
+- `/mem-dashboard`
+
+Policy:
+- `/hooks`
+- `/hook-reload`
 
 ## Command-Line Options
 
@@ -337,7 +442,6 @@ Useful commands:
 Create a starter skill:
 
 ```text
-/init config
 /init skill checks
 ```
 
@@ -387,6 +491,9 @@ Explain the structure of this repository
 /version
 /help
 /reload
+/hooks
+/hook-reload
+/override
 ```
 
 ### Conversation And Session Commands
@@ -412,6 +519,7 @@ Explain the structure of this repository
 /set-plan-review [provider]
 /do-plan-review <task>
 /permissions [mode]
+/set_max_tool_iterations <n>
 /locale-auto [on|off]
 ```
 
@@ -543,6 +651,46 @@ Useful commands:
 /checkpoints
 /rollback [target]
 /init verify
+```
+
+## Evidence, Investigation, And Simulation
+
+Kernforge now includes a security-oriented operational loop around evidence capture, live investigation state, and adversarial simulation.
+
+Evidence commands:
+
+```text
+/evidence
+/evidence-search <query>
+/evidence-show <id>
+/evidence-dashboard [query]
+/evidence-dashboard-html [query]
+```
+
+Investigation commands:
+
+```text
+/investigate [subcommand]
+/investigate-dashboard
+/investigate-dashboard-html
+```
+
+Simulation commands:
+
+```text
+/simulate [profile]
+/simulate-dashboard
+/simulate-dashboard-html
+```
+
+Hook and override commands:
+
+```text
+/hooks
+/hook-reload
+/override
+/override-add ...
+/override-clear ...
 ```
 
 ## Notes

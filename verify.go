@@ -112,7 +112,37 @@ func runRecommendedVerification(ctx context.Context, ws Workspace, sess *Session
 	if len(plan.Steps) == 0 {
 		return VerificationReport{}, false
 	}
+	if verdict, err := ws.Hook(ctx, HookPreVerification, HookPayload{
+		"trigger":       trigger,
+		"mode":          string(plan.Mode),
+		"changed_files": append([]string(nil), changed...),
+	}); err != nil {
+		return VerificationReport{}, false
+	} else {
+		if len(verdict.VerificationAdds) > 0 {
+			for _, step := range verdict.VerificationAdds {
+				if !verificationStepExists(plan.Steps, VerificationPolicyStep{
+					Label:   step.Label,
+					Command: step.Command,
+					Stage:   step.Stage,
+				}) {
+					plan.Steps = append(plan.Steps, step)
+				}
+			}
+			plan.PlannerNote = joinSentence(plan.PlannerNote, fmt.Sprintf("Hook engine added %d verification step(s).", len(verdict.VerificationAdds)))
+		}
+		if len(verdict.ContextAdds) > 0 {
+			plan.PlannerNote = joinSentence(plan.PlannerNote, "Hook review context: "+strings.Join(verdict.ContextAdds, " | "))
+		}
+	}
 	report := executeVerificationSteps(ctx, ws, trigger, plan)
+	_, _ = ws.Hook(ctx, HookPostVerification, HookPayload{
+		"trigger":       trigger,
+		"mode":          string(report.Mode),
+		"changed_files": append([]string(nil), changed...),
+		"output":        report.SummaryLine(),
+		"error":         report.FailureSummary(),
+	})
 	return report, true
 }
 
@@ -122,10 +152,21 @@ func buildVerificationPlan(root string, changed []string, mode VerificationMode)
 
 func buildVerificationPlanWithTuning(root string, changed []string, mode VerificationMode, tuning VerificationTuning) VerificationPlan {
 	steps := buildVerificationSteps(root, changed, mode)
+	securitySteps, securityNote := buildSecurityVerificationSteps(root, changed, mode)
+	if len(securitySteps) > 0 {
+		steps = append(securitySteps, steps...)
+	}
+	adversarialSteps, adversarialNote := buildRecentAdversarialVerificationSteps(root)
+	if len(adversarialSteps) > 0 {
+		steps = append(adversarialSteps, steps...)
+	}
 	policy, policyErr := LoadVerificationPolicy(root)
 	steps, policyNote := applyVerificationPolicy(root, steps, changed, mode, policy)
-	steps, note := reorderVerificationSteps(steps, changed, tuning)
-	note = joinSentence(policyNote, note)
+	steps, reorderNote := reorderVerificationSteps(steps, changed, tuning)
+	note := joinSentence(securityNote, adversarialNote)
+	note = joinSentence(note, policyNote)
+	note = joinSentence(note, renderSecurityVerificationSummary(changed))
+	note = joinSentence(note, reorderNote)
 	if policyErr != nil {
 		note = joinSentence("Verify policy error: "+policyErr.Error(), note)
 	}
@@ -805,6 +846,65 @@ func (r VerificationReport) FailureSummary() string {
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func (r VerificationReport) SecurityCategories() []string {
+	var out []string
+	text := strings.TrimSpace(r.Decision)
+	for _, token := range strings.Fields(text) {
+		lower := strings.ToLower(strings.TrimSpace(token))
+		if !strings.HasPrefix(lower, "security_categories=") {
+			continue
+		}
+		value := strings.TrimPrefix(lower, "security_categories=")
+		for _, item := range strings.Split(value, ",") {
+			if trimmed := strings.TrimSpace(item); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		}
+	}
+	return uniqueStrings(out)
+}
+
+func (r VerificationReport) VerificationTags() []string {
+	var out []string
+	for _, step := range r.Steps {
+		out = append(out, step.Tags...)
+	}
+	return uniqueStrings(out)
+}
+
+func (r VerificationReport) VerificationArtifacts() []string {
+	var out []string
+	for _, step := range r.Steps {
+		scope := strings.TrimSpace(step.Scope)
+		if scope == "" || strings.EqualFold(scope, "workspace") || strings.EqualFold(scope, "targeted") {
+			continue
+		}
+		if strings.Contains(scope, ",") {
+			for _, item := range strings.Split(scope, ",") {
+				if trimmed := strings.TrimSpace(item); trimmed != "" {
+					out = append(out, trimmed)
+				}
+			}
+			continue
+		}
+		out = append(out, scope)
+	}
+	return uniqueStrings(out)
+}
+
+func (r VerificationReport) FailureKinds() []string {
+	var out []string
+	for _, step := range r.Steps {
+		if step.Status != VerificationFailed {
+			continue
+		}
+		if trimmed := strings.TrimSpace(step.FailureKind); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return uniqueStrings(out)
 }
 
 func (r VerificationReport) RepairGuidance() string {

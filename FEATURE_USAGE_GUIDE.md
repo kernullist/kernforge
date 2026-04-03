@@ -1,0 +1,625 @@
+# Kernforge Detailed Usage Guide
+
+This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
+
+Reference point:
+- Codebase snapshot: 2026-04-03
+
+Intended readers:
+- Windows security engineers
+- Anti-cheat engineers
+- Kernel and user-mode telemetry engineers
+- Driver, signing, symbol, and package readiness engineers
+- Unreal Engine security and integrity engineers
+
+Goals of this guide:
+1. Explain real usage patterns instead of just listing features.
+2. Show which command combinations fit which kinds of problems.
+3. Teach the full loop of `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
+
+## 1. The Best Way To Think About Kernforge
+
+Kernforge can be used like a normal coding CLI, but its strongest current value comes from running a deliberate protection loop around sensitive engineering work.
+
+The best current loop looks like this:
+
+1. Change code or inspect a live target.
+2. If live state matters, use `/investigate` to capture the current system state.
+3. If attacker pressure matters, use `/simulate` to evaluate tamper, stealth, or forensic blind spots.
+4. Use `/review-selection`, `/edit-selection`, or `/do-plan-review` to drive the work.
+5. Run `/verify` to execute the verification plan.
+6. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
+7. Let hooks act as the final policy layer before push or PR.
+
+Practical interpretation:
+1. `investigate` captures what is happening live.
+2. `simulate` highlights attacker-facing weak spots.
+3. `verify` turns code changes and recent context into a concrete validation plan.
+4. `evidence` stores structured recent signals.
+5. `memory` keeps conclusions across sessions.
+6. `hooks` turn that accumulated context back into guardrails.
+
+## 2. Core Features And When To Use Them
+
+### 2.1 Hook Engine
+
+Purpose:
+1. Warn, confirm, or block risky actions.
+2. Inject extra review context and verification steps before verification runs.
+3. Strengthen push and PR policy using recent evidence.
+4. Create automatic checkpoints before risky flows.
+
+Useful commands:
+- `/hooks`
+- `/hook-reload`
+- `/init hooks`
+- `/override`
+- `/override-add <rule-id> <hours> <reason>`
+- `/override-clear <override-id|rule-id|all>`
+
+Current actions:
+- `warn`
+- `ask`
+- `deny`
+- `append_context`
+- `append_review_context`
+- `add_verification_step`
+- `create_checkpoint`
+
+Best used when:
+1. Your team repeatedly hits signing, symbol, provider, XML, or scanner regressions.
+2. Passing normal tests is not enough for approval.
+3. You want repeatable PR and push guardrails instead of relying on memory.
+
+Recommended operating model:
+1. Start with the `windows-security` preset.
+2. Add workspace-specific rules in `.kernforge/hooks.json`.
+3. Begin with `warn` and `ask`.
+4. Promote only repeat incident classes to `deny`.
+5. Use `/override-add` only with an expiration and a reason.
+
+### 2.2 Security-Aware Verification
+
+Purpose:
+1. Infer security-relevant categories from the changed files.
+2. Build verification steps that match the change type.
+3. Pull recent simulation and investigation context into verification planning.
+
+Current categories and signals:
+1. `driver`
+2. `telemetry`
+3. `unreal`
+4. `memory-scan`
+5. Recent high-risk simulation findings
+6. Active investigations and live findings
+
+Useful commands:
+- `/verify`
+- `/verify --full`
+- `/verify src/foo.cpp,driver/guard.cpp`
+- `/verify-dashboard`
+- `/verify-dashboard-html`
+
+Best used when:
+1. Generic `go test`, `msbuild`, or `ctest` is not enough.
+2. You need signing, symbols, package, provider, XML, or verifier-oriented follow-up.
+3. You already saw risky investigation or simulation findings and want them reflected in validation.
+
+### 2.3 Evidence Store
+
+Purpose:
+1. Store verification, override, investigation, and simulation output as structured evidence.
+2. Give you a fast way to inspect recent failed or high-risk signals.
+3. Feed recent state back into hooks and verification planning.
+
+Useful commands:
+- `/evidence`
+- `/evidence-search <query>`
+- `/evidence-show <id>`
+- `/evidence-dashboard [query]`
+- `/evidence-dashboard-html [query]`
+
+Common evidence kinds:
+1. `verification_category`
+2. `verification_artifact`
+3. `verification_failure`
+4. `hook_override`
+5. `investigation_session`
+6. `investigation_snapshot`
+7. `investigation_finding`
+8. `simulation_run`
+9. `simulation_finding`
+
+### 2.4 Persistent Memory
+
+Purpose:
+1. Keep important context across sessions.
+2. Let you find earlier decisions, failures, and verification context later.
+3. Support long-running investigations and repeated regression classes.
+
+Useful commands:
+- `/mem`
+- `/mem-search <query>`
+- `/mem-show <id>`
+- `/mem-dashboard [query]`
+- `/mem-dashboard-html [query]`
+
+Strength:
+1. It stores more than text. It also stores verification categories, tags, artifacts, failures, severities, signals, and risk.
+
+### 2.5 Live Investigation Mode
+
+Purpose:
+1. Capture live Windows state as investigation snapshots.
+2. Store live findings as evidence and memory.
+3. Feed those live findings into simulation and verification later.
+
+Useful commands:
+- `/investigate`
+- `/investigate start <preset> [target]`
+- `/investigate snapshot [target]`
+- `/investigate note <text>`
+- `/investigate stop [summary]`
+- `/investigate list`
+- `/investigate show <id>`
+- `/investigate dashboard`
+- `/investigate dashboard-html`
+
+Current presets:
+1. `driver-load`
+2. `process-attach`
+3. `telemetry-provider`
+
+Best used when:
+1. Static code review is not enough.
+2. You need to capture live verifier, module, driver, service, or provider state before editing.
+3. You want a reusable record of the real runtime state that informed later decisions.
+
+### 2.6 Adversarial Simulation Profiles
+
+Purpose:
+1. Evaluate recent evidence and investigation state from an attacker perspective.
+2. Surface tamper, stealth, and forensic blind spots.
+3. Feed that perspective back into review, edit, plan-review, and verification flows.
+
+Useful commands:
+- `/simulate`
+- `/simulate tamper-surface [target]`
+- `/simulate stealth-surface [target]`
+- `/simulate forensic-blind-spot [target]`
+- `/simulate list`
+- `/simulate show <id>`
+- `/simulate dashboard`
+- `/simulate dashboard-html`
+
+Current profiles:
+1. `tamper-surface`
+2. `stealth-surface`
+3. `forensic-blind-spot`
+
+Best used when:
+1. You care about integrity bypass or registration bypass.
+2. You suspect observer or telemetry visibility gaps.
+3. You worry that post-incident artifacts may be too weak.
+
+### 2.7 Selection-First Review And Edit
+
+Purpose:
+1. Review or edit only the selected code range instead of the whole file.
+2. Automatically inject recent simulation findings when they match the selected area.
+
+Useful commands:
+- `/open <path>`
+- `/selection`
+- `/selections`
+- `/review-selection [extra]`
+- `/review-selections [extra]`
+- `/edit-selection <task>`
+- `/note-selection <text>`
+- `/tag-selection <tag[,tag2]>`
+
+Best used when:
+1. You want to focus on a single IOCTL handler, integrity check, or provider registration block.
+2. You want to connect a recent simulation finding directly to the relevant code.
+
+### 2.8 Plan Review Workflow
+
+Purpose:
+1. Have one model produce a plan.
+2. Have another model review that plan.
+3. Execute the approved plan through the normal agent flow.
+
+Useful commands:
+- `/set-plan-review`
+- `/do-plan-review <task>`
+
+Best used when:
+1. A change spans multiple components.
+2. Order of operations, rollback points, or operational caution matter.
+3. You want simulation findings to shape the implementation plan before edits begin.
+
+Current integration:
+1. Recent simulation findings that match the task are injected into the planning prompt.
+2. The same perspective is injected again into the final execution prompt.
+
+## 3. Recommended Real-World Flows
+
+### 3.1 Driver Hardening Or Signing-Sensitive Work
+
+Situation:
+- You changed `driver/guard.cpp` or `driver/guard.inf`.
+- Signing, symbols, verifier, or packaging readiness matters.
+- Similar failures happened recently.
+
+Recommended flow:
+1. `/investigate start driver-load guard.sys`
+2. `/investigate snapshot`
+3. `/investigate note current verifier state and loaded filter stack before edit`
+4. `/simulate tamper-surface guard.sys`
+5. `/open driver/guard.cpp`
+6. Select the relevant protection logic in the viewer.
+7. `/review-selection integrity bypass paths and verifier interactions`
+8. `/edit-selection harden registration and signing assumptions`
+9. `/verify`
+10. `/evidence-dashboard category:driver`
+11. `/mem-search category:driver signal:signing`
+12. `/investigate stop hardened signing path reviewed`
+
+What Kernforge adds here:
+1. A live state capture before editing.
+2. A tamper-oriented attacker review before editing.
+3. Automatic adversarial prompt context during review and edit.
+4. Driver-aware verification steps plus recent investigation and simulation follow-up review steps.
+5. Evidence-aware push or PR policy later.
+
+### 3.2 Telemetry Provider Drift Or XML And Manifest Regression
+
+Situation:
+- You changed a provider manifest and registration logic.
+- Runtime visibility is uncertain.
+- You also care about observer coverage and post-incident traceability.
+
+Recommended flow:
+1. `/investigate start telemetry-provider MyProvider`
+2. `/investigate snapshot MyProvider`
+3. `/simulate stealth-surface MyProvider`
+4. `/open telemetry/provider.man`
+5. Select the manifest region.
+6. `/review-selection provider visibility and schema drift`
+7. `/open telemetry/register_provider.cpp`
+8. `/edit-selection align provider registration and fallback visibility`
+9. `/verify`
+10. `/evidence-search category:telemetry outcome:failed`
+11. `/simulate forensic-blind-spot MyProvider`
+12. `/mem-search category:telemetry signal:provider`
+13. `/investigate stop provider contract and visibility reviewed`
+
+Why this works well:
+1. Investigation captures real provider state.
+2. Stealth simulation asks whether you can still observe the path.
+3. Forensic blind spot simulation asks whether later reconstruction will still work.
+4. Verification turns those concerns into explicit review steps.
+
+### 3.3 Memory Scan Or Pattern Scan Regression Work
+
+Situation:
+- You are adjusting scanner logic for false positives, false negatives, or evasion resistance.
+- Recent scanner-related failures already exist.
+
+Recommended flow:
+1. `/simulate stealth-surface scanner-core`
+2. `/open scanner/patternscan.cpp`
+3. `/review-selection false positives, stealth coverage, and performance ceilings`
+4. `/edit-selection reduce false positives without weakening evasion coverage`
+5. `/verify`
+6. `/evidence-dashboard category:memory-scan`
+7. `/mem-search category:memory-scan risk:>=70`
+
+Why this works well:
+1. Scanner work is usually about coverage and evasion, not just correctness.
+2. Simulation brings attacker pressure into the prompt.
+3. Verification reasserts those review concerns before the loop closes.
+
+### 3.4 Large Multi-Step Change With Plan Review
+
+Situation:
+- The change spans driver and telemetry concerns together.
+- Ordering, rollback, and review discipline matter.
+
+Recommended flow:
+1. `/simulate tamper-surface guard.sys`
+2. `/simulate forensic-blind-spot guard.sys`
+3. `/do-plan-review harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
+4. Let the reviewer critique the plan.
+5. Execute the approved plan.
+6. `/verify`
+7. `/evidence-dashboard`
+
+Current strength:
+1. Simulation findings can shape the planning prompt.
+2. They can also shape the final plan execution prompt.
+
+## 4. Command-By-Command Practical Usage
+
+### 4.1 `/investigate`
+
+Basic usage:
+
+```text
+/investigate start driver-load guard.sys
+/investigate snapshot
+/investigate note verifier enabled on target system
+/investigate stop initial driver state captured
+```
+
+Good use cases:
+1. Before editing, when you want the current driver stack or verifier state on record.
+2. When you want to confirm a telemetry provider is really visible live.
+3. When you want a reusable runtime record that later verification and review can reference.
+
+Key interpretation:
+1. Investigation does not replace verification.
+2. It captures the real-world state that should inform later work.
+
+### 4.2 `/simulate`
+
+Basic usage:
+
+```text
+/simulate tamper-surface guard.sys
+/simulate stealth-surface MyProvider
+/simulate forensic-blind-spot game.exe
+```
+
+Good use cases:
+1. Right after a driver change, to look for integrity or registration bypass surface.
+2. Right after a telemetry change, to inspect observer visibility gaps.
+3. When you want to know whether post-incident artifacts will still be usable.
+
+Key interpretation:
+1. Simulation is not proof of exploitation.
+2. It is a structured way to highlight attacker-relevant weak spots.
+
+### 4.3 `/review-selection` And `/edit-selection`
+
+Basic usage:
+
+```text
+/open driver/guard.cpp
+/review-selection check bypass surfaces and cleanup paths
+/edit-selection harden the selected registration path
+```
+
+Good use cases:
+1. When only one function or block matters.
+2. When you want recent simulation findings tied directly to the selected area.
+
+Current automatic behavior:
+1. If recent simulation findings match the selected path, Kernforge injects `Additional adversarial review focus` into review and edit prompts.
+
+### 4.4 `/do-plan-review`
+
+Basic usage:
+
+```text
+/do-plan-review harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
+```
+
+Good use cases:
+1. Large or high-risk changes.
+2. Work where rollback points and sequencing matter.
+3. Cases where attacker-oriented thinking should shape the implementation plan before edits begin.
+
+Current automatic behavior:
+1. Matching recent simulation findings are injected into the planning prompt.
+2. They are also injected into the execution prompt after approval.
+
+### 4.5 `/verify`
+
+Basic usage:
+
+```text
+/verify
+/verify --full
+/verify driver/guard.cpp,telemetry/provider.man
+```
+
+What the planner currently considers:
+1. Changed files
+2. Security categories
+3. Verification policy
+4. Verification history tuning
+5. Hook-injected context and extra steps
+6. Recent investigation and simulation state
+
+Good use cases:
+1. After editing, when you want a real verification plan instead of a generic test command.
+2. When recent investigation or simulation findings should influence validation.
+3. When you want security-aware review steps in addition to build or test steps.
+
+### 4.6 `/evidence-search` And `/evidence-dashboard`
+
+Useful queries:
+
+```text
+/evidence-search category:driver outcome:failed
+/evidence-search kind:simulation_finding severity:critical
+/evidence-search signal:tamper risk:>=60
+/evidence-dashboard category:telemetry
+```
+
+Good use cases:
+1. When you want to inspect what simulation just produced.
+2. When you want only recent signing, provider, or scanner-related failures.
+3. When you want to see active overrides and recent high-risk state together.
+
+### 4.7 `/mem-search`
+
+Useful queries:
+
+```text
+/mem-search category:driver signal:signing
+/mem-search category:telemetry tag:provider
+/mem-search severity:critical risk:>=80
+/mem-search artifact:guard.sys
+```
+
+Good use cases:
+1. When you want earlier reasoning from previous sessions.
+2. When you want long-lived context for repeated artifacts or failures.
+
+### 4.8 `/hooks` And `/override-*`
+
+Inspect:
+
+```text
+/hooks
+/override
+```
+
+Create an exception:
+
+```text
+/override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
+```
+
+Clear:
+
+```text
+/override-clear all
+```
+
+Good use cases:
+1. When you want to understand why policy is blocking.
+2. When you need a temporary exception with an audit trail.
+
+## 5. When To Use Each Dashboard
+
+### 5.1 `/verify-dashboard`
+
+Best when:
+1. You want recent verification trends.
+2. You want to see which checks fail most often.
+
+### 5.2 `/evidence-dashboard`
+
+Best when:
+1. You want the current workspace risk picture.
+2. You want recent failed or high-risk signals plus overrides in one view.
+
+### 5.3 `/mem-dashboard`
+
+Best when:
+1. You want long-term context, trust tiers, and verification artifact patterns.
+2. You want to skim what the system has learned across sessions.
+
+### 5.4 `/investigate dashboard`
+
+Best when:
+1. You want to see how many investigation sessions exist.
+2. You want preset, finding category, and finding severity distribution.
+
+### 5.5 `/simulate dashboard`
+
+Best when:
+1. You want to see which attack profiles you have been using.
+2. You want severity, signal, finding, and recommended-action breakdowns.
+
+## 6. Suggested Baselines By Team
+
+### 6.1 Driver Team
+
+Recommended:
+1. Enable `windows-security`.
+2. Run `driver-load` investigation before risky changes.
+3. Run `tamper-surface` simulation before review or edit.
+4. Run `/verify`.
+5. Inspect `/evidence-dashboard category:driver`.
+6. Promote only repeated high-risk failures to `deny`.
+
+### 6.2 Telemetry Team
+
+Recommended:
+1. Use `telemetry-provider` investigation before manifest and provider changes.
+2. Run `stealth-surface` after provider changes.
+3. Run `forensic-blind-spot` when incident traceability matters.
+4. Run `/verify`.
+5. Inspect `/evidence-search category:telemetry outcome:failed`.
+6. Use `/mem-search category:telemetry tag:provider` for long-lived context.
+
+### 6.3 Anti-Cheat Or Memory-Scan Team
+
+Recommended:
+1. Use `stealth-surface` before scanner changes.
+2. Use selection-first review and edit aggressively.
+3. Run `/verify`.
+4. Let repeated high-risk failures drive checkpoint and deny policy.
+
+## 7. Cases Where You Should Not Over-Enforce Yet
+
+Avoid overly strong policy in these cases:
+
+1. Very early prototyping
+2. New projects with almost no evidence history
+3. General utility work not tied to the security workflow
+
+Recommended progression:
+1. Start with `warn`
+2. Move recurring issues to `ask`
+3. Reserve `deny` for genuine operational incident classes
+
+## 8. Quick Scenario Recipes
+
+### Scenario A: Driver Integrity Hardening
+
+```text
+/investigate start driver-load guard.sys
+/investigate snapshot
+/simulate tamper-surface guard.sys
+/open driver/guard.cpp
+/review-selection integrity bypass paths
+/edit-selection harden the selected integrity checks
+/verify
+/evidence-dashboard category:driver
+```
+
+### Scenario B: Telemetry Provider Visibility Drift
+
+```text
+/investigate start telemetry-provider MyProvider
+/investigate snapshot MyProvider
+/simulate stealth-surface MyProvider
+/open telemetry/provider.man
+/review-selection schema and visibility drift
+/verify
+/evidence-search category:telemetry outcome:failed
+```
+
+### Scenario C: Plan Review Before A Large Change
+
+```text
+/simulate tamper-surface guard.sys
+/simulate forensic-blind-spot guard.sys
+/do-plan-review harden driver registration and preserve telemetry audit artifacts
+/verify
+/simulate-dashboard
+```
+
+## 9. Summary
+
+The best current one-line description of Kernforge is this:
+
+"Observe first, stress the change from an adversarial angle, work in focused code regions, verify with recent context, and feed the result back into evidence, memory, and policy."
+
+That means the strongest current loop is:
+
+1. `/investigate`
+2. `/simulate`
+3. `/review-selection` or `/edit-selection`
+4. `/do-plan-review`
+5. `/verify`
+6. `/evidence-dashboard`
+7. `/mem-search`
+8. Push or PR under hook policy
+
+That loop is the clearest current Kernforge differentiator.

@@ -239,6 +239,56 @@ func TestPersistentMemoryImportanceBoostHelpsPrioritizeVerifiedMemory(t *testing
 	}
 }
 
+func TestBuildPersistentMemoryRecordCapturesStructuredVerificationMetadata(t *testing.T) {
+	dir := t.TempDir()
+	sess := NewSession(dir, "fake", "fake-model", "", "default")
+	sess.LastVerification = &VerificationReport{
+		Decision: "Security-aware verification detected categories: driver, telemetry. security_categories=driver,telemetry",
+		Steps: []VerificationStep{
+			{
+				Label:  "signtool verify driver/guard.sys",
+				Scope:  "driver/guard.sys",
+				Stage:  "targeted",
+				Tags:   []string{"driver", "signing", "security"},
+				Status: VerificationPassed,
+			},
+			{
+				Label:       "telemetry manifest review",
+				Scope:       "telemetry/provider.man",
+				Stage:       "targeted",
+				Tags:        []string{"telemetry", "security"},
+				Status:      VerificationFailed,
+				FailureKind: "runtime_error",
+			},
+		},
+	}
+	record, ok := buildPersistentMemoryRecord(Workspace{BaseRoot: dir, Root: dir}, sess, "review changes", "done", nil)
+	if !ok {
+		t.Fatal("expected persistent memory record")
+	}
+	if len(record.VerificationCategories) != 2 {
+		t.Fatalf("unexpected verification categories: %#v", record.VerificationCategories)
+	}
+	if !sliceContainsFold(record.VerificationTags, "signing") {
+		t.Fatalf("expected verification tags to include signing, got %#v", record.VerificationTags)
+	}
+	if !sliceContainsFold(record.VerificationArtifacts, "driver/guard.sys") {
+		t.Fatalf("expected verification artifacts to include driver artifact, got %#v", record.VerificationArtifacts)
+	}
+	if !sliceContainsFold(record.VerificationFailures, "runtime_error") {
+		t.Fatalf("expected verification failures to include runtime_error, got %#v", record.VerificationFailures)
+	}
+	if len(record.VerificationSeverities) == 0 {
+		t.Fatalf("expected verification severities, got %#v", record)
+	}
+	if len(record.VerificationSignals) == 0 {
+		t.Fatalf("expected verification signals, got %#v", record)
+	}
+	if record.VerificationMaxRisk == 0 {
+		t.Fatalf("expected verification max risk, got %#v", record)
+	}
+}
+
 func TestPersistentMemoryPromoteDemoteAndTrustAdjustments(t *testing.T) {
 	store := &PersistentMemoryStore{
 		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
@@ -284,16 +334,19 @@ func TestPersistentMemoryDashboardSummarizesImportanceAndTrust(t *testing.T) {
 		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
 	}
 	if err := store.Append(PersistentMemoryRecord{
-		ID:         "mem-a",
-		SessionID:  "s1",
-		Workspace:  filepath.Join("F:", "repo"),
-		Request:    "auth",
-		Reply:      "done",
-		Summary:    "Request: auth\n\nOutcome: done",
-		Importance: PersistentMemoryHigh,
-		Trust:      PersistentMemoryConfirmed,
-		Files:      []string{"internal/auth/service.go"},
-		Keywords:   []string{"auth"},
+		ID:                     "mem-a",
+		SessionID:              "s1",
+		Workspace:              filepath.Join("F:", "repo"),
+		Request:                "auth",
+		Reply:                  "done",
+		Summary:                "Request: auth\n\nOutcome: done",
+		Importance:             PersistentMemoryHigh,
+		Trust:                  PersistentMemoryConfirmed,
+		Files:                  []string{"internal/auth/service.go"},
+		VerificationCategories: []string{"driver"},
+		VerificationTags:       []string{"signing", "security"},
+		VerificationArtifacts:  []string{"driver/guard.sys"},
+		Keywords:               []string{"auth"},
 	}); err != nil {
 		t.Fatalf("Append a: %v", err)
 	}
@@ -319,8 +372,129 @@ func TestPersistentMemoryDashboardSummarizesImportanceAndTrust(t *testing.T) {
 		t.Fatalf("expected filtered dashboard to show one record, got %#v", summary)
 	}
 	rendered := renderPersistentMemoryDashboard(summary)
-	if !strings.Contains(rendered, "Importance distribution:") || !strings.Contains(rendered, "Trust distribution:") {
+	if !strings.Contains(rendered, "Importance distribution:") || !strings.Contains(rendered, "Trust distribution:") || !strings.Contains(rendered, "Top verification categories:") {
 		t.Fatalf("unexpected memory dashboard render: %q", rendered)
+	}
+}
+
+func TestPersistentMemorySearchHitsUseVerificationMetadata(t *testing.T) {
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:                     "mem-driver",
+		SessionID:              "s1",
+		Workspace:              filepath.Join("F:", "repo"),
+		Request:                "review driver",
+		Reply:                  "done",
+		Summary:                "driver verification complete",
+		VerificationCategories: []string{"driver"},
+		VerificationTags:       []string{"signing", "security"},
+		VerificationArtifacts:  []string{"driver/guard.sys"},
+		VerificationSeverities: []string{"critical"},
+		VerificationSignals:    []string{"signing"},
+		VerificationMaxRisk:    92,
+		Keywords:               []string{"driver"},
+	}); err != nil {
+		t.Fatalf("Append driver: %v", err)
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:        "mem-docs",
+		SessionID: "s2",
+		Workspace: filepath.Join("F:", "repo"),
+		Request:   "update docs",
+		Reply:     "done",
+		Summary:   "docs update",
+		Keywords:  []string{"docs"},
+	}); err != nil {
+		t.Fatalf("Append docs: %v", err)
+	}
+	hits, err := store.SearchHits("guard.sys signing", filepath.Join("F:", "repo"), "", 5)
+	if err != nil {
+		t.Fatalf("SearchHits: %v", err)
+	}
+	if len(hits) == 0 || hits[0].Record.ID != "mem-driver" {
+		t.Fatalf("expected verification metadata match to rank first, got %#v", hits)
+	}
+}
+
+func TestPersistentMemoryQueryFiltersStructuredVerificationMetadata(t *testing.T) {
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:                     "mem-driver",
+		SessionID:              "s1",
+		Workspace:              filepath.Join("F:", "repo"),
+		Summary:                "driver verification complete",
+		VerificationCategories: []string{"driver"},
+		VerificationTags:       []string{"signing", "security"},
+		VerificationArtifacts:  []string{"driver/guard.sys"},
+		VerificationFailures:   []string{"runtime_error"},
+		VerificationSeverities: []string{"critical"},
+		VerificationSignals:    []string{"signing"},
+		VerificationMaxRisk:    92,
+		Keywords:               []string{"driver"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	results, err := store.Search("category:driver tag:signing artifact:guard.sys failure:runtime_error severity:critical signal:signing risk:>=80", filepath.Join("F:", "repo"), "", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "mem-driver" {
+		t.Fatalf("unexpected filtered results: %#v", results)
+	}
+}
+
+func TestPersistentMemoryDashboardFiltersStructuredVerificationMetadata(t *testing.T) {
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:                     "mem-driver",
+		SessionID:              "s1",
+		Workspace:              filepath.Join("F:", "repo"),
+		Summary:                "driver verification complete",
+		VerificationCategories: []string{"driver"},
+		VerificationTags:       []string{"signing"},
+		VerificationArtifacts:  []string{"driver/guard.sys"},
+		VerificationSeverities: []string{"critical"},
+		VerificationSignals:    []string{"signing"},
+		VerificationMaxRisk:    92,
+		Keywords:               []string{"driver"},
+	}); err != nil {
+		t.Fatalf("Append driver: %v", err)
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:                     "mem-telemetry",
+		SessionID:              "s2",
+		Workspace:              filepath.Join("F:", "repo"),
+		Summary:                "telemetry verification complete",
+		VerificationCategories: []string{"telemetry"},
+		VerificationTags:       []string{"provider"},
+		VerificationSeverities: []string{"high"},
+		VerificationSignals:    []string{"provider"},
+		VerificationMaxRisk:    68,
+		Keywords:               []string{"telemetry"},
+	}); err != nil {
+		t.Fatalf("Append telemetry: %v", err)
+	}
+	summary, err := store.Dashboard(filepath.Join("F:", "repo"), "category:driver tag:signing severity:critical signal:signing risk:>=80", 10)
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	if summary.TotalRecords != 1 {
+		t.Fatalf("expected one filtered record, got %#v", summary)
+	}
+	if len(summary.TopVerificationCategories) != 1 || summary.TopVerificationCategories[0].Name != "driver" {
+		t.Fatalf("unexpected category summary: %#v", summary.TopVerificationCategories)
+	}
+	if len(summary.TopVerificationSeverities) != 1 || summary.TopVerificationSeverities[0].Name != "critical" {
+		t.Fatalf("unexpected severity summary: %#v", summary.TopVerificationSeverities)
+	}
+	if len(summary.TopVerificationSignals) != 1 || summary.TopVerificationSignals[0].Name != "signing" {
+		t.Fatalf("unexpected signal summary: %#v", summary.TopVerificationSignals)
 	}
 }
 

@@ -1,0 +1,629 @@
+# Kernforge 상세 사용 가이드
+
+이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
+
+기준 시점:
+- 코드베이스 기준: 2026-04-03
+
+대상 사용자:
+- Windows security 엔지니어
+- anti-cheat 엔지니어
+- kernel/user-mode telemetry 개발자
+- driver/signing/symbol/package readiness 담당자
+- Unreal Engine 보안/무결성 담당자
+
+이 문서의 목적:
+1. 기능 목록을 나열하는 것이 아니라 실제 사용 흐름을 설명한다.
+2. 어떤 문제에서 어떤 명령 조합을 쓰면 좋은지 예시 중심으로 정리한다.
+3. `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
+
+## 1. Kernforge를 가장 잘 쓰는 관점
+
+Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 현재 가장 강한 사용 방식은 아래와 같은 보호 루프를 의식적으로 돌리는 것이다.
+
+1. 변경하거나 관찰한다.
+2. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
+3. 공격자 관점이 중요하면 `/simulate`로 tamper, stealth, forensic blind spot을 본다.
+4. `/review-selection`, `/edit-selection`, `/do-plan-review`로 실제 작업을 진행한다.
+5. `/verify`로 verification plan을 돌린다.
+6. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
+7. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
+
+핵심 해석:
+1. `investigate`는 실행 중 상태를 관찰한다.
+2. `simulate`는 공격자 관점에서 약한 면을 드러낸다.
+3. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
+4. `evidence`는 결과를 증거 단위로 구조화한다.
+5. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
+6. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
+
+## 2. 현재 구현된 핵심 기능과 언제 쓰면 좋은가
+
+### 2.1 Hook Engine
+
+목적:
+1. 위험 작업 전에 경고하거나 차단한다.
+2. verification 전에 추가 review context와 verification step을 주입한다.
+3. 최근 evidence 상태를 보고 push/PR 정책을 더 강하게 만든다.
+4. 필요하면 자동 checkpoint를 만든다.
+
+대표 명령:
+- `/hooks`
+- `/hook-reload`
+- `/init hooks`
+- `/override`
+- `/override-add <rule-id> <hours> <reason>`
+- `/override-clear <override-id|rule-id|all>`
+
+대표 액션:
+- `warn`
+- `ask`
+- `deny`
+- `append_context`
+- `append_review_context`
+- `add_verification_step`
+- `create_checkpoint`
+
+특히 좋은 상황:
+1. signing/symbol/provider/XML 같은 반복 실수가 많은 팀
+2. "PR 전에 최소한 이것만은 확인되어야 한다"는 정책이 있는 팀
+3. 운영 영향이 큰 변경을 사람이 매번 기억에만 의존하면 안 되는 팀
+
+추천 운영 방식:
+1. 처음에는 `windows-security` preset만 켠다.
+2. `warn`과 `ask` 위주로 적응한다.
+3. 반복 사고가 나는 규칙만 `deny`로 올린다.
+4. 너무 강한 규칙은 `/override-add`로 예외 흐름을 열되, reason과 expiry를 반드시 남긴다.
+
+### 2.2 Security-Aware Verification
+
+목적:
+1. 변경 파일을 보고 보안 카테고리를 추론한다.
+2. 카테고리에 맞는 verification step을 자동으로 추가한다.
+3. 최근 simulation/investigation 결과까지 참고해 verification plan을 보강한다.
+
+현재 인식하는 축:
+1. `driver`
+2. `telemetry`
+3. `unreal`
+4. `memory-scan`
+5. 최근 high-risk simulation signal
+6. active investigation / live finding
+
+대표 명령:
+- `/verify`
+- `/verify --full`
+- `/verify src/foo.cpp,driver/guard.cpp`
+- `/verify-dashboard`
+- `/verify-dashboard-html`
+
+좋은 상황:
+1. 일반 `go test`, `msbuild`, `ctest`만으로는 부족한 작업
+2. signing, symbols, package, provider, XML, verifier 상태까지 같이 봐야 하는 작업
+3. 최근 investigation/simulation에서 이미 위험 신호가 나온 상태
+
+### 2.3 Evidence Store
+
+목적:
+1. verification, override, investigation, simulation 결과를 evidence 단위로 저장한다.
+2. 최근 failed/high-risk 상태를 빠르게 검색하고 대시보드로 볼 수 있게 한다.
+3. hooks와 verification planner가 다시 참고할 수 있는 구조화된 근거를 만든다.
+
+대표 명령:
+- `/evidence`
+- `/evidence-search <query>`
+- `/evidence-show <id>`
+- `/evidence-dashboard [query]`
+- `/evidence-dashboard-html [query]`
+
+현재 자주 보게 되는 evidence 종류:
+1. `verification_category`
+2. `verification_artifact`
+3. `verification_failure`
+4. `hook_override`
+5. `investigation_session`
+6. `investigation_snapshot`
+7. `investigation_finding`
+8. `simulation_run`
+9. `simulation_finding`
+
+### 2.4 Persistent Memory
+
+목적:
+1. 세션이 끝나도 중요한 판단과 결과를 다음 세션까지 유지한다.
+2. 과거 verification/evidence 맥락을 다시 찾아볼 수 있게 한다.
+3. 장기적 회귀나 반복 실패 패턴을 시간축으로 추적하는 기반이 된다.
+
+대표 명령:
+- `/mem`
+- `/mem-search <query>`
+- `/mem-show <id>`
+- `/mem-dashboard [query]`
+- `/mem-dashboard-html [query]`
+
+특징:
+1. 단순 메모가 아니라 verification category/tag/artifact/failure/severity/signal/risk를 같이 저장한다.
+2. evidence보다 더 긴 시간축의 판단과 작업 맥락을 제공한다.
+
+### 2.5 Live Investigation Mode
+
+목적:
+1. 실행 중인 Windows 상태를 스냅샷으로 수집한다.
+2. live 상태에서 보인 finding을 evidence와 memory에 남긴다.
+3. 이후 simulation, verification, review 흐름의 입력으로 쓴다.
+
+대표 명령:
+- `/investigate`
+- `/investigate start <preset> [target]`
+- `/investigate snapshot [target]`
+- `/investigate note <text>`
+- `/investigate stop [summary]`
+- `/investigate list`
+- `/investigate show <id>`
+- `/investigate dashboard`
+- `/investigate dashboard-html`
+
+현재 preset:
+1. `driver-load`
+2. `process-attach`
+3. `telemetry-provider`
+
+좋은 상황:
+1. 코드 수정 전에 현재 로딩 상태, verifier 상태, provider 상태를 먼저 보고 싶은 경우
+2. "재현은 되는데 왜 그런지 live 상태가 필요하다"는 경우
+3. 단순 정적 코드 리뷰보다 현장 관찰이 중요한 경우
+
+### 2.6 Adversarial Simulation Profiles
+
+목적:
+1. recent failed evidence와 investigation 결과를 바탕으로 공격자 관점 리스크를 평가한다.
+2. tamper, stealth, forensic blind spot 관점에서 약한 면을 드러낸다.
+3. review, edit, plan-review, verify에 다시 그 관점을 주입한다.
+
+대표 명령:
+- `/simulate`
+- `/simulate tamper-surface [target]`
+- `/simulate stealth-surface [target]`
+- `/simulate forensic-blind-spot [target]`
+- `/simulate list`
+- `/simulate show <id>`
+- `/simulate dashboard`
+- `/simulate dashboard-html`
+
+현재 profile:
+1. `tamper-surface`
+2. `stealth-surface`
+3. `forensic-blind-spot`
+
+좋은 상황:
+1. integrity, signing, bypass surface가 걱정되는 driver/anti-cheat 작업
+2. observer coverage, telemetry visibility가 약할 수 있는 telemetry 작업
+3. forensic artifact가 부족해 사후 분석이 힘들 수 있는 작업
+
+### 2.7 Selection-First Review / Edit
+
+목적:
+1. 전체 파일이 아니라 선택한 코드 범위만 집중 리뷰하거나 수정한다.
+2. recent simulation finding이 선택 영역과 맞닿으면 자동으로 review/edit prompt에 주입한다.
+
+대표 명령:
+- `/open <path>`
+- `/selection`
+- `/selections`
+- `/review-selection [extra]`
+- `/review-selections [extra]`
+- `/edit-selection <task>`
+- `/note-selection <text>`
+- `/tag-selection <tag[,tag2]>`
+
+좋은 상황:
+1. 특정 IOCTL handler, provider registration block, integrity check 함수만 집중 분석하고 싶을 때
+2. 방금 simulation에서 지적된 surface와 실제 코드 영역을 빠르게 연결하고 싶을 때
+
+### 2.8 Plan Review Workflow
+
+목적:
+1. planner 모델이 계획을 만들고
+2. reviewer 모델이 계획을 검토하고
+3. 승인된 계획을 다시 실행하게 한다.
+
+대표 명령:
+- `/set-plan-review`
+- `/do-plan-review <task>`
+
+좋은 상황:
+1. 구현이 여러 단계로 얽힌 driver/telemetry 보안 변경
+2. 공격자 관점과 운영 현실성을 같이 고려해야 하는 큰 수정
+3. 실수 비용이 커서 바로 편집 루프로 들어가기 전에 계획 검토가 필요한 작업
+
+현재 연동:
+1. recent simulation finding이 task와 겹치면 planning prompt에 자동 주입된다.
+2. 최종 plan 실행 prompt에도 같은 관점이 자동 주입된다.
+
+## 3. 가장 추천하는 실전 흐름
+
+### 3.1 Driver hardening 또는 signing 관련 변경
+
+상황:
+- `driver/guard.cpp`, `driver/guard.inf`를 수정했다.
+- signing/symbol/package readiness가 중요하다.
+- 최근에도 비슷한 실패를 겪은 적이 있다.
+
+추천 흐름:
+1. `/investigate start driver-load guard.sys`
+2. `/investigate snapshot`
+3. `/investigate note current verifier state and loaded filter stack before edit`
+4. `/simulate tamper-surface guard.sys`
+5. `/open driver/guard.cpp`
+6. viewer에서 보호 로직 부분을 선택한다.
+7. `/review-selection integrity bypass paths and verifier interactions`
+8. `/edit-selection harden registration and signing assumptions`
+9. `/verify`
+10. `/evidence-dashboard category:driver`
+11. `/mem-search category:driver signal:signing`
+12. 필요하면 `/investigate stop hardened signing path reviewed`
+
+이 흐름에서 Kernforge가 해주는 일:
+1. live driver 상태를 investigation evidence로 남긴다.
+2. tamper-surface simulation으로 bypass 가능성을 먼저 드러낸다.
+3. 선택한 코드 범위 리뷰/수정 시 simulation 관점을 prompt에 자동 주입한다.
+4. `/verify`가 driver security verification과 recent simulation/investigation follow-up step을 같이 넣는다.
+5. evidence/hook이 push/PR 전 마지막 방어를 맡는다.
+
+어떤 명령이 특히 중요하나:
+- `/simulate tamper-surface guard.sys`
+- `/review-selection ...`
+- `/verify`
+- `/evidence-dashboard category:driver`
+
+### 3.2 Telemetry provider drift 또는 XML/manifest 회귀
+
+상황:
+- provider manifest와 registration 코드가 같이 바뀌었다.
+- 이벤트가 실제 런타임에서 보일지 불안하다.
+- stealth 관점에서 observer coverage도 같이 보고 싶다.
+
+추천 흐름:
+1. `/investigate start telemetry-provider MyProvider`
+2. `/investigate snapshot MyProvider`
+3. `/simulate stealth-surface MyProvider`
+4. `/open telemetry/provider.man`
+5. manifest range를 선택한다.
+6. `/review-selection provider visibility and schema drift`
+7. `/open telemetry/register_provider.cpp`
+8. `/edit-selection align provider registration and fallback visibility`
+9. `/verify`
+10. `/evidence-search category:telemetry outcome:failed`
+11. `/simulate forensic-blind-spot MyProvider`
+12. `/mem-search category:telemetry signal:provider`
+13. `/investigate stop provider contract and visibility reviewed`
+
+Kernforge가 도와주는 부분:
+1. live provider 상태를 먼저 관찰한다.
+2. stealth-surface가 "보이기는 하는가" 관점을 앞에 끌어온다.
+3. forensic-blind-spot이 "나중에 추적 가능한가"까지 확인하게 만든다.
+4. `/verify`는 XML/provider/telemetry review step과 recent simulation follow-up step을 동시에 넣는다.
+
+### 3.3 Memory scan / pattern scan 회귀 점검
+
+상황:
+- false positive 또는 evasion 대응 수정이 들어갔다.
+- 최근 scanner 변경에서 반복 실패가 있었다.
+
+추천 흐름:
+1. `/simulate stealth-surface scanner-core`
+2. `/open scanner/patternscan.cpp`
+3. `/review-selection false positives, stealth coverage, and perf ceilings`
+4. `/edit-selection reduce false positives without weakening evasion coverage`
+5. `/verify`
+6. `/evidence-dashboard category:memory-scan`
+7. `/mem-search category:memory-scan risk:>=70`
+
+왜 이 흐름이 좋은가:
+1. scanner 작업은 단순 correctness보다 coverage와 evasions가 중요하다.
+2. simulation이 우선 공격자 관점을 주고,
+3. verification이 이후 보안 review step으로 다시 고정해 준다.
+
+### 3.4 큰 변경 전에 plan-review를 거는 경우
+
+상황:
+- driver + telemetry 쪽을 함께 건드리는 큰 변경
+- 구현 순서와 rollback 포인트가 중요하다.
+
+추천 흐름:
+1. `/simulate tamper-surface guard.sys`
+2. `/simulate forensic-blind-spot guard.sys`
+3. `/do-plan-review harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
+4. reviewer가 계획을 비판하도록 둔다.
+5. 승인된 뒤 plan 실행
+6. `/verify`
+7. `/evidence-dashboard`
+
+현재 장점:
+1. simulation finding이 planning prompt에 직접 주입된다.
+2. 최종 plan 실행 prompt에도 그 관점이 다시 들어간다.
+
+## 4. 명령별 상세 사용법과 좋은 예시
+
+### 4.1 `/investigate`
+
+기본 사용:
+
+```text
+/investigate start driver-load guard.sys
+/investigate snapshot
+/investigate note verifier enabled on target system
+/investigate stop initial driver state captured
+```
+
+좋은 사용 예:
+1. 코드 수정 전에 현재 driver stack과 verifier 상태를 고정하고 싶을 때
+2. telemetry provider가 정말 보이는지 live 상태를 남기고 싶을 때
+3. 나중에 "그때 live 상태가 어땠지?"를 evidence로 다시 찾고 싶을 때
+
+추천 해석:
+1. investigation은 verification 대체가 아니다.
+2. verification 전에 현실 상태를 고정하는 역할이다.
+
+### 4.2 `/simulate`
+
+기본 사용:
+
+```text
+/simulate tamper-surface guard.sys
+/simulate stealth-surface MyProvider
+/simulate forensic-blind-spot game.exe
+```
+
+좋은 사용 예:
+1. driver 변경 직후 integrity/signing bypass 면을 보고 싶을 때
+2. telemetry 변경 후 observer visibility gap을 보고 싶을 때
+3. forensic artifact가 부족한 변경인지 보고 싶을 때
+
+추천 해석:
+1. simulation은 "지금 당장 exploit 가능"을 증명하는 도구가 아니다.
+2. 공격자 관점에서 확인해야 할 약한 면을 정리하는 도구다.
+
+### 4.3 `/review-selection`과 `/edit-selection`
+
+기본 사용:
+
+```text
+/open driver/guard.cpp
+/review-selection check bypass surfaces and cleanup paths
+/edit-selection harden the selected registration path
+```
+
+좋은 사용 예:
+1. 특정 함수나 registration block만 집중적으로 보고 싶을 때
+2. recent simulation finding과 실제 코드 범위를 빨리 연결하고 싶을 때
+
+현재 자동 연동:
+1. 선택한 파일 경로와 맞닿는 recent simulation finding이 있으면
+2. review/edit prompt에 `Additional adversarial review focus`가 자동 주입된다.
+
+### 4.4 `/do-plan-review`
+
+기본 사용:
+
+```text
+/do-plan-review harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
+```
+
+좋은 사용 예:
+1. 구현이 여러 단계로 얽힌 대형 변경
+2. 먼저 계획을 비판적으로 다듬고 싶은 경우
+3. simulation 결과를 바로 구현 계획에 녹이고 싶은 경우
+
+현재 자동 연동:
+1. task 텍스트와 겹치는 recent simulation finding이 있으면 planning prompt에 자동 주입된다.
+2. 최종 실행 prompt에도 같은 관점이 다시 들어간다.
+
+### 4.5 `/verify`
+
+기본 사용:
+
+```text
+/verify
+/verify --full
+/verify driver/guard.cpp,telemetry/provider.man
+```
+
+현재 planner가 보는 것:
+1. 변경 파일
+2. security category
+3. verify policy
+4. verification history tuning
+5. hook이 추가한 context/step
+6. recent investigation/simulation 결과
+
+좋은 사용 예:
+1. edit 이후 실제 verification plan을 확인하고 싶을 때
+2. 최근 simulation finding이 verification에도 반영되는지 보고 싶을 때
+3. 단순 빌드/테스트보다 깊은 보안 review step이 필요한 경우
+
+### 4.6 `/evidence-search`와 `/evidence-dashboard`
+
+자주 쓰는 쿼리 예:
+
+```text
+/evidence-search category:driver outcome:failed
+/evidence-search kind:simulation_finding severity:critical
+/evidence-search signal:tamper risk:>=60
+/evidence-dashboard category:telemetry
+```
+
+좋은 사용 예:
+1. 방금 simulation이 뭘 남겼는지 보고 싶을 때
+2. 최근 failed signing/provider finding만 보고 싶을 때
+3. override가 활성화되어 있는지 같이 보고 싶을 때
+
+### 4.7 `/mem-search`
+
+자주 쓰는 쿼리 예:
+
+```text
+/mem-search category:driver signal:signing
+/mem-search category:telemetry tag:provider
+/mem-search severity:critical risk:>=80
+/mem-search artifact:guard.sys
+```
+
+좋은 사용 예:
+1. 예전 세션에서 왜 이 방향으로 판단했는지 다시 찾고 싶을 때
+2. 특정 artifact 또는 failure가 반복됐는지 장기 관점으로 보고 싶을 때
+
+### 4.8 `/hooks`와 `/override-*`
+
+확인:
+
+```text
+/hooks
+/override
+```
+
+예외 추가:
+
+```text
+/override-add deny-driver-pr-with-critical-signing-or-symbol-evidence 4 urgent hotfix after manual verification
+```
+
+해제:
+
+```text
+/override-clear all
+```
+
+좋은 사용 예:
+1. 정책이 왜 막는지 먼저 확인하고 싶을 때
+2. 예외를 주더라도 감사 추적을 남기고 싶을 때
+
+## 5. 대시보드는 언제 어떤 것을 보면 좋은가
+
+### 5.1 `/verify-dashboard`
+
+추천 시점:
+1. 최근 verification 실패 경향을 보고 싶을 때
+2. 어떤 check가 자주 깨지는지 보고 싶을 때
+
+### 5.2 `/evidence-dashboard`
+
+추천 시점:
+1. 지금 workspace의 failed/high-risk 상태를 빠르게 보고 싶을 때
+2. override, severity, signal 분포까지 함께 보고 싶을 때
+
+### 5.3 `/mem-dashboard`
+
+추천 시점:
+1. 장기 맥락, trust/importance, verification artifact 분포를 보고 싶을 때
+2. 이전 세션 누적 지식을 훑고 싶을 때
+
+### 5.4 `/investigate dashboard`
+
+추천 시점:
+1. 최근 investigation session이 얼마나 쌓였는지 보고 싶을 때
+2. 어떤 preset과 finding category가 많이 나왔는지 보고 싶을 때
+
+### 5.5 `/simulate dashboard`
+
+추천 시점:
+1. 최근 simulation run이 어떤 profile에 몰렸는지 보고 싶을 때
+2. tamper/stealth/forensics signal과 recommended action 분포를 보고 싶을 때
+
+## 6. 처음 쓰는 팀을 위한 추천 운영안
+
+### 6.1 Driver 팀
+
+추천:
+1. `windows-security` preset 활성화
+2. 코드 수정 전에 `driver-load` investigation
+3. 수정 전에 `tamper-surface` simulation
+4. `/verify`
+5. `/evidence-dashboard category:driver`
+6. 반복 실패만 deny로 강화
+
+### 6.2 Telemetry 팀
+
+추천:
+1. provider manifest 작업 전 `telemetry-provider` investigation
+2. 수정 후 `stealth-surface`, 필요하면 `forensic-blind-spot`
+3. `/verify`
+4. `/evidence-search category:telemetry outcome:failed`
+5. `/mem-search category:telemetry tag:provider`
+
+### 6.3 Anti-Cheat / Memory Scan 팀
+
+추천:
+1. scanner 관련 변경 전 `stealth-surface`
+2. 선택 영역 리뷰/수정 적극 사용
+3. `/verify`
+4. recent high-risk failure는 checkpoint와 deny 정책으로 묶기
+
+## 7. 너무 과하게 쓰지 않는 것이 좋은 경우
+
+다음 상황에서는 규칙과 절차를 너무 강하게 두지 않는 것이 좋다.
+
+1. 아주 초기 프로토타이핑
+2. 아직 evidence가 거의 쌓이지 않은 새 프로젝트
+3. security workflow와 무관한 범용 유틸리티 수정
+
+추천:
+1. 초반에는 `warn`
+2. 익숙해지면 `ask`
+3. 실제 운영 사고와 직결된 항목만 `deny`
+
+## 8. 빠른 시작용 추천 시나리오
+
+### 시나리오 A: driver integrity hardening
+
+```text
+/investigate start driver-load guard.sys
+/investigate snapshot
+/simulate tamper-surface guard.sys
+/open driver/guard.cpp
+/review-selection integrity bypass paths
+/edit-selection harden the selected integrity checks
+/verify
+/evidence-dashboard category:driver
+```
+
+### 시나리오 B: telemetry provider visibility drift
+
+```text
+/investigate start telemetry-provider MyProvider
+/investigate snapshot MyProvider
+/simulate stealth-surface MyProvider
+/open telemetry/provider.man
+/review-selection schema and visibility drift
+/verify
+/evidence-search category:telemetry outcome:failed
+```
+
+### 시나리오 C: 큰 변경 전에 plan-review
+
+```text
+/simulate tamper-surface guard.sys
+/simulate forensic-blind-spot guard.sys
+/do-plan-review harden driver registration and preserve telemetry audit artifacts
+/verify
+/simulate-dashboard
+```
+
+## 9. 문서 요약
+
+현재 Kernforge를 가장 잘 쓰는 방법은 다음 한 문장으로 요약할 수 있다.
+
+"먼저 관찰하고, 공격자 관점으로 흔들어 보고, 선택 영역 단위로 리뷰/수정하고, verification으로 닫고, evidence와 memory를 다시 정책으로 사용한다."
+
+즉 가장 추천되는 루프는 아래와 같다.
+
+1. `/investigate`
+2. `/simulate`
+3. `/review-selection` 또는 `/edit-selection`
+4. `/do-plan-review`
+5. `/verify`
+6. `/evidence-dashboard`
+7. `/mem-search`
+8. push/PR에서 hook policy 적용
+
+이 루프가 현재 Kernforge의 가장 큰 차별점이다.
