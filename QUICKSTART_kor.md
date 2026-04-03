@@ -14,7 +14,7 @@
 추천 순서:
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
@@ -26,10 +26,11 @@
 
 이 흐름의 의미:
 1. 현재 상태를 먼저 캡처한다.
-2. 공격자 관점에서 약한 면을 먼저 본다.
-3. 선택한 코드만 집중 리뷰/수정한다.
-4. verification으로 닫는다.
-5. evidence dashboard로 현재 위험 상태를 확인한다.
+2. `driver-visibility`는 드라이버 로드 원인 분석기가 아니라 가시성 triage snapshot이다.
+3. 공격자 관점에서 약한 면을 먼저 본다.
+4. 선택한 코드만 집중 리뷰/수정한다.
+5. verification으로 닫는다.
+6. evidence dashboard로 현재 위험 상태를 확인한다.
 
 ## 2. 가장 자주 쓰는 명령
 
@@ -68,7 +69,7 @@
 ### Driver 변경
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
 /review-selection signing and integrity assumptions
@@ -79,7 +80,7 @@
 ### Telemetry 변경
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
 /review-selection provider visibility and schema drift

@@ -14,7 +14,7 @@ func TestInvestigationStoreAppendUpdateActiveAndGet(t *testing.T) {
 	}
 	record, err := store.Append(InvestigationRecord{
 		Workspace: root,
-		Preset:    "driver-load",
+		Preset:    "driver-visibility",
 		Target:    "guard.sys",
 		Status:    InvestigationActive,
 	})
@@ -59,7 +59,7 @@ func TestInvestigationDashboardSummarizesFindings(t *testing.T) {
 	}
 	_, err := store.Append(InvestigationRecord{
 		Workspace: root,
-		Preset:    "driver-load",
+		Preset:    "driver-visibility",
 		Status:    InvestigationCompleted,
 		Snapshots: []InvestigationSnapshot{
 			{

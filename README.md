@@ -204,16 +204,18 @@ Basic safe flow for driver changes:
 4. If needed, run `/mem-search category:driver` to pull in older session context.
 5. During push or PR creation, hook policy can re-check recent evidence and respond with warnings, confirmations, blocks, or automatic checkpoints.
 
-Recommended flow with live state and adversarial context:
+Recommended flow with live state and simulation risk context:
 
-1. `/investigate start driver-load guard.sys`
+1. `/investigate start driver-visibility guard.sys`
 2. `/investigate snapshot`
 3. `/simulate tamper-surface guard.sys`
 4. `/open driver/guard.cpp`
-5. `/review-selection integrity bypass paths`
+5. `/review-selection integrity risk paths`
 6. `/edit-selection harden the selected integrity checks`
 7. `/verify`
 8. `/evidence-dashboard category:driver`
+
+The `driver-visibility` preset is intentionally narrow. It captures a lightweight triage snapshot of current driver visibility, verifier state, and related artifacts, not a deep driver load root-cause analysis.
 
 The full explanation of this loop is in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md).
 
@@ -655,7 +657,7 @@ Useful commands:
 
 ## Evidence, Investigation, And Simulation
 
-Kernforge now includes a security-oriented operational loop around evidence capture, live investigation state, and adversarial simulation.
+Kernforge now includes a security-oriented operational loop around evidence capture, live investigation state, and risk-oriented simulation.
 
 Evidence commands:
 

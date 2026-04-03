@@ -4,7 +4,7 @@ This short guide is for getting productive with Kernforge as quickly as possible
 
 The key loop to remember:
 1. Use `/investigate` when live state matters.
-2. Use `/simulate` when attacker pressure matters.
+2. Use `/simulate` when an extra risk lens matters.
 3. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
 4. Use `/verify` to close the loop.
 5. Inspect the result with `/evidence-dashboard` and `/mem-search`.
@@ -14,7 +14,7 @@ The key loop to remember:
 Recommended sequence:
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
@@ -26,10 +26,11 @@ Recommended sequence:
 
 What this does:
 1. Capture the current live state first.
-2. Stress the target from an attacker angle.
-3. Review and edit only the selected code.
-4. Verify with the current context.
-5. Inspect the resulting risk picture.
+2. `driver-visibility` is a lightweight visibility triage snapshot, not a deep driver load diagnostic.
+3. Check the target through an extra risk lens.
+4. Review and edit only the selected code.
+5. Verify with the current context.
+6. Inspect the resulting risk picture.
 
 ## 2. Most Common Commands
 
@@ -68,7 +69,7 @@ Policy:
 ### Driver change
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
 /review-selection signing and integrity assumptions
@@ -79,7 +80,7 @@ Policy:
 ### Telemetry change
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
 /review-selection provider visibility and schema drift

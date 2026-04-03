@@ -8,9 +8,15 @@
 이 기능의 핵심 가치는 아래와 같다.
 
 1. 코드만이 아니라 실행 중 상태를 기준으로 문제를 본다.
-2. ETW, WPR, process, service, driver, module, symbol 상태를 하나의 investigation session으로 묶는다.
+2. 현재 구현 범위 안에서 process, service, driver, provider 같은 사용자 모드 관찰 신호를 하나의 investigation session으로 묶는다.
 3. 수집 결과를 evidence와 persistent memory에 구조화해 누적한다.
 4. 이후 verification, review, push/PR policy에 다시 반영할 수 있다.
+
+중요한 범위 제한:
+
+1. MVP의 investigation preset은 lightweight live triage에 초점이 있다.
+2. 특히 driver preset은 deep driver load root-cause analysis가 아니라 driver visibility snapshot으로 보는 것이 맞다.
+3. full ETW/WPR/WinDbg/CI policy root cause 분석은 현재 범위 밖이다.
 
 이 기능은 특히 다음 상황에 맞는다.
 
@@ -54,19 +60,19 @@ MVP에서 하지 않을 것:
 
 MVP preset:
 
-1. `driver-load`
-2. `process-attach`
-3. `telemetry-provider`
+1. `driver-visibility`
+2. `process-visibility`
+3. `provider-visibility`
 4. `memory-scan`
 5. `unreal-integrity`
 
 예:
 
 ```text
-/investigate start driver-load mydriver.sys
+/investigate start driver-visibility mydriver.sys
 /investigate snapshot
 /investigate note verifier query shows unexpected settings
-/investigate stop driver load blocked on target machine
+/investigate stop driver visibility snapshot captured before deeper debugging
 ```
 
 ## 4. 핵심 개념
@@ -150,7 +156,7 @@ Snapshot 안에서 핵심 신호로 추출된 항목.
 
 MVP는 "실행 가능한 도구가 있으면 실제 command 실행, 없으면 graceful degrade" 전략을 따른다.
 
-### 6.1 driver-load preset
+### 6.1 driver-visibility preset
 
 우선 수집:
 
@@ -166,9 +172,14 @@ MVP는 "실행 가능한 도구가 있으면 실제 command 실행, 없으면 gr
 2. verifier active
 3. verifier inactive
 4. target driver not listed
-5. filter stack present
 
-### 6.2 process-attach preset
+의도:
+
+1. deep driver load 분석이 아니라 현재 시점의 가시성 triage snapshot을 남긴다.
+2. "보이느냐, verifier가 켜져 있느냐, 관련 artifact가 있느냐"를 빠르게 확인한다.
+3. 더 깊은 원인 분석이 필요하면 별도 driver load debugging 단계로 이어져야 한다.
+
+### 6.2 process-visibility preset
 
 우선 수집:
 
@@ -179,10 +190,13 @@ MVP는 "실행 가능한 도구가 있으면 실제 command 실행, 없으면 gr
 추출 finding 예:
 
 1. target process missing
-2. target process duplicated
-3. process protection mismatch
 
-### 6.3 telemetry-provider preset
+의도:
+
+1. deep process attach 분석이 아니라 현재 시점의 process visibility triage snapshot을 남긴다.
+2. "보이느냐, 일반 프로세스 나열 경로에서 잡히느냐"를 빠르게 확인한다.
+
+### 6.3 provider-visibility preset
 
 우선 수집:
 
@@ -193,8 +207,11 @@ MVP는 "실행 가능한 도구가 있으면 실제 command 실행, 없으면 gr
 추출 finding 예:
 
 1. provider not registered
-2. manifest present but provider absent
-3. likely xml/provider drift
+
+의도:
+
+1. deep ETW/provider root cause 분석이 아니라 현재 provider visibility triage snapshot을 남긴다.
+2. "provider listing에 보이느냐, 관련 manifest artifact가 있느냐"를 빠르게 확인한다.
 
 ### 6.4 memory-scan preset
 
@@ -236,7 +253,7 @@ Investigation은 자체 저장만 하지 않고 evidence로도 투영한다.
 
 1. `investigation_session`
    - category: `driver`
-   - subject: `driver-load:mydriver.sys`
+   - subject: `driver-visibility:mydriver.sys`
    - outcome: `active|completed`
 2. `investigation_finding`
    - category: `driver`
@@ -278,7 +295,7 @@ MVP에서는 우선 `summary + keywords` 중심으로 넣고,
 
 예:
 
-1. 최근 `driver-load` investigation에서 `target driver not listed` + `critical`
+1. 최근 `driver-visibility` investigation에서 `target driver not listed` + `critical`
 2. 그 상태에서 PR 생성 시
 3. hook이 "recent unresolved investigation finding exists" 경고 출력
 
@@ -308,7 +325,7 @@ MVP에서 반드시 들어갈 것:
 
 1. investigation session store
 2. command UX
-3. `driver-load`, `telemetry-provider`, `process-attach` preset
+3. `driver-visibility`, `provider-visibility`, `process-visibility` preset
 4. snapshot 수집
 5. finding 추출
 6. evidence 기록

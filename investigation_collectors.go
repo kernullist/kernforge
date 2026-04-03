@@ -17,8 +17,22 @@ type investigationCommandSpec struct {
 	Command string
 }
 
+func normalizeInvestigationPreset(preset string) string {
+	value := strings.ToLower(strings.TrimSpace(preset))
+	switch value {
+	case "driver-load":
+		return "driver-visibility"
+	case "process-attach":
+		return "process-visibility"
+	case "telemetry-provider":
+		return "provider-visibility"
+	default:
+		return value
+	}
+}
+
 func collectInvestigationSnapshot(ctx context.Context, ws Workspace, preset, target string, evidence *EvidenceStore) InvestigationSnapshot {
-	preset = strings.ToLower(strings.TrimSpace(preset))
+	preset = normalizeInvestigationPreset(preset)
 	snapshot := InvestigationSnapshot{
 		Kind:      preset,
 		Target:    strings.TrimSpace(target),
@@ -51,21 +65,21 @@ func collectInvestigationSnapshot(ctx context.Context, ws Workspace, preset, tar
 }
 
 func investigationPresetCommands(preset, target string) []investigationCommandSpec {
-	switch strings.ToLower(strings.TrimSpace(preset)) {
-	case "driver-load":
+	switch normalizeInvestigationPreset(preset) {
+	case "driver-visibility":
 		return []investigationCommandSpec{
 			{Label: "driver services", Name: "sc", Args: []string{"query", "type=", "driver"}, Command: "sc query type= driver"},
 			{Label: "driverquery", Name: "driverquery", Args: []string{"/v"}, Command: "driverquery /v"},
 			{Label: "verifier", Name: "verifier", Args: []string{"/querysettings"}, Command: "verifier /querysettings"},
 			{Label: "fltmc", Name: "fltmc", Args: nil, Command: "fltmc"},
 		}
-	case "process-attach":
+	case "process-visibility":
 		return []investigationCommandSpec{
 			{Label: "tasklist", Name: "tasklist", Args: []string{"/v"}, Command: "tasklist /v"},
 			{Label: "services", Name: "sc", Args: []string{"query"}, Command: "sc query"},
 			{Label: "powershell-process", Name: "powershell", Args: []string{"-NoProfile", "-Command", "Get-Process | Select-Object -First 120 Name,Id,Path | Format-Table -AutoSize | Out-String -Width 220"}, Command: "powershell Get-Process"},
 		}
-	case "telemetry-provider":
+	case "provider-visibility":
 		return []investigationCommandSpec{
 			{Label: "logman providers", Name: "logman", Args: []string{"query", "providers"}, Command: "logman query providers"},
 			{Label: "wevtutil logs", Name: "wevtutil", Args: []string{"el"}, Command: "wevtutil el"},
@@ -117,8 +131,8 @@ func investigationFindingsFromCommand(preset, target string, result Investigatio
 	var findings []InvestigationFinding
 	output := strings.ToLower(result.Output)
 	targetLower := strings.ToLower(strings.TrimSpace(target))
-	switch preset {
-	case "driver-load":
+	switch normalizeInvestigationPreset(preset) {
+	case "driver-visibility":
 		if result.Label == "verifier" {
 			if strings.Contains(output, "no drivers are currently verified") {
 				findings = append(findings, InvestigationFinding{Kind: "verifier_state", Category: "driver", Subject: "verifier inactive", Outcome: "passed", Severity: "low", SignalClass: "verifier", RiskScore: 10, Message: "Driver Verifier appears inactive."})
@@ -132,14 +146,14 @@ func investigationFindingsFromCommand(preset, target string, result Investigatio
 				findings = append(findings, InvestigationFinding{Kind: "driver_visibility", Category: "driver", Subject: "target driver not listed", Outcome: "failed", Severity: "high", SignalClass: "driver_state", RiskScore: 72, Message: "Target driver was not observed in live driver listings.", Attributes: map[string]string{"target": target}})
 			}
 		}
-	case "process-attach":
+	case "process-visibility":
 		if targetLower != "" && (result.Label == "tasklist" || result.Label == "powershell-process") {
 			base := strings.ToLower(strings.TrimSuffix(filepath.Base(targetLower), filepath.Ext(targetLower)))
 			if base != "" && !strings.Contains(output, base) {
 				findings = append(findings, InvestigationFinding{Kind: "process_presence", Category: "telemetry", Subject: "target process missing", Outcome: "failed", Severity: "high", SignalClass: "process_state", RiskScore: 68, Message: "Target process was not observed in process listings.", Attributes: map[string]string{"target": target}})
 			}
 		}
-	case "telemetry-provider":
+	case "provider-visibility":
 		if targetLower != "" && (result.Label == "logman providers" || result.Label == "wevtutil logs") {
 			base := strings.ToLower(strings.TrimSuffix(filepath.Base(targetLower), filepath.Ext(targetLower)))
 			if base != "" && !strings.Contains(output, base) {
@@ -163,10 +177,10 @@ func investigationFindingsFromCommand(preset, target string, result Investigatio
 }
 
 func investigationCategoryForPreset(preset string) string {
-	switch preset {
-	case "driver-load":
+	switch normalizeInvestigationPreset(preset) {
+	case "driver-visibility":
 		return "driver"
-	case "telemetry-provider":
+	case "provider-visibility":
 		return "telemetry"
 	case "memory-scan":
 		return "memory-scan"
@@ -183,11 +197,11 @@ func investigationArtifactsForTarget(ws Workspace, preset, target string) []stri
 		return nil
 	}
 	candidates := []string{target}
-	if strings.EqualFold(preset, "driver-load") {
+	if strings.EqualFold(normalizeInvestigationPreset(preset), "driver-visibility") {
 		base := strings.TrimSuffix(target, filepath.Ext(target))
 		candidates = append(candidates, base+".sys", base+".inf", base+".cat")
 	}
-	if strings.EqualFold(preset, "telemetry-provider") {
+	if strings.EqualFold(normalizeInvestigationPreset(preset), "provider-visibility") {
 		base := strings.TrimSuffix(target, filepath.Ext(target))
 		candidates = append(candidates, base+".man", base+".xml", base+".mc")
 	}
@@ -223,6 +237,7 @@ func resolveInvestigationArtifact(ws Workspace, candidate string) string {
 }
 
 func investigationArtifactFindings(preset, target string, artifacts []string) []InvestigationFinding {
+	preset = normalizeInvestigationPreset(preset)
 	if strings.TrimSpace(target) == "" {
 		return nil
 	}
@@ -231,10 +246,10 @@ func investigationArtifactFindings(preset, target string, artifacts []string) []
 	}
 	category := investigationCategoryForPreset(preset)
 	signal := "artifact"
-	if preset == "driver-load" {
+	if preset == "driver-visibility" {
 		signal = "driver_artifact"
 	}
-	if preset == "telemetry-provider" {
+	if preset == "provider-visibility" {
 		signal = "provider"
 	}
 	return []InvestigationFinding{{
@@ -251,6 +266,7 @@ func investigationArtifactFindings(preset, target string, artifacts []string) []
 }
 
 func investigationEvidenceReferenceFindings(preset, target string, records []EvidenceRecord) []InvestigationFinding {
+	preset = normalizeInvestigationPreset(preset)
 	category := investigationCategoryForPreset(preset)
 	var findings []InvestigationFinding
 	for _, record := range records {

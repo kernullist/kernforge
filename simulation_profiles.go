@@ -66,7 +66,7 @@ func evaluateTamperSurface(target string, evidence []EvidenceRecord, investigati
 				RiskScore:   max(82, item.RiskScore),
 				Message:     "A signing or artifact weakness suggests a straightforward replacement or registration tamper surface.",
 				RecommendedActions: []string{
-					"/investigate start driver-load " + simulationValueOrDefault(target, item.Subject),
+					"/investigate start driver-visibility " + simulationValueOrDefault(target, item.Subject),
 					"/verify",
 				},
 			})
@@ -75,13 +75,13 @@ func evaluateTamperSurface(target string, evidence []EvidenceRecord, investigati
 			findings = append(findings, SimulationFinding{
 				Kind:        "tamper_surface",
 				Category:    "telemetry",
-				Subject:     "provider-registration-bypass-surface",
+				Subject:     "provider-registration-risk-surface",
 				Severity:    "high",
 				SignalClass: "tamper",
 				RiskScore:   max(68, item.RiskScore),
-				Message:     "Provider registration weakness can allow telemetry bypass or silent degradation.",
+				Message:     "Provider registration weakness can allow telemetry degradation or visibility gaps.",
 				RecommendedActions: []string{
-					"/investigate start telemetry-provider " + simulationValueOrDefault(target, item.Subject),
+					"/investigate start provider-visibility " + simulationValueOrDefault(target, item.Subject),
 					"/evidence-search category:telemetry outcome:failed",
 				},
 			})
@@ -94,11 +94,11 @@ func evaluateTamperSurface(target string, evidence []EvidenceRecord, investigati
 					findings = append(findings, SimulationFinding{
 						Kind:        "tamper_surface",
 						Category:    finding.Category,
-						Subject:     "repeated-failure-path-exposes-tamper-surface",
+						Subject:     "repeated-failure-path-keeps-tamper-risk-open",
 						Severity:    "high",
 						SignalClass: "tamper",
 						RiskScore:   max(72, finding.RiskScore),
-						Message:     "Repeated inability to observe the target suggests a tamper path that remains unresolved.",
+						Message:     "Repeated inability to observe the target suggests an unresolved tamper-related risk path.",
 						RecommendedActions: []string{
 							"/investigate snapshot",
 							"/evidence-search outcome:failed",
@@ -128,7 +128,7 @@ func evaluateStealthSurface(target string, evidence []EvidenceRecord, investigat
 						Severity:    "high",
 						SignalClass: "stealth",
 						RiskScore:   max(70, finding.RiskScore),
-						Message:     "The target can disappear from normal observation paths, creating a stealth surface.",
+						Message:     "The target can disappear from normal observation paths, leaving a visibility gap.",
 						RecommendedActions: []string{
 							"/investigate snapshot " + strings.TrimSpace(target),
 							"/simulate forensic-blind-spot " + strings.TrimSpace(target),
@@ -146,9 +146,9 @@ func evaluateStealthSurface(target string, evidence []EvidenceRecord, investigat
 			Severity:    "medium",
 			SignalClass: "stealth",
 			RiskScore:   48,
-			Message:     "No strong indication of active observer instrumentation was found in recent investigation state.",
+			Message:     "Recent investigation state did not show strong signs of active observer instrumentation.",
 			RecommendedActions: []string{
-				"/investigate start driver-load " + strings.TrimSpace(target),
+				"/investigate start driver-visibility " + strings.TrimSpace(target),
 			},
 		})
 	}
@@ -167,7 +167,7 @@ func evaluateStealthSurface(target string, evidence []EvidenceRecord, investigat
 				Severity:    "medium",
 				SignalClass: "stealth",
 				RiskScore:   44,
-				Message:     "Recent failure evidence is concentrated in one category, which may leave alternate stealth paths weakly covered.",
+				Message:     "Recent failure evidence is concentrated in one category, which may leave alternate visibility gaps weakly covered.",
 				RecommendedActions: []string{
 					"/evidence-dashboard",
 					"/investigate list",
@@ -200,7 +200,7 @@ func evaluateForensicBlindSpot(target string, evidence []EvidenceRecord, investi
 			RiskScore:   66,
 			Message:     "Failures exist, but there is little artifact-backed evidence to reconstruct what happened later.",
 			RecommendedActions: []string{
-				"/investigate start process-attach " + strings.TrimSpace(target),
+				"/investigate start process-visibility " + strings.TrimSpace(target),
 				"/investigate snapshot",
 			},
 		})
@@ -215,7 +215,7 @@ func evaluateForensicBlindSpot(target string, evidence []EvidenceRecord, investi
 			RiskScore:   64,
 			Message:     "Recent failures exist without a corresponding live investigation record.",
 			RecommendedActions: []string{
-				"/investigate start process-attach " + strings.TrimSpace(target),
+				"/investigate start process-visibility " + strings.TrimSpace(target),
 			},
 		})
 	}
@@ -250,7 +250,7 @@ func evaluateForensicBlindSpot(target string, evidence []EvidenceRecord, investi
 			RiskScore:   46,
 			Message:     "Verification failed recently, but there is no linked live snapshot to preserve runtime state.",
 			RecommendedActions: []string{
-				"/investigate start process-attach " + strings.TrimSpace(target),
+				"/investigate start process-visibility " + strings.TrimSpace(target),
 				"/verify-dashboard",
 			},
 		})

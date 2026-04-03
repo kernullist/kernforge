@@ -294,7 +294,7 @@ func normalizeInvestigationRecord(record InvestigationRecord) InvestigationRecor
 		record.ID = fmt.Sprintf("inv-%s-%03d", record.CreatedAt.Format("20060102-150405"), record.CreatedAt.Nanosecond()/1_000_000)
 	}
 	record.Workspace = normalizePersistentMemoryWorkspace(record.Workspace)
-	record.Preset = strings.TrimSpace(record.Preset)
+	record.Preset = normalizeInvestigationPreset(record.Preset)
 	record.Target = strings.TrimSpace(record.Target)
 	record.Summary = compactPersistentMemoryText(record.Summary, 240)
 	record.Tags = uniqueStrings(record.Tags)

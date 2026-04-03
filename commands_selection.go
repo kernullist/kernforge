@@ -171,11 +171,11 @@ func (rt *runtimeState) handleSelectionsReviewCommand(args string) error {
 }
 
 func (rt *runtimeState) appendSelectionSimulationReviewContext(prompt string, selections []ViewerSelection) string {
-	return rt.appendSimulationContextForHints(prompt, buildSelectionSimulationMatchHints(selections), "Additional adversarial review focus")
+	return rt.appendSimulationContextForHints(prompt, buildSelectionSimulationMatchHints(selections), "Additional simulation risk focus")
 }
 
 func (rt *runtimeState) appendSimulationPlanningContext(prompt string, task string) string {
-	return rt.appendSimulationContextForHints(prompt, buildSimulationTextMatchHints(task), "Additional adversarial planning focus")
+	return rt.appendSimulationContextForHints(prompt, buildSimulationTextMatchHints(task), "Additional simulation planning focus")
 }
 
 func (rt *runtimeState) appendSimulationContextForHints(prompt string, hints []string, heading string) string {

@@ -12,11 +12,11 @@
 ## 2. 권장 기본 흐름
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity bypass paths and verifier interactions
+/review-selection integrity risk paths and verifier interactions
 /edit-selection harden registration and signing assumptions
 /verify
 /evidence-dashboard category:driver
@@ -25,14 +25,14 @@
 
 ## 3. 각 단계의 의미
 
-1. `/investigate start driver-load guard.sys`
-driver load 상태, verifier 상태, filter stack을 현재 시점 기준으로 잡아 둔다.
+1. `/investigate start driver-visibility guard.sys`
+현재 시점의 드라이버 가시성, verifier 상태, 관련 artifact 존재 여부를 빠르게 잡아 둔다.
 
 2. `/simulate tamper-surface guard.sys`
-integrity/signing/bypass surface를 먼저 드러낸다.
+integrity/signing/tamper risk surface를 먼저 드러낸다.
 
 3. `/review-selection ...`
-simulation finding이 선택 범위와 맞닿으면 adversarial context가 자동 주입된다.
+simulation finding이 선택 범위와 맞닿으면 risk context가 자동 주입된다.
 
 4. `/verify`
 driver category 기반 verification과 recent simulation/investigation follow-up step이 같이 들어간다.

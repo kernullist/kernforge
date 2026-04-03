@@ -105,7 +105,7 @@ func (rt *runtimeState) handleInvestigationStart(args string) error {
 	if active, ok, err := rt.investigations.Active(rt.workspace.BaseRoot); err == nil && ok {
 		return fmt.Errorf("an active investigation already exists: %s", active.ID)
 	}
-	preset := strings.TrimSpace(fields[0])
+	preset := normalizeInvestigationPreset(fields[0])
 	target := ""
 	if len(fields) > 1 {
 		target = strings.Join(fields[1:], " ")

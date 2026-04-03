@@ -26,7 +26,7 @@
 1. scanner 작업은 단순 correctness보다 탐지 coverage와 evasions가 더 중요하다.
 2. `stealth-surface`는 탐지 관찰 범위가 비는 지점을 먼저 드러낸다.
 3. selection review/edit는 실제 scanning path만 좁혀서 점검할 수 있게 해준다.
-4. `/verify`는 memory-scan category 기반 보안 review step과 recent adversarial context를 같이 넣는다.
+4. `/verify`는 memory-scan category 기반 보안 review step과 recent simulation risk context를 같이 넣는다.
 5. `/evidence-dashboard`는 최근 high-risk scanner 상태를 빠르게 보여준다.
 
 ## 4. forensic 관점도 중요한 경우

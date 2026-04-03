@@ -486,7 +486,7 @@ func builtinHookPresetRules(name string) ([]HookRule, error) {
 				},
 				Action: HookAction{
 					Type:    "warn",
-					Message: "Recent adversarial tamper-surface simulation findings suggest unresolved high-risk bypass exposure.",
+					Message: "Recent tamper-surface simulation findings suggest unresolved high-risk tamper risk.",
 				},
 			},
 			{
@@ -502,7 +502,7 @@ func builtinHookPresetRules(name string) ([]HookRule, error) {
 				},
 				Action: HookAction{
 					Type:    "warn",
-					Message: "Recent adversarial stealth-surface simulation findings indicate a visibility gap around the target.",
+					Message: "Recent stealth-surface simulation findings indicate a visibility gap around the target.",
 				},
 			},
 			{
@@ -534,7 +534,7 @@ func builtinHookPresetRules(name string) ([]HookRule, error) {
 				},
 				Action: HookAction{
 					Type:    "append_review_context",
-					Message: "Recent adversarial tamper-surface findings suggest integrity, signing, or registration bypass risk. Re-check replacement surfaces and tamper assumptions before trusting verification results.",
+					Message: "Recent tamper-surface findings suggest integrity, signing, or registration risk. Re-check replacement surfaces and tamper assumptions before trusting verification results.",
 				},
 			},
 			{
@@ -551,7 +551,7 @@ func builtinHookPresetRules(name string) ([]HookRule, error) {
 				},
 				Action: HookAction{
 					Type:    "append_context",
-					Message: "Recent adversarial stealth-surface findings indicate a visibility gap around the target. Review with emphasis on observer coverage, missing runtime visibility, and single-signal blind spots.",
+					Message: "Recent stealth-surface findings indicate a visibility gap around the target. Review with emphasis on observer coverage, missing runtime visibility, and single-signal blind spots.",
 				},
 			},
 			{
