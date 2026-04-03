@@ -38,7 +38,7 @@ func buildAdversarialVerificationStepsFromState(evidenceItems []EvidenceRecord, 
 	if hasHighRiskSimulationSignal(evidenceItems, "tamper", 60) {
 		steps = append(steps, VerificationStep{
 			Label:   "tamper surface follow-up review",
-			Command: `echo Recent tamper-surface simulation findings detected. Re-check integrity enforcement, signing gates, registration paths, and bypass-resistance assumptions before treating the change as verified.`,
+			Command: `echo Recent tamper-surface simulation findings detected. Re-check integrity enforcement, signing gates, registration paths, and tamper-resistance assumptions before treating the change as verified.`,
 			Scope:   "targeted",
 			Stage:   "targeted",
 			Tags:    []string{"simulation", "tamper", "security"},
@@ -73,7 +73,7 @@ func buildAdversarialVerificationStepsFromState(evidenceItems []EvidenceRecord, 
 	if activeCount > 0 {
 		steps = append(steps, VerificationStep{
 			Label:   "active investigation alignment review",
-			Command: `echo An active investigation session exists for this workspace. Re-check that verification covers the same live findings, targets, and suspected failure surfaces before closing the loop.`,
+			Command: `echo An active investigation session exists for this workspace. Re-check that verification covers the same live findings, targets, and suspected risk surfaces before closing the loop.`,
 			Scope:   "workspace",
 			Stage:   "targeted",
 			Tags:    []string{"investigation", "security"},

@@ -12,11 +12,11 @@ This playbook explains how to use Kernforge effectively for driver, signing, sym
 ## 2. Recommended Baseline Flow
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity bypass paths and verifier interactions
+/review-selection integrity risk paths and verifier interactions
 /edit-selection harden registration and signing assumptions
 /verify
 /evidence-dashboard category:driver
@@ -25,14 +25,14 @@ This playbook explains how to use Kernforge effectively for driver, signing, sym
 
 ## 3. What Each Stage Does
 
-1. `/investigate start driver-load guard.sys`
-Captures the current driver load state, verifier state, and filter stack.
+1. `/investigate start driver-visibility guard.sys`
+Captures a lightweight snapshot of current driver visibility, verifier state, and related artifacts.
 
 2. `/simulate tamper-surface guard.sys`
-Surfaces likely integrity, signing, and bypass pressure points.
+Surfaces likely integrity, signing, and tamper-risk pressure points.
 
 3. `/review-selection ...`
-If simulation findings match the selected range, adversarial context is injected automatically.
+If simulation findings match the selected range, simulation risk context is injected automatically.
 
 4. `/verify`
 Adds driver-focused verification steps and recent investigation or simulation follow-up review steps.

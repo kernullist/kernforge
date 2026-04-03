@@ -26,7 +26,7 @@ This playbook explains how to use Kernforge for pattern scan, signature scan, me
 1. Scanner work is usually about detection coverage and evasions, not just correctness.
 2. `stealth-surface` surfaces observer gaps first.
 3. Selection review and edit keep the work focused on the real scanning path.
-4. `/verify` adds memory-scan review steps plus recent adversarial context.
+4. `/verify` adds memory-scan review steps plus recent simulation risk context.
 5. `/evidence-dashboard` gives a fast current view of high-risk scanner state.
 
 ## 4. When Forensics Also Matter

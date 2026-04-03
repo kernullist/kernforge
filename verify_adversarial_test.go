@@ -44,12 +44,12 @@ func TestBuildAdversarialVerificationStepsFromStateAddsSimulationAndInvestigatio
 		},
 	)
 	if len(steps) < 3 {
-		t.Fatalf("expected multiple adversarial follow-up steps, got %#v", steps)
+		t.Fatalf("expected multiple simulation follow-up steps, got %#v", steps)
 	}
 	joinedLabels := strings.ToLower(steps[0].Label + " " + steps[1].Label + " " + steps[2].Label)
 	for _, needle := range []string{"tamper", "forensic", "investigation"} {
 		if !strings.Contains(joinedLabels, needle) && !strings.Contains(strings.ToLower(note), needle) {
-			t.Fatalf("expected adversarial note or labels to include %q, got labels=%q note=%q", needle, joinedLabels, note)
+			t.Fatalf("expected simulation note or labels to include %q, got labels=%q note=%q", needle, joinedLabels, note)
 		}
 	}
 }

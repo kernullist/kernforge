@@ -25,7 +25,7 @@ The best current loop looks like this:
 
 1. Change code or inspect a live target.
 2. If live state matters, use `/investigate` to capture the current system state.
-3. If attacker pressure matters, use `/simulate` to evaluate tamper, stealth, or forensic blind spots.
+3. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
 4. Use `/review-selection`, `/edit-selection`, or `/do-plan-review` to drive the work.
 5. Run `/verify` to execute the verification plan.
 6. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
@@ -33,7 +33,7 @@ The best current loop looks like this:
 
 Practical interpretation:
 1. `investigate` captures what is happening live.
-2. `simulate` highlights attacker-facing weak spots.
+2. `simulate` highlights risk-oriented weak spots using lightweight heuristics.
 3. `verify` turns code changes and recent context into a concrete validation plan.
 4. `evidence` stores structured recent signals.
 5. `memory` keeps conclusions across sessions.
@@ -166,21 +166,28 @@ Useful commands:
 - `/investigate dashboard-html`
 
 Current presets:
-1. `driver-load`
-2. `process-attach`
-3. `telemetry-provider`
+1. `driver-visibility`
+2. `process-visibility`
+3. `provider-visibility`
 
 Best used when:
 1. Static code review is not enough.
 2. You need to capture live verifier, module, driver, service, or provider state before editing.
 3. You want a reusable record of the real runtime state that informed later decisions.
+4. You want a lightweight visibility triage snapshot before deeper debugging.
+
+Important scope limit:
+1. `driver-visibility` is not a deep root-cause analyzer for driver load failures.
+2. Its current implementation is intentionally narrow and focuses on user-mode-visible driver, service, filter, verifier, and artifact state.
+3. `process-visibility` is a process-listing triage snapshot, not a process attach or protection analyzer.
+4. `provider-visibility` is a provider-listing triage snapshot, not a deep ETW or provider root-cause analyzer.
 
 ### 2.6 Adversarial Simulation Profiles
 
 Purpose:
-1. Evaluate recent evidence and investigation state from an attacker perspective.
-2. Surface tamper, stealth, and forensic blind spots.
-3. Feed that perspective back into review, edit, plan-review, and verification flows.
+1. Evaluate recent evidence and investigation state through a lightweight risk lens.
+2. Surface tamper, visibility, and forensic blind spots.
+3. Feed that heuristic context back into review, edit, plan-review, and verification flows.
 
 Useful commands:
 - `/simulate`
@@ -198,9 +205,13 @@ Current profiles:
 3. `forensic-blind-spot`
 
 Best used when:
-1. You care about integrity bypass or registration bypass.
+1. You care about integrity or registration risk.
 2. You suspect observer or telemetry visibility gaps.
 3. You worry that post-incident artifacts may be too weak.
+
+Important scope limit:
+1. Simulation is a heuristic risk review, not proof of exploitability.
+2. The profile names describe interpretation lenses, not offensive capability.
 
 ### 2.7 Selection-First Review And Edit
 
@@ -252,13 +263,13 @@ Situation:
 - Similar failures happened recently.
 
 Recommended flow:
-1. `/investigate start driver-load guard.sys`
+1. `/investigate start driver-visibility guard.sys`
 2. `/investigate snapshot`
-3. `/investigate note current verifier state and loaded filter stack before edit`
+3. `/investigate note current driver visibility snapshot captured before edit`
 4. `/simulate tamper-surface guard.sys`
 5. `/open driver/guard.cpp`
 6. Select the relevant protection logic in the viewer.
-7. `/review-selection integrity bypass paths and verifier interactions`
+7. `/review-selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
 10. `/evidence-dashboard category:driver`
@@ -266,9 +277,9 @@ Recommended flow:
 12. `/investigate stop hardened signing path reviewed`
 
 What Kernforge adds here:
-1. A live state capture before editing.
-2. A tamper-oriented attacker review before editing.
-3. Automatic adversarial prompt context during review and edit.
+1. A live driver-visibility capture before editing.
+2. A tamper-oriented risk review before editing.
+3. Automatic risk-oriented prompt context during review and edit.
 4. Driver-aware verification steps plus recent investigation and simulation follow-up review steps.
 5. Evidence-aware push or PR policy later.
 
@@ -280,7 +291,7 @@ Situation:
 - You also care about observer coverage and post-incident traceability.
 
 Recommended flow:
-1. `/investigate start telemetry-provider MyProvider`
+1. `/investigate start provider-visibility MyProvider`
 2. `/investigate snapshot MyProvider`
 3. `/simulate stealth-surface MyProvider`
 4. `/open telemetry/provider.man`
@@ -317,7 +328,7 @@ Recommended flow:
 
 Why this works well:
 1. Scanner work is usually about coverage and evasion, not just correctness.
-2. Simulation brings attacker pressure into the prompt.
+2. Simulation brings an extra risk lens into the prompt.
 3. Verification reasserts those review concerns before the loop closes.
 
 ### 3.4 Large Multi-Step Change With Plan Review
@@ -346,20 +357,22 @@ Current strength:
 Basic usage:
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /investigate note verifier enabled on target system
 /investigate stop initial driver state captured
 ```
 
 Good use cases:
-1. Before editing, when you want the current driver stack or verifier state on record.
-2. When you want to confirm a telemetry provider is really visible live.
-3. When you want a reusable runtime record that later verification and review can reference.
+1. Before editing, when you want the current driver visibility or verifier state on record.
+2. When you want a quick triage snapshot before deeper driver load debugging.
+3. When you want to confirm a telemetry provider is really visible live.
+4. When you want a reusable runtime record that later verification and review can reference.
 
 Key interpretation:
 1. Investigation does not replace verification.
 2. It captures the real-world state that should inform later work.
+3. In particular, `driver-visibility` is a lightweight visibility snapshot, not a full driver load analyzer.
 
 ### 4.2 `/simulate`
 
@@ -372,13 +385,13 @@ Basic usage:
 ```
 
 Good use cases:
-1. Right after a driver change, to look for integrity or registration bypass surface.
+1. Right after a driver change, to look for integrity or registration risk surface.
 2. Right after a telemetry change, to inspect observer visibility gaps.
 3. When you want to know whether post-incident artifacts will still be usable.
 
 Key interpretation:
 1. Simulation is not proof of exploitation.
-2. It is a structured way to highlight attacker-relevant weak spots.
+2. It is a structured way to highlight heuristic risk signals that deserve review.
 
 ### 4.3 `/review-selection` And `/edit-selection`
 
@@ -386,7 +399,7 @@ Basic usage:
 
 ```text
 /open driver/guard.cpp
-/review-selection check bypass surfaces and cleanup paths
+/review-selection check risk surfaces and cleanup paths
 /edit-selection harden the selected registration path
 ```
 
@@ -395,7 +408,7 @@ Good use cases:
 2. When you want recent simulation findings tied directly to the selected area.
 
 Current automatic behavior:
-1. If recent simulation findings match the selected path, Kernforge injects `Additional adversarial review focus` into review and edit prompts.
+1. If recent simulation findings match the selected path, Kernforge injects `Additional simulation risk focus` into review and edit prompts.
 
 ### 4.4 `/do-plan-review`
 
@@ -408,7 +421,7 @@ Basic usage:
 Good use cases:
 1. Large or high-risk changes.
 2. Work where rollback points and sequencing matter.
-3. Cases where attacker-oriented thinking should shape the implementation plan before edits begin.
+3. Cases where risk-oriented thinking should shape the implementation plan before edits begin.
 
 Current automatic behavior:
 1. Matching recent simulation findings are injected into the planning prompt.
@@ -522,7 +535,7 @@ Best when:
 ### 5.5 `/simulate dashboard`
 
 Best when:
-1. You want to see which attack profiles you have been using.
+1. You want to see which risk profiles you have been using.
 2. You want severity, signal, finding, and recommended-action breakdowns.
 
 ## 6. Suggested Baselines By Team
@@ -531,7 +544,7 @@ Best when:
 
 Recommended:
 1. Enable `windows-security`.
-2. Run `driver-load` investigation before risky changes.
+2. Run `driver-visibility` investigation before risky changes.
 3. Run `tamper-surface` simulation before review or edit.
 4. Run `/verify`.
 5. Inspect `/evidence-dashboard category:driver`.
@@ -540,7 +553,7 @@ Recommended:
 ### 6.2 Telemetry Team
 
 Recommended:
-1. Use `telemetry-provider` investigation before manifest and provider changes.
+1. Use `provider-visibility` investigation before manifest and provider changes.
 2. Run `stealth-surface` after provider changes.
 3. Run `forensic-blind-spot` when incident traceability matters.
 4. Run `/verify`.
@@ -573,11 +586,11 @@ Recommended progression:
 ### Scenario A: Driver Integrity Hardening
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity bypass paths
+/review-selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
 /evidence-dashboard category:driver
@@ -586,7 +599,7 @@ Recommended progression:
 ### Scenario B: Telemetry Provider Visibility Drift
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
@@ -609,7 +622,7 @@ Recommended progression:
 
 The best current one-line description of Kernforge is this:
 
-"Observe first, stress the change from an adversarial angle, work in focused code regions, verify with recent context, and feed the result back into evidence, memory, and policy."
+"Observe first, apply a risk lens, work in focused code regions, verify with recent context, and feed the result back into evidence, memory, and policy."
 
 That means the strongest current loop is:
 

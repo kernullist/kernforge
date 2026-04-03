@@ -12,7 +12,7 @@
 ## 2. 권장 기본 흐름
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
@@ -33,7 +33,7 @@
 ```
 
 이 흐름이 좋은 이유:
-1. telemetry는 "보이는가"와 "나중에 추적 가능한가"를 같이 봐야 한다.
+1. `provider-visibility`는 deep ETW/provider root cause 분석이 아니라 현재 provider visibility triage snapshot이다.
 2. stealth-surface는 observer coverage를,
 3. forensic-blind-spot은 artifact retention을 다시 보게 만든다.
 

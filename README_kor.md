@@ -205,14 +205,16 @@ Driver 변경을 안전하게 밀어붙이는 가장 기본 흐름:
 
 더 공격자 관점까지 포함한 권장 흐름:
 
-1. `/investigate start driver-load guard.sys`
+1. `/investigate start driver-visibility guard.sys`
 2. `/investigate snapshot`
 3. `/simulate tamper-surface guard.sys`
 4. `/open driver/guard.cpp`
-5. `/review-selection integrity bypass paths`
+5. `/review-selection integrity risk paths`
 6. `/edit-selection harden the selected integrity checks`
 7. `/verify`
 8. `/evidence-dashboard category:driver`
+
+여기서 `driver-visibility` preset은 드라이버 로드 root cause를 깊게 파고드는 분석기가 아니라, 현재 시점의 드라이버 가시성, verifier 상태, 관련 artifact 존재 여부를 빠르게 남기는 lightweight triage snapshot이다.
 
 이 흐름 전체 설명은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 있습니다.
 
@@ -655,7 +657,7 @@ REPL에서 변경:
 
 ## Evidence, Investigation, Simulation
 
-Kernforge는 이제 evidence 축적, live investigation 상태, adversarial simulation을 포함하는 보안 중심 운영 루프를 제공합니다.
+Kernforge는 이제 evidence 축적, live investigation 상태, risk-oriented simulation을 포함하는 보안 중심 운영 루프를 제공합니다.
 
 evidence 관련 명령:
 

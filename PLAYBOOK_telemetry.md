@@ -12,7 +12,7 @@ This playbook explains how to use Kernforge for ETW, provider, manifest, XML, ru
 ## 2. Recommended Baseline Flow
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
@@ -33,7 +33,7 @@ This playbook explains how to use Kernforge for ETW, provider, manifest, XML, ru
 ```
 
 Why this helps:
-1. Telemetry work is about both current visibility and future traceability.
+1. `provider-visibility` is a visibility triage snapshot, not a deep ETW or provider root-cause analyzer.
 2. `stealth-surface` checks observer coverage.
 3. `forensic-blind-spot` checks artifact retention and reconstruction assumptions.
 

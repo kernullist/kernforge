@@ -35,8 +35,8 @@ func TestAppendSelectionSimulationReviewContext(t *testing.T) {
 	prompt := rt.appendSelectionSimulationReviewContext("review prompt", []ViewerSelection{
 		{FilePath: "src/guard.cpp"},
 	})
-	if !strings.Contains(prompt, "Additional adversarial review focus:") {
-		t.Fatalf("expected adversarial context in prompt, got %q", prompt)
+	if !strings.Contains(prompt, "Additional simulation risk focus:") {
+		t.Fatalf("expected simulation risk context in prompt, got %q", prompt)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestAppendSimulationPlanningContext(t *testing.T) {
 		},
 	}
 	prompt := rt.appendSimulationPlanningContext("plan prompt", "investigate guard signing hardening")
-	if !strings.Contains(prompt, "Additional adversarial planning focus:") {
+	if !strings.Contains(prompt, "Additional simulation planning focus:") {
 		t.Fatalf("expected planning context in prompt, got %q", prompt)
 	}
 }

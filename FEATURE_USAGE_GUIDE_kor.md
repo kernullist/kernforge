@@ -23,7 +23,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 1. 변경하거나 관찰한다.
 2. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
-3. 공격자 관점이 중요하면 `/simulate`로 tamper, stealth, forensic blind spot을 본다.
+3. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
 4. `/review-selection`, `/edit-selection`, `/do-plan-review`로 실제 작업을 진행한다.
 5. `/verify`로 verification plan을 돌린다.
 6. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
@@ -164,21 +164,28 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/investigate dashboard-html`
 
 현재 preset:
-1. `driver-load`
-2. `process-attach`
-3. `telemetry-provider`
+1. `driver-visibility`
+2. `process-visibility`
+3. `provider-visibility`
 
 좋은 상황:
 1. 코드 수정 전에 현재 로딩 상태, verifier 상태, provider 상태를 먼저 보고 싶은 경우
 2. "재현은 되는데 왜 그런지 live 상태가 필요하다"는 경우
 3. 단순 정적 코드 리뷰보다 현장 관찰이 중요한 경우
+4. 깊은 원인 분석 전에 가시성 triage snapshot을 남기고 싶은 경우
+
+중요한 범위 제한:
+1. `driver-visibility`는 드라이버 로드 실패 root cause를 깊게 분석하는 preset이 아니다.
+2. 현재 구현은 사용자 모드에서 보이는 driver/service/filter/verifier 상태와 workspace artifact 존재 여부를 빠르게 남기는 데 초점이 있다.
+3. `process-visibility`는 attach나 protection 분석기가 아니라 process listing 기반 triage snapshot이다.
+4. `provider-visibility`는 ETW/provider registration root cause 분석기가 아니라 provider listing 기반 triage snapshot이다.
 
 ### 2.6 Adversarial Simulation Profiles
 
 목적:
 1. recent failed evidence와 investigation 결과를 바탕으로 공격자 관점 리스크를 평가한다.
-2. tamper, stealth, forensic blind spot 관점에서 약한 면을 드러낸다.
-3. review, edit, plan-review, verify에 다시 그 관점을 주입한다.
+2. tamper, visibility, forensic blind spot 관점에서 약한 면을 드러낸다.
+3. review, edit, plan-review, verify에 heuristic risk context를 다시 주입한다.
 
 대표 명령:
 - `/simulate`
@@ -196,9 +203,13 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. `forensic-blind-spot`
 
 좋은 상황:
-1. integrity, signing, bypass surface가 걱정되는 driver/anti-cheat 작업
+1. integrity, signing, registration risk가 걱정되는 driver/anti-cheat 작업
 2. observer coverage, telemetry visibility가 약할 수 있는 telemetry 작업
 3. forensic artifact가 부족해 사후 분석이 힘들 수 있는 작업
+
+중요한 범위 제한:
+1. simulation은 실제 공격 재현이나 exploitability 증명이 아니라 heuristic risk review다.
+2. `tamper-surface`, `stealth-surface`, `forensic-blind-spot`은 offensive capability가 아니라 해석 프레임 이름이다.
 
 ### 2.7 Selection-First Review / Edit
 
@@ -250,13 +261,13 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - 최근에도 비슷한 실패를 겪은 적이 있다.
 
 추천 흐름:
-1. `/investigate start driver-load guard.sys`
+1. `/investigate start driver-visibility guard.sys`
 2. `/investigate snapshot`
-3. `/investigate note current verifier state and loaded filter stack before edit`
+3. `/investigate note current driver visibility snapshot captured before edit`
 4. `/simulate tamper-surface guard.sys`
 5. `/open driver/guard.cpp`
 6. viewer에서 보호 로직 부분을 선택한다.
-7. `/review-selection integrity bypass paths and verifier interactions`
+7. `/review-selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
 10. `/evidence-dashboard category:driver`
@@ -264,8 +275,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 12. 필요하면 `/investigate stop hardened signing path reviewed`
 
 이 흐름에서 Kernforge가 해주는 일:
-1. live driver 상태를 investigation evidence로 남긴다.
-2. tamper-surface simulation으로 bypass 가능성을 먼저 드러낸다.
+1. live driver visibility 상태를 investigation evidence로 남긴다.
+2. tamper-surface simulation으로 tamper risk 신호를 먼저 드러낸다.
 3. 선택한 코드 범위 리뷰/수정 시 simulation 관점을 prompt에 자동 주입한다.
 4. `/verify`가 driver security verification과 recent simulation/investigation follow-up step을 같이 넣는다.
 5. evidence/hook이 push/PR 전 마지막 방어를 맡는다.
@@ -284,7 +295,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - stealth 관점에서 observer coverage도 같이 보고 싶다.
 
 추천 흐름:
-1. `/investigate start telemetry-provider MyProvider`
+1. `/investigate start provider-visibility MyProvider`
 2. `/investigate snapshot MyProvider`
 3. `/simulate stealth-surface MyProvider`
 4. `/open telemetry/provider.man`
@@ -350,20 +361,22 @@ Kernforge가 도와주는 부분:
 기본 사용:
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /investigate note verifier enabled on target system
 /investigate stop initial driver state captured
 ```
 
 좋은 사용 예:
-1. 코드 수정 전에 현재 driver stack과 verifier 상태를 고정하고 싶을 때
-2. telemetry provider가 정말 보이는지 live 상태를 남기고 싶을 때
-3. 나중에 "그때 live 상태가 어땠지?"를 evidence로 다시 찾고 싶을 때
+1. 코드 수정 전에 현재 driver visibility와 verifier 상태를 고정하고 싶을 때
+2. driver load root cause를 파기 전에 현재 가시성 triage를 남기고 싶을 때
+3. telemetry provider가 정말 보이는지 live 상태를 남기고 싶을 때
+4. 나중에 "그때 live 상태가 어땠지?"를 evidence로 다시 찾고 싶을 때
 
 추천 해석:
 1. investigation은 verification 대체가 아니다.
 2. verification 전에 현실 상태를 고정하는 역할이다.
+3. 특히 `driver-visibility`는 깊은 로드 분석기가 아니라 lightweight visibility snapshot이다.
 
 ### 4.2 `/simulate`
 
@@ -376,13 +389,13 @@ Kernforge가 도와주는 부분:
 ```
 
 좋은 사용 예:
-1. driver 변경 직후 integrity/signing bypass 면을 보고 싶을 때
+1. driver 변경 직후 integrity/signing risk 면을 보고 싶을 때
 2. telemetry 변경 후 observer visibility gap을 보고 싶을 때
 3. forensic artifact가 부족한 변경인지 보고 싶을 때
 
 추천 해석:
 1. simulation은 "지금 당장 exploit 가능"을 증명하는 도구가 아니다.
-2. 공격자 관점에서 확인해야 할 약한 면을 정리하는 도구다.
+2. evidence와 investigation 결과를 바탕으로 risk signal을 구조화하는 도구다.
 
 ### 4.3 `/review-selection`과 `/edit-selection`
 
@@ -390,7 +403,7 @@ Kernforge가 도와주는 부분:
 
 ```text
 /open driver/guard.cpp
-/review-selection check bypass surfaces and cleanup paths
+/review-selection check risk surfaces and cleanup paths
 /edit-selection harden the selected registration path
 ```
 
@@ -400,7 +413,7 @@ Kernforge가 도와주는 부분:
 
 현재 자동 연동:
 1. 선택한 파일 경로와 맞닿는 recent simulation finding이 있으면
-2. review/edit prompt에 `Additional adversarial review focus`가 자동 주입된다.
+2. review/edit prompt에 `Additional simulation risk focus`가 자동 주입된다.
 
 ### 4.4 `/do-plan-review`
 
@@ -536,7 +549,7 @@ Kernforge가 도와주는 부분:
 
 추천:
 1. `windows-security` preset 활성화
-2. 코드 수정 전에 `driver-load` investigation
+2. 코드 수정 전에 `driver-visibility` investigation
 3. 수정 전에 `tamper-surface` simulation
 4. `/verify`
 5. `/evidence-dashboard category:driver`
@@ -545,7 +558,7 @@ Kernforge가 도와주는 부분:
 ### 6.2 Telemetry 팀
 
 추천:
-1. provider manifest 작업 전 `telemetry-provider` investigation
+1. provider manifest 작업 전 `provider-visibility` investigation
 2. 수정 후 `stealth-surface`, 필요하면 `forensic-blind-spot`
 3. `/verify`
 4. `/evidence-search category:telemetry outcome:failed`
@@ -577,11 +590,11 @@ Kernforge가 도와주는 부분:
 ### 시나리오 A: driver integrity hardening
 
 ```text
-/investigate start driver-load guard.sys
+/investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity bypass paths
+/review-selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
 /evidence-dashboard category:driver
@@ -590,7 +603,7 @@ Kernforge가 도와주는 부분:
 ### 시나리오 B: telemetry provider visibility drift
 
 ```text
-/investigate start telemetry-provider MyProvider
+/investigate start provider-visibility MyProvider
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
@@ -613,7 +626,7 @@ Kernforge가 도와주는 부분:
 
 현재 Kernforge를 가장 잘 쓰는 방법은 다음 한 문장으로 요약할 수 있다.
 
-"먼저 관찰하고, 공격자 관점으로 흔들어 보고, 선택 영역 단위로 리뷰/수정하고, verification으로 닫고, evidence와 memory를 다시 정책으로 사용한다."
+"먼저 관찰하고, risk lens로 약한 면을 점검하고, 선택 영역 단위로 리뷰/수정하고, verification으로 닫고, evidence와 memory를 다시 정책으로 사용한다."
 
 즉 가장 추천되는 루프는 아래와 같다.
 

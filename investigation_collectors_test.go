@@ -6,7 +6,7 @@ import (
 )
 
 func TestInvestigationArtifactFindingsDriverMissing(t *testing.T) {
-	findings := investigationArtifactFindings("driver-load", "guard.sys", nil)
+	findings := investigationArtifactFindings("driver-visibility", "guard.sys", nil)
 	if len(findings) != 1 {
 		t.Fatalf("expected one finding, got %#v", findings)
 	}
@@ -37,7 +37,7 @@ func TestInvestigationEvidenceReferenceFindingsMatchesCategoryAndTarget(t *testi
 			RiskScore:   65,
 		},
 	}
-	findings := investigationEvidenceReferenceFindings("driver-load", "guard.sys", records)
+	findings := investigationEvidenceReferenceFindings("driver-visibility", "guard.sys", records)
 	if len(findings) != 1 {
 		t.Fatalf("expected one finding, got %#v", findings)
 	}

@@ -631,7 +631,7 @@ Verification And Checkpoints:
 /investigate [subcommand] Manage live investigation sessions and snapshots
 /investigate-dashboard  Show an investigation dashboard for this workspace
 /investigate-dashboard-html Generate and open an HTML investigation dashboard
-/simulate [profile]   Run adversarial simulation profiles against recent evidence and investigations
+/simulate [profile]   Run risk-oriented simulation profiles against recent evidence and investigations
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
@@ -848,7 +848,7 @@ Investigation commands capture live Windows state and store the result as invest
 
 /investigate start <preset> [target]
 - Start a new investigation session.
-- MVP presets: driver-load, process-attach, telemetry-provider
+- MVP presets: driver-visibility, process-visibility, provider-visibility
 
 /investigate snapshot [target]
 - Capture a live snapshot for the active investigation.
@@ -873,7 +873,7 @@ Investigation commands capture live Windows state and store the result as invest
 `), true
 	case "simulate", "simulation":
 		return strings.TrimSpace(`
-Simulation commands evaluate recent evidence and investigation state from an adversarial point of view.
+Simulation commands evaluate recent evidence and investigation state through lightweight risk-focused heuristics.
 
 /simulate
 - Show available simulation profiles and the most recent simulation status.
