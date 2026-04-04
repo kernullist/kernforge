@@ -15,31 +15,52 @@ Intended readers:
 Goals of this guide:
 1. Explain real usage patterns instead of just listing features.
 2. Show which command combinations fit which kinds of problems.
-3. Teach the full loop of `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
+3. Teach the full loop of `analyze-project -> analyze-performance -> investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
 ## 1. The Best Way To Think About Kernforge
 
-Kernforge can be used like a normal coding CLI, but its strongest current value comes from running a deliberate protection loop around sensitive engineering work.
+Kernforge can be used like a normal coding CLI, but its strongest current value now comes from building a reusable project knowledge pack before running sensitive engineering changes through the rest of the loop.
 
 The best current loop looks like this:
 
-1. Change code or inspect a live target.
-2. If live state matters, use `/investigate` to capture the current system state.
-3. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
-4. Use `/review-selection`, `/edit-selection`, or `/do-plan-review` to drive the work.
-5. Run `/verify` to execute the verification plan.
-6. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
-7. Let hooks act as the final policy layer before push or PR.
+1. If the workspace is large or unfamiliar, run `/analyze-project` first.
+2. Use `/analyze-performance` to turn the latest knowledge pack into a bottleneck lens when performance or startup paths matter.
+3. If live state matters, use `/investigate` to capture the current system state.
+4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
+5. Use `/review-selection`, `/edit-selection`, or `/do-plan-review` to drive the work.
+6. Run `/verify` to execute the verification plan.
+7. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
+8. Let hooks act as the final policy layer before push or PR.
 
 Practical interpretation:
-1. `investigate` captures what is happening live.
-2. `simulate` highlights risk-oriented weak spots using lightweight heuristics.
-3. `verify` turns code changes and recent context into a concrete validation plan.
-4. `evidence` stores structured recent signals.
-5. `memory` keeps conclusions across sessions.
-6. `hooks` turn that accumulated context back into guardrails.
+1. `analyze-project` builds a reusable architecture map instead of a disposable summary.
+2. `analyze-performance` extracts likely hot paths and bottlenecks from the latest architecture knowledge.
+3. `investigate` captures what is happening live.
+4. `simulate` highlights risk-oriented weak spots using lightweight heuristics.
+5. `verify` turns code changes and recent context into a concrete validation plan.
+6. `evidence` stores structured recent signals.
+7. `memory` keeps conclusions across sessions.
+8. `hooks` turn that accumulated context back into guardrails.
 
 ## 2. Core Features And When To Use Them
+
+### 2.0 Project Analysis
+
+Purpose:
+1. Build a reusable architecture document for a large workspace.
+2. Split analysis across multiple worker and reviewer passes.
+3. Keep a `latest` knowledge pack and performance lens for follow-up work.
+4. Reuse unchanged shard results when incremental mode is enabled.
+
+Useful commands:
+- `/analyze-project <goal>`
+- `/analyze-performance [focus]`
+- `/set-analysis-models`
+
+Best used when:
+1. You are entering a large codebase and need more than an ad hoc summary.
+2. The work spans startup, integrity, ETW, scanner, compression, memory, or upload paths.
+3. You want follow-up review and verification to inherit a stable architecture view.
 
 ### 2.1 Hook Engine
 

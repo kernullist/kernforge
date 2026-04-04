@@ -12,6 +12,8 @@
 ## 2. 권장 기본 흐름
 
 ```text
+/analyze-project scanner stealth, false-positive, and memory hot path architecture
+/analyze-performance scanner
 /simulate stealth-surface scanner-core
 /open scanner/patternscan.cpp
 /review-selection false positives, stealth coverage, and performance ceilings
@@ -24,10 +26,11 @@
 ## 3. 이 흐름이 좋은 이유
 
 1. scanner 작업은 단순 correctness보다 탐지 coverage와 evasions가 더 중요하다.
-2. `stealth-surface`는 탐지 관찰 범위가 비는 지점을 먼저 드러낸다.
-3. selection review/edit는 실제 scanning path만 좁혀서 점검할 수 있게 해준다.
-4. `/verify`는 memory-scan category 기반 보안 review step과 recent simulation risk context를 같이 넣는다.
-5. `/evidence-dashboard`는 최근 high-risk scanner 상태를 빠르게 보여준다.
+2. project analysis가 scanning path, hot path, 위험 의존성을 먼저 구조화해 준다.
+3. `stealth-surface`는 탐지 관찰 범위가 비는 지점을 먼저 드러낸다.
+4. selection review/edit는 실제 scanning path만 좁혀서 점검할 수 있게 해준다.
+5. `/verify`는 memory-scan category 기반 보안 review step과 recent simulation risk context를 같이 넣는다.
+6. `/evidence-dashboard`는 최근 high-risk scanner 상태를 빠르게 보여준다.
 
 ## 4. forensic 관점도 중요한 경우
 

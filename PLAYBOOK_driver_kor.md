@@ -12,6 +12,8 @@
 ## 2. 권장 기본 흐름
 
 ```text
+/analyze-project driver startup, signing, and integrity architecture
+/analyze-performance startup
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
@@ -25,19 +27,22 @@
 
 ## 3. 각 단계의 의미
 
-1. `/investigate start driver-visibility guard.sys`
+1. `/analyze-project ...`
+startup, signing, integrity, verification 민감 경로를 재사용 가능한 구조 지식으로 정리한다.
+
+2. `/investigate start driver-visibility guard.sys`
 현재 시점의 드라이버 가시성, verifier 상태, 관련 artifact 존재 여부를 빠르게 잡아 둔다.
 
-2. `/simulate tamper-surface guard.sys`
+3. `/simulate tamper-surface guard.sys`
 integrity/signing/tamper risk surface를 먼저 드러낸다.
 
-3. `/review-selection ...`
+4. `/review-selection ...`
 simulation finding이 선택 범위와 맞닿으면 risk context가 자동 주입된다.
 
-4. `/verify`
+5. `/verify`
 driver category 기반 verification과 recent simulation/investigation follow-up step이 같이 들어간다.
 
-5. `/evidence-dashboard category:driver`
+6. `/evidence-dashboard category:driver`
 최근 signing/symbol/package/verifier 관련 failed evidence를 한눈에 본다.
 
 ## 4. 특히 자주 보는 신호

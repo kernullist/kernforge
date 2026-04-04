@@ -12,6 +12,8 @@
 ## 2. 권장 기본 흐름
 
 ```text
+/analyze-project telemetry provider visibility and manifest architecture
+/analyze-performance ETW
 /investigate start provider-visibility MyProvider
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
@@ -33,9 +35,10 @@
 ```
 
 이 흐름이 좋은 이유:
-1. `provider-visibility`는 deep ETW/provider root cause 분석이 아니라 현재 provider visibility triage snapshot이다.
-2. stealth-surface는 observer coverage를,
-3. forensic-blind-spot은 artifact retention을 다시 보게 만든다.
+1. project analysis가 provider registration, manifest, visibility path를 재사용 가능한 구조 지식으로 만든다.
+2. `provider-visibility`는 deep ETW/provider root cause 분석이 아니라 현재 provider visibility triage snapshot이다.
+3. stealth-surface는 observer coverage를,
+4. forensic-blind-spot은 artifact retention을 다시 보게 만든다.
 
 ## 4. 특히 자주 보는 신호
 

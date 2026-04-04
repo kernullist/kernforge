@@ -3,17 +3,19 @@
 This short guide is for getting productive with Kernforge as quickly as possible.
 
 The key loop to remember:
-1. Use `/investigate` when live state matters.
-2. Use `/simulate` when an extra risk lens matters.
-3. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
-4. Use `/verify` to close the loop.
-5. Inspect the result with `/evidence-dashboard` and `/mem-search`.
+1. Use `/analyze-project` first when the workspace is large or unfamiliar.
+2. Use `/investigate` when live state matters.
+3. Use `/simulate` when an extra risk lens matters.
+4. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
+5. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
 ## 1. The Core Loop In Five Minutes
 
 Recommended sequence:
 
 ```text
+/analyze-project driver startup, integrity, and signing architecture
+/analyze-performance startup
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
@@ -25,14 +27,20 @@ Recommended sequence:
 ```
 
 What this does:
-1. Capture the current live state first.
-2. `driver-visibility` is a lightweight visibility triage snapshot, not a deep driver load diagnostic.
-3. Check the target through an extra risk lens.
-4. Review and edit only the selected code.
-5. Verify with the current context.
-6. Inspect the resulting risk picture.
+1. Build a reusable architecture map and performance lens first.
+2. Capture the current live state.
+3. `driver-visibility` is a lightweight visibility triage snapshot, not a deep driver load diagnostic.
+4. Check the target through an extra risk lens.
+5. Review and edit only the selected code.
+6. Verify with the current context.
+7. Inspect the resulting risk picture.
 
 ## 2. Most Common Commands
+
+Project analysis:
+- `/analyze-project <goal>`
+- `/analyze-performance [focus]`
+- `/set-analysis-models`
 
 Investigation:
 - `/investigate`
@@ -69,6 +77,7 @@ Policy:
 ### Driver change
 
 ```text
+/analyze-project driver startup and integrity architecture
 /investigate start driver-visibility guard.sys
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
@@ -80,6 +89,7 @@ Policy:
 ### Telemetry change
 
 ```text
+/analyze-project telemetry provider visibility and manifest architecture
 /investigate start provider-visibility MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
@@ -91,9 +101,10 @@ Policy:
 ## 4. What To Check First When Something Feels Wrong
 
 1. `/status`
-2. `/evidence-dashboard`
-3. `/mem-search category:driver` or `/mem-search category:telemetry`
-4. `/hooks`
+2. `/analyze-performance startup` or another relevant focus
+3. `/evidence-dashboard`
+4. `/mem-search category:driver` or `/mem-search category:telemetry`
+5. `/hooks`
 
 ## 5. Next Documents
 

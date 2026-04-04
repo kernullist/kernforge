@@ -15,29 +15,50 @@
 이 문서의 목적:
 1. 기능 목록을 나열하는 것이 아니라 실제 사용 흐름을 설명한다.
 2. 어떤 문제에서 어떤 명령 조합을 쓰면 좋은지 예시 중심으로 정리한다.
-3. `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
+3. `analyze-project -> analyze-performance -> investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
 
 ## 1. Kernforge를 가장 잘 쓰는 관점
 
-Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 현재 가장 강한 사용 방식은 아래와 같은 보호 루프를 의식적으로 돌리는 것이다.
+Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 현재 가장 강한 사용 방식은 먼저 재사용 가능한 프로젝트 지식을 만들고 그 위에서 나머지 루프를 돌리는 것이다.
 
-1. 변경하거나 관찰한다.
-2. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
-3. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
-4. `/review-selection`, `/edit-selection`, `/do-plan-review`로 실제 작업을 진행한다.
-5. `/verify`로 verification plan을 돌린다.
-6. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-7. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
+1. 워크스페이스가 크거나 낯설면 `/analyze-project`를 먼저 실행한다.
+2. 성능이나 startup path가 중요하면 `/analyze-performance`로 최신 knowledge pack을 performance lens로 바꾼다.
+3. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
+4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
+5. `/review-selection`, `/edit-selection`, `/do-plan-review`로 실제 작업을 진행한다.
+6. `/verify`로 verification plan을 돌린다.
+7. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
+8. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
-1. `investigate`는 실행 중 상태를 관찰한다.
-2. `simulate`는 공격자 관점에서 약한 면을 드러낸다.
-3. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
-4. `evidence`는 결과를 증거 단위로 구조화한다.
-5. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
-6. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
+1. `analyze-project`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
+2. `analyze-performance`는 최신 구조 지식에서 hot path와 bottleneck 가능성을 끌어낸다.
+3. `investigate`는 실행 중 상태를 관찰한다.
+4. `simulate`는 공격자 관점에서 약한 면을 드러낸다.
+5. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
+6. `evidence`는 결과를 증거 단위로 구조화한다.
+7. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
+8. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
 
 ## 2. 현재 구현된 핵심 기능과 언제 쓰면 좋은가
+
+### 2.0 Project Analysis
+
+목적:
+1. 큰 워크스페이스의 구조를 재사용 가능한 문서로 만든다.
+2. 여러 worker와 reviewer 패스로 분석을 분산한다.
+3. 후속 작업용 `latest` knowledge pack과 performance lens를 유지한다.
+4. incremental 모드에서는 바뀌지 않은 shard를 재사용한다.
+
+대표 명령:
+- `/analyze-project <goal>`
+- `/analyze-performance [focus]`
+- `/set-analysis-models`
+
+특히 좋은 상황:
+1. 큰 코드베이스에 처음 들어가서 즉석 요약으로는 부족할 때
+2. startup, integrity, ETW, scanner, compression, memory, upload path를 같이 봐야 할 때
+3. 이후 review와 verification이 안정적인 구조 지식을 공유해야 할 때
 
 ### 2.1 Hook Engine
 

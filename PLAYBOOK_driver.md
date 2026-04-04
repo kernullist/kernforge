@@ -12,6 +12,8 @@ This playbook explains how to use Kernforge effectively for driver, signing, sym
 ## 2. Recommended Baseline Flow
 
 ```text
+/analyze-project driver startup, signing, and integrity architecture
+/analyze-performance startup
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
@@ -25,19 +27,22 @@ This playbook explains how to use Kernforge effectively for driver, signing, sym
 
 ## 3. What Each Stage Does
 
-1. `/investigate start driver-visibility guard.sys`
+1. `/analyze-project ...`
+Builds a reusable architecture map for startup, signing, integrity, and verification-sensitive paths.
+
+2. `/investigate start driver-visibility guard.sys`
 Captures a lightweight snapshot of current driver visibility, verifier state, and related artifacts.
 
-2. `/simulate tamper-surface guard.sys`
+3. `/simulate tamper-surface guard.sys`
 Surfaces likely integrity, signing, and tamper-risk pressure points.
 
-3. `/review-selection ...`
+4. `/review-selection ...`
 If simulation findings match the selected range, simulation risk context is injected automatically.
 
-4. `/verify`
+5. `/verify`
 Adds driver-focused verification steps and recent investigation or simulation follow-up review steps.
 
-5. `/evidence-dashboard category:driver`
+6. `/evidence-dashboard category:driver`
 Shows recent failed signing, symbol, package, or verifier-related evidence.
 
 ## 4. Signals Worth Watching Closely

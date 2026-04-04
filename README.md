@@ -5,8 +5,8 @@
 
 `Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, and is especially tuned for Windows security, anti-cheat, telemetry, driver-oriented workflows, and large project analysis.
 
-Its strongest current value is not just code generation, but a `protection loop for sensitive engineering changes`.  
-In particular, Kernforge is now shaped around `project analysis -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
+Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into a reusable knowledge pack, then carries that context into editing, verification, evidence, and policy.  
+Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
 ## Documentation
 
@@ -33,21 +33,21 @@ The most practical end-to-end workflow is described in the [English Detailed Usa
 
 ## Why Kernforge
 
-Kernforge is especially strong when you need to make risky engineering changes with better operational safety.
+Kernforge is especially strong when you need to understand a large, security-sensitive codebase before you change it.
 
 It is a good fit for:
 
 1. Driver, signing, symbol, and package readiness work
 2. Telemetry, provider, and manifest compatibility work
-3. Memory-scan and Unreal integrity work that needs both security review and practical guardrails
+3. Memory-scan and Unreal integrity work that needs both architecture understanding and practical guardrails
 
 Its current differentiators are:
 
-1. It builds deeper verification plans from the type of change.
-2. It stores verification output as structured evidence and long-lived memory.
-3. It feeds that history back into push and PR policy.
-4. It can create safety checkpoints before blocking high-risk flows.
-5. It can build a reusable project knowledge pack with multi-agent analysis and a derived performance lens.
+1. It can analyze a large workspace with a conductor plus multiple worker and reviewer passes.
+2. It produces a reusable knowledge pack and a derived performance lens instead of a disposable one-shot summary.
+3. It carries that analysis forward into review, edit, verification, and investigation workflows.
+4. It stores verification output as structured evidence and long-lived memory.
+5. It feeds that history back into hook policy, push and PR decisions, and safety checkpoints.
 
 ## What It Currently Supports
 
@@ -69,25 +69,13 @@ Its current differentiators are:
 
 ## Highlights
 
-### Input And Prompting
+### Project Analysis
 
-- Interactive chat REPL
-- One-shot prompt mode with `-prompt`
-- Image attachments with `-image`, `-i`, or `@path/to/image.png`
-- File mentions like `@main.go`
-- Line-range mentions like `@main.go:120-150`
-- MCP mentions like `@mcp:docs:getting-started`
-- Multiline input by ending a line with `\`
-- Automatic code scouting when no explicit file mention is provided
-
-### Editing Workflow
-
-- Diff preview before file writes
-- Selection-aware edit previews
-- Automatic verification after edits when applicable
-- Automatic checkpoint creation before the first edit in a request
-- Manual checkpoints, checkpoint diff, and rollback
-- Selection-first edit and review flow through `/open`
+- `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
+- Incremental shard reuse avoids re-analyzing unchanged areas when possible
+- Dedicated worker and reviewer models can be configured separately from the main chat model
+- Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
+- `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
 
 ### Security Verification And Policy Loop
 
@@ -98,13 +86,25 @@ Its current differentiators are:
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
 
-### Project Analysis
+### Editing Workflow
 
-- `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
-- Incremental shard reuse avoids re-analyzing unchanged areas when possible
-- Dedicated worker and reviewer models can be configured separately from the main chat model
-- Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
-- `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
+- Diff preview before file writes
+- Selection-aware edit previews
+- Automatic verification after edits when applicable
+- Automatic checkpoint creation before the first edit in a request
+- Manual checkpoints, checkpoint diff, and rollback
+- Selection-first edit and review flow through `/open`
+
+### Input And Prompting
+
+- Interactive chat REPL
+- One-shot prompt mode with `-prompt`
+- Image attachments with `-image`, `-i`, or `@path/to/image.png`
+- File mentions like `@main.go`
+- Line-range mentions like `@main.go:120-150`
+- MCP mentions like `@mcp:docs:getting-started`
+- Multiline input by ending a line with `\`
+- Automatic code scouting when no explicit file mention is provided
 
 ### Interactive Ergonomics
 

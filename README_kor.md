@@ -5,8 +5,8 @@
 
 `Kernforge`는 Go로 만든 터미널 중심 AI 코딩 CLI입니다. 로컬 우선 개발 흐름에 맞춰 설계되어 있고, 특히 Windows security, anti-cheat, telemetry, driver 워크플로우와 대형 프로젝트 분석에 실용적으로 쓰기 좋게 구현되어 있습니다.
 
-현재 Kernforge의 가장 큰 강점은 단순 코드 생성보다 `민감한 변경을 실수 적게 밀어붙이는 보호 루프`에 있습니다.  
-특히 `project analysis -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`으로 이어지는 흐름을 통해 driver, telemetry, memory-scan, Unreal 보안 작업을 더 안전하게 진행할 수 있도록 설계되어 있습니다.
+현재 Kernforge의 가장 큰 강점은 `multi-agent project analysis pipeline`입니다. 큰 워크스페이스를 재사용 가능한 knowledge pack으로 정리하고, 그 분석 결과를 편집, 검증, evidence, policy 단계까지 그대로 이어갈 수 있습니다.  
+특히 `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback` 흐름을 중심으로, driver, telemetry, memory-scan, Unreal 보안 작업을 더 안전하고 일관되게 진행할 수 있도록 설계되어 있습니다.
 
 ## 문서
 
@@ -33,19 +33,19 @@
 
 ## 왜 Kernforge인가
 
-Kernforge는 현재 아래 상황에서 특히 강합니다.
+Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다음 변경해야 하는 상황에서 특히 강합니다.
 
 1. driver/signing/symbol/package readiness처럼 실수 비용이 큰 작업
 2. telemetry/provider/manifest drift처럼 테스트만으로 놓치기 쉬운 작업
-3. memory-scan, Unreal integrity처럼 보안 리뷰와 운영 현실성이 같이 필요한 작업
+3. memory-scan, Unreal integrity처럼 구조 이해와 운영 가드레일이 동시에 필요한 작업
 
 핵심 차별점은 다음과 같습니다.
 
-1. 변경 유형을 보고 verification을 더 깊게 조립합니다.
-2. verification 결과를 evidence와 persistent memory에 구조적으로 남깁니다.
-3. 이후 push/PR 전에 그 기억을 다시 policy로 사용합니다.
-4. 위험 상황에서는 자동 checkpoint로 되돌릴 지점까지 확보합니다.
-5. multi-agent project analysis로 재사용 가능한 knowledge pack과 performance lens 기반을 만듭니다.
+1. conductor와 여러 worker/reviewer 패스를 사용해 큰 워크스페이스를 분석할 수 있습니다.
+2. 일회성 요약이 아니라 재사용 가능한 knowledge pack과 performance lens를 만듭니다.
+3. 그 분석 결과를 review, edit, verification, investigation 흐름으로 그대로 이어갑니다.
+4. verification 결과를 evidence와 persistent memory에 구조적으로 남깁니다.
+5. 이후 hook policy, push/PR 판단, safety checkpoint까지 연결합니다.
 
 ## 현재 구현된 기능
 
@@ -67,25 +67,13 @@ Kernforge는 현재 아래 상황에서 특히 강합니다.
 
 ## 핵심 특징
 
-### 입력과 프롬프트
+### Project Analysis
 
-- 대화형 채팅 REPL
-- `-prompt` 기반 단발 실행
-- `-image`, `-i`, `@path/to/image.png` 이미지 첨부
-- `@main.go` 같은 파일 멘션
-- `@main.go:120-150` 같은 라인 범위 멘션
-- `@mcp:docs:getting-started` 같은 MCP 리소스 멘션
-- 줄 끝에 `\`를 붙여 멀티라인 입력
-- 파일을 명시하지 않았을 때 자동 코드 scouting
-
-### 편집 워크플로우
-
-- 파일 쓰기 전 diff preview
-- selection-aware edit preview
-- 편집 후 자동 verification
-- 한 요청의 첫 편집 전에 자동 checkpoint 생성
-- 수동 checkpoint, checkpoint diff, rollback
-- `/open` 중심 selection-first 리뷰/수정 흐름
+- `/analyze-project <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
+- 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
+- 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
+- `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
+- `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
 
 ### 보안 검증과 정책 루프
 
@@ -96,13 +84,25 @@ Kernforge는 현재 아래 상황에서 특히 강합니다.
 - recent failed evidence를 이용한 hook 기반 push/PR 경고, 확인, 차단
 - 반복 실패 상황에서 자동 safety checkpoint 생성 가능
 
-### Project Analysis
+### 편집 워크플로우
 
-- `/analyze-project <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
-- 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
-- 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
-- `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
-- `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
+- 파일 쓰기 전 diff preview
+- selection-aware edit preview
+- 편집 후 자동 verification
+- 한 요청의 첫 편집 전에 자동 checkpoint 생성
+- 수동 checkpoint, checkpoint diff, rollback
+- `/open` 중심 selection-first 리뷰/수정 흐름
+
+### 입력과 프롬프트
+
+- 대화형 채팅 REPL
+- `-prompt` 기반 단발 실행
+- `-image`, `-i`, `@path/to/image.png` 이미지 첨부
+- `@main.go` 같은 파일 멘션
+- `@main.go:120-150` 같은 라인 범위 멘션
+- `@mcp:docs:getting-started` 같은 MCP 리소스 멘션
+- 줄 끝에 `\`를 붙여 멀티라인 입력
+- 파일을 명시하지 않았을 때 자동 코드 scouting
 
 ### 사용성
 
