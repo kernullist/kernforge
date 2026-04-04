@@ -28,16 +28,16 @@ var (
 const th32csSnapProcess = 0x00000002
 
 type processEntry32 struct {
-	Size              uint32
-	CntUsage          uint32
-	ProcessID         uint32
-	DefaultHeapID     uintptr
-	ModuleID          uint32
-	CntThreads        uint32
-	ParentProcessID   uint32
-	PcPriClassBase    int32
-	Flags             uint32
-	ExeFile           [260]uint16
+	Size            uint32
+	CntUsage        uint32
+	ProcessID       uint32
+	DefaultHeapID   uintptr
+	ModuleID        uint32
+	CntThreads      uint32
+	ParentProcessID uint32
+	PcPriClassBase  int32
+	Flags           uint32
+	ExeFile         [260]uint16
 }
 
 func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
@@ -52,6 +52,7 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 		defer ticker.Stop()
 
 		wasDown := false
+		var lastBlockedEscape time.Time
 		for {
 			select {
 			case <-stop:
@@ -60,10 +61,17 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 				state, _, _ := getAsyncKeyStateProc.Call(vkEscape)
 				down := (uint16(state) & 0x8000) != 0
 				if down && !wasDown {
-					if shouldCancelOnEscape(isRequestCancelForegroundTarget(), shouldCancel) {
+					hasForegroundTarget := isRequestCancelForegroundTarget()
+					if shouldCancelOnEscape(hasForegroundTarget, shouldCancel) {
 						cancel()
 						return
 					}
+					repeatedPress := !lastBlockedEscape.IsZero() && time.Since(lastBlockedEscape) <= 1500*time.Millisecond
+					if shouldCancelOnRepeatedEscape(hasForegroundTarget, repeatedPress, shouldCancel) {
+						cancel()
+						return
+					}
+					lastBlockedEscape = time.Now()
 				}
 				wasDown = down
 			}

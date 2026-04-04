@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,31 @@ func TestOpenAIClientSetsToolChoiceWhenToolsExist(t *testing.T) {
 	}
 	if value != "auto" {
 		t.Fatalf("unexpected tool_choice: %v", value)
+	}
+}
+
+func TestOpenAIClientIncludesStructuredErrorDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"Provider returned error","type":"server_error","param":"model","code":"backend_failure"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	text := err.Error()
+	for _, part := range []string{"Provider returned error", "type=server_error", "param=model", "code=backend_failure"} {
+		if !strings.Contains(text, part) {
+			t.Fatalf("expected %q in error, got %q", part, text)
+		}
 	}
 }

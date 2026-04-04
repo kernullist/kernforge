@@ -19,32 +19,33 @@ type PlanReviewConfig struct {
 }
 
 type Config struct {
-	Provider            string            `json:"provider"`
-	Model               string            `json:"model"`
-	BaseURL             string            `json:"base_url"`
-	APIKey              string            `json:"api_key"`
-	ProviderKeys        map[string]string `json:"provider_keys,omitempty"`
-	Temperature         float64           `json:"temperature"`
-	MaxTokens           int               `json:"max_tokens"`
-	MaxToolIterations   int               `json:"max_tool_iterations"`
-	Command             string            `json:"command,omitempty"`
-	PermissionMode      string            `json:"permission_mode"`
-	Shell               string            `json:"shell"`
-	SessionDir          string            `json:"session_dir"`
-	AutoCompactChars    int               `json:"auto_compact_chars"`
-	AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
-	AutoLocale          *bool             `json:"auto_locale,omitempty"`
-	HooksEnabled        *bool             `json:"hooks_enabled,omitempty"`
-	HookPresets         []string          `json:"hook_presets,omitempty"`
-	HooksFailClosed     *bool             `json:"hooks_fail_closed,omitempty"`
-	MemoryFiles         []string          `json:"memory_files"`
-	SkillPaths          []string          `json:"skill_paths,omitempty"`
-	EnabledSkills       []string          `json:"enabled_skills,omitempty"`
-	MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
-	Profiles            []Profile         `json:"profiles,omitempty"`
-	PlanReview          *PlanReviewConfig `json:"plan_review,omitempty"`
-	ReviewProfiles      []Profile         `json:"review_profiles,omitempty"`
+	Provider            string                `json:"provider"`
+	Model               string                `json:"model"`
+	BaseURL             string                `json:"base_url"`
+	APIKey              string                `json:"api_key"`
+	ProviderKeys        map[string]string     `json:"provider_keys,omitempty"`
+	Temperature         float64               `json:"temperature"`
+	MaxTokens           int                   `json:"max_tokens"`
+	MaxToolIterations   int                   `json:"max_tool_iterations"`
+	Command             string                `json:"command,omitempty"`
+	PermissionMode      string                `json:"permission_mode"`
+	Shell               string                `json:"shell"`
+	SessionDir          string                `json:"session_dir"`
+	AutoCompactChars    int                   `json:"auto_compact_chars"`
+	AutoCheckpointEdits *bool                 `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerifyDocsOnly  *bool                 `json:"auto_verify_docs_only,omitempty"`
+	AutoLocale          *bool                 `json:"auto_locale,omitempty"`
+	HooksEnabled        *bool                 `json:"hooks_enabled,omitempty"`
+	HookPresets         []string              `json:"hook_presets,omitempty"`
+	HooksFailClosed     *bool                 `json:"hooks_fail_closed,omitempty"`
+	MemoryFiles         []string              `json:"memory_files"`
+	SkillPaths          []string              `json:"skill_paths,omitempty"`
+	EnabledSkills       []string              `json:"enabled_skills,omitempty"`
+	MCPServers          []MCPServerConfig     `json:"mcp_servers,omitempty"`
+	Profiles            []Profile             `json:"profiles,omitempty"`
+	ProjectAnalysis     ProjectAnalysisConfig `json:"project_analysis,omitempty"`
+	PlanReview          *PlanReviewConfig     `json:"plan_review,omitempty"`
+	ReviewProfiles      []Profile             `json:"review_profiles,omitempty"`
 }
 
 type Profile struct {
@@ -207,6 +208,55 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.Profiles) > 0 {
 		dst.Profiles = append([]Profile(nil), src.Profiles...)
 	}
+	if src.ProjectAnalysis.Enabled != nil {
+		value := *src.ProjectAnalysis.Enabled
+		dst.ProjectAnalysis.Enabled = &value
+	}
+	if src.ProjectAnalysis.MinAgents != 0 {
+		dst.ProjectAnalysis.MinAgents = src.ProjectAnalysis.MinAgents
+	}
+	if src.ProjectAnalysis.MaxAgents != 0 {
+		dst.ProjectAnalysis.MaxAgents = src.ProjectAnalysis.MaxAgents
+	}
+	if src.ProjectAnalysis.MaxTotalShards != 0 {
+		dst.ProjectAnalysis.MaxTotalShards = src.ProjectAnalysis.MaxTotalShards
+	}
+	if src.ProjectAnalysis.MaxRevisionRounds != 0 {
+		dst.ProjectAnalysis.MaxRevisionRounds = src.ProjectAnalysis.MaxRevisionRounds
+	}
+	if src.ProjectAnalysis.MaxProviderRetries != 0 {
+		dst.ProjectAnalysis.MaxProviderRetries = src.ProjectAnalysis.MaxProviderRetries
+	}
+	if src.ProjectAnalysis.ProviderRetryDelayMs != 0 {
+		dst.ProjectAnalysis.ProviderRetryDelayMs = src.ProjectAnalysis.ProviderRetryDelayMs
+	}
+	if src.ProjectAnalysis.MaxFilesPerShard != 0 {
+		dst.ProjectAnalysis.MaxFilesPerShard = src.ProjectAnalysis.MaxFilesPerShard
+	}
+	if src.ProjectAnalysis.MaxLinesPerShard != 0 {
+		dst.ProjectAnalysis.MaxLinesPerShard = src.ProjectAnalysis.MaxLinesPerShard
+	}
+	if len(src.ProjectAnalysis.ExcludeDirs) > 0 {
+		dst.ProjectAnalysis.ExcludeDirs = append([]string(nil), src.ProjectAnalysis.ExcludeDirs...)
+	}
+	if src.ProjectAnalysis.OutputDir != "" {
+		dst.ProjectAnalysis.OutputDir = src.ProjectAnalysis.OutputDir
+	}
+	if src.ProjectAnalysis.MaxFileBytes != 0 {
+		dst.ProjectAnalysis.MaxFileBytes = src.ProjectAnalysis.MaxFileBytes
+	}
+	if src.ProjectAnalysis.WorkerProfile != nil {
+		copy := *src.ProjectAnalysis.WorkerProfile
+		dst.ProjectAnalysis.WorkerProfile = &copy
+	}
+	if src.ProjectAnalysis.ReviewerProfile != nil {
+		copy := *src.ProjectAnalysis.ReviewerProfile
+		dst.ProjectAnalysis.ReviewerProfile = &copy
+	}
+	if src.ProjectAnalysis.Incremental != nil {
+		value := *src.ProjectAnalysis.Incremental
+		dst.ProjectAnalysis.Incremental = &value
+	}
 	if src.PlanReview != nil {
 		copy := *src.PlanReview
 		dst.PlanReview = &copy
@@ -267,6 +317,15 @@ func normalizeConfigPaths(cfg *Config) {
 	}
 	for i, item := range cfg.SkillPaths {
 		cfg.SkillPaths[i] = expandHome(item)
+	}
+	if strings.TrimSpace(cfg.ProjectAnalysis.OutputDir) != "" {
+		cfg.ProjectAnalysis.OutputDir = expandHome(cfg.ProjectAnalysis.OutputDir)
+	}
+	if cfg.ProjectAnalysis.WorkerProfile != nil {
+		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
+	}
+	if cfg.ProjectAnalysis.ReviewerProfile != nil {
+		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
@@ -615,9 +674,12 @@ Conversation And Sessions:
 
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
+/analyze-project <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
+/analyze-performance [focus] Analyze likely performance bottlenecks using the latest architecture knowledge pack
+/set-analysis-models   Configure worker/reviewer models for /analyze-project
 /model [name]          Show or change the active model
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
-/set_max_tool_iterations <n> Set the maximum tool iteration count per request
+/set-max-tool-iterations <n> Set the maximum tool iteration count per request
 /profile               Show recent provider/model profiles and switch to one
 /profile-review        Show and manage saved review profiles
 /provider              Choose and configure a provider
@@ -779,7 +841,7 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "set-plan-review":
+	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
@@ -803,6 +865,18 @@ Provider and model commands control which model is active and how planning/revie
 
 /do-plan-review <task>
 - Ask one model to produce a plan, have a reviewer model critique it, iterate, then optionally execute the final plan.
+
+/analyze-project <goal>
+- Analyze the workspace using a conductor and multiple sub-agents, then write a project document.
+
+/analyze-performance [focus]
+- Load the latest architecture knowledge pack and performance lens, then analyze likely bottlenecks and hot paths.
+- Add an optional focus such as startup, ETW, scanner, compression, upload, or memory.
+
+/set-analysis-models
+- Configure dedicated worker and reviewer models used by /analyze-project.
+- Use /set-analysis-models status to show the current analysis model configuration.
+- Use /set-analysis-models clear to reset worker and reviewer to the main active model.
 `), true
 	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff":
 		return strings.TrimSpace(`

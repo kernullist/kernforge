@@ -48,6 +48,15 @@ type ChatResponse struct {
 	StopReason string
 }
 
+type providerErrorBody struct {
+	Error *struct {
+		Message string `json:"message"`
+		Type    string `json:"type,omitempty"`
+		Param   string `json:"param,omitempty"`
+		Code    any    `json:"code,omitempty"`
+	} `json:"error,omitempty"`
+}
+
 type ProviderClient interface {
 	Name() string
 	Complete(ctx context.Context, req ChatRequest) (ChatResponse, error)
@@ -335,6 +344,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		} `json:"choices"`
 		Error *struct {
 			Message string `json:"message"`
+			Type    string `json:"type,omitempty"`
+			Param   string `json:"param,omitempty"`
+			Code    any    `json:"code,omitempty"`
 		} `json:"error,omitempty"`
 	}
 
@@ -441,7 +453,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("openai API error (%s): %s", resp.Status, strings.TrimSpace(string(data)))
+		return ChatResponse{}, fmt.Errorf("openai API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
 	}
 
 	var decoded openAIResponse
@@ -449,7 +461,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, fmt.Errorf("openai API error: %s", decoded.Error.Message)
+		return ChatResponse{}, fmt.Errorf("openai API error: %s", formatProviderErrorFields(decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data))
 	}
 	if len(decoded.Choices) == 0 {
 		return ChatResponse{}, fmt.Errorf("openai API error: empty choices")
@@ -770,6 +782,43 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 		base = "https://" + base
 	}
 	return strings.TrimRight(base, "/")
+}
+
+func formatProviderErrorDetails(data []byte) string {
+	trimmed := strings.TrimSpace(string(data))
+	decoded := providerErrorBody{}
+	if err := json.Unmarshal(data, &decoded); err == nil && decoded.Error != nil {
+		return formatProviderErrorFields(decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+	}
+	if trimmed == "" {
+		return "empty error response body"
+	}
+	return trimmed
+}
+
+func formatProviderErrorFields(message string, errorType string, param string, code any, raw []byte) string {
+	parts := []string{}
+	if strings.TrimSpace(message) != "" {
+		parts = append(parts, strings.TrimSpace(message))
+	} else {
+		parts = append(parts, "provider returned error")
+	}
+	if strings.TrimSpace(errorType) != "" {
+		parts = append(parts, "type="+strings.TrimSpace(errorType))
+	}
+	if strings.TrimSpace(param) != "" {
+		parts = append(parts, "param="+strings.TrimSpace(param))
+	}
+	if code != nil {
+		parts = append(parts, "code="+fmt.Sprintf("%v", code))
+	}
+
+	detail := strings.Join(parts, " | ")
+	rawText := strings.TrimSpace(string(raw))
+	if strings.EqualFold(strings.TrimSpace(message), "Provider returned error") && rawText != "" && !strings.Contains(rawText, detail) {
+		detail += " | raw=" + rawText
+	}
+	return detail
 }
 
 func openAIAPIURL(baseURL, path string) string {

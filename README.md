@@ -3,10 +3,10 @@
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
 ![Kernforge demo](./branding/kernforge_demo.gif)
 
-`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, and is especially tuned for Windows security, anti-cheat, telemetry, and driver-oriented workflows.
+`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, and is especially tuned for Windows security, anti-cheat, telemetry, driver-oriented workflows, and large project analysis.
 
 Its strongest current value is not just code generation, but a `protection loop for sensitive engineering changes`.  
-In particular, Kernforge is now shaped around `adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
+In particular, Kernforge is now shaped around `project analysis -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
 ## Documentation
 
@@ -47,6 +47,7 @@ Its current differentiators are:
 2. It stores verification output as structured evidence and long-lived memory.
 3. It feeds that history back into push and PR policy.
 4. It can create safety checkpoints before blocking high-risk flows.
+5. It can build a reusable project knowledge pack with multi-agent analysis and a derived performance lens.
 
 ## What It Currently Supports
 
@@ -63,6 +64,7 @@ Its current differentiators are:
 - Windows viewer and diff-preview windows for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
+- Multi-agent project analysis with reusable knowledge packs and a performance lens
 - Plan-review workflow with a separate reviewer model
 
 ## Highlights
@@ -95,6 +97,14 @@ Its current differentiators are:
 - Evidence search and evidence dashboards
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
+
+### Project Analysis
+
+- `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
+- Incremental shard reuse avoids re-analyzing unchanged areas when possible
+- Dedicated worker and reviewer models can be configured separately from the main chat model
+- Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
+- `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
 
 ### Interactive Ergonomics
 
@@ -305,7 +315,9 @@ Later sources override earlier ones:
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
   "auto_verify_docs_only": false,
-  "auto_locale": true
+  "auto_locale": true,
+  "hooks_enabled": true,
+  "hooks_fail_closed": false
 }
 ```
 
@@ -332,6 +344,10 @@ Later sources override earlier ones:
 | `enabled_skills` | Skills always injected into prompts |
 | `mcp_servers` | MCP server definitions |
 | `profiles` | Saved recent or pinned provider/model profiles |
+| `hooks_enabled` | Enable or disable the hook engine |
+| `hook_presets` | Hook preset names loaded for the workspace |
+| `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default |
+| `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
 | `plan_review` | Reviewer model config used by `/do-plan-review` |
 | `review_profiles` | Saved reviewer profiles |
 
@@ -404,6 +420,7 @@ Starter commands:
 
 ```text
 /init
+/init hooks
 /init memory-policy
 ```
 
@@ -519,6 +536,9 @@ Explain the structure of this repository
 /profile
 /profile-review
 /set-plan-review [provider]
+/set-analysis-models
+/analyze-project <goal>
+/analyze-performance [focus]
 /do-plan-review <task>
 /permissions [mode]
 /set_max_tool_iterations <n>
@@ -694,6 +714,42 @@ Hook and override commands:
 /override-add ...
 /override-clear ...
 ```
+
+## Project Analysis
+
+The new project analysis flow is designed for large or risky codebases where you want a durable architecture map instead of an ad hoc one-shot summary.
+
+Core commands:
+
+```text
+/analyze-project <goal>
+/analyze-performance [focus]
+/set-analysis-models
+```
+
+What it does:
+
+- Scans the workspace into a structured snapshot
+- Splits the codebase into analysis shards
+- Uses a conductor plus multiple worker/reviewer passes
+- Writes Markdown and JSON analysis artifacts
+- Maintains a `latest` knowledge pack for follow-up analysis
+- Reuses unchanged shard results when incremental analysis is enabled
+
+Typical outputs:
+
+- `.kernforge/analysis/<timestamp>_<goal>.md`
+- `.kernforge/analysis/<timestamp>_<goal>.json`
+- `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
+- `.kernforge/analysis/<timestamp>_<goal>_performance_lens.md`
+- `.kernforge/analysis/latest/`
+
+Recommended flow:
+
+1. Run `/analyze-project anti-cheat startup and integrity architecture`.
+2. Review the generated knowledge pack and shard outputs.
+3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
+4. Use the resulting knowledge in `/review-selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
 
 ## Notes
 

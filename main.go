@@ -645,6 +645,7 @@ func (rt *runtimeState) printAssistant(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	rt.stopThinkingIndicator()
 	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
 }
 
@@ -2285,7 +2286,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+string(mode)))
-	case "set_max_tool_iterations":
+	case "set-max-tool-iterations":
 		if cmd.Args == "" {
 			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))))
 			return false, nil
@@ -2745,8 +2746,20 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSetPlanReviewCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "set-analysis-models":
+		if err := rt.handleSetAnalysisModelsCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "do-plan-review":
 		if err := rt.handleDoPlanReviewCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "analyze-project":
+		if err := rt.handleAnalyzeProjectCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "analyze-performance":
+		if err := rt.handleAnalyzePerformanceCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "profile-review":
@@ -2849,6 +2862,232 @@ func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {
 		return nil
 	}
 	return err
+}
+
+func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
+	parts := strings.Fields(args)
+	if len(parts) > 0 {
+		switch strings.ToLower(parts[0]) {
+		case "status":
+			return rt.showProjectAnalysisModelStatus()
+		case "clear", "reset":
+			rt.cfg.ProjectAnalysis.WorkerProfile = nil
+			rt.cfg.ProjectAnalysis.ReviewerProfile = nil
+			if err := SaveUserConfig(rt.cfg); err != nil {
+				return err
+			}
+			fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis worker/reviewer models reset to the main active model."))
+			return nil
+		case "worker", "reviewer":
+			provider := ""
+			if len(parts) > 1 {
+				provider = parts[1]
+			}
+			err := rt.configureProjectAnalysisRoleInteractive(strings.ToLower(parts[0]), provider)
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		default:
+			return fmt.Errorf("usage: /set-analysis-models [status|clear|worker [provider]|reviewer [provider]]")
+		}
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.section("Set Analysis Models"))
+	if err := rt.showProjectAnalysisModelStatus(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.info("  1. worker"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  2. reviewer"))
+	choice, err := rt.promptValue("Select analysis role", "1")
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	role := ""
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case "", "1", "worker":
+		role = "worker"
+	case "2", "reviewer", "reviewr":
+		role = "reviewer"
+	default:
+		return fmt.Errorf("unknown analysis role: %s", choice)
+	}
+	err = rt.configureProjectAnalysisRoleInteractive(role, "")
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	return err
+}
+
+func (rt *runtimeState) showProjectAnalysisModelStatus() error {
+	fmt.Fprintln(rt.writer, rt.ui.section("Project Analysis Models"))
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", rt.cfg.Provider+" / "+rt.cfg.Model+" (inherits main model)"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", rt.cfg.ProjectAnalysis.WorkerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.WorkerProfile.Model))
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.ProjectAnalysis.WorkerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.WorkerProfile.Model+" (inherits worker model)"))
+		} else {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.Provider+" / "+rt.cfg.Model+" (inherits main model)"))
+		}
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.ProjectAnalysis.ReviewerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.ReviewerProfile.Model))
+	}
+	incrementalEnabled := rt.cfg.ProjectAnalysis.Incremental == nil || *rt.cfg.ProjectAnalysis.Incremental
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
+	return nil
+}
+
+func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, providerArg string) error {
+	provider := strings.ToLower(strings.TrimSpace(providerArg))
+	if provider == "" {
+		fmt.Fprintln(rt.writer, rt.ui.section("Set Analysis "+strings.Title(role)))
+		fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
+		defaultChoice := "1"
+		current := rt.cfg.ProjectAnalysis.WorkerProfile
+		if role == "reviewer" {
+			current = rt.cfg.ProjectAnalysis.ReviewerProfile
+		}
+		if current != nil {
+			switch strings.ToLower(strings.TrimSpace(current.Provider)) {
+			case "anthropic":
+				defaultChoice = "1"
+			case "openai", "openai-compatible":
+				defaultChoice = "2"
+			case "openrouter":
+				defaultChoice = "3"
+			case "ollama":
+				defaultChoice = "4"
+			}
+		}
+		choice, err := rt.promptValue("Select provider", defaultChoice)
+		if err != nil {
+			return err
+		}
+		switch strings.ToLower(strings.TrimSpace(choice)) {
+		case "", "1", "anthropic":
+			provider = "anthropic"
+		case "2", "openai", "openai-compatible":
+			provider = "openai"
+		case "3", "openrouter":
+			provider = "openrouter"
+		case "4", "ollama":
+			provider = "ollama"
+		default:
+			return fmt.Errorf("unknown provider: %s", choice)
+		}
+	}
+
+	nextModel := ""
+	nextBaseURL := ""
+	nextAPIKey := ""
+	current := rt.cfg.ProjectAnalysis.WorkerProfile
+	if role == "reviewer" {
+		current = rt.cfg.ProjectAnalysis.ReviewerProfile
+	}
+	if current != nil && strings.EqualFold(current.Provider, provider) {
+		nextModel = current.Model
+		nextBaseURL = current.BaseURL
+		nextAPIKey = current.APIKey
+	}
+
+	switch provider {
+	case "ollama":
+		defaultURL := nextBaseURL
+		if strings.TrimSpace(defaultURL) == "" {
+			defaultURL = normalizeOllamaBaseURL("")
+		}
+		url, err := rt.promptValue("Ollama URL", defaultURL)
+		if err != nil {
+			return err
+		}
+		url = normalizeOllamaBaseURL(url)
+		models, normalized, fetchErr := rt.fetchAndShowOllamaModels(url)
+		if fetchErr != nil {
+			return fmt.Errorf("could not connect to Ollama server: %w", fetchErr)
+		}
+		if len(models) == 0 {
+			return fmt.Errorf("no Ollama models were returned by %s", normalized)
+		}
+		rt.ollamaModels = models
+		selected, err := rt.chooseOllamaModel(models)
+		if err != nil {
+			return err
+		}
+		nextModel = selected.Name
+		nextBaseURL = normalized
+	case "anthropic", "openai", "openrouter":
+		if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(provider, rt.cfg.Provider) {
+			nextAPIKey = rt.cfg.APIKey
+		}
+		if strings.TrimSpace(nextAPIKey) == "" {
+			keyPrompt := providerDisplayName(provider) + " API key (for analysis " + role + ")"
+			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
+			if err != nil {
+				return err
+			}
+			nextAPIKey = apiKey
+		}
+		if provider == "openrouter" {
+			nextBaseURL = normalizeOpenRouterBaseURL("")
+			models, normalized, err := rt.fetchAndShowOpenRouterModels(nextBaseURL, nextAPIKey)
+			if err != nil {
+				return err
+			}
+			selected, err := rt.chooseOpenRouterModel(models)
+			if err != nil {
+				return err
+			}
+			nextModel = selected.ID
+			nextBaseURL = normalized
+		} else if provider == "anthropic" {
+			model, err := rt.chooseAnthropicModel(nextModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+		} else {
+			model, err := rt.chooseOpenAIModel(nextModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+		}
+	default:
+		return fmt.Errorf("unsupported provider: %s", provider)
+	}
+
+	return rt.activateProjectAnalysisRole(role, provider, nextModel, nextBaseURL, nextAPIKey)
+}
+
+func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string, model string, baseURL string, apiKey string) error {
+	profile := &Profile{
+		Name:     profileName(provider, model),
+		Provider: provider,
+		Model:    model,
+		BaseURL:  normalizeProfileBaseURL(provider, baseURL),
+		APIKey:   apiKey,
+	}
+	if role == "worker" {
+		rt.cfg.ProjectAnalysis.WorkerProfile = profile
+	} else if role == "reviewer" {
+		rt.cfg.ProjectAnalysis.ReviewerProfile = profile
+	} else {
+		return fmt.Errorf("unsupported analysis role: %s", role)
+	}
+	if err := SaveUserConfig(rt.cfg); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s / %s", role, provider, model)))
+	return nil
 }
 
 func (rt *runtimeState) showPlanReviewStatus() error {
@@ -3241,6 +3480,574 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	}
 	rt.printAssistant(reply)
 	return nil
+}
+
+func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
+	if strings.TrimSpace(args) == "" {
+		return fmt.Errorf("usage: /analyze-project <goal>")
+	}
+	if rt.agent == nil || rt.agent.Client == nil {
+		return fmt.Errorf("no model provider is configured")
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.section("Project Analysis"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("planner", rt.session.Provider+" / "+rt.session.Model))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("conductor_model", rt.session.Provider+" / "+rt.session.Model))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
+	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
+	workerLabel := rt.session.Provider + " / " + rt.session.Model
+	reviewerLabel := workerLabel
+	if analysisCfg.WorkerProfile != nil {
+		workerLabel = analysisCfg.WorkerProfile.Provider + " / " + analysisCfg.WorkerProfile.Model
+	}
+	if analysisCfg.ReviewerProfile != nil {
+		reviewerLabel = analysisCfg.ReviewerProfile.Provider + " / " + analysisCfg.ReviewerProfile.Model
+	} else if analysisCfg.WorkerProfile != nil {
+		reviewerLabel = workerLabel
+	}
+	incrementalEnabled := analysisCfg.Incremental == nil || *analysisCfg.Incremental
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", workerLabel))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", reviewerLabel))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
+
+	analyzer := newProjectAnalyzer(rt.cfg, rt.agent.Client, rt.workspace, func(status string) {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
+	}, func(debug string) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("analysis: "+debug))
+	})
+	previewSnapshot, err := analyzer.scanProject()
+	if err != nil {
+		return err
+	}
+	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
+	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
+	estimatedWaves := ceilDiv(estimatedTotalShards, analysisMaxInt(estimatedConcurrency, 1))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_files", fmt.Sprintf("%d", previewSnapshot.TotalFiles)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_lines", fmt.Sprintf("%d", previewSnapshot.TotalLines)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_dirs", fmt.Sprintf("%d", len(previewSnapshot.Directories))))
+	if strings.TrimSpace(previewSnapshot.PrimaryStartup) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_startup", previewSnapshot.PrimaryStartup))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_concurrency", fmt.Sprintf("%d", estimatedConcurrency)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_total_shards", fmt.Sprintf("%d", estimatedTotalShards)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_waves", fmt.Sprintf("%d", estimatedWaves)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_total_shards", fmt.Sprintf("%d", analysisCfg.MaxTotalShards)))
+	fmt.Fprintln(rt.writer)
+
+	if rt.interactive {
+		proceed, err := rt.confirm("Proceed with this analysis plan?")
+		if err != nil {
+			return err
+		}
+		if !proceed {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("Project analysis aborted by user."))
+			return nil
+		}
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Interactive confirmation unavailable; proceeding with the displayed analysis plan."))
+		fmt.Fprintln(rt.writer)
+	}
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	defer stopEscapeWatcher()
+
+	rt.startThinkingIndicator()
+	defer rt.stopThinkingIndicator()
+
+	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, rt.workspace, func(status string) {
+		rt.printWhileThinking(rt.ui.hintLine(status))
+	}, func(debug string) {
+		rt.printWhileThinking(rt.ui.infoLine("analysis: " + debug))
+	})
+	run, err := analyzer.Run(requestCtx, args)
+	if err != nil {
+		if requestCtx.Err() == context.Canceled {
+			return fmt.Errorf("project analysis canceled by user")
+		}
+		return err
+	}
+
+	rt.session.LastAnalysis = &run.Summary
+	if err := rt.store.Save(rt.session); err != nil {
+		return err
+	}
+
+	rt.printWhileThinking(rt.ui.successLine(fmt.Sprintf("Analysis completed with %d shard(s).", run.Summary.TotalShards)))
+	if run.Summary.ReviewFailures > 0 {
+		rt.printWhileThinking(rt.ui.statusKV("review_failures", fmt.Sprintf("%d", run.Summary.ReviewFailures)))
+	}
+	reused := 0
+	missed := 0
+	missReasons := map[string]int{}
+	for _, shard := range run.Shards {
+		if shard.CacheStatus == "reused" {
+			reused++
+		} else {
+			missed++
+			reason := strings.TrimSpace(shard.InvalidationReason)
+			if reason == "" {
+				reason = "unknown"
+			}
+			missReasons[reason]++
+		}
+	}
+	rt.printWhileThinking(rt.ui.statusKV("cache_reused", fmt.Sprintf("%d", reused)))
+	rt.printWhileThinking(rt.ui.statusKV("cache_miss", fmt.Sprintf("%d", missed)))
+	if len(missReasons) > 0 {
+		reasons := make([]string, 0, len(missReasons))
+		for reason, count := range missReasons {
+			reasons = append(reasons, fmt.Sprintf("%s=%d", reason, count))
+		}
+		slices.Sort(reasons)
+		rt.printWhileThinking(rt.ui.statusKV("cache_miss_reasons", strings.Join(reasons, ", ")))
+	}
+	rt.printWhileThinking(rt.ui.statusKV("output", run.Summary.OutputPath))
+	rt.printAssistant(run.FinalDocument)
+	return nil
+}
+
+func (rt *runtimeState) handleAnalyzePerformanceCommand(args string) error {
+	if rt.agent == nil || rt.agent.Client == nil {
+		return fmt.Errorf("no model provider is configured")
+	}
+	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	knowledgePath := filepath.Join(latestDir, "knowledge_pack.json")
+	perfPath := filepath.Join(latestDir, "performance_lens.json")
+
+	knowledgeData, err := os.ReadFile(knowledgePath)
+	if err != nil {
+		return fmt.Errorf("latest knowledge pack not found; run /analyze-project first")
+	}
+	perfData, err := os.ReadFile(perfPath)
+	if err != nil {
+		return fmt.Errorf("latest performance lens not found; run /analyze-project first")
+	}
+
+	pack := KnowledgePack{}
+	if err := json.Unmarshal(knowledgeData, &pack); err != nil {
+		return fmt.Errorf("read knowledge pack: %w", err)
+	}
+	lens := PerformanceLens{}
+	if err := json.Unmarshal(perfData, &lens); err != nil {
+		return fmt.Errorf("read performance lens: %w", err)
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.section("Performance Analysis"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("knowledge_pack", knowledgePath))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("performance_lens", perfPath))
+	if strings.TrimSpace(lens.PrimaryStartup) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("primary_startup", lens.PrimaryStartup))
+	}
+	fmt.Fprintln(rt.writer)
+
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	defer stopEscapeWatcher()
+
+	rt.startThinkingIndicator()
+	defer rt.stopThinkingIndicator()
+
+	hotspotContext := rt.collectPerformanceHotspotContext(pack, lens)
+	prompt := buildPerformanceAnalysisPrompt(pack, lens, hotspotContext, args)
+	reply, err := rt.runAgentReply(requestCtx, prompt)
+	if err != nil {
+		reply = fallbackPerformanceReport(pack, lens, hotspotContext, args)
+	}
+
+	result := buildPerformanceAnalysisResult(pack, lens, args, knowledgePath, perfPath, reply)
+	reportPath, jsonPath, pathErr := rt.persistPerformanceReport(reply, result, args, analysisCfg.OutputDir)
+	if pathErr == nil {
+		rt.printWhileThinking(rt.ui.statusKV("output", reportPath))
+		rt.printWhileThinking(rt.ui.statusKV("output_json", jsonPath))
+	}
+	rt.printAssistant(reply)
+	return nil
+}
+
+type PerformanceAnalysisResult struct {
+	GeneratedAt     time.Time            `json:"generated_at"`
+	Focus           string               `json:"focus,omitempty"`
+	PrimaryStartup  string               `json:"primary_startup,omitempty"`
+	StartupEntries  []string             `json:"startup_entries,omitempty"`
+	TopHotspots     []PerformanceHotspot `json:"top_hotspots,omitempty"`
+	ProfilingOrder  []string             `json:"profiling_order,omitempty"`
+	SourceArtifacts []string             `json:"source_artifacts,omitempty"`
+	Report          string               `json:"report"`
+}
+
+func buildPerformanceAnalysisResult(pack KnowledgePack, lens PerformanceLens, focus string, knowledgePath string, perfPath string, report string) PerformanceAnalysisResult {
+	order := []string{}
+	order = append(order, limitStrings(lens.HeavyEntrypoints, 4)...)
+	order = append(order, limitStrings(lens.IOBoundCandidates, 3)...)
+	order = append(order, limitStrings(lens.CPUBoundCandidates, 3)...)
+	order = analysisUniqueStrings(order)
+	return PerformanceAnalysisResult{
+		GeneratedAt:     time.Now(),
+		Focus:           strings.TrimSpace(focus),
+		PrimaryStartup:  lens.PrimaryStartup,
+		StartupEntries:  append([]string(nil), lens.StartupEntryFiles...),
+		TopHotspots:     limitStringsPerformanceHotspots(lens.Hotspots, 10),
+		ProfilingOrder:  order,
+		SourceArtifacts: []string{knowledgePath, perfPath},
+		Report:          report,
+	}
+}
+
+func buildPerformanceAnalysisPrompt(pack KnowledgePack, lens PerformanceLens, hotspotContext string, focus string) string {
+	var b strings.Builder
+	b.WriteString("Analyze likely performance bottlenecks for this project using the provided architecture knowledge and performance lens.\n\n")
+	if strings.TrimSpace(focus) != "" {
+		fmt.Fprintf(&b, "Focus: %s\n\n", strings.TrimSpace(focus))
+	}
+	b.WriteString("Requirements:\n")
+	b.WriteString("- Prioritize concrete bottleneck candidates over generic advice.\n")
+	b.WriteString("- Distinguish startup, steady-state, IO-bound, CPU-bound, and memory-pressure issues when visible.\n")
+	b.WriteString("- Mention which modules or files should be profiled first.\n")
+	b.WriteString("- Use the hotspot file excerpts and extracted performance signals to call out concrete loops, parsers, ETW callbacks, upload/compression paths, synchronization hotspots, or large execution hubs when visible.\n")
+	b.WriteString("- Recommend a short investigation order.\n\n")
+	knowledgeJSON, _ := json.MarshalIndent(pack, "", "  ")
+	perfJSON, _ := json.MarshalIndent(lens, "", "  ")
+	b.WriteString("Knowledge Pack:\n")
+	b.Write(knowledgeJSON)
+	b.WriteString("\n\nPerformance Lens:\n")
+	b.Write(perfJSON)
+	if strings.TrimSpace(hotspotContext) != "" {
+		b.WriteString("\n\nHotspot File Context:\n")
+		b.WriteString(hotspotContext)
+	}
+	return b.String()
+}
+
+func fallbackPerformanceReport(pack KnowledgePack, lens PerformanceLens, hotspotContext string, focus string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Performance Bottleneck Analysis\n\n")
+	if strings.TrimSpace(focus) != "" {
+		fmt.Fprintf(&b, "- Focus: %s\n", strings.TrimSpace(focus))
+	}
+	if strings.TrimSpace(lens.PrimaryStartup) != "" {
+		fmt.Fprintf(&b, "- Primary startup project: `%s`\n", lens.PrimaryStartup)
+	}
+	if len(lens.StartupEntryFiles) > 0 {
+		fmt.Fprintf(&b, "- Startup entry files: %s\n", strings.Join(limitStrings(lens.StartupEntryFiles, 3), ", "))
+	}
+	b.WriteString("\n## Likely Hotspots\n\n")
+	if len(lens.Hotspots) == 0 {
+		b.WriteString("- No performance hotspots were inferred from the current knowledge pack.\n\n")
+	} else {
+		for _, hotspot := range limitStringsPerformanceHotspots(lens.Hotspots, 8) {
+			fmt.Fprintf(&b, "### %s\n\n", hotspot.Title)
+			if strings.TrimSpace(hotspot.Category) != "" {
+				fmt.Fprintf(&b, "- Category: %s\n", hotspot.Category)
+			}
+			if hotspot.Score > 0 {
+				fmt.Fprintf(&b, "- Score: %d\n", hotspot.Score)
+			}
+			if strings.TrimSpace(hotspot.Reason) != "" {
+				fmt.Fprintf(&b, "- Reason: %s\n", hotspot.Reason)
+			}
+			if len(hotspot.EntryPoints) > 0 {
+				fmt.Fprintf(&b, "- Entry points: %s\n", strings.Join(limitStrings(hotspot.EntryPoints, 3), "; "))
+			}
+			if len(hotspot.Files) > 0 {
+				fmt.Fprintf(&b, "- Files to profile first: %s\n", strings.Join(limitStrings(hotspot.Files, 4), "; "))
+			}
+			if snippet := hotspotSnippetForReport(hotspotContext, hotspot.Title); strings.TrimSpace(snippet) != "" {
+				fmt.Fprintf(&b, "- Code context: %s\n", snippet)
+			}
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("## Profiling Order\n\n")
+	order := []string{}
+	order = append(order, limitStrings(lens.HeavyEntrypoints, 4)...)
+	order = append(order, limitStrings(lens.IOBoundCandidates, 3)...)
+	order = append(order, limitStrings(lens.CPUBoundCandidates, 3)...)
+	order = analysisUniqueStrings(order)
+	if len(order) == 0 {
+		b.WriteString("- Start with the primary startup path and the largest subsystem files.\n")
+	} else {
+		for _, item := range order {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
+	b.WriteString("\n## Large Files\n\n")
+	for _, item := range limitStrings(lens.LargeFiles, 10) {
+		fmt.Fprintf(&b, "- %s\n", item)
+	}
+	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func (rt *runtimeState) collectPerformanceHotspotContext(pack KnowledgePack, lens PerformanceLens) string {
+	files := []string{}
+	files = append(files, limitStrings(lens.StartupEntryFiles, 3)...)
+	for _, hotspot := range limitStringsPerformanceHotspots(lens.Hotspots, 8) {
+		files = append(files, limitStrings(hotspot.Files, 3)...)
+	}
+	for _, subsystem := range pack.Subsystems {
+		if len(files) >= 18 {
+			break
+		}
+		if strings.Contains(strings.ToLower(canonicalKnowledgeTitle(subsystem)), "performance") {
+			files = append(files, limitStrings(subsystem.KeyFiles, 2)...)
+		}
+	}
+	files = analysisUniqueStrings(files)
+
+	sections := []string{}
+	for _, rel := range limitStrings(files, 16) {
+		abs, err := rt.workspace.Resolve(rel)
+		if err != nil {
+			continue
+		}
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		lines := splitLines(string(data))
+		if len(lines) > 80 {
+			lines = lines[:80]
+		}
+		signals := detectLocalPerformanceSignals(string(data))
+		localScore := scoreLocalPerformanceSignals(string(data))
+		functions := detectHotFunctions(string(data))
+		section := fmt.Sprintf("FILE %s\n", rel)
+		if len(signals) > 0 {
+			section += "Signals: " + strings.Join(limitStrings(signals, 8), ", ") + "\n"
+		}
+		if localScore > 0 {
+			section += fmt.Sprintf("Local Score: %d\n", localScore)
+		}
+		if len(functions) > 0 {
+			section += "Hot Functions: " + strings.Join(limitStrings(functions, 5), ", ") + "\n"
+		}
+		contextLines := lines
+		if len(functions) > 0 {
+			if narrowed := extractFunctionContext(string(data), functions[0], 60); len(narrowed) > 0 {
+				contextLines = narrowed
+			}
+		}
+		section += "```\n" + strings.Join(contextLines, "\n") + "\n```"
+		sections = append(sections, section)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+func hotspotSnippetForReport(hotspotContext string, title string) string {
+	if strings.TrimSpace(hotspotContext) == "" {
+		return ""
+	}
+	lines := splitLines(hotspotContext)
+	if len(lines) == 0 {
+		return ""
+	}
+	titleLower := strings.ToLower(strings.TrimSpace(title))
+	if titleLower == "" {
+		return ""
+	}
+	for i, line := range lines {
+		if strings.HasPrefix(line, "FILE ") && strings.Contains(strings.ToLower(line), titleLower) {
+			end := i + 6
+			if end > len(lines) {
+				end = len(lines)
+			}
+			return strings.Join(lines[i:end], " ")
+		}
+	}
+	for i, line := range lines {
+		if strings.HasPrefix(line, "FILE ") {
+			end := i + 4
+			if end > len(lines) {
+				end = len(lines)
+			}
+			return strings.Join(lines[i:end], " ")
+		}
+	}
+	return ""
+}
+
+func detectLocalPerformanceSignals(content string) []string {
+	lower := strings.ToLower(content)
+	signals := []string{}
+	patterns := []struct {
+		label   string
+		markers []string
+	}{
+		{label: "tight loops", markers: []string{"for (", "while (", "do {", "for("}},
+		{label: "sleep or polling", markers: []string{"sleep(", "sleep_for(", "waitforsingleobject(", "peekmessage(", "getmessage("}},
+		{label: "locking or contention", markers: []string{"critical_section", "std::mutex", "lock_guard", "unique_lock", "entercriticalsection", "srwlock"}},
+		{label: "heap allocation churn", markers: []string{"new ", "delete ", "malloc(", "free(", "realloc(", "vector<", "push_back("}},
+		{label: "memory copy or buffer churn", markers: []string{"memcpy(", "memmove(", "copy(", "append(", "resize("}},
+		{label: "file io", markers: []string{"createfile", "readfile(", "writefile(", "ifstream", "ofstream", "fread(", "fwrite("}},
+		{label: "network io", markers: []string{"send(", "recv(", "connect(", "winhttp", "internetreadfile", "socket("}},
+		{label: "compression or crypto", markers: []string{"compress", "decompress", "zip", "inflate", "deflate", "sha1", "sha256", "aes", "bcrypt"}},
+		{label: "etw or callback dispatch", markers: []string{"etw", "eventrecordcallback", "processtrace(", "enabletraceex2", "open trace"}},
+		{label: "thread fan-out", markers: []string{"std::thread", "_beginthreadex", "createthread(", "queueuserworkitem("}},
+	}
+	for _, pattern := range patterns {
+		if containsAny(lower, pattern.markers...) {
+			signals = append(signals, pattern.label)
+		}
+	}
+	return analysisUniqueStrings(signals)
+}
+
+func scoreLocalPerformanceSignals(content string) int {
+	signals := detectLocalPerformanceSignals(content)
+	score := 0
+	for _, signal := range signals {
+		switch signal {
+		case "tight loops":
+			score += 3
+		case "sleep or polling":
+			score += 4
+		case "locking or contention":
+			score += 5
+		case "heap allocation churn":
+			score += 4
+		case "memory copy or buffer churn":
+			score += 4
+		case "file io":
+			score += 4
+		case "network io":
+			score += 4
+		case "compression or crypto":
+			score += 4
+		case "etw or callback dispatch":
+			score += 4
+		case "thread fan-out":
+			score += 3
+		}
+	}
+	lower := strings.ToLower(content)
+	if containsAny(lower, "retry", "backoff", "poll", "busy", "spin") {
+		score += 3
+	}
+	if containsAny(lower, "printf(", "outputdebugstring", "spdlog", "log(", "trace(", "securelog") {
+		score += 2
+	}
+	return score
+}
+
+func detectHotFunctions(content string) []string {
+	lines := splitLines(content)
+	out := []string{}
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !looksLikeFunctionSignature(trimmed) {
+			continue
+		}
+		start := i
+		if start > 0 && strings.TrimSpace(lines[start-1]) != "" && !strings.HasSuffix(strings.TrimSpace(lines[start-1]), ";") {
+			prev := strings.TrimSpace(lines[start-1])
+			if strings.Contains(prev, "(") || strings.Contains(prev, "::") {
+				start = start - 1
+			}
+		}
+		end := analysisMinInt(len(lines), i+40)
+		window := strings.Join(lines[start:end], "\n")
+		signals := detectLocalPerformanceSignals(window)
+		if len(signals) == 0 {
+			continue
+		}
+		if name := functionNameFromSignature(trimmed); name != "" {
+			score := scoreLocalPerformanceSignals(window)
+			out = append(out, fmt.Sprintf("%s [score=%d; %s]", name, score, strings.Join(limitStrings(signals, 3), ", ")))
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func looksLikeFunctionSignature(line string) bool {
+	if line == "" {
+		return false
+	}
+	if strings.HasPrefix(line, "#") {
+		return false
+	}
+	if strings.HasPrefix(line, "if ") || strings.HasPrefix(line, "if(") ||
+		strings.HasPrefix(line, "for ") || strings.HasPrefix(line, "for(") ||
+		strings.HasPrefix(line, "while ") || strings.HasPrefix(line, "while(") ||
+		strings.HasPrefix(line, "switch ") || strings.HasPrefix(line, "switch(") {
+		return false
+	}
+	if !strings.Contains(line, "(") || !strings.Contains(line, ")") {
+		return false
+	}
+	if !(strings.HasSuffix(line, "{") || strings.Contains(line, ") const") || strings.Contains(line, ") noexcept") || strings.Contains(line, ")")) {
+		return false
+	}
+	return true
+}
+
+func functionNameFromSignature(line string) string {
+	open := strings.Index(line, "(")
+	if open <= 0 {
+		return ""
+	}
+	prefix := strings.TrimSpace(line[:open])
+	fields := strings.Fields(prefix)
+	if len(fields) == 0 {
+		return ""
+	}
+	name := fields[len(fields)-1]
+	name = strings.Trim(name, "*&")
+	if name == "" {
+		return ""
+	}
+	return name
+}
+
+func extractFunctionContext(content string, functionLabel string, limit int) []string {
+	name := strings.TrimSpace(functionLabel)
+	if idx := strings.Index(name, " ["); idx >= 0 {
+		name = name[:idx]
+	}
+	if name == "" {
+		return nil
+	}
+	lines := splitLines(content)
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, name+"(") || strings.Contains(line, name+" (") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return nil
+	}
+	end := analysisMinInt(len(lines), start+limit)
+	return append([]string(nil), lines[start:end]...)
+}
+
+func (rt *runtimeState) persistPerformanceReport(report string, result PerformanceAnalysisResult, focus string, outputDir string) (string, string, error) {
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		return "", "", err
+	}
+	name := "performance"
+	if strings.TrimSpace(focus) != "" {
+		name += "_" + sanitizeFileName(focus)
+	}
+	base := filepath.Join(outputDir, time.Now().Format("20060102-150405")+"_"+name)
+	path := base + ".md"
+	if err := os.WriteFile(path, []byte(report), 0o644); err != nil {
+		return "", "", err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return "", "", err
+	}
+	jsonPath := base + ".json"
+	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
+		return "", "", err
+	}
+	return path, jsonPath, nil
 }
 
 func (rt *runtimeState) closeExtensions() {

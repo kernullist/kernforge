@@ -68,10 +68,13 @@ var slashCommands = []string{
 	"diff",
 	"export",
 	"config",
+	"set-analysis-models",
 	"set-plan-review",
 	"do-plan-review",
+	"analyze-project",
+	"analyze-performance",
 	"profile-review",
-	"set_max_tool_iterations",
+	"set-max-tool-iterations",
 	"exit",
 }
 
@@ -104,6 +107,9 @@ func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, b
 	}
 	commandText := strings.TrimPrefix(trimmedLeft, "/")
 	if strings.Contains(commandText, " ") {
+		if completed, suggestions, ok := rt.completeSlashSubcommand(buffer, trimmedLeft, commandText); ok {
+			return completed, suggestions, true
+		}
 		return buffer, nil, false
 	}
 	leading := buffer[:len(buffer)-len(trimmedLeft)]
@@ -127,6 +133,45 @@ func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, b
 	suggestions := make([]string, 0, len(matches))
 	for _, match := range matches {
 		suggestions = append(suggestions, "/"+match)
+	}
+	return buffer, suggestions, true
+}
+
+func (rt *runtimeState) completeSlashSubcommand(buffer string, trimmedLeft string, commandText string) (string, []string, bool) {
+	parts := strings.SplitN(commandText, " ", 2)
+	if len(parts) != 2 {
+		return buffer, nil, false
+	}
+	commandName := strings.ToLower(strings.TrimSpace(parts[0]))
+	argText := parts[1]
+	if commandName != "set-analysis-models" {
+		return buffer, nil, false
+	}
+	if strings.Contains(strings.TrimSpace(argText), " ") {
+		return buffer, nil, false
+	}
+	leading := buffer[:len(buffer)-len(trimmedLeft)]
+	partial := strings.ToLower(strings.TrimSpace(argText))
+	subcommands := []string{"status", "worker", "reviewer", "clear"}
+	matches := make([]string, 0, len(subcommands))
+	for _, sub := range subcommands {
+		if strings.HasPrefix(sub, partial) {
+			matches = append(matches, sub)
+		}
+	}
+	if len(matches) == 0 {
+		return buffer, nil, true
+	}
+	if len(matches) == 1 {
+		return leading + "/set-analysis-models " + matches[0] + " ", nil, true
+	}
+	prefix := longestCommonPrefix(matches)
+	if len(prefix) > len(partial) {
+		return leading + "/set-analysis-models " + prefix, nil, true
+	}
+	suggestions := make([]string, 0, len(matches))
+	for _, match := range matches {
+		suggestions = append(suggestions, "/set-analysis-models "+match)
 	}
 	return buffer, suggestions, true
 }

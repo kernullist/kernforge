@@ -10,6 +10,19 @@ func shouldCancelOnEscape(hasForegroundTarget bool, shouldCancel func() bool) bo
 	return true
 }
 
+func shouldCancelOnRepeatedEscape(hasForegroundTarget bool, repeatedPress bool, shouldCancel func() bool) bool {
+	if hasForegroundTarget {
+		return shouldCancelOnEscape(true, shouldCancel)
+	}
+	if !repeatedPress {
+		return false
+	}
+	if shouldCancel != nil && !shouldCancel() {
+		return false
+	}
+	return true
+}
+
 func isPIDInParentChain(targetPID uint32, currentPID uint32, parentLookup func(uint32) (uint32, bool)) bool {
 	if targetPID == 0 || currentPID == 0 || parentLookup == nil {
 		return false

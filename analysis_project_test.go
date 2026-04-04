@@ -1,0 +1,2484 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+type stubAnalysisClient struct {
+	workerCalls    int
+	reviewerCalls  int
+	synthesisCalls int
+}
+
+func (c *stubAnalysisClient) Name() string {
+	return "stub"
+}
+
+func (c *stubAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		c.workerCalls++
+		return ChatResponse{
+			Message: Message{
+				Text: `{"report":{"title":"core","scope_summary":"Core runtime and command handling.","responsibilities":["Owns the main command loop"],"entry_points":["main.go"],"internal_flow":["main.go initializes runtime state and enters the command loop"],"dependencies":["session.go"],"collaboration":["Uses session persistence and configuration state"],"risks":["Large main runtime file"],"unknowns":[],"evidence_files":["main.go"],"narrative":"The shard centers around startup and command dispatch."}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		c.reviewerCalls++
+		return ChatResponse{
+			Message: Message{
+				Text: `{"decision":{"status":"approved","issues":[],"revision_prompt":""}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		c.synthesisCalls++
+		return ChatResponse{
+			Message: Message{
+				Text: "# Project Overview\n\nStub final document.\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
+type namedAnalysisClient struct {
+	name  string
+	calls int
+	text  string
+}
+
+type fencedAnalysisClient struct{}
+
+func (c *fencedAnalysisClient) Name() string {
+	return "fenced"
+}
+
+func (c *fencedAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		return ChatResponse{
+			Message: Message{
+				Text: "```json\n{\n  \"report\": {\n    \"title\": \"runtime\",\n    \"scope_summary\": \"Runtime shard\",\n    \"responsibilities\": [\"Owns runtime\"],\n    \"key_files\": [\"main.go\"],\n    \"entry_points\": [\"main.go: main()\"],\n    \"internal_flow\": [\"main initializes runtime\"],\n    \"dependencies\": [\"config.go\"],\n    \"collaboration\": [\"Uses session state\"],\n    \"risks\": [],\n    \"unknowns\": [],\n    \"evidence_files\": [\"main.go\"],\n    \"narrative\": \"Structured worker output inside a code fence.\"\n  }\n}\n```",
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		return ChatResponse{
+			Message: Message{
+				Text: "```json\n{\n  \"decision\": {\n    \"status\": \"approved\",\n    \"issues\": [],\n    \"revision_prompt\": \"\"\n  }\n}\n```",
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		return ChatResponse{
+			Message: Message{
+				Text: "# Project Overview\n\nFenced response final document.\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
+func (c *namedAnalysisClient) Name() string {
+	return c.name
+}
+
+type draftAnalysisClient struct{}
+
+func (c *draftAnalysisClient) Name() string {
+	return "draft"
+}
+
+func (c *draftAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"report":{"title":"core","scope_summary":"summary","responsibilities":["boot"],"entry_points":["main.go"],"internal_flow":["main starts"],"dependencies":[],"collaboration":[],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"decision":{"status":"needs_revision","issues":["missing depth"],"revision_prompt":"expand details"}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		return ChatResponse{
+			Message: Message{
+				Text: "# Analysis\n\nbody\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
+type reviewerFailureAnalysisClient struct{}
+
+func (c *reviewerFailureAnalysisClient) Name() string {
+	return "reviewer-failure"
+}
+
+func (c *reviewerFailureAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"report":{"title":"core","scope_summary":"summary","responsibilities":["boot"],"entry_points":["main.go"],"internal_flow":["main starts"],"dependencies":[],"collaboration":["coordinates with worker"],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		return ChatResponse{}, fmt.Errorf("openai API error: The operation was aborted | code=504")
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		return ChatResponse{
+			Message: Message{
+				Text: "# Analysis\n\nbody\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
+type failingAnalysisClient struct {
+	target string
+}
+
+func (c *failingAnalysisClient) Name() string {
+	return "failing"
+}
+
+func (c *failingAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	if strings.Contains(req.System, c.target) {
+		return ChatResponse{}, fmt.Errorf("openai API error: Provider returned error")
+	}
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"report":{"title":"core","scope_summary":"summary","responsibilities":["boot"],"entry_points":["main.go"],"internal_flow":["main starts"],"dependencies":[],"collaboration":[],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"decision":{"status":"approved","issues":[],"revision_prompt":""}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		return ChatResponse{
+			Message: Message{
+				Text: "# Analysis\n\nbody\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
+type flakyAnalysisClient struct {
+	failuresRemaining int
+	calls             int
+}
+
+func (c *flakyAnalysisClient) Name() string {
+	return "flaky"
+}
+
+func (c *flakyAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.calls++
+	if c.failuresRemaining > 0 {
+		c.failuresRemaining--
+		return ChatResponse{}, fmt.Errorf("openai API error: Provider returned error")
+	}
+	return ChatResponse{
+		Message: Message{
+			Text: `{"report":{"title":"core","scope_summary":"summary","responsibilities":["boot"],"facts":["main.go defines startup"],"inferences":["runtime is centralized"],"entry_points":["main.go"],"internal_flow":["main starts"],"dependencies":[],"collaboration":[],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+		},
+	}, nil
+}
+
+func (c *namedAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.calls++
+	return ChatResponse{
+		Message: Message{
+			Text: c.text,
+		},
+	}, nil
+}
+
+func TestProjectAnalyzerRunCreatesArtifacts(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main()\n{\n}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "pkg", "feature.go"), []byte("package pkg\n\nfunc Feature()\n{\n}\n"), 0o644); err != nil {
+		t.Fatalf("write feature.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &stubAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.AgentCount < 2 || run.Summary.AgentCount > 16 {
+		t.Fatalf("unexpected agent count: %d", run.Summary.AgentCount)
+	}
+	if run.Summary.TotalShards == 0 {
+		t.Fatalf("expected shards to be created")
+	}
+	if strings.TrimSpace(run.Summary.OutputPath) == "" {
+		t.Fatalf("expected output path")
+	}
+	if _, err := os.Stat(run.Summary.OutputPath); err != nil {
+		t.Fatalf("expected markdown artifact: %v", err)
+	}
+	jsonPath := strings.TrimSuffix(run.Summary.OutputPath, ".md") + ".json"
+	if _, err := os.Stat(jsonPath); err != nil {
+		t.Fatalf("expected json artifact: %v", err)
+	}
+	shardDir := strings.TrimSuffix(run.Summary.OutputPath, ".md") + "_shards"
+	entries, err := os.ReadDir(shardDir)
+	if err != nil {
+		t.Fatalf("expected shard artifact directory: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("expected shard markdown artifacts")
+	}
+	if client.workerCalls == 0 {
+		t.Fatalf("expected worker calls")
+	}
+	if len(run.DebugEvents) == 0 {
+		t.Fatalf("expected debug events to be recorded")
+	}
+}
+
+func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main()\n{\n}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &fencedAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.ApprovedShards == 0 {
+		t.Fatalf("expected at least one approved shard")
+	}
+	if !strings.Contains(run.FinalDocument, "Fenced response final document.") {
+		t.Fatalf("expected synthesized final document, got: %s", run.FinalDocument)
+	}
+	if len(run.Reports) == 0 {
+		t.Fatalf("expected reports")
+	}
+	if got := run.Reports[0].ScopeSummary; got != "Runtime shard" {
+		t.Fatalf("expected parsed scope summary, got %q", got)
+	}
+	if len(run.Reviews) == 0 || run.Reviews[0].Status != "approved" {
+		t.Fatalf("expected parsed approved review, got %#v", run.Reviews)
+	}
+}
+
+func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main()\n{\n}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &reviewerFailureAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.ReviewFailures == 0 {
+		t.Fatalf("expected review failures to be tracked")
+	}
+	if strings.TrimSpace(run.FinalDocument) == "" {
+		t.Fatalf("expected final document even when reviewer fails")
+	}
+	if !strings.Contains(run.FinalDocument, "Draft Analysis") && !strings.Contains(run.FinalDocument, "Analysis With Review Failures") {
+		t.Fatalf("expected degraded review banner in final document\n%s", run.FinalDocument)
+	}
+	found := false
+	for _, review := range run.Reviews {
+		if review.Status == "review_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected at least one review_failed decision: %#v", run.Reviews)
+	}
+}
+
+func TestExecuteShardWrapsWorkerProviderErrorWithShardAndModel(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Model = "analysis-model"
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	analyzer.workerClient = &failingAnalysisClient{target: "project analysis sub-agent"}
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shards := analyzer.planShards(snapshot, 2)
+	if len(shards) == 0 {
+		t.Fatalf("expected shards")
+	}
+	reuseState := analyzer.buildReuseState(nil, shards)
+	_, _, _, err = analyzer.executeShard(context.Background(), snapshot, shards[0], "analyze", nil, reuseState)
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "analysis worker request failed") || !strings.Contains(text, "shard=") || !strings.Contains(text, "model=analysis-model") {
+		t.Fatalf("expected wrapped worker error, got %q", text)
+	}
+}
+
+func TestEstimateAgentCountClampsRange(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	client := &stubAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: t.TempDir(),
+		Root:     t.TempDir(),
+	}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+
+	snapshot := ProjectSnapshot{
+		TotalFiles:    5000,
+		TotalLines:    1000000,
+		Directories:   make([]string, 200),
+		ManifestFiles: []string{"go.mod", "package.json", "Cargo.toml"},
+	}
+	count := analyzer.estimateAgentCount(snapshot)
+	if count != 16 {
+		t.Fatalf("expected clamp to 16, got %d", count)
+	}
+
+	snapshot = ProjectSnapshot{}
+	count = analyzer.estimateAgentCount(snapshot)
+	if count != 2 {
+		t.Fatalf("expected minimum of 2, got %d", count)
+	}
+}
+
+func TestScanProjectResolvesRelativeImports(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "core"), 0o755); err != nil {
+		t.Fatalf("mkdir core: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "feature"), 0o755); err != nil {
+		t.Fatalf("mkdir feature: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "core", "shared.h"), []byte("#pragma once\n"), 0o644); err != nil {
+		t.Fatalf("write shared.h: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "feature", "mod.cpp"), []byte("#include \"../core/shared.h\"\nint x = 1;\n"), 0o644); err != nil {
+		t.Fatalf("write mod.cpp: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	file := snapshot.FilesByPath["feature/mod.cpp"]
+	if len(file.Imports) == 0 {
+		t.Fatalf("expected resolved imports, got none")
+	}
+	if file.Imports[0] != "core/shared.h" {
+		t.Fatalf("expected core/shared.h, got %#v", file.Imports)
+	}
+}
+
+func TestPlanShardsUsesImportClusters(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("a/a.cpp", "#include \"../b/b.h\"\nint a = 1;\n")
+	mustWrite("a/a.h", "#pragma once\n")
+	mustWrite("b/b.cpp", "#include \"../a/a.h\"\nint b = 2;\n")
+	mustWrite("b/b.h", "#pragma once\n")
+	mustWrite("c/c.cpp", "int c = 3;\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shards := analyzer.planShards(snapshot, 2)
+	if len(shards) == 0 {
+		t.Fatalf("expected shards")
+	}
+	foundClusteredShard := false
+	for _, shard := range shards {
+		hasA := false
+		hasB := false
+		for _, path := range shard.PrimaryFiles {
+			if strings.HasPrefix(path, "a/") {
+				hasA = true
+			}
+			if strings.HasPrefix(path, "b/") {
+				hasB = true
+			}
+		}
+		if hasA && hasB {
+			foundClusteredShard = true
+			break
+		}
+	}
+	if !foundClusteredShard {
+		t.Fatalf("expected import-coupled directories to be clustered together")
+	}
+}
+
+func TestScanProjectExcludesClaudeWorktrees(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".claude", "worktrees", "mirror"), 0o755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude", "worktrees", "mirror", "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write mirrored main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write real main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	for _, file := range snapshot.Files {
+		if strings.Contains(file.Path, ".claude/worktrees") {
+			t.Fatalf("expected .claude/worktrees to be excluded, found %s", file.Path)
+		}
+	}
+}
+
+func TestScanProjectResolvesGoModuleImports(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "internal", "core"), 0o755); err != nil {
+		t.Fatalf("mkdir internal/core: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "internal", "core", "core.go"), []byte("package core\n"), 0o644); err != nil {
+		t.Fatalf("write core.go: %v", err)
+	}
+	mainBody := "package main\n\nimport (\n    \"example.com/demo/internal/core\"\n)\n\nfunc main() {\n    _ = core.Version\n}\n"
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte(mainBody), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	if snapshot.ModulePath != "example.com/demo" {
+		t.Fatalf("expected module path example.com/demo, got %q", snapshot.ModulePath)
+	}
+	file := snapshot.FilesByPath["main.go"]
+	found := false
+	for _, item := range file.Imports {
+		if item == "internal/core/core.go" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected resolved go import to internal/core/core.go, got %#v", file.Imports)
+	}
+}
+
+func TestFallbackFinalDocumentIncludesFlowAndIntegrationSections(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:          "C:/repo",
+		ModulePath:    "example.com/demo",
+		Directories:   []string{"core", "feature"},
+		ManifestFiles: []string{"go.mod"},
+		TotalFiles:    2,
+		TotalLines:    42,
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "core",
+			ScopeSummary:     "Core runtime.",
+			Responsibilities: []string{"Owns bootstrap"},
+			KeyFiles:         []string{"main.go", "config.go"},
+			EntryPoints:      []string{"main.go"},
+			InternalFlow:     []string{"main.go initializes config before dispatch"},
+			Dependencies:     []string{"feature/service.go"},
+			Collaboration:    []string{"Calls into feature service after bootstrap"},
+			Risks:            []string{"Tight coupling in startup path"},
+			Unknowns:         []string{"Shutdown sequence not fully traced"},
+			Narrative:        "Narrative block.",
+		},
+	}
+
+	doc := fallbackFinalDocument(snapshot, []AnalysisShard{{ID: "shard-01", Name: "core"}}, reports, "analyze flow")
+	for _, expected := range []string{
+		"## Shard Index",
+		"## Execution Flow And Entry Points",
+		"## Dependencies And Integration Points",
+		"## Risks And Unknowns",
+		"Integration: Calls into feature service after bootstrap",
+		"Responsibilities:",
+		"Key files:",
+		"Internal flow:",
+	} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected document to contain %q\n%s", expected, doc)
+		}
+	}
+}
+
+func TestBuildShardDocumentsCreatesDetailedShardMarkdown(t *testing.T) {
+	shards := []AnalysisShard{
+		{
+			ID:                 "shard-01",
+			Name:               "core",
+			PrimaryFiles:       []string{"main.go"},
+			ReferenceFiles:     []string{"config.go"},
+			CacheStatus:        "miss",
+			InvalidationReason: "new",
+		},
+	}
+	reports := []WorkerReport{
+		{
+			ScopeSummary:     "Core runtime summary.",
+			Responsibilities: []string{"Boot the runtime"},
+			KeyFiles:         []string{"main.go"},
+			EntryPoints:      []string{"main.go"},
+			InternalFlow:     []string{"Initialize config then enter loop"},
+			Dependencies:     []string{"config.go"},
+			Collaboration:    []string{"Interacts with session management"},
+			Risks:            []string{"Large command surface"},
+			Unknowns:         []string{"Shutdown behavior not traced"},
+			EvidenceFiles:    []string{"main.go"},
+			Narrative:        "Detailed narrative.",
+		},
+	}
+
+	docs := buildShardDocuments(shards, reports, "analyze runtime")
+	doc := docs["shard-01"]
+	for _, expected := range []string{
+		"# core",
+		"## Primary Files",
+		"## Responsibilities",
+		"## Key Files",
+		"## Internal Flow",
+		"## Evidence Files",
+	} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected shard document to contain %q\n%s", expected, doc)
+		}
+	}
+}
+
+func TestPlanShardsSplitsLargeRootIntoSubsystemShards(t *testing.T) {
+	root := t.TempDir()
+	write := func(name string) {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for _, name := range []string{
+		"main.go", "agent.go", "session.go", "provider.go", "config.go", "scout.go",
+		"verify.go", "verify_policy.go", "verify_classifier.go", "checkpoint.go",
+		"hooks.go", "hook_overrides.go",
+		"evidence_store.go", "investigation_collectors.go", "simulation_profiles.go",
+		"persistent_memory.go", "memory_policy.go", "mcp.go", "skill.go",
+		"ui.go", "viewer_windows.go", "preview.go", "selection_diff.go",
+		"commands_hooks.go", "commands_investigate.go", "commands_memory.go",
+		"input_windows.go", "cancel_windows.go", "storage_atomic.go",
+		"README.md", "ROADMAP_kor.md", "release.ps1", "go.mod",
+	} {
+		write(name)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	if len(snapshot.FilesByDirectory[""]) < 12 {
+		t.Fatalf("expected enough root files for root subsystem split, got %d", len(snapshot.FilesByDirectory[""]))
+	}
+	rootSubShards := analyzer.planRootSubsystemShards(snapshot, snapshot.FilesByDirectory[""])
+	if len(rootSubShards) < 2 {
+		t.Fatalf("expected direct root subsystem split, got %d", len(rootSubShards))
+	}
+	shards := analyzer.planShards(snapshot, 4)
+	names := []string{}
+	for _, shard := range shards {
+		names = append(names, shard.Name)
+	}
+	foundRuntime := false
+	foundVerification := false
+	foundPlatformIO := false
+	foundDocsSpecs := false
+	foundProjectManifest := false
+	foundOpsScripts := false
+	for _, name := range names {
+		if strings.HasPrefix(name, "runtime") {
+			foundRuntime = true
+		}
+		if strings.HasPrefix(name, "verification") {
+			foundVerification = true
+		}
+		if strings.HasPrefix(name, "platform_io") {
+			foundPlatformIO = true
+		}
+		if strings.HasPrefix(name, "docs_specs") {
+			foundDocsSpecs = true
+		}
+		if strings.HasPrefix(name, "project_manifest") {
+			foundProjectManifest = true
+		}
+		if strings.HasPrefix(name, "ops_scripts") {
+			foundOpsScripts = true
+		}
+	}
+	if !foundRuntime || !foundVerification || !foundPlatformIO || !foundDocsSpecs || !foundProjectManifest || !foundOpsScripts {
+		t.Fatalf("expected root subsystem shards, got %v", names)
+	}
+}
+
+func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "commands_investigate.go"), []byte("package main\n\nfunc handleInvestigateCommand()\n{\n}\n"), 0o644); err != nil {
+		t.Fatalf("write commands_investigate.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "commands",
+		PrimaryFiles: []string{"commands_investigate.go"},
+	}
+	prompt := buildWorkerPrompt(snapshot, shard, "goal", "")
+	if !strings.Contains(prompt, "snippet-limited or context-truncated") {
+		t.Fatalf("expected truncated-context guidance in worker prompt\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "may include only the first part of the file") {
+		t.Fatalf("expected file excerpt note in worker prompt\n%s", prompt)
+	}
+}
+
+func TestNormalizeWorkerReportPreservesFactsAndInferences(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "runtime",
+		PrimaryFiles: []string{"main.go"},
+	}
+	report := WorkerReport{
+		Facts:         []string{"main.go defines startup", "main.go defines startup"},
+		Inferences:    []string{"runtime is centralized", "runtime is centralized"},
+		EvidenceFiles: []string{"main.go"},
+	}
+	normalizeWorkerReport(&report, shard)
+	if len(report.Facts) != 1 || report.Facts[0] != "main.go defines startup" {
+		t.Fatalf("expected normalized facts, got %#v", report.Facts)
+	}
+	if len(report.Inferences) != 1 || report.Inferences[0] != "runtime is centralized" {
+		t.Fatalf("expected normalized inferences, got %#v", report.Inferences)
+	}
+}
+
+func TestRunWorkerRetriesProviderErrors(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Model = "analysis-model"
+	cfg.ProjectAnalysis.MaxProviderRetries = 2
+	cfg.ProjectAnalysis.ProviderRetryDelayMs = 1
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	client := &flakyAnalysisClient{failuresRemaining: 1}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	analyzer.workerClient = client
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	report, err := analyzer.runWorker(context.Background(), snapshot, AnalysisShard{
+		ID:           "shard-01",
+		Name:         "runtime",
+		PrimaryFiles: []string{"main.go"},
+	}, "goal", "")
+	if err != nil {
+		t.Fatalf("runWorker returned error: %v", err)
+	}
+	if client.calls != 2 {
+		t.Fatalf("expected retry to call provider twice, got %d", client.calls)
+	}
+	if len(report.Facts) == 0 || len(report.Inferences) == 0 {
+		t.Fatalf("expected parsed facts and inferences, got %#v", report)
+	}
+}
+
+func TestGroupedReportsForSynthesisMergesTinyOperationalShards(t *testing.T) {
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "project_manifest"},
+		{ID: "shard-02", Name: "ops_scripts"},
+		{ID: "shard-03", Name: "runtime"},
+	}
+	reports := []WorkerReport{
+		{Title: "project_manifest", Facts: []string{"module is kernforge"}},
+		{Title: "ops_scripts", Facts: []string{"release.ps1 exists"}},
+		{Title: "runtime", Facts: []string{"main.go initializes runtime"}},
+	}
+	grouped := groupedReportsForSynthesis(shards, reports)
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 grouped sections, got %d", len(grouped))
+	}
+	foundOperational := false
+	for _, item := range grouped {
+		if item.Title == "Operational Metadata And Scripts" {
+			foundOperational = true
+			if len(item.Facts) != 2 {
+				t.Fatalf("expected merged facts for tiny shards, got %#v", item.Facts)
+			}
+		}
+	}
+	if !foundOperational {
+		t.Fatalf("expected operational grouping, got %#v", grouped)
+	}
+}
+
+func TestEnsureFinalDocumentInsightsAppendsAppendixWhenMissing(t *testing.T) {
+	text := "# Analysis\n\n### Agent Runtime\n\nBody\n"
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime"},
+	}
+	reports := []WorkerReport{
+		{
+			Title:         "runtime",
+			Facts:         []string{"main.go initializes runtime"},
+			Inferences:    []string{"runtime is centralized"},
+			EvidenceFiles: []string{"main.go", "agent.go"},
+		},
+	}
+	out := ensureFinalDocumentInsights(text, ProjectSnapshot{}, shards, reports)
+	if !strings.Contains(out, "## Evidence And Inference Appendix") {
+		t.Fatalf("expected appendix in final document\n%s", out)
+	}
+	if !strings.Contains(out, "## Evidence Files Appendix") {
+		t.Fatalf("expected evidence appendix in final document\n%s", out)
+	}
+	if !strings.Contains(out, "Facts:") || !strings.Contains(out, "Inferences:") {
+		t.Fatalf("expected facts and inferences in appendix\n%s", out)
+	}
+	if !strings.Contains(out, "Evidence files:") {
+		t.Fatalf("expected evidence files in appendix\n%s", out)
+	}
+	if strings.Contains(out, "Agent Runtime Group") {
+		t.Fatalf("expected normalized heading name\n%s", out)
+	}
+	if !strings.Contains(out, "Agent Runtime") {
+		t.Fatalf("expected normalized heading to remain present\n%s", out)
+	}
+}
+
+func TestEnsureFinalDocumentInsightsUsesCoverageNotGlobalPresence(t *testing.T) {
+	text := "# Analysis\n\n### Agent Runtime\n\nFacts:\n- runtime fact\n\nInferences:\n- runtime inference\n\nEvidence files:\n- main.go\n\n### Safety Control Plane\n\nBody only\n"
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime"},
+		{ID: "shard-02", Name: "verification"},
+	}
+	reports := []WorkerReport{
+		{
+			Title:         "runtime",
+			Facts:         []string{"runtime fact"},
+			Inferences:    []string{"runtime inference"},
+			EvidenceFiles: []string{"main.go"},
+		},
+		{
+			Title:         "verification",
+			Facts:         []string{"verification fact"},
+			Inferences:    []string{"verification inference"},
+			EvidenceFiles: []string{"verify.go"},
+		},
+	}
+	out := ensureFinalDocumentInsights(text, ProjectSnapshot{}, shards, reports)
+	if !strings.Contains(out, "### Safety Control Plane: verification") {
+		t.Fatalf("expected appendix entry for missing verification coverage\n%s", out)
+	}
+	if !strings.Contains(out, "verify.go") {
+		t.Fatalf("expected evidence appendix for uncovered subsystem\n%s", out)
+	}
+	if strings.Contains(out, "### Agent Runtime: runtime") {
+		t.Fatalf("expected runtime section to be omitted from delta appendix when already covered\n%s", out)
+	}
+}
+
+func TestGroupedReportsForSynthesisAssignsArchitectureGroups(t *testing.T) {
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime"},
+		{ID: "shard-02", Name: "verification"},
+		{ID: "shard-03", Name: "project_manifest"},
+	}
+	reports := []WorkerReport{
+		{Title: "runtime"},
+		{Title: "verification"},
+		{Title: "project_manifest"},
+	}
+	grouped := groupedReportsForSynthesis(shards, reports)
+	if len(grouped) < 2 {
+		t.Fatalf("expected grouped sections, got %#v", grouped)
+	}
+	if grouped[0].Group != "Agent Runtime" {
+		t.Fatalf("expected runtime group first, got %#v", grouped)
+	}
+	foundOperational := false
+	for _, item := range grouped {
+		if item.Group == "Operational Metadata" {
+			foundOperational = true
+			break
+		}
+	}
+	if !foundOperational {
+		t.Fatalf("expected operational metadata group, got %#v", grouped)
+	}
+}
+
+func TestSynthesisGroupForShardAdaptsToTavernStyleModules(t *testing.T) {
+	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"TavernMaster/TavernMaster.cpp"}}, WorkerReport{}); got != "Security Control" {
+		t.Fatalf("expected TavernMaster to map to Security Control, got %q", got)
+	}
+	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"TavernWorker/PrefetchScanner.cpp"}}, WorkerReport{}); got != "Forensic Analysis" {
+		t.Fatalf("expected TavernWorker to map to Forensic Analysis, got %q", got)
+	}
+	if got := synthesisGroupForShard(AnalysisShard{PrimaryFiles: []string{"External/aws/include/aws/auth/auth.h"}}, WorkerReport{}); got != "External Dependencies" {
+		t.Fatalf("expected External to map to External Dependencies, got %q", got)
+	}
+}
+
+func TestGroupedReportsForSynthesisPushesExternalDependenciesLast(t *testing.T) {
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "misc", PrimaryFiles: []string{"External/aws/include/aws/auth/auth.h"}},
+		{ID: "shard-02", Name: "misc", PrimaryFiles: []string{"TavernMaster/TavernMaster.cpp"}},
+	}
+	reports := []WorkerReport{
+		{Title: "aws auth"},
+		{Title: "master"},
+	}
+	grouped := groupedReportsForSynthesis(shards, reports)
+	if len(grouped) != 2 {
+		t.Fatalf("expected 2 grouped sections, got %#v", grouped)
+	}
+	if grouped[0].Group != "Security Control" {
+		t.Fatalf("expected product code before external dependencies, got %#v", grouped)
+	}
+	if grouped[1].Group != "External Dependencies" {
+		t.Fatalf("expected external dependency section last, got %#v", grouped)
+	}
+}
+
+func TestFallbackFinalDocumentIncludesEvidenceFilesAndGroupHeadings(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:       "C:\\git\\kernforge",
+		TotalFiles: 2,
+		TotalLines: 10,
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"main.go"}},
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "runtime",
+			Responsibilities: []string{"boot runtime"},
+			Facts:            []string{"main.go initializes runtime"},
+			EvidenceFiles:    []string{"main.go", "agent.go"},
+		},
+	}
+	doc := fallbackFinalDocument(snapshot, shards, reports, "goal")
+	if !strings.Contains(doc, "### Agent Runtime") {
+		t.Fatalf("expected group heading in fallback doc\n%s", doc)
+	}
+	if !strings.Contains(doc, "Evidence files:") && !strings.Contains(doc, "Evidence files") {
+		t.Fatalf("expected evidence files section in fallback doc\n%s", doc)
+	}
+}
+
+func TestSanitizeFileNamePreservesValidUnicodeBoundaries(t *testing.T) {
+	name := sanitizeFileName("이 프로젝트의 전체 구조와 실행 흐름을 아주 자세하게 문서화")
+	if strings.ContainsRune(name, utf8.RuneError) {
+		t.Fatalf("expected sanitized filename without rune error: %q", name)
+	}
+	if strings.Contains(name, "�") {
+		t.Fatalf("expected sanitized filename without replacement char: %q", name)
+	}
+	if name == "" {
+		t.Fatalf("expected non-empty sanitized filename")
+	}
+}
+
+func TestExecuteShardUsesDedicatedWorkerAndReviewerClients(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	worker := &namedAnalysisClient{
+		name: "worker",
+		text: `{"report":{"title":"core","scope_summary":"core","responsibilities":["boot"],"entry_points":["main.go"],"internal_flow":["main starts runtime"],"dependencies":[],"collaboration":[],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+	}
+	reviewer := &namedAnalysisClient{
+		name: "reviewer",
+		text: `{"decision":{"status":"approved","issues":[],"revision_prompt":""}}`,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	analyzer.workerClient = worker
+	analyzer.reviewerClient = reviewer
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shards := analyzer.planShards(snapshot, 2)
+	if len(shards) == 0 {
+		t.Fatalf("expected shards")
+	}
+	reuseState := analyzer.buildReuseState(nil, shards)
+	_, _, _, err = analyzer.executeShard(context.Background(), snapshot, shards[0], "analyze", nil, reuseState)
+	if err != nil {
+		t.Fatalf("executeShard returned error: %v", err)
+	}
+	if worker.calls == 0 {
+		t.Fatalf("expected dedicated worker client to be used")
+	}
+	if reviewer.calls == 0 {
+		t.Fatalf("expected dedicated reviewer client to be used")
+	}
+}
+
+func TestProjectAnalyzerIncrementalReuseSkipsWorkerAndReviewer(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &stubAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	firstRun, err := analyzer.Run(context.Background(), "incremental goal")
+	if err != nil {
+		t.Fatalf("first Run returned error: %v", err)
+	}
+	if firstRun.Summary.TotalShards == 0 {
+		t.Fatalf("expected first run shards")
+	}
+	firstWorkerCalls := client.workerCalls
+	firstReviewerCalls := client.reviewerCalls
+
+	secondRun, err := analyzer.Run(context.Background(), "incremental goal")
+	if err != nil {
+		t.Fatalf("second Run returned error: %v", err)
+	}
+	if client.workerCalls != firstWorkerCalls {
+		t.Fatalf("expected incremental reuse to skip worker calls, before=%d after=%d", firstWorkerCalls, client.workerCalls)
+	}
+	if client.reviewerCalls != firstReviewerCalls {
+		t.Fatalf("expected incremental reuse to skip reviewer calls, before=%d after=%d", firstReviewerCalls, client.reviewerCalls)
+	}
+	reused := false
+	for _, shard := range secondRun.Shards {
+		if shard.CacheStatus == "reused" {
+			reused = true
+			break
+		}
+	}
+	if !reused {
+		t.Fatalf("expected reused shard cache status")
+	}
+}
+
+func TestSelectiveInvalidationWhenDependencyPrimaryChanges(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+
+	currentShards := []AnalysisShard{
+		{
+			ID:                   "shard-01",
+			Name:                 "core",
+			PrimaryFiles:         []string{"core/a.go"},
+			PrimaryFingerprint:   "core-new",
+			ReferenceFingerprint: "",
+		},
+		{
+			ID:                   "shard-02",
+			Name:                 "feature",
+			PrimaryFiles:         []string{"feature/b.go"},
+			ReferenceFiles:       []string{"core/a.go"},
+			PrimaryFingerprint:   "feature-same",
+			ReferenceFingerprint: "feature-ref",
+		},
+	}
+	previousRun := &ProjectAnalysisRun{
+		Shards: []AnalysisShard{
+			{
+				ID:                   "old-01",
+				PrimaryFiles:         []string{"core/a.go"},
+				PrimaryFingerprint:   "core-old",
+				ReferenceFingerprint: "",
+			},
+			{
+				ID:                   "old-02",
+				PrimaryFiles:         []string{"feature/b.go"},
+				ReferenceFiles:       []string{"core/a.go"},
+				PrimaryFingerprint:   "feature-same",
+				ReferenceFingerprint: "feature-ref",
+			},
+		},
+		Reports: []WorkerReport{
+			{ShardID: "old-01"},
+			{ShardID: "old-02"},
+		},
+		Reviews: []ReviewDecision{
+			{Status: "approved"},
+			{Status: "approved"},
+		},
+	}
+
+	reuseState := analyzer.buildReuseState(previousRun, currentShards)
+	if _, changed := reuseState.changedPrimaryFiles["core/a.go"]; !changed {
+		t.Fatalf("expected changed primary file to be tracked")
+	}
+	_, _, reason, ok := analyzer.tryReuseShard(previousRun, currentShards[1], reuseState)
+	if ok {
+		t.Fatalf("expected dependent shard reuse to be denied")
+	}
+	if reason != "dependency_changed" {
+		t.Fatalf("expected dependency_changed, got %q", reason)
+	}
+}
+
+func TestBuildReviewerPromptIncludesPreviousReportForDependencyChanged(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		FilesByPath: map[string]ScannedFile{
+			"feature/b.go": {Path: "feature/b.go", LineCount: 10},
+		},
+		Root: ".",
+	}
+	shard := AnalysisShard{
+		ID:                 "shard-02",
+		Name:               "feature",
+		PrimaryFiles:       []string{"feature/b.go"},
+		CacheStatus:        "miss",
+		InvalidationReason: "dependency_changed",
+	}
+	current := WorkerReport{
+		Title:            "feature",
+		ScopeSummary:     "new report",
+		Responsibilities: []string{"serve requests"},
+		InternalFlow:     []string{"flow"},
+		EvidenceFiles:    []string{"feature/b.go"},
+	}
+	previous := WorkerReport{
+		Title:            "feature-old",
+		ScopeSummary:     "old report",
+		Responsibilities: []string{"old ownership"},
+	}
+	prompt := buildReviewerPrompt(snapshot, shard, current, "goal", previous, true)
+	if !strings.Contains(prompt, "Previous approved report for diff-aware review") {
+		t.Fatalf("expected previous report block in reviewer prompt\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "\"old ownership\"") {
+		t.Fatalf("expected previous report contents in reviewer prompt\n%s", prompt)
+	}
+}
+
+func TestRunDowngradesToDraftWhenNoShardApproved(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &draftAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "draft on failed reviews")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.Status != "draft" {
+		t.Fatalf("expected draft status, got %s", run.Summary.Status)
+	}
+	if !strings.HasPrefix(run.FinalDocument, "# Draft Analysis") {
+		t.Fatalf("expected draft warning prefix\n%s", run.FinalDocument)
+	}
+}
+
+func TestEnsureFinalDocumentInsightsCompactsExternalDependencyAppendix(t *testing.T) {
+	document := "# Project Analysis\n\n## Subsystem Breakdown\n\n### Core Application\n\n#### Core Runtime\n\nResponsibilities:\n- boot\n"
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"main.go"}},
+		{ID: "shard-02", Name: "aws_auth", PrimaryFiles: []string{"External/aws/auth/Auth.h"}},
+		{ID: "shard-03", Name: "zydis", PrimaryFiles: []string{"External/Zydis/Zydis.h"}},
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "Core Runtime",
+			Responsibilities: []string{"boot"},
+			EvidenceFiles:    []string{"main.go"},
+			Facts:            []string{"main.go initializes runtime"},
+		},
+		{
+			Title:         "AWS Authentication",
+			EvidenceFiles: []string{"External/aws/auth/Auth.h", "External/aws/auth/Credentials.h"},
+			Facts:         []string{"aws auth provides credentials"},
+			Inferences:    []string{"used for cloud authentication"},
+			Dependencies:  []string{"AWS CRT"},
+		},
+		{
+			Title:         "Zydis Decoder",
+			EvidenceFiles: []string{"External/Zydis/Zydis.h", "External/Zydis/Decoder.h"},
+			Facts:         []string{"zydis decodes instructions"},
+			Inferences:    []string{"used for binary analysis"},
+			Dependencies:  []string{"Zycore"},
+		},
+	}
+	got := ensureFinalDocumentInsights(document, ProjectSnapshot{}, shards, reports)
+	if !strings.Contains(got, "### External Dependencies: Dependency Catalog") {
+		t.Fatalf("expected compact external dependency catalog\n%s", got)
+	}
+	if strings.Contains(got, "### External Dependencies: AWS Authentication") {
+		t.Fatalf("expected external appendix entries to be compacted\n%s", got)
+	}
+}
+
+func TestEnsureFinalDocumentInsightsInjectsPrimaryStartupProject(t *testing.T) {
+	document := "# Project Analysis\n\n## 1. Project Overview\n\nOverview text.\n\n## 3. Execution Flow And Entry Points\n\nFlow text.\n"
+	snapshot := ProjectSnapshot{
+		PrimaryStartup:  "Tavern",
+		StartupProjects: []string{"Tavern", "TavernWorker", "TavernDart"},
+		SolutionProjects: []SolutionProject{
+			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+		},
+	}
+	got := ensureFinalDocumentInsights(document, snapshot, nil, nil)
+	if !strings.Contains(got, "Primary startup project:") {
+		t.Fatalf("expected startup project snippet\n%s", got)
+	}
+	if !strings.Contains(got, "`Tavern`") {
+		t.Fatalf("expected Tavern in startup snippet\n%s", got)
+	}
+	if !strings.Contains(got, "`Tavern/Tavern.cpp`") {
+		t.Fatalf("expected startup entry file in snippet\n%s", got)
+	}
+}
+
+func TestIsVisualStudioCppProjectDetectsSolutionManifest(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		ManifestFiles: []string{"Tavern.sln", "Tavern/Tavern.vcxproj"},
+	}
+	if !isVisualStudioCppProject(snapshot) {
+		t.Fatalf("expected Visual Studio / C++ project detection")
+	}
+}
+
+func TestEnrichSolutionMetadataFindsStartupProjectAndEntryFiles(t *testing.T) {
+	root := t.TempDir()
+	sln := `Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{GUID}") = "Tavern", "Tavern/Tavern.vcxproj", "{A}"
+Project("{GUID}") = "Common", "Common/Common.vcxproj", "{B}"
+EndProject
+`
+	vcxprojApp := `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup></Project>`
+	vcxprojLib := `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir Tavern: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Common"), 0o755); err != nil {
+		t.Fatalf("mkdir Common: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern.sln"), []byte(sln), 0o644); err != nil {
+		t.Fatalf("write sln: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "Tavern.vcxproj"), []byte(vcxprojApp), 0o644); err != nil {
+		t.Fatalf("write app vcxproj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Common", "Common.vcxproj"), []byte(vcxprojLib), 0o644); err != nil {
+		t.Fatalf("write lib vcxproj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "main.cpp"), []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write main.cpp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Common", "helper.cpp"), []byte("void helper() {}\n"), 0o644); err != nil {
+		t.Fatalf("write helper.cpp: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	if snapshot.PrimaryStartup != "Tavern" {
+		t.Fatalf("expected Tavern as primary startup, got %q", snapshot.PrimaryStartup)
+	}
+	if len(snapshot.SolutionProjects) != 2 {
+		t.Fatalf("expected solution projects to be discovered, got %d", len(snapshot.SolutionProjects))
+	}
+	if !containsString(snapshot.StartupProjects, "Tavern") {
+		t.Fatalf("expected Tavern in startup candidates: %#v", snapshot.StartupProjects)
+	}
+	if !containsString(snapshot.EntrypointFiles, "Tavern/main.cpp") {
+		t.Fatalf("expected solution entrypoint file in snapshot: %#v", snapshot.EntrypointFiles)
+	}
+}
+
+func TestFallbackFinalDocumentIncludesPrimaryStartupProject(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		PrimaryStartup: "Tavern",
+		TotalFiles:     1,
+		TotalLines:     10,
+	}
+	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
+	if !strings.Contains(doc, "Inferred primary startup project: `Tavern`") {
+		t.Fatalf("expected fallback doc to include primary startup project\n%s", doc)
+	}
+}
+
+func TestInferRuntimeEdgesFindsProjectReferencesAndDynamicLoads(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(path string, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+	mustWrite(filepath.Join(root, "Tavern", "Tavern.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\TavernMaster\TavernMaster.vcxproj" /></ItemGroup></Project>`)
+	mustWrite(filepath.Join(root, "TavernMaster", "TavernMaster.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup><ItemGroup><ProjectReference Include="..\TavernWorker\TavernWorker.vcxproj" /></ItemGroup></Project>`)
+	mustWrite(filepath.Join(root, "TavernCmn", "TavernCmn.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
+	mustWrite(filepath.Join(root, "TavernUpd", "TavernUpd.vcxproj"), `<Project><PropertyGroup Label="Configuration"><ConfigurationType>DynamicLibrary</ConfigurationType></PropertyGroup></Project>`)
+	mustWrite(filepath.Join(root, "TavernCmn", "dllmain.cpp"), `LoadLibrary(L"TavernUpd.bin");`)
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "TavernCmn/dllmain.cpp"},
+		},
+		SolutionProjects: []SolutionProject{
+			{Name: "Tavern", Path: "Tavern/Tavern.vcxproj", Directory: "Tavern", ProjectReferences: parseVCXProjProjectReferences(root, "Tavern/Tavern.vcxproj")},
+			{Name: "TavernMaster", Path: "TavernMaster/TavernMaster.vcxproj", Directory: "TavernMaster", ProjectReferences: parseVCXProjProjectReferences(root, "TavernMaster/TavernMaster.vcxproj")},
+			{Name: "TavernWorker", Path: "TavernWorker/TavernWorker.vcxproj", Directory: "TavernWorker"},
+			{Name: "TavernCmn", Path: "TavernCmn/TavernCmn.vcxproj", Directory: "TavernCmn"},
+			{Name: "TavernUpd", Path: "TavernUpd/TavernUpd.vcxproj", Directory: "TavernUpd"},
+		},
+	}
+	edges := inferRuntimeEdges(snapshot, snapshot.SolutionProjects)
+	foundAppToMaster := false
+	foundMasterToWorker := false
+	foundCmnToUpd := false
+	for _, edge := range edges {
+		if edge.Source == "Tavern" && edge.Target == "TavernMaster" {
+			if edge.Confidence != "high" {
+				t.Fatalf("expected high confidence for project reference edge, got %#v", edge)
+			}
+			foundAppToMaster = true
+		}
+		if edge.Source == "TavernMaster" && edge.Target == "TavernWorker" {
+			if edge.Confidence != "high" {
+				t.Fatalf("expected high confidence for worker edge, got %#v", edge)
+			}
+			foundMasterToWorker = true
+		}
+		if edge.Source == "TavernCmn" && edge.Target == "TavernUpd" {
+			if edge.Kind != "dynamic_load" || edge.Confidence != "high" {
+				t.Fatalf("expected high-confidence dynamic load edge, got %#v", edge)
+			}
+			foundCmnToUpd = true
+		}
+	}
+	if !foundAppToMaster || !foundMasterToWorker || !foundCmnToUpd {
+		t.Fatalf("expected runtime edges, got %#v", edges)
+	}
+}
+
+func TestHighConfidenceRuntimeEdgesExcludeStringReferencesFromDocument(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		PrimaryStartup: "Tavern",
+		RuntimeEdges: []RuntimeEdge{
+			{Source: "Tavern", Target: "TavernMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"Tavern/Tavern.vcxproj"}},
+			{Source: "TavernWorker", Target: "TavernUpd", Kind: "string_reference", Confidence: "low", Evidence: []string{"TavernWorker/worker.cpp"}},
+		},
+		TotalFiles: 1,
+		TotalLines: 10,
+	}
+	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
+	if !strings.Contains(doc, "Tavern -> TavernMaster") {
+		t.Fatalf("expected high-confidence runtime edge in document\n%s", doc)
+	}
+	if strings.Contains(doc, "TavernWorker -> TavernUpd") {
+		t.Fatalf("expected low-confidence runtime edge to be excluded from document\n%s", doc)
+	}
+}
+
+func TestNormalizeUnexpectedLocaleArtifacts(t *testing.T) {
+	input := "## Project Overview\n\n主要启动链\n\n运行时图\n"
+	got := normalizeUnexpectedLocaleArtifacts(input)
+	if strings.Contains(got, "主要启动链") || strings.Contains(got, "运行时图") {
+		t.Fatalf("expected locale artifacts to be normalized\n%s", got)
+	}
+	if !strings.Contains(got, "Primary Startup Chain") || !strings.Contains(got, "Runtime Graph") {
+		t.Fatalf("expected normalized headings in output\n%s", got)
+	}
+}
+
+func TestCanonicalProjectNameNormalizesTavernComnAlias(t *testing.T) {
+	got := canonicalProjectName("TavernComn", []string{"Tavern", "TavernCmn", "TavernUpd"})
+	if got != "TavernCmn" {
+		t.Fatalf("expected TavernComn alias to normalize to TavernCmn, got %q", got)
+	}
+}
+
+func TestBuildOperationalChainUsesCollaborationAndOperationalEvidence(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		PrimaryStartup: "Tavern",
+		SolutionProjects: []SolutionProject{
+			{Name: "Tavern", Directory: "Tavern"},
+			{Name: "TavernMaster", Directory: "TavernMaster"},
+			{Name: "TavernWorker", Directory: "TavernWorker"},
+			{Name: "TavernCmn", Directory: "TavernCmn"},
+			{Name: "TavernUpd", Directory: "TavernUpd"},
+		},
+		RuntimeEdges: []RuntimeEdge{
+			{Source: "Tavern", Target: "TavernMaster", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"Tavern/TavernWorkerManager.cpp"}},
+			{Source: "TavernWorker", Target: "TavernComn", Kind: "string_reference", Confidence: "low", Evidence: []string{"TavernWorker/TavernUpdManager.cpp"}},
+			{Source: "TavernCmn", Target: "TavernUpd", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"TavernCmn/dllmain.cpp"}},
+		},
+	}
+	reports := []WorkerReport{
+		{
+			Title:         "TavernMaster Analysis",
+			EvidenceFiles: []string{"TavernMaster/TavernMaster.cpp"},
+			Collaboration: []string{"TavernMaster coordinates with TavernWorker for forensic operations."},
+			InternalFlow:  []string{"TavernMaster launches worker-side detection orchestration."},
+		},
+	}
+	chain := buildOperationalChain(snapshot, reports)
+	got := []string{}
+	for _, edge := range chain {
+		got = append(got, edge.Source+"->"+edge.Target)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "TavernMaster->TavernWorker") {
+		t.Fatalf("expected TavernMaster->TavernWorker in operational chain, got %v", got)
+	}
+	if !strings.Contains(joined, "TavernWorker->TavernCmn") {
+		t.Fatalf("expected TavernWorker->TavernCmn in operational chain, got %v", got)
+	}
+	if !strings.Contains(joined, "TavernCmn->TavernUpd") {
+		t.Fatalf("expected TavernCmn->TavernUpd in operational chain, got %v", got)
+	}
+}
+
+func TestEstimateShardCountCanExceedConcurrentAgents(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MinAgents:      2,
+			MaxAgents:      4,
+			MaxTotalShards: 32,
+		},
+	}
+	snapshot := ProjectSnapshot{
+		TotalFiles:  2200,
+		TotalLines:  260000,
+		Directories: []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"},
+	}
+	concurrency := analyzer.estimateAgentCount(snapshot)
+	if concurrency != 4 {
+		t.Fatalf("expected concurrent agents capped at 4, got %d", concurrency)
+	}
+	totalShards := analyzer.estimateShardCount(snapshot, concurrency)
+	if totalShards <= concurrency {
+		t.Fatalf("expected total shard count to exceed concurrent agents, got shards=%d concurrency=%d", totalShards, concurrency)
+	}
+}
+
+func TestChooseAnalysisLensesIncludesGoalSpecificLenses(t *testing.T) {
+	lenses := chooseAnalysisLenses("analyze runtime flow and named pipe ipc command dispatch")
+	names := []string{}
+	for _, lens := range lenses {
+		names = append(names, lens.Type)
+	}
+	joined := strings.Join(names, ",")
+	if !strings.Contains(joined, "architecture") || !strings.Contains(joined, "runtime_flow") || !strings.Contains(joined, "ipc") {
+		t.Fatalf("expected architecture, runtime_flow, and ipc lenses, got %v", names)
+	}
+}
+
+func TestRefineAnalysisLensesForSnapshotAddsUnrealLenses(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealProjects: []UnrealProject{{Name: "ShooterGame", Path: "ShooterGame.uproject"}},
+	}
+	lenses := refineAnalysisLensesForSnapshot(snapshot, []AnalysisLens{{Type: "architecture"}})
+	names := []string{}
+	for _, lens := range lenses {
+		names = append(names, lens.Type)
+	}
+	joined := strings.Join(names, ",")
+	for _, expected := range []string{"unreal_module", "unreal_gameplay", "unreal_network"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected %s lens in %v", expected, names)
+		}
+	}
+}
+
+func TestScoreFileImportancePrioritizesEntrypointsAndIpcSignals(t *testing.T) {
+	analyzer := &projectAnalyzer{}
+	snapshot := ProjectSnapshot{
+		Files: []ScannedFile{
+			{Path: "src/main.cpp", Directory: "src", IsEntrypoint: true, LineCount: 120, Imports: []string{"ipc/pipe.h"}},
+			{Path: "External/aws/include/aws/common/command_line_parser.h", Directory: "External/aws/include/aws/common", LineCount: 400},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"src/main.cpp": {Path: "src/main.cpp", Directory: "src", IsEntrypoint: true, LineCount: 120, Imports: []string{"ipc/pipe.h"}},
+			"External/aws/include/aws/common/command_line_parser.h": {Path: "External/aws/include/aws/common/command_line_parser.h", Directory: "External/aws/include/aws/common", LineCount: 400},
+		},
+		FilesByDirectory: map[string][]ScannedFile{
+			"src":                             {{Path: "src/main.cpp", Directory: "src", IsEntrypoint: true, LineCount: 120, Imports: []string{"ipc/pipe.h"}}},
+			"External/aws/include/aws/common": {{Path: "External/aws/include/aws/common/command_line_parser.h", Directory: "External/aws/include/aws/common", LineCount: 400}},
+		},
+		ReverseImportGraph: map[string][]string{
+			"src/main.cpp": {"src/manager.cpp"},
+		},
+	}
+	analyzer.scoreFileImportance(&snapshot, []AnalysisLens{{Type: "ipc"}, {Type: "runtime_flow"}})
+	mainFile := snapshot.FilesByPath["src/main.cpp"]
+	externalFile := snapshot.FilesByPath["External/aws/include/aws/common/command_line_parser.h"]
+	if mainFile.ImportanceScore <= externalFile.ImportanceScore {
+		t.Fatalf("expected main.cpp to outrank external parser file: main=%d external=%d", mainFile.ImportanceScore, externalFile.ImportanceScore)
+	}
+}
+
+func TestBuildProjectEdgesIncludesDependencyRuntimeAndConfigEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		PrimaryStartup: "app",
+		ManifestFiles:  []string{"go.mod"},
+		ImportGraph: map[string][]string{
+			"src/main.go": {"src/ipc.go", "External/lib/foo.h"},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"src/main.go":        {Path: "src/main.go", Directory: "src"},
+			"src/ipc.go":         {Path: "src/ipc.go", Directory: "src"},
+			"External/lib/foo.h": {Path: "External/lib/foo.h", Directory: "External/lib"},
+		},
+		RuntimeEdges: []RuntimeEdge{
+			{Source: "app", Target: "worker", Kind: "process_spawn", Confidence: "high", Evidence: []string{"src/main.go"}},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	kinds := []string{}
+	for _, edge := range edges {
+		kinds = append(kinds, edge.Type)
+	}
+	joined := strings.Join(kinds, ",")
+	if !strings.Contains(joined, "dependency_edge") || !strings.Contains(joined, "runtime_edge") || !strings.Contains(joined, "config_edge") || !strings.Contains(joined, "external_edge") {
+		t.Fatalf("expected dependency/runtime/config/external edges, got %v", kinds)
+	}
+}
+
+func TestScanProjectExtractsUnrealMetadata(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("ShooterGame.uproject", `{"Modules":[{"Name":"ShooterGame"}],"Plugins":[{"Name":"GameplayAbilities","Enabled":true}]}`)
+	mustWrite("Plugins/CheatGuard/CheatGuard.uplugin", `{"EnabledByDefault":true,"Modules":[{"Name":"CheatGuard"}]}`)
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine", "GameplayAbilities" }); PrivateDependencyModuleNames.AddRange(new string[] { "Slate" });`)
+	mustWrite("Source/ShooterGame.Target.cs", `public class ShooterGameTarget : TargetRules { public ShooterGameTarget(TargetInfo Target) : base(Target) { Type = TargetType.Game; ExtraModuleNames.AddRange(new string[] { "ShooterGame" }); } }`)
+	mustWrite("Source/ShooterGame/Public/ShooterGameMode.h", `UCLASS(Blueprintable) class SHOOTERGAME_API AShooterGameMode : public AGameModeBase { GENERATED_BODY() public: UPROPERTY(EditAnywhere) int32 MaxBots; UFUNCTION(BlueprintCallable) void StartMatchFlow(); };`)
+	mustWrite("Source/ShooterGame/Public/ShooterPlayerController.h", `UCLASS() class SHOOTERGAME_API AShooterPlayerController : public APlayerController { GENERATED_BODY() public: UFUNCTION(BlueprintCallable) void OpenScoreboard(); };`)
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses("analyze unreal gameplay framework"))
+	if len(snapshot.UnrealProjects) != 1 {
+		t.Fatalf("expected 1 unreal project, got %d", len(snapshot.UnrealProjects))
+	}
+	if snapshot.PrimaryUnrealModule != "ShooterGame" {
+		t.Fatalf("expected primary unreal module ShooterGame, got %q", snapshot.PrimaryUnrealModule)
+	}
+	if len(snapshot.UnrealTargets) != 1 || snapshot.UnrealTargets[0].TargetType != "Game" {
+		t.Fatalf("expected one Game target, got %+v", snapshot.UnrealTargets)
+	}
+	if len(snapshot.UnrealModules) == 0 || snapshot.UnrealModules[0].Name != "ShooterGame" {
+		t.Fatalf("expected ShooterGame unreal module, got %+v", snapshot.UnrealModules)
+	}
+	if len(snapshot.UnrealTypes) < 2 {
+		t.Fatalf("expected unreal reflected types, got %+v", snapshot.UnrealTypes)
+	}
+}
+
+func TestBuildProjectEdgesIncludesUnrealModuleEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		PrimaryUnrealModule: "ShooterGame",
+		ManifestFiles:       []string{"ShooterGame.uproject", "Source/ShooterGame.Target.cs", "Source/ShooterGame/ShooterGame.Build.cs"},
+		UnrealProjects: []UnrealProject{
+			{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"ShooterGame"}, Plugins: []string{"GameplayAbilities"}},
+		},
+		UnrealTargets: []UnrealTarget{
+			{Name: "ShooterGame", Path: "Source/ShooterGame.Target.cs", TargetType: "Game", Modules: []string{"ShooterGame"}},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs", PublicDependencies: []string{"Core", "Engine"}, PrivateDependencies: []string{"Slate"}},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterGameMode", Kind: "UCLASS", BaseClass: "AGameModeBase", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterGameMode.h", GameplayRole: "game_mode"},
+			{Name: "AShooterPlayerController", Kind: "UCLASS", BaseClass: "APlayerController", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterPlayerController.h", GameplayRole: "player_controller"},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	joined := []string{}
+	for _, edge := range edges {
+		joined = append(joined, edge.Type+":"+edge.Source+"->"+edge.Target+":"+edge.Attributes["kind"])
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{
+		"module_edge:ShooterGame->Core:public_dependency",
+		"module_edge:ShooterGame->Engine:public_dependency",
+		"module_edge:ShooterGame->Slate:private_dependency",
+		"reflection_edge:AShooterGameMode->AGameModeBase:UCLASS",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected unreal module edge %q in %s", expected, text)
+		}
+	}
+}
+
+func TestExtractUnrealReflectedTypesDetectsGameplayRoles(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine" });`)
+	mustWrite("Source/ShooterGame/Public/ShooterGameInstance.h", `UCLASS() class UShooterGameInstance : public UGameInstance { GENERATED_BODY() public: UPROPERTY(EditAnywhere) int32 Warmup; UFUNCTION(BlueprintCallable) void BootServices(); UFUNCTION(BlueprintNativeEvent) void NotifyReady(); };`)
+	mustWrite("Source/ShooterGame/Public/ShooterWorldSubsystem.h", `UCLASS() class UShooterWorldSubsystem : public UWorldSubsystem { GENERATED_BODY() };`)
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterGameInstance.h"},
+			{Path: "Source/ShooterGame/Public/ShooterWorldSubsystem.h"},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+		},
+	}
+	types := extractUnrealReflectedTypes(snapshot)
+	if len(types) < 2 {
+		t.Fatalf("expected reflected types, got %+v", types)
+	}
+	joined := []string{}
+	for _, item := range types {
+		joined = append(joined, item.Name+":"+item.GameplayRole+":"+item.BaseClass)
+	}
+	text := strings.Join(joined, ",")
+	if !strings.Contains(text, "UShooterGameInstance:game_instance:UGameInstance") {
+		t.Fatalf("expected game instance role in %s", text)
+	}
+	if !strings.Contains(text, "UShooterWorldSubsystem:subsystem:UWorldSubsystem") {
+		t.Fatalf("expected subsystem role in %s", text)
+	}
+	foundBlueprint := false
+	foundEvent := false
+	for _, item := range types {
+		if item.Name == "UShooterGameInstance" {
+			foundBlueprint = containsString(item.BlueprintCallableFunctions, "BootServices")
+			foundEvent = containsString(item.BlueprintEventFunctions, "NotifyReady")
+		}
+	}
+	if !foundBlueprint || !foundEvent {
+		t.Fatalf("expected blueprint callable and event functions in %+v", types)
+	}
+}
+
+func TestExtractUnrealNetworkSurfacesDetectsRPCsAndReplicatedState(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine", "NetCore" });`)
+	mustWrite("Source/ShooterGame/Public/ShooterCharacter.h", `UCLASS() class SHOOTERGAME_API AShooterCharacter : public ACharacter { GENERATED_BODY() public: UFUNCTION(Server, Reliable) void ServerFire(); UFUNCTION(Client, Reliable) void ClientConfirmShot(); UFUNCTION(NetMulticast, Unreliable) void MulticastPlayFX(); UPROPERTY(Replicated) int32 Ammo; UPROPERTY(ReplicatedUsing=OnRep_Health) float Health; UFUNCTION() void OnRep_Health(); };`)
+	mustWrite("Source/ShooterGame/Private/ShooterCharacter.cpp", `void AShooterCharacter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const { Super::GetLifetimeReplicatedProps(OutLifetimeProps); DOREPLIFETIME(AShooterCharacter, Ammo); DOREPLIFETIME(AShooterCharacter, Health); }`)
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterCharacter.h"},
+			{Path: "Source/ShooterGame/Private/ShooterCharacter.cpp"},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterCharacter", Kind: "UCLASS", BaseClass: "ACharacter", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterCharacter.h", GameplayRole: "character"},
+		},
+	}
+	surfaces := extractUnrealNetworkSurfaces(snapshot)
+	if len(surfaces) == 0 {
+		t.Fatalf("expected unreal network surfaces")
+	}
+	item := surfaces[0]
+	if !containsString(item.ServerRPCs, "ServerFire") || !containsString(item.ClientRPCs, "ClientConfirmShot") || !containsString(item.MulticastRPCs, "MulticastPlayFX") {
+		t.Fatalf("expected RPCs in %+v", item)
+	}
+	if !containsString(item.ReplicatedProperties, "Ammo") || !containsString(item.RepNotifyProperties, "Health") {
+		t.Fatalf("expected replicated state in %+v", item)
+	}
+	if !item.HasReplicationList {
+		t.Fatalf("expected replication list registration in %+v", item)
+	}
+}
+
+func TestBuildProjectEdgesIncludesUnrealNetworkEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{
+				TypeName:             "AShooterCharacter",
+				File:                 "Source/ShooterGame/Public/ShooterCharacter.h",
+				ServerRPCs:           []string{"ServerFire"},
+				ClientRPCs:           []string{"ClientConfirmShot"},
+				MulticastRPCs:        []string{"MulticastPlayFX"},
+				ReplicatedProperties: []string{"Ammo"},
+				RepNotifyProperties:  []string{"Health"},
+				HasReplicationList:   true,
+			},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	joined := []string{}
+	for _, edge := range edges {
+		joined = append(joined, edge.Type+":"+edge.Source+"->"+edge.Target+":"+edge.Attributes["kind"])
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{
+		"rpc_edge:AShooterCharacter->ServerFire:server_rpc",
+		"rpc_edge:AShooterCharacter->ClientConfirmShot:client_rpc",
+		"rpc_edge:AShooterCharacter->MulticastPlayFX:multicast_rpc",
+		"gameplay_edge:AShooterCharacter->Ammo:replicated_property",
+		"gameplay_edge:AShooterCharacter->Health:rep_notify_property",
+		"config_edge:AShooterCharacter->GetLifetimeReplicatedProps:replication_registration",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected unreal network edge %q in %s", expected, text)
+		}
+	}
+}
+
+func TestExtractUnrealAssetReferencesDetectsAssetsAndConfig(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine" });`)
+	mustWrite("Source/ShooterGame/Public/ShooterHUD.h", `UCLASS() class SHOOTERGAME_API AShooterHUD : public AHUD { GENERATED_BODY() public: UPROPERTY(EditDefaultsOnly) TSoftObjectPtr<UTexture2D> CrosshairTexture; };`)
+	mustWrite("Source/ShooterGame/Private/ShooterHUD.cpp", `static ConstructorHelpers::FObjectFinder<UTexture2D> CrosshairObj(TEXT("/Game/UI/T_Crosshair")); UObject* WidgetClass = LoadObject<UObject>(nullptr, TEXT("/Game/UI/WBP_Scoreboard.WBP_Scoreboard"));`)
+	mustWrite("Config/DefaultGame.ini", "[/Script/ShooterGame.ShooterHUD]\nDefaultCrosshair=/Game/UI/T_Crosshair\nHUDClass=/Game/UI/WBP_Scoreboard.WBP_Scoreboard\n")
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterHUD.h"},
+			{Path: "Source/ShooterGame/Private/ShooterHUD.cpp"},
+			{Path: "Config/DefaultGame.ini"},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterHUD", Kind: "UCLASS", BaseClass: "AHUD", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterHUD.h", GameplayRole: "hud"},
+		},
+	}
+	items := extractUnrealAssetReferences(snapshot)
+	if len(items) == 0 {
+		t.Fatalf("expected unreal asset references")
+	}
+	joined := []string{}
+	for _, item := range items {
+		joined = append(joined, firstNonBlankAnalysisString(item.OwnerName, item.File)+":"+strings.Join(item.AssetPaths, "|")+":"+strings.Join(item.ConfigKeys, "|")+":"+strings.Join(item.LoadMethods, "|"))
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{"/Game/UI/T_Crosshair", "/Game/UI/WBP_Scoreboard.WBP_Scoreboard", "DefaultCrosshair=/Game/UI/T_Crosshair", "constructor_helpers", "runtime_object_load"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected asset/config signal %q in %s", expected, text)
+		}
+	}
+}
+
+func TestBuildProjectEdgesIncludesUnrealAssetAndConfigEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealAssets: []UnrealAssetReference{
+			{
+				OwnerName:   "AShooterHUD",
+				Module:      "ShooterGame",
+				File:        "Source/ShooterGame/Private/ShooterHUD.cpp",
+				AssetPaths:  []string{"/Game/UI/T_Crosshair"},
+				ConfigKeys:  []string{"DefaultCrosshair=/Game/UI/T_Crosshair"},
+				LoadMethods: []string{"constructor_helpers"},
+			},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	joined := []string{}
+	for _, edge := range edges {
+		joined = append(joined, edge.Type+":"+edge.Source+"->"+edge.Target+":"+edge.Attributes["kind"])
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{
+		"asset_edge:AShooterHUD->/Game/UI/T_Crosshair:asset_reference",
+		"config_edge:AShooterHUD->DefaultCrosshair=/Game/UI/T_Crosshair:config_binding",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected unreal asset/config edge %q in %s", expected, text)
+		}
+	}
+}
+
+func TestBuildProjectEdgesIncludesUnrealFrameworkAssignmentEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealTypes: []UnrealReflectedType{
+			{
+				Name:                  "AShooterGameMode",
+				Kind:                  "UCLASS",
+				BaseClass:             "AGameModeBase",
+				File:                  "Source/ShooterGame/Public/ShooterGameMode.h",
+				GameplayRole:          "game_mode",
+				DefaultPawnClass:      "AShooterCharacter",
+				PlayerControllerClass: "AShooterPlayerController",
+				HUDClass:              "AShooterHUD",
+			},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	joined := []string{}
+	for _, edge := range edges {
+		joined = append(joined, edge.Type+":"+edge.Source+"->"+edge.Target+":"+edge.Attributes["kind"]+":"+edge.Attributes["flow"])
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{
+		"gameplay_edge:AShooterGameMode->AShooterCharacter:framework_assignment:default_pawn_assignment",
+		"gameplay_edge:AShooterGameMode->AShooterPlayerController:framework_assignment:player_controller_assignment",
+		"gameplay_edge:AShooterGameMode->AShooterHUD:framework_assignment:hud_assignment",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected unreal framework assignment edge %q in %s", expected, text)
+		}
+	}
+}
+
+func TestExtractUnrealProjectSettingsDetectsStartupMapAndGameMode(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Config/DefaultEngine.ini", "[/Script/EngineSettings.GameMapsSettings]\nGameDefaultMap=/Game/Maps/Lobby\nEditorStartupMap=/Game/Maps/TestMap\nGlobalDefaultGameMode=/Script/ShooterGame.ShooterGameMode\nGameInstanceClass=/Script/ShooterGame.ShooterGameInstance\n")
+	mustWrite("Config/DefaultGame.ini", "[/Script/ShooterGame.ShooterGameMode]\nDefaultPawnClass=/Script/ShooterGame.ShooterCharacter\nPlayerControllerClass=/Script/ShooterGame.ShooterPlayerController\nHUDClass=/Script/ShooterGame.ShooterHUD\n")
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Config/DefaultEngine.ini"},
+			{Path: "Config/DefaultGame.ini"},
+		},
+	}
+	settings := extractUnrealProjectSettings(snapshot)
+	if len(settings) != 2 {
+		t.Fatalf("expected 2 unreal settings sources, got %+v", settings)
+	}
+	joined := []string{}
+	for _, item := range settings {
+		joined = append(joined, item.SourceFile+":"+item.GameDefaultMap+":"+item.GlobalDefaultGameMode+":"+item.GameInstanceClass+":"+item.DefaultPawnClass+":"+item.PlayerControllerClass+":"+item.HUDClass)
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{"/Game/Maps/Lobby", "/Script/ShooterGame.ShooterGameMode", "/Script/ShooterGame.ShooterGameInstance", "/Script/ShooterGame.ShooterCharacter", "/Script/ShooterGame.ShooterPlayerController", "/Script/ShooterGame.ShooterHUD"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected unreal setting %q in %s", expected, text)
+		}
+	}
+}
+
+func TestBuildUnrealGameplayFlowLinesIncludesSettingsDrivenStartupFlow(t *testing.T) {
+	types := []UnrealReflectedType{
+		{Name: "AShooterGameMode", GameplayRole: "game_mode", DefaultPawnClass: "AShooterCharacter", PlayerControllerClass: "AShooterPlayerController", HUDClass: "AShooterHUD"},
+	}
+	settings := []UnrealProjectSetting{
+		{
+			SourceFile:            "Config/DefaultEngine.ini",
+			GameDefaultMap:        "/Game/Maps/Lobby",
+			GlobalDefaultGameMode: "/Script/ShooterGame.ShooterGameMode",
+			GameInstanceClass:     "/Script/ShooterGame.ShooterGameInstance",
+		},
+	}
+	lines := buildUnrealGameplayFlowLines(types, settings)
+	text := strings.Join(lines, ",")
+	for _, expected := range []string{"Startup -> Map=/Game/Maps/Lobby", "Startup -> GameInstance=/Script/ShooterGame.ShooterGameInstance", "MapLoad -> GameMode=/Script/ShooterGame.ShooterGameMode", "AShooterGameMode -> DefaultPawn=AShooterCharacter"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected gameplay flow line %q in %s", expected, text)
+		}
+	}
+}
+
+func TestExtractUnrealReflectedTypesDetectsFrameworkAssignments(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine" });`)
+	mustWrite("Source/ShooterGame/Public/ShooterGameMode.h", `UCLASS() class SHOOTERGAME_API AShooterGameMode : public AGameModeBase { GENERATED_BODY() public: AShooterGameMode() { DefaultPawnClass = AShooterCharacter::StaticClass(); PlayerControllerClass = AShooterPlayerController::StaticClass(); HUDClass = AShooterHUD::StaticClass(); } };`)
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterGameMode.h"},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+		},
+	}
+	types := extractUnrealReflectedTypes(snapshot)
+	if len(types) != 1 {
+		t.Fatalf("expected one reflected type, got %+v", types)
+	}
+	item := types[0]
+	if item.DefaultPawnClass != "AShooterCharacter" || item.PlayerControllerClass != "AShooterPlayerController" || item.HUDClass != "AShooterHUD" {
+		t.Fatalf("expected framework assignments in %+v", item)
+	}
+}
+
+func TestCanonicalizeBlueprintAssetClass(t *testing.T) {
+	for input, expected := range map[string]string{
+		"/Game/UI/WBP_Scoreboard.WBP_Scoreboard":           "WBP_Scoreboard",
+		"/Game/UI/WBP_Scoreboard.WBP_Scoreboard_C":         "WBP_Scoreboard",
+		"/Script/ShooterGame.ShooterHUD":                   "ShooterHUD",
+		"TEXT(\"/Game/Characters/BP_Player.BP_Player_C\")": "BP_Player",
+	} {
+		if got := canonicalizeBlueprintAssetClass(input); got != expected {
+			t.Fatalf("canonicalizeBlueprintAssetClass(%q)=%q, want %q", input, got, expected)
+		}
+	}
+}
+
+func TestExtractUnrealGameplaySystemsDetectsInputUmgAndGAS(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	mustWrite("Source/ShooterGame/ShooterGame.Build.cs", `PublicDependencyModuleNames.AddRange(new string[] { "Core", "Engine", "EnhancedInput", "UMG", "GameplayAbilities" });`)
+	mustWrite("Source/ShooterGame/Public/ShooterHUD.h", `UCLASS() class AShooterHUD : public AHUD { GENERATED_BODY() };`)
+	mustWrite("Source/ShooterGame/Private/ShooterHUD.cpp", `void AShooterHUD::BuildUI() { CreateWidget<UUserWidget>(GetWorld(), ScoreboardClass); } static ConstructorHelpers::FClassFinder<UUserWidget> Scoreboard(TEXT("/Game/UI/WBP_Scoreboard.WBP_Scoreboard_C"));`)
+	mustWrite("Source/ShooterGame/Public/ShooterInputComponent.h", `UCLASS() class UShooterInputComponent : public UActorComponent { GENERATED_BODY() };`)
+	mustWrite("Source/ShooterGame/Private/ShooterInputComponent.cpp", `void AShooterPlayerController::SetupInput() { UShooterInputComponent* Comp = nullptr; } void UShooterInputComponent::SetupInput(UEnhancedInputComponent* Input) { Input->BindAction(FireAction, ETriggerEvent::Triggered, this, &UShooterInputComponent::HandleFire); } UInputAction* FireAction = nullptr; UInputMappingContext* IMC_Default = nullptr;`)
+	mustWrite("Source/ShooterGame/Public/ShooterAbilityComponent.h", `UCLASS() class UShooterAbilityComponent : public UAbilitySystemComponent { GENERATED_BODY() };`)
+	mustWrite("Source/ShooterGame/Private/ShooterAbilityComponent.cpp", `UShooterAttributeSet* Attr = nullptr; UShooterDashAbility* Ability = nullptr; UShooterBuffEffect* Effect = nullptr; void AShooterCharacter::GrantAbilities() { UShooterAbilityComponent* Comp = nullptr; } void UShooterAbilityComponent::InitCombat() { InitAbilityActorInfo(nullptr, nullptr); GiveAbility(FGameplayAbilitySpec()); ApplyGameplayEffectToSelf(nullptr, 1.0f, FGameplayEffectContextHandle()); }`)
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterHUD.h"},
+			{Path: "Source/ShooterGame/Private/ShooterHUD.cpp"},
+			{Path: "Source/ShooterGame/Public/ShooterInputComponent.h"},
+			{Path: "Source/ShooterGame/Private/ShooterInputComponent.cpp"},
+			{Path: "Source/ShooterGame/Public/ShooterAbilityComponent.h"},
+			{Path: "Source/ShooterGame/Private/ShooterAbilityComponent.cpp"},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterHUD", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterHUD.h", GameplayRole: "hud"},
+			{Name: "UShooterInputComponent", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterInputComponent.h"},
+			{Name: "UShooterAbilityComponent", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterAbilityComponent.h"},
+			{Name: "AShooterPlayerController", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterPlayerController.h", GameplayRole: "player_controller"},
+			{Name: "AShooterCharacter", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterCharacter.h", GameplayRole: "character"},
+		},
+	}
+	snapshot.UnrealAssets = extractUnrealAssetReferences(snapshot)
+	systems := extractUnrealGameplaySystems(snapshot)
+	if len(systems) < 3 {
+		t.Fatalf("expected gameplay systems, got %+v", systems)
+	}
+	text := []string{}
+	for _, item := range systems {
+		text = append(text, item.System+":"+firstNonBlankAnalysisString(item.OwnerName, item.File)+":"+strings.Join(item.Signals, "|")+":"+strings.Join(item.Assets, "|")+":"+strings.Join(item.Functions, "|")+":"+strings.Join(item.Actions, "|")+":"+strings.Join(item.Contexts, "|")+":"+strings.Join(item.OwnedBy, "|")+":"+strings.Join(item.Abilities, "|")+":"+strings.Join(item.Effects, "|")+":"+strings.Join(item.Attributes, "|"))
+	}
+	joined := strings.Join(text, ",")
+	for _, expected := range []string{
+		"enhanced_input:UShooterInputComponent:input_action|mapping_context|bind_action",
+		"umg:AShooterHUD:user_widget|create_widget",
+		"gameplay_ability_system:UShooterAbilityComponent:ability_system_component|gameplay_ability|gameplay_effect",
+		"WBP_Scoreboard",
+		"HandleFire",
+		"FireAction",
+		"IMC_Default",
+		"AShooterPlayerController",
+		"UShooterDashAbility",
+		"UShooterBuffEffect",
+		"UShooterAttributeSet",
+		"AShooterCharacter",
+		"GiveAbility",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected gameplay system signal %q in %s", expected, joined)
+		}
+	}
+}
+
+func TestBuildProjectEdgesIncludesUnrealGameplaySystemEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealAssets: []UnrealAssetReference{
+			{
+				OwnerName:        "AShooterHUD",
+				File:             "Source/ShooterGame/Private/ShooterHUD.cpp",
+				CanonicalTargets: []string{"WBP_Scoreboard"},
+			},
+		},
+		UnrealSystems: []UnrealGameplaySystem{
+			{
+				System:    "enhanced_input",
+				OwnerName: "UShooterInputComponent",
+				File:      "Source/ShooterGame/Private/ShooterInputComponent.cpp",
+				Functions: []string{"HandleFire"},
+				Actions:   []string{"IA_Fire"},
+				Contexts:  []string{"IMC_Default"},
+				Assets:    []string{"IA_Fire"},
+			},
+		},
+	}
+	edges := buildProjectEdges(snapshot)
+	joined := []string{}
+	for _, edge := range edges {
+		joined = append(joined, edge.Type+":"+edge.Source+"->"+edge.Target+":"+edge.Attributes["kind"])
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{
+		"gameplay_edge:AShooterHUD->WBP_Scoreboard:blueprint_asset_binding",
+		"gameplay_edge:UShooterInputComponent->enhanced_input:gameplay_system",
+		"gameplay_edge:UShooterInputComponent->HandleFire:system_function",
+		"gameplay_edge:UShooterInputComponent->IA_Fire:input_action",
+		"gameplay_edge:UShooterInputComponent->IMC_Default:input_context",
+		"asset_edge:UShooterInputComponent->IA_Fire:system_asset",
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected gameplay system edge %q in %s", expected, text)
+		}
+	}
+}
+
+func TestPlanShardsDoesNotCollapseToConcurrentAgentLimit(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MaxAgents:        2,
+			MaxTotalShards:   16,
+			MaxFilesPerShard: 10,
+			MaxLinesPerShard: 1000,
+		},
+	}
+	snapshot := ProjectSnapshot{
+		FilesByDirectory: map[string][]ScannedFile{
+			"mod1": {{Path: "mod1/a.cpp", Directory: "mod1", LineCount: 50}},
+			"mod2": {{Path: "mod2/a.cpp", Directory: "mod2", LineCount: 50}},
+			"mod3": {{Path: "mod3/a.cpp", Directory: "mod3", LineCount: 50}},
+			"mod4": {{Path: "mod4/a.cpp", Directory: "mod4", LineCount: 50}},
+			"mod5": {{Path: "mod5/a.cpp", Directory: "mod5", LineCount: 50}},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"mod1/a.cpp": {Path: "mod1/a.cpp", Directory: "mod1", LineCount: 50},
+			"mod2/a.cpp": {Path: "mod2/a.cpp", Directory: "mod2", LineCount: 50},
+			"mod3/a.cpp": {Path: "mod3/a.cpp", Directory: "mod3", LineCount: 50},
+			"mod4/a.cpp": {Path: "mod4/a.cpp", Directory: "mod4", LineCount: 50},
+			"mod5/a.cpp": {Path: "mod5/a.cpp", Directory: "mod5", LineCount: 50},
+		},
+		Directories: []string{"mod1", "mod2", "mod3", "mod4", "mod5"},
+	}
+	shards := analyzer.planShards(snapshot, 5)
+	if len(shards) < 5 {
+		t.Fatalf("expected shard planning to preserve more shards than concurrent agent limit, got %d", len(shards))
+	}
+}
+
+func TestPlanRefinementShardsSplitsLargeImportantCandidate(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MaxFilesPerShard:    12,
+			MaxLinesPerShard:    2400,
+			MaxRefinementShards: 6,
+		},
+	}
+	files := []ScannedFile{
+		{Path: "core/main.cpp", Directory: "core", LineCount: 500, ImportanceScore: 18},
+		{Path: "core/pipe.cpp", Directory: "core", LineCount: 420, ImportanceScore: 16},
+		{Path: "core/worker.cpp", Directory: "core", LineCount: 380, ImportanceScore: 14},
+		{Path: "core/ipc.cpp", Directory: "core", LineCount: 360, ImportanceScore: 13},
+		{Path: "core/state.cpp", Directory: "core", LineCount: 340, ImportanceScore: 7},
+		{Path: "core/util.cpp", Directory: "core", LineCount: 260, ImportanceScore: 5},
+	}
+	filesByPath := map[string]ScannedFile{}
+	for _, file := range files {
+		filesByPath[file.Path] = file
+	}
+	snapshot := ProjectSnapshot{
+		AnalysisLenses: []AnalysisLens{{Type: "ipc"}, {Type: "runtime_flow"}},
+		FilesByPath:    filesByPath,
+	}
+	shards := []AnalysisShard{
+		{
+			ID:             "shard-01",
+			Name:           "core_cluster",
+			PrimaryFiles:   filesToPaths(files),
+			EstimatedFiles: len(files),
+			EstimatedLines: sumLines(files),
+		},
+	}
+	reports := []WorkerReport{
+		{
+			Title:         "core runtime",
+			ScopeSummary:  "IPC manager and runtime control path",
+			EntryPoints:   []string{"core/main.cpp"},
+			InternalFlow:  []string{"pipe dispatch routes commands into worker control"},
+			Collaboration: []string{"manager coordinates worker and service state"},
+			Unknowns:      []string{"broad shard hides exact dispatch branches"},
+			EvidenceFiles: []string{"core/main.cpp", "core/pipe.cpp"},
+		},
+	}
+	reviews := []ReviewDecision{
+		{
+			Status: "needs_revision",
+			Issues: []string{"scope too broad"},
+		},
+	}
+	refined, replaced := analyzer.planRefinementShards(snapshot, shards, reports, reviews)
+	if len(refined) < 2 {
+		t.Fatalf("expected refinement shards, got %d", len(refined))
+	}
+	if _, ok := replaced["shard-01"]; !ok {
+		t.Fatalf("expected parent shard to be replaced")
+	}
+	for _, shard := range refined {
+		if shard.ParentShardID != "shard-01" {
+			t.Fatalf("expected refined shard to reference parent shard-01, got %s", shard.ParentShardID)
+		}
+		if shard.RefinementStage < 2 {
+			t.Fatalf("expected refined shard stage >= 2, got %d", shard.RefinementStage)
+		}
+	}
+}
+
+func TestProjectAnalyzerRunAppliesStageTwoRefinement(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 8; i++ {
+		name := filepath.Join(root, "core", fmt.Sprintf("file_%02d.go", i))
+		body := "package core\n\n"
+		for j := 0; j < 120; j++ {
+			body += fmt.Sprintf("func Fn_%02d_%02d() {}\n", i, j)
+		}
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatalf("mkdir core: %v", err)
+		}
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	cfg.ProjectAnalysis.MaxRefinementShards = 4
+	cfg.ProjectAnalysis.MaxFilesPerShard = 16
+	cfg.ProjectAnalysis.MaxLinesPerShard = 20000
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "analyze runtime flow and command dispatch")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.RefinedShards == 0 {
+		t.Fatalf("expected refinement shards to be planned")
+	}
+	foundRefined := false
+	for _, shard := range run.Shards {
+		if shard.ParentShardID != "" {
+			foundRefined = true
+			break
+		}
+	}
+	if !foundRefined {
+		t.Fatalf("expected final run shards to include refined child shards")
+	}
+}
+
+func TestFallbackFinalDocumentIncludesRuntimeGraph(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		PrimaryStartup: "Tavern",
+		RuntimeEdges: []RuntimeEdge{
+			{Source: "Tavern", Target: "TavernMaster", Kind: "project_reference", Confidence: "high", Evidence: []string{"Tavern/Tavern.vcxproj"}},
+		},
+		TotalFiles: 1,
+		TotalLines: 10,
+	}
+	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
+	if !strings.Contains(doc, "## Runtime Graph") {
+		t.Fatalf("expected runtime graph section\n%s", doc)
+	}
+	if !strings.Contains(doc, "Tavern -> TavernMaster") {
+		t.Fatalf("expected runtime graph edge\n%s", doc)
+	}
+}
+
+func TestBuildKnowledgePackIncludesStartupAndSubsystems(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:            "C:\\repo",
+		GeneratedAt:     time.Now(),
+		PrimaryStartup:  "Tavern",
+		StartupProjects: []string{"Tavern", "TavernWorker"},
+		ManifestFiles:   []string{"Tavern.sln"},
+		EntrypointFiles: []string{"Tavern/Tavern.cpp"},
+		SolutionProjects: []SolutionProject{
+			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+		},
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"Tavern/Tavern.cpp"}},
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "Core Runtime",
+			Responsibilities: []string{"boot client", "load orchestrator"},
+			KeyFiles:         []string{"Tavern/Tavern.cpp", "TavernCmn/dllmain.cpp"},
+			EvidenceFiles:    []string{"Tavern/Tavern.cpp"},
+			EntryPoints:      []string{"Tavern/Tavern.cpp::main"},
+			Dependencies:     []string{"TavernCmn", "Common"},
+			Risks:            []string{"startup chain is security-sensitive"},
+		},
+	}
+	pack := buildKnowledgePack(snapshot, shards, reports, "goal", "run-1")
+	if pack.PrimaryStartup != "Tavern" {
+		t.Fatalf("expected primary startup in knowledge pack, got %q", pack.PrimaryStartup)
+	}
+	if len(pack.Subsystems) != 1 {
+		t.Fatalf("expected subsystem in knowledge pack, got %#v", pack.Subsystems)
+	}
+	if !containsString(pack.StartupEntryFiles, "Tavern/Tavern.cpp") {
+		t.Fatalf("expected startup entry file in knowledge pack: %#v", pack.StartupEntryFiles)
+	}
+	if len(pack.PerformanceLens.Hotspots) == 0 {
+		t.Fatalf("expected performance lens hotspots in knowledge pack: %#v", pack.PerformanceLens)
+	}
+}
+
+func TestFallbackFinalDocumentIncludesUnrealModuleMap(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:                "C:\\repo",
+		TotalFiles:          4,
+		TotalLines:          100,
+		UnrealProjects:      []UnrealProject{{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"ShooterGame"}, Plugins: []string{"CheatGuard"}}},
+		UnrealTargets:       []UnrealTarget{{Name: "ShooterGame", Path: "Source/ShooterGame.Target.cs", TargetType: "Game", Modules: []string{"ShooterGame"}}},
+		UnrealModules:       []UnrealModule{{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs", Kind: "game_module", PublicDependencies: []string{"Core", "Engine"}}},
+		PrimaryUnrealModule: "ShooterGame",
+	}
+	doc := fallbackFinalDocument(snapshot, nil, nil, "analyze unreal gameplay")
+	for _, expected := range []string{"## Unreal Module And Target Map", "Primary Unreal module", "ShooterGame.uproject", "Source/ShooterGame.Target.cs"} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected %q in fallback document\n%s", expected, doc)
+		}
+	}
+}
+
+func TestFallbackFinalDocumentIncludesUnrealGameplaySystems(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:       "C:\\repo",
+		TotalFiles: 4,
+		TotalLines: 100,
+		UnrealSystems: []UnrealGameplaySystem{
+			{System: "enhanced_input", OwnerName: "UShooterInputComponent", File: "Source/ShooterGame/Private/ShooterInputComponent.cpp", Signals: []string{"bind_action"}, Functions: []string{"HandleFire"}, Actions: []string{"IA_Fire"}, Contexts: []string{"IMC_Default"}},
+		},
+	}
+	doc := fallbackFinalDocument(snapshot, nil, nil, "analyze unreal gameplay")
+	for _, expected := range []string{"## Unreal Gameplay Systems", "## Unreal Gameplay System Flow Map", "enhanced_input", "UShooterInputComponent", "HandleFire", "IA_Fire", "IMC_Default"} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected %q in fallback document\n%s", expected, doc)
+		}
+	}
+}
+
+func TestBuildKnowledgePackIncludesUnrealMetadata(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:                "C:\\repo",
+		GeneratedAt:         time.Now(),
+		PrimaryUnrealModule: "ShooterGame",
+		UnrealProjects:      []UnrealProject{{Name: "ShooterGame", Path: "ShooterGame.uproject"}},
+		UnrealPlugins:       []UnrealPlugin{{Name: "CheatGuard", Path: "Plugins/CheatGuard/CheatGuard.uplugin"}},
+		UnrealTargets:       []UnrealTarget{{Name: "ShooterGame", Path: "Source/ShooterGame.Target.cs", TargetType: "Game"}},
+		UnrealModules:       []UnrealModule{{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"}},
+		UnrealSystems:       []UnrealGameplaySystem{{System: "umg", OwnerName: "AShooterHUD", File: "Source/ShooterGame/Private/ShooterHUD.cpp"}},
+	}
+	pack := buildKnowledgePack(snapshot, nil, nil, "goal", "run-1")
+	if pack.PrimaryUnrealModule != "ShooterGame" {
+		t.Fatalf("expected primary unreal module in knowledge pack, got %q", pack.PrimaryUnrealModule)
+	}
+	if len(pack.UnrealProjects) != 1 || len(pack.UnrealModules) != 1 || len(pack.UnrealTargets) != 1 || len(pack.UnrealSystems) != 1 {
+		t.Fatalf("expected unreal metadata in knowledge pack, got %+v", pack)
+	}
+}
+
+func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID: "run-1",
+			Goal:  "goal",
+		},
+		FinalDocument: "# doc\n",
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-1",
+			Goal:           "goal",
+			Root:           root,
+			PrimaryStartup: "Tavern",
+			Subsystems: []KnowledgeSubsystem{
+				{Title: "Core Runtime", Group: "Core Application"},
+			},
+		},
+	}
+	if _, err := analyzer.persistRun(run); err != nil {
+		t.Fatalf("persistRun returned error: %v", err)
+	}
+	base := filepath.Join(cfg.ProjectAnalysis.OutputDir, "run-1_goal")
+	if _, err := os.Stat(base + "_knowledge.json"); err != nil {
+		t.Fatalf("expected knowledge json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_knowledge.md"); err != nil {
+		t.Fatalf("expected knowledge digest artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "knowledge_pack.json")); err != nil {
+		t.Fatalf("expected latest knowledge pack artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_performance_lens.json"); err != nil {
+		t.Fatalf("expected performance lens json artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "performance_lens.json")); err != nil {
+		t.Fatalf("expected latest performance lens artifact: %v", err)
+	}
+}
+
+func TestBuildPerformanceLensClassifiesHotspots(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		PrimaryStartup: "Tavern",
+		Files: []ScannedFile{
+			{Path: "Common/ETWConsumer.cpp", LineCount: 1032},
+			{Path: "TavernWorker/PrefetchScanner.cpp", LineCount: 920},
+		},
+		SolutionProjects: []SolutionProject{
+			{Name: "Tavern", EntryFiles: []string{"Tavern/Tavern.cpp"}},
+		},
+	}
+	items := []synthesisSection{
+		{
+			Title:            "Monitoring",
+			Group:            "Security Control",
+			Responsibilities: []string{"monitor file system and ETW events"},
+			EntryPoints:      []string{"ETWConsumer::Initialize"},
+			KeyFiles:         []string{"Common/ETWConsumer.cpp"},
+			InternalFlow:     []string{"initialize ETW -> receive events"},
+		},
+		{
+			Title:            "Worker",
+			Group:            "Forensic Analysis",
+			Responsibilities: []string{"scan prefetch and decode artifacts"},
+			EntryPoints:      []string{"ScannerBase::Scan"},
+			KeyFiles:         []string{"TavernWorker/PrefetchScanner.cpp"},
+			InternalFlow:     []string{"scan -> decompress -> hash"},
+		},
+	}
+	lens := buildPerformanceLens(snapshot, items)
+	if len(lens.Hotspots) < 2 {
+		t.Fatalf("expected hotspots, got %#v", lens)
+	}
+	if !containsString(lens.IOBoundCandidates, "Security Control: Monitoring") {
+		t.Fatalf("expected io-bound monitoring candidate: %#v", lens.IOBoundCandidates)
+	}
+	if !containsString(lens.CPUBoundCandidates, "Forensic Analysis: Worker") {
+		t.Fatalf("expected cpu-bound worker candidate: %#v", lens.CPUBoundCandidates)
+	}
+	if len(lens.Hotspots) == 0 || lens.Hotspots[0].Score < lens.Hotspots[len(lens.Hotspots)-1].Score {
+		t.Fatalf("expected hotspots sorted by descending score: %#v", lens.Hotspots)
+	}
+	if lens.Hotspots[0].Score == 0 {
+		t.Fatalf("expected non-zero hotspot score: %#v", lens.Hotspots[0])
+	}
+}
+
+func containsString(items []string, needle string) bool {
+	for _, item := range items {
+		if item == needle {
+			return true
+		}
+	}
+	return false
+}
