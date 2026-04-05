@@ -394,11 +394,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			}
 			payload.Messages = append(payload.Messages, openAIMessage{Role: "user", Content: content})
 		case "assistant":
-			item := openAIMessage{Role: "assistant", Content: msg.Text}
+			item := openAIMessage{Role: "assistant", Content: assistantMessageContent(msg.Text, len(msg.ToolCalls) > 0)}
 			for _, tc := range msg.ToolCalls {
 				call := openAIToolCall{ID: tc.ID, Type: "function"}
 				call.Function.Name = tc.Name
-				call.Function.Arguments = tc.Arguments
+				call.Function.Arguments = normalizeOpenAIToolCallArguments(tc.Arguments)
 				item.ToolCalls = append(item.ToolCalls, call)
 			}
 			payload.Messages = append(payload.Messages, item)
@@ -453,7 +453,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("openai API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
+		return ChatResponse{}, fmt.Errorf("openai API error (%s): %s | request=%s", resp.Status, formatProviderErrorDetails(data), summarizeOpenAIRequestBody(body))
 	}
 
 	var decoded openAIResponse
@@ -481,6 +481,39 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		Message:    out,
 		StopReason: choice.FinishReason,
 	}, nil
+}
+
+func assistantMessageContent(text string, hasToolCalls bool) any {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" && hasToolCalls {
+		return nil
+	}
+	return text
+}
+
+func normalizeOpenAIToolCallArguments(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "{}"
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+		if _, ok := decoded.(map[string]any); ok {
+			normalized, marshalErr := json.Marshal(decoded)
+			if marshalErr == nil {
+				return string(normalized)
+			}
+		}
+	}
+
+	fallback, err := json.Marshal(map[string]any{
+		"raw": trimmed,
+	})
+	if err != nil {
+		return `{}`
+	}
+	return string(fallback)
 }
 
 type OllamaModelInfo struct {
@@ -819,6 +852,19 @@ func formatProviderErrorFields(message string, errorType string, param string, c
 		detail += " | raw=" + rawText
 	}
 	return detail
+}
+
+func summarizeOpenAIRequestBody(body []byte) string {
+	const maxLen = 600
+
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return "empty"
+	}
+	if len(trimmed) <= maxLen {
+		return trimmed
+	}
+	return trimmed[:maxLen] + "...(truncated)"
 }
 
 func openAIAPIURL(baseURL, path string) string {

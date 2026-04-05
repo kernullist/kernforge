@@ -235,19 +235,33 @@ type ProjectEdge struct {
 }
 
 type AnalysisShard struct {
-	ID                   string   `json:"id"`
-	Name                 string   `json:"name"`
-	ParentShardID        string   `json:"parent_shard_id,omitempty"`
-	RefinementStage      int      `json:"refinement_stage,omitempty"`
-	PrimaryFiles         []string `json:"primary_files"`
-	ReferenceFiles       []string `json:"reference_files,omitempty"`
-	EstimatedFiles       int      `json:"estimated_files"`
-	EstimatedLines       int      `json:"estimated_lines"`
-	Fingerprint          string   `json:"fingerprint,omitempty"`
-	PrimaryFingerprint   string   `json:"primary_fingerprint,omitempty"`
-	ReferenceFingerprint string   `json:"reference_fingerprint,omitempty"`
-	CacheStatus          string   `json:"cache_status,omitempty"`
-	InvalidationReason   string   `json:"invalidation_reason,omitempty"`
+	ID                           string               `json:"id"`
+	Name                         string               `json:"name"`
+	ParentShardID                string               `json:"parent_shard_id,omitempty"`
+	RefinementStage              int                  `json:"refinement_stage,omitempty"`
+	PrimaryFiles                 []string             `json:"primary_files"`
+	ReferenceFiles               []string             `json:"reference_files,omitempty"`
+	EstimatedFiles               int                  `json:"estimated_files"`
+	EstimatedLines               int                  `json:"estimated_lines"`
+	Fingerprint                  string               `json:"fingerprint,omitempty"`
+	PrimaryFingerprint           string               `json:"primary_fingerprint,omitempty"`
+	ReferenceFingerprint         string               `json:"reference_fingerprint,omitempty"`
+	PrimarySemanticFingerprint   string               `json:"primary_semantic_fingerprint,omitempty"`
+	ReferenceSemanticFingerprint string               `json:"reference_semantic_fingerprint,omitempty"`
+	CacheStatus                  string               `json:"cache_status,omitempty"`
+	InvalidationReason           string               `json:"invalidation_reason,omitempty"`
+	InvalidationDiff             []string             `json:"invalidation_diff,omitempty"`
+	InvalidationChanges          []InvalidationChange `json:"invalidation_changes,omitempty"`
+}
+
+type InvalidationChange struct {
+	Kind    string `json:"kind,omitempty"`
+	Scope   string `json:"scope,omitempty"`
+	Owner   string `json:"owner,omitempty"`
+	Subject string `json:"subject,omitempty"`
+	Before  string `json:"before,omitempty"`
+	After   string `json:"after,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 type WorkerReport struct {
@@ -270,19 +284,25 @@ type WorkerReport struct {
 }
 
 type KnowledgeSubsystem struct {
-	Title            string   `json:"title"`
-	Group            string   `json:"group,omitempty"`
-	ShardIDs         []string `json:"shard_ids,omitempty"`
-	Responsibilities []string `json:"responsibilities,omitempty"`
-	Facts            []string `json:"facts,omitempty"`
-	Inferences       []string `json:"inferences,omitempty"`
-	KeyFiles         []string `json:"key_files,omitempty"`
-	EvidenceFiles    []string `json:"evidence_files,omitempty"`
-	EntryPoints      []string `json:"entry_points,omitempty"`
-	Dependencies     []string `json:"dependencies,omitempty"`
-	Collaboration    []string `json:"collaboration,omitempty"`
-	Risks            []string `json:"risks,omitempty"`
-	Unknowns         []string `json:"unknowns,omitempty"`
+	Title                string               `json:"title"`
+	Group                string               `json:"group,omitempty"`
+	ShardIDs             []string             `json:"shard_ids,omitempty"`
+	ShardNames           []string             `json:"shard_names,omitempty"`
+	CacheStatuses        []string             `json:"cache_statuses,omitempty"`
+	InvalidationReasons  []string             `json:"invalidation_reasons,omitempty"`
+	InvalidationEvidence []string             `json:"invalidation_evidence,omitempty"`
+	InvalidationDiff     []string             `json:"invalidation_diff,omitempty"`
+	InvalidationChanges  []InvalidationChange `json:"invalidation_changes,omitempty"`
+	Responsibilities     []string             `json:"responsibilities,omitempty"`
+	Facts                []string             `json:"facts,omitempty"`
+	Inferences           []string             `json:"inferences,omitempty"`
+	KeyFiles             []string             `json:"key_files,omitempty"`
+	EvidenceFiles        []string             `json:"evidence_files,omitempty"`
+	EntryPoints          []string             `json:"entry_points,omitempty"`
+	Dependencies         []string             `json:"dependencies,omitempty"`
+	Collaboration        []string             `json:"collaboration,omitempty"`
+	Risks                []string             `json:"risks,omitempty"`
+	Unknowns             []string             `json:"unknowns,omitempty"`
 }
 
 type PerformanceHotspot struct {
@@ -307,36 +327,84 @@ type PerformanceLens struct {
 	MemoryRiskCandidates []string             `json:"memory_risk_candidates,omitempty"`
 }
 
+type AnalysisExecutionSummary struct {
+	TotalShards                 int      `json:"total_shards,omitempty"`
+	ReusedShards                int      `json:"reused_shards,omitempty"`
+	MissedShards                int      `json:"missed_shards,omitempty"`
+	NewShards                   int      `json:"new_shards,omitempty"`
+	RecomputedShards            int      `json:"recomputed_shards,omitempty"`
+	SemanticRecomputedShards    int      `json:"semantic_recomputed_shards,omitempty"`
+	InvalidationReasons         []string `json:"invalidation_reasons,omitempty"`
+	SemanticInvalidationReasons []string `json:"semantic_invalidation_reasons,omitempty"`
+	TopChangeClasses            []string `json:"top_change_classes,omitempty"`
+	TopChangeExamples           []string `json:"top_change_examples,omitempty"`
+}
+
+type VectorCorpusDocument struct {
+	ID       string            `json:"id"`
+	Kind     string            `json:"kind"`
+	Title    string            `json:"title"`
+	Text     string            `json:"text"`
+	PathHint string            `json:"path_hint,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type VectorCorpus struct {
+	RunID       string                 `json:"run_id"`
+	Goal        string                 `json:"goal"`
+	Root        string                 `json:"root"`
+	GeneratedAt time.Time              `json:"generated_at"`
+	Documents   []VectorCorpusDocument `json:"documents,omitempty"`
+}
+
+type VectorIngestionManifest struct {
+	RunID         string                  `json:"run_id"`
+	Goal          string                  `json:"goal"`
+	Root          string                  `json:"root"`
+	GeneratedAt   time.Time               `json:"generated_at"`
+	DocumentCount int                     `json:"document_count"`
+	DocumentKinds []string                `json:"document_kinds,omitempty"`
+	Targets       []VectorIngestionTarget `json:"targets,omitempty"`
+}
+
+type VectorIngestionTarget struct {
+	Name        string `json:"name"`
+	Format      string `json:"format"`
+	Filename    string `json:"filename"`
+	Description string `json:"description,omitempty"`
+}
+
 type KnowledgePack struct {
-	RunID                string                 `json:"run_id"`
-	Goal                 string                 `json:"goal"`
-	Root                 string                 `json:"root"`
-	GeneratedAt          time.Time              `json:"generated_at"`
-	AnalysisLenses       []AnalysisLens         `json:"analysis_lenses,omitempty"`
-	ProjectSummary       string                 `json:"project_summary,omitempty"`
-	PrimaryStartup       string                 `json:"primary_startup,omitempty"`
-	StartupCandidates    []string               `json:"startup_candidates,omitempty"`
-	StartupEntryFiles    []string               `json:"startup_entry_files,omitempty"`
-	ManifestFiles        []string               `json:"manifest_files,omitempty"`
-	EntrypointFiles      []string               `json:"entrypoint_files,omitempty"`
-	ArchitectureGroups   []string               `json:"architecture_groups,omitempty"`
-	TopImportantFiles    []string               `json:"top_important_files,omitempty"`
-	ProjectEdges         []ProjectEdge          `json:"project_edges,omitempty"`
-	UnrealProjects       []UnrealProject        `json:"unreal_projects,omitempty"`
-	UnrealPlugins        []UnrealPlugin         `json:"unreal_plugins,omitempty"`
-	UnrealTargets        []UnrealTarget         `json:"unreal_targets,omitempty"`
-	UnrealModules        []UnrealModule         `json:"unreal_modules,omitempty"`
-	UnrealTypes          []UnrealReflectedType  `json:"unreal_types,omitempty"`
-	UnrealNetwork        []UnrealNetworkSurface `json:"unreal_network,omitempty"`
-	UnrealAssets         []UnrealAssetReference `json:"unreal_assets,omitempty"`
-	UnrealSystems        []UnrealGameplaySystem `json:"unreal_systems,omitempty"`
-	UnrealSettings       []UnrealProjectSetting `json:"unreal_settings,omitempty"`
-	PrimaryUnrealModule  string                 `json:"primary_unreal_module,omitempty"`
-	Subsystems           []KnowledgeSubsystem   `json:"subsystems,omitempty"`
-	ExternalDependencies []string               `json:"external_dependencies,omitempty"`
-	HighRiskFiles        []string               `json:"high_risk_files,omitempty"`
-	Unknowns             []string               `json:"unknowns,omitempty"`
-	PerformanceLens      PerformanceLens        `json:"performance_lens,omitempty"`
+	RunID                string                   `json:"run_id"`
+	Goal                 string                   `json:"goal"`
+	Root                 string                   `json:"root"`
+	GeneratedAt          time.Time                `json:"generated_at"`
+	AnalysisLenses       []AnalysisLens           `json:"analysis_lenses,omitempty"`
+	ProjectSummary       string                   `json:"project_summary,omitempty"`
+	PrimaryStartup       string                   `json:"primary_startup,omitempty"`
+	StartupCandidates    []string                 `json:"startup_candidates,omitempty"`
+	StartupEntryFiles    []string                 `json:"startup_entry_files,omitempty"`
+	ManifestFiles        []string                 `json:"manifest_files,omitempty"`
+	EntrypointFiles      []string                 `json:"entrypoint_files,omitempty"`
+	ArchitectureGroups   []string                 `json:"architecture_groups,omitempty"`
+	TopImportantFiles    []string                 `json:"top_important_files,omitempty"`
+	ProjectEdges         []ProjectEdge            `json:"project_edges,omitempty"`
+	UnrealProjects       []UnrealProject          `json:"unreal_projects,omitempty"`
+	UnrealPlugins        []UnrealPlugin           `json:"unreal_plugins,omitempty"`
+	UnrealTargets        []UnrealTarget           `json:"unreal_targets,omitempty"`
+	UnrealModules        []UnrealModule           `json:"unreal_modules,omitempty"`
+	UnrealTypes          []UnrealReflectedType    `json:"unreal_types,omitempty"`
+	UnrealNetwork        []UnrealNetworkSurface   `json:"unreal_network,omitempty"`
+	UnrealAssets         []UnrealAssetReference   `json:"unreal_assets,omitempty"`
+	UnrealSystems        []UnrealGameplaySystem   `json:"unreal_systems,omitempty"`
+	UnrealSettings       []UnrealProjectSetting   `json:"unreal_settings,omitempty"`
+	PrimaryUnrealModule  string                   `json:"primary_unreal_module,omitempty"`
+	Subsystems           []KnowledgeSubsystem     `json:"subsystems,omitempty"`
+	ExternalDependencies []string                 `json:"external_dependencies,omitempty"`
+	HighRiskFiles        []string                 `json:"high_risk_files,omitempty"`
+	Unknowns             []string                 `json:"unknowns,omitempty"`
+	AnalysisExecution    AnalysisExecutionSummary `json:"analysis_execution,omitempty"`
+	PerformanceLens      PerformanceLens          `json:"performance_lens,omitempty"`
 }
 
 type ReviewDecision struct {
@@ -347,18 +415,22 @@ type ReviewDecision struct {
 }
 
 type ProjectAnalysisRun struct {
-	Summary          ProjectAnalysisSummary `json:"summary"`
-	Snapshot         ProjectSnapshot        `json:"snapshot"`
-	Shards           []AnalysisShard        `json:"shards"`
-	Reports          []WorkerReport         `json:"reports"`
-	Reviews          []ReviewDecision       `json:"reviews"`
-	FinalDocument    string                 `json:"final_document"`
-	ConductorProfile string                 `json:"conductor_profile,omitempty"`
-	WorkerProfile    string                 `json:"worker_profile,omitempty"`
-	ReviewerProfile  string                 `json:"reviewer_profile,omitempty"`
-	KnowledgePack    KnowledgePack          `json:"knowledge_pack,omitempty"`
-	DebugEvents      []string               `json:"debug_events,omitempty"`
-	ShardDocuments   map[string]string      `json:"shard_documents,omitempty"`
+	Summary          ProjectAnalysisSummary  `json:"summary"`
+	Snapshot         ProjectSnapshot         `json:"snapshot"`
+	Shards           []AnalysisShard         `json:"shards"`
+	Reports          []WorkerReport          `json:"reports"`
+	Reviews          []ReviewDecision        `json:"reviews"`
+	FinalDocument    string                  `json:"final_document"`
+	ConductorProfile string                  `json:"conductor_profile,omitempty"`
+	WorkerProfile    string                  `json:"worker_profile,omitempty"`
+	ReviewerProfile  string                  `json:"reviewer_profile,omitempty"`
+	KnowledgePack    KnowledgePack           `json:"knowledge_pack,omitempty"`
+	SemanticIndex    SemanticIndex           `json:"semantic_index,omitempty"`
+	UnrealGraph      UnrealSemanticGraph     `json:"unreal_graph,omitempty"`
+	VectorCorpus     VectorCorpus            `json:"vector_corpus,omitempty"`
+	VectorIngestion  VectorIngestionManifest `json:"vector_ingestion,omitempty"`
+	DebugEvents      []string                `json:"debug_events,omitempty"`
+	ShardDocuments   map[string]string       `json:"shard_documents,omitempty"`
 }
 
 type projectAnalyzer struct {
@@ -377,6 +449,7 @@ type projectAnalyzer struct {
 type analysisReuseState struct {
 	previousByPrimaryKey map[string]int
 	changedPrimaryFiles  map[string]struct{}
+	changedSemanticFiles map[string]struct{}
 }
 
 func defaultProjectAnalysisConfig(cwd string) ProjectAnalysisConfig {
@@ -603,8 +676,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysis
 		a.debug(fmt.Sprintf("analysis completed with review failures: %d", run.Summary.ReviewFailures))
 	}
 	run.FinalDocument = document
-	run.ShardDocuments = buildShardDocuments(run.Shards, run.Reports, goal)
+	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
 	run.KnowledgePack = buildKnowledgePack(run.Snapshot, run.Shards, run.Reports, goal, run.Summary.RunID)
+	run.UnrealGraph = buildUnrealSemanticGraph(run.Snapshot, goal, run.Summary.RunID)
+	run.SemanticIndex = buildSemanticIndex(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
+	run.VectorCorpus = buildVectorCorpus(run)
+	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
 	a.debug("final document synthesis completed")
 
 	if run.Summary.Status == "running" {
@@ -2998,20 +3075,36 @@ func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int
 			shards := make([]AnalysisShard, 0, len(rootSubShards)+len(otherShards))
 			for _, shard := range rootSubShards {
 				shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
-				shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, 10)
-				shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
-				shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
-				shard.Fingerprint = a.computeShardFingerprint(snapshot, shard)
+				a.finalizeShard(snapshot, &shard, 10)
 				shards = append(shards, shard)
 			}
 			for _, shard := range otherShards {
 				shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
-				shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, 10)
-				shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
-				shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
-				shard.Fingerprint = a.computeShardFingerprint(snapshot, shard)
+				a.finalizeShard(snapshot, &shard, 10)
 				shards = append(shards, shard)
 			}
+			return shards
+		}
+	}
+
+	if semanticShards := a.planSemanticShards(snapshot, desiredShards); len(semanticShards) > 0 {
+		shards := make([]AnalysisShard, 0, len(semanticShards))
+		for _, shard := range semanticShards {
+			shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
+			a.finalizeShard(snapshot, &shard, 12)
+			shards = append(shards, shard)
+		}
+		if len(shards) > 0 {
+			maxTotalShards := a.analysisCfg.MaxTotalShards
+			if maxTotalShards <= 0 {
+				maxTotalShards = analysisMaxInt(desiredShards, 1)
+			}
+			if len(shards) > maxTotalShards {
+				shards = mergeShards(shards, maxTotalShards)
+			}
+			sort.Slice(shards, func(i int, j int) bool {
+				return shards[i].ID < shards[j].ID
+			})
 			return shards
 		}
 	}
@@ -3032,10 +3125,7 @@ func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int
 					EstimatedFiles: len(files),
 					EstimatedLines: sumLines(files),
 				}
-				shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, 12)
-				shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
-				shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
-				shard.Fingerprint = a.computeShardFingerprint(snapshot, shard)
+				a.finalizeShard(snapshot, &shard, 12)
 				shards = append(shards, shard)
 			}
 		}
@@ -3072,10 +3162,7 @@ func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int
 			if len(rootShards) > 0 {
 				for _, shard := range rootShards {
 					shard.ID = fmt.Sprintf("shard-%02d", len(shards)+1)
-					shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, 10)
-					shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
-					shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
-					shard.Fingerprint = a.computeShardFingerprint(snapshot, shard)
+					a.finalizeShard(snapshot, &shard, 10)
 					shards = append(shards, shard)
 				}
 				continue
@@ -3090,10 +3177,7 @@ func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int
 				EstimatedFiles: len(chunk),
 				EstimatedLines: sumLines(chunk),
 			}
-			shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, 10)
-			shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
-			shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
-			shard.Fingerprint = a.computeShardFingerprint(snapshot, shard)
+			a.finalizeShard(snapshot, &shard, 10)
 			shards = append(shards, shard)
 		}
 	}
@@ -3381,17 +3465,42 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 
 func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnapshot, shard AnalysisShard, goal string, previousRun *ProjectAnalysisRun, reuseState analysisReuseState) (WorkerReport, ReviewDecision, AnalysisShard, error) {
 	a.debug(fmt.Sprintf("shard %s queued: files=%d refs=%d", shard.Name, len(shard.PrimaryFiles), len(shard.ReferenceFiles)))
-	if report, review, reason, ok := a.tryReuseShard(previousRun, shard, reuseState); ok {
+	report, review, reason, ok := a.tryReuseShard(previousRun, shard, reuseState)
+	if ok {
 		shard.CacheStatus = "reused"
 		shard.InvalidationReason = reason
 		a.debug(fmt.Sprintf("shard %s cache hit: reason=%s", shard.Name, reason))
 		return report, review, shard, nil
 	}
 	shard.CacheStatus = "miss"
-	if _, ok := reuseState.previousByPrimaryKey[primaryFilesKey(shard.PrimaryFiles)]; !ok {
+	if strings.TrimSpace(reason) != "" {
+		shard.InvalidationReason = reason
+	} else if _, ok := reuseState.previousByPrimaryKey[primaryFilesKey(shard.PrimaryFiles)]; !ok {
 		shard.InvalidationReason = "new"
 	} else {
 		shard.InvalidationReason = "recomputed"
+	}
+	if previousShard, ok := a.previousShardForPrimary(previousRun, shard, reuseState); ok {
+		shard.InvalidationChanges = buildInvalidationChanges(
+			previousRun.Snapshot,
+			snapshot,
+			[]string{shard.Name},
+			previousShard.PrimaryFiles,
+			shard.PrimaryFiles,
+			4,
+		)
+		shard.InvalidationDiff = buildInvalidationDiffStrings(shard.InvalidationChanges, 4)
+		if len(shard.InvalidationDiff) == 0 {
+			shard.InvalidationDiff = buildInvalidationDiffLines(
+				previousRun.Snapshot,
+				snapshot,
+				[]string{shard.Name},
+				previousShard.PrimaryFiles,
+				shard.PrimaryFiles,
+				[]string{shard.InvalidationReason},
+				4,
+			)
+		}
 	}
 	a.debug(fmt.Sprintf("shard %s cache miss: reason=%s", shard.Name, shard.InvalidationReason))
 	revisionPrompt := ""
@@ -3502,10 +3611,7 @@ func (a *projectAnalyzer) planRefinementShards(snapshot ProjectSnapshot, shards 
 				EstimatedFiles:  len(chunk),
 				EstimatedLines:  sumLines(chunk),
 			}
-			child.ReferenceFiles = a.relatedFiles(snapshot, child.PrimaryFiles, 12)
-			child.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, child.PrimaryFiles)
-			child.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, child.ReferenceFiles)
-			child.Fingerprint = a.computeShardFingerprint(snapshot, child)
+			a.finalizeShard(snapshot, &child, 12)
 			refined = append(refined, child)
 			nextID++
 		}
@@ -3728,20 +3834,25 @@ func (a *projectAnalyzer) synthesizeFinalDocument(ctx context.Context, snapshot 
 }
 
 type synthesisSection struct {
-	Title            string   `json:"title"`
-	Group            string   `json:"group,omitempty"`
-	ShardIDs         []string `json:"shard_ids"`
-	Responsibilities []string `json:"responsibilities,omitempty"`
-	Facts            []string `json:"facts,omitempty"`
-	Inferences       []string `json:"inferences,omitempty"`
-	KeyFiles         []string `json:"key_files,omitempty"`
-	EvidenceFiles    []string `json:"evidence_files,omitempty"`
-	EntryPoints      []string `json:"entry_points,omitempty"`
-	InternalFlow     []string `json:"internal_flow,omitempty"`
-	Dependencies     []string `json:"dependencies,omitempty"`
-	Collaboration    []string `json:"collaboration,omitempty"`
-	Risks            []string `json:"risks,omitempty"`
-	Unknowns         []string `json:"unknowns,omitempty"`
+	Title               string               `json:"title"`
+	Group               string               `json:"group,omitempty"`
+	ShardIDs            []string             `json:"shard_ids"`
+	ShardNames          []string             `json:"shard_names,omitempty"`
+	CacheStatuses       []string             `json:"cache_statuses,omitempty"`
+	InvalidationReasons []string             `json:"invalidation_reasons,omitempty"`
+	InvalidationDiff    []string             `json:"invalidation_diff,omitempty"`
+	InvalidationChanges []InvalidationChange `json:"invalidation_changes,omitempty"`
+	Responsibilities    []string             `json:"responsibilities,omitempty"`
+	Facts               []string             `json:"facts,omitempty"`
+	Inferences          []string             `json:"inferences,omitempty"`
+	KeyFiles            []string             `json:"key_files,omitempty"`
+	EvidenceFiles       []string             `json:"evidence_files,omitempty"`
+	EntryPoints         []string             `json:"entry_points,omitempty"`
+	InternalFlow        []string             `json:"internal_flow,omitempty"`
+	Dependencies        []string             `json:"dependencies,omitempty"`
+	Collaboration       []string             `json:"collaboration,omitempty"`
+	Risks               []string             `json:"risks,omitempty"`
+	Unknowns            []string             `json:"unknowns,omitempty"`
 }
 
 func groupedReportsForSynthesis(shards []AnalysisShard, reports []WorkerReport) []synthesisSection {
@@ -3790,9 +3901,18 @@ func groupedReportsForSynthesis(shards []AnalysisShard, reports []WorkerReport) 
 
 func mergeSynthesisSection(section *synthesisSection, shard AnalysisShard, report WorkerReport) {
 	section.ShardIDs = append(section.ShardIDs, shard.ID)
+	section.ShardNames = analysisUniqueStrings(append(section.ShardNames, strings.TrimSpace(shard.Name)))
 	if strings.TrimSpace(section.Title) == "" {
 		section.Title = report.Title
 	}
+	if status := strings.TrimSpace(shard.CacheStatus); status != "" {
+		section.CacheStatuses = analysisUniqueStrings(append(section.CacheStatuses, status))
+	}
+	if reason := strings.TrimSpace(shard.InvalidationReason); reason != "" {
+		section.InvalidationReasons = analysisUniqueStrings(append(section.InvalidationReasons, reason))
+	}
+	section.InvalidationDiff = analysisUniqueStrings(append(section.InvalidationDiff, shard.InvalidationDiff...))
+	section.InvalidationChanges = append(section.InvalidationChanges, shard.InvalidationChanges...)
 	section.Responsibilities = analysisUniqueStrings(append(section.Responsibilities, report.Responsibilities...))
 	section.Facts = analysisUniqueStrings(append(section.Facts, report.Facts...))
 	section.Inferences = analysisUniqueStrings(append(section.Inferences, report.Inferences...))
@@ -3815,6 +3935,7 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 	trimmed = normalizeFinalDocumentHeadings(trimmed)
 	trimmed = ensureStartupProjectCoverage(trimmed, snapshot)
 	trimmed = ensureExecutionChainCoverage(trimmed, snapshot, reports)
+	trimmed = ensureAnalysisExecutionCoverage(trimmed, shards)
 	trimmed = normalizeUnexpectedLocaleArtifacts(trimmed)
 	missingEvidence := sectionsMissingCoverage(trimmed, items, "evidence")
 	missingInsights := sectionsMissingCoverage(trimmed, items, "insights")
@@ -3835,6 +3956,22 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 		b.WriteString("\n## Evidence And Inference Appendix\n\n")
 		writeInsightAppendix(&b, missingInsights)
 	}
+	return strings.TrimSpace(b.String())
+}
+
+func ensureAnalysisExecutionCoverage(text string, shards []AnalysisShard) string {
+	summary := buildAnalysisExecutionSummary(shards)
+	if summary.TotalShards == 0 {
+		return text
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "analysis execution") || strings.Contains(lower, "semantic invalidation") || strings.Contains(lower, "cache status") {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(text))
+	b.WriteString("\n\n## Analysis Execution Appendix\n\n")
+	writeAnalysisExecutionSummary(&b, summary)
 	return strings.TrimSpace(b.String())
 }
 
@@ -4739,6 +4876,16 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
 	performanceJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.json")
 	performanceDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.md")
+	snapshotJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_snapshot.json")
+	structuralIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index.json")
+	unrealGraphJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_unreal_graph.json")
+	vectorCorpusJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.json")
+	vectorCorpusJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.jsonl")
+	vectorIngestManifestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_ingest_manifest.json")
+	vectorIngestRecordsPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_ingest_records.jsonl")
+	vectorPGVectorSQLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_pgvector.sql")
+	vectorSQLiteSQLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_sqlite.sql")
+	vectorQdrantJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_qdrant.jsonl")
 	if err := os.WriteFile(mdPath, []byte(run.FinalDocument), 0o644); err != nil {
 		return "", err
 	}
@@ -4765,6 +4912,66 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	if err := os.WriteFile(jsonPath, data, 0o644); err != nil {
 		return "", err
 	}
+	snapshotData, err := json.MarshalIndent(run.Snapshot, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(snapshotJSONPath, snapshotData, 0o644); err != nil {
+		return "", err
+	}
+	if len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0 {
+		indexData, err := json.MarshalIndent(run.SemanticIndex, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(structuralIndexJSONPath, indexData, 0o644); err != nil {
+			return "", err
+		}
+	}
+	if len(run.UnrealGraph.Nodes) > 0 || len(run.UnrealGraph.Edges) > 0 {
+		graphData, err := json.MarshalIndent(run.UnrealGraph, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(unrealGraphJSONPath, graphData, 0o644); err != nil {
+			return "", err
+		}
+	}
+	if len(run.VectorCorpus.Documents) > 0 {
+		corpusData, err := json.MarshalIndent(run.VectorCorpus, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorCorpusJSONPath, corpusData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorCorpusJSONLPath, []byte(buildVectorCorpusJSONL(run.VectorCorpus)), 0o644); err != nil {
+			return "", err
+		}
+		manifest := run.VectorIngestion
+		if manifest.DocumentCount == 0 {
+			manifest = buildVectorIngestionManifest(run.VectorCorpus)
+		}
+		manifestData, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorIngestManifestPath, manifestData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorIngestRecordsPath, []byte(buildVectorIngestionRecordsJSONL(run.VectorCorpus)), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorPGVectorSQLPath, []byte(buildVectorPGVectorSQL(run.VectorCorpus)), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorSQLiteSQLPath, []byte(buildVectorSQLiteSQL(run.VectorCorpus)), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(vectorQdrantJSONLPath, []byte(buildVectorQdrantSeedJSONL(run.VectorCorpus)), 0o644); err != nil {
+			return "", err
+		}
+	}
 	if len(run.KnowledgePack.Subsystems) > 0 || strings.TrimSpace(run.KnowledgePack.PrimaryStartup) != "" {
 		knowledgeData, err := json.MarshalIndent(run.KnowledgePack, "", "  ")
 		if err != nil {
@@ -4778,6 +4985,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 		latestDir := filepath.Join(a.analysisCfg.OutputDir, "latest")
 		if err := os.MkdirAll(latestDir, 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), knowledgeData, 0o644); err != nil {
@@ -4802,6 +5012,59 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "performance_digest.md"), []byte(perfDigest), 0o644); err != nil {
 			return "", err
+		}
+		if len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0 {
+			indexData, err := json.MarshalIndent(run.SemanticIndex, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), indexData, 0o644); err != nil {
+				return "", err
+			}
+		}
+		if len(run.UnrealGraph.Nodes) > 0 || len(run.UnrealGraph.Edges) > 0 {
+			graphData, err := json.MarshalIndent(run.UnrealGraph, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "unreal_graph.json"), graphData, 0o644); err != nil {
+				return "", err
+			}
+		}
+		if len(run.VectorCorpus.Documents) > 0 {
+			corpusData, err := json.MarshalIndent(run.VectorCorpus, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_corpus.json"), corpusData, 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_corpus.jsonl"), []byte(buildVectorCorpusJSONL(run.VectorCorpus)), 0o644); err != nil {
+				return "", err
+			}
+			manifest := run.VectorIngestion
+			if manifest.DocumentCount == 0 {
+				manifest = buildVectorIngestionManifest(run.VectorCorpus)
+			}
+			manifestData, err := json.MarshalIndent(manifest, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_ingest_manifest.json"), manifestData, 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_ingest_records.jsonl"), []byte(buildVectorIngestionRecordsJSONL(run.VectorCorpus)), 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_pgvector.sql"), []byte(buildVectorPGVectorSQL(run.VectorCorpus)), 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_sqlite.sql"), []byte(buildVectorSQLiteSQL(run.VectorCorpus)), 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "vector_qdrant.jsonl"), []byte(buildVectorQdrantSeedJSONL(run.VectorCorpus)), 0o644); err != nil {
+				return "", err
+			}
 		}
 	}
 	return mdPath, nil
@@ -4852,6 +5115,7 @@ func (a *projectAnalyzer) relatedFiles(snapshot ProjectSnapshot, primaryFiles []
 func (a *projectAnalyzer) computeShardFingerprint(snapshot ProjectSnapshot, shard AnalysisShard) string {
 	hash := sha256.New()
 	fmt.Fprintf(hash, "primary:%s\nreference:%s\n", shard.PrimaryFingerprint, shard.ReferenceFingerprint)
+	fmt.Fprintf(hash, "primary_semantic:%s\nreference_semantic:%s\n", shard.PrimarySemanticFingerprint, shard.ReferenceSemanticFingerprint)
 	fmt.Fprintf(hash, "worker:%s\nreviewer:%s\n", a.workerModel(), a.reviewerModel())
 	return hex.EncodeToString(hash.Sum(nil))
 }
@@ -4873,6 +5137,102 @@ func (a *projectAnalyzer) computeFileSetFingerprint(snapshot ProjectSnapshot, pa
 		hash.Write([]byte("\n"))
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (a *projectAnalyzer) computeSemanticFingerprint(snapshot ProjectSnapshot, paths []string) string {
+	hash := sha256.New()
+	sorted := analysisUniqueStrings(append([]string(nil), paths...))
+	sort.Strings(sorted)
+	fileSet := map[string]struct{}{}
+	for _, path := range sorted {
+		fileSet[path] = struct{}{}
+		file := snapshot.FilesByPath[path]
+		fmt.Fprintf(hash, "file:%s\nimportance:%d\n", path, file.ImportanceScore)
+	}
+	for _, edge := range snapshot.RuntimeEdges {
+		if !edgeTouchesFiles(edge.Evidence, fileSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "runtime:%s|%s|%s|%s|%s\n", edge.Source, edge.Target, edge.Kind, edge.Confidence, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range snapshot.ProjectEdges {
+		if !edgeTouchesFiles(edge.Evidence, fileSet) {
+			continue
+		}
+		attrKeys := make([]string, 0, len(edge.Attributes))
+		for key := range edge.Attributes {
+			attrKeys = append(attrKeys, key)
+		}
+		sort.Strings(attrKeys)
+		attrPairs := []string{}
+		for _, key := range attrKeys {
+			attrPairs = append(attrPairs, key+"="+edge.Attributes[key])
+		}
+		fmt.Fprintf(hash, "project:%s|%s|%s|%s|%s|%s\n", edge.Source, edge.Target, edge.Type, edge.Confidence, strings.Join(analysisUniqueStrings(edge.Evidence), "|"), strings.Join(attrPairs, "|"))
+	}
+	for _, item := range snapshot.UnrealTypes {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		fmt.Fprintf(hash, "type:%s|%s|%s|%s|%s\n", item.Name, item.Kind, item.BaseClass, item.Module, item.GameplayRole)
+	}
+	for _, item := range snapshot.UnrealNetwork {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		fmt.Fprintf(hash, "network:%s|server=%s|client=%s|multi=%s|rep=%s|notify=%s\n",
+			item.TypeName,
+			strings.Join(analysisUniqueStrings(item.ServerRPCs), "|"),
+			strings.Join(analysisUniqueStrings(item.ClientRPCs), "|"),
+			strings.Join(analysisUniqueStrings(item.MulticastRPCs), "|"),
+			strings.Join(analysisUniqueStrings(item.ReplicatedProperties), "|"),
+			strings.Join(analysisUniqueStrings(item.RepNotifyProperties), "|"))
+	}
+	for _, item := range snapshot.UnrealAssets {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		fmt.Fprintf(hash, "asset:%s|targets=%s|config=%s|load=%s\n",
+			firstNonBlankAnalysisString(item.OwnerName, item.File),
+			strings.Join(analysisUniqueStrings(item.CanonicalTargets), "|"),
+			strings.Join(analysisUniqueStrings(item.ConfigKeys), "|"),
+			strings.Join(analysisUniqueStrings(item.LoadMethods), "|"))
+	}
+	for _, item := range snapshot.UnrealSystems {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		fmt.Fprintf(hash, "system:%s|owner=%s|actions=%s|widgets=%s|abilities=%s|effects=%s\n",
+			item.System,
+			firstNonBlankAnalysisString(item.OwnerName, item.File),
+			strings.Join(analysisUniqueStrings(item.Actions), "|"),
+			strings.Join(analysisUniqueStrings(item.Widgets), "|"),
+			strings.Join(analysisUniqueStrings(item.Abilities), "|"),
+			strings.Join(analysisUniqueStrings(item.Effects), "|"))
+	}
+	for _, item := range snapshot.UnrealSettings {
+		if _, ok := fileSet[item.SourceFile]; !ok {
+			continue
+		}
+		fmt.Fprintf(hash, "settings:%s|map=%s|mode=%s|instance=%s|pawn=%s|controller=%s|hud=%s\n",
+			item.SourceFile,
+			item.GameDefaultMap,
+			item.GlobalDefaultGameMode,
+			item.GameInstanceClass,
+			item.DefaultPawnClass,
+			item.PlayerControllerClass,
+			item.HUDClass)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (a *projectAnalyzer) finalizeShard(snapshot ProjectSnapshot, shard *AnalysisShard, referenceLimit int) {
+	shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, referenceLimit)
+	shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
+	shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
+	shard.PrimarySemanticFingerprint = a.computeSemanticFingerprint(snapshot, shard.PrimaryFiles)
+	shard.ReferenceSemanticFingerprint = a.computeSemanticFingerprint(snapshot, shard.ReferenceFiles)
+	shard.Fingerprint = a.computeShardFingerprint(snapshot, *shard)
 }
 
 func (a *projectAnalyzer) initializeClients() error {
@@ -4960,11 +5320,13 @@ func (a *projectAnalyzer) buildReuseState(previousRun *ProjectAnalysisRun, shard
 	state := analysisReuseState{
 		previousByPrimaryKey: map[string]int{},
 		changedPrimaryFiles:  map[string]struct{}{},
+		changedSemanticFiles: map[string]struct{}{},
 	}
 	if previousRun == nil {
 		for _, shard := range shards {
 			for _, path := range shard.PrimaryFiles {
 				state.changedPrimaryFiles[path] = struct{}{}
+				state.changedSemanticFiles[path] = struct{}{}
 			}
 		}
 		return state
@@ -4978,6 +5340,7 @@ func (a *projectAnalyzer) buildReuseState(previousRun *ProjectAnalysisRun, shard
 		if !ok {
 			for _, path := range shard.PrimaryFiles {
 				state.changedPrimaryFiles[path] = struct{}{}
+				state.changedSemanticFiles[path] = struct{}{}
 			}
 			continue
 		}
@@ -4985,6 +5348,11 @@ func (a *projectAnalyzer) buildReuseState(previousRun *ProjectAnalysisRun, shard
 		if previousShard.PrimaryFingerprint != shard.PrimaryFingerprint {
 			for _, path := range shard.PrimaryFiles {
 				state.changedPrimaryFiles[path] = struct{}{}
+			}
+		}
+		if previousShard.PrimarySemanticFingerprint != shard.PrimarySemanticFingerprint {
+			for _, path := range shard.PrimaryFiles {
+				state.changedSemanticFiles[path] = struct{}{}
 			}
 		}
 	}
@@ -5034,13 +5402,22 @@ func (a *projectAnalyzer) tryReuseShard(previousRun *ProjectAnalysisRun, shard A
 	if previousShard.PrimaryFingerprint != shard.PrimaryFingerprint {
 		return WorkerReport{}, ReviewDecision{}, "primary_changed", false
 	}
+	if previousShard.PrimarySemanticFingerprint != shard.PrimarySemanticFingerprint {
+		return WorkerReport{}, ReviewDecision{}, "semantic_primary_changed", false
+	}
 	for _, ref := range shard.ReferenceFiles {
 		if _, changed := reuseState.changedPrimaryFiles[ref]; changed {
 			return WorkerReport{}, ReviewDecision{}, "dependency_changed", false
 		}
+		if _, changed := reuseState.changedSemanticFiles[ref]; changed {
+			return WorkerReport{}, ReviewDecision{}, "semantic_dependency_changed", false
+		}
 	}
 	if previousShard.ReferenceFingerprint != shard.ReferenceFingerprint {
 		return WorkerReport{}, ReviewDecision{}, "reference_changed", false
+	}
+	if previousShard.ReferenceSemanticFingerprint != shard.ReferenceSemanticFingerprint {
+		return WorkerReport{}, ReviewDecision{}, "semantic_reference_changed", false
 	}
 	review := previousRun.Reviews[index]
 	if !strings.EqualFold(review.Status, "approved") {
@@ -5063,6 +5440,704 @@ func (a *projectAnalyzer) previousReportForShard(previousRun *ProjectAnalysisRun
 		return WorkerReport{}, false
 	}
 	return previousRun.Reports[index], true
+}
+
+func (a *projectAnalyzer) previousShardForPrimary(previousRun *ProjectAnalysisRun, shard AnalysisShard, reuseState analysisReuseState) (AnalysisShard, bool) {
+	if previousRun == nil {
+		return AnalysisShard{}, false
+	}
+	index, ok := reuseState.previousByPrimaryKey[primaryFilesKey(shard.PrimaryFiles)]
+	if !ok {
+		return AnalysisShard{}, false
+	}
+	if index < 0 || index >= len(previousRun.Shards) {
+		return AnalysisShard{}, false
+	}
+	return previousRun.Shards[index], true
+}
+
+func analysisInvalidationContext(shardNames []string) string {
+	for _, name := range shardNames {
+		trimmed := strings.TrimSpace(name)
+		switch {
+		case strings.HasPrefix(trimmed, "unreal_network"):
+			return "unreal_network"
+		case strings.HasPrefix(trimmed, "unreal_ui"):
+			return "unreal_ui"
+		case strings.HasPrefix(trimmed, "unreal_ability"):
+			return "unreal_ability"
+		case strings.HasPrefix(trimmed, "asset_config"):
+			return "asset_config"
+		case strings.HasPrefix(trimmed, "integrity_security"):
+			return "integrity_security"
+		case strings.HasPrefix(trimmed, "startup"):
+			return "startup"
+		case strings.HasPrefix(trimmed, "build_graph"):
+			return "build_graph"
+		case strings.HasPrefix(trimmed, "unreal_gameplay"):
+			return "unreal_gameplay"
+		}
+	}
+	return ""
+}
+
+func describeAnalysisInvalidationReasonWithContext(reason string, shardNames []string) string {
+	context := analysisInvalidationContext(shardNames)
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "":
+		return ""
+	case "cache_hit":
+		return "Reused previous approved result because no relevant file, dependency, or semantic context changed."
+	case "new":
+		return "New shard scope detected, so no reusable prior analysis existed for this file set."
+	case "new_primary_scope":
+		return "Primary shard scope is new compared with the previous run."
+	case "recomputed":
+		return "Shard was recomputed instead of reused."
+	case "primary_changed":
+		return "Primary files changed, so the shard had to be recomputed."
+	case "semantic_primary_changed":
+		switch context {
+		case "unreal_network":
+			return "Primary files kept the same content scope, but RPC, replication, or authority semantics changed."
+		case "unreal_ui":
+			return "Primary files kept the same content scope, but widget ownership or gameplay-to-UI coupling semantics changed."
+		case "unreal_ability":
+			return "Primary files kept the same content scope, but ability, effect, or attribute semantics changed."
+		case "asset_config":
+			return "Primary files kept the same content scope, but config-driven startup or asset binding semantics changed."
+		case "integrity_security":
+			return "Primary files kept the same content scope, but trust boundary or anti-tamper semantics changed."
+		case "startup":
+			return "Primary files kept the same content scope, but bootstrap or startup handoff semantics changed."
+		case "build_graph":
+			return "Primary files kept the same content scope, but project, target, plugin, or module composition semantics changed."
+		case "unreal_gameplay":
+			return "Primary files kept the same content scope, but gameplay framework ownership semantics changed."
+		}
+		return "Primary files kept the same content scope, but their semantic structure changed."
+	case "dependency_changed":
+		switch context {
+		case "unreal_network":
+			return "An upstream dependency changed, so RPC, replication, or authority analysis was recomputed."
+		case "unreal_ui":
+			return "An upstream dependency changed, so widget ownership and gameplay-to-UI analysis was recomputed."
+		case "unreal_ability":
+			return "An upstream dependency changed, so ability system analysis was recomputed."
+		case "asset_config":
+			return "An upstream dependency changed, so config-driven startup or asset binding analysis was recomputed."
+		case "integrity_security":
+			return "An upstream dependency changed, so trust boundary or anti-tamper analysis was recomputed."
+		}
+		return "An upstream dependency shard changed, so dependent analysis was recomputed."
+	case "semantic_dependency_changed":
+		switch context {
+		case "unreal_network":
+			return "An upstream dependency kept the same file scope, but RPC, replication, or authority semantics changed."
+		case "unreal_ui":
+			return "An upstream dependency kept the same file scope, but widget ownership or gameplay-to-UI semantics changed."
+		case "unreal_ability":
+			return "An upstream dependency kept the same file scope, but ability, effect, or attribute semantics changed."
+		case "asset_config":
+			return "An upstream dependency kept the same file scope, but config-driven startup or asset binding semantics changed."
+		case "integrity_security":
+			return "An upstream dependency kept the same file scope, but trust boundary or anti-tamper semantics changed."
+		case "startup":
+			return "An upstream dependency kept the same file scope, but bootstrap or startup handoff semantics changed."
+		case "build_graph":
+			return "An upstream dependency kept the same file scope, but project, target, plugin, or module graph semantics changed."
+		case "unreal_gameplay":
+			return "An upstream dependency kept the same file scope, but gameplay framework ownership semantics changed."
+		}
+		return "An upstream dependency kept the same file scope, but its semantic context changed."
+	case "reference_changed":
+		switch context {
+		case "unreal_network":
+			return "Reference context changed, so RPC, replication, or authority evidence was refreshed."
+		case "asset_config":
+			return "Reference context changed, so config and asset binding evidence was refreshed."
+		case "integrity_security":
+			return "Reference context changed, so trust boundary and anti-tamper evidence was refreshed."
+		}
+		return "Reference context files changed, so dependency evidence was refreshed."
+	case "semantic_reference_changed":
+		switch context {
+		case "unreal_network":
+			return "Reference files kept the same content scope, but RPC, replication, or authority semantics changed."
+		case "unreal_ui":
+			return "Reference files kept the same content scope, but widget ownership or gameplay-to-UI semantics changed."
+		case "unreal_ability":
+			return "Reference files kept the same content scope, but ability, effect, or attribute semantics changed."
+		case "asset_config":
+			return "Reference files kept the same content scope, but config-driven startup or asset binding semantics changed."
+		case "integrity_security":
+			return "Reference files kept the same content scope, but trust boundary or anti-tamper semantics changed."
+		}
+		return "Reference files kept the same content scope, but their semantic context changed."
+	case "previous_review_not_approved":
+		return "Previous shard result was not approved, so it could not be safely reused."
+	case "previous_run_incomplete":
+		return "Previous run did not contain a complete reusable worker and reviewer result."
+	case "no_previous_run":
+		return "No previous analysis run was available for reuse."
+	default:
+		return reason
+	}
+}
+
+func describeAnalysisInvalidationReason(reason string) string {
+	return describeAnalysisInvalidationReasonWithContext(reason, nil)
+}
+
+func describeAnalysisInvalidationReasonsWithContext(reasons []string, shardNames []string, limit int) []string {
+	out := make([]string, 0, len(reasons))
+	for _, reason := range analysisUniqueStrings(reasons) {
+		described := describeAnalysisInvalidationReasonWithContext(reason, shardNames)
+		if strings.TrimSpace(described) == "" {
+			continue
+		}
+		out = append(out, described)
+	}
+	return limitStrings(out, limit)
+}
+
+func describeAnalysisInvalidationReasons(reasons []string, limit int) []string {
+	return describeAnalysisInvalidationReasonsWithContext(reasons, nil, limit)
+}
+
+func buildInvalidationEvidenceLines(snapshot ProjectSnapshot, shardNames []string, paths []string, reasons []string, limit int) []string {
+	if len(paths) == 0 || len(reasons) == 0 {
+		return nil
+	}
+	fileSet := map[string]struct{}{}
+	for _, path := range analysisUniqueStrings(paths) {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		fileSet[path] = struct{}{}
+	}
+	if len(fileSet) == 0 {
+		return nil
+	}
+	context := analysisInvalidationContext(shardNames)
+	lines := []string{}
+	appendLines := func(items []string) {
+		for _, item := range items {
+			if strings.TrimSpace(item) == "" {
+				continue
+			}
+			lines = append(lines, item)
+		}
+	}
+	switch context {
+	case "unreal_network":
+		appendLines(collectPromptNetworkLines(snapshot.UnrealNetwork, fileSet))
+		appendLines(trimPromptBullets(promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 4, "")))
+	case "unreal_ui":
+		appendLines(collectPromptSystemLines(snapshot.UnrealSystems, fileSet))
+		appendLines(collectPromptAssetLines(snapshot.UnrealAssets, fileSet))
+	case "unreal_ability":
+		appendLines(collectPromptSystemLines(snapshot.UnrealSystems, fileSet))
+		appendLines(collectPromptTypeLines(snapshot.UnrealTypes, fileSet))
+	case "asset_config":
+		appendLines(collectPromptAssetLines(snapshot.UnrealAssets, fileSet))
+		appendLines(collectPromptSettingsLines(snapshot.UnrealSettings, fileSet))
+	case "integrity_security":
+		appendLines(trimPromptBullets(promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 4, "")))
+		appendLines(collectPromptSystemLines(snapshot.UnrealSystems, fileSet))
+	case "startup":
+		appendLines(trimPromptBullets(promptEdgeLines(snapshot.RuntimeEdges, fileSet, 4, "")))
+		appendLines(trimPromptBullets(promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 4, "")))
+	case "build_graph":
+		appendLines(collectPromptProjectLines(snapshot.UnrealProjects, fileSet))
+		appendLines(collectPromptPluginLines(snapshot.UnrealPlugins, fileSet))
+		appendLines(collectPromptTargetLines(snapshot.UnrealTargets, fileSet))
+		appendLines(collectPromptModuleLines(snapshot.UnrealModules, fileSet))
+	case "unreal_gameplay":
+		appendLines(collectPromptTypeLines(snapshot.UnrealTypes, fileSet))
+		appendLines(collectPromptSystemLines(snapshot.UnrealSystems, fileSet))
+	default:
+		appendLines(trimPromptBullets(promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 4, "")))
+		appendLines(trimPromptBullets(promptEdgeLines(snapshot.RuntimeEdges, fileSet, 4, "")))
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return limitStrings(analysisUniqueStrings(lines), limit)
+}
+
+func buildInvalidationDiffLines(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, shardNames []string, previousPaths []string, currentPaths []string, reasons []string, limit int) []string {
+	if changes := buildInvalidationChanges(previousSnapshot, currentSnapshot, shardNames, previousPaths, currentPaths, limit); len(changes) > 0 {
+		return buildInvalidationDiffStrings(changes, limit)
+	}
+	if limit <= 0 {
+		return nil
+	}
+	context := analysisInvalidationContext(shardNames)
+	if structured := buildStructuredInvalidationDiffLines(previousSnapshot, currentSnapshot, context, previousPaths, currentPaths, limit); len(structured) > 0 {
+		return structured
+	}
+	previousEvidence := buildInvalidationEvidenceLines(previousSnapshot, shardNames, previousPaths, reasons, limit*2)
+	currentEvidence := buildInvalidationEvidenceLines(currentSnapshot, shardNames, currentPaths, reasons, limit*2)
+	if len(previousEvidence) == 0 && len(currentEvidence) == 0 {
+		return nil
+	}
+	previousSet := map[string]struct{}{}
+	currentSet := map[string]struct{}{}
+	for _, item := range previousEvidence {
+		previousSet[item] = struct{}{}
+	}
+	for _, item := range currentEvidence {
+		currentSet[item] = struct{}{}
+	}
+	diff := []string{}
+	for _, item := range currentEvidence {
+		if _, ok := previousSet[item]; ok {
+			continue
+		}
+		diff = append(diff, "Added: "+item)
+	}
+	for _, item := range previousEvidence {
+		if _, ok := currentSet[item]; ok {
+			continue
+		}
+		diff = append(diff, "Removed: "+item)
+	}
+	return limitStrings(analysisUniqueStrings(diff), limit)
+}
+
+func buildInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, shardNames []string, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	if limit <= 0 {
+		return nil
+	}
+	context := analysisInvalidationContext(shardNames)
+	changes := buildStructuredInvalidationChanges(previousSnapshot, currentSnapshot, context, previousPaths, currentPaths, limit)
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func buildInvalidationDiffStrings(changes []InvalidationChange, limit int) []string {
+	lines := []string{}
+	for _, change := range limitInvalidationChanges(changes, limit) {
+		lines = append(lines, renderInvalidationChange(change))
+	}
+	return lines
+}
+
+func buildStructuredInvalidationDiffLines(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, context string, previousPaths []string, currentPaths []string, limit int) []string {
+	return buildInvalidationDiffStrings(buildStructuredInvalidationChanges(previousSnapshot, currentSnapshot, context, previousPaths, currentPaths, limit), limit)
+}
+
+func buildStructuredInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, context string, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	switch context {
+	case "unreal_network":
+		return buildUnrealNetworkInvalidationChanges(previousSnapshot.UnrealNetwork, currentSnapshot.UnrealNetwork, previousPaths, currentPaths, limit)
+	case "asset_config":
+		return buildAssetConfigInvalidationChanges(previousSnapshot, currentSnapshot, previousPaths, currentPaths, limit)
+	case "integrity_security":
+		return buildSecurityInvalidationChanges(previousSnapshot, currentSnapshot, previousPaths, currentPaths, limit)
+	case "unreal_ability", "unreal_ui", "unreal_gameplay":
+		return buildGameplaySystemInvalidationChanges(previousSnapshot, currentSnapshot, previousPaths, currentPaths, limit)
+	case "startup":
+		return buildStartupInvalidationChanges(previousSnapshot, currentSnapshot, previousPaths, currentPaths, limit)
+	}
+	return nil
+}
+
+func buildUnrealNetworkInvalidationChanges(previous []UnrealNetworkSurface, current []UnrealNetworkSurface, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	prevMap := mapFilteredNetworkSurfaces(previous, previousPaths)
+	currMap := mapFilteredNetworkSurfaces(current, currentPaths)
+	changes := []InvalidationChange{}
+	for typeName, curr := range currMap {
+		prev := prevMap[typeName]
+		changes = append(changes, diffNamedChanges("rpc_added", "unreal_network", typeName, prev.ServerRPCs, curr.ServerRPCs)...)
+		changes = append(changes, diffNamedChanges("client_rpc_added", "unreal_network", typeName, prev.ClientRPCs, curr.ClientRPCs)...)
+		changes = append(changes, diffNamedChanges("multicast_rpc_added", "unreal_network", typeName, prev.MulticastRPCs, curr.MulticastRPCs)...)
+		changes = append(changes, diffNamedChanges("replicated_property_added", "unreal_network", typeName, prev.ReplicatedProperties, curr.ReplicatedProperties)...)
+		changes = append(changes, diffNamedChanges("repnotify_property_added", "unreal_network", typeName, prev.RepNotifyProperties, curr.RepNotifyProperties)...)
+		changes = append(changes, diffNamedChanges("rpc_removed", "unreal_network", typeName, curr.ServerRPCs, prev.ServerRPCs)...)
+		changes = append(changes, diffNamedChanges("client_rpc_removed", "unreal_network", typeName, curr.ClientRPCs, prev.ClientRPCs)...)
+		changes = append(changes, diffNamedChanges("multicast_rpc_removed", "unreal_network", typeName, curr.MulticastRPCs, prev.MulticastRPCs)...)
+		changes = append(changes, diffNamedChanges("replicated_property_removed", "unreal_network", typeName, curr.ReplicatedProperties, prev.ReplicatedProperties)...)
+		changes = append(changes, diffNamedChanges("repnotify_property_removed", "unreal_network", typeName, curr.RepNotifyProperties, prev.RepNotifyProperties)...)
+	}
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func buildAssetConfigInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	changes := []InvalidationChange{}
+	prevAssets := mapFilteredAssetRefs(previousSnapshot.UnrealAssets, previousPaths)
+	currAssets := mapFilteredAssetRefs(currentSnapshot.UnrealAssets, currentPaths)
+	for owner, curr := range currAssets {
+		prev := prevAssets[owner]
+		changes = append(changes, diffNamedChanges("config_binding_added", "asset_config", owner, prev.ConfigKeys, curr.ConfigKeys)...)
+		changes = append(changes, diffNamedChanges("asset_target_added", "asset_config", owner, prev.CanonicalTargets, curr.CanonicalTargets)...)
+		changes = append(changes, diffNamedChanges("load_method_added", "asset_config", owner, prev.LoadMethods, curr.LoadMethods)...)
+		changes = append(changes, diffNamedChanges("config_binding_removed", "asset_config", owner, curr.ConfigKeys, prev.ConfigKeys)...)
+		changes = append(changes, diffNamedChanges("asset_target_removed", "asset_config", owner, curr.CanonicalTargets, prev.CanonicalTargets)...)
+	}
+	prevSettings := mapFilteredSettings(previousSnapshot.UnrealSettings, previousPaths)
+	currSettings := mapFilteredSettings(currentSnapshot.UnrealSettings, currentPaths)
+	for source, curr := range currSettings {
+		prev := prevSettings[source]
+		changes = append(changes, diffScalarChanges("game_default_map_changed", "asset_config", source, prev.GameDefaultMap, curr.GameDefaultMap)...)
+		changes = append(changes, diffScalarChanges("default_game_mode_changed", "asset_config", source, prev.GlobalDefaultGameMode, curr.GlobalDefaultGameMode)...)
+	}
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func buildSecurityInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	changes := []InvalidationChange{}
+	prevEdges := filteredProjectEdges(previousSnapshot.ProjectEdges, previousPaths)
+	currEdges := filteredProjectEdges(currentSnapshot.ProjectEdges, currentPaths)
+	changes = append(changes, diffProjectEdgeChanges("trust_boundary_edge_added", "integrity_security", prevEdges, currEdges, "security", "integrity", "anti_tamper", "rpc_server", "configured_by")...)
+	changes = append(changes, diffProjectEdgeChanges("trust_boundary_edge_removed", "integrity_security", currEdges, prevEdges, "security", "integrity", "anti_tamper", "rpc_server", "configured_by")...)
+	prevSystems := mapFilteredSystems(previousSnapshot.UnrealSystems, previousPaths)
+	currSystems := mapFilteredSystems(currentSnapshot.UnrealSystems, currentPaths)
+	for key, curr := range currSystems {
+		prev := prevSystems[key]
+		changes = append(changes, diffNamedChanges("security_signal_added", "integrity_security", key, prev.Signals, curr.Signals)...)
+		changes = append(changes, diffNamedChanges("security_action_added", "integrity_security", key, prev.Actions, curr.Actions)...)
+		changes = append(changes, diffNamedChanges("security_signal_removed", "integrity_security", key, curr.Signals, prev.Signals)...)
+	}
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func buildGameplaySystemInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	prevSystems := mapFilteredSystems(previousSnapshot.UnrealSystems, previousPaths)
+	currSystems := mapFilteredSystems(currentSnapshot.UnrealSystems, currentPaths)
+	changes := []InvalidationChange{}
+	for key, curr := range currSystems {
+		prev := prevSystems[key]
+		changes = append(changes, diffNamedChanges("gameplay_function_added", "unreal_gameplay", key, prev.Functions, curr.Functions)...)
+		changes = append(changes, diffNamedChanges("gameplay_action_added", "unreal_gameplay", key, prev.Actions, curr.Actions)...)
+		changes = append(changes, diffNamedChanges("widget_binding_added", "unreal_ui", key, prev.Widgets, curr.Widgets)...)
+		changes = append(changes, diffNamedChanges("ability_binding_added", "unreal_ability", key, prev.Abilities, curr.Abilities)...)
+		changes = append(changes, diffNamedChanges("effect_binding_added", "unreal_ability", key, prev.Effects, curr.Effects)...)
+	}
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func buildStartupInvalidationChanges(previousSnapshot ProjectSnapshot, currentSnapshot ProjectSnapshot, previousPaths []string, currentPaths []string, limit int) []InvalidationChange {
+	changes := []InvalidationChange{}
+	prevEdges := filteredRuntimeEdges(previousSnapshot.RuntimeEdges, previousPaths)
+	currEdges := filteredRuntimeEdges(currentSnapshot.RuntimeEdges, currentPaths)
+	changes = append(changes, diffRuntimeEdgeChanges("startup_edge_added", "startup", prevEdges, currEdges)...)
+	changes = append(changes, diffRuntimeEdgeChanges("startup_edge_removed", "startup", currEdges, prevEdges)...)
+	prevSettings := mapFilteredSettings(previousSnapshot.UnrealSettings, previousPaths)
+	currSettings := mapFilteredSettings(currentSnapshot.UnrealSettings, currentPaths)
+	for source, curr := range currSettings {
+		prev := prevSettings[source]
+		changes = append(changes, diffScalarChanges("startup_map_changed", "startup", source, prev.GameDefaultMap, curr.GameDefaultMap)...)
+		changes = append(changes, diffScalarChanges("startup_game_instance_changed", "startup", source, prev.GameInstanceClass, curr.GameInstanceClass)...)
+	}
+	return limitInvalidationChanges(dedupeInvalidationChanges(changes), limit)
+}
+
+func diffNamedChanges(kind string, scope string, owner string, previous []string, current []string) []InvalidationChange {
+	prevSet := map[string]struct{}{}
+	for _, item := range analysisUniqueStrings(previous) {
+		prevSet[item] = struct{}{}
+	}
+	changes := []InvalidationChange{}
+	for _, item := range analysisUniqueStrings(current) {
+		if _, ok := prevSet[item]; ok {
+			continue
+		}
+		changes = append(changes, InvalidationChange{
+			Kind:    kind,
+			Scope:   scope,
+			Owner:   firstNonBlankAnalysisString(owner, "unknown"),
+			Subject: item,
+		})
+	}
+	return changes
+}
+
+func diffScalarChanges(kind string, scope string, source string, previous string, current string) []InvalidationChange {
+	if strings.TrimSpace(previous) == strings.TrimSpace(current) {
+		return nil
+	}
+	if strings.TrimSpace(previous) == "" && strings.TrimSpace(current) == "" {
+		return nil
+	}
+	return []InvalidationChange{{
+		Kind:   kind,
+		Scope:  scope,
+		Owner:  firstNonBlankAnalysisString(source, "settings"),
+		Before: firstNonBlankAnalysisString(previous, "none"),
+		After:  firstNonBlankAnalysisString(current, "none"),
+		Source: source,
+	}}
+}
+
+func mapFilteredNetworkSurfaces(items []UnrealNetworkSurface, paths []string) map[string]UnrealNetworkSurface {
+	fileSet := toPathSet(paths)
+	out := map[string]UnrealNetworkSurface{}
+	for _, item := range items {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		out[firstNonBlankAnalysisString(item.TypeName, item.File)] = item
+	}
+	return out
+}
+
+func mapFilteredAssetRefs(items []UnrealAssetReference, paths []string) map[string]UnrealAssetReference {
+	fileSet := toPathSet(paths)
+	out := map[string]UnrealAssetReference{}
+	for _, item := range items {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		out[firstNonBlankAnalysisString(item.OwnerName, item.File)] = item
+	}
+	return out
+}
+
+func mapFilteredSystems(items []UnrealGameplaySystem, paths []string) map[string]UnrealGameplaySystem {
+	fileSet := toPathSet(paths)
+	out := map[string]UnrealGameplaySystem{}
+	for _, item := range items {
+		if _, ok := fileSet[item.File]; !ok {
+			continue
+		}
+		out[firstNonBlankAnalysisString(item.System, item.File)] = item
+	}
+	return out
+}
+
+func mapFilteredSettings(items []UnrealProjectSetting, paths []string) map[string]UnrealProjectSetting {
+	fileSet := toPathSet(paths)
+	out := map[string]UnrealProjectSetting{}
+	for _, item := range items {
+		if _, ok := fileSet[item.SourceFile]; !ok {
+			continue
+		}
+		out[item.SourceFile] = item
+	}
+	return out
+}
+
+func filteredProjectEdges(items []ProjectEdge, paths []string) []ProjectEdge {
+	fileSet := toPathSet(paths)
+	out := []ProjectEdge{}
+	for _, item := range items {
+		if !edgeTouchesFiles(item.Evidence, fileSet) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filteredRuntimeEdges(items []RuntimeEdge, paths []string) []RuntimeEdge {
+	fileSet := toPathSet(paths)
+	out := []RuntimeEdge{}
+	for _, item := range items {
+		if !edgeTouchesFiles(item.Evidence, fileSet) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func diffProjectEdgeChanges(kind string, scope string, previous []ProjectEdge, current []ProjectEdge, types ...string) []InvalidationChange {
+	prevSet := map[string]struct{}{}
+	typeSet := toLowerSet(types)
+	for _, edge := range previous {
+		if len(typeSet) > 0 {
+			if _, ok := typeSet[strings.ToLower(strings.TrimSpace(edge.Type))]; !ok {
+				continue
+			}
+		}
+		prevSet[strings.ToLower(edge.Source+"|"+edge.Type+"|"+edge.Target)] = struct{}{}
+	}
+	changes := []InvalidationChange{}
+	for _, edge := range current {
+		if len(typeSet) > 0 {
+			if _, ok := typeSet[strings.ToLower(strings.TrimSpace(edge.Type))]; !ok {
+				continue
+			}
+		}
+		key := strings.ToLower(edge.Source + "|" + edge.Type + "|" + edge.Target)
+		if _, ok := prevSet[key]; ok {
+			continue
+		}
+		changes = append(changes, InvalidationChange{
+			Kind:    kind,
+			Scope:   scope,
+			Owner:   edge.Source,
+			Subject: edge.Target,
+			After:   edge.Type,
+		})
+	}
+	return changes
+}
+
+func diffRuntimeEdgeChanges(kind string, scope string, previous []RuntimeEdge, current []RuntimeEdge) []InvalidationChange {
+	prevSet := map[string]struct{}{}
+	for _, edge := range previous {
+		prevSet[strings.ToLower(edge.Source+"|"+edge.Kind+"|"+edge.Target)] = struct{}{}
+	}
+	changes := []InvalidationChange{}
+	for _, edge := range current {
+		key := strings.ToLower(edge.Source + "|" + edge.Kind + "|" + edge.Target)
+		if _, ok := prevSet[key]; ok {
+			continue
+		}
+		changes = append(changes, InvalidationChange{
+			Kind:    kind,
+			Scope:   scope,
+			Owner:   edge.Source,
+			Subject: edge.Target,
+			After:   edge.Kind,
+		})
+	}
+	return changes
+}
+
+func toPathSet(paths []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, path := range analysisUniqueStrings(paths) {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		out[path] = struct{}{}
+	}
+	return out
+}
+
+func toLowerSet(items []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, item := range items {
+		trimmed := strings.ToLower(strings.TrimSpace(item))
+		if trimmed == "" {
+			continue
+		}
+		out[trimmed] = struct{}{}
+	}
+	return out
+}
+
+func dedupeInvalidationChanges(items []InvalidationChange) []InvalidationChange {
+	out := make([]InvalidationChange, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		key := strings.ToLower(strings.Join([]string{
+			item.Kind,
+			item.Scope,
+			item.Owner,
+			item.Subject,
+			item.Before,
+			item.After,
+			item.Source,
+		}, "|"))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
+func limitInvalidationChanges(items []InvalidationChange, limit int) []InvalidationChange {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]InvalidationChange(nil), items...)
+	}
+	return append([]InvalidationChange(nil), items[:limit]...)
+}
+
+func renderInvalidationChange(change InvalidationChange) string {
+	switch change.Kind {
+	case "rpc_added":
+		return fmt.Sprintf("RPC added: %s -> %s", change.Owner, change.Subject)
+	case "client_rpc_added":
+		return fmt.Sprintf("Client RPC added: %s -> %s", change.Owner, change.Subject)
+	case "multicast_rpc_added":
+		return fmt.Sprintf("Multicast RPC added: %s -> %s", change.Owner, change.Subject)
+	case "replicated_property_added":
+		return fmt.Sprintf("Replicated property added: %s -> %s", change.Owner, change.Subject)
+	case "repnotify_property_added":
+		return fmt.Sprintf("RepNotify property added: %s -> %s", change.Owner, change.Subject)
+	case "rpc_removed":
+		return fmt.Sprintf("RPC removed: %s -> %s", change.Owner, change.Subject)
+	case "client_rpc_removed":
+		return fmt.Sprintf("Client RPC removed: %s -> %s", change.Owner, change.Subject)
+	case "multicast_rpc_removed":
+		return fmt.Sprintf("Multicast RPC removed: %s -> %s", change.Owner, change.Subject)
+	case "replicated_property_removed":
+		return fmt.Sprintf("Replicated property removed: %s -> %s", change.Owner, change.Subject)
+	case "repnotify_property_removed":
+		return fmt.Sprintf("RepNotify property removed: %s -> %s", change.Owner, change.Subject)
+	case "config_binding_added":
+		return fmt.Sprintf("Config binding added: %s -> %s", change.Owner, change.Subject)
+	case "config_binding_removed":
+		return fmt.Sprintf("Config binding removed: %s -> %s", change.Owner, change.Subject)
+	case "asset_target_added":
+		return fmt.Sprintf("Asset target added: %s -> %s", change.Owner, change.Subject)
+	case "asset_target_removed":
+		return fmt.Sprintf("Asset target removed: %s -> %s", change.Owner, change.Subject)
+	case "load_method_added":
+		return fmt.Sprintf("Load method added: %s -> %s", change.Owner, change.Subject)
+	case "game_default_map_changed":
+		return fmt.Sprintf("Game default map changed: %s (%s -> %s)", change.Owner, change.Before, change.After)
+	case "default_game_mode_changed":
+		return fmt.Sprintf("Default game mode changed: %s (%s -> %s)", change.Owner, change.Before, change.After)
+	case "trust_boundary_edge_added":
+		return fmt.Sprintf("Trust boundary edge added: %s -> %s [%s]", change.Owner, change.Subject, change.After)
+	case "trust_boundary_edge_removed":
+		return fmt.Sprintf("Trust boundary edge removed: %s -> %s [%s]", change.Owner, change.Subject, change.After)
+	case "security_signal_added":
+		return fmt.Sprintf("Security signal added: %s -> %s", change.Owner, change.Subject)
+	case "security_signal_removed":
+		return fmt.Sprintf("Security signal removed: %s -> %s", change.Owner, change.Subject)
+	case "security_action_added":
+		return fmt.Sprintf("Security action added: %s -> %s", change.Owner, change.Subject)
+	case "gameplay_function_added":
+		return fmt.Sprintf("Gameplay function added: %s -> %s", change.Owner, change.Subject)
+	case "gameplay_action_added":
+		return fmt.Sprintf("Gameplay action added: %s -> %s", change.Owner, change.Subject)
+	case "widget_binding_added":
+		return fmt.Sprintf("Widget binding added: %s -> %s", change.Owner, change.Subject)
+	case "ability_binding_added":
+		return fmt.Sprintf("Ability binding added: %s -> %s", change.Owner, change.Subject)
+	case "effect_binding_added":
+		return fmt.Sprintf("Effect binding added: %s -> %s", change.Owner, change.Subject)
+	case "startup_edge_added":
+		return fmt.Sprintf("Startup edge added: %s -> %s (%s)", change.Owner, change.Subject, change.After)
+	case "startup_edge_removed":
+		return fmt.Sprintf("Startup edge removed: %s -> %s (%s)", change.Owner, change.Subject, change.After)
+	case "startup_map_changed":
+		return fmt.Sprintf("Startup map changed: %s (%s -> %s)", change.Owner, change.Before, change.After)
+	case "startup_game_instance_changed":
+		return fmt.Sprintf("Startup game instance changed: %s (%s -> %s)", change.Owner, change.Before, change.After)
+	default:
+		if change.Before != "" || change.After != "" {
+			return fmt.Sprintf("%s: %s (%s -> %s)", change.Kind, change.Owner, change.Before, change.After)
+		}
+		if change.Subject != "" {
+			return fmt.Sprintf("%s: %s -> %s", change.Kind, change.Owner, change.Subject)
+		}
+		return change.Kind
+	}
+}
+
+func trimPromptBullets(lines []string) []string {
+	out := []string{}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasSuffix(trimmed, ":") {
+			continue
+		}
+		trimmed = strings.TrimPrefix(trimmed, "- ")
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func (a *projectAnalyzer) resolveImports(snapshot *ProjectSnapshot) {
@@ -5334,6 +6409,12 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
 	fmt.Fprintf(&b, "Scope rule: primary files are your ownership boundary; reference files are for dependency context only.\n\n")
+	if intent := analysisShardIntent(shard.Name); intent != "" {
+		fmt.Fprintf(&b, "Shard intent:\n%s\n\n", intent)
+	}
+	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
+		fmt.Fprintf(&b, "Semantic focus:\n%s\n\n", focus)
+	}
 	fmt.Fprintf(&b, "Primary files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
 	if len(shard.ReferenceFiles) > 0 {
 		fmt.Fprintf(&b, "Reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
@@ -5352,6 +6433,25 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- collaboration should mention external subsystems or shared files.\n")
 	b.WriteString("- If file excerpts appear truncated, say the analysis is snippet-limited or context-truncated instead of calling visible handlers or symbols architectural unknowns.\n")
 	b.WriteString("- Do not cite files outside the provided primary/reference lists.\n\n")
+	if strings.HasPrefix(shard.Name, "startup") {
+		b.WriteString("- For startup shards, emphasize bootstrap order, target/module ownership, and early runtime handoff.\n")
+	}
+	if strings.Contains(shard.Name, "network") {
+		b.WriteString("- For network shards, identify authority boundaries, server/client RPC intent, and replicated state ownership.\n")
+	}
+	if strings.Contains(shard.Name, "ability") {
+		b.WriteString("- For ability shards, identify ASC, abilities, effects, attribute sets, and action-to-effect flow.\n")
+	}
+	if strings.Contains(shard.Name, "ui") {
+		b.WriteString("- For UI shards, identify widget ownership, screen composition, and widget-to-gameplay coupling.\n")
+	}
+	if strings.Contains(shard.Name, "asset_config") {
+		b.WriteString("- For asset/config shards, identify config-driven startup, asset path bindings, and runtime load points.\n")
+	}
+	if strings.Contains(shard.Name, "integrity_security") {
+		b.WriteString("- For integrity/security shards, identify trust boundaries, tamper-sensitive state, and anti-cheat enforcement paths.\n")
+	}
+	b.WriteString("\n")
 	b.WriteString("Note: each file excerpt below may include only the first part of the file, not the full file.\n\n")
 	b.WriteString("File context:\n")
 	for _, section := range buildFileContext(snapshot, append(append([]string(nil), shard.PrimaryFiles...), shard.ReferenceFiles...), 10) {
@@ -5368,13 +6468,23 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
 	fmt.Fprintf(&b, "Shard cache status: %s\n", shard.CacheStatus)
 	if strings.TrimSpace(shard.InvalidationReason) != "" {
-		fmt.Fprintf(&b, "Invalidation reason: %s\n", shard.InvalidationReason)
+		fmt.Fprintf(&b, "Invalidation reason: %s\n", describeAnalysisInvalidationReasonWithContext(shard.InvalidationReason, []string{shard.Name}))
 	}
+	if intent := analysisShardIntent(shard.Name); intent != "" {
+		fmt.Fprintf(&b, "Shard intent:\n%s\n", intent)
+	}
+	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
+		fmt.Fprintf(&b, "Semantic focus:\n%s\n", focus)
+	}
+	if reviewRules := buildSemanticReviewerChecklist(shard.Name); strings.TrimSpace(reviewRules) != "" {
+		fmt.Fprintf(&b, "Semantic review checklist:\n%s\n", reviewRules)
+	}
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "Assigned files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
 	if len(shard.ReferenceFiles) > 0 {
 		fmt.Fprintf(&b, "Allowed reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
 	}
-	if hasPreviousReport && shard.InvalidationReason == "dependency_changed" {
+	if hasPreviousReport && (shard.InvalidationReason == "dependency_changed" || shard.InvalidationReason == "semantic_dependency_changed") {
 		previousJSON, _ := json.MarshalIndent(previousReport, "", "  ")
 		b.WriteString("Previous approved report for diff-aware review:\n")
 		b.Write(previousJSON)
@@ -5911,20 +7021,24 @@ func softFailReviewDecision(shard AnalysisShard, report WorkerReport, err error)
 
 func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) string {
 	type subsystemSection struct {
-		Title            string
-		Group            string
-		Summary          string
-		Responsibilities []string
-		Facts            []string
-		Inferences       []string
-		KeyFiles         []string
-		EvidenceFiles    []string
-		EntryPoints      []string
-		InternalFlow     []string
-		Dependencies     []string
-		Collaboration    []string
-		Risks            []string
-		Unknowns         []string
+		Title               string
+		Group               string
+		Summary             string
+		ShardNames          []string
+		CacheStatuses       []string
+		InvalidationReasons []string
+		InvalidationDiff    []string
+		Responsibilities    []string
+		Facts               []string
+		Inferences          []string
+		KeyFiles            []string
+		EvidenceFiles       []string
+		EntryPoints         []string
+		InternalFlow        []string
+		Dependencies        []string
+		Collaboration       []string
+		Risks               []string
+		Unknowns            []string
 	}
 
 	allEntryPoints := []string{}
@@ -5936,20 +7050,24 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 	sections := make([]subsystemSection, 0, len(grouped))
 	for _, report := range grouped {
 		sections = append(sections, subsystemSection{
-			Title:            report.Title,
-			Group:            report.Group,
-			Summary:          "",
-			Responsibilities: report.Responsibilities,
-			Facts:            report.Facts,
-			Inferences:       report.Inferences,
-			KeyFiles:         report.KeyFiles,
-			EvidenceFiles:    report.EvidenceFiles,
-			EntryPoints:      report.EntryPoints,
-			InternalFlow:     report.InternalFlow,
-			Dependencies:     report.Dependencies,
-			Collaboration:    report.Collaboration,
-			Risks:            report.Risks,
-			Unknowns:         report.Unknowns,
+			Title:               report.Title,
+			Group:               report.Group,
+			Summary:             "",
+			ShardNames:          report.ShardNames,
+			CacheStatuses:       report.CacheStatuses,
+			InvalidationReasons: report.InvalidationReasons,
+			InvalidationDiff:    report.InvalidationDiff,
+			Responsibilities:    report.Responsibilities,
+			Facts:               report.Facts,
+			Inferences:          report.Inferences,
+			KeyFiles:            report.KeyFiles,
+			EvidenceFiles:       report.EvidenceFiles,
+			EntryPoints:         report.EntryPoints,
+			InternalFlow:        report.InternalFlow,
+			Dependencies:        report.Dependencies,
+			Collaboration:       report.Collaboration,
+			Risks:               report.Risks,
+			Unknowns:            report.Unknowns,
 		})
 		allEntryPoints = append(allEntryPoints, report.EntryPoints...)
 		allFlow = append(allFlow, report.InternalFlow...)
@@ -6036,6 +7154,12 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 				fmt.Fprintf(&b, "- Additional directories omitted: %d\n", len(snapshot.Directories)-limit)
 			}
 		}
+		b.WriteString("\n")
+	}
+	execution := buildAnalysisExecutionSummary(shards)
+	if execution.TotalShards > 0 {
+		fmt.Fprintf(&b, "## Analysis Execution\n\n")
+		writeAnalysisExecutionSummary(&b, execution)
 		b.WriteString("\n")
 	}
 	if len(snapshot.UnrealProjects) > 0 || len(snapshot.UnrealModules) > 0 || len(snapshot.UnrealTargets) > 0 {
@@ -6323,6 +7447,18 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 		if strings.TrimSpace(section.Summary) != "" {
 			fmt.Fprintf(&b, "%s\n\n", section.Summary)
 		}
+		if len(section.CacheStatuses) > 0 {
+			fmt.Fprintf(&b, "Cache status: %s\n\n", strings.Join(limitStrings(section.CacheStatuses, 4), ", "))
+		}
+		if len(section.InvalidationReasons) > 0 {
+			fmt.Fprintf(&b, "Invalidation reasons: %s\n\n", strings.Join(describeAnalysisInvalidationReasonsWithContext(section.InvalidationReasons, section.ShardNames, 6), " | "))
+		}
+		if evidence := buildInvalidationEvidenceLines(snapshot, section.ShardNames, firstNonEmpty(section.EvidenceFiles, section.KeyFiles), section.InvalidationReasons, 5); len(evidence) > 0 {
+			fmt.Fprintf(&b, "Invalidation evidence: %s\n\n", strings.Join(evidence, " | "))
+		}
+		if len(section.InvalidationDiff) > 0 {
+			fmt.Fprintf(&b, "Invalidation diff: %s\n\n", strings.Join(limitStrings(section.InvalidationDiff, 5), " | "))
+		}
 		if len(section.EntryPoints) > 0 {
 			b.WriteString("Entry points:\n")
 			for _, item := range section.EntryPoints {
@@ -6435,7 +7571,7 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 	return strings.TrimSpace(b.String()) + "\n"
 }
 
-func buildShardDocuments(shards []AnalysisShard, reports []WorkerReport, goal string) map[string]string {
+func buildShardDocuments(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) map[string]string {
 	out := map[string]string{}
 	for index, shard := range shards {
 		if index >= len(reports) {
@@ -6452,7 +7588,14 @@ func buildShardDocuments(shards []AnalysisShard, reports []WorkerReport, goal st
 			fmt.Fprintf(&b, "- Cache status: %s\n", shard.CacheStatus)
 		}
 		if strings.TrimSpace(shard.InvalidationReason) != "" {
-			fmt.Fprintf(&b, "- Invalidation reason: %s\n", shard.InvalidationReason)
+			fmt.Fprintf(&b, "- Invalidation reason: %s\n", describeAnalysisInvalidationReasonWithContext(shard.InvalidationReason, []string{shard.Name}))
+			evidence := buildInvalidationEvidenceLines(snapshot, []string{shard.Name}, firstNonEmpty(shard.PrimaryFiles, report.EvidenceFiles), []string{shard.InvalidationReason}, 4)
+			if len(evidence) > 0 {
+				fmt.Fprintf(&b, "- Invalidation evidence: %s\n", strings.Join(evidence, " | "))
+			}
+			if len(shard.InvalidationDiff) > 0 {
+				fmt.Fprintf(&b, "- Invalidation diff: %s\n", strings.Join(limitStrings(shard.InvalidationDiff, 4), " | "))
+			}
 		}
 		b.WriteString("\n## Scope Summary\n\n")
 		b.WriteString(strings.TrimSpace(report.ScopeSummary))
@@ -6488,29 +7631,33 @@ func buildShardDocuments(shards []AnalysisShard, reports []WorkerReport, goal st
 func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string, runID string) KnowledgePack {
 	grouped := groupedReportsForSynthesis(shards, reports)
 	subsystems := make([]KnowledgeSubsystem, 0, len(grouped))
-	projectSummary := ""
-	if len(grouped) > 0 {
-		projectSummary = summarizeKnowledgePack(grouped)
-	}
+	executionSummary := buildAnalysisExecutionSummary(shards)
+	projectSummary := summarizeKnowledgePack(snapshot, grouped, executionSummary)
 	highRisk := []string{}
 	unknowns := []string{}
 	externalDeps := []string{}
 	groups := []string{}
 	for _, section := range grouped {
 		subsystems = append(subsystems, KnowledgeSubsystem{
-			Title:            strings.TrimSpace(section.Title),
-			Group:            strings.TrimSpace(section.Group),
-			ShardIDs:         append([]string(nil), section.ShardIDs...),
-			Responsibilities: append([]string(nil), section.Responsibilities...),
-			Facts:            append([]string(nil), section.Facts...),
-			Inferences:       append([]string(nil), section.Inferences...),
-			KeyFiles:         append([]string(nil), section.KeyFiles...),
-			EvidenceFiles:    append([]string(nil), section.EvidenceFiles...),
-			EntryPoints:      append([]string(nil), section.EntryPoints...),
-			Dependencies:     append([]string(nil), section.Dependencies...),
-			Collaboration:    append([]string(nil), section.Collaboration...),
-			Risks:            append([]string(nil), section.Risks...),
-			Unknowns:         append([]string(nil), section.Unknowns...),
+			Title:                strings.TrimSpace(section.Title),
+			Group:                strings.TrimSpace(section.Group),
+			ShardIDs:             append([]string(nil), section.ShardIDs...),
+			ShardNames:           append([]string(nil), section.ShardNames...),
+			CacheStatuses:        append([]string(nil), section.CacheStatuses...),
+			InvalidationReasons:  append([]string(nil), section.InvalidationReasons...),
+			InvalidationEvidence: buildInvalidationEvidenceLines(snapshot, section.ShardNames, firstNonEmpty(section.EvidenceFiles, section.KeyFiles), section.InvalidationReasons, 6),
+			InvalidationDiff:     append([]string(nil), section.InvalidationDiff...),
+			InvalidationChanges:  append([]InvalidationChange(nil), section.InvalidationChanges...),
+			Responsibilities:     append([]string(nil), section.Responsibilities...),
+			Facts:                append([]string(nil), section.Facts...),
+			Inferences:           append([]string(nil), section.Inferences...),
+			KeyFiles:             append([]string(nil), section.KeyFiles...),
+			EvidenceFiles:        append([]string(nil), section.EvidenceFiles...),
+			EntryPoints:          append([]string(nil), section.EntryPoints...),
+			Dependencies:         append([]string(nil), section.Dependencies...),
+			Collaboration:        append([]string(nil), section.Collaboration...),
+			Risks:                append([]string(nil), section.Risks...),
+			Unknowns:             append([]string(nil), section.Unknowns...),
 		})
 		if strings.TrimSpace(section.Group) != "" {
 			groups = append(groups, section.Group)
@@ -6553,6 +7700,7 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 		ExternalDependencies: analysisUniqueStrings(externalDeps),
 		HighRiskFiles:        analysisUniqueStrings(highRisk),
 		Unknowns:             analysisUniqueStrings(unknowns),
+		AnalysisExecution:    executionSummary,
 		PerformanceLens:      buildPerformanceLens(snapshot, grouped),
 	}
 }
@@ -6849,9 +7997,9 @@ func performanceReason(item synthesisSection, signals []string, fileLines map[st
 	return strings.Join(parts, " | ")
 }
 
-func summarizeKnowledgePack(items []synthesisSection) string {
+func summarizeKnowledgePack(snapshot ProjectSnapshot, items []synthesisSection, execution AnalysisExecutionSummary) string {
 	if len(items) == 0 {
-		return ""
+		return summarizeExecutionFocus(snapshot.AnalysisLenses, execution)
 	}
 	top := items[0]
 	summary := []string{}
@@ -6864,7 +8012,165 @@ func summarizeKnowledgePack(items []synthesisSection) string {
 	if len(top.Responsibilities) > 0 {
 		summary = append(summary, "Responsibilities: "+strings.Join(limitStrings(top.Responsibilities, 3), "; "))
 	}
+	if focus := summarizeExecutionFocus(snapshot.AnalysisLenses, execution); strings.TrimSpace(focus) != "" {
+		summary = append(summary, focus)
+	}
 	return strings.Join(summary, " | ")
+}
+
+func summarizeExecutionFocus(lenses []AnalysisLens, execution AnalysisExecutionSummary) string {
+	if len(execution.TopChangeClasses) == 0 {
+		return ""
+	}
+	lensSet := map[string]struct{}{}
+	for _, lens := range lenses {
+		lensSet[strings.TrimSpace(lens.Type)] = struct{}{}
+	}
+	joined := strings.ToLower(strings.Join(execution.TopChangeClasses, " | "))
+	focusParts := []string{}
+	if containsAny(joined, "trust_boundary_edge", "security_signal", "rpc_added", "replicated_property_added") {
+		if _, ok := lensSet["security_boundary"]; ok {
+			focusParts = append(focusParts, "Executive focus: recent changes are concentrated on authority, replication, or security-sensitive boundaries.")
+		} else {
+			focusParts = append(focusParts, "Executive focus: recent changes are concentrated on authority or replication-sensitive runtime surfaces.")
+		}
+	}
+	if containsAny(joined, "startup_edge", "startup_map_changed", "startup_game_instance_changed") {
+		focusParts = append(focusParts, "Startup impact: bootstrap or startup ownership changed in the latest analysis window.")
+	}
+	if containsAny(joined, "config_binding", "asset_target", "game_default_map_changed", "default_game_mode_changed") {
+		focusParts = append(focusParts, "Content/config impact: config-driven startup or asset binding changed materially.")
+	}
+	if containsAny(joined, "widget_binding_added", "ability_binding_added", "effect_binding_added", "gameplay_function_added") {
+		focusParts = append(focusParts, "Gameplay impact: gameplay framework, UI, or ability coupling changed materially.")
+	}
+	return strings.Join(analysisUniqueStrings(focusParts), " | ")
+}
+
+func buildAnalysisExecutionSummary(shards []AnalysisShard) AnalysisExecutionSummary {
+	summary := AnalysisExecutionSummary{
+		TotalShards:                 len(shards),
+		InvalidationReasons:         []string{},
+		SemanticInvalidationReasons: []string{},
+	}
+	reasons := []string{}
+	semanticReasons := []string{}
+	changeCounts := map[string]int{}
+	changeExamples := map[string]string{}
+	for _, shard := range shards {
+		switch strings.ToLower(strings.TrimSpace(shard.CacheStatus)) {
+		case "reused":
+			summary.ReusedShards++
+		case "miss":
+			summary.MissedShards++
+		}
+		switch strings.ToLower(strings.TrimSpace(shard.InvalidationReason)) {
+		case "new", "new_primary_scope":
+			summary.NewShards++
+		case "recomputed", "primary_changed", "reference_changed", "dependency_changed", "previous_review_not_approved", "previous_run_incomplete":
+			summary.RecomputedShards++
+		}
+		reason := strings.TrimSpace(shard.InvalidationReason)
+		if reason != "" {
+			reasons = append(reasons, reason)
+			if strings.Contains(strings.ToLower(reason), "semantic") {
+				semanticReasons = append(semanticReasons, reason)
+				summary.SemanticRecomputedShards++
+			}
+		}
+		for _, change := range shard.InvalidationChanges {
+			kind := strings.TrimSpace(change.Kind)
+			if kind == "" {
+				continue
+			}
+			changeCounts[kind]++
+			if _, ok := changeExamples[kind]; !ok {
+				changeExamples[kind] = renderInvalidationChange(change)
+			}
+		}
+	}
+	summary.InvalidationReasons = analysisUniqueStrings(reasons)
+	summary.SemanticInvalidationReasons = analysisUniqueStrings(semanticReasons)
+	summary.TopChangeClasses = summarizeTopInvalidationChangeClasses(changeCounts, 6)
+	summary.TopChangeExamples = summarizeTopInvalidationChangeExamples(changeCounts, changeExamples, 4)
+	return summary
+}
+
+func summarizeTopInvalidationChangeClasses(counts map[string]int, limit int) []string {
+	type item struct {
+		kind  string
+		count int
+	}
+	items := make([]item, 0, len(counts))
+	for kind, count := range counts {
+		items = append(items, item{kind: kind, count: count})
+	}
+	sort.Slice(items, func(i int, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].kind < items[j].kind
+		}
+		return items[i].count > items[j].count
+	})
+	out := []string{}
+	for _, item := range items {
+		out = append(out, fmt.Sprintf("%s (%d)", item.kind, item.count))
+	}
+	return limitStrings(out, limit)
+}
+
+func summarizeTopInvalidationChangeExamples(counts map[string]int, examples map[string]string, limit int) []string {
+	type item struct {
+		kind    string
+		count   int
+		example string
+	}
+	items := make([]item, 0, len(counts))
+	for kind, count := range counts {
+		example := strings.TrimSpace(examples[kind])
+		if example == "" {
+			continue
+		}
+		items = append(items, item{kind: kind, count: count, example: example})
+	}
+	sort.Slice(items, func(i int, j int) bool {
+		if items[i].count == items[j].count {
+			return items[i].kind < items[j].kind
+		}
+		return items[i].count > items[j].count
+	})
+	out := []string{}
+	for _, item := range items {
+		out = append(out, fmt.Sprintf("%s: %s", item.kind, item.example))
+	}
+	return limitStrings(out, limit)
+}
+
+func writeAnalysisExecutionSummary(b *strings.Builder, summary AnalysisExecutionSummary) {
+	fmt.Fprintf(b, "- Total shards: %d\n", summary.TotalShards)
+	if summary.ReusedShards > 0 {
+		fmt.Fprintf(b, "- Reused shards: %d\n", summary.ReusedShards)
+	}
+	if summary.MissedShards > 0 {
+		fmt.Fprintf(b, "- Recomputed shards: %d\n", summary.MissedShards)
+	}
+	if summary.NewShards > 0 {
+		fmt.Fprintf(b, "- New scope shards: %d\n", summary.NewShards)
+	}
+	if summary.SemanticRecomputedShards > 0 {
+		fmt.Fprintf(b, "- Semantic invalidation shards: %d\n", summary.SemanticRecomputedShards)
+	}
+	if len(summary.InvalidationReasons) > 0 {
+		fmt.Fprintf(b, "- Invalidation reasons: %s\n", strings.Join(describeAnalysisInvalidationReasons(summary.InvalidationReasons, 8), " | "))
+	}
+	if len(summary.SemanticInvalidationReasons) > 0 {
+		fmt.Fprintf(b, "- Semantic invalidation reasons: %s\n", strings.Join(describeAnalysisInvalidationReasons(summary.SemanticInvalidationReasons, 8), " | "))
+	}
+	if len(summary.TopChangeClasses) > 0 {
+		fmt.Fprintf(b, "- Top change classes: %s\n", strings.Join(summary.TopChangeClasses, ", "))
+	}
+	if len(summary.TopChangeExamples) > 0 {
+		fmt.Fprintf(b, "- Top change examples: %s\n", strings.Join(summary.TopChangeExamples, " | "))
+	}
 }
 
 func buildKnowledgeDigest(pack KnowledgePack) string {
@@ -6885,10 +8191,27 @@ func buildKnowledgeDigest(pack KnowledgePack) string {
 	if strings.TrimSpace(pack.ProjectSummary) != "" {
 		fmt.Fprintf(&b, "\n## Summary\n\n%s\n", pack.ProjectSummary)
 	}
+	if pack.AnalysisExecution.TotalShards > 0 {
+		fmt.Fprintf(&b, "\n## Analysis Execution\n\n")
+		writeAnalysisExecutionSummary(&b, pack.AnalysisExecution)
+		b.WriteString("\n")
+	}
 	if len(pack.Subsystems) > 0 {
 		fmt.Fprintf(&b, "\n## Subsystems\n\n")
 		for _, subsystem := range pack.Subsystems {
 			fmt.Fprintf(&b, "### %s\n\n", canonicalKnowledgeTitle(subsystem))
+			if len(subsystem.CacheStatuses) > 0 {
+				fmt.Fprintf(&b, "- Cache status: %s\n", strings.Join(limitStrings(subsystem.CacheStatuses, 4), "; "))
+			}
+			if len(subsystem.InvalidationReasons) > 0 {
+				fmt.Fprintf(&b, "- Invalidation reasons: %s\n", strings.Join(describeAnalysisInvalidationReasonsWithContext(subsystem.InvalidationReasons, subsystem.ShardNames, 6), " | "))
+			}
+			if len(subsystem.InvalidationEvidence) > 0 {
+				fmt.Fprintf(&b, "- Invalidation evidence: %s\n", strings.Join(limitStrings(subsystem.InvalidationEvidence, 5), " | "))
+			}
+			if len(subsystem.InvalidationDiff) > 0 {
+				fmt.Fprintf(&b, "- Invalidation diff: %s\n", strings.Join(limitStrings(subsystem.InvalidationDiff, 5), " | "))
+			}
 			if len(subsystem.Responsibilities) > 0 {
 				fmt.Fprintf(&b, "- Responsibilities: %s\n", strings.Join(limitStrings(subsystem.Responsibilities, 3), "; "))
 			}
@@ -6925,6 +8248,392 @@ func buildKnowledgeDigest(pack KnowledgePack) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func buildVectorCorpus(run ProjectAnalysisRun) VectorCorpus {
+	corpus := VectorCorpus{
+		RunID:       run.Summary.RunID,
+		Goal:        run.Summary.Goal,
+		Root:        run.Snapshot.Root,
+		GeneratedAt: run.Snapshot.GeneratedAt,
+		Documents:   []VectorCorpusDocument{},
+	}
+	add := func(doc VectorCorpusDocument) {
+		doc.ID = strings.TrimSpace(doc.ID)
+		doc.Kind = strings.TrimSpace(doc.Kind)
+		doc.Title = strings.TrimSpace(doc.Title)
+		doc.Text = strings.TrimSpace(doc.Text)
+		if doc.ID == "" || doc.Kind == "" || doc.Title == "" || doc.Text == "" {
+			return
+		}
+		if doc.Metadata == nil {
+			doc.Metadata = map[string]string{}
+		}
+		corpus.Documents = append(corpus.Documents, doc)
+	}
+
+	add(VectorCorpusDocument{
+		ID:    "project_summary",
+		Kind:  "project_summary",
+		Title: "Project Summary",
+		Text:  buildVectorProjectSummary(run),
+		Metadata: map[string]string{
+			"run_id": run.Summary.RunID,
+			"goal":   run.Summary.Goal,
+		},
+	})
+	add(VectorCorpusDocument{
+		ID:    "analysis_execution",
+		Kind:  "analysis_execution",
+		Title: "Analysis Execution Summary",
+		Text:  buildVectorExecutionSummary(run.KnowledgePack.AnalysisExecution),
+		Metadata: map[string]string{
+			"run_id": run.Summary.RunID,
+			"goal":   run.Summary.Goal,
+		},
+	})
+	for _, subsystem := range run.KnowledgePack.Subsystems {
+		add(VectorCorpusDocument{
+			ID:       "subsystem:" + sanitizeFileName(canonicalKnowledgeTitle(subsystem)),
+			Kind:     "subsystem",
+			Title:    canonicalKnowledgeTitle(subsystem),
+			Text:     buildVectorSubsystemDocument(subsystem),
+			PathHint: firstNonBlankAnalysisString(firstSliceValue(subsystem.EvidenceFiles), firstSliceValue(subsystem.KeyFiles)),
+			Metadata: map[string]string{
+				"group": strings.TrimSpace(subsystem.Group),
+			},
+		})
+	}
+	for shardID, doc := range run.ShardDocuments {
+		shardName := shardID
+		for _, shard := range run.Shards {
+			if shard.ID == shardID {
+				shardName = shard.Name
+				break
+			}
+		}
+		add(VectorCorpusDocument{
+			ID:    "shard:" + shardID,
+			Kind:  "shard",
+			Title: shardName,
+			Text:  doc,
+			Metadata: map[string]string{
+				"shard_id": shardID,
+			},
+		})
+	}
+	return corpus
+}
+
+func buildVectorProjectSummary(run ProjectAnalysisRun) string {
+	parts := []string{}
+	if strings.TrimSpace(run.KnowledgePack.ProjectSummary) != "" {
+		parts = append(parts, run.KnowledgePack.ProjectSummary)
+	}
+	if strings.TrimSpace(run.Summary.Goal) != "" {
+		parts = append(parts, "Goal: "+run.Summary.Goal)
+	}
+	if strings.TrimSpace(run.KnowledgePack.PrimaryStartup) != "" {
+		parts = append(parts, "Primary startup: "+run.KnowledgePack.PrimaryStartup)
+	}
+	if len(run.KnowledgePack.ArchitectureGroups) > 0 {
+		parts = append(parts, "Architecture groups: "+strings.Join(run.KnowledgePack.ArchitectureGroups, ", "))
+	}
+	if len(run.KnowledgePack.TopImportantFiles) > 0 {
+		parts = append(parts, "Top important files: "+strings.Join(limitStrings(run.KnowledgePack.TopImportantFiles, 6), " | "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func buildVectorExecutionSummary(summary AnalysisExecutionSummary) string {
+	parts := []string{}
+	parts = append(parts, fmt.Sprintf("Total shards: %d", summary.TotalShards))
+	if summary.SemanticRecomputedShards > 0 {
+		parts = append(parts, fmt.Sprintf("Semantic invalidation shards: %d", summary.SemanticRecomputedShards))
+	}
+	if len(summary.TopChangeClasses) > 0 {
+		parts = append(parts, "Top change classes: "+strings.Join(summary.TopChangeClasses, ", "))
+	}
+	if len(summary.TopChangeExamples) > 0 {
+		parts = append(parts, "Top change examples: "+strings.Join(summary.TopChangeExamples, " | "))
+	}
+	if len(summary.SemanticInvalidationReasons) > 0 {
+		parts = append(parts, "Semantic invalidation reasons: "+strings.Join(describeAnalysisInvalidationReasons(summary.SemanticInvalidationReasons, 6), " | "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func buildVectorSubsystemDocument(subsystem KnowledgeSubsystem) string {
+	parts := []string{}
+	if len(subsystem.Responsibilities) > 0 {
+		parts = append(parts, "Responsibilities: "+strings.Join(limitStrings(subsystem.Responsibilities, 5), " | "))
+	}
+	if len(subsystem.EntryPoints) > 0 {
+		parts = append(parts, "Entry points: "+strings.Join(limitStrings(subsystem.EntryPoints, 4), " | "))
+	}
+	if len(subsystem.Dependencies) > 0 {
+		parts = append(parts, "Dependencies: "+strings.Join(limitStrings(subsystem.Dependencies, 5), " | "))
+	}
+	if len(subsystem.InvalidationReasons) > 0 {
+		parts = append(parts, "Invalidation reasons: "+strings.Join(describeAnalysisInvalidationReasonsWithContext(subsystem.InvalidationReasons, subsystem.ShardNames, 6), " | "))
+	}
+	if len(subsystem.InvalidationEvidence) > 0 {
+		parts = append(parts, "Invalidation evidence: "+strings.Join(limitStrings(subsystem.InvalidationEvidence, 6), " | "))
+	}
+	if len(subsystem.InvalidationDiff) > 0 {
+		parts = append(parts, "Invalidation diff: "+strings.Join(limitStrings(subsystem.InvalidationDiff, 6), " | "))
+	}
+	if len(subsystem.KeyFiles) > 0 {
+		parts = append(parts, "Key files: "+strings.Join(limitStrings(subsystem.KeyFiles, 6), " | "))
+	}
+	if len(subsystem.EvidenceFiles) > 0 {
+		parts = append(parts, "Evidence files: "+strings.Join(limitStrings(subsystem.EvidenceFiles, 6), " | "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func buildVectorCorpusJSONL(corpus VectorCorpus) string {
+	lines := []string{}
+	for _, doc := range corpus.Documents {
+		data, err := json.Marshal(doc)
+		if err != nil {
+			continue
+		}
+		lines = append(lines, string(data))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func buildVectorIngestionManifest(corpus VectorCorpus) VectorIngestionManifest {
+	kinds := []string{}
+	seenKinds := map[string]struct{}{}
+	for _, doc := range corpus.Documents {
+		kind := strings.TrimSpace(doc.Kind)
+		if kind == "" {
+			continue
+		}
+		if _, exists := seenKinds[kind]; exists {
+			continue
+		}
+		seenKinds[kind] = struct{}{}
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	return VectorIngestionManifest{
+		RunID:         corpus.RunID,
+		Goal:          corpus.Goal,
+		Root:          corpus.Root,
+		GeneratedAt:   corpus.GeneratedAt,
+		DocumentCount: len(corpus.Documents),
+		DocumentKinds: kinds,
+		Targets: []VectorIngestionTarget{
+			{
+				Name:        "records",
+				Format:      "jsonl",
+				Filename:    "vector_ingest_records.jsonl",
+				Description: "Canonical ingestion records with text, metadata, and content hashes.",
+			},
+			{
+				Name:        "pgvector",
+				Format:      "sql",
+				Filename:    "vector_pgvector.sql",
+				Description: "PostgreSQL and pgvector staging schema plus UPSERT statements for raw analysis documents.",
+			},
+			{
+				Name:        "sqlite",
+				Format:      "sql",
+				Filename:    "vector_sqlite.sql",
+				Description: "SQLite staging schema plus INSERT statements for local embedding or sqlite-vec pipelines.",
+			},
+			{
+				Name:        "qdrant",
+				Format:      "jsonl",
+				Filename:    "vector_qdrant.jsonl",
+				Description: "Qdrant seed payloads ready for an external embedding worker to attach vectors and upsert.",
+			},
+		},
+	}
+}
+
+func buildVectorIngestionRecordsJSONL(corpus VectorCorpus) string {
+	type ingestionRecord struct {
+		ID          string            `json:"id"`
+		RunID       string            `json:"run_id"`
+		Goal        string            `json:"goal"`
+		Kind        string            `json:"kind"`
+		Title       string            `json:"title"`
+		Text        string            `json:"text"`
+		PathHint    string            `json:"path_hint,omitempty"`
+		ContentHash string            `json:"content_hash"`
+		Metadata    map[string]string `json:"metadata,omitempty"`
+	}
+	lines := []string{}
+	for _, doc := range corpus.Documents {
+		record := ingestionRecord{
+			ID:          doc.ID,
+			RunID:       corpus.RunID,
+			Goal:        corpus.Goal,
+			Kind:        doc.Kind,
+			Title:       doc.Title,
+			Text:        doc.Text,
+			PathHint:    doc.PathHint,
+			ContentHash: hashAnalysisText(doc.Text),
+			Metadata:    cloneStringMap(doc.Metadata),
+		}
+		data, err := json.Marshal(record)
+		if err != nil {
+			continue
+		}
+		lines = append(lines, string(data))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func buildVectorPGVectorSQL(corpus VectorCorpus) string {
+	var b strings.Builder
+	b.WriteString("-- Generated by Kernforge project analysis.\n")
+	b.WriteString("-- This file stages raw analysis documents for a pgvector embedding pipeline.\n\n")
+	b.WriteString("CREATE EXTENSION IF NOT EXISTS vector;\n\n")
+	b.WriteString("CREATE TABLE IF NOT EXISTS analysis_vector_documents (\n")
+	b.WriteString("    doc_id TEXT PRIMARY KEY,\n")
+	b.WriteString("    run_id TEXT NOT NULL,\n")
+	b.WriteString("    goal TEXT NOT NULL,\n")
+	b.WriteString("    kind TEXT NOT NULL,\n")
+	b.WriteString("    title TEXT NOT NULL,\n")
+	b.WriteString("    path_hint TEXT,\n")
+	b.WriteString("    body TEXT NOT NULL,\n")
+	b.WriteString("    content_hash TEXT NOT NULL,\n")
+	b.WriteString("    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,\n")
+	b.WriteString("    embedding VECTOR,\n")
+	b.WriteString("    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n")
+	b.WriteString(");\n\n")
+	for _, doc := range corpus.Documents {
+		metadataJSON := "{}"
+		if len(doc.Metadata) > 0 {
+			if data, err := json.Marshal(doc.Metadata); err == nil {
+				metadataJSON = string(data)
+			}
+		}
+		fmt.Fprintf(
+			&b,
+			"INSERT INTO analysis_vector_documents (doc_id, run_id, goal, kind, title, path_hint, body, content_hash, metadata)\nVALUES ('%s', '%s', '%s', '%s', '%s', %s, '%s', '%s', '%s'::jsonb)\nON CONFLICT (doc_id) DO UPDATE SET\n    run_id = EXCLUDED.run_id,\n    goal = EXCLUDED.goal,\n    kind = EXCLUDED.kind,\n    title = EXCLUDED.title,\n    path_hint = EXCLUDED.path_hint,\n    body = EXCLUDED.body,\n    content_hash = EXCLUDED.content_hash,\n    metadata = EXCLUDED.metadata,\n    updated_at = NOW();\n\n",
+			escapeSQLString(doc.ID),
+			escapeSQLString(corpus.RunID),
+			escapeSQLString(corpus.Goal),
+			escapeSQLString(doc.Kind),
+			escapeSQLString(doc.Title),
+			sqlNullableString(doc.PathHint),
+			escapeSQLString(doc.Text),
+			escapeSQLString(hashAnalysisText(doc.Text)),
+			escapeSQLString(metadataJSON),
+		)
+	}
+	return b.String()
+}
+
+func buildVectorSQLiteSQL(corpus VectorCorpus) string {
+	var b strings.Builder
+	b.WriteString("-- Generated by Kernforge project analysis.\n")
+	b.WriteString("-- This file stages raw analysis documents for local embedding or sqlite-vec workflows.\n\n")
+	b.WriteString("CREATE TABLE IF NOT EXISTS analysis_vector_documents (\n")
+	b.WriteString("    doc_id TEXT PRIMARY KEY,\n")
+	b.WriteString("    run_id TEXT NOT NULL,\n")
+	b.WriteString("    goal TEXT NOT NULL,\n")
+	b.WriteString("    kind TEXT NOT NULL,\n")
+	b.WriteString("    title TEXT NOT NULL,\n")
+	b.WriteString("    path_hint TEXT,\n")
+	b.WriteString("    body TEXT NOT NULL,\n")
+	b.WriteString("    content_hash TEXT NOT NULL,\n")
+	b.WriteString("    metadata_json TEXT NOT NULL DEFAULT '{}'\n")
+	b.WriteString(");\n\n")
+	for _, doc := range corpus.Documents {
+		metadataJSON := "{}"
+		if len(doc.Metadata) > 0 {
+			if data, err := json.Marshal(doc.Metadata); err == nil {
+				metadataJSON = string(data)
+			}
+		}
+		fmt.Fprintf(
+			&b,
+			"INSERT INTO analysis_vector_documents (doc_id, run_id, goal, kind, title, path_hint, body, content_hash, metadata_json)\nVALUES ('%s', '%s', '%s', '%s', '%s', %s, '%s', '%s', '%s')\nON CONFLICT(doc_id) DO UPDATE SET\n    run_id=excluded.run_id,\n    goal=excluded.goal,\n    kind=excluded.kind,\n    title=excluded.title,\n    path_hint=excluded.path_hint,\n    body=excluded.body,\n    content_hash=excluded.content_hash,\n    metadata_json=excluded.metadata_json;\n\n",
+			escapeSQLString(doc.ID),
+			escapeSQLString(corpus.RunID),
+			escapeSQLString(corpus.Goal),
+			escapeSQLString(doc.Kind),
+			escapeSQLString(doc.Title),
+			sqlNullableString(doc.PathHint),
+			escapeSQLString(doc.Text),
+			escapeSQLString(hashAnalysisText(doc.Text)),
+			escapeSQLString(metadataJSON),
+		)
+	}
+	return b.String()
+}
+
+func buildVectorQdrantSeedJSONL(corpus VectorCorpus) string {
+	type qdrantSeed struct {
+		ID      string                 `json:"id"`
+		RunID   string                 `json:"run_id"`
+		Payload map[string]interface{} `json:"payload"`
+	}
+	lines := []string{}
+	for _, doc := range corpus.Documents {
+		payload := map[string]interface{}{
+			"run_id":       corpus.RunID,
+			"goal":         corpus.Goal,
+			"kind":         doc.Kind,
+			"title":        doc.Title,
+			"text":         doc.Text,
+			"path_hint":    doc.PathHint,
+			"content_hash": hashAnalysisText(doc.Text),
+			"metadata":     cloneStringMap(doc.Metadata),
+		}
+		data, err := json.Marshal(qdrantSeed{
+			ID:      doc.ID,
+			RunID:   corpus.RunID,
+			Payload: payload,
+		})
+		if err != nil {
+			continue
+		}
+		lines = append(lines, string(data))
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func hashAnalysisText(text string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(text)))
+	return hex.EncodeToString(sum[:])
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
+func escapeSQLString(value string) string {
+	return strings.ReplaceAll(value, "'", "''")
+}
+
+func sqlNullableString(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "NULL"
+	}
+	return "'" + escapeSQLString(trimmed) + "'"
+}
+
+func firstSliceValue(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(items[0])
 }
 
 func buildPerformanceLensDigest(lens PerformanceLens) string {

@@ -88,6 +88,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. worker와 reviewer prompt가 shard 목적에 맞는 semantic focus와 review checklist를 받는다.
 3. incremental reuse가 file hash뿐 아니라 semantic fingerprint 변화까지 본다.
 4. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
+5. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
 
 ### 2.1 Hook Engine
 

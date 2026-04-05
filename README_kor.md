@@ -397,6 +397,9 @@ provider별:
 
 - 기본 base URL: `https://api.openai.com`
 - `OPENAI_API_KEY` 사용
+- assistant가 tool call만 보낼 때는 빈 assistant content를 보내지 않아 호환성을 높인다.
+- JSON이 아닌 assistant tool-call arguments는 전송 전에 정규화한다.
+- HTTP 오류 메시지에는 provider 디버깅을 빠르게 하기 위한 compact request preview가 포함된다.
 
 ### OpenRouter
 
@@ -409,6 +412,7 @@ provider별:
 - OpenAI 스타일 chat completions API 사용
 - 별도 지정이 없으면 `OPENAI_API_KEY` 사용
 - `base_url`을 명시하는 구성이 일반적
+- OpenAI provider와 동일한 tool-call 정규화 및 request preview 진단을 적용한다.
 
 ## 메모리
 

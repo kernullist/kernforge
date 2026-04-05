@@ -90,6 +90,7 @@ What materially changed for large and Unreal-heavy workspaces:
 2. Worker and reviewer prompts now carry shard-specific semantic focus and review checklists.
 3. Incremental reuse now considers semantic fingerprints instead of relying only on file hashes.
 4. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
+5. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
 
 ### 2.1 Hook Engine
 

@@ -637,7 +637,7 @@ func TestBuildShardDocumentsCreatesDetailedShardMarkdown(t *testing.T) {
 		},
 	}
 
-	docs := buildShardDocuments(shards, reports, "analyze runtime")
+	docs := buildShardDocuments(ProjectSnapshot{}, shards, reports, "analyze runtime")
 	doc := docs["shard-01"]
 	for _, expected := range []string{
 		"# core",
@@ -650,6 +650,158 @@ func TestBuildShardDocumentsCreatesDetailedShardMarkdown(t *testing.T) {
 		if !strings.Contains(doc, expected) {
 			t.Fatalf("expected shard document to contain %q\n%s", expected, doc)
 		}
+	}
+}
+
+func TestBuildShardDocumentsIncludesInvalidationEvidenceForUnrealNetwork(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}, ReplicatedProperties: []string{"Ammo"}},
+		},
+	}
+	shards := []AnalysisShard{
+		{
+			ID:                 "shard-01",
+			Name:               "unreal_network",
+			PrimaryFiles:       []string{"net.cpp"},
+			CacheStatus:        "miss",
+			InvalidationReason: "semantic_dependency_changed",
+			InvalidationDiff:   []string{"Replicated property added: AShooterCharacter -> Ammo"},
+			InvalidationChanges: []InvalidationChange{
+				{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Ammo"},
+			},
+		},
+	}
+	reports := []WorkerReport{
+		{
+			ScopeSummary:  "Network summary.",
+			EvidenceFiles: []string{"net.cpp"},
+			Narrative:     "Detailed narrative.",
+		},
+	}
+	docs := buildShardDocuments(snapshot, shards, reports, "analyze network")
+	doc := docs["shard-01"]
+	for _, expected := range []string{
+		"Invalidation evidence:",
+		"Invalidation diff:",
+		"AShooterCharacter server=ServerFire",
+		"Replicated property added: AShooterCharacter -> Ammo",
+	} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected shard document invalidation evidence %q\n%s", expected, doc)
+		}
+	}
+}
+
+func TestBuildInvalidationDiffLinesDetectsUnrealNetworkDelta(t *testing.T) {
+	previous := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}},
+		},
+	}
+	current := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}, ReplicatedProperties: []string{"Ammo"}},
+		},
+	}
+	diff := buildInvalidationDiffLines(previous, current, []string{"unreal_network"}, []string{"net.cpp"}, []string{"net.cpp"}, []string{"semantic_dependency_changed"}, 4)
+	if len(diff) == 0 {
+		t.Fatalf("expected invalidation diff lines")
+	}
+	foundAdded := false
+	for _, item := range diff {
+		if strings.Contains(item, "Replicated property added:") && strings.Contains(item, "Ammo") {
+			foundAdded = true
+			break
+		}
+	}
+	if !foundAdded {
+		t.Fatalf("expected Ammo replication diff in %+v", diff)
+	}
+}
+
+func TestBuildInvalidationChangesDetectsStructuredUnrealNetworkDelta(t *testing.T) {
+	previous := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}},
+		},
+	}
+	current := ProjectSnapshot{
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}, ReplicatedProperties: []string{"Ammo"}},
+		},
+	}
+	changes := buildInvalidationChanges(previous, current, []string{"unreal_network"}, []string{"net.cpp"}, []string{"net.cpp"}, 4)
+	if len(changes) == 0 {
+		t.Fatalf("expected structured invalidation changes")
+	}
+	found := false
+	for _, change := range changes {
+		if change.Kind == "replicated_property_added" && change.Owner == "AShooterCharacter" && change.Subject == "Ammo" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected replicated_property_added change in %+v", changes)
+	}
+}
+
+func TestBuildAnalysisExecutionSummaryIncludesTopChangeClasses(t *testing.T) {
+	shards := []AnalysisShard{
+		{
+			ID:                 "shard-01",
+			Name:               "unreal_network",
+			CacheStatus:        "miss",
+			InvalidationReason: "semantic_dependency_changed",
+			InvalidationChanges: []InvalidationChange{
+				{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Ammo"},
+				{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Health"},
+			},
+		},
+		{
+			ID:                 "shard-02",
+			Name:               "asset_config",
+			CacheStatus:        "miss",
+			InvalidationReason: "semantic_dependency_changed",
+			InvalidationChanges: []InvalidationChange{
+				{Kind: "config_binding_added", Scope: "asset_config", Owner: "AShooterHUD", Subject: "MenuClass"},
+			},
+		},
+	}
+	summary := buildAnalysisExecutionSummary(shards)
+	if len(summary.TopChangeClasses) == 0 {
+		t.Fatalf("expected top change classes in execution summary: %+v", summary)
+	}
+	if !strings.Contains(summary.TopChangeClasses[0], "replicated_property_added") {
+		t.Fatalf("expected replicated_property_added to lead top change classes: %+v", summary.TopChangeClasses)
+	}
+	if len(summary.TopChangeExamples) == 0 || !strings.Contains(summary.TopChangeExamples[0], "Replicated property added") {
+		t.Fatalf("expected top change example in execution summary: %+v", summary.TopChangeExamples)
+	}
+}
+
+func TestSummarizeKnowledgePackIncludesLensAwareExecutiveFocus(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		AnalysisLenses: []AnalysisLens{
+			{Type: "architecture"},
+			{Type: "security_boundary"},
+			{Type: "runtime_flow"},
+		},
+	}
+	items := []synthesisSection{
+		{
+			Title:            "network",
+			Group:            "Security Control",
+			Responsibilities: []string{"handle RPC"},
+		},
+	}
+	execution := AnalysisExecutionSummary{
+		TopChangeClasses: []string{"replicated_property_added (2)", "rpc_added (1)"},
+	}
+	summary := summarizeKnowledgePack(snapshot, items, execution)
+	if !strings.Contains(summary, "Executive focus: recent changes are concentrated on authority, replication, or security-sensitive boundaries.") {
+		t.Fatalf("expected lens-aware executive focus in summary: %s", summary)
 	}
 }
 
@@ -727,6 +879,85 @@ func TestPlanShardsSplitsLargeRootIntoSubsystemShards(t *testing.T) {
 	}
 }
 
+func TestPlanShardsUsesSemanticBucketsForUnrealSnapshots(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MaxFilesPerShard: 8,
+			MaxLinesPerShard: 2000,
+			MaxTotalShards:   16,
+		},
+	}
+	files := []ScannedFile{
+		{Path: "Source/ShooterGame/Main.cpp", Directory: "Source/ShooterGame", LineCount: 120, IsEntrypoint: true, ImportanceScore: 15},
+		{Path: "ShooterGame.uproject", Directory: "", LineCount: 30, IsManifest: true, ImportanceScore: 10},
+		{Path: "Source/ShooterGame/ShooterGame.Build.cs", Directory: "Source/ShooterGame", LineCount: 40, IsManifest: true, ImportanceScore: 14},
+		{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 220, ImportanceScore: 18},
+		{Path: "Source/ShooterGame/Public/ShooterHUD.h", Directory: "Source/ShooterGame/Public", LineCount: 160, ImportanceScore: 13},
+		{Path: "Source/ShooterGame/Public/ShooterAbilitySet.h", Directory: "Source/ShooterGame/Public", LineCount: 150, ImportanceScore: 12},
+		{Path: "Source/ShooterGame/Private/ShooterSettings.cpp", Directory: "Source/ShooterGame/Private", LineCount: 90, ImportanceScore: 9},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IntegrityGuard.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 260, ImportanceScore: 17},
+		{Path: "Source/ShooterGame/Private/MiscRuntime.cpp", Directory: "Source/ShooterGame/Private", LineCount: 80, ImportanceScore: 4},
+	}
+	filesByPath := map[string]ScannedFile{}
+	filesByDir := map[string][]ScannedFile{}
+	for _, file := range files {
+		filesByPath[file.Path] = file
+		filesByDir[file.Directory] = append(filesByDir[file.Directory], file)
+	}
+	snapshot := ProjectSnapshot{
+		Root:             "C:\\repo",
+		GeneratedAt:      time.Now(),
+		Files:            files,
+		FilesByPath:      filesByPath,
+		FilesByDirectory: filesByDir,
+		EntrypointFiles: []string{
+			"Source/ShooterGame/Main.cpp",
+		},
+		ManifestFiles: []string{
+			"ShooterGame.uproject",
+			"Source/ShooterGame/ShooterGame.Build.cs",
+		},
+		UnrealProjects: []UnrealProject{
+			{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"ShooterGame"}, Plugins: []string{"CheatGuard"}},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+			{Name: "CheatGuardRuntime", Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/CheatGuardRuntime.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterCharacter", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterCharacter.h", GameplayRole: "character"},
+			{Name: "AShooterHUD", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterHUD.h", GameplayRole: "hud"},
+			{Name: "UShooterAbilitySet", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterAbilitySet.h"},
+			{Name: "UIntegrityGuardSubsystem", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IntegrityGuard.cpp", GameplayRole: "subsystem"},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "Source/ShooterGame/Public/ShooterCharacter.h", ServerRPCs: []string{"ServerFire"}},
+		},
+		UnrealAssets: []UnrealAssetReference{
+			{OwnerName: "AShooterHUD", File: "Source/ShooterGame/Private/ShooterSettings.cpp", ConfigKeys: []string{"GameDefaultMap"}},
+		},
+	}
+	shards := analyzer.planShards(snapshot, 6)
+	names := []string{}
+	for _, shard := range shards {
+		names = append(names, shard.Name)
+	}
+	joined := strings.Join(names, ",")
+	for _, expected := range []string{
+		"startup",
+		"build_graph",
+		"unreal_network",
+		"unreal_ui",
+		"unreal_ability",
+		"asset_config",
+		"integrity_security",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected semantic shard %q in %v", expected, names)
+		}
+	}
+}
+
 func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "commands_investigate.go"), []byte("package main\n\nfunc handleInvestigateCommand()\n{\n}\n"), 0o644); err != nil {
@@ -753,6 +984,120 @@ func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "may include only the first part of the file") {
 		t.Fatalf("expected file excerpt note in worker prompt\n%s", prompt)
+	}
+}
+
+func TestBuildWorkerPromptIncludesSemanticShardFocus(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		GeneratedAt:    time.Now(),
+		PrimaryStartup: "ShooterGame",
+		ProjectEdges: []ProjectEdge{
+			{
+				Source:     "AShooterCharacter",
+				Target:     "ServerFire",
+				Type:       "unreal_rpc_server",
+				Confidence: "high",
+				Evidence:   []string{"Source/ShooterGame/Public/ShooterCharacter.h: UFUNCTION(Server)"},
+			},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{
+				TypeName:             "AShooterCharacter",
+				File:                 "Source/ShooterGame/Public/ShooterCharacter.h",
+				ServerRPCs:           []string{"ServerFire"},
+				ReplicatedProperties: []string{"Ammo"},
+			},
+		},
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"Source/ShooterGame/Public/ShooterCharacter.h": {Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100},
+		},
+		FilesByDirectory: map[string][]ScannedFile{
+			"Source/ShooterGame/Public": {{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100}},
+		},
+	}
+	shard := AnalysisShard{
+		ID:           "shard-03",
+		Name:         "unreal_network",
+		PrimaryFiles: []string{"Source/ShooterGame/Public/ShooterCharacter.h"},
+	}
+	prompt := buildWorkerPrompt(snapshot, shard, "analyze replication and authority", "")
+	for _, expected := range []string{
+		"Shard intent:",
+		"Trace replication, RPC, and authority boundaries",
+		"Semantic focus:",
+		"Network surfaces:",
+		"AShooterCharacter server=ServerFire",
+		"Relevant typed project edges:",
+		"AShooterCharacter -> ServerFire [unreal_rpc_server, confidence=high]",
+		"For network shards, identify authority boundaries",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected semantic worker prompt to contain %q\n%s", expected, prompt)
+		}
+	}
+}
+
+func TestBuildReviewerPromptIncludesSemanticChecklist(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		ProjectEdges: []ProjectEdge{
+			{
+				Source:     "AShooterCharacter",
+				Target:     "ServerFire",
+				Type:       "unreal_rpc_server",
+				Confidence: "high",
+				Evidence:   []string{"Source/ShooterGame/Public/ShooterCharacter.h: UFUNCTION(Server)"},
+			},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{
+				TypeName:             "AShooterCharacter",
+				File:                 "Source/ShooterGame/Public/ShooterCharacter.h",
+				ServerRPCs:           []string{"ServerFire"},
+				ReplicatedProperties: []string{"Ammo"},
+			},
+		},
+		Files: []ScannedFile{
+			{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"Source/ShooterGame/Public/ShooterCharacter.h": {Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100},
+		},
+		FilesByDirectory: map[string][]ScannedFile{
+			"Source/ShooterGame/Public": {{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 100}},
+		},
+	}
+	shard := AnalysisShard{
+		ID:           "shard-07",
+		Name:         "unreal_network",
+		PrimaryFiles: []string{"Source/ShooterGame/Public/ShooterCharacter.h"},
+	}
+	report := WorkerReport{
+		Title:        "network",
+		ScopeSummary: "Analyzes RPC and replicated state.",
+		KeyFiles:     []string{"Source/ShooterGame/Public/ShooterCharacter.h"},
+		EvidenceFiles: []string{
+			"Source/ShooterGame/Public/ShooterCharacter.h",
+		},
+	}
+	prompt := buildReviewerPrompt(snapshot, shard, report, "analyze replication and authority", WorkerReport{}, false)
+	for _, expected := range []string{
+		"Shard intent:",
+		"Semantic focus:",
+		"Semantic review checklist:",
+		"Confirm the report separates server/client/multicast RPCs and replicated state.",
+		"Reject if authority boundary or replication ownership is missing.",
+		"Network surfaces:",
+		"AShooterCharacter server=ServerFire",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected semantic reviewer prompt to contain %q\n%s", expected, prompt)
+		}
 	}
 }
 
@@ -996,6 +1341,32 @@ func TestFallbackFinalDocumentIncludesEvidenceFilesAndGroupHeadings(t *testing.T
 	}
 }
 
+func TestFallbackFinalDocumentIncludesAnalysisExecutionSummary(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:       "C:\\git\\kernforge",
+		TotalFiles: 2,
+		TotalLines: 10,
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"main.go"}, CacheStatus: "reused", InvalidationReason: "cache_hit"},
+		{ID: "shard-02", Name: "network", PrimaryFiles: []string{"net.cpp"}, CacheStatus: "miss", InvalidationReason: "semantic_primary_changed"},
+	}
+	reports := []WorkerReport{
+		{Title: "runtime", Responsibilities: []string{"boot runtime"}, EvidenceFiles: []string{"main.go"}},
+		{Title: "network", Responsibilities: []string{"handle RPC"}, EvidenceFiles: []string{"net.cpp"}},
+	}
+	doc := fallbackFinalDocument(snapshot, shards, reports, "goal")
+	for _, expected := range []string{
+		"## Analysis Execution",
+		"Semantic invalidation shards: 1",
+		"Primary files kept the same content scope, but their semantic structure changed.",
+	} {
+		if !strings.Contains(doc, expected) {
+			t.Fatalf("expected analysis execution summary to contain %q\n%s", expected, doc)
+		}
+	}
+}
+
 func TestSanitizeFileNamePreservesValidUnicodeBoundaries(t *testing.T) {
 	name := sanitizeFileName("이 프로젝트의 전체 구조와 실행 흐름을 아주 자세하게 문서화")
 	if strings.ContainsRune(name, utf8.RuneError) {
@@ -1160,6 +1531,308 @@ func TestSelectiveInvalidationWhenDependencyPrimaryChanges(t *testing.T) {
 	}
 	if reason != "dependency_changed" {
 		t.Fatalf("expected dependency_changed, got %q", reason)
+	}
+}
+
+func TestSelectiveInvalidationWhenPrimarySemanticChanges(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+
+	currentShards := []AnalysisShard{
+		{
+			ID:                         "shard-01",
+			Name:                       "feature",
+			PrimaryFiles:               []string{"feature/b.go"},
+			PrimaryFingerprint:         "feature-same",
+			PrimarySemanticFingerprint: "semantic-new",
+			ReferenceFingerprint:       "feature-ref",
+		},
+	}
+	previousRun := &ProjectAnalysisRun{
+		Shards: []AnalysisShard{
+			{
+				ID:                         "old-01",
+				PrimaryFiles:               []string{"feature/b.go"},
+				PrimaryFingerprint:         "feature-same",
+				PrimarySemanticFingerprint: "semantic-old",
+				ReferenceFingerprint:       "feature-ref",
+			},
+		},
+		Reports: []WorkerReport{
+			{ShardID: "old-01"},
+		},
+		Reviews: []ReviewDecision{
+			{Status: "approved"},
+		},
+	}
+
+	reuseState := analyzer.buildReuseState(previousRun, currentShards)
+	if _, changed := reuseState.changedSemanticFiles["feature/b.go"]; !changed {
+		t.Fatalf("expected changed semantic file to be tracked")
+	}
+	_, _, reason, ok := analyzer.tryReuseShard(previousRun, currentShards[0], reuseState)
+	if ok {
+		t.Fatalf("expected shard reuse to be denied after semantic primary change")
+	}
+	if reason != "semantic_primary_changed" {
+		t.Fatalf("expected semantic_primary_changed, got %q", reason)
+	}
+}
+
+func TestSelectiveInvalidationWhenDependencySemanticChanges(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+
+	currentShards := []AnalysisShard{
+		{
+			ID:                         "shard-01",
+			Name:                       "core",
+			PrimaryFiles:               []string{"core/a.go"},
+			PrimaryFingerprint:         "core-same",
+			PrimarySemanticFingerprint: "core-semantic-new",
+		},
+		{
+			ID:                           "shard-02",
+			Name:                         "feature",
+			PrimaryFiles:                 []string{"feature/b.go"},
+			ReferenceFiles:               []string{"core/a.go"},
+			PrimaryFingerprint:           "feature-same",
+			PrimarySemanticFingerprint:   "feature-semantic",
+			ReferenceFingerprint:         "feature-ref",
+			ReferenceSemanticFingerprint: "feature-ref-semantic",
+		},
+	}
+	previousRun := &ProjectAnalysisRun{
+		Shards: []AnalysisShard{
+			{
+				ID:                         "old-01",
+				PrimaryFiles:               []string{"core/a.go"},
+				PrimaryFingerprint:         "core-same",
+				PrimarySemanticFingerprint: "core-semantic-old",
+			},
+			{
+				ID:                           "old-02",
+				PrimaryFiles:                 []string{"feature/b.go"},
+				ReferenceFiles:               []string{"core/a.go"},
+				PrimaryFingerprint:           "feature-same",
+				PrimarySemanticFingerprint:   "feature-semantic",
+				ReferenceFingerprint:         "feature-ref",
+				ReferenceSemanticFingerprint: "feature-ref-semantic",
+			},
+		},
+		Reports: []WorkerReport{
+			{ShardID: "old-01"},
+			{ShardID: "old-02"},
+		},
+		Reviews: []ReviewDecision{
+			{Status: "approved"},
+			{Status: "approved"},
+		},
+	}
+
+	reuseState := analyzer.buildReuseState(previousRun, currentShards)
+	if _, changed := reuseState.changedSemanticFiles["core/a.go"]; !changed {
+		t.Fatalf("expected changed semantic dependency to be tracked")
+	}
+	_, _, reason, ok := analyzer.tryReuseShard(previousRun, currentShards[1], reuseState)
+	if ok {
+		t.Fatalf("expected dependent shard reuse to be denied after semantic dependency change")
+	}
+	if reason != "semantic_dependency_changed" {
+		t.Fatalf("expected semantic_dependency_changed, got %q", reason)
+	}
+}
+
+func TestBuildKnowledgePackIncludesAnalysisExecutionSummary(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		AnalysisLenses: []AnalysisLens{
+			{Type: "architecture"},
+			{Type: "security_boundary"},
+		},
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"main.go"}, CacheStatus: "reused", InvalidationReason: "cache_hit"},
+		{ID: "shard-02", Name: "network", PrimaryFiles: []string{"net.cpp"}, CacheStatus: "miss", InvalidationReason: "semantic_dependency_changed", InvalidationChanges: []InvalidationChange{{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Ammo"}}},
+	}
+	reports := []WorkerReport{
+		{Title: "runtime", Responsibilities: []string{"boot runtime"}, EvidenceFiles: []string{"main.go"}},
+		{Title: "network", Responsibilities: []string{"handle RPC"}, EvidenceFiles: []string{"net.cpp"}},
+	}
+	pack := buildKnowledgePack(snapshot, shards, reports, "goal", "run-1")
+	if pack.AnalysisExecution.TotalShards != 2 {
+		t.Fatalf("expected total shard count in knowledge pack, got %+v", pack.AnalysisExecution)
+	}
+	if pack.AnalysisExecution.ReusedShards != 1 || pack.AnalysisExecution.MissedShards != 1 {
+		t.Fatalf("expected reused/missed shard counts, got %+v", pack.AnalysisExecution)
+	}
+	if pack.AnalysisExecution.SemanticRecomputedShards != 1 {
+		t.Fatalf("expected semantic invalidation count, got %+v", pack.AnalysisExecution)
+	}
+	foundSemanticReason := false
+	for _, reason := range pack.AnalysisExecution.SemanticInvalidationReasons {
+		if reason == "semantic_dependency_changed" {
+			foundSemanticReason = true
+			break
+		}
+	}
+	if !foundSemanticReason {
+		t.Fatalf("expected semantic invalidation reason in knowledge pack, got %+v", pack.AnalysisExecution)
+	}
+	if len(pack.AnalysisExecution.TopChangeClasses) == 0 || !strings.Contains(strings.Join(pack.AnalysisExecution.TopChangeClasses, ","), "replicated_property_added") {
+		t.Fatalf("expected top change classes in analysis execution summary, got %+v", pack.AnalysisExecution)
+	}
+	digest := buildKnowledgeDigest(pack)
+	if !strings.Contains(digest, "## Analysis Execution") || !strings.Contains(digest, "An upstream dependency kept the same file scope, but its semantic context changed.") {
+		t.Fatalf("expected digest to include analysis execution summary\n%s", digest)
+	}
+	if !strings.Contains(digest, "Top change classes:") || !strings.Contains(digest, "replicated_property_added") {
+		t.Fatalf("expected digest to include top change classes\n%s", digest)
+	}
+	if !strings.Contains(pack.ProjectSummary, "Executive focus: recent changes are concentrated on authority, replication, or security-sensitive boundaries.") {
+		t.Fatalf("expected project summary to include lens-aware executive focus: %s", pack.ProjectSummary)
+	}
+}
+
+func TestFallbackFinalDocumentIncludesSubsystemInvalidationReasons(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:       "C:\\git\\kernforge",
+		TotalFiles: 2,
+		TotalLines: 20,
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}, ReplicatedProperties: []string{"Ammo"}},
+		},
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "unreal_network", PrimaryFiles: []string{"net.cpp"}, CacheStatus: "miss", InvalidationReason: "semantic_dependency_changed", InvalidationDiff: []string{"Replicated property added: AShooterCharacter -> Ammo"}, InvalidationChanges: []InvalidationChange{{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Ammo"}}},
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "network",
+			Responsibilities: []string{"handle RPC"},
+			EvidenceFiles:    []string{"net.cpp"},
+		},
+	}
+	doc := fallbackFinalDocument(snapshot, shards, reports, "goal")
+	if !strings.Contains(doc, "An upstream dependency kept the same file scope, but RPC, replication, or authority semantics changed.") {
+		t.Fatalf("expected subsystem invalidation reason in fallback document\n%s", doc)
+	}
+	if !strings.Contains(doc, "Invalidation evidence:") || !strings.Contains(doc, "AShooterCharacter server=ServerFire") {
+		t.Fatalf("expected subsystem invalidation evidence in fallback document\n%s", doc)
+	}
+	if !strings.Contains(doc, "Invalidation diff:") || !strings.Contains(doc, "Replicated property added: AShooterCharacter -> Ammo") {
+		t.Fatalf("expected subsystem invalidation diff in fallback document\n%s", doc)
+	}
+}
+
+func TestBuildKnowledgePackIncludesSubsystemInvalidationReasons(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "net.cpp", ServerRPCs: []string{"ServerFire"}, ReplicatedProperties: []string{"Ammo"}},
+		},
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-01", Name: "unreal_network", PrimaryFiles: []string{"net.cpp"}, CacheStatus: "miss", InvalidationReason: "semantic_dependency_changed", InvalidationDiff: []string{"Replicated property added: AShooterCharacter -> Ammo"}, InvalidationChanges: []InvalidationChange{{Kind: "replicated_property_added", Scope: "unreal_network", Owner: "AShooterCharacter", Subject: "Ammo"}}},
+		{ID: "shard-02", Name: "startup", PrimaryFiles: []string{"main.cpp"}, CacheStatus: "reused", InvalidationReason: "cache_hit"},
+	}
+	reports := []WorkerReport{
+		{Title: "network", Responsibilities: []string{"handle RPC"}, EvidenceFiles: []string{"net.cpp"}},
+		{Title: "startup", Responsibilities: []string{"boot runtime"}, EvidenceFiles: []string{"main.cpp"}},
+	}
+	pack := buildKnowledgePack(snapshot, shards, reports, "goal", "run-1")
+	if len(pack.Subsystems) < 2 {
+		t.Fatalf("expected subsystems in knowledge pack, got %+v", pack.Subsystems)
+	}
+	found := false
+	for _, subsystem := range pack.Subsystems {
+		if subsystem.Title != "network" {
+			continue
+		}
+		found = true
+		if len(subsystem.InvalidationReasons) == 0 || subsystem.InvalidationReasons[0] != "semantic_dependency_changed" {
+			t.Fatalf("expected subsystem invalidation reason, got %+v", subsystem)
+		}
+		if len(subsystem.CacheStatuses) == 0 || subsystem.CacheStatuses[0] != "miss" {
+			t.Fatalf("expected subsystem cache status, got %+v", subsystem)
+		}
+		if len(subsystem.InvalidationEvidence) == 0 {
+			t.Fatalf("expected subsystem invalidation evidence, got %+v", subsystem)
+		}
+		if len(subsystem.InvalidationDiff) == 0 {
+			t.Fatalf("expected subsystem invalidation diff, got %+v", subsystem)
+		}
+		if len(subsystem.InvalidationChanges) == 0 {
+			t.Fatalf("expected subsystem invalidation changes, got %+v", subsystem)
+		}
+		if subsystem.InvalidationChanges[0].Kind == "" {
+			t.Fatalf("expected structured invalidation change kind, got %+v", subsystem.InvalidationChanges)
+		}
+	}
+	if !found {
+		t.Fatalf("expected network subsystem in knowledge pack, got %+v", pack.Subsystems)
+	}
+	digest := buildKnowledgeDigest(pack)
+	if !strings.Contains(digest, "- Invalidation reasons: An upstream dependency kept the same file scope, but RPC, replication, or authority semantics changed.") {
+		t.Fatalf("expected subsystem invalidation reason in digest\n%s", digest)
+	}
+	if !strings.Contains(digest, "- Invalidation evidence:") || !strings.Contains(digest, "AShooterCharacter server=ServerFire") {
+		t.Fatalf("expected subsystem invalidation evidence in digest\n%s", digest)
+	}
+	if !strings.Contains(digest, "- Invalidation diff:") || !strings.Contains(digest, "Replicated property added: AShooterCharacter -> Ammo") {
+		t.Fatalf("expected subsystem invalidation diff in digest\n%s", digest)
+	}
+}
+
+func TestBuildInvalidationDiffLinesDetectsAssetConfigDelta(t *testing.T) {
+	previous := ProjectSnapshot{
+		UnrealAssets: []UnrealAssetReference{
+			{OwnerName: "AShooterHUD", File: "hud.cpp", ConfigKeys: []string{"GameDefaultMap"}},
+		},
+	}
+	current := ProjectSnapshot{
+		UnrealAssets: []UnrealAssetReference{
+			{OwnerName: "AShooterHUD", File: "hud.cpp", ConfigKeys: []string{"GameDefaultMap", "MenuClass"}},
+		},
+	}
+	diff := buildInvalidationDiffLines(previous, current, []string{"asset_config"}, []string{"hud.cpp"}, []string{"hud.cpp"}, []string{"semantic_dependency_changed"}, 4)
+	found := false
+	for _, item := range diff {
+		if strings.Contains(item, "Config binding added: AShooterHUD -> MenuClass") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected config binding diff in %+v", diff)
+	}
+}
+
+func TestDescribeAnalysisInvalidationReasonMapsSemanticReason(t *testing.T) {
+	got := describeAnalysisInvalidationReason("semantic_dependency_changed")
+	want := "An upstream dependency kept the same file scope, but its semantic context changed."
+	if got != want {
+		t.Fatalf("expected mapped invalidation reason %q, got %q", want, got)
+	}
+}
+
+func TestDescribeAnalysisInvalidationReasonWithContextMapsUnrealNetworkReason(t *testing.T) {
+	got := describeAnalysisInvalidationReasonWithContext("semantic_dependency_changed", []string{"unreal_network"})
+	want := "An upstream dependency kept the same file scope, but RPC, replication, or authority semantics changed."
+	if got != want {
+		t.Fatalf("expected contextual invalidation reason %q, got %q", want, got)
 	}
 }
 
@@ -2384,6 +3057,95 @@ func TestBuildKnowledgePackIncludesUnrealMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildVectorCorpusIncludesProjectSubsystemAndShardDocs(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID: "run-1",
+			Goal:  "analyze unreal network security",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:           "C:\\repo",
+			GeneratedAt:    time.Now(),
+			AnalysisLenses: []AnalysisLens{{Type: "security_boundary"}},
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-1",
+			Goal:           "analyze unreal network security",
+			Root:           "C:\\repo",
+			ProjectSummary: "Executive focus: recent changes are concentrated on authority, replication, or security-sensitive boundaries.",
+			AnalysisExecution: AnalysisExecutionSummary{
+				TotalShards:      2,
+				TopChangeClasses: []string{"replicated_property_added (2)"},
+			},
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:                "network",
+					Group:                "Security Control",
+					Responsibilities:     []string{"handle RPC"},
+					InvalidationReasons:  []string{"semantic_dependency_changed"},
+					InvalidationEvidence: []string{"AShooterCharacter server=ServerFire client= multicast= replicated=Ammo"},
+					EvidenceFiles:        []string{"net.cpp"},
+				},
+			},
+		},
+		Shards: []AnalysisShard{
+			{ID: "shard-01", Name: "unreal_network"},
+		},
+		ShardDocuments: map[string]string{
+			"shard-01": "# unreal_network\n\nShard text",
+		},
+	}
+	corpus := buildVectorCorpus(run)
+	if len(corpus.Documents) < 3 {
+		t.Fatalf("expected vector corpus documents, got %+v", corpus.Documents)
+	}
+	joined := []string{}
+	for _, doc := range corpus.Documents {
+		joined = append(joined, doc.Kind+":"+doc.Title)
+	}
+	text := strings.Join(joined, ",")
+	for _, expected := range []string{"project_summary:Project Summary", "analysis_execution:Analysis Execution Summary", "subsystem:Security Control: network", "shard:unreal_network"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected vector corpus entry %q in %s", expected, text)
+		}
+	}
+}
+
+func TestBuildVectorIngestionManifestIncludesTargetsAndKinds(t *testing.T) {
+	corpus := VectorCorpus{
+		RunID:       "run-1",
+		Goal:        "analyze unreal network security",
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		Documents: []VectorCorpusDocument{
+			{ID: "project_summary", Kind: "project_summary", Title: "Project Summary", Text: "summary"},
+			{ID: "shard:unreal_network", Kind: "shard", Title: "unreal_network", Text: "shard body"},
+		},
+	}
+	manifest := buildVectorIngestionManifest(corpus)
+	if manifest.DocumentCount != 2 {
+		t.Fatalf("expected 2 documents, got %+v", manifest)
+	}
+	if len(manifest.DocumentKinds) != 2 || manifest.DocumentKinds[0] != "project_summary" || manifest.DocumentKinds[1] != "shard" {
+		t.Fatalf("expected sorted document kinds, got %+v", manifest.DocumentKinds)
+	}
+	targets := []string{}
+	for _, target := range manifest.Targets {
+		targets = append(targets, target.Name+":"+target.Filename)
+	}
+	joined := strings.Join(targets, ",")
+	for _, expected := range []string{
+		"records:vector_ingest_records.jsonl",
+		"pgvector:vector_pgvector.sql",
+		"sqlite:vector_sqlite.sql",
+		"qdrant:vector_qdrant.jsonl",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected ingestion target %q in %s", expected, joined)
+		}
+	}
+}
+
 func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
@@ -2405,7 +3167,38 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 				{Title: "Core Runtime", Group: "Core Application"},
 			},
 		},
+		Snapshot: ProjectSnapshot{
+			Root:           root,
+			GeneratedAt:    time.Now(),
+			PrimaryStartup: "Tavern",
+			Files: []ScannedFile{
+				{Path: "Tavern/Tavern.cpp", Directory: "Tavern", Extension: ".cpp", LineCount: 40, IsEntrypoint: true, ImportanceScore: 12},
+			},
+		},
+		SemanticIndex: SemanticIndex{
+			RunID:       "run-1",
+			Goal:        "goal",
+			Root:        root,
+			GeneratedAt: time.Now(),
+			Files: []SemanticIndexedFile{
+				{Path: "Tavern/Tavern.cpp", IsEntrypoint: true},
+			},
+			Symbols: []SemanticSymbol{
+				{ID: "module:Tavern", Name: "Tavern", Kind: "unreal_module"},
+			},
+		},
+		UnrealGraph: UnrealSemanticGraph{
+			RunID:       "run-1",
+			Goal:        "goal",
+			Root:        root,
+			GeneratedAt: time.Now(),
+			Nodes: []UnrealSemanticNode{
+				{ID: "module:Tavern", Kind: "module", Name: "Tavern"},
+			},
+		},
 	}
+	run.VectorCorpus = buildVectorCorpus(run)
+	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
 	if _, err := analyzer.persistRun(run); err != nil {
 		t.Fatalf("persistRun returned error: %v", err)
 	}
@@ -2424,6 +3217,176 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "performance_lens.json")); err != nil {
 		t.Fatalf("expected latest performance lens artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_snapshot.json"); err != nil {
+		t.Fatalf("expected snapshot json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_structural_index.json"); err != nil {
+		t.Fatalf("expected structural index json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_unreal_graph.json"); err != nil {
+		t.Fatalf("expected unreal graph json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_corpus.json"); err != nil {
+		t.Fatalf("expected vector corpus json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_corpus.jsonl"); err != nil {
+		t.Fatalf("expected vector corpus jsonl artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_ingest_manifest.json"); err != nil {
+		t.Fatalf("expected vector ingest manifest artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_ingest_records.jsonl"); err != nil {
+		t.Fatalf("expected vector ingest records artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_pgvector.sql"); err != nil {
+		t.Fatalf("expected vector pgvector sql artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_sqlite.sql"); err != nil {
+		t.Fatalf("expected vector sqlite sql artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_vector_qdrant.jsonl"); err != nil {
+		t.Fatalf("expected vector qdrant seed artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "snapshot.json")); err != nil {
+		t.Fatalf("expected latest snapshot artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "structural_index.json")); err != nil {
+		t.Fatalf("expected latest structural index artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "unreal_graph.json")); err != nil {
+		t.Fatalf("expected latest unreal graph artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_corpus.json")); err != nil {
+		t.Fatalf("expected latest vector corpus artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_corpus.jsonl")); err != nil {
+		t.Fatalf("expected latest vector corpus jsonl artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_ingest_manifest.json")); err != nil {
+		t.Fatalf("expected latest vector ingest manifest artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_ingest_records.jsonl")); err != nil {
+		t.Fatalf("expected latest vector ingest records artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_pgvector.sql")); err != nil {
+		t.Fatalf("expected latest vector pgvector sql artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_sqlite.sql")); err != nil {
+		t.Fatalf("expected latest vector sqlite sql artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "vector_qdrant.jsonl")); err != nil {
+		t.Fatalf("expected latest vector qdrant artifact: %v", err)
+	}
+}
+
+func TestBuildSemanticIndexIncludesFilesSymbolsAndBuildEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		GeneratedAt:    time.Now(),
+		PrimaryStartup: "ShooterGame",
+		Files: []ScannedFile{
+			{
+				Path:            "Source/ShooterGame/ShooterGame.Build.cs",
+				Directory:       "Source/ShooterGame",
+				Extension:       ".cs",
+				LineCount:       25,
+				IsManifest:      true,
+				ImportanceScore: 18,
+				ImportanceReasons: []string{
+					"unreal_module_lens_priority",
+				},
+				Imports: []string{"Engine", "CoreUObject"},
+			},
+		},
+		UnrealModules: []UnrealModule{
+			{
+				Name:                "ShooterGame",
+				Path:                "Source/ShooterGame/ShooterGame.Build.cs",
+				Kind:                "game_module",
+				PublicDependencies:  []string{"Core", "Engine"},
+				PrivateDependencies: []string{"Slate"},
+			},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{
+				Name:         "AShooterGameMode",
+				Kind:         "UCLASS",
+				BaseClass:    "AGameModeBase",
+				Module:       "ShooterGame",
+				File:         "Source/ShooterGame/Public/ShooterGameMode.h",
+				GameplayRole: "game_mode",
+			},
+		},
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndex(snapshot, "goal", "run-1", graph)
+	if len(index.Files) != 1 {
+		t.Fatalf("expected one indexed file, got %+v", index.Files)
+	}
+	if len(index.Symbols) < 2 {
+		t.Fatalf("expected module and type symbols, got %+v", index.Symbols)
+	}
+	if len(index.References) == 0 {
+		t.Fatalf("expected file import references")
+	}
+	if len(index.BuildEdges) == 0 {
+		t.Fatalf("expected build edges")
+	}
+	if index.UnrealGraph.RunID != "run-1" || len(index.UnrealGraph.Nodes) == 0 {
+		t.Fatalf("expected embedded unreal graph, got %+v", index.UnrealGraph)
+	}
+}
+
+func TestBuildUnrealSemanticGraphIncludesCoreEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:        "C:\\repo",
+		GeneratedAt: time.Now(),
+		UnrealProjects: []UnrealProject{
+			{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"ShooterGame"}, Plugins: []string{"CheatGuard"}},
+		},
+		UnrealPlugins: []UnrealPlugin{
+			{Name: "CheatGuard", Path: "Plugins/CheatGuard/CheatGuard.uplugin", Modules: []string{"CheatGuardRuntime"}, EnabledByDefault: true},
+		},
+		UnrealTargets: []UnrealTarget{
+			{Name: "ShooterGame", Path: "Source/ShooterGame.Target.cs", TargetType: "Game", Modules: []string{"ShooterGame"}},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs", PublicDependencies: []string{"Engine"}},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterGameMode", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterGameMode.h", BaseClass: "AGameModeBase", DefaultPawnClass: "AShooterCharacter"},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterGameMode", ServerRPCs: []string{"ServerStartMatch"}, ReplicatedProperties: []string{"MatchState"}},
+		},
+		UnrealAssets: []UnrealAssetReference{
+			{OwnerName: "AShooterGameMode", CanonicalTargets: []string{"WBP_Lobby"}, ConfigKeys: []string{"GameDefaultMap"}},
+		},
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	if len(graph.Nodes) == 0 || len(graph.Edges) == 0 {
+		t.Fatalf("expected graph nodes and edges, got %+v", graph)
+	}
+	text := []string{}
+	for _, edge := range graph.Edges {
+		text = append(text, edge.Source+"->"+edge.Type+"->"+edge.Target)
+	}
+	joined := strings.Join(text, ",")
+	for _, expected := range []string{
+		"uproject:ShooterGame->declares->module:ShooterGame",
+		"uproject:ShooterGame->loads->plugin:CheatGuard",
+		"module:ShooterGame->declares->type:AShooterGameMode",
+		"type:AShooterGameMode->inherits_from->type:AGameModeBase",
+		"type:AShooterGameMode->spawns->type:AShooterCharacter",
+		"type:AShooterGameMode->rpc_server->rpc:ServerStartMatch",
+		"type:AShooterGameMode->replicates->property:MatchState",
+		"type:AShooterGameMode->references_asset->asset:WBP_Lobby",
+		"type:AShooterGameMode->configured_by->config:GameDefaultMap",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected graph edge %q in %s", expected, joined)
+		}
 	}
 }
 

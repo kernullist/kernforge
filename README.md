@@ -398,6 +398,9 @@ Provider-specific:
 
 - Default base URL: `https://api.openai.com`
 - Reads `OPENAI_API_KEY`
+- Assistant turns that contain only tool calls omit empty assistant content for better API compatibility
+- Non-JSON assistant tool-call arguments are normalized before request send
+- HTTP error messages include a compact request preview to speed up provider debugging
 
 ### OpenRouter
 
@@ -410,6 +413,7 @@ Provider-specific:
 - Uses OpenAI-style chat completions
 - Reads `OPENAI_API_KEY` unless overridden by config/env
 - Requires an explicit `base_url`
+- Applies the same assistant tool-call normalization and request-preview diagnostics as the OpenAI provider
 
 ## Memory
 

@@ -130,3 +130,94 @@ func TestOpenAIClientIncludesStructuredErrorDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAIClientNormalizesAssistantToolCallArguments(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{
+						ID:        "call_1",
+						Name:      "read_file",
+						Arguments: "path=C:\\\\temp\\\\note.txt",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("messages missing from request body: %#v", body["messages"])
+	}
+	assistant, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("assistant message has unexpected type: %#v", messages[0])
+	}
+	if _, ok := assistant["content"]; ok {
+		t.Fatalf("assistant content should be omitted when only tool calls are present")
+	}
+	toolCalls, ok := assistant["tool_calls"].([]any)
+	if !ok || len(toolCalls) != 1 {
+		t.Fatalf("tool_calls missing from assistant message: %#v", assistant["tool_calls"])
+	}
+	call, ok := toolCalls[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool call has unexpected type: %#v", toolCalls[0])
+	}
+	function, ok := call["function"].(map[string]any)
+	if !ok {
+		t.Fatalf("function payload has unexpected type: %#v", call["function"])
+	}
+	args, ok := function["arguments"].(string)
+	if !ok {
+		t.Fatalf("arguments should be encoded as a string: %#v", function["arguments"])
+	}
+	expected := `{"raw":"path=C:\\\\temp\\\\note.txt"}`
+	if args != expected {
+		t.Fatalf("unexpected normalized arguments: got %q want %q", args, expected)
+	}
+}
+
+func TestOpenAIClientIncludesRequestPreviewOnHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"Provider returned error","code":"400"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{
+			{
+				Role: "user",
+				Text: "hello",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), `request={"model":"openai/gpt-4.1"`) {
+		t.Fatalf("expected request preview in error, got %q", err.Error())
+	}
+}
