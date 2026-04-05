@@ -40,6 +40,21 @@ func (r *ToolRegistry) Definitions() []ToolDefinition {
 	return out
 }
 
+func (r *ToolRegistry) DefinitionsExcluding(disabled map[string]bool) []ToolDefinition {
+	if len(disabled) == 0 {
+		return r.Definitions()
+	}
+	out := make([]ToolDefinition, 0, len(r.tools))
+	for _, tool := range r.tools {
+		def := tool.Definition()
+		if disabled[strings.TrimSpace(def.Name)] {
+			continue
+		}
+		out = append(out, def)
+	}
+	return out
+}
+
 func (r *ToolRegistry) Execute(ctx context.Context, name string, args string) (string, error) {
 	tool, ok := r.tools[name]
 	if !ok {
@@ -48,7 +63,7 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args string) (s
 	payload := map[string]any{}
 	if strings.TrimSpace(args) != "" {
 		if err := json.Unmarshal([]byte(args), &payload); err != nil {
-			return "", fmt.Errorf("tool %s received invalid JSON: %w", name, err)
+			return "", fmt.Errorf("%w: tool %s received invalid JSON: %v", ErrInvalidToolArgumentsJSON, name, err)
 		}
 	}
 	return tool.Execute(ctx, payload)
@@ -60,6 +75,7 @@ type Workspace struct {
 	Shell            string
 	Perms            *PermissionManager
 	PrepareEdit      func(string) error
+	ReportProgress   func(string)
 	CurrentSelection func() *ViewerSelection
 	PreviewEdit      func(EditPreview) (bool, error)
 	UpdatePlan       func([]PlanItem)
@@ -200,6 +216,17 @@ func (w Workspace) BeforeEdit(reason string) error {
 		return nil
 	}
 	return w.PrepareEdit(reason)
+}
+
+func (w Workspace) Progress(message string) {
+	if w.ReportProgress == nil {
+		return
+	}
+	trimmed := strings.TrimSpace(message)
+	if trimmed == "" {
+		return
+	}
+	w.ReportProgress(trimmed)
 }
 
 func (w Workspace) Selection() *ViewerSelection {
@@ -557,6 +584,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := t.ws.BeforeEdit(reason); err != nil {
 			return "", err
 		}
+		t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return "", err
@@ -565,6 +593,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if _, err := f.WriteString(content); err != nil {
 			return "", err
 		}
+		t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
 	} else {
 		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
 			"path":          relOrAbs(t.ws.Root, path),
@@ -587,10 +616,13 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := t.ws.BeforeEdit(reason); err != nil {
 			return "", err
 		}
+		t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return "", err
 		}
+		t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
 	}
+	t.ws.Progress("Running post-edit hooks for " + relOrAbs(t.ws.Root, path) + "...")
 	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
 		"path":          relOrAbs(t.ws.Root, path),
 		"absolute_path": path,
@@ -600,6 +632,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	}); err != nil {
 		return "", err
 	}
+	t.ws.Progress("Post-edit hooks finished for " + relOrAbs(t.ws.Root, path) + ".")
 	return joinNonEmpty(
 		fmt.Sprintf("wrote %d bytes to %s", len(content), relOrAbs(t.ws.Root, path)),
 		buildEditPreview(relOrAbs(t.ws.Root, path), before, after),
@@ -743,9 +776,12 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	if err := t.ws.BeforeEdit("replace in " + relOrAbs(t.ws.Root, path)); err != nil {
 		return "", err
 	}
+	t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
+	t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
+	t.ws.Progress("Running post-edit hooks for " + relOrAbs(t.ws.Root, path) + "...")
 	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
 		"path":          relOrAbs(t.ws.Root, path),
 		"absolute_path": path,
@@ -755,6 +791,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	}); err != nil {
 		return "", err
 	}
+	t.ws.Progress("Post-edit hooks finished for " + relOrAbs(t.ws.Root, path) + ".")
 	return joinNonEmpty(
 		fmt.Sprintf("updated %s (%d replacement(s))", relOrAbs(t.ws.Root, path), count),
 		buildEditPreview(relOrAbs(t.ws.Root, path), content, updated),

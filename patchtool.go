@@ -220,6 +220,12 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 		}
 		previewBlocks = append(previewBlocks, buildSelectionAwareEditPreview(ws, target, change.before, change.after))
 	}
+	if err := ws.ConfirmEdit(EditPreview{
+		Title:   fmt.Sprintf("Apply patch to %d file(s)", len(planned)),
+		Preview: strings.Join(previewBlocks, "\n\n"),
+	}); err != nil {
+		return "", err
+	}
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
 		return "", err
 	}
@@ -237,21 +243,26 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 		}
 		switch change.kind {
 		case "add":
+			ws.Progress("Writing " + relOrAbs(ws.Root, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
 				return "", err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
 				return "", err
 			}
+			ws.Progress("Saved " + relOrAbs(ws.Root, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.destPath), "", change.after))
 		case "delete":
+			ws.Progress("Deleting " + relOrAbs(ws.Root, change.srcPath) + "...")
 			if err := os.Remove(change.srcPath); err != nil {
 				return "", err
 			}
+			ws.Progress("Deleted " + relOrAbs(ws.Root, change.srcPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.srcPath), change.before, ""))
 		case "update":
+			ws.Progress("Writing " + relOrAbs(ws.Root, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
 				return "", err
 			}
@@ -263,6 +274,7 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 					return "", err
 				}
 			}
+			ws.Progress("Saved " + relOrAbs(ws.Root, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.destPath), change.before, change.after))
 		default:

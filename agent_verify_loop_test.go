@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type scriptedProviderClient struct {
@@ -27,6 +28,52 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	resp := s.replies[s.index]
 	s.index++
 	return resp, nil
+}
+
+type blockingProviderClient struct {
+	calls   int
+	started chan struct{}
+}
+
+func (b *blockingProviderClient) Name() string { return "blocking" }
+
+func (b *blockingProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = req
+	b.calls++
+	if b.started != nil {
+		select {
+		case <-b.started:
+		default:
+			close(b.started)
+		}
+	}
+	<-ctx.Done()
+	return ChatResponse{}, ctx.Err()
+}
+
+type cancelDuringToolTool struct {
+	cancel func()
+	calls  int
+}
+
+func (t *cancelDuringToolTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        "cancel_during_tool",
+		Description: "Cancel the active request while simulating a completed tool call.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *cancelDuringToolTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	if t.cancel != nil {
+		t.cancel()
+	}
+	return "tool finished after cancel", nil
 }
 
 func toolCallResponse(name string, args map[string]any) ChatResponse {
@@ -584,5 +631,142 @@ func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
 	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First read the exact file again from the same path") {
 		t.Fatalf("expected reread guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentStopsBeforeNextModelTurnWhenContextCanceledDuringTool(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("cancel_during_tool", map[string]any{}),
+			{Message: Message{Role: "assistant", Text: "this should never be requested"}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	ctx, cancel := context.WithCancel(context.Background())
+	tool := &cancelDuringToolTool{
+		cancel: cancel,
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(tool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(ctx, "cancel during tool execution")
+	if err == nil {
+		t.Fatalf("expected cancellation error")
+	}
+	if err != context.Canceled {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if tool.calls != 1 {
+		t.Fatalf("expected tool to run once, got %d", tool.calls)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected no follow-up model turn after cancellation, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentReturnsPromptlyWhenContextCanceledDuringModelTurn(t *testing.T) {
+	root := t.TempDir()
+	provider := &blockingProviderClient{started: make(chan struct{})}
+	session := NewSession(root, "blocking", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	ctx, cancel := context.WithCancel(context.Background())
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.Reply(ctx, "cancel during model execution")
+		done <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider did not start model turn")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("agent did not return promptly after model cancellation")
+	}
+
+	if provider.calls != 1 {
+		t.Fatalf("expected one provider call, got %d", provider.calls)
+	}
+}
+
+func TestAgentNudgesAfterMalformedWriteFileArguments(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "write_file",
+						Arguments: `{"path":"main.go","content":"package main`,
+					}},
+				},
+			},
+			{Message: Message{Role: "assistant", Text: "I retried with apply_patch after the malformed write_file call."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "I retried with apply_patch after the malformed write_file call." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected follow-up turn after malformed tool arguments, got %d", len(provider.requests))
+	}
+	lastTurn := provider.requests[1]
+	if len(lastTurn.Messages) == 0 {
+		t.Fatalf("expected guidance before second turn")
+	}
+	lastMessage := lastTurn.Messages[len(lastTurn.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "use apply_patch instead of write_file") {
+		t.Fatalf("expected apply_patch recovery guidance, got %#v", lastMessage)
+	}
+	for _, tool := range lastTurn.Tools {
+		if tool.Name == "write_file" {
+			t.Fatalf("expected write_file to be disabled after malformed arguments")
+		}
 	}
 }
