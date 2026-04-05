@@ -106,7 +106,14 @@ Policy:
 4. `/mem-search category:driver` or `/mem-search category:telemetry`
 5. `/hooks`
 
-## 5. Next Documents
+## 5. Input Cancellation Tips
+
+1. `Esc` while typing cancels only the current prompt input.
+2. `Esc` while a model request is running cancels the in-flight request.
+3. On Windows consoles, brief `Esc` taps are handled as valid request cancel input.
+4. After request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it.
+
+## 6. Next Documents
 
 Full workflow guide:
 - [Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md)

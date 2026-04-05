@@ -106,7 +106,14 @@
 4. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
 5. `/hooks`
 
-## 5. 다음 문서
+## 5. 입력 취소 팁
+
+1. 입력 중 `Esc`는 현재 입력만 취소한다.
+2. 모델 응답 대기 중 `Esc`는 진행 중 요청을 취소한다.
+3. Windows 콘솔에서는 짧게 누른 `Esc`도 취소로 잡히도록 처리되어 있다.
+4. 요청 취소 직후 다음 프롬프트는 잔여 `Esc` 입력 때문에 자동 취소되지 않도록 안정화된다.
+
+## 6. 다음 문서
 
 더 자세한 흐름:
 - [상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)

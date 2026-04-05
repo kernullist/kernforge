@@ -13,16 +13,19 @@ import (
 const vkEscape = 0x1B
 
 var (
-	user32CancelDLL      = syscall.NewLazyDLL("user32.dll")
-	kernel32CancelDLL    = syscall.NewLazyDLL("kernel32.dll")
-	getAsyncKeyStateProc = user32CancelDLL.NewProc("GetAsyncKeyState")
-	getForegroundWndProc = user32CancelDLL.NewProc("GetForegroundWindow")
-	getConsoleWndProc    = kernel32CancelDLL.NewProc("GetConsoleWindow")
-	getWindowPIDProc     = user32CancelDLL.NewProc("GetWindowThreadProcessId")
-	createSnapshotProc   = kernel32CancelDLL.NewProc("CreateToolhelp32Snapshot")
-	process32FirstProc   = kernel32CancelDLL.NewProc("Process32FirstW")
-	process32NextProc    = kernel32CancelDLL.NewProc("Process32NextW")
-	closeHandleProc      = kernel32CancelDLL.NewProc("CloseHandle")
+	user32CancelDLL                   = syscall.NewLazyDLL("user32.dll")
+	kernel32CancelDLL                 = syscall.NewLazyDLL("kernel32.dll")
+	getAsyncKeyStateProc              = user32CancelDLL.NewProc("GetAsyncKeyState")
+	getForegroundWndProc              = user32CancelDLL.NewProc("GetForegroundWindow")
+	getConsoleWndProc                 = kernel32CancelDLL.NewProc("GetConsoleWindow")
+	getConsoleModeCancelProc          = kernel32CancelDLL.NewProc("GetConsoleMode")
+	flushConsoleInputBufferProc       = kernel32CancelDLL.NewProc("FlushConsoleInputBuffer")
+	getNumberOfConsoleInputEventsProc = kernel32CancelDLL.NewProc("GetNumberOfConsoleInputEvents")
+	getWindowPIDProc                  = user32CancelDLL.NewProc("GetWindowThreadProcessId")
+	createSnapshotProc                = kernel32CancelDLL.NewProc("CreateToolhelp32Snapshot")
+	process32FirstProc                = kernel32CancelDLL.NewProc("Process32FirstW")
+	process32NextProc                 = kernel32CancelDLL.NewProc("Process32NextW")
+	closeHandleProc                   = kernel32CancelDLL.NewProc("CloseHandle")
 )
 
 const th32csSnapProcess = 0x00000002
@@ -58,16 +61,21 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 			case <-stop:
 				return
 			case <-ticker.C:
+				if pollConsoleEscape(cancel, shouldCancel) {
+					return
+				}
 				state, _, _ := getAsyncKeyStateProc.Call(vkEscape)
-				down := (uint16(state) & 0x8000) != 0
+				down := isAsyncKeyPressed(state)
 				if down && !wasDown {
 					hasForegroundTarget := isRequestCancelForegroundTarget()
 					if shouldCancelOnEscape(hasForegroundTarget, shouldCancel) {
+						flushPendingConsoleInput()
 						cancel()
 						return
 					}
 					repeatedPress := !lastBlockedEscape.IsZero() && time.Since(lastBlockedEscape) <= 1500*time.Millisecond
 					if shouldCancelOnRepeatedEscape(hasForegroundTarget, repeatedPress, shouldCancel) {
+						flushPendingConsoleInput()
 						cancel()
 						return
 					}
@@ -81,6 +89,71 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 	return func() {
 		close(stop)
 		<-done
+	}
+}
+
+func pollConsoleEscape(cancel func(), shouldCancel func() bool) bool {
+	handle := syscall.Handle(os.Stdin.Fd())
+	var mode uint32
+	r1, _, _ := getConsoleModeCancelProc.Call(uintptr(handle), uintptr(unsafe.Pointer(&mode)))
+	if r1 == 0 {
+		return false
+	}
+
+	var eventCount uint32
+	r1, _, _ = getNumberOfConsoleInputEventsProc.Call(uintptr(handle), uintptr(unsafe.Pointer(&eventCount)))
+	if r1 == 0 || eventCount == 0 {
+		return false
+	}
+
+	remaining := eventCount
+	for remaining > 0 {
+		record, err := readConsoleInputRecord(handle)
+		if err != nil {
+			return false
+		}
+		remaining--
+		if record.EventType != keyEventType || record.KeyEvent.KeyDown == 0 {
+			continue
+		}
+		event := record.KeyEvent
+		if event.VirtualKeyCode != vkEscape {
+			continue
+		}
+		if !shouldCancelOnEscape(true, shouldCancel) {
+			continue
+		}
+		flushPendingConsoleInput()
+		cancel()
+		return true
+	}
+
+	return false
+}
+
+func flushPendingConsoleInput() {
+	handle := syscall.Handle(os.Stdin.Fd())
+	flushConsoleInputBufferProc.Call(uintptr(handle))
+}
+
+func stabilizeConsoleAfterRequestCancel() {
+	waitForEscapeRelease(500 * time.Millisecond)
+	time.Sleep(30 * time.Millisecond)
+	flushPendingConsoleInput()
+}
+
+func isEscapePhysicallyPressed() bool {
+	state, _, _ := getAsyncKeyStateProc.Call(vkEscape)
+	return isAsyncKeyPressed(state)
+}
+
+func waitForEscapeRelease(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for isEscapePhysicallyPressed() {
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

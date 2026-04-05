@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"bufio"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimeStateWithRequestCancelSuspendedDisablesAndRestores(t *testing.T) {
@@ -56,18 +58,18 @@ func TestRuntimeStateWithRequestCancelSuspendedSupportsNesting(t *testing.T) {
 	}
 }
 
-func TestShouldCancelOnEscapeRequiresForegroundTarget(t *testing.T) {
+func TestShouldCancelOnEscapeAllowsImmediateCancelWithoutForegroundTarget(t *testing.T) {
 	called := false
 	allow := func() bool {
 		called = true
 		return true
 	}
 
-	if shouldCancelOnEscape(false, allow) {
-		t.Fatalf("expected cancel to be ignored without foreground target")
+	if !shouldCancelOnEscape(false, allow) {
+		t.Fatalf("expected cancel to be allowed without foreground target when runtime gate accepts it")
 	}
-	if called {
-		t.Fatalf("expected shouldCancel callback to be skipped without foreground target")
+	if !called {
+		t.Fatalf("expected shouldCancel callback to be consulted")
 	}
 }
 
@@ -113,6 +115,77 @@ func TestShouldCancelOnRepeatedEscapeStillHonorsRuntimeGate(t *testing.T) {
 	}
 	if !called {
 		t.Fatalf("expected cancel gate to be consulted")
+	}
+}
+
+func TestIsAsyncKeyPressedDetectsDownBit(t *testing.T) {
+	if !isAsyncKeyPressed(0x8000) {
+		t.Fatalf("expected high-order down bit to be treated as pressed")
+	}
+}
+
+func TestIsAsyncKeyPressedDetectsTransitionBit(t *testing.T) {
+	if !isAsyncKeyPressed(0x0001) {
+		t.Fatalf("expected low-order transition bit to be treated as pressed")
+	}
+}
+
+func TestIsAsyncKeyPressedRejectsClearState(t *testing.T) {
+	if isAsyncKeyPressed(0x0000) {
+		t.Fatalf("expected clear state to be treated as not pressed")
+	}
+}
+
+func TestIsEscapePhysicallyPressedDefaultNonWindowsHelperShape(t *testing.T) {
+	_ = isEscapePhysicallyPressed()
+}
+
+func TestRuntimeStateShouldIgnorePromptEscapeAfterRecentCancel(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.noteRecentRequestCancel()
+
+	if !rt.shouldIgnorePromptEscape() {
+		t.Fatalf("expected prompt escape to be ignored immediately after request cancel")
+	}
+}
+
+func TestRuntimeStateShouldIgnorePromptEscapeExpires(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.requestCancelIgnoreUntil = time.Now().Add(-10 * time.Millisecond)
+
+	if rt.shouldIgnorePromptEscape() {
+		t.Fatalf("expected expired cancel grace window to stop ignoring prompt escape")
+	}
+	if !rt.requestCancelIgnoreUntil.IsZero() {
+		t.Fatalf("expected expired cancel grace window to be cleared")
+	}
+}
+
+func TestRuntimeStateConsumeRecentRequestCancelClearsActiveWindow(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.noteRecentRequestCancel()
+
+	if !rt.consumeRecentRequestCancel() {
+		t.Fatalf("expected active recent cancel to be consumed")
+	}
+	if !rt.requestCancelIgnoreUntil.IsZero() {
+		t.Fatalf("expected consumeRecentRequestCancel to clear the grace window")
+	}
+}
+
+func TestRuntimeStateConsumeRecentRequestCancelRejectsExpiredWindow(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.requestCancelIgnoreUntil = time.Now().Add(-10 * time.Millisecond)
+
+	if rt.consumeRecentRequestCancel() {
+		t.Fatalf("expected expired recent cancel to be rejected")
+	}
+	if !rt.requestCancelIgnoreUntil.IsZero() {
+		t.Fatalf("expected expired grace window to be cleared")
 	}
 }
 
@@ -433,5 +506,58 @@ func TestRuntimeStateFormatAssistantErrorForEditTargetMismatch(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Re-read the file from the exact same path before editing again") {
 		t.Fatalf("expected rerun guidance, got %q", joined)
+	}
+}
+
+func TestParseConfirmationAnswerRecognizesAlways(t *testing.T) {
+	allowed, always, handled := parseConfirmationAnswer("always")
+	if !handled || !allowed || !always {
+		t.Fatalf("expected always answer to enable approval, got handled=%v allowed=%v always=%v", handled, allowed, always)
+	}
+}
+
+func TestRuntimeStateConfirmAlwaysApprovesFutureWritePrompts(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("always\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		interactive: true,
+	}
+
+	allowed, err := rt.confirm("Allow write? C:\\git\\kernforge\\main.go (add 'always' to allow for entire session)")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected first write prompt to be allowed")
+	}
+	if !rt.alwaysApproveWrites {
+		t.Fatalf("expected write prompts to be auto-approved for the rest of the session")
+	}
+	if !rt.autoApproveConfirmation("Allow write? C:\\git\\kernforge\\other.go (add 'always' to allow for entire session)") {
+		t.Fatalf("expected subsequent write prompt to be auto-approved")
+	}
+}
+
+func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		interactive: true,
+	}
+
+	allowed, err := rt.confirm("Open diff preview?")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected diff preview prompt to be allowed")
+	}
+	if !rt.alwaysApprovePreview {
+		t.Fatalf("expected diff preview prompts to be auto-approved for the rest of the session")
+	}
+	if !rt.autoApproveConfirmation("Open diff preview?") {
+		t.Fatalf("expected subsequent diff preview prompt to be auto-approved")
 	}
 }

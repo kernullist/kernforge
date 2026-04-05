@@ -29,6 +29,7 @@
 - 별도 viewer 창
 - selection-first review/edit 흐름
 - Windows 입력/취소 처리
+- 짧은 `Esc` 탭 취소와 취소 직후 프롬프트 안정화까지 포함한 콘솔 취소 신뢰성
 
 4. planner/reviewer 분리 구조
 - `/do-plan-review`

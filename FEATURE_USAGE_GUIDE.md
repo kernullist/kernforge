@@ -44,6 +44,19 @@ Practical interpretation:
 
 ## 2. Core Features And When To Use Them
 
+### Input And Cancellation Handling
+
+Purpose:
+1. Keep prompt cancel and in-flight request cancel distinct on Windows consoles.
+2. Avoid missing brief `Esc` taps during a running request.
+3. Prevent leftover console `Esc` input from auto-canceling the next prompt after request cancel.
+
+Current behavior:
+1. `Esc` while typing cancels only the current prompt input.
+2. `Esc` during model response wait cancels the in-flight request.
+3. On Windows, Kernforge combines async key-state checks with console input polling so short `Esc` taps are still recognized.
+4. After request cancel, Kernforge waits briefly for `Esc` release and clears pending console input before opening the next prompt.
+
 ### 2.0 Project Analysis
 
 Purpose:
@@ -51,6 +64,7 @@ Purpose:
 2. Split analysis across multiple worker and reviewer passes.
 3. Keep a `latest` knowledge pack and performance lens for follow-up work.
 4. Reuse unchanged shard results when incremental mode is enabled.
+5. Preserve a structural index, Unreal semantic graph, and vector corpus for downstream automation.
 
 Useful commands:
 - `/analyze-project <goal>`
@@ -61,6 +75,21 @@ Best used when:
 1. You are entering a large codebase and need more than an ad hoc summary.
 2. The work spans startup, integrity, ETW, scanner, compression, memory, or upload paths.
 3. You want follow-up review and verification to inherit a stable architecture view.
+4. You are dealing with a UE5-scale codebase where modules, targets, reflection, replication, and asset/config coupling all matter at once.
+
+Additional artifacts now produced by project analysis:
+1. `snapshot`: structured scan output plus runtime and project edges.
+2. `structural index`: symbol, reference, and build-edge oriented analysis state.
+3. `unreal graph`: UE project, module, network, asset, system, and config semantics.
+4. `knowledge pack`: human-readable architecture digest and subsystem summaries.
+5. `vector corpus`: embedding-ready project, subsystem, and shard documents.
+6. `vector ingest exports`: staging files for pgvector, SQLite, and Qdrant pipelines.
+
+What materially changed for large and Unreal-heavy workspaces:
+1. A semantic shard planner now prioritizes `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, and `unreal_gameplay`.
+2. Worker and reviewer prompts now carry shard-specific semantic focus and review checklists.
+3. Incremental reuse now considers semantic fingerprints instead of relying only on file hashes.
+4. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
 
 ### 2.1 Hook Engine
 

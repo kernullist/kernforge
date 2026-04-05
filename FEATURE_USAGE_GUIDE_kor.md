@@ -42,6 +42,19 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 ## 2. 현재 구현된 핵심 기능과 언제 쓰면 좋은가
 
+### 입력과 취소 처리
+
+목적:
+1. Windows 콘솔에서도 입력 취소와 요청 취소를 분리해서 안정적으로 처리한다.
+2. 짧게 누른 `Esc`를 진행 중 요청 취소로 놓치지 않게 한다.
+3. 요청 취소 직후 남은 콘솔 입력 때문에 다음 프롬프트가 바로 취소되지 않게 한다.
+
+실제 동작:
+1. 입력 중 `Esc`는 현재 프롬프트 입력만 취소한다.
+2. 모델 응답 대기 중 `Esc`는 진행 중 요청을 취소한다.
+3. Windows에서는 async key state와 console input record를 함께 사용해 짧은 `Esc` 탭도 놓치지 않게 처리한다.
+4. 요청 취소 뒤에는 `Esc` release를 잠깐 기다리고 pending console input을 정리한 뒤 다음 입력을 받는다.
+
 ### 2.0 Project Analysis
 
 목적:
@@ -49,6 +62,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 여러 worker와 reviewer 패스로 분석을 분산한다.
 3. 후속 작업용 `latest` knowledge pack과 performance lens를 유지한다.
 4. incremental 모드에서는 바뀌지 않은 shard를 재사용한다.
+5. structural index, Unreal semantic graph, vector corpus까지 후속 자동화에 재사용할 수 있게 남긴다.
 
 대표 명령:
 - `/analyze-project <goal>`
@@ -59,6 +73,21 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 1. 큰 코드베이스에 처음 들어가서 즉석 요약으로는 부족할 때
 2. startup, integrity, ETW, scanner, compression, memory, upload path를 같이 봐야 할 때
 3. 이후 review와 verification이 안정적인 구조 지식을 공유해야 할 때
+4. Unreal 5처럼 module, target, reflection, replication, asset/config coupling이 동시에 얽힌 코드베이스를 다뤄야 할 때
+
+현재 project analysis가 추가로 남기는 핵심 산출물:
+1. `snapshot`: 스캔 결과와 runtime/project edge를 담는 구조화된 입력
+2. `structural index`: symbol, reference, build edge 중심의 정밀 인덱스
+3. `unreal graph`: UE project/module/network/asset/system/config를 구조화한 semantic graph
+4. `knowledge pack`: 사람이 읽는 architecture digest와 subsystem 요약
+5. `vector corpus`: 임베딩 친화적인 project/subsystem/shard 문서 묶음
+6. `vector ingest exports`: pgvector, sqlite, qdrant로 넘기기 쉬운 seed 파일
+
+대규모/UE 프로젝트에서 특히 달라진 점:
+1. semantic shard planner가 `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, `unreal_gameplay` 영역을 우선 분리한다.
+2. worker와 reviewer prompt가 shard 목적에 맞는 semantic focus와 review checklist를 받는다.
+3. incremental reuse가 file hash뿐 아니라 semantic fingerprint 변화까지 본다.
+4. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
 
 ### 2.1 Hook Engine
 
