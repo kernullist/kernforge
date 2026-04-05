@@ -1,8 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,18 +59,18 @@ func TestRuntimeStateWithRequestCancelSuspendedSupportsNesting(t *testing.T) {
 	}
 }
 
-func TestShouldCancelOnEscapeAllowsImmediateCancelWithoutForegroundTarget(t *testing.T) {
+func TestShouldCancelOnEscapeRejectsCancelWithoutForegroundTarget(t *testing.T) {
 	called := false
 	allow := func() bool {
 		called = true
 		return true
 	}
 
-	if !shouldCancelOnEscape(false, allow) {
-		t.Fatalf("expected cancel to be allowed without foreground target when runtime gate accepts it")
+	if shouldCancelOnEscape(false, allow) {
+		t.Fatalf("expected cancel to be blocked without foreground target")
 	}
-	if !called {
-		t.Fatalf("expected shouldCancel callback to be consulted")
+	if called {
+		t.Fatalf("expected shouldCancel callback to be skipped when foreground target is missing")
 	}
 }
 
@@ -88,18 +89,18 @@ func TestShouldCancelOnEscapeHonorsRuntimeGate(t *testing.T) {
 	}
 }
 
-func TestShouldCancelOnRepeatedEscapeAllowsFallbackWithoutForegroundTarget(t *testing.T) {
+func TestShouldCancelOnRepeatedEscapeRejectsWithoutForegroundTarget(t *testing.T) {
 	called := false
 	allow := func() bool {
 		called = true
 		return true
 	}
 
-	if !shouldCancelOnRepeatedEscape(false, true, allow) {
-		t.Fatalf("expected repeated escape fallback to allow cancellation")
+	if shouldCancelOnRepeatedEscape(false, true, allow) {
+		t.Fatalf("expected repeated escape fallback to be blocked without foreground target")
 	}
-	if !called {
-		t.Fatalf("expected cancel gate to be consulted")
+	if called {
+		t.Fatalf("expected cancel gate to be skipped when foreground target is missing")
 	}
 }
 
@@ -110,11 +111,41 @@ func TestShouldCancelOnRepeatedEscapeStillHonorsRuntimeGate(t *testing.T) {
 		return false
 	}
 
-	if shouldCancelOnRepeatedEscape(false, true, allow) {
+	if shouldCancelOnRepeatedEscape(true, true, allow) {
 		t.Fatalf("expected repeated escape fallback to honor runtime gate")
 	}
 	if !called {
 		t.Fatalf("expected cancel gate to be consulted")
+	}
+}
+
+func TestConfirmAndCancelCancelsWhenApproved(t *testing.T) {
+	canceled := false
+
+	ok := confirmAndCancel(func() bool { return true }, func() {
+		canceled = true
+	})
+
+	if !ok {
+		t.Fatalf("expected confirmAndCancel to return true when approved")
+	}
+	if !canceled {
+		t.Fatalf("expected cancel callback to run when approved")
+	}
+}
+
+func TestConfirmAndCancelSkipsCancelWhenRejected(t *testing.T) {
+	canceled := false
+
+	ok := confirmAndCancel(func() bool { return false }, func() {
+		canceled = true
+	})
+
+	if ok {
+		t.Fatalf("expected confirmAndCancel to return false when rejected")
+	}
+	if canceled {
+		t.Fatalf("expected cancel callback to be skipped when rejected")
 	}
 }
 
@@ -186,6 +217,29 @@ func TestRuntimeStateConsumeRecentRequestCancelRejectsExpiredWindow(t *testing.T
 	}
 	if !rt.requestCancelIgnoreUntil.IsZero() {
 		t.Fatalf("expected expired grace window to be cleared")
+	}
+}
+
+func TestRuntimeStateCurrentThinkingStatusUsesProgressOverride(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.setThinkingStatus("Edit applied. Waiting for the model to summarize the change...")
+
+	status := rt.currentThinkingStatus(3 * time.Second)
+	if status != "Edit applied. Waiting for the model to summarize the change..." {
+		t.Fatalf("unexpected thinking status: %q", status)
+	}
+}
+
+func TestRuntimeStateCurrentThinkingStatusPrefersCancelPending(t *testing.T) {
+	rt := &runtimeState{}
+
+	rt.setThinkingStatus("Edit applied. Waiting for the model to summarize the change...")
+	rt.beginRequestCancel()
+
+	status := rt.currentThinkingStatus(30 * time.Second)
+	if status != "Canceling current request..." {
+		t.Fatalf("expected canceling status, got %q", status)
 	}
 }
 
@@ -477,6 +531,21 @@ func TestRuntimeStateFormatAssistantErrorForTokenLimit(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Increase max_tokens") {
 		t.Fatalf("expected token limit guidance, got %q", joined)
+	}
+}
+
+func TestRuntimeStateFormatAssistantErrorForDeadlineExceeded(t *testing.T) {
+	rt := &runtimeState{
+		ui: UI{},
+	}
+
+	lines := rt.formatAssistantError(context.DeadlineExceeded)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "assistant error: context deadline exceeded") {
+		t.Fatalf("expected base timeout error line, got %q", joined)
+	}
+	if !strings.Contains(joined, "timed out before a usable response arrived") {
+		t.Fatalf("expected timeout guidance, got %q", joined)
 	}
 }
 

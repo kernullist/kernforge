@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -41,6 +42,7 @@ type ChatRequest struct {
 	MaxTokens   int
 	Temperature float64
 	WorkingDir  string
+	OnTextDelta func(string)
 }
 
 type ChatResponse struct {
@@ -97,11 +99,9 @@ func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
 		baseURL = "https://api.anthropic.com"
 	}
 	return &AnthropicClient{
-		apiKey:  apiKey,
-		baseURL: strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
+		apiKey:     apiKey,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		httpClient: &http.Client{},
 	}
 }
 
@@ -291,11 +291,9 @@ type OpenAIClient struct {
 
 func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
 	return &OpenAIClient{
-		apiKey:  apiKey,
-		baseURL: normalizeOpenAIBaseURL(baseURL),
-		httpClient: &http.Client{
-			Timeout: 5 * time.Minute,
-		},
+		apiKey:     apiKey,
+		baseURL:    normalizeOpenAIBaseURL(baseURL),
+		httpClient: &http.Client{},
 	}
 }
 
@@ -333,6 +331,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			} `json:"function"`
 		} `json:"tools,omitempty"`
 		ToolChoice string `json:"tool_choice,omitempty"`
+		Stream     bool   `json:"stream,omitempty"`
 	}
 	type openAIResponse struct {
 		Choices []struct {
@@ -429,6 +428,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	if len(payload.Tools) > 0 {
 		payload.ToolChoice = "auto"
 	}
+	if req.OnTextDelta != nil {
+		payload.Stream = true
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -447,6 +449,10 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	defer resp.Body.Close()
+
+	if payload.Stream {
+		return readOpenAIStream(ctx, resp.Body, req.OnTextDelta)
+	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -480,6 +486,143 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	return ChatResponse{
 		Message:    out,
 		StopReason: choice.FinishReason,
+	}, nil
+}
+
+func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(string)) (ChatResponse, error) {
+	type streamToolCallDelta struct {
+		Index    int    `json:"index"`
+		ID       string `json:"id,omitempty"`
+		Type     string `json:"type,omitempty"`
+		Function struct {
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"function,omitempty"`
+	}
+	type streamChunk struct {
+		Choices []struct {
+			Delta struct {
+				Content   string                `json:"content,omitempty"`
+				ToolCalls []streamToolCallDelta `json:"tool_calls,omitempty"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type,omitempty"`
+			Param   string `json:"param,omitempty"`
+			Code    any    `json:"code,omitempty"`
+		} `json:"error,omitempty"`
+	}
+	type toolCallAccumulator struct {
+		ID           string
+		Name         string
+		Arguments    strings.Builder
+		SeenArgument bool
+	}
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = body.Close()
+		case <-done:
+		}
+	}()
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	var textBuilder strings.Builder
+	toolCalls := map[int]*toolCallAccumulator{}
+	stopReason := ""
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk streamChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			return ChatResponse{}, err
+		}
+		if chunk.Error != nil {
+			return ChatResponse{}, fmt.Errorf("openai API error: %s", formatProviderErrorFields(chunk.Error.Message, chunk.Error.Type, chunk.Error.Param, chunk.Error.Code, []byte(payload)))
+		}
+		for _, choice := range chunk.Choices {
+			if choice.FinishReason != "" {
+				stopReason = choice.FinishReason
+			}
+			if choice.Delta.Content != "" {
+				textBuilder.WriteString(choice.Delta.Content)
+				if onTextDelta != nil {
+					onTextDelta(choice.Delta.Content)
+				}
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				entry := toolCalls[tc.Index]
+				if entry == nil {
+					entry = &toolCallAccumulator{}
+					toolCalls[tc.Index] = entry
+				}
+				if tc.ID != "" {
+					entry.ID = tc.ID
+				}
+				if tc.Function.Name != "" {
+					entry.Name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					entry.Arguments.WriteString(tc.Function.Arguments)
+					entry.SeenArgument = true
+				}
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ChatResponse{}, ctxErr
+		}
+		return ChatResponse{}, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ChatResponse{}, ctxErr
+	}
+
+	out := Message{
+		Role: "assistant",
+		Text: textBuilder.String(),
+	}
+	for index := 0; ; index++ {
+		entry, ok := toolCalls[index]
+		if !ok {
+			break
+		}
+		arguments := "{}"
+		if entry.SeenArgument {
+			arguments = entry.Arguments.String()
+		}
+		out.ToolCalls = append(out.ToolCalls, ToolCall{
+			ID:        entry.ID,
+			Name:      entry.Name,
+			Arguments: arguments,
+		})
+	}
+
+	return ChatResponse{
+		Message:    out,
+		StopReason: stopReason,
 	}, nil
 }
 
@@ -559,12 +702,9 @@ type OllamaClient struct {
 
 func NewOllamaClient(baseURL, apiKey string) *OllamaClient {
 	return &OllamaClient{
-		apiKey:  apiKey,
-		baseURL: normalizeOllamaBaseURL(baseURL),
-		httpClient: &http.Client{
-			// Ollama 는 로컬 실행 시 응답이 느릴 수 있으므로 긴 타임아웃 설정
-			Timeout: 10 * time.Minute,
-		},
+		apiKey:     apiKey,
+		baseURL:    normalizeOllamaBaseURL(baseURL),
+		httpClient: &http.Client{},
 	}
 }
 

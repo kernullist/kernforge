@@ -43,7 +43,7 @@ type processEntry32 struct {
 	ExeFile         [260]uint16
 }
 
-func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
+func startEscapeWatcher(cancel func(), shouldCancel func() bool, confirmCancel func() bool) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	var once sync.Once
@@ -61,7 +61,7 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 			case <-stop:
 				return
 			case <-ticker.C:
-				if pollConsoleEscape(cancel, shouldCancel) {
+				if pollConsoleEscape(cancel, shouldCancel, confirmCancel) {
 					return
 				}
 				state, _, _ := getAsyncKeyStateProc.Call(vkEscape)
@@ -70,14 +70,22 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 					hasForegroundTarget := isRequestCancelForegroundTarget()
 					if shouldCancelOnEscape(hasForegroundTarget, shouldCancel) {
 						flushPendingConsoleInput()
-						cancel()
-						return
+						if confirmAndCancel(confirmCancel, cancel) {
+							return
+						}
+						lastBlockedEscape = time.Now()
+						wasDown = down
+						continue
 					}
 					repeatedPress := !lastBlockedEscape.IsZero() && time.Since(lastBlockedEscape) <= 1500*time.Millisecond
 					if shouldCancelOnRepeatedEscape(hasForegroundTarget, repeatedPress, shouldCancel) {
 						flushPendingConsoleInput()
-						cancel()
-						return
+						if confirmAndCancel(confirmCancel, cancel) {
+							return
+						}
+						lastBlockedEscape = time.Now()
+						wasDown = down
+						continue
 					}
 					lastBlockedEscape = time.Now()
 				}
@@ -92,7 +100,7 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
 	}
 }
 
-func pollConsoleEscape(cancel func(), shouldCancel func() bool) bool {
+func pollConsoleEscape(cancel func(), shouldCancel func() bool, confirmCancel func() bool) bool {
 	handle := syscall.Handle(os.Stdin.Fd())
 	var mode uint32
 	r1, _, _ := getConsoleModeCancelProc.Call(uintptr(handle), uintptr(unsafe.Pointer(&mode)))
@@ -124,8 +132,10 @@ func pollConsoleEscape(cancel func(), shouldCancel func() bool) bool {
 			continue
 		}
 		flushPendingConsoleInput()
-		cancel()
-		return true
+		if confirmAndCancel(confirmCancel, cancel) {
+			return true
+		}
+		return false
 	}
 
 	return false

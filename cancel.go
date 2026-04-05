@@ -1,24 +1,34 @@
 package main
 
 func shouldCancelOnEscape(hasForegroundTarget bool, shouldCancel func() bool) bool {
+	if !hasForegroundTarget {
+		return false
+	}
 	if shouldCancel != nil && !shouldCancel() {
 		return false
 	}
-	_ = hasForegroundTarget
+	return true
+}
+
+func confirmAndCancel(confirmCancel func() bool, cancel func()) bool {
+	if confirmCancel != nil && !confirmCancel() {
+		return false
+	}
+	if cancel == nil {
+		return false
+	}
+	cancel()
 	return true
 }
 
 func shouldCancelOnRepeatedEscape(hasForegroundTarget bool, repeatedPress bool, shouldCancel func() bool) bool {
-	if hasForegroundTarget {
-		return shouldCancelOnEscape(true, shouldCancel)
+	if !hasForegroundTarget {
+		return false
 	}
 	if !repeatedPress {
 		return false
 	}
-	if shouldCancel != nil && !shouldCancel() {
-		return false
-	}
-	return true
+	return shouldCancelOnEscape(true, shouldCancel)
 }
 
 func isAsyncKeyPressed(state uintptr) bool {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const userConfigDirName = ".kernforge"
@@ -68,7 +69,7 @@ func DefaultConfig(cwd string) Config {
 		Shell:               defaultShell(),
 		SessionDir:          filepath.Join(userConfigDir(), "sessions"),
 		AutoCompactChars:    45000,
-		AutoCheckpointEdits: boolPtr(true),
+		AutoCheckpointEdits: boolPtr(false),
 		AutoVerifyDocsOnly:  boolPtr(false),
 		AutoLocale:          boolPtr(true),
 		HooksEnabled:        boolPtr(true),
@@ -415,7 +416,7 @@ func boolPtr(value bool) *bool {
 
 func configAutoCheckpointEdits(cfg Config) bool {
 	if cfg.AutoCheckpointEdits == nil {
-		return true
+		return false
 	}
 	return *cfg.AutoCheckpointEdits
 }
@@ -446,6 +447,10 @@ func configMaxToolIterations(cfg Config) int {
 		return 16
 	}
 	return cfg.MaxToolIterations
+}
+
+func configRequestTimeout(cfg Config) time.Duration {
+	return 20 * time.Minute
 }
 
 func configAutoLocale(cfg Config) bool {
@@ -603,7 +608,7 @@ func InitWorkspaceConfigTemplate() string {
 		EnabledSkills       []string          `json:"enabled_skills,omitempty"`
 		MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
 	}{
-		AutoCheckpointEdits: boolPtr(true),
+		AutoCheckpointEdits: boolPtr(false),
 		AutoVerifyDocsOnly:  boolPtr(false),
 		HooksEnabled:        boolPtr(true),
 		HookPresets:         []string{},

@@ -80,3 +80,57 @@ func TestEditToolDescriptionsBiasTowardApplyPatch(t *testing.T) {
 		t.Fatalf("expected replace_in_file description to emphasize narrow usage, got %q", replaceDesc)
 	}
 }
+
+func TestApplyPatchRequiresPreviewApprovalBeforeWriting(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	previewCalls := 0
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			previewCalls++
+			if !strings.Contains(preview.Title, "Apply patch") {
+				t.Fatalf("unexpected preview title: %q", preview.Title)
+			}
+			if !strings.Contains(preview.Preview, "Preview for main.go") {
+				t.Fatalf("expected patch preview contents, got %q", preview.Preview)
+			}
+			return false, nil
+		},
+	}
+	tool := NewApplyPatchTool(ws)
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+	})
+	if !errors.Is(err, ErrEditCanceled) {
+		t.Fatalf("expected ErrEditCanceled, got %v", err)
+	}
+	if previewCalls != 1 {
+		t.Fatalf("expected one preview confirmation, got %d", previewCalls)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected file to remain unchanged after preview rejection, got %q", string(data))
+	}
+}
+
+func TestToolRegistryExecuteWrapsMalformedJSONAsInvalidToolArguments(t *testing.T) {
+	ws := Workspace{}
+	registry := NewToolRegistry(NewWriteFileTool(ws))
+
+	_, err := registry.Execute(context.Background(), "write_file", `{"path":"main.go","content":"package main`)
+	if !errors.Is(err, ErrInvalidToolArgumentsJSON) {
+		t.Fatalf("expected ErrInvalidToolArgumentsJSON, got %v", err)
+	}
+}

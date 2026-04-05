@@ -135,11 +135,13 @@ func (ui UI) errorLine(text string) string {
 	return ui.error("ERROR  " + text)
 }
 
-func (ui UI) thinkingLine(frame string, elapsed time.Duration) string {
+func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) string {
 	seconds := int(elapsed.Seconds())
-	status := "Sending prompt to model..."
-	if seconds >= 15 {
-		status = "Still waiting for the model response..."
+	if strings.TrimSpace(status) == "" {
+		status = "Sending prompt to model..."
+		if seconds >= 15 {
+			status = "Still waiting for the model response..."
+		}
 	}
 	return ui.bold(ui.accent("thinking")) + " " + ui.dim("["+frame+"]") + " " + ui.info(status) + " " + ui.dim(fmt.Sprintf("(%ds, Esc to cancel)", seconds))
 }

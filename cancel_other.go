@@ -4,9 +4,10 @@ package main
 
 import "time"
 
-func startEscapeWatcher(cancel func(), shouldCancel func() bool) func() {
+func startEscapeWatcher(cancel func(), shouldCancel func() bool, confirmCancel func() bool) func() {
 	_ = cancel
 	_ = shouldCancel
+	_ = confirmCancel
 	return func() {}
 }
 

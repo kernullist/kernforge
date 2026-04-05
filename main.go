@@ -26,45 +26,54 @@ func main() {
 }
 
 type runtimeState struct {
-	cfg                  Config
-	reader               *bufio.Reader
-	writer               io.Writer
-	ui                   UI
-	bannerShown          bool
-	prefillInput         string
-	inputHistory         []string
-	store                *SessionStore
-	session              *Session
-	agent                *Agent
-	perms                *PermissionManager
-	memory               MemoryBundle
-	longMem              *PersistentMemoryStore
-	evidence             *EvidenceStore
-	investigations       *InvestigationStore
-	simulations          *SimulationStore
-	hookOverrides        *HookOverrideStore
-	checkpoints          *CheckpointManager
-	autoCP               *AutoCheckpointController
-	verifyHistory        *VerificationHistoryStore
-	hooks                *HookRuntime
-	hookWarns            []string
-	skills               SkillCatalog
-	skillWarns           []string
-	mcp                  *MCPManager
-	mcpWarns             []string
-	ollamaModels         []OllamaModelInfo
-	clientErr            error
-	workspace            Workspace
-	interactive          bool
-	thinkingMu           sync.Mutex
-	thinkingStop         func()
-	requestCancelMu      sync.Mutex
-	requestCancelPauses  int
+	cfg                      Config
+	reader                   *bufio.Reader
+	writer                   io.Writer
+	ui                       UI
+	bannerShown              bool
+	prefillInput             string
+	inputHistory             []string
+	store                    *SessionStore
+	session                  *Session
+	agent                    *Agent
+	perms                    *PermissionManager
+	memory                   MemoryBundle
+	longMem                  *PersistentMemoryStore
+	evidence                 *EvidenceStore
+	investigations           *InvestigationStore
+	simulations              *SimulationStore
+	hookOverrides            *HookOverrideStore
+	checkpoints              *CheckpointManager
+	autoCP                   *AutoCheckpointController
+	verifyHistory            *VerificationHistoryStore
+	hooks                    *HookRuntime
+	hookWarns                []string
+	skills                   SkillCatalog
+	skillWarns               []string
+	mcp                      *MCPManager
+	mcpWarns                 []string
+	ollamaModels             []OllamaModelInfo
+	clientErr                error
+	workspace                Workspace
+	interactive              bool
+	outputMu                 sync.Mutex
+	thinkingMu               sync.Mutex
+	thinkingStop             func()
+	streamMu                 sync.Mutex
+	streamingAssistant       bool
+	streamedAssistantText    strings.Builder
+	suppressThinkingMu       sync.Mutex
+	suppressThinking         bool
+	thinkingStatusMu         sync.Mutex
+	thinkingStatusOverride   string
+	requestCancelMu          sync.Mutex
+	requestCancelPauses      int
+	requestCancelPending     bool
 	requestCancelIgnoreUntil time.Time
-	lastAssistantMu      sync.Mutex
-	lastAssistantPrinted string
-	alwaysApprovePreview bool
-	alwaysApproveWrites  bool
+	lastAssistantMu          sync.Mutex
+	lastAssistantPrinted     string
+	alwaysApprovePreview     bool
+	alwaysApproveWrites      bool
 }
 
 func run(args []string) error {
@@ -198,6 +207,10 @@ func run(args []string) error {
 		Shell:       cfg.Shell,
 		Perms:       rt.perms,
 		PrepareEdit: rt.prepareEdit,
+		ReportProgress: func(message string) {
+			rt.setThinkingStatus(message)
+			rt.printWhileThinking(rt.ui.infoLine(message))
+		},
 		CurrentSelection: func() *ViewerSelection {
 			return rt.session.CurrentSelection()
 		},
@@ -230,6 +243,13 @@ func run(args []string) error {
 		VerifyHistory: rt.verifyHistory,
 		EmitAssistant: func(text string) {
 			rt.printAssistantWhileThinking(text)
+		},
+		EmitAssistantDelta: func(text string) {
+			rt.appendAssistantStream(text)
+		},
+		EmitProgress: func(text string) {
+			rt.setThinkingStatus(compactThinkingStatus(text))
+			rt.printWhileThinking(rt.ui.infoLine(text))
 		},
 	}
 	rt.reloadExtensions()
@@ -288,7 +308,7 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	if rt.clientErr != nil {
 		return rt.clientErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), configRequestTimeout(rt.cfg))
 	defer cancel()
 	reply, err := rt.runAgentReplyWithImages(ctx, prompt, images)
 	if err != nil {
@@ -393,7 +413,7 @@ func (rt *runtimeState) runREPL() error {
 			}
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), configRequestTimeout(rt.cfg))
 		reply, err := rt.runAgentReply(ctx, input)
 		cancel()
 		if err != nil {
@@ -461,6 +481,8 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 			lines = append(lines, rt.ui.hintLine("Model stop reason: "+stopReason))
 		}
 		lines = append(lines, rt.ui.hintLine("Increase max_tokens, reduce prompt bloat, or ask for a shorter intermediate answer."))
+	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded"):
+		lines = append(lines, rt.ui.hintLine("The model request timed out before a usable response arrived. Retry the request, reduce prompt/tool churn, or increase the request timeout if your provider is slow."))
 	}
 	return lines
 }
@@ -520,14 +542,26 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 	requestCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	rt.resetAssistantDedup()
+	rt.resetAssistantStream()
+	rt.allowThinkingIndicator()
+	rt.clearThinkingStatus()
+	rt.clearRequestCancelState()
 	rt.armAutoCheckpoint()
 	defer rt.clearAutoCheckpoint()
+	defer rt.allowThinkingIndicator()
+	defer rt.clearThinkingStatus()
+	defer rt.clearRequestCancelState()
 
-	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	cancelRequest := func() {
+		rt.beginRequestCancel()
+		cancel()
+	}
+	stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 	defer stopEscapeWatcher()
 
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
+	defer rt.finishAssistantStream()
 
 	reply, err := rt.agent.ReplyWithImages(requestCtx, input, images)
 	if err != nil {
@@ -547,6 +581,9 @@ func (rt *runtimeState) startThinkingIndicator() {
 		return
 	}
 	rt.thinkingMu.Unlock()
+	if rt.isThinkingSuppressed() {
+		return
+	}
 
 	frames := []string{"-", "\\", "|", "/"}
 	stop := make(chan struct{})
@@ -571,9 +608,10 @@ func (rt *runtimeState) startThinkingIndicator() {
 		lastWidth := 0
 		startedAt := time.Now()
 		render := func(frame string) {
-			line := rt.ui.thinkingLine(frame, time.Since(startedAt))
+			elapsed := time.Since(startedAt)
+			line := rt.ui.thinkingLine(frame, elapsed, rt.currentThinkingStatus(elapsed))
 			clear := "\r" + strings.Repeat(" ", lastWidth) + "\r"
-			fmt.Fprint(rt.writer, clear+line)
+			rt.writeOutput(clear + line)
 			lastWidth = visibleLen(line)
 		}
 
@@ -583,7 +621,7 @@ func (rt *runtimeState) startThinkingIndicator() {
 			select {
 			case <-stop:
 				clear := "\r" + strings.Repeat(" ", lastWidth) + "\r"
-				fmt.Fprint(rt.writer, clear)
+				rt.writeOutput(clear)
 				close(done)
 				return
 			case <-ticker.C:
@@ -604,12 +642,166 @@ func (rt *runtimeState) stopThinkingIndicator() {
 	}
 }
 
+func (rt *runtimeState) resetAssistantStream() {
+	rt.streamMu.Lock()
+	rt.streamingAssistant = false
+	rt.streamedAssistantText.Reset()
+	rt.streamMu.Unlock()
+}
+
+func (rt *runtimeState) suppressThinkingIndicator() {
+	rt.suppressThinkingMu.Lock()
+	rt.suppressThinking = true
+	rt.suppressThinkingMu.Unlock()
+}
+
+func (rt *runtimeState) allowThinkingIndicator() {
+	rt.suppressThinkingMu.Lock()
+	rt.suppressThinking = false
+	rt.suppressThinkingMu.Unlock()
+}
+
+func (rt *runtimeState) isThinkingSuppressed() bool {
+	rt.suppressThinkingMu.Lock()
+	defer rt.suppressThinkingMu.Unlock()
+	return rt.suppressThinking
+}
+
+func (rt *runtimeState) appendAssistantStream(text string) {
+	if text == "" {
+		return
+	}
+	rt.clearThinkingStatus()
+	rt.suppressThinkingIndicator()
+
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+
+	if !rt.streamingAssistant {
+		rt.stopThinkingIndicator()
+		rt.writeOutput(rt.ui.bold(rt.ui.info("assistant")) + rt.ui.dim(": "))
+		rt.streamingAssistant = true
+	}
+	rt.streamedAssistantText.WriteString(text)
+	rt.writeOutput(rt.ui.mint(text))
+}
+
+func (rt *runtimeState) finishAssistantStream() {
+	rt.streamMu.Lock()
+	defer rt.streamMu.Unlock()
+
+	if !rt.streamingAssistant {
+		return
+	}
+	rt.writeOutput("\n")
+	rt.streamingAssistant = false
+	if normalized := normalizeAssistantDisplayText(rt.streamedAssistantText.String()); normalized != "" {
+		rt.lastAssistantMu.Lock()
+		rt.lastAssistantPrinted = normalized
+		rt.lastAssistantMu.Unlock()
+	}
+	rt.streamedAssistantText.Reset()
+}
+
 func (rt *runtimeState) printWhileThinking(lines ...string) {
 	rt.stopThinkingIndicator()
+	rt.outputMu.Lock()
 	for _, line := range lines {
 		fmt.Fprintln(rt.writer, line)
 	}
+	rt.outputMu.Unlock()
 	rt.startThinkingIndicator()
+}
+
+func (rt *runtimeState) writeOutput(text string) {
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	fmt.Fprint(rt.writer, text)
+}
+
+func (rt *runtimeState) setThinkingStatus(text string) {
+	rt.thinkingStatusMu.Lock()
+	rt.thinkingStatusOverride = strings.TrimSpace(text)
+	rt.thinkingStatusMu.Unlock()
+}
+
+func (rt *runtimeState) clearThinkingStatus() {
+	rt.thinkingStatusMu.Lock()
+	rt.thinkingStatusOverride = ""
+	rt.thinkingStatusMu.Unlock()
+}
+
+func (rt *runtimeState) beginRequestCancel() {
+	rt.requestCancelMu.Lock()
+	rt.requestCancelPending = true
+	rt.requestCancelMu.Unlock()
+}
+
+func (rt *runtimeState) clearRequestCancelState() {
+	rt.requestCancelMu.Lock()
+	rt.requestCancelPending = false
+	rt.requestCancelMu.Unlock()
+}
+
+func (rt *runtimeState) currentThinkingStatus(elapsed time.Duration) string {
+	rt.requestCancelMu.Lock()
+	cancelPending := rt.requestCancelPending
+	rt.requestCancelMu.Unlock()
+	if cancelPending {
+		return "Canceling current request..."
+	}
+	rt.thinkingStatusMu.Lock()
+	override := rt.thinkingStatusOverride
+	rt.thinkingStatusMu.Unlock()
+	if override != "" {
+		return override
+	}
+	if elapsed >= 15*time.Second {
+		return "Still waiting for the model response..."
+	}
+	return "Sending prompt to model..."
+}
+
+func compactThinkingStatus(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lower, "cancel"):
+		return "Canceling current request..."
+	case strings.HasPrefix(lower, "writing "):
+		return "Applying edit..."
+	case strings.HasPrefix(lower, "saved "):
+		return "Edit saved."
+	case strings.HasPrefix(lower, "running post-edit hooks"):
+		return "Running post-edit hooks..."
+	case strings.HasPrefix(lower, "post-edit hooks finished"):
+		return "Post-edit hooks finished."
+	case strings.HasPrefix(lower, "creating automatic checkpoint"):
+		return "Creating checkpoint..."
+	case strings.HasPrefix(lower, "patch applied"):
+		return "Patch applied."
+	case strings.HasPrefix(lower, "file updated"):
+		return "File updated."
+	case strings.HasPrefix(lower, "replacement applied"):
+		return "Replacement applied."
+	case strings.Contains(lower, "checking follow-up"):
+		return "Checking follow-up steps..."
+	case strings.Contains(lower, "automatic verification failed"):
+		return "Verification failed."
+	case strings.Contains(lower, "automatic verification finished"):
+		return "Verification finished."
+	case strings.Contains(lower, "waiting for the model to summarize"):
+		return "Finalizing reply..."
+	}
+
+	if len(trimmed) > 48 {
+		return trimmed[:45] + "..."
+	}
+	return trimmed
 }
 
 func normalizeAssistantDisplayText(text string) string {
@@ -656,7 +848,11 @@ func (rt *runtimeState) printAssistant(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	rt.clearThinkingStatus()
+	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
 	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
 }
 
@@ -664,15 +860,36 @@ func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	rt.clearThinkingStatus()
+	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
+	rt.outputMu.Lock()
 	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
-	rt.startThinkingIndicator()
+	rt.outputMu.Unlock()
 }
 
 func (rt *runtimeState) shouldHonorRequestCancel() bool {
 	rt.requestCancelMu.Lock()
 	defer rt.requestCancelMu.Unlock()
 	return rt.requestCancelPauses == 0
+}
+
+func (rt *runtimeState) confirmRequestCancel() bool {
+	if !rt.interactive {
+		return true
+	}
+	var (
+		allowed bool
+		err     error
+	)
+	rt.withRequestCancelSuspended(func() {
+		allowed, err = rt.confirm("Cancel current request?")
+	})
+	if err != nil {
+		rt.printWhileThinking(rt.ui.warnLine("request cancel confirmation failed: " + err.Error()))
+		return false
+	}
+	return allowed
 }
 
 func (rt *runtimeState) noteRecentRequestCancel() {
@@ -3518,7 +3735,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 	defer stopEscapeWatcher()
 
 	result, err := RunPlanReview(
@@ -3654,7 +3871,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 	defer stopEscapeWatcher()
 
 	rt.startThinkingIndicator()
@@ -3751,7 +3968,7 @@ func (rt *runtimeState) handleAnalyzePerformanceCommand(args string) error {
 
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel)
+	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 	defer stopEscapeWatcher()
 
 	rt.startThinkingIndicator()
@@ -4441,6 +4658,9 @@ func (rt *runtimeState) clearAutoCheckpoint() {
 func (rt *runtimeState) prepareEdit(reason string) error {
 	if rt.autoCP == nil {
 		return nil
+	}
+	if rt.autoCP.Enabled && rt.autoCP.Pending {
+		rt.printWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
 	}
 	meta, err := rt.autoCP.Prepare(reason)
 	if err != nil {

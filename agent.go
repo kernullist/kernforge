@@ -14,21 +14,23 @@ import (
 )
 
 type Agent struct {
-	Config          Config
-	Client          ProviderClient
-	Tools           *ToolRegistry
-	Workspace       Workspace
-	Session         *Session
-	Store           *SessionStore
-	Memory          MemoryBundle
-	Skills          SkillCatalog
-	MCP             *MCPManager
-	LongMem         *PersistentMemoryStore
-	Evidence        *EvidenceStore
-	VerifyHistory   *VerificationHistoryStore
-	VerifyChanges   func(context.Context) (VerificationReport, bool)
-	EmitAssistant   func(string)
-	lastEmittedText string
+	Config             Config
+	Client             ProviderClient
+	Tools              *ToolRegistry
+	Workspace          Workspace
+	Session            *Session
+	Store              *SessionStore
+	Memory             MemoryBundle
+	Skills             SkillCatalog
+	MCP                *MCPManager
+	LongMem            *PersistentMemoryStore
+	Evidence           *EvidenceStore
+	VerifyHistory      *VerificationHistoryStore
+	VerifyChanges      func(context.Context) (VerificationReport, bool)
+	EmitAssistant      func(string)
+	EmitAssistantDelta func(string)
+	EmitProgress       func(string)
+	lastEmittedText    string
 }
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
@@ -99,6 +101,7 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 	unresolvedVerification := false
 	finalAnswerNudges := 0
 	patchFormatRetries := 0
+	invalidToolArgsRetries := 0
 	editTargetMismatchRetries := 0
 	lastToolError := ""
 	lastToolErrorCount := 0
@@ -111,22 +114,30 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 	lastRecentToolTurns := ""
 	consecutiveEditTurns := 0
 	postEditFinalAnswerNudges := 0
+	disabledTools := map[string]bool{}
 	for iterations := 0; iterations < configMaxToolIterations(a.Config); iterations++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		lastIteration = iterations + 1
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
 			a.Compact("Auto-compacted due to context growth.")
 		}
-		resp, err := a.Client.Complete(ctx, ChatRequest{
+		resp, err := a.completeModelTurn(ctx, ChatRequest{
 			Model:       a.Session.Model,
 			System:      a.systemPrompt(),
 			Messages:    a.Session.Messages,
-			Tools:       a.Tools.Definitions(),
+			Tools:       a.Tools.DefinitionsExcluding(disabledTools),
 			MaxTokens:   a.Config.MaxTokens,
 			Temperature: a.Config.Temperature,
 			WorkingDir:  a.Session.WorkingDir,
+			OnTextDelta: a.EmitAssistantDelta,
 		})
 		if err != nil {
 			return "", err
+		}
+		if a.EmitAssistantDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
+			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
 		lastStopReason = normalizeStopReason(resp.StopReason)
 		a.Session.AddMessage(resp.Message)
@@ -230,6 +241,9 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		finalAnswerNudges = 0
 		edited := false
 		for _, call := range resp.Message.ToolCalls {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
 			out, err := a.Tools.Execute(ctx, call.Name, call.Arguments)
 			toolMsg := Message{
 				Role:       "tool",
@@ -265,6 +279,29 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 					return "", saveErr
 				}
 				return "", err
+			}
+			if err != nil && errors.Is(err, ErrInvalidToolArgumentsJSON) && invalidToolArgsRetries < 1 {
+				toolMsg.IsError = true
+				if out == "" {
+					toolMsg.Text = err.Error()
+				} else {
+					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+				}
+				a.Session.AddMessage(toolMsg)
+				if toolShouldBeDisabledAfterInvalidJSON(call.Name) {
+					disabledTools[strings.TrimSpace(call.Name)] = true
+				}
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: invalidToolArgumentsGuidance(call.Name),
+				})
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				invalidToolArgsRetries++
+				lastToolError = ""
+				lastToolErrorCount = 0
+				continue
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
 				toolMsg.IsError = true
@@ -320,14 +357,32 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 				edited = true
 				lastToolError = ""
 				lastToolErrorCount = 0
+				if a.EmitProgress != nil {
+					if summary := summarizeEditToolResult(call.Name, out); summary != "" {
+						a.EmitProgress(summary)
+					}
+				}
 			}
 			a.Session.AddMessage(toolMsg)
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
 		if lastToolErrorCount >= 2 && lastToolError != "" {
 			return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 		}
 		if edited {
+			if a.EmitProgress != nil {
+				a.EmitProgress("Edit applied. Checking follow-up steps...")
+			}
 			if report, ok := a.autoVerifyChanges(ctx); ok {
+				if a.EmitProgress != nil {
+					if report.HasFailures() {
+						a.EmitProgress("Automatic verification failed. Asking the model to continue fixing the issue...")
+					} else {
+						a.EmitProgress("Automatic verification finished. Waiting for the model to summarize the change...")
+					}
+				}
 				verification := strings.TrimSpace(report.RenderDetailed())
 				a.Session.AddMessage(Message{
 					Role: "user",
@@ -350,6 +405,9 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 					})
 				}
 			} else {
+				if a.EmitProgress != nil {
+					a.EmitProgress("Edit applied. Waiting for the model to summarize the change...")
+				}
 				unresolvedVerification = false
 			}
 			if !unresolvedVerification {
@@ -372,12 +430,35 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 	}
 	if lastToolError != "" {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
 	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, configMaxToolIterations(a.Config), lastRecentToolTurns))
+}
+
+func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	type result struct {
+		resp ChatResponse
+		err  error
+	}
+
+	done := make(chan result, 1)
+	go func() {
+		resp, err := a.Client.Complete(ctx, req)
+		done <- result{resp: resp, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ChatResponse{}, ctx.Err()
+	case out := <-done:
+		return out.resp, out.err
+	}
 }
 
 func toolCallSignature(calls []ToolCall) string {
@@ -406,6 +487,61 @@ func normalizeToolArguments(raw string) string {
 		return trimmed
 	}
 	return string(canonical)
+}
+
+func summarizeEditToolResult(name, out string) string {
+	lines := strings.Split(strings.ReplaceAll(out, "\r\n", "\n"), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "--- ") || strings.HasPrefix(trimmed, "+++ ") || strings.HasPrefix(trimmed, "@@") {
+			continue
+		}
+		switch name {
+		case "apply_patch":
+			return "Patch applied: " + trimmed
+		case "write_file":
+			return "File updated: " + trimmed
+		case "replace_in_file":
+			return "Replacement applied: " + trimmed
+		default:
+			return trimmed
+		}
+	}
+	switch name {
+	case "apply_patch":
+		return "Patch applied successfully."
+	case "write_file":
+		return "File updated successfully."
+	case "replace_in_file":
+		return "Replacement applied successfully."
+	default:
+		return ""
+	}
+}
+
+func invalidToolArgumentsGuidance(toolName string) string {
+	switch strings.TrimSpace(toolName) {
+	case "write_file":
+		return "Your last write_file call used malformed or truncated JSON arguments. write_file is now disabled for this request. Do not repeat the same write_file payload. If you are editing an existing file, first read the exact file path again and use apply_patch instead of write_file. Only use write_file for creating a new file or fully rewriting a file with one complete valid JSON object."
+	case "apply_patch":
+		return "Your last apply_patch call used malformed or truncated JSON arguments. Retry with one complete valid JSON object whose patch field contains the full raw patch text. Do not send partial JSON or cut off the patch string."
+	case "replace_in_file":
+		return "Your last replace_in_file call used malformed or truncated JSON arguments. replace_in_file is now disabled for this request. Re-read the file and retry with one complete valid JSON object. If the change is larger than a tiny exact substitution, use apply_patch instead."
+	default:
+		return "Your last tool call used malformed or truncated JSON arguments. Retry with one complete valid JSON object only. Do not repeat the same broken payload."
+	}
+}
+
+func toolShouldBeDisabledAfterInvalidJSON(toolName string) bool {
+	switch strings.TrimSpace(toolName) {
+	case "write_file", "replace_in_file":
+		return true
+	default:
+		return false
+	}
 }
 
 func summarizeToolCalls(calls []ToolCall) string {
@@ -616,6 +752,8 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.\n")
 	b.WriteString("- If an edit fails because search text or patch context is not found, do not repeat the same edit. Re-read the file from the same path and build a fresh edit.\n")
 	b.WriteString("- Use write_file for creating new files or fully rewriting a file when necessary.\n")
+	b.WriteString("- Do not use write_file for small edits to existing files. Read the file and use apply_patch instead.\n")
+	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
 	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use &&. Use a single command or PowerShell separators like ; only when needed.\n")
