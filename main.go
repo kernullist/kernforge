@@ -60,8 +60,11 @@ type runtimeState struct {
 	thinkingStop         func()
 	requestCancelMu      sync.Mutex
 	requestCancelPauses  int
+	requestCancelIgnoreUntil time.Time
 	lastAssistantMu      sync.Mutex
 	lastAssistantPrinted string
+	alwaysApprovePreview bool
+	alwaysApproveWrites  bool
 }
 
 func run(args []string) error {
@@ -299,6 +302,9 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if !rt.interactive {
 		return true, nil
 	}
+	if rt.alwaysApprovePreview {
+		return rt.openEditPreview(preview)
+	}
 	var (
 		openPreview bool
 		err         error
@@ -312,6 +318,10 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if !openPreview {
 		return false, ErrEditCanceled
 	}
+	return rt.openEditPreview(preview)
+}
+
+func (rt *runtimeState) openEditPreview(preview EditPreview) (bool, error) {
 	ok, err := OpenDiffPreview(preview)
 	if err == nil {
 		return ok, nil
@@ -522,6 +532,7 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 	reply, err := rt.agent.ReplyWithImages(requestCtx, input, images)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled && ctx.Err() == nil {
+			rt.noteRecentRequestCancel()
 			return "", fmt.Errorf("request canceled by user")
 		}
 		return "", err
@@ -662,6 +673,36 @@ func (rt *runtimeState) shouldHonorRequestCancel() bool {
 	rt.requestCancelMu.Lock()
 	defer rt.requestCancelMu.Unlock()
 	return rt.requestCancelPauses == 0
+}
+
+func (rt *runtimeState) noteRecentRequestCancel() {
+	rt.requestCancelMu.Lock()
+	rt.requestCancelIgnoreUntil = time.Now().Add(350 * time.Millisecond)
+	rt.requestCancelMu.Unlock()
+}
+
+func (rt *runtimeState) shouldIgnorePromptEscape() bool {
+	rt.requestCancelMu.Lock()
+	defer rt.requestCancelMu.Unlock()
+	if rt.requestCancelIgnoreUntil.IsZero() {
+		return false
+	}
+	if time.Now().After(rt.requestCancelIgnoreUntil) {
+		rt.requestCancelIgnoreUntil = time.Time{}
+		return false
+	}
+	return true
+}
+
+func (rt *runtimeState) consumeRecentRequestCancel() bool {
+	rt.requestCancelMu.Lock()
+	defer rt.requestCancelMu.Unlock()
+	if rt.requestCancelIgnoreUntil.IsZero() {
+		return false
+	}
+	active := time.Now().Before(rt.requestCancelIgnoreUntil)
+	rt.requestCancelIgnoreUntil = time.Time{}
+	return active
 }
 
 func (rt *runtimeState) suspendRequestCancel() func() {
@@ -841,6 +882,9 @@ func (rt *runtimeState) readInput(prompt string) (string, error) {
 	currentPrompt := prompt
 	initial := rt.prefillInput
 	rt.prefillInput = ""
+	if rt.consumeRecentRequestCancel() {
+		stabilizeConsoleAfterRequestCancel()
+	}
 	for {
 		var historyNav *inputHistoryNavigator
 		if len(lines) == 0 {
@@ -882,10 +926,13 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 	if !rt.interactive {
 		return false, fmt.Errorf("interactive confirmation unavailable")
 	}
+	if rt.autoApproveConfirmation(question) {
+		return true, nil
+	}
 	resumeThinking := rt.suspendThinkingIndicator()
 	defer resumeThinking()
 	for {
-		label := rt.ui.warnLine(question) + " " + rt.ui.dim("[y/N, Esc=cancel]")
+		label := rt.confirmLabel(question)
 		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil)
 		if !usedInteractive {
 			fmt.Fprint(rt.writer, label+" ")
@@ -900,13 +947,68 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 			}
 			return false, err
 		}
-		answer = strings.ToLower(strings.TrimSpace(answer))
-		switch answer {
-		case "y", "yes":
-			return true, nil
-		case "", "n", "no":
-			return false, nil
+		allowed, always, handled := parseConfirmationAnswer(answer)
+		if !handled {
+			continue
 		}
+		if allowed && always {
+			rt.rememberConfirmationApproval(question)
+		}
+		return allowed, nil
+	}
+}
+
+func (rt *runtimeState) autoApproveConfirmation(question string) bool {
+	if isWriteApprovalQuestion(question) {
+		return rt.alwaysApproveWrites
+	}
+	if isDiffPreviewQuestion(question) {
+		return rt.alwaysApprovePreview
+	}
+	return false
+}
+
+func (rt *runtimeState) confirmLabel(question string) string {
+	hint := "[y/N, Esc=cancel]"
+	if supportsAlwaysApproval(question) {
+		hint = "[y/N/a=always, Esc=cancel]"
+	}
+	return rt.ui.warnLine(question) + " " + rt.ui.dim(hint)
+}
+
+func supportsAlwaysApproval(question string) bool {
+	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question)
+}
+
+func isWriteApprovalQuestion(question string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(question)), "allow write?")
+}
+
+func isDiffPreviewQuestion(question string) bool {
+	return strings.EqualFold(strings.TrimSpace(question), "Open diff preview?")
+}
+
+func parseConfirmationAnswer(answer string) (bool, bool, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(answer))
+	switch normalized {
+	case "y", "yes":
+		return true, false, true
+	case "a", "always":
+		return true, true, true
+	case "", "n", "no":
+		return false, false, true
+	default:
+		return false, false, false
+	}
+}
+
+func (rt *runtimeState) rememberConfirmationApproval(question string) {
+	if isWriteApprovalQuestion(question) {
+		rt.alwaysApproveWrites = true
+		return
+	}
+	if isDiffPreviewQuestion(question) {
+		rt.alwaysApprovePreview = true
 	}
 }
 
@@ -3436,6 +3538,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
+			rt.noteRecentRequestCancel()
 			return fmt.Errorf("plan review canceled by user")
 		}
 		return err
@@ -3565,6 +3668,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	run, err := analyzer.Run(requestCtx, args)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
+			rt.noteRecentRequestCancel()
 			return fmt.Errorf("project analysis canceled by user")
 		}
 		return err

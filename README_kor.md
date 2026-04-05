@@ -28,6 +28,7 @@
 - [한국어 Hook Engine 스펙](./HOOK_ENGINE_SPEC_kor.md)
 - [한국어 Live Investigation Mode 스펙](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [한국어 Adversarial Simulation 스펙](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
+- [한국어 차세대 Project Analysis 스펙](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
 가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
 
@@ -71,6 +72,10 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 - `/analyze-project <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
+- semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
+- Unreal project/module/target/type/network/asset/system/config 신호를 구조화해 대형 UE 프로젝트 대응
+- semantic shard planner와 semantic-aware worker/reviewer prompt로 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분석
+- knowledge pack 외에도 structural index, Unreal semantic graph, vector corpus, vector ingestion export를 함께 생성
 - 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
 - `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
 - `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
@@ -109,6 +114,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 명령, 경로, 멘션, MCP 대상, `/open`에 대한 `Tab` 완성
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
+- Windows 콘솔에서 짧게 누른 `Esc`도 안정적으로 요청 취소
+- 요청 취소 직후 다음 프롬프트가 연속 `Esc` 입력으로 자동 취소되지 않도록 안정화
 - Windows 콘솔의 `Up`, `Down` 입력 히스토리
 
 ### 지속성
@@ -549,6 +556,8 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 
 - 입력 중 `Esc`: 현재 입력 취소
 - 요청 실행 중 `Esc`: 진행 중인 모델 요청 취소
+- Windows에서는 짧게 누른 `Esc`도 요청 취소로 인식되도록 처리한다.
+- 요청 취소 직후에는 `Esc` release와 콘솔 입력 버퍼를 정리해서 다음 프롬프트가 자동 취소되지 않게 한다.
 - Windows 콘솔의 `Up`, `Down`: 최근 입력 불러오기
 
 ### Tab 완성
@@ -731,17 +740,33 @@ hook 및 override 관련 명령:
 
 - 워크스페이스를 구조화된 snapshot으로 스캔
 - 코드베이스를 analysis shard로 분할
+- semantic shard planner로 UE/대규모 코드베이스의 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분리
 - conductor와 여러 worker/reviewer 패스를 사용
+- structural index와 Unreal semantic graph를 생성
+- semantic fingerprint와 structured invalidation diff로 재사용 여부와 재분석 원인을 추적
 - Markdown과 JSON 분석 산출물 생성
 - 후속 분석용 `latest` knowledge pack 유지
+- vector corpus와 provider별 ingestion seed를 생성
 - incremental 분석이 켜져 있으면 변경 없는 shard 결과 재사용
 
 주요 출력:
 
 - `.kernforge/analysis/<timestamp>_<goal>.md`
 - `.kernforge/analysis/<timestamp>_<goal>.json`
+- `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
+- `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
+- `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
+- `.kernforge/analysis/<timestamp>_<goal>_knowledge.json`
 - `.kernforge/analysis/<timestamp>_<goal>_performance_lens.md`
+- `.kernforge/analysis/<timestamp>_<goal>_performance_lens.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_corpus.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_corpus.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_ingest_manifest.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_ingest_records.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_pgvector.sql`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_sqlite.sql`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_qdrant.jsonl`
 - `.kernforge/analysis/latest/`
 
 권장 흐름:

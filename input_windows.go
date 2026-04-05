@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 	"unsafe"
 )
@@ -29,11 +30,11 @@ const (
 )
 
 var (
-	kernel32DLL                      = syscall.NewLazyDLL("kernel32.dll")
-	getConsoleModeProc               = kernel32DLL.NewProc("GetConsoleMode")
-	setConsoleModeProc               = kernel32DLL.NewProc("SetConsoleMode")
-	readConsoleInputProc             = kernel32DLL.NewProc("ReadConsoleInputW")
-	getConsoleScreenBufferInfoProc   = kernel32DLL.NewProc("GetConsoleScreenBufferInfo")
+	kernel32DLL                    = syscall.NewLazyDLL("kernel32.dll")
+	getConsoleModeProc             = kernel32DLL.NewProc("GetConsoleMode")
+	setConsoleModeProc             = kernel32DLL.NewProc("SetConsoleMode")
+	readConsoleInputProc           = kernel32DLL.NewProc("ReadConsoleInputW")
+	getConsoleScreenBufferInfoProc = kernel32DLL.NewProc("GetConsoleScreenBufferInfo")
 )
 
 type consoleScreenBufferInfo struct {
@@ -97,6 +98,31 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 	}
 	cursorPos := len(buffer)
 	prevLines := 0
+	currentLineCount := func() int {
+		current := prompt + string(buffer)
+		termW := terminalWidth()
+		if termW <= 0 {
+			return 1
+		}
+		width := visibleLen(current)
+		if width <= 0 {
+			return 1
+		}
+		return ((width - 1) / termW) + 1
+	}
+	runeSliceWidth := func(items []rune) int {
+		width := 0
+		for _, r := range items {
+			width += runeWidth(r)
+		}
+		return width
+	}
+	widthAfterCursor := func() int {
+		if cursorPos >= len(buffer) {
+			return 0
+		}
+		return runeSliceWidth(buffer[cursorPos:])
+	}
 	redraw := func() {
 		termW := terminalWidth()
 		// Move cursor up to the first line if previous content wrapped
@@ -117,10 +143,45 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			prevLines = 0
 		}
 		// Move cursor back to cursorPos
-		charsAfter := len(buffer) - cursorPos
-		if charsAfter > 0 {
-			fmt.Fprintf(rt.writer, "\x1b[%dD", charsAfter)
+		cellsAfter := widthAfterCursor()
+		if cellsAfter > 0 {
+			fmt.Fprintf(rt.writer, "\x1b[%dD", cellsAfter)
 		}
+	}
+	moveCursorLeft := func(count int) {
+		if count > 0 {
+			fmt.Fprintf(rt.writer, "\x1b[%dD", count)
+		}
+	}
+	moveCursorRight := func(count int) {
+		if count > 0 {
+			fmt.Fprintf(rt.writer, "\x1b[%dC", count)
+		}
+	}
+	eraseTrailing := func(count int) {
+		if count <= 0 {
+			return
+		}
+		spaces := strings.Repeat(" ", count)
+		fmt.Fprint(rt.writer, spaces)
+		moveCursorLeft(count)
+	}
+	rewriteFromCursor := func(charsAfter int, blankCount int) {
+		if charsAfter < 0 {
+			charsAfter = 0
+		}
+		if blankCount < 0 {
+			blankCount = 0
+		}
+		tail := ""
+		if charsAfter > 0 {
+			tail = string(buffer[cursorPos:])
+		}
+		fmt.Fprint(rt.writer, tail)
+		if blankCount > 0 {
+			fmt.Fprint(rt.writer, strings.Repeat(" ", blankCount))
+		}
+		moveCursorLeft(charsAfter + blankCount)
 	}
 
 	redraw()
@@ -138,37 +199,95 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			fmt.Fprint(rt.writer, "\n")
 			return string(buffer), true, nil
 		case inputVKEscape:
+			if rt.shouldIgnorePromptEscape() {
+				continue
+			}
 			fmt.Fprint(rt.writer, cancelInteractiveLine(prevLines))
 			return "", true, ErrPromptCanceled
 		case inputVKBack:
+			beforeLines := currentLineCount()
+			removed := 0
+			wasAtEnd := cursorPos == len(buffer)
+			removedWidth := 0
 			for i := 0; i < repeatCount && cursorPos > 0; i++ {
+				removedWidth += runeWidth(buffer[cursorPos-1])
 				buffer = append(buffer[:cursorPos-1], buffer[cursorPos:]...)
 				cursorPos--
+				removed++
 			}
 			historyNav.SyncBuffer(string(buffer))
-			redraw()
+			if removed == 0 {
+				continue
+			}
+			afterLines := currentLineCount()
+			if afterLines == beforeLines {
+				moveCursorLeft(removedWidth)
+				if wasAtEnd {
+					eraseTrailing(removedWidth)
+				} else {
+					cellsAfter := widthAfterCursor()
+					rewriteFromCursor(cellsAfter, removedWidth)
+				}
+				prevLines = afterLines - 1
+			} else {
+				redraw()
+			}
 		case inputVKDelete:
+			beforeLines := currentLineCount()
+			removed := 0
+			deletingTrailing := false
+			removedWidth := 0
+			if cursorPos < len(buffer) {
+				deleteCount := repeatCount
+				if deleteCount > len(buffer)-cursorPos {
+					deleteCount = len(buffer) - cursorPos
+				}
+				deletingTrailing = cursorPos+deleteCount == len(buffer)
+			}
 			for i := 0; i < repeatCount && cursorPos < len(buffer); i++ {
+				removedWidth += runeWidth(buffer[cursorPos])
 				buffer = append(buffer[:cursorPos], buffer[cursorPos+1:]...)
+				removed++
 			}
 			historyNav.SyncBuffer(string(buffer))
-			redraw()
+			if removed == 0 {
+				continue
+			}
+			afterLines := currentLineCount()
+			if afterLines == beforeLines {
+				if deletingTrailing {
+					eraseTrailing(removedWidth)
+				} else {
+					cellsAfter := widthAfterCursor()
+					rewriteFromCursor(cellsAfter, removedWidth)
+				}
+				prevLines = afterLines - 1
+			} else {
+				redraw()
+			}
 		case inputVKLeft:
+			moved := 0
+			movedWidth := 0
 			for i := 0; i < repeatCount && cursorPos > 0; i++ {
 				cursorPos--
+				moved++
+				movedWidth += runeWidth(buffer[cursorPos])
 			}
-			redraw()
+			_ = moved
+			moveCursorLeft(movedWidth)
 		case inputVKRight:
+			movedWidth := 0
 			for i := 0; i < repeatCount && cursorPos < len(buffer); i++ {
+				movedWidth += runeWidth(buffer[cursorPos])
 				cursorPos++
 			}
-			redraw()
+			moveCursorRight(movedWidth)
 		case inputVKHome:
+			moveCursorLeft(runeSliceWidth(buffer[:cursorPos]))
 			cursorPos = 0
-			redraw()
 		case inputVKEnd:
+			moveCursorRight(widthAfterCursor())
 			cursorPos = len(buffer)
-			redraw()
 		case inputVKTab:
 			updated, suggestions, handled := rt.completeLine(string(buffer))
 			if !handled {
@@ -212,6 +331,8 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			}
 			ch := rune(event.UnicodeChar)
 			if ch >= 32 {
+				beforeLines := currentLineCount()
+				typedAtEnd := cursorPos == len(buffer)
 				for i := 0; i < repeatCount; i++ {
 					buffer = append(buffer, 0)
 					copy(buffer[cursorPos+1:], buffer[cursorPos:])
@@ -219,7 +340,24 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 					cursorPos++
 				}
 				historyNav.SyncBuffer(string(buffer))
-				redraw()
+				if typedAtEnd {
+					inserted := strings.Repeat(string(ch), repeatCount)
+					fmt.Fprint(rt.writer, inserted)
+					afterLines := currentLineCount()
+					if afterLines > 0 {
+						prevLines = afterLines - 1
+					} else {
+						prevLines = 0
+					}
+				} else if afterLines := currentLineCount(); afterLines == beforeLines {
+					cellsAfter := widthAfterCursor()
+					inserted := strings.Repeat(string(ch), repeatCount)
+					fmt.Fprint(rt.writer, inserted)
+					rewriteFromCursor(cellsAfter, 0)
+					prevLines = afterLines - 1
+				} else {
+					redraw()
+				}
 			}
 		}
 	}
@@ -234,24 +372,32 @@ func cancelInteractiveLine(prevLines int) string {
 }
 
 func readConsoleKeyEvent(handle syscall.Handle) (keyEventRecord, error) {
-	var record inputRecord
-	var read uint32
 	for {
-		r1, _, err := readConsoleInputProc.Call(
-			uintptr(handle),
-			uintptr(unsafe.Pointer(&record)),
-			1,
-			uintptr(unsafe.Pointer(&read)),
-		)
-		if r1 == 0 {
+		record, err := readConsoleInputRecord(handle)
+		if err != nil {
 			return keyEventRecord{}, err
-		}
-		if read == 0 {
-			return keyEventRecord{}, io.EOF
 		}
 		if record.EventType != keyEventType || record.KeyEvent.KeyDown == 0 {
 			continue
 		}
 		return record.KeyEvent, nil
 	}
+}
+
+func readConsoleInputRecord(handle syscall.Handle) (inputRecord, error) {
+	var record inputRecord
+	var read uint32
+	r1, _, err := readConsoleInputProc.Call(
+		uintptr(handle),
+		uintptr(unsafe.Pointer(&record)),
+		1,
+		uintptr(unsafe.Pointer(&read)),
+	)
+	if r1 == 0 {
+		return inputRecord{}, err
+	}
+	if read == 0 {
+		return inputRecord{}, io.EOF
+	}
+	return record, nil
 }

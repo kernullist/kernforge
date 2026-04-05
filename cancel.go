@@ -1,12 +1,10 @@
 package main
 
 func shouldCancelOnEscape(hasForegroundTarget bool, shouldCancel func() bool) bool {
-	if !hasForegroundTarget {
-		return false
-	}
 	if shouldCancel != nil && !shouldCancel() {
 		return false
 	}
+	_ = hasForegroundTarget
 	return true
 }
 
@@ -21,6 +19,11 @@ func shouldCancelOnRepeatedEscape(hasForegroundTarget bool, repeatedPress bool, 
 		return false
 	}
 	return true
+}
+
+func isAsyncKeyPressed(state uintptr) bool {
+	keyState := uint16(state)
+	return (keyState&0x8000) != 0 || (keyState&0x0001) != 0
 }
 
 func isPIDInParentChain(targetPID uint32, currentPID uint32, parentLookup func(uint32) (uint32, bool)) bool {

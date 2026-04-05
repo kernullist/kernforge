@@ -28,6 +28,7 @@ Specs And Roadmap:
 - [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
 - [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
+- [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
 The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
@@ -73,6 +74,10 @@ Its current differentiators are:
 
 - `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
+- Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
+- Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
+- A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
+- In addition to a knowledge pack, the pipeline now emits a structural index, Unreal semantic graph, vector corpus, and vector ingestion exports
 - Dedicated worker and reviewer models can be configured separately from the main chat model
 - Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
 - `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
@@ -111,6 +116,8 @@ Its current differentiators are:
 - `Tab` completion for commands, paths, mentions, MCP targets, and `/open`
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
+- On Windows consoles, short `Esc` taps are treated as request cancel reliably
+- After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
 - Windows console input history with `Up` and `Down`
 
 ### Persistence And Context
@@ -549,6 +556,8 @@ Explain the structure of this repository
 
 - `Esc` while typing: cancel current input
 - `Esc` during a request: cancel the in-flight model request
+- On Windows, brief `Esc` taps are still recognized as request cancel
+- After request cancel, Kernforge waits for `Esc` release and clears pending console input before the next prompt
 - `Up` / `Down` in the Windows console: recall recent inputs
 
 ### Tab Completion
@@ -731,17 +740,33 @@ What it does:
 
 - Scans the workspace into a structured snapshot
 - Splits the codebase into analysis shards
+- Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
 - Uses a conductor plus multiple worker/reviewer passes
+- Builds a structural index and an Unreal semantic graph
+- Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
 - Writes Markdown and JSON analysis artifacts
 - Maintains a `latest` knowledge pack for follow-up analysis
+- Produces a vector corpus and provider-specific ingestion seeds
 - Reuses unchanged shard results when incremental analysis is enabled
 
 Typical outputs:
 
 - `.kernforge/analysis/<timestamp>_<goal>.md`
 - `.kernforge/analysis/<timestamp>_<goal>.json`
+- `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
+- `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
+- `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
+- `.kernforge/analysis/<timestamp>_<goal>_knowledge.json`
 - `.kernforge/analysis/<timestamp>_<goal>_performance_lens.md`
+- `.kernforge/analysis/<timestamp>_<goal>_performance_lens.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_corpus.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_corpus.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_ingest_manifest.json`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_ingest_records.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_pgvector.sql`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_sqlite.sql`
+- `.kernforge/analysis/<timestamp>_<goal>_vector_qdrant.jsonl`
 - `.kernforge/analysis/latest/`
 
 Recommended flow:
