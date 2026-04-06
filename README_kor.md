@@ -60,7 +60,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - evidence store, evidence search, evidence dashboard
 - 로컬 `SKILL.md` 스킬 탐색과 요청 단위 활성화
 - stdio 기반 MCP server의 tool, resource, prompt 연결
-- Windows용 별도 viewer와 diff preview 창
+- Windows용 별도 텍스트 viewer와 WebView2 기반 diff review/diff viewer
 - adaptive verification, 검증 이력 대시보드, checkpoint, rollback
 - hook engine, workspace hook rules, evidence-aware push/PR policy
 - 재사용 가능한 knowledge pack과 performance lens를 만드는 multi-agent project analysis
@@ -91,7 +91,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### 편집 워크플로우
 
-- 파일 쓰기 전 diff preview
+- 파일 쓰기 전 WebView2 diff review
 - selection-aware edit preview
 - 편집 후 자동 verification
 - 한 요청의 첫 편집 전에 자동 checkpoint 생성
@@ -141,6 +141,31 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 ```powershell
 go build -o kernforge.exe .
 ```
+
+### WebView2 Runtime
+
+Windows diff review와 read-only diff viewer는 WebView2를 사용합니다.
+
+권장 배포 방식:
+
+1. `Evergreen Bootstrapper`
+   일반적인 온라인 설치에 가장 무난합니다.
+2. `Evergreen Standalone Installer`
+   오프라인 또는 제한된 환경에 더 적합합니다.
+3. `Fixed Version Runtime`
+   렌더링 엔진 버전을 반드시 고정해야 할 때만 권장합니다.
+
+Kernforge 기준 실무 권장안:
+
+1. 설치 프로그램에 `Evergreen Bootstrapper`를 포함하거나 다운로드 경로를 둡니다.
+2. Kernforge 실행 전에 WebView2 Runtime 존재 여부를 확인합니다.
+3. 없으면 먼저 설치합니다.
+4. 그래도 WebView2 초기화가 실패하면 workflow에 따라 브라우저 기반 preview 또는 터미널 diff 출력으로 fallback합니다.
+
+참고:
+
+- [Microsoft WebView2 배포 가이드](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)
+- [WebView2 Runtime 다운로드](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 
 ### 실행
 
@@ -591,6 +616,8 @@ viewer 및 selection 기능:
 - 선택한 라인 범위 기반 prompt prefill
 - selection stack 저장
 - selection 범위만 대상으로 하는 review/edit 프롬프트
+- `/diff`, `/diff-selection`은 Windows에서 read-only 내부 diff viewer를 우선 사용
+- 내부 diff viewer는 changed-file navigation, unified/split 전환, intraline highlight를 제공
 
 selection 관련 명령:
 
@@ -634,6 +661,8 @@ git 관련 명령:
 ```text
 /diff
 ```
+
+Windows에서는 `/diff`, `/diff-selection`이 내부 WebView2 diff viewer를 우선 사용합니다. 해당 surface를 사용할 수 없으면 터미널 출력으로 fallback합니다.
 
 모델이 사용할 수 있는 전용 git 도구:
 
@@ -782,5 +811,6 @@ hook 및 override 관련 명령:
 
 ## 참고
 
-- 별도 viewer 창과 diff preview 창은 주로 Windows 환경에 맞춰 구현되어 있습니다.
+- 별도 텍스트 viewer 창과 WebView2 diff surface는 주로 Windows 환경에 맞춰 구현되어 있습니다.
+- WebView2 diff surface 초기화가 실패하면 workflow에 따라 브라우저 기반 preview 또는 터미널 출력으로 fallback합니다.
 - CLI 핵심, 세션, provider, memory, skills, MCP, verification 로직은 가능한 범위에서 이식성을 유지하도록 구성되어 있습니다.

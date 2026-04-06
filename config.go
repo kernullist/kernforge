@@ -1074,7 +1074,7 @@ Selection and review commands let you work on a focused code region instead of t
 - Set comma-separated tags on the active selection.
 
 /diff-selection
-- Show git diff limited to the selected range.
+- Show git diff limited to the selected range. On Windows this prefers the internal read-only diff viewer.
 
 /review-selection [...]
 /review-selections [...]
@@ -1135,7 +1135,7 @@ MCP and skills commands expose local skills plus external MCP tools, resources, 
 Git commands expose lightweight repository inspection helpers.
 
 /diff
-- Show the current git diff for the workspace.
+- Show the current git diff for the workspace. On Windows this prefers the internal read-only diff viewer.
 `), true
 	case "help":
 		return strings.TrimSpace(`

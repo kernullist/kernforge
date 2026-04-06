@@ -8,6 +8,16 @@ import (
 )
 
 func OpenDiffPreview(preview EditPreview) (bool, error) {
+	ok, err := OpenDiffPreviewWebView(preview)
+	if err == nil {
+		return ok, nil
+	}
+
+	ok, err = OpenDiffPreviewHTML(preview)
+	if err == nil {
+		return ok, nil
+	}
+
 	previewPath, err := createTempPreviewPath()
 	if err != nil {
 		return false, err
