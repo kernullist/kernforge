@@ -267,16 +267,24 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 목적:
 1. 전체 파일이 아니라 선택한 코드 범위만 집중 리뷰하거나 수정한다.
 2. recent simulation finding이 선택 영역과 맞닿으면 자동으로 review/edit prompt에 주입한다.
+3. 더 넓은 리뷰나 수정 전에 workspace/selection diff를 richer Windows diff surface로 확인할 수 있다.
 
 대표 명령:
 - `/open <path>`
 - `/selection`
 - `/selections`
+- `/diff`
+- `/diff-selection`
 - `/review-selection [extra]`
 - `/review-selections [extra]`
 - `/edit-selection <task>`
 - `/note-selection <text>`
 - `/tag-selection <tag[,tag2]>`
+
+diff workflow 메모:
+1. Windows에서는 `/diff`, `/diff-selection`이 내부 WebView2 diff viewer를 우선 사용한다.
+2. read-only diff viewer에는 changed-file navigation, unified/split 전환, intraline highlight가 포함된다.
+3. 내부 surface를 사용할 수 없으면 터미널 출력으로 fallback한다.
 
 좋은 상황:
 1. 특정 IOCTL handler, provider registration block, integrity check 함수만 집중 분석하고 싶을 때

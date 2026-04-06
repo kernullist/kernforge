@@ -269,16 +269,24 @@ Important scope limit:
 Purpose:
 1. Review or edit only the selected code range instead of the whole file.
 2. Automatically inject recent simulation findings when they match the selected area.
+3. Inspect workspace and selection diffs in a richer Windows diff surface before wider review or editing.
 
 Useful commands:
 - `/open <path>`
 - `/selection`
 - `/selections`
+- `/diff`
+- `/diff-selection`
 - `/review-selection [extra]`
 - `/review-selections [extra]`
 - `/edit-selection <task>`
 - `/note-selection <text>`
 - `/tag-selection <tag[,tag2]>`
+
+Diff workflow notes:
+1. On Windows, `/diff` and `/diff-selection` prefer the internal WebView2 diff viewer.
+2. The read-only diff viewer includes changed-file navigation, unified/split toggles, and intraline highlights.
+3. If the internal surface is unavailable, Kernforge falls back to terminal output.
 
 Best used when:
 1. You want to focus on a single IOCTL handler, integrity check, or provider registration block.

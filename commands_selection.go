@@ -116,6 +116,10 @@ func (rt *runtimeState) handleSelectionDiffCommand() error {
 	if err != nil {
 		return err
 	}
+	if viewErr := rt.presentDiffView("Selection Diff", selection.Summary(rt.workspace.Root), diff); viewErr == nil {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Opened selection diff in internal diff view"))
+		return nil
+	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Selection Diff"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("range", selection.Summary(rt.workspace.Root)))
 	fmt.Fprintln(rt.writer, diff)

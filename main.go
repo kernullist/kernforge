@@ -467,6 +467,12 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 		lines = append(lines, rt.ui.hintLine("The model kept asking for the same tool calls. This usually means it is stuck on the same observation without making progress."))
 	case strings.HasPrefix(text, "stopped after repeated tool failure:"):
 		lines = append(lines, rt.ui.hintLine("The same tool failure repeated. Fix the failing command or permission issue before retrying."))
+		if strings.Contains(text, ErrInvalidPatchFormat.Error()) {
+			lines = append(lines, rt.ui.hintLine("apply_patch must send raw patch text, not prose or JSON."))
+			lines = append(lines, rt.ui.hintLine("Required header: *** Begin Patch"))
+			lines = append(lines, rt.ui.hintLine("Required footer: *** End Patch"))
+			lines = append(lines, rt.ui.hintLine("Use sections like *** Update File:, *** Add File:, or *** Delete File: between them."))
+		}
 		if strings.Contains(text, ErrEditTargetMismatch.Error()) {
 			rejectedPath := parseRejectedEditTargetPath(text)
 			lines = append(lines, rt.ui.hintLine("Active workspace root: "+rt.session.WorkingDir))
@@ -3024,6 +3030,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		return false, rt.handleProfileCommand()
 	case "diff":
 		out, err := NewGitDiffTool(rt.workspace).Execute(context.Background(), map[string]any{})
+		if err == nil {
+			if viewErr := rt.presentDiffView("Workspace Diff", rt.workspace.Root, out); viewErr == nil {
+				fmt.Fprintln(rt.writer, rt.ui.successLine("Opened workspace diff in internal diff view"))
+				return false, nil
+			}
+		}
 		if strings.TrimSpace(out) != "" {
 			fmt.Fprintln(rt.writer, out)
 		}

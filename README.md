@@ -62,7 +62,7 @@ Its current differentiators are:
 - Evidence store, evidence search, and evidence dashboards
 - Local `SKILL.md` skills with discovery and per-request activation
 - Stdio MCP servers with tools, resources, and prompts
-- Windows viewer and diff-preview windows for selection-first workflows
+- Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
 - Multi-agent project analysis with reusable knowledge packs and a performance lens
@@ -93,7 +93,7 @@ Its current differentiators are:
 
 ### Editing Workflow
 
-- Diff preview before file writes
+- WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
 - Automatic checkpoint creation before the first edit in a request
@@ -143,6 +143,31 @@ Its current differentiators are:
 ```powershell
 go build -o kernforge.exe .
 ```
+
+### WebView2 Runtime
+
+The Windows diff review and read-only diff viewer use WebView2.
+
+Recommended deployment choices:
+
+1. `Evergreen Bootstrapper`
+   Best default for normal online installs.
+2. `Evergreen Standalone Installer`
+   Better for offline or restricted environments.
+3. `Fixed Version Runtime`
+   Use only when you must pin the rendering engine version.
+
+Practical recommendation for Kernforge:
+
+1. Bundle or download the `Evergreen Bootstrapper` in your installer.
+2. Check for WebView2 Runtime before launching Kernforge.
+3. Install it if missing.
+4. If WebView2 still cannot be initialized, Kernforge falls back to the browser-based preview or terminal diff output depending on the workflow.
+
+Reference:
+
+- [Microsoft WebView2 distribution guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)
+- [WebView2 Runtime downloads](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
 
 ### Run
 
@@ -591,6 +616,8 @@ Viewer and selection workflow features:
 - Prompt prefill from selected lines
 - Saved selection stack
 - Review-only and edit-only prompts scoped to the selection
+- `/diff` and `/diff-selection` open a read-only internal diff viewer on Windows
+- The internal diff viewer includes changed-file navigation, unified/split mode switching, and intraline highlights
 
 Selection commands:
 
@@ -634,6 +661,8 @@ Git command:
 ```text
 /diff
 ```
+
+On Windows, `/diff` and `/diff-selection` prefer the internal WebView2 diff viewer. If that surface is unavailable, Kernforge falls back to terminal output.
 
 Built-in AI git tools available to the model include:
 
@@ -782,5 +811,6 @@ Recommended flow:
 
 ## Notes
 
-- The viewer and diff preview windows are primarily implemented for Windows.
+- The separate text viewer and the WebView2 diff surfaces are primarily implemented for Windows.
+- If the WebView2 diff surface cannot be initialized, Kernforge falls back to the browser-based preview or terminal output depending on the workflow.
 - The CLI core, sessions, providers, memory, skills, MCP support, and verification logic are designed to remain portable where possible.
