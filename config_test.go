@@ -93,13 +93,6 @@ func TestDefaultMemoryPathsExcludeLegacyLocations(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigDisablesAutoVerifyDocsOnly(t *testing.T) {
-	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
-	if configAutoVerifyDocsOnly(cfg) {
-		t.Fatalf("expected auto_verify_docs_only to default to false")
-	}
-}
-
 func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
 	if !configAutoVerify(cfg) {

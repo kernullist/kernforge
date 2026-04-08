@@ -56,6 +56,7 @@ Current behavior:
 2. `Esc` during model response wait cancels the in-flight request.
 3. On Windows, Kernforge combines async key-state checks with console input polling so short `Esc` taps are still recognized.
 4. After request cancel, Kernforge waits briefly for `Esc` release and clears pending console input before opening the next prompt.
+5. Assistant streaming now suppresses empty leading chunks, flushes cleanly before progress lines, and breaks repeated follow-on preambles onto separate lines for readability.
 
 ### 2.0 Project Analysis
 

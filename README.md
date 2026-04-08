@@ -119,6 +119,7 @@ Its current differentiators are:
 - `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, and `/simulate show`
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
+- Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
 - After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
 - Windows console input history with `Up` and `Down`
@@ -351,7 +352,6 @@ Later sources override earlier ones:
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
   "auto_verify": true,
-  "auto_verify_docs_only": false,
   "msbuild_path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
   "cmake_path": "C:\\Program Files\\CMake\\bin\\cmake.exe",
   "auto_locale": true,
@@ -378,7 +378,6 @@ Later sources override earlier ones:
 | `auto_compact_chars` | Approximate context threshold before auto-compacting |
 | `auto_checkpoint_edits` | Create a safety checkpoint before the first edit in a request |
 | `auto_verify` | Master switch for automatic verification after edits |
-| `auto_verify_docs_only` | Allow docs-only changes to still trigger auto verification |
 | `msbuild_path` | Workspace override for MSBuild when PATH is incomplete |
 | `cmake_path` | Workspace override for CMake when PATH is incomplete |
 | `ctest_path` | Workspace override for CTest when PATH is incomplete |

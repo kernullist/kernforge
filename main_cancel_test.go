@@ -520,6 +520,78 @@ func TestRuntimeStateAppendAssistantStreamTrimsLeadingWhitespaceBeforeFirstVisib
 	}
 }
 
+func TestRuntimeStatePrintWhileThinkingFlushesActiveAssistantStream(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("partial reply")
+	rt.printWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "assistant: partial reply\n") {
+		t.Fatalf("expected assistant stream to be terminated before info output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "INFO  Creating automatic checkpoint before edit...") {
+		t.Fatalf("expected info line to be printed, got %q", rendered)
+	}
+	if strings.Contains(rendered, "partial replyINFO") {
+		t.Fatalf("expected assistant and info output to be separated, got %q", rendered)
+	}
+}
+
+func TestRuntimeStatePrintAssistantFlushesActiveAssistantStream(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("partial reply")
+	rt.printAssistant("Final answer")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "assistant: partial reply\nassistant: Final answer") {
+		t.Fatalf("expected assistant stream to flush before final assistant output, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamInsertsBreakBeforeFollowOnPreamble(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("Let me read AnthropicProvider and GeminiProvider:")
+	rt.appendAssistantStream("Now I have all the files.")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "GeminiProvider:\nNow I have all the files.") {
+		t.Fatalf("expected follow-on preamble to be separated onto a new line, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamDoesNotBreakNormalContinuation(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("This is a sentence")
+	rt.appendAssistantStream(" continuation.")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if strings.Contains(rendered, "sentence\n continuation") {
+		t.Fatalf("expected normal continuation to stay on the same line, got %q", rendered)
+	}
+}
+
 func TestParseToolLoopDiagnosticsExtractsFields(t *testing.T) {
 	toolSummary, stopReason, recentTurns := parseToolLoopDiagnostics("tool loop limit exceeded (last_tools=list_files, run_shell; stop_reason=tool_calls; iteration=16; max_iterations=16; recent_turns=list_files:ok | run_shell:error)")
 	if toolSummary != "list_files, run_shell" {
@@ -629,6 +701,9 @@ func TestRuntimeStateHandleSetAutoVerifyCommand(t *testing.T) {
 			BaseURL:        "https://example.test",
 			PermissionMode: "default",
 		},
+		agent: &Agent{
+			Config: DefaultConfig(home),
+		},
 	}
 
 	if err := rt.handleSetAutoVerifyCommand("off"); err != nil {
@@ -636,6 +711,9 @@ func TestRuntimeStateHandleSetAutoVerifyCommand(t *testing.T) {
 	}
 	if configAutoVerify(rt.cfg) {
 		t.Fatalf("expected auto_verify to be disabled in runtime config")
+	}
+	if configAutoVerify(rt.agent.Config) {
+		t.Fatalf("expected auto_verify to be disabled in agent runtime config")
 	}
 	if !strings.Contains(output.String(), "Automatic verification set to false") {
 		t.Fatalf("expected success output, got %q", output.String())

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strconv"
@@ -78,6 +79,8 @@ type runtimeState struct {
 	alwaysApproveWrites      bool
 	autoAcceptPreviewOnce    bool
 }
+
+var assistantFollowOnPreamblePattern = regexp.MustCompile(`([\.\:\!\?\)])((?i:Now let me |Let me |Now I |I'll |I will |I need to |First, ))`)
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("kernforge", flag.ContinueOnError)
@@ -706,6 +709,8 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.writeOutput(rt.ui.bold(rt.ui.info("assistant")) + rt.ui.dim(": "))
 		rt.streamingAssistant = true
 	}
+	text = normalizeAssistantStreamPreambleBoundary(rt.streamedAssistantText.String(), text)
+	text = splitAssistantPreambleBoundaries(text)
 	rt.streamedAssistantText.WriteString(text)
 	rt.writeOutput(rt.ui.mint(text))
 }
@@ -727,7 +732,12 @@ func (rt *runtimeState) finishAssistantStream() {
 	rt.streamedAssistantText.Reset()
 }
 
+func (rt *runtimeState) flushAssistantStream() {
+	rt.finishAssistantStream()
+}
+
 func (rt *runtimeState) printWhileThinking(lines ...string) {
+	rt.flushAssistantStream()
 	rt.stopThinkingIndicator()
 	rt.outputMu.Lock()
 	for _, line := range lines {
@@ -848,6 +858,43 @@ func normalizeAssistantDisplayText(text string) string {
 	return strings.Join(strings.Fields(normalized), " ")
 }
 
+func normalizeAssistantStreamPreambleBoundary(existing string, incoming string) string {
+	if strings.TrimSpace(existing) == "" || incoming == "" {
+		return incoming
+	}
+	if strings.HasPrefix(incoming, "\n") || strings.HasPrefix(incoming, "\r") {
+		return incoming
+	}
+	lowerIncoming := strings.ToLower(incoming)
+	if !strings.HasPrefix(lowerIncoming, "let me ") &&
+		!strings.HasPrefix(lowerIncoming, "now let me ") &&
+		!strings.HasPrefix(lowerIncoming, "now i ") &&
+		!strings.HasPrefix(lowerIncoming, "i'll ") &&
+		!strings.HasPrefix(lowerIncoming, "i will ") &&
+		!strings.HasPrefix(lowerIncoming, "i need to ") &&
+		!strings.HasPrefix(lowerIncoming, "first, ") {
+		return incoming
+	}
+
+	last := rune(0)
+	for _, r := range existing {
+		last = r
+	}
+	switch last {
+	case '.', ':', '!', '?', ')':
+		return "\n" + incoming
+	default:
+		return incoming
+	}
+}
+
+func splitAssistantPreambleBoundaries(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	return assistantFollowOnPreamblePattern.ReplaceAllString(text, "$1\n$2")
+}
+
 func (rt *runtimeState) resetAssistantDedup() {
 	rt.lastAssistantMu.Lock()
 	rt.lastAssistantPrinted = ""
@@ -872,6 +919,7 @@ func (rt *runtimeState) printAssistant(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
 	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
@@ -884,6 +932,7 @@ func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
 	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
@@ -3126,7 +3175,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify_docs_only", fmt.Sprintf("%t", configAutoVerifyDocsOnly(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cmake_path", valueOrUnset(rt.cfg.CMakePath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("ctest_path", valueOrUnset(rt.cfg.CTestPath)))
@@ -3198,6 +3246,7 @@ func (rt *runtimeState) handleSetAutoVerifyCommand(args string) error {
 		return fmt.Errorf("usage: /set-auto-verify [on|off]")
 	}
 	rt.cfg.AutoVerify = boolPtr(val)
+	rt.syncClientFromConfig()
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
