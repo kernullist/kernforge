@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,12 +30,18 @@ type Config struct {
 	Temperature         float64               `json:"temperature"`
 	MaxTokens           int                   `json:"max_tokens"`
 	MaxToolIterations   int                   `json:"max_tool_iterations"`
+	RequestTimeoutSecs  int                   `json:"request_timeout_seconds,omitempty"`
+	MSBuildPath         string                `json:"msbuild_path,omitempty"`
+	CMakePath           string                `json:"cmake_path,omitempty"`
+	CTestPath           string                `json:"ctest_path,omitempty"`
+	NinjaPath           string                `json:"ninja_path,omitempty"`
 	Command             string                `json:"command,omitempty"`
 	PermissionMode      string                `json:"permission_mode"`
 	Shell               string                `json:"shell"`
 	SessionDir          string                `json:"session_dir"`
 	AutoCompactChars    int                   `json:"auto_compact_chars"`
 	AutoCheckpointEdits *bool                 `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify          *bool                 `json:"auto_verify,omitempty"`
 	AutoVerifyDocsOnly  *bool                 `json:"auto_verify_docs_only,omitempty"`
 	AutoLocale          *bool                 `json:"auto_locale,omitempty"`
 	HooksEnabled        *bool                 `json:"hooks_enabled,omitempty"`
@@ -65,11 +73,13 @@ func DefaultConfig(cwd string) Config {
 		Temperature:         0.2,
 		MaxTokens:           4096,
 		MaxToolIterations:   16,
+		RequestTimeoutSecs:  1200,
 		PermissionMode:      "default",
 		Shell:               defaultShell(),
 		SessionDir:          filepath.Join(userConfigDir(), "sessions"),
 		AutoCompactChars:    45000,
 		AutoCheckpointEdits: boolPtr(false),
+		AutoVerify:          boolPtr(true),
 		AutoVerifyDocsOnly:  boolPtr(false),
 		AutoLocale:          boolPtr(true),
 		HooksEnabled:        boolPtr(true),
@@ -159,6 +169,21 @@ func mergeConfig(dst *Config, src Config) {
 	if src.MaxToolIterations != 0 {
 		dst.MaxToolIterations = src.MaxToolIterations
 	}
+	if src.RequestTimeoutSecs != 0 {
+		dst.RequestTimeoutSecs = src.RequestTimeoutSecs
+	}
+	if src.MSBuildPath != "" {
+		dst.MSBuildPath = src.MSBuildPath
+	}
+	if src.CMakePath != "" {
+		dst.CMakePath = src.CMakePath
+	}
+	if src.CTestPath != "" {
+		dst.CTestPath = src.CTestPath
+	}
+	if src.NinjaPath != "" {
+		dst.NinjaPath = src.NinjaPath
+	}
 	if src.PermissionMode != "" {
 		dst.PermissionMode = src.PermissionMode
 	}
@@ -174,6 +199,10 @@ func mergeConfig(dst *Config, src Config) {
 	if src.AutoCheckpointEdits != nil {
 		value := *src.AutoCheckpointEdits
 		dst.AutoCheckpointEdits = &value
+	}
+	if src.AutoVerify != nil {
+		value := *src.AutoVerify
+		dst.AutoVerify = &value
 	}
 	if src.AutoVerifyDocsOnly != nil {
 		value := *src.AutoVerifyDocsOnly
@@ -275,7 +304,13 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
+	envInt("KERNFORGE_REQUEST_TIMEOUT_SECONDS", &cfg.RequestTimeoutSecs)
+	envString("KERNFORGE_MSBUILD_PATH", &cfg.MSBuildPath)
+	envString("KERNFORGE_CMAKE_PATH", &cfg.CMakePath)
+	envString("KERNFORGE_CTEST_PATH", &cfg.CTestPath)
+	envString("KERNFORGE_NINJA_PATH", &cfg.NinjaPath)
 	envBool("KERNFORGE_AUTO_CHECKPOINT_EDITS", &cfg.AutoCheckpointEdits)
+	envBool("KERNFORGE_AUTO_VERIFY", &cfg.AutoVerify)
 	envBool("KERNFORGE_AUTO_LOCALE", &cfg.AutoLocale)
 	envBool("KERNFORGE_HOOKS_ENABLED", &cfg.HooksEnabled)
 	envBool("KERNFORGE_HOOKS_FAIL_CLOSED", &cfg.HooksFailClosed)
@@ -322,6 +357,18 @@ func normalizeConfigPaths(cfg *Config) {
 	if strings.TrimSpace(cfg.ProjectAnalysis.OutputDir) != "" {
 		cfg.ProjectAnalysis.OutputDir = expandHome(cfg.ProjectAnalysis.OutputDir)
 	}
+	if strings.TrimSpace(cfg.MSBuildPath) != "" {
+		cfg.MSBuildPath = expandHome(cfg.MSBuildPath)
+	}
+	if strings.TrimSpace(cfg.CMakePath) != "" {
+		cfg.CMakePath = expandHome(cfg.CMakePath)
+	}
+	if strings.TrimSpace(cfg.CTestPath) != "" {
+		cfg.CTestPath = expandHome(cfg.CTestPath)
+	}
+	if strings.TrimSpace(cfg.NinjaPath) != "" {
+		cfg.NinjaPath = expandHome(cfg.NinjaPath)
+	}
 	if cfg.ProjectAnalysis.WorkerProfile != nil {
 		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
 	}
@@ -356,6 +403,38 @@ func SaveUserConfig(cfg Config) error {
 		return err
 	}
 	return os.WriteFile(userConfigPath(), data, 0o644)
+}
+
+func SaveWorkspaceConfigOverrides(cwd string, overrides map[string]any) error {
+	path := workspaceConfigPath(cwd)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	payload := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		if len(bytes.TrimSpace(data)) > 0 {
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return fmt.Errorf("parse %s: %w", path, err)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+
+	for key, value := range overrides {
+		if value == nil {
+			delete(payload, key)
+			continue
+		}
+		payload[key] = value
+	}
+
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0o644)
 }
 
 func normalizeProfileBaseURL(provider, baseURL string) string {
@@ -409,6 +488,18 @@ func envBool(key string, dst **bool) {
 	*dst = boolPtr(parsed)
 }
 
+func envInt(key string, dst *int) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return
+	}
+	*dst = parsed
+}
+
 func boolPtr(value bool) *bool {
 	v := value
 	return &v
@@ -442,6 +533,13 @@ func configAutoVerifyDocsOnly(cfg Config) bool {
 	return *cfg.AutoVerifyDocsOnly
 }
 
+func configAutoVerify(cfg Config) bool {
+	if cfg.AutoVerify == nil {
+		return true
+	}
+	return *cfg.AutoVerify
+}
+
 func configMaxToolIterations(cfg Config) int {
 	if cfg.MaxToolIterations <= 0 {
 		return 16
@@ -450,6 +548,9 @@ func configMaxToolIterations(cfg Config) int {
 }
 
 func configRequestTimeout(cfg Config) time.Duration {
+	if cfg.RequestTimeoutSecs > 0 {
+		return time.Duration(cfg.RequestTimeoutSecs) * time.Second
+	}
 	return 20 * time.Minute
 }
 
@@ -601,7 +702,13 @@ func InitMemoryTemplate(projectName string) string {
 func InitWorkspaceConfigTemplate() string {
 	sample := struct {
 		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
+		AutoVerify          *bool             `json:"auto_verify,omitempty"`
 		AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
+		RequestTimeoutSecs  int               `json:"request_timeout_seconds,omitempty"`
+		MSBuildPath         string            `json:"msbuild_path,omitempty"`
+		CMakePath           string            `json:"cmake_path,omitempty"`
+		CTestPath           string            `json:"ctest_path,omitempty"`
+		NinjaPath           string            `json:"ninja_path,omitempty"`
 		HooksEnabled        *bool             `json:"hooks_enabled,omitempty"`
 		HookPresets         []string          `json:"hook_presets,omitempty"`
 		SkillPaths          []string          `json:"skill_paths,omitempty"`
@@ -609,7 +716,13 @@ func InitWorkspaceConfigTemplate() string {
 		MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
 	}{
 		AutoCheckpointEdits: boolPtr(false),
+		AutoVerify:          boolPtr(true),
 		AutoVerifyDocsOnly:  boolPtr(false),
+		RequestTimeoutSecs:  1200,
+		MSBuildPath:         "",
+		CMakePath:           "",
+		CTestPath:           "",
+		NinjaPath:           "",
 		HooksEnabled:        boolPtr(true),
 		HookPresets:         []string{},
 		SkillPaths:          []string{"./.kernforge/skills"},
@@ -693,6 +806,17 @@ Provider And Models:
 Verification And Checkpoints:
 /checkpoint [note]     Create a workspace checkpoint snapshot, optionally with a note
 /checkpoint-auto [on|off] Show or change automatic checkpoint creation before edits
+/detect-verification-tools Detect and save workspace verification tool paths
+/set-msbuild-path <path> Set the MSBuild executable path for workspace verification
+/clear-msbuild-path     Clear the workspace MSBuild path override
+/set-cmake-path <path> Set the CMake executable path for workspace verification
+/clear-cmake-path       Clear the workspace CMake path override
+/set-ctest-path <path> Set the CTest executable path for workspace verification
+/clear-ctest-path       Clear the workspace CTest path override
+/set-ninja-path <path> Set the Ninja executable path for workspace verification
+/clear-ninja-path       Clear the workspace Ninja path override
+/set-auto-verify [on|off] Show or change automatic verification after edits
+- Quote paths that contain spaces. Example: /set-msbuild-path "C:\Program Files\...\MSBuild.exe"
 /checkpoint-diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
 /checkpoints           List checkpoints for the current workspace
 /investigate [subcommand] Manage live investigation sessions and snapshots
@@ -883,7 +1007,7 @@ Provider and model commands control which model is active and how planning/revie
 - Use /set-analysis-models status to show the current analysis model configuration.
 - Use /set-analysis-models clear to reset worker and reviewer to the main active model.
 `), true
-	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff":
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path":
 		return strings.TrimSpace(`
 Verification and checkpoint commands help you validate changes and recover safely.
 
@@ -908,6 +1032,32 @@ Verification and checkpoint commands help you validate changes and recover safel
 
 /checkpoint-auto [on|off]
 - Show or change automatic checkpoint creation before edits.
+
+/detect-verification-tools
+- Detect MSBuild, CMake, CTest, and Ninja executable paths on Windows and save any newly found workspace overrides.
+
+/set-msbuild-path <path>
+/set-cmake-path <path>
+/set-ctest-path <path>
+/set-ninja-path <path>
+- Set a workspace-specific executable path used by automatic verification when PATH is incomplete.
+- Without a path, show the current value and any detected suggestion.
+- Paths containing spaces are supported.
+- Quote Windows paths with spaces to avoid ambiguity.
+- Examples:
+  /set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"
+  /set-cmake-path "C:\Program Files\CMake\bin\cmake.exe"
+
+/clear-msbuild-path
+/clear-cmake-path
+/clear-ctest-path
+/clear-ninja-path
+- Remove the corresponding workspace-specific executable override.
+
+/set-auto-verify [on|off]
+- Show or change automatic verification after edits.
+- This is the master switch for edit-triggered verification.
+- If it is off, auto_verify_docs_only has no effect.
 
 /checkpoint-diff [target] [-- path[,path2]]
 - Compare the current workspace to a checkpoint, optionally limited to specific paths.
@@ -1238,7 +1388,11 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
-	allowed, err := m.prompt(fmt.Sprintf("Allow %s? %s (add 'always' to allow for entire session)", action, detail))
+	question := fmt.Sprintf("Allow %s? %s", action, detail)
+	if action != ActionShell {
+		question += " (add 'always' to allow for entire session)"
+	}
+	allowed, err := m.prompt(question)
 	if allowed && action == ActionShell {
 		m.shellAllowed = true
 	}

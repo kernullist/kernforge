@@ -62,6 +62,9 @@
 검증:
 - `/verify`
 - `/verify-dashboard`
+- `/set-auto-verify [on|off]`
+- `/detect-verification-tools`
+- `/set-msbuild-path <path>`
 
 증거와 기억:
 - `/evidence-dashboard`
@@ -105,6 +108,11 @@
 3. `/evidence-dashboard`
 4. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
 5. `/hooks`
+
+Windows build tool이 없어 automatic verification이 실패하면:
+1. 먼저 `/detect-verification-tools`를 실행한다.
+2. 자동 탐지가 못 찾으면 예를 들어 `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`처럼 직접 지정한다.
+3. 당분간 편집 후 verification을 끄고 싶으면 `/set-auto-verify off`를 사용한다.
 
 ## 5. 입력 취소 팁
 

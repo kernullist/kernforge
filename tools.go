@@ -73,6 +73,7 @@ type Workspace struct {
 	BaseRoot         string
 	Root             string
 	Shell            string
+	VerificationToolPaths map[string]string
 	Perms            *PermissionManager
 	PrepareEdit      func(string) error
 	ReportProgress   func(string)

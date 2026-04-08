@@ -153,6 +153,91 @@ func TestClassifyVerificationFailureRecognizesCommonGoFailures(t *testing.T) {
 	}
 }
 
+func TestClassifyVerificationFailureRecognizesMissingCommand(t *testing.T) {
+	kind, hint := classifyVerificationFailure(VerificationStep{
+		Label:   "msbuild demo.sln",
+		Command: "msbuild demo.sln /m",
+		Output:  "msbuild : The term 'msbuild' is not recognized as the name of a cmdlet, function, script file, or executable program.",
+	})
+	if kind != "command_not_found" {
+		t.Fatalf("expected command_not_found, got %q", kind)
+	}
+	if !strings.Contains(strings.ToLower(hint), "disable automatic verification") {
+		t.Fatalf("expected missing-tool hint, got %q", hint)
+	}
+}
+
+func TestVerificationReportMissingCommandToolRecognizesMSBuild(t *testing.T) {
+	report := VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+		}},
+	}
+	if got := report.MissingCommandTool(); got != "msbuild" {
+		t.Fatalf("expected msbuild tool name, got %q", got)
+	}
+}
+
+func TestVerificationReportMissingCommandToolRecognizesCTestAndNinja(t *testing.T) {
+	ctestReport := VerificationReport{
+		Steps: []VerificationStep{{
+			Command:     `ctest --test-dir "build" --output-on-failure`,
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+		}},
+	}
+	if got := ctestReport.MissingCommandTool(); got != "ctest" {
+		t.Fatalf("expected ctest tool name, got %q", got)
+	}
+
+	ninjaReport := VerificationReport{
+		Steps: []VerificationStep{{
+			Command:     `ninja -C "build"`,
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+		}},
+	}
+	if got := ninjaReport.MissingCommandTool(); got != "ninja" {
+		t.Fatalf("expected ninja tool name, got %q", got)
+	}
+}
+
+func TestResolveVerificationCommandPathUsesConfiguredMSBuildPath(t *testing.T) {
+	ws := Workspace{
+		VerificationToolPaths: map[string]string{
+			"msbuild": `C:\Tools\MSBuild\MSBuild.exe`,
+		},
+	}
+	got := resolveVerificationCommandPath(ws, `msbuild "demo.sln" /m`)
+	want := `"C:\Tools\MSBuild\MSBuild.exe" "demo.sln" /m`
+	if got != want {
+		t.Fatalf("unexpected resolved command: got %q want %q", got, want)
+	}
+}
+
+func TestResolveVerificationCommandPathUsesConfiguredCTestAndNinjaPaths(t *testing.T) {
+	ws := Workspace{
+		VerificationToolPaths: map[string]string{
+			"ctest": `C:\Tools\CMake\bin\ctest.exe`,
+			"ninja": `C:\Tools\Ninja\ninja.exe`,
+		},
+	}
+	gotCTest := resolveVerificationCommandPath(ws, `ctest --test-dir "build" --output-on-failure`)
+	wantCTest := `"C:\Tools\CMake\bin\ctest.exe" --test-dir "build" --output-on-failure`
+	if gotCTest != wantCTest {
+		t.Fatalf("unexpected resolved ctest command: got %q want %q", gotCTest, wantCTest)
+	}
+
+	gotNinja := resolveVerificationCommandPath(ws, `ninja -C "build"`)
+	wantNinja := `"C:\Tools\Ninja\ninja.exe" -C "build"`
+	if gotNinja != wantNinja {
+		t.Fatalf("unexpected resolved ninja command: got %q want %q", gotNinja, wantNinja)
+	}
+}
+
 func TestVerificationReportFailureSummaryIncludesKindsAndHints(t *testing.T) {
 	report := VerificationReport{
 		Steps: []VerificationStep{{

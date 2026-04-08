@@ -62,6 +62,9 @@ Selection workflow:
 Verification:
 - `/verify`
 - `/verify-dashboard`
+- `/set-auto-verify [on|off]`
+- `/detect-verification-tools`
+- `/set-msbuild-path <path>`
 
 Evidence and memory:
 - `/evidence-dashboard`
@@ -105,6 +108,11 @@ Policy:
 3. `/evidence-dashboard`
 4. `/mem-search category:driver` or `/mem-search category:telemetry`
 5. `/hooks`
+
+If automatic verification fails because Windows build tools are missing:
+1. Run `/detect-verification-tools` first.
+2. If detection does not find the tool, set it explicitly, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
+3. If you want editing without post-edit verification for a while, use `/set-auto-verify off`.
 
 ## 5. Input Cancellation Tips
 

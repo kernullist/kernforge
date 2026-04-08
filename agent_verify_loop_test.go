@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,6 +53,41 @@ func (b *blockingProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return ChatResponse{}, ctx.Err()
 }
 
+type timeoutThenSuccessProviderClient struct {
+	calls int
+}
+
+func (p *timeoutThenSuccessProviderClient) Name() string { return "timeout-then-success" }
+
+func (p *timeoutThenSuccessProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = req
+	p.calls++
+	if p.calls == 1 {
+		<-ctx.Done()
+		return ChatResponse{}, ctx.Err()
+	}
+	return ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "recovered",
+		},
+		StopReason: "stop",
+	}, nil
+}
+
+type timeoutProviderClient struct {
+	calls int
+}
+
+func (p *timeoutProviderClient) Name() string { return "timeout" }
+
+func (p *timeoutProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = req
+	p.calls++
+	<-ctx.Done()
+	return ChatResponse{}, ctx.Err()
+}
+
 type cancelDuringToolTool struct {
 	cancel func()
 	calls  int
@@ -74,6 +111,29 @@ func (t *cancelDuringToolTool) Execute(ctx context.Context, input any) (string, 
 		t.cancel()
 	}
 	return "tool finished after cancel", nil
+}
+
+type failingTool struct {
+	name  string
+	err   error
+	calls int
+}
+
+func (t *failingTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Fail with a scripted error for retry-loop tests.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *failingTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	return "", t.err
 }
 
 func toolCallResponse(name string, args map[string]any) ChatResponse {
@@ -267,6 +327,105 @@ func TestAgentCanAutoVerifyDocsOnlyChangesWhenEnabled(t *testing.T) {
 	}
 	if verifyCount != 1 {
 		t.Fatalf("expected docs-only change to run automatic verification when enabled, got %d runs", verifyCount)
+	}
+}
+
+func TestAgentSkipsAutomaticVerificationWhenDisabled(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Updated the file."}},
+		},
+	}
+	verifyCount := 0
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	cfg := DefaultConfig(root)
+	cfg.AutoVerify = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{Steps: []VerificationStep{{Label: "verify", Status: VerificationPassed}}}, true
+		},
+	}
+
+	if _, err := agent.Reply(context.Background(), "update the file"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("expected automatic verification to be disabled, got %d runs", verifyCount)
+	}
+}
+
+func TestAgentPromptsToDisableAutoVerifyOnFirstMissingToolFailure(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "Implemented the change, but verification was disabled because the local build toolchain is unavailable."}},
+		},
+	}
+	verifyCount := 0
+	promptCount := 0
+	cfg := DefaultConfig(root)
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{
+				Steps: []VerificationStep{{
+					Label:       "msbuild demo.sln",
+					Command:     "msbuild demo.sln /m",
+					Status:      VerificationFailed,
+					FailureKind: "command_not_found",
+					Hint:        "A required verification tool could not be started.",
+					Output:      "msbuild : The term 'msbuild' is not recognized as the name of a cmdlet, function, script file, or executable program.",
+				}},
+			}, true
+		},
+	}
+	agent.PromptResolveAutoVerifyFailure = func(report VerificationReport) (AutoVerifyFailureResolution, error) {
+		promptCount++
+		if !report.HasCommandMissingFailure() {
+			t.Fatalf("expected command-missing failure report")
+		}
+		agent.Config.AutoVerify = boolPtr(false)
+		return AutoVerifyFailureDisable, nil
+	}
+
+	reply, err := agent.Reply(context.Background(), "make the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "verification was disabled") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if verifyCount != 1 {
+		t.Fatalf("expected first missing-tool verification failure to trigger disable prompt, got %d verification runs", verifyCount)
+	}
+	if promptCount != 1 {
+		t.Fatalf("expected one disable prompt, got %d", promptCount)
+	}
+	if configAutoVerify(agent.Config) {
+		t.Fatalf("expected auto_verify to be disabled after prompt")
 	}
 }
 
@@ -768,5 +927,211 @@ func TestAgentNudgesAfterMalformedWriteFileArguments(t *testing.T) {
 		if tool.Name == "write_file" {
 			t.Fatalf("expected write_file to be disabled after malformed arguments")
 		}
+	}
+}
+
+func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
+	provider := &timeoutThenSuccessProviderClient{}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			RequestTimeoutSecs: 1,
+		},
+		Client: provider,
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	resp, err := agent.completeModelTurn(context.Background(), ChatRequest{
+		Model: "test-model",
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurn: %v", err)
+	}
+	if resp.Message.Text != "recovered" {
+		t.Fatalf("unexpected response text: %q", resp.Message.Text)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("expected two provider attempts, got %d", provider.calls)
+	}
+	if len(progress) == 0 || !strings.Contains(progress[0], "Retrying once") {
+		t.Fatalf("expected retry progress message, got %#v", progress)
+	}
+}
+
+func TestCompleteModelTurnReturnsTimeoutAfterRetryExhausted(t *testing.T) {
+	provider := &timeoutProviderClient{}
+	agent := &Agent{
+		Config: Config{
+			RequestTimeoutSecs: 1,
+		},
+		Client: provider,
+	}
+
+	_, err := agent.completeModelTurn(context.Background(), ChatRequest{
+		Model: "test-model",
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded after retry exhaustion, got %v", err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("expected two provider attempts, got %d", provider.calls)
+	}
+}
+
+func TestCompleteModelTurnDoesNotRetryOnUserCancellation(t *testing.T) {
+	provider := &blockingProviderClient{started: make(chan struct{})}
+	agent := &Agent{
+		Config: Config{
+			RequestTimeoutSecs: 1,
+		},
+		Client: provider,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := agent.completeModelTurn(ctx, ChatRequest{
+			Model: "test-model",
+		})
+		done <- err
+	}()
+
+	select {
+	case <-provider.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("provider did not start model turn")
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("completeModelTurn did not return after cancellation")
+	}
+
+	if provider.calls != 1 {
+		t.Fatalf("expected one provider attempt on cancellation, got %d", provider.calls)
+	}
+}
+
+func TestAgentNudgesBeforeAbortingRepeatedToolFailure(t *testing.T) {
+	root := t.TempDir()
+	failTool := &failingTool{
+		name: "failing_tool",
+		err:  fmt.Errorf("preview surface busy"),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("failing_tool", map[string]any{}),
+			toolCallResponse("failing_tool", map[string]any{}),
+			{Message: Message{Role: "assistant", Text: "I could not use the preview surface, so I am stopping with guidance instead."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(failTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "try the preview flow")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "stopping with guidance") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected third turn after repeated failure nudge, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[2]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected guidance message before third turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "The same tool failure repeated") {
+		t.Fatalf("expected repeated failure guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentAbortsAfterThirdRepeatedToolFailure(t *testing.T) {
+	root := t.TempDir()
+	failTool := &failingTool{
+		name: "failing_tool",
+		err:  fmt.Errorf("preview surface busy"),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("failing_tool", map[string]any{"attempt": 1}),
+			toolCallResponse("failing_tool", map[string]any{"attempt": 2}),
+			toolCallResponse("failing_tool", map[string]any{"attempt": 3}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(failTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "try the preview flow")
+	if err == nil || !strings.Contains(err.Error(), "stopped after repeated tool failure") {
+		t.Fatalf("expected repeated tool failure error, got %v", err)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected abort on third failing turn, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentDoesNotLabelSingleFinalToolFailureAsRepeated(t *testing.T) {
+	root := t.TempDir()
+	failTool := &failingTool{
+		name: "failing_tool",
+		err:  fmt.Errorf("preview surface busy"),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("failing_tool", map[string]any{}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			MaxToolIterations: 1,
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(failTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "try the preview flow")
+	if err == nil {
+		t.Fatalf("expected tool loop error")
+	}
+	if strings.Contains(err.Error(), "stopped after repeated tool failure") {
+		t.Fatalf("single final failure should not be labeled repeated: %v", err)
+	}
+	if !strings.Contains(err.Error(), "tool loop limit exceeded") {
+		t.Fatalf("expected tool loop limit error, got %v", err)
 	}
 }

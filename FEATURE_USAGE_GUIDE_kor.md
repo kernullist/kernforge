@@ -147,11 +147,24 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/verify src/foo.cpp,driver/guard.cpp`
 - `/verify-dashboard`
 - `/verify-dashboard-html`
+- `/set-auto-verify [on|off]`
+- `/detect-verification-tools`
+- `/set-msbuild-path <path>`
+- `/set-cmake-path <path>`
+- `/set-ctest-path <path>`
+- `/set-ninja-path <path>`
 
 좋은 상황:
 1. 일반 `go test`, `msbuild`, `ctest`만으로는 부족한 작업
 2. signing, symbols, package, provider, XML, verifier 상태까지 같이 봐야 하는 작업
 3. 최근 investigation/simulation에서 이미 위험 신호가 나온 상태
+
+운영 메모:
+1. `auto_verify`는 편집 후 automatic verification 전체를 켜고 끄는 마스터 스위치다.
+2. Windows에서 `msbuild`, `cmake`, `ctest`, `ninja`가 없으면 Kernforge가 automatic verification 비활성화 또는 실행 파일 경로 저장을 제안할 수 있다.
+3. 공백이 있는 경로는 따옴표로 감싸는 편이 안전하다.
+4. 예: `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
+5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, timeout 난 model turn은 한 번 자동 재시도한다.
 
 ### 2.3 Evidence Store
 
@@ -285,6 +298,7 @@ diff workflow 메모:
 1. Windows에서는 `/diff`, `/diff-selection`이 내부 WebView2 diff viewer를 우선 사용한다.
 2. read-only diff viewer에는 changed-file navigation, unified/split 전환, intraline highlight가 포함된다.
 3. 내부 surface를 사용할 수 없으면 터미널 출력으로 fallback한다.
+4. `Open diff preview?`에서 `a`를 누르면 현재 수정은 바로 승인되고, 이후 diff preview도 세션 동안 건너뛴다.
 
 좋은 상황:
 1. 특정 IOCTL handler, provider registration block, integrity check 함수만 집중 분석하고 싶을 때
@@ -309,6 +323,19 @@ diff workflow 메모:
 현재 연동:
 1. recent simulation finding이 task와 겹치면 planning prompt에 자동 주입된다.
 2. 최종 plan 실행 prompt에도 같은 관점이 자동 주입된다.
+
+### 2.9 Interactive Ergonomics
+
+목적:
+1. investigation, verification, review 흐름에서 반복 입력 부담을 줄인다.
+2. subcommand나 id를 기억하지 못해도 빠르게 이어서 작업하게 한다.
+
+현재 `Tab` 완성이 커버하는 범위:
+1. slash command 이름
+2. workspace path와 `@file` 멘션
+3. MCP resource/prompt target
+4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>` 같은 고정 인자
+5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`에 필요한 저장된 id
 
 ## 3. 가장 추천하는 실전 흐름
 

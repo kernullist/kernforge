@@ -69,6 +69,9 @@ func isEditTool(name string) bool {
 }
 
 func (a *Agent) autoVerifyChanges(ctx context.Context) (VerificationReport, bool) {
+	if !configAutoVerify(a.Config) {
+		return VerificationReport{}, false
+	}
 	changed := collectAutomaticVerificationChangedPaths(a.Config, a.Workspace.Root, a.Session)
 	if len(changed) == 0 {
 		return VerificationReport{}, false
@@ -687,14 +690,15 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 	}
 	for i := range report.Steps {
 		step := &report.Steps[i]
-		if err := ws.EnsureShell(step.Command); err != nil {
+		resolvedCommand := resolveVerificationCommandPath(ws, step.Command)
+		if err := ws.EnsureShell(resolvedCommand); err != nil {
 			step.Status = VerificationSkipped
 			step.Output = "Permission denied: " + err.Error()
 			continue
 		}
 		start := time.Now()
 		runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		name, args := shellInvocation(ws.Shell, step.Command)
+		name, args := shellInvocation(ws.Shell, resolvedCommand)
 		cmd := exec.CommandContext(runCtx, name, args...)
 		cmd.Dir = ws.Root
 		out, err := cmd.CombinedOutput()
@@ -907,6 +911,49 @@ func (r VerificationReport) FailureKinds() []string {
 	return uniqueStrings(out)
 }
 
+func (r VerificationReport) HasCommandMissingFailure() bool {
+	for _, step := range r.Steps {
+		if step.Status != VerificationFailed {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(step.FailureKind), "command_not_found") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r VerificationReport) MissingCommandTool() string {
+	for _, step := range r.Steps {
+		if step.Status != VerificationFailed {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(step.FailureKind), "command_not_found") {
+			continue
+		}
+		command := strings.ToLower(strings.TrimSpace(step.Command))
+		switch {
+		case strings.HasPrefix(command, "msbuild "):
+			return "msbuild"
+		case command == "msbuild":
+			return "msbuild"
+		case strings.HasPrefix(command, "cmake "):
+			return "cmake"
+		case command == "cmake":
+			return "cmake"
+		case strings.HasPrefix(command, "ctest "):
+			return "ctest"
+		case command == "ctest":
+			return "ctest"
+		case strings.HasPrefix(command, "ninja "):
+			return "ninja"
+		case command == "ninja":
+			return "ninja"
+		}
+	}
+	return ""
+}
+
 func (r VerificationReport) RepairGuidance() string {
 	step := r.FirstFailure()
 	if step == nil {
@@ -966,6 +1013,8 @@ func classifyVerificationFailure(step VerificationStep) (string, string) {
 	switch {
 	case strings.Contains(output, "timed out"):
 		return "timeout", "The verification command timed out. Reduce the scope, fix hanging behavior, or rerun after addressing long-running work."
+	case looksLikeMissingVerificationCommand(output):
+		return "command_not_found", "A required verification tool could not be started. Check PATH, install the missing build/test tool, or disable automatic verification for this workspace."
 	case strings.Contains(command, "typecheck"):
 		return "typecheck_error", "Fix the reported type errors before retrying verification."
 	case strings.Contains(command, "lint") || strings.Contains(command, "vet"):
@@ -998,6 +1047,8 @@ func classifyVerificationFailure(step VerificationStep) (string, string) {
 
 func repairStrategyForFailure(step VerificationStep) string {
 	switch step.FailureKind {
+	case "command_not_found":
+		return "The verification command could not start because a required tool was not found. Fix PATH, install the missing toolchain component, open the workspace in a developer shell, or disable automatic verification if the environment is intentionally incomplete."
 	case "compile_error":
 		return "Fix the compiler or build errors before anything else. Start with the first reported error, keep the change set minimal, and rerun verification after the code builds again."
 	case "typecheck_error":
@@ -1035,6 +1086,62 @@ func looksLikeGoCompileFailure(output string) bool {
 		}
 	}
 	return false
+}
+
+func looksLikeMissingVerificationCommand(output string) bool {
+	for _, needle := range []string{
+		"is not recognized as the name of a cmdlet",
+		"is not recognized as an internal or external command",
+		"executable file not found in %path%",
+		"exec: \"",
+		"command not found",
+		"no such file or directory",
+		"the system cannot find the file specified",
+		"createprocess failed",
+	} {
+		if strings.Contains(output, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveVerificationCommandPath(ws Workspace, command string) string {
+	resolved := strings.TrimSpace(command)
+	if resolved == "" || len(ws.VerificationToolPaths) == 0 {
+		return command
+	}
+	if path := strings.TrimSpace(ws.VerificationToolPaths["msbuild"]); path != "" {
+		resolved = replaceLeadingVerificationTool(resolved, "msbuild", path)
+	}
+	if path := strings.TrimSpace(ws.VerificationToolPaths["cmake"]); path != "" {
+		resolved = replaceLeadingVerificationTool(resolved, "cmake", path)
+	}
+	if path := strings.TrimSpace(ws.VerificationToolPaths["ctest"]); path != "" {
+		resolved = replaceLeadingVerificationTool(resolved, "ctest", path)
+	}
+	if path := strings.TrimSpace(ws.VerificationToolPaths["ninja"]); path != "" {
+		resolved = replaceLeadingVerificationTool(resolved, "ninja", path)
+	}
+	return resolved
+}
+
+func replaceLeadingVerificationTool(command, toolName, toolPath string) string {
+	trimmed := strings.TrimSpace(command)
+	lowerTool := strings.ToLower(strings.TrimSpace(toolName))
+	lowerCommand := strings.ToLower(trimmed)
+	if lowerTool == "" || strings.TrimSpace(toolPath) == "" {
+		return command
+	}
+	if lowerCommand != lowerTool && !strings.HasPrefix(lowerCommand, lowerTool+" ") {
+		return command
+	}
+	rest := strings.TrimSpace(trimmed[len(toolName):])
+	resolved := quoteVerificationCommandArg(strings.TrimSpace(toolPath))
+	if rest == "" {
+		return resolved
+	}
+	return resolved + " " + rest
 }
 
 func exists(path string) bool {

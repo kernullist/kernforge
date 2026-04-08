@@ -359,3 +359,69 @@ func TestOpenAIClientStreamHonorsContextCancellation(t *testing.T) {
 		t.Fatalf("stream request did not stop after context cancellation")
 	}
 }
+
+func TestOpenAIClientReturnsPartialTextOnStreamDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial answer\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	resp, err := client.Complete(ctx, ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("expected partial response instead of timeout, got %v", err)
+	}
+	if resp.Message.Text != "partial answer" {
+		t.Fatalf("unexpected partial text: %q", resp.Message.Text)
+	}
+	if resp.StopReason != "partial" {
+		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
+	}
+}
+
+func TestOpenAIClientDoesNotReturnPartialToolCallOnStreamDeadline(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\"\"}}]},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := client.Complete(ctx, ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected timeout for partial tool call stream, got %v", err)
+	}
+}
