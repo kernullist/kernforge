@@ -54,6 +54,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 모델 응답 대기 중 `Esc`는 진행 중 요청을 취소한다.
 3. Windows에서는 async key state와 console input record를 함께 사용해 짧은 `Esc` 탭도 놓치지 않게 처리한다.
 4. 요청 취소 뒤에는 `Esc` release를 잠깐 기다리고 pending console input을 정리한 뒤 다음 입력을 받는다.
+5. assistant streaming은 선행 빈 chunk를 무시하고, progress 출력 전 경계를 정리하며, 반복 follow-on preamble을 별도 줄로 나눠 가독성을 높인다.
 
 ### 2.0 Project Analysis
 

@@ -289,44 +289,8 @@ func TestAgentSkipsAutomaticVerificationForDocsOnlyChangesByDefault(t *testing.T
 	if reply != "Wrote the document." {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if verifyCount != 0 {
-		t.Fatalf("expected docs-only change to skip automatic verification, got %d runs", verifyCount)
-	}
-}
-
-func TestAgentCanAutoVerifyDocsOnlyChangesWhenEnabled(t *testing.T) {
-	root := t.TempDir()
-	provider := &scriptedProviderClient{
-		replies: []ChatResponse{
-			toolCallResponse("write_file", map[string]any{"path": "notes.md", "content": "# notes\n"}),
-			{Message: Message{Role: "assistant", Text: "Wrote the document."}},
-		},
-	}
-	verifyCount := 0
-	session := NewSession(root, "scripted", "model", "", "default")
-	store := NewSessionStore(filepath.Join(root, "sessions"))
-	ws := Workspace{BaseRoot: root, Root: root}
-	cfg := DefaultConfig(root)
-	cfg.AutoVerifyDocsOnly = boolPtr(true)
-	agent := &Agent{
-		Config:    cfg,
-		Client:    provider,
-		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
-		Workspace: ws,
-		Session:   session,
-		Store:     store,
-		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
-			_ = ctx
-			verifyCount++
-			return VerificationReport{Steps: []VerificationStep{{Label: "verify", Status: VerificationPassed}}}, true
-		},
-	}
-
-	if _, err := agent.Reply(context.Background(), "write a document"); err != nil {
-		t.Fatalf("Reply: %v", err)
-	}
 	if verifyCount != 1 {
-		t.Fatalf("expected docs-only change to run automatic verification when enabled, got %d runs", verifyCount)
+		t.Fatalf("expected docs-only change to run automatic verification, got %d runs", verifyCount)
 	}
 }
 
@@ -644,6 +608,81 @@ func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterNudge(t *testing.
 	}
 	if !strings.Contains(err.Error(), "repeated identical tool calls") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSanitizeAssistantMessageTextRemovesToolPreambleNarration(t *testing.T) {
+	text := "Let me read AnthropicProvider and GeminiProvider:Now I have all the files. Let me apply all the changes."
+
+	got := sanitizeAssistantMessageText(text, true)
+	if got != "" {
+		t.Fatalf("expected pure tool preamble narration to be dropped, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantMessageTextKeepsSubstantiveToolPlan(t *testing.T) {
+	text := "Let me inspect the providers.\nThe approach:\n1. Update the interface\n2. Pass reasoning effort through all providers"
+
+	got := sanitizeAssistantMessageText(text, true)
+	if !strings.Contains(got, "The approach:") {
+		t.Fatalf("expected substantive content to be kept, got %q", got)
+	}
+	if strings.Contains(strings.ToLower(got), "let me inspect") {
+		t.Fatalf("expected narration preamble to be removed, got %q", got)
+	}
+}
+
+func TestAgentStoresSanitizedToolPreambleInsteadOfNarration(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Let me read AnthropicProvider and GeminiProvider:Now I have all the files. Let me apply all the changes.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "list_files",
+						Arguments: `{}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Done.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Done." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(session.Messages) < 3 {
+		t.Fatalf("expected stored session messages, got %#v", session.Messages)
+	}
+	assistantTurn := session.Messages[1]
+	if assistantTurn.Role != "assistant" {
+		t.Fatalf("expected assistant tool turn, got %#v", assistantTurn)
+	}
+	if strings.TrimSpace(assistantTurn.Text) != "" {
+		t.Fatalf("expected tool-turn narration to be stripped from stored message, got %q", assistantTurn.Text)
 	}
 }
 

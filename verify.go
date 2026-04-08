@@ -555,9 +555,6 @@ func collectVerificationChangedPaths(root string, sess *Session) []string {
 
 func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Session) []string {
 	changed := collectVerificationChangedPaths(root, sess)
-	if configAutoVerifyDocsOnly(cfg) {
-		return changed
-	}
 	return filterCodeLikePaths(changed)
 }
 

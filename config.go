@@ -42,7 +42,6 @@ type Config struct {
 	AutoCompactChars    int                   `json:"auto_compact_chars"`
 	AutoCheckpointEdits *bool                 `json:"auto_checkpoint_edits,omitempty"`
 	AutoVerify          *bool                 `json:"auto_verify,omitempty"`
-	AutoVerifyDocsOnly  *bool                 `json:"auto_verify_docs_only,omitempty"`
 	AutoLocale          *bool                 `json:"auto_locale,omitempty"`
 	HooksEnabled        *bool                 `json:"hooks_enabled,omitempty"`
 	HookPresets         []string              `json:"hook_presets,omitempty"`
@@ -80,7 +79,6 @@ func DefaultConfig(cwd string) Config {
 		AutoCompactChars:    45000,
 		AutoCheckpointEdits: boolPtr(false),
 		AutoVerify:          boolPtr(true),
-		AutoVerifyDocsOnly:  boolPtr(false),
 		AutoLocale:          boolPtr(true),
 		HooksEnabled:        boolPtr(true),
 		HooksFailClosed:     boolPtr(false),
@@ -203,10 +201,6 @@ func mergeConfig(dst *Config, src Config) {
 	if src.AutoVerify != nil {
 		value := *src.AutoVerify
 		dst.AutoVerify = &value
-	}
-	if src.AutoVerifyDocsOnly != nil {
-		value := *src.AutoVerifyDocsOnly
-		dst.AutoVerifyDocsOnly = &value
 	}
 	if src.AutoLocale != nil {
 		value := *src.AutoLocale
@@ -526,13 +520,6 @@ func configHooksFailClosed(cfg Config) bool {
 	return *cfg.HooksFailClosed
 }
 
-func configAutoVerifyDocsOnly(cfg Config) bool {
-	if cfg.AutoVerifyDocsOnly == nil {
-		return false
-	}
-	return *cfg.AutoVerifyDocsOnly
-}
-
 func configAutoVerify(cfg Config) bool {
 	if cfg.AutoVerify == nil {
 		return true
@@ -703,7 +690,6 @@ func InitWorkspaceConfigTemplate() string {
 	sample := struct {
 		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
 		AutoVerify          *bool             `json:"auto_verify,omitempty"`
-		AutoVerifyDocsOnly  *bool             `json:"auto_verify_docs_only,omitempty"`
 		RequestTimeoutSecs  int               `json:"request_timeout_seconds,omitempty"`
 		MSBuildPath         string            `json:"msbuild_path,omitempty"`
 		CMakePath           string            `json:"cmake_path,omitempty"`
@@ -717,7 +703,6 @@ func InitWorkspaceConfigTemplate() string {
 	}{
 		AutoCheckpointEdits: boolPtr(false),
 		AutoVerify:          boolPtr(true),
-		AutoVerifyDocsOnly:  boolPtr(false),
 		RequestTimeoutSecs:  1200,
 		MSBuildPath:         "",
 		CMakePath:           "",
@@ -1057,7 +1042,6 @@ Verification and checkpoint commands help you validate changes and recover safel
 /set-auto-verify [on|off]
 - Show or change automatic verification after edits.
 - This is the master switch for edit-triggered verification.
-- If it is off, auto_verify_docs_only has no effect.
 
 /checkpoint-diff [target] [-- path[,path2]]
 - Compare the current workspace to a checkpoint, optionally limited to specific paths.

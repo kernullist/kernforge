@@ -14,24 +14,24 @@ import (
 )
 
 type Agent struct {
-	Config             Config
-	Client             ProviderClient
-	Tools              *ToolRegistry
-	Workspace          Workspace
-	Session            *Session
-	Store              *SessionStore
-	Memory             MemoryBundle
-	Skills             SkillCatalog
-	MCP                *MCPManager
-	LongMem            *PersistentMemoryStore
-	Evidence           *EvidenceStore
-	VerifyHistory      *VerificationHistoryStore
-	VerifyChanges      func(context.Context) (VerificationReport, bool)
+	Config                         Config
+	Client                         ProviderClient
+	Tools                          *ToolRegistry
+	Workspace                      Workspace
+	Session                        *Session
+	Store                          *SessionStore
+	Memory                         MemoryBundle
+	Skills                         SkillCatalog
+	MCP                            *MCPManager
+	LongMem                        *PersistentMemoryStore
+	Evidence                       *EvidenceStore
+	VerifyHistory                  *VerificationHistoryStore
+	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
-	EmitAssistant      func(string)
-	EmitAssistantDelta func(string)
-	EmitProgress       func(string)
-	lastEmittedText    string
+	EmitAssistant                  func(string)
+	EmitAssistantDelta             func(string)
+	EmitProgress                   func(string)
+	lastEmittedText                string
 }
 
 type AutoVerifyFailureResolution string
@@ -152,6 +152,7 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		if a.EmitAssistantDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
 			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
@@ -520,6 +521,56 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
 	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, configMaxToolIterations(a.Config), lastRecentToolTurns))
+}
+
+func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
+	trimmed := strings.TrimSpace(splitAssistantPreambleBoundaries(text))
+	if trimmed == "" {
+		return ""
+	}
+	if !hasToolCalls {
+		return trimmed
+	}
+	lines := strings.Split(trimmed, "\n")
+	kept := make([]string, 0, len(lines))
+	sawPreamble := false
+	for _, line := range lines {
+		current := strings.TrimSpace(line)
+		if current == "" {
+			continue
+		}
+		if isAssistantNarrationPreamble(current) {
+			sawPreamble = true
+			continue
+		}
+		kept = append(kept, current)
+	}
+	if len(kept) == 0 && sawPreamble {
+		return ""
+	}
+	return strings.Join(kept, "\n")
+}
+
+func isAssistantNarrationPreamble(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case strings.HasPrefix(lower, "let me "):
+		return true
+	case strings.HasPrefix(lower, "now let me "):
+		return true
+	case strings.HasPrefix(lower, "now i "):
+		return true
+	case strings.HasPrefix(lower, "i'll "):
+		return true
+	case strings.HasPrefix(lower, "i will "):
+		return true
+	case strings.HasPrefix(lower, "i need to "):
+		return true
+	case strings.HasPrefix(lower, "first, "):
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
