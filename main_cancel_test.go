@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -485,6 +486,40 @@ func TestRuntimeStatePrintAssistantSuppressesEquivalentDuplicateOutputWithPunctu
 	}
 }
 
+func TestRuntimeStateAppendAssistantStreamIgnoresLeadingWhitespaceOnlyChunks(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("\n\n")
+	rt.finishAssistantStream()
+
+	if strings.TrimSpace(out.String()) != "" {
+		t.Fatalf("expected whitespace-only streamed chunks to produce no output, got %q", out.String())
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamTrimsLeadingWhitespaceBeforeFirstVisibleText(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("\n\nhello")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "assistant: hello") {
+		t.Fatalf("expected streamed output to start with visible text, got %q", rendered)
+	}
+	if strings.Contains(rendered, "assistant: \n") {
+		t.Fatalf("expected no blank line immediately after assistant label, got %q", rendered)
+	}
+}
+
 func TestParseToolLoopDiagnosticsExtractsFields(t *testing.T) {
 	toolSummary, stopReason, recentTurns := parseToolLoopDiagnostics("tool loop limit exceeded (last_tools=list_files, run_shell; stop_reason=tool_calls; iteration=16; max_iterations=16; recent_turns=list_files:ok | run_shell:error)")
 	if toolSummary != "list_files, run_shell" {
@@ -578,6 +613,391 @@ func TestRuntimeStateFormatAssistantErrorForEditTargetMismatch(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateHandleSetAutoVerifyCommand(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		writer: output,
+		ui:     UI{},
+		cfg:    DefaultConfig(home),
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+
+	if err := rt.handleSetAutoVerifyCommand("off"); err != nil {
+		t.Fatalf("handleSetAutoVerifyCommand: %v", err)
+	}
+	if configAutoVerify(rt.cfg) {
+		t.Fatalf("expected auto_verify to be disabled in runtime config")
+	}
+	if !strings.Contains(output.String(), "Automatic verification set to false") {
+		t.Fatalf("expected success output, got %q", output.String())
+	}
+
+	saved, err := LoadConfig(home)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if configAutoVerify(saved) {
+		t.Fatalf("expected saved config to keep auto_verify disabled")
+	}
+}
+
+func TestRuntimeStatePromptResolveAutoVerifyFailureDisableSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("y\n")),
+		writer:      output,
+		ui:          UI{},
+		interactive: true,
+		cfg:         DefaultConfig(home),
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	resolution, err := rt.promptResolveAutoVerifyFailure(VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+			Hint:        "A required verification tool could not be started.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptResolveAutoVerifyFailure: %v", err)
+	}
+	if resolution != AutoVerifyFailureDisable {
+		t.Fatalf("expected disable resolution, got %q", resolution)
+	}
+	if configAutoVerify(rt.cfg) {
+		t.Fatalf("expected runtime config auto_verify to be disabled")
+	}
+	if configAutoVerify(rt.agent.Config) {
+		t.Fatalf("expected agent config auto_verify to be disabled")
+	}
+}
+
+func TestRuntimeStatePromptResolveAutoVerifyFailureAlwaysPersistsToWorkspaceConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      output,
+		ui:          UI{},
+		interactive: true,
+		cfg:         DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	resolution, err := rt.promptResolveAutoVerifyFailure(VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+			Hint:        "A required verification tool could not be started.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptResolveAutoVerifyFailure: %v", err)
+	}
+	if resolution != AutoVerifyFailureDisable {
+		t.Fatalf("expected disable resolution, got %q", resolution)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if configAutoVerify(loaded) {
+		t.Fatalf("expected workspace config to keep auto_verify disabled")
+	}
+}
+
+func TestRuntimeStatePromptResolveAutoVerifyFailureSavesToolPathAndRequestsRetry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	msbuildPath := filepath.Join(home, "MSBuild.exe")
+	if err := os.WriteFile(msbuildPath, []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write msbuild stub: %v", err)
+	}
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("p\n" + msbuildPath + "\n")),
+		writer:      output,
+		ui:          UI{},
+		interactive: true,
+		cfg:         DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	resolution, err := rt.promptResolveAutoVerifyFailure(VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+			Hint:        "A required verification tool could not be started.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptResolveAutoVerifyFailure: %v", err)
+	}
+	if resolution != AutoVerifyFailureRetry {
+		t.Fatalf("expected retry resolution, got %q", resolution)
+	}
+	if strings.TrimSpace(rt.cfg.MSBuildPath) != msbuildPath {
+		t.Fatalf("expected runtime config msbuild path to be updated, got %q", rt.cfg.MSBuildPath)
+	}
+	if got := strings.TrimSpace(rt.workspace.VerificationToolPaths["msbuild"]); got != msbuildPath {
+		t.Fatalf("expected workspace tool path to be updated, got %q", got)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if strings.TrimSpace(loaded.MSBuildPath) != msbuildPath {
+		t.Fatalf("expected workspace config msbuild path to persist, got %q", loaded.MSBuildPath)
+	}
+}
+
+func TestBuildVerificationToolPathsIncludesCTestAndNinja(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.CTestPath = `C:\Tools\CMake\bin\ctest.exe`
+	cfg.NinjaPath = `C:\Tools\Ninja\ninja.exe`
+
+	paths := buildVerificationToolPaths(cfg)
+	if got := paths["ctest"]; got != cfg.CTestPath {
+		t.Fatalf("expected ctest path, got %q", got)
+	}
+	if got := paths["ninja"]; got != cfg.NinjaPath {
+		t.Fatalf("expected ninja path, got %q", got)
+	}
+}
+
+func TestHandleSetVerificationToolPathCommandPersistsWorkspaceOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	ninjaPath := filepath.Join(home, "ninja.exe")
+	if err := os.WriteFile(ninjaPath, []byte("stub"), 0o644); err != nil {
+		t.Fatalf("write ninja stub: %v", err)
+	}
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		writer: output,
+		ui:     UI{},
+		cfg:    DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	if err := rt.handleSetVerificationToolPathCommand("ninja", ninjaPath); err != nil {
+		t.Fatalf("handleSetVerificationToolPathCommand: %v", err)
+	}
+	if strings.TrimSpace(rt.cfg.NinjaPath) != ninjaPath {
+		t.Fatalf("expected runtime ninja path to update, got %q", rt.cfg.NinjaPath)
+	}
+	if strings.TrimSpace(rt.workspace.VerificationToolPaths["ninja"]) != ninjaPath {
+		t.Fatalf("expected workspace ninja path to update")
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if strings.TrimSpace(loaded.NinjaPath) != ninjaPath {
+		t.Fatalf("expected persisted ninja path, got %q", loaded.NinjaPath)
+	}
+}
+
+func TestAutoPopulateVerificationToolPathsAppliesDetectedValues(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	detected, err := autoPopulateVerificationToolPaths(t.TempDir(), &cfg, func(tool string) string {
+		switch tool {
+		case "msbuild":
+			return `C:\Tools\MSBuild\MSBuild.exe`
+		case "ctest":
+			return `C:\Tools\CMake\bin\ctest.exe`
+		default:
+			return ""
+		}
+	})
+	if runtime.GOOS != "windows" {
+		if err != nil {
+			t.Fatalf("expected no error on non-windows, got %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("autoPopulateVerificationToolPaths: %v", err)
+	}
+	if detected["msbuild"] == "" || detected["ctest"] == "" {
+		t.Fatalf("expected detected paths, got %#v", detected)
+	}
+	if cfg.MSBuildPath == "" || cfg.CTestPath == "" {
+		t.Fatalf("expected config to be updated, got %#v", cfg)
+	}
+}
+
+func TestHandleClearVerificationToolPathCommandRemovesWorkspaceOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(workspace, map[string]any{
+		"cmake_path": `C:\Tools\CMake\bin\cmake.exe`,
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	rt := &runtimeState{
+		writer: os.Stdout,
+		ui:     UI{},
+		cfg:    DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.cfg.CMakePath = `C:\Tools\CMake\bin\cmake.exe`
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+
+	if err := rt.handleClearVerificationToolPathCommand("cmake"); err != nil {
+		t.Fatalf("handleClearVerificationToolPathCommand: %v", err)
+	}
+	if strings.TrimSpace(rt.cfg.CMakePath) != "" {
+		t.Fatalf("expected runtime cmake path to be cleared")
+	}
+	if _, ok := rt.workspace.VerificationToolPaths["cmake"]; ok {
+		t.Fatalf("expected workspace tool path to be cleared")
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if strings.TrimSpace(loaded.CMakePath) != "" {
+		t.Fatalf("expected persisted cmake path to be cleared, got %q", loaded.CMakePath)
+	}
+}
+
+func TestHandleDetectVerificationToolsCommandUpdatesWorkspaceConfig(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only auto detection behavior")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	cfg := DefaultConfig(workspace)
+	applied, err := autoPopulateVerificationToolPaths(workspace, &cfg, func(tool string) string {
+		switch tool {
+		case "ninja":
+			return `C:\Tools\Ninja\ninja.exe`
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("autoPopulateVerificationToolPaths: %v", err)
+	}
+	if strings.TrimSpace(applied["ninja"]) == "" {
+		t.Fatalf("expected ninja detection result")
+	}
+}
+
 func TestParseConfirmationAnswerRecognizesAlways(t *testing.T) {
 	allowed, always, handled := parseConfirmationAnswer("always")
 	if !handled || !allowed || !always {
@@ -626,7 +1046,64 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T)
 	if !rt.alwaysApprovePreview {
 		t.Fatalf("expected diff preview prompts to be auto-approved for the rest of the session")
 	}
+	if !rt.autoAcceptPreviewOnce {
+		t.Fatalf("expected first diff preview always answer to auto-accept the current edit")
+	}
 	if !rt.autoApproveConfirmation("Open diff preview?") {
 		t.Fatalf("expected subsequent diff preview prompt to be auto-approved")
+	}
+}
+
+func TestRuntimeStatePreviewEditSkipsPreviewWhenAlwaysEnabled(t *testing.T) {
+	rt := &runtimeState{
+		writer:               &bytes.Buffer{},
+		ui:                   UI{},
+		interactive:          true,
+		alwaysApprovePreview: true,
+	}
+
+	ok, err := rt.previewEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if err != nil {
+		t.Fatalf("previewEdit returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected previewEdit to auto-accept without opening diff preview")
+	}
+}
+
+func TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		interactive: true,
+	}
+
+	ok, err := rt.previewEdit(EditPreview{
+		Title:   "Apply patch",
+		Preview: "Preview for main.go\n+ change",
+	})
+	if err != nil {
+		t.Fatalf("previewEdit returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected previewEdit to auto-accept after 'a' response")
+	}
+	if rt.autoAcceptPreviewOnce {
+		t.Fatalf("expected one-shot auto-accept flag to be consumed")
+	}
+}
+
+func TestConfirmLabelUsesAutoAcceptHintForDiffPreview(t *testing.T) {
+	rt := &runtimeState{
+		ui: UI{},
+	}
+
+	label := rt.confirmLabel("Open diff preview?")
+	if !strings.Contains(label, "a=auto-accept") {
+		t.Fatalf("expected diff preview hint to advertise auto-accept, got %q", label)
 	}
 }

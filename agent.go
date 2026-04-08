@@ -27,11 +27,25 @@ type Agent struct {
 	Evidence           *EvidenceStore
 	VerifyHistory      *VerificationHistoryStore
 	VerifyChanges      func(context.Context) (VerificationReport, bool)
+	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	EmitAssistant      func(string)
 	EmitAssistantDelta func(string)
 	EmitProgress       func(string)
 	lastEmittedText    string
 }
+
+type AutoVerifyFailureResolution string
+
+const (
+	AutoVerifyFailureNoAction AutoVerifyFailureResolution = ""
+	AutoVerifyFailureDisable  AutoVerifyFailureResolution = "disable"
+	AutoVerifyFailureRetry    AutoVerifyFailureResolution = "retry"
+)
+
+const (
+	repeatedToolFailureNudgeThreshold = 2
+	repeatedToolFailureAbortThreshold = 3
+)
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
 	return a.ReplyWithImages(ctx, userText, nil)
@@ -114,6 +128,8 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 	lastRecentToolTurns := ""
 	consecutiveEditTurns := 0
 	postEditFinalAnswerNudges := 0
+	autoVerifyInfraFailureCount := 0
+	autoVerifyDisablePrompted := false
 	disabledTools := map[string]bool{}
 	for iterations := 0; iterations < configMaxToolIterations(a.Config); iterations++ {
 		if err := ctx.Err(); err != nil {
@@ -240,6 +256,8 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		emptyFinalReplies = 0
 		finalAnswerNudges = 0
 		edited := false
+		iterationToolError := ""
+		iterationHadToolSuccess := false
 		for _, call := range resp.Message.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				return "", err
@@ -335,12 +353,7 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 					currentError = strings.TrimSpace(call.Name + ": " + toolMsg.Text + "\n" + err.Error())
 				}
 				if currentError != "" {
-					if currentError == lastToolError {
-						lastToolErrorCount++
-					} else {
-						lastToolError = currentError
-						lastToolErrorCount = 1
-					}
+					iterationToolError = currentError
 				}
 				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 1 {
 					patchFormatRetries++
@@ -353,13 +366,14 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 					lastToolErrorCount = 0
 					continue
 				}
-			} else if isEditTool(call.Name) {
-				edited = true
-				lastToolError = ""
-				lastToolErrorCount = 0
-				if a.EmitProgress != nil {
-					if summary := summarizeEditToolResult(call.Name, out); summary != "" {
-						a.EmitProgress(summary)
+			} else {
+				iterationHadToolSuccess = true
+				if isEditTool(call.Name) {
+					edited = true
+					if a.EmitProgress != nil {
+						if summary := summarizeEditToolResult(call.Name, out); summary != "" {
+							a.EmitProgress(summary)
+						}
 					}
 				}
 			}
@@ -368,14 +382,38 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if lastToolErrorCount >= 2 && lastToolError != "" {
+		if iterationHadToolSuccess {
+			lastToolError = ""
+			lastToolErrorCount = 0
+		} else if iterationToolError != "" {
+			if iterationToolError == lastToolError {
+				lastToolErrorCount++
+			} else {
+				lastToolError = iterationToolError
+				lastToolErrorCount = 1
+			}
+		}
+		if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
 			return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 		}
+		if lastToolErrorCount == repeatedToolFailureNudgeThreshold && lastToolError != "" {
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: "The same tool failure repeated. Do not repeat the same failing tool call again unless you materially change the approach or inputs. Read the error carefully, choose a different next step, or provide a final answer if the issue is external.",
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+			continue
+		}
 		if edited {
+			autoVerifyDisabledAfterPrompt := false
 			if a.EmitProgress != nil {
 				a.EmitProgress("Edit applied. Checking follow-up steps...")
 			}
 			if report, ok := a.autoVerifyChanges(ctx); ok {
+				autoVerifyRetryAttempted := false
 				if a.EmitProgress != nil {
 					if report.HasFailures() {
 						a.EmitProgress("Automatic verification failed. Asking the model to continue fixing the issue...")
@@ -390,21 +428,64 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 				})
 				unresolvedVerification = report.HasFailures()
 				if report.HasFailures() {
-					failureSummary := strings.TrimSpace(report.FailureSummary())
-					repairGuidance := strings.TrimSpace(report.RepairGuidance())
-					text := "The latest verification failed. Investigate the failure and continue working if you can. Prefer fixing the problem over stopping early."
-					if failureSummary != "" {
-						text += "\n\nLikely failure summary:\n" + failureSummary
+					if report.HasCommandMissingFailure() {
+						autoVerifyInfraFailureCount++
+					} else {
+						autoVerifyInfraFailureCount = 0
 					}
-					if repairGuidance != "" {
-						text += "\n\nSuggested repair strategy:\n" + repairGuidance
+					if autoVerifyInfraFailureCount >= 1 && !autoVerifyDisablePrompted && a.PromptResolveAutoVerifyFailure != nil {
+						autoVerifyDisablePrompted = true
+						resolution, promptErr := a.PromptResolveAutoVerifyFailure(report)
+						if promptErr != nil {
+							return "", promptErr
+						}
+						if resolution == AutoVerifyFailureRetry && !autoVerifyRetryAttempted {
+							autoVerifyRetryAttempted = true
+							if a.EmitProgress != nil {
+								a.EmitProgress("Verification tool path updated. Retrying automatic verification...")
+							}
+							retriedReport, retriedOK := a.autoVerifyChanges(ctx)
+							if retriedOK {
+								report = retriedReport
+								verification = strings.TrimSpace(report.RenderDetailed())
+								a.Session.AddMessage(Message{
+									Role: "user",
+									Text: "Automatic verification results after tool-path update:\n" + verification,
+								})
+								unresolvedVerification = report.HasFailures()
+							}
+						}
+						if resolution == AutoVerifyFailureDisable {
+							unresolvedVerification = false
+							autoVerifyInfraFailureCount = 0
+							autoVerifyDisabledAfterPrompt = true
+							if a.EmitProgress != nil {
+								a.EmitProgress("Automatic verification was disabled after repeated tool-path verification failures.")
+							}
+							a.Session.AddMessage(Message{
+								Role: "user",
+								Text: "Automatic verification has been disabled for this workspace after repeated verification tool startup failures. Do not spend more turns trying to repair the local verification environment unless the user explicitly asks for that. Continue with the task and summarize any unverified risk briefly if needed.",
+							})
+						}
 					}
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: text,
-					})
+					if !autoVerifyDisabledAfterPrompt {
+						failureSummary := strings.TrimSpace(report.FailureSummary())
+						repairGuidance := strings.TrimSpace(report.RepairGuidance())
+						text := "The latest verification failed. Investigate the failure and continue working if you can. Prefer fixing the problem over stopping early."
+						if failureSummary != "" {
+							text += "\n\nLikely failure summary:\n" + failureSummary
+						}
+						if repairGuidance != "" {
+							text += "\n\nSuggested repair strategy:\n" + repairGuidance
+						}
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: text,
+						})
+					}
 				}
 			} else {
+				autoVerifyInfraFailureCount = 0
 				if a.EmitProgress != nil {
 					a.EmitProgress("Edit applied. Waiting for the model to summarize the change...")
 				}
@@ -435,13 +516,42 @@ func (a *Agent) completeLoop(ctx context.Context) (string, error) {
 		}
 		lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 	}
-	if lastToolError != "" {
+	if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
 	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, configMaxToolIterations(a.Config), lastRecentToolTurns))
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	attempts := 2
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ChatResponse{}, err
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, configRequestTimeout(a.Config))
+		resp, err := a.completeModelTurnOnce(attemptCtx, req)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			return ChatResponse{}, err
+		}
+		if ctx.Err() != nil {
+			return ChatResponse{}, ctx.Err()
+		}
+		if attempt == attempts-1 {
+			return ChatResponse{}, err
+		}
+		if a.EmitProgress != nil {
+			a.EmitProgress("Model request timed out. Retrying once...")
+		}
+	}
+	return ChatResponse{}, context.DeadlineExceeded
+}
+
+func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	type result struct {
 		resp ChatResponse
 		err  error

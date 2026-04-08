@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
@@ -52,6 +53,16 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/verify [path,...|--full]",
 		"/verify-dashboard [all]",
 		"/verify-dashboard-html [all]",
+		"/set-msbuild-path <path>",
+		"/clear-msbuild-path",
+		"/set-cmake-path <path>",
+		"/clear-cmake-path",
+		"/set-ctest-path <path>",
+		"/clear-ctest-path",
+		"/set-ninja-path <path>",
+		"/clear-ninja-path",
+		"/detect-verification-tools",
+		"/set-auto-verify [on|off]",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to contain %q", needle)
@@ -89,6 +100,28 @@ func TestDefaultConfigDisablesAutoVerifyDocsOnly(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	if !configAutoVerify(cfg) {
+		t.Fatalf("expected auto_verify to default to true")
+	}
+}
+
+func TestDefaultConfigRequestTimeoutUsesTwentyMinutes(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	if got := configRequestTimeout(cfg); got != 20*time.Minute {
+		t.Fatalf("expected default request timeout of 20 minutes, got %s", got)
+	}
+}
+
+func TestConfigRequestTimeoutUsesConfiguredSeconds(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	cfg.RequestTimeoutSecs = 7
+	if got := configRequestTimeout(cfg); got != 7*time.Second {
+		t.Fatalf("expected configured request timeout of 7 seconds, got %s", got)
+	}
+}
+
 func TestPlatformUserConfigBaseDirUsesHomeDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -96,5 +129,27 @@ func TestPlatformUserConfigBaseDirUsesHomeDir(t *testing.T) {
 	}
 	if got := platformUserConfigBaseDir(); got != home {
 		t.Fatalf("expected user config base dir %q, got %q", home, got)
+	}
+}
+
+func TestPermissionManagerShellPromptDoesNotAdvertiseAlways(t *testing.T) {
+	var prompted string
+	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
+		prompted = question
+		return true, nil
+	})
+
+	allowed, err := perms.Allow(ActionShell, "go test ./...")
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected shell permission to be allowed")
+	}
+	if !strings.Contains(prompted, "Allow shell? go test ./...") {
+		t.Fatalf("unexpected shell prompt: %q", prompted)
+	}
+	if strings.Contains(strings.ToLower(prompted), "always") {
+		t.Fatalf("shell prompt should not advertise always, got %q", prompted)
 	}
 }

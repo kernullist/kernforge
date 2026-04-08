@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -74,6 +76,7 @@ type runtimeState struct {
 	lastAssistantPrinted     string
 	alwaysApprovePreview     bool
 	alwaysApproveWrites      bool
+	autoAcceptPreviewOnce    bool
 }
 
 func run(args []string) error {
@@ -154,6 +157,9 @@ func run(args []string) error {
 	if yesFlag {
 		cfg.PermissionMode = string(ModeBypass)
 	}
+	if _, err := autoPopulateVerificationToolPaths(cwd, &cfg, detectWindowsVerificationToolPath); err != nil {
+		return err
+	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}
@@ -202,11 +208,12 @@ func run(args []string) error {
 
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
 	rt.workspace = Workspace{
-		BaseRoot:    cwd,
-		Root:        sess.WorkingDir,
-		Shell:       cfg.Shell,
-		Perms:       rt.perms,
-		PrepareEdit: rt.prepareEdit,
+		BaseRoot:              cwd,
+		Root:                  sess.WorkingDir,
+		Shell:                 cfg.Shell,
+		VerificationToolPaths: buildVerificationToolPaths(cfg),
+		Perms:                 rt.perms,
+		PrepareEdit:           rt.prepareEdit,
 		ReportProgress: func(message string) {
 			rt.setThinkingStatus(message)
 			rt.printWhileThinking(rt.ui.infoLine(message))
@@ -241,6 +248,9 @@ func run(args []string) error {
 		LongMem:       rt.longMem,
 		Evidence:      rt.evidence,
 		VerifyHistory: rt.verifyHistory,
+		PromptResolveAutoVerifyFailure: func(report VerificationReport) (AutoVerifyFailureResolution, error) {
+			return rt.promptResolveAutoVerifyFailure(report)
+		},
 		EmitAssistant: func(text string) {
 			rt.printAssistantWhileThinking(text)
 		},
@@ -308,8 +318,7 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	if rt.clientErr != nil {
 		return rt.clientErr
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), configRequestTimeout(rt.cfg))
-	defer cancel()
+	ctx := context.Background()
 	reply, err := rt.runAgentReplyWithImages(ctx, prompt, images)
 	if err != nil {
 		return err
@@ -323,7 +332,7 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 		return true, nil
 	}
 	if rt.alwaysApprovePreview {
-		return rt.openEditPreview(preview)
+		return true, nil
 	}
 	var (
 		openPreview bool
@@ -334,6 +343,10 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	})
 	if err != nil {
 		return false, err
+	}
+	if rt.autoAcceptPreviewOnce {
+		rt.autoAcceptPreviewOnce = false
+		return true, nil
 	}
 	if !openPreview {
 		return false, ErrEditCanceled
@@ -413,9 +426,8 @@ func (rt *runtimeState) runREPL() error {
 			}
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), configRequestTimeout(rt.cfg))
+		ctx := context.Background()
 		reply, err := rt.runAgentReply(ctx, input)
-		cancel()
 		if err != nil {
 			if errors.Is(err, ErrEditCanceled) {
 				fmt.Fprintln(rt.writer, rt.ui.infoLine("Edit canceled."))
@@ -683,6 +695,12 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 	rt.streamMu.Lock()
 	defer rt.streamMu.Unlock()
 
+	if !rt.streamingAssistant {
+		text = strings.TrimLeftFunc(text, unicode.IsSpace)
+		if text == "" {
+			return
+		}
+	}
 	if !rt.streamingAssistant {
 		rt.stopThinkingIndicator()
 		rt.writeOutput(rt.ui.bold(rt.ui.info("assistant")) + rt.ui.dim(": "))
@@ -1193,7 +1211,9 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 
 func (rt *runtimeState) confirmLabel(question string) string {
 	hint := "[y/N, Esc=cancel]"
-	if supportsAlwaysApproval(question) {
+	if isDiffPreviewQuestion(question) {
+		hint = "[y/N/a=auto-accept, Esc=cancel]"
+	} else if supportsAlwaysApproval(question) {
 		hint = "[y/N/a=always, Esc=cancel]"
 	}
 	return rt.ui.warnLine(question) + " " + rt.ui.dim(hint)
@@ -1232,6 +1252,7 @@ func (rt *runtimeState) rememberConfirmationApproval(question string) {
 	}
 	if isDiffPreviewQuestion(question) {
 		rt.alwaysApprovePreview = true
+		rt.autoAcceptPreviewOnce = true
 	}
 }
 
@@ -2069,6 +2090,7 @@ func (rt *runtimeState) syncClientFromConfig() {
 		rt.agent.Config = rt.cfg
 		rt.agent.Client = client
 	}
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.clientErr = clientErr
 }
 
@@ -2570,6 +2592,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", rt.session.LastVerification.SummaryLine()))
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_history", fmt.Sprintf("%d", rt.verificationHistoryCount())))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("skills", fmt.Sprintf("%d", rt.skills.Count())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_skills", fmt.Sprintf("%d", rt.skills.EnabledCount())))
 		mcpStatuses := rt.mcpStatus()
@@ -2768,6 +2791,46 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "checkpoint-auto":
 		if err := rt.handleCheckpointAutoCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "set-msbuild-path":
+		if err := rt.handleSetVerificationToolPathCommand("msbuild", cmd.Args); err != nil {
+			return false, err
+		}
+	case "clear-msbuild-path":
+		if err := rt.handleClearVerificationToolPathCommand("msbuild"); err != nil {
+			return false, err
+		}
+	case "set-cmake-path":
+		if err := rt.handleSetVerificationToolPathCommand("cmake", cmd.Args); err != nil {
+			return false, err
+		}
+	case "clear-cmake-path":
+		if err := rt.handleClearVerificationToolPathCommand("cmake"); err != nil {
+			return false, err
+		}
+	case "set-ctest-path":
+		if err := rt.handleSetVerificationToolPathCommand("ctest", cmd.Args); err != nil {
+			return false, err
+		}
+	case "clear-ctest-path":
+		if err := rt.handleClearVerificationToolPathCommand("ctest"); err != nil {
+			return false, err
+		}
+	case "set-ninja-path":
+		if err := rt.handleSetVerificationToolPathCommand("ninja", cmd.Args); err != nil {
+			return false, err
+		}
+	case "clear-ninja-path":
+		if err := rt.handleClearVerificationToolPathCommand("ninja"); err != nil {
+			return false, err
+		}
+	case "detect-verification-tools":
+		if err := rt.handleDetectVerificationToolsCommand(); err != nil {
+			return false, err
+		}
+	case "set-auto-verify":
+		if err := rt.handleSetAutoVerifyCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "locale-auto":
@@ -3062,7 +3125,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("max_tool_iterations", fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify_docs_only", fmt.Sprintf("%t", configAutoVerifyDocsOnly(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cmake_path", valueOrUnset(rt.cfg.CMakePath)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("ctest_path", valueOrUnset(rt.cfg.CTestPath)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("ninja_path", valueOrUnset(rt.cfg.NinjaPath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("skill_paths", fmt.Sprintf("%d", len(rt.cfg.SkillPaths))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_skills", strings.Join(rt.cfg.EnabledSkills, ", ")))
@@ -3118,6 +3186,439 @@ func (rt *runtimeState) handleLocaleAutoCommand(args string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Auto-locale set to %t", val)))
 	return nil
+}
+
+func (rt *runtimeState) handleSetAutoVerifyCommand(args string) error {
+	if args == "" {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("Automatic verification is currently: %t", configAutoVerify(rt.cfg))))
+		return nil
+	}
+	val, ok := parseBoolString(args)
+	if !ok {
+		return fmt.Errorf("usage: /set-auto-verify [on|off]")
+	}
+	rt.cfg.AutoVerify = boolPtr(val)
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Automatic verification set to %t", val)))
+	return nil
+}
+
+func (rt *runtimeState) handleSetVerificationToolPathCommand(toolName, args string) error {
+	displayName := suggestedVerificationToolDisplayName(toolName)
+	current := currentVerificationToolPath(rt.cfg, toolName)
+	if strings.TrimSpace(args) == "" {
+		suggested := suggestedVerificationToolPath(rt.cfg, toolName)
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("%s path: %s", displayName, valueOrUnset(current))))
+		if strings.TrimSpace(suggested) != "" && !strings.EqualFold(strings.TrimSpace(suggested), strings.TrimSpace(current)) {
+			fmt.Fprintln(rt.writer, rt.ui.dim("Suggested: "+suggested))
+		}
+		return nil
+	}
+	resolvedPath, err := normalizeVerificationToolPathInput(args)
+	if err != nil {
+		return err
+	}
+	configKey := verificationToolConfigKey(toolName)
+	if strings.TrimSpace(configKey) == "" {
+		return fmt.Errorf("unsupported verification tool: %s", toolName)
+	}
+	if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, map[string]any{
+		configKey: resolvedPath,
+	}); err != nil {
+		return err
+	}
+	applyVerificationToolPathToConfig(&rt.cfg, toolName, resolvedPath)
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("%s path set to %s", displayName, resolvedPath)))
+	return nil
+}
+
+func (rt *runtimeState) handleClearVerificationToolPathCommand(toolName string) error {
+	displayName := suggestedVerificationToolDisplayName(toolName)
+	configKey := verificationToolConfigKey(toolName)
+	if strings.TrimSpace(configKey) == "" {
+		return fmt.Errorf("unsupported verification tool: %s", toolName)
+	}
+	if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, map[string]any{
+		configKey: nil,
+	}); err != nil {
+		return err
+	}
+	applyVerificationToolPathToConfig(&rt.cfg, toolName, "")
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("%s path cleared for this workspace", displayName)))
+	return nil
+}
+
+func (rt *runtimeState) handleDetectVerificationToolsCommand() error {
+	applied, err := autoPopulateVerificationToolPaths(rt.workspace.BaseRoot, &rt.cfg, detectWindowsVerificationToolPath)
+	if err != nil {
+		return err
+	}
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Verification Tools"))
+	if len(applied) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("No new verification tool paths were detected."))
+		return nil
+	}
+	for _, toolName := range []string{"msbuild", "cmake", "ctest", "ninja"} {
+		if path := strings.TrimSpace(applied[toolName]); path != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(strings.ToLower(suggestedVerificationToolDisplayName(toolName)), path))
+		}
+	}
+	return nil
+}
+
+func buildVerificationToolPaths(cfg Config) map[string]string {
+	paths := map[string]string{}
+	if strings.TrimSpace(cfg.MSBuildPath) != "" {
+		paths["msbuild"] = strings.TrimSpace(cfg.MSBuildPath)
+	}
+	if strings.TrimSpace(cfg.CMakePath) != "" {
+		paths["cmake"] = strings.TrimSpace(cfg.CMakePath)
+	}
+	if strings.TrimSpace(cfg.CTestPath) != "" {
+		paths["ctest"] = strings.TrimSpace(cfg.CTestPath)
+	}
+	if strings.TrimSpace(cfg.NinjaPath) != "" {
+		paths["ninja"] = strings.TrimSpace(cfg.NinjaPath)
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	return paths
+}
+
+func autoPopulateVerificationToolPaths(cwd string, cfg *Config, detector func(string) string) (map[string]string, error) {
+	if runtime.GOOS != "windows" {
+		return nil, nil
+	}
+	if cfg == nil || detector == nil {
+		return nil, nil
+	}
+	updates := map[string]any{}
+	applied := map[string]string{}
+	for _, toolName := range []string{"msbuild", "cmake", "ctest", "ninja"} {
+		if strings.TrimSpace(currentVerificationToolPath(*cfg, toolName)) != "" {
+			continue
+		}
+		detected := strings.TrimSpace(detector(toolName))
+		if detected == "" {
+			continue
+		}
+		applyVerificationToolPathToConfig(cfg, toolName, detected)
+		updates[verificationToolConfigKey(toolName)] = detected
+		applied[toolName] = detected
+	}
+	if len(updates) == 0 {
+		return nil, nil
+	}
+	if err := SaveWorkspaceConfigOverrides(cwd, updates); err != nil {
+		return nil, err
+	}
+	return applied, nil
+}
+
+func currentVerificationToolPath(cfg Config, toolName string) string {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "msbuild":
+		return strings.TrimSpace(cfg.MSBuildPath)
+	case "cmake":
+		return strings.TrimSpace(cfg.CMakePath)
+	case "ctest":
+		return strings.TrimSpace(cfg.CTestPath)
+	case "ninja":
+		return strings.TrimSpace(cfg.NinjaPath)
+	default:
+		return ""
+	}
+}
+
+func suggestedVerificationToolDisplayName(toolName string) string {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "msbuild":
+		return "MSBuild"
+	case "cmake":
+		return "CMake"
+	case "ctest":
+		return "CTest"
+	case "ninja":
+		return "Ninja"
+	default:
+		return strings.TrimSpace(toolName)
+	}
+}
+
+func verificationToolConfigKey(toolName string) string {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "msbuild":
+		return "msbuild_path"
+	case "cmake":
+		return "cmake_path"
+	case "ctest":
+		return "ctest_path"
+	case "ninja":
+		return "ninja_path"
+	default:
+		return ""
+	}
+}
+
+func applyVerificationToolPathToConfig(cfg *Config, toolName, path string) {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "msbuild":
+		cfg.MSBuildPath = path
+	case "cmake":
+		cfg.CMakePath = path
+	case "ctest":
+		cfg.CTestPath = path
+	case "ninja":
+		cfg.NinjaPath = path
+	}
+}
+
+func normalizeVerificationToolPathInput(value string) (string, error) {
+	trimmed := strings.TrimSpace(strings.Trim(value, `"'`))
+	if trimmed == "" {
+		return "", fmt.Errorf("tool path cannot be empty")
+	}
+	resolved := expandHome(trimmed)
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("tool path must point to an executable file, not a directory")
+	}
+	abs, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	return abs, nil
+}
+
+func suggestedVerificationToolPath(cfg Config, toolName string) string {
+	if current := currentVerificationToolPath(cfg, toolName); strings.TrimSpace(current) != "" {
+		return current
+	}
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	if discovered := detectWindowsVerificationToolPath(toolName); strings.TrimSpace(discovered) != "" {
+		return discovered
+	}
+	return ""
+}
+
+func detectWindowsVerificationToolPath(toolName string) string {
+	candidates := windowsVerificationToolCandidates(toolName)
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			abs, absErr := filepath.Abs(candidate)
+			if absErr == nil {
+				return abs
+			}
+			return candidate
+		}
+	}
+	return ""
+}
+
+func windowsVerificationToolCandidates(toolName string) []string {
+	tool := strings.ToLower(strings.TrimSpace(toolName))
+	var out []string
+	programFiles := []string{
+		os.Getenv("ProgramFiles"),
+		os.Getenv("ProgramFiles(x86)"),
+		`C:\Program Files`,
+		`C:\Program Files (x86)`,
+	}
+
+	appendIf := func(path string) {
+		if strings.TrimSpace(path) != "" {
+			out = append(out, path)
+		}
+	}
+
+	for _, base := range uniqueStrings(programFiles) {
+		switch tool {
+		case "cmake":
+			appendIf(filepath.Join(base, "CMake", "bin", "cmake.exe"))
+		case "ctest":
+			appendIf(filepath.Join(base, "CMake", "bin", "ctest.exe"))
+		case "ninja":
+			appendIf(filepath.Join(base, "CMake", "bin", "ninja.exe"))
+		}
+	}
+
+	for _, root := range windowsVisualStudioInstallRoots() {
+		switch tool {
+		case "msbuild":
+			appendIf(filepath.Join(root, "MSBuild", "Current", "Bin", "MSBuild.exe"))
+		case "cmake":
+			appendIf(filepath.Join(root, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "CMake", "bin", "cmake.exe"))
+		case "ctest":
+			appendIf(filepath.Join(root, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "CMake", "bin", "ctest.exe"))
+		case "ninja":
+			appendIf(filepath.Join(root, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe"))
+		}
+	}
+
+	return uniqueStrings(out)
+}
+
+func windowsVisualStudioInstallRoots() []string {
+	var roots []string
+	for _, installerBase := range []string{
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft Visual Studio", "Installer"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft Visual Studio", "Installer"),
+		`C:\Program Files (x86)\Microsoft Visual Studio\Installer`,
+		`C:\Program Files\Microsoft Visual Studio\Installer`,
+	} {
+		if strings.TrimSpace(installerBase) == "" {
+			continue
+		}
+		vswhere := filepath.Join(installerBase, "vswhere.exe")
+		if _, err := os.Stat(vswhere); err == nil {
+			out, cmdErr := exec.Command(vswhere, "-latest", "-products", "*", "-property", "installationPath").Output()
+			if cmdErr == nil {
+				if path := strings.TrimSpace(string(out)); path != "" {
+					roots = append(roots, path)
+				}
+			}
+		}
+	}
+
+	for _, base := range []string{
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft Visual Studio"),
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft Visual Studio"),
+		`C:\Program Files (x86)\Microsoft Visual Studio`,
+		`C:\Program Files\Microsoft Visual Studio`,
+	} {
+		if strings.TrimSpace(base) == "" {
+			continue
+		}
+		entries, err := os.ReadDir(base)
+		if err != nil {
+			continue
+		}
+		for _, yearEntry := range entries {
+			if !yearEntry.IsDir() {
+				continue
+			}
+			yearPath := filepath.Join(base, yearEntry.Name())
+			skus, skuErr := os.ReadDir(yearPath)
+			if skuErr != nil {
+				continue
+			}
+			for _, skuEntry := range skus {
+				if skuEntry.IsDir() {
+					roots = append(roots, filepath.Join(yearPath, skuEntry.Name()))
+				}
+			}
+		}
+	}
+	return uniqueStrings(roots)
+}
+
+func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport) (AutoVerifyFailureResolution, error) {
+	if !rt.interactive {
+		return AutoVerifyFailureNoAction, nil
+	}
+	resumeThinking := rt.suspendThinkingIndicator()
+	defer resumeThinking()
+
+	toolName := report.MissingCommandTool()
+	label := rt.ui.warnLine("Automatic verification failed because a verification tool could not be started.") + " " + rt.ui.dim("[p=set path/y=disable now/a=always disable for this workspace, Esc=cancel]")
+	for {
+		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil)
+		if !usedInteractive {
+			fmt.Fprint(rt.writer, label+" ")
+			answer, err = rt.reader.ReadString('\n')
+			if err != nil {
+				return AutoVerifyFailureNoAction, err
+			}
+			answer = strings.TrimSpace(answer)
+		} else if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return AutoVerifyFailureNoAction, nil
+			}
+			return AutoVerifyFailureNoAction, err
+		}
+
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "p", "path":
+			if strings.TrimSpace(toolName) == "" {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("Could not identify which verification tool is missing."))
+				return AutoVerifyFailureNoAction, nil
+			}
+			configKey := verificationToolConfigKey(toolName)
+			currentValue := suggestedVerificationToolPath(rt.cfg, toolName)
+			value, valueErr := rt.promptValue(fmt.Sprintf("Path for %s executable", toolName), currentValue)
+			if valueErr != nil {
+				return AutoVerifyFailureNoAction, valueErr
+			}
+			resolvedPath, pathErr := normalizeVerificationToolPathInput(value)
+			if pathErr != nil {
+				return AutoVerifyFailureNoAction, pathErr
+			}
+			if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, map[string]any{
+				configKey: resolvedPath,
+			}); err != nil {
+				return AutoVerifyFailureNoAction, err
+			}
+			applyVerificationToolPathToConfig(&rt.cfg, toolName, resolvedPath)
+			rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+			if rt.agent != nil {
+				rt.agent.Config = rt.cfg
+			}
+			fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("%s path saved for this workspace.", strings.ToUpper(toolName))))
+			return AutoVerifyFailureRetry, nil
+		case "y", "yes":
+			rt.cfg.AutoVerify = boolPtr(false)
+			if rt.agent != nil {
+				rt.agent.Config = rt.cfg
+			}
+			fmt.Fprintln(rt.writer, rt.ui.successLine("Automatic verification disabled for this session."))
+			if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("Latest verification failure:"))
+				fmt.Fprintln(rt.writer, rt.ui.dim(summary))
+			}
+			return AutoVerifyFailureDisable, nil
+		case "a", "always":
+			rt.cfg.AutoVerify = boolPtr(false)
+			if rt.agent != nil {
+				rt.agent.Config = rt.cfg
+			}
+			if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, map[string]any{
+				"auto_verify": false,
+			}); err != nil {
+				return AutoVerifyFailureNoAction, err
+			}
+			fmt.Fprintln(rt.writer, rt.ui.successLine("Automatic verification disabled for this workspace."))
+			if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("Latest verification failure:"))
+				fmt.Fprintln(rt.writer, rt.ui.dim(summary))
+			}
+			return AutoVerifyFailureDisable, nil
+		case "", "n", "no":
+			return AutoVerifyFailureNoAction, nil
+		}
+	}
 }
 
 func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {

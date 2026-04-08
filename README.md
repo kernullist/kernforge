@@ -88,6 +88,8 @@ Its current differentiators are:
 - Verification history and verification dashboards
 - Structured evidence capture from verification
 - Evidence search and evidence dashboards
+- Runtime toggle for automatic verification with `/set-auto-verify [on|off]`
+- Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
 
@@ -96,6 +98,7 @@ Its current differentiators are:
 - WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
+- `a` on `Open diff preview?` auto-accepts the current edit and future diff previews for the session
 - Automatic checkpoint creation before the first edit in a request
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
@@ -113,7 +116,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, and `/open`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, and `/simulate show`
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
@@ -343,10 +346,14 @@ Later sources override earlier ones:
   "base_url": "http://localhost:11434",
   "permission_mode": "default",
   "shell": "powershell",
+  "request_timeout_seconds": 1200,
   "max_tool_iterations": 16,
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
+  "auto_verify": true,
   "auto_verify_docs_only": false,
+  "msbuild_path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
+  "cmake_path": "C:\\Program Files\\CMake\\bin\\cmake.exe",
   "auto_locale": true,
   "hooks_enabled": true,
   "hooks_fail_closed": false
@@ -363,13 +370,19 @@ Later sources override earlier ones:
 | `api_key` | API key |
 | `temperature` | Model temperature |
 | `max_tokens` | Max completion tokens |
+| `request_timeout_seconds` | Per-request model timeout in seconds; timed-out model turns retry once |
 | `max_tool_iterations` | Max tool loop count per request |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
 | `session_dir` | Directory for saved session JSON files |
 | `auto_compact_chars` | Approximate context threshold before auto-compacting |
 | `auto_checkpoint_edits` | Create a safety checkpoint before the first edit in a request |
+| `auto_verify` | Master switch for automatic verification after edits |
 | `auto_verify_docs_only` | Allow docs-only changes to still trigger auto verification |
+| `msbuild_path` | Workspace override for MSBuild when PATH is incomplete |
+| `cmake_path` | Workspace override for CMake when PATH is incomplete |
+| `ctest_path` | Workspace override for CTest when PATH is incomplete |
+| `ninja_path` | Workspace override for Ninja when PATH is incomplete |
 | `auto_locale` | Inject the detected system locale into prompts |
 | `memory_files` | Extra memory file paths |
 | `skill_paths` | Extra skill search paths |
@@ -394,8 +407,14 @@ General overrides:
 - `KERNFORGE_PERMISSION_MODE`
 - `KERNFORGE_SHELL`
 - `KERNFORGE_SESSION_DIR`
+- `KERNFORGE_REQUEST_TIMEOUT_SECONDS`
 - `KERNFORGE_AUTO_CHECKPOINT_EDITS`
+- `KERNFORGE_AUTO_VERIFY`
 - `KERNFORGE_AUTO_LOCALE`
+- `KERNFORGE_MSBUILD_PATH`
+- `KERNFORGE_CMAKE_PATH`
+- `KERNFORGE_CTEST_PATH`
+- `KERNFORGE_NINJA_PATH`
 
 Provider-specific:
 
@@ -426,12 +445,14 @@ Provider-specific:
 - Assistant turns that contain only tool calls omit empty assistant content for better API compatibility
 - Non-JSON assistant tool-call arguments are normalized before request send
 - HTTP error messages include a compact request preview to speed up provider debugging
+- Streamed partial text is preserved on deadline when no tool call is in progress, and timed-out model turns retry once
 
 ### OpenRouter
 
 - Default base URL: `https://openrouter.ai/api/v1`
 - Reads `OPENROUTER_API_KEY`
 - Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
+- Uses the same request-timeout, streamed partial-text, and single-retry behavior as the OpenAI-compatible client
 
 ### OpenAI-compatible
 

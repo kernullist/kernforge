@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -592,11 +593,21 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 	}
 	if err := scanner.Err(); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
+			if errors.Is(ctxErr, context.DeadlineExceeded) {
+				if partial, ok := buildPartialStreamResponse(textBuilder.String(), len(toolCalls) > 0, stopReason); ok {
+					return partial, nil
+				}
+			}
 			return ChatResponse{}, ctxErr
 		}
 		return ChatResponse{}, err
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			if partial, ok := buildPartialStreamResponse(textBuilder.String(), len(toolCalls) > 0, stopReason); ok {
+				return partial, nil
+			}
+		}
 		return ChatResponse{}, ctxErr
 	}
 
@@ -624,6 +635,26 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 		Message:    out,
 		StopReason: stopReason,
 	}, nil
+}
+
+func buildPartialStreamResponse(text string, hasToolCalls bool, stopReason string) (ChatResponse, bool) {
+	if strings.TrimSpace(text) == "" {
+		return ChatResponse{}, false
+	}
+	if hasToolCalls {
+		return ChatResponse{}, false
+	}
+	partialStopReason := "partial"
+	if strings.TrimSpace(stopReason) != "" {
+		partialStopReason = strings.TrimSpace(stopReason) + "_partial"
+	}
+	return ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: text,
+		},
+		StopReason: normalizeStopReason(partialStopReason),
+	}, true
 }
 
 func assistantMessageContent(text string, hasToolCalls bool) any {

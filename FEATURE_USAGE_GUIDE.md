@@ -150,11 +150,23 @@ Useful commands:
 - `/verify src/foo.cpp,driver/guard.cpp`
 - `/verify-dashboard`
 - `/verify-dashboard-html`
+- `/set-auto-verify [on|off]`
+- `/detect-verification-tools`
+- `/set-msbuild-path <path>`
+- `/set-cmake-path <path>`
+- `/set-ctest-path <path>`
+- `/set-ninja-path <path>`
 
 Best used when:
 1. Generic `go test`, `msbuild`, or `ctest` is not enough.
 2. You need signing, symbols, package, provider, XML, or verifier-oriented follow-up.
 3. You already saw risky investigation or simulation findings and want them reflected in validation.
+
+Operational notes:
+1. `auto_verify` is now the master switch for edit-triggered verification.
+2. When a Windows verification tool such as `msbuild`, `cmake`, `ctest`, or `ninja` is missing, Kernforge can prompt to disable auto verification or save an explicit executable path.
+3. Use quotes for paths that contain spaces, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
+4. Model request timeout is configurable through `request_timeout_seconds`, and timed-out model turns retry once.
 
 ### 2.3 Evidence Store
 
@@ -287,6 +299,7 @@ Diff workflow notes:
 1. On Windows, `/diff` and `/diff-selection` prefer the internal WebView2 diff viewer.
 2. The read-only diff viewer includes changed-file navigation, unified/split toggles, and intraline highlights.
 3. If the internal surface is unavailable, Kernforge falls back to terminal output.
+4. In `Open diff preview?`, answering `a` auto-accepts the current edit and skips future diff previews for the rest of the session.
 
 Best used when:
 1. You want to focus on a single IOCTL handler, integrity check, or provider registration block.
@@ -311,6 +324,19 @@ Best used when:
 Current integration:
 1. Recent simulation findings that match the task are injected into the planning prompt.
 2. The same perspective is injected again into the final execution prompt.
+
+### 2.9 Interactive Ergonomics
+
+Purpose:
+1. Reduce typing friction in long investigative and verification-heavy sessions.
+2. Make command discovery faster when subcommands or ids are easy to forget.
+
+What `Tab` completion now covers:
+1. Slash commands
+2. Workspace paths and `@file` mentions
+3. MCP resource and prompt targets
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, and `/simulate <profile>`
+5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, and `/simulate show`
 
 ## 3. Recommended Real-World Flows
 

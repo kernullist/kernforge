@@ -23,6 +23,17 @@ var slashCommands = []string{
 	"context",
 	"memory",
 	"mem",
+	"evidence",
+	"evidence-search",
+	"evidence-show",
+	"evidence-dashboard",
+	"evidence-dashboard-html",
+	"investigate",
+	"investigate-dashboard",
+	"investigate-dashboard-html",
+	"simulate",
+	"simulate-dashboard",
+	"simulate-dashboard-html",
 	"mem-search",
 	"mem-show",
 	"mem-promote",
@@ -33,8 +44,21 @@ var slashCommands = []string{
 	"mem-dashboard-html",
 	"mem-prune",
 	"mem-stats",
+	"override",
+	"override-add",
+	"override-clear",
 	"checkpoint",
 	"checkpoint-auto",
+	"detect-verification-tools",
+	"set-msbuild-path",
+	"clear-msbuild-path",
+	"set-cmake-path",
+	"clear-cmake-path",
+	"set-ctest-path",
+	"clear-ctest-path",
+	"set-ninja-path",
+	"clear-ninja-path",
+	"set-auto-verify",
 	"checkpoint-diff",
 	"locale-auto",
 	"checkpoints",
@@ -46,6 +70,8 @@ var slashCommands = []string{
 	"prompts",
 	"prompt",
 	"reload",
+	"hook-reload",
+	"hooks",
 	"init",
 	"open",
 	"selection",
@@ -144,36 +170,241 @@ func (rt *runtimeState) completeSlashSubcommand(buffer string, trimmedLeft strin
 	}
 	commandName := strings.ToLower(strings.TrimSpace(parts[0]))
 	argText := parts[1]
-	if commandName != "set-analysis-models" {
-		return buffer, nil, false
-	}
-	if strings.Contains(strings.TrimSpace(argText), " ") {
+
+	completedArg, suggestions, ok := rt.completeSlashArgumentText(commandName, argText)
+	if !ok {
 		return buffer, nil, false
 	}
 	leading := buffer[:len(buffer)-len(trimmedLeft)]
-	partial := strings.ToLower(strings.TrimSpace(argText))
-	subcommands := []string{"status", "worker", "reviewer", "clear"}
-	matches := make([]string, 0, len(subcommands))
-	for _, sub := range subcommands {
-		if strings.HasPrefix(sub, partial) {
-			matches = append(matches, sub)
+	if len(suggestions) > 0 {
+		prefixed := make([]string, 0, len(suggestions))
+		for _, suggestion := range suggestions {
+			prefixed = append(prefixed, leading+"/"+commandName+" "+suggestion)
+		}
+		return buffer, prefixed, true
+	}
+	return leading + "/" + commandName + " " + completedArg, nil, true
+}
+
+func (rt *runtimeState) completeSlashArgumentText(commandName string, argText string) (string, []string, bool) {
+	trimmedArgs := strings.TrimLeft(argText, " \t")
+	argFields := strings.Fields(trimmedArgs)
+	endsWithSpace := strings.HasSuffix(argText, " ")
+
+	suggestions, replaceIndex, ok := rt.slashArgumentSuggestions(commandName, argFields, endsWithSpace)
+	if !ok || len(suggestions) == 0 {
+		return "", nil, ok
+	}
+
+	if replaceIndex > len(argFields) {
+		replaceIndex = len(argFields)
+	}
+	replaceValue := ""
+	if replaceIndex < len(argFields) {
+		replaceValue = strings.ToLower(strings.TrimSpace(argFields[replaceIndex]))
+	}
+	matches := make([]string, 0, len(suggestions))
+	for _, suggestion := range suggestions {
+		if strings.HasPrefix(strings.ToLower(suggestion), replaceValue) {
+			matches = append(matches, suggestion)
 		}
 	}
 	if len(matches) == 0 {
-		return buffer, nil, true
+		return "", nil, true
 	}
+
+	prefixFields := append([]string(nil), argFields[:replaceIndex]...)
 	if len(matches) == 1 {
-		return leading + "/set-analysis-models " + matches[0] + " ", nil, true
+		finalFields := append(prefixFields, matches[0])
+		return strings.Join(finalFields, " ") + " ", nil, true
 	}
+
 	prefix := longestCommonPrefix(matches)
-	if len(prefix) > len(partial) {
-		return leading + "/set-analysis-models " + prefix, nil, true
+	if len(prefix) > len(replaceValue) {
+		finalFields := append(prefixFields, prefix)
+		return strings.Join(finalFields, " "), nil, true
 	}
-	suggestions := make([]string, 0, len(matches))
+
+	rendered := make([]string, 0, len(matches))
 	for _, match := range matches {
-		suggestions = append(suggestions, "/set-analysis-models "+match)
+		finalFields := append(prefixFields, match)
+		rendered = append(rendered, strings.Join(finalFields, " "))
 	}
-	return buffer, suggestions, true
+	return "", rendered, true
+}
+
+func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
+	firstLevel := map[string][]string{
+		"permissions":           {"default", "acceptEdits", "plan", "bypassPermissions"},
+		"checkpoint-auto":       {"on", "off"},
+		"locale-auto":           {"on", "off"},
+		"set-auto-verify":       {"on", "off"},
+		"verify":                {"--full"},
+		"verify-dashboard":      {"all"},
+		"verify-dashboard-html": {"all"},
+		"mem-prune":             {"all"},
+		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "ollama"},
+		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
+		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
+		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
+		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
+	}
+
+	if len(fields) == 0 {
+		if options, ok := firstLevel[commandName]; ok {
+			return options, 0, true
+		}
+		return nil, 0, false
+	}
+
+	if endsWithSpace {
+		fields = append(fields, "")
+	}
+
+	switch commandName {
+	case "resume":
+		if len(fields) <= 1 {
+			return rt.recentSessionIDs(), 0, true
+		}
+		return nil, 0, false
+	case "evidence-show":
+		if len(fields) <= 1 {
+			return rt.recentEvidenceIDs(), 0, true
+		}
+		return nil, 0, false
+	case "mem-show", "mem-promote", "mem-demote", "mem-confirm", "mem-tentative":
+		if len(fields) <= 1 {
+			return rt.recentPersistentMemoryIDs(), 0, true
+		}
+		return nil, 0, false
+	case "set-plan-review":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+	case "set-analysis-models":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
+			return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+		}
+		return nil, 0, false
+	case "investigate":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "start") {
+			return []string{"driver-visibility", "process-visibility", "provider-visibility"}, 1, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
+			return rt.recentInvestigationIDs(), 1, true
+		}
+		return nil, 0, false
+	case "simulate":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
+			return rt.recentSimulationIDs(), 1, true
+		}
+		return nil, 0, false
+	case "init":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	default:
+		if options, ok := firstLevel[commandName]; ok && len(fields) <= 1 {
+			return options, 0, true
+		}
+	}
+
+	return nil, 0, false
+}
+
+func (rt *runtimeState) recentSessionIDs() []string {
+	if rt == nil || rt.store == nil {
+		return nil
+	}
+	items, err := rt.store.List()
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) recentEvidenceIDs() []string {
+	if rt == nil || rt.evidence == nil {
+		return nil
+	}
+	items, err := rt.evidence.ListRecent(rt.workspace.BaseRoot, 12)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) recentPersistentMemoryIDs() []string {
+	if rt == nil || rt.longMem == nil {
+		return nil
+	}
+	items, err := rt.longMem.ListRecent(rt.workspace.BaseRoot, 12)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) recentInvestigationIDs() []string {
+	if rt == nil || rt.investigations == nil {
+		return nil
+	}
+	items, err := rt.investigations.ListRecent(rt.workspace.BaseRoot, 12)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) recentSimulationIDs() []string {
+	if rt == nil || rt.simulations == nil {
+		return nil
+	}
+	items, err := rt.simulations.ListRecent(rt.workspace.BaseRoot, 12)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
 }
 
 func (rt *runtimeState) completeMentionPath(buffer string) (string, []string, bool) {
