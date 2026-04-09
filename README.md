@@ -8,6 +8,14 @@
 Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into a reusable knowledge pack, then carries that context into editing, verification, evidence, and policy.  
 Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
+## Flagship Capability
+
+If Kernforge has one feature to understand first, it is `multi-agent project analysis`.
+
+- `/analyze-project <goal>` builds a reusable architecture map instead of a disposable summary
+- The output becomes a durable knowledge pack, performance lens, structural index, and vector-ready analysis set
+- That analysis is then reused in review, editing, verification, and policy workflows
+
 ## Documentation
 
 Quick Start:
@@ -52,6 +60,7 @@ Its current differentiators are:
 
 ## What It Currently Supports
 
+- Multi-agent project analysis with reusable knowledge packs and a performance lens
 - Interactive REPL and one-shot `-prompt` mode
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
 - File, patch, shell, and git-oriented tool use
@@ -65,7 +74,6 @@ Its current differentiators are:
 - Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
-- Multi-agent project analysis with reusable knowledge packs and a performance lens
 - Plan-review workflow with a separate reviewer model
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 

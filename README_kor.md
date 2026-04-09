@@ -8,6 +8,14 @@
 현재 Kernforge의 가장 큰 강점은 `multi-agent project analysis pipeline`입니다. 큰 워크스페이스를 재사용 가능한 knowledge pack으로 정리하고, 그 분석 결과를 편집, 검증, evidence, policy 단계까지 그대로 이어갈 수 있습니다.  
 특히 `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback` 흐름을 중심으로, driver, telemetry, memory-scan, Unreal 보안 작업을 더 안전하고 일관되게 진행할 수 있도록 설계되어 있습니다.
 
+## 대표 강점
+
+Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent project analysis`입니다.
+
+- `/analyze-project <goal>`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
+- 결과물은 knowledge pack, performance lens, structural index, vector-ready analysis set으로 남는다.
+- 이 분석 자산은 이후 review, edit, verification, policy 흐름까지 계속 재사용된다.
+
 ## 문서
 
 빠른 시작:
@@ -50,6 +58,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ## 현재 구현된 기능
 
+- 재사용 가능한 knowledge pack과 performance lens를 만드는 multi-agent project analysis
 - 대화형 REPL과 `-prompt` 기반 one-shot 실행
 - `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible` provider 지원
 - 파일, 패치, 셸, git 중심 도구 호출
@@ -63,7 +72,6 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - Windows용 별도 텍스트 viewer와 WebView2 기반 diff review/diff viewer
 - adaptive verification, 검증 이력 대시보드, checkpoint, rollback
 - hook engine, workspace hook rules, evidence-aware push/PR policy
-- 재사용 가능한 knowledge pack과 performance lens를 만드는 multi-agent project analysis
 - 별도 reviewer 모델을 사용하는 plan-review 워크플로우
 - `.kernforge/features` 아래에 spec/plan/tasks/implementation artifact를 남기는 tracked feature 워크플로우
 
