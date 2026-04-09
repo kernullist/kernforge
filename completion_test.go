@@ -25,6 +25,8 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/set-analysis-models ", wantSuggest: []string{"/set-analysis-models status", "/set-analysis-models worker", "/set-analysis-models reviewer", "/set-analysis-models clear"}},
 		{input: "/set-analysis-models w", wantBuffer: "/set-analysis-models worker "},
 		{input: "/set-analysis-models worker op", wantBuffer: "/set-analysis-models worker open"},
+		{input: "/new-feature ", wantSuggest: []string{"/new-feature start", "/new-feature status", "/new-feature list", "/new-feature plan", "/new-feature implement", "/new-feature close"}},
+		{input: "/new-feature im", wantBuffer: "/new-feature implement "},
 		{input: "/investigate ", wantSuggest: []string{"/investigate status", "/investigate start", "/investigate snapshot", "/investigate note", "/investigate stop", "/investigate show", "/investigate list", "/investigate dashboard", "/investigate dashboard-html"}},
 		{input: "/investigate start d", wantBuffer: "/investigate start driver-visibility "},
 		{input: "/simulate ", wantSuggest: []string{"/simulate status", "/simulate show", "/simulate list", "/simulate dashboard", "/simulate dashboard-html", "/simulate tamper-surface", "/simulate stealth-surface", "/simulate forensic-blind-spot"}},
@@ -63,6 +65,7 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 	}{
 		{input: "/evi", wantBuffer: "/evidence"},
 		{input: "/invest", wantBuffer: "/investigate"},
+		{input: "/new-f", wantBuffer: "/new-feature "},
 		{input: "/simu", wantBuffer: "/simulate"},
 		{input: "/override-a", wantBuffer: "/override-add "},
 		{input: "/hook-r", wantBuffer: "/hook-reload "},
@@ -145,6 +148,12 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		t.Fatalf("append simulation: %v", err)
 	}
 
+	featureStore := NewFeatureStore(dir)
+	feature, err := featureStore.Create(dir, "add tracked feature workflow", "openai / gpt-5.4", "")
+	if err != nil {
+		t.Fatalf("create feature: %v", err)
+	}
+
 	rt := &runtimeState{
 		store:          store,
 		evidence:       evidence,
@@ -167,6 +176,7 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		{input: "/mem-promote mem", wantBuffer: "/mem-promote mem-abc "},
 		{input: "/investigate show inv", wantBuffer: "/investigate show invest-abc "},
 		{input: "/simulate show sim", wantBuffer: "/simulate show sim-abc "},
+		{input: "/new-feature status " + feature.ID[:8], wantBuffer: "/new-feature status " + feature.ID + " "},
 	}
 
 	for _, tc := range cases {

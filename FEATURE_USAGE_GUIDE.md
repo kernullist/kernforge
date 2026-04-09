@@ -27,7 +27,7 @@ The best current loop looks like this:
 2. Use `/analyze-performance` to turn the latest knowledge pack into a bottleneck lens when performance or startup paths matter.
 3. If live state matters, use `/investigate` to capture the current system state.
 4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
-5. Use `/review-selection`, `/edit-selection`, or `/do-plan-review` to drive the work.
+5. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
 6. Run `/verify` to execute the verification plan.
 7. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
 8. Let hooks act as the final policy layer before push or PR.
@@ -92,6 +92,8 @@ What materially changed for large and Unreal-heavy workspaces:
 3. Incremental reuse now considers semantic fingerprints instead of relying only on file hashes.
 4. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
 5. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
+6. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
+7. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
 
 ### 2.1 Hook Engine
 
@@ -326,7 +328,32 @@ Current integration:
 1. Recent simulation findings that match the task are injected into the planning prompt.
 2. The same perspective is injected again into the final execution prompt.
 
-### 2.9 Interactive Ergonomics
+### 2.9 Tracked Feature Workflow
+
+Purpose:
+1. Create a long-lived feature workspace instead of a disposable plan.
+2. Persist spec, plan, task, and implementation artifacts under `.kernforge/features/<id>`.
+3. Separate planning from execution so large changes can be resumed safely.
+
+Useful commands:
+- `/new-feature <task>`
+- `/new-feature list`
+- `/new-feature status [id]`
+- `/new-feature plan [id]`
+- `/new-feature implement [id]`
+- `/new-feature close [id]`
+
+Best used when:
+1. A feature will span multiple sessions or handoffs.
+2. You want explicit artifacts for scope, sequencing, and acceptance tracking.
+3. You want implementation to be an explicit follow-up step instead of happening immediately after planning.
+
+Current integration:
+1. `/new-feature <task>` behaves like `/new-feature start <task>` and creates `feature.json`, `spec.md`, `plan.md`, and `tasks.md`.
+2. The created feature becomes the active feature in the session status.
+3. `/new-feature implement [id]` executes the saved tracked plan and writes `implementation.md`.
+
+### 2.10 Interactive Ergonomics
 
 Purpose:
 1. Reduce typing friction in long investigative and verification-heavy sessions.
@@ -337,7 +364,13 @@ What `Tab` completion now covers:
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
 4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, and `/simulate <profile>`
-5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, and `/simulate show`
+5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+
+Prompt budget behavior that now matters:
+1. Cached `analyze-project` summaries can be injected ahead of auto-scouted code snippets when they are more relevant.
+2. If the cached project analysis is sufficient to answer a question, Kernforge can reply without spending extra tool iterations.
+3. Skill and MCP catalogs are now included in full only when the request is actually asking about them.
+4. Auto-scout contributes fewer candidates and less text, and it now focuses on locate/definition/reference-style requests.
 
 ## 3. Recommended Real-World Flows
 
@@ -436,6 +469,26 @@ Current strength:
 1. Simulation findings can shape the planning prompt.
 2. They can also shape the final plan execution prompt.
 
+### 3.5 Tracked Feature Lifecycle Across Multiple Sessions
+
+Situation:
+- The work is substantial enough that you want durable planning artifacts.
+- You expect implementation, verification, and closure to happen over more than one sitting.
+
+Recommended flow:
+1. `/simulate tamper-surface guard.sys`
+2. `/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points`
+3. `/new-feature status`
+4. Review the generated `spec.md`, `plan.md`, and `tasks.md` under `.kernforge/features/<id>`.
+5. `/new-feature implement`
+6. `/verify`
+7. `/new-feature close`
+
+Why this works well:
+1. The feature state survives session boundaries.
+2. Planning artifacts are explicit and easy to inspect or regenerate.
+3. Execution is intentionally separated from planning, which reduces accidental long-running edits from a rough first draft.
+
 ## 4. Command-By-Command Practical Usage
 
 ### 4.1 `/investigate`
@@ -513,7 +566,30 @@ Current automatic behavior:
 1. Matching recent simulation findings are injected into the planning prompt.
 2. They are also injected into the execution prompt after approval.
 
-### 4.5 `/verify`
+### 4.5 `/new-feature`
+
+Basic usage:
+
+```text
+/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
+/new-feature status
+/new-feature plan
+/new-feature implement
+/new-feature close
+```
+
+Good use cases:
+1. New features that need durable scope and execution artifacts.
+2. Work that should pause after planning so you can review or resume later.
+3. Changes that benefit from an active feature id in session context.
+
+Current automatic behavior:
+1. A tracked feature workspace is created under `.kernforge/features/<id>`.
+2. `spec.md`, `plan.md`, and `tasks.md` are regenerated when you start or re-plan the feature.
+3. `/new-feature implement [id]` executes the saved plan and writes `implementation.md`.
+4. `status`, `plan`, `implement`, and `close` accept unique id prefixes as well as full ids.
+
+### 4.6 `/verify`
 
 Basic usage:
 
@@ -536,7 +612,7 @@ Good use cases:
 2. When recent investigation or simulation findings should influence validation.
 3. When you want security-aware review steps in addition to build or test steps.
 
-### 4.6 `/evidence-search` And `/evidence-dashboard`
+### 4.7 `/evidence-search` And `/evidence-dashboard`
 
 Useful queries:
 
@@ -552,7 +628,7 @@ Good use cases:
 2. When you want only recent signing, provider, or scanner-related failures.
 3. When you want to see active overrides and recent high-risk state together.
 
-### 4.7 `/mem-search`
+### 4.8 `/mem-search`
 
 Useful queries:
 
@@ -567,7 +643,7 @@ Good use cases:
 1. When you want earlier reasoning from previous sessions.
 2. When you want long-lived context for repeated artifacts or failures.
 
-### 4.8 `/hooks` And `/override-*`
+### 4.9 `/hooks` And `/override-*`
 
 Inspect:
 
@@ -704,6 +780,17 @@ Recommended progression:
 /simulate-dashboard
 ```
 
+### Scenario D: Tracked Feature With Explicit Execution
+
+```text
+/simulate tamper-surface guard.sys
+/new-feature harden driver registration and preserve telemetry audit artifacts
+/new-feature status
+/new-feature implement
+/verify
+/new-feature close
+```
+
 ## 9. Summary
 
 The best current one-line description of Kernforge is this:
@@ -716,9 +803,10 @@ That means the strongest current loop is:
 2. `/simulate`
 3. `/review-selection` or `/edit-selection`
 4. `/do-plan-review`
-5. `/verify`
-6. `/evidence-dashboard`
-7. `/mem-search`
-8. Push or PR under hook policy
+5. `/new-feature`
+6. `/verify`
+7. `/evidence-dashboard`
+8. `/mem-search`
+9. Push or PR under hook policy
 
 That loop is the clearest current Kernforge differentiator.

@@ -65,6 +65,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - hook engine, workspace hook rules, evidence-aware push/PR policy
 - 재사용 가능한 knowledge pack과 performance lens를 만드는 multi-agent project analysis
 - 별도 reviewer 모델을 사용하는 plan-review 워크플로우
+- `.kernforge/features` 아래에 spec/plan/tasks/implementation artifact를 남기는 tracked feature 워크플로우
 
 ## 핵심 특징
 
@@ -72,6 +73,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 - `/analyze-project <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
+- goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다.
+- interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
 - semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
 - Unreal project/module/target/type/network/asset/system/config 신호를 구조화해 대형 UE 프로젝트 대응
 - semantic shard planner와 semantic-aware worker/reviewer prompt로 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분석
@@ -101,6 +104,13 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 수동 checkpoint, checkpoint diff, rollback
 - `/open` 중심 selection-first 리뷰/수정 흐름
 
+### Tracked Feature Workflow
+
+- `/new-feature <task>`는 tracked feature workspace를 만들고 `spec.md`, `plan.md`, `tasks.md`를 생성한다.
+- feature artifact는 `.kernforge/features/<id>` 아래에 저장되어 여러 세션에 걸친 작업을 이어가기 쉽다.
+- `/new-feature status|plan|implement|close [id]`로 active feature 상태 확인, 재계획, 실행, 종료를 분리해서 다룰 수 있다.
+- `/do-plan-review <task>`는 여전히 one-shot 계획 검토 후 즉시 실행하는 흐름에 더 적합하다.
+
 ### 입력과 프롬프트
 
 - 대화형 채팅 REPL
@@ -111,16 +121,20 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `@mcp:docs:getting-started` 같은 MCP 리소스 멘션
 - 줄 끝에 `\`를 붙여 멀티라인 입력
 - 파일을 명시하지 않았을 때 자동 코드 scouting
+- 최근 `analyze-project` 결과를 cached architecture context로 재사용해서 큰 코드 영역 재탐색을 줄일 수 있다.
+- cached analysis만으로 답이 충분하면 추가 tool 호출 없이 바로 응답할 수 있다.
 
 ### 사용성
 
-- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show` 같은 저장된 id까지 `Tab` 완성
+- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close` 같은 저장된 id까지 `Tab` 완성
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
 - assistant streaming 출력은 선행 blank chunk를 무시하고, progress/info 출력 전 경계를 정리하며, 반복 follow-on preamble 사이에 줄바꿈을 넣어 더 읽기 쉽게 출력된다.
 - Windows 콘솔에서 짧게 누른 `Esc`도 안정적으로 요청 취소
 - 요청 취소 직후 다음 프롬프트가 연속 `Esc` 입력으로 자동 취소되지 않도록 안정화
 - Windows 콘솔의 `Up`, `Down` 입력 히스토리
+- prompt 조립 시 긴 summary를 잘라 넣고, skill/MCP catalog는 실제로 필요한 요청에서만 크게 싣는다.
+- auto-scout는 위치 찾기, 정의 찾기, 참조 찾기 성격의 질문에 더 집중하고 턴당 문맥 투입량도 줄였다.
 
 ### 지속성
 
@@ -596,6 +610,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /analyze-project <goal>
 /analyze-performance [focus]
 /do-plan-review <task>
+/new-feature <task>
 /permissions [mode]
 /set_max_tool_iterations <n>
 /locale-auto [on|off]

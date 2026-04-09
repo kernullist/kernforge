@@ -75,6 +75,12 @@ Policy:
 - `/hooks`
 - `/override`
 
+Planning and tracked feature work:
+- `/do-plan-review <task>`
+- `/new-feature <task>`
+- `/new-feature status [id]`
+- `/new-feature implement [id]`
+
 ## 3. Best First Scenarios
 
 ### Driver change
@@ -100,6 +106,18 @@ Policy:
 /verify
 /evidence-search category:telemetry outcome:failed
 ```
+
+### Multi-session feature work
+
+```text
+/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
+/new-feature status
+/new-feature implement
+/verify
+/new-feature close
+```
+
+Use `/new-feature` when you want persisted spec, plan, and task artifacts under `.kernforge/features/<id>`. Use `/do-plan-review` when you want a reviewed plan and immediate execution without a longer-lived tracked feature workspace.
 
 ## 4. What To Check First When Something Feels Wrong
 

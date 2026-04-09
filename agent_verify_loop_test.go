@@ -256,41 +256,426 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	}
 }
 
-func TestAgentSkipsAutomaticVerificationForDocsOnlyChangesByDefault(t *testing.T) {
+func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	root := t.TempDir()
+	cfg := DefaultConfig(root)
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			toolCallResponse("write_file", map[string]any{"path": "notes.md", "content": "# notes\n"}),
-			{Message: Message{Role: "assistant", Text: "Wrote the document."}},
+			{Message: Message{Role: "assistant", Text: "used cached analysis"}},
 		},
 	}
-	verifyCount := 0
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	pack := KnowledgePack{
+		RunID:          "run-1",
+		Goal:           "map TavernWorker architecture",
+		Root:           root,
+		ProjectSummary: "TavernWorker owns telemetry collection and event triage.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:            "TavernWorker Runtime",
+				Group:            "Forensic Analysis",
+				Responsibilities: []string{"Collect telemetry", "Normalize suspicious events"},
+				EntryPoints:      []string{"TavernWorker/main.cpp"},
+				KeyFiles:         []string{"TavernWorker/main.cpp", "TavernWorker/collector.cpp"},
+				Dependencies:     []string{"Common/ipc.hpp"},
+				EvidenceFiles:    []string{"TavernWorker/main.cpp"},
+			},
+		},
+	}
+	data, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), data, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+	corpus := VectorCorpus{
+		RunID: "run-1",
+		Documents: []VectorCorpusDocument{
+			{
+				ID:       "subsystem:tavernworker-runtime",
+				Kind:     "subsystem",
+				Title:    "Forensic Analysis: TavernWorker Runtime",
+				Text:     "Startup path initializes telemetry collectors and triage workers.",
+				PathHint: "TavernWorker/main.cpp",
+			},
+		},
+	}
+	corpusData, err := json.Marshal(corpus)
+	if err != nil {
+		t.Fatalf("marshal vector corpus: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "vector_corpus.json"), corpusData, 0o644); err != nil {
+		t.Fatalf("write vector corpus: %v", err)
+	}
+	index := SemanticIndex{
+		RunID: "run-1",
+		Files: []SemanticIndexedFile{
+			{Path: "TavernWorker/main.cpp", ImportanceScore: 95, Tags: []string{"entrypoint", "startup"}},
+		},
+		Symbols: []SemanticSymbol{
+			{Name: "WorkerBootstrap", Kind: "function", File: "TavernWorker/main.cpp", Module: "TavernWorker"},
+		},
+	}
+	indexData, err := json.Marshal(index)
+	if err != nil {
+		t.Fatalf("marshal structural index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write structural index: %v", err)
+	}
+
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
-		Config:    DefaultConfig(root),
+		Config:    cfg,
 		Client:    provider,
-		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Tools:     NewToolRegistry(),
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
-		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
-			_ = ctx
-			verifyCount++
-			return VerificationReport{Steps: []VerificationStep{{Label: "verify", Status: VerificationPassed}}}, true
-		},
 	}
 
-	reply, err := agent.Reply(context.Background(), "write a document")
+	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow.")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Wrote the document." {
+	if !strings.Contains(reply, "used cached analysis") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 1 || len(provider.requests[0].Messages) == 0 {
+		t.Fatalf("expected one provider request with messages, got %#v", provider.requests)
+	}
+	userText := ""
+	for _, msg := range provider.requests[0].Messages {
+		if strings.Contains(msg.Text, "Relevant project analysis from past analyze-project runs") {
+			userText = msg.Text
+			break
+		}
+	}
+	if !strings.Contains(userText, "Relevant project analysis from past analyze-project runs") {
+		t.Fatalf("expected cached analysis context in user text, got %q", userText)
+	}
+	if !strings.Contains(userText, "Forensic Analysis: TavernWorker Runtime") {
+		t.Fatalf("expected matching subsystem in injected analysis context, got %q", userText)
+	}
+	if !strings.Contains(userText, "Relevant vector documents") {
+		t.Fatalf("expected vector corpus context in injected analysis context, got %q", userText)
+	}
+	if !strings.Contains(userText, "Relevant structural index hits") {
+		t.Fatalf("expected structural index hits in injected analysis context, got %q", userText)
+	}
+}
+
+func TestAgentDoesNotRepeatLatestProjectAnalysisContextAfterFirstTurn(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "first"}},
+			{Message: Message{Role: "assistant", Text: "second"}},
+		},
+	}
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	pack := KnowledgePack{
+		RunID:          "run-1",
+		Goal:           "map worker architecture",
+		Root:           root,
+		ProjectSummary: "Worker summary.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "Worker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"TavernWorker/main.cpp"},
+				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+			},
+		},
+	}
+	data, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), data, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "Explain TavernWorker."); err != nil {
+		t.Fatalf("first Reply: %v", err)
+	}
+	if _, err := agent.Reply(context.Background(), "Now summarize risks only."); err != nil {
+		t.Fatalf("second Reply: %v", err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected two provider requests, got %d", len(provider.requests))
+	}
+	firstUserText := ""
+	for _, msg := range provider.requests[0].Messages {
+		if strings.Contains(msg.Text, "Relevant project analysis from past analyze-project runs") {
+			firstUserText = msg.Text
+			break
+		}
+	}
+	secondUserText := provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text
+	if !strings.Contains(firstUserText, "Relevant project analysis from past analyze-project runs") {
+		t.Fatalf("expected first turn to include analysis context, got %q", firstUserText)
+	}
+	if strings.Contains(secondUserText, "Relevant project analysis from past analyze-project runs") {
+		t.Fatalf("expected second turn not to repeat analysis context, got %q", secondUserText)
+	}
+}
+
+func TestAgentReinjectsLatestProjectAnalysisContextWhenQueryChangesMaterially(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "first"}},
+			{Message: Message{Role: "assistant", Text: "second"}},
+		},
+	}
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	pack := KnowledgePack{
+		RunID:          "run-2",
+		Goal:           "map worker and common architecture",
+		Root:           root,
+		ProjectSummary: "Worker and Common cooperate over IPC.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "Worker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"TavernWorker/main.cpp"},
+				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+			},
+			{
+				Title:            "IPC Layer",
+				Group:            "Shared Infrastructure",
+				Responsibilities: []string{"Owns pipe framing"},
+				KeyFiles:         []string{"Common/ipc.cpp"},
+				EvidenceFiles:    []string{"Common/ipc.cpp"},
+			},
+		},
+	}
+	packData, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), packData, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+	index := SemanticIndex{
+		RunID: "run-2",
+		Files: []SemanticIndexedFile{
+			{Path: "Common/ipc.cpp", ImportanceScore: 80, Tags: []string{"ipc", "pipe"}},
+		},
+		Symbols: []SemanticSymbol{
+			{Name: "PipeRouter", Kind: "class", File: "Common/ipc.cpp", Module: "Common"},
+		},
+	}
+	indexData, err := json.Marshal(index)
+	if err != nil {
+		t.Fatalf("marshal structural index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write structural index: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow."); err != nil {
+		t.Fatalf("first Reply: %v", err)
+	}
+	if _, err := agent.Reply(context.Background(), "Explain Common IPC module architecture in detail."); err != nil {
+		t.Fatalf("second Reply: %v", err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected two provider requests, got %d", len(provider.requests))
+	}
+	secondUserText := ""
+	for _, msg := range provider.requests[1].Messages {
+		if strings.Contains(msg.Text, "Relevant project analysis from past analyze-project runs") {
+			secondUserText = msg.Text
+			break
+		}
+	}
+	if !strings.Contains(secondUserText, "Relevant project analysis from past analyze-project runs") {
+		t.Fatalf("expected materially changed query to reinject analysis context, got %q", secondUserText)
+	}
+	if !strings.Contains(secondUserText, "Common/ipc.cpp") {
+		t.Fatalf("expected reinjected context to include Common IPC hits, got %q", secondUserText)
+	}
+}
+
+func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "TavernWorker startup begins in main.cpp and then initializes telemetry collectors."}},
+		},
+	}
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	pack := KnowledgePack{
+		RunID:          "run-fastpath",
+		Goal:           "map worker architecture",
+		Root:           root,
+		ProjectSummary: "TavernWorker owns startup and telemetry collection.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "Worker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"TavernWorker/main.cpp"},
+				EvidenceFiles: []string{"TavernWorker/main.cpp"},
+			},
+		},
+	}
+	packData, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), packData, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow.")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "TavernWorker startup begins") {
+		t.Fatalf("unexpected fast-path reply: %q", reply)
+	}
+	if !strings.Contains(reply, "Cached analysis fast-path") || !strings.Contains(reply, "confidence:") {
+		t.Fatalf("expected fast-path provenance and confidence, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected only one provider request via fast-path, got %d", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 {
+		t.Fatalf("expected fast-path request to expose no tools, got %#v", provider.requests[0].Tools)
+	}
+	lastMessage := provider.requests[0].Messages[len(provider.requests[0].Messages)-1].Text
+	if !strings.Contains(lastMessage, "Fast-path check") {
+		t.Fatalf("expected fast-path instruction in request, got %q", lastMessage)
+	}
+}
+
+func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsTools(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: projectAnalysisFastPathNeedsTools}},
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			{Message: Message{Role: "assistant", Text: "Read the file and answered with verified details."}},
+		},
+	}
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	pack := KnowledgePack{
+		RunID:          "run-fastpath-2",
+		Goal:           "map worker architecture",
+		Root:           root,
+		ProjectSummary: "TavernWorker summary.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "Worker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"main.go"},
+				EvidenceFiles: []string{"main.go"},
+			},
+		},
+	}
+	packData, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), packData, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "Explain TavernWorker startup flow in verified detail.")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "verified details") {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
-	if verifyCount != 1 {
-		t.Fatalf("expected docs-only change to run automatic verification, got %d runs", verifyCount)
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected preflight plus normal tool loop, got %d requests", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 {
+		t.Fatalf("expected preflight request to expose no tools")
+	}
+	if len(provider.requests[1].Tools) == 0 {
+		t.Fatalf("expected fallback request to expose tools")
 	}
 }
 

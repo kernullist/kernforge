@@ -310,6 +310,64 @@ func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
 	}
 }
 
+func TestDeriveAnalysisGoalScopeMatchesDirectoryHint(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Directories: []string{"TavernWorker", "Common", "docs/internal"},
+		FilesByDirectory: map[string][]ScannedFile{
+			"TavernWorker": {{Path: "TavernWorker/worker.cpp", Directory: "TavernWorker"}},
+			"Common":       {{Path: "Common/shared.cpp", Directory: "Common"}},
+		},
+	}
+	scope := deriveAnalysisGoalScope("TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", snapshot)
+	if len(scope.DirectoryPrefixes) != 1 || scope.DirectoryPrefixes[0] != "TavernWorker" {
+		t.Fatalf("expected TavernWorker scope, got %#v", scope)
+	}
+}
+
+func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(root, "TavernWorker"),
+		filepath.Join(root, "Common"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "TavernWorker", "worker.cpp"), []byte("int Worker()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write worker.cpp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Common", "shared.cpp"), []byte("int Shared()\n{\n    return 2;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write shared.cpp: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &stubAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if len(run.Shards) == 0 {
+		t.Fatalf("expected scoped shards")
+	}
+	for _, shard := range run.Shards {
+		if !hasPathPrefix(shard.PrimaryFiles, "TavernWorker/") {
+			t.Fatalf("expected only TavernWorker shards, got %#v", run.Shards)
+		}
+	}
+	if client.workerCalls != len(run.Shards) {
+		t.Fatalf("expected worker calls to match scoped shards, calls=%d shards=%d", client.workerCalls, len(run.Shards))
+	}
+}
+
 func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main()\n{\n}\n"), 0o644); err != nil {
@@ -523,6 +581,117 @@ func TestScanProjectExcludesClaudeWorktrees(t *testing.T) {
 		if strings.Contains(file.Path, ".claude/worktrees") {
 			t.Fatalf("expected .claude/worktrees to be excluded, found %s", file.Path)
 		}
+	}
+}
+
+func TestFindAnalysisDirectoryCandidatesDetectsHiddenAndExternalLikeDirs(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{
+		filepath.Join(root, ".cache"),
+		filepath.Join(root, "external"),
+		filepath.Join(root, ".git"),
+		filepath.Join(root, "src"),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	cfg := defaultProjectAnalysisConfig(root)
+	candidates, err := findAnalysisDirectoryCandidates(root, cfg)
+	if err != nil {
+		t.Fatalf("findAnalysisDirectoryCandidates returned error: %v", err)
+	}
+	got := map[string]string{}
+	for _, candidate := range candidates {
+		got[candidate.Path] = candidate.Reason
+	}
+	if got[".cache"] != "hidden" {
+		t.Fatalf("expected .cache to be flagged as hidden, got %#v", got)
+	}
+	if got["external"] != "external_like" {
+		t.Fatalf("expected external to be flagged as external_like, got %#v", got)
+	}
+	if _, ok := got[".git"]; ok {
+		t.Fatalf("expected .git to be suppressed by default exclusions, got %#v", got)
+	}
+	if _, ok := got["src"]; ok {
+		t.Fatalf("expected src not to be flagged, got %#v", got)
+	}
+}
+
+func TestScanProjectHonorsExcludePaths(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "external"), 0o755); err != nil {
+		t.Fatalf("mkdir external: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "external", "dep.go"), []byte("package external\n"), 0o644); err != nil {
+		t.Fatalf("write external dep.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.ExcludePaths = []string{"external"}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	for _, file := range snapshot.Files {
+		if strings.HasPrefix(file.Path, "external/") {
+			t.Fatalf("expected external path to be excluded, found %s", file.Path)
+		}
+	}
+	for _, dir := range snapshot.Directories {
+		if dir == "external" {
+			t.Fatalf("expected external directory to be excluded from directories list")
+		}
+	}
+	if _, ok := snapshot.FilesByPath["main.go"]; !ok {
+		t.Fatalf("expected main.go to remain in snapshot")
+	}
+}
+
+func TestMergeSessionSummaryWithAnalysisReplacesPreviousCachedBlock(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:  "run-2",
+			Goal:   "map worker architecture",
+			Status: "completed",
+		},
+		KnowledgePack: KnowledgePack{
+			ProjectSummary:    "Worker owns telemetry ingestion.",
+			PrimaryStartup:    "TavernWorker",
+			TopImportantFiles: []string{"TavernWorker/main.cpp"},
+			Subsystems: []KnowledgeSubsystem{
+				{Title: "Worker Runtime", Group: "Forensic Analysis"},
+			},
+		},
+	}
+	initial := "Carry over prior implementation notes.\n\n" + cachedProjectAnalysisSummaryStart + "\n- Goal: stale\n" + cachedProjectAnalysisSummaryEnd
+	merged := mergeSessionSummaryWithAnalysis(initial, run)
+	if !strings.Contains(merged, "Carry over prior implementation notes.") {
+		t.Fatalf("expected non-analysis summary to remain, got %q", merged)
+	}
+	if strings.Contains(merged, "- Goal: stale") {
+		t.Fatalf("expected stale cached analysis block to be replaced, got %q", merged)
+	}
+	if !strings.Contains(merged, "map worker architecture") || !strings.Contains(merged, "Worker owns telemetry ingestion.") {
+		t.Fatalf("expected new cached analysis block, got %q", merged)
+	}
+}
+
+func TestAnalysisQueryMeaningfullyChangedIgnoresShortFollowUpButDetectsNewTopic(t *testing.T) {
+	if analysisQueryMeaningfullyChanged("Explain TavernWorker startup flow.", "Now summarize risks only.") {
+		t.Fatalf("expected short follow-up not to trigger reinjection")
+	}
+	if !analysisQueryMeaningfullyChanged("Explain TavernWorker startup flow.", "Explain Common IPC module architecture in detail.") {
+		t.Fatalf("expected materially different topic to trigger reinjection")
 	}
 }
 

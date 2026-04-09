@@ -75,6 +75,12 @@
 - `/hooks`
 - `/override`
 
+계획과 tracked feature 작업:
+- `/do-plan-review <task>`
+- `/new-feature <task>`
+- `/new-feature status [id]`
+- `/new-feature implement [id]`
+
 ## 3. 시작할 때 가장 좋은 시나리오
 
 ### Driver 변경
@@ -100,6 +106,18 @@
 /verify
 /evidence-search category:telemetry outcome:failed
 ```
+
+### 여러 세션에 걸친 feature 작업
+
+```text
+/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
+/new-feature status
+/new-feature implement
+/verify
+/new-feature close
+```
+
+`/new-feature`는 `.kernforge/features/<id>` 아래에 spec, plan, task artifact를 남기며 진행 상태를 추적하고 싶을 때 쓰는 것이 좋다. `/do-plan-review`는 reviewer를 붙여 한 번에 계획을 다듬고 바로 실행하고 싶을 때 더 잘 맞는다.
 
 ## 4. 막혔을 때 가장 먼저 볼 것
 

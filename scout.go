@@ -34,6 +34,11 @@ var (
 	}
 )
 
+const (
+	scoutMaxCandidates   = 2
+	scoutMaxContextChars = 2800
+)
+
 type scoutTerms struct {
 	fileTerms         []string
 	symbolTerms       []string
@@ -59,6 +64,9 @@ type scoutWindow struct {
 
 func (a *Agent) autoScoutContext(input string) string {
 	if strings.Contains(input, "@") {
+		return ""
+	}
+	if !shouldRunAutoScout(input) {
 		return ""
 	}
 	terms := extractScoutTerms(input)
@@ -127,8 +135,8 @@ func findScoutCandidates(root string, terms scoutTerms) []scoutCandidate {
 		return candidates[i].path < candidates[j].path
 	})
 
-	if len(candidates) > 4 {
-		candidates = candidates[:4]
+	if len(candidates) > scoutMaxCandidates {
+		candidates = candidates[:scoutMaxCandidates]
 	}
 	return candidates
 }
@@ -235,7 +243,7 @@ func renderScoutContext(root string, candidates []scoutCandidate) string {
 			strings.Join(candidate.reasons, ", "),
 			snippet,
 		)
-		if totalChars+len(section) > 9000 && len(sections) > 0 {
+		if totalChars+len(section) > scoutMaxContextChars && len(sections) > 0 {
 			break
 		}
 		totalChars += len(section)
@@ -245,6 +253,21 @@ func renderScoutContext(root string, candidates []scoutCandidate) string {
 		return ""
 	}
 	return "\n\nAuto-discovered code context:\n" + strings.Join(sections, "\n\n")
+}
+
+func shouldRunAutoScout(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"where", "find", "show", "locate", "definition", "defined", "declaration", "declared", "implemented", "implementation",
+		"reference", "references", "usage", "used", "caller", "callers", "called by", "who calls", "grep",
+		"어디", "위치", "찾", "정의", "선언", "구현", "참조", "사용처", "호출", "누가 호출",
+	) {
+		return true
+	}
+	return false
 }
 
 func buildScoutSnippet(candidate scoutCandidate) string {

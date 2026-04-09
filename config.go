@@ -263,6 +263,9 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.ProjectAnalysis.ExcludeDirs) > 0 {
 		dst.ProjectAnalysis.ExcludeDirs = append([]string(nil), src.ProjectAnalysis.ExcludeDirs...)
 	}
+	if len(src.ProjectAnalysis.ExcludePaths) > 0 {
+		dst.ProjectAnalysis.ExcludePaths = append([]string(nil), src.ProjectAnalysis.ExcludePaths...)
+	}
 	if src.ProjectAnalysis.OutputDir != "" {
 		dst.ProjectAnalysis.OutputDir = src.ProjectAnalysis.OutputDir
 	}
@@ -777,6 +780,7 @@ Conversation And Sessions:
 
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
+/new-feature <task>    Create tracked feature artifacts and generate spec/plan/tasks
 /analyze-project <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
 /analyze-performance [focus] Analyze likely performance bottlenecks using the latest architecture knowledge pack
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
@@ -955,7 +959,7 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
+	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
@@ -979,6 +983,28 @@ Provider and model commands control which model is active and how planning/revie
 
 /do-plan-review <task>
 - Ask one model to produce a plan, have a reviewer model critique it, iterate, then optionally execute the final plan.
+
+/new-feature <task>
+- Create a tracked feature workspace under .kernforge/features/<id>, generate spec.md, plan.md, and tasks.md, then mark it as the active feature.
+- Equivalent to /new-feature start <task>.
+
+/new-feature start <task>
+- Explicitly create a tracked feature and regenerate its spec/plan/tasks artifacts.
+
+/new-feature list
+- List tracked features for the current workspace.
+
+/new-feature status [id]
+- Show the active or selected tracked feature, including artifact paths and task preview.
+
+/new-feature plan [id]
+- Regenerate spec.md, plan.md, and tasks.md for the active or selected tracked feature.
+
+/new-feature implement [id]
+- Execute the saved tracked feature plan and persist an implementation summary artifact.
+
+/new-feature close [id]
+- Mark the active or selected tracked feature as done.
 
 /analyze-project <goal>
 - Analyze the workspace using a conductor and multiple sub-agents, then write a project document.
