@@ -81,6 +81,8 @@ type runtimeState struct {
 }
 
 var assistantFollowOnPreamblePattern = regexp.MustCompile(`([\.\:\!\?\)])((?i:Now let me |Let me |Now I |I'll |I will |I need to |First, ))`)
+var numberedPlanItemPattern = regexp.MustCompile(`^\d+[\.\)]\s+(.+)$`)
+var bulletPlanItemPattern = regexp.MustCompile(`^[-*]\s+(.+)$`)
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("kernforge", flag.ContinueOnError)
@@ -1245,6 +1247,51 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 			rt.rememberConfirmationApproval(question)
 		}
 		return allowed, nil
+	}
+}
+
+func (rt *runtimeState) prepareAnalysisDirectorySelection(cfg ProjectAnalysisConfig) (ProjectAnalysisConfig, error) {
+	candidates, err := findAnalysisDirectoryCandidates(rt.workspace.Root, cfg)
+	if err != nil {
+		return cfg, err
+	}
+	if len(candidates) == 0 {
+		return cfg, nil
+	}
+	fmt.Fprintln(rt.writer, rt.ui.warnLine("Potentially unrelated directories were detected during project structure discovery."))
+	for _, candidate := range candidates {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV(candidate.Path, analysisDirectoryCandidateReasonLabel(candidate.Reason)))
+	}
+	fmt.Fprintln(rt.writer)
+	if !rt.interactive {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Interactive confirmation unavailable; including these directories in the analysis."))
+		fmt.Fprintln(rt.writer)
+		return cfg, nil
+	}
+	updated := cfg
+	for _, candidate := range candidates {
+		question := fmt.Sprintf("Include directory %q in project analysis?", candidate.Path)
+		include, err := rt.confirm(question)
+		if err != nil {
+			return cfg, err
+		}
+		if !include {
+			updated.ExcludePaths = append(updated.ExcludePaths, candidate.Path)
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("Excluding "+candidate.Path+" from this analysis run."))
+		}
+	}
+	fmt.Fprintln(rt.writer)
+	return updated, nil
+}
+
+func analysisDirectoryCandidateReasonLabel(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "hidden":
+		return "hidden directory"
+	case "external_like":
+		return "external-looking directory"
+	default:
+		return "review candidate"
 	}
 }
 
@@ -2597,6 +2644,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cwd", rt.session.WorkingDir))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("session", rt.session.ID))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("sessions_dir", rt.store.Root()))
+		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
+		}
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}
@@ -3201,6 +3251,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleDoPlanReviewCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "new-feature":
+		if err := rt.handleNewFeatureCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "analyze-project":
 		if err := rt.handleAnalyzeProjectCommand(cmd.Args); err != nil {
 			return false, err
@@ -3803,6 +3857,55 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 	return err
 }
 
+func parsePlanItemsFromText(plan string) []PlanItem {
+	plan = strings.ReplaceAll(plan, "\r\n", "\n")
+	plan = strings.TrimSpace(plan)
+	if plan == "" {
+		return nil
+	}
+
+	lines := strings.Split(plan, "\n")
+	items := make([]PlanItem, 0, len(lines))
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if match := numberedPlanItemPattern.FindStringSubmatch(line); len(match) == 2 {
+			items = append(items, PlanItem{
+				Step:   strings.TrimSpace(match[1]),
+				Status: "pending",
+			})
+			continue
+		}
+		if match := bulletPlanItemPattern.FindStringSubmatch(line); len(match) == 2 {
+			items = append(items, PlanItem{
+				Step:   strings.TrimSpace(match[1]),
+				Status: "pending",
+			})
+		}
+	}
+	if len(items) > 0 {
+		return items
+	}
+	return []PlanItem{{
+		Step:   compactPersistentMemoryText(plan, 220),
+		Status: "pending",
+	}}
+}
+
+func (rt *runtimeState) seedSessionPlanFromText(plan string) error {
+	if rt == nil || rt.session == nil || rt.store == nil {
+		return nil
+	}
+	items := parsePlanItemsFromText(plan)
+	if len(items) == 0 {
+		return nil
+	}
+	rt.session.Plan = items
+	return rt.store.Save(rt.session)
+}
+
 func (rt *runtimeState) showProjectAnalysisModelStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Project Analysis Models"))
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil {
@@ -4377,6 +4480,10 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("conductor_model", rt.session.Provider+" / "+rt.session.Model))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
 	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
+	analysisCfg, err := rt.prepareAnalysisDirectorySelection(analysisCfg)
+	if err != nil {
+		return err
+	}
 	workerLabel := rt.session.Provider + " / " + rt.session.Model
 	reviewerLabel := workerLabel
 	if analysisCfg.WorkerProfile != nil {
@@ -4397,12 +4504,26 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}, func(debug string) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("analysis: "+debug))
 	})
+	analyzer.analysisCfg = analysisCfg
 	previewSnapshot, err := analyzer.scanProject()
 	if err != nil {
 		return err
 	}
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
+	plannedShards := analyzer.planShards(previewSnapshot, estimatedTotalShards)
+	scope, scopedShards := deriveScopedAnalysisShards(args, previewSnapshot, plannedShards)
+	if len(scopedShards) > 0 {
+		plannedShards = scopedShards
+		estimatedTotalShards = len(plannedShards)
+		if estimatedConcurrency > estimatedTotalShards {
+			estimatedConcurrency = estimatedTotalShards
+		}
+		if estimatedConcurrency < 1 {
+			estimatedConcurrency = 1
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_scope", strings.Join(scope.DirectoryPrefixes, ", ")))
+	}
 	estimatedWaves := ceilDiv(estimatedTotalShards, analysisMaxInt(estimatedConcurrency, 1))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_files", fmt.Sprintf("%d", previewSnapshot.TotalFiles)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_lines", fmt.Sprintf("%d", previewSnapshot.TotalLines)))
@@ -4444,6 +4565,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}, func(debug string) {
 		rt.printWhileThinking(rt.ui.infoLine("analysis: " + debug))
 	})
+	analyzer.analysisCfg = analysisCfg
 	run, err := analyzer.Run(requestCtx, args)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
@@ -4454,6 +4576,9 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}
 
 	rt.session.LastAnalysis = &run.Summary
+	rt.session.Summary = mergeSessionSummaryWithAnalysis(rt.session.Summary, run)
+	rt.session.LastAnalysisContextQuery = ""
+	rt.session.LastAnalysisContextRunID = run.Summary.RunID
 	if err := rt.store.Save(rt.session); err != nil {
 		return err
 	}

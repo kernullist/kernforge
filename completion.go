@@ -97,6 +97,7 @@ var slashCommands = []string{
 	"set-analysis-models",
 	"set-plan-review",
 	"do-plan-review",
+	"new-feature",
 	"analyze-project",
 	"analyze-performance",
 	"profile-review",
@@ -245,6 +246,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"mem-prune":             {"all"},
 		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "ollama"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
+		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
 		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
@@ -287,6 +289,17 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
 			return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+		}
+		return nil, 0, false
+	case "new-feature":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 {
+			switch strings.ToLower(strings.TrimSpace(fields[0])) {
+			case "status", "plan", "implement", "close":
+				return rt.recentFeatureIDs(), 1, true
+			}
 		}
 		return nil, 0, false
 	case "investigate":
@@ -395,6 +408,24 @@ func (rt *runtimeState) recentSimulationIDs() []string {
 		return nil
 	}
 	items, err := rt.simulations.ListRecent(rt.workspace.BaseRoot, 12)
+	if err != nil {
+		return nil
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.ID) != "" {
+			ids = append(ids, item.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) recentFeatureIDs() []string {
+	if rt == nil {
+		return nil
+	}
+	store := NewFeatureStore(rt.workspace.BaseRoot)
+	items, err := store.List()
 	if err != nil {
 		return nil
 	}

@@ -30,6 +30,7 @@ type ProjectAnalysisConfig struct {
 	MaxFilesPerShard     int      `json:"max_files_per_shard,omitempty"`
 	MaxLinesPerShard     int      `json:"max_lines_per_shard,omitempty"`
 	ExcludeDirs          []string `json:"exclude_dirs,omitempty"`
+	ExcludePaths         []string `json:"exclude_paths,omitempty"`
 	OutputDir            string   `json:"output_dir,omitempty"`
 	MaxFileBytes         int64    `json:"max_file_bytes,omitempty"`
 	WorkerProfile        *Profile `json:"worker_profile,omitempty"`
@@ -283,6 +284,10 @@ type WorkerReport struct {
 	Raw              string   `json:"raw,omitempty"`
 }
 
+type AnalysisGoalScope struct {
+	DirectoryPrefixes []string `json:"directory_prefixes,omitempty"`
+}
+
 type KnowledgeSubsystem struct {
 	Title                string               `json:"title"`
 	Group                string               `json:"group,omitempty"`
@@ -507,6 +512,9 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	if len(cfg.ProjectAnalysis.ExcludeDirs) > 0 {
 		out.ExcludeDirs = append([]string(nil), cfg.ProjectAnalysis.ExcludeDirs...)
 	}
+	if len(cfg.ProjectAnalysis.ExcludePaths) > 0 {
+		out.ExcludePaths = append([]string(nil), cfg.ProjectAnalysis.ExcludePaths...)
+	}
 	if strings.TrimSpace(cfg.ProjectAnalysis.OutputDir) != "" {
 		out.OutputDir = cfg.ProjectAnalysis.OutputDir
 	}
@@ -552,6 +560,104 @@ func newProjectAnalyzer(cfg Config, client ProviderClient, ws Workspace, onStatu
 		onStatus:    onStatus,
 		onDebug:     onDebug,
 	}
+}
+
+type AnalysisDirectoryCandidate struct {
+	Path   string
+	Reason string
+}
+
+func findAnalysisDirectoryCandidates(root string, cfg ProjectAnalysisConfig) ([]AnalysisDirectoryCandidate, error) {
+	excludedNames := analysisExcludedDirNameSet(cfg)
+	excludedAbs := analysisExcludedAbsolutePathSet(root, cfg)
+	seen := map[string]struct{}{}
+	candidates := []AnalysisDirectoryCandidate{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == root {
+			return nil
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		cleanPath := strings.ToLower(filepath.Clean(path))
+		if _, ok := excludedAbs[cleanPath]; ok {
+			return filepath.SkipDir
+		}
+		name := strings.TrimSpace(d.Name())
+		if _, ok := excludedNames[strings.ToLower(name)]; ok {
+			return filepath.SkipDir
+		}
+		relPath := filepath.ToSlash(relOrAbs(root, path))
+		reason := analysisDirectoryCandidateReason(name)
+		if reason != "" {
+			key := strings.ToLower(relPath)
+			if _, ok := seen[key]; !ok {
+				seen[key] = struct{}{}
+				candidates = append(candidates, AnalysisDirectoryCandidate{
+					Path:   relPath,
+					Reason: reason,
+				})
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(candidates, func(i int, j int) bool {
+		return candidates[i].Path < candidates[j].Path
+	})
+	return candidates, nil
+}
+
+func analysisDirectoryCandidateReason(name string) string {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, ".") {
+		return "hidden"
+	}
+	switch lower {
+	case "external", "externals", "dependency", "dependencies", "deps":
+		return "external_like"
+	}
+	return ""
+}
+
+func analysisExcludedDirNameSet(cfg ProjectAnalysisConfig) map[string]struct{} {
+	excluded := map[string]struct{}{}
+	for _, item := range cfg.ExcludeDirs {
+		trimmed := strings.ToLower(strings.TrimSpace(item))
+		if trimmed == "" {
+			continue
+		}
+		excluded[trimmed] = struct{}{}
+	}
+	return excluded
+}
+
+func analysisExcludedAbsolutePathSet(root string, cfg ProjectAnalysisConfig) map[string]struct{} {
+	excludedAbs := map[string]struct{}{}
+	if strings.TrimSpace(cfg.OutputDir) != "" {
+		excludedAbs[strings.ToLower(filepath.Clean(cfg.OutputDir))] = struct{}{}
+	}
+	for _, item := range cfg.ExcludePaths {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		target := trimmed
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(root, target)
+		}
+		excludedAbs[strings.ToLower(filepath.Clean(target))] = struct{}{}
+	}
+	return excludedAbs
 }
 
 func (a *projectAnalyzer) status(text string) {
@@ -613,8 +719,22 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysis
 	agentCount := a.estimateAgentCount(snapshot)
 	targetShards := a.estimateShardCount(snapshot, agentCount)
 	shards := a.planShards(snapshot, targetShards)
+	scope, scopedShards := deriveScopedAnalysisShards(goal, snapshot, shards)
+	if len(scopedShards) > 0 {
+		shards = scopedShards
+	}
 	if len(shards) == 0 {
 		return run, fmt.Errorf("no analyzable files found")
+	}
+	if len(scope.DirectoryPrefixes) > 0 {
+		a.status(fmt.Sprintf("Applying scoped analysis to %s.", strings.Join(scope.DirectoryPrefixes, ", ")))
+		a.debug(fmt.Sprintf("analysis scope matched directories: %s", strings.Join(scope.DirectoryPrefixes, ", ")))
+	}
+	if agentCount > len(shards) {
+		agentCount = len(shards)
+	}
+	if agentCount < 1 {
+		agentCount = 1
 	}
 	run.Summary.AgentCount = agentCount
 	run.Summary.TotalShards = len(shards)
@@ -716,14 +836,8 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 		FilesByPath:        map[string]ScannedFile{},
 		FilesByDirectory:   map[string][]ScannedFile{},
 	}
-	excluded := map[string]struct{}{}
-	for _, item := range a.analysisCfg.ExcludeDirs {
-		excluded[strings.ToLower(strings.TrimSpace(item))] = struct{}{}
-	}
-	excludedAbs := map[string]struct{}{}
-	if strings.TrimSpace(a.analysisCfg.OutputDir) != "" {
-		excludedAbs[strings.ToLower(filepath.Clean(a.analysisCfg.OutputDir))] = struct{}{}
-	}
+	excluded := analysisExcludedDirNameSet(a.analysisCfg)
+	excludedAbs := analysisExcludedAbsolutePathSet(a.workspace.Root, a.analysisCfg)
 
 	err := filepath.WalkDir(a.workspace.Root, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -893,6 +1007,163 @@ func chooseAnalysisLenses(goal string) []AnalysisLens {
 		)
 	}
 	return analysisUniqueLenses(lenses)
+}
+
+func deriveScopedAnalysisShards(goal string, snapshot ProjectSnapshot, shards []AnalysisShard) (AnalysisGoalScope, []AnalysisShard) {
+	scope := deriveAnalysisGoalScope(goal, snapshot)
+	if len(scope.DirectoryPrefixes) == 0 {
+		return AnalysisGoalScope{}, nil
+	}
+	filtered := []AnalysisShard{}
+	for _, shard := range shards {
+		if shardMatchesAnalysisGoalScope(shard, scope) {
+			filtered = append(filtered, shard)
+		}
+	}
+	if len(filtered) == 0 {
+		return AnalysisGoalScope{}, nil
+	}
+	return scope, filtered
+}
+
+func deriveAnalysisGoalScope(goal string, snapshot ProjectSnapshot) AnalysisGoalScope {
+	lowerGoal := strings.ToLower(filepath.ToSlash(strings.TrimSpace(goal)))
+	if lowerGoal == "" {
+		return AnalysisGoalScope{}
+	}
+	directories := analysisScopeDirectories(snapshot)
+	fullMatches := []string{}
+	baseMatches := []string{}
+	hasDirectoryHint := analysisGoalHasDirectoryHint(lowerGoal)
+	for _, dir := range directories {
+		lowerDir := strings.ToLower(filepath.ToSlash(dir))
+		if lowerDir == "" {
+			continue
+		}
+		if strings.Contains(lowerGoal, lowerDir) {
+			fullMatches = append(fullMatches, dir)
+			continue
+		}
+		if !hasDirectoryHint {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(lowerDir))
+		if base == "" || base == "." {
+			continue
+		}
+		if strings.Contains(lowerGoal, base) {
+			baseMatches = append(baseMatches, dir)
+		}
+	}
+	if len(fullMatches) > 0 {
+		return AnalysisGoalScope{DirectoryPrefixes: compactAnalysisScopePrefixes(fullMatches)}
+	}
+	if len(baseMatches) > 0 {
+		return AnalysisGoalScope{DirectoryPrefixes: compactAnalysisScopePrefixes(baseMatches)}
+	}
+	return AnalysisGoalScope{}
+}
+
+func analysisScopeDirectories(snapshot ProjectSnapshot) []string {
+	seen := map[string]struct{}{}
+	items := []string{}
+	for _, dir := range snapshot.Directories {
+		trimmed := filepath.ToSlash(strings.TrimSpace(dir))
+		if trimmed == "" || trimmed == "." {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, trimmed)
+	}
+	for dir := range snapshot.FilesByDirectory {
+		trimmed := filepath.ToSlash(strings.TrimSpace(dir))
+		if trimmed == "" || trimmed == "." {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		items = append(items, trimmed)
+	}
+	sort.Slice(items, func(i int, j int) bool {
+		if len(items[i]) == len(items[j]) {
+			return items[i] < items[j]
+		}
+		return len(items[i]) > len(items[j])
+	})
+	return items
+}
+
+func analysisGoalHasDirectoryHint(lowerGoal string) bool {
+	return containsAny(lowerGoal,
+		" directory",
+		" directories",
+		" folder",
+		" folders",
+		" dir ",
+		"path ",
+		"under ",
+		"inside ",
+		"within ",
+		"only ",
+		"just ",
+		"디렉토리",
+		"폴더",
+		"경로",
+		"하위",
+		"안의",
+		"내의",
+		"만 분석",
+		"만 문서화",
+	)
+}
+
+func compactAnalysisScopePrefixes(items []string) []string {
+	unique := analysisUniqueStrings(items)
+	sort.Slice(unique, func(i int, j int) bool {
+		if len(unique[i]) == len(unique[j]) {
+			return unique[i] < unique[j]
+		}
+		return len(unique[i]) > len(unique[j])
+	})
+	kept := []string{}
+	for _, item := range unique {
+		normalized := strings.ToLower(filepath.ToSlash(strings.TrimSpace(item)))
+		if normalized == "" {
+			continue
+		}
+		skip := false
+		for _, existing := range kept {
+			lowerExisting := strings.ToLower(filepath.ToSlash(existing))
+			if strings.HasPrefix(lowerExisting+"/", normalized+"/") {
+				skip = true
+				break
+			}
+		}
+		if !skip {
+			kept = append(kept, item)
+		}
+	}
+	sort.Strings(kept)
+	return kept
+}
+
+func shardMatchesAnalysisGoalScope(shard AnalysisShard, scope AnalysisGoalScope) bool {
+	if len(scope.DirectoryPrefixes) == 0 {
+		return true
+	}
+	for _, prefix := range scope.DirectoryPrefixes {
+		if hasPathPrefix(shard.PrimaryFiles, prefix+"/") || hasPathPrefix(shard.PrimaryFiles, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func refineAnalysisLensesForSnapshot(snapshot ProjectSnapshot, lenses []AnalysisLens) []AnalysisLens {

@@ -25,7 +25,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 성능이나 startup path가 중요하면 `/analyze-performance`로 최신 knowledge pack을 performance lens로 바꾼다.
 3. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
 4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
-5. `/review-selection`, `/edit-selection`, `/do-plan-review`로 실제 작업을 진행한다.
+5. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
 6. `/verify`로 verification plan을 돌린다.
 7. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
 8. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
@@ -90,6 +90,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. incremental reuse가 file hash뿐 아니라 semantic fingerprint 변화까지 본다.
 4. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
 5. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
+6. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
+7. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
 
 ### 2.1 Hook Engine
 
@@ -325,7 +327,32 @@ diff workflow 메모:
 1. recent simulation finding이 task와 겹치면 planning prompt에 자동 주입된다.
 2. 최종 plan 실행 prompt에도 같은 관점이 자동 주입된다.
 
-### 2.9 Interactive Ergonomics
+### 2.9 Tracked Feature Workflow
+
+목적:
+1. 일회성 plan 대신 여러 세션에 걸쳐 유지되는 feature workspace를 만든다.
+2. `.kernforge/features/<id>` 아래에 spec, plan, task, implementation artifact를 남긴다.
+3. planning과 execution을 분리해서 큰 변경을 더 안전하게 이어간다.
+
+대표 명령:
+- `/new-feature <task>`
+- `/new-feature list`
+- `/new-feature status [id]`
+- `/new-feature plan [id]`
+- `/new-feature implement [id]`
+- `/new-feature close [id]`
+
+좋은 상황:
+1. feature 작업이 한 세션 안에 끝나지 않을 때
+2. scope, sequencing, acceptance 기준을 artifact로 남기고 싶을 때
+3. 계획을 만든 직후 바로 구현하지 않고 한 번 더 점검하고 싶을 때
+
+현재 연동:
+1. `/new-feature <task>`는 `/new-feature start <task>`와 같게 동작하며 `feature.json`, `spec.md`, `plan.md`, `tasks.md`를 만든다.
+2. 생성된 feature는 세션의 active feature로 기록된다.
+3. `/new-feature implement [id]`는 저장된 plan을 실행하고 `implementation.md`를 남긴다.
+
+### 2.10 Interactive Ergonomics
 
 목적:
 1. investigation, verification, review 흐름에서 반복 입력 부담을 줄인다.
@@ -336,7 +363,13 @@ diff workflow 메모:
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
 4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>` 같은 고정 인자
-5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`에 필요한 저장된 id
+5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
+
+토큰 예산 관점에서 달라진 점:
+1. cached `analyze-project` summary가 더 적절하면 auto-scout 코드 조각보다 먼저 주입될 수 있다.
+2. cached project analysis만으로 충분한 질문은 추가 tool iteration 없이 바로 답할 수 있다.
+3. skill/MCP catalog는 실제로 그 정보를 묻는 요청에서만 크게 포함된다.
+4. auto-scout는 후보 수와 문맥 길이를 줄였고, 위치 찾기/정의 찾기/참조 찾기 성격의 질문에 더 집중한다.
 
 ## 3. 가장 추천하는 실전 흐름
 
@@ -441,6 +474,26 @@ Kernforge가 도와주는 부분:
 1. simulation finding이 planning prompt에 직접 주입된다.
 2. 최종 plan 실행 prompt에도 그 관점이 다시 들어간다.
 
+### 3.5 여러 세션에 걸친 tracked feature lifecycle
+
+상황:
+- 구현과 verification, 정리가 여러 번에 나뉘는 큰 feature 작업
+- spec, plan, task artifact를 남기며 추적하고 싶은 경우
+
+추천 흐름:
+1. `/simulate tamper-surface guard.sys`
+2. `/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points`
+3. `/new-feature status`
+4. `.kernforge/features/<id>` 아래의 `spec.md`, `plan.md`, `tasks.md`를 검토한다.
+5. `/new-feature implement`
+6. `/verify`
+7. `/new-feature close`
+
+왜 이 흐름이 좋은가:
+1. feature 상태가 세션 밖에서도 유지된다.
+2. planning artifact를 다시 읽고 재생성하기 쉽다.
+3. planning과 execution이 분리되어 초안 품질이 낮을 때 바로 긴 구현으로 들어갈 위험을 줄인다.
+
 ## 4. 명령별 상세 사용법과 좋은 예시
 
 ### 4.1 `/investigate`
@@ -519,7 +572,30 @@ Kernforge가 도와주는 부분:
 1. task 텍스트와 겹치는 recent simulation finding이 있으면 planning prompt에 자동 주입된다.
 2. 최종 실행 prompt에도 같은 관점이 다시 들어간다.
 
-### 4.5 `/verify`
+### 4.5 `/new-feature`
+
+기본 사용:
+
+```text
+/new-feature harden driver registration, preserve telemetry audit artifacts, and document rollback points
+/new-feature status
+/new-feature plan
+/new-feature implement
+/new-feature close
+```
+
+좋은 사용 예:
+1. spec, plan, task, implementation artifact를 남기며 진행하고 싶은 새 기능 작업
+2. planning 직후 바로 구현하지 않고 pause/resume이 필요한 경우
+3. 세션 상태에 active feature id를 유지하는 편이 유리한 변경
+
+현재 자동 연동:
+1. `.kernforge/features/<id>` 아래에 tracked feature workspace가 생성된다.
+2. start 또는 re-plan 시 `spec.md`, `plan.md`, `tasks.md`가 다시 생성된다.
+3. `/new-feature implement [id]`는 저장된 plan을 실행하고 `implementation.md`를 남긴다.
+4. `status`, `plan`, `implement`, `close`는 전체 id뿐 아니라 고유 prefix도 받을 수 있다.
+
+### 4.6 `/verify`
 
 기본 사용:
 
@@ -542,7 +618,7 @@ Kernforge가 도와주는 부분:
 2. 최근 simulation finding이 verification에도 반영되는지 보고 싶을 때
 3. 단순 빌드/테스트보다 깊은 보안 review step이 필요한 경우
 
-### 4.6 `/evidence-search`와 `/evidence-dashboard`
+### 4.7 `/evidence-search`와 `/evidence-dashboard`
 
 자주 쓰는 쿼리 예:
 
@@ -558,7 +634,7 @@ Kernforge가 도와주는 부분:
 2. 최근 failed signing/provider finding만 보고 싶을 때
 3. override가 활성화되어 있는지 같이 보고 싶을 때
 
-### 4.7 `/mem-search`
+### 4.8 `/mem-search`
 
 자주 쓰는 쿼리 예:
 
@@ -573,7 +649,7 @@ Kernforge가 도와주는 부분:
 1. 예전 세션에서 왜 이 방향으로 판단했는지 다시 찾고 싶을 때
 2. 특정 artifact 또는 failure가 반복됐는지 장기 관점으로 보고 싶을 때
 
-### 4.8 `/hooks`와 `/override-*`
+### 4.9 `/hooks`와 `/override-*`
 
 확인:
 
@@ -709,6 +785,17 @@ Kernforge가 도와주는 부분:
 /simulate-dashboard
 ```
 
+### 시나리오 D: tracked feature를 만들고 명시적으로 실행
+
+```text
+/simulate tamper-surface guard.sys
+/new-feature harden driver registration and preserve telemetry audit artifacts
+/new-feature status
+/new-feature implement
+/verify
+/new-feature close
+```
+
 ## 9. 문서 요약
 
 현재 Kernforge를 가장 잘 쓰는 방법은 다음 한 문장으로 요약할 수 있다.
@@ -721,9 +808,10 @@ Kernforge가 도와주는 부분:
 2. `/simulate`
 3. `/review-selection` 또는 `/edit-selection`
 4. `/do-plan-review`
-5. `/verify`
-6. `/evidence-dashboard`
-7. `/mem-search`
-8. push/PR에서 hook policy 적용
+5. `/new-feature`
+6. `/verify`
+7. `/evidence-dashboard`
+8. `/mem-search`
+9. push/PR에서 hook policy 적용
 
 이 루프가 현재 Kernforge의 가장 큰 차별점이다.

@@ -67,6 +67,7 @@ Its current differentiators are:
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
 - Multi-agent project analysis with reusable knowledge packs and a performance lens
 - Plan-review workflow with a separate reviewer model
+- Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 
 ## Highlights
 
@@ -74,6 +75,8 @@ Its current differentiators are:
 
 - `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
+- Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace
+- Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
 - Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
@@ -103,6 +106,13 @@ Its current differentiators are:
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
 
+### Tracked Feature Workflow
+
+- `/new-feature <task>` creates a tracked feature workspace and writes `spec.md`, `plan.md`, and `tasks.md`
+- Tracked feature artifacts live under `.kernforge/features/<id>` so large work can survive across sessions
+- `/new-feature status|plan|implement|close [id]` lets you inspect, regenerate, execute, and finish the active feature
+- `/do-plan-review <task>` remains the better fit for one-shot reviewed planning and immediate execution
+
 ### Input And Prompting
 
 - Interactive chat REPL
@@ -113,16 +123,20 @@ Its current differentiators are:
 - MCP mentions like `@mcp:docs:getting-started`
 - Multiline input by ending a line with `\`
 - Automatic code scouting when no explicit file mention is provided
+- Recent `analyze-project` results can be injected as cached architecture context before Kernforge rereads large areas
+- When cached analysis is sufficient for a question, Kernforge can answer directly from that summary without extra tool calls
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, and `/simulate show`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
 - After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
 - Windows console input history with `Up` and `Down`
+- Prompt assembly now trims long summaries and only includes the full skill or MCP catalogs when the request actually asks for them
+- Auto-scout now stays focused on find/definition/reference-style questions and contributes less context per turn
 
 ### Persistence And Context
 
@@ -596,6 +610,7 @@ Explain the structure of this repository
 /analyze-project <goal>
 /analyze-performance [focus]
 /do-plan-review <task>
+/new-feature <task>
 /permissions [mode]
 /set_max_tool_iterations <n>
 /locale-auto [on|off]

@@ -63,6 +63,7 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/clear-ninja-path",
 		"/detect-verification-tools",
 		"/set-auto-verify [on|off]",
+		"/new-feature <task>",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to contain %q", needle)

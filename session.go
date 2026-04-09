@@ -16,23 +16,27 @@ type PlanItem struct {
 }
 
 type Session struct {
-	ID               string                  `json:"id"`
-	Name             string                  `json:"name"`
-	WorkingDir       string                  `json:"working_dir"`
-	Provider         string                  `json:"provider"`
-	Model            string                  `json:"model"`
-	BaseURL          string                  `json:"base_url,omitempty"`
-	PermissionMode   string                  `json:"permission_mode"`
-	CreatedAt        time.Time               `json:"created_at"`
-	UpdatedAt        time.Time               `json:"updated_at"`
-	Summary          string                  `json:"summary,omitempty"`
-	Plan             []PlanItem              `json:"plan,omitempty"`
-	LastAnalysis     *ProjectAnalysisSummary `json:"last_analysis,omitempty"`
-	LastVerification *VerificationReport     `json:"last_verification,omitempty"`
-	LastSelection    *ViewerSelection        `json:"last_selection,omitempty"`
-	Selections       []ViewerSelection       `json:"selections,omitempty"`
-	ActiveSelection  int                     `json:"active_selection,omitempty"`
-	Messages         []Message               `json:"messages"`
+	ID                       string                  `json:"id"`
+	Name                     string                  `json:"name"`
+	WorkingDir               string                  `json:"working_dir"`
+	Provider                 string                  `json:"provider"`
+	Model                    string                  `json:"model"`
+	BaseURL                  string                  `json:"base_url,omitempty"`
+	PermissionMode           string                  `json:"permission_mode"`
+	CreatedAt                time.Time               `json:"created_at"`
+	UpdatedAt                time.Time               `json:"updated_at"`
+	Summary                  string                  `json:"summary,omitempty"`
+	LastAnalysisContextQuery string                  `json:"last_analysis_context_query,omitempty"`
+	LastAnalysisContextRunID string                  `json:"last_analysis_context_run_id,omitempty"`
+	ActiveFeatureID          string                  `json:"active_feature_id,omitempty"`
+	LastFeatureID            string                  `json:"last_feature_id,omitempty"`
+	Plan                     []PlanItem              `json:"plan,omitempty"`
+	LastAnalysis             *ProjectAnalysisSummary `json:"last_analysis,omitempty"`
+	LastVerification         *VerificationReport     `json:"last_verification,omitempty"`
+	LastSelection            *ViewerSelection        `json:"last_selection,omitempty"`
+	Selections               []ViewerSelection       `json:"selections,omitempty"`
+	ActiveSelection          int                     `json:"active_selection,omitempty"`
+	Messages                 []Message               `json:"messages"`
 }
 
 func NewSession(workingDir, providerName, model, baseURL, permissionMode string) *Session {
@@ -91,6 +95,14 @@ func (s *Session) ExportText() string {
 		b.WriteString("## Plan\n\n")
 		for _, item := range s.Plan {
 			fmt.Fprintf(&b, "- [%s] %s\n", item.Status, item.Step)
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(s.ActiveFeatureID) != "" {
+		b.WriteString("## Active Feature\n\n")
+		fmt.Fprintf(&b, "- Active feature: %s\n", s.ActiveFeatureID)
+		if strings.TrimSpace(s.LastFeatureID) != "" && !strings.EqualFold(s.LastFeatureID, s.ActiveFeatureID) {
+			fmt.Fprintf(&b, "- Last feature: %s\n", s.LastFeatureID)
 		}
 		b.WriteString("\n")
 	}
