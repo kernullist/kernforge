@@ -109,7 +109,10 @@ Its current differentiators are:
 - WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
+- `a` on `Allow write?` enables write auto-approval for the session only
 - `a` on `Open diff preview?` auto-accepts the current edit and future diff previews for the session
+- Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate session-scoped `Allow git?` approval path
+- Git-mutating tools are intended for explicit user requests, not normal review or edit turns
 - Automatic checkpoint creation before the first edit in a request
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
@@ -133,6 +136,8 @@ Its current differentiators are:
 - Automatic code scouting when no explicit file mention is provided
 - Recent `analyze-project` results can be injected as cached architecture context before Kernforge rereads large areas
 - When cached analysis is sufficient for a question, Kernforge can answer directly from that summary without extra tool calls
+- Prompts that ask to analyze, explain, diagnose, or document default to read-only investigation mode
+- Prompts that explicitly ask to fix code stay tool-driven and Kernforge nudges the model away from handing patches back to the user
 
 ### Interactive Ergonomics
 
@@ -140,6 +145,9 @@ Its current differentiators are:
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
+- Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
+- Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
+- Abruptly cut-off final answers are retried once as a continuation and merged before the CLI returns to the prompt
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
 - After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
 - Windows console input history with `Up` and `Down`
@@ -473,7 +481,7 @@ Provider-specific:
 - Default base URL: `https://openrouter.ai/api/v1`
 - Reads `OPENROUTER_API_KEY`
 - Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
-- Uses the same request-timeout, streamed partial-text, and single-retry behavior as the OpenAI-compatible client
+- Uses the same request-timeout, streamed partial-text, incomplete-stream fallback, and single-retry behavior as the OpenAI-compatible client
 
 ### OpenAI-compatible
 
@@ -592,6 +600,9 @@ Explain the structure of this repository
 /hook-reload
 /override
 ```
+
+- `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
+- `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 
 ### Conversation And Session Commands
 

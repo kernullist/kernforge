@@ -64,6 +64,14 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/detect-verification-tools",
 		"/set-auto-verify [on|off]",
 		"/new-feature <task>",
+		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
+		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
+		`Using a on "Allow git?" enables git auto-approval for the current session only.`,
+		"Shell approval is tracked separately for the current session.",
+		"run_shell to modify workspace files",
+		"/status to inspect the current session approval state",
+		"/config to inspect effective settings",
+		"git actions",
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to contain %q", needle)
@@ -145,5 +153,27 @@ func TestPermissionManagerShellPromptDoesNotAdvertiseAlways(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(prompted), "always") {
 		t.Fatalf("shell prompt should not advertise always, got %q", prompted)
+	}
+}
+
+func TestPermissionManagerGitPromptAdvertisesAlways(t *testing.T) {
+	var prompted string
+	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
+		prompted = question
+		return true, nil
+	})
+
+	allowed, err := perms.Allow(ActionGit, "create commit: test subject")
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected git permission to be allowed")
+	}
+	if !strings.Contains(prompted, "Allow git? create commit: test subject") {
+		t.Fatalf("unexpected git prompt: %q", prompted)
+	}
+	if !strings.Contains(strings.ToLower(prompted), "always") {
+		t.Fatalf("git prompt should advertise always, got %q", prompted)
 	}
 }

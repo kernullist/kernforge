@@ -32,6 +32,28 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return resp, nil
 }
 
+type streamingScriptedProviderClient struct {
+	replies  []ChatResponse
+	requests []ChatRequest
+	index    int
+}
+
+func (s *streamingScriptedProviderClient) Name() string { return "streaming-scripted" }
+
+func (s *streamingScriptedProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	s.requests = append(s.requests, req)
+	if s.index >= len(s.replies) {
+		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
+	}
+	resp := s.replies[s.index]
+	s.index++
+	if req.OnTextDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
+		req.OnTextDelta(resp.Message.Text)
+	}
+	return resp, nil
+}
+
 type blockingProviderClient struct {
 	calls   int
 	started chan struct{}
@@ -117,6 +139,47 @@ type failingTool struct {
 	name  string
 	err   error
 	calls int
+}
+
+type toolUnsupportedThenSuccessClient struct {
+	calls    int
+	requests []ChatRequest
+}
+
+func (c *toolUnsupportedThenSuccessClient) Name() string { return "tool-unsupported-then-success" }
+
+func (c *toolUnsupportedThenSuccessClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	c.calls++
+	c.requests = append(c.requests, req)
+	if c.calls == 1 {
+		return ChatResponse{}, fmt.Errorf("openai API error (404 Not Found): No endpoints found that support tool use. Try disabling \"git_status\".")
+	}
+	return ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "첨부된 코드 기준으로 즉시 보이는 치명적 버그는 없지만 경계 조건 검토가 필요합니다.",
+		},
+		StopReason: "stop",
+	}, nil
+}
+
+type fallbackReplayClient struct {
+	calls int
+}
+
+func (c *fallbackReplayClient) Name() string { return "fallback-replay" }
+
+func (c *fallbackReplayClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	c.calls++
+	return ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "full fallback answer",
+		},
+		StopReason: "stop_after_stream_retry",
+	}, nil
 }
 
 func (t *failingTool) Definition() ToolDefinition {
@@ -253,6 +316,118 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	}
 	if session.LastVerification == nil || session.LastVerification.HasFailures() {
 		t.Fatalf("expected final verification report to be passing, got %#v", session.LastVerification)
+	}
+}
+
+func TestAgentAnalysisOnlyRequestHidesEditTools(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "원인은 ETW 세션 초기화 순서 문제입니다."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewApplyPatchTool(ws), NewWriteFileTool(ws), NewReplaceInFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@Tavern/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "원인은") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected at least one model request")
+	}
+	var toolNames []string
+	for _, def := range provider.requests[0].Tools {
+		toolNames = append(toolNames, def.Name)
+	}
+	if containsString(toolNames, "apply_patch") || containsString(toolNames, "write_file") || containsString(toolNames, "replace_in_file") {
+		t.Fatalf("expected edit tools to be hidden for analysis-only request, got %v", toolNames)
+	}
+	if !containsString(toolNames, "read_file") {
+		t.Fatalf("expected read tools to remain available, got %v", toolNames)
+	}
+}
+
+func TestAgentRetriesEmptyResponseForAnalysisRequest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "VAllocAnalyzer.cpp"), []byte("int Check()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: ""}},
+			{Message: Message{Role: "assistant", Text: "문제점은 아직 확인되지 않았지만 경계 조건 검토가 필요합니다."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewGrepTool(ws), NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 에 버그가 있는지 검토해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "검토") && !strings.Contains(reply, "문제점") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one retry after empty response, got %d requests", len(provider.requests))
+	}
+	lastMessages := provider.requests[1].Messages
+	if len(lastMessages) == 0 {
+		t.Fatalf("expected retry guidance message")
+	}
+	lastText := lastMessages[len(lastMessages)-1].Text
+	if !strings.Contains(lastText, "read-only analysis or review request") {
+		t.Fatalf("expected analysis-specific empty-response guidance, got %q", lastText)
+	}
+	if !strings.Contains(lastText, "read_file") {
+		t.Fatalf("expected retry guidance to mention read_file, got %q", lastText)
+	}
+}
+
+func TestSummarizeToolInvocationReadFileIncludesPathAndRange(t *testing.T) {
+	call := ToolCall{
+		Name:      "read_file",
+		Arguments: `{"path":"Tavern/Common/ETWConsumer.cpp","start_line":10,"end_line":42}`,
+	}
+
+	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
+	want := "Using read_file on Tavern/Common/ETWConsumer.cpp:10-42..."
+	if got != want {
+		t.Fatalf("unexpected summary: got %q want %q", got, want)
+	}
+}
+
+func TestSummarizeToolInvocationRunShellIncludesCommand(t *testing.T) {
+	call := ToolCall{
+		Name:      "run_shell",
+		Arguments: `{"command":"rg -n \"systemPrompt\" agent.go"}`,
+	}
+
+	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
+	if !strings.Contains(got, "Running shell: rg -n") {
+		t.Fatalf("unexpected shell summary: %q", got)
 	}
 }
 
@@ -1017,6 +1192,173 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveToolPlan(t *testing.T) {
 	}
 }
 
+func TestReplyLooksAbruptlyTruncatedDetectsCutoffTail(t *testing.T) {
+	if !replyLooksAbruptlyTruncated("현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이") {
+		t.Fatalf("expected abrupt cutoff to be detected")
+	}
+	if !replyLooksAbruptlyTruncated("`HasMRUItemsSubKey` 함수에서 이 문제를 수정하겠습니다. 다른 함수들(`ParsePrivateRegistryFile`, `Parse") {
+		t.Fatalf("expected unbalanced code-span cutoff to be detected")
+	}
+	if replyLooksAbruptlyTruncated("현재 코드는 `items` 하위 키가 없는 구조도 처리해야 합니다.") {
+		t.Fatalf("did not expect complete sentence to be treated as truncated")
+	}
+}
+
+func TestMergeAssistantContinuationHandlesKoreanAndEnglishBoundaries(t *testing.T) {
+	if got := mergeAssistantContinuation("이", "로 인해 문제가 발생합니다."); got != "이로 인해 문제가 발생합니다." {
+		t.Fatalf("unexpected korean continuation merge: %q", got)
+	}
+	if got := mergeAssistantContinuation("This affects", "some registry layouts."); got != "This affects some registry layouts." {
+		t.Fatalf("unexpected english continuation merge: %q", got)
+	}
+	if got := mergeAssistantContinuation("Parse", "ItemsInInstance"); got != "ParseItemsInInstance" {
+		t.Fatalf("unexpected camel-case continuation merge: %q", got)
+	}
+}
+
+func TestAgentRetriesAbruptlyTruncatedFinalReply(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이",
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "로 인해 일부 Visual Studio 버전에서 최근 파일 목록이 누락됩니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "review this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	expected := "현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이로 인해 일부 Visual Studio 버전에서 최근 파일 목록이 누락됩니다."
+	if reply != expected {
+		t.Fatalf("unexpected merged reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected continuation retry, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "cut off mid-sentence") {
+		t.Fatalf("expected continuation guidance, got %#v", lastMessage)
+	}
+	if len(session.Messages) < 2 || session.Messages[1].Text != expected {
+		t.Fatalf("expected merged answer to replace original assistant turn, got %#v", session.Messages)
+	}
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected continuation helper turns to be trimmed from history, got %#v", session.Messages)
+	}
+}
+
+func TestAgentRetriesAbruptlyTruncatedFinalReplyWhileStreaming(t *testing.T) {
+	root := t.TempDir()
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이",
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "로 인해 일부 Visual Studio 버전에서 최근 파일 목록이 누락됩니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emitted strings.Builder
+	agent := &Agent{
+		Config:             Config{},
+		Client:             provider,
+		Tools:              NewToolRegistry(NewReadFileTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
+	}
+
+	reply, err := agent.Reply(context.Background(), "review this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	expected := "현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이로 인해 일부 Visual Studio 버전에서 최근 파일 목록이 누락됩니다."
+	if reply != expected {
+		t.Fatalf("unexpected merged reply: %q", reply)
+	}
+	if emitted.String() != expected {
+		t.Fatalf("expected streamed text to continue seamlessly, got %q", emitted.String())
+	}
+}
+
+func TestAgentRetriesCodeSpanTruncationWhileStreaming(t *testing.T) {
+	root := t.TempDir()
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "`HasMRUItemsSubKey` 함수에서 이 문제를 수정하겠습니다. 다른 함수들(`ParsePrivateRegistryFile`, `Parse",
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "ItemsInInstance`)도 함께 점검해 안전하게 마무리하겠습니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emitted strings.Builder
+	agent := &Agent{
+		Config:             Config{},
+		Client:             provider,
+		Tools:              NewToolRegistry(NewReadFileTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
+	}
+
+	reply, err := agent.Reply(context.Background(), "review and fix this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	expected := "`HasMRUItemsSubKey` 함수에서 이 문제를 수정하겠습니다. 다른 함수들(`ParsePrivateRegistryFile`, `ParseItemsInInstance`)도 함께 점검해 안전하게 마무리하겠습니다."
+	if reply != expected {
+		t.Fatalf("unexpected merged reply: %q", reply)
+	}
+	if emitted.String() != expected {
+		t.Fatalf("expected streamed text to continue seamlessly, got %q", emitted.String())
+	}
+}
+
 func TestAgentStoresSanitizedToolPreambleInsteadOfNarration(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -1441,6 +1783,198 @@ func TestCompleteModelTurnDoesNotRetryOnUserCancellation(t *testing.T) {
 
 	if provider.calls != 1 {
 		t.Fatalf("expected one provider attempt on cancellation, got %d", provider.calls)
+	}
+}
+
+func TestAgentReadOnlyAnalysisFallsBackWhenModelDoesNotSupportToolUse(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "VAllocAnalyzer.cpp"), []byte("int Check()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &toolUnsupportedThenSuccessClient{}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewGrepTool(ws), NewListFilesTool(ws), NewGitStatusTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "버그") && !strings.Contains(reply, "검토") && !strings.Contains(reply, "경계 조건") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("expected retry without tools, got %d calls", provider.calls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected two recorded requests, got %d", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) == 0 {
+		t.Fatalf("expected first request to include tools")
+	}
+	if len(provider.requests[1].Tools) != 0 {
+		t.Fatalf("expected fallback request to omit tools, got %d", len(provider.requests[1].Tools))
+	}
+	if !strings.Contains(provider.requests[1].System, "does not support tool use") {
+		t.Fatalf("expected fallback system guidance, got %q", provider.requests[1].System)
+	}
+}
+
+func TestAgentEditRequestReturnsFriendlyToolUseUnsupportedError(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "VAllocAnalyzer.cpp"), []byte("int Check()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &toolUnsupportedThenSuccessClient{}
+	session := NewSession(root, "openrouter", "meta-llama/llama-3.2-11b-vision-instruct", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewApplyPatchTool(ws), NewGitStatusTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘")
+	if err == nil {
+		t.Fatalf("expected tool-use unsupported error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "selected model does not support tool use") {
+		t.Fatalf("expected friendly tool-use message, got %q", text)
+	}
+	if strings.Contains(text, "request={") {
+		t.Fatalf("expected raw request dump to be hidden, got %q", text)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected edit request to fail without no-tools retry, got %d calls", provider.calls)
+	}
+}
+
+func TestAgentRetriesWhenEditRequestHandsPatchBackWithoutUsingTools(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "VAllocAnalyzer.cpp")
+	before := "int Check()\n{\n    return 0;\n}\n"
+	after := "int Check()\n{\n    return 1;\n}\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "도구 사용에 문제가 있어 직접 패치를 적용해드리지 못합니다. 위 설명에 따라 코드를 직접 수정해주시면 됩니다."}},
+			toolCallResponse("read_file", map[string]any{"path": "VAllocAnalyzer.cpp"}),
+			toolCallResponse("write_file", map[string]any{"path": "VAllocAnalyzer.cpp", "content": after}),
+			{Message: Message{Role: "assistant", Text: "VAllocAnalyzer.cpp를 수정했고 반환값이 1이 되도록 반영했습니다."}},
+		},
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "수정") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(contents) != after {
+		t.Fatalf("expected file to be updated after retry, got %q", string(contents))
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected retry path to consume four requests, got %d", len(provider.requests))
+	}
+	secondRequest := provider.requests[1]
+	if len(secondRequest.Messages) == 0 {
+		t.Fatalf("expected retry guidance before second request")
+	}
+	lastMessage := secondRequest.Messages[len(secondRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Do not hand the patch back to the user") {
+		t.Fatalf("expected manual-edit handoff guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksGitCommitWithoutExplicitUserRequest(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("git_commit", map[string]any{"message": "fix: unexpected commit"}),
+			{Message: Message{Role: "assistant", Text: "코드 수정만 완료했고 커밋은 하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewGitCommitTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "커밋은 하지 않았습니다") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected git tool request to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Do not stage, commit, push, or open a PR") {
+		t.Fatalf("expected git mutation guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentDoesNotSuppressFinalReplyAfterStreamFallback(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    &fallbackReplayClient{},
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		EmitAssistantDelta: func(string) {},
+	}
+	agent.lastEmittedText = "full fallback answer"
+
+	reply, err := agent.Reply(context.Background(), "inspect this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "full fallback answer" {
+		t.Fatalf("expected final reply replay, got %q", reply)
 	}
 }
 

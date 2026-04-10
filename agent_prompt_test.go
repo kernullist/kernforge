@@ -88,3 +88,60 @@ func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 		t.Fatalf("expected MCP catalogs in system prompt, got %q", prompt)
 	}
 }
+
+func TestSystemPromptMarksAnalysisOnlyRequestsAsReadOnly(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Tavern/Common/ETWConsumer.cpp ETWConsumer가 제대로 동작할 수 없는 로그를 수집했는데 원인을 분석해"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "The latest user request is analysis-only.") {
+		t.Fatalf("expected analysis-only guard in system prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptMarksExplicitFixRequestsAsToolDriven(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "The latest user request explicitly asks for a fix.") {
+		t.Fatalf("expected explicit fix guard in system prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptForbidsGitMutationsWithoutExplicitRequest(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Do not stage, commit, push, or open a PR unless the user explicitly asks") {
+		t.Fatalf("expected git mutation guard in system prompt, got %q", prompt)
+	}
+}
+
+func TestLooksLikeExplicitGitIntentIgnoresCodeOnlyCommitMentions(t *testing.T) {
+	if looksLikeExplicitGitIntent("fix commit parsing in the hook engine") {
+		t.Fatalf("expected code-only commit mention to stay false")
+	}
+	if looksLikeExplicitGitIntent("investigate push retry logic in provider.go") {
+		t.Fatalf("expected code-only push mention to stay false")
+	}
+	if !looksLikeExplicitGitIntent("commit these changes after the fix") {
+		t.Fatalf("expected explicit commit request to be true")
+	}
+}

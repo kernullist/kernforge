@@ -141,6 +141,20 @@ func (w Workspace) EnsureWrite(path string) error {
 	return nil
 }
 
+func (w Workspace) EnsureGit(detail string) error {
+	if w.Perms == nil {
+		return nil
+	}
+	ok, err := w.Perms.Allow(ActionGit, detail)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("git permission denied")
+	}
+	return nil
+}
+
 func (w Workspace) ensureProtectedEditPath(path string) error {
 	targetAbs, err := filepath.Abs(path)
 	if err != nil {
@@ -242,6 +256,17 @@ func (w Workspace) Hook(ctx context.Context, event HookEvent, payload HookPayloa
 		return HookVerdict{Allow: true}, nil
 	}
 	return w.RunHook(ctx, event, payload)
+}
+
+func firstLine(text string) string {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if trimmed == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(trimmed, '\n'); idx >= 0 {
+		return strings.TrimSpace(trimmed[:idx])
+	}
+	return trimmed
 }
 
 func shellInvocation(shell, command string) (string, []string) {
@@ -824,6 +849,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
 	}
+	if shellCommandLikelyMutatesWorkspace(command) {
+		return "", fmt.Errorf("run_shell cannot modify workspace files; use apply_patch, write_file, or replace_in_file instead")
+	}
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
 		"tool_name": "run_shell",
 		"tool_kind": "shell",
@@ -882,6 +910,26 @@ func summarizeShellCommand(command string) string {
 		return command
 	}
 	return command[:120] + "..."
+}
+
+func shellCommandLikelyMutatesWorkspace(command string) bool {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" {
+		return false
+	}
+	markers := []string{
+		">", ">>",
+		"set-content", "add-content", "out-file", "sc ", "ac ",
+		"move-item", "copy-item", "remove-item", "rename-item", "new-item", "ni ",
+		"mkdir ", "md ", "del ", "erase ", "copy ", "move ", "ren ", "rename ",
+		"rm ", "mv ", "cp ", "touch ", "install ", "sed -i", "perl -pi", "tee ",
+	}
+	for _, marker := range markers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func hookCommandRiskTags(command string) []string {
@@ -954,7 +1002,7 @@ func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
 	if !all && len(paths) == 0 {
 		return "", fmt.Errorf("paths are required unless all=true")
 	}
-	if err := t.ws.EnsureWrite("git add"); err != nil {
+	if err := t.ws.EnsureGit("stage changes with git_add"); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"add"}
@@ -1017,7 +1065,7 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 	if strings.TrimSpace(message) == "" {
 		return "", fmt.Errorf("message is required")
 	}
-	if err := t.ws.EnsureWrite("git commit"); err != nil {
+	if err := t.ws.EnsureGit("create commit: " + firstLine(message)); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"commit", "-m", message}
@@ -1092,7 +1140,7 @@ func (t GitPushTool) Execute(ctx context.Context, input any) (string, error) {
 	}); err != nil {
 		return "", err
 	}
-	if err := t.ws.EnsureShell(fmt.Sprintf("git push %s %s", remote, branch)); err != nil {
+	if err := t.ws.EnsureGit(fmt.Sprintf("push branch %s to %s", branch, remote)); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"push"}
@@ -1199,7 +1247,7 @@ func (t GitCreatePRTool) Execute(ctx context.Context, input any) (string, error)
 	}); err != nil {
 		return "", err
 	}
-	if err := t.ws.EnsureShell("gh pr create"); err != nil {
+	if err := t.ws.EnsureGit("create pull request for " + branch); err != nil {
 		return "", err
 	}
 	cmdArgs := []string{"pr", "create", "--head", branch}

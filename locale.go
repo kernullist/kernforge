@@ -24,3 +24,22 @@ func getSystemLocale() string {
 	}
 	return "en-US"
 }
+
+func resolvedDisplayLocale(cfg Config) string {
+	if configAutoLocale(cfg) {
+		return strings.TrimSpace(getSystemLocale())
+	}
+	return "en-US"
+}
+
+func localePrefersKorean(cfg Config) bool {
+	locale := strings.ToLower(strings.TrimSpace(resolvedDisplayLocale(cfg)))
+	return strings.HasPrefix(locale, "ko")
+}
+
+func localizedText(cfg Config, english string, korean string) string {
+	if localePrefersKorean(cfg) {
+		return korean
+	}
+	return english
+}

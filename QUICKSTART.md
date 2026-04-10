@@ -127,10 +127,19 @@ Use `/new-feature` when you want persisted spec, plan, and task artifacts under 
 4. `/mem-search category:driver` or `/mem-search category:telemetry`
 5. `/hooks`
 
+Quick interpretation:
+1. `/status` is the fast view for current session and runtime state, including approvals.
+2. `/config` is the fast view for effective settings such as provider defaults, hooks, locale, and verification toggles.
+
 If automatic verification fails because Windows build tools are missing:
 1. Run `/detect-verification-tools` first.
 2. If detection does not find the tool, set it explicitly, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
 3. If you want editing without post-edit verification for a while, use `/set-auto-verify off`.
+
+If a model tries to stage, commit, push, or open a PR:
+1. Kernforge treats git mutation as a separate approval path from file edits.
+2. `Allow git?` covers git-mutating tools for the current session.
+3. Normal review and edit prompts are not supposed to run git mutation unless you explicitly asked for it.
 
 ## 5. Input Cancellation Tips
 

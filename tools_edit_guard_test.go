@@ -134,3 +134,29 @@ func TestToolRegistryExecuteWrapsMalformedJSONAsInvalidToolArguments(t *testing.
 		t.Fatalf("expected ErrInvalidToolArgumentsJSON, got %v", err)
 	}
 }
+
+func TestRunShellRejectsWorkspaceMutatingCommands(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command": "Set-Content test.txt 'hello'",
+	})
+	if err == nil {
+		t.Fatalf("expected mutating shell command to be rejected")
+	}
+	if !strings.Contains(err.Error(), "run_shell cannot modify workspace files") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	if _, err := tool.Execute(context.Background(), map[string]any{
+		"command": "echo hello",
+	}); err != nil {
+		t.Fatalf("expected read-only shell command to succeed, got %v", err)
+	}
+}

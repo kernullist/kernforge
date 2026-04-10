@@ -143,7 +143,12 @@ func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) st
 			status = "Still waiting for the model response..."
 		}
 	}
-	return ui.bold(ui.accent("thinking")) + " " + ui.dim("["+frame+"]") + " " + ui.info(status) + " " + ui.dim(fmt.Sprintf("(%ds, Esc to cancel)", seconds))
+	line := ui.bold(ui.accent("thinking")) + " " + ui.dim("["+frame+"]")
+	if !isRedundantThinkingStatus(status) {
+		line += " " + ui.info(status)
+	}
+	line += " " + ui.dim(fmt.Sprintf("(%ds, Esc to cancel)", seconds))
+	return line
 }
 
 func (ui UI) hintLine(text string) string {
@@ -152,6 +157,15 @@ func (ui UI) hintLine(text string) string {
 
 var commandHighlightPattern = regexp.MustCompile(`(?m)(^|\s)(/[A-Za-z0-9_-]+|![^\s]+|@[^\s]+)`)
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func isRedundantThinkingStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "Thinking ...", "생각 중 ...":
+		return true
+	default:
+		return false
+	}
+}
 
 func (ui UI) highlightCommands(text string) string {
 	if !ui.color {

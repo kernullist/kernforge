@@ -425,3 +425,114 @@ func TestOpenAIClientDoesNotReturnPartialToolCallOnStreamDeadline(t *testing.T) 
 		t.Fatalf("expected timeout for partial tool call stream, got %v", err)
 	}
 }
+
+func TestOpenAIClientFallsBackToNonStreamWhenStreamReturnsEmpty(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		defer r.Body.Close()
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+
+		if requests == 1 {
+			if body["stream"] != true {
+				t.Fatalf("expected first request to stream, got %#v", body["stream"])
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatalf("expected flusher")
+			}
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			flusher.Flush()
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			return
+		}
+
+		if _, ok := body["stream"]; ok {
+			t.Fatalf("expected fallback request to omit stream flag, got %#v", body["stream"])
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback answer"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openrouter:google/gemma-4-31b-it:free",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review this file",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected stream + fallback requests, got %d", requests)
+	}
+	if resp.Message.Text != "fallback answer" {
+		t.Fatalf("unexpected fallback text: %q", resp.Message.Text)
+	}
+	if resp.StopReason != "stop_after_stream_retry" {
+		t.Fatalf("unexpected fallback stop reason: %q", resp.StopReason)
+	}
+}
+
+func TestOpenAIClientFallsBackToNonStreamWhenStreamEndsWithoutDoneOrFinishReason(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		defer r.Body.Close()
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+
+		if requests == 1 {
+			w.Header().Set("content-type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatalf("expected flusher")
+			}
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial intro\"},\"finish_reason\":\"\"}]}\n\n")
+			flusher.Flush()
+			return
+		}
+
+		if _, ok := body["stream"]; ok {
+			t.Fatalf("expected fallback request to omit stream flag, got %#v", body["stream"])
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"full fallback answer"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openrouter:google/gemini-2.5-pro",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review and fix this file",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected stream + fallback requests, got %d", requests)
+	}
+	if resp.Message.Text != "full fallback answer" {
+		t.Fatalf("unexpected fallback text: %q", resp.Message.Text)
+	}
+	if resp.StopReason != "stop_after_stream_retry" {
+		t.Fatalf("unexpected fallback stop reason: %q", resp.StopReason)
+	}
+}

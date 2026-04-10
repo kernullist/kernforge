@@ -791,6 +791,13 @@ Provider And Models:
 /profile-review        Show and manage saved review profiles
 /provider              Choose and configure a provider
 /set-plan-review [provider] Configure the reviewer model for plan review (interactive)
+- Write approval prompts accept y/N/a. Using a on "Allow write?" enables write auto-approval for the current session only.
+- Diff preview prompts accept y/N/a. Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.
+- Git approval prompts accept y/N/a. Using a on "Allow git?" enables git auto-approval for the current session only.
+- Shell approval is tracked separately for the current session. Once a shell command is approved, later run_shell calls can proceed without another shell prompt in the same session.
+- Kernforge does not allow run_shell to modify workspace files. File edits must go through apply_patch, write_file, or replace_in_file so diff preview and write approval rules can still apply.
+- Use /status to inspect the current session approval state for writes, diff previews, shell access, and git actions.
+- Use /config to inspect effective settings such as provider, token limits, hooks, and verification defaults.
 
 Verification And Checkpoints:
 /checkpoint [note]     Create a workspace checkpoint snapshot, optionally with a note
@@ -1336,6 +1343,7 @@ const (
 	ActionRead  Action = "read"
 	ActionWrite Action = "write"
 	ActionShell Action = "shell"
+	ActionGit   Action = "git"
 )
 
 type PromptFunc func(question string) (bool, error)
@@ -1344,6 +1352,7 @@ type PermissionManager struct {
 	mode         Mode
 	prompt       PromptFunc
 	shellAllowed bool
+	gitAllowed   bool
 }
 
 func ParseMode(value string) Mode {
@@ -1394,6 +1403,9 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 	if action == ActionShell && m.shellAllowed {
 		return true, nil
 	}
+	if action == ActionGit && m.gitAllowed {
+		return true, nil
+	}
 
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
@@ -1412,4 +1424,12 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 // IsShellAllowed returns whether shell permissions have been granted for this session.
 func (m *PermissionManager) IsShellAllowed() bool {
 	return m.shellAllowed
+}
+
+func (m *PermissionManager) IsGitAllowed() bool {
+	return m.gitAllowed
+}
+
+func (m *PermissionManager) RememberGitApproval() {
+	m.gitAllowed = true
 }

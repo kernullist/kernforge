@@ -55,6 +55,39 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. Windows에서는 async key state와 console input record를 함께 사용해 짧은 `Esc` 탭도 놓치지 않게 처리한다.
 4. 요청 취소 뒤에는 `Esc` release를 잠깐 기다리고 pending console input을 정리한 뒤 다음 입력을 받는다.
 5. assistant streaming은 선행 빈 chunk를 무시하고, progress 출력 전 경계를 정리하며, 반복 follow-on preamble을 별도 줄로 나눠 가독성을 높인다.
+6. 기본 대기 문구는 thinking prefix와 중복되지 않도록 정리한다.
+7. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
+8. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
+
+### 런타임 상태 확인과 승인 상태
+
+목적:
+1. 현재 세션 상태와 적용된 설정값을 분리해서 본다.
+2. write, diff, shell, git 승인 상태를 config 파일을 열지 않고 확인한다.
+3. git 변경 작업을 일반 파일 수정과 다른 승인 축으로 관리한다.
+
+대표 명령:
+- `/status`
+- `/config`
+
+현재 동작:
+1. `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 세션 id, approval 상태, selection, verification, MCP 카운트가 여기에 들어간다.
+2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
+3. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
+4. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
+5. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
+
+### 프롬프트 의도 라우팅
+
+목적:
+1. 분석/설명 요청을 기본적으로 read-only로 유지한다.
+2. 명시적 수정 요청은 prose-only 조언으로 흐르지 않고 tool-driven edit으로 유지한다.
+3. 일반 코드 리뷰 중 accidental git mutation이나 patch handoff를 줄인다.
+
+현재 동작:
+1. 분석, 설명, 진단, 검토, 문서화 요청은 동시에 수정까지 명시하지 않는 한 기본적으로 read-only investigation 모드로 처리된다.
+2. 명시적으로 수정까지 요청한 프롬프트는 edit tool을 유지하고, 모델이 패치를 사용자에게 넘기려 하면 Kernforge가 한 번 더 직접 수정 도구 사용을 유도한다.
+3. git stage/commit/push/PR 생성은 사용자가 해당 git 작업을 명시적으로 요청하지 않으면 막힌다.
 
 ### 2.0 Project Analysis
 

@@ -127,10 +127,19 @@
 4. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
 5. `/hooks`
 
+빠른 해석:
+1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. approval 상태도 여기서 본다.
+2. `/config`는 provider 기본값, hooks, locale, verification toggle 같은 현재 적용 설정을 빠르게 보는 용도다.
+
 Windows build tool이 없어 automatic verification이 실패하면:
 1. 먼저 `/detect-verification-tools`를 실행한다.
 2. 자동 탐지가 못 찾으면 예를 들어 `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`처럼 직접 지정한다.
 3. 당분간 편집 후 verification을 끄고 싶으면 `/set-auto-verify off`를 사용한다.
+
+모델이 stage/commit/push/PR을 하려고 할 때:
+1. Kernforge는 git 변경 작업을 파일 수정과 다른 승인 축으로 본다.
+2. `Allow git?`는 현재 세션의 git mutation tool 승인이다.
+3. 일반 review/edit 프롬프트에서는 사용자가 명시적으로 요청하지 않는 한 git mutation이 실행되지 않는 것이 기본이다.
 
 ## 5. 입력 취소 팁
 

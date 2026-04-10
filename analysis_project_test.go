@@ -657,6 +657,100 @@ func TestScanProjectHonorsExcludePaths(t *testing.T) {
 	}
 }
 
+func TestScanProjectExcludesVisualStudioBuildOutputs(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Tavern/Common/ETWConsumer.cpp", "int Etw()\n{\n    return 1;\n}\n")
+	mustWrite("Tavern/Tavern/x64/Live/Tavern.tlog/link.command.1.tlog", "^link\n")
+	mustWrite("Tavern/Tavern/x64/Live/Tavern.lastbuildstate", "state\n")
+	mustWrite("Tavern/TavernWorker/x64/Release/TavernWorker.tlog/CL.read.1.tlog", "log\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	for _, file := range snapshot.Files {
+		lower := strings.ToLower(file.Path)
+		if strings.Contains(lower, "/x64/live/") || strings.Contains(lower, "/x64/release/") {
+			t.Fatalf("expected Visual Studio output path to be excluded, found %s", file.Path)
+		}
+		if strings.HasSuffix(lower, ".tlog") || strings.HasSuffix(lower, ".lastbuildstate") {
+			t.Fatalf("expected build artifact file to be excluded, found %s", file.Path)
+		}
+	}
+	if _, ok := snapshot.FilesByPath["Tavern/Common/ETWConsumer.cpp"]; !ok {
+		t.Fatalf("expected normal source file to remain included")
+	}
+}
+
+func TestScanProjectExcludesCommonGeneratedOutputsAcrossToolchains(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("src/main.cpp", "int main()\n{\n    return 0;\n}\n")
+	mustWrite("python/app.py", "print('ok')\n")
+	mustWrite("target/debug/build.log", "cargo build output\n")
+	mustWrite("module/.venv/Lib/site-packages/pkg.py", "generated\n")
+	mustWrite("python/__pycache__/app.cpython-312.pyc", "bytecode\n")
+	mustWrite("web/app.tsbuildinfo", "incremental state\n")
+	mustWrite("native/CMakeFiles/progress.marks", "1\n")
+	mustWrite("native/cmake-build-debug/compile_commands.json", "{ }\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	for _, file := range snapshot.Files {
+		lower := strings.ToLower(file.Path)
+		if strings.Contains(lower, "/target/debug/") ||
+			strings.Contains(lower, "/.venv/") ||
+			strings.Contains(lower, "/__pycache__/") ||
+			strings.Contains(lower, "/cmakefiles/") ||
+			strings.Contains(lower, "/cmake-build-debug/") ||
+			strings.HasSuffix(lower, ".tsbuildinfo") ||
+			strings.HasSuffix(lower, ".pyc") {
+			t.Fatalf("expected generated artifact to be excluded, found %s", file.Path)
+		}
+	}
+	if _, ok := snapshot.FilesByPath["src/main.cpp"]; !ok {
+		t.Fatalf("expected native source file to remain included")
+	}
+	if _, ok := snapshot.FilesByPath["python/app.py"]; !ok {
+		t.Fatalf("expected python source file to remain included")
+	}
+}
+
 func TestMergeSessionSummaryWithAnalysisReplacesPreviousCachedBlock(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{

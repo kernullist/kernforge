@@ -65,6 +65,7 @@ type runtimeState struct {
 	streamMu                 sync.Mutex
 	streamingAssistant       bool
 	streamedAssistantText    strings.Builder
+	pendingAssistantSpacing  string
 	suppressThinkingMu       sync.Mutex
 	suppressThinking         bool
 	thinkingStatusMu         sync.Mutex
@@ -263,7 +264,7 @@ func run(args []string) error {
 			rt.appendAssistantStream(text)
 		},
 		EmitProgress: func(text string) {
-			rt.setThinkingStatus(compactThinkingStatus(text))
+			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
 			rt.printWhileThinking(rt.ui.infoLine(text))
 		},
 	}
@@ -504,6 +505,9 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 			lines = append(lines, rt.ui.hintLine("Model stop reason: "+stopReason))
 		}
 		lines = append(lines, rt.ui.hintLine("Increase max_tokens, reduce prompt bloat, or ask for a shorter intermediate answer."))
+	case strings.Contains(text, "does not support tool use"):
+		lines = append(lines, rt.ui.hintLine("This model endpoint cannot use Kernforge tools, so it cannot reliably inspect files, run commands, or apply edits."))
+		lines = append(lines, rt.ui.hintLine("Switch to a tool-capable model for review/fix tasks, or ask for a no-tools answer if you only want a best-effort opinion from attached context."))
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded"):
 		lines = append(lines, rt.ui.hintLine("The model request timed out before a usable response arrived. Retry the request, reduce prompt/tool churn, or increase the request timeout if your provider is slow."))
 	}
@@ -669,6 +673,7 @@ func (rt *runtimeState) resetAssistantStream() {
 	rt.streamMu.Lock()
 	rt.streamingAssistant = false
 	rt.streamedAssistantText.Reset()
+	rt.pendingAssistantSpacing = ""
 	rt.streamMu.Unlock()
 }
 
@@ -694,18 +699,41 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 	if text == "" {
 		return
 	}
-	rt.clearThinkingStatus()
-	rt.suppressThinkingIndicator()
 
 	rt.streamMu.Lock()
 	defer rt.streamMu.Unlock()
 
 	if !rt.streamingAssistant {
+		rt.pendingAssistantSpacing = ""
 		text = strings.TrimLeftFunc(text, unicode.IsSpace)
 		if text == "" {
 			return
 		}
 	}
+	if rt.streamingAssistant && isAssistantBlankLineChunk(text) {
+		rt.pendingAssistantSpacing += text
+		if countLineBreaks(rt.pendingAssistantSpacing) >= 3 {
+			rt.writeOutput("\n")
+			rt.streamingAssistant = false
+			if normalized := normalizeAssistantDisplayText(rt.streamedAssistantText.String()); normalized != "" {
+				rt.lastAssistantMu.Lock()
+				rt.lastAssistantPrinted = normalized
+				rt.lastAssistantMu.Unlock()
+			}
+			rt.streamedAssistantText.Reset()
+			rt.pendingAssistantSpacing = ""
+			rt.setThinkingStatus(localizedText(rt.cfg, "Working ...", "작업 중 ..."))
+			rt.allowThinkingIndicator()
+			rt.startThinkingIndicator()
+		}
+		return
+	}
+	if rt.pendingAssistantSpacing != "" {
+		text = rt.pendingAssistantSpacing + text
+		rt.pendingAssistantSpacing = ""
+	}
+	rt.clearThinkingStatus()
+	rt.suppressThinkingIndicator()
 	if !rt.streamingAssistant {
 		rt.stopThinkingIndicator()
 		rt.writeOutput(rt.ui.bold(rt.ui.info("assistant")) + rt.ui.dim(": "))
@@ -720,6 +748,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 func (rt *runtimeState) finishAssistantStream() {
 	rt.streamMu.Lock()
 	defer rt.streamMu.Unlock()
+	rt.pendingAssistantSpacing = ""
 
 	if !rt.streamingAssistant {
 		return
@@ -740,13 +769,13 @@ func (rt *runtimeState) flushAssistantStream() {
 
 func (rt *runtimeState) printWhileThinking(lines ...string) {
 	rt.flushAssistantStream()
-	rt.stopThinkingIndicator()
+	resumeThinking := rt.suspendThinkingIndicator()
+	defer resumeThinking()
 	rt.outputMu.Lock()
 	for _, line := range lines {
 		fmt.Fprintln(rt.writer, line)
 	}
 	rt.outputMu.Unlock()
-	rt.startThinkingIndicator()
 }
 
 func (rt *runtimeState) writeOutput(text string) {
@@ -784,7 +813,7 @@ func (rt *runtimeState) currentThinkingStatus(elapsed time.Duration) string {
 	cancelPending := rt.requestCancelPending
 	rt.requestCancelMu.Unlock()
 	if cancelPending {
-		return "Canceling current request..."
+		return localizedText(rt.cfg, "Canceling current request...", "취소하는 중 ...")
 	}
 	rt.thinkingStatusMu.Lock()
 	override := rt.thinkingStatusOverride
@@ -792,13 +821,16 @@ func (rt *runtimeState) currentThinkingStatus(elapsed time.Duration) string {
 	if override != "" {
 		return override
 	}
-	if elapsed >= 15*time.Second {
-		return "Still waiting for the model response..."
+	if elapsed >= 45*time.Second {
+		return localizedText(rt.cfg, "Thinking ... still preparing the response.", "생각 중 ... 아직 답변을 정리하고 있어요.")
 	}
-	return "Sending prompt to model..."
+	if elapsed >= 15*time.Second {
+		return localizedText(rt.cfg, "Thinking ...", "생각 중 ...")
+	}
+	return localizedText(rt.cfg, "Thinking ...", "생각 중 ...")
 }
 
-func compactThinkingStatus(text string) string {
+func compactThinkingStatus(cfg Config, text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return ""
@@ -807,31 +839,45 @@ func compactThinkingStatus(text string) string {
 	lower := strings.ToLower(trimmed)
 	switch {
 	case strings.Contains(lower, "cancel"):
-		return "Canceling current request..."
+		return localizedText(cfg, "Canceling current request...", "취소하는 중 ...")
+	case strings.HasPrefix(lower, "using read_file"):
+		return trimmed
+	case strings.HasPrefix(lower, "using grep"):
+		return trimmed
+	case strings.HasPrefix(lower, "using list_files"):
+		return trimmed
+	case strings.HasPrefix(lower, "using git_"):
+		return trimmed
+	case strings.HasPrefix(lower, "using mcp__"):
+		return trimmed
+	case strings.HasPrefix(lower, "using "):
+		return trimmed
+	case strings.HasPrefix(lower, "running shell:"):
+		return trimmed
 	case strings.HasPrefix(lower, "writing "):
-		return "Applying edit..."
+		return localizedText(cfg, "Applying edit...", "수정 적용 중 ...")
 	case strings.HasPrefix(lower, "saved "):
-		return "Edit saved."
+		return localizedText(cfg, "Edit saved.", "수정 저장 완료.")
 	case strings.HasPrefix(lower, "running post-edit hooks"):
-		return "Running post-edit hooks..."
+		return localizedText(cfg, "Running post-edit hooks...", "후처리 hook 실행 중 ...")
 	case strings.HasPrefix(lower, "post-edit hooks finished"):
-		return "Post-edit hooks finished."
+		return localizedText(cfg, "Post-edit hooks finished.", "후처리 hook 실행 완료.")
 	case strings.HasPrefix(lower, "creating automatic checkpoint"):
-		return "Creating checkpoint..."
+		return localizedText(cfg, "Creating checkpoint...", "체크포인트 생성 중 ...")
 	case strings.HasPrefix(lower, "patch applied"):
-		return "Patch applied."
+		return localizedText(cfg, "Patch applied.", "패치 적용 완료.")
 	case strings.HasPrefix(lower, "file updated"):
-		return "File updated."
+		return localizedText(cfg, "File updated.", "파일 갱신 완료.")
 	case strings.HasPrefix(lower, "replacement applied"):
-		return "Replacement applied."
+		return localizedText(cfg, "Replacement applied.", "치환 적용 완료.")
 	case strings.Contains(lower, "checking follow-up"):
-		return "Checking follow-up steps..."
+		return localizedText(cfg, "Checking follow-up steps...", "후속 단계 확인 중 ...")
 	case strings.Contains(lower, "automatic verification failed"):
-		return "Verification failed."
+		return localizedText(cfg, "Verification failed.", "검증 실패.")
 	case strings.Contains(lower, "automatic verification finished"):
-		return "Verification finished."
+		return localizedText(cfg, "Verification finished.", "검증 완료.")
 	case strings.Contains(lower, "waiting for the model to summarize"):
-		return "Finalizing reply..."
+		return localizedText(cfg, "Finalizing reply...", "답변 정리 중 ...")
 	}
 
 	if len(trimmed) > 48 {
@@ -895,6 +941,25 @@ func splitAssistantPreambleBoundaries(text string) string {
 		return text
 	}
 	return assistantFollowOnPreamblePattern.ReplaceAllString(text, "$1\n$2")
+}
+
+func isAssistantBlankLineChunk(text string) bool {
+	return strings.TrimSpace(text) == "" && strings.ContainsAny(text, "\r\n")
+}
+
+func countLineBreaks(text string) int {
+	count := 0
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\n':
+			count++
+		case '\r':
+			if i+1 >= len(text) || text[i+1] != '\n' {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func (rt *runtimeState) resetAssistantDedup() {
@@ -1302,6 +1367,9 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 	if isDiffPreviewQuestion(question) {
 		return rt.alwaysApprovePreview
 	}
+	if isGitApprovalQuestion(question) {
+		return rt.perms != nil && rt.perms.IsGitAllowed()
+	}
 	return false
 }
 
@@ -1316,7 +1384,7 @@ func (rt *runtimeState) confirmLabel(question string) string {
 }
 
 func supportsAlwaysApproval(question string) bool {
-	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question)
+	return isWriteApprovalQuestion(question) || isDiffPreviewQuestion(question) || isGitApprovalQuestion(question)
 }
 
 func isWriteApprovalQuestion(question string) bool {
@@ -1325,6 +1393,10 @@ func isWriteApprovalQuestion(question string) bool {
 
 func isDiffPreviewQuestion(question string) bool {
 	return strings.EqualFold(strings.TrimSpace(question), "Open diff preview?")
+}
+
+func isGitApprovalQuestion(question string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(question)), "allow git?")
 }
 
 func parseConfirmationAnswer(answer string) (bool, bool, bool) {
@@ -1349,7 +1421,18 @@ func (rt *runtimeState) rememberConfirmationApproval(question string) {
 	if isDiffPreviewQuestion(question) {
 		rt.alwaysApprovePreview = true
 		rt.autoAcceptPreviewOnce = true
+		return
 	}
+	if isGitApprovalQuestion(question) && rt.perms != nil {
+		rt.perms.RememberGitApproval()
+	}
+}
+
+func sessionApprovalStateLabel(enabled bool, mode string) string {
+	if enabled {
+		return mode + " (session)"
+	}
+	return "ask"
 }
 
 func (rt *runtimeState) promptValue(prompt, defaultValue string) (string, error) {
@@ -2636,6 +2719,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "status":
 		fmt.Fprintln(rt.writer, rt.ui.section("Status"))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state. Use /config for effective settings."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("version", currentVersion()))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.session.Provider))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.session.Model))
@@ -2670,11 +2754,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 				}
 			}
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hooks_enabled", fmt.Sprintf("%t", configHooksEnabled(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_presets", fmt.Sprintf("%d", len(rt.cfg.HookPresets))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "auto-approve")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "auto-accept")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")))
 		if rt.hookOverrides != nil {
 			if items, err := rt.hookOverrides.List(rt.workspace.BaseRoot); err == nil {
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_overrides", fmt.Sprintf("%d", len(items))))
@@ -2691,7 +2774,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", rt.session.LastVerification.SummaryLine()))
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_history", fmt.Sprintf("%d", rt.verificationHistoryCount())))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("skills", fmt.Sprintf("%d", rt.skills.Count())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_skills", fmt.Sprintf("%d", rt.skills.EnabledCount())))
 		mcpStatuses := rt.mcpStatus()
@@ -3214,6 +3296,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Exported to "+cmd.Args))
 	case "config":
 		fmt.Fprintln(rt.writer, rt.ui.section("Config"))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Effective settings merged from config files, environment, and session overrides."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.cfg.Provider))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.cfg.Model))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)))
@@ -3225,11 +3308,14 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hooks_enabled", fmt.Sprintf("%t", configHooksEnabled(rt.cfg))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_presets", fmt.Sprintf("%d", len(rt.cfg.HookPresets))))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cmake_path", valueOrUnset(rt.cfg.CMakePath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("ctest_path", valueOrUnset(rt.cfg.CTestPath)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("ninja_path", valueOrUnset(rt.cfg.NinjaPath)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("skill_paths", fmt.Sprintf("%d", len(rt.cfg.SkillPaths))))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_skills", strings.Join(rt.cfg.EnabledSkills, ", ")))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_servers", fmt.Sprintf("%d", len(rt.cfg.MCPServers))))

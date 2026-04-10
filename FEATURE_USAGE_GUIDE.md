@@ -57,6 +57,39 @@ Current behavior:
 3. On Windows, Kernforge combines async key-state checks with console input polling so short `Esc` taps are still recognized.
 4. After request cancel, Kernforge waits briefly for `Esc` release and clears pending console input before opening the next prompt.
 5. Assistant streaming now suppresses empty leading chunks, flushes cleanly before progress lines, and breaks repeated follow-on preambles onto separate lines for readability.
+6. Generic waiting text is collapsed so the thinking indicator does not repeat the same status twice.
+7. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
+8. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
+
+### Runtime Inspection And Approval State
+
+Purpose:
+1. Distinguish between current session state and merged effective settings.
+2. Make write, diff, shell, and git approvals visible without opening config files.
+3. Keep git-mutating actions on a separate approval path from normal file edits.
+
+Useful commands:
+- `/status`
+- `/config`
+
+Current behavior:
+1. `/status` shows session and runtime state such as the active session id, current approvals, selection state, verification state, and MCP counts.
+2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
+3. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
+4. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
+5. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
+
+### Prompt Intent Routing
+
+Purpose:
+1. Keep analysis and explanation requests read-only by default.
+2. Keep explicit fix requests tool-driven instead of drifting into prose-only advice.
+3. Reduce accidental patch handoff or accidental git mutation during normal code review.
+
+Current behavior:
+1. Requests that ask to analyze, explain, diagnose, review, or document default to read-only investigation mode unless they also explicitly ask for a fix.
+2. Requests that explicitly ask to fix code keep edit tools available and Kernforge nudges the model back toward direct tool use if it tries to hand the patch back to the user.
+3. Git staging, commit, push, and PR creation are blocked unless the user explicitly asked for that git action.
 
 ### 2.0 Project Analysis
 

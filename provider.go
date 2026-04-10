@@ -452,7 +452,21 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	defer resp.Body.Close()
 
 	if payload.Stream {
-		return readOpenAIStream(ctx, resp.Body, req.OnTextDelta)
+		streamResp, err := readOpenAIStream(ctx, resp.Body, req.OnTextDelta)
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		if shouldFallbackAfterOpenAIStream(streamResp) {
+			fallbackReq := req
+			fallbackReq.OnTextDelta = nil
+			fallbackResp, err := c.Complete(ctx, fallbackReq)
+			if err != nil {
+				return ChatResponse{}, err
+			}
+			fallbackResp.StopReason = markStopReasonAsStreamFallback(fallbackResp.StopReason)
+			return fallbackResp, nil
+		}
+		return streamResp, nil
 	}
 
 	data, err := io.ReadAll(resp.Body)
@@ -538,6 +552,7 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 	var textBuilder strings.Builder
 	toolCalls := map[int]*toolCallAccumulator{}
 	stopReason := ""
+	sawDone := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -552,6 +567,7 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 			continue
 		}
 		if payload == "[DONE]" {
+			sawDone = true
 			break
 		}
 
@@ -631,10 +647,14 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 		})
 	}
 
-	return ChatResponse{
+	result := ChatResponse{
 		Message:    out,
 		StopReason: stopReason,
-	}, nil
+	}
+	if !sawDone && strings.TrimSpace(result.StopReason) == "" && strings.TrimSpace(result.Message.Text) != "" && len(result.Message.ToolCalls) == 0 {
+		result.StopReason = "stream_incomplete"
+	}
+	return result, nil
 }
 
 func buildPartialStreamResponse(text string, hasToolCalls bool, stopReason string) (ChatResponse, bool) {
@@ -655,6 +675,21 @@ func buildPartialStreamResponse(text string, hasToolCalls bool, stopReason strin
 		},
 		StopReason: normalizeStopReason(partialStopReason),
 	}, true
+}
+
+func shouldFallbackAfterOpenAIStream(resp ChatResponse) bool {
+	if strings.TrimSpace(resp.Message.Text) == "" && len(resp.Message.ToolCalls) == 0 {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(resp.StopReason), "stream_incomplete")
+}
+
+func markStopReasonAsStreamFallback(stopReason string) string {
+	base := strings.TrimSpace(stopReason)
+	if base == "" {
+		base = "fallback"
+	}
+	return normalizeStopReason(base + "_after_stream_retry")
 }
 
 func assistantMessageContent(text string, hasToolCalls bool) any {

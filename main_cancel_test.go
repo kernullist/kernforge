@@ -239,8 +239,27 @@ func TestRuntimeStateCurrentThinkingStatusPrefersCancelPending(t *testing.T) {
 	rt.beginRequestCancel()
 
 	status := rt.currentThinkingStatus(30 * time.Second)
-	if status != "Canceling current request..." {
+	if status != "Canceling current request..." && status != "취소하는 중 ..." {
 		t.Fatalf("expected canceling status, got %q", status)
+	}
+}
+
+func TestUIThinkingLineSuppressesRedundantGenericThinkingStatus(t *testing.T) {
+	ui := UI{}
+	line := ansiPattern.ReplaceAllString(ui.thinkingLine("\\", 30*time.Second, "생각 중 ..."), "")
+	if strings.Contains(line, "생각 중 ...") {
+		t.Fatalf("expected redundant generic thinking status to be omitted, got %q", line)
+	}
+	if !strings.Contains(line, "thinking [\\]") {
+		t.Fatalf("expected thinking prefix to remain, got %q", line)
+	}
+}
+
+func TestUIThinkingLineKeepsSpecificProgressStatus(t *testing.T) {
+	ui := UI{}
+	line := ansiPattern.ReplaceAllString(ui.thinkingLine("\\", 30*time.Second, "read_file 확인 중 ... VAllocAnalyzer.cpp"), "")
+	if !strings.Contains(line, "read_file 확인 중 ... VAllocAnalyzer.cpp") {
+		t.Fatalf("expected specific progress status to remain, got %q", line)
 	}
 }
 
@@ -520,6 +539,56 @@ func TestRuntimeStateAppendAssistantStreamTrimsLeadingWhitespaceBeforeFirstVisib
 	}
 }
 
+func TestRuntimeStateAppendAssistantStreamPreservesBufferedParagraphBreaks(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("Hello")
+	rt.appendAssistantStream("\n\n")
+	rt.appendAssistantStream("World")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "assistant: Hello\n\nWorld") {
+		t.Fatalf("expected buffered paragraph break to be preserved, got %q", rendered)
+	}
+	if strings.Count(rendered, "assistant:") != 1 {
+		t.Fatalf("expected a single assistant block, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamShowsWorkingStatusForRepeatedBlankLines(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		cfg: Config{
+			AutoLocale: boolPtr(false),
+		},
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("Applying patch")
+	rt.appendAssistantStream("\n")
+	rt.appendAssistantStream("\n")
+	rt.appendAssistantStream("\n")
+	time.Sleep(30 * time.Millisecond)
+	rt.stopThinkingIndicator()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "assistant: Applying patch\n") {
+		t.Fatalf("expected partial assistant reply to flush before placeholder status, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Working ...") {
+		t.Fatalf("expected working placeholder after repeated blank lines, got %q", rendered)
+	}
+	if strings.Contains(rendered, "\n\n\n") {
+		t.Fatalf("expected repeated blank lines to be replaced with progress, got %q", rendered)
+	}
+}
+
 func TestRuntimeStatePrintWhileThinkingFlushesActiveAssistantStream(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
@@ -539,6 +608,48 @@ func TestRuntimeStatePrintWhileThinkingFlushesActiveAssistantStream(t *testing.T
 	}
 	if strings.Contains(rendered, "partial replyINFO") {
 		t.Fatalf("expected assistant and info output to be separated, got %q", rendered)
+	}
+}
+
+func TestRuntimeStatePrintWhileThinkingDoesNotStartIndicatorWhenInactive(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.printWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
+
+	rt.thinkingMu.Lock()
+	active := rt.thinkingStop != nil
+	rt.thinkingMu.Unlock()
+	if active {
+		rt.stopThinkingIndicator()
+		t.Fatalf("expected printWhileThinking to leave the indicator stopped when it was inactive")
+	}
+}
+
+func TestFormatAssistantErrorAddsGuidanceForToolUseUnsupportedModel(t *testing.T) {
+	rt := &runtimeState{
+		ui: UI{},
+	}
+
+	lines := rt.formatAssistantError(fmt.Errorf("selected model does not support tool use for inspect/edit requests: provider=openrouter model=meta-llama/llama-3.2-11b-vision-instruct"))
+	if len(lines) < 2 {
+		t.Fatalf("expected guidance lines, got %#v", lines)
+	}
+	rendered := strings.Join(lines, "\n")
+	if !strings.Contains(rendered, "cannot use Kernforge tools") {
+		t.Fatalf("expected tool-use guidance, got %q", rendered)
+	}
+}
+
+func TestSessionApprovalStateLabel(t *testing.T) {
+	if got := sessionApprovalStateLabel(false, "auto-approve"); got != "ask" {
+		t.Fatalf("unexpected disabled label: %q", got)
+	}
+	if got := sessionApprovalStateLabel(true, "auto-approve"); got != "auto-approve (session)" {
+		t.Fatalf("unexpected enabled label: %q", got)
 	}
 }
 
@@ -1129,6 +1240,100 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T)
 	}
 	if !rt.autoApproveConfirmation("Open diff preview?") {
 		t.Fatalf("expected subsequent diff preview prompt to be auto-approved")
+	}
+}
+
+func TestRuntimeStateConfirmAlwaysApprovesFutureGitPrompts(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		interactive: true,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	allowed, err := rt.confirm("Allow git? create commit: test subject (add 'always' to allow for entire session)")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected git prompt to be allowed")
+	}
+	if rt.perms == nil || !rt.perms.IsGitAllowed() {
+		t.Fatalf("expected git prompts to be auto-approved for the rest of the session")
+	}
+	if !rt.autoApproveConfirmation("Allow git? stage changes with git_add (add 'always' to allow for entire session)") {
+		t.Fatalf("expected subsequent git prompt to be auto-approved")
+	}
+}
+
+func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	rt.alwaysApproveWrites = true
+
+	if _, err := rt.handleCommand(Command{Name: "status"}); err != nil {
+		t.Fatalf("handleCommand(status): %v", err)
+	}
+
+	text := out.String()
+	if !strings.Contains(text, "Current session and runtime state.") {
+		t.Fatalf("expected runtime hint, got %q", text)
+	}
+	if !strings.Contains(text, "write_approval:") {
+		t.Fatalf("expected runtime approval state in status, got %q", text)
+	}
+	if strings.Contains(text, "auto_checkpoint_edits:") {
+		t.Fatalf("did not expect config-only auto_checkpoint_edits in status, got %q", text)
+	}
+	if strings.Contains(text, "hooks_enabled:") {
+		t.Fatalf("did not expect config-only hooks_enabled in status, got %q", text)
+	}
+}
+
+func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	rt.alwaysApproveWrites = true
+
+	if _, err := rt.handleCommand(Command{Name: "config"}); err != nil {
+		t.Fatalf("handleCommand(config): %v", err)
+	}
+
+	text := out.String()
+	if !strings.Contains(text, "Effective settings merged from config files, environment, and session overrides.") {
+		t.Fatalf("expected config hint, got %q", text)
+	}
+	if !strings.Contains(text, "auto_checkpoint_edits:") {
+		t.Fatalf("expected config settings in config output, got %q", text)
+	}
+	if !strings.Contains(text, "hooks_enabled:") {
+		t.Fatalf("expected hook settings in config output, got %q", text)
+	}
+	if strings.Contains(text, "write_approval:") {
+		t.Fatalf("did not expect runtime-only approval state in config, got %q", text)
 	}
 }
 

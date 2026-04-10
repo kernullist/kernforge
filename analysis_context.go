@@ -832,9 +832,60 @@ func looksLikeActionOrToolIntent(text string) bool {
 	)
 }
 
+func prefersReadOnlyAnalysisIntent(text string) bool {
+	base := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if base == "" {
+		return false
+	}
+	if looksLikeExplicitEditIntent(base) {
+		return false
+	}
+	if strings.Contains(base, "?") {
+		return true
+	}
+	return containsAny(base,
+		"analy", "analysis", "diagnos", "explain", "investigat", "why ", "why is", "why does", "reason", "root cause", "document", "summarize",
+		"분석", "원인", "이유", "설명", "조사", "문서화", "진단", "왜", "동작할 수 없", "동작하지 않", "안되는", "안 돼", "안되",
+	)
+}
+
+func looksLikeExplicitEditIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "/") {
+		return true
+	}
+	return containsAny(lower,
+		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
+		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "수정", "실행", "적용", "작성", "추가", "테스트", "패치",
+	)
+}
+
+func looksLikeExplicitGitIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"git add", "git commit", "git push", "git stage", "git stash", "create a pr", "create pr", "open a pr", "open pr", "pull request",
+		"stage these changes", "stage the changes", "stage this", "stage it",
+		"commit these changes", "commit the changes", "commit this", "commit it",
+		"push this branch", "push the branch", "push these changes", "push it",
+		"check in these changes", "check in this",
+		"커밋해", "커밋해줘", "커밋해 줘", "커밋할", "커밋해도",
+		"스테이징해", "스테이징해줘", "스테이징해 줘", "스테이지해", "스테이지해줘", "스테이지해 줘",
+		"푸시해", "푸시해줘", "푸시해 줘", "브랜치 푸시",
+		"pr 만들어", "pr 열어", "pull request 만들어", "pull request 열어", "풀 리퀘스트 만들어", "풀 리퀘스트 열어",
+	)
+}
+
 func baseUserQueryText(text string) string {
 	trimmed := strings.TrimSpace(text)
 	markers := []string{
+		"\n\nRequest mode:",
+		"\n\nGit intent:\n",
 		"\n\nRelevant persistent memory from past sessions:\n",
 		"\n\nRelevant project analysis from past analyze-project runs:\n",
 		"\n\nAuto-discovered code context:\n",

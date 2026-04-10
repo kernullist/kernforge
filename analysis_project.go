@@ -469,7 +469,7 @@ func defaultProjectAnalysisConfig(cwd string) ProjectAnalysisConfig {
 		ProviderRetryDelayMs: 1500,
 		MaxFilesPerShard:     250,
 		MaxLinesPerShard:     40000,
-		ExcludeDirs:          []string{".git", ".svn", ".hg", ".claude", ".kernforge", "node_modules", "vendor", "third_party", "dist", "build", "out", "bin", "obj", "tmp", "temp"},
+		ExcludeDirs:          []string{".git", ".svn", ".hg", ".claude", ".kernforge", ".vs", ".gradle", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".venv", "venv", "__pycache__", "ipch", "node_modules", "vendor", "third_party", "dist", "build", "out", "bin", "obj", "target", "tmp", "temp", "coverage", "CMakeFiles"},
 		OutputDir:            filepath.Join(cwd, ".kernforge", "analysis"),
 		MaxFileBytes:         512 * 1024,
 		Incremental:          boolPtr(true),
@@ -846,6 +846,12 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 		if path == a.workspace.Root {
 			return nil
 		}
+		if analysisShouldSkipPath(a.workspace.Root, path, d) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			if _, ok := excludedAbs[strings.ToLower(filepath.Clean(path))]; ok {
 				return filepath.SkipDir
@@ -912,6 +918,74 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 	sort.Strings(snapshot.EntrypointFiles)
 	sort.Strings(snapshot.StartupProjects)
 	return snapshot, nil
+}
+
+func analysisShouldSkipPath(root string, path string, d os.DirEntry) bool {
+	relPath := filepath.ToSlash(relOrAbs(root, path))
+	lowerRel := strings.ToLower(strings.TrimSpace(relPath))
+	name := strings.ToLower(strings.TrimSpace(d.Name()))
+	if lowerRel == "" || name == "" {
+		return false
+	}
+	if name == ".vs" || name == "ipch" {
+		return true
+	}
+	if strings.HasPrefix(name, "cmake-build-") {
+		return true
+	}
+	if strings.HasSuffix(name, ".tlog") || strings.HasSuffix(lowerRel, ".tlog") {
+		return true
+	}
+	if strings.HasSuffix(lowerRel, ".lastbuildstate") ||
+		strings.HasSuffix(lowerRel, ".tsbuildinfo") ||
+		strings.HasSuffix(lowerRel, ".pyc") ||
+		strings.HasSuffix(lowerRel, ".pyo") ||
+		strings.HasSuffix(lowerRel, ".coverage") {
+		return true
+	}
+	segments := strings.Split(lowerRel, "/")
+	hasPlatformSegment := false
+	hasConfigSegment := false
+	for _, segment := range segments {
+		switch segment {
+		case "x64", "x86", "win32", "arm64":
+			hasPlatformSegment = true
+		case "debug", "release", "live":
+			hasConfigSegment = true
+		}
+		if hasPlatformSegment && hasConfigSegment {
+			return true
+		}
+	}
+	if analysisHasAdjacentSegments(segments, "target", "debug", "release", "deps") {
+		return true
+	}
+	if analysisHasAdjacentSegments(segments, "build", "generated") {
+		return true
+	}
+	return false
+}
+
+func analysisHasAdjacentSegments(segments []string, anchors ...string) bool {
+	if len(segments) == 0 || len(anchors) < 2 {
+		return false
+	}
+	allowed := map[string]struct{}{}
+	for _, item := range anchors {
+		allowed[strings.ToLower(strings.TrimSpace(item))] = struct{}{}
+	}
+	matched := 0
+	for _, segment := range segments {
+		if _, ok := allowed[segment]; ok {
+			matched++
+			if matched >= 2 {
+				return true
+			}
+			continue
+		}
+		matched = 0
+	}
+	return false
 }
 
 func (a *projectAnalyzer) estimateAgentCount(snapshot ProjectSnapshot) int {

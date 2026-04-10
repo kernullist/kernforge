@@ -107,7 +107,10 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 파일 쓰기 전 WebView2 diff review
 - selection-aware edit preview
 - 편집 후 자동 verification
+- `Allow write?`에서 `a`를 누르면 현재 세션 동안만 write auto-approval이 켜진다.
 - `Open diff preview?`에서 `a`를 누르면 현재 수정과 이후 diff preview를 세션 동안 자동 승인
+- `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인 경로를 사용한다.
+- git 변경 도구는 일반 review/edit 턴이 아니라, 사용자가 명시적으로 git 작업을 요청한 경우에만 쓰는 것이 기본 동작이다.
 - 한 요청의 첫 편집 전에 자동 checkpoint 생성
 - 수동 checkpoint, checkpoint diff, rollback
 - `/open` 중심 selection-first 리뷰/수정 흐름
@@ -131,6 +134,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 파일을 명시하지 않았을 때 자동 코드 scouting
 - 최근 `analyze-project` 결과를 cached architecture context로 재사용해서 큰 코드 영역 재탐색을 줄일 수 있다.
 - cached analysis만으로 답이 충분하면 추가 tool 호출 없이 바로 응답할 수 있다.
+- 분석, 설명, 진단, 문서화 요청은 기본적으로 read-only investigation 모드로 처리된다.
+- 명시적으로 수정까지 요청한 프롬프트는 tool-driven edit 흐름을 유지하고, Kernforge는 모델이 패치를 사용자에게 되돌리려 하면 한 번 더 수정 도구 사용을 유도한다.
 
 ### 사용성
 
@@ -138,6 +143,9 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
 - assistant streaming 출력은 선행 blank chunk를 무시하고, progress/info 출력 전 경계를 정리하며, 반복 follow-on preamble 사이에 줄바꿈을 넣어 더 읽기 쉽게 출력된다.
+- 기본 대기 문구는 thinking prefix와 중복되지 않게 정리해서 같은 의미를 두 번 보여주지 않는다.
+- 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
+- 문장 중간에서 잘린 최종 답변은 한 번 continuation 재시도를 걸고 합쳐서 출력한 뒤 프롬프트로 복귀한다.
 - Windows 콘솔에서 짧게 누른 `Esc`도 안정적으로 요청 취소
 - 요청 취소 직후 다음 프롬프트가 연속 `Esc` 입력으로 자동 취소되지 않도록 안정화
 - Windows 콘솔의 `Up`, `Down` 입력 히스토리
@@ -472,7 +480,7 @@ provider별:
 - 기본 base URL: `https://openrouter.ai/api/v1`
 - `OPENROUTER_API_KEY` 사용
 - 대화형 모델 선택기에서 페이지 이동, 필터링, curated 추천, reasoning-only 필터, 정렬 지원
-- OpenAI-compatible client와 동일하게 request timeout, partial stream 복구, 1회 자동 재시도를 사용한다.
+- OpenAI-compatible client와 동일하게 request timeout, partial stream 복구, incomplete stream fallback, 1회 자동 재시도를 사용한다.
 
 ### OpenAI-compatible
 
@@ -592,6 +600,9 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /hook-reload
 /override
 ```
+
+- `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 approval 상태, 세션 id, 메모리/검증/MCP 카운트가 여기에 들어간다.
+- `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, hook/locale/verification 설정이 여기에 들어간다.
 
 ### 대화와 세션 명령
 
