@@ -12,7 +12,7 @@
 
 Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent project analysis`입니다.
 
-- `/analyze-project <goal>`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
 - 결과물은 knowledge pack, performance lens, structural index, vector-ready analysis set으로 남는다.
 - 이 분석 자산은 이후 review, edit, verification, policy 흐름까지 계속 재사용된다.
 
@@ -79,7 +79,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### Project Analysis
 
-- `/analyze-project <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
+- `--mode`를 생략하면 기본 모드는 `map`
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
 - goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다.
 - interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
@@ -139,7 +140,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### 사용성
 
-- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close` 같은 저장된 id까지 `Tab` 완성
+- 명령, 경로, 멘션, MCP 대상, 고정 인자, analyze-project mode, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close` 같은 저장된 id까지 `Tab` 완성
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
 - assistant streaming 출력은 선행 blank chunk를 무시하고, progress/info 출력 전 경계를 정리하며, 반복 follow-on preamble 사이에 줄바꿈을 넣어 더 읽기 쉽게 출력된다.
@@ -627,7 +628,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /profile-review
 /set-plan-review [provider]
 /set-analysis-models
-/analyze-project <goal>
+/analyze-project [--mode map|trace|impact|security|performance] <goal>
 /analyze-performance [focus]
 /do-plan-review <task>
 /new-feature <task>
@@ -649,6 +650,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 `Tab` 완성 지원 대상:
 
 - slash command
+- `/analyze-project --mode ...`와 내장 mode 값
 - `@file` 멘션
 - `/open <path>`
 - `/resource <server:...>`
@@ -819,10 +821,18 @@ hook 및 override 관련 명령:
 핵심 명령:
 
 ```text
-/analyze-project <goal>
+/analyze-project [--mode map|trace|impact|security|performance] <goal>
 /analyze-performance [focus]
 /set-analysis-models
 ```
+
+모드 요약:
+
+- `map`: 기본 아키텍처 맵, subsystem ownership과 module boundary 중심
+- `trace`: 실행 경로와 caller/callee 흐름 중심
+- `impact`: 변경 영향 범위와 blast radius 중심
+- `security`: trust boundary, validation, privileged surface, tamper-sensitive path 중심
+- `performance`: startup cost, hot path, blocking chain, contention 중심
 
 무엇을 하는가:
 

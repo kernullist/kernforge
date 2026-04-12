@@ -240,6 +240,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},
+		"analyze-project":       {"--mode"},
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
@@ -289,6 +290,14 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
 			return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+		}
+		return nil, 0, false
+	case "analyze-project":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "--mode") {
+			return supportedProjectAnalysisModes, 1, true
 		}
 		return nil, 0, false
 	case "new-feature":

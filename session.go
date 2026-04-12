@@ -110,6 +110,9 @@ func (s *Session) ExportText() string {
 		b.WriteString("## Last Analysis\n\n")
 		fmt.Fprintf(&b, "- Run ID: %s\n", s.LastAnalysis.RunID)
 		fmt.Fprintf(&b, "- Goal: %s\n", s.LastAnalysis.Goal)
+		if strings.TrimSpace(s.LastAnalysis.Mode) != "" {
+			fmt.Fprintf(&b, "- Mode: %s\n", s.LastAnalysis.Mode)
+		}
 		fmt.Fprintf(&b, "- Status: %s\n", s.LastAnalysis.Status)
 		fmt.Fprintf(&b, "- Agents: %d\n", s.LastAnalysis.AgentCount)
 		if strings.TrimSpace(s.LastAnalysis.OutputPath) != "" {

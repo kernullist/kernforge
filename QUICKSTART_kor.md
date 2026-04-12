@@ -38,9 +38,10 @@
 ## 2. 가장 자주 쓰는 명령
 
 프로젝트 분석:
-- `/analyze-project <goal>`
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+- `--mode`를 생략하면 기본 모드는 `map`
 
 조사:
 - `/investigate`

@@ -101,9 +101,16 @@ Purpose:
 5. Preserve a structural index, Unreal semantic graph, and vector corpus for downstream automation.
 
 Useful commands:
-- `/analyze-project <goal>`
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+
+Mode summary:
+1. `map` is the default mode and prioritizes architecture ownership and module boundaries.
+2. `trace` emphasizes runtime flow, caller/callee chains, and dispatch order.
+3. `impact` emphasizes change impact, downstream dependencies, and retest scope.
+4. `security` emphasizes trust boundaries, validation, and privileged surfaces.
+5. `performance` emphasizes startup cost, hot paths, contention, and blocking chains.
 
 Best used when:
 1. You are entering a large codebase and need more than an ad hoc summary.
@@ -396,7 +403,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, and `/simulate <profile>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 
 Prompt budget behavior that now matters:
