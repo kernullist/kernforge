@@ -483,6 +483,9 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 		lines = append(lines, rt.ui.hintLine("Try tightening the prompt, reducing unnecessary tools, or increasing max_tokens if the model is getting stuck planning."))
 	case strings.HasPrefix(text, "stopped after repeated identical tool calls"):
 		lines = append(lines, rt.ui.hintLine("The model kept asking for the same tool calls. This usually means it is stuck on the same observation without making progress."))
+	case strings.HasPrefix(text, "stopped after repeatedly reading the same file without making progress:"):
+		lines = append(lines, rt.ui.hintLine("The model kept re-reading the same file instead of moving to a conclusion or a different source of evidence."))
+		lines = append(lines, rt.ui.hintLine("This is usually a model planning failure, not a filesystem issue. Retry with a tighter prompt or a stronger tool-using model if it repeats."))
 	case strings.HasPrefix(text, "stopped after repeated tool failure:"):
 		lines = append(lines, rt.ui.hintLine("The same tool failure repeated. Fix the failing command or permission issue before retrying."))
 		if strings.Contains(text, ErrInvalidPatchFormat.Error()) {
@@ -633,13 +636,23 @@ func (rt *runtimeState) startThinkingIndicator() {
 		defer ticker.Stop()
 
 		lastWidth := 0
+		lastRendered := ""
 		startedAt := time.Now()
 		render := func(frame string) {
 			elapsed := time.Since(startedAt)
-			line := rt.ui.thinkingLine(frame, elapsed, rt.currentThinkingStatus(elapsed))
+			status := rt.currentThinkingStatus(elapsed)
+			renderFrame := frame
+			if !shouldAnimateThinkingStatus(status) {
+				renderFrame = "-"
+			}
+			line := rt.ui.thinkingLine(renderFrame, elapsed, status)
+			if line == lastRendered {
+				return
+			}
 			clear := "\r" + strings.Repeat(" ", lastWidth) + "\r"
 			rt.writeOutput(clear + line)
 			lastWidth = visibleLen(line)
+			lastRendered = line
 		}
 
 		index := 0
