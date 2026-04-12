@@ -332,7 +332,7 @@ func planPatchDocument(ws Workspace, doc patchDocument) ([]plannedPatchChange, e
 				summary:  "added " + relOrAbs(ws.Root, path),
 			})
 		case "delete":
-			path, err := ws.Resolve(op.path)
+			path, err := ws.ResolveForLookup(op.path)
 			if err != nil {
 				return nil, err
 			}
@@ -347,7 +347,7 @@ func planPatchDocument(ws Workspace, doc patchDocument) ([]plannedPatchChange, e
 				summary: "deleted " + relOrAbs(ws.Root, path),
 			})
 		case "update":
-			srcPath, err := ws.Resolve(op.path)
+			srcPath, err := ws.ResolveForLookup(op.path)
 			if err != nil {
 				return nil, err
 			}

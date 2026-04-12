@@ -160,3 +160,35 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 		t.Fatalf("expected read-only shell command to succeed, got %v", err)
 	}
 }
+
+func TestApplyPatchUpdatesFallbackTargetWhenSourceExistsAtBaseRoot(t *testing.T) {
+	base := t.TempDir()
+	current := filepath.Join(base, "nested")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	target := filepath.Join(base, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: base,
+		Root:     current,
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(data), "func main() {}") {
+		t.Fatalf("expected fallback patch target update, got %q", string(data))
+	}
+}

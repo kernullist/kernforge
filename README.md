@@ -353,6 +353,7 @@ Kernforge tracks:
 The workspace root is set from `-cwd` or the process working directory at startup. File tools stay within that root.
 
 Inside the REPL, `!cd` changes the current working directory, but it does not expand the workspace boundary.
+Relative-path read and search tools look in the current directory first, then fall back to the workspace root if the target is not found there.
 
 ### Config Locations
 

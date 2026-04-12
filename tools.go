@@ -93,12 +93,56 @@ func (w Workspace) Resolve(path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		path = "."
 	}
+	abs, err := w.resolveAgainstRoot(w.Root, path)
+	if err != nil {
+		return "", err
+	}
+	return w.ensureWithinBaseRoot(path, abs)
+}
+
+func (w Workspace) ResolveForLookup(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		path = "."
+	}
+	primary, err := w.Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(path) || sameFilePath(w.Root, w.BaseRoot) {
+		return primary, nil
+	}
+	if _, err := os.Stat(primary); err == nil {
+		return primary, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	fallback, err := w.resolveAgainstRoot(w.BaseRoot, path)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(fallback); err == nil {
+		return fallback, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	return primary, nil
+}
+
+func (w Workspace) resolveAgainstRoot(root, path string) (string, error) {
 	var abs string
 	if filepath.IsAbs(path) {
 		abs = filepath.Clean(path)
 	} else {
-		abs = filepath.Clean(filepath.Join(w.Root, path))
+		base := root
+		if strings.TrimSpace(base) == "" {
+			base = w.Root
+		}
+		abs = filepath.Clean(filepath.Join(base, path))
 	}
+	return abs, nil
+}
+
+func (w Workspace) ensureWithinBaseRoot(originalPath, abs string) (string, error) {
 	baseRoot := w.BaseRoot
 	if strings.TrimSpace(baseRoot) == "" {
 		baseRoot = w.Root
@@ -119,9 +163,24 @@ func (w Workspace) Resolve(path string) (string, error) {
 		return targetAbs, nil
 	}
 	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path is outside the workspace root: %s", path)
+		return "", fmt.Errorf("path is outside the workspace root: %s", originalPath)
 	}
 	return targetAbs, nil
+}
+
+func sameFilePath(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	left, err := filepath.Abs(a)
+	if err != nil {
+		return false
+	}
+	right, err := filepath.Abs(b)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 }
 
 func (w Workspace) EnsureWrite(path string) error {
@@ -341,7 +400,7 @@ func (t ListFilesTool) Definition() ToolDefinition {
 
 func (t ListFilesTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	root, err := t.ws.Resolve(stringValue(args, "path"))
+	root, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
@@ -422,7 +481,7 @@ func (t ReadFileTool) Definition() ToolDefinition {
 
 func (t ReadFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.Resolve(stringValue(args, "path"))
+	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
@@ -480,7 +539,7 @@ func (t GrepTool) Definition() ToolDefinition {
 
 func (t GrepTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	root, err := t.ws.Resolve(stringValue(args, "path"))
+	root, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
@@ -565,7 +624,7 @@ func (t WriteFileTool) Definition() ToolDefinition {
 
 func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.Resolve(stringValue(args, "path"))
+	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
@@ -748,7 +807,7 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 
 func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.Resolve(stringValue(args, "path"))
+	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
