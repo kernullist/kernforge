@@ -345,6 +345,107 @@ MVP 범위:
 주의:
 - 이 기능은 분명 유용하지만, P0/P1보다 먼저 들어가야 하는 기능은 아니다.
 
+### P1. Desktop UX App Shell
+
+목표:
+- 현재의 Windows 중심 CLI를 유지한 채, 실사용 가능한 데스크탑 UX를 가진 앱 셸로 확장한다.
+
+핵심 방향:
+1. 기존 Go 코어는 유지한다.
+2. UI 셸은 WebView2 기반 데스크탑 프레임워크로 감싼다.
+3. 권한이 필요한 Windows 기능은 UI 프로세스와 분리한다.
+4. 기존 diff preview, viewer, evidence, verification 흐름을 앱 안의 화면으로 재구성한다.
+
+권장 기술 스택:
+1. app shell
+- `Wails`
+
+2. frontend
+- `React`
+- `TypeScript`
+- `Vite`
+
+3. state
+- `Zustand` 또는 `Redux Toolkit`
+
+4. code and diff surface
+- `Monaco Editor`
+
+5. large table and dashboard
+- `TanStack Table` 또는 `AG Grid`
+- `ECharts`
+
+6. local persistence
+- `SQLite`
+
+7. privileged runtime
+- `Windows Service` 또는 별도 elevated helper
+- `named pipe` 또는 로컬 `gRPC`
+
+추천 이유:
+1. 현재 Kernforge는 이미 Go 기반이라 재사용률이 가장 높다.
+2. 저장소 안에 이미 WebView2 diff preview와 Windows viewer가 있어 기술 방향이 자연스럽다.
+3. Electron보다 가볍고, Tauri보다 현재 Go 코어 통합이 단순하다.
+
+권장 아키텍처:
+1. desktop UI
+- React 기반 대시보드, 세션, evidence, verification, investigation 화면
+
+2. core worker
+- 기존 Kernforge agent, tool registry, analysis, verify, memory, hooks 실행
+
+3. privileged broker
+- driver, service, ETW, symbol, memory inspection, protected target 관련 작업 분리
+
+4. optional kernel component
+- 정말 필요한 anti-cheat or telemetry 기능만 최소 범위로 유지
+
+이 아키텍처가 중요한 이유:
+1. UI 크래시와 고권한 작업을 분리할 수 있다.
+2. anti-cheat/security 기능의 권한 경계를 명확히 만들 수 있다.
+3. 서비스형 helper를 통해 운영 현실에 맞는 복구, 재시도, 로그 수집이 쉬워진다.
+
+우선 앱에서 먼저 살릴 UX:
+1. session explorer
+2. project analysis dashboard
+3. evidence dashboard
+4. verification history
+5. selection-aware diff review
+6. tracked feature workspace view
+7. live target status panel
+
+단계별 구현 제안:
+1. Stage A
+- 기존 Go 엔진을 UI 친화 API 계층으로 묶는다.
+- 장기 실행 작업에 progress/event stream을 붙인다.
+
+2. Stage B
+- Wails 셸과 React frontend를 붙인다.
+- session, analyze-project, verify, evidence 화면을 먼저 연결한다.
+
+3. Stage C
+- 기존 preview/viewer를 앱 내부 diff surface로 통합한다.
+- Monaco 기반 읽기/리뷰/selection sync를 붙인다.
+
+4. Stage D
+- privileged broker와 desktop UI를 분리한다.
+- 관리자 권한이 필요한 Windows 작업은 broker를 통해서만 실행한다.
+
+5. Stage E
+- installer, code signing, WebView2 bootstrap, update 전략을 정리한다.
+
+대안 비교:
+1. `Wails`
+- 가장 추천
+- 기존 Go 코어를 거의 그대로 살릴 수 있다.
+
+2. `Tauri + Go sidecar`
+- 가능하지만 Rust 셸과 Go sidecar를 함께 운영해야 해서 복잡도가 높다.
+
+3. `Electron`
+- UI 생태계는 좋지만 메모리, 패키지 크기, 운영 비용이 크다.
+- Kernforge의 Windows low-level tooling 방향과는 우선순위가 맞지 않는다.
+
 ## 5. 추천 로드맵
 
 ### Phase 1
@@ -359,11 +460,13 @@ MVP 범위:
 1. hook engine MVP
 2. subagent framework MVP
 3. security review profiles MVP
+4. desktop app shell architecture and API boundary 설계
 
 완료 기준:
 1. 특정 shell/tool/edit/git 이벤트에 hook rule 적용 가능
 2. planner/reviewer 외 2개 이상의 전문 subagent 실행 가능
 3. review profile 선택 후 동일 코드에 대해 다른 관점의 리뷰 결과 생성 가능
+4. Wails 기반 앱 셸에 필요한 core API surface와 event model이 정리됨
 
 ### Phase 2
 
@@ -377,11 +480,19 @@ MVP 범위:
 1. security-aware verification planner
 2. evidence graph memory
 3. live Windows target helper 도구 일부
+4. desktop app shell MVP
+
+권장 desktop app shell MVP 범위:
+1. session list and detail
+2. analysis result browser
+3. evidence and verification dashboard
+4. integrated diff review surface
 
 완료 기준:
 1. 변경 유형별 검증 자동 편성
 2. evidence entity 저장 및 검색
 3. symbol/signing/ETW 상태를 수집하고 이슈와 연결 가능
+4. 주요 investigation and verification workflow를 앱 UI에서 수행 가능
 
 ### Phase 3
 
@@ -396,6 +507,8 @@ MVP 범위:
 2. automations
 3. GitHub/PR security review automation
 4. optional cloud delegation
+5. privileged broker integration
+6. installer and signing pipeline
 
 ## 6. 기능 매트릭스
 
@@ -420,6 +533,7 @@ MVP 범위:
 | GitHub review automation | 1 | 2 | 4 | P2 |
 | Windows security tooling | 2 | 1 | 2 | 핵심 차별화로 집중 |
 | anti-cheat specialization | 1 | 1 | 1 | 가장 큰 기회 |
+| desktop UX shell | 2 | 2 | 4 | Go core 유지형 Wails app으로 확장 |
 
 ## 7. 현재 코드 구조 기준 구현 진입점
 
@@ -528,6 +642,46 @@ MVP 범위:
 주의:
 - 이 축은 권한/위험도가 높으므로 hook engine 이후에 붙이는 편이 안전하다.
 
+### Desktop UX App Shell
+
+주요 파일:
+- `main.go`
+- `ui.go`
+- `viewer_windows.go`
+- `preview_webview_windows.go`
+- `preview_html.go`
+- `diff_html.go`
+
+권장 추가 디렉토리:
+- `app/desktop`
+- `app/frontend`
+- `app/frontend/src`
+- `app/frontend/src/components`
+- `app/frontend/src/pages`
+- `app/frontend/src/state`
+- `app/frontend/src/lib`
+
+권장 추가 파일:
+- `app_desktop.go`
+- `app_events.go`
+- `app_sessions.go`
+- `app_analysis.go`
+- `app_evidence.go`
+- `app_verify.go`
+- `app_privileged_client_windows.go`
+
+필수 요소:
+1. UI에서 직접 호출 가능한 안정된 core API
+2. long-running task progress stream
+3. selection and diff state bridge
+4. evidence and verification query API
+5. privileged broker 연결 abstraction
+
+주의:
+1. UI에서 Windows privileged 기능을 직접 호출하지 않는다.
+2. 기존 CLI 워크플로우는 유지하고, desktop shell은 병행 제공하는 편이 안전하다.
+3. 초기 단계에서는 CLI를 orchestration source of truth로 두는 것이 현실적이다.
+
 ## 8. 구현 순서 제안
 
 ### 추천 1순위
@@ -544,16 +698,19 @@ MVP 범위:
 
 1. security-aware verification
 2. evidence graph memory
+3. desktop app shell MVP
 
 이유:
 - Kernforge의 기존 강점을 더 크게 만든다.
 - anti-cheat/security 팀이 반복적으로 얻는 가치가 커진다.
+- 이미 있는 viewer/preview 자산을 더 일관된 UX로 묶을 수 있다.
 
 ### 추천 3순위
 
 1. live Windows target workflow
 2. incident replay bundle
 3. automations
+4. privileged broker hardening and installer/signing
 
 이유:
 - 강력하지만 운영/권한/UX 복잡도가 올라간다.
@@ -595,6 +752,12 @@ MVP 범위:
 - file/artifact category
 - category별 verification step 매핑
 - verification history feedback loop
+
+4. Desktop app shell architecture spec 작성
+- Wails app boundary
+- frontend page map
+- Go core API surface
+- privileged broker split point
 
 이 셋이 정리되면, 실제 구현 우선순위와 파일 단위 작업 분할까지 바로 들어갈 수 있다.
 
