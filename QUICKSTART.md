@@ -38,9 +38,10 @@ What this does:
 ## 2. Most Common Commands
 
 Project analysis:
-- `/analyze-project <goal>`
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+- If you omit `--mode`, the default mode is `map`
 
 Investigation:
 - `/investigate`

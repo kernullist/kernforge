@@ -781,7 +781,7 @@ Conversation And Sessions:
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
 /new-feature <task>    Create tracked feature artifacts and generate spec/plan/tasks
-/analyze-project <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
+/analyze-project [--mode map|trace|impact|security|performance] <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
 /analyze-performance [focus] Analyze likely performance bottlenecks using the latest architecture knowledge pack
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
 /model [name]          Show or change the active model
@@ -1013,8 +1013,10 @@ Provider and model commands control which model is active and how planning/revie
 /new-feature close [id]
 - Mark the active or selected tracked feature as done.
 
-/analyze-project <goal>
+/analyze-project [--mode map|trace|impact|security|performance] <goal>
 - Analyze the workspace using a conductor and multiple sub-agents, then write a project document.
+- Modes: map, trace, impact, security, performance.
+- When omitted, mode is inferred from the goal text.
 
 /analyze-performance [focus]
 - Load the latest architecture knowledge pack and performance lens, then analyze likely bottlenecks and hot paths.

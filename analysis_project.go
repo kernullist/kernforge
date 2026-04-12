@@ -41,6 +41,7 @@ type ProjectAnalysisConfig struct {
 type ProjectAnalysisSummary struct {
 	RunID          string    `json:"run_id"`
 	Goal           string    `json:"goal"`
+	Mode           string    `json:"mode,omitempty"`
 	Status         string    `json:"status"`
 	AgentCount     int       `json:"agent_count"`
 	OutputPath     string    `json:"output_path"`
@@ -68,6 +69,7 @@ type ScannedFile struct {
 type ProjectSnapshot struct {
 	Root                string                   `json:"root"`
 	ModulePath          string                   `json:"module_path,omitempty"`
+	AnalysisMode        string                   `json:"analysis_mode,omitempty"`
 	GeneratedAt         time.Time                `json:"generated_at"`
 	Files               []ScannedFile            `json:"files"`
 	Directories         []string                 `json:"directories"`
@@ -382,6 +384,7 @@ type VectorIngestionTarget struct {
 type KnowledgePack struct {
 	RunID                string                   `json:"run_id"`
 	Goal                 string                   `json:"goal"`
+	AnalysisMode         string                   `json:"analysis_mode,omitempty"`
 	Root                 string                   `json:"root"`
 	GeneratedAt          time.Time                `json:"generated_at"`
 	AnalysisLenses       []AnalysisLens           `json:"analysis_lenses,omitempty"`
@@ -431,6 +434,7 @@ type ProjectAnalysisRun struct {
 	ReviewerProfile  string                  `json:"reviewer_profile,omitempty"`
 	KnowledgePack    KnowledgePack           `json:"knowledge_pack,omitempty"`
 	SemanticIndex    SemanticIndex           `json:"semantic_index,omitempty"`
+	SemanticIndexV2  SemanticIndexV2         `json:"semantic_index_v2,omitempty"`
 	UnrealGraph      UnrealSemanticGraph     `json:"unreal_graph,omitempty"`
 	VectorCorpus     VectorCorpus            `json:"vector_corpus,omitempty"`
 	VectorIngestion  VectorIngestionManifest `json:"vector_ingestion,omitempty"`
@@ -679,13 +683,14 @@ func (a *projectAnalyzer) debug(text string) {
 	}
 }
 
-func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysisRun, error) {
+func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (ProjectAnalysisRun, error) {
 	run := ProjectAnalysisRun{}
 	a.debugMu.Lock()
 	a.debugEvents = nil
 	a.debugMu.Unlock()
 	run.Summary.RunID = time.Now().Format("20060102-150405")
 	run.Summary.Goal = strings.TrimSpace(goal)
+	run.Summary.Mode = effectiveProjectAnalysisMode(mode, goal)
 	run.Summary.Status = "running"
 	run.Summary.StartedAt = time.Now()
 
@@ -711,7 +716,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysis
 	if err != nil {
 		return run, err
 	}
-	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses(goal))
+	snapshot.AnalysisMode = run.Summary.Mode
+	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses(goal, run.Summary.Mode))
 	a.scoreFileImportance(&snapshot, snapshot.AnalysisLenses)
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
 	run.Snapshot = snapshot
@@ -740,7 +746,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysis
 	run.Summary.TotalShards = len(shards)
 	run.Shards = shards
 
-	previousRun, _ := a.loadPreviousRun(goal)
+	previousRun, _ := a.loadPreviousRun(goal, run.Summary.Mode)
 	if previousRun != nil {
 		a.status("Loaded previous analysis for incremental reuse.")
 		a.debug(fmt.Sprintf("loaded previous analysis run: shards=%d approved=%d", len(previousRun.Shards), previousRun.Summary.ApprovedShards))
@@ -800,6 +806,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string) (ProjectAnalysis
 	run.KnowledgePack = buildKnowledgePack(run.Snapshot, run.Shards, run.Reports, goal, run.Summary.RunID)
 	run.UnrealGraph = buildUnrealSemanticGraph(run.Snapshot, goal, run.Summary.RunID)
 	run.SemanticIndex = buildSemanticIndex(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
+	run.SemanticIndexV2 = buildSemanticIndexV2(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
 	run.VectorCorpus = buildVectorCorpus(run)
 	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
 	a.debug("final document synthesis completed")
@@ -1020,7 +1027,7 @@ func (a *projectAnalyzer) estimateShardCount(snapshot ProjectSnapshot, concurren
 	return count
 }
 
-func chooseAnalysisLenses(goal string) []AnalysisLens {
+func chooseAnalysisLenses(goal string, mode string) []AnalysisLens {
 	lower := strings.ToLower(strings.TrimSpace(goal))
 	lenses := []AnalysisLens{
 		{
@@ -1029,6 +1036,7 @@ func chooseAnalysisLenses(goal string) []AnalysisLens {
 			OutputFocus:     []string{"module map", "ownership", "execution chain"},
 		},
 	}
+	lenses = append(lenses, analysisLensesForMode(mode)...)
 	if containsAny(lower, "runtime", "execution", "flow", "startup", "init", "boot", "entry") {
 		lenses = append(lenses, AnalysisLens{
 			Type:            "runtime_flow",
@@ -5211,10 +5219,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	if err := os.MkdirAll(a.analysisCfg.OutputDir, 0o755); err != nil {
 		return "", err
 	}
-	base := fmt.Sprintf("%s_%s", run.Summary.RunID, sanitizeFileName(run.Summary.Goal))
-	if strings.TrimSpace(base) == "" {
-		base = run.Summary.RunID
-	}
+	base := analysisArtifactBaseName(run.Summary.RunID, run.Summary.Goal, run.Summary.Mode)
 	mdPath := filepath.Join(a.analysisCfg.OutputDir, base+".md")
 	jsonPath := filepath.Join(a.analysisCfg.OutputDir, base+".json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
@@ -5223,6 +5228,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	performanceDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.md")
 	snapshotJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_snapshot.json")
 	structuralIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index.json")
+	structuralIndexV2JSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index_v2.json")
 	unrealGraphJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_unreal_graph.json")
 	vectorCorpusJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.json")
 	vectorCorpusJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.jsonl")
@@ -5270,6 +5276,15 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		if err := os.WriteFile(structuralIndexJSONPath, indexData, 0o644); err != nil {
+			return "", err
+		}
+	}
+	if hasSemanticIndexV2Data(run.SemanticIndexV2) {
+		indexData, err := json.MarshalIndent(run.SemanticIndexV2, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(structuralIndexV2JSONPath, indexData, 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -5364,6 +5379,15 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 				return "", err
 			}
 			if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), indexData, 0o644); err != nil {
+				return "", err
+			}
+		}
+		if hasSemanticIndexV2Data(run.SemanticIndexV2) {
+			indexData, err := json.MarshalIndent(run.SemanticIndexV2, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "structural_index_v2.json"), indexData, 0o644); err != nil {
 				return "", err
 			}
 		}
@@ -5704,14 +5728,34 @@ func (a *projectAnalyzer) buildReuseState(previousRun *ProjectAnalysisRun, shard
 	return state
 }
 
-func (a *projectAnalyzer) loadPreviousRun(goal string) (*ProjectAnalysisRun, error) {
+func (a *projectAnalyzer) loadPreviousRun(goal string, mode string) (*ProjectAnalysisRun, error) {
 	if a.analysisCfg.Incremental != nil && !*a.analysisCfg.Incremental {
 		return nil, nil
 	}
-	pattern := filepath.Join(a.analysisCfg.OutputDir, "*_"+sanitizeFileName(goal)+".json")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return nil, err
+	matches := []string{}
+	seen := map[string]struct{}{}
+	patterns := []string{
+		filepath.Join(a.analysisCfg.OutputDir, "*_"+analysisGoalArtifactSuffix(goal, mode)+".json"),
+	}
+	legacySuffix := sanitizeFileName(goal)
+	if legacySuffix != "" && legacySuffix != analysisGoalArtifactSuffix(goal, mode) {
+		patterns = append(patterns, filepath.Join(a.analysisCfg.OutputDir, "*_"+legacySuffix+".json"))
+	}
+	for _, pattern := range patterns {
+		items, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			matches = append(matches, item)
+		}
+	}
+	if len(matches) == 0 {
+		return nil, nil
 	}
 	sort.Slice(matches, func(i int, j int) bool {
 		infoI, errI := os.Stat(matches[i])
@@ -6752,8 +6796,22 @@ Requirements:
 func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal string, revisionPrompt string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
+	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
+		fmt.Fprintf(&b, "Analysis mode: %s", mode)
+		if label := projectAnalysisModePromptLabel(mode); label != "" {
+			fmt.Fprintf(&b, " (%s)", label)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
 	fmt.Fprintf(&b, "Scope rule: primary files are your ownership boundary; reference files are for dependency context only.\n\n")
+	if requirements := projectAnalysisModePromptRequirements(snapshot.AnalysisMode); len(requirements) > 0 {
+		b.WriteString("Mode requirements:\n")
+		for _, item := range requirements {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+		b.WriteString("\n")
+	}
 	if intent := analysisShardIntent(shard.Name); intent != "" {
 		fmt.Fprintf(&b, "Shard intent:\n%s\n\n", intent)
 	}
@@ -6810,8 +6868,22 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	data, _ := json.MarshalIndent(report, "", "  ")
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
+	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
+		fmt.Fprintf(&b, "Analysis mode: %s", mode)
+		if label := projectAnalysisModePromptLabel(mode); label != "" {
+			fmt.Fprintf(&b, " (%s)", label)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "Shard: %s (%s)\n", shard.ID, shard.Name)
 	fmt.Fprintf(&b, "Shard cache status: %s\n", shard.CacheStatus)
+	if requirements := projectAnalysisModePromptRequirements(snapshot.AnalysisMode); len(requirements) > 0 {
+		b.WriteString("Mode review requirements:\n")
+		for _, item := range requirements {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+		b.WriteString("\n")
+	}
 	if strings.TrimSpace(shard.InvalidationReason) != "" {
 		fmt.Fprintf(&b, "Invalidation reason: %s\n", describeAnalysisInvalidationReasonWithContext(shard.InvalidationReason, []string{shard.Name}))
 	}
@@ -6852,6 +6924,20 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	data, _ := json.MarshalIndent(items, "", "  ")
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
+	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
+		fmt.Fprintf(&b, "Analysis mode: %s", mode)
+		if label := projectAnalysisModePromptLabel(mode); label != "" {
+			fmt.Fprintf(&b, " (%s)", label)
+		}
+		b.WriteString("\n")
+		if requirements := projectAnalysisModePromptRequirements(mode); len(requirements) > 0 {
+			b.WriteString("Mode synthesis requirements:\n")
+			for _, item := range requirements {
+				fmt.Fprintf(&b, "- %s\n", item)
+			}
+			b.WriteString("\n")
+		}
+	}
 	fmt.Fprintf(&b, "Workspace: %s\n", snapshot.Root)
 	if len(snapshot.AnalysisLenses) > 0 {
 		lensNames := []string{}
@@ -7430,6 +7516,9 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 	fmt.Fprintf(&b, "# Project Analysis\n\n")
 	fmt.Fprintf(&b, "## Project Overview\n\n")
 	fmt.Fprintf(&b, "- Goal: %s\n", goal)
+	if strings.TrimSpace(snapshot.AnalysisMode) != "" {
+		fmt.Fprintf(&b, "- Mode: `%s`\n", snapshot.AnalysisMode)
+	}
 	fmt.Fprintf(&b, "- Workspace: `%s`\n", snapshot.Root)
 	if len(snapshot.AnalysisLenses) > 0 {
 		lensNames := []string{}
@@ -7927,6 +8016,9 @@ func buildShardDocuments(snapshot ProjectSnapshot, shards []AnalysisShard, repor
 		fmt.Fprintf(&b, "# %s\n\n", shard.Name)
 		fmt.Fprintf(&b, "- Shard ID: %s\n", shard.ID)
 		fmt.Fprintf(&b, "- Goal: %s\n", goal)
+		if strings.TrimSpace(snapshot.AnalysisMode) != "" {
+			fmt.Fprintf(&b, "- Mode: %s\n", snapshot.AnalysisMode)
+		}
 		fmt.Fprintf(&b, "- Primary files: %d\n", len(shard.PrimaryFiles))
 		fmt.Fprintf(&b, "- Reference files: %d\n", len(shard.ReferenceFiles))
 		if strings.TrimSpace(shard.CacheStatus) != "" {
@@ -8019,6 +8111,7 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 	return KnowledgePack{
 		RunID:                runID,
 		Goal:                 goal,
+		AnalysisMode:         snapshot.AnalysisMode,
 		Root:                 snapshot.Root,
 		GeneratedAt:          snapshot.GeneratedAt,
 		AnalysisLenses:       append([]AnalysisLens(nil), snapshot.AnalysisLenses...),
@@ -8523,6 +8616,9 @@ func buildKnowledgeDigest(pack KnowledgePack) string {
 	fmt.Fprintf(&b, "# Architecture Knowledge Digest\n\n")
 	fmt.Fprintf(&b, "- Run ID: `%s`\n", pack.RunID)
 	fmt.Fprintf(&b, "- Goal: %s\n", pack.Goal)
+	if strings.TrimSpace(pack.AnalysisMode) != "" {
+		fmt.Fprintf(&b, "- Mode: `%s`\n", pack.AnalysisMode)
+	}
 	fmt.Fprintf(&b, "- Root: `%s`\n", pack.Root)
 	if strings.TrimSpace(pack.PrimaryStartup) != "" {
 		fmt.Fprintf(&b, "- Primary startup project: `%s`\n", pack.PrimaryStartup)

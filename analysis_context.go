@@ -18,9 +18,10 @@ const (
 )
 
 type latestAnalysisArtifacts struct {
-	Pack   KnowledgePack
-	Corpus VectorCorpus
-	Index  SemanticIndex
+	Pack    KnowledgePack
+	Corpus  VectorCorpus
+	Index   SemanticIndex
+	IndexV2 SemanticIndexV2
 }
 
 type cachedAnalysisFastPathMetadata struct {
@@ -78,6 +79,9 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 	}
 	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index.json")); err == nil {
 		_ = json.Unmarshal(indexData, &artifacts.Index)
+	}
+	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index_v2.json")); err == nil {
+		_ = json.Unmarshal(indexData, &artifacts.IndexV2)
 	}
 	return artifacts, true
 }
@@ -240,7 +244,12 @@ func analysisStringSet(items []string) map[string]struct{} {
 
 func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, query string) string {
 	query = strings.TrimSpace(query)
-	if strings.TrimSpace(artifacts.Pack.ProjectSummary) == "" && len(artifacts.Pack.Subsystems) == 0 && len(artifacts.Corpus.Documents) == 0 && len(artifacts.Index.Files) == 0 && len(artifacts.Index.Symbols) == 0 {
+	if strings.TrimSpace(artifacts.Pack.ProjectSummary) == "" &&
+		len(artifacts.Pack.Subsystems) == 0 &&
+		len(artifacts.Corpus.Documents) == 0 &&
+		len(artifacts.Index.Files) == 0 &&
+		len(artifacts.Index.Symbols) == 0 &&
+		!hasSemanticIndexV2Data(artifacts.IndexV2) {
 		return ""
 	}
 
@@ -313,6 +322,12 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 			}
 			b.WriteString(line + "\n")
 		}
+	}
+
+	if v2Text := renderRelevantSemanticIndexV2Context(artifacts.IndexV2, query); strings.TrimSpace(v2Text) != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(v2Text))
+		b.WriteString("\n")
 	}
 
 	return compactProjectAnalysisText(strings.TrimSpace(b.String()), defaultAnalysisContextMaxChars)
@@ -654,6 +669,9 @@ func buildSessionAnalysisSummary(run ProjectAnalysisRun) string {
 	if strings.TrimSpace(run.Summary.Goal) != "" {
 		fmt.Fprintf(&b, "- Goal: %s\n", strings.TrimSpace(run.Summary.Goal))
 	}
+	if strings.TrimSpace(run.Summary.Mode) != "" {
+		fmt.Fprintf(&b, "- Mode: %s\n", strings.TrimSpace(run.Summary.Mode))
+	}
 	fmt.Fprintf(&b, "- Run ID: %s\n", strings.TrimSpace(run.Summary.RunID))
 	fmt.Fprintf(&b, "- Status: %s\n", strings.TrimSpace(run.Summary.Status))
 	if strings.TrimSpace(run.KnowledgePack.PrimaryStartup) != "" {
@@ -707,6 +725,7 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 	vectorDocs := selectRelevantVectorDocuments(artifacts.Corpus, query, 2)
 	files := selectRelevantIndexedFiles(artifacts.Index, query, 3)
 	symbols := selectRelevantSemanticSymbols(artifacts.Index, query, 4)
+	v2Hits := collectRelevantSemanticIndexV2Hits(artifacts.IndexV2, query)
 	sources := []string{}
 	if len(subsystems) > 0 {
 		sources = append(sources, "knowledge_pack")
@@ -717,11 +736,21 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 	if len(files) > 0 || len(symbols) > 0 {
 		sources = append(sources, "structural_index")
 	}
+	if len(v2Hits.Files) > 0 ||
+		len(v2Hits.Symbols) > 0 ||
+		len(v2Hits.Calls) > 0 ||
+		len(v2Hits.Inheritance) > 0 ||
+		len(v2Hits.Builds) > 0 ||
+		len(v2Hits.Overlays) > 0 ||
+		len(v2Hits.References) > 0 ||
+		len(v2Hits.Occurrences) > 0 {
+		sources = append(sources, "structural_index_v2")
+	}
 	confidence := "low"
 	switch {
-	case len(subsystems) > 0 && len(vectorDocs) > 0 && (len(files) > 0 || len(symbols) > 0):
+	case len(subsystems) > 0 && len(vectorDocs) > 0 && (len(files) > 0 || len(symbols) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0):
 		confidence = "high"
-	case len(subsystems) > 0 || len(vectorDocs) > 0 || len(files) > 0 || len(symbols) > 0:
+	case len(subsystems) > 0 || len(vectorDocs) > 0 || len(files) > 0 || len(symbols) > 0 || len(v2Hits.Files) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0:
 		confidence = "medium"
 	case strings.TrimSpace(artifacts.Pack.ProjectSummary) != "":
 		confidence = "low"

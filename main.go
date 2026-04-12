@@ -4567,8 +4567,9 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 }
 
 func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
-	if strings.TrimSpace(args) == "" {
-		return fmt.Errorf("usage: /analyze-project <goal>")
+	mode, goal, err := parseAnalyzeProjectArgs(args)
+	if err != nil {
+		return err
 	}
 	if rt.agent == nil || rt.agent.Client == nil {
 		return fmt.Errorf("no model provider is configured")
@@ -4578,8 +4579,9 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("planner", rt.session.Provider+" / "+rt.session.Model))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("conductor_model", rt.session.Provider+" / "+rt.session.Model))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_mode", projectAnalysisModeStatus(mode, goal)))
 	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
-	analysisCfg, err := rt.prepareAnalysisDirectorySelection(analysisCfg)
+	analysisCfg, err = rt.prepareAnalysisDirectorySelection(analysisCfg)
 	if err != nil {
 		return err
 	}
@@ -4611,7 +4613,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
 	plannedShards := analyzer.planShards(previewSnapshot, estimatedTotalShards)
-	scope, scopedShards := deriveScopedAnalysisShards(args, previewSnapshot, plannedShards)
+	scope, scopedShards := deriveScopedAnalysisShards(goal, previewSnapshot, plannedShards)
 	if len(scopedShards) > 0 {
 		plannedShards = scopedShards
 		estimatedTotalShards = len(plannedShards)
@@ -4665,7 +4667,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		rt.printWhileThinking(rt.ui.infoLine("analysis: " + debug))
 	})
 	analyzer.analysisCfg = analysisCfg
-	run, err := analyzer.Run(requestCtx, args)
+	run, err := analyzer.Run(requestCtx, goal, mode)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
 			rt.noteRecentRequestCancel()
@@ -5321,6 +5323,44 @@ func (rt *runtimeState) mcpPrompts() []MCPPromptRef {
 		return nil
 	}
 	return rt.mcp.Prompts()
+}
+
+func parseAnalyzeProjectArgs(raw string) (string, string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", fmt.Errorf(projectAnalysisUsage())
+	}
+	fields := strings.Fields(trimmed)
+	mode := ""
+	goalParts := []string{}
+	for index := 0; index < len(fields); index++ {
+		field := strings.TrimSpace(fields[index])
+		switch {
+		case strings.HasPrefix(field, "--mode="):
+			value := strings.TrimSpace(strings.TrimPrefix(field, "--mode="))
+			mode = normalizeProjectAnalysisMode(value)
+			if mode == "" {
+				return "", "", fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
+			}
+		case field == "--mode":
+			if index+1 >= len(fields) {
+				return "", "", fmt.Errorf(projectAnalysisUsage())
+			}
+			index++
+			value := strings.TrimSpace(fields[index])
+			mode = normalizeProjectAnalysisMode(value)
+			if mode == "" {
+				return "", "", fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
+			}
+		default:
+			goalParts = append(goalParts, field)
+		}
+	}
+	goal := strings.TrimSpace(strings.Join(goalParts, " "))
+	if goal == "" {
+		return "", "", fmt.Errorf(projectAnalysisUsage())
+	}
+	return mode, goal, nil
 }
 
 func parsePromptCommandArgs(raw string) (string, map[string]any, error) {

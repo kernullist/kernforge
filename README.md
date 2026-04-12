@@ -12,7 +12,7 @@ Kernforge is now centered on `project analysis -> performance lens -> adaptive v
 
 If Kernforge has one feature to understand first, it is `multi-agent project analysis`.
 
-- `/analyze-project <goal>` builds a reusable architecture map instead of a disposable summary
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>` builds a reusable architecture map instead of a disposable summary
 - The output becomes a durable knowledge pack, performance lens, structural index, and vector-ready analysis set
 - That analysis is then reused in review, editing, verification, and policy workflows
 
@@ -81,7 +81,8 @@ Its current differentiators are:
 
 ### Project Analysis
 
-- `/analyze-project <goal>` runs a conductor plus multiple sub-agents and writes a project document
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>` runs a conductor plus multiple sub-agents and writes a project document
+- If you omit `--mode`, the default mode is `map`
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
 - Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace
 - Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
@@ -141,7 +142,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, analyze-project modes, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
@@ -627,7 +628,7 @@ Explain the structure of this repository
 /profile-review
 /set-plan-review [provider]
 /set-analysis-models
-/analyze-project <goal>
+/analyze-project [--mode map|trace|impact|security|performance] <goal>
 /analyze-performance [focus]
 /do-plan-review <task>
 /new-feature <task>
@@ -649,6 +650,7 @@ Explain the structure of this repository
 `Tab` completion supports:
 
 - Slash commands
+- `/analyze-project --mode ...` and built-in mode values
 - `@file` mentions
 - `/open <path>`
 - `/resource <server:...>`
@@ -819,10 +821,18 @@ The new project analysis flow is designed for large or risky codebases where you
 Core commands:
 
 ```text
-/analyze-project <goal>
+/analyze-project [--mode map|trace|impact|security|performance] <goal>
 /analyze-performance [focus]
 /set-analysis-models
 ```
+
+Mode summary:
+
+- `map`: default architecture map focused on subsystem ownership and module boundaries
+- `trace`: execution path and caller/callee flow emphasis
+- `impact`: change impact and blast-radius emphasis
+- `security`: trust boundaries, validation, privileged surfaces, and tamper-sensitive paths
+- `performance`: startup cost, hot paths, blocking chains, and contention emphasis
 
 What it does:
 

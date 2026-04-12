@@ -237,7 +237,7 @@ func TestProjectAnalyzerRunCreatesArtifacts(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "map the project")
+	run, err := analyzer.Run(context.Background(), "map the project", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestProjectAnalyzerParsesFencedWorkerAndReviewerJSON(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "map the project")
+	run, err := analyzer.Run(context.Background(), "map the project", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestProjectAnalyzerRunScopesShardsToRequestedDirectory(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.")
+	run, err := analyzer.Run(context.Background(), "TavernWorker 디렉토리 안의 코드를 분석하고 주요 탐지, 방어 기능들을 문서화해줘.", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "map the project")
+	run, err := analyzer.Run(context.Background(), "map the project", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -1700,7 +1700,7 @@ func TestProjectAnalyzerIncrementalReuseSkipsWorkerAndReviewer(t *testing.T) {
 	}
 
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	firstRun, err := analyzer.Run(context.Background(), "incremental goal")
+	firstRun, err := analyzer.Run(context.Background(), "incremental goal", "")
 	if err != nil {
 		t.Fatalf("first Run returned error: %v", err)
 	}
@@ -1710,7 +1710,7 @@ func TestProjectAnalyzerIncrementalReuseSkipsWorkerAndReviewer(t *testing.T) {
 	firstWorkerCalls := client.workerCalls
 	firstReviewerCalls := client.reviewerCalls
 
-	secondRun, err := analyzer.Run(context.Background(), "incremental goal")
+	secondRun, err := analyzer.Run(context.Background(), "incremental goal", "")
 	if err != nil {
 		t.Fatalf("second Run returned error: %v", err)
 	}
@@ -2147,7 +2147,7 @@ func TestRunDowngradesToDraftWhenNoShardApproved(t *testing.T) {
 		Root:     root,
 	}
 	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "draft on failed reviews")
+	run, err := analyzer.Run(context.Background(), "draft on failed reviews", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -2453,7 +2453,7 @@ func TestEstimateShardCountCanExceedConcurrentAgents(t *testing.T) {
 }
 
 func TestChooseAnalysisLensesIncludesGoalSpecificLenses(t *testing.T) {
-	lenses := chooseAnalysisLenses("analyze runtime flow and named pipe ipc command dispatch")
+	lenses := chooseAnalysisLenses("analyze runtime flow and named pipe ipc command dispatch", "")
 	names := []string{}
 	for _, lens := range lenses {
 		names = append(names, lens.Type)
@@ -2461,6 +2461,18 @@ func TestChooseAnalysisLensesIncludesGoalSpecificLenses(t *testing.T) {
 	joined := strings.Join(names, ",")
 	if !strings.Contains(joined, "architecture") || !strings.Contains(joined, "runtime_flow") || !strings.Contains(joined, "ipc") {
 		t.Fatalf("expected architecture, runtime_flow, and ipc lenses, got %v", names)
+	}
+}
+
+func TestChooseAnalysisLensesRespectsExplicitSecurityMode(t *testing.T) {
+	lenses := chooseAnalysisLenses("map worker startup", "security")
+	names := []string{}
+	for _, lens := range lenses {
+		names = append(names, lens.Type)
+	}
+	joined := strings.Join(names, ",")
+	if !strings.Contains(joined, "architecture") || !strings.Contains(joined, "security_boundary") {
+		t.Fatalf("expected architecture and security_boundary lenses, got %v", names)
 	}
 }
 
@@ -2559,7 +2571,7 @@ func TestScanProjectExtractsUnrealMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanProject returned error: %v", err)
 	}
-	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses("analyze unreal gameplay framework"))
+	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses("analyze unreal gameplay framework", ""))
 	if len(snapshot.UnrealProjects) != 1 {
 		t.Fatalf("expected 1 unreal project, got %d", len(snapshot.UnrealProjects))
 	}
@@ -3186,7 +3198,7 @@ func TestProjectAnalyzerRunAppliesStageTwoRefinement(t *testing.T) {
 		Root:     root,
 	}
 	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
-	run, err := analyzer.Run(context.Background(), "analyze runtime flow and command dispatch")
+	run, err := analyzer.Run(context.Background(), "analyze runtime flow and command dispatch", "")
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
@@ -3460,6 +3472,7 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 			},
 		},
 	}
+	run.SemanticIndexV2 = buildSemanticIndexV2(run.Snapshot, run.Summary.Goal, run.Summary.RunID, run.UnrealGraph)
 	run.VectorCorpus = buildVectorCorpus(run)
 	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
 	if _, err := analyzer.persistRun(run); err != nil {
@@ -3486,6 +3499,9 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(base + "_structural_index.json"); err != nil {
 		t.Fatalf("expected structural index json artifact: %v", err)
+	}
+	if _, err := os.Stat(base + "_structural_index_v2.json"); err != nil {
+		t.Fatalf("expected structural index v2 json artifact: %v", err)
 	}
 	if _, err := os.Stat(base + "_unreal_graph.json"); err != nil {
 		t.Fatalf("expected unreal graph json artifact: %v", err)
@@ -3516,6 +3532,9 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "structural_index.json")); err != nil {
 		t.Fatalf("expected latest structural index artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "structural_index_v2.json")); err != nil {
+		t.Fatalf("expected latest structural index v2 artifact: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest", "unreal_graph.json")); err != nil {
 		t.Fatalf("expected latest unreal graph artifact: %v", err)
@@ -3598,6 +3617,117 @@ func TestBuildSemanticIndexIncludesFilesSymbolsAndBuildEdges(t *testing.T) {
 	}
 	if index.UnrealGraph.RunID != "run-1" || len(index.UnrealGraph.Nodes) == 0 {
 		t.Fatalf("expected embedded unreal graph, got %+v", index.UnrealGraph)
+	}
+}
+
+func TestBuildSemanticIndexV2IncludesOccurrencesAndOverlayEdges(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		GeneratedAt:    time.Now(),
+		PrimaryStartup: "ShooterGame",
+		Files: []ScannedFile{
+			{
+				Path:            "Source/ShooterGame/Public/ShooterGameMode.h",
+				Directory:       "Source/ShooterGame/Public",
+				Extension:       ".h",
+				LineCount:       72,
+				ImportanceScore: 22,
+				ImportanceReasons: []string{
+					"startup_symbol",
+					"unreal_network_lens_priority",
+				},
+			},
+		},
+		SolutionProjects: []SolutionProject{
+			{
+				Name:       "ShooterGame",
+				Path:       "ShooterGame.vcxproj",
+				Kind:       "vcxproj",
+				OutputType: "application",
+			},
+		},
+		UnrealModules: []UnrealModule{
+			{
+				Name:                "ShooterGame",
+				Path:                "Source/ShooterGame/ShooterGame.Build.cs",
+				Kind:                "game_module",
+				PublicDependencies:  []string{"Core", "Engine"},
+				PrivateDependencies: []string{"Slate"},
+			},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{
+				Name:         "AShooterGameMode",
+				Kind:         "UCLASS",
+				BaseClass:    "AGameModeBase",
+				Module:       "ShooterGame",
+				File:         "Source/ShooterGame/Public/ShooterGameMode.h",
+				GameplayRole: "game_mode",
+			},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{
+				TypeName:             "AShooterGameMode",
+				File:                 "Source/ShooterGame/Public/ShooterGameMode.h",
+				ServerRPCs:           []string{"ServerStartMatch"},
+				ReplicatedProperties: []string{"MatchState"},
+			},
+		},
+		UnrealAssets: []UnrealAssetReference{
+			{
+				OwnerName:        "AShooterGameMode",
+				File:             "Source/ShooterGame/Public/ShooterGameMode.h",
+				CanonicalTargets: []string{"WBP_Lobby"},
+				ConfigKeys:       []string{"GameDefaultMap"},
+			},
+		},
+		RuntimeEdges: []RuntimeEdge{
+			{
+				Source:     "ShooterGame",
+				Target:     "ShooterGame",
+				Kind:       "dynamic_load",
+				Confidence: "high",
+				Evidence:   []string{"ShooterGame.vcxproj"},
+			},
+		},
+		ProjectEdges: []ProjectEdge{
+			{
+				Source:     "ShooterGame",
+				Target:     "AShooterGameMode",
+				Type:       "security_edge",
+				Confidence: "high",
+				Evidence:   []string{"Source/ShooterGame/Public/ShooterGameMode.h"},
+			},
+		},
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+	if len(index.Files) != 1 {
+		t.Fatalf("expected one v2 file record, got %+v", index.Files)
+	}
+	if len(index.Symbols) < 5 {
+		t.Fatalf("expected richer v2 symbols, got %+v", index.Symbols)
+	}
+	if len(index.Occurrences) == 0 {
+		t.Fatalf("expected symbol occurrences")
+	}
+	if len(index.CallEdges) == 0 {
+		t.Fatalf("expected call edges")
+	}
+	if len(index.InheritanceEdges) == 0 {
+		t.Fatalf("expected inheritance edges")
+	}
+	if len(index.BuildOwnershipEdges) == 0 {
+		t.Fatalf("expected build ownership edges")
+	}
+	if len(index.GeneratedCodeEdges) == 0 {
+		t.Fatalf("expected generated code edges")
+	}
+	if len(index.OverlayEdges) == 0 {
+		t.Fatalf("expected overlay edges")
+	}
+	if len(index.QueryModes) != 5 {
+		t.Fatalf("expected default query modes, got %+v", index.QueryModes)
 	}
 }
 

@@ -99,9 +99,16 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. structural index, Unreal semantic graph, vector corpus까지 후속 자동화에 재사용할 수 있게 남긴다.
 
 대표 명령:
-- `/analyze-project <goal>`
+- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+
+모드 요약:
+1. `map`은 기본 모드이며 architecture ownership과 module boundary를 우선 본다.
+2. `trace`는 runtime flow, caller/callee chain, dispatch 순서를 더 강조한다.
+3. `impact`는 변경 영향 범위, downstream dependency, 재검증 범위를 더 강조한다.
+4. `security`는 trust boundary, validation, privileged surface를 더 강조한다.
+5. `performance`는 startup cost, hot path, contention, blocking chain을 더 강조한다.
 
 특히 좋은 상황:
 1. 큰 코드베이스에 처음 들어가서 즉석 요약으로는 부족할 때
@@ -395,7 +402,7 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 
 토큰 예산 관점에서 달라진 점:
