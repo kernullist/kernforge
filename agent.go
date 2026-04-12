@@ -46,6 +46,8 @@ const (
 const (
 	repeatedToolFailureNudgeThreshold = 2
 	repeatedToolFailureAbortThreshold = 3
+	repeatedReadFilePathNudgeTurns    = 4
+	repeatedReadFilePathAbortTurns    = 6
 )
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
@@ -153,6 +155,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastToolCallSignatureCount := 0
 	repeatedToolCallNudges := 0
 	lastToolCallSummary := ""
+	lastReadFilePath := ""
+	lastReadFilePathTurns := 0
+	repeatedReadFilePathNudges := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -259,6 +264,33 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return "", fmt.Errorf("stopped after repeated identical tool calls")
 				}
 			}
+			if readPath, ok := repeatedReadFilePathKey(resp.Message.ToolCalls); ok {
+				if readPath == lastReadFilePath {
+					lastReadFilePathTurns++
+				} else {
+					lastReadFilePath = readPath
+					lastReadFilePathTurns = 1
+					repeatedReadFilePathNudges = 0
+				}
+				if lastReadFilePathTurns >= repeatedReadFilePathAbortTurns {
+					return "", fmt.Errorf("stopped after repeatedly reading the same file without making progress: %s", readPath)
+				}
+				if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns && repeatedReadFilePathNudges < 1 {
+					repeatedReadFilePathNudges++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: fmt.Sprintf("You have read the same file repeatedly across multiple tool turns: %s. Do not keep scanning more ranges from the same file unless a specific missing section is still required. Either explain what you found so far, switch to a different tool or file, or provide the final answer now.", readPath),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+			} else {
+				lastReadFilePath = ""
+				lastReadFilePathTurns = 0
+				repeatedReadFilePathNudges = 0
+			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
 				if preamble != "" {
@@ -289,6 +321,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			lastToolCallSignature = ""
 			lastToolCallSignatureCount = 0
 			repeatedToolCallNudges = 0
+			lastReadFilePath = ""
+			lastReadFilePathTurns = 0
+			repeatedReadFilePathNudges = 0
 			reply := strings.TrimSpace(resp.Message.Text)
 			if reply != "" {
 				if continuedReplyPrefix != "" {
@@ -343,9 +378,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if reply == a.lastEmittedText && !stopReasonNeedsFinalReplay(lastStopReason) {
-					return "", nil
-				}
 				return reply, nil
 			}
 			if isTokenLimitStopReason(lastStopReason) {
@@ -364,10 +396,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					Text: "Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message.",
 				})
 			} else {
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: "Please provide the final answer to the user now. Do not return an empty message.",
-			})
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: "Please provide the final answer to the user now. Do not return an empty message.",
+				})
 			}
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
@@ -873,14 +905,6 @@ func isToolUseUnsupportedError(err error) bool {
 		strings.Contains(lower, "tool use is not supported")
 }
 
-func stopReasonNeedsFinalReplay(stopReason string) bool {
-	lower := strings.ToLower(strings.TrimSpace(stopReason))
-	if lower == "" {
-		return false
-	}
-	return strings.Contains(lower, "after_stream_retry")
-}
-
 func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	type result struct {
 		resp ChatResponse
@@ -927,6 +951,44 @@ func normalizeToolArguments(raw string) string {
 		return trimmed
 	}
 	return string(canonical)
+}
+
+func repeatedReadFilePathKey(calls []ToolCall) (string, bool) {
+	if len(calls) == 0 {
+		return "", false
+	}
+
+	key := ""
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "read_file" {
+			return "", false
+		}
+		path := readFilePathKey(call.Arguments)
+		if path == "" {
+			return "", false
+		}
+		if key == "" {
+			key = path
+			continue
+		}
+		if key != path {
+			return "", false
+		}
+	}
+
+	return key, key != ""
+}
+
+func readFilePathKey(arguments string) string {
+	args := map[string]any{}
+	if strings.TrimSpace(arguments) != "" {
+		_ = json.Unmarshal([]byte(arguments), &args)
+	}
+	path := strings.TrimSpace(stringValue(args, "path"))
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
 }
 
 func summarizeEditToolResult(name, out string) string {
@@ -1118,10 +1180,7 @@ func summarizeToolTurn(messages []Message, assistantIndex int) string {
 	parts := make([]string, 0, len(msg.ToolCalls))
 	toolResults := collectToolResults(messages, assistantIndex, len(msg.ToolCalls))
 	for i, call := range msg.ToolCalls {
-		name := strings.TrimSpace(call.Name)
-		if name == "" {
-			name = "unknown"
-		}
+		name := summarizeToolDiagnosticCall(call)
 		status := "pending"
 		if i < len(toolResults) && toolResults[i] != "" {
 			status = toolResults[i]
@@ -1155,6 +1214,49 @@ func summarizeToolResultStatus(msg Message) string {
 		return "empty"
 	default:
 		return "ok"
+	}
+}
+
+func summarizeToolDiagnosticCall(call ToolCall) string {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return "unknown"
+	}
+
+	args := map[string]any{}
+	if strings.TrimSpace(call.Arguments) != "" {
+		_ = json.Unmarshal([]byte(call.Arguments), &args)
+	}
+
+	switch name {
+	case "read_file":
+		path := strings.TrimSpace(stringValue(args, "path"))
+		if path == "" {
+			return name
+		}
+		start := intValue(args, "start_line", 0)
+		end := intValue(args, "end_line", 0)
+		if start > 0 && end >= start {
+			return fmt.Sprintf("%s[%s:%d-%d]", name, path, start, end)
+		}
+		return fmt.Sprintf("%s[%s]", name, path)
+	case "grep":
+		pattern := strings.TrimSpace(stringValue(args, "pattern"))
+		if pattern == "" {
+			return name
+		}
+		if len(pattern) > 32 {
+			pattern = pattern[:29] + "..."
+		}
+		return fmt.Sprintf("%s[%s]", name, pattern)
+	case "list_files":
+		path := strings.TrimSpace(stringValue(args, "path"))
+		if path == "" {
+			return name
+		}
+		return fmt.Sprintf("%s[%s]", name, path)
+	default:
+		return name
 	}
 }
 

@@ -167,6 +167,17 @@ func isRedundantThinkingStatus(status string) bool {
 	}
 }
 
+func shouldAnimateThinkingStatus(status string) bool {
+	trimmed := strings.TrimSpace(status)
+	if trimmed == "" {
+		return true
+	}
+	if isRedundantThinkingStatus(trimmed) {
+		return true
+	}
+	return false
+}
+
 func (ui UI) highlightCommands(text string) string {
 	if !ui.color {
 		return text

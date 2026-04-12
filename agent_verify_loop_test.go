@@ -1959,12 +1959,12 @@ func TestAgentDoesNotSuppressFinalReplyAfterStreamFallback(t *testing.T) {
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
-		Config:    Config{},
-		Client:    &fallbackReplayClient{},
-		Tools:     NewToolRegistry(NewReadFileTool(ws)),
-		Workspace: ws,
-		Session:   session,
-		Store:     store,
+		Config:             Config{},
+		Client:             &fallbackReplayClient{},
+		Tools:              NewToolRegistry(NewReadFileTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
 		EmitAssistantDelta: func(string) {},
 	}
 	agent.lastEmittedText = "full fallback answer"
@@ -1975,6 +1975,150 @@ func TestAgentDoesNotSuppressFinalReplyAfterStreamFallback(t *testing.T) {
 	}
 	if reply != "full fallback answer" {
 		t.Fatalf("expected final reply replay, got %q", reply)
+	}
+}
+
+func TestAgentReturnsFinalReplyEvenWhenAlreadyStreamed(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{},
+		Client: &streamingScriptedProviderClient{
+			replies: []ChatResponse{
+				{Message: Message{Role: "assistant", Text: "final streamed answer"}},
+			},
+		},
+		Tools:              NewToolRegistry(NewReadFileTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(string) {},
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "final streamed answer" {
+		t.Fatalf("expected streamed final reply to be returned, got %q", reply)
+	}
+}
+
+func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 1}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 3, "end_line": 4}),
+			{Message: Message{Role: "assistant", Text: "I have enough context now and can explain the issue."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "enough context") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 5 {
+		t.Fatalf("expected fifth turn after repeated read_file nudge, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[4]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected repeated read_file guidance before final turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "read the same file repeatedly") {
+		t.Fatalf("expected repeated read_file guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentStopsAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 1}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 3, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 4}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "inspect this file")
+	if err == nil {
+		t.Fatalf("expected repeated same-file reads to stop the loop")
+	}
+	if !strings.Contains(err.Error(), "repeatedly reading the same file") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSummarizeToolTurnIncludesReadFileRangeDetails(t *testing.T) {
+	messages := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					ID:        "call-1",
+					Name:      "read_file",
+					Arguments: `{"path":"Tavern/TavernWorker/TavernWorkerCore.cpp","start_line":29,"end_line":58}`,
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call-1",
+			ToolName:   "read_file",
+			Text:       "ok",
+		},
+	}
+
+	got := summarizeToolTurn(messages, 0)
+	if !strings.Contains(got, "read_file[Tavern/TavernWorker/TavernWorkerCore.cpp:29-58]:ok") {
+		t.Fatalf("expected read_file range details in diagnostic, got %q", got)
 	}
 }
 

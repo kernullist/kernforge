@@ -263,6 +263,24 @@ func TestUIThinkingLineKeepsSpecificProgressStatus(t *testing.T) {
 	}
 }
 
+func TestShouldAnimateThinkingStatusKeepsGenericThinkingAnimated(t *testing.T) {
+	if !shouldAnimateThinkingStatus("생각 중 ...") {
+		t.Fatalf("expected generic thinking status to remain animated")
+	}
+	if !shouldAnimateThinkingStatus("") {
+		t.Fatalf("expected empty status to remain animated")
+	}
+}
+
+func TestShouldAnimateThinkingStatusFreezesSpecificToolProgress(t *testing.T) {
+	if shouldAnimateThinkingStatus("Using read_file on TavernWorkerCore.cpp:1-200...") {
+		t.Fatalf("expected specific tool progress to stop spinner animation")
+	}
+	if shouldAnimateThinkingStatus("read_file 확인 중 ... TavernWorkerCore.cpp") {
+		t.Fatalf("expected localized tool progress to stop spinner animation")
+	}
+}
+
 func TestDetectLocalPerformanceSignalsFindsCommonPatterns(t *testing.T) {
 	content := `
 for (;;)
