@@ -270,6 +270,12 @@ $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
 
+LM Studio:
+
+```powershell
+.\kernforge.exe -provider openai-compatible -base-url http://localhost:1234/v1 -model local-model-id
+```
+
 ### Windows Security Workflow 예시
 
 Driver 변경을 안전하게 밀어붙이는 가장 기본 흐름:
