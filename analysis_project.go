@@ -3453,10 +3453,15 @@ func (a *projectAnalyzer) planShards(snapshot ProjectSnapshot, desiredShards int
 				maxTotalShards = analysisMaxInt(desiredShards, 1)
 			}
 			if len(shards) > maxTotalShards {
-				shards = mergeShards(shards, maxTotalShards)
+				shards = mergeSemanticShardsByPriority(shards, maxTotalShards, snapshot.AnalysisMode)
 			}
 			sort.Slice(shards, func(i int, j int) bool {
-				return shards[i].ID < shards[j].ID
+				leftPriority := semanticShardPriority(shards[i].Name, snapshot.AnalysisMode)
+				rightPriority := semanticShardPriority(shards[j].Name, snapshot.AnalysisMode)
+				if leftPriority == rightPriority {
+					return shards[i].ID < shards[j].ID
+				}
+				return leftPriority < rightPriority
 			})
 			return shards
 		}
@@ -4288,6 +4293,7 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 	trimmed = normalizeFinalDocumentHeadings(trimmed)
 	trimmed = ensureStartupProjectCoverage(trimmed, snapshot)
 	trimmed = ensureExecutionChainCoverage(trimmed, snapshot, reports)
+	trimmed = ensureSecuritySurfaceCoverage(trimmed, snapshot, items)
 	trimmed = ensureAnalysisExecutionCoverage(trimmed, shards)
 	trimmed = normalizeUnexpectedLocaleArtifacts(trimmed)
 	missingEvidence := sectionsMissingCoverage(trimmed, items, "evidence")
@@ -4310,6 +4316,122 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 		writeInsightAppendix(&b, missingInsights)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func ensureSecuritySurfaceCoverage(document string, snapshot ProjectSnapshot, items []synthesisSection) string {
+	if !strings.EqualFold(strings.TrimSpace(snapshot.AnalysisMode), "security") {
+		return document
+	}
+	lower := strings.ToLower(document)
+	if strings.Contains(lower, "security surface decomposition") {
+		return document
+	}
+	snippet := buildSecuritySurfaceDecompositionSection(items)
+	if strings.TrimSpace(snippet) == "" {
+		return document
+	}
+	updated := insertBeforeSection(document, "## Subsystem Breakdown", snippet)
+	if updated != document {
+		return updated
+	}
+	return strings.TrimSpace(document) + "\n\n" + snippet
+}
+
+func buildSecuritySurfaceDecompositionSection(items []synthesisSection) string {
+	type securitySurfaceSpec struct {
+		ShardName string
+		Title     string
+	}
+	specs := []securitySurfaceSpec{
+		{ShardName: "security_driver", Title: "Driver Surface"},
+		{ShardName: "security_ioctl", Title: "IOCTL Surface"},
+		{ShardName: "security_handles", Title: "Handle Surface"},
+		{ShardName: "security_memory", Title: "Memory Surface"},
+		{ShardName: "security_rpc", Title: "RPC Surface"},
+	}
+	surfaces := []synthesisSection{}
+	for _, spec := range specs {
+		combined := synthesisSection{Title: spec.Title}
+		for _, item := range items {
+			if !containsStringFold(item.ShardNames, spec.ShardName) {
+				continue
+			}
+			mergeSynthesisSections(&combined, item)
+		}
+		if len(combined.ShardNames) == 0 {
+			continue
+		}
+		surfaces = append(surfaces, combined)
+	}
+	if len(surfaces) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("## Security Surface Decomposition\n\n")
+	b.WriteString("This section breaks the security analysis into the primary privileged or abuse-sensitive surfaces that should be reviewed independently.\n\n")
+	for _, surface := range surfaces {
+		fmt.Fprintf(&b, "### %s\n\n", surface.Title)
+		if len(surface.Responsibilities) > 0 {
+			b.WriteString("Responsibilities:\n")
+			for _, item := range limitStrings(surface.Responsibilities, 3) {
+				fmt.Fprintf(&b, "- %s\n", item)
+			}
+			b.WriteString("\n")
+		}
+		findings := analysisUniqueStrings(append(append([]string{}, surface.Facts...), surface.Inferences...))
+		if len(findings) > 0 {
+			b.WriteString("Findings:\n")
+			for _, item := range limitStrings(findings, 4) {
+				fmt.Fprintf(&b, "- %s\n", item)
+			}
+			b.WriteString("\n")
+		}
+		entryPoints := analysisUniqueStrings(append(append([]string{}, surface.EntryPoints...), surface.InternalFlow...))
+		if len(entryPoints) > 0 {
+			b.WriteString("Entry points and flow:\n")
+			for _, item := range limitStrings(entryPoints, 4) {
+				fmt.Fprintf(&b, "- %s\n", item)
+			}
+			b.WriteString("\n")
+		}
+		keyFiles := analysisUniqueStrings(append(append([]string{}, surface.KeyFiles...), surface.EvidenceFiles...))
+		if len(keyFiles) > 0 {
+			b.WriteString("Key files:\n")
+			for _, item := range limitStrings(keyFiles, 4) {
+				fmt.Fprintf(&b, "- `%s`\n", item)
+			}
+			b.WriteString("\n")
+		}
+		if len(surface.Risks) > 0 {
+			b.WriteString("Risks:\n")
+			for _, item := range limitStrings(surface.Risks, 3) {
+				fmt.Fprintf(&b, "- %s\n", item)
+			}
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func mergeSynthesisSections(target *synthesisSection, source synthesisSection) {
+	target.ShardIDs = analysisUniqueStrings(append(target.ShardIDs, source.ShardIDs...))
+	target.ShardNames = analysisUniqueStrings(append(target.ShardNames, source.ShardNames...))
+	target.CacheStatuses = analysisUniqueStrings(append(target.CacheStatuses, source.CacheStatuses...))
+	target.InvalidationReasons = analysisUniqueStrings(append(target.InvalidationReasons, source.InvalidationReasons...))
+	target.InvalidationDiff = analysisUniqueStrings(append(target.InvalidationDiff, source.InvalidationDiff...))
+	target.InvalidationChanges = append(target.InvalidationChanges, source.InvalidationChanges...)
+	target.Responsibilities = analysisUniqueStrings(append(target.Responsibilities, source.Responsibilities...))
+	target.Facts = analysisUniqueStrings(append(target.Facts, source.Facts...))
+	target.Inferences = analysisUniqueStrings(append(target.Inferences, source.Inferences...))
+	target.KeyFiles = analysisUniqueStrings(append(target.KeyFiles, source.KeyFiles...))
+	target.EvidenceFiles = analysisUniqueStrings(append(target.EvidenceFiles, source.EvidenceFiles...))
+	target.EntryPoints = analysisUniqueStrings(append(target.EntryPoints, source.EntryPoints...))
+	target.InternalFlow = analysisUniqueStrings(append(target.InternalFlow, source.InternalFlow...))
+	target.Dependencies = analysisUniqueStrings(append(target.Dependencies, source.Dependencies...))
+	target.Collaboration = analysisUniqueStrings(append(target.Collaboration, source.Collaboration...))
+	target.Risks = analysisUniqueStrings(append(target.Risks, source.Risks...))
+	target.Unknowns = analysisUniqueStrings(append(target.Unknowns, source.Unknowns...))
 }
 
 func ensureAnalysisExecutionCoverage(text string, shards []AnalysisShard) string {
@@ -4904,6 +5026,14 @@ func injectIntoSection(document string, heading string, snippet string) string {
 	return document[:insertPos] + snippet + "\n\n" + document[insertPos:]
 }
 
+func insertBeforeSection(document string, heading string, snippet string) string {
+	pos := strings.Index(document, heading)
+	if pos < 0 {
+		return document
+	}
+	return strings.TrimRight(document[:pos], "\r\n") + "\n\n" + strings.TrimSpace(snippet) + "\n\n" + document[pos:]
+}
+
 func sectionsMissingCoverage(document string, items []synthesisSection, mode string) []synthesisSection {
 	lowerDoc := strings.ToLower(document)
 	missing := []synthesisSection{}
@@ -4987,6 +5117,19 @@ func filterMissingBullets(window string, items []string) []string {
 		}
 	}
 	return out
+}
+
+func containsStringFold(items []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), target) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalSynthesisTitle(item synthesisSection) string {
@@ -5849,6 +5992,13 @@ func analysisInvalidationContext(shardNames []string) string {
 	for _, name := range shardNames {
 		trimmed := strings.TrimSpace(name)
 		switch {
+		case strings.HasPrefix(trimmed, "security_rpc"):
+			return "integrity_security"
+		case strings.HasPrefix(trimmed, "security_driver"),
+			strings.HasPrefix(trimmed, "security_ioctl"),
+			strings.HasPrefix(trimmed, "security_handles"),
+			strings.HasPrefix(trimmed, "security_memory"):
+			return "integrity_security"
 		case strings.HasPrefix(trimmed, "unreal_network"):
 			return "unreal_network"
 		case strings.HasPrefix(trimmed, "unreal_ui"):
@@ -6838,6 +6988,21 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- Do not cite files outside the provided primary/reference lists.\n\n")
 	if strings.HasPrefix(shard.Name, "startup") {
 		b.WriteString("- For startup shards, emphasize bootstrap order, target/module ownership, and early runtime handoff.\n")
+	}
+	if strings.Contains(shard.Name, "security_driver") {
+		b.WriteString("- For driver shards, identify kernel-facing entry points, load/registration flow, and privileged ownership.\n")
+	}
+	if strings.Contains(shard.Name, "security_ioctl") {
+		b.WriteString("- For IOCTL shards, identify device-control handlers, validation gates, and privileged request flow.\n")
+	}
+	if strings.Contains(shard.Name, "security_handles") {
+		b.WriteString("- For handle shards, identify handle acquisition, duplication, and access-check boundaries.\n")
+	}
+	if strings.Contains(shard.Name, "security_memory") {
+		b.WriteString("- For memory shards, identify remote-memory read/write/scan flow and tamper-sensitive buffers.\n")
+	}
+	if strings.Contains(shard.Name, "security_rpc") {
+		b.WriteString("- For security RPC shards, identify RPC/IPC/pipe validation, dispatch ownership, and authority boundaries.\n")
 	}
 	if strings.Contains(shard.Name, "network") {
 		b.WriteString("- For network shards, identify authority boundaries, server/client RPC intent, and replicated state ownership.\n")

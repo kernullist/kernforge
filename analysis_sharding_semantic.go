@@ -14,6 +14,11 @@ type semanticShardSignals struct {
 	AbilityPaths  map[string]struct{}
 	AssetPaths    map[string]struct{}
 	SecurityPaths map[string]struct{}
+	DriverPaths   map[string]struct{}
+	IoctlPaths    map[string]struct{}
+	HandlePaths   map[string]struct{}
+	MemoryPaths   map[string]struct{}
+	RPCPaths      map[string]struct{}
 }
 
 func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredShards int) []AnalysisShard {
@@ -36,12 +41,17 @@ func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredSh
 		"unreal_ui":          {},
 		"unreal_ability":     {},
 		"asset_config":       {},
+		"security_driver":    {},
+		"security_ioctl":     {},
+		"security_handles":   {},
+		"security_memory":    {},
+		"security_rpc":       {},
 		"integrity_security": {},
 		"unreal_gameplay":    {},
 	}
 	assigned := map[string]struct{}{}
 	for _, file := range orderedFiles {
-		bucket := classifySemanticShardFile(file, signals)
+		bucket := classifySemanticShardFile(file, signals, snapshot.AnalysisMode)
 		if bucket == "" {
 			continue
 		}
@@ -65,16 +75,7 @@ func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredSh
 	}
 
 	shards := []AnalysisShard{}
-	orderedBuckets := []string{
-		"startup",
-		"build_graph",
-		"unreal_network",
-		"unreal_ui",
-		"unreal_ability",
-		"asset_config",
-		"integrity_security",
-		"unreal_gameplay",
-	}
+	orderedBuckets := orderedSemanticShardBuckets(snapshot.AnalysisMode)
 	for _, name := range orderedBuckets {
 		files := buckets[name]
 		if len(files) == 0 {
@@ -126,6 +127,113 @@ func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredSh
 	return shards
 }
 
+func orderedSemanticShardBuckets(mode string) []string {
+	switch normalizeProjectAnalysisMode(mode) {
+	case "trace":
+		return []string{
+			"startup",
+			"unreal_network",
+			"build_graph",
+			"unreal_gameplay",
+			"asset_config",
+			"integrity_security",
+			"unreal_ui",
+			"unreal_ability",
+		}
+	case "impact":
+		return []string{
+			"build_graph",
+			"startup",
+			"asset_config",
+			"unreal_network",
+			"integrity_security",
+			"unreal_gameplay",
+			"unreal_ui",
+			"unreal_ability",
+		}
+	case "security":
+		return []string{
+			"security_driver",
+			"security_ioctl",
+			"security_handles",
+			"security_memory",
+			"security_rpc",
+			"integrity_security",
+			"unreal_network",
+			"startup",
+			"build_graph",
+			"asset_config",
+			"unreal_gameplay",
+			"unreal_ui",
+			"unreal_ability",
+		}
+	case "performance":
+		return []string{
+			"startup",
+			"build_graph",
+			"unreal_gameplay",
+			"unreal_network",
+			"integrity_security",
+			"asset_config",
+			"unreal_ui",
+			"unreal_ability",
+		}
+	default:
+		return []string{
+			"startup",
+			"build_graph",
+			"unreal_network",
+			"unreal_ui",
+			"unreal_ability",
+			"asset_config",
+			"integrity_security",
+			"unreal_gameplay",
+		}
+	}
+}
+
+func semanticShardPriority(name string, mode string) int {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return 100
+	}
+	for index, bucket := range orderedSemanticShardBuckets(mode) {
+		if strings.HasPrefix(trimmed, bucket) {
+			return index
+		}
+	}
+	return len(orderedSemanticShardBuckets(mode)) + 10
+}
+
+func mergeSemanticShardsByPriority(shards []AnalysisShard, target int, mode string) []AnalysisShard {
+	merged := append([]AnalysisShard(nil), shards...)
+	for len(merged) > target {
+		sort.SliceStable(merged, func(i int, j int) bool {
+			leftPriority := semanticShardPriority(merged[i].Name, mode)
+			rightPriority := semanticShardPriority(merged[j].Name, mode)
+			if leftPriority == rightPriority {
+				if merged[i].EstimatedLines == merged[j].EstimatedLines {
+					return merged[i].ID < merged[j].ID
+				}
+				return merged[i].EstimatedLines < merged[j].EstimatedLines
+			}
+			return leftPriority > rightPriority
+		})
+		left := merged[0]
+		right := merged[1]
+		combined := AnalysisShard{
+			ID:             left.ID,
+			Name:           left.Name + "+" + right.Name,
+			PrimaryFiles:   analysisUniqueStrings(append(append([]string(nil), left.PrimaryFiles...), right.PrimaryFiles...)),
+			ReferenceFiles: analysisUniqueStrings(append(append([]string(nil), left.ReferenceFiles...), right.ReferenceFiles...)),
+			EstimatedFiles: left.EstimatedFiles + right.EstimatedFiles,
+			EstimatedLines: left.EstimatedLines + right.EstimatedLines,
+		}
+		merged = append([]AnalysisShard{combined}, merged[2:]...)
+	}
+	return merged
+}
+
 func hasSemanticShardSignals(snapshot ProjectSnapshot) bool {
 	return len(snapshot.UnrealProjects) > 0 ||
 		len(snapshot.UnrealPlugins) > 0 ||
@@ -148,6 +256,11 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		AbilityPaths:  map[string]struct{}{},
 		AssetPaths:    map[string]struct{}{},
 		SecurityPaths: map[string]struct{}{},
+		DriverPaths:   map[string]struct{}{},
+		IoctlPaths:    map[string]struct{}{},
+		HandlePaths:   map[string]struct{}{},
+		MemoryPaths:   map[string]struct{}{},
+		RPCPaths:      map[string]struct{}{},
 	}
 	for _, path := range analysisUniqueStrings(append([]string{}, snapshot.EntrypointFiles...)) {
 		signals.StartupPaths[path] = struct{}{}
@@ -165,6 +278,7 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		signals.BuildPaths[item.Path] = struct{}{}
 		if containsAny(strings.ToLower(item.Name), "anti", "cheat", "guard", "integrity", "tamper") {
 			signals.SecurityPaths[item.Path] = struct{}{}
+			addSecurityShardSignalsForPath(item.Path, &signals)
 		}
 	}
 	for _, item := range snapshot.UnrealTargets {
@@ -174,6 +288,7 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		signals.BuildPaths[item.Path] = struct{}{}
 		if containsAny(strings.ToLower(item.Name), "anti", "cheat", "guard", "integrity", "tamper", "scan", "memory", "telemetry") {
 			signals.SecurityPaths[item.Path] = struct{}{}
+			addSecurityShardSignalsForPath(item.Path, &signals)
 		}
 	}
 	for _, item := range snapshot.UnrealTypes {
@@ -194,11 +309,13 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		}
 		if containsAny(lowerName, "anti", "cheat", "guard", "integrity", "tamper", "scanner") || containsAny(lowerFile, "anti", "cheat", "guard", "integrity", "tamper", "scanner", "memory", "telemetry") {
 			signals.SecurityPaths[item.File] = struct{}{}
+			addSecurityShardSignalsForPath(item.File, &signals)
 		}
 	}
 	for _, item := range snapshot.UnrealNetwork {
 		if strings.TrimSpace(item.File) != "" {
 			signals.NetworkPaths[item.File] = struct{}{}
+			signals.RPCPaths[item.File] = struct{}{}
 		}
 	}
 	for _, item := range snapshot.UnrealAssets {
@@ -220,6 +337,7 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 		}
 		if containsAny(lowerFile, "anti", "cheat", "guard", "integrity", "tamper", "scanner", "telemetry") {
 			signals.SecurityPaths[item.File] = struct{}{}
+			addSecurityShardSignalsForPath(item.File, &signals)
 		}
 	}
 	for _, item := range snapshot.UnrealSettings {
@@ -228,10 +346,32 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 			signals.StartupPaths[item.SourceFile] = struct{}{}
 		}
 	}
+	for _, edge := range snapshot.ProjectEdges {
+		lowerType := strings.ToLower(strings.TrimSpace(edge.Type))
+		if !containsAny(lowerType, "rpc", "security", "integrity", "anti_tamper") {
+			continue
+		}
+		for _, file := range snapshot.Files {
+			if edgeEvidenceMentionsPath(edge.Evidence, file.Path) {
+				if containsAny(lowerType, "rpc") {
+					signals.RPCPaths[file.Path] = struct{}{}
+				}
+				if containsAny(lowerType, "security", "integrity", "anti_tamper") {
+					signals.SecurityPaths[file.Path] = struct{}{}
+					addSecurityShardSignalsForPath(file.Path, &signals)
+				}
+			}
+		}
+	}
 	return signals
 }
 
-func classifySemanticShardFile(file ScannedFile, signals semanticShardSignals) string {
+func classifySemanticShardFile(file ScannedFile, signals semanticShardSignals, mode string) string {
+	if normalizeProjectAnalysisMode(mode) == "security" {
+		if securityBucket := classifySecuritySemanticShardFile(file, signals); securityBucket != "" {
+			return securityBucket
+		}
+	}
 	if _, ok := signals.StartupPaths[file.Path]; ok {
 		return "startup"
 	}
@@ -277,6 +417,57 @@ func classifySemanticShardFile(file ScannedFile, signals semanticShardSignals) s
 	default:
 		return ""
 	}
+}
+
+func classifySecuritySemanticShardFile(file ScannedFile, signals semanticShardSignals) string {
+	lower := strings.ToLower(file.Path)
+	if _, ok := signals.DriverPaths[file.Path]; ok || containsAny(lower, "driver", "kernel", "minifilter", "wdf", "flt") {
+		return "security_driver"
+	}
+	if _, ok := signals.IoctlPaths[file.Path]; ok || containsAny(lower, "ioctl", "devicecontrol", "device_control", "ctl_code", "irp") {
+		return "security_ioctl"
+	}
+	if _, ok := signals.HandlePaths[file.Path]; ok || containsAny(lower, "handle", "openprocess", "duplicatehandle", "accessmask", "object") {
+		return "security_handles"
+	}
+	if _, ok := signals.MemoryPaths[file.Path]; ok || containsAny(lower, "memory", "vm", "mdl", "readprocessmemory", "writeprocessmemory", "scan") {
+		return "security_memory"
+	}
+	if _, ok := signals.RPCPaths[file.Path]; ok || containsAny(lower, "rpc", "pipe", "ipc", "alpc", "dispatch", "command") {
+		return "security_rpc"
+	}
+	return ""
+}
+
+func addSecurityShardSignalsForPath(path string, signals *semanticShardSignals) {
+	if signals == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	lower := strings.ToLower(path)
+	if containsAny(lower, "driver", "kernel", "minifilter", "wdf", "flt") {
+		signals.DriverPaths[path] = struct{}{}
+	}
+	if containsAny(lower, "ioctl", "devicecontrol", "device_control", "ctl_code", "irp") {
+		signals.IoctlPaths[path] = struct{}{}
+	}
+	if containsAny(lower, "handle", "openprocess", "duplicatehandle", "accessmask", "object") {
+		signals.HandlePaths[path] = struct{}{}
+	}
+	if containsAny(lower, "memory", "vm", "mdl", "readprocessmemory", "writeprocessmemory", "scan") {
+		signals.MemoryPaths[path] = struct{}{}
+	}
+	if containsAny(lower, "rpc", "pipe", "ipc", "alpc", "dispatch", "command") {
+		signals.RPCPaths[path] = struct{}{}
+	}
+}
+
+func edgeEvidenceMentionsPath(evidence []string, path string) bool {
+	for _, item := range evidence {
+		if strings.Contains(item, path) {
+			return true
+		}
+	}
+	return false
 }
 
 func filterSnapshotForUnassignedFiles(snapshot ProjectSnapshot, assigned map[string]struct{}) ProjectSnapshot {

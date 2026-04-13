@@ -94,6 +94,87 @@ func TestBuildSessionAnalysisSummaryIncludesMode(t *testing.T) {
 	}
 }
 
+func TestRenderRelevantProjectAnalysisContextIncludesIOCTLV2OverlayHits(t *testing.T) {
+	artifacts := latestAnalysisArtifacts{
+		IndexV2: SemanticIndexV2{
+			RunID:       "run-ioctl-v2",
+			Goal:        "map ioctl trust boundaries",
+			GeneratedAt: time.Now(),
+			OverlayEdges: []OverlayEdge{
+				{
+					SourceID: "entity:Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp",
+					TargetID: "entity:ioctl_surface",
+					Type:     "issues_ioctl",
+					Domain:   "ioctl_surface",
+					Evidence: []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp"},
+				},
+			},
+		},
+	}
+
+	text := renderRelevantProjectAnalysisContext(artifacts, "Show the anti-cheat ioctl validation path.")
+	if !strings.Contains(text, "query_mode: security") {
+		t.Fatalf("expected security query mode, got %q", text)
+	}
+	if !strings.Contains(text, "overlay_v2: ioctl_surface") {
+		t.Fatalf("expected ioctl overlay hit, got %q", text)
+	}
+}
+
+func TestRenderRelevantProjectAnalysisContextIncludesHandleV2OverlayHits(t *testing.T) {
+	artifacts := latestAnalysisArtifacts{
+		IndexV2: SemanticIndexV2{
+			RunID:       "run-handle-v2",
+			Goal:        "map handle trust boundaries",
+			GeneratedAt: time.Now(),
+			OverlayEdges: []OverlayEdge{
+				{
+					SourceID: "entity:Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp",
+					TargetID: "entity:handle_surface",
+					Type:     "opens_handle",
+					Domain:   "handle_surface",
+					Evidence: []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp"},
+				},
+			},
+		},
+	}
+
+	text := renderRelevantProjectAnalysisContext(artifacts, "Show the anti-cheat handle access policy.")
+	if !strings.Contains(text, "query_mode: security") {
+		t.Fatalf("expected security query mode, got %q", text)
+	}
+	if !strings.Contains(text, "overlay_v2: handle_surface") {
+		t.Fatalf("expected handle overlay hit, got %q", text)
+	}
+}
+
+func TestRenderRelevantProjectAnalysisContextIncludesRPCV2OverlayHits(t *testing.T) {
+	artifacts := latestAnalysisArtifacts{
+		IndexV2: SemanticIndexV2{
+			RunID:       "run-rpc-v2",
+			Goal:        "map rpc trust boundaries",
+			GeneratedAt: time.Now(),
+			OverlayEdges: []OverlayEdge{
+				{
+					SourceID: "entity:Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp",
+					TargetID: "entity:rpc_surface",
+					Type:     "dispatches_rpc",
+					Domain:   "rpc_surface",
+					Evidence: []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp"},
+				},
+			},
+		},
+	}
+
+	text := renderRelevantProjectAnalysisContext(artifacts, "Show the anti-cheat rpc dispatch validation path.")
+	if !strings.Contains(text, "query_mode: security") {
+		t.Fatalf("expected security query mode, got %q", text)
+	}
+	if !strings.Contains(text, "overlay_v2: rpc_surface") {
+		t.Fatalf("expected rpc overlay hit, got %q", text)
+	}
+}
+
 func containsStringCI(items []string, target string) bool {
 	for _, item := range items {
 		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(target)) {

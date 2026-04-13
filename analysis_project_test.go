@@ -1221,6 +1221,143 @@ func TestPlanShardsUsesSemanticBucketsForUnrealSnapshots(t *testing.T) {
 	}
 }
 
+func TestPlanShardsSecurityModePrioritizesSecurityBuckets(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MaxFilesPerShard: 8,
+			MaxLinesPerShard: 2000,
+			MaxTotalShards:   16,
+		},
+	}
+	files := []ScannedFile{
+		{Path: "Source/ShooterGame/Main.cpp", Directory: "Source/ShooterGame", LineCount: 120, IsEntrypoint: true, ImportanceScore: 15},
+		{Path: "ShooterGame.uproject", Directory: "", LineCount: 30, IsManifest: true, ImportanceScore: 10},
+		{Path: "Source/ShooterGame/ShooterGame.Build.cs", Directory: "Source/ShooterGame", LineCount: 40, IsManifest: true, ImportanceScore: 14},
+		{Path: "Source/ShooterGame/Public/ShooterCharacter.h", Directory: "Source/ShooterGame/Public", LineCount: 220, ImportanceScore: 18},
+		{Path: "Source/ShooterGame/Public/ShooterHUD.h", Directory: "Source/ShooterGame/Public", LineCount: 160, ImportanceScore: 13},
+		{Path: "Source/ShooterGame/Public/ShooterAbilitySet.h", Directory: "Source/ShooterGame/Public", LineCount: 150, ImportanceScore: 12},
+		{Path: "Source/ShooterGame/Private/ShooterSettings.cpp", Directory: "Source/ShooterGame/Private", LineCount: 90, ImportanceScore: 9},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IntegrityGuard.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 260, ImportanceScore: 17},
+	}
+	filesByPath := map[string]ScannedFile{}
+	filesByDir := map[string][]ScannedFile{}
+	for _, file := range files {
+		filesByPath[file.Path] = file
+		filesByDir[file.Directory] = append(filesByDir[file.Directory], file)
+	}
+	snapshot := ProjectSnapshot{
+		Root:             "C:\\repo",
+		GeneratedAt:      time.Now(),
+		AnalysisMode:     "security",
+		Files:            files,
+		FilesByPath:      filesByPath,
+		FilesByDirectory: filesByDir,
+		EntrypointFiles:  []string{"Source/ShooterGame/Main.cpp"},
+		ManifestFiles: []string{
+			"ShooterGame.uproject",
+			"Source/ShooterGame/ShooterGame.Build.cs",
+		},
+		UnrealProjects: []UnrealProject{
+			{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"ShooterGame"}, Plugins: []string{"CheatGuard"}},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "ShooterGame", Path: "Source/ShooterGame/ShooterGame.Build.cs"},
+			{Name: "CheatGuardRuntime", Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/CheatGuardRuntime.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "AShooterCharacter", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterCharacter.h", GameplayRole: "character"},
+			{Name: "AShooterHUD", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterHUD.h", GameplayRole: "hud"},
+			{Name: "UShooterAbilitySet", Kind: "UCLASS", Module: "ShooterGame", File: "Source/ShooterGame/Public/ShooterAbilitySet.h"},
+			{Name: "UIntegrityGuardSubsystem", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IntegrityGuard.cpp", GameplayRole: "subsystem"},
+		},
+		UnrealNetwork: []UnrealNetworkSurface{
+			{TypeName: "AShooterCharacter", File: "Source/ShooterGame/Public/ShooterCharacter.h", ServerRPCs: []string{"ServerFire"}},
+		},
+		UnrealAssets: []UnrealAssetReference{
+			{OwnerName: "AShooterHUD", File: "Source/ShooterGame/Private/ShooterSettings.cpp", ConfigKeys: []string{"GameDefaultMap"}},
+		},
+	}
+
+	shards := analyzer.planShards(snapshot, 6)
+	if len(shards) < 2 {
+		t.Fatalf("expected multiple semantic shards, got %v", shards)
+	}
+	if !strings.HasPrefix(shards[0].Name, "security_") && !strings.HasPrefix(shards[0].Name, "integrity_security") {
+		t.Fatalf("expected security mode to prioritize security shard first, got %v", shards[0].Name)
+	}
+	if !strings.HasPrefix(shards[1].Name, "unreal_network") &&
+		!strings.HasPrefix(shards[1].Name, "startup") &&
+		!strings.HasPrefix(shards[1].Name, "integrity_security") {
+		t.Fatalf("expected security-adjacent shard near front, got %v", shards[1].Name)
+	}
+}
+
+func TestPlanShardsSecurityModeSplitsSpecializedSecurityBuckets(t *testing.T) {
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{
+			MaxFilesPerShard: 8,
+			MaxLinesPerShard: 2000,
+			MaxTotalShards:   16,
+		},
+	}
+	files := []ScannedFile{
+		{Path: "Source/ShooterGame/Main.cpp", Directory: "Source/ShooterGame", LineCount: 120, IsEntrypoint: true, ImportanceScore: 15},
+		{Path: "ShooterGame.uproject", Directory: "", LineCount: 30, IsManifest: true, ImportanceScore: 10},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/KernelDriverBridge.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 180, ImportanceScore: 16},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 170, ImportanceScore: 16},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 160, ImportanceScore: 16},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/MemoryScanner.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 220, ImportanceScore: 17},
+		{Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp", Directory: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private", LineCount: 150, ImportanceScore: 15},
+	}
+	filesByPath := map[string]ScannedFile{}
+	filesByDir := map[string][]ScannedFile{}
+	for _, file := range files {
+		filesByPath[file.Path] = file
+		filesByDir[file.Directory] = append(filesByDir[file.Directory], file)
+	}
+	snapshot := ProjectSnapshot{
+		Root:             "C:\\repo",
+		GeneratedAt:      time.Now(),
+		AnalysisMode:     "security",
+		Files:            files,
+		FilesByPath:      filesByPath,
+		FilesByDirectory: filesByDir,
+		EntrypointFiles:  []string{"Source/ShooterGame/Main.cpp"},
+		ManifestFiles:    []string{"ShooterGame.uproject"},
+		UnrealProjects: []UnrealProject{
+			{Name: "ShooterGame", Path: "ShooterGame.uproject", Modules: []string{"CheatGuardRuntime"}},
+		},
+		UnrealModules: []UnrealModule{
+			{Name: "CheatGuardRuntime", Path: "Plugins/CheatGuard/Source/CheatGuardRuntime/CheatGuardRuntime.Build.cs"},
+		},
+		UnrealTypes: []UnrealReflectedType{
+			{Name: "UKernelDriverBridge", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/KernelDriverBridge.cpp"},
+			{Name: "UIoctlDispatch", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp"},
+			{Name: "UHandlePolicy", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp"},
+			{Name: "UMemoryScanner", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/MemoryScanner.cpp"},
+			{Name: "URpcDispatchPipe", Kind: "UCLASS", Module: "CheatGuardRuntime", File: "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp"},
+		},
+	}
+
+	shards := analyzer.planShards(snapshot, 8)
+	names := []string{}
+	for _, shard := range shards {
+		names = append(names, shard.Name)
+	}
+	joined := strings.Join(names, ",")
+	for _, expected := range []string{
+		"security_driver",
+		"security_ioctl",
+		"security_handles",
+		"security_memory",
+		"security_rpc",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected specialized security shard %q in %v", expected, names)
+		}
+	}
+}
+
 func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "commands_investigate.go"), []byte("package main\n\nfunc handleInvestigateCommand()\n{\n}\n"), 0o644); err != nil {
@@ -2215,6 +2352,69 @@ func TestEnsureFinalDocumentInsightsInjectsPrimaryStartupProject(t *testing.T) {
 	}
 	if !strings.Contains(got, "`Tavern/Tavern.cpp`") {
 		t.Fatalf("expected startup entry file in snippet\n%s", got)
+	}
+}
+
+func TestEnsureFinalDocumentInsightsInjectsSecuritySurfaceDecomposition(t *testing.T) {
+	document := "# Project Analysis\n\n## 3. Execution Flow And Entry Points\n\nFlow text.\n\n## Subsystem Breakdown\n\nSubsystem text.\n"
+	snapshot := ProjectSnapshot{
+		AnalysisMode: "security",
+	}
+	shards := []AnalysisShard{
+		{ID: "shard-driver", Name: "security_driver", PrimaryFiles: []string{"driver/DriverEntry.cpp"}},
+		{ID: "shard-ioctl", Name: "security_ioctl", PrimaryFiles: []string{"driver/IoctlDispatch.cpp"}},
+		{ID: "shard-handles", Name: "security_handles", PrimaryFiles: []string{"agent/HandlePolicy.cpp"}},
+		{ID: "shard-memory", Name: "security_memory", PrimaryFiles: []string{"agent/MemoryScanner.cpp"}},
+		{ID: "shard-rpc", Name: "security_rpc", PrimaryFiles: []string{"agent/RpcDispatchPipe.cpp"}},
+	}
+	reports := []WorkerReport{
+		{
+			Title:            "Driver Security",
+			Responsibilities: []string{"Initialize the driver trust boundary and privileged callbacks."},
+			Facts:            []string{"DriverEntry registers the process and image monitoring callbacks."},
+			EntryPoints:      []string{"DriverEntry"},
+			KeyFiles:         []string{"driver/DriverEntry.cpp"},
+			Risks:            []string{"Unsigned or weakly validated load paths weaken the privileged boundary."},
+		},
+		{
+			Title:            "IOCTL Security",
+			Responsibilities: []string{"Validate device control dispatch paths and IOCTL policy."},
+			Facts:            []string{"DeviceIoControl requests converge in the central dispatch table."},
+			InternalFlow:     []string{"DispatchDeviceControl -> ValidateIoctl -> ExecuteRequest"},
+			EvidenceFiles:    []string{"driver/IoctlDispatch.cpp"},
+		},
+		{
+			Title:            "Handle Security",
+			Responsibilities: []string{"Restrict hostile process handle opens and access masks."},
+			Inferences:       []string{"OpenProcess and DuplicateHandle checks are the core escalation gate."},
+			KeyFiles:         []string{"agent/HandlePolicy.cpp"},
+		},
+		{
+			Title:            "Memory Security",
+			Responsibilities: []string{"Scan remote memory regions and guard write-sensitive paths."},
+			Facts:            []string{"Remote memory reads are routed through the scanner control loop."},
+			KeyFiles:         []string{"agent/MemoryScanner.cpp"},
+		},
+		{
+			Title:            "RPC Security",
+			Responsibilities: []string{"Validate IPC and command dispatch before execution."},
+			Facts:            []string{"Named pipe commands are decoded before reaching the worker actions."},
+			EntryPoints:      []string{"OnPipeMessage"},
+			KeyFiles:         []string{"agent/RpcDispatchPipe.cpp"},
+		},
+	}
+	got := ensureFinalDocumentInsights(document, snapshot, shards, reports)
+	if !strings.Contains(got, "## Security Surface Decomposition") {
+		t.Fatalf("expected security surface section\n%s", got)
+	}
+	if !strings.Contains(got, "### Driver Surface") || !strings.Contains(got, "### IOCTL Surface") || !strings.Contains(got, "### RPC Surface") {
+		t.Fatalf("expected specialized security subsections\n%s", got)
+	}
+	if !strings.Contains(got, "`driver/IoctlDispatch.cpp`") || !strings.Contains(got, "`agent/RpcDispatchPipe.cpp`") {
+		t.Fatalf("expected key security files in decomposition\n%s", got)
+	}
+	if strings.Index(got, "## Security Surface Decomposition") > strings.Index(got, "## Subsystem Breakdown") {
+		t.Fatalf("expected security decomposition before subsystem breakdown\n%s", got)
 	}
 }
 
@@ -3637,6 +3837,34 @@ func TestBuildSemanticIndexV2IncludesOccurrencesAndOverlayEdges(t *testing.T) {
 					"unreal_network_lens_priority",
 				},
 			},
+			{
+				Path:            "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp",
+				Directory:       "Plugins/CheatGuard/Source/CheatGuardRuntime/Private",
+				Extension:       ".cpp",
+				LineCount:       110,
+				ImportanceScore: 19,
+			},
+			{
+				Path:            "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/MemoryScanner.cpp",
+				Directory:       "Plugins/CheatGuard/Source/CheatGuardRuntime/Private",
+				Extension:       ".cpp",
+				LineCount:       144,
+				ImportanceScore: 20,
+			},
+			{
+				Path:            "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp",
+				Directory:       "Plugins/CheatGuard/Source/CheatGuardRuntime/Private",
+				Extension:       ".cpp",
+				LineCount:       96,
+				ImportanceScore: 18,
+			},
+			{
+				Path:            "Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp",
+				Directory:       "Plugins/CheatGuard/Source/CheatGuardRuntime/Private",
+				Extension:       ".cpp",
+				LineCount:       102,
+				ImportanceScore: 18,
+			},
 		},
 		SolutionProjects: []SolutionProject{
 			{
@@ -3698,12 +3926,40 @@ func TestBuildSemanticIndexV2IncludesOccurrencesAndOverlayEdges(t *testing.T) {
 				Confidence: "high",
 				Evidence:   []string{"Source/ShooterGame/Public/ShooterGameMode.h"},
 			},
+			{
+				Source:     "CheatGuardRuntime",
+				Target:     "IoctlDispatch",
+				Type:       "device_control_dispatch",
+				Confidence: "high",
+				Evidence:   []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/IoctlDispatch.cpp"},
+			},
+			{
+				Source:     "CheatGuardRuntime",
+				Target:     "MemoryScanner",
+				Type:       "remote_memory_scan",
+				Confidence: "high",
+				Evidence:   []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/MemoryScanner.cpp"},
+			},
+			{
+				Source:     "CheatGuardRuntime",
+				Target:     "HandlePolicy",
+				Type:       "process_handle_open",
+				Confidence: "high",
+				Evidence:   []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/HandlePolicy.cpp"},
+			},
+			{
+				Source:     "CheatGuardRuntime",
+				Target:     "RpcDispatchPipe",
+				Type:       "named_pipe_dispatch",
+				Confidence: "high",
+				Evidence:   []string{"Plugins/CheatGuard/Source/CheatGuardRuntime/Private/RpcDispatchPipe.cpp"},
+			},
 		},
 	}
 	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
 	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
-	if len(index.Files) != 1 {
-		t.Fatalf("expected one v2 file record, got %+v", index.Files)
+	if len(index.Files) != 5 {
+		t.Fatalf("expected five v2 file records, got %+v", index.Files)
 	}
 	if len(index.Symbols) < 5 {
 		t.Fatalf("expected richer v2 symbols, got %+v", index.Symbols)
@@ -3725,6 +3981,16 @@ func TestBuildSemanticIndexV2IncludesOccurrencesAndOverlayEdges(t *testing.T) {
 	}
 	if len(index.OverlayEdges) == 0 {
 		t.Fatalf("expected overlay edges")
+	}
+	overlayText := []string{}
+	for _, edge := range index.OverlayEdges {
+		overlayText = append(overlayText, edge.Domain+"|"+edge.Type)
+	}
+	joined := strings.Join(overlayText, ",")
+	for _, expected := range []string{"ioctl_surface|issues_ioctl", "memory_surface|accesses_remote_memory", "handle_surface|opens_handle", "rpc_surface|dispatches_rpc"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected v2 overlay %q in %s", expected, joined)
+		}
 	}
 	if len(index.QueryModes) != 5 {
 		t.Fatalf("expected default query modes, got %+v", index.QueryModes)

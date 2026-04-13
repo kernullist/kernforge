@@ -317,6 +317,78 @@ func projectEdgeSuggestsSecurity(edge ProjectEdge) bool {
 	return false
 }
 
+func projectEdgeSuggestsIOCTL(edge ProjectEdge) bool {
+	corpus := strings.ToLower(strings.TrimSpace(edge.Type) + " " + strings.Join(edge.Evidence, " "))
+	if containsAny(corpus, "ioctl", "devicecontrol", "device_control", "ctl_code", "irp", "deviceiocontrol") {
+		return true
+	}
+	for key, value := range edge.Attributes {
+		joined := strings.ToLower(strings.TrimSpace(key) + " " + strings.TrimSpace(value))
+		if containsAny(joined, "ioctl", "devicecontrol", "device_control", "ctl_code", "irp", "deviceiocontrol") {
+			return true
+		}
+	}
+	return false
+}
+
+func projectEdgeSuggestsMemory(edge ProjectEdge) bool {
+	corpus := strings.ToLower(strings.TrimSpace(edge.Type) + " " + strings.Join(edge.Evidence, " "))
+	if containsAny(corpus, "memory", "readprocessmemory", "writeprocessmemory", "remote_memory", "vm_read", "vm_write", "scan") {
+		return true
+	}
+	for key, value := range edge.Attributes {
+		joined := strings.ToLower(strings.TrimSpace(key) + " " + strings.TrimSpace(value))
+		if containsAny(joined, "memory", "readprocessmemory", "writeprocessmemory", "remote_memory", "vm_read", "vm_write", "scan") {
+			return true
+		}
+	}
+	return false
+}
+
+func projectEdgeSuggestsHandles(edge ProjectEdge) bool {
+	corpus := strings.ToLower(strings.TrimSpace(edge.Type) + " " + strings.Join(edge.Evidence, " "))
+	if containsAny(corpus, "handle", "openprocess", "duplicatehandle", "accessmask", "object", "process_handle") {
+		return true
+	}
+	for key, value := range edge.Attributes {
+		joined := strings.ToLower(strings.TrimSpace(key) + " " + strings.TrimSpace(value))
+		if containsAny(joined, "handle", "openprocess", "duplicatehandle", "accessmask", "object", "process_handle") {
+			return true
+		}
+	}
+	return false
+}
+
+func projectEdgeSuggestsRPC(edge ProjectEdge) bool {
+	corpus := strings.ToLower(strings.TrimSpace(edge.Type) + " " + strings.Join(edge.Evidence, " "))
+	if containsAny(corpus, "rpc", "pipe", "ipc", "alpc", "dispatch", "command", "named_pipe") {
+		return true
+	}
+	for key, value := range edge.Attributes {
+		joined := strings.ToLower(strings.TrimSpace(key) + " " + strings.TrimSpace(value))
+		if containsAny(joined, "rpc", "pipe", "ipc", "alpc", "dispatch", "command", "named_pipe") {
+			return true
+		}
+	}
+	return false
+}
+
+func classifySecurityOverlayForFile(path string) (string, string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(path))
+	switch {
+	case containsAny(lower, "ioctl", "devicecontrol", "device_control", "ctl_code", "irp", "deviceiocontrol"):
+		return "ioctl_surface", "issues_ioctl", true
+	case containsAny(lower, "rpc", "pipe", "ipc", "alpc", "dispatch", "command"):
+		return "rpc_surface", "dispatches_rpc", true
+	case containsAny(lower, "handle", "openprocess", "duplicatehandle", "accessmask", "object"):
+		return "handle_surface", "opens_handle", true
+	case containsAny(lower, "memory", "readprocessmemory", "writeprocessmemory", "remote_memory", "vm", "mdl", "scan"):
+		return "memory_surface", "accesses_remote_memory", true
+	default:
+		return "", "", false
+	}
+}
+
 func projectEdgeSuggestsContent(edge ProjectEdge) bool {
 	corpus := strings.ToLower(strings.TrimSpace(edge.Type) + " " + strings.Join(edge.Evidence, " "))
 	if containsAny(corpus, "config", "asset", "configured_by") {
@@ -581,6 +653,19 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 				Evidence:   []string{file.Path},
 			})
 		}
+		if domain, edgeType, ok := classifySecurityOverlayForFile(file.Path); ok {
+			sourceID := "entity:" + file.Path
+			targetID := "entity:" + domain
+			ensureSymbol(sourceID)
+			ensureSymbol(targetID)
+			addOverlayEdge(OverlayEdge{
+				SourceID: sourceID,
+				TargetID: targetID,
+				Type:     edgeType,
+				Domain:   domain,
+				Evidence: []string{file.Path},
+			})
+		}
 	}
 
 	for _, project := range snapshot.SolutionProjects {
@@ -720,6 +805,42 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 				TargetID: targetID,
 				Type:     edge.Type,
 				Domain:   "security_boundary",
+				Evidence: edge.Evidence,
+			})
+		}
+		if projectEdgeSuggestsIOCTL(edge) {
+			addOverlayEdge(OverlayEdge{
+				SourceID: sourceID,
+				TargetID: targetID,
+				Type:     edge.Type,
+				Domain:   "ioctl_surface",
+				Evidence: edge.Evidence,
+			})
+		}
+		if projectEdgeSuggestsMemory(edge) {
+			addOverlayEdge(OverlayEdge{
+				SourceID: sourceID,
+				TargetID: targetID,
+				Type:     edge.Type,
+				Domain:   "memory_surface",
+				Evidence: edge.Evidence,
+			})
+		}
+		if projectEdgeSuggestsHandles(edge) {
+			addOverlayEdge(OverlayEdge{
+				SourceID: sourceID,
+				TargetID: targetID,
+				Type:     edge.Type,
+				Domain:   "handle_surface",
+				Evidence: edge.Evidence,
+			})
+		}
+		if projectEdgeSuggestsRPC(edge) {
+			addOverlayEdge(OverlayEdge{
+				SourceID: sourceID,
+				TargetID: targetID,
+				Type:     edge.Type,
+				Domain:   "rpc_surface",
 				Evidence: edge.Evidence,
 			})
 		}
