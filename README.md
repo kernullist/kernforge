@@ -271,6 +271,12 @@ $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
 
+LM Studio:
+
+```powershell
+.\kernforge.exe -provider openai-compatible -base-url http://localhost:1234/v1 -model local-model-id
+```
+
 ### Windows Security Workflow Example
 
 Basic safe flow for driver changes:
