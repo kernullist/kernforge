@@ -12,6 +12,16 @@ func analysisShardIntent(name string) string {
 		return "- Trace bootstrap order, startup ownership, and initial runtime handoff."
 	case strings.HasPrefix(name, "build_graph"):
 		return "- Map project, target, plugin, and module composition with dependency direction."
+	case strings.HasPrefix(name, "security_driver"):
+		return "- Map driver ownership, kernel-facing boundaries, and load or registration flow."
+	case strings.HasPrefix(name, "security_ioctl"):
+		return "- Trace IOCTL surfaces, device-control dispatch, validation, and privileged request flow."
+	case strings.HasPrefix(name, "security_handles"):
+		return "- Trace handle acquisition, access checks, duplication, and object-protection boundaries."
+	case strings.HasPrefix(name, "security_memory"):
+		return "- Trace remote-memory inspection or modification flow, scanner ownership, and tamper-sensitive state."
+	case strings.HasPrefix(name, "security_rpc"):
+		return "- Trace RPC, IPC, pipe, or command-dispatch validation across security-sensitive boundaries."
 	case strings.HasPrefix(name, "unreal_network"):
 		return "- Trace replication, RPC, and authority boundaries across gameplay types."
 	case strings.HasPrefix(name, "unreal_ui"):
@@ -47,6 +57,24 @@ func buildSemanticShardFocus(snapshot ProjectSnapshot, shard AnalysisShard) stri
 		lines = append(lines, buildPromptList("Unreal plugins", collectPromptPluginLines(snapshot.UnrealPlugins, fileSet))...)
 		lines = append(lines, buildPromptList("Unreal targets", collectPromptTargetLines(snapshot.UnrealTargets, fileSet))...)
 		lines = append(lines, buildPromptList("Unreal modules", collectPromptModuleLines(snapshot.UnrealModules, fileSet))...)
+	case strings.HasPrefix(shard.Name, "security_driver"):
+		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "Driver-oriented project edges")...)
+		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
+		lines = append(lines, buildPromptList("Security-oriented gameplay systems", collectPromptSystemLines(snapshot.UnrealSystems, fileSet))...)
+	case strings.HasPrefix(shard.Name, "security_ioctl"):
+		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "IOCTL-oriented project edges")...)
+		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
+	case strings.HasPrefix(shard.Name, "security_handles"):
+		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "Handle-oriented project edges")...)
+		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
+	case strings.HasPrefix(shard.Name, "security_memory"):
+		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "Memory-oriented project edges")...)
+		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
+		lines = append(lines, buildPromptList("Security-oriented gameplay systems", collectPromptSystemLines(snapshot.UnrealSystems, fileSet))...)
+	case strings.HasPrefix(shard.Name, "security_rpc"):
+		lines = append(lines, buildPromptList("Network surfaces", collectPromptNetworkLines(snapshot.UnrealNetwork, fileSet))...)
+		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "RPC-oriented project edges")...)
+		lines = append(lines, promptEdgeLines(snapshot.RuntimeEdges, fileSet, 6, "Relevant runtime edges")...)
 	case strings.HasPrefix(shard.Name, "unreal_network"):
 		lines = append(lines, buildPromptList("Network surfaces", collectPromptNetworkLines(snapshot.UnrealNetwork, fileSet))...)
 		lines = append(lines, promptProjectEdgeLines(snapshot.ProjectEdges, fileSet, 8, "Relevant typed project edges")...)
@@ -85,6 +113,31 @@ func buildSemanticReviewerChecklist(name string) string {
 		lines = append(lines,
 			"- Confirm the report names project, target, plugin, and module dependency direction.",
 			"- Reject if composition is described vaguely without concrete build ownership evidence.",
+		)
+	case strings.HasPrefix(name, "security_driver"):
+		lines = append(lines,
+			"- Confirm the report names driver ownership, kernel boundary, and load or registration flow when present.",
+			"- Reject if driver-sensitive code is summarized without concrete privileged entry points or evidence files.",
+		)
+	case strings.HasPrefix(name, "security_ioctl"):
+		lines = append(lines,
+			"- Confirm the report names IOCTL or device-control entry points, validation gates, and dispatch ownership when present.",
+			"- Reject if privileged request handling is described generically without concrete handlers or evidence.",
+		)
+	case strings.HasPrefix(name, "security_handles"):
+		lines = append(lines,
+			"- Confirm the report names handle acquisition, duplication, access checks, or object-protection boundaries when present.",
+			"- Reject if process/object access is described without concrete APIs, owners, or evidence.",
+		)
+	case strings.HasPrefix(name, "security_memory"):
+		lines = append(lines,
+			"- Confirm the report names remote-memory read/write/scan flow, scanner ownership, or tamper-sensitive buffers when present.",
+			"- Reject if memory-sensitive flow is hand-wavy or unsupported by assigned files.",
+		)
+	case strings.HasPrefix(name, "security_rpc"):
+		lines = append(lines,
+			"- Confirm the report names RPC, IPC, pipe, or command-dispatch validation and authority boundaries when present.",
+			"- Reject if request validation or privileged dispatch ownership is omitted despite visible evidence.",
 		)
 	case strings.HasPrefix(name, "unreal_network"):
 		lines = append(lines,
