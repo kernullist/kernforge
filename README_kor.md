@@ -81,13 +81,15 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 - `/analyze-project [--mode map|trace|impact|security|performance] <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
 - `--mode`를 생략하면 기본 모드는 `map`
+- `security` 모드에서는 관련 경로가 있을 때 `driver`, `IOCTL`, `handle`, `memory`, `RPC` surface로 결과를 분해해서 본다.
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
 - goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다.
 - interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
 - semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
 - Unreal project/module/target/type/network/asset/system/config 신호를 구조화해 대형 UE 프로젝트 대응
 - semantic shard planner와 semantic-aware worker/reviewer prompt로 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분석
-- knowledge pack 외에도 structural index, Unreal semantic graph, vector corpus, vector ingestion export를 함께 생성
+- knowledge pack 외에도 structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, vector ingestion export를 함께 생성
+- `security` 모드 최종 문서에는 privileged path를 따로 읽기 쉽도록 `Security Surface Decomposition` 섹션이 추가된다.
 - 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
 - `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
 - `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
@@ -837,7 +839,7 @@ hook 및 override 관련 명령:
 - `map`: 기본 아키텍처 맵, subsystem ownership과 module boundary 중심
 - `trace`: 실행 경로와 caller/callee 흐름 중심
 - `impact`: 변경 영향 범위와 blast radius 중심
-- `security`: trust boundary, validation, privileged surface, tamper-sensitive path 중심
+- `security`: trust boundary, validation, privileged surface, tamper-sensitive path 중심이며 `driver`, `IOCTL`, `handle`, `memory`, `RPC` 단위로도 분해
 - `performance`: startup cost, hot path, blocking chain, contention 중심
 
 무엇을 하는가:
@@ -859,6 +861,7 @@ hook 및 override 관련 명령:
 - `.kernforge/analysis/<timestamp>_<goal>.json`
 - `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
+- `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.json`

@@ -83,13 +83,15 @@ Its current differentiators are:
 
 - `/analyze-project [--mode map|trace|impact|security|performance] <goal>` runs a conductor plus multiple sub-agents and writes a project document
 - If you omit `--mode`, the default mode is `map`
+- In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
 - Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace
 - Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
 - Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
-- In addition to a knowledge pack, the pipeline now emits a structural index, Unreal semantic graph, vector corpus, and vector ingestion exports
+- In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- Security-mode final documents now add a `Security Surface Decomposition` section so privileged and abuse-sensitive paths do not get flattened into a generic summary
 - Dedicated worker and reviewer models can be configured separately from the main chat model
 - Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
 - `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
@@ -837,7 +839,7 @@ Mode summary:
 - `map`: default architecture map focused on subsystem ownership and module boundaries
 - `trace`: execution path and caller/callee flow emphasis
 - `impact`: change impact and blast-radius emphasis
-- `security`: trust boundaries, validation, privileged surfaces, and tamper-sensitive paths
+- `security`: trust boundaries, validation, privileged surfaces, and tamper-sensitive paths, with dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` decomposition
 - `performance`: startup cost, hot paths, blocking chains, and contention emphasis
 
 What it does:
@@ -859,6 +861,7 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>.json`
 - `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
+- `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.json`
