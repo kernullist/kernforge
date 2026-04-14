@@ -112,6 +112,9 @@ Its current differentiators are:
 - WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
+- `read_file` now reuses unchanged exact ranges, covered subranges, and partial overlaps so large-file edit loops avoid redundant rereads
+- `grep` now annotates matches with `[cached-nearby:inside]` or `[cached-nearby:N]` when recent `read_file` context already covers the same area or a nearby span
+- Repeated same-file `read_file` turns now prefer cache-aware nudges before falling back to hard repeated-tool aborts
 - `a` on `Allow write?` enables write auto-approval for the session only
 - `a` on `Open diff preview?` auto-accepts the current edit and future diff previews for the session
 - Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate session-scoped `Allow git?` approval path
@@ -139,6 +142,8 @@ Its current differentiators are:
 - Automatic code scouting when no explicit file mention is provided
 - Recent `analyze-project` results can be injected as cached architecture context before Kernforge rereads large areas
 - When cached analysis is sufficient for a question, Kernforge can answer directly from that summary without extra tool calls
+- Cached `read_file` NOTE results are now treated as a signal that the relevant lines were already seen, which helps reduce large-file reread loops
+- `grep` cache-nearby hints help the model choose smaller follow-up `read_file` ranges around fresh unmatched lines instead of rescanning a wide block
 - Prompts that ask to analyze, explain, diagnose, or document default to read-only investigation mode
 - Prompts that explicitly ask to fix code stay tool-driven and Kernforge nudges the model away from handing patches back to the user
 

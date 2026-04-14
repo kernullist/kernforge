@@ -63,6 +63,303 @@ func TestReadFileToolPrefersCurrentDirectoryBeforeBaseRoot(t *testing.T) {
 	}
 }
 
+func TestReadFileToolReturnsCachedRangeHintForUnchangedFile(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "cached.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	first, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 1,
+		"end_line":   1,
+	})
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	if strings.Contains(first, "NOTE: returning cached content") {
+		t.Fatalf("did not expect cache hint on first read, got %q", first)
+	}
+
+	second, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 1,
+		"end_line":   1,
+	})
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if !strings.Contains(second, "NOTE: returning cached content for an unchanged read_file range.") {
+		t.Fatalf("expected cache hint on repeated identical read, got %q", second)
+	}
+	if !strings.Contains(second, "   1 | alpha") {
+		t.Fatalf("expected cached line content, got %q", second)
+	}
+}
+
+func TestReadFileToolInvalidatesCacheAfterFileChange(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "cached.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	if _, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 1,
+		"end_line":   1,
+	}); err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+
+	if err := os.WriteFile(target, []byte("updated\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile update: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 1,
+		"end_line":   1,
+	})
+	if err != nil {
+		t.Fatalf("second Execute: %v", err)
+	}
+	if strings.Contains(out, "NOTE: returning cached content") {
+		t.Fatalf("did not expect stale cache hint after file change, got %q", out)
+	}
+	if !strings.Contains(out, "   1 | updated") {
+		t.Fatalf("expected fresh file contents after cache invalidation, got %q", out)
+	}
+}
+
+func TestReadFileToolReturnsCoveredSubrangeFromCachedRange(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "cached.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\ngamma\ndelta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	if _, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 1,
+		"end_line":   4,
+	}); err != nil {
+		t.Fatalf("seed Execute: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 2,
+		"end_line":   3,
+	})
+	if err != nil {
+		t.Fatalf("subset Execute: %v", err)
+	}
+	if !strings.Contains(out, "NOTE: returning content from a cached overlapping read_file range.") {
+		t.Fatalf("expected overlapping cache hint, got %q", out)
+	}
+	if !strings.Contains(out, "   2 | beta") || !strings.Contains(out, "   3 | gamma") {
+		t.Fatalf("expected covered subrange content, got %q", out)
+	}
+	if strings.Contains(out, "   1 | alpha") || strings.Contains(out, "   4 | delta") {
+		t.Fatalf("expected only requested subrange lines, got %q", out)
+	}
+}
+
+func TestReadFileToolReturnsPartialOverlapPlusFreshTail(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "cached.txt")
+	if err := os.WriteFile(target, []byte("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	if _, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 2,
+		"end_line":   4,
+	}); err != nil {
+		t.Fatalf("seed Execute: %v", err)
+	}
+
+	out, err := tool.Execute(context.Background(), map[string]any{
+		"path":       "cached.txt",
+		"start_line": 3,
+		"end_line":   6,
+	})
+	if err != nil {
+		t.Fatalf("partial overlap Execute: %v", err)
+	}
+	if !strings.Contains(out, "NOTE: returning content assembled from a cached partial overlap plus newly read lines.") {
+		t.Fatalf("expected partial overlap hint, got %q", out)
+	}
+	if !strings.Contains(out, "   3 | gamma") || !strings.Contains(out, "   4 | delta") {
+		t.Fatalf("expected cached overlap lines, got %q", out)
+	}
+	if !strings.Contains(out, "   5 | epsilon") || !strings.Contains(out, "   6 | zeta") {
+		t.Fatalf("expected freshly read tail lines, got %q", out)
+	}
+	if strings.Contains(out, "   2 | beta") {
+		t.Fatalf("did not expect extra pre-overlap line, got %q", out)
+	}
+}
+
+func TestGrepToolAnnotatesMatchesInsideCachedReadSpan(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("alpha\nbeta target\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	hints := &ToolHints{}
+	ws := Workspace{
+		BaseRoot:  base,
+		Root:      base,
+		ToolHints: hints,
+	}
+	readTool := NewReadFileTool(ws)
+	grepTool := NewGrepTool(ws)
+
+	if _, err := readTool.Execute(context.Background(), map[string]any{
+		"path":       "sample.cpp",
+		"start_line": 2,
+		"end_line":   2,
+	}); err != nil {
+		t.Fatalf("read Execute: %v", err)
+	}
+
+	out, err := grepTool.Execute(context.Background(), map[string]any{
+		"pattern": "target",
+		"path":    ".",
+	})
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if !strings.Contains(out, "[cached-nearby:inside]") {
+		t.Fatalf("expected cached-nearby inside hint, got %q", out)
+	}
+}
+
+func TestGrepToolAnnotatesMatchesNearCachedReadSpan(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("one\ntwo\nthree\nfour\nfive target\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	hints := &ToolHints{}
+	ws := Workspace{
+		BaseRoot:  base,
+		Root:      base,
+		ToolHints: hints,
+	}
+	readTool := NewReadFileTool(ws)
+	grepTool := NewGrepTool(ws)
+
+	if _, err := readTool.Execute(context.Background(), map[string]any{
+		"path":       "sample.cpp",
+		"start_line": 2,
+		"end_line":   3,
+	}); err != nil {
+		t.Fatalf("read Execute: %v", err)
+	}
+
+	out, err := grepTool.Execute(context.Background(), map[string]any{
+		"pattern": "target",
+		"path":    ".",
+	})
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if !strings.Contains(out, "[cached-nearby:2]") {
+		t.Fatalf("expected cached-nearby distance hint, got %q", out)
+	}
+}
+
+func TestGrepToolSkipsStaleCachedReadHintsAfterFileChange(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("alpha\nbeta target\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	hints := &ToolHints{}
+	ws := Workspace{
+		BaseRoot:  base,
+		Root:      base,
+		ToolHints: hints,
+	}
+	readTool := NewReadFileTool(ws)
+	grepTool := NewGrepTool(ws)
+
+	if _, err := readTool.Execute(context.Background(), map[string]any{
+		"path":       "sample.cpp",
+		"start_line": 2,
+		"end_line":   2,
+	}); err != nil {
+		t.Fatalf("read Execute: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("alpha\nbeta target updated\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile update: %v", err)
+	}
+
+	out, err := grepTool.Execute(context.Background(), map[string]any{
+		"pattern": "target",
+		"path":    ".",
+	})
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if strings.Contains(out, "[cached-nearby:") {
+		t.Fatalf("did not expect stale cached-nearby hint, got %q", out)
+	}
+}
+
+func TestToolRegistrySharesReadHintsBetweenReadFileAndGrep(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "sample.cpp")
+	if err := os.WriteFile(target, []byte("alpha\nbeta target\ngamma\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: base,
+		Root:     base,
+	}
+	registry := NewToolRegistry(NewReadFileTool(ws), NewGrepTool(ws))
+
+	if _, err := registry.Execute(context.Background(), "read_file", `{"path":"sample.cpp","start_line":2,"end_line":2}`); err != nil {
+		t.Fatalf("read_file Execute: %v", err)
+	}
+	out, err := registry.Execute(context.Background(), "grep", `{"pattern":"target","path":"."}`)
+	if err != nil {
+		t.Fatalf("grep Execute: %v", err)
+	}
+	if !strings.Contains(out, "[cached-nearby:inside]") {
+		t.Fatalf("expected registry-shared cached hint, got %q", out)
+	}
+}
+
 func TestListFilesToolFallsBackToBaseRootWhenRelativePathMissingInCurrentDirectory(t *testing.T) {
 	base := t.TempDir()
 	current := filepath.Join(base, "nested")

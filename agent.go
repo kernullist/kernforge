@@ -158,6 +158,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastReadFilePath := ""
 	lastReadFilePathTurns := 0
 	repeatedReadFilePathNudges := 0
+	repeatedCachedReadFileNudges := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -239,7 +240,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
-			currentSignature := toolCallSignature(resp.Message.ToolCalls)
+			currentSignature := ""
+			if shouldTrackRepeatedToolCallSignature(resp.Message.ToolCalls) {
+				currentSignature = toolCallSignature(resp.Message.ToolCalls)
+			}
 			if currentSignature != "" {
 				lastToolCallSummary = summarizeToolCalls(resp.Message.ToolCalls)
 				if currentSignature == lastToolCallSignature {
@@ -271,6 +275,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastReadFilePath = readPath
 					lastReadFilePathTurns = 1
 					repeatedReadFilePathNudges = 0
+					repeatedCachedReadFileNudges = 0
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathAbortTurns {
 					return "", fmt.Errorf("stopped after repeatedly reading the same file without making progress: %s", readPath)
@@ -290,6 +295,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				lastReadFilePath = ""
 				lastReadFilePathTurns = 0
 				repeatedReadFilePathNudges = 0
+				repeatedCachedReadFileNudges = 0
 			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
@@ -324,6 +330,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			lastReadFilePath = ""
 			lastReadFilePathTurns = 0
 			repeatedReadFilePathNudges = 0
+			repeatedCachedReadFileNudges = 0
 			reply := strings.TrimSpace(resp.Message.Text)
 			if reply != "" {
 				if continuedReplyPrefix != "" {
@@ -539,6 +546,19 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			}
 			a.Session.AddMessage(toolMsg)
+		}
+		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
+			repeatedCachedReadFileNudges++
+			repeatedReadFilePathNudges++
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: fmt.Sprintf("Your latest read_file result for %s came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again. Either inspect a different file or tool, or give the final answer now.", lastReadFilePath),
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -937,6 +957,18 @@ func toolCallSignature(calls []ToolCall) string {
 	return strings.Join(parts, "\x1e")
 }
 
+func shouldTrackRepeatedToolCallSignature(calls []ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "read_file" {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeToolArguments(raw string) string {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -1210,11 +1242,48 @@ func summarizeToolResultStatus(msg Message) string {
 		return "canceled"
 	case msg.IsError:
 		return "error"
+	case isCachedReadFileToolResult(msg):
+		return "cached"
 	case text == "":
 		return "empty"
 	default:
 		return "ok"
 	}
+}
+
+func isCachedReadFileToolResult(msg Message) bool {
+	if strings.TrimSpace(msg.ToolName) != "read_file" {
+		return false
+	}
+	text := strings.TrimSpace(msg.Text)
+	return strings.HasPrefix(text, "NOTE: returning cached content") ||
+		strings.HasPrefix(text, "NOTE: returning content from a cached overlapping read_file range.") ||
+		strings.HasPrefix(text, "NOTE: returning content assembled from a cached partial overlap plus newly read lines.")
+}
+
+func lastAssistantToolTurnWasCachedReadFile(messages []Message) bool {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		results := collectToolResults(messages, i, len(msg.ToolCalls))
+		if len(results) == 0 {
+			return false
+		}
+		hasReadFile := false
+		for idx, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.Name) != "read_file" {
+				return false
+			}
+			hasReadFile = true
+			if idx >= len(results) || results[idx] != "cached" {
+				return false
+			}
+		}
+		return hasReadFile
+	}
+	return false
 }
 
 func summarizeToolDiagnosticCall(call ToolCall) string {
@@ -1373,6 +1442,8 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Prefer read_file, list_files, grep, and git tools to inspect the codebase.\n")
 	b.WriteString("- Prefer apply_patch for precise edits to existing files.\n")
 	b.WriteString("- Before editing a file, read that exact file path first unless the current contents were already read very recently in this turn.\n")
+	b.WriteString("- If read_file returns a NOTE about cached content, treat that as evidence you already have the relevant lines. Do not reread the same range unless the file likely changed or a missing adjacent range is still required.\n")
+	b.WriteString("- If grep results include [cached-nearby:inside] or [cached-nearby:N], prefer a narrowly targeted next read around the unmatched nearby lines instead of rereading a large surrounding range.\n")
 	b.WriteString("- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.\n")
 	b.WriteString("- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.\n")
 	b.WriteString("- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.\n")

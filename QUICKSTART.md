@@ -142,6 +142,11 @@ If a model tries to stage, commit, push, or open a PR:
 2. `Allow git?` covers git-mutating tools for the current session.
 3. Normal review and edit prompts are not supposed to run git mutation unless you explicitly asked for it.
 
+If the model keeps rereading a large file:
+1. Recent `read_file` cache hits now return a `NOTE:` prefix instead of silently rereading the same range.
+2. `grep` results can include `[cached-nearby:inside]` or `[cached-nearby:N]` to show that relevant context is already in a recent read span.
+3. The best next prompt is usually to ask for the missing adjacent range or the exact local change, not to ask for the whole block again.
+
 ## 5. Input Cancellation Tips
 
 1. `Esc` while typing cancels only the current prompt input.

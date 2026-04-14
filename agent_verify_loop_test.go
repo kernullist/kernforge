@@ -1171,6 +1171,36 @@ func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterNudge(t *testing.
 	}
 }
 
+func TestShouldTrackRepeatedToolCallSignatureIgnoresReadFileOnlyTurns(t *testing.T) {
+	calls := []ToolCall{
+		{
+			Name:      "read_file",
+			Arguments: `{"path":"IMLauncherMainWindow.cpp","start_line":2170,"end_line":2200}`,
+		},
+	}
+
+	if shouldTrackRepeatedToolCallSignature(calls) {
+		t.Fatalf("expected read_file-only turns to use dedicated repeated-read handling")
+	}
+}
+
+func TestShouldTrackRepeatedToolCallSignatureKeepsMixedToolTurns(t *testing.T) {
+	calls := []ToolCall{
+		{
+			Name:      "read_file",
+			Arguments: `{"path":"IMLauncherMainWindow.cpp","start_line":2170,"end_line":2200}`,
+		},
+		{
+			Name:      "grep",
+			Arguments: `{"pattern":"LoadBackgroundImage"}`,
+		},
+	}
+
+	if !shouldTrackRepeatedToolCallSignature(calls) {
+		t.Fatalf("expected mixed tool turns to keep repeated identical signature protection")
+	}
+}
+
 func TestSanitizeAssistantMessageTextRemovesToolPreambleNarration(t *testing.T) {
 	text := "Let me read AnthropicProvider and GeminiProvider:Now I have all the files. Let me apply all the changes."
 
@@ -2050,9 +2080,18 @@ func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 	if len(lastRequest.Messages) == 0 {
 		t.Fatalf("expected repeated read_file guidance before final turn")
 	}
-	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
-	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "read the same file repeatedly") {
-		t.Fatalf("expected repeated read_file guidance, got %#v", lastMessage)
+	foundGuidance := false
+	for _, msg := range lastRequest.Messages {
+		if msg.Role != "user" {
+			continue
+		}
+		if strings.Contains(msg.Text, "read the same file repeatedly") || strings.Contains(msg.Text, "came from cached previously-read content") {
+			foundGuidance = true
+			break
+		}
+	}
+	if !foundGuidance {
+		t.Fatalf("expected repeated read_file guidance in final request, got %#v", lastRequest.Messages)
 	}
 }
 
@@ -2119,6 +2158,77 @@ func TestSummarizeToolTurnIncludesReadFileRangeDetails(t *testing.T) {
 	got := summarizeToolTurn(messages, 0)
 	if !strings.Contains(got, "read_file[Tavern/TavernWorker/TavernWorkerCore.cpp:29-58]:ok") {
 		t.Fatalf("expected read_file range details in diagnostic, got %q", got)
+	}
+}
+
+func TestSummarizeToolTurnMarksCachedReadFileResults(t *testing.T) {
+	messages := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{
+				{
+					ID:        "call-1",
+					Name:      "read_file",
+					Arguments: `{"path":"Tavern/TavernWorker/TavernWorkerCore.cpp","start_line":29,"end_line":58}`,
+				},
+			},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call-1",
+			ToolName:   "read_file",
+			Text:       "NOTE: returning cached content for an unchanged read_file range.\n  29 | cached",
+		},
+	}
+
+	got := summarizeToolTurn(messages, 0)
+	if !strings.Contains(got, "read_file[Tavern/TavernWorker/TavernWorkerCore.cpp:29-58]:cached") {
+		t.Fatalf("expected cached read_file diagnostic, got %q", got)
+	}
+}
+
+func TestAgentNudgesSoonerAfterCachedReadFileResult(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "TavernWorkerCore.cpp"), []byte("int WorkerMain()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 2}),
+			{Message: Message{Role: "assistant", Text: "I already have enough context."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect this file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "enough context") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected cached-read nudge before final turn, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[2]
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "came from cached previously-read content") {
+		t.Fatalf("expected cached read guidance, got %#v", lastMessage)
 	}
 }
 

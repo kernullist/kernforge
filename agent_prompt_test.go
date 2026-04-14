@@ -134,6 +134,24 @@ func TestSystemPromptForbidsGitMutationsWithoutExplicitRequest(t *testing.T) {
 	}
 }
 
+func TestSystemPromptExplainsCachedReadAndGrepHints(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "큰 cpp 파일 수정 이어서 진행해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "If read_file returns a NOTE about cached content") {
+		t.Fatalf("expected cached read_file guidance in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "If grep results include [cached-nearby:inside] or [cached-nearby:N]") {
+		t.Fatalf("expected cached-nearby grep guidance in system prompt, got %q", prompt)
+	}
+}
+
 func TestLooksLikeExplicitGitIntentIgnoresCodeOnlyCommitMentions(t *testing.T) {
 	if looksLikeExplicitGitIntent("fix commit parsing in the hook engine") {
 		t.Fatalf("expected code-only commit mention to stay false")

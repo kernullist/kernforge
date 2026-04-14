@@ -110,6 +110,9 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 파일 쓰기 전 WebView2 diff review
 - selection-aware edit preview
 - 편집 후 자동 verification
+- 큰 파일 편집 루프에서 `read_file`는 변경되지 않은 동일 범위, 포함되는 하위 범위, 부분 겹침 범위를 재사용해서 불필요한 재읽기를 줄인다.
+- 최근 `read_file` 문맥과 겹치거나 가까운 `grep` 결과에는 `[cached-nearby:inside]`, `[cached-nearby:N]` 힌트가 붙어 다음 읽기 범위를 더 좁게 잡도록 돕는다.
+- 같은 파일에 대한 반복 `read_file` 턴은 캐시 기반 경고를 먼저 주고, 그래도 진전이 없을 때만 강한 반복 호출 중단으로 넘어간다.
 - `Allow write?`에서 `a`를 누르면 현재 세션 동안만 write auto-approval이 켜진다.
 - `Open diff preview?`에서 `a`를 누르면 현재 수정과 이후 diff preview를 세션 동안 자동 승인
 - `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인 경로를 사용한다.
@@ -137,6 +140,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 파일을 명시하지 않았을 때 자동 코드 scouting
 - 최근 `analyze-project` 결과를 cached architecture context로 재사용해서 큰 코드 영역 재탐색을 줄일 수 있다.
 - cached analysis만으로 답이 충분하면 추가 tool 호출 없이 바로 응답할 수 있다.
+- `read_file`가 cached NOTE를 반환하면 Kernforge는 해당 줄을 이미 본 문맥으로 간주해 같은 큰 범위를 다시 읽는 흐름을 줄인다.
+- `grep`의 `cached-nearby` 힌트는 아직 읽지 않은 인접 줄만 좁게 다시 읽도록 유도해서 큰 파일 재탐색 비용을 낮춘다.
 - 분석, 설명, 진단, 문서화 요청은 기본적으로 read-only investigation 모드로 처리된다.
 - 명시적으로 수정까지 요청한 프롬프트는 tool-driven edit 흐름을 유지하고, Kernforge는 모델이 패치를 사용자에게 되돌리려 하면 한 번 더 수정 도구 사용을 유도한다.
 

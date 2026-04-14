@@ -142,6 +142,11 @@ Windows build tool이 없어 automatic verification이 실패하면:
 2. `Allow git?`는 현재 세션의 git mutation tool 승인이다.
 3. 일반 review/edit 프롬프트에서는 사용자가 명시적으로 요청하지 않는 한 git mutation이 실행되지 않는 것이 기본이다.
 
+모델이 큰 파일을 계속 다시 읽으려 할 때:
+1. 최근 `read_file` cache hit는 같은 범위를 조용히 다시 읽는 대신 `NOTE:` 접두사로 이미 본 구간임을 드러낸다.
+2. `grep` 결과에 `[cached-nearby:inside]` 또는 `[cached-nearby:N]`가 붙을 수 있는데, 이는 최근 읽은 범위와 겹치거나 아주 가깝다는 뜻이다.
+3. 이 경우에는 큰 블록 전체를 다시 요청하기보다 빠진 인접 범위나 정확한 수정 지점만 좁게 요청하는 편이 좋다.
+
 ## 5. 입력 취소 팁
 
 1. 입력 중 `Esc`는 현재 입력만 취소한다.
