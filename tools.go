@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,13 +22,21 @@ type Tool interface {
 	Execute(ctx context.Context, input any) (string, error)
 }
 
+type sharedToolHintsAware interface {
+	setSharedToolHints(*ToolHints)
+}
+
 type ToolRegistry struct {
 	tools map[string]Tool
 }
 
 func NewToolRegistry(items ...Tool) *ToolRegistry {
+	sharedHints := &ToolHints{maxReadSpans: 16}
 	byName := make(map[string]Tool, len(items))
 	for _, item := range items {
+		if aware, ok := item.(sharedToolHintsAware); ok {
+			aware.setSharedToolHints(sharedHints)
+		}
 		byName[item.Definition().Name] = item
 	}
 	return &ToolRegistry{tools: byName}
@@ -70,23 +80,38 @@ func (r *ToolRegistry) Execute(ctx context.Context, name string, args string) (s
 }
 
 type Workspace struct {
-	BaseRoot         string
-	Root             string
-	Shell            string
+	BaseRoot              string
+	Root                  string
+	Shell                 string
 	VerificationToolPaths map[string]string
-	Perms            *PermissionManager
-	PrepareEdit      func(string) error
-	ReportProgress   func(string)
-	CurrentSelection func() *ViewerSelection
-	PreviewEdit      func(EditPreview) (bool, error)
-	UpdatePlan       func([]PlanItem)
-	GetPlan          func() []PlanItem
-	RunHook          func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
+	ToolHints             *ToolHints
+	Perms                 *PermissionManager
+	PrepareEdit           func(string) error
+	ReportProgress        func(string)
+	CurrentSelection      func() *ViewerSelection
+	PreviewEdit           func(EditPreview) (bool, error)
+	UpdatePlan            func([]PlanItem)
+	GetPlan               func() []PlanItem
+	RunHook               func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
 }
 
 type EditPreview struct {
 	Title   string
 	Preview string
+}
+
+type ToolHints struct {
+	mu              sync.Mutex
+	recentReadSpans []readSpanHint
+	maxReadSpans    int
+}
+
+type readSpanHint struct {
+	path            string
+	startLine       int
+	endLine         int
+	modTimeUnixNano int64
+	size            int64
 }
 
 func (w Workspace) Resolve(path string) (string, error) {
@@ -98,6 +123,68 @@ func (w Workspace) Resolve(path string) (string, error) {
 		return "", err
 	}
 	return w.ensureWithinBaseRoot(path, abs)
+}
+
+func (w Workspace) toolHints() *ToolHints {
+	if w.ToolHints != nil {
+		return w.ToolHints
+	}
+	return nil
+}
+
+func (h *ToolHints) rememberReadSpan(span readSpanHint) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.maxReadSpans <= 0 {
+		h.maxReadSpans = 16
+	}
+	filtered := h.recentReadSpans[:0]
+	for _, existing := range h.recentReadSpans {
+		if existing.path == span.path && existing.startLine == span.startLine && existing.endLine == span.endLine &&
+			existing.modTimeUnixNano == span.modTimeUnixNano && existing.size == span.size {
+			continue
+		}
+		filtered = append(filtered, existing)
+	}
+	h.recentReadSpans = append(filtered, span)
+	if len(h.recentReadSpans) > h.maxReadSpans {
+		h.recentReadSpans = h.recentReadSpans[len(h.recentReadSpans)-h.maxReadSpans:]
+	}
+}
+
+func (h *ToolHints) readCacheHint(path string, lineNo int, info fs.FileInfo) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	best := ""
+	bestDistance := 0
+	for i := len(h.recentReadSpans) - 1; i >= 0; i-- {
+		span := h.recentReadSpans[i]
+		if span.path != path {
+			continue
+		}
+		if span.modTimeUnixNano != info.ModTime().UnixNano() || span.size != info.Size() {
+			continue
+		}
+		if lineNo >= span.startLine && lineNo <= span.endLine {
+			return "[cached-nearby:inside]"
+		}
+		distance := 0
+		if lineNo < span.startLine {
+			distance = span.startLine - lineNo
+		} else {
+			distance = lineNo - span.endLine
+		}
+		if distance > 12 {
+			continue
+		}
+		if best == "" || distance < bestDistance {
+			bestDistance = distance
+			best = fmt.Sprintf("[cached-nearby:%d]", distance)
+		}
+	}
+	return best
 }
 
 func (w Workspace) ResolveForLookup(path string) (string, error) {
@@ -459,11 +546,43 @@ func (t ListFilesTool) Execute(ctx context.Context, input any) (string, error) {
 	return strings.Join(lines, "\n"), nil
 }
 
-type ReadFileTool struct{ ws Workspace }
+type readFileCacheEntry struct {
+	path            string
+	startLine       int
+	endLine         int
+	modTimeUnixNano int64
+	size            int64
+	renderedLines   []string
+	output          string
+}
 
-func NewReadFileTool(ws Workspace) ReadFileTool { return ReadFileTool{ws: ws} }
+type ReadFileTool struct {
+	ws        Workspace
+	mu        sync.Mutex
+	cache     map[string]readFileCacheEntry
+	cacheKeys []string
+	maxCache  int
+}
 
-func (t ReadFileTool) Definition() ToolDefinition {
+func NewReadFileTool(ws Workspace) *ReadFileTool {
+	if ws.ToolHints == nil {
+		ws.ToolHints = &ToolHints{maxReadSpans: 16}
+	}
+	return &ReadFileTool{
+		ws:       ws,
+		cache:    make(map[string]readFileCacheEntry),
+		maxCache: 8,
+	}
+}
+
+func (t *ReadFileTool) setSharedToolHints(hints *ToolHints) {
+	if hints == nil {
+		return
+	}
+	t.ws.ToolHints = hints
+}
+
+func (t *ReadFileTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "read_file",
 		Description: "Read a file from the workspace. Supports line ranges.",
@@ -479,46 +598,349 @@ func (t ReadFileTool) Definition() ToolDefinition {
 	}
 }
 
-func (t ReadFileTool) Execute(ctx context.Context, input any) (string, error) {
+func (t *ReadFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
 	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
-	if !isText(data) {
-		return "", fmt.Errorf("refusing to read binary file: %s", path)
+	startArg := intValue(args, "start_line", 1)
+	endArg := intValue(args, "end_line", 0)
+	cacheKey := readFileCacheKey(path, startArg, endArg)
+	if cached, ok := t.lookupCachedRead(cacheKey, info); ok {
+		return "NOTE: returning cached content for an unchanged read_file range.\n" + cached, nil
 	}
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	default:
+	if covered, ok := t.lookupCoveredCachedRead(path, startArg, endArg, info); ok {
+		return "NOTE: returning content from a cached overlapping read_file range.\n" + covered, nil
 	}
-	lines := strings.Split(string(data), "\n")
-	start := intValue(args, "start_line", 1)
-	end := intValue(args, "end_line", len(lines))
+	start := startArg
+	end := endArg
 	if start < 1 {
 		start = 1
 	}
-	if end > len(lines) {
-		end = len(lines)
+	if overlap, ok := t.lookupPartialOverlap(path, start, end, info); ok {
+		renderedLines, normalizedEnd, readErr := readRenderedRangeWithCachedOverlap(ctx, path, start, end, overlap)
+		if readErr != nil {
+			return "", readErr
+		}
+		if start > normalizedEnd {
+			return "", fmt.Errorf("invalid line range")
+		}
+		result := strings.Join(renderedLines, "\n")
+		t.storeCachedRead(cacheKey, path, start, normalizedEnd, info, renderedLines, result)
+		t.recordReadSpanHint(path, start, normalizedEnd, info)
+		return "NOTE: returning content assembled from a cached partial overlap plus newly read lines.\n" + result, nil
 	}
-	if start > end {
+	renderedLines, normalizedEnd, err := readRenderedFileRange(ctx, path, start, end)
+	if err != nil {
+		return "", err
+	}
+	if start > normalizedEnd {
 		return "", fmt.Errorf("invalid line range")
 	}
-	var out []string
-	for i := start - 1; i < end; i++ {
-		out = append(out, fmt.Sprintf("%4d | %s", i+1, lines[i]))
+	result := strings.Join(renderedLines, "\n")
+	t.storeCachedRead(cacheKey, path, start, normalizedEnd, info, renderedLines, result)
+	t.recordReadSpanHint(path, start, normalizedEnd, info)
+	return result, nil
+}
+
+func readFileCacheKey(path string, start, end int) string {
+	return fmt.Sprintf("%s:%d:%d", normalizeReadFileCachePath(path), start, end)
+}
+
+func (t *ReadFileTool) lookupCachedRead(cacheKey string, info fs.FileInfo) (string, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	entry, ok := t.cache[cacheKey]
+	if !ok {
+		return "", false
 	}
-	return strings.Join(out, "\n"), nil
+	if entry.size != info.Size() {
+		return "", false
+	}
+	if entry.modTimeUnixNano != info.ModTime().UnixNano() {
+		return "", false
+	}
+	return entry.output, true
+}
+
+func (t *ReadFileTool) lookupCoveredCachedRead(path string, start, end int, info fs.FileInfo) (string, bool) {
+	if end <= 0 {
+		return "", false
+	}
+
+	normalizedPath := normalizeReadFileCachePath(path)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for _, cacheKey := range t.cacheKeys {
+		entry, ok := t.cache[cacheKey]
+		if !ok {
+			continue
+		}
+		if entry.path != normalizedPath {
+			continue
+		}
+		if entry.size != info.Size() {
+			continue
+		}
+		if entry.modTimeUnixNano != info.ModTime().UnixNano() {
+			continue
+		}
+		if start < entry.startLine || end > entry.endLine {
+			continue
+		}
+		offsetStart := start - entry.startLine
+		offsetEnd := end - entry.startLine + 1
+		if offsetStart < 0 || offsetEnd > len(entry.renderedLines) || offsetStart >= offsetEnd {
+			continue
+		}
+		return strings.Join(entry.renderedLines[offsetStart:offsetEnd], "\n"), true
+	}
+
+	return "", false
+}
+
+func (t *ReadFileTool) lookupPartialOverlap(path string, start, end int, info fs.FileInfo) (readFileCacheEntry, bool) {
+	if end <= 0 {
+		return readFileCacheEntry{}, false
+	}
+
+	normalizedPath := normalizeReadFileCachePath(path)
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	best := readFileCacheEntry{}
+	bestOverlap := 0
+	for i := len(t.cacheKeys) - 1; i >= 0; i-- {
+		cacheKey := t.cacheKeys[i]
+		entry, ok := t.cache[cacheKey]
+		if !ok {
+			continue
+		}
+		if entry.path != normalizedPath {
+			continue
+		}
+		if entry.size != info.Size() {
+			continue
+		}
+		if entry.modTimeUnixNano != info.ModTime().UnixNano() {
+			continue
+		}
+		overlapStart := readFileMaxInt(start, entry.startLine)
+		overlapEnd := readFileMinInt(end, entry.endLine)
+		if overlapStart > overlapEnd {
+			continue
+		}
+		overlapLen := overlapEnd - overlapStart + 1
+		requestLen := end - start + 1
+		if overlapLen <= 0 || overlapLen >= requestLen {
+			continue
+		}
+		if overlapLen > bestOverlap {
+			best = cloneReadFileCacheEntry(entry)
+			bestOverlap = overlapLen
+		}
+	}
+
+	if bestOverlap == 0 {
+		return readFileCacheEntry{}, false
+	}
+	return best, true
+}
+
+func (t *ReadFileTool) storeCachedRead(cacheKey, path string, start, end int, info fs.FileInfo, renderedLines []string, output string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.cache == nil {
+		t.cache = make(map[string]readFileCacheEntry)
+	}
+	if existing, ok := t.cache[cacheKey]; ok {
+		existing.path = normalizeReadFileCachePath(path)
+		existing.startLine = start
+		existing.endLine = end
+		existing.modTimeUnixNano = info.ModTime().UnixNano()
+		existing.size = info.Size()
+		existing.renderedLines = append([]string(nil), renderedLines...)
+		existing.output = output
+		t.cache[cacheKey] = existing
+		return
+	}
+
+	t.cache[cacheKey] = readFileCacheEntry{
+		path:            normalizeReadFileCachePath(path),
+		startLine:       start,
+		endLine:         end,
+		modTimeUnixNano: info.ModTime().UnixNano(),
+		size:            info.Size(),
+		renderedLines:   append([]string(nil), renderedLines...),
+		output:          output,
+	}
+	t.cacheKeys = append(t.cacheKeys, cacheKey)
+	if t.maxCache <= 0 {
+		t.maxCache = 8
+	}
+	if len(t.cacheKeys) > t.maxCache {
+		evictKey := t.cacheKeys[0]
+		t.cacheKeys = t.cacheKeys[1:]
+		delete(t.cache, evictKey)
+	}
+}
+
+func normalizeReadFileCachePath(path string) string {
+	return strings.ToLower(filepath.Clean(path))
+}
+
+func (t *ReadFileTool) recordReadSpanHint(path string, start, end int, info fs.FileInfo) {
+	hints := t.ws.toolHints()
+	if hints == nil {
+		return
+	}
+	hints.rememberReadSpan(readSpanHint{
+		path:            normalizeReadFileCachePath(path),
+		startLine:       start,
+		endLine:         end,
+		modTimeUnixNano: info.ModTime().UnixNano(),
+		size:            info.Size(),
+	})
+}
+
+func cloneReadFileCacheEntry(entry readFileCacheEntry) readFileCacheEntry {
+	cloned := entry
+	cloned.renderedLines = append([]string(nil), entry.renderedLines...)
+	return cloned
+}
+
+func readRenderedFileRange(ctx context.Context, path string, start, end int) ([]string, int, error) {
+	if start < 1 {
+		start = 1
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer file.Close()
+
+	if err := rejectBinaryFile(file); err != nil {
+		return nil, 0, err
+	}
+	if _, err := file.Seek(0, 0); err != nil {
+		return nil, 0, err
+	}
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+
+	renderedLines := make([]string, 0)
+	lineNumber := 0
+	lastLine := 0
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		default:
+		}
+
+		lineNumber++
+		lastLine = lineNumber
+		if lineNumber < start {
+			continue
+		}
+		if end > 0 && lineNumber > end {
+			break
+		}
+		renderedLines = append(renderedLines, fmt.Sprintf("%4d | %s", lineNumber, scanner.Text()))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, 0, err
+	}
+	if end == 0 || end > lastLine {
+		end = lastLine
+	}
+	return renderedLines, end, nil
+}
+
+func readRenderedRangeWithCachedOverlap(ctx context.Context, path string, start, end int, overlap readFileCacheEntry) ([]string, int, error) {
+	headLines := make([]string, 0)
+	tailLines := make([]string, 0)
+	normalizedEnd := end
+	var err error
+
+	if start < overlap.startLine {
+		headLines, _, err = readRenderedFileRange(ctx, path, start, overlap.startLine-1)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	overlapStart := readFileMaxInt(start, overlap.startLine)
+	overlapEnd := readFileMinInt(end, overlap.endLine)
+	offsetStart := overlapStart - overlap.startLine
+	offsetEnd := overlapEnd - overlap.startLine + 1
+	middleLines := append([]string(nil), overlap.renderedLines[offsetStart:offsetEnd]...)
+
+	if end > overlap.endLine {
+		tailLines, normalizedEnd, err = readRenderedFileRange(ctx, path, overlap.endLine+1, end)
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	combined := make([]string, 0, len(headLines)+len(middleLines)+len(tailLines))
+	combined = append(combined, headLines...)
+	combined = append(combined, middleLines...)
+	combined = append(combined, tailLines...)
+	if normalizedEnd == 0 {
+		normalizedEnd = overlapEnd
+	}
+	return combined, normalizedEnd, nil
+}
+
+func rejectBinaryFile(file *os.File) error {
+	preview := make([]byte, 8192)
+	n, err := file.Read(preview)
+	if err != nil && err != io.EOF {
+		return err
+	}
+	if !isText(preview[:n]) {
+		return fmt.Errorf("refusing to read binary file: %s", file.Name())
+	}
+	return nil
+}
+
+func readFileMinInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func readFileMaxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type GrepTool struct{ ws Workspace }
 
-func NewGrepTool(ws Workspace) GrepTool { return GrepTool{ws: ws} }
+func NewGrepTool(ws Workspace) *GrepTool { return &GrepTool{ws: ws} }
+
+func (t *GrepTool) setSharedToolHints(hints *ToolHints) {
+	if hints == nil {
+		return
+	}
+	t.ws.ToolHints = hints
+}
 
 func (t GrepTool) Definition() ToolDefinition {
 	return ToolDefinition{
@@ -581,11 +1003,18 @@ func (t GrepTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		scanner := bufio.NewScanner(strings.NewReader(string(data)))
 		lineNo := 0
+		fileInfo, statErr := os.Stat(path)
 		for scanner.Scan() {
 			lineNo++
 			line := scanner.Text()
 			if re.MatchString(line) {
-				matches = append(matches, fmt.Sprintf("%s:%d: %s", relOrAbs(t.ws.Root, path), lineNo, line))
+				matchPrefix := fmt.Sprintf("%s:%d: %s", relOrAbs(t.ws.Root, path), lineNo, line)
+				if statErr == nil {
+					if hint := t.grepReadCacheHint(path, lineNo, fileInfo); hint != "" {
+						matchPrefix += " " + hint
+					}
+				}
+				matches = append(matches, matchPrefix)
 				if len(matches) >= maxResults {
 					return stop
 				}
@@ -600,6 +1029,14 @@ func (t GrepTool) Execute(ctx context.Context, input any) (string, error) {
 		return "(no matches)", nil
 	}
 	return strings.Join(matches, "\n"), nil
+}
+
+func (t GrepTool) grepReadCacheHint(path string, lineNo int, info fs.FileInfo) string {
+	hints := t.ws.toolHints()
+	if hints == nil {
+		return ""
+	}
+	return hints.readCacheHint(normalizeReadFileCachePath(path), lineNo, info)
 }
 
 type WriteFileTool struct{ ws Workspace }

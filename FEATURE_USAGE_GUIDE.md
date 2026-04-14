@@ -91,6 +91,26 @@ Current behavior:
 2. Requests that explicitly ask to fix code keep edit tools available and Kernforge nudges the model back toward direct tool use if it tries to hand the patch back to the user.
 3. Git staging, commit, push, and PR creation are blocked unless the user explicitly asked for that git action.
 
+### Read Reuse And Large-File Inspection
+
+Purpose:
+1. Reduce repeated `read_file` churn on very large source files.
+2. Make `grep` results expose when nearby context was already read.
+3. Nudge the model away from scanning the same region again when cache evidence already exists.
+
+Current behavior:
+1. `read_file` reuses unchanged exact ranges, covered subranges, and partial overlaps before it falls back to fresh file reads.
+2. Cached `read_file` replies include a `NOTE:` prefix so the model can treat them as already-seen context rather than fresh evidence.
+3. Repeated same-file `read_file` turns now use that cache signal to warn earlier when the model is looping on the same chunk.
+4. `grep` annotates matches with `[cached-nearby:inside]` when the matching line already sits inside a recent read span.
+5. `grep` annotates matches with `[cached-nearby:N]` when the match is near a recently read span, which encourages a narrower follow-up `read_file` request.
+6. Stale read hints are ignored automatically when file size or modification time changes.
+
+Practical interpretation:
+1. If you see `NOTE: returning cached content...`, the tool is telling the model it already has that text and should only read a missing adjacent range if necessary.
+2. If `grep` returns `[cached-nearby:inside]`, the next best action is usually edit, explain, or read a tiny adjacent gap rather than rescanning a large block.
+3. If `grep` returns `[cached-nearby:2]`, `[cached-nearby:5]`, and similar markers, the model should usually read only that small uncovered neighborhood.
+
 ### 2.0 Project Analysis
 
 Purpose:
