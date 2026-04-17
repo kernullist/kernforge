@@ -21,6 +21,8 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/checkpoint-auto of", wantBuffer: "/checkpoint-auto off "},
 		{input: "/locale-auto of", wantBuffer: "/locale-auto off "},
 		{input: "/set-auto-verify of", wantBuffer: "/set-auto-verify off "},
+		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider ollama"}},
+		{input: "/provider st", wantBuffer: "/provider status "},
 		{input: "/verify --", wantBuffer: "/verify --full "},
 		{input: "/verify-dashboard a", wantBuffer: "/verify-dashboard all "},
 		{input: "/verify-dashboard-html a", wantBuffer: "/verify-dashboard-html all "},
@@ -190,6 +192,22 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		}
 		if gotBuffer != tc.wantBuffer {
 			t.Fatalf("%q: unexpected buffer: got %q want %q", tc.input, gotBuffer, tc.wantBuffer)
+		}
+	}
+}
+
+func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) {
+	cases := map[string]string{
+		"/status":                  "Show current session state, approvals, and extension status.",
+		"/provider status":         "Show the current provider, base URL, key state, and billing visibility.",
+		"/verify":                  "Run manual verification for the current workspace state.",
+		"/new-feature status":      "Show the current state of a tracked feature.",
+		"/simulate tamper-surface": "Model obvious tamper vectors and exposed surfaces.",
+	}
+
+	for item, want := range cases {
+		if got := commandCompletionDescription(item); got != want {
+			t.Fatalf("%q: got %q want %q", item, got, want)
 		}
 	}
 }

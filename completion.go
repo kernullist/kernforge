@@ -105,6 +105,201 @@ var slashCommands = []string{
 	"exit",
 }
 
+var slashCommandDescriptions = map[string]string{
+	"help":                       "Show command lists and detailed usage help.",
+	"status":                     "Show current session state, approvals, and extension status.",
+	"provider":                   "Configure the model provider and inspect provider status.",
+	"profile":                    "Manage saved provider and model profiles.",
+	"version":                    "Print the current Kernforge version.",
+	"model":                      "Show or change the active model.",
+	"permissions":                "Inspect or change the session permission mode.",
+	"verify":                     "Run manual verification for the current workspace state.",
+	"verify-dashboard":           "Summarize recent verification history in the terminal.",
+	"verify-dashboard-html":      "Render recent verification history in the HTML dashboard.",
+	"clear":                      "Clear the current terminal screen.",
+	"compact":                    "Compact the session context to reduce prompt weight.",
+	"context":                    "Inspect the current conversation context and memory payloads.",
+	"memory":                     "Show or manage short-term memory loaded for this workspace.",
+	"mem":                        "Alias for memory commands.",
+	"evidence":                   "Capture or review evidence records tied to the workspace.",
+	"evidence-search":            "Search saved evidence records by query.",
+	"evidence-show":              "Open a specific evidence record by id.",
+	"evidence-dashboard":         "Summarize evidence activity in the terminal.",
+	"evidence-dashboard-html":    "Render the evidence dashboard in HTML.",
+	"investigate":                "Run or manage investigation workflows and snapshots.",
+	"investigate-dashboard":      "Summarize investigation history in the terminal.",
+	"investigate-dashboard-html": "Render the investigation dashboard in HTML.",
+	"simulate":                   "Run or inspect anti-tamper simulation profiles.",
+	"simulate-dashboard":         "Summarize simulation history in the terminal.",
+	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
+	"mem-search":                 "Search persistent memory entries.",
+	"mem-show":                   "Open a persistent memory entry by id.",
+	"mem-promote":                "Promote a memory entry for stronger reuse weight.",
+	"mem-demote":                 "Demote a memory entry so it is reused less often.",
+	"mem-confirm":                "Mark a tentative memory entry as confirmed.",
+	"mem-tentative":              "Mark a memory entry as tentative for later review.",
+	"mem-dashboard":              "Summarize persistent memory usage in the terminal.",
+	"mem-dashboard-html":         "Render the persistent memory dashboard in HTML.",
+	"mem-prune":                  "Prune stale or low-value persistent memory entries.",
+	"mem-stats":                  "Show persistent memory counts and health metrics.",
+	"override":                   "Inspect or manage temporary hook override rules.",
+	"override-add":               "Add a temporary hook override rule.",
+	"override-clear":             "Clear active hook override rules.",
+	"checkpoint":                 "Create a rollback checkpoint for the workspace.",
+	"checkpoint-auto":            "Enable or disable automatic checkpoints before edits.",
+	"detect-verification-tools":  "Probe common Windows build and test tool locations.",
+	"set-msbuild-path":           "Override the MSBuild executable path for verification.",
+	"clear-msbuild-path":         "Clear the workspace MSBuild override path.",
+	"set-cmake-path":             "Override the CMake executable path for verification.",
+	"clear-cmake-path":           "Clear the workspace CMake override path.",
+	"set-ctest-path":             "Override the CTest executable path for verification.",
+	"clear-ctest-path":           "Clear the workspace CTest override path.",
+	"set-ninja-path":             "Override the Ninja executable path for verification.",
+	"clear-ninja-path":           "Clear the workspace Ninja override path.",
+	"set-auto-verify":            "Enable or disable automatic verification after edits.",
+	"checkpoint-diff":            "Compare current workspace files against a checkpoint.",
+	"locale-auto":                "Enable or disable automatic locale switching.",
+	"checkpoints":                "List saved checkpoints for the workspace.",
+	"rollback":                   "Restore the workspace or selected paths from a checkpoint.",
+	"skills":                     "Inspect and manage loaded Codex skills.",
+	"mcp":                        "Inspect MCP server status and tool availability.",
+	"resources":                  "List MCP resources across configured servers.",
+	"resource":                   "Open a specific MCP resource by name or URI.",
+	"prompts":                    "List MCP prompts across configured servers.",
+	"prompt":                     "Run a specific MCP prompt with JSON arguments.",
+	"reload":                     "Reload config, skills, hooks, and MCP state.",
+	"hook-reload":                "Reload hook configuration without restarting.",
+	"hooks":                      "Inspect loaded hooks and hook runtime status.",
+	"init":                       "Bootstrap config, hooks, memory policy, or verify assets.",
+	"open":                       "Open a file in the internal text viewer.",
+	"selection":                  "Show the current viewer selection.",
+	"selections":                 "List saved viewer selections.",
+	"use-selection":              "Promote a saved selection to the active one.",
+	"drop-selection":             "Remove one saved selection from the stack.",
+	"note-selection":             "Attach a note to the active selection.",
+	"tag-selection":              "Attach tags to the active selection.",
+	"clear-selection":            "Clear the active selection only.",
+	"clear-selections":           "Clear the full saved selection stack.",
+	"diff-selection":             "Diff the active selection against current changes.",
+	"review-selection":           "Review only the active selection.",
+	"review-selections":          "Review the saved selection set together.",
+	"edit-selection":             "Apply an edit task scoped to the active selection.",
+	"resume":                     "Resume a previous session by id.",
+	"rename":                     "Rename the current session.",
+	"session":                    "Show the current session metadata.",
+	"sessions":                   "List recent sessions.",
+	"tasks":                      "Show the active plan and task progress.",
+	"diff":                       "Show the current workspace diff.",
+	"export":                     "Export the current session transcript or artifacts.",
+	"config":                     "Show effective configuration values.",
+	"set-analysis-models":        "Configure worker and reviewer providers for analysis.",
+	"set-plan-review":            "Configure plan review provider behavior.",
+	"do-plan-review":             "Run a focused plan review for a task description.",
+	"new-feature":                "Create or manage tracked feature workspaces.",
+	"analyze-project":            "Run project analysis with a selected analysis mode.",
+	"analyze-performance":        "Run a performance-focused project analysis pass.",
+	"profile-review":             "Review saved model profiles and compare their fit.",
+	"set-max-tool-iterations":    "Adjust the max tool loop count for the session.",
+	"exit":                       "Exit the interactive Kernforge session.",
+}
+
+var slashSubcommandDescriptions = map[string]map[string]string{
+	"permissions": {
+		"default":           "Ask before shell, write, and git actions.",
+		"acceptEdits":       "Auto-approve workspace edits while still asking for shell and git.",
+		"plan":              "Favor planning and read-only analysis before edits.",
+		"bypassPermissions": "Bypass runtime permission prompts for this session.",
+	},
+	"checkpoint-auto": {
+		"on":  "Create a safety checkpoint before edits.",
+		"off": "Skip automatic checkpoint creation before edits.",
+	},
+	"locale-auto": {
+		"on":  "Let Kernforge switch response locale automatically.",
+		"off": "Keep the current response locale fixed.",
+	},
+	"set-auto-verify": {
+		"on":  "Run verification automatically after edits.",
+		"off": "Disable automatic post-edit verification.",
+	},
+	"verify": {
+		"--full": "Verify the full workspace instead of changed paths only.",
+	},
+	"verify-dashboard": {
+		"all": "Show dashboard entries across all workspaces.",
+	},
+	"verify-dashboard-html": {
+		"all": "Render dashboard entries across all workspaces in HTML.",
+	},
+	"mem-prune": {
+		"all": "Prune memory entries without limiting to the current workspace.",
+	},
+	"provider": {
+		"status":     "Show the current provider, base URL, key state, and billing visibility.",
+		"anthropic":  "Switch to Anthropic provider setup.",
+		"openai":     "Switch to OpenAI provider setup.",
+		"openrouter": "Switch to OpenRouter provider setup.",
+		"ollama":     "Switch to Ollama provider setup.",
+	},
+	"set-plan-review": {
+		"status":     "Show the current plan review provider setting.",
+		"anthropic":  "Use Anthropic for plan review passes.",
+		"openai":     "Use OpenAI for plan review passes.",
+		"openrouter": "Use OpenRouter for plan review passes.",
+		"ollama":     "Use Ollama for plan review passes.",
+	},
+	"set-analysis-models": {
+		"status":   "Show current worker and reviewer analysis providers.",
+		"worker":   "Set the provider used for worker analysis passes.",
+		"reviewer": "Set the provider used for reviewer analysis passes.",
+		"clear":    "Clear provider overrides and use defaults again.",
+	},
+	"analyze-project": {
+		"--mode":      "Choose the analysis mode before describing the goal.",
+		"map":         "Map structure, modules, and relationships across the project.",
+		"trace":       "Trace a concrete flow across files and call sites.",
+		"impact":      "Estimate what files and behaviors a change will affect.",
+		"security":    "Focus analysis on attack surface and trust boundaries.",
+		"performance": "Focus analysis on hotspots and performance costs.",
+	},
+	"new-feature": {
+		"start":     "Create a tracked feature workspace and seed planning files.",
+		"status":    "Show the current state of a tracked feature.",
+		"list":      "List tracked feature workspaces.",
+		"plan":      "Regenerate or inspect the tracked feature plan.",
+		"implement": "Execute the next implementation slice for a tracked feature.",
+		"close":     "Finish and archive a tracked feature workspace.",
+	},
+	"investigate": {
+		"status":         "Show the current investigation status.",
+		"start":          "Start a new investigation from a preset.",
+		"snapshot":       "Capture a new investigation snapshot.",
+		"note":           "Add an operator note to the active investigation.",
+		"stop":           "Stop the active investigation.",
+		"show":           "Open a saved investigation by id.",
+		"list":           "List investigation sessions.",
+		"dashboard":      "Summarize investigations in the terminal.",
+		"dashboard-html": "Render the investigation dashboard in HTML.",
+	},
+	"simulate": {
+		"status":              "Show the current simulation status.",
+		"show":                "Open a saved simulation result by id.",
+		"list":                "List saved simulation results.",
+		"dashboard":           "Summarize simulations in the terminal.",
+		"dashboard-html":      "Render the simulation dashboard in HTML.",
+		"tamper-surface":      "Model obvious tamper vectors and exposed surfaces.",
+		"stealth-surface":     "Model stealthier attacker paths and blind spots.",
+		"forensic-blind-spot": "Model telemetry gaps that weaken post-incident review.",
+	},
+	"init": {
+		"config":        "Write or refresh starter config files.",
+		"hooks":         "Write or refresh starter hook configuration.",
+		"memory-policy": "Write or refresh starter memory policy files.",
+		"skill":         "Install a named skill into the workspace setup.",
+		"verify":        "Write or refresh verification configuration files.",
+	},
+}
+
 func (rt *runtimeState) completeLine(buffer string) (string, []string, bool) {
 	if completed, suggestions, ok := rt.completeSlashCommand(buffer); ok {
 		return completed, suggestions, true
@@ -240,6 +435,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},
+		"provider":              {"status", "anthropic", "openai", "openrouter", "ollama"},
 		"analyze-project":       {"--mode"},
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
@@ -265,6 +461,11 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	}
 
 	switch commandName {
+	case "provider":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
 	case "resume":
 		if len(fields) <= 1 {
 			return rt.recentSessionIDs(), 0, true
@@ -445,6 +646,29 @@ func (rt *runtimeState) recentFeatureIDs() []string {
 		}
 	}
 	return ids
+}
+
+func commandCompletionDescription(item string) string {
+	trimmed := strings.TrimSpace(item)
+	if !strings.HasPrefix(trimmed, "/") {
+		return ""
+	}
+
+	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))
+	if len(fields) == 0 {
+		return ""
+	}
+
+	commandName := strings.ToLower(strings.TrimSpace(fields[0]))
+	if len(fields) >= 2 {
+		subcommand := strings.ToLower(strings.TrimSpace(fields[1]))
+		if descriptions, ok := slashSubcommandDescriptions[commandName]; ok {
+			if description := strings.TrimSpace(descriptions[subcommand]); description != "" {
+				return description
+			}
+		}
+	}
+	return strings.TrimSpace(slashCommandDescriptions[commandName])
 }
 
 func (rt *runtimeState) completeMentionPath(buffer string) (string, []string, bool) {

@@ -77,7 +77,7 @@ func (rt *runtimeState) handleVerifyCommand(args string) error {
 		"error":         report.FailureSummary(),
 	})
 	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
-	fmt.Fprintln(rt.writer, report.RenderDetailed())
+	fmt.Fprintln(rt.writer, report.RenderTerminal(rt.ui))
 	return nil
 }
 
@@ -216,8 +216,13 @@ func (rt *runtimeState) handleCheckpointDiffCommand(args string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Checkpoint Diff"))
-	fmt.Fprintln(rt.writer, rt.ui.dim(fmt.Sprintf("%s  %s", meta.ID, meta.Name)))
-	fmt.Fprintln(rt.writer, renderCheckpointDiff(diffs))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("checkpoint", meta.ID))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("name", meta.Name))
+	if len(paths) > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("paths", strings.Join(paths, ", ")))
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, renderCheckpointDiffTerminal(rt.ui, diffs))
 	return nil
 }
 

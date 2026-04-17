@@ -64,6 +64,7 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/detect-verification-tools",
 		"/set-auto-verify [on|off]",
 		"/new-feature <task>",
+		"/provider status",
 		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
 		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
 		`Using a on "Allow git?" enables git auto-approval for the current session only.`,
@@ -75,6 +76,23 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
+	detail, ok := HelpDetail("provider status")
+	if !ok {
+		t.Fatalf("expected provider status help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/provider status",
+		"/provider anthropic",
+		"OpenRouter performs a live key lookup",
+		"OpenAI and Anthropic show officially documented billing and usage visibility limits",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected provider help detail to contain %q", needle)
 		}
 	}
 }

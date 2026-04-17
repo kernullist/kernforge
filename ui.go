@@ -35,17 +35,18 @@ func (ui UI) paint(code, text string) string {
 	return "\x1b[" + code + "m" + text + "\x1b[0m"
 }
 
-func (ui UI) bold(text string) string    { return ui.paint("1", text) }
-func (ui UI) dim(text string) string     { return ui.paint("38;5;245", text) }
-func (ui UI) accent(text string) string  { return ui.paint("38;5;81", text) }
-func (ui UI) accent2(text string) string { return ui.paint("38;5;214", text) }
-func (ui UI) success(text string) string { return ui.paint("38;5;42", text) }
-func (ui UI) warn(text string) string    { return ui.paint("38;5;220", text) }
-func (ui UI) error(text string) string   { return ui.paint("38;5;203", text) }
-func (ui UI) info(text string) string    { return ui.paint("38;5;117", text) }
-func (ui UI) cloud(text string) string   { return ui.paint("38;5;255", text) }
-func (ui UI) blush(text string) string   { return ui.paint("38;5;218", text) }
-func (ui UI) mint(text string) string    { return ui.paint("38;5;121", text) }
+func (ui UI) bold(text string) string          { return ui.paint("1", text) }
+func (ui UI) dim(text string) string           { return ui.paint("38;5;245", text) }
+func (ui UI) accent(text string) string        { return ui.paint("38;5;81", text) }
+func (ui UI) accent2(text string) string       { return ui.paint("38;5;214", text) }
+func (ui UI) success(text string) string       { return ui.paint("38;5;42", text) }
+func (ui UI) warn(text string) string          { return ui.paint("38;5;220", text) }
+func (ui UI) error(text string) string         { return ui.paint("38;5;203", text) }
+func (ui UI) info(text string) string          { return ui.paint("38;5;117", text) }
+func (ui UI) cloud(text string) string         { return ui.paint("38;5;255", text) }
+func (ui UI) blush(text string) string         { return ui.paint("38;5;218", text) }
+func (ui UI) mint(text string) string          { return ui.paint("38;5;121", text) }
+func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
 
 func (ui UI) clearScreen() string {
 	return "\x1b[2J\x1b[H"
@@ -58,30 +59,82 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 	if strings.TrimSpace(model) == "" {
 		model = "(unset)"
 	}
-	titleArt := []string{
-		ui.accent(" _  __  _____  ____   _   _  _____   ___   ____    ____  _____"),
-		ui.accent("| |/ / | ____||  _ \\ | \\ | ||  ___| / _ \\ |  _ \\  / ___|| ____|"),
-		ui.info("| ' /  |  _|  | |_) ||  \\| || |_   | | | || |_) || |  _ |  _|  "),
-		ui.info("| . \\  | |___ |  _ < | |\\  ||  _|  | |_| ||  _ < | |_| || |___ "),
-		ui.accent2("|_|\\_\\ |_____||_| \\_\\|_| \\_||_|     \\___/ |_| \\_\\\\____||_____|"),
+	width := terminalWidth()
+	if width < 72 {
+		width = 72
+	}
+	if width > 108 {
+		width = 108
 	}
 
-	title := ui.bold(ui.accent("Kernforge")) + "  " + ui.dim("forge-ready terminal coding agent")
-	tagline := ui.info("Sharpen ideas, shape patches, and keep momentum in the shell.")
-	versionLine := ui.accent("version") + "=" + ui.info(currentVersion())
-	meta1 := ui.accent("provider") + "=" + ui.info(provider) + "  " + ui.accent("model") + "=" + ui.info(model)
-	meta2 := ui.accent("session") + "=" + ui.dim(sessionID)
-	meta3 := ui.accent("workspace") + "=" + ui.dim(cwd)
-	divider := ui.dim(strings.Repeat("=", 72))
+	divider := ui.dim(strings.Repeat("-", width))
+	meta := ui.bannerMeta("provider", ui.info(provider)) +
+		"  " + ui.bannerMeta("model", ui.info(model)) +
+		"  " + ui.bannerMeta("session", ui.dim(sessionID))
+	workspaceLine := ui.bannerMeta("workspace", ui.dim(cwd))
+	readinessLine := ui.bannerMeta(
+		"ready",
+		ui.bold(ui.accent("edit"))+
+			ui.dim(" / ")+
+			ui.bold(ui.warn("review"))+
+			ui.dim(" / ")+
+			ui.bold(ui.success("verify")),
+	)
+	commandLine := ui.bannerMeta("commands", ui.highlightCommands("/help /status /models /config")) +
+		"  " + ui.bannerMeta("shell", ui.highlightCommands("!cmd")) +
+		"  " + ui.bannerMeta("files", ui.highlightCommands("@path"))
+	tipLine := ui.bannerMeta("tip", ui.info("Esc cancels the active turn. End a line with \\ for multiline input."))
+	hero := ui.bannerHero(
+		ui.bannerLogo(),
+		[]string{
+			ui.bold(ui.accent("Kernforge")) + "  " + ui.accent("version") + "=" + ui.info(currentVersion()),
+			ui.dim("forge-ready terminal coding agent"),
+			ui.bold(ui.cloud("Welcome back.")),
+			ui.info("Describe the task and Kernforge will inspect, edit, and verify with you."),
+			meta,
+			workspaceLine,
+		},
+		3,
+	)
 
-	lines := []string{divider}
-	lines = append(lines, titleArt...)
-	lines = append(lines, "", title, tagline, versionLine, meta1, meta2, meta3, divider)
+	lines := []string{
+		divider,
+		hero,
+		"",
+		readinessLine,
+		commandLine,
+		tipLine,
+		divider,
+	}
 	return strings.Join(lines, "\n")
 }
 
 func (ui UI) prompt(provider, model string) string {
-	return ui.bold(ui.accent("kernforge")) + ui.dim("("+provider+":"+model+")") + ui.accent(" > ")
+	target := ui.promptTarget(provider, model)
+	return ui.bold(ui.accent("you")) + " " + ui.dim("["+target+"]") + ui.accent(" > ")
+}
+
+func (ui UI) turnSeparator(turn int, provider, model string) string {
+	_ = turn
+	_ = provider
+	_ = model
+
+	width := terminalWidth()
+	if width < 48 {
+		width = 48
+	}
+	if width > 96 {
+		width = 96
+	}
+
+	span := width / 2
+	if span < 28 {
+		span = 28
+	}
+	if span > 44 {
+		span = 44
+	}
+	return ui.dim(strings.Repeat("-", span))
 }
 
 func (ui UI) continuationPrompt() string {
@@ -89,34 +142,87 @@ func (ui UI) continuationPrompt() string {
 }
 
 func (ui UI) assistant(text string) string {
-	if strings.TrimSpace(text) == "" {
+	body := formatAssistantText(text)
+	if body == "" {
 		return ""
 	}
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	if len(lines) == 1 {
-		return ui.bold(ui.info("assistant")) + ui.dim(": ") + ui.mint(lines[0])
-	}
-	var out []string
-	out = append(out, ui.bold(ui.info("assistant"))+ui.dim(": ")+ui.mint(lines[0]))
-	for _, line := range lines[1:] {
-		out = append(out, ui.mint("           "+line))
-	}
-	return strings.Join(out, "\n")
+	return ui.assistantHeader() + "\n" + ui.renderAssistantBody(body)
 }
 
 func (ui UI) shell(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return ui.bold(ui.accent2("shell")) + "\n" + text
+	body := strings.TrimRight(text, "\r\n")
+	meta := fmt.Sprintf("%d line(s)", countBlockLines(body))
+	return ui.outputHeader("shell output", meta, ui.accent2) + "\n" + ui.cloud(body)
 }
 
 func (ui UI) statusKV(key, value string) string {
-	return ui.bold(ui.accent(key+":")) + " " + value
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		trimmedKey = "-"
+	}
+	if ui.shouldCompactStatusKey(trimmedKey) {
+		return ui.bold(ui.accent(padDisplayRight(trimmedKey+":", 25))) + ui.dim(" ") + value
+	}
+	return ui.bold(ui.accent(trimmedKey)) + ui.dim(" -> ") + value
 }
 
 func (ui UI) section(title string) string {
-	return ui.bold(ui.accent2(title))
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		trimmedTitle = "Section"
+	}
+	label := "== " + trimmedTitle + " "
+	return ui.bold(ui.accent2(label)) + ui.dim(strings.Repeat("=", ui.rulePadding(label, 6)))
+}
+
+func (ui UI) subsection(title string) string {
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		trimmedTitle = "Group"
+	}
+	label := "-- " + trimmedTitle + " "
+	return ui.bold(ui.info(label)) + ui.dim(strings.Repeat("-", ui.rulePadding(label, 4)))
+}
+
+func (ui UI) progressLine(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return ui.dim("  | ") + text
+}
+
+func (ui UI) planItem(index int, status string, step string) string {
+	number := fmt.Sprintf("%02d.", index+1)
+	return ui.dim(number) + " " + ui.planBadge(status) + " " + strings.TrimSpace(step)
+}
+
+func (ui UI) assistantHeader() string {
+	label := ">> assistant "
+	return ui.bold(ui.mint(label)) + ui.dim(strings.Repeat("-", ui.rulePadding(label, 8)))
+}
+
+func (ui UI) outputHeader(title string, meta string, paint func(string) string) string {
+	trimmedTitle := strings.TrimSpace(title)
+	if trimmedTitle == "" {
+		trimmedTitle = "output"
+	}
+	label := ">> " + trimmedTitle
+	if trimmedMeta := strings.TrimSpace(meta); trimmedMeta != "" {
+		label += " [" + trimmedMeta + "]"
+	}
+	label += " "
+	return ui.bold(paint(label)) + ui.dim(strings.Repeat("-", ui.rulePadding(label, 8)))
+}
+
+func (ui UI) activityLine(kind string, text string) string {
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return ""
+	}
+	return ui.activityBadge(kind) + " " + trimmedText
 }
 
 func (ui UI) successLine(text string) string {
@@ -143,11 +249,11 @@ func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) st
 			status = "Still waiting for the model response..."
 		}
 	}
-	line := ui.bold(ui.accent("thinking")) + " " + ui.dim("["+frame+"]")
+	line := ui.bold(ui.accent("[thinking]")) + " " + ui.dim("["+frame+"]")
 	if !isRedundantThinkingStatus(status) {
 		line += " " + ui.info(status)
 	}
-	line += " " + ui.dim(fmt.Sprintf("(%ds, Esc to cancel)", seconds))
+	line += " " + ui.dim(fmt.Sprintf("[%ds | Esc]", seconds))
 	return line
 }
 
@@ -155,8 +261,160 @@ func (ui UI) hintLine(text string) string {
 	return ui.accent2("TIP") + "  " + ui.info(text)
 }
 
+func (ui UI) bannerMeta(key, value string) string {
+	return ui.accent(key) + ui.dim("=") + value
+}
+
+func (ui UI) bannerLogo() []string {
+	return []string{
+		ui.dim(".--------------."),
+		ui.bold(ui.accent("| K\\  /F====   |")),
+		ui.bold(ui.accent2("| K \\/ F___    |")),
+		ui.bold(ui.mint("| K /\\ F       |")),
+		ui.bold(ui.info("| K/  \\F       |")),
+		ui.dim("'--------------'"),
+	}
+}
+
+func (ui UI) bannerHero(left []string, right []string, gap int) string {
+	if gap < 1 {
+		gap = 1
+	}
+
+	leftWidth := 0
+	for _, line := range left {
+		if visible := visibleLen(line); visible > leftWidth {
+			leftWidth = visible
+		}
+	}
+
+	totalLines := len(left)
+	if len(right) > totalLines {
+		totalLines = len(right)
+	}
+
+	var lines []string
+	for i := 0; i < totalLines; i++ {
+		leftLine := ""
+		rightLine := ""
+		if i < len(left) {
+			leftLine = left[i]
+		}
+		if i < len(right) {
+			rightLine = right[i]
+		}
+		if strings.TrimSpace(rightLine) == "" {
+			lines = append(lines, leftLine)
+			continue
+		}
+		lines = append(lines, padDisplayRight(leftLine, leftWidth)+strings.Repeat(" ", gap)+rightLine)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (ui UI) promptTarget(provider, model string) string {
+	var parts []string
+	if trimmed := strings.TrimSpace(provider); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	if trimmed := strings.TrimSpace(model); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	if len(parts) == 0 {
+		return "unconfigured"
+	}
+	return strings.Join(parts, " / ")
+}
+
+func (ui UI) shouldCompactStatusKey(key string) bool {
+	if visibleLen(key) > 24 {
+		return false
+	}
+	if strings.Contains(key, " ") {
+		return false
+	}
+	if strings.ContainsAny(key, `/\`) {
+		return false
+	}
+	return true
+}
+
+func (ui UI) rulePadding(label string, minimum int) int {
+	width := terminalWidth()
+	if width < 48 {
+		width = 48
+	}
+	if width > 100 {
+		width = 100
+	}
+	padding := width - visibleLen(label)
+	if padding < minimum {
+		padding = minimum
+	}
+	return padding
+}
+
+func (ui UI) planBadge(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed":
+		return ui.success("[done]")
+	case "in_progress":
+		return ui.accent2("[work]")
+	default:
+		return ui.dim("[todo]")
+	}
+}
+
+func (ui UI) verificationBadge(status VerificationStatus) string {
+	switch status {
+	case VerificationPassed:
+		return ui.success("[pass]")
+	case VerificationFailed:
+		return ui.error("[fail]")
+	case VerificationSkipped:
+		return ui.dim("[skip]")
+	default:
+		return ui.accent("[wait]")
+	}
+}
+
+func (ui UI) verificationStepLine(index int, step VerificationStep) string {
+	number := fmt.Sprintf("%02d.", index+1)
+	line := ui.dim(number) + " " + ui.verificationBadge(step.Status) + " " + strings.TrimSpace(step.Label)
+	if step.Status == VerificationFailed && strings.TrimSpace(step.FailureKind) != "" {
+		line += " " + ui.warn("["+strings.TrimSpace(step.FailureKind)+"]")
+	}
+	return line
+}
+
+func (ui UI) activityBadge(kind string) string {
+	normalized := strings.ToLower(strings.TrimSpace(kind))
+	if normalized == "" {
+		normalized = "info"
+	}
+	label := "[" + padDisplayRight(normalized, 7) + "]"
+	switch normalized {
+	case "tool":
+		return ui.bold(ui.accent2(label))
+	case "edit":
+		return ui.bold(ui.success(label))
+	case "verify":
+		return ui.bold(ui.warn(label))
+	case "model":
+		return ui.bold(ui.accent(label))
+	case "next":
+		return ui.bold(ui.info(label))
+	case "analysis":
+		return ui.bold(ui.blush(label))
+	default:
+		return ui.bold(ui.dim(label))
+	}
+}
+
 var commandHighlightPattern = regexp.MustCompile(`(?m)(^|\s)(/[A-Za-z0-9_-]+|![^\s]+|@[^\s]+)`)
 var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+var assistantBulletListPattern = regexp.MustCompile(`^[-*+]\s+`)
+var assistantOrderedListPattern = regexp.MustCompile(`^\d+[\.\)]\s+`)
 
 func isRedundantThinkingStatus(status string) bool {
 	switch strings.TrimSpace(status) {
@@ -359,6 +617,218 @@ func pricePerMillion(raw string) string {
 	}
 }
 
+func padDisplayRight(text string, width int) string {
+	padding := width - visibleLen(text)
+	if padding <= 0 {
+		return text
+	}
+	return text + strings.Repeat(" ", padding)
+}
+
+func countBlockLines(text string) int {
+	trimmed := strings.TrimRight(text, "\r\n")
+	if trimmed == "" {
+		return 0
+	}
+	return strings.Count(strings.ReplaceAll(trimmed, "\r\n", "\n"), "\n") + 1
+}
+
+func (ui UI) renderAssistantBody(text string) string {
+	if text == "" || !ui.color {
+		return text
+	}
+
+	var out strings.Builder
+	inFence := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if line == "" {
+			continue
+		}
+		hasNewline := strings.HasSuffix(line, "\n")
+		content := strings.TrimSuffix(line, "\n")
+		kind := classifyAssistantLine(content, inFence)
+		out.WriteString(ui.renderAssistantLine(kind, content))
+		if hasNewline {
+			out.WriteByte('\n')
+		}
+		if isAssistantFenceLine(content) {
+			inFence = !inFence
+		}
+	}
+	return out.String()
+}
+
+func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *string) string {
+	if text == "" {
+		return ""
+	}
+	if !ui.color {
+		return text
+	}
+
+	var out strings.Builder
+	for _, segment := range strings.SplitAfter(text, "\n") {
+		if segment == "" {
+			continue
+		}
+
+		hasNewline := strings.HasSuffix(segment, "\n")
+		content := strings.TrimSuffix(segment, "\n")
+		if hasNewline {
+			fullLine := *linePrefix + content
+			kind := classifyAssistantLine(fullLine, *inFence)
+			out.WriteString(ui.renderAssistantLine(kind, content))
+			out.WriteByte('\n')
+			if isAssistantFenceLine(fullLine) {
+				*inFence = !*inFence
+			}
+			*linePrefix = ""
+			continue
+		}
+
+		previewLine := *linePrefix + content
+		kind := classifyAssistantLine(previewLine, *inFence)
+		out.WriteString(ui.renderAssistantLine(kind, content))
+		*linePrefix = previewLine
+	}
+	return out.String()
+}
+
+func (ui UI) renderAssistantLine(kind assistantLineKind, text string) string {
+	if text == "" {
+		return ""
+	}
+	switch kind {
+	case assistantLineFence, assistantLineCode:
+		return ui.assistantCode(text)
+	default:
+		return ui.mint(text)
+	}
+}
+
+type assistantLineKind int
+
+const (
+	assistantLineNone assistantLineKind = iota
+	assistantLineParagraph
+	assistantLineList
+	assistantLineHeading
+	assistantLineFence
+	assistantLineCode
+	assistantLineQuote
+)
+
+func formatAssistantText(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = trimOuterBlankLines(normalized)
+	if normalized == "" {
+		return ""
+	}
+
+	lines := strings.Split(normalized, "\n")
+	var out []string
+	prevKind := assistantLineNone
+	prevBlank := false
+	inFence := false
+
+	for _, raw := range lines {
+		line := strings.TrimRight(raw, " \t")
+		if strings.TrimSpace(line) == "" {
+			if len(out) == 0 || prevBlank {
+				continue
+			}
+			out = append(out, "")
+			prevBlank = true
+			continue
+		}
+
+		kind := classifyAssistantLine(line, inFence)
+		if shouldInsertAssistantSpacer(prevKind, kind, prevBlank) {
+			out = append(out, "")
+		}
+		out = append(out, line)
+		prevBlank = false
+		prevKind = kind
+		if isAssistantFenceLine(line) {
+			inFence = !inFence
+		}
+	}
+
+	for len(out) > 0 && strings.TrimSpace(out[len(out)-1]) == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+func trimOuterBlankLines(text string) string {
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start >= end {
+		return ""
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+func classifyAssistantLine(line string, inFence bool) assistantLineKind {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return assistantLineNone
+	}
+	if isAssistantFenceLine(trimmed) {
+		return assistantLineFence
+	}
+	if inFence {
+		return assistantLineCode
+	}
+	if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") {
+		return assistantLineCode
+	}
+	if assistantBulletListPattern.MatchString(trimmed) || assistantOrderedListPattern.MatchString(trimmed) {
+		return assistantLineList
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		return assistantLineHeading
+	}
+	if strings.HasPrefix(trimmed, ">") {
+		return assistantLineQuote
+	}
+	return assistantLineParagraph
+}
+
+func shouldInsertAssistantSpacer(previous, current assistantLineKind, previousBlank bool) bool {
+	if previous == assistantLineNone || previousBlank {
+		return false
+	}
+	switch current {
+	case assistantLineList:
+		return previous == assistantLineParagraph || previous == assistantLineHeading || previous == assistantLineQuote
+	case assistantLineHeading:
+		return previous != assistantLineHeading
+	case assistantLineFence:
+		return previous != assistantLineFence
+	case assistantLineParagraph, assistantLineQuote:
+		return previous == assistantLineHeading || previous == assistantLineFence
+	default:
+		return false
+	}
+}
+
+func isAssistantFenceLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
 func visibleLen(text string) int {
 	clean := ansiPattern.ReplaceAllString(text, "")
 	width := 0
@@ -412,6 +882,11 @@ func (ui UI) formatCompletionSuggestions(suggestions []string, typed string) str
 
 	category := completionCategory(suggestions)
 	prefix := completionMatchPrefix(typed, category)
+	header := ui.completionHeader(category, len(suggestions))
+
+	if category == "command" {
+		return ui.formatCommandCompletionSuggestions(suggestions, prefix, header)
+	}
 
 	termW := terminalWidth()
 	if termW < 40 {
@@ -434,8 +909,6 @@ func (ui UI) formatCompletionSuggestions(suggestions []string, typed string) str
 		cols = 1
 	}
 
-	header := ui.completionHeader(category, len(suggestions))
-
 	var sb strings.Builder
 	sb.WriteString(header)
 	sb.WriteByte('\n')
@@ -453,6 +926,36 @@ func (ui UI) formatCompletionSuggestions(suggestions []string, typed string) str
 		sb.WriteString(painted)
 		if (i+1)%cols != 0 && i < len(suggestions)-1 {
 			sb.WriteString(strings.Repeat(" ", padLen))
+		}
+	}
+	return sb.String()
+}
+
+func (ui UI) formatCommandCompletionSuggestions(suggestions []string, prefix string, header string) string {
+	commandWidth := 0
+	for _, suggestion := range suggestions {
+		if width := visibleLen(suggestion); width > commandWidth {
+			commandWidth = width
+		}
+	}
+	if commandWidth < 12 {
+		commandWidth = 12
+	}
+
+	var sb strings.Builder
+	sb.WriteString(header)
+	sb.WriteByte('\n')
+	for i, suggestion := range suggestions {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		command := padDisplayRight(ui.paintCompletionItem(suggestion, prefix, "command"), commandWidth)
+		description := strings.TrimSpace(commandCompletionDescription(suggestion))
+		sb.WriteString("  ")
+		sb.WriteString(command)
+		if description != "" {
+			sb.WriteString("  ")
+			sb.WriteString(ui.dim(description))
 		}
 	}
 	return sb.String()

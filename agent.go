@@ -473,6 +473,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					toolMsg.Text = out + "\n\nERROR: " + err.Error()
 				}
+				if a.EmitProgress != nil {
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.EmitProgress(summary)
+					}
+				}
 				a.Session.AddMessage(toolMsg)
 				if toolShouldBeDisabledAfterInvalidJSON(call.Name) {
 					disabledTools[strings.TrimSpace(call.Name)] = true
@@ -495,6 +500,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					toolMsg.Text = err.Error()
 				} else {
 					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+				}
+				if a.EmitProgress != nil {
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.EmitProgress(summary)
+					}
 				}
 				a.Session.AddMessage(toolMsg)
 				a.Session.AddMessage(Message{
@@ -523,6 +533,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if currentError != "" {
 					iterationToolError = currentError
 				}
+				if a.EmitProgress != nil {
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.EmitProgress(summary)
+					}
+				}
 				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 1 {
 					patchFormatRetries++
 					a.Session.AddMessage(toolMsg)
@@ -542,6 +557,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						if summary := summarizeEditToolResult(call.Name, out); summary != "" {
 							a.EmitProgress(summary)
 						}
+					}
+				} else if a.EmitProgress != nil {
+					if summary := summarizeToolCompletion(a.Config, call, out); summary != "" {
+						a.EmitProgress(summary)
 					}
 				}
 			}
@@ -1148,6 +1167,103 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 	default:
 		return fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), name)
 	}
+}
+
+func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return ""
+	}
+
+	args := map[string]any{}
+	if strings.TrimSpace(call.Arguments) != "" {
+		_ = json.Unmarshal([]byte(call.Arguments), &args)
+	}
+
+	switch name {
+	case "read_file":
+		path := strings.TrimSpace(stringValue(args, "path"))
+		lineCount := countNonEmptyLines(out)
+		if path == "" {
+			if lineCount > 0 {
+				return fmt.Sprintf(localizedText(cfg, "read_file loaded %d line(s).", "read_file 완료 (%d줄)."), lineCount)
+			}
+			return localizedText(cfg, "read_file completed.", "read_file 완료.")
+		}
+		if lineCount > 0 {
+			return fmt.Sprintf(localizedText(cfg, "read_file loaded %s (%d line(s)).", "read_file 완료 %s (%d줄)."), path, lineCount)
+		}
+		return fmt.Sprintf(localizedText(cfg, "read_file loaded %s.", "read_file 완료 %s."), path)
+	case "grep":
+		pattern := truncateStatusSnippet(strings.TrimSpace(stringValue(args, "pattern")), 48)
+		matchCount := countNonEmptyLines(out)
+		if pattern == "" {
+			return fmt.Sprintf(localizedText(cfg, "grep returned %d line(s).", "grep 완료 (%d줄)."), matchCount)
+		}
+		return fmt.Sprintf(localizedText(cfg, "grep returned %d line(s) for %q.", "grep 완료 %q (%d줄)."), matchCount, pattern)
+	case "list_files":
+		path := strings.TrimSpace(stringValue(args, "path"))
+		if path == "" {
+			path = "."
+		}
+		itemCount := countNonEmptyLines(out)
+		return fmt.Sprintf(localizedText(cfg, "list_files returned %d item(s) from %s.", "list_files 완료 %s (%d개)."), itemCount, path)
+	case "run_shell":
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if snippet == "" {
+			return localizedText(cfg, "run_shell completed with no output.", "shell 완료: 출력 없음.")
+		}
+		return fmt.Sprintf(localizedText(cfg, "run_shell completed: %s", "shell 완료: %s"), snippet)
+	case "git_status", "git_diff", "git_add", "git_commit", "git_push", "git_create_pr":
+		return fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), name)
+	case "apply_patch", "write_file", "replace_in_file":
+		return ""
+	default:
+		return fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), name)
+	}
+}
+
+func summarizeToolFailure(cfg Config, call ToolCall, err error) string {
+	name := strings.TrimSpace(call.Name)
+	if name == "" || err == nil {
+		return ""
+	}
+	reason := truncateStatusSnippet(firstNonEmptyLine(err.Error()), 96)
+	if reason == "" {
+		reason = localizedText(cfg, "unknown error", "알 수 없는 오류")
+	}
+	return fmt.Sprintf(localizedText(cfg, "%s failed: %s", "%s 실패: %s"), name, reason)
+}
+
+func countNonEmptyLines(text string) int {
+	count := 0
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	return count
+}
+
+func firstNonEmptyLine(text string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func truncateStatusSnippet(text string, limit int) string {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if limit <= 0 || len(trimmed) <= limit {
+		return trimmed
+	}
+	if limit <= 3 {
+		return trimmed[:limit]
+	}
+	return trimmed[:limit-3] + "..."
 }
 
 func normalizeStopReason(reason string) string {

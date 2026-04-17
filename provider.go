@@ -96,12 +96,9 @@ type AnthropicClient struct {
 }
 
 func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = "https://api.anthropic.com"
-	}
 	return &AnthropicClient{
 		apiKey:     apiKey,
-		baseURL:    strings.TrimRight(baseURL, "/"),
+		baseURL:    normalizeAnthropicBaseURL(baseURL),
 		httpClient: &http.Client{},
 	}
 }
@@ -996,6 +993,17 @@ func normalizeOllamaBaseURL(baseURL string) string {
 	return base
 }
 
+func normalizeAnthropicBaseURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		base = "https://api.anthropic.com"
+	}
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
+
 func ollamaAPIURL(baseURL, path string) string {
 	base := normalizeOllamaBaseURL(baseURL)
 	return base + "/api" + path
@@ -1021,6 +1029,21 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 		base = "https://" + base
 	}
 	return strings.TrimRight(base, "/")
+}
+
+func normalizeProviderBaseURL(provider, baseURL string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return normalizeAnthropicBaseURL(baseURL)
+	case "openai", "openai-compatible":
+		return normalizeOpenAIBaseURL(baseURL)
+	case "openrouter":
+		return normalizeOpenRouterBaseURL(baseURL)
+	case "ollama":
+		return normalizeOllamaBaseURL(baseURL)
+	default:
+		return strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	}
 }
 
 func formatProviderErrorDetails(data []byte) string {
@@ -1085,6 +1108,117 @@ func openAIAPIURL(baseURL, path string) string {
 		return base + normalizedPath[len("/v1"):]
 	}
 	return base + normalizedPath
+}
+
+type OpenRouterKeyStatus struct {
+	Label              string   `json:"label,omitempty"`
+	Limit              *float64 `json:"limit,omitempty"`
+	LimitRemaining     *float64 `json:"limit_remaining,omitempty"`
+	LimitReset         string   `json:"limit_reset,omitempty"`
+	Usage              *float64 `json:"usage,omitempty"`
+	UsageDaily         *float64 `json:"usage_daily,omitempty"`
+	UsageWeekly        *float64 `json:"usage_weekly,omitempty"`
+	UsageMonthly       *float64 `json:"usage_monthly,omitempty"`
+	BYOKUsage          *float64 `json:"byok_usage,omitempty"`
+	BYOKUsageDaily     *float64 `json:"byok_usage_daily,omitempty"`
+	BYOKUsageWeekly    *float64 `json:"byok_usage_weekly,omitempty"`
+	BYOKUsageMonthly   *float64 `json:"byok_usage_monthly,omitempty"`
+	IncludeBYOKInLimit bool     `json:"include_byok_in_limit,omitempty"`
+	IsFreeTier         bool     `json:"is_free_tier,omitempty"`
+	IsManagementKey    bool     `json:"is_management_key,omitempty"`
+	IsProvisioningKey  bool     `json:"is_provisioning_key,omitempty"`
+	ExpiresAt          string   `json:"expires_at,omitempty"`
+}
+
+type OpenRouterCredits struct {
+	TotalCredits *float64 `json:"total_credits,omitempty"`
+	TotalUsage   *float64 `json:"total_usage,omitempty"`
+}
+
+func FetchOpenRouterKeyStatus(ctx context.Context, baseURL, apiKey string) (OpenRouterKeyStatus, string, error) {
+	type openRouterKeyResponse struct {
+		Data  OpenRouterKeyStatus `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	normalized := normalizeOpenRouterBaseURL(baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized+"/key", nil)
+	if err != nil {
+		return OpenRouterKeyStatus{}, normalized, err
+	}
+	req.Header.Set("content-type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return OpenRouterKeyStatus{}, normalized, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OpenRouterKeyStatus{}, normalized, err
+	}
+	if resp.StatusCode >= 300 {
+		return OpenRouterKeyStatus{}, normalized, fmt.Errorf("openrouter API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
+	}
+
+	var decoded openRouterKeyResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return OpenRouterKeyStatus{}, normalized, err
+	}
+	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
+		return OpenRouterKeyStatus{}, normalized, fmt.Errorf("openrouter API error: %s", decoded.Error.Message)
+	}
+	return decoded.Data, normalized, nil
+}
+
+func FetchOpenRouterCredits(ctx context.Context, baseURL, apiKey string) (OpenRouterCredits, string, error) {
+	type openRouterCreditsResponse struct {
+		Data  OpenRouterCredits `json:"data"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+
+	normalized := normalizeOpenRouterBaseURL(baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, normalized+"/credits", nil)
+	if err != nil {
+		return OpenRouterCredits{}, normalized, err
+	}
+	req.Header.Set("content-type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("authorization", "Bearer "+apiKey)
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return OpenRouterCredits{}, normalized, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return OpenRouterCredits{}, normalized, err
+	}
+	if resp.StatusCode >= 300 {
+		return OpenRouterCredits{}, normalized, fmt.Errorf("openrouter API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
+	}
+
+	var decoded openRouterCreditsResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return OpenRouterCredits{}, normalized, err
+	}
+	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
+		return OpenRouterCredits{}, normalized, fmt.Errorf("openrouter API error: %s", decoded.Error.Message)
+	}
+	return decoded.Data, normalized, nil
 }
 
 func FetchOpenRouterModels(ctx context.Context, baseURL, apiKey string) ([]OpenRouterModelInfo, string, error) {

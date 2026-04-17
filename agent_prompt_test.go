@@ -163,3 +163,48 @@ func TestLooksLikeExplicitGitIntentIgnoresCodeOnlyCommitMentions(t *testing.T) {
 		t.Fatalf("expected explicit commit request to be true")
 	}
 }
+
+func TestSummarizeToolCompletionForReadFile(t *testing.T) {
+	summary := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, ToolCall{
+		Name:      "read_file",
+		Arguments: `{"path":"main.go","start_line":1,"end_line":3}`,
+	}, "line1\nline2\nline3\n")
+
+	if summary != "read_file loaded main.go (3 line(s))." {
+		t.Fatalf("unexpected read_file summary: %q", summary)
+	}
+}
+
+func TestSummarizeToolCompletionForRunShellUsesFirstOutputLine(t *testing.T) {
+	summary := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, ToolCall{
+		Name:      "run_shell",
+		Arguments: `{"command":"go test ./..."}`,
+	}, "\nPASS\nok   kernforge  0.123s\n")
+
+	if summary != "run_shell completed: PASS" {
+		t.Fatalf("unexpected run_shell summary: %q", summary)
+	}
+}
+
+func TestSummarizeToolFailureTruncatesError(t *testing.T) {
+	err := summarizeToolFailure(Config{AutoLocale: boolPtr(false)}, ToolCall{
+		Name: "apply_patch",
+	}, assertErrString("search text not found in main.go while trying to update a stale block with old line numbers"))
+
+	if !strings.HasPrefix(err, "apply_patch failed: ") {
+		t.Fatalf("expected failure prefix, got %q", err)
+	}
+	if len(err) > 130 {
+		t.Fatalf("expected truncated failure summary, got %q", err)
+	}
+}
+
+type errString string
+
+func (e errString) Error() string {
+	return string(e)
+}
+
+func assertErrString(text string) error {
+	return errString(text)
+}

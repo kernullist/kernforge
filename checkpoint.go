@@ -581,6 +581,115 @@ func renderCheckpointDiff(entries []CheckpointDiffEntry) string {
 	return strings.Join(blocks, "\n\n")
 }
 
+func renderCheckpointDiffTerminal(ui UI, entries []CheckpointDiffEntry) string {
+	var lines []string
+	lines = append(lines, ui.outputHeader("diff", checkpointDiffSummary(entries), ui.accent2))
+	if len(entries) == 0 {
+		lines = append(lines, ui.progressLine(ui.dim("(no diff)")))
+		return strings.Join(lines, "\n")
+	}
+
+	for _, entry := range entries {
+		lines = append(lines, "")
+		lines = append(lines, ui.subsection(fmt.Sprintf("%s [%s]", entry.Path, checkpointDiffKind(entry))))
+
+		meta := checkpointDiffMeta(entry)
+		if meta != "" {
+			lines = append(lines, ui.progressLine(ui.dim(meta)))
+		}
+
+		before := entry.Before
+		after := entry.After
+		if (!isText(before) && len(before) > 0) || (!isText(after) && len(after) > 0) {
+			lines = append(lines, indentBlock("[binary change omitted]", "    "))
+			continue
+		}
+
+		preview := trimCheckpointDiffPreview(buildEditPreview(entry.Path, string(before), string(after)))
+		lines = append(lines, indentBlock(preview, "    "))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func checkpointDiffSummary(entries []CheckpointDiffEntry) string {
+	if len(entries) == 0 {
+		return "0 file(s)"
+	}
+	added := 0
+	deleted := 0
+	modified := 0
+	binary := 0
+	for _, entry := range entries {
+		switch checkpointDiffKind(entry) {
+		case "added":
+			added++
+		case "deleted":
+			deleted++
+		case "binary":
+			binary++
+		default:
+			modified++
+		}
+	}
+
+	var parts []string
+	parts = append(parts, fmt.Sprintf("%d file(s)", len(entries)))
+	if modified > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified", modified))
+	}
+	if added > 0 {
+		parts = append(parts, fmt.Sprintf("%d added", added))
+	}
+	if deleted > 0 {
+		parts = append(parts, fmt.Sprintf("%d deleted", deleted))
+	}
+	if binary > 0 {
+		parts = append(parts, fmt.Sprintf("%d binary", binary))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func checkpointDiffKind(entry CheckpointDiffEntry) string {
+	before := entry.Before
+	after := entry.After
+	if (!isText(before) && len(before) > 0) || (!isText(after) && len(after) > 0) {
+		return "binary"
+	}
+	switch {
+	case len(before) == 0 && len(after) > 0:
+		return "added"
+	case len(before) > 0 && len(after) == 0:
+		return "deleted"
+	default:
+		return "modified"
+	}
+}
+
+func checkpointDiffMeta(entry CheckpointDiffEntry) string {
+	before := entry.Before
+	after := entry.After
+	if checkpointDiffKind(entry) == "binary" {
+		return fmt.Sprintf("change=binary  before=%d byte(s)  after=%d byte(s)", len(before), len(after))
+	}
+	return fmt.Sprintf(
+		"change=%s  before=%d line(s)  after=%d line(s)",
+		checkpointDiffKind(entry),
+		countBlockLines(string(before)),
+		countBlockLines(string(after)),
+	)
+}
+
+func trimCheckpointDiffPreview(preview string) string {
+	lines := strings.Split(preview, "\n")
+	if len(lines) == 0 {
+		return preview
+	}
+	if strings.HasPrefix(lines[0], "Preview for ") {
+		lines = lines[1:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func shouldSkipCheckpointDir(name string) bool {
 	return strings.EqualFold(name, ".git")
 }

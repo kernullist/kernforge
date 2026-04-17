@@ -790,6 +790,7 @@ Provider And Models:
 /profile               Show recent provider/model profiles and switch to one
 /profile-review        Show and manage saved review profiles
 /provider              Choose and configure a provider
+/provider status       Show provider connectivity, key state, and budget visibility
 /set-plan-review [provider] Configure the reviewer model for plan review (interactive)
 - Write approval prompts accept y/N/a. Using a on "Allow write?" enables write auto-approval for the current session only.
 - Diff preview prompts accept y/N/a. Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.
@@ -966,7 +967,7 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
+	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
@@ -984,6 +985,12 @@ Provider and model commands control which model is active and how planning/revie
 
 /provider
 - Choose and configure a provider interactively.
+- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, or /provider ollama.
+
+/provider status
+- Show the active provider, normalized base URL, API key presence, and provider-specific budget visibility.
+- OpenRouter performs a live key lookup and, for management keys, also shows account credits.
+- OpenAI and Anthropic show officially documented billing and usage visibility limits instead of guessing a live balance endpoint.
 
 /set-plan-review [provider]
 - Configure the reviewer model used by /do-plan-review.

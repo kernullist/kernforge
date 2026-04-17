@@ -82,6 +82,11 @@ Planning and tracked feature work:
 - `/new-feature status [id]`
 - `/new-feature implement [id]`
 
+Provider and runtime inspection:
+- `/provider status`
+- `/status`
+- `/config`
+
 ## 3. Best First Scenarios
 
 ### Driver change
@@ -123,14 +128,16 @@ Use `/new-feature` when you want persisted spec, plan, and task artifacts under 
 ## 4. What To Check First When Something Feels Wrong
 
 1. `/status`
-2. `/analyze-performance startup` or another relevant focus
-3. `/evidence-dashboard`
-4. `/mem-search category:driver` or `/mem-search category:telemetry`
-5. `/hooks`
+2. `/provider status`
+3. `/analyze-performance startup` or another relevant focus
+4. `/evidence-dashboard`
+5. `/mem-search category:driver` or `/mem-search category:telemetry`
+6. `/hooks`
 
 Quick interpretation:
 1. `/status` is the fast view for current session and runtime state, including approvals.
 2. `/config` is the fast view for effective settings such as provider defaults, hooks, locale, and verification toggles.
+3. `/provider status` is the fast view for provider wiring. It shows the normalized endpoint, whether an API key is configured, and what budget visibility is actually available for the current provider.
 
 If automatic verification fails because Windows build tools are missing:
 1. Run `/detect-verification-tools` first.

@@ -991,6 +991,69 @@ func (r VerificationReport) RenderDetailed() string {
 	return strings.Join(parts, "\n\n")
 }
 
+func (r VerificationReport) RenderTerminal(ui UI) string {
+	var lines []string
+	lines = append(lines, ui.subsection("Summary"))
+	lines = append(lines, ui.statusKV("result", r.SummaryLine()))
+	if strings.TrimSpace(string(r.Mode)) != "" {
+		lines = append(lines, ui.statusKV("mode", string(r.Mode)))
+	}
+	if strings.TrimSpace(r.Trigger) != "" {
+		lines = append(lines, ui.statusKV("trigger", r.Trigger))
+	}
+	if len(r.ChangedPaths) > 0 {
+		lines = append(lines, ui.statusKV("changed_paths", strings.Join(r.ChangedPaths, ", ")))
+	}
+
+	if strings.TrimSpace(r.Decision) != "" {
+		lines = append(lines, "")
+		lines = append(lines, ui.subsection("Decision"))
+		lines = append(lines, indentBlock(truncateVerificationBlock(r.Decision, 10), "  "))
+	}
+	if guidance := strings.TrimSpace(r.RepairGuidance()); guidance != "" {
+		lines = append(lines, "")
+		lines = append(lines, ui.subsection("Repair"))
+		lines = append(lines, indentBlock(truncateVerificationBlock(guidance, 10), "  "))
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, ui.subsection("Steps"))
+	for i, step := range r.Steps {
+		lines = append(lines, ui.verificationStepLine(i, step))
+
+		var meta []string
+		if strings.TrimSpace(step.Stage) != "" {
+			meta = append(meta, "stage="+strings.TrimSpace(step.Stage))
+		}
+		if strings.TrimSpace(step.Scope) != "" {
+			meta = append(meta, "scope="+strings.TrimSpace(step.Scope))
+		}
+		if step.DurationMs > 0 {
+			meta = append(meta, fmt.Sprintf("duration=%dms", step.DurationMs))
+		}
+		if len(meta) > 0 {
+			lines = append(lines, ui.progressLine(ui.dim(strings.Join(meta, "  "))))
+		}
+		if strings.TrimSpace(step.Command) != "" {
+			lines = append(lines, ui.progressLine(ui.dim("cmd: "+step.Command)))
+		}
+		if step.Status == VerificationFailed && strings.TrimSpace(step.Hint) != "" {
+			lines = append(lines, ui.progressLine(ui.warn("hint: "+strings.TrimSpace(step.Hint))))
+		}
+
+		output := strings.TrimSpace(step.Output)
+		if output == "" {
+			continue
+		}
+		maxLines := 4
+		if step.Status == VerificationFailed {
+			maxLines = 14
+		}
+		lines = append(lines, indentBlock(truncateVerificationBlock(output, maxLines), "    "))
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (r VerificationReport) RenderShort() string {
 	var lines []string
 	lines = append(lines, r.SummaryLine())
@@ -1000,6 +1063,29 @@ func (r VerificationReport) RenderShort() string {
 			line += " [" + step.FailureKind + "]"
 		}
 		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func truncateVerificationBlock(text string, maxLines int) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(strings.TrimSpace(normalized), "\n")
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return strings.Join(lines, "\n")
+	}
+	trimmed := append([]string(nil), lines[:maxLines]...)
+	trimmed = append(trimmed, fmt.Sprintf("... (%d more line(s))", len(lines)-maxLines))
+	return strings.Join(trimmed, "\n")
+}
+
+func indentBlock(text string, prefix string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
 	}
 	return strings.Join(lines, "\n")
 }

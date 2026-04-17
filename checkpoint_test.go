@@ -177,3 +177,32 @@ func TestHelpTextIncludesCheckpointCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderCheckpointDiffTerminalUsesGroupedCards(t *testing.T) {
+	ui := UI{color: false}
+	rendered := renderCheckpointDiffTerminal(ui, []CheckpointDiffEntry{
+		{
+			Path:   "main.txt",
+			Before: []byte("v1\n"),
+			After:  []byte("v2\n"),
+		},
+		{
+			Path:   "new.txt",
+			Before: nil,
+			After:  []byte("hello\n"),
+		},
+	})
+
+	for _, needle := range []string{
+		">> diff [2 file(s) | 1 modified | 1 added] ",
+		"-- main.txt [modified] ",
+		"change=modified  before=1 line(s)  after=1 line(s)",
+		"--- before/main.txt",
+		"-- new.txt [added] ",
+		"change=added  before=0 line(s)  after=1 line(s)",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected terminal diff to contain %q, got %q", needle, rendered)
+		}
+	}
+}

@@ -221,6 +221,43 @@ func TestRuntimeStateConsumeRecentRequestCancelRejectsExpiredWindow(t *testing.T
 	}
 }
 
+func TestRuntimeStatePrintTurnSeparatorAddsBreathingRoom(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: false},
+		session: &Session{
+			Provider: "openai",
+			Model:    "gpt-5.4",
+		},
+	}
+
+	rt.printTurnSeparator(3)
+
+	rendered := out.String()
+	if !strings.HasPrefix(rendered, "\n----------------") {
+		t.Fatalf("expected turn separator to start after a blank line, got %q", rendered)
+	}
+	if strings.Contains(strings.ToLower(rendered), "turn") {
+		t.Fatalf("expected rendered separator to omit explicit turn labels, got %q", rendered)
+	}
+}
+
+func TestShouldIgnoreEmptyPromptSubmitOnlyForPrimaryBlankSubmit(t *testing.T) {
+	if !shouldIgnoreEmptyPromptSubmit(nil, "", "") {
+		t.Fatalf("expected top-level empty submit to be ignored")
+	}
+	if shouldIgnoreEmptyPromptSubmit(nil, "prefill", "") {
+		t.Fatalf("expected prefilled prompt to remain submit-capable")
+	}
+	if shouldIgnoreEmptyPromptSubmit([]string{"partial"}, "", "") {
+		t.Fatalf("expected multiline continuation blank submit to remain meaningful")
+	}
+	if shouldIgnoreEmptyPromptSubmit(nil, "", "   ") {
+		t.Fatalf("expected whitespace-only typed content to remain visible to caller")
+	}
+}
+
 func TestRuntimeStateCurrentThinkingStatusUsesProgressOverride(t *testing.T) {
 	rt := &runtimeState{}
 
@@ -250,7 +287,7 @@ func TestUIThinkingLineSuppressesRedundantGenericThinkingStatus(t *testing.T) {
 	if strings.Contains(line, "생각 중 ...") {
 		t.Fatalf("expected redundant generic thinking status to be omitted, got %q", line)
 	}
-	if !strings.Contains(line, "thinking [\\]") {
+	if !strings.Contains(line, "[thinking] [\\]") {
 		t.Fatalf("expected thinking prefix to remain, got %q", line)
 	}
 }
@@ -501,7 +538,7 @@ func TestRuntimeStatePrintAssistantSuppressesEquivalentDuplicateOutput(t *testin
 	rt.printAssistant("  I prepared a patch.\nI will show the diff before applying it.  ")
 
 	rendered := strings.TrimSpace(out.String())
-	if strings.Count(rendered, "assistant:") != 1 {
+	if strings.Count(rendered, ">> assistant ") != 1 {
 		t.Fatalf("expected only one assistant line to be printed, got %q", rendered)
 	}
 }
@@ -518,7 +555,7 @@ func TestRuntimeStatePrintAssistantSuppressesEquivalentDuplicateOutputWithPunctu
 	rt.printAssistant("문제를 찾았습니다. `ActionService` 생성자에서 `lastKnownSettings`를 초기화하지 않아서 실행 직후에는 `null` 상태입니다.")
 
 	rendered := strings.TrimSpace(out.String())
-	if strings.Count(rendered, "assistant:") != 1 {
+	if strings.Count(rendered, ">> assistant ") != 1 {
 		t.Fatalf("expected punctuation-only variant to be suppressed, got %q", rendered)
 	}
 }
@@ -549,10 +586,10 @@ func TestRuntimeStateAppendAssistantStreamTrimsLeadingWhitespaceBeforeFirstVisib
 	rt.finishAssistantStream()
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "assistant: hello") {
+	if !strings.Contains(rendered, ">> assistant ") || !strings.Contains(rendered, "\nhello") {
 		t.Fatalf("expected streamed output to start with visible text, got %q", rendered)
 	}
-	if strings.Contains(rendered, "assistant: \n") {
+	if strings.Contains(rendered, "\n\nhello") {
 		t.Fatalf("expected no blank line immediately after assistant label, got %q", rendered)
 	}
 }
@@ -570,10 +607,10 @@ func TestRuntimeStateAppendAssistantStreamPreservesBufferedParagraphBreaks(t *te
 	rt.finishAssistantStream()
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "assistant: Hello\n\nWorld") {
+	if !strings.Contains(rendered, "Hello\n\nWorld") {
 		t.Fatalf("expected buffered paragraph break to be preserved, got %q", rendered)
 	}
-	if strings.Count(rendered, "assistant:") != 1 {
+	if strings.Count(rendered, ">> assistant ") != 1 {
 		t.Fatalf("expected a single assistant block, got %q", rendered)
 	}
 }
@@ -596,7 +633,7 @@ func TestRuntimeStateAppendAssistantStreamShowsWorkingStatusForRepeatedBlankLine
 	rt.stopThinkingIndicator()
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "assistant: Applying patch\n") {
+	if !strings.Contains(rendered, ">> assistant ") || !strings.Contains(rendered, "\nApplying patch\n") {
 		t.Fatalf("expected partial assistant reply to flush before placeholder status, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Working ...") {
@@ -618,11 +655,14 @@ func TestRuntimeStatePrintWhileThinkingFlushesActiveAssistantStream(t *testing.T
 	rt.printWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "assistant: partial reply\n") {
+	if !strings.Contains(rendered, ">> assistant ") || !strings.Contains(rendered, "\npartial reply\n") {
 		t.Fatalf("expected assistant stream to be terminated before info output, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "INFO  Creating automatic checkpoint before edit...") {
 		t.Fatalf("expected info line to be printed, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "  | ") {
+		t.Fatalf("expected progress output to be visually nested, got %q", rendered)
 	}
 	if strings.Contains(rendered, "partial replyINFO") {
 		t.Fatalf("expected assistant and info output to be separated, got %q", rendered)
@@ -682,8 +722,65 @@ func TestRuntimeStatePrintAssistantFlushesActiveAssistantStream(t *testing.T) {
 	rt.printAssistant("Final answer")
 
 	rendered := out.String()
-	if !strings.Contains(rendered, "assistant: partial reply\nassistant: Final answer") {
+	if strings.Count(rendered, ">> assistant ") != 2 {
+		t.Fatalf("expected two assistant blocks, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "partial reply\n>> assistant ") || !strings.Contains(rendered, "\nFinal answer") {
 		t.Fatalf("expected assistant stream to flush before final assistant output, got %q", rendered)
+	}
+}
+
+func TestRuntimeStatePrintAssistantWhileThinkingUsesNextActivityLine(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.printAssistantWhileThinking("I am going to inspect the auth flow first.")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "[next") {
+		t.Fatalf("expected assistant preamble to render as next-step activity, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "inspect the auth flow first") {
+		t.Fatalf("expected activity line to include assistant preamble text, got %q", rendered)
+	}
+}
+
+func TestPrintProgressMessageClassifiesEditEvents(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.printProgressMessage("Creating automatic checkpoint before edit...")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "[edit") {
+		t.Fatalf("expected checkpoint progress to use edit activity badge, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Creating automatic checkpoint before edit...") {
+		t.Fatalf("expected progress text to be preserved, got %q", rendered)
+	}
+}
+
+func TestPrintProgressMessageClassifiesToolEvents(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.printProgressMessage("read_file loaded main.go (12 line(s)).")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "[tool") {
+		t.Fatalf("expected read_file completion to use tool badge, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "read_file loaded main.go (12 line(s)).") {
+		t.Fatalf("expected tool completion text to be preserved, got %q", rendered)
 	}
 }
 
@@ -718,6 +815,49 @@ func TestRuntimeStateAppendAssistantStreamDoesNotBreakNormalContinuation(t *test
 	rendered := out.String()
 	if strings.Contains(rendered, "sentence\n continuation") {
 		t.Fatalf("expected normal continuation to stay on the same line, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamFormatsListBoundaryAcrossChunks(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.appendAssistantStream("Summary:")
+	rt.appendAssistantStream("\n- first\n- second")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "Summary:\n\n- first\n- second") {
+		t.Fatalf("expected streamed output to insert paragraph spacing before list, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateAppendAssistantStreamUsesCodeToneInsideFence(t *testing.T) {
+	var out bytes.Buffer
+	ui := UI{color: true}
+	rt := &runtimeState{
+		writer: &out,
+		ui:     ui,
+	}
+
+	rt.appendAssistantStream("Summary\n")
+	rt.appendAssistantStream("```go\n")
+	rt.appendAssistantStream("fmt.Println(\"hi\")\n")
+	rt.appendAssistantStream("```\n")
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, ui.mint("Summary")) {
+		t.Fatalf("expected paragraph text to keep assistant body tone, got %q", rendered)
+	}
+	if !strings.Contains(rendered, ui.assistantCode("```go")) {
+		t.Fatalf("expected fence line to use code tone during streaming, got %q", rendered)
+	}
+	if !strings.Contains(rendered, ui.assistantCode("fmt.Println(\"hi\")")) {
+		t.Fatalf("expected code line to use code tone during streaming, got %q", rendered)
 	}
 }
 
@@ -1312,6 +1452,9 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	if !strings.Contains(text, "write_approval:") {
 		t.Fatalf("expected runtime approval state in status, got %q", text)
 	}
+	if !strings.Contains(text, "-- Connection ") || !strings.Contains(text, "-- Approvals ") || !strings.Contains(text, "-- Extensions ") {
+		t.Fatalf("expected grouped status output, got %q", text)
+	}
 	if strings.Contains(text, "auto_checkpoint_edits:") {
 		t.Fatalf("did not expect config-only auto_checkpoint_edits in status, got %q", text)
 	}
@@ -1350,8 +1493,52 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	if !strings.Contains(text, "hooks_enabled:") {
 		t.Fatalf("expected hook settings in config output, got %q", text)
 	}
+	if !strings.Contains(text, "-- Model ") || !strings.Contains(text, "-- Tool Paths ") || !strings.Contains(text, "-- Extensions ") {
+		t.Fatalf("expected grouped config output, got %q", text)
+	}
 	if strings.Contains(text, "write_approval:") {
 		t.Fatalf("did not expect runtime-only approval state in config, got %q", text)
+	}
+}
+
+func TestTasksCommandRendersSummaryAndModernPlanItems(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	session.Plan = []PlanItem{
+		{Step: "Inspect UI render path", Status: "completed"},
+		{Step: "Refine status layout", Status: "in_progress"},
+		{Step: "Polish task cards", Status: "pending"},
+	}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "tasks"}); err != nil {
+		t.Fatalf("handleCommand(tasks): %v", err)
+	}
+
+	text := out.String()
+	for _, needle := range []string{
+		"-- Summary ",
+		"-- Plan ",
+		"completed:",
+		"in_progress:",
+		"pending:",
+		"01. [done] Inspect UI render path",
+		"02. [work] Refine status layout",
+		"03. [todo] Polish task cards",
+	} {
+		if !strings.Contains(text, needle) {
+			t.Fatalf("expected tasks output to contain %q, got %q", needle, text)
+		}
 	}
 }
 

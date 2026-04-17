@@ -271,6 +271,45 @@ func TestVerificationReportRepairGuidanceUsesFailureKind(t *testing.T) {
 	}
 }
 
+func TestVerificationReportRenderTerminalUsesGroupedSections(t *testing.T) {
+	report := VerificationReport{
+		Trigger:      "manual",
+		Mode:         VerificationAdaptive,
+		Decision:     "Adaptive verification stopped after a targeted failure to keep feedback local.",
+		ChangedPaths: []string{"main.go", "ui.go"},
+		Steps: []VerificationStep{
+			{
+				Label:       "go test ./...",
+				Command:     "go test ./...",
+				Stage:       "workspace",
+				Scope:       "workspace",
+				Status:      VerificationFailed,
+				FailureKind: "test_failure",
+				Hint:        "Fix the failing behavior first.",
+				Output:      "FAIL\n--- FAIL: TestOne\n--- FAIL: TestTwo\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\n",
+			},
+		},
+	}
+
+	rendered := report.RenderTerminal(UI{color: false})
+	for _, needle := range []string{
+		"-- Summary ",
+		"-- Decision ",
+		"-- Repair ",
+		"-- Steps ",
+		"01. [fail] go test ./... [test_failure]",
+		"trigger:",
+		"changed_paths:",
+		"cmd: go test ./...",
+		"hint: Fix the failing behavior first.",
+		"... (1 more line(s))",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected terminal render to contain %q, got %q", needle, rendered)
+		}
+	}
+}
+
 func TestBuildVerificationPlanFullModeSkipsTargetedSteps(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example\n\ngo 1.21\n"), 0o644); err != nil {

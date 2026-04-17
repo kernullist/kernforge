@@ -34,6 +34,7 @@ type runtimeState struct {
 	writer                   io.Writer
 	ui                       UI
 	bannerShown              bool
+	promptTurn               int
 	prefillInput             string
 	inputHistory             []string
 	store                    *SessionStore
@@ -66,6 +67,8 @@ type runtimeState struct {
 	streamingAssistant       bool
 	streamedAssistantText    strings.Builder
 	pendingAssistantSpacing  string
+	assistantStreamInFence   bool
+	assistantStreamLine      string
 	suppressThinkingMu       sync.Mutex
 	suppressThinking         bool
 	thinkingStatusMu         sync.Mutex
@@ -84,6 +87,17 @@ type runtimeState struct {
 var assistantFollowOnPreamblePattern = regexp.MustCompile(`([\.\:\!\?\)])((?i:Now let me |Let me |Now I |I'll |I will |I need to |First, ))`)
 var numberedPlanItemPattern = regexp.MustCompile(`^\d+[\.\)]\s+(.+)$`)
 var bulletPlanItemPattern = regexp.MustCompile(`^[-*]\s+(.+)$`)
+
+var fetchOpenRouterKeyStatus = FetchOpenRouterKeyStatus
+var fetchOpenRouterCredits = FetchOpenRouterCredits
+
+const openRouterCurrentKeyDocsURL = "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key"
+const openRouterCreditsDocsURL = "https://openrouter.ai/docs/api/api-reference/credits/get-credits"
+const anthropicBillingHelpURL = "https://support.anthropic.com/en/articles/8977456-how-do-i-pay-for-my-api-usage"
+const anthropicUsageCostDocsURL = "https://platform.claude.com/docs/en/api/usage-cost-api"
+const openAIUsageAPIDocsURL = "https://platform.openai.com/docs/api-reference/usage/costs?api-mode=responses&lang=curl"
+const openAIPrepaidBillingHelpURL = "https://help.openai.com/en/articles/8264644-how-can-i-set-up-prepaid-billing"
+const openAIUsageDashboardHelpURL = "https://help.openai.com/en/articles/10478918-api-usage-dashboard"
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("kernforge", flag.ContinueOnError)
@@ -222,7 +236,7 @@ func run(args []string) error {
 		PrepareEdit:           rt.prepareEdit,
 		ReportProgress: func(message string) {
 			rt.setThinkingStatus(message)
-			rt.printWhileThinking(rt.ui.infoLine(message))
+			rt.printProgressMessage(message)
 		},
 		CurrentSelection: func() *ViewerSelection {
 			return rt.session.CurrentSelection()
@@ -265,7 +279,7 @@ func run(args []string) error {
 		},
 		EmitProgress: func(text string) {
 			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
-			rt.printWhileThinking(rt.ui.infoLine(text))
+			rt.printProgressMessage(text)
 		},
 	}
 	rt.reloadExtensions()
@@ -386,13 +400,15 @@ func (rt *runtimeState) showBanner() {
 func (rt *runtimeState) redrawScreen() {
 	rt.bannerShown = false
 	rt.showBanner()
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Type /help for commands. End a line with \\ for multiline input."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Type a task or /help to begin."))
 }
 
 func (rt *runtimeState) runREPL() error {
 	rt.redrawScreen()
 
 	for {
+		nextTurn := rt.promptTurn + 1
+		rt.printTurnSeparator(nextTurn)
 		input, err := rt.readInput(rt.ui.prompt(rt.session.Provider, rt.session.Model))
 		if err != nil {
 			if errors.Is(err, ErrPromptCanceled) {
@@ -408,6 +424,7 @@ func (rt *runtimeState) runREPL() error {
 		if line == "" {
 			continue
 		}
+		rt.promptTurn = nextTurn
 		rt.rememberInputHistory(input)
 		if strings.HasPrefix(line, "!") {
 			if err := rt.runShell(strings.TrimPrefix(line, "!")); err != nil {
@@ -463,6 +480,11 @@ func (rt *runtimeState) runREPL() error {
 
 func (rt *runtimeState) runAgentReply(ctx context.Context, input string) (string, error) {
 	return rt.runAgentReplyWithImages(ctx, input, nil)
+}
+
+func (rt *runtimeState) printTurnSeparator(turn int) {
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.turnSeparator(turn, rt.session.Provider, rt.session.Model))
 }
 
 func (rt *runtimeState) formatAssistantError(err error) []string {
@@ -687,6 +709,8 @@ func (rt *runtimeState) resetAssistantStream() {
 	rt.streamingAssistant = false
 	rt.streamedAssistantText.Reset()
 	rt.pendingAssistantSpacing = ""
+	rt.assistantStreamInFence = false
+	rt.assistantStreamLine = ""
 	rt.streamMu.Unlock()
 }
 
@@ -735,6 +759,8 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 			}
 			rt.streamedAssistantText.Reset()
 			rt.pendingAssistantSpacing = ""
+			rt.assistantStreamInFence = false
+			rt.assistantStreamLine = ""
 			rt.setThinkingStatus(localizedText(rt.cfg, "Working ...", "작업 중 ..."))
 			rt.allowThinkingIndicator()
 			rt.startThinkingIndicator()
@@ -749,13 +775,15 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 	rt.suppressThinkingIndicator()
 	if !rt.streamingAssistant {
 		rt.stopThinkingIndicator()
-		rt.writeOutput(rt.ui.bold(rt.ui.info("assistant")) + rt.ui.dim(": "))
+		rt.writeOutput(rt.ui.assistantHeader() + "\n")
 		rt.streamingAssistant = true
 	}
-	text = normalizeAssistantStreamPreambleBoundary(rt.streamedAssistantText.String(), text)
-	text = splitAssistantPreambleBoundaries(text)
+	text = formatAssistantStreamDelta(rt.streamedAssistantText.String(), text)
+	if text == "" {
+		return
+	}
 	rt.streamedAssistantText.WriteString(text)
-	rt.writeOutput(rt.ui.mint(text))
+	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamInFence, &rt.assistantStreamLine))
 }
 
 func (rt *runtimeState) finishAssistantStream() {
@@ -774,6 +802,8 @@ func (rt *runtimeState) finishAssistantStream() {
 		rt.lastAssistantMu.Unlock()
 	}
 	rt.streamedAssistantText.Reset()
+	rt.assistantStreamInFence = false
+	rt.assistantStreamLine = ""
 }
 
 func (rt *runtimeState) flushAssistantStream() {
@@ -786,9 +816,20 @@ func (rt *runtimeState) printWhileThinking(lines ...string) {
 	defer resumeThinking()
 	rt.outputMu.Lock()
 	for _, line := range lines {
-		fmt.Fprintln(rt.writer, line)
+		if strings.TrimSpace(line) == "" {
+			fmt.Fprintln(rt.writer)
+			continue
+		}
+		fmt.Fprintln(rt.writer, rt.ui.progressLine(line))
 	}
 	rt.outputMu.Unlock()
+}
+
+func (rt *runtimeState) printProgressMessage(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	rt.printWhileThinking(rt.ui.activityLine(classifyProgressKind(text), text))
 }
 
 func (rt *runtimeState) writeOutput(text string) {
@@ -899,6 +940,47 @@ func compactThinkingStatus(cfg Config, text string) string {
 	return trimmed
 }
 
+func classifyProgressKind(text string) string {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	switch {
+	case lower == "":
+		return "info"
+	case strings.Contains(lower, "read_file"),
+		strings.Contains(lower, "grep"),
+		strings.Contains(lower, "list_files"),
+		strings.Contains(lower, "run_shell"),
+		strings.Contains(lower, "git_"),
+		strings.HasPrefix(lower, "using "):
+		return "tool"
+	case strings.Contains(lower, "verification"),
+		strings.Contains(lower, "verify"):
+		return "verify"
+	case strings.Contains(lower, "apply_patch"),
+		strings.Contains(lower, "write_file"),
+		strings.Contains(lower, "replace_in_file"),
+		strings.Contains(lower, "edit saved"),
+		strings.Contains(lower, "edit applied"),
+		strings.Contains(lower, "writing "),
+		strings.Contains(lower, "saved "),
+		strings.Contains(lower, "patch applied"),
+		strings.Contains(lower, "file updated"),
+		strings.Contains(lower, "replacement applied"),
+		strings.Contains(lower, "post-edit"):
+		return "edit"
+	case strings.Contains(lower, "checkpoint"),
+		strings.Contains(lower, "follow-up steps"):
+		return "edit"
+	case strings.Contains(lower, "analysis"):
+		return "analysis"
+	case strings.Contains(lower, "model"),
+		strings.Contains(lower, "retrying"),
+		strings.Contains(lower, "timeout"):
+		return "model"
+	default:
+		return "info"
+	}
+}
+
 func normalizeAssistantDisplayText(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -949,6 +1031,22 @@ func normalizeAssistantStreamPreambleBoundary(existing string, incoming string) 
 	}
 }
 
+func formatAssistantStreamDelta(existing string, incoming string) string {
+	if incoming == "" {
+		return ""
+	}
+	incoming = normalizeAssistantStreamPreambleBoundary(existing, incoming)
+	incoming = splitAssistantPreambleBoundaries(incoming)
+
+	formattedExisting := formatAssistantText(existing)
+	formattedCombined := formatAssistantText(existing + incoming)
+	if strings.HasPrefix(formattedCombined, formattedExisting) {
+		delta := formattedCombined[len(formattedExisting):]
+		return delta + strings.Repeat("\n", countTrailingLineBreaks(incoming))
+	}
+	return incoming
+}
+
 func splitAssistantPreambleBoundaries(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return text
@@ -970,6 +1068,23 @@ func countLineBreaks(text string) int {
 			if i+1 >= len(text) || text[i+1] != '\n' {
 				count++
 			}
+		}
+	}
+	return count
+}
+
+func countTrailingLineBreaks(text string) int {
+	count := 0
+	for i := len(text) - 1; i >= 0; i-- {
+		switch text[i] {
+		case '\n':
+			count++
+		case '\r':
+			if i+1 >= len(text) || text[i+1] != '\n' {
+				count++
+			}
+		default:
+			return count
 		}
 	}
 	return count
@@ -1012,13 +1127,8 @@ func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
-	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
-	rt.suppressThinkingIndicator()
-	rt.stopThinkingIndicator()
-	rt.outputMu.Lock()
-	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
-	rt.outputMu.Unlock()
+	rt.printWhileThinking(rt.ui.activityLine("next", text))
 }
 
 func (rt *runtimeState) shouldHonorRequestCancel() bool {
@@ -1260,7 +1370,7 @@ func (rt *runtimeState) readInput(prompt string) (string, error) {
 		if len(lines) == 0 {
 			historyNav = newInputHistoryNavigator(rt.inputHistoryEntries(), initial)
 		}
-		line, usedInteractive, err := rt.readInteractiveLine(currentPrompt, initial, historyNav)
+		line, usedInteractive, err := rt.readInteractiveLine(currentPrompt, initial, historyNav, false)
 		if !usedInteractive {
 			fmt.Fprint(rt.writer, currentPrompt)
 			if initial != "" {
@@ -1281,6 +1391,11 @@ func (rt *runtimeState) readInput(prompt string) (string, error) {
 			}
 			return "", err
 		}
+		if shouldIgnoreEmptyPromptSubmit(lines, initial, line) {
+			currentPrompt = prompt
+			initial = ""
+			continue
+		}
 		if strings.HasSuffix(line, `\`) {
 			lines = append(lines, strings.TrimSuffix(line, `\`))
 			currentPrompt = rt.ui.continuationPrompt()
@@ -1290,6 +1405,10 @@ func (rt *runtimeState) readInput(prompt string) (string, error) {
 		lines = append(lines, line)
 		return strings.Join(lines, "\n"), nil
 	}
+}
+
+func shouldIgnoreEmptyPromptSubmit(lines []string, initial string, line string) bool {
+	return len(lines) == 0 && initial == "" && line == ""
 }
 
 func (rt *runtimeState) confirm(question string) (bool, error) {
@@ -1303,7 +1422,7 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 	defer resumeThinking()
 	for {
 		label := rt.confirmLabel(question)
-		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil)
+		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
 		if !usedInteractive {
 			fmt.Fprint(rt.writer, label+" ")
 			answer, err = rt.reader.ReadString('\n')
@@ -1471,7 +1590,7 @@ func (rt *runtimeState) promptValueWithOptions(prompt, defaultValue string, allo
 		label += " " + rt.ui.dim("["+defaultValue+"]")
 	}
 	label += " " + rt.ui.dim("[Esc to cancel]")
-	line, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil)
+	line, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
 	if !usedInteractive {
 		fmt.Fprint(rt.writer, label+" ")
 		line, err = rt.reader.ReadString('\n')
@@ -2470,19 +2589,181 @@ func (rt *runtimeState) handleOpenCommand(pathArg string) error {
 }
 
 func (rt *runtimeState) showProviderStatus() error {
-	base := rt.cfg.BaseURL
-	if strings.ToLower(rt.cfg.Provider) == "ollama" || strings.TrimSpace(base) != "" {
-		base = normalizeOllamaBaseURL(base)
-	}
-	if base == "" {
-		base = normalizeOllamaBaseURL("")
-	}
+	provider, model, base, apiKey := rt.currentProviderStatus()
 	fmt.Fprintln(rt.writer, rt.ui.section("Provider"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", valueOrUnset(rt.session.Provider)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", base))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("model", valueOrUnset(rt.session.Model)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("cached_models", fmt.Sprintf("%d", len(rt.ollamaModels))))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", valueOrUnset(provider)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", valueOrUnset(base)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("model", valueOrUnset(model)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("api_key", providerAPIKeyState(apiKey)))
+	if strings.EqualFold(provider, "ollama") {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cached_models", fmt.Sprintf("%d", len(rt.ollamaModels))))
+	}
+	if strings.TrimSpace(provider) != "" {
+		rt.printProviderBudgetStatus(provider, base, apiKey)
+	}
 	return nil
+}
+
+func (rt *runtimeState) currentProviderStatus() (string, string, string, string) {
+	provider := strings.ToLower(firstNonEmptyTrimmed(rt.session.Provider, rt.cfg.Provider))
+	model := firstNonEmptyTrimmed(rt.session.Model, rt.cfg.Model)
+	baseURL := normalizeProviderBaseURL(provider, firstNonEmptyTrimmed(rt.session.BaseURL, rt.cfg.BaseURL))
+	apiKey := strings.TrimSpace(rt.storedProviderKey(provider))
+	if strings.EqualFold(provider, rt.cfg.Provider) && strings.TrimSpace(rt.cfg.APIKey) != "" {
+		apiKey = strings.TrimSpace(rt.cfg.APIKey)
+	}
+	return provider, model, baseURL, apiKey
+}
+
+func firstNonEmptyTrimmed(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func providerAPIKeyState(apiKey string) string {
+	if strings.TrimSpace(apiKey) == "" {
+		return "(unset)"
+	}
+	return "configured"
+}
+
+func formatOptionalDecimal(value *float64) string {
+	if value == nil {
+		return "(unset)"
+	}
+	return strconv.FormatFloat(*value, 'f', 2, 64)
+}
+
+func formatOpenRouterLimitValue(value *float64) string {
+	if value == nil {
+		return "unlimited"
+	}
+	return formatOptionalDecimal(value)
+}
+
+func openRouterKeyKind(status OpenRouterKeyStatus) string {
+	parts := make([]string, 0, 2)
+	if status.IsManagementKey {
+		parts = append(parts, "management")
+	}
+	if status.IsProvisioningKey {
+		parts = append(parts, "provisioning")
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "standard")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatOpenRouterAccountBalance(credits OpenRouterCredits) string {
+	if credits.TotalCredits == nil || credits.TotalUsage == nil {
+		return "(unset)"
+	}
+	return strconv.FormatFloat(*credits.TotalCredits-*credits.TotalUsage, 'f', 2, 64)
+}
+
+func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey string) {
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Budget"))
+
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Billing page shows the organization's available credit balance."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Usage & Cost Admin API exposes historical usage/cost data, not a standard-key live balance endpoint."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("admin_access", "Organization admin API key required."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_docs", anthropicUsageCostDocsURL))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("billing_help", anthropicBillingHelpURL))
+	case "openai":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "No documented exact prepaid-balance API endpoint is available."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Organization usage and costs endpoints are available for reporting."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("rate_limits", "Per-request remaining requests/tokens arrive via x-ratelimit-* headers."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_docs", openAIUsageAPIDocsURL))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("billing_help", openAIPrepaidBillingHelpURL))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("dashboard_help", openAIUsageDashboardHelpURL))
+	case "openai-compatible":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Depends on the upstream provider; no generic standard endpoint is assumed."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use the upstream provider's documented billing and usage endpoints."))
+	case "openrouter":
+		rt.printOpenRouterBudgetStatus(baseURL, apiKey)
+	case "ollama":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Not applicable for local providers."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "No remote billing API is expected for local model servers."))
+	default:
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Unknown provider; budget visibility depends on the upstream API."))
+	}
+}
+
+func (rt *runtimeState) printOpenRouterBudgetStatus(baseURL, apiKey string) {
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_budget_api", "GET /key exposes key-level limit_remaining and usage."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("key_docs", openRouterCurrentKeyDocsURL))
+
+	if strings.TrimSpace(apiKey) == "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Skipped: no API key configured."))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	status, _, err := fetchOpenRouterKeyStatus(ctx, baseURL, apiKey)
+	if err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Failed."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup_error", err.Error()))
+		return
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Live key status loaded."))
+	if strings.TrimSpace(status.Label) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("key_label", status.Label))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("key_type", openRouterKeyKind(status)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("limit", formatOpenRouterLimitValue(status.Limit)))
+	if status.LimitRemaining != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("limit_remaining", formatOptionalDecimal(status.LimitRemaining)))
+	}
+	if status.Usage != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage", formatOptionalDecimal(status.Usage)))
+	}
+	if status.UsageDaily != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_daily", formatOptionalDecimal(status.UsageDaily)))
+	}
+	if status.UsageMonthly != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_monthly", formatOptionalDecimal(status.UsageMonthly)))
+	}
+	if status.BYOKUsage != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("byok_usage", formatOptionalDecimal(status.BYOKUsage)))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("free_tier", fmt.Sprintf("%t", status.IsFreeTier)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("include_byok_in_limit", fmt.Sprintf("%t", status.IncludeBYOKInLimit)))
+	if strings.TrimSpace(status.LimitReset) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("limit_reset", status.LimitReset))
+	}
+	if strings.TrimSpace(status.ExpiresAt) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("expires_at", status.ExpiresAt))
+	}
+
+	if !status.IsManagementKey {
+		return
+	}
+
+	credits, _, err := fetchOpenRouterCredits(ctx, baseURL, apiKey)
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("credits_api", openRouterCreditsDocsURL))
+	if err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("account_lookup_error", err.Error()))
+		return
+	}
+
+	if credits.TotalCredits != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("account_credits", formatOptionalDecimal(credits.TotalCredits)))
+	}
+	if credits.TotalUsage != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("account_usage", formatOptionalDecimal(credits.TotalUsage)))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("account_balance", formatOpenRouterAccountBalance(credits)))
 }
 
 func (rt *runtimeState) connectOllama(initialURL string) error {
@@ -2717,6 +2998,27 @@ func valueOrUnset(value string) string {
 	return value
 }
 
+type uiKV struct {
+	Key   string
+	Value string
+}
+
+func kv(key, value string) uiKV {
+	return uiKV{
+		Key:   key,
+		Value: value,
+	}
+}
+
+func (rt *runtimeState) printKVGroup(title string, items ...uiKV) {
+	if strings.TrimSpace(title) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.subsection(title))
+	}
+	for _, item := range items {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV(item.Key, item.Value))
+	}
+}
+
 func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	switch cmd.Name {
 	case "help":
@@ -2733,23 +3035,32 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "status":
 		fmt.Fprintln(rt.writer, rt.ui.section("Status"))
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("Current session and runtime state. Use /config for effective settings."))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("version", currentVersion()))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.session.Provider))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.session.Model))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", rt.cfg.BaseURL))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("permission_mode", rt.session.PermissionMode))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("cwd", rt.session.WorkingDir))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("session", rt.session.ID))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("sessions_dir", rt.store.Root()))
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Connection",
+			kv("version", currentVersion()),
+			kv("provider", valueOrUnset(rt.session.Provider)),
+			kv("model", valueOrUnset(rt.session.Model)),
+			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
+			kv("permission_mode", valueOrUnset(rt.session.PermissionMode)),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Workspace",
+			kv("cwd", rt.session.WorkingDir),
+			kv("session", rt.session.ID),
+			kv("sessions_dir", rt.store.Root()),
+		)
 		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
 		}
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("persistent_memory", fmt.Sprintf("%d", rt.persistentMemoryCount())))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("evidence_records", fmt.Sprintf("%d", rt.evidenceCount())))
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Data",
+			kv("memory_files", fmt.Sprintf("%d", len(rt.memory.Files))),
+			kv("persistent_memory", fmt.Sprintf("%d", rt.persistentMemoryCount())),
+			kv("evidence_records", fmt.Sprintf("%d", rt.evidenceCount())),
+		)
 		if rt.investigations != nil {
 			if count, active, last, err := rt.investigations.Stats(rt.workspace.BaseRoot); err == nil {
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("investigation_sessions", fmt.Sprintf("%d", count)))
@@ -2767,12 +3078,17 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 				}
 			}
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "auto-approve")))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "auto-accept")))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")))
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Approvals",
+			kv("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "auto-approve")),
+			kv("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "auto-accept")),
+			kv("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")),
+			kv("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")),
+		)
 		if rt.hookOverrides != nil {
 			if items, err := rt.hookOverrides.List(rt.workspace.BaseRoot); err == nil {
+				fmt.Fprintln(rt.writer)
+				fmt.Fprintln(rt.writer, rt.ui.subsection("Overrides"))
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_overrides", fmt.Sprintf("%d", len(items))))
 				for _, item := range items {
 					line := fmt.Sprintf("%s  expires=%s", item.RuleID, item.ExpiresAt.Format(time.RFC3339))
@@ -2783,6 +3099,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 				}
 			}
 		}
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.subsection("Extensions"))
 		if rt.session.LastVerification != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", rt.session.LastVerification.SummaryLine()))
 		}
@@ -3269,17 +3587,30 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, nil
 		}
 		fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
+		var completed int
+		var inProgress int
+		var pending int
 		for _, item := range rt.session.Plan {
-			status := item.Status
 			switch item.Status {
 			case "completed":
-				status = rt.ui.success(item.Status)
+				completed++
 			case "in_progress":
-				status = rt.ui.accent2(item.Status)
+				inProgress++
 			default:
-				status = rt.ui.dim(item.Status)
+				pending++
 			}
-			fmt.Fprintf(rt.writer, "[%s] %s\n", status, item.Step)
+		}
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Summary",
+			kv("total", fmt.Sprintf("%d", len(rt.session.Plan))),
+			kv("completed", fmt.Sprintf("%d", completed)),
+			kv("in_progress", fmt.Sprintf("%d", inProgress)),
+			kv("pending", fmt.Sprintf("%d", pending)),
+		)
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.subsection("Plan"))
+		for i, item := range rt.session.Plan {
+			fmt.Fprintln(rt.writer, rt.ui.planItem(i, item.Status, item.Step))
 		}
 	case "provider":
 		return false, rt.handleProviderCommand(cmd.Args)
@@ -3310,28 +3641,46 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "config":
 		fmt.Fprintln(rt.writer, rt.ui.section("Config"))
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("Effective settings merged from config files, environment, and session overrides."))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.cfg.Provider))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.cfg.Model))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", rt.cfg.BaseURL))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("shell", rt.cfg.Shell))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("permission_mode", string(rt.perms.Mode())))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("session_dir", rt.cfg.SessionDir))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("max_tool_iterations", fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hooks_enabled", fmt.Sprintf("%t", configHooksEnabled(rt.cfg))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_presets", fmt.Sprintf("%d", len(rt.cfg.HookPresets))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("cmake_path", valueOrUnset(rt.cfg.CMakePath)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("ctest_path", valueOrUnset(rt.cfg.CTestPath)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("ninja_path", valueOrUnset(rt.cfg.NinjaPath)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("skill_paths", fmt.Sprintf("%d", len(rt.cfg.SkillPaths))))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_skills", strings.Join(rt.cfg.EnabledSkills, ", ")))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_servers", fmt.Sprintf("%d", len(rt.cfg.MCPServers))))
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Model",
+			kv("provider", valueOrUnset(rt.cfg.Provider)),
+			kv("model", valueOrUnset(rt.cfg.Model)),
+			kv("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)),
+			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Runtime",
+			kv("shell", valueOrUnset(rt.cfg.Shell)),
+			kv("permission_mode", string(rt.perms.Mode())),
+			kv("session_dir", rt.cfg.SessionDir),
+			kv("max_tool_iterations", fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))),
+			kv("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Automation",
+			kv("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))),
+			kv("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))),
+			kv("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Hooks",
+			kv("hooks_enabled", fmt.Sprintf("%t", configHooksEnabled(rt.cfg))),
+			kv("hook_presets", fmt.Sprintf("%d", len(rt.cfg.HookPresets))),
+			kv("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Tool Paths",
+			kv("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)),
+			kv("cmake_path", valueOrUnset(rt.cfg.CMakePath)),
+			kv("ctest_path", valueOrUnset(rt.cfg.CTestPath)),
+			kv("ninja_path", valueOrUnset(rt.cfg.NinjaPath)),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Extensions",
+			kv("skill_paths", fmt.Sprintf("%d", len(rt.cfg.SkillPaths))),
+			kv("enabled_skills", strings.Join(rt.cfg.EnabledSkills, ", ")),
+			kv("mcp_servers", fmt.Sprintf("%d", len(rt.cfg.MCPServers))),
+		)
 		if rt.longMem != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("persistent_memory_path", rt.longMem.Path))
 		}
@@ -3747,7 +4096,7 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 	toolName := report.MissingCommandTool()
 	label := rt.ui.warnLine("Automatic verification failed because a verification tool could not be started.") + " " + rt.ui.dim("[p=set path/y=disable now/a=always disable for this workspace, Esc=cancel]")
 	for {
-		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil)
+		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
 		if !usedInteractive {
 			fmt.Fprint(rt.writer, label+" ")
 			answer, err = rt.reader.ReadString('\n')

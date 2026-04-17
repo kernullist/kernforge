@@ -82,6 +82,11 @@
 - `/new-feature status [id]`
 - `/new-feature implement [id]`
 
+provider 및 런타임 확인:
+- `/provider status`
+- `/status`
+- `/config`
+
 ## 3. 시작할 때 가장 좋은 시나리오
 
 ### Driver 변경
@@ -123,14 +128,16 @@
 ## 4. 막혔을 때 가장 먼저 볼 것
 
 1. `/status`
-2. `/analyze-performance startup` 또는 관련 focus
-3. `/evidence-dashboard`
-4. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
-5. `/hooks`
+2. `/provider status`
+3. `/analyze-performance startup` 또는 관련 focus
+4. `/evidence-dashboard`
+5. `/mem-search category:driver` 또는 `/mem-search category:telemetry`
+6. `/hooks`
 
 빠른 해석:
 1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. approval 상태도 여기서 본다.
 2. `/config`는 provider 기본값, hooks, locale, verification toggle 같은 현재 적용 설정을 빠르게 보는 용도다.
+3. `/provider status`는 현재 provider 연결 상태를 빠르게 보는 용도다. 정규화된 endpoint, API key 설정 여부, provider별로 실제 확인 가능한 budget visibility 범위를 보여준다.
 
 Windows build tool이 없어 automatic verification이 실패하면:
 1. 먼저 `/detect-verification-tools`를 실행한다.

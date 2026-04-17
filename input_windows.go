@@ -76,7 +76,7 @@ type inputRecord struct {
 	KeyEvent  keyEventRecord
 }
 
-func (rt *runtimeState) readInteractiveLine(prompt string, initial string, historyNav *inputHistoryNavigator) (string, bool, error) {
+func (rt *runtimeState) readInteractiveLine(prompt string, initial string, historyNav *inputHistoryNavigator, allowEmptySubmit bool) (string, bool, error) {
 	handle := syscall.Handle(os.Stdin.Fd())
 	var originalMode uint32
 	r1, _, _ := getConsoleModeProc.Call(uintptr(handle), uintptr(unsafe.Pointer(&originalMode)))
@@ -196,6 +196,9 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 		}
 		switch event.VirtualKeyCode {
 		case inputVKReturn:
+			if !allowEmptySubmit && len(buffer) == 0 {
+				continue
+			}
 			fmt.Fprint(rt.writer, "\n")
 			return string(buffer), true, nil
 		case inputVKEscape:
