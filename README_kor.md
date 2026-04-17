@@ -86,9 +86,13 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다.
 - interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
 - semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
+- `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, `compile_commands.json`를 build alignment에 반영해 재사용 가능한 build context를 만든다.
+- `structural_index_v2`는 이제 file 중심 요약을 넘어 symbol anchor, build ownership edge, function-level call edge, overlay edge를 함께 담는다.
+- `trace`, `impact`, `security` retrieval은 graph neighborhood를 확장하고 `build_context_v2`, `path_v2` 근거를 함께 남긴다.
 - Unreal project/module/target/type/network/asset/system/config 신호를 구조화해 대형 UE 프로젝트 대응
 - semantic shard planner와 semantic-aware worker/reviewer prompt로 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분석
 - knowledge pack 외에도 structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, vector ingestion export를 함께 생성
+- source anchor parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function 같은 modern C++ 패턴까지 추적한다.
 - `security` 모드 최종 문서에는 privileged path를 따로 읽기 쉽도록 `Security Surface Decomposition` 섹션이 추가된다.
 - 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
 - `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
@@ -147,9 +151,12 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### 사용성
 
-- 명령, 경로, 멘션, MCP 대상, 고정 인자, analyze-project mode, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close` 같은 저장된 id까지 `Tab` 완성
+- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/provider status|anthropic|openai|openrouter|ollama` 같은 provider 하위 명령, analyze-project mode, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close` 같은 저장된 id까지 `Tab` 완성
+- command/subcommand 자동완성 메뉴에 각 후보 설명을 같이 보여줘서 이름만 나열되지 않게 했다.
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
+- 메인 프롬프트에서 빈 입력 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
+- REPL은 compact branded banner, subtle turn divider, grouped status/config section, assistant/tool activity stream 분리로 더 촘촘한 터미널 UX를 사용한다.
 - assistant streaming 출력은 선행 blank chunk를 무시하고, progress/info 출력 전 경계를 정리하며, 반복 follow-on preamble 사이에 줄바꿈을 넣어 더 읽기 쉽게 출력된다.
 - 기본 대기 문구는 thinking prefix와 중복되지 않게 정리해서 같은 의미를 두 번 보여주지 않는다.
 - 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
@@ -276,6 +283,8 @@ OpenAI-compatible:
 $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
+
+대화형 REPL 안에서는 `/provider status`로 현재 provider, 정규화된 `base_url`, API key 설정 여부, provider별 budget visibility를 바로 확인할 수 있습니다.
 
 LM Studio:
 
@@ -480,6 +489,7 @@ provider별:
 
 - 기본 base URL: `https://api.anthropic.com`
 - `ANTHROPIC_API_KEY` 사용
+- `/provider status`는 live balance를 추정하지 않고 Billing page 가시성과 Usage & Cost Admin API 제약을 함께 보여준다.
 
 ### OpenAI
 
@@ -489,6 +499,7 @@ provider별:
 - JSON이 아닌 assistant tool-call arguments는 전송 전에 정규화한다.
 - HTTP 오류 메시지에는 provider 디버깅을 빠르게 하기 위한 compact request preview가 포함된다.
 - tool call이 진행 중이 아닐 때는 streamed partial text를 timeout에서도 최대한 살리고, timeout 난 model turn은 한 번 자동 재시도한다.
+- `/provider status`는 usage/cost visibility와 rate-limit 단서를 보여주고, exact prepaid balance endpoint가 공식 문서에 없다는 점을 같이 알려준다.
 
 ### OpenRouter
 
@@ -496,6 +507,7 @@ provider별:
 - `OPENROUTER_API_KEY` 사용
 - 대화형 모델 선택기에서 페이지 이동, 필터링, curated 추천, reasoning-only 필터, 정렬 지원
 - OpenAI-compatible client와 동일하게 request timeout, partial stream 복구, incomplete stream fallback, 1회 자동 재시도를 사용한다.
+- `/provider status`는 live `/key` 조회로 key-level `limit_remaining`, `usage`를 보여주고 management key면 `/credits`도 함께 조회한다.
 
 ### OpenAI-compatible
 
@@ -503,6 +515,7 @@ provider별:
 - 별도 지정이 없으면 `OPENAI_API_KEY` 사용
 - `base_url`을 명시하는 구성이 일반적
 - OpenAI provider와 동일한 tool-call 정규화 및 request preview 진단을 적용한다.
+- `/provider status`는 정규화된 endpoint와 key 존재 여부까지는 보여주지만 billing visibility는 upstream provider 구현에 따라 달라진다.
 
 ## 메모리
 
@@ -607,6 +620,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 ```text
 /config
 /context
+/provider status
 /status
 /version
 /help
@@ -618,6 +632,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 
 - `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 approval 상태, 세션 id, 메모리/검증/MCP 카운트가 여기에 들어간다.
 - `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, hook/locale/verification 설정이 여기에 들어간다.
+- `/provider status`는 active provider, 정규화된 `base_url`, API key 설정 여부, provider별 budget visibility를 보여준다. OpenRouter는 live lookup을 수행하고, OpenAI/Anthropic은 공식 문서 기준의 제약과 billing 안내를 노출한다.
 
 ### 대화와 세션 명령
 
@@ -636,6 +651,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 
 ```text
 /provider
+/provider status
 /model [name]
 /profile
 /profile-review
@@ -646,7 +662,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /do-plan-review <task>
 /new-feature <task>
 /permissions [mode]
-/set_max_tool_iterations <n>
+/set-max-tool-iterations <n>
 /locale-auto [on|off]
 ```
 
@@ -663,6 +679,8 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 `Tab` 완성 지원 대상:
 
 - slash command
+- command/subcommand 설명이 붙은 completion menu
+- `/provider status|anthropic|openai|openrouter|ollama`
 - `/analyze-project --mode ...`와 내장 mode 값
 - `@file` 멘션
 - `/open <path>`

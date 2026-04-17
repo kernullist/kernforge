@@ -1,7 +1,7 @@
 # 차세대 Project Analysis 아키텍처 제안
 
 기준 시점:
-- 코드베이스 기준: 2026-04-05
+- 코드베이스 기준: 2026-04-18
 
 대상:
 - UE5급 대규모 게임 프로젝트
@@ -40,6 +40,23 @@
 5. fallback 문서와 휴리스틱 graph는 설명에는 좋지만 정밀 영향 분석에는 한계가 있다.
 
 결론적으로 다음 단계는 "더 큰 컨텍스트를 LLM에 넣는 것"이 아니라 "정밀 인덱스를 먼저 만들고 LLM은 그 위에서 합성하게 하는 것"이어야 한다.
+
+## 1.1 구현 상태 업데이트
+
+현재 코드 기준으로 이미 들어간 항목은 다음과 같다.
+
+1. `structural_index_v2`는 build context, symbol anchor, build ownership edge, call edge, overlay edge까지 포함하는 방향으로 확장되었다.
+2. build alignment는 `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, `compile_commands.json`를 함께 읽어 module/target/file 관계를 build context로 정리한다.
+3. source anchor 계층은 Go/C++/C# 함수 정의를 line range와 함께 올리고, function-level call edge와 security overlay를 추가한다.
+4. `trace`, `impact`, `security` retrieval은 keyword hit만 고르는 방식에서 graph neighborhood/path expansion 기반으로 강화되어 `build_context_v2`, `path_v2` 근거를 남긴다.
+5. incremental reuse는 file hash만이 아니라 symbol neighborhood를 반영한 semantic fingerprint 경로를 사용한다.
+6. C++ parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function 같은 modern C++ 패턴을 처리한다.
+
+아직 남아 있는 대표 항목은 다음과 같다.
+
+1. 독립적인 `surface` 모드 정식 노출
+2. build condition과 generated code를 더 정밀하게 반영하는 parser/ingestion 계층
+3. symbol-level invalidation의 세분화와 UE generated artifact 연계 강화
 
 ## 2. 기존 방법론 검토
 

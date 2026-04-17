@@ -67,36 +67,38 @@ type ScannedFile struct {
 }
 
 type ProjectSnapshot struct {
-	Root                string                   `json:"root"`
-	ModulePath          string                   `json:"module_path,omitempty"`
-	AnalysisMode        string                   `json:"analysis_mode,omitempty"`
-	GeneratedAt         time.Time                `json:"generated_at"`
-	Files               []ScannedFile            `json:"files"`
-	Directories         []string                 `json:"directories"`
-	ManifestFiles       []string                 `json:"manifest_files"`
-	EntrypointFiles     []string                 `json:"entrypoint_files"`
-	SolutionProjects    []SolutionProject        `json:"solution_projects,omitempty"`
-	StartupProjects     []string                 `json:"startup_projects,omitempty"`
-	PrimaryStartup      string                   `json:"primary_startup,omitempty"`
-	UnrealProjects      []UnrealProject          `json:"unreal_projects,omitempty"`
-	UnrealPlugins       []UnrealPlugin           `json:"unreal_plugins,omitempty"`
-	UnrealTargets       []UnrealTarget           `json:"unreal_targets,omitempty"`
-	UnrealModules       []UnrealModule           `json:"unreal_modules,omitempty"`
-	UnrealTypes         []UnrealReflectedType    `json:"unreal_types,omitempty"`
-	UnrealNetwork       []UnrealNetworkSurface   `json:"unreal_network,omitempty"`
-	UnrealAssets        []UnrealAssetReference   `json:"unreal_assets,omitempty"`
-	UnrealSystems       []UnrealGameplaySystem   `json:"unreal_systems,omitempty"`
-	UnrealSettings      []UnrealProjectSetting   `json:"unreal_settings,omitempty"`
-	PrimaryUnrealModule string                   `json:"primary_unreal_module,omitempty"`
-	AnalysisLenses      []AnalysisLens           `json:"analysis_lenses,omitempty"`
-	RuntimeEdges        []RuntimeEdge            `json:"runtime_edges,omitempty"`
-	ProjectEdges        []ProjectEdge            `json:"project_edges,omitempty"`
-	TotalFiles          int                      `json:"total_files"`
-	TotalLines          int                      `json:"total_lines"`
-	ImportGraph         map[string][]string      `json:"import_graph"`
-	ReverseImportGraph  map[string][]string      `json:"reverse_import_graph"`
-	FilesByPath         map[string]ScannedFile   `json:"-"`
-	FilesByDirectory    map[string][]ScannedFile `json:"-"`
+	Root                string                     `json:"root"`
+	ModulePath          string                     `json:"module_path,omitempty"`
+	AnalysisMode        string                     `json:"analysis_mode,omitempty"`
+	GeneratedAt         time.Time                  `json:"generated_at"`
+	Files               []ScannedFile              `json:"files"`
+	Directories         []string                   `json:"directories"`
+	ManifestFiles       []string                   `json:"manifest_files"`
+	EntrypointFiles     []string                   `json:"entrypoint_files"`
+	SolutionProjects    []SolutionProject          `json:"solution_projects,omitempty"`
+	StartupProjects     []string                   `json:"startup_projects,omitempty"`
+	PrimaryStartup      string                     `json:"primary_startup,omitempty"`
+	UnrealProjects      []UnrealProject            `json:"unreal_projects,omitempty"`
+	UnrealPlugins       []UnrealPlugin             `json:"unreal_plugins,omitempty"`
+	UnrealTargets       []UnrealTarget             `json:"unreal_targets,omitempty"`
+	UnrealModules       []UnrealModule             `json:"unreal_modules,omitempty"`
+	UnrealTypes         []UnrealReflectedType      `json:"unreal_types,omitempty"`
+	UnrealNetwork       []UnrealNetworkSurface     `json:"unreal_network,omitempty"`
+	UnrealAssets        []UnrealAssetReference     `json:"unreal_assets,omitempty"`
+	UnrealSystems       []UnrealGameplaySystem     `json:"unreal_systems,omitempty"`
+	UnrealSettings      []UnrealProjectSetting     `json:"unreal_settings,omitempty"`
+	CompileCommands     []CompilationCommandRecord `json:"compile_commands,omitempty"`
+	BuildContexts       []BuildContextRecord       `json:"build_contexts,omitempty"`
+	PrimaryUnrealModule string                     `json:"primary_unreal_module,omitempty"`
+	AnalysisLenses      []AnalysisLens             `json:"analysis_lenses,omitempty"`
+	RuntimeEdges        []RuntimeEdge              `json:"runtime_edges,omitempty"`
+	ProjectEdges        []ProjectEdge              `json:"project_edges,omitempty"`
+	TotalFiles          int                        `json:"total_files"`
+	TotalLines          int                        `json:"total_lines"`
+	ImportGraph         map[string][]string        `json:"import_graph"`
+	ReverseImportGraph  map[string][]string        `json:"reverse_import_graph"`
+	FilesByPath         map[string]ScannedFile     `json:"-"`
+	FilesByDirectory    map[string][]ScannedFile   `json:"-"`
 }
 
 type SolutionProject struct {
@@ -443,16 +445,18 @@ type ProjectAnalysisRun struct {
 }
 
 type projectAnalyzer struct {
-	cfg            Config
-	analysisCfg    ProjectAnalysisConfig
-	client         ProviderClient
-	workerClient   ProviderClient
-	reviewerClient ProviderClient
-	workspace      Workspace
-	onStatus       func(string)
-	onDebug        func(string)
-	debugMu        sync.Mutex
-	debugEvents    []string
+	cfg                   Config
+	analysisCfg           ProjectAnalysisConfig
+	client                ProviderClient
+	workerClient          ProviderClient
+	reviewerClient        ProviderClient
+	workspace             Workspace
+	cachedUnrealGraph     UnrealSemanticGraph
+	cachedSemanticIndexV2 SemanticIndexV2
+	onStatus              func(string)
+	onDebug               func(string)
+	debugMu               sync.Mutex
+	debugEvents           []string
 }
 
 type analysisReuseState struct {
@@ -688,6 +692,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	a.debugMu.Lock()
 	a.debugEvents = nil
 	a.debugMu.Unlock()
+	a.cachedUnrealGraph = UnrealSemanticGraph{}
+	a.cachedSemanticIndexV2 = SemanticIndexV2{}
 	run.Summary.RunID = time.Now().Format("20060102-150405")
 	run.Summary.Goal = strings.TrimSpace(goal)
 	run.Summary.Mode = effectiveProjectAnalysisMode(mode, goal)
@@ -720,6 +726,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses(goal, run.Summary.Mode))
 	a.scoreFileImportance(&snapshot, snapshot.AnalysisLenses)
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
+	a.cachedUnrealGraph = buildUnrealSemanticGraph(snapshot, goal, run.Summary.RunID)
+	a.cachedSemanticIndexV2 = buildSemanticIndexV2(snapshot, goal, run.Summary.RunID, a.cachedUnrealGraph)
 	run.Snapshot = snapshot
 
 	agentCount := a.estimateAgentCount(snapshot)
@@ -804,9 +812,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.FinalDocument = document
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
 	run.KnowledgePack = buildKnowledgePack(run.Snapshot, run.Shards, run.Reports, goal, run.Summary.RunID)
-	run.UnrealGraph = buildUnrealSemanticGraph(run.Snapshot, goal, run.Summary.RunID)
+	run.UnrealGraph = a.cachedUnrealGraph
 	run.SemanticIndex = buildSemanticIndex(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
-	run.SemanticIndexV2 = buildSemanticIndexV2(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
+	run.SemanticIndexV2 = a.cachedSemanticIndexV2
 	run.VectorCorpus = buildVectorCorpus(run)
 	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
 	a.debug("final document synthesis completed")
@@ -920,6 +928,7 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 	a.resolveImports(&snapshot)
 	a.enrichSolutionMetadata(&snapshot)
 	a.enrichUnrealMetadata(&snapshot)
+	enrichBuildAlignment(&snapshot)
 	sort.Strings(snapshot.Directories)
 	sort.Strings(snapshot.ManifestFiles)
 	sort.Strings(snapshot.EntrypointFiles)
@@ -5652,6 +5661,13 @@ func (a *projectAnalyzer) computeFileSetFingerprint(snapshot ProjectSnapshot, pa
 }
 
 func (a *projectAnalyzer) computeSemanticFingerprint(snapshot ProjectSnapshot, paths []string) string {
+	if hasSemanticIndexV2Data(a.cachedSemanticIndexV2) {
+		return a.computeSemanticFingerprintV2(snapshot, a.cachedSemanticIndexV2, paths)
+	}
+	return a.computeSemanticFingerprintLegacy(snapshot, paths)
+}
+
+func (a *projectAnalyzer) computeSemanticFingerprintLegacy(snapshot ProjectSnapshot, paths []string) string {
 	hash := sha256.New()
 	sorted := analysisUniqueStrings(append([]string(nil), paths...))
 	sort.Strings(sorted)
@@ -5736,6 +5752,217 @@ func (a *projectAnalyzer) computeSemanticFingerprint(snapshot ProjectSnapshot, p
 			item.HUDClass)
 	}
 	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func (a *projectAnalyzer) computeSemanticFingerprintV2(snapshot ProjectSnapshot, index SemanticIndexV2, paths []string) string {
+	hash := sha256.New()
+	sortedPaths := analysisUniqueStrings(append([]string(nil), paths...))
+	sort.Strings(sortedPaths)
+	fileSet := map[string]struct{}{}
+	seedIDs := map[string]struct{}{}
+	for _, path := range sortedPaths {
+		fileSet[path] = struct{}{}
+		file := snapshot.FilesByPath[path]
+		fmt.Fprintf(hash, "file:%s|importance:%d|entry:%t|manifest:%t\n", path, file.ImportanceScore, file.IsEntrypoint, file.IsManifest)
+		for _, ctxID := range buildContextIDsForFile(snapshot, path) {
+			seedIDs[ctxID] = struct{}{}
+		}
+	}
+
+	for _, item := range index.Symbols {
+		if _, ok := fileSet[item.File]; ok {
+			seedIDs[item.ID] = struct{}{}
+			continue
+		}
+		if strings.TrimSpace(item.BuildContextID) != "" {
+			if _, ok := seedIDs[item.BuildContextID]; ok {
+				seedIDs[item.ID] = struct{}{}
+			}
+		}
+	}
+	for _, item := range index.Occurrences {
+		if _, ok := fileSet[item.File]; ok {
+			seedIDs[item.SymbolID] = struct{}{}
+		}
+	}
+
+	nodeSet := map[string]struct{}{}
+	for id := range seedIDs {
+		nodeSet[id] = struct{}{}
+	}
+	expandNodes := func(sourceID string, targetID string, touchesFile bool) {
+		if touchesFile {
+			if strings.TrimSpace(sourceID) != "" {
+				nodeSet[sourceID] = struct{}{}
+			}
+			if strings.TrimSpace(targetID) != "" {
+				nodeSet[targetID] = struct{}{}
+			}
+			return
+		}
+		if _, ok := seedIDs[sourceID]; ok {
+			if strings.TrimSpace(targetID) != "" {
+				nodeSet[targetID] = struct{}{}
+			}
+		}
+		if _, ok := seedIDs[targetID]; ok {
+			if strings.TrimSpace(sourceID) != "" {
+				nodeSet[sourceID] = struct{}{}
+			}
+		}
+	}
+	for _, edge := range index.CallEdges {
+		expandNodes(edge.SourceID, edge.TargetID, edgeTouchesFiles(edge.Evidence, fileSet))
+	}
+	for _, edge := range index.BuildOwnershipEdges {
+		expandNodes(edge.SourceID, edge.TargetID, edgeTouchesFiles(edge.Evidence, fileSet))
+	}
+	for _, edge := range index.InheritanceEdges {
+		expandNodes(edge.SourceID, edge.TargetID, edgeTouchesFiles(edge.Evidence, fileSet))
+	}
+	for _, edge := range index.OverlayEdges {
+		expandNodes(edge.SourceID, edge.TargetID, edgeTouchesFiles(edge.Evidence, fileSet))
+	}
+	for _, edge := range index.References {
+		touchesFile := edgeTouchesFiles(edge.Evidence, fileSet)
+		if _, ok := fileSet[edge.SourceFile]; ok {
+			touchesFile = true
+		}
+		if _, ok := fileSet[edge.TargetPath]; ok {
+			touchesFile = true
+		}
+		expandNodes(edge.SourceID, edge.TargetID, touchesFile)
+	}
+	for _, edge := range index.GeneratedCodeEdges {
+		if _, ok := fileSet[edge.SourceFile]; ok {
+			if strings.TrimSpace(edge.TargetID) != "" {
+				nodeSet[edge.TargetID] = struct{}{}
+			}
+		}
+	}
+
+	for _, ctx := range index.BuildContexts {
+		if _, ok := nodeSet[ctx.ID]; !ok && !buildContextTouchesFiles(ctx, fileSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "ctx:%s|%s|dir=%s|project=%s|target=%s|module=%s|compiler=%s|files=%s|defines=%s|includes=%s|force=%s\n",
+			ctx.ID,
+			ctx.Kind,
+			ctx.Directory,
+			ctx.Project,
+			ctx.Target,
+			ctx.Module,
+			ctx.Compiler,
+			strings.Join(analysisUniqueStrings(ctx.Files), "|"),
+			strings.Join(analysisUniqueStrings(ctx.Defines), "|"),
+			strings.Join(analysisUniqueStrings(ctx.IncludePaths), "|"),
+			strings.Join(analysisUniqueStrings(ctx.ForceIncludes), "|"),
+		)
+	}
+	for _, symbol := range index.Symbols {
+		if _, ok := nodeSet[symbol.ID]; !ok {
+			continue
+		}
+		attrKeys := make([]string, 0, len(symbol.Attributes))
+		for key := range symbol.Attributes {
+			attrKeys = append(attrKeys, key)
+		}
+		sort.Strings(attrKeys)
+		attrPairs := []string{}
+		for _, key := range attrKeys {
+			attrPairs = append(attrPairs, key+"="+symbol.Attributes[key])
+		}
+		fmt.Fprintf(hash, "symbol:%s|name=%s|kind=%s|file=%s|module=%s|container=%s|ctx=%s|base=%s|sig=%s|lines=%d-%d|tags=%s|attrs=%s\n",
+			symbol.ID,
+			symbol.Name,
+			symbol.Kind,
+			symbol.File,
+			symbol.Module,
+			symbol.ContainerSymbolID,
+			symbol.BuildContextID,
+			symbol.BaseSymbolID,
+			symbol.Signature,
+			symbol.StartLine,
+			symbol.EndLine,
+			strings.Join(analysisUniqueStrings(symbol.Tags), "|"),
+			strings.Join(attrPairs, "|"),
+		)
+	}
+	for _, item := range index.Occurrences {
+		if _, ok := nodeSet[item.SymbolID]; !ok {
+			if _, fileOk := fileSet[item.File]; !fileOk {
+				continue
+			}
+		}
+		fmt.Fprintf(hash, "occurrence:%s|%s|%s\n", item.SymbolID, item.Role, item.File)
+	}
+	for _, edge := range index.CallEdges {
+		if !semanticV2EdgeTouchesNodeSet(edge.SourceID, edge.TargetID, fileSet, edge.Evidence, nodeSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "call:%s|%s|%s|%s\n", edge.SourceID, edge.TargetID, edge.Type, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range index.BuildOwnershipEdges {
+		if !semanticV2EdgeTouchesNodeSet(edge.SourceID, edge.TargetID, fileSet, edge.Evidence, nodeSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "build:%s|%s|%s|%s\n", edge.SourceID, edge.TargetID, edge.Type, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range index.InheritanceEdges {
+		if !semanticV2EdgeTouchesNodeSet(edge.SourceID, edge.TargetID, fileSet, edge.Evidence, nodeSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "inherit:%s|%s|%s\n", edge.SourceID, edge.TargetID, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range index.OverlayEdges {
+		if !semanticV2EdgeTouchesNodeSet(edge.SourceID, edge.TargetID, fileSet, edge.Evidence, nodeSet) {
+			continue
+		}
+		fmt.Fprintf(hash, "overlay:%s|%s|%s|%s|%s\n", edge.SourceID, edge.TargetID, edge.Type, edge.Domain, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range index.References {
+		touchesFile := edgeTouchesFiles(edge.Evidence, fileSet)
+		if _, ok := fileSet[edge.SourceFile]; ok {
+			touchesFile = true
+		}
+		if _, ok := fileSet[edge.TargetPath]; ok {
+			touchesFile = true
+		}
+		_, sourceHit := nodeSet[edge.SourceID]
+		_, targetHit := nodeSet[edge.TargetID]
+		if !sourceHit && !targetHit && !touchesFile {
+			continue
+		}
+		fmt.Fprintf(hash, "ref:%s|%s|%s|%s|%s|%s\n", edge.SourceID, edge.SourceFile, edge.TargetID, edge.TargetPath, edge.Type, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	for _, edge := range index.GeneratedCodeEdges {
+		if _, ok := fileSet[edge.SourceFile]; !ok {
+			if _, ok := nodeSet[edge.TargetID]; !ok {
+				continue
+			}
+		}
+		fmt.Fprintf(hash, "generated:%s|%s|%s|%s\n", edge.SourceFile, edge.TargetID, edge.Type, strings.Join(analysisUniqueStrings(edge.Evidence), "|"))
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
+func buildContextTouchesFiles(ctx BuildContextRecord, fileSet map[string]struct{}) bool {
+	for _, path := range ctx.Files {
+		if _, ok := fileSet[path]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticV2EdgeTouchesNodeSet(sourceID string, targetID string, fileSet map[string]struct{}, evidence []string, nodeSet map[string]struct{}) bool {
+	if _, ok := nodeSet[sourceID]; ok {
+		return true
+	}
+	if _, ok := nodeSet[targetID]; ok {
+		return true
+	}
+	return edgeTouchesFiles(evidence, fileSet)
 }
 
 func (a *projectAnalyzer) finalizeShard(snapshot ProjectSnapshot, shard *AnalysisShard, referenceLimit int) {

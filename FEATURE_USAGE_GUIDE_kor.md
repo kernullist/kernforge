@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-03
+- 코드베이스 기준: 2026-04-18
 
 대상 사용자:
 - Windows security 엔지니어
@@ -58,6 +58,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 6. 기본 대기 문구는 thinking prefix와 중복되지 않도록 정리한다.
 7. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
 8. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
+9. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
+10. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
 
 ### 런타임 상태 확인과 승인 상태
 
@@ -69,13 +71,17 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 대표 명령:
 - `/status`
 - `/config`
+- `/provider status`
 
 현재 동작:
 1. `/status`는 현재 세션과 런타임 상태를 보여준다. 예를 들어 세션 id, approval 상태, selection, verification, MCP 카운트가 여기에 들어간다.
 2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
-3. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
-4. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
-5. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
+3. `/provider status`는 active provider, 정규화된 endpoint, API key 존재 여부, provider별 budget visibility를 보여준다.
+4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.
+5. OpenAI와 Anthropic에서는 `/provider status`가 임의의 live balance endpoint를 추정하지 않고 공식 문서 기준의 billing/usage visibility 제약을 보여준다.
+6. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
+7. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
+8. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
 
 ### 프롬프트 의도 라우팅
 
@@ -138,7 +144,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 현재 project analysis가 추가로 남기는 핵심 산출물:
 1. `snapshot`: 스캔 결과와 runtime/project edge를 담는 구조화된 입력
-2. `structural index`: symbol, reference, build edge 중심의 정밀 인덱스
+2. `structural index`: symbol anchor, reference, build context, build ownership edge, call edge, overlay를 함께 담는 정밀 인덱스
 3. `unreal graph`: UE project/module/network/asset/system/config를 구조화한 semantic graph
 4. `knowledge pack`: 사람이 읽는 architecture digest와 subsystem 요약
 5. `vector corpus`: 임베딩 친화적인 project/subsystem/shard 문서 묶음
@@ -148,10 +154,14 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 1. semantic shard planner가 `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, `unreal_gameplay` 영역을 우선 분리한다.
 2. worker와 reviewer prompt가 shard 목적에 맞는 semantic focus와 review checklist를 받는다.
 3. incremental reuse가 file hash뿐 아니라 semantic fingerprint 변화까지 본다.
-4. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
-5. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
-6. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
-7. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
+4. `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, `compile_commands.json`를 build alignment에 반영해 재사용 가능한 build context를 만든다.
+5. Go/C++/C# source anchor를 symbol record, line range, call edge, build ownership edge, security overlay까지 포함하는 구조 자산으로 올린다.
+6. `trace`, `impact`, `security` retrieval은 키워드 hit만 보는 대신 graph neighborhood를 확장하고 `build_context_v2`, `path_v2` 근거를 남긴다.
+7. C++ anchor parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function을 처리한다.
+8. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
+9. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
+10. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
+11. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
 
 ### 2.1 Hook Engine
 
@@ -422,8 +432,9 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
+6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
 토큰 예산 관점에서 달라진 점:
 1. cached `analyze-project` summary가 더 적절하면 auto-scout 코드 조각보다 먼저 주입될 수 있다.

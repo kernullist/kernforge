@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-04-03
+- Codebase snapshot: 2026-04-18
 
 Intended readers:
 - Windows security engineers
@@ -60,6 +60,8 @@ Current behavior:
 6. Generic waiting text is collapsed so the thinking indicator does not repeat the same status twice.
 7. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
 8. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
+9. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
+10. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
 
 ### Runtime Inspection And Approval State
 
@@ -71,13 +73,17 @@ Purpose:
 Useful commands:
 - `/status`
 - `/config`
+- `/provider status`
 
 Current behavior:
 1. `/status` shows session and runtime state such as the active session id, current approvals, selection state, verification state, and MCP counts.
 2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
-3. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
-4. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
-5. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
+3. `/provider status` shows the active provider, normalized endpoint, API key presence, and provider-specific budget visibility.
+4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.
+5. For OpenAI and Anthropic, `/provider status` intentionally shows officially documented billing and usage visibility limits instead of inventing a live balance endpoint.
+6. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
+7. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
+8. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
 
 ### Prompt Intent Routing
 
@@ -140,7 +146,7 @@ Best used when:
 
 Additional artifacts now produced by project analysis:
 1. `snapshot`: structured scan output plus runtime and project edges.
-2. `structural index`: symbol, reference, and build-edge oriented analysis state.
+2. `structural index`: symbol anchors, references, build contexts, build ownership edges, call edges, and overlay-oriented analysis state.
 3. `unreal graph`: UE project, module, network, asset, system, and config semantics.
 4. `knowledge pack`: human-readable architecture digest and subsystem summaries.
 5. `vector corpus`: embedding-ready project, subsystem, and shard documents.
@@ -150,10 +156,14 @@ What materially changed for large and Unreal-heavy workspaces:
 1. A semantic shard planner now prioritizes `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, and `unreal_gameplay`.
 2. Worker and reviewer prompts now carry shard-specific semantic focus and review checklists.
 3. Incremental reuse now considers semantic fingerprints instead of relying only on file hashes.
-4. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
-5. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
-6. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
-7. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
+4. Build alignment now promotes `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records.
+5. Source anchors now lift Go, C++, and C# functions into symbol records with line ranges, call edges, build ownership edges, and security overlays.
+6. `trace`, `impact`, and `security` retrieval now expand graph neighborhoods instead of relying only on keyword hits, and they persist `build_context_v2` plus `path_v2` evidence.
+7. The C++ anchor parser now covers template out-of-line methods, operators, `requires`, `decltype(auto)`, API-macro-wrapped scopes, and friend functions.
+8. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
+9. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
+10. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
+11. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
 
 ### 2.1 Hook Engine
 
@@ -423,8 +433,9 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
 Prompt budget behavior that now matters:
 1. Cached `analyze-project` summaries can be injected ahead of auto-scouted code snippets when they are more relevant.
