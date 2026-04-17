@@ -7,15 +7,17 @@ import (
 )
 
 type relevantSemanticIndexV2Hits struct {
-	Mode        string
-	Files       []FileRecord
-	Symbols     []SymbolRecord
-	Calls       []CallEdge
-	Inheritance []InheritanceEdge
-	Builds      []BuildOwnershipEdge
-	Overlays    []OverlayEdge
-	References  []ReferenceRecord
-	Occurrences []SymbolOccurrence
+	Mode          string
+	Files         []FileRecord
+	BuildContexts []BuildContextRecord
+	Symbols       []SymbolRecord
+	Calls         []CallEdge
+	Inheritance   []InheritanceEdge
+	Builds        []BuildOwnershipEdge
+	Overlays      []OverlayEdge
+	References    []ReferenceRecord
+	Occurrences   []SymbolOccurrence
+	Paths         []SemanticPathV2
 }
 
 func classifyProjectAnalysisQueryMode(query string) string {
@@ -48,13 +50,15 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 	}
 	hits := collectRelevantSemanticIndexV2Hits(index, query)
 	if len(hits.Files) == 0 &&
+		len(hits.BuildContexts) == 0 &&
 		len(hits.Symbols) == 0 &&
 		len(hits.Calls) == 0 &&
 		len(hits.Inheritance) == 0 &&
 		len(hits.Builds) == 0 &&
 		len(hits.Overlays) == 0 &&
 		len(hits.References) == 0 &&
-		len(hits.Occurrences) == 0 {
+		len(hits.Occurrences) == 0 &&
+		len(hits.Paths) == 0 {
 		return ""
 	}
 	nameByID := semanticIndexV2NameMap(index)
@@ -75,6 +79,22 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		}
 		b.WriteString(line + "\n")
 	}
+	for _, item := range hits.BuildContexts {
+		line := fmt.Sprintf("- build_context_v2: %s (%s)", strings.TrimSpace(item.Name), strings.TrimSpace(item.Kind))
+		if strings.TrimSpace(item.Directory) != "" {
+			line += " dir=" + strings.TrimSpace(item.Directory)
+		}
+		if strings.TrimSpace(item.Module) != "" {
+			line += " module=" + strings.TrimSpace(item.Module)
+		}
+		if strings.TrimSpace(item.Project) != "" {
+			line += " project=" + strings.TrimSpace(item.Project)
+		}
+		if strings.TrimSpace(item.Compiler) != "" {
+			line += " compiler=" + strings.TrimSpace(item.Compiler)
+		}
+		b.WriteString(line + "\n")
+	}
 	for _, item := range hits.Symbols {
 		line := fmt.Sprintf("- symbol_v2: %s (%s)", strings.TrimSpace(item.Name), strings.TrimSpace(item.Kind))
 		if strings.TrimSpace(item.File) != "" {
@@ -82,6 +102,12 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 		}
 		if strings.TrimSpace(item.Module) != "" {
 			line += " module=" + strings.TrimSpace(item.Module)
+		}
+		if strings.TrimSpace(item.BuildContextID) != "" {
+			line += " ctx=" + semanticIndexV2EntityDisplay(nameByID, item.BuildContextID)
+		}
+		if item.StartLine > 0 {
+			line += fmt.Sprintf(" lines=%d-%d", item.StartLine, item.EndLine)
 		}
 		if strings.TrimSpace(item.ContainerSymbolID) != "" {
 			line += " container=" + semanticIndexV2EntityDisplay(nameByID, item.ContainerSymbolID)
@@ -146,6 +172,20 @@ func renderRelevantSemanticIndexV2Context(index SemanticIndexV2, query string) s
 			strings.TrimSpace(item.File),
 		))
 	}
+	for _, item := range hits.Paths {
+		if len(item.Nodes) < 2 {
+			continue
+		}
+		displayNodes := []string{}
+		for _, node := range item.Nodes {
+			displayNodes = append(displayNodes, semanticIndexV2EntityDisplay(nameByID, node))
+		}
+		b.WriteString(fmt.Sprintf("- path_v2: %s reason=%s score=%d\n",
+			strings.Join(displayNodes, " -> "),
+			strings.TrimSpace(item.Reason),
+			item.Score,
+		))
+	}
 	return strings.TrimSpace(b.String())
 }
 
@@ -181,7 +221,7 @@ func collectRelevantSemanticIndexV2Hits(index SemanticIndexV2, query string) rel
 		hits.Builds = selectRelevantV2BuildEdges(index, query, mode, 3)
 		hits.References = selectRelevantV2References(index, query, mode, 2)
 	}
-	return hits
+	return expandRelevantSemanticIndexV2Hits(index, hits, query)
 }
 
 func semanticIndexV2NameMap(index SemanticIndexV2) map[string]string {
@@ -260,6 +300,7 @@ func selectRelevantV2Files(index SemanticIndexV2, query string, mode string, lim
 			strings.ToLower(strings.TrimSpace(item.Language)),
 			strings.ToLower(strings.Join(item.Tags, " ")),
 			strings.ToLower(strings.Join(item.ModuleHints, " ")),
+			strings.ToLower(strings.Join(item.BuildContextIDs, " ")),
 		}
 		score := analysisV2BaseScore(haystacks, loweredQuery, queryTokens, queryRefs)
 		score += analysisMinInt(item.ImportanceScore/20, 4)
@@ -310,6 +351,8 @@ func selectRelevantV2Symbols(index SemanticIndexV2, query string, mode string, l
 			strings.ToLower(strings.TrimSpace(item.File)),
 			strings.ToLower(strings.TrimSpace(item.Module)),
 			strings.ToLower(strings.TrimSpace(item.ContainerSymbolID)),
+			strings.ToLower(strings.TrimSpace(item.BuildContextID)),
+			strings.ToLower(strings.TrimSpace(item.Signature)),
 			strings.ToLower(strings.Join(item.Tags, " ")),
 			strings.ToLower(strings.Join(attrText, " ")),
 		}

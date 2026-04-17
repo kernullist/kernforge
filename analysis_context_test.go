@@ -175,6 +175,57 @@ func TestRenderRelevantProjectAnalysisContextIncludesRPCV2OverlayHits(t *testing
 	}
 }
 
+func TestRenderRelevantProjectAnalysisContextIncludesBuildContextAndPathExpansion(t *testing.T) {
+	artifacts := latestAnalysisArtifacts{
+		IndexV2: SemanticIndexV2{
+			RunID:          "run-trace-v2",
+			Goal:           "trace ioctl validation path",
+			GeneratedAt:    time.Now(),
+			PrimaryStartup: "GuardRuntime",
+			BuildContexts: []BuildContextRecord{
+				{
+					ID:        "buildctx:compile:module:GuardRuntime",
+					Name:      "GuardRuntime compile context",
+					Kind:      "compile_command",
+					Directory: "native/cmake-build-debug",
+					Module:    "GuardRuntime",
+					Files:     []string{"Source/GuardRuntime/Private/IoctlDispatch.cpp"},
+					Compiler:  "clang++",
+				},
+			},
+			Files: []FileRecord{
+				{
+					Path:            "Source/GuardRuntime/Private/IoctlDispatch.cpp",
+					ImportanceScore: 85,
+					BuildContextIDs: []string{"buildctx:compile:module:GuardRuntime"},
+				},
+			},
+			Symbols: []SymbolRecord{
+				{ID: "buildctx:compile:module:GuardRuntime", Name: "GuardRuntime compile context", Kind: "build_context"},
+				{ID: "ioctl:GuardDispatch@Source/GuardRuntime/Private/IoctlDispatch.cpp", Name: "GuardDispatch", Kind: "ioctl_handler", File: "Source/GuardRuntime/Private/IoctlDispatch.cpp", BuildContextID: "buildctx:compile:module:GuardRuntime"},
+				{ID: "func:ValidateRequest@Source/GuardRuntime/Private/IoctlDispatch.cpp", Name: "ValidateRequest", Kind: "function", File: "Source/GuardRuntime/Private/IoctlDispatch.cpp", BuildContextID: "buildctx:compile:module:GuardRuntime"},
+			},
+			BuildOwnershipEdges: []BuildOwnershipEdge{
+				{SourceID: "buildctx:compile:module:GuardRuntime", TargetID: "ioctl:GuardDispatch@Source/GuardRuntime/Private/IoctlDispatch.cpp", Type: "compiles_symbol", Evidence: []string{"Source/GuardRuntime/Private/IoctlDispatch.cpp"}},
+			},
+			CallEdges: []CallEdge{
+				{SourceID: "ioctl:GuardDispatch@Source/GuardRuntime/Private/IoctlDispatch.cpp", TargetID: "func:ValidateRequest@Source/GuardRuntime/Private/IoctlDispatch.cpp", Type: "calls", Evidence: []string{"Source/GuardRuntime/Private/IoctlDispatch.cpp"}},
+			},
+			OverlayEdges: []OverlayEdge{
+				{SourceID: "ioctl:GuardDispatch@Source/GuardRuntime/Private/IoctlDispatch.cpp", TargetID: "entity:ioctl_surface", Type: "issues_ioctl", Domain: "ioctl_surface", Evidence: []string{"Source/GuardRuntime/Private/IoctlDispatch.cpp"}},
+			},
+		},
+	}
+
+	text := renderRelevantProjectAnalysisContext(artifacts, "Trace the ioctl validation path from build context to handler.")
+	if !strings.Contains(text, "build_context_v2: GuardRuntime compile context") {
+		t.Fatalf("expected build context rendering, got %q", text)
+	}
+	if !strings.Contains(text, "path_v2: GuardRuntime compile context -> GuardDispatch") {
+		t.Fatalf("expected graph-expanded path rendering, got %q", text)
+	}
+}
+
 func containsStringCI(items []string, target string) bool {
 	for _, item := range items {
 		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(target)) {

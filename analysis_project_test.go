@@ -751,6 +751,66 @@ func TestScanProjectExcludesCommonGeneratedOutputsAcrossToolchains(t *testing.T)
 	}
 }
 
+func TestScanProjectBuildAlignmentCapturesCompileCommands(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Private/IoctlDispatch.cpp", `bool ValidateRequest() { return true; }
+int GuardDispatch() { if (ValidateRequest()) { DeviceIoControl(0, 0, 0, 0, 0, 0, 0, 0); } return 0; }
+`)
+	mustWrite("native/cmake-build-debug/compile_commands.json", `[
+  {
+    "directory": "`+filepath.ToSlash(root)+`",
+    "file": "Source/GuardRuntime/Private/IoctlDispatch.cpp",
+    "arguments": ["clang++", "-I", "Source/GuardRuntime/Public", "-DGUARD_BUILD", "-include", "pch.h", "-c", "Source/GuardRuntime/Private/IoctlDispatch.cpp"]
+  }
+]`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	if _, ok := snapshot.FilesByPath["native/cmake-build-debug/compile_commands.json"]; ok {
+		t.Fatalf("expected compile_commands.json to stay excluded from scanned files")
+	}
+	if len(snapshot.CompileCommands) != 1 {
+		t.Fatalf("expected compile command metadata, got %+v", snapshot.CompileCommands)
+	}
+	command := snapshot.CompileCommands[0]
+	if command.File != "Source/GuardRuntime/Private/IoctlDispatch.cpp" {
+		t.Fatalf("unexpected compile command file: %+v", command)
+	}
+	if !containsString(snapshot.CompileCommands[0].Defines, "GUARD_BUILD") {
+		t.Fatalf("expected define extraction, got %+v", command)
+	}
+	if !containsString(snapshot.CompileCommands[0].ForceIncludes, "pch.h") {
+		t.Fatalf("expected force include extraction, got %+v", command)
+	}
+	foundContext := false
+	for _, ctx := range snapshot.BuildContexts {
+		if ctx.Module == "GuardRuntime" && strings.Contains(ctx.ID, "buildctx:compile:module:GuardRuntime") {
+			foundContext = true
+			break
+		}
+	}
+	if !foundContext {
+		t.Fatalf("expected compile build context, got %+v", snapshot.BuildContexts)
+	}
+}
+
 func TestMergeSessionSummaryWithAnalysisReplacesPreviousCachedBlock(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{
@@ -4093,6 +4153,520 @@ func TestBuildPerformanceLensClassifiesHotspots(t *testing.T) {
 	}
 	if lens.Hotspots[0].Score == 0 {
 		t.Fatalf("expected non-zero hotspot score: %#v", lens.Hotspots[0])
+	}
+}
+
+func TestBuildSemanticIndexV2IncludesSourceAnchorsAndBuildContexts(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Private/IoctlDispatch.cpp", `bool ValidateRequest() { return true; }
+int GuardDispatch() { if (ValidateRequest()) { DeviceIoControl(0, 0, 0, 0, 0, 0, 0, 0); } return 0; }
+bool ScanRemoteMemory() { return ReadProcessMemory(0, 0, 0, 0, 0); }
+`)
+	mustWrite("native/cmake-build-debug/compile_commands.json", `[
+  {
+    "directory": "`+filepath.ToSlash(root)+`",
+    "file": "Source/GuardRuntime/Private/IoctlDispatch.cpp",
+    "arguments": ["clang++", "-I", "Source/GuardRuntime/Public", "-DGUARD_BUILD", "-c", "Source/GuardRuntime/Private/IoctlDispatch.cpp"]
+  }
+]`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	if len(index.BuildContexts) == 0 {
+		t.Fatalf("expected build contexts in v2 index, got %+v", index)
+	}
+	foundBuildContext := false
+	foundIoctlHandler := false
+	foundMemoryPath := false
+	for _, symbol := range index.Symbols {
+		if symbol.Kind == "build_context" && strings.Contains(symbol.ID, "buildctx:compile:module:GuardRuntime") {
+			foundBuildContext = true
+		}
+		if symbol.Name == "GuardDispatch" && symbol.Kind == "ioctl_handler" {
+			foundIoctlHandler = true
+		}
+		if symbol.Name == "ScanRemoteMemory" && symbol.Kind == "memory_path" {
+			foundMemoryPath = true
+		}
+	}
+	if !foundBuildContext {
+		t.Fatalf("expected build context symbol in %+v", index.Symbols)
+	}
+	if !foundIoctlHandler {
+		t.Fatalf("expected ioctl handler symbol in %+v", index.Symbols)
+	}
+	if !foundMemoryPath {
+		t.Fatalf("expected memory path symbol in %+v", index.Symbols)
+	}
+	foundCall := false
+	foundCompileOwnership := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "GuardDispatch") && strings.Contains(edge.TargetID, "ValidateRequest") {
+			foundCall = true
+			break
+		}
+	}
+	for _, edge := range index.BuildOwnershipEdges {
+		if strings.Contains(edge.SourceID, "buildctx:compile:module:GuardRuntime") && strings.Contains(edge.TargetID, "GuardDispatch") && edge.Type == "compiles_symbol" {
+			foundCompileOwnership = true
+			break
+		}
+	}
+	if !foundCall {
+		t.Fatalf("expected function-level call edge in %+v", index.CallEdges)
+	}
+	if !foundCompileOwnership {
+		t.Fatalf("expected build-context ownership edge in %+v", index.BuildOwnershipEdges)
+	}
+}
+
+func TestBuildSemanticIndexV2QualifiesInlineScopedMethods(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Public/InlineScanner.h", `namespace Guard
+{
+class Scanner
+{
+public:
+    bool Validate()
+    {
+        return true;
+    }
+
+    bool Dispatch()
+    {
+        return Validate();
+    }
+};
+
+bool GlobalCheck()
+{
+    return true;
+}
+}
+`)
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	foundValidate := false
+	foundDispatch := false
+	foundGlobal := false
+	for _, symbol := range index.Symbols {
+		switch symbol.CanonicalName {
+		case "Guard::Scanner::Validate":
+			foundValidate = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::Dispatch":
+			foundDispatch = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::GlobalCheck":
+			foundGlobal = symbol.ContainerSymbolID == ""
+		}
+	}
+	if !foundValidate || !foundDispatch || !foundGlobal {
+		t.Fatalf("expected qualified inline symbols, got %+v", index.Symbols)
+	}
+
+	foundScopedCall := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "Guard::Scanner::Dispatch") && strings.Contains(edge.TargetID, "Guard::Scanner::Validate") {
+			foundScopedCall = true
+			break
+		}
+	}
+	if !foundScopedCall {
+		t.Fatalf("expected same-container inline call edge, got %+v", index.CallEdges)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesTemplatedOutOfLineMethods(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Public/TemplateScanner.h", `namespace Guard
+{
+template <typename TValue>
+class Scanner
+{
+public:
+    bool Validate(
+        int pid,
+        const TValue* value
+    ) const;
+
+    bool Dispatch();
+};
+
+template <typename TValue>
+bool Scanner<TValue>::Validate(
+    int pid,
+    const TValue* value
+) const
+{
+    return pid > 0 && value != nullptr;
+}
+
+template <typename TValue>
+bool Scanner<TValue>::Dispatch()
+{
+    return Scanner<TValue>::Validate(
+        7,
+        nullptr
+    );
+}
+}
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	foundValidate := false
+	foundDispatch := false
+	for _, symbol := range index.Symbols {
+		switch symbol.CanonicalName {
+		case "Guard::Scanner::Validate":
+			foundValidate = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::Dispatch":
+			foundDispatch = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		}
+	}
+	if !foundValidate || !foundDispatch {
+		t.Fatalf("expected templated out-of-line symbols, got %+v", index.Symbols)
+	}
+
+	foundTemplatedCall := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "Guard::Scanner::Dispatch") && strings.Contains(edge.TargetID, "Guard::Scanner::Validate") {
+			foundTemplatedCall = true
+			break
+		}
+	}
+	if !foundTemplatedCall {
+		t.Fatalf("expected templated same-type call edge, got %+v", index.CallEdges)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesAttributedOperatorMethods(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Public/OperatorScanner.h", `namespace Guard
+{
+class Scanner
+{
+public:
+    __declspec(noinline) bool Validate(
+        int pid
+    ) const
+    {
+        return pid > 0;
+    }
+
+    [[nodiscard]] FORCEINLINE bool operator()(
+        int pid
+    ) const
+    {
+        return Validate(pid);
+    }
+};
+}
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	foundValidate := false
+	foundOperator := false
+	for _, symbol := range index.Symbols {
+		switch symbol.CanonicalName {
+		case "Guard::Scanner::Validate":
+			foundValidate = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::operator()":
+			foundOperator = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		}
+	}
+	if !foundValidate || !foundOperator {
+		t.Fatalf("expected attributed operator symbols, got %+v", index.Symbols)
+	}
+
+	foundOperatorCall := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "operator()") && strings.Contains(edge.TargetID, "Guard::Scanner::Validate") {
+			foundOperatorCall = true
+			break
+		}
+	}
+	if !foundOperatorCall {
+		t.Fatalf("expected operator-to-validate call edge, got %+v", index.CallEdges)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesRequiresConversionOperators(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Public/RequiresScanner.h", `namespace Guard
+{
+template <typename TValue>
+class Scanner
+{
+public:
+    explicit operator bool() const
+        requires (sizeof(TValue) >= 4)
+    {
+        return true;
+    }
+
+    bool Dispatch() const
+        requires (sizeof(TValue) >= 4)
+    {
+        return this->operator bool();
+    }
+};
+}
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	foundDispatch := false
+	foundConversion := false
+	for _, symbol := range index.Symbols {
+		switch symbol.CanonicalName {
+		case "Guard::Scanner::Dispatch":
+			foundDispatch = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::operatorbool":
+			foundConversion = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		}
+	}
+	if !foundDispatch || !foundConversion {
+		t.Fatalf("expected requires conversion symbols, got %+v", index.Symbols)
+	}
+
+	foundConversionCall := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "Guard::Scanner::Dispatch") && strings.Contains(edge.TargetID, "Guard::Scanner::operatorbool") {
+			foundConversionCall = true
+			break
+		}
+	}
+	if !foundConversionCall {
+		t.Fatalf("expected dispatch-to-conversion call edge, got %+v", index.CallEdges)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesMacroWrappedScopedAndFriendMethods(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Source/GuardRuntime/GuardRuntime.Build.cs", `public class GuardRuntime : ModuleRules { public GuardRuntime(ReadOnlyTargetRules Target) : base(Target) {} }`)
+	mustWrite("Source/GuardRuntime/Public/MacroScanner.h", `#define SHOOTERGAME_API
+#define FORCEINLINE inline
+
+namespace Guard
+{
+class SHOOTERGAME_API Scanner final
+{
+public:
+    GENERATED_BODY()
+
+    constexpr bool Validate(
+        int pid
+    ) const
+    {
+        return pid > 0;
+    }
+
+    FORCEINLINE decltype(auto) Access(
+        int pid
+    ) const
+    {
+        return Validate(pid);
+    }
+
+    consteval static int BuildEpoch()
+    {
+        return 7;
+    }
+
+    friend constexpr bool Inspect(const Scanner& value)
+    {
+        return value.Validate(7);
+    }
+};
+}
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "goal", "run-1")
+	index := buildSemanticIndexV2(snapshot, "goal", "run-1", graph)
+
+	foundValidate := false
+	foundAccess := false
+	foundBuildEpoch := false
+	foundFriendInspect := false
+	for _, symbol := range index.Symbols {
+		switch symbol.CanonicalName {
+		case "Guard::Scanner::Validate":
+			foundValidate = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::Access":
+			foundAccess = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Scanner::BuildEpoch":
+			foundBuildEpoch = symbol.ContainerSymbolID == "type:Guard::Scanner"
+		case "Guard::Inspect":
+			foundFriendInspect = symbol.ContainerSymbolID == ""
+		}
+	}
+	if !foundValidate || !foundAccess || !foundBuildEpoch || !foundFriendInspect {
+		t.Fatalf("expected macro-wrapped scoped symbols, got %+v", index.Symbols)
+	}
+
+	foundAccessCall := false
+	foundFriendCall := false
+	for _, edge := range index.CallEdges {
+		if strings.Contains(edge.SourceID, "Guard::Scanner::Access") && strings.Contains(edge.TargetID, "Guard::Scanner::Validate") {
+			foundAccessCall = true
+		}
+		if strings.Contains(edge.SourceID, "Guard::Inspect") && strings.Contains(edge.TargetID, "Guard::Scanner::Validate") {
+			foundFriendCall = true
+		}
+	}
+	if !foundAccessCall || !foundFriendCall {
+		t.Fatalf("expected macro-wrapped call edges, got %+v", index.CallEdges)
+	}
+}
+
+func TestComputeSemanticFingerprintV2ChangesWithSourceAnchorNeighborhood(t *testing.T) {
+	root := t.TempDir()
+	writeMain := func(body string) {
+		path := filepath.Join(root, "main.go")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write main.go: %v", err)
+		}
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+
+	writeMain("package main\nfunc helper() {}\nfunc entry() { helper() }\n")
+	firstSnapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject first pass: %v", err)
+	}
+	firstSnapshot.ProjectEdges = buildProjectEdges(firstSnapshot)
+	analyzer.cachedUnrealGraph = buildUnrealSemanticGraph(firstSnapshot, "goal", "run-1")
+	analyzer.cachedSemanticIndexV2 = buildSemanticIndexV2(firstSnapshot, "goal", "run-1", analyzer.cachedUnrealGraph)
+	firstFingerprint := analyzer.computeSemanticFingerprint(firstSnapshot, []string{"main.go"})
+
+	writeMain("package main\nfunc helper() {}\nfunc validate() {}\nfunc entry() { validate() }\n")
+	secondSnapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject second pass: %v", err)
+	}
+	secondSnapshot.ProjectEdges = buildProjectEdges(secondSnapshot)
+	analyzer.cachedUnrealGraph = buildUnrealSemanticGraph(secondSnapshot, "goal", "run-2")
+	analyzer.cachedSemanticIndexV2 = buildSemanticIndexV2(secondSnapshot, "goal", "run-2", analyzer.cachedUnrealGraph)
+	secondFingerprint := analyzer.computeSemanticFingerprint(secondSnapshot, []string{"main.go"})
+
+	if firstFingerprint == secondFingerprint {
+		t.Fatalf("expected semantic fingerprint to change with source-anchor neighborhood updates")
 	}
 }
 

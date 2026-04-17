@@ -88,9 +88,13 @@ Its current differentiators are:
 - Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace
 - Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
 - Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
+- Build alignment now lifts `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records
+- `structural_index_v2` now carries symbol anchors, build ownership edges, function-level call edges, and overlay edges instead of staying file-centric
+- `trace`, `impact`, and `security` retrieval now expand graph neighborhoods and emit `build_context_v2` plus `path_v2` evidence
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
 - In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- The source-anchor parser now handles modern C++ patterns such as template out-of-line methods, operators, `requires` and `decltype(auto)` headers, API-macro-wrapped scopes, and friend functions
 - Security-mode final documents now add a `Security Surface Decomposition` section so privileged and abuse-sensitive paths do not get flattened into a generic summary
 - Dedicated worker and reviewer models can be configured separately from the main chat model
 - Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
@@ -149,9 +153,12 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, analyze-project modes, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+- Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
+- Pressing `Enter` on an empty main prompt is ignored so the REPL does not create empty turns
+- The REPL uses a compact branded banner, subtle turn dividers, grouped status/config sections, and separate assistant versus tool activity streams for denser terminal UX
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
@@ -277,6 +284,8 @@ OpenAI-compatible:
 $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
+
+Inside the interactive REPL, use `/provider status` to inspect the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility.
 
 LM Studio:
 
@@ -481,6 +490,7 @@ Provider-specific:
 
 - Default base URL: `https://api.anthropic.com`
 - Reads `ANTHROPIC_API_KEY`
+- `/provider status` shows Billing-page visibility plus the documented Usage & Cost Admin API limits instead of guessing a live standard-key balance endpoint
 
 ### OpenAI
 
@@ -490,6 +500,7 @@ Provider-specific:
 - Non-JSON assistant tool-call arguments are normalized before request send
 - HTTP error messages include a compact request preview to speed up provider debugging
 - Streamed partial text is preserved on deadline when no tool call is in progress, and timed-out model turns retry once
+- `/provider status` shows usage/cost visibility and rate-limit guidance, and notes that an exact prepaid-balance API endpoint is not currently documented
 
 ### OpenRouter
 
@@ -497,6 +508,7 @@ Provider-specific:
 - Reads `OPENROUTER_API_KEY`
 - Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
 - Uses the same request-timeout, streamed partial-text, incomplete-stream fallback, and single-retry behavior as the OpenAI-compatible client
+- `/provider status` performs a live `/key` lookup for key-level `limit_remaining` and `usage`, and it also queries `/credits` when the key is a management key
 
 ### OpenAI-compatible
 
@@ -504,6 +516,7 @@ Provider-specific:
 - Reads `OPENAI_API_KEY` unless overridden by config/env
 - Requires an explicit `base_url`
 - Applies the same assistant tool-call normalization and request-preview diagnostics as the OpenAI provider
+- `/provider status` can show the normalized endpoint and key presence, but billing visibility depends on the upstream provider
 
 ## Memory
 
@@ -607,6 +620,7 @@ Explain the structure of this repository
 ```text
 /config
 /context
+/provider status
 /status
 /version
 /help
@@ -618,6 +632,7 @@ Explain the structure of this repository
 
 - `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
+- `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter performs a live lookup, while OpenAI and Anthropic expose officially documented limits and billing guidance.
 
 ### Conversation And Session Commands
 
@@ -636,6 +651,7 @@ Explain the structure of this repository
 
 ```text
 /provider
+/provider status
 /model [name]
 /profile
 /profile-review
@@ -646,7 +662,7 @@ Explain the structure of this repository
 /do-plan-review <task>
 /new-feature <task>
 /permissions [mode]
-/set_max_tool_iterations <n>
+/set-max-tool-iterations <n>
 /locale-auto [on|off]
 ```
 
@@ -663,6 +679,8 @@ Explain the structure of this repository
 `Tab` completion supports:
 
 - Slash commands
+- Command and subcommand descriptions in completion menus
+- `/provider status|anthropic|openai|openrouter|ollama`
 - `/analyze-project --mode ...` and built-in mode values
 - `@file` mentions
 - `/open <path>`

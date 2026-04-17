@@ -18,6 +18,7 @@ type FileRecord struct {
 	ImportanceScore int      `json:"importance_score,omitempty"`
 	Tags            []string `json:"tags,omitempty"`
 	ModuleHints     []string `json:"module_hints,omitempty"`
+	BuildContextIDs []string `json:"build_context_ids,omitempty"`
 }
 
 type SymbolRecord struct {
@@ -31,6 +32,9 @@ type SymbolRecord struct {
 	ContainerSymbolID string            `json:"container_symbol_id,omitempty"`
 	BuildContextID    string            `json:"build_context_id,omitempty"`
 	BaseSymbolID      string            `json:"base_symbol_id,omitempty"`
+	Signature         string            `json:"signature,omitempty"`
+	StartLine         int               `json:"start_line,omitempty"`
+	EndLine           int               `json:"end_line,omitempty"`
 	Tags              []string          `json:"tags,omitempty"`
 	Attributes        map[string]string `json:"attributes,omitempty"`
 }
@@ -91,6 +95,7 @@ type SemanticIndexV2 struct {
 	Root                string               `json:"root"`
 	GeneratedAt         time.Time            `json:"generated_at"`
 	Files               []FileRecord         `json:"files,omitempty"`
+	BuildContexts       []BuildContextRecord `json:"build_contexts,omitempty"`
 	Symbols             []SymbolRecord       `json:"symbols,omitempty"`
 	Occurrences         []SymbolOccurrence   `json:"occurrences,omitempty"`
 	References          []ReferenceRecord    `json:"references,omitempty"`
@@ -245,6 +250,9 @@ func buildSyntheticV2Symbol(symbolID string, snapshot ProjectSnapshot) (SymbolRe
 	case strings.HasPrefix(symbolID, "settings:"):
 		name := strings.TrimPrefix(symbolID, "settings:")
 		return SymbolRecord{ID: symbolID, Name: name, CanonicalName: symbolID, Kind: "settings", Language: "build_meta", File: name}, true
+	case strings.HasPrefix(symbolID, "buildctx:"):
+		name := strings.TrimPrefix(symbolID, "buildctx:")
+		return SymbolRecord{ID: symbolID, Name: name, CanonicalName: symbolID, Kind: "build_context", Language: "build_meta", BuildContextID: symbolID}, true
 	case strings.HasPrefix(symbolID, "input_action:"):
 		name := strings.TrimPrefix(symbolID, "input_action:")
 		return SymbolRecord{ID: symbolID, Name: name, CanonicalName: symbolID, Kind: "input_action", Language: "gameplay_meta"}, true
@@ -437,6 +445,7 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		symbol.ContainerSymbolID = strings.TrimSpace(symbol.ContainerSymbolID)
 		symbol.BuildContextID = strings.TrimSpace(symbol.BuildContextID)
 		symbol.BaseSymbolID = strings.TrimSpace(symbol.BaseSymbolID)
+		symbol.Signature = strings.TrimSpace(symbol.Signature)
 		symbol.Tags = analysisUniqueStrings(symbol.Tags)
 		if len(symbol.Attributes) == 0 {
 			symbol.Attributes = nil
@@ -460,6 +469,15 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 		}
 		if existing.BaseSymbolID == "" {
 			existing.BaseSymbolID = symbol.BaseSymbolID
+		}
+		if existing.Signature == "" {
+			existing.Signature = symbol.Signature
+		}
+		if existing.StartLine == 0 {
+			existing.StartLine = symbol.StartLine
+		}
+		if existing.EndLine == 0 {
+			existing.EndLine = symbol.EndLine
 		}
 		if existing.Language == "" {
 			existing.Language = symbol.Language
@@ -644,6 +662,7 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			ImportanceScore: file.ImportanceScore,
 			Tags:            analysisUniqueStrings(tags),
 			ModuleHints:     analysisUniqueStrings(moduleHints),
+			BuildContextIDs: buildContextIDsForFile(snapshot, file.Path),
 		})
 		for _, imported := range analysisUniqueStrings(file.Imports) {
 			addReference(ReferenceRecord{
@@ -665,6 +684,49 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 				Domain:   domain,
 				Evidence: []string{file.Path},
 			})
+		}
+	}
+	index.BuildContexts = append(index.BuildContexts, snapshot.BuildContexts...)
+	sort.Slice(index.BuildContexts, func(i int, j int) bool {
+		return index.BuildContexts[i].ID < index.BuildContexts[j].ID
+	})
+	for _, ctx := range snapshot.BuildContexts {
+		addSymbol(SymbolRecord{
+			ID:             ctx.ID,
+			Name:           ctx.Name,
+			CanonicalName:  ctx.ID,
+			Kind:           "build_context",
+			Language:       "build_meta",
+			File:           ctx.Source,
+			BuildContextID: ctx.ID,
+			Tags:           analysisUniqueStrings([]string{ctx.Kind, ctx.Project, ctx.Target, ctx.Module, ctx.Plugin}),
+			Attributes: map[string]string{
+				"directory": strings.TrimSpace(ctx.Directory),
+				"project":   strings.TrimSpace(ctx.Project),
+				"target":    strings.TrimSpace(ctx.Target),
+				"module":    strings.TrimSpace(ctx.Module),
+				"plugin":    strings.TrimSpace(ctx.Plugin),
+				"compiler":  strings.TrimSpace(ctx.Compiler),
+			},
+		})
+		for _, path := range analysisUniqueStrings(ctx.Files) {
+			targetID := "entity:" + strings.TrimSpace(path)
+			ensureSymbol(targetID)
+			addBuildEdge(BuildOwnershipEdge{
+				SourceID: ctx.ID,
+				TargetID: targetID,
+				Type:     "compiles",
+				Evidence: []string{path},
+			})
+		}
+		if strings.TrimSpace(ctx.Project) != "" {
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "project:" + ctx.Project, Type: "aligns_with"})
+		}
+		if strings.TrimSpace(ctx.Target) != "" {
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "target:" + ctx.Target, Type: "aligns_with"})
+		}
+		if strings.TrimSpace(ctx.Module) != "" {
+			addBuildEdge(BuildOwnershipEdge{SourceID: ctx.ID, TargetID: "module:" + ctx.Module, Type: "aligns_with"})
 		}
 	}
 
@@ -921,6 +983,22 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			Evidence:   []string{item.File},
 		})
 	}
+	sourceExtraction := collectSourceAnchorsV2(snapshot, symbolByID)
+	for _, symbol := range sourceExtraction.Symbols {
+		addSymbol(symbol)
+	}
+	for _, occurrence := range sourceExtraction.Occurrences {
+		addOccurrence(occurrence.SymbolID, occurrence.File, occurrence.Role)
+	}
+	for _, edge := range sourceExtraction.Calls {
+		addCallEdge(edge)
+	}
+	for _, edge := range sourceExtraction.Overlays {
+		addOverlayEdge(edge)
+	}
+	for _, edge := range sourceExtraction.Builds {
+		addBuildEdge(edge)
+	}
 
 	for _, symbol := range symbolByID {
 		index.Symbols = append(index.Symbols, symbol)
@@ -975,6 +1053,7 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 
 func hasSemanticIndexV2Data(index SemanticIndexV2) bool {
 	return len(index.Files) > 0 ||
+		len(index.BuildContexts) > 0 ||
 		len(index.Symbols) > 0 ||
 		len(index.Occurrences) > 0 ||
 		len(index.References) > 0 ||
