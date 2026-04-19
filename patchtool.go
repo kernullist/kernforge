@@ -26,16 +26,62 @@ func (t ApplyPatchTool) Definition() ToolDefinition {
 }
 
 func (t ApplyPatchTool) Execute(ctx context.Context, input any) (string, error) {
+	result, err := t.ExecuteDetailed(ctx, input)
+	return result.DisplayText, err
+}
+
+func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	args := input.(map[string]any)
 	patchText := stringValue(args, "patch")
 	if strings.TrimSpace(patchText) == "" {
-		return "", fmt.Errorf("patch is required")
+		return ToolExecutionResult{}, fmt.Errorf("patch is required")
 	}
 	doc, err := parsePatchDocument(patchText)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
+		return ToolExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
 	}
-	return applyPatchDocument(ctx, t.ws, doc)
+	text, err := applyPatchDocument(ctx, t.ws, doc)
+	return ToolExecutionResult{
+		DisplayText: text,
+		Meta:        buildApplyPatchMeta(t.ws.Root, doc),
+	}, err
+}
+
+func buildApplyPatchMeta(root string, doc patchDocument) map[string]any {
+	changedPaths := make([]string, 0, len(doc.ops))
+	added := 0
+	updated := 0
+	deleted := 0
+	moved := 0
+	for _, op := range doc.ops {
+		path := relOrAbs(root, op.path)
+		if strings.TrimSpace(path) != "" {
+			changedPaths = append(changedPaths, path)
+		}
+		switch strings.TrimSpace(strings.ToLower(op.kind)) {
+		case "add":
+			added++
+		case "delete":
+			deleted++
+		case "update":
+			updated++
+			if strings.TrimSpace(op.moveTo) != "" {
+				moved++
+			}
+		}
+	}
+	return map[string]any{
+		"changed_paths":         normalizeTaskStateList(changedPaths, 32),
+		"changed_count":         len(changedPaths),
+		"patch_operation_count": len(doc.ops),
+		"add_count":             added,
+		"update_count":          updated,
+		"delete_count":          deleted,
+		"move_count":            moved,
+		"changed_workspace":     len(changedPaths) > 0,
+		"requires_verification": len(changedPaths) > 0,
+		"effect":                "edit",
+	}
 }
 
 type patchDocument struct {

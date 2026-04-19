@@ -61,6 +61,7 @@ Its current differentiators are:
 ## What It Currently Supports
 
 - Multi-agent project analysis with reusable knowledge packs and a performance lens
+- Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Interactive REPL and one-shot `-prompt` mode
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
 - File, patch, shell, and git-oriented tool use
@@ -424,10 +425,15 @@ Later sources override earlier ones:
 | `api_key` | API key |
 | `temperature` | Model temperature |
 | `max_tokens` | Max completion tokens |
-| `request_timeout_seconds` | Per-request model timeout in seconds; timed-out model turns retry once |
+| `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
+| `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
+| `request_timeout_seconds` | Per-request model timeout in seconds |
 | `max_tool_iterations` | Max tool loop count per request |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
+| `shell_timeout_seconds` | Default timeout in seconds used by `run_shell` |
+| `read_hint_spans` | Shared `read_file` and `grep` cached-nearby hint history size |
+| `read_cache_entries` | `read_file` in-memory cached range entry count |
 | `session_dir` | Directory for saved session JSON files |
 | `auto_compact_chars` | Approximate context threshold before auto-compacting |
 | `auto_checkpoint_edits` | Create a safety checkpoint before the first edit in a request |
@@ -449,6 +455,18 @@ Later sources override earlier ones:
 | `plan_review` | Reviewer model config used by `/do-plan-review` |
 | `review_profiles` | Saved reviewer profiles |
 
+### Interactive Loop Durability Notes
+
+- The interactive loop now attempts planner/reviewer preflight by default for each new request. If no dedicated review profile is configured, Kernforge falls back to an auxiliary client created from the active main provider/model.
+- Before returning a substantial final answer, the interactive loop now asks the reviewer to approve or request revision. Recovery can also trigger a refreshed execution plan instead of repeating the same failing path.
+- The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
+- Task-graph nodes now track retry budgets and recent failure context. Repeated failures on the same node can block that node explicitly, which pushes the executor toward a materially different recovery path instead of repeating the same failing step forever.
+- `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
+- Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.
+- Independent long-running verification commands can also use `run_shell_bundle_background` and `check_shell_bundle` to run and poll several background jobs in parallel. Bundle metadata is persisted in the session, so the agent can resume polling with `bundle_id="latest"` even after compaction.
+- Background work is now node-aware. Long-running verification can carry `owner_node_id`, stale or superseded bundles can be canceled through dedicated tools, and lifecycle state is pushed back into the owning plan node instead of being inferred only from free-form text.
+- Secondary executor nodes can now run automatic read-only worker follow-ups. These workers gather evidence with safe tools such as `grep`, `list_files`, `git_status`, `git_diff`, `check_shell_job`, and `check_shell_bundle`, then persist their summaries back into the task graph for the main executor to consume.
+
 ### Environment Variables
 
 General overrides:
@@ -460,7 +478,10 @@ General overrides:
 - `KERNFORGE_PERMISSION_MODE`
 - `KERNFORGE_SHELL`
 - `KERNFORGE_SESSION_DIR`
+- `KERNFORGE_MAX_REQUEST_RETRIES`
+- `KERNFORGE_REQUEST_RETRY_DELAY_MS`
 - `KERNFORGE_REQUEST_TIMEOUT_SECONDS`
+- `KERNFORGE_SHELL_TIMEOUT_SECONDS`
 - `KERNFORGE_AUTO_CHECKPOINT_EDITS`
 - `KERNFORGE_AUTO_VERIFY`
 - `KERNFORGE_AUTO_LOCALE`
@@ -499,7 +520,7 @@ Provider-specific:
 - Assistant turns that contain only tool calls omit empty assistant content for better API compatibility
 - Non-JSON assistant tool-call arguments are normalized before request send
 - HTTP error messages include a compact request preview to speed up provider debugging
-- Streamed partial text is preserved on deadline when no tool call is in progress, and timed-out model turns retry once
+- Streamed partial text is preserved on deadline when no tool call is in progress, and transient provider errors or timed-out model turns retry according to the interactive request retry settings
 - `/provider status` shows usage/cost visibility and rate-limit guidance, and notes that an exact prepaid-balance API endpoint is not currently documented
 
 ### OpenRouter

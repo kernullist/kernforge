@@ -11,12 +11,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
 type Agent struct {
 	Config                         Config
 	Client                         ProviderClient
+	ReviewerClient                 ProviderClient
+	ReviewerModel                  string
+	AuxReviewerClient              ProviderClient
+	AuxReviewerModel               string
 	Tools                          *ToolRegistry
 	Workspace                      Workspace
 	Session                        *Session
@@ -44,10 +49,17 @@ const (
 )
 
 const (
-	repeatedToolFailureNudgeThreshold = 2
-	repeatedToolFailureAbortThreshold = 3
-	repeatedReadFilePathNudgeTurns    = 4
-	repeatedReadFilePathAbortTurns    = 6
+	repeatedToolCallNudgeThreshold        = 3
+	repeatedToolCallRecoveryThreshold     = 4
+	repeatedToolCallAbortThreshold        = 5
+	repeatedToolFailureNudgeThreshold     = 2
+	repeatedToolFailureRecoveryThreshold  = 3
+	repeatedToolFailureAbortThreshold     = 4
+	repeatedReadFilePathNudgeTurns        = 4
+	repeatedReadFilePathRecoveryThreshold = 6
+	repeatedReadFilePathAbortTurns        = 8
+	maxToolBudgetExtensions               = 2
+	compactPinnedMessagesToKeep           = 6
 )
 
 func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
@@ -87,6 +99,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	images := appendUniqueImages(nil, mentionImages...)
 	images = appendUniqueImages(images, extraImages...)
+	a.initializeTaskState(userText)
 	a.Session.AddMessage(Message{
 		Role:   "user",
 		Text:   enriched,
@@ -114,10 +127,10 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 }
 
 func (a *Agent) Compact(instructions string) string {
-	if len(a.Session.Messages) <= 8 {
+	cut := compactCutIndex(a.Session.Messages, 12, 4)
+	if cut <= 0 {
 		return "conversation is already compact"
 	}
-	cut := len(a.Session.Messages) - 8
 	older := a.Session.Messages[:cut]
 	a.Session.Messages = append([]Message(nil), a.Session.Messages[cut:]...)
 	summary := summarizeMessages(older, instructions)
@@ -131,6 +144,7 @@ func (a *Agent) Compact(instructions string) string {
 }
 
 func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) (string, error) {
+	a.refreshBackgroundJobs()
 	if reply, ok, err := a.maybeAnswerFromCachedProjectAnalysis(ctx); err != nil {
 		return "", err
 	} else if ok {
@@ -143,6 +157,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		return reply, nil
 	}
+	if err := a.maybePrimeInteractivePlan(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest); err != nil {
+		return "", err
+	}
 	emptyFinalReplies := 0
 	unresolvedVerification := false
 	finalAnswerNudges := 0
@@ -154,11 +171,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastToolCallSignature := ""
 	lastToolCallSignatureCount := 0
 	repeatedToolCallNudges := 0
+	repeatedToolCallRecoveryTurns := 0
 	lastToolCallSummary := ""
 	lastReadFilePath := ""
 	lastReadFilePathTurns := 0
 	repeatedReadFilePathNudges := 0
 	repeatedCachedReadFileNudges := 0
+	repeatedReadFilePathRecoveryCount := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -168,23 +187,84 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	autoVerifyDisablePrompted := false
 	manualEditHandoffRetries := 0
 	abruptReplyRetries := 0
+	finalAnswerReviewRevisions := 0
+	lastReviewedFinalAnswer := ""
 	attemptedEditTool := false
+	repeatedToolFailureRecoveryTurns := 0
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
+	maxToolIterations := configMaxToolIterations(a.Config)
+	toolBudgetLimit := maxToolIterations
+	toolBudgetExtensions := 0
+	toolLoopLimitRecoveryUsed := false
+	turnCount := 0
 	disabledTools := map[string]bool{}
 	if readOnlyAnalysis {
 		disabledTools["apply_patch"] = true
 		disabledTools["write_file"] = true
 		disabledTools["replace_in_file"] = true
 	}
-	for iterations := 0; iterations < configMaxToolIterations(a.Config); iterations++ {
+	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		lastIteration = iterations + 1
+		if turnCount >= toolBudgetLimit {
+			if shouldExtendToolBudget(a.Session.Messages, lastToolErrorCount, lastToolCallSignatureCount, lastReadFilePathTurns, toolBudgetExtensions) {
+				extraTurns := nextToolBudgetExtension(maxToolIterations, toolBudgetExtensions)
+				if extraTurns > 0 {
+					toolBudgetExtensions++
+					toolBudgetLimit += extraTurns
+					if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars/2 {
+						a.Compact("Auto-compacted to preserve important context while extending the tool budget after sustained progress.")
+					}
+					recoveryRecent := summarizeRecentToolTurns(a.Session.Messages, 4)
+					if a.EmitProgress != nil {
+						a.EmitProgress(fmt.Sprintf("Recent tool turns show progress. Extending the tool budget by %d more turn(s)...", extraTurns))
+					}
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: toolBudgetExtensionGuidance(extraTurns, recoveryRecent),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					lastRecentToolTurns = recoveryRecent
+					continue
+				}
+			}
+			if toolLoopLimitRecoveryUsed {
+				break
+			}
+			toolLoopLimitRecoveryUsed = true
+			toolBudgetLimit++
+			recoveryRecent := summarizeRecentToolTurns(a.Session.Messages, 3)
+			if a.EmitProgress != nil {
+				a.EmitProgress("Tool loop limit reached. Asking the model to replan or conclude without more tool churn...")
+			}
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: a.recoveryGuidance(ctx, recoveryTriggerToolBudgetExceeded, recoveryInput{
+					Summary: lastToolCallSummary,
+					Recent:  recoveryRecent,
+					Detail:  lastStopReason,
+				}),
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			lastRecentToolTurns = recoveryRecent
+			continue
+		}
+		turnCount++
+		lastIteration = turnCount
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
 			a.Compact("Auto-compacted due to context growth.")
 		}
+		if err := a.syncTaskExecutorFocus(); err != nil {
+			return "", err
+		}
+		_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
+		_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
 		turnReq := ChatRequest{
 			Model:       a.Session.Model,
 			System:      a.systemPrompt(),
@@ -252,8 +332,28 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastToolCallSignature = currentSignature
 					lastToolCallSignatureCount = 1
 					repeatedToolCallNudges = 0
+					repeatedToolCallRecoveryTurns = 0
 				}
-				if lastToolCallSignatureCount >= 3 {
+				if lastToolCallSignatureCount >= repeatedToolCallAbortThreshold {
+					return "", fmt.Errorf("stopped after repeated identical tool calls")
+				}
+				if lastToolCallSignatureCount >= repeatedToolCallRecoveryThreshold && repeatedToolCallRecoveryTurns < 1 {
+					repeatedToolCallRecoveryTurns++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
+							Summary: lastToolCallSummary,
+							Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
+							Detail:  lastToolCallSummary,
+						}),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+					continue
+				}
+				if lastToolCallSignatureCount >= repeatedToolCallNudgeThreshold {
 					if repeatedToolCallNudges < 1 {
 						repeatedToolCallNudges++
 						a.Session.AddMessage(Message{
@@ -265,7 +365,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						continue
 					}
-					return "", fmt.Errorf("stopped after repeated identical tool calls")
 				}
 			}
 			if readPath, ok := repeatedReadFilePathKey(resp.Message.ToolCalls); ok {
@@ -276,9 +375,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastReadFilePathTurns = 1
 					repeatedReadFilePathNudges = 0
 					repeatedCachedReadFileNudges = 0
+					repeatedReadFilePathRecoveryCount = 0
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathAbortTurns {
 					return "", fmt.Errorf("stopped after repeatedly reading the same file without making progress: %s", readPath)
+				}
+				if lastReadFilePathTurns >= repeatedReadFilePathRecoveryThreshold && repeatedReadFilePathRecoveryCount < 1 {
+					repeatedReadFilePathRecoveryCount++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedReadFile, recoveryInput{
+							Path:   readPath,
+							Turns:  lastReadFilePathTurns,
+							Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
+							Detail: readPath,
+						}),
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+					continue
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns && repeatedReadFilePathNudges < 1 {
 					repeatedReadFilePathNudges++
@@ -296,6 +413,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				lastReadFilePathTurns = 0
 				repeatedReadFilePathNudges = 0
 				repeatedCachedReadFileNudges = 0
+				repeatedReadFilePathRecoveryCount = 0
 			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
@@ -327,10 +445,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			lastToolCallSignature = ""
 			lastToolCallSignatureCount = 0
 			repeatedToolCallNudges = 0
+			repeatedToolCallRecoveryTurns = 0
 			lastReadFilePath = ""
 			lastReadFilePathTurns = 0
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
+			repeatedReadFilePathRecoveryCount = 0
 			reply := strings.TrimSpace(resp.Message.Text)
 			if reply != "" {
 				if continuedReplyPrefix != "" {
@@ -385,6 +505,36 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
+				if a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
+					finalAnswerReviewRevisions < 2 &&
+					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
+					approved, reviewText := a.reviewInteractiveFinalAnswer(ctx, reply, unresolvedVerification)
+					lastReviewedFinalAnswer = reply
+					if !approved {
+						finalAnswerReviewRevisions++
+						nextText := "Reviewer feedback: the proposed final answer is not ready yet. Revise the work or the answer before concluding."
+						if strings.TrimSpace(reviewText) != "" {
+							nextText += "\n\n" + strings.TrimSpace(reviewText)
+						}
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: nextText,
+						})
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
+				if a.Session.TaskState != nil && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
+					a.Session.TaskState.SetPhase("done")
+					a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+					a.Session.TaskState.ClearExecutorFocus()
+					a.Session.completeSharedPlan()
+				}
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
 				return reply, nil
 			}
 			if isTokenLimitStopReason(lastStopReason) {
@@ -430,16 +580,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.EmitProgress(summary)
 				}
 			}
-			out, err := a.Tools.Execute(ctx, call.Name, call.Arguments)
+			a.noteToolExecutionStart(call)
+			toolMsgIndex, saveErr := a.beginToolExecution(call)
+			if saveErr != nil {
+				return "", saveErr
+			}
+			result, err := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
 			toolMsg := Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
 				ToolName:   call.Name,
-				Text:       out,
+				Text:       result.DisplayText,
+				ToolMeta:   result.Meta,
+			}
+			a.setToolExecutionResult(toolMsgIndex, toolMsg)
+			a.noteToolExecutionResultDetailed(call, result, err)
+			if saveErr := a.Store.Save(a.Session); saveErr != nil {
+				return "", saveErr
 			}
 			if err != nil && errors.Is(err, ErrEditCanceled) {
 				toolMsg.Text = "CANCELED: user canceled the edit preview. No files were changed."
-				a.Session.AddMessage(toolMsg)
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -447,7 +608,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrWriteDenied) {
 				toolMsg.Text = "CANCELED: user declined write approval. No files were changed, and no filesystem permission issue was detected."
-				a.Session.AddMessage(toolMsg)
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -455,12 +616,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidEditPayload) {
 				toolMsg.IsError = true
-				if out == "" {
+				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()
 				} else {
-					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
-				a.Session.AddMessage(toolMsg)
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -468,17 +629,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidToolArgumentsJSON) && invalidToolArgsRetries < 1 {
 				toolMsg.IsError = true
-				if out == "" {
+				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()
 				} else {
-					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
 				if a.EmitProgress != nil {
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.EmitProgress(summary)
 					}
 				}
-				a.Session.AddMessage(toolMsg)
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if toolShouldBeDisabledAfterInvalidJSON(call.Name) {
 					disabledTools[strings.TrimSpace(call.Name)] = true
 				}
@@ -496,17 +657,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
 				toolMsg.IsError = true
-				if out == "" {
+				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()
 				} else {
-					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
 				if a.EmitProgress != nil {
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.EmitProgress(summary)
 					}
 				}
-				a.Session.AddMessage(toolMsg)
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				a.Session.AddMessage(Message{
 					Role: "user",
 					Text: "Your last edit targeted stale or mismatched file contents. Do not repeat the same edit immediately. First read the exact file again from the same path, confirm the current contents, and then build a new edit against that fresh text. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
@@ -521,10 +682,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil {
 				toolMsg.IsError = true
-				if out == "" {
+				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()
 				} else {
-					toolMsg.Text = out + "\n\nERROR: " + err.Error()
+					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
 				currentError := strings.TrimSpace(err.Error())
 				if call.Name == "run_shell" {
@@ -540,11 +701,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 1 {
 					patchFormatRetries++
-					a.Session.AddMessage(toolMsg)
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: "Your last apply_patch call used the wrong patch format. Retry using the tool again and make the patch string start exactly with:\n*** Begin Patch\nThen use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\nDo not send prose, JSON, or code fences inside the patch string.",
 					})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
 					lastToolError = ""
 					lastToolErrorCount = 0
 					continue
@@ -554,17 +718,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if isEditTool(call.Name) {
 					edited = true
 					if a.EmitProgress != nil {
-						if summary := summarizeEditToolResult(call.Name, out); summary != "" {
+						if summary := summarizeEditToolResult(call.Name, result.DisplayText); summary != "" {
 							a.EmitProgress(summary)
 						}
 					}
 				} else if a.EmitProgress != nil {
-					if summary := summarizeToolCompletion(a.Config, call, out); summary != "" {
+					if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
 						a.EmitProgress(summary)
 					}
 				}
+				_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
+				_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 			}
-			a.Session.AddMessage(toolMsg)
 		}
 		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
 			repeatedCachedReadFileNudges++
@@ -585,16 +750,33 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if iterationHadToolSuccess {
 			lastToolError = ""
 			lastToolErrorCount = 0
+			repeatedToolFailureRecoveryTurns = 0
 		} else if iterationToolError != "" {
 			if iterationToolError == lastToolError {
 				lastToolErrorCount++
 			} else {
 				lastToolError = iterationToolError
 				lastToolErrorCount = 1
+				repeatedToolFailureRecoveryTurns = 0
 			}
 		}
 		if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
 			return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
+		}
+		if lastToolErrorCount >= repeatedToolFailureRecoveryThreshold && lastToolError != "" && repeatedToolFailureRecoveryTurns < 1 {
+			repeatedToolFailureRecoveryTurns++
+			a.Session.AddMessage(Message{
+				Role: "user",
+				Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolError, recoveryInput{
+					Detail: lastToolError,
+					Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
+				}),
+			})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+			continue
 		}
 		if lastToolErrorCount == repeatedToolFailureNudgeThreshold && lastToolError != "" {
 			a.Session.AddMessage(Message{
@@ -613,6 +795,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.EmitProgress("Edit applied. Checking follow-up steps...")
 			}
 			if report, ok := a.autoVerifyChanges(ctx); ok {
+				a.noteVerificationResult(report)
 				autoVerifyRetryAttempted := false
 				if a.EmitProgress != nil {
 					if report.HasFailures() {
@@ -647,6 +830,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							retriedReport, retriedOK := a.autoVerifyChanges(ctx)
 							if retriedOK {
 								report = retriedReport
+								a.noteVerificationResult(report)
 								verification = strings.TrimSpace(report.RenderDetailed())
 								a.Session.AddMessage(Message{
 									Role: "user",
@@ -719,7 +903,21 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	if lastToolErrorCount >= repeatedToolFailureAbortThreshold && lastToolError != "" {
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
-	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, configMaxToolIterations(a.Config), lastRecentToolTurns))
+	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, maxToolIterations, lastRecentToolTurns))
+}
+
+func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	a.refreshBackgroundJobs()
+	if unresolvedVerification {
+		return false
+	}
+	if a.Session.TaskState != nil && len(a.Session.TaskState.PendingChecks) > 0 {
+		return false
+	}
+	return !a.hasRunningBackgroundJobs()
 }
 
 func replySuggestsManualEditHandoff(text string) bool {
@@ -903,8 +1101,10 @@ func isAssistantNarrationPreamble(text string) bool {
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	attempts := 2
-	for attempt := 0; attempt < attempts; attempt++ {
+	maxRetries := configMaxRequestRetries(a.Config)
+	totalAttempts := maxRetries + 1
+	baseDelay := configRequestRetryDelay(a.Config)
+	for attempt := 0; attempt < totalAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return ChatResponse{}, err
 		}
@@ -915,20 +1115,41 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 		if err == nil {
 			return resp, nil
 		}
-		if !errors.Is(err, context.DeadlineExceeded) {
-			return ChatResponse{}, err
-		}
 		if ctx.Err() != nil {
 			return ChatResponse{}, ctx.Err()
 		}
-		if attempt == attempts-1 {
+		if !shouldRetryProviderError(err) || attempt == totalAttempts-1 {
 			return ChatResponse{}, err
 		}
+		delay := providerRetryDelay(baseDelay, attempt)
 		if a.EmitProgress != nil {
-			a.EmitProgress("Model request timed out. Retrying once...")
+			a.EmitProgress(modelRetryProgressMessage(err, attempt, totalAttempts, delay))
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ChatResponse{}, ctx.Err()
+			case <-timer.C:
+			}
 		}
 	}
 	return ChatResponse{}, context.DeadlineExceeded
+}
+
+func modelRetryProgressMessage(err error, attempt int, totalAttempts int, delay time.Duration) string {
+	base := "Transient provider error during model request."
+	if errors.Is(err, context.DeadlineExceeded) {
+		base = "Model request timed out."
+	}
+	if totalAttempts == 2 && attempt == 0 {
+		return base + " Retrying once..."
+	}
+	if delay <= 0 {
+		return fmt.Sprintf("%s Retrying (attempt %d/%d)...", base, attempt+2, totalAttempts)
+	}
+	return fmt.Sprintf("%s Retrying in %s (attempt %d/%d)...", base, delay.Round(time.Second), attempt+2, totalAttempts)
 }
 
 func isToolUseUnsupportedError(err error) bool {
@@ -1088,6 +1309,110 @@ func invalidToolArgumentsGuidance(toolName string) string {
 	}
 }
 
+func repeatedToolCallRecoveryGuidance(summary string, recent string) string {
+	parts := []string{
+		"Recovery mode: the tool loop is still stuck on the same tool call sequence. Do not repeat that sequence again immediately.",
+		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose one materially different next step: inspect a different file or tool, change the tool arguments, or provide the best final answer now.\n3. Only retry the same tool sequence if you can explain exactly what changed.",
+	}
+	if strings.TrimSpace(summary) != "" {
+		parts = append(parts, "Repeated tool sequence:\n"+summary)
+	}
+	if strings.TrimSpace(recent) != "" {
+		parts = append(parts, "Recent tool turns:\n"+recent)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func repeatedReadFilePathRecoveryGuidance(path string, turns int, recent string) string {
+	parts := []string{
+		fmt.Sprintf("Recovery mode: you have read the same file path across %d tool turns: %s. Treat the existing reads as sufficient unless the file changed.", turns, path),
+		"Do not read the same path again immediately. Either inspect a different file or tool, explain the current findings, or provide the best final answer now. Only reread this path if you can name the exact missing section that is still required.",
+	}
+	if strings.TrimSpace(recent) != "" {
+		parts = append(parts, "Recent tool turns:\n"+recent)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func repeatedToolFailureRecoveryGuidance(toolErr string, recent string) string {
+	parts := []string{
+		"Recovery mode: the same tool failure has happened multiple times. Do not repeat the same failing tool call again with near-identical inputs.",
+		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose a materially different action: use another tool, change the target/path/arguments, or provide the best partial final answer with the blocker.\n3. Only retry the failing tool if you can explain what changed.",
+	}
+	if strings.TrimSpace(toolErr) != "" {
+		parts = append(parts, "Latest tool failure:\n"+sanitizeDiagnosticValue(toolErr))
+	}
+	if strings.TrimSpace(recent) != "" {
+		parts = append(parts, "Recent tool turns:\n"+recent)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func toolBudgetExtensionGuidance(extraTurns int, recent string) string {
+	parts := []string{
+		fmt.Sprintf("Recent tool turns show real progress. The tool budget is extended by %d more turn(s).", extraTurns),
+		"Use the extra turns to finish the investigation or fix. Do not spend them repeating the same tool sequence again.",
+	}
+	if strings.TrimSpace(recent) != "" {
+		parts = append(parts, "Recent tool turns:\n"+recent)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func toolLoopLimitRecoveryGuidance(summary string, stopReason string, recent string) string {
+	parts := []string{
+		"The normal tool budget has been exhausted. Do not continue the same tool loop blindly.",
+		"Next step requirements:\n1. State the blocker or current finding in one sentence.\n2. Prefer a final or partial answer from the evidence already gathered.\n3. Only make one more tool call if it is materially different and you can explain why it is still necessary.",
+	}
+	if strings.TrimSpace(summary) != "" {
+		parts = append(parts, "Last tool sequence:\n"+summary)
+	}
+	if strings.TrimSpace(stopReason) != "" {
+		parts = append(parts, "Last stop reason:\n"+sanitizeDiagnosticValue(stopReason))
+	}
+	if strings.TrimSpace(recent) != "" {
+		parts = append(parts, "Recent tool turns:\n"+recent)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func shouldExtendToolBudget(messages []Message, lastToolErrorCount, lastToolCallSignatureCount, lastReadFilePathTurns, extensionCount int) bool {
+	if extensionCount >= maxToolBudgetExtensions {
+		return false
+	}
+	if lastToolErrorCount > 0 {
+		return false
+	}
+	if lastToolCallSignatureCount >= repeatedToolCallNudgeThreshold {
+		return false
+	}
+	if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns {
+		return false
+	}
+	recentTurns := collectRecentToolTurnSummaries(messages, 4)
+	if len(recentTurns) < 2 {
+		return false
+	}
+	if countDistinctStrings(recentTurns) < 2 {
+		return false
+	}
+	return countDistinctRecentToolNames(messages, 4) >= 2
+}
+
+func nextToolBudgetExtension(baseBudget, extensionCount int) int {
+	if extensionCount >= maxToolBudgetExtensions {
+		return 0
+	}
+	extra := 2
+	if baseBudget >= 6 {
+		extra = 3
+	}
+	if baseBudget >= 10 {
+		extra = 4
+	}
+	return extra
+}
+
 func toolShouldBeDisabledAfterInvalidJSON(toolName string) bool {
 	switch strings.TrimSpace(toolName) {
 	case "write_file", "replace_in_file":
@@ -1111,6 +1436,85 @@ func summarizeToolCalls(calls []ToolCall) string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+func collectRecentToolTurnSummaries(messages []Message, limit int) []string {
+	if limit <= 0 || len(messages) == 0 {
+		return nil
+	}
+	out := make([]string, 0, limit)
+	for i := len(messages) - 1; i >= 0 && len(out) < limit; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		summary := strings.TrimSpace(summarizeToolTurn(messages, i))
+		if summary == "" {
+			continue
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func countDistinctStrings(items []string) int {
+	if len(items) == 0 {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+	}
+	return len(seen)
+}
+
+func countDistinctRecentToolNames(messages []Message, limit int) int {
+	if limit <= 0 || len(messages) == 0 {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	countedTurns := 0
+	for i := len(messages) - 1; i >= 0 && countedTurns < limit; i-- {
+		msg := messages[i]
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		countedTurns++
+		for _, call := range msg.ToolCalls {
+			name := strings.TrimSpace(call.Name)
+			if name == "" {
+				continue
+			}
+			seen[name] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func (a *Agent) beginToolExecution(call ToolCall) (int, error) {
+	a.Session.AddMessage(Message{
+		Role:       "tool",
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		Text:       "IN_PROGRESS: " + summarizeToolDiagnosticCall(call),
+	})
+	if err := a.Store.Save(a.Session); err != nil {
+		return -1, err
+	}
+	return len(a.Session.Messages) - 1, nil
+}
+
+func (a *Agent) setToolExecutionResult(index int, msg Message) {
+	if index >= 0 && index < len(a.Session.Messages) {
+		a.Session.Messages[index] = msg
+		a.Session.UpdatedAt = time.Now()
+		return
+	}
+	a.Session.AddMessage(msg)
 }
 
 func summarizeToolInvocation(cfg Config, call ToolCall) string {
@@ -1160,6 +1564,45 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 			return localizedText(cfg, "Using run_shell...", "shell 실행 중 ...")
 		}
 		return fmt.Sprintf(localizedText(cfg, "Running shell: %s", "shell 실행 중 ... %s"), command)
+	case "run_shell_background":
+		command := strings.TrimSpace(stringValue(args, "command"))
+		if len(command) > 72 {
+			command = command[:69] + "..."
+		}
+		if command == "" {
+			return localizedText(cfg, "Starting background shell...", "백그라운드 shell 시작 중 ...")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Starting background shell: %s", "백그라운드 shell 시작 중 ... %s"), command)
+	case "run_shell_bundle_background":
+		commands := stringSliceValue(args, "commands")
+		if len(commands) == 0 {
+			return localizedText(cfg, "Starting background shell bundle...", "백그라운드 shell 묶음 시작 중 ...")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Starting %d background shell command(s)...", "백그라운드 shell %d개 시작 중 ..."), len(commands))
+	case "check_shell_job":
+		jobID := strings.TrimSpace(stringValue(args, "job_id"))
+		if jobID == "" {
+			jobID = "latest"
+		}
+		return fmt.Sprintf(localizedText(cfg, "Checking shell job %s...", "shell job 확인 중 ... %s"), jobID)
+	case "check_shell_bundle":
+		jobIDs := stringSliceValue(args, "job_ids")
+		if len(jobIDs) == 0 {
+			return localizedText(cfg, "Checking shell bundle...", "shell 묶음 확인 중 ...")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Checking %d shell job(s)...", "shell job %d개 확인 중 ..."), len(jobIDs))
+	case "cancel_shell_job":
+		jobID := strings.TrimSpace(stringValue(args, "job_id"))
+		if jobID == "" {
+			jobID = "latest"
+		}
+		return fmt.Sprintf(localizedText(cfg, "Canceling shell job %s...", "shell job 중단 중 ... %s"), jobID)
+	case "cancel_shell_bundle":
+		bundleID := strings.TrimSpace(stringValue(args, "bundle_id"))
+		if bundleID == "" {
+			bundleID = "latest"
+		}
+		return fmt.Sprintf(localizedText(cfg, "Canceling shell bundle %s...", "shell 묶음 중단 중 ... %s"), bundleID)
 	case "git_status", "git_diff", "git_add", "git_commit", "git_push", "git_create_pr":
 		return fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), name)
 	case "apply_patch", "write_file", "replace_in_file":
@@ -1214,6 +1657,34 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 			return localizedText(cfg, "run_shell completed with no output.", "shell 완료: 출력 없음.")
 		}
 		return fmt.Sprintf(localizedText(cfg, "run_shell completed: %s", "shell 완료: %s"), snippet)
+	case "run_shell_background":
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if snippet == "" {
+			return localizedText(cfg, "Background shell job started.", "백그라운드 shell 시작됨.")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Background shell started: %s", "백그라운드 shell 시작: %s"), snippet)
+	case "run_shell_bundle_background":
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if snippet == "" {
+			return localizedText(cfg, "Background shell bundle started.", "백그라운드 shell 묶음 시작됨.")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Background shell bundle started: %s", "백그라운드 shell 묶음 시작: %s"), snippet)
+	case "check_shell_job":
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if snippet == "" {
+			return localizedText(cfg, "Shell job status loaded.", "shell job 상태 확인 완료.")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Shell job status: %s", "shell job 상태: %s"), snippet)
+	case "check_shell_bundle":
+		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
+		if snippet == "" {
+			return localizedText(cfg, "Shell bundle status loaded.", "shell 묶음 상태 확인 완료.")
+		}
+		return fmt.Sprintf(localizedText(cfg, "Shell bundle status: %s", "shell 묶음 상태: %s"), snippet)
+	case "cancel_shell_job":
+		return localizedText(cfg, "Background shell job canceled.", "백그라운드 shell job 중단 완료.")
+	case "cancel_shell_bundle":
+		return localizedText(cfg, "Background shell bundle canceled.", "백그라운드 shell 묶음 중단 완료.")
 	case "git_status", "git_diff", "git_add", "git_commit", "git_push", "git_create_pr":
 		return fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), name)
 	case "apply_patch", "write_file", "replace_in_file":
@@ -1354,6 +1825,8 @@ func collectToolResults(messages []Message, assistantIndex, expected int) []stri
 func summarizeToolResultStatus(msg Message) string {
 	text := strings.TrimSpace(msg.Text)
 	switch {
+	case strings.HasPrefix(text, "IN_PROGRESS:"):
+		return "running"
 	case strings.HasPrefix(text, "CANCELED:"):
 		return "canceled"
 	case msg.IsError:
@@ -1502,11 +1975,35 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(compactPromptSection(a.Session.Summary, 900))
 		b.WriteString("\n")
 	}
+	if a.Session.TaskState != nil {
+		if stateText := strings.TrimSpace(a.Session.TaskState.RenderPromptSection()); stateText != "" {
+			b.WriteString("\nStructured task state:\n")
+			b.WriteString(stateText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.TaskGraph != nil {
+		if graphText := strings.TrimSpace(a.Session.TaskGraph.RenderPromptSection()); graphText != "" {
+			b.WriteString("\nStructured task graph:\n")
+			b.WriteString(graphText)
+			b.WriteString("\n")
+		}
+	}
 	if len(a.Session.Plan) > 0 {
 		b.WriteString("\nCurrent shared plan:\n")
 		for _, item := range a.Session.Plan {
 			fmt.Fprintf(&b, "- [%s] %s\n", item.Status, item.Step)
 		}
+	}
+	if jobsText := strings.TrimSpace(renderBackgroundJobsPrompt(a.Session.BackgroundJobs, a.Session.WorkingDir)); jobsText != "" {
+		b.WriteString("\nActive background shell jobs:\n")
+		b.WriteString(jobsText)
+		b.WriteString("\n")
+	}
+	if bundlesText := strings.TrimSpace(renderBackgroundBundlesPrompt(a.Session.BackgroundBundles)); bundlesText != "" {
+		b.WriteString("\nActive background shell bundles:\n")
+		b.WriteString(bundlesText)
+		b.WriteString("\n")
 	}
 	if a.Session.LastVerification != nil {
 		b.WriteString("\nLatest verification summary:\n")
@@ -1570,8 +2067,17 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
 	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")
+	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
+	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")
+	b.WriteString("- Use check_shell_job to poll a background shell job instead of rerunning the same long command.\n")
+	b.WriteString("- Use check_shell_bundle to poll several background shell jobs together when a parallel verification bundle is running.\n")
+	b.WriteString("- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id=\"latest\" instead of reconstructing the job id list from memory.\n")
+	b.WriteString("- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.\n")
+	b.WriteString("- When a long-running verification command belongs to the current focused task-graph node, include owner_node_id in the tool arguments so the runtime can attach that work to the correct node.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use &&. Use a single command or PowerShell separators like ; only when needed.\n")
 	b.WriteString("- For run_shell, the working directory is already set to the workspace root. Do not prepend commands with cd unless changing into a subdirectory is truly necessary.\n")
+	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
+	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
 	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")
 	b.WriteString("- Local skills can be referenced by name with $skill-name.\n")
 	b.WriteString("- MCP tool names from servers are prefixed as mcp__server__tool.\n")
@@ -1628,8 +2134,17 @@ func summarizeMessages(messages []Message, instructions string) string {
 	if strings.TrimSpace(instructions) != "" {
 		lines = append(lines, "Focus: "+strings.TrimSpace(instructions))
 	}
-	for _, msg := range messages {
-		text := strings.TrimSpace(msg.Text)
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			text := summarizeToolTurnForCompact(messages, i)
+			if strings.TrimSpace(text) != "" {
+				lines = append(lines, fmt.Sprintf("[%s] %s", msg.Role, text))
+			}
+			i += countFollowingToolMessages(messages, i)
+			continue
+		}
+		text := compactMessageSummaryText(msg)
 		if text == "" && len(msg.Images) > 0 {
 			text = fmt.Sprintf("attached %d image(s)", len(msg.Images))
 		}
@@ -1643,8 +2158,12 @@ func summarizeMessages(messages []Message, instructions string) string {
 		if text == "" {
 			continue
 		}
-		if len(text) > 220 {
-			text = text[:220] + "..."
+		limit := 220
+		if messageShouldPinForCompact(msg) {
+			limit = 420
+		}
+		if len(text) > limit {
+			text = text[:limit] + "..."
 		}
 		lines = append(lines, fmt.Sprintf("[%s] %s", msg.Role, strings.ReplaceAll(text, "\n", " ")))
 	}
@@ -1654,6 +2173,208 @@ func summarizeMessages(messages []Message, instructions string) string {
 	return strings.Join(lines, "\n")
 }
 
+func compactCutIndex(messages []Message, keepRecentMessages int, keepRecentToolTurns int) int {
+	if keepRecentMessages <= 0 {
+		keepRecentMessages = 8
+	}
+	if len(messages) <= keepRecentMessages {
+		return 0
+	}
+	cut := len(messages) - keepRecentMessages
+	if keepRecentToolTurns <= 0 {
+		return cut
+	}
+	toolTurnStarts := make([]int, 0, keepRecentToolTurns)
+	for index, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			toolTurnStarts = append(toolTurnStarts, index)
+		}
+	}
+	if len(toolTurnStarts) >= keepRecentToolTurns {
+		preserveStart := toolTurnStarts[len(toolTurnStarts)-keepRecentToolTurns]
+		if preserveStart < cut {
+			cut = preserveStart
+		}
+	}
+	if pinnedStart := compactPinnedStartIndex(messages, compactPinnedMessagesToKeep); pinnedStart >= 0 && pinnedStart < cut {
+		cut = pinnedStart
+	}
+	if cut < 0 {
+		return 0
+	}
+	return cut
+}
+
+func countFollowingToolMessages(messages []Message, assistantIndex int) int {
+	count := 0
+	for i := assistantIndex + 1; i < len(messages); i++ {
+		if messages[i].Role != "tool" {
+			break
+		}
+		count++
+	}
+	return count
+}
+
+func summarizeToolTurnForCompact(messages []Message, assistantIndex int) string {
+	msg := messages[assistantIndex]
+	parts := make([]string, 0, len(msg.ToolCalls))
+	toolResults := collectToolMessages(messages, assistantIndex, len(msg.ToolCalls))
+	for i, call := range msg.ToolCalls {
+		name := summarizeToolDiagnosticCall(call)
+		status := "pending"
+		if i < len(toolResults) {
+			status = summarizeCompactToolResult(toolResults[i])
+		}
+		parts = append(parts, sanitizeDiagnosticValue(name+":"+status))
+	}
+	preamble := strings.TrimSpace(msg.Text)
+	toolSummary := strings.Join(parts, ", ")
+	if preamble == "" {
+		return "tool turn: " + toolSummary
+	}
+	return sanitizeDiagnosticValue(strings.ReplaceAll(preamble, "\n", " ")) + " | tool turn: " + toolSummary
+}
+
+func collectToolMessages(messages []Message, assistantIndex, expected int) []Message {
+	results := make([]Message, 0, expected)
+	for i := assistantIndex + 1; i < len(messages) && len(results) < expected; i++ {
+		msg := messages[i]
+		if msg.Role == "tool" {
+			results = append(results, msg)
+			continue
+		}
+		break
+	}
+	return results
+}
+
+func summarizeCompactToolResult(msg Message) string {
+	status := summarizeToolResultStatus(msg)
+	if !msg.IsError {
+		return status
+	}
+	detail := compactToolErrorDetail(msg.Text)
+	if detail == "" {
+		return status
+	}
+	return status + ":" + sanitizeDiagnosticValue(detail)
+}
+
+func compactMessageSummaryText(msg Message) string {
+	if msg.Role == "tool" {
+		return summarizeCompactToolResult(msg)
+	}
+	text := strings.TrimSpace(msg.Text)
+	if !messageShouldPinForCompact(msg) {
+		return text
+	}
+	return compactPinnedMessageSnippet(text, 6)
+}
+
+func messageShouldPinForCompact(msg Message) bool {
+	text := strings.ToLower(strings.TrimSpace(msg.Text))
+	if msg.Role == "tool" {
+		if msg.IsError {
+			return true
+		}
+		if strings.HasPrefix(strings.TrimSpace(msg.Text), "IN_PROGRESS:") {
+			return true
+		}
+		if strings.TrimSpace(msg.ToolName) == "run_shell" && strings.Contains(text, "[run_shell output truncated") {
+			return true
+		}
+		return false
+	}
+	if msg.Role != "user" {
+		return false
+	}
+	return containsAny(text,
+		"automatic verification results",
+		"latest verification failed",
+		"automatic verification has been disabled",
+		"verification tool path updated",
+		"recovery mode:",
+		"tool budget is extended",
+		"tool budget has been exhausted",
+		"wrong patch format",
+		"malformed or truncated json",
+		"stale or mismatched file contents",
+	)
+}
+
+func compactPinnedStartIndex(messages []Message, keepPinnedMessages int) int {
+	if keepPinnedMessages <= 0 || len(messages) == 0 {
+		return -1
+	}
+	indices := make([]int, 0, keepPinnedMessages)
+	seen := map[int]struct{}{}
+	for idx, msg := range messages {
+		if !messageShouldPinForCompact(msg) {
+			continue
+		}
+		start := compactPinnedMessageStart(messages, idx)
+		if _, ok := seen[start]; ok {
+			continue
+		}
+		seen[start] = struct{}{}
+		indices = append(indices, start)
+	}
+	if len(indices) == 0 {
+		return -1
+	}
+	if len(indices) <= keepPinnedMessages {
+		return indices[0]
+	}
+	return indices[len(indices)-keepPinnedMessages]
+}
+
+func compactPinnedMessageStart(messages []Message, index int) int {
+	if index <= 0 || index >= len(messages) {
+		return index
+	}
+	if messages[index].Role != "tool" {
+		return index
+	}
+	for i := index - 1; i >= 0; i-- {
+		if messages[i].Role == "assistant" && len(messages[i].ToolCalls) > 0 {
+			return i
+		}
+		if messages[i].Role != "tool" {
+			break
+		}
+	}
+	return index
+}
+
+func compactPinnedMessageSnippet(text string, maxLines int) string {
+	normalized := strings.ReplaceAll(strings.TrimSpace(text), "\r\n", "\n")
+	if normalized == "" {
+		return ""
+	}
+	lines := strings.Split(normalized, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+		if maxLines > 0 && len(filtered) >= maxLines {
+			break
+		}
+	}
+	return strings.Join(filtered, " | ")
+}
+
+func compactToolErrorDetail(text string) string {
+	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	if idx := strings.LastIndex(normalized, "ERROR:"); idx >= 0 {
+		return firstLine(normalized[idx+len("ERROR:"):])
+	}
+	return firstLine(normalized)
+}
+
 func synthesizeToolPreambleText(calls []ToolCall) string {
 	if len(calls) == 0 {
 		return ""
@@ -1661,6 +2382,18 @@ func synthesizeToolPreambleText(calls []ToolCall) string {
 	switch calls[0].Name {
 	case "run_shell":
 		return "Let me check the current state first."
+	case "run_shell_background":
+		return "This may take a while, so I am starting it in the background first."
+	case "run_shell_bundle_background":
+		return "These can run independently, so I am starting them in parallel in the background."
+	case "check_shell_job":
+		return "Let me poll the background job and see where it is."
+	case "check_shell_bundle":
+		return "Let me poll the background job bundle and see how far it has progressed."
+	case "cancel_shell_job":
+		return "This background job is stale, so I am stopping it before it wastes more time."
+	case "cancel_shell_bundle":
+		return "This background bundle is stale, so I am stopping it before it wastes more time."
 	case "apply_patch":
 		return "I prepared a patch. I will show the diff before applying it."
 	case "write_file":
@@ -1679,6 +2412,18 @@ func synthesizeToolPreamble(calls []ToolCall) string {
 	switch calls[0].Name {
 	case "run_shell":
 		return "먼저 현재 상태를 확인해볼게요."
+	case "run_shell_background":
+		return "시간이 걸릴 수 있어서 먼저 백그라운드로 돌려둘게요."
+	case "run_shell_bundle_background":
+		return "서로 독립적인 작업이라 백그라운드에서 병렬로 먼저 돌려둘게요."
+	case "check_shell_job":
+		return "백그라운드 작업 상태를 먼저 확인해볼게요."
+	case "check_shell_bundle":
+		return "백그라운드 작업 묶음 상태를 먼저 확인해볼게요."
+	case "cancel_shell_job":
+		return "이 background job은 stale해서 먼저 정리할게요."
+	case "cancel_shell_bundle":
+		return "이 background bundle은 stale해서 먼저 정리할게요."
 	case "apply_patch":
 		return "수정안을 만들었어요. 적용 전에 diff를 먼저 보여드릴게요."
 	case "write_file":

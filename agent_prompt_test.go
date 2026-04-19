@@ -152,6 +152,60 @@ func TestSystemPromptExplainsCachedReadAndGrepHints(t *testing.T) {
 	}
 }
 
+func TestSystemPromptIncludesActiveBackgroundBundles(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.BackgroundBundles = []BackgroundShellBundle{{
+		ID:               "bundle-1",
+		Status:           "running",
+		CommandSummaries: []string{"go test ./pkg/...", "ctest --output-on-failure"},
+		JobIDs:           []string{"job-1", "job-2"},
+		LastSummary:      "completed=1 running=1 failed=0 total=2",
+	}}
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Active background shell bundles:") {
+		t.Fatalf("expected active background bundle section in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "bundle-1 [running] jobs=2") {
+		t.Fatalf("expected bundle details in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "bundle_id=\"latest\"") {
+		t.Fatalf("expected latest bundle polling guidance in system prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptIncludesStructuredTaskGraph(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{ID: "plan-01", Title: "Inspect the issue", Kind: "inspection", Status: "completed"},
+			{ID: "plan-02", Title: "Verify the fix", Kind: "verification", Status: "ready", MicroWorkerBrief: "Poll the verification bundle before concluding."},
+		},
+	}
+	session.TaskGraph.Normalize()
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Structured task graph:") {
+		t.Fatalf("expected structured task graph section, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Task graph nodes: 2") {
+		t.Fatalf("expected task graph summary in prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Verify the fix [ready]") {
+		t.Fatalf("expected ready node details in prompt, got %q", prompt)
+	}
+}
+
 func TestLooksLikeExplicitGitIntentIgnoresCodeOnlyCommitMentions(t *testing.T) {
 	if looksLikeExplicitGitIntent("fix commit parsing in the hook engine") {
 		t.Fatalf("expected code-only commit mention to stay false")

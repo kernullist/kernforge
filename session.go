@@ -36,6 +36,10 @@ type Session struct {
 	LastSelection            *ViewerSelection        `json:"last_selection,omitempty"`
 	Selections               []ViewerSelection       `json:"selections,omitempty"`
 	ActiveSelection          int                     `json:"active_selection,omitempty"`
+	TaskState                *TaskState              `json:"task_state,omitempty"`
+	TaskGraph                *TaskGraph              `json:"task_graph,omitempty"`
+	BackgroundJobs           []BackgroundShellJob    `json:"background_jobs,omitempty"`
+	BackgroundBundles        []BackgroundShellBundle `json:"background_bundles,omitempty"`
 	Messages                 []Message               `json:"messages"`
 }
 
@@ -63,6 +67,24 @@ func (s *Session) AddMessage(msg Message) {
 
 func (s *Session) ApproxChars() int {
 	total := len(s.Summary)
+	if s.TaskState != nil {
+		total += s.TaskState.ApproxChars()
+	}
+	if s.TaskGraph != nil {
+		total += len(s.TaskGraph.RenderExportSection())
+	}
+	for _, job := range s.BackgroundJobs {
+		total += len(job.ID) + len(job.Command) + len(job.Status) + len(job.LastOutput)
+	}
+	for _, bundle := range s.BackgroundBundles {
+		total += len(bundle.ID) + len(bundle.Status) + len(bundle.LastSummary)
+		for _, item := range bundle.CommandSummaries {
+			total += len(item)
+		}
+		for _, item := range bundle.JobIDs {
+			total += len(item)
+		}
+	}
 	for _, msg := range s.Messages {
 		total += len(msg.Text)
 		for _, image := range msg.Images {
@@ -123,6 +145,30 @@ func (s *Session) ExportText() string {
 	if s.LastVerification != nil {
 		b.WriteString("## Last Verification\n\n")
 		b.WriteString(s.LastVerification.RenderDetailed())
+		b.WriteString("\n\n")
+	}
+	if s.TaskState != nil {
+		if rendered := strings.TrimSpace(s.TaskState.RenderExportSection()); rendered != "" {
+			b.WriteString("## Task State\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.TaskGraph != nil {
+		if rendered := strings.TrimSpace(s.TaskGraph.RenderExportSection()); rendered != "" {
+			b.WriteString("## Task Graph\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if rendered := renderBackgroundJobsExport(s.BackgroundJobs); rendered != "" {
+		b.WriteString("## Background Jobs\n\n")
+		b.WriteString(rendered)
+		b.WriteString("\n\n")
+	}
+	if rendered := renderBackgroundBundlesExport(s.BackgroundBundles); rendered != "" {
+		b.WriteString("## Background Bundles\n\n")
+		b.WriteString(rendered)
 		b.WriteString("\n\n")
 	}
 	if s.LastSelection != nil && s.LastSelection.HasSelection() {
@@ -210,6 +256,9 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 		return nil, err
 	}
 	sess.normalizeSelectionState()
+	sess.normalizeTaskStateArtifacts()
+	sess.normalizeBackgroundJobs()
+	sess.normalizeBackgroundBundles()
 	return &sess, nil
 }
 

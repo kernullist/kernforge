@@ -134,11 +134,63 @@ func TestDefaultConfigRequestTimeoutUsesTwentyMinutes(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigRequestRetriesUseSaneDefaults(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	if got := configMaxRequestRetries(cfg); got != 2 {
+		t.Fatalf("expected default max request retries of 2, got %d", got)
+	}
+	if got := configRequestRetryDelay(cfg); got != 1500*time.Millisecond {
+		t.Fatalf("expected default request retry delay of 1500ms, got %s", got)
+	}
+	if got := configReadHintSpans(cfg); got != defaultReadHintSpans {
+		t.Fatalf("expected default read hint spans of %d, got %d", defaultReadHintSpans, got)
+	}
+	if got := configReadCacheEntries(cfg); got != defaultReadCacheEntries {
+		t.Fatalf("expected default read cache entries of %d, got %d", defaultReadCacheEntries, got)
+	}
+}
+
 func TestConfigRequestTimeoutUsesConfiguredSeconds(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
 	cfg.RequestTimeoutSecs = 7
 	if got := configRequestTimeout(cfg); got != 7*time.Second {
 		t.Fatalf("expected configured request timeout of 7 seconds, got %s", got)
+	}
+}
+
+func TestConfigShellTimeoutUsesConfiguredSeconds(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	cfg.ShellTimeoutSecs = 9
+	if got := configShellTimeout(cfg); got != 9*time.Second {
+		t.Fatalf("expected configured shell timeout of 9 seconds, got %s", got)
+	}
+}
+
+func TestConfigReadSettingsUseConfiguredValues(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	cfg.ReadHintSpans = 7
+	cfg.ReadCacheEntries = 5
+	if got := configReadHintSpans(cfg); got != 7 {
+		t.Fatalf("expected configured read hint spans of 7, got %d", got)
+	}
+	if got := configReadCacheEntries(cfg); got != 5 {
+		t.Fatalf("expected configured read cache entries of 5, got %d", got)
+	}
+}
+
+func TestProviderRetryDelayUsesExponentialBackoffWithinJitterBounds(t *testing.T) {
+	base := 100 * time.Millisecond
+	first := providerRetryDelay(base, 0)
+	third := providerRetryDelay(base, 3)
+
+	if first < 80*time.Millisecond || first > 120*time.Millisecond {
+		t.Fatalf("expected first retry delay to stay within jitter bounds, got %s", first)
+	}
+	if third < 640*time.Millisecond || third > 960*time.Millisecond {
+		t.Fatalf("expected third retry delay to stay within jitter bounds, got %s", third)
+	}
+	if third <= first {
+		t.Fatalf("expected exponential backoff to grow retry delay, got first=%s third=%s", first, third)
 	}
 }
 
@@ -171,6 +223,28 @@ func TestPermissionManagerShellPromptDoesNotAdvertiseAlways(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(prompted), "always") {
 		t.Fatalf("shell prompt should not advertise always, got %q", prompted)
+	}
+}
+
+func TestPermissionManagerShellWritePromptDoesNotAdvertiseAlways(t *testing.T) {
+	var prompted string
+	perms := NewPermissionManager(ModeDefault, func(question string) (bool, error) {
+		prompted = question
+		return true, nil
+	})
+
+	allowed, err := perms.Allow(ActionShellWrite, "fmt ./... (scoped to main.go)")
+	if err != nil {
+		t.Fatalf("Allow: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected shell write permission to be allowed")
+	}
+	if !strings.Contains(prompted, "Allow shell write? fmt ./... (scoped to main.go)") {
+		t.Fatalf("unexpected shell write prompt: %q", prompted)
+	}
+	if strings.Contains(strings.ToLower(prompted), "always") {
+		t.Fatalf("shell write prompt should not advertise always, got %q", prompted)
 	}
 }
 

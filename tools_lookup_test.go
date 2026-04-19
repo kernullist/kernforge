@@ -360,6 +360,32 @@ func TestToolRegistrySharesReadHintsBetweenReadFileAndGrep(t *testing.T) {
 	}
 }
 
+func TestReadToolsUseWorkspaceConfiguredHintAndCacheLimits(t *testing.T) {
+	base := t.TempDir()
+	readTool := NewReadFileTool(Workspace{
+		BaseRoot:         base,
+		Root:             base,
+		ReadHintSpans:    5,
+		ReadCacheEntries: 3,
+	})
+	grepTool := NewGrepTool(Workspace{
+		BaseRoot:      base,
+		Root:          base,
+		ReadHintSpans: 5,
+	})
+	_ = NewToolRegistry(readTool, grepTool)
+
+	if readTool.maxCache != 3 {
+		t.Fatalf("expected read cache size 3, got %d", readTool.maxCache)
+	}
+	if readTool.ws.ToolHints == nil {
+		t.Fatalf("expected shared tool hints to be initialized")
+	}
+	if readTool.ws.ToolHints.maxReadSpans != 5 {
+		t.Fatalf("expected shared read hint limit 5, got %d", readTool.ws.ToolHints.maxReadSpans)
+	}
+}
+
 func TestListFilesToolFallsBackToBaseRootWhenRelativePathMissingInCurrentDirectory(t *testing.T) {
 	base := t.TempDir()
 	current := filepath.Join(base, "nested")

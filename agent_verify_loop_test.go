@@ -8,12 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 type scriptedProviderClient struct {
+	mu       sync.Mutex
 	replies  []ChatResponse
 	requests []ChatRequest
 	index    int
@@ -23,6 +26,8 @@ func (s *scriptedProviderClient) Name() string { return "scripted" }
 
 func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.requests = append(s.requests, req)
 	if s.index >= len(s.replies) {
 		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
@@ -33,6 +38,7 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 }
 
 type streamingScriptedProviderClient struct {
+	mu       sync.Mutex
 	replies  []ChatResponse
 	requests []ChatRequest
 	index    int
@@ -42,6 +48,8 @@ func (s *streamingScriptedProviderClient) Name() string { return "streaming-scri
 
 func (s *streamingScriptedProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	_ = ctx
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.requests = append(s.requests, req)
 	if s.index >= len(s.replies) {
 		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
@@ -110,6 +118,32 @@ func (p *timeoutProviderClient) Complete(ctx context.Context, req ChatRequest) (
 	return ChatResponse{}, ctx.Err()
 }
 
+type transientErrorThenSuccessProviderClient struct {
+	calls     int
+	failCount int
+	err       error
+}
+
+func (p *transientErrorThenSuccessProviderClient) Name() string {
+	return "transient-error-then-success"
+}
+
+func (p *transientErrorThenSuccessProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	_ = req
+	p.calls++
+	if p.calls <= p.failCount {
+		return ChatResponse{}, p.err
+	}
+	return ChatResponse{
+		Message: Message{
+			Role: "assistant",
+			Text: "recovered",
+		},
+		StopReason: "stop",
+	}, nil
+}
+
 type cancelDuringToolTool struct {
 	cancel func()
 	calls  int
@@ -139,6 +173,15 @@ type failingTool struct {
 	name  string
 	err   error
 	calls int
+}
+
+type observingSessionTool struct {
+	name        string
+	sessionPath string
+	output      string
+	err         error
+	calls       int
+	onExecute   func([]byte)
 }
 
 type toolUnsupportedThenSuccessClient struct {
@@ -197,6 +240,29 @@ func (t *failingTool) Execute(ctx context.Context, input any) (string, error) {
 	_ = input
 	t.calls++
 	return "", t.err
+}
+
+func (t *observingSessionTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Observe the persisted session state during tool execution.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *observingSessionTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	if t.onExecute != nil && strings.TrimSpace(t.sessionPath) != "" {
+		data, readErr := os.ReadFile(t.sessionPath)
+		if readErr == nil {
+			t.onExecute(data)
+		}
+	}
+	return t.output, t.err
 }
 
 func toolCallResponse(name string, args map[string]any) ChatResponse {
@@ -1140,10 +1206,11 @@ func TestAgentNudgesAfterRepeatedIdenticalToolCalls(t *testing.T) {
 	}
 }
 
-func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterNudge(t *testing.T) {
+func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterRecoveryTurn(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{}),
 			toolCallResponse("list_files", map[string]any{}),
 			toolCallResponse("list_files", map[string]any{}),
 			toolCallResponse("list_files", map[string]any{}),
@@ -1168,6 +1235,17 @@ func TestAgentStopsAfterRepeatedIdenticalToolCallsContinueAfterNudge(t *testing.
 	}
 	if !strings.Contains(err.Error(), "repeated identical tool calls") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.requests) != 5 {
+		t.Fatalf("expected abort on fifth repeated tool-call turn, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[4]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before aborting repeated tool calls")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Recovery mode") {
+		t.Fatalf("expected recovery guidance before abort, got %#v", lastMessage)
 	}
 }
 
@@ -1503,6 +1581,17 @@ func TestAgentToolLoopLimitIncludesLastToolSummaryAndStopReason(t *testing.T) {
 				},
 				StopReason: "tool_calls",
 			},
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-3",
+						Name:      "list_files",
+						Arguments: `{"path":"."}`,
+					}},
+				},
+				StopReason: "tool_calls",
+			},
 		},
 	}
 	cfg := Config{MaxToolIterations: 2}
@@ -1531,7 +1620,7 @@ func TestAgentToolLoopLimitIncludesLastToolSummaryAndStopReason(t *testing.T) {
 	if !strings.Contains(err.Error(), "stop_reason=tool_calls") {
 		t.Fatalf("expected stop reason, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "iteration=2") {
+	if !strings.Contains(err.Error(), "iteration=3") {
 		t.Fatalf("expected iteration count, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "max_iterations=2") {
@@ -1539,6 +1628,211 @@ func TestAgentToolLoopLimitIncludesLastToolSummaryAndStopReason(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "recent_turns=") {
 		t.Fatalf("expected recent tool turns summary, got %v", err)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected one recovery turn beyond the normal tool budget, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[2]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before final tool-loop-limit turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "tool budget has been exhausted") {
+		t.Fatalf("expected tool-loop-limit recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentUsesRecoveryTurnWhenToolBudgetIsExhausted(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "I already inspected the workspace listing and can answer from that evidence.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			MaxToolIterations: 1,
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "I already inspected the workspace listing and can answer from that evidence." {
+		t.Fatalf("unexpected reply after recovery turn: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one extra recovery turn, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[1]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before final turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "tool budget has been exhausted") {
+		t.Fatalf("expected tool-loop-limit recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentExtendsToolBudgetWhenRecentTurnsShowProgress(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("alpha\nbeta\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			toolCallResponse("grep", map[string]any{"pattern": "alpha", "path": "."}),
+			toolCallResponse("read_file", map[string]any{"path": "sample.txt", "start_line": 1, "end_line": 1}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "I gathered enough evidence after the extended tool budget.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			MaxToolIterations: 2,
+		},
+		Client: provider,
+		Tools: NewToolRegistry(
+			NewListFilesTool(ws),
+			NewGrepTool(ws),
+			NewReadFileTool(ws),
+		),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace carefully")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "I gathered enough evidence after the extended tool budget." {
+		t.Fatalf("unexpected reply after budget extension: %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected extra model turns after budget extension, got %d requests", len(provider.requests))
+	}
+	extendedRequest := provider.requests[2]
+	if len(extendedRequest.Messages) == 0 {
+		t.Fatalf("expected extension guidance before the extended turn")
+	}
+	lastMessage := extendedRequest.Messages[len(extendedRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "tool budget is extended") {
+		t.Fatalf("expected tool budget extension guidance, got %#v", lastMessage)
+	}
+}
+
+func TestCompactCutIndexPreservesRecentToolTurns(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "u1"},
+		{Role: "assistant", Text: "a1"},
+		{Role: "user", Text: "u2"},
+		{Role: "assistant", Text: "a2"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "list_files", Arguments: `{}`}}},
+		{Role: "tool", ToolName: "list_files", Text: "ok"},
+		{Role: "user", Text: "g1"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "grep", Arguments: `{"pattern":"x"}`}}},
+		{Role: "tool", ToolName: "grep", Text: "ok"},
+		{Role: "user", Text: "g2"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "read_file", Arguments: `{"path":"a.cpp"}`}}},
+		{Role: "tool", ToolName: "read_file", Text: "ok"},
+		{Role: "user", Text: "g3"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "run_shell", Arguments: `{"command":"go test ./..."}`}}},
+		{Role: "tool", ToolName: "run_shell", Text: "ok"},
+		{Role: "user", Text: "g4"},
+	}
+
+	got := compactCutIndex(messages, 8, 4)
+	if got != 4 {
+		t.Fatalf("expected compact cut index 4 to preserve recent tool turns, got %d", got)
+	}
+}
+
+func TestCompactCutIndexPreservesPinnedVerificationMessages(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "u1"},
+		{Role: "assistant", Text: "a1"},
+		{Role: "user", Text: "Automatic verification results:\n- step one failed\n- step two pending"},
+		{Role: "assistant", Text: "a2"},
+		{Role: "user", Text: "u2"},
+		{Role: "assistant", Text: "a3"},
+		{Role: "user", Text: "u3"},
+		{Role: "assistant", Text: "a4"},
+		{Role: "user", Text: "u4"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "list_files", Arguments: `{}`}}},
+		{Role: "tool", ToolName: "list_files", Text: "ok"},
+		{Role: "user", Text: "u5"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "grep", Arguments: `{"pattern":"x"}`}}},
+		{Role: "tool", ToolName: "grep", Text: "ok"},
+		{Role: "user", Text: "u6"},
+		{Role: "assistant", ToolCalls: []ToolCall{{Name: "read_file", Arguments: `{"path":"a.cpp"}`}}},
+		{Role: "tool", ToolName: "read_file", Text: "ok"},
+		{Role: "user", Text: "u7"},
+	}
+
+	got := compactCutIndex(messages, 8, 4)
+	if got != 2 {
+		t.Fatalf("expected compact cut index 2 to preserve pinned verification message, got %d", got)
+	}
+}
+
+func TestSummarizeMessagesIncludesCompactToolErrorDetails(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "inspect the failure"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				Name:      "failing_tool",
+				Arguments: `{}`,
+			}},
+		},
+		{
+			Role:     "tool",
+			ToolName: "failing_tool",
+			Text:     "stderr line\n\nERROR: preview surface busy",
+			IsError:  true,
+		},
+	}
+
+	summary := summarizeMessages(messages, "Auto-compacted due to context growth.")
+	if !strings.Contains(summary, "tool turn: failing_tool:error:preview surface busy") {
+		t.Fatalf("expected compact summary to preserve tool error detail, got %q", summary)
+	}
+}
+
+func TestSummarizeMessagesKeepsPinnedVerificationSnippet(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "Automatic verification results:\n- msbuild failed\n- ctest skipped\n- rerun needed"},
+	}
+
+	summary := summarizeMessages(messages, "Auto-compacted due to context growth.")
+	if !strings.Contains(summary, "Automatic verification results:") || !strings.Contains(summary, "msbuild failed") {
+		t.Fatalf("expected compact summary to preserve pinned verification snippet, got %q", summary)
 	}
 }
 
@@ -1672,6 +1966,110 @@ func TestAgentReturnsPromptlyWhenContextCanceledDuringModelTurn(t *testing.T) {
 	}
 }
 
+func TestAgentPersistsInProgressToolStateBeforeExecution(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	sessionPath := filepath.Join(store.Root(), session.ID+".json")
+
+	sawInProgress := false
+	observer := &observingSessionTool{
+		name:        "observe_session",
+		sessionPath: sessionPath,
+		output:      "observed",
+	}
+	observer.onExecute = func(data []byte) {
+		if strings.Contains(string(data), `"text": "IN_PROGRESS: observe_session"`) {
+			sawInProgress = true
+		}
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("observe_session", map[string]any{}),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(observer),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect session persistence")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "done") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if !sawInProgress {
+		t.Fatalf("expected observer to see an in-progress tool state before execution")
+	}
+}
+
+func TestAgentPersistsCompletedToolResultsBetweenToolCalls(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	sessionPath := filepath.Join(store.Root(), session.ID+".json")
+
+	firstTool := &observingSessionTool{
+		name:   "first_tool",
+		output: "first done",
+	}
+	secondSawFirst := false
+	secondTool := &observingSessionTool{
+		name:        "second_tool",
+		sessionPath: sessionPath,
+		output:      "second done",
+		onExecute: func(data []byte) {
+			secondSawFirst = strings.Contains(string(data), `"tool_name": "first_tool"`) &&
+				strings.Contains(string(data), `"text": "first done"`)
+		},
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{
+						{ID: "call-1", Name: "first_tool", Arguments: `{}`},
+						{ID: "call-2", Name: "second_tool", Arguments: `{}`},
+					},
+				},
+				StopReason: "tool_calls",
+			},
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(firstTool, secondTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect persistence between tool calls")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "done") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if !secondSawFirst {
+		t.Fatalf("expected the second tool call to observe the first persisted tool result")
+	}
+}
+
 func TestAgentNudgesAfterMalformedWriteFileArguments(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -1731,7 +2129,9 @@ func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
 	var progress []string
 	agent := &Agent{
 		Config: Config{
-			RequestTimeoutSecs: 1,
+			MaxRequestRetries:   1,
+			RequestRetryDelayMs: 1,
+			RequestTimeoutSecs:  1,
 		},
 		Client: provider,
 		EmitProgress: func(text string) {
@@ -1760,7 +2160,9 @@ func TestCompleteModelTurnReturnsTimeoutAfterRetryExhausted(t *testing.T) {
 	provider := &timeoutProviderClient{}
 	agent := &Agent{
 		Config: Config{
-			RequestTimeoutSecs: 1,
+			MaxRequestRetries:   1,
+			RequestRetryDelayMs: 1,
+			RequestTimeoutSecs:  1,
 		},
 		Client: provider,
 	}
@@ -1780,7 +2182,9 @@ func TestCompleteModelTurnDoesNotRetryOnUserCancellation(t *testing.T) {
 	provider := &blockingProviderClient{started: make(chan struct{})}
 	agent := &Agent{
 		Config: Config{
-			RequestTimeoutSecs: 1,
+			MaxRequestRetries:   1,
+			RequestRetryDelayMs: 1,
+			RequestTimeoutSecs:  1,
 		},
 		Client: provider,
 	}
@@ -1813,6 +2217,66 @@ func TestCompleteModelTurnDoesNotRetryOnUserCancellation(t *testing.T) {
 
 	if provider.calls != 1 {
 		t.Fatalf("expected one provider attempt on cancellation, got %d", provider.calls)
+	}
+}
+
+func TestCompleteModelTurnRetriesTransientProviderErrors(t *testing.T) {
+	provider := &transientErrorThenSuccessProviderClient{
+		failCount: 2,
+		err:       fmt.Errorf("openai API error (503 Service Unavailable): upstream overloaded"),
+	}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			MaxRequestRetries:   2,
+			RequestRetryDelayMs: 1,
+			RequestTimeoutSecs:  1,
+		},
+		Client: provider,
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	resp, err := agent.completeModelTurn(context.Background(), ChatRequest{
+		Model: "test-model",
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurn: %v", err)
+	}
+	if resp.Message.Text != "recovered" {
+		t.Fatalf("unexpected response text: %q", resp.Message.Text)
+	}
+	if provider.calls != 3 {
+		t.Fatalf("expected three provider attempts, got %d", provider.calls)
+	}
+	if len(progress) == 0 || !strings.Contains(progress[0], "Transient provider error") {
+		t.Fatalf("expected transient retry progress message, got %#v", progress)
+	}
+}
+
+func TestCompleteModelTurnDoesNotRetryPermanentProviderErrors(t *testing.T) {
+	provider := &transientErrorThenSuccessProviderClient{
+		failCount: 1,
+		err:       fmt.Errorf("openai API error (401 Unauthorized): invalid api key"),
+	}
+	agent := &Agent{
+		Config: Config{
+			MaxRequestRetries:   2,
+			RequestRetryDelayMs: 1,
+			RequestTimeoutSecs:  1,
+		},
+		Client: provider,
+	}
+
+	_, err := agent.completeModelTurn(context.Background(), ChatRequest{
+		Model: "test-model",
+	})
+	if err == nil {
+		t.Fatalf("expected permanent provider error")
+	}
+	if provider.calls != 1 {
+		t.Fatalf("expected one provider attempt for permanent error, got %d", provider.calls)
 	}
 }
 
@@ -2095,7 +2559,7 @@ func TestAgentNudgesAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 	}
 }
 
-func TestAgentStopsAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
+func TestAgentStopsAfterRepeatedReadFilePathAcrossRangesAfterRecoveryTurn(t *testing.T) {
 	root := t.TempDir()
 	targetDir := filepath.Join(root, "Tavern", "TavernWorker")
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
@@ -2111,6 +2575,8 @@ func TestAgentStopsAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 3}),
 			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 3, "end_line": 4}),
 			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 3}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 4}),
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 1, "end_line": 4}),
 			toolCallResponse("read_file", map[string]any{"path": "Tavern/TavernWorker/TavernWorkerCore.cpp", "start_line": 2, "end_line": 4}),
 		},
 	}
@@ -2132,6 +2598,23 @@ func TestAgentStopsAfterRepeatedReadFilePathAcrossRanges(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "repeatedly reading the same file") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(provider.requests) != 8 {
+		t.Fatalf("expected abort on eighth repeated same-file turn, got %d requests", len(provider.requests))
+	}
+	recoveryRequest := provider.requests[6]
+	if len(recoveryRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before final repeated read")
+	}
+	foundRecovery := false
+	for _, msg := range recoveryRequest.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Text, "Recovery mode") {
+			foundRecovery = true
+			break
+		}
+	}
+	if !foundRecovery {
+		t.Fatalf("expected recovery guidance in request %#v", recoveryRequest.Messages)
 	}
 }
 
@@ -2277,7 +2760,7 @@ func TestAgentNudgesBeforeAbortingRepeatedToolFailure(t *testing.T) {
 	}
 }
 
-func TestAgentAbortsAfterThirdRepeatedToolFailure(t *testing.T) {
+func TestAgentAbortsAfterFourthRepeatedToolFailure(t *testing.T) {
 	root := t.TempDir()
 	failTool := &failingTool{
 		name: "failing_tool",
@@ -2288,6 +2771,7 @@ func TestAgentAbortsAfterThirdRepeatedToolFailure(t *testing.T) {
 			toolCallResponse("failing_tool", map[string]any{"attempt": 1}),
 			toolCallResponse("failing_tool", map[string]any{"attempt": 2}),
 			toolCallResponse("failing_tool", map[string]any{"attempt": 3}),
+			toolCallResponse("failing_tool", map[string]any{"attempt": 4}),
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2306,12 +2790,20 @@ func TestAgentAbortsAfterThirdRepeatedToolFailure(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "stopped after repeated tool failure") {
 		t.Fatalf("expected repeated tool failure error, got %v", err)
 	}
-	if len(provider.requests) != 3 {
-		t.Fatalf("expected abort on third failing turn, got %d requests", len(provider.requests))
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected abort on fourth failing turn, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[3]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before final repeated failure turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Recovery mode") {
+		t.Fatalf("expected recovery guidance before abort, got %#v", lastMessage)
 	}
 }
 
-func TestAgentDoesNotLabelSingleFinalToolFailureAsRepeated(t *testing.T) {
+func TestAgentSingleToolFailureGetsRecoveryTurnInsteadOfRepeatedFailureLabel(t *testing.T) {
 	root := t.TempDir()
 	failTool := &failingTool{
 		name: "failing_tool",
@@ -2320,6 +2812,13 @@ func TestAgentDoesNotLabelSingleFinalToolFailureAsRepeated(t *testing.T) {
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("failing_tool", map[string]any{}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "The preview surface stayed busy, so I am stopping instead of repeating the same failing tool call.",
+				},
+				StopReason: "stop",
+			},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -2336,14 +2835,377 @@ func TestAgentDoesNotLabelSingleFinalToolFailureAsRepeated(t *testing.T) {
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "try the preview flow")
-	if err == nil {
-		t.Fatalf("expected tool loop error")
+	reply, err := agent.Reply(context.Background(), "try the preview flow")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
 	}
-	if strings.Contains(err.Error(), "stopped after repeated tool failure") {
-		t.Fatalf("single final failure should not be labeled repeated: %v", err)
+	if !strings.Contains(reply, "preview surface stayed busy") {
+		t.Fatalf("unexpected recovery-turn reply: %q", reply)
 	}
-	if !strings.Contains(err.Error(), "tool loop limit exceeded") {
-		t.Fatalf("expected tool loop limit error, got %v", err)
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one recovery turn after the single tool failure, got %d requests", len(provider.requests))
+	}
+	lastRequest := provider.requests[1]
+	if len(lastRequest.Messages) == 0 {
+		t.Fatalf("expected recovery guidance before final turn")
+	}
+	lastMessage := lastRequest.Messages[len(lastRequest.Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "tool budget has been exhausted") {
+		t.Fatalf("expected tool-loop-limit recovery guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
+	root := t.TempDir()
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "1. Inspect the issue\n2. Fix it\n3. Summarize the result",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "The issue is fixed.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "I updated the fix, verified the result, and there are no remaining blockers.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe execution plan is sound.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "NEEDS_REVISION\nThe final answer does not mention verification or whether any blockers remain.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe revised final answer is ready.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config: Config{
+			Model: "model",
+		},
+		Client:         mainProvider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the bug and summarize the result")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "verified the result") {
+		t.Fatalf("expected revised final answer, got %q", reply)
+	}
+	if len(reviewer.requests) != 3 {
+		t.Fatalf("expected plan review + 2 final reviews, got %d requests", len(reviewer.requests))
+	}
+	foundRevisionPrompt := false
+	for _, msg := range session.Messages {
+		if msg.Role == "user" && strings.Contains(msg.Text, "Reviewer feedback: the proposed final answer is not ready yet") {
+			foundRevisionPrompt = true
+			break
+		}
+	}
+	if !foundRevisionPrompt {
+		t.Fatalf("expected reviewer revision prompt to be added to the session")
+	}
+	if session.TaskState == nil || session.TaskState.FinalReviewVerdict != "approved" {
+		t.Fatalf("expected final review verdict to be approved, got %#v", session.TaskState)
+	}
+}
+
+func TestBuildRecoveryGuidanceCanRefreshExecutionPlan(t *testing.T) {
+	root := t.TempDir()
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "1. Poll the active shell job\n2. Inspect the failing output\n3. Only rerun verification if the job output is stale",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "- The loop is repeating a stale verification step.\n- Poll the running shell job before launching another build.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe refreshed plan breaks the loop.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		Goal:           "Finish the long-running verification flow without rerunning the same build.",
+		PlanSummary:    "1. Run the build\n2. Rerun the build again",
+		FailedAttempts: []string{"Repeated the same build", "Repeated the same build again"},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config: Config{
+			Model: "model",
+		},
+		Client:         mainProvider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          store,
+	}
+
+	guidance := agent.buildRecoveryGuidance(context.Background(), string(recoveryTriggerRepeatedToolError), "fallback recovery", "recent tools", "same failure")
+	if !strings.Contains(guidance, "Refreshed execution plan") {
+		t.Fatalf("expected refreshed execution plan in guidance, got %q", guidance)
+	}
+	if session.TaskState == nil || session.TaskState.PlanRefreshCount == 0 {
+		t.Fatalf("expected plan refresh count to increase, got %#v", session.TaskState)
+	}
+	if len(session.Plan) == 0 {
+		t.Fatalf("expected refreshed session plan items")
+	}
+	if !strings.Contains(session.TaskState.PlanSummary, "Poll the active shell job") {
+		t.Fatalf("expected refreshed plan summary, got %#v", session.TaskState)
+	}
+}
+
+func TestNoteToolExecutionResultKeepsSharedPlanInProgressWhenBackgroundJobStarts(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{}
+	session.Plan = []PlanItem{
+		{Step: "Start background verification", Status: "in_progress"},
+		{Step: "Poll the background job", Status: "pending"},
+	}
+	now := time.Now()
+	session.BackgroundJobs = []BackgroundShellJob{{
+		ID:             "job-1",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "running",
+		StartedAt:      now,
+		UpdatedAt:      now,
+	}}
+	agent := &Agent{
+		Session: session,
+	}
+
+	agent.noteToolExecutionResult(ToolCall{Name: "run_shell_background"}, "started background shell job job-1 [running]\ncommand: go test ./...\nstatus: running", nil)
+
+	if session.Plan[0].Status != "in_progress" || session.Plan[1].Status != "pending" {
+		t.Fatalf("expected shared plan to remain in progress while background job is only started, got %#v", session.Plan)
+	}
+	if session.TaskState.PlanCursor != 0 {
+		t.Fatalf("expected plan cursor to stay at 0, got %d", session.TaskState.PlanCursor)
+	}
+	if !slices.Contains(session.TaskState.PendingChecks, backgroundShellJobPendingCheck) {
+		t.Fatalf("expected pending background-job check, got %#v", session.TaskState.PendingChecks)
+	}
+}
+
+func TestNoteToolExecutionResultAdvancesSharedPlanOnlyAfterBackgroundBundleCompletes(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		PendingChecks: []string{backgroundShellJobPendingCheck},
+	}
+	session.Plan = []PlanItem{
+		{Step: "Poll the background jobs", Status: "in_progress"},
+		{Step: "Summarize the result", Status: "pending"},
+	}
+	now := time.Now()
+	session.BackgroundJobs = []BackgroundShellJob{
+		{ID: "job-1", Status: "completed", StartedAt: now, UpdatedAt: now},
+		{ID: "job-2", Status: "running", StartedAt: now, UpdatedAt: now},
+	}
+	agent := &Agent{
+		Session: session,
+	}
+
+	agent.noteToolExecutionResult(ToolCall{Name: "check_shell_bundle"}, "summary: completed=1 running=1 failed=0 total=2\n- job-1 [completed]\n- job-2 [running]", nil)
+
+	if session.Plan[0].Status != "in_progress" || session.TaskState.PlanCursor != 0 {
+		t.Fatalf("expected plan to remain in progress while bundle still has running jobs, got %#v cursor=%d", session.Plan, session.TaskState.PlanCursor)
+	}
+	if !slices.Contains(session.TaskState.PendingChecks, backgroundShellJobPendingCheck) {
+		t.Fatalf("expected pending background-job check while bundle is still running, got %#v", session.TaskState.PendingChecks)
+	}
+
+	session.BackgroundJobs[1].Status = "completed"
+	agent.noteToolExecutionResult(ToolCall{Name: "check_shell_bundle"}, "summary: completed=2 running=0 failed=0 total=2\n- job-1 [completed]\n- job-2 [completed]", nil)
+
+	if session.Plan[0].Status != "completed" || session.Plan[1].Status != "in_progress" {
+		t.Fatalf("expected shared plan to advance after bundle completion, got %#v", session.Plan)
+	}
+	if session.TaskState.PlanCursor != 1 {
+		t.Fatalf("expected plan cursor to advance to 1, got %d", session.TaskState.PlanCursor)
+	}
+	if slices.Contains(session.TaskState.PendingChecks, backgroundShellJobPendingCheck) {
+		t.Fatalf("expected background-job pending check to clear after completion, got %#v", session.TaskState.PendingChecks)
+	}
+}
+
+func TestCompleteLoopLeavesSharedPlanOpenWhenBackgroundWorkRemains(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "The fix is partially understood, but the background verification job is still running.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		Goal:        "Finish the long-running verification flow.",
+		Phase:       "execution",
+		PlanSummary: "1. Start background verification\n2. Poll the result\n3. Summarize the status",
+		PendingChecks: []string{
+			backgroundShellJobPendingCheck,
+		},
+	}
+	session.Plan = []PlanItem{
+		{Step: "Start background verification", Status: "completed"},
+		{Step: "Poll the result", Status: "in_progress"},
+		{Step: "Summarize the status", Status: "pending"},
+	}
+	session.syncTaskStatePlanCursor()
+	now := time.Now()
+	session.BackgroundJobs = []BackgroundShellJob{{
+		ID:             "job-1",
+		Command:        "go test ./...",
+		CommandSummary: "go test ./...",
+		Status:         "running",
+		StartedAt:      now,
+		UpdatedAt:      now,
+	}}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "still running") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if session.TaskState == nil {
+		t.Fatalf("expected task state to be preserved")
+	}
+	if session.TaskState.Phase == "done" {
+		t.Fatalf("expected task state to remain open while background work remains, got %#v", session.TaskState)
+	}
+	if session.Plan[1].Status != "in_progress" || session.TaskState.PlanCursor != 1 {
+		t.Fatalf("expected shared plan to remain open, got %#v cursor=%d", session.Plan, session.TaskState.PlanCursor)
+	}
+
+	reloaded, err := store.Load(session.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if reloaded.TaskState == nil || reloaded.TaskState.Phase == "done" {
+		t.Fatalf("expected persisted task state to stay open, got %#v", reloaded.TaskState)
+	}
+	if len(reloaded.Plan) < 2 || reloaded.Plan[1].Status != "in_progress" {
+		t.Fatalf("expected persisted shared plan to remain open, got %#v", reloaded.Plan)
+	}
+}
+
+func TestNoteVerificationResultRemovesOnlyVerificationPendingCheck(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		PendingChecks: []string{
+			verificationPendingCheck,
+			backgroundShellJobPendingCheck,
+		},
+	}
+	session.Plan = []PlanItem{
+		{Step: "Verify the result", Status: "in_progress"},
+		{Step: "Poll the background job", Status: "pending"},
+	}
+	now := time.Now()
+	session.BackgroundJobs = []BackgroundShellJob{{
+		ID:        "job-1",
+		Status:    "running",
+		StartedAt: now,
+		UpdatedAt: now,
+	}}
+	agent := &Agent{
+		Session: session,
+	}
+
+	agent.noteVerificationResult(VerificationReport{
+		Steps: []VerificationStep{{
+			Label:  "go test ./...",
+			Status: VerificationPassed,
+		}},
+	})
+
+	if slices.Contains(session.TaskState.PendingChecks, verificationPendingCheck) {
+		t.Fatalf("expected verification pending check to be removed, got %#v", session.TaskState.PendingChecks)
+	}
+	if !slices.Contains(session.TaskState.PendingChecks, backgroundShellJobPendingCheck) {
+		t.Fatalf("expected background pending check to remain, got %#v", session.TaskState.PendingChecks)
+	}
+	if session.TaskState.Phase != "execution" {
+		t.Fatalf("expected task state to stay in execution while background work remains, got %#v", session.TaskState)
+	}
+	if session.TaskState.NextStep != backgroundShellJobPendingCheck {
+		t.Fatalf("expected next step to point at the remaining background check, got %#v", session.TaskState)
 	}
 }

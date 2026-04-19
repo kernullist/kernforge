@@ -29,59 +29,61 @@ func main() {
 }
 
 type runtimeState struct {
-	cfg                      Config
-	reader                   *bufio.Reader
-	writer                   io.Writer
-	ui                       UI
-	bannerShown              bool
-	promptTurn               int
-	prefillInput             string
-	inputHistory             []string
-	store                    *SessionStore
-	session                  *Session
-	agent                    *Agent
-	perms                    *PermissionManager
-	memory                   MemoryBundle
-	longMem                  *PersistentMemoryStore
-	evidence                 *EvidenceStore
-	investigations           *InvestigationStore
-	simulations              *SimulationStore
-	hookOverrides            *HookOverrideStore
-	checkpoints              *CheckpointManager
-	autoCP                   *AutoCheckpointController
-	verifyHistory            *VerificationHistoryStore
-	hooks                    *HookRuntime
-	hookWarns                []string
-	skills                   SkillCatalog
-	skillWarns               []string
-	mcp                      *MCPManager
-	mcpWarns                 []string
-	ollamaModels             []OllamaModelInfo
-	clientErr                error
-	workspace                Workspace
-	interactive              bool
-	outputMu                 sync.Mutex
-	thinkingMu               sync.Mutex
-	thinkingStop             func()
-	streamMu                 sync.Mutex
-	streamingAssistant       bool
-	streamedAssistantText    strings.Builder
-	pendingAssistantSpacing  string
-	assistantStreamInFence   bool
-	assistantStreamLine      string
-	suppressThinkingMu       sync.Mutex
-	suppressThinking         bool
-	thinkingStatusMu         sync.Mutex
-	thinkingStatusOverride   string
-	requestCancelMu          sync.Mutex
-	requestCancelPauses      int
-	requestCancelPending     bool
-	requestCancelIgnoreUntil time.Time
-	lastAssistantMu          sync.Mutex
-	lastAssistantPrinted     string
-	alwaysApprovePreview     bool
-	alwaysApproveWrites      bool
-	autoAcceptPreviewOnce    bool
+	cfg                        Config
+	reader                     *bufio.Reader
+	writer                     io.Writer
+	ui                         UI
+	bannerShown                bool
+	promptTurn                 int
+	prefillInput               string
+	inputHistory               []string
+	store                      *SessionStore
+	session                    *Session
+	agent                      *Agent
+	perms                      *PermissionManager
+	memory                     MemoryBundle
+	longMem                    *PersistentMemoryStore
+	evidence                   *EvidenceStore
+	investigations             *InvestigationStore
+	simulations                *SimulationStore
+	hookOverrides              *HookOverrideStore
+	checkpoints                *CheckpointManager
+	autoCP                     *AutoCheckpointController
+	verifyHistory              *VerificationHistoryStore
+	backgroundJobs             *BackgroundJobManager
+	hooks                      *HookRuntime
+	hookWarns                  []string
+	skills                     SkillCatalog
+	skillWarns                 []string
+	mcp                        *MCPManager
+	mcpWarns                   []string
+	ollamaModels               []OllamaModelInfo
+	clientErr                  error
+	workspace                  Workspace
+	detectVerificationToolPath func(string) string
+	interactive                bool
+	outputMu                   sync.Mutex
+	thinkingMu                 sync.Mutex
+	thinkingStop               func()
+	streamMu                   sync.Mutex
+	streamingAssistant         bool
+	streamedAssistantText      strings.Builder
+	pendingAssistantSpacing    string
+	assistantStreamInFence     bool
+	assistantStreamLine        string
+	suppressThinkingMu         sync.Mutex
+	suppressThinking           bool
+	thinkingStatusMu           sync.Mutex
+	thinkingStatusOverride     string
+	requestCancelMu            sync.Mutex
+	requestCancelPauses        int
+	requestCancelPending       bool
+	requestCancelIgnoreUntil   time.Time
+	lastAssistantMu            sync.Mutex
+	lastAssistantPrinted       string
+	alwaysApprovePreview       bool
+	alwaysApproveWrites        bool
+	autoAcceptPreviewOnce      bool
 }
 
 var assistantFollowOnPreamblePattern = regexp.MustCompile(`([\.\:\!\?\)])((?i:Now let me |Let me |Now I |I'll |I will |I need to |First, ))`)
@@ -227,10 +229,14 @@ func run(args []string) error {
 	}
 
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
+	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(cwd, userConfigDirName, "jobs"), sess, store)
 	rt.workspace = Workspace{
 		BaseRoot:              cwd,
 		Root:                  sess.WorkingDir,
 		Shell:                 cfg.Shell,
+		ShellTimeout:          configShellTimeout(cfg),
+		ReadHintSpans:         configReadHintSpans(cfg),
+		ReadCacheEntries:      configReadCacheEntries(cfg),
 		VerificationToolPaths: buildVerificationToolPaths(cfg),
 		Perms:                 rt.perms,
 		PrepareEdit:           rt.prepareEdit,
@@ -243,13 +249,14 @@ func run(args []string) error {
 		},
 		PreviewEdit: rt.previewEdit,
 		UpdatePlan: func(items []PlanItem) {
-			rt.session.Plan = append([]PlanItem(nil), items...)
+			rt.session.SetSharedPlan(items)
 			_ = rt.store.Save(rt.session)
 		},
 		GetPlan: func() []PlanItem {
 			return append([]PlanItem(nil), rt.session.Plan...)
 		},
-		RunHook: rt.runHook,
+		RunHook:        rt.runHook,
+		BackgroundJobs: rt.backgroundJobs,
 	}
 	if err := rt.ensureConfigured(); err != nil {
 		return err
@@ -281,6 +288,12 @@ func run(args []string) error {
 			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
 			rt.printProgressMessage(text)
 		},
+	}
+	if rt.cfg.PlanReview != nil {
+		if reviewerClient, reviewerErr := createReviewerClient(rt.cfg.PlanReview, rt.cfg); reviewerErr == nil {
+			rt.agent.ReviewerClient = reviewerClient
+			rt.agent.ReviewerModel = rt.cfg.PlanReview.Model
+		}
 	}
 	rt.reloadExtensions()
 
@@ -320,6 +333,12 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewWriteFileTool(ws),
 		NewReplaceInFileTool(ws),
 		NewRunShellTool(ws),
+		NewRunBackgroundShellTool(ws),
+		NewRunShellBundleBackgroundTool(ws),
+		NewCheckShellJobTool(ws),
+		NewCheckShellBundleTool(ws),
+		NewCancelShellJobTool(ws),
+		NewCancelShellBundleTool(ws),
 		NewGitAddTool(ws),
 		NewGitCommitTool(ws),
 		NewGitPushTool(ws),
@@ -3187,7 +3206,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "clear", "reset", "new":
 		rt.session.Messages = nil
 		rt.session.Summary = ""
-		rt.session.Plan = nil
+		rt.session.ClearSharedPlan()
 		_ = rt.store.Save(rt.session)
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Conversation cleared"))
 	case "compact":
@@ -4086,7 +4105,51 @@ func windowsVisualStudioInstallRoots() []string {
 	return uniqueStrings(roots)
 }
 
+func (rt *runtimeState) verificationToolDetector() func(string) string {
+	if rt.detectVerificationToolPath != nil {
+		return rt.detectVerificationToolPath
+	}
+	return detectWindowsVerificationToolPath
+}
+
+func (rt *runtimeState) tryAutoResolveAutoVerifyFailure(report VerificationReport) (AutoVerifyFailureResolution, bool, error) {
+	if runtime.GOOS != "windows" {
+		return AutoVerifyFailureNoAction, false, nil
+	}
+	if strings.TrimSpace(rt.workspace.BaseRoot) == "" {
+		return AutoVerifyFailureNoAction, false, nil
+	}
+	applied, err := autoPopulateVerificationToolPaths(rt.workspace.BaseRoot, &rt.cfg, rt.verificationToolDetector())
+	if err != nil {
+		return AutoVerifyFailureNoAction, false, err
+	}
+	if len(applied) == 0 {
+		return AutoVerifyFailureNoAction, false, nil
+	}
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Verification Tools"))
+	toolName := strings.ToLower(strings.TrimSpace(report.MissingCommandTool()))
+	if path := strings.TrimSpace(applied[toolName]); toolName != "" && path != "" {
+		fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Auto-detected %s at %s", suggestedVerificationToolDisplayName(toolName), path)))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Auto-detected verification tool path overrides for this workspace."))
+		for _, candidate := range []string{"msbuild", "cmake", "ctest", "ninja"} {
+			if path := strings.TrimSpace(applied[candidate]); path != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV(strings.ToLower(suggestedVerificationToolDisplayName(candidate)), path))
+			}
+		}
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Retrying automatic verification with the detected tool paths."))
+	return AutoVerifyFailureRetry, true, nil
+}
+
 func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport) (AutoVerifyFailureResolution, error) {
+	if resolution, handled, err := rt.tryAutoResolveAutoVerifyFailure(report); handled || err != nil {
+		return resolution, err
+	}
 	if !rt.interactive {
 		return AutoVerifyFailureNoAction, nil
 	}
@@ -4350,7 +4413,7 @@ func (rt *runtimeState) seedSessionPlanFromText(plan string) error {
 	if len(items) == 0 {
 		return nil
 	}
-	rt.session.Plan = items
+	rt.session.SetSharedPlan(items)
 	return rt.store.Save(rt.session)
 }
 
@@ -5544,6 +5607,10 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	rt.session.BaseURL = activeBaseURL
 	rt.session.PermissionMode = activePermission
 	rt.workspace.Shell = rt.cfg.Shell
+	rt.workspace.ShellTimeout = configShellTimeout(rt.cfg)
+	rt.workspace.ReadHintSpans = configReadHintSpans(rt.cfg)
+	rt.workspace.ReadCacheEntries = configReadCacheEntries(rt.cfg)
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.perms.SetMode(ParseMode(rt.session.PermissionMode))
 	rt.store = NewSessionStore(rt.cfg.SessionDir)
 

@@ -1008,7 +1008,10 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureDisableSession(t *testing.T) 
 		writer:      output,
 		ui:          UI{},
 		interactive: true,
-		cfg:         DefaultConfig(home),
+		detectVerificationToolPath: func(string) string {
+			return ""
+		},
+		cfg: DefaultConfig(home),
 		session: &Session{
 			Provider:       "openai",
 			Model:          "gpt-test",
@@ -1059,7 +1062,10 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureAlwaysPersistsToWorkspaceConf
 		writer:      output,
 		ui:          UI{},
 		interactive: true,
-		cfg:         DefaultConfig(workspace),
+		detectVerificationToolPath: func(string) string {
+			return ""
+		},
+		cfg: DefaultConfig(workspace),
 		workspace: Workspace{
 			BaseRoot: workspace,
 			Root:     workspace,
@@ -1120,7 +1126,10 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureSavesToolPathAndRequestsRetry
 		writer:      output,
 		ui:          UI{},
 		interactive: true,
-		cfg:         DefaultConfig(workspace),
+		detectVerificationToolPath: func(string) string {
+			return ""
+		},
+		cfg: DefaultConfig(workspace),
 		workspace: Workspace{
 			BaseRoot: workspace,
 			Root:     workspace,
@@ -1164,6 +1173,73 @@ func TestRuntimeStatePromptResolveAutoVerifyFailureSavesToolPathAndRequestsRetry
 	}
 	if strings.TrimSpace(loaded.MSBuildPath) != msbuildPath {
 		t.Fatalf("expected workspace config msbuild path to persist, got %q", loaded.MSBuildPath)
+	}
+}
+
+func TestRuntimeStatePromptResolveAutoVerifyFailureAutoDetectsAndRetries(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-only auto detection behavior")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	workspace := filepath.Join(home, "repo")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("")),
+		writer:      output,
+		ui:          UI{},
+		interactive: true,
+		detectVerificationToolPath: func(tool string) string {
+			if tool == "msbuild" {
+				return `C:\Tools\MSBuild\MSBuild.exe`
+			}
+			return ""
+		},
+		cfg: DefaultConfig(workspace),
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	resolution, err := rt.promptResolveAutoVerifyFailure(VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+			Hint:        "A required verification tool could not be started.",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("promptResolveAutoVerifyFailure: %v", err)
+	}
+	if resolution != AutoVerifyFailureRetry {
+		t.Fatalf("expected retry resolution, got %q", resolution)
+	}
+	if strings.TrimSpace(rt.cfg.MSBuildPath) != `C:\Tools\MSBuild\MSBuild.exe` {
+		t.Fatalf("expected runtime config msbuild path to update, got %q", rt.cfg.MSBuildPath)
+	}
+	if got := strings.TrimSpace(rt.workspace.VerificationToolPaths["msbuild"]); got != `C:\Tools\MSBuild\MSBuild.exe` {
+		t.Fatalf("expected workspace verification tool path to update, got %q", got)
+	}
+	if !strings.Contains(output.String(), "Retrying automatic verification") {
+		t.Fatalf("expected retry notice in output, got %q", output.String())
 	}
 }
 

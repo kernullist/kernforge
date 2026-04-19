@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -5319,13 +5320,13 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 		if ctx.Err() != nil {
 			return ChatResponse{}, err
 		}
-		if !shouldRetryAnalysisProviderError(err) || attempt == maxRetries {
+		if !shouldRetryProviderError(err) || attempt == maxRetries {
 			return ChatResponse{}, err
 		}
 
 		detail := fmt.Sprintf("analysis provider error: stage=%s shard=%s model=%s attempt=%d/%d error=%v", stage, shardName, model, attempt+1, maxRetries+1, err)
 		a.debug(strings.TrimSpace(detail))
-		delay := baseDelay * time.Duration(attempt+1)
+		delay := providerRetryDelay(baseDelay, attempt)
 		a.status(fmt.Sprintf("Provider error during %s (%s). Retrying in %s...", stage, model, delay.Round(time.Second)))
 		timer := time.NewTimer(delay)
 		select {
@@ -5338,14 +5339,20 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 	return ChatResponse{}, lastErr
 }
 
-func shouldRetryAnalysisProviderError(err error) bool {
+func shouldRetryProviderError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var providerErr *ProviderAPIError
+	if errors.As(err, &providerErr) {
+		return providerErr.Retryable()
 	}
 	text := strings.ToLower(err.Error())
 	retryHints := []string{
 		"provider returned error",
-		"api error",
 		"rate limit",
 		"timeout",
 		"temporarily unavailable",

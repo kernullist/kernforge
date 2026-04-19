@@ -45,7 +45,7 @@ func (m *CheckpointManager) Create(workspaceRoot, name string) (CheckpointMetada
 		return CheckpointMetadata{}, err
 	}
 	now := time.Now()
-	id := fmt.Sprintf("%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000)
+	id := fmt.Sprintf("%s-%09d", now.Format("20060102-150405"), now.Nanosecond())
 	trimmedName := strings.TrimSpace(name)
 	if trimmedName == "" {
 		trimmedName = "Checkpoint " + id

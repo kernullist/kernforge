@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -32,6 +33,7 @@ type Message struct {
 	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
 	ToolName   string         `json:"tool_name,omitempty"`
+	ToolMeta   map[string]any `json:"tool_meta,omitempty"`
 	IsError    bool           `json:"is_error,omitempty"`
 }
 
@@ -58,6 +60,144 @@ type providerErrorBody struct {
 		Param   string `json:"param,omitempty"`
 		Code    any    `json:"code,omitempty"`
 	} `json:"error,omitempty"`
+}
+
+type ProviderAPIError struct {
+	Provider       string
+	StatusCode     int
+	Status         string
+	Message        string
+	ErrorType      string
+	Param          string
+	Code           string
+	RequestSummary string
+	RawBody        string
+}
+
+func (e *ProviderAPIError) Error() string {
+	provider := strings.TrimSpace(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	if e.StatusCode > 0 || strings.TrimSpace(e.Status) != "" {
+		statusText := strings.TrimSpace(e.Status)
+		if statusText == "" {
+			statusText = strconv.Itoa(e.StatusCode)
+		}
+		text := fmt.Sprintf("%s API error (%s): %s", provider, statusText, e.Details())
+		if strings.TrimSpace(e.RequestSummary) != "" {
+			text += " | request=" + strings.TrimSpace(e.RequestSummary)
+		}
+		return text
+	}
+	return fmt.Sprintf("%s API error: %s", provider, e.Details())
+}
+
+func (e *ProviderAPIError) Details() string {
+	parts := []string{}
+	if strings.TrimSpace(e.Message) != "" {
+		parts = append(parts, strings.TrimSpace(e.Message))
+	} else {
+		parts = append(parts, "provider returned error")
+	}
+	if strings.TrimSpace(e.ErrorType) != "" {
+		parts = append(parts, "type="+strings.TrimSpace(e.ErrorType))
+	}
+	if strings.TrimSpace(e.Param) != "" {
+		parts = append(parts, "param="+strings.TrimSpace(e.Param))
+	}
+	if strings.TrimSpace(e.Code) != "" {
+		parts = append(parts, "code="+strings.TrimSpace(e.Code))
+	}
+	detail := strings.Join(parts, " | ")
+	rawText := strings.TrimSpace(e.RawBody)
+	if strings.EqualFold(strings.TrimSpace(e.Message), "Provider returned error") && rawText != "" && !strings.Contains(rawText, detail) {
+		detail += " | raw=" + rawText
+	}
+	return detail
+}
+
+func (e *ProviderAPIError) Retryable() bool {
+	return providerErrorLooksRetryable(e.StatusCode, e.ErrorType, e.Message, e.Code, e.RawBody)
+}
+
+func newProviderHTTPError(provider string, statusCode int, status string, data []byte, requestSummary string) error {
+	message, errorType, param, code, rawBody := decodeProviderErrorPayload(data)
+	return &ProviderAPIError{
+		Provider:       provider,
+		StatusCode:     statusCode,
+		Status:         status,
+		Message:        message,
+		ErrorType:      errorType,
+		Param:          param,
+		Code:           code,
+		RequestSummary: requestSummary,
+		RawBody:        rawBody,
+	}
+}
+
+func newProviderMessageError(provider, message, errorType, param string, code any, raw []byte) error {
+	return &ProviderAPIError{
+		Provider:  provider,
+		Message:   strings.TrimSpace(message),
+		ErrorType: strings.TrimSpace(errorType),
+		Param:     strings.TrimSpace(param),
+		Code:      normalizeProviderErrorCode(code),
+		RawBody:   strings.TrimSpace(string(raw)),
+	}
+}
+
+func decodeProviderErrorPayload(data []byte) (string, string, string, string, string) {
+	rawText := strings.TrimSpace(string(data))
+	decoded := providerErrorBody{}
+	if err := json.Unmarshal(data, &decoded); err == nil && decoded.Error != nil {
+		return strings.TrimSpace(decoded.Error.Message), strings.TrimSpace(decoded.Error.Type), strings.TrimSpace(decoded.Error.Param), normalizeProviderErrorCode(decoded.Error.Code), rawText
+	}
+	if rawText == "" {
+		return "empty error response body", "", "", "", rawText
+	}
+	return rawText, "", "", "", rawText
+}
+
+func normalizeProviderErrorCode(code any) string {
+	if code == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", code))
+}
+
+func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw string) bool {
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if statusCode >= 500 && statusCode <= 504 {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{errorType, message, code, raw}, " ")))
+	retryHints := []string{
+		"rate limit",
+		"timeout",
+		"temporarily unavailable",
+		"server error",
+		"bad gateway",
+		"gateway timeout",
+		"service unavailable",
+		"overloaded",
+		"server_overloaded",
+		"server_error",
+		"timeout_error",
+		"429",
+		"500",
+		"502",
+		"503",
+		"504",
+	}
+	for _, hint := range retryHints {
+		if strings.Contains(text, hint) {
+			return true
+		}
+	}
+	return false
 }
 
 type ProviderClient interface {
@@ -245,7 +385,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		return ChatResponse{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("anthropic API error (%s): %s", resp.Status, strings.TrimSpace(string(data)))
+		return ChatResponse{}, newProviderHTTPError("anthropic", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded anthropicResponse
@@ -253,7 +393,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, fmt.Errorf("anthropic API error: %s", decoded.Error.Message)
+		return ChatResponse{}, newProviderMessageError("anthropic", decoded.Error.Message, "", "", nil, data)
 	}
 
 	out := Message{Role: "assistant"}
@@ -471,7 +611,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("openai API error (%s): %s | request=%s", resp.Status, formatProviderErrorDetails(data), summarizeOpenAIRequestBody(body))
+		return ChatResponse{}, newProviderHTTPError("openai", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
 	}
 
 	var decoded openAIResponse
@@ -479,10 +619,10 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, fmt.Errorf("openai API error: %s", formatProviderErrorFields(decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data))
+		return ChatResponse{}, newProviderMessageError("openai", decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
 	}
 	if len(decoded.Choices) == 0 {
-		return ChatResponse{}, fmt.Errorf("openai API error: empty choices")
+		return ChatResponse{}, newProviderMessageError("openai", "empty choices", "", "", nil, nil)
 	}
 
 	choice := decoded.Choices[0]
@@ -573,7 +713,7 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 			return ChatResponse{}, err
 		}
 		if chunk.Error != nil {
-			return ChatResponse{}, fmt.Errorf("openai API error: %s", formatProviderErrorFields(chunk.Error.Message, chunk.Error.Type, chunk.Error.Param, chunk.Error.Code, []byte(payload)))
+			return ChatResponse{}, newProviderMessageError("openai", chunk.Error.Message, chunk.Error.Type, chunk.Error.Param, chunk.Error.Code, []byte(payload))
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != "" {
@@ -911,7 +1051,7 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if resp.StatusCode >= 300 {
-		return ChatResponse{}, fmt.Errorf("ollama API error (%s): %s", resp.Status, strings.TrimSpace(string(data)))
+		return ChatResponse{}, newProviderHTTPError("ollama", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded ollamaResponse
@@ -919,7 +1059,7 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if strings.TrimSpace(decoded.Error) != "" {
-		return ChatResponse{}, fmt.Errorf("ollama API error: %s", decoded.Error)
+		return ChatResponse{}, newProviderMessageError("ollama", decoded.Error, "", "", nil, data)
 	}
 
 	out := Message{Role: "assistant", Text: decoded.Message.Content}
@@ -967,7 +1107,7 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 		return nil, normalized, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, normalized, fmt.Errorf("ollama API error (%s): %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, normalized, newProviderHTTPError("ollama", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded ollamaTagsResponse
@@ -975,7 +1115,7 @@ func FetchOllamaModels(ctx context.Context, baseURL, apiKey string) ([]OllamaMod
 		return nil, normalized, err
 	}
 	if strings.TrimSpace(decoded.Error) != "" {
-		return nil, normalized, fmt.Errorf("ollama API error: %s", decoded.Error)
+		return nil, normalized, newProviderMessageError("ollama", decoded.Error, "", "", nil, data)
 	}
 	return decoded.Models, normalized, nil
 }
@@ -1165,7 +1305,7 @@ func FetchOpenRouterKeyStatus(ctx context.Context, baseURL, apiKey string) (Open
 		return OpenRouterKeyStatus{}, normalized, err
 	}
 	if resp.StatusCode >= 300 {
-		return OpenRouterKeyStatus{}, normalized, fmt.Errorf("openrouter API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
+		return OpenRouterKeyStatus{}, normalized, newProviderHTTPError("openrouter", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded openRouterKeyResponse
@@ -1173,7 +1313,7 @@ func FetchOpenRouterKeyStatus(ctx context.Context, baseURL, apiKey string) (Open
 		return OpenRouterKeyStatus{}, normalized, err
 	}
 	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
-		return OpenRouterKeyStatus{}, normalized, fmt.Errorf("openrouter API error: %s", decoded.Error.Message)
+		return OpenRouterKeyStatus{}, normalized, newProviderMessageError("openrouter", decoded.Error.Message, "", "", nil, data)
 	}
 	return decoded.Data, normalized, nil
 }
@@ -1208,7 +1348,7 @@ func FetchOpenRouterCredits(ctx context.Context, baseURL, apiKey string) (OpenRo
 		return OpenRouterCredits{}, normalized, err
 	}
 	if resp.StatusCode >= 300 {
-		return OpenRouterCredits{}, normalized, fmt.Errorf("openrouter API error (%s): %s", resp.Status, formatProviderErrorDetails(data))
+		return OpenRouterCredits{}, normalized, newProviderHTTPError("openrouter", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded openRouterCreditsResponse
@@ -1216,7 +1356,7 @@ func FetchOpenRouterCredits(ctx context.Context, baseURL, apiKey string) (OpenRo
 		return OpenRouterCredits{}, normalized, err
 	}
 	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
-		return OpenRouterCredits{}, normalized, fmt.Errorf("openrouter API error: %s", decoded.Error.Message)
+		return OpenRouterCredits{}, normalized, newProviderMessageError("openrouter", decoded.Error.Message, "", "", nil, data)
 	}
 	return decoded.Data, normalized, nil
 }
@@ -1251,7 +1391,7 @@ func FetchOpenRouterModels(ctx context.Context, baseURL, apiKey string) ([]OpenR
 		return nil, normalized, err
 	}
 	if resp.StatusCode >= 300 {
-		return nil, normalized, fmt.Errorf("openrouter API error (%s): %s", resp.Status, strings.TrimSpace(string(data)))
+		return nil, normalized, newProviderHTTPError("openrouter", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded openRouterModelsResponse
@@ -1259,7 +1399,7 @@ func FetchOpenRouterModels(ctx context.Context, baseURL, apiKey string) ([]OpenR
 		return nil, normalized, err
 	}
 	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
-		return nil, normalized, fmt.Errorf("openrouter API error: %s", decoded.Error.Message)
+		return nil, normalized, newProviderMessageError("openrouter", decoded.Error.Message, "", "", nil, data)
 	}
 	return decoded.Data, normalized, nil
 }

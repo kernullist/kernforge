@@ -237,9 +237,11 @@ Best used when:
 
 Operational notes:
 1. `auto_verify` is now the master switch for edit-triggered verification.
-2. When a Windows verification tool such as `msbuild`, `cmake`, `ctest`, or `ninja` is missing, Kernforge can prompt to disable auto verification or save an explicit executable path.
+2. When a Windows verification tool such as `msbuild`, `cmake`, `ctest`, or `ninja` is missing, Kernforge first tries to auto-detect and save a usable path for the workspace, then falls back to prompting if detection still fails.
 3. Use quotes for paths that contain spaces, for example `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`.
-4. Model request timeout is configurable through `request_timeout_seconds`, and timed-out model turns retry once.
+4. Model request timeout is configurable through `request_timeout_seconds`, while `max_request_retries` and `request_retry_delay_ms` control retries for timed-out or transient provider failures.
+5. For long-running local validation, prefer `run_shell_background` plus `check_shell_job` so the agent can reuse one expensive build or test job across multiple turns.
+6. When a setup, formatter, or generator command is genuinely safer than a manual patch, the agent can use `run_shell` with scoped workspace writes by declaring `allow_workspace_writes=true` and a narrow `write_paths` list.
 
 ### 2.3 Evidence Store
 

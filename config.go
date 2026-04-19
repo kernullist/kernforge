@@ -14,6 +14,12 @@ import (
 
 const userConfigDirName = ".kernforge"
 
+const (
+	defaultReadHintSpans    = 48
+	defaultReadCacheEntries = 24
+	maxProviderRetryDelay   = 30 * time.Second
+)
+
 type PlanReviewConfig struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
@@ -30,7 +36,12 @@ type Config struct {
 	Temperature         float64               `json:"temperature"`
 	MaxTokens           int                   `json:"max_tokens"`
 	MaxToolIterations   int                   `json:"max_tool_iterations"`
+	MaxRequestRetries   int                   `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs int                   `json:"request_retry_delay_ms,omitempty"`
 	RequestTimeoutSecs  int                   `json:"request_timeout_seconds,omitempty"`
+	ShellTimeoutSecs    int                   `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans       int                   `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries    int                   `json:"read_cache_entries,omitempty"`
 	MSBuildPath         string                `json:"msbuild_path,omitempty"`
 	CMakePath           string                `json:"cmake_path,omitempty"`
 	CTestPath           string                `json:"ctest_path,omitempty"`
@@ -72,7 +83,12 @@ func DefaultConfig(cwd string) Config {
 		Temperature:         0.2,
 		MaxTokens:           4096,
 		MaxToolIterations:   16,
+		MaxRequestRetries:   2,
+		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
+		ShellTimeoutSecs:    300,
+		ReadHintSpans:       defaultReadHintSpans,
+		ReadCacheEntries:    defaultReadCacheEntries,
 		PermissionMode:      "default",
 		Shell:               defaultShell(),
 		SessionDir:          filepath.Join(userConfigDir(), "sessions"),
@@ -167,8 +183,23 @@ func mergeConfig(dst *Config, src Config) {
 	if src.MaxToolIterations != 0 {
 		dst.MaxToolIterations = src.MaxToolIterations
 	}
+	if src.MaxRequestRetries != 0 {
+		dst.MaxRequestRetries = src.MaxRequestRetries
+	}
+	if src.RequestRetryDelayMs != 0 {
+		dst.RequestRetryDelayMs = src.RequestRetryDelayMs
+	}
 	if src.RequestTimeoutSecs != 0 {
 		dst.RequestTimeoutSecs = src.RequestTimeoutSecs
+	}
+	if src.ShellTimeoutSecs != 0 {
+		dst.ShellTimeoutSecs = src.ShellTimeoutSecs
+	}
+	if src.ReadHintSpans != 0 {
+		dst.ReadHintSpans = src.ReadHintSpans
+	}
+	if src.ReadCacheEntries != 0 {
+		dst.ReadCacheEntries = src.ReadCacheEntries
 	}
 	if src.MSBuildPath != "" {
 		dst.MSBuildPath = src.MSBuildPath
@@ -301,7 +332,12 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
+	envInt("KERNFORGE_MAX_REQUEST_RETRIES", &cfg.MaxRequestRetries)
+	envInt("KERNFORGE_REQUEST_RETRY_DELAY_MS", &cfg.RequestRetryDelayMs)
 	envInt("KERNFORGE_REQUEST_TIMEOUT_SECONDS", &cfg.RequestTimeoutSecs)
+	envInt("KERNFORGE_SHELL_TIMEOUT_SECONDS", &cfg.ShellTimeoutSecs)
+	envInt("KERNFORGE_READ_HINT_SPANS", &cfg.ReadHintSpans)
+	envInt("KERNFORGE_READ_CACHE_ENTRIES", &cfg.ReadCacheEntries)
 	envString("KERNFORGE_MSBUILD_PATH", &cfg.MSBuildPath)
 	envString("KERNFORGE_CMAKE_PATH", &cfg.CMakePath)
 	envString("KERNFORGE_CTEST_PATH", &cfg.CTestPath)
@@ -537,11 +573,82 @@ func configMaxToolIterations(cfg Config) int {
 	return cfg.MaxToolIterations
 }
 
+func configMaxRequestRetries(cfg Config) int {
+	if cfg.MaxRequestRetries < 0 {
+		return 0
+	}
+	if cfg.MaxRequestRetries == 0 {
+		return 2
+	}
+	return cfg.MaxRequestRetries
+}
+
+func configRequestRetryDelay(cfg Config) time.Duration {
+	if cfg.RequestRetryDelayMs > 0 {
+		return time.Duration(cfg.RequestRetryDelayMs) * time.Millisecond
+	}
+	return 1500 * time.Millisecond
+}
+
+func providerRetryDelay(baseDelay time.Duration, attempt int) time.Duration {
+	if baseDelay <= 0 {
+		return 0
+	}
+	if attempt < 0 {
+		attempt = 0
+	}
+	delay := baseDelay
+	for i := 0; i < attempt; i++ {
+		if delay >= maxProviderRetryDelay/2 {
+			delay = maxProviderRetryDelay
+			break
+		}
+		delay *= 2
+	}
+	if delay > maxProviderRetryDelay {
+		delay = maxProviderRetryDelay
+	}
+	jitterWindow := delay / 5
+	if jitterWindow <= 0 {
+		return delay
+	}
+	span := int64(jitterWindow*2 + 1)
+	if span <= 0 {
+		return delay
+	}
+	offset := time.Duration(time.Now().UnixNano()%span) - jitterWindow
+	if delay+offset <= 0 {
+		return time.Millisecond
+	}
+	return delay + offset
+}
+
 func configRequestTimeout(cfg Config) time.Duration {
 	if cfg.RequestTimeoutSecs > 0 {
 		return time.Duration(cfg.RequestTimeoutSecs) * time.Second
 	}
 	return 20 * time.Minute
+}
+
+func configShellTimeout(cfg Config) time.Duration {
+	if cfg.ShellTimeoutSecs > 0 {
+		return time.Duration(cfg.ShellTimeoutSecs) * time.Second
+	}
+	return 5 * time.Minute
+}
+
+func configReadHintSpans(cfg Config) int {
+	if cfg.ReadHintSpans > 0 {
+		return cfg.ReadHintSpans
+	}
+	return defaultReadHintSpans
+}
+
+func configReadCacheEntries(cfg Config) int {
+	if cfg.ReadCacheEntries > 0 {
+		return cfg.ReadCacheEntries
+	}
+	return defaultReadCacheEntries
 }
 
 func configAutoLocale(cfg Config) bool {
@@ -693,7 +800,12 @@ func InitWorkspaceConfigTemplate() string {
 	sample := struct {
 		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
 		AutoVerify          *bool             `json:"auto_verify,omitempty"`
+		MaxRequestRetries   int               `json:"max_request_retries,omitempty"`
+		RequestRetryDelayMs int               `json:"request_retry_delay_ms,omitempty"`
 		RequestTimeoutSecs  int               `json:"request_timeout_seconds,omitempty"`
+		ShellTimeoutSecs    int               `json:"shell_timeout_seconds,omitempty"`
+		ReadHintSpans       int               `json:"read_hint_spans,omitempty"`
+		ReadCacheEntries    int               `json:"read_cache_entries,omitempty"`
 		MSBuildPath         string            `json:"msbuild_path,omitempty"`
 		CMakePath           string            `json:"cmake_path,omitempty"`
 		CTestPath           string            `json:"ctest_path,omitempty"`
@@ -706,7 +818,12 @@ func InitWorkspaceConfigTemplate() string {
 	}{
 		AutoCheckpointEdits: boolPtr(false),
 		AutoVerify:          boolPtr(true),
+		MaxRequestRetries:   2,
+		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
+		ShellTimeoutSecs:    300,
+		ReadHintSpans:       defaultReadHintSpans,
+		ReadCacheEntries:    defaultReadCacheEntries,
 		MSBuildPath:         "",
 		CMakePath:           "",
 		CTestPath:           "",
@@ -1349,10 +1466,11 @@ const (
 type Action string
 
 const (
-	ActionRead  Action = "read"
-	ActionWrite Action = "write"
-	ActionShell Action = "shell"
-	ActionGit   Action = "git"
+	ActionRead       Action = "read"
+	ActionWrite      Action = "write"
+	ActionShell      Action = "shell"
+	ActionShellWrite Action = "shell_write"
+	ActionGit        Action = "git"
 )
 
 type PromptFunc func(question string) (bool, error)
@@ -1419,8 +1537,8 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
-	question := fmt.Sprintf("Allow %s? %s", action, detail)
-	if action != ActionShell {
+	question := permissionQuestion(action, detail)
+	if permissionActionSupportsAlwaysApproval(action) {
 		question += " (add 'always' to allow for entire session)"
 	}
 	allowed, err := m.prompt(question)
@@ -1428,6 +1546,24 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 		m.shellAllowed = true
 	}
 	return allowed, err
+}
+
+func permissionQuestion(action Action, detail string) string {
+	switch action {
+	case ActionShellWrite:
+		return fmt.Sprintf("Allow shell write? %s", detail)
+	default:
+		return fmt.Sprintf("Allow %s? %s", action, detail)
+	}
+}
+
+func permissionActionSupportsAlwaysApproval(action Action) bool {
+	switch action {
+	case ActionWrite, ActionGit:
+		return true
+	default:
+		return false
+	}
 }
 
 // IsShellAllowed returns whether shell permissions have been granted for this session.

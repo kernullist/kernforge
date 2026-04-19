@@ -134,6 +134,56 @@ func TestOpenAIClientIncludesStructuredErrorDetails(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientReturnsStructuredProviderAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"Provider returned error","type":"server_error","code":"backend_failure"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	var providerErr *ProviderAPIError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderAPIError, got %T", err)
+	}
+	if providerErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected HTTP 503, got %d", providerErr.StatusCode)
+	}
+	if !providerErr.Retryable() {
+		t.Fatalf("expected HTTP 503 provider error to be retryable")
+	}
+}
+
+func TestShouldRetryProviderErrorUsesStructuredProviderAPIError(t *testing.T) {
+	if !shouldRetryProviderError(&ProviderAPIError{
+		Provider:   "openai",
+		StatusCode: http.StatusBadGateway,
+		Status:     "502 Bad Gateway",
+		Message:    "upstream overloaded",
+	}) {
+		t.Fatalf("expected structured 502 provider error to be retryable")
+	}
+	if shouldRetryProviderError(&ProviderAPIError{
+		Provider:   "openai",
+		StatusCode: http.StatusUnauthorized,
+		Status:     "401 Unauthorized",
+		Message:    "invalid api key",
+	}) {
+		t.Fatalf("expected structured 401 provider error to remain non-retryable")
+	}
+}
+
 func TestOpenAIClientNormalizesAssistantToolCallArguments(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
