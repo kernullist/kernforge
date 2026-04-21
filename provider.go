@@ -888,31 +888,92 @@ func extractOpenAIMessageText(raw json.RawMessage) string {
 	if err := json.Unmarshal(trimmed, &decoded); err != nil {
 		return ""
 	}
-	return flattenOpenAIContentValue(decoded)
+	return joinOpenAITextSegments(flattenOpenAIContentSegments(decoded, ""))
 }
 
-func flattenOpenAIContentValue(value any) string {
+type openAITextSegment struct {
+	Text string
+	Kind string
+}
+
+func flattenOpenAIContentSegments(value any, kind string) []openAITextSegment {
 	switch typed := value.(type) {
 	case string:
-		return typed
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := flattenOpenAIContentValue(item); strings.TrimSpace(text) != "" {
-				parts = append(parts, text)
-			}
+		if strings.TrimSpace(typed) == "" {
+			return nil
 		}
-		return strings.Join(parts, "")
+		return []openAITextSegment{{
+			Text: typed,
+			Kind: kind,
+		}}
+	case []any:
+		segments := make([]openAITextSegment, 0, len(typed))
+		for _, item := range typed {
+			segments = append(segments, flattenOpenAIContentSegments(item, kind)...)
+		}
+		return segments
 	case map[string]any:
+		if rawKind, ok := typed["type"].(string); ok && strings.TrimSpace(rawKind) != "" {
+			kind = strings.TrimSpace(rawKind)
+		}
 		for _, key := range []string{"text", "output_text", "content", "value"} {
 			if candidate, ok := typed[key]; ok {
-				if text := flattenOpenAIContentValue(candidate); strings.TrimSpace(text) != "" {
-					return text
+				if segments := flattenOpenAIContentSegments(candidate, kind); len(segments) > 0 {
+					return segments
 				}
 			}
 		}
 	}
-	return ""
+	return nil
+}
+
+func joinOpenAITextSegments(segments []openAITextSegment) string {
+	if len(segments) == 0 {
+		return ""
+	}
+
+	parts := make([]string, 0, len(segments))
+	var previous openAITextSegment
+	hasPrevious := false
+	for _, segment := range segments {
+		if strings.TrimSpace(segment.Text) == "" {
+			continue
+		}
+		if hasPrevious && shouldSkipEquivalentOpenAITextSegment(previous, segment) {
+			continue
+		}
+		parts = append(parts, segment.Text)
+		previous = segment
+		hasPrevious = true
+	}
+	return strings.Join(parts, "")
+}
+
+func shouldSkipEquivalentOpenAITextSegment(previous, current openAITextSegment) bool {
+	if previous.Text != current.Text {
+		return false
+	}
+
+	previousKind := canonicalOpenAITextSegmentKind(previous.Kind)
+	currentKind := canonicalOpenAITextSegmentKind(current.Kind)
+	if previousKind == "" || currentKind == "" {
+		return false
+	}
+	if previousKind != currentKind {
+		return false
+	}
+	return !strings.EqualFold(strings.TrimSpace(previous.Kind), strings.TrimSpace(current.Kind))
+}
+
+func canonicalOpenAITextSegmentKind(kind string) string {
+	lower := strings.ToLower(strings.TrimSpace(kind))
+	if lower == "" {
+		return ""
+	}
+	if strings.Contains(lower, "text") {
+		return "text"
+	}
+	return lower
 }
 
 func assistantMessageContent(text string, hasToolCalls bool) any {

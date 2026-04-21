@@ -642,6 +642,70 @@ func TestOpenAIClientExtractsTextFromContentPartArray(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientDeduplicatesEquivalentTypedContentPartsInStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"output_text\",\"text\":\"좋\"},{\"type\":\"text\",\"text\":\"좋\"}]},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"output_text_delta\",\"text\":\"습\"},{\"type\":\"text\",\"text\":\"습\"}]},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"output_text\",\"text\":\"니다.\"},{\"type\":\"text\",\"text\":\"니다.\"}]},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "say hello",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.Join(deltas, "") != "좋습니다." {
+		t.Fatalf("unexpected streamed deltas: %#v", deltas)
+	}
+	if resp.Message.Text != "좋습니다." {
+		t.Fatalf("unexpected streamed text: %q", resp.Message.Text)
+	}
+}
+
+func TestOpenAIClientPreservesRepeatedContentPartsWhenTypesMatch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":[{"type":"text","text":"ha"},{"type":"text","text":"ha"}]},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "repeat",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "haha" {
+		t.Fatalf("expected repeated same-type parts to be preserved, got %q", resp.Message.Text)
+	}
+}
+
 func TestOpenAIClientMarksEmptyFallbackAfterEmptyStream(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
