@@ -472,6 +472,46 @@ func TestAgentRetriesEmptyResponseForAnalysisRequest(t *testing.T) {
 	}
 }
 
+func TestAgentEmptyResponseErrorIncludesProviderModelAndAfterTool(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			{Message: Message{Role: "assistant", Text: ""}, StopReason: "stream_empty_fallback_empty_after_stream_retry"},
+			{Message: Message{Role: "assistant", Text: ""}, StopReason: "stream_empty_fallback_empty_after_stream_retry"},
+		},
+	}
+	session := NewSession(root, "openrouter", "openai/gpt-oss-120b", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	_, err := agent.Reply(context.Background(), "리서치 문서를 파일로 작성해줘")
+	if err == nil {
+		t.Fatalf("expected empty response failure")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "provider=openrouter") {
+		t.Fatalf("expected provider in error, got %q", text)
+	}
+	if !strings.Contains(text, "model=openai/gpt-oss-120b") {
+		t.Fatalf("expected model in error, got %q", text)
+	}
+	if !strings.Contains(text, "stop_reason=stream_empty_fallback_empty_after_stream_retry") {
+		t.Fatalf("expected detailed stop reason in error, got %q", text)
+	}
+	if !strings.Contains(text, "after_tool=true") {
+		t.Fatalf("expected after_tool flag in error, got %q", text)
+	}
+}
+
 func TestSummarizeToolInvocationReadFileIncludesPathAndRange(t *testing.T) {
 	call := ToolCall{
 		Name:      "read_file",
@@ -2444,6 +2484,78 @@ func TestAgentBlocksGitCommitWithoutExplicitUserRequest(t *testing.T) {
 	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Do not stage, commit, push, or open a PR") {
 		t.Fatalf("expected git mutation guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksShellGitCommitWithoutExplicitUserRequest(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell", map[string]any{"command": `git commit -m "fix: unexpected commit"`}),
+			{Message: Message{Role: "assistant", Text: "문서만 작성했고 git 작업은 하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "리서치 문서를 markdown 파일로 작성해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "git 작업은 하지 않았습니다") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected shell git mutation request to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Do not stage, commit, push, or open a PR") {
+		t.Fatalf("expected git mutation guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "anti-cheat-research/analysis/security-review.md"}),
+			{Message: Message{Role: "assistant", Text: "먼저 부모 디렉터리를 확인한 뒤 진행하겠습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws), NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "리서치 문서를 markdown 파일로 작성해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "부모 디렉터리") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected document read request to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First use list_files on the parent directory") {
+		t.Fatalf("expected document read guidance, got %#v", lastMessage)
 	}
 }
 

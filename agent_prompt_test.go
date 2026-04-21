@@ -152,6 +152,24 @@ func TestSystemPromptExplainsCachedReadAndGrepHints(t *testing.T) {
 	}
 }
 
+func TestSystemPromptExplainsDocumentReadConfirmationGuidance(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "리서치 문서를 markdown 파일로 작성해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "prefer edit tools. Do not use run_shell for repo bootstrap") {
+		t.Fatalf("expected document edit guidance, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Use list_files on the parent directory before read_file") {
+		t.Fatalf("expected document read confirmation guidance, got %q", prompt)
+	}
+}
+
 func TestSystemPromptIncludesActiveBackgroundBundles(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
@@ -237,6 +255,17 @@ func TestSummarizeToolCompletionForRunShellUsesFirstOutputLine(t *testing.T) {
 
 	if summary != "run_shell completed: PASS" {
 		t.Fatalf("unexpected run_shell summary: %q", summary)
+	}
+}
+
+func TestSummarizeToolCompletionForListFiles(t *testing.T) {
+	summary := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, ToolCall{
+		Name:      "list_files",
+		Arguments: `{"path":"./anti-cheat-research/analysis"}`,
+	}, "analysis/testing.md\n")
+
+	if summary != "list_files returned 1 item(s) from ./anti-cheat-research/analysis." {
+		t.Fatalf("unexpected list_files summary: %q", summary)
 	}
 }
 

@@ -552,9 +552,29 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 	case strings.Contains(text, "does not support tool use"):
 		lines = append(lines, rt.ui.hintLine("This model endpoint cannot use Kernforge tools, so it cannot reliably inspect files, run commands, or apply edits."))
 		lines = append(lines, rt.ui.hintLine("Switch to a tool-capable model for review/fix tasks, or ask for a no-tools answer if you only want a best-effort opinion from attached context."))
+		lines = rt.appendIrrecoverableModelAlternatives(lines)
+	case strings.Contains(text, "model returned an empty response"):
+		lines = append(lines, rt.ui.hintLine("The provider returned no visible assistant text and no tool calls. This is a model/provider response failure, not a filesystem or shell failure."))
+		if strings.Contains(text, "stream_empty_fallback_empty_after_stream_retry") {
+			lines = append(lines, rt.ui.hintLine("The streamed reply was empty, and Kernforge retried once without streaming but that fallback reply was also empty."))
+		}
+		if strings.Contains(text, "after_tool=true") {
+			lines = append(lines, rt.ui.hintLine("This happened after at least one successful tool result, so the model likely stalled on the follow-up turn after seeing tool output."))
+		}
+		if strings.Contains(text, "provider=openrouter") {
+			lines = append(lines, rt.ui.hintLine("Try a different OpenRouter model for tool-heavy work, or retry with a stronger tool-using model if this one keeps returning blank follow-up turns."))
+		}
+		lines = rt.appendIrrecoverableModelAlternatives(lines)
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(text, "context deadline exceeded") || strings.Contains(text, "client.timeout exceeded"):
 		lines = append(lines, rt.ui.hintLine("The model request timed out before a usable response arrived. Retry the request, reduce prompt/tool churn, or increase the request timeout if your provider is slow."))
 	}
+	return lines
+}
+
+func (rt *runtimeState) appendIrrecoverableModelAlternatives(lines []string) []string {
+	lines = append(lines, rt.ui.hintLine("Alternative 1: retry the same prompt with a different tool-capable model or provider."))
+	lines = append(lines, rt.ui.hintLine("Alternative 2: ask for a no-tools answer that returns the research or document content inline instead of writing files."))
+	lines = append(lines, rt.ui.hintLine("Alternative 3: split the task into smaller steps, then retry the file-writing or edit step separately."))
 	return lines
 }
 

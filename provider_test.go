@@ -534,6 +534,76 @@ func TestOpenAIClientFallsBackToNonStreamWhenStreamReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientExtractsTextFromContentPartArray(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":[{"type":"output_text","text":"array "},{"type":"text","text":"answer"}]},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openrouter:openai/gpt-oss-120b",
+		Messages: []Message{{
+			Role: "user",
+			Text: "summarize",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "array answer" {
+		t.Fatalf("expected array content text, got %q", resp.Message.Text)
+	}
+}
+
+func TestOpenAIClientMarksEmptyFallbackAfterEmptyStream(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		defer r.Body.Close()
+
+		if requests == 1 {
+			w.Header().Set("content-type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatalf("expected flusher")
+			}
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			flusher.Flush()
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			flusher.Flush()
+			return
+		}
+
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":""},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openrouter:openai/gpt-oss-120b",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review this file",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected stream + fallback requests, got %d", requests)
+	}
+	if resp.StopReason != "stream_empty_fallback_empty_after_stream_retry" {
+		t.Fatalf("unexpected fallback stop reason: %q", resp.StopReason)
+	}
+	if resp.Message.Text != "" {
+		t.Fatalf("expected empty fallback text, got %q", resp.Message.Text)
+	}
+}
+
 func TestOpenAIClientFallsBackToNonStreamWhenStreamEndsWithoutDoneOrFinishReason(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

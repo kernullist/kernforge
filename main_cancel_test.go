@@ -700,6 +700,33 @@ func TestFormatAssistantErrorAddsGuidanceForToolUseUnsupportedModel(t *testing.T
 	if !strings.Contains(rendered, "cannot use Kernforge tools") {
 		t.Fatalf("expected tool-use guidance, got %q", rendered)
 	}
+	if !strings.Contains(rendered, "Alternative 1: retry the same prompt with a different tool-capable model or provider.") {
+		t.Fatalf("expected alternative guidance, got %q", rendered)
+	}
+}
+
+func TestFormatAssistantErrorAddsGuidanceForEmptyResponseAfterTool(t *testing.T) {
+	rt := &runtimeState{
+		ui: UI{},
+	}
+
+	lines := rt.formatAssistantError(fmt.Errorf("model returned an empty response (provider=openrouter model=openai/gpt-oss-120b stop_reason=stream_empty_fallback_empty_after_stream_retry after_tool=true)"))
+	if len(lines) < 2 {
+		t.Fatalf("expected guidance lines, got %#v", lines)
+	}
+	rendered := strings.Join(lines, "\n")
+	if !strings.Contains(rendered, "provider returned no visible assistant text") {
+		t.Fatalf("expected empty-response guidance, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "streamed reply was empty") {
+		t.Fatalf("expected stream fallback guidance, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "after at least one successful tool result") {
+		t.Fatalf("expected after-tool guidance, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Alternative 2: ask for a no-tools answer") {
+		t.Fatalf("expected alternative guidance, got %q", rendered)
+	}
 }
 
 func TestSessionApprovalStateLabel(t *testing.T) {

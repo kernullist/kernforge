@@ -190,6 +190,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	finalAnswerReviewRevisions := 0
 	lastReviewedFinalAnswer := ""
 	attemptedEditTool := false
+	sawToolResultThisTurn := false
 	repeatedToolFailureRecoveryTurns := 0
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
@@ -304,6 +305,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.Session.AddMessage(Message{
 					Role: "user",
 					Text: "Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls(resp.Message.ToolCalls, a.Session); block {
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: fmt.Sprintf("This request is document/report authoring work. Do not guess that generated files already exist and call read_file on them immediately. First use list_files on the parent directory %s to confirm whether %s actually exists. If the parent directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools instead.", parentPath, targetPath),
 				})
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -542,10 +553,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			emptyFinalReplies++
 			if emptyFinalReplies >= 2 {
-				if lastStopReason != "" {
-					return "", fmt.Errorf("model returned an empty response (stop_reason=%s)", lastStopReason)
-				}
-				return "", fmt.Errorf("model returned an empty response")
+				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
 			}
 			if readOnlyAnalysis {
 				a.Session.AddMessage(Message{
@@ -586,6 +594,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return "", saveErr
 			}
 			result, err := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+			sawToolResultThisTurn = true
 			toolMsg := Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -1650,7 +1659,7 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 			path = "."
 		}
 		itemCount := countNonEmptyLines(out)
-		return fmt.Sprintf(localizedText(cfg, "list_files returned %d item(s) from %s.", "list_files 완료 %s (%d개)."), itemCount, path)
+		return fmt.Sprintf(localizedText(cfg, "list_files returned %[1]d item(s) from %[2]s.", "list_files 완료 %[2]s (%[1]d개)."), itemCount, path)
 	case "run_shell":
 		snippet := truncateStatusSnippet(firstNonEmptyLine(out), 80)
 		if snippet == "" {
@@ -1739,6 +1748,26 @@ func truncateStatusSnippet(text string, limit int) string {
 
 func normalizeStopReason(reason string) string {
 	return strings.ToLower(strings.TrimSpace(reason))
+}
+
+func formatEmptyModelResponseError(session *Session, stopReason string, afterTool bool) error {
+	parts := make([]string, 0, 4)
+	if session != nil {
+		if provider := strings.TrimSpace(session.Provider); provider != "" {
+			parts = append(parts, "provider="+provider)
+		}
+		if model := strings.TrimSpace(session.Model); model != "" {
+			parts = append(parts, "model="+model)
+		}
+	}
+	if normalized := normalizeStopReason(stopReason); normalized != "" {
+		parts = append(parts, "stop_reason="+normalized)
+	}
+	parts = append(parts, fmt.Sprintf("after_tool=%t", afterTool))
+	if len(parts) == 0 {
+		return fmt.Errorf("model returned an empty response")
+	}
+	return fmt.Errorf("model returned an empty response (%s)", strings.Join(parts, " "))
 }
 
 func isTokenLimitStopReason(reason string) bool {
@@ -1937,12 +1966,179 @@ func allToolCallsAreEditTools(calls []ToolCall) bool {
 
 func hasMutatingGitToolCalls(calls []ToolCall) bool {
 	for _, call := range calls {
-		switch strings.TrimSpace(call.Name) {
-		case "git_add", "git_commit", "git_push", "git_create_pr":
+		if toolCallMutatesGitState(call) {
 			return true
 		}
 	}
 	return false
+}
+
+func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Session) (bool, string, string) {
+	if session == nil || !looksLikeDocumentAuthoringIntent(latestUserMessageText(session.Messages)) {
+		return false, "", ""
+	}
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "read_file" {
+			continue
+		}
+		targetPath := normalizeSessionRelativePath(toolCallPathArgument(call))
+		if targetPath == "." || !pathLooksLikeDocumentArtifact(targetPath) {
+			continue
+		}
+		parentPath := normalizeSessionRelativePath(filepath.Dir(targetPath))
+		if documentPathConfirmedBySession(session, targetPath) {
+			continue
+		}
+		if sessionHasListFilesConfirmationForParent(session, parentPath) || toolCallsIncludeListFilesConfirmation(calls, parentPath) {
+			continue
+		}
+		return true, targetPath, parentPath
+	}
+	return false, "", ""
+}
+
+func documentPathConfirmedBySession(session *Session, targetPath string) bool {
+	if session == nil {
+		return false
+	}
+	normalizedTarget := normalizeSessionRelativePath(targetPath)
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.IsError {
+			continue
+		}
+		switch strings.TrimSpace(msg.ToolName) {
+		case "read_file", "write_file", "replace_in_file":
+			if normalizeSessionRelativePath(toolMetaString(msg.ToolMeta, "path")) == normalizedTarget {
+				return true
+			}
+		case "apply_patch":
+			for _, changed := range toolMetaStringSlice(msg.ToolMeta, "changed_paths") {
+				if normalizeSessionRelativePath(changed) == normalizedTarget {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func sessionHasListFilesConfirmationForParent(session *Session, parentPath string) bool {
+	if session == nil {
+		return false
+	}
+	normalizedParent := normalizeSessionRelativePath(parentPath)
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.IsError || strings.TrimSpace(msg.ToolName) != "list_files" {
+			continue
+		}
+		if listFilesCoverageConfirmsParent(
+			normalizeSessionRelativePath(toolMetaString(msg.ToolMeta, "path")),
+			toolMetaBool(msg.ToolMeta, "recursive"),
+			normalizedParent,
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func toolCallsIncludeListFilesConfirmation(calls []ToolCall, parentPath string) bool {
+	normalizedParent := normalizeSessionRelativePath(parentPath)
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "list_files" {
+			continue
+		}
+		if listFilesCoverageConfirmsParent(
+			normalizeSessionRelativePath(toolCallPathArgument(call)),
+			toolCallRecursiveArgument(call),
+			normalizedParent,
+		) {
+			return true
+		}
+	}
+	return false
+}
+
+func listFilesCoverageConfirmsParent(listedRoot string, recursive bool, parentPath string) bool {
+	root := normalizeSessionRelativePath(listedRoot)
+	parent := normalizeSessionRelativePath(parentPath)
+	if root == parent {
+		return true
+	}
+	if !recursive {
+		return false
+	}
+	if root == "." {
+		return true
+	}
+	return parent == root || strings.HasPrefix(parent, root+"/")
+}
+
+func toolCallMutatesGitState(call ToolCall) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "git_add", "git_commit", "git_push", "git_create_pr":
+		return true
+	case "run_shell", "run_shell_background":
+		return shellCommandMutatesGitState(toolCallCommandArgument(call))
+	case "run_shell_bundle_background":
+		for _, command := range toolCallCommandsArgument(call) {
+			if shellCommandMutatesGitState(command) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func toolCallCommandArgument(call ToolCall) string {
+	args := toolCallArgumentsMap(call)
+	return stringValue(args, "command")
+}
+
+func toolCallPathArgument(call ToolCall) string {
+	args := toolCallArgumentsMap(call)
+	return stringValue(args, "path")
+}
+
+func toolCallRecursiveArgument(call ToolCall) bool {
+	args := toolCallArgumentsMap(call)
+	return boolValue(args, "recursive", false)
+}
+
+func toolCallArgumentsMap(call ToolCall) map[string]any {
+	args := map[string]any{}
+	if strings.TrimSpace(call.Arguments) != "" {
+		_ = json.Unmarshal([]byte(call.Arguments), &args)
+	}
+	return args
+}
+
+func toolCallCommandsArgument(call ToolCall) []string {
+	args := toolCallArgumentsMap(call)
+	return stringSliceValue(args, "commands")
+}
+
+func normalizeSessionRelativePath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return "."
+	}
+	normalized := filepath.ToSlash(filepath.Clean(trimmed))
+	if normalized == "" {
+		return "."
+	}
+	return normalized
+}
+
+func pathLooksLikeDocumentArtifact(path string) bool {
+	lower := strings.ToLower(normalizeSessionRelativePath(path))
+	switch strings.ToLower(filepath.Ext(lower)) {
+	case ".md", ".markdown", ".txt", ".rst", ".adoc":
+		return true
+	}
+	return containsAny(lower,
+		"/analysis/", "/document/", "/documents/", "/docs/", "/legal/", "/notes/", "/report/", "/reports/", "/research/",
+	)
 }
 
 func (a *Agent) systemPrompt() string {
@@ -2074,8 +2270,11 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id=\"latest\" instead of reconstructing the job id list from memory.\n")
 	b.WriteString("- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.\n")
 	b.WriteString("- When a long-running verification command belongs to the current focused task-graph node, include owner_node_id in the tool arguments so the runtime can attach that work to the correct node.\n")
-	b.WriteString("- For run_shell on Windows PowerShell, do not use &&. Use a single command or PowerShell separators like ; only when needed.\n")
+	b.WriteString("- For run_shell on Windows PowerShell, do not use && or ||. Use a single command or PowerShell separators and conditionals only when needed.\n")
+	b.WriteString("- For run_shell on Windows PowerShell, do not use Unix shell syntax like find ... -type, chmod, chown, ls -la, or /dev/null redirection, and do not use cmd.exe batch syntax like for /d %x. Rewrite those commands with PowerShell cmdlets, or explicitly invoke cmd /c or bash -lc only when that interpreter is intentionally required.\n")
 	b.WriteString("- For run_shell, the working directory is already set to the workspace root. Do not prepend commands with cd unless changing into a subdirectory is truly necessary.\n")
+	b.WriteString("- When the user asks to create or update ordinary source files or documents, prefer edit tools. Do not use run_shell for repo bootstrap, ACL changes, or git init unless the user explicitly asked for setup work.\n")
+	b.WriteString("- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.\n")
 	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
 	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
 	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")

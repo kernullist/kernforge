@@ -317,6 +317,8 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		"msbuild demo.sln /m":       shellMutationVerificationArtifacts,
 		"ninja":                     shellMutationVerificationArtifacts,
 		"go list ./...":             shellMutationCacheOnly,
+		"git commit -m test":        shellMutationGitMutation,
+		`cd repo ; git init`:        shellMutationGitMutation,
 		"npm install react":         shellMutationWorkspaceWrite,
 	}
 
@@ -325,6 +327,15 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		if got.Class != want {
 			t.Fatalf("unexpected shell mutation class for %q: got %q want %q", command, got.Class, want)
 		}
+	}
+}
+
+func TestAssessShellCommandMutationIgnoresNullSinkFallbackSyntax(t *testing.T) {
+	if got := assessShellCommandMutation(`ls -la . 2>/dev/null || echo "ls failed"`); got.Class != shellMutationReadOnly {
+		t.Fatalf("expected Unix null sink fallback to stay read-only, got %q", got.Class)
+	}
+	if got := assessShellCommandMutation(`echo hello > out.txt 2>/dev/null`); got.Class != shellMutationWorkspaceWrite {
+		t.Fatalf("expected real file write redirection to remain a workspace write, got %q", got.Class)
 	}
 }
 

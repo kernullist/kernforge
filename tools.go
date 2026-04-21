@@ -346,7 +346,7 @@ func (w Workspace) ResolveForLookup(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if filepath.IsAbs(path) || sameFilePath(w.Root, w.BaseRoot) {
+	if w.pathLooksAbsoluteForLookup(path) || sameFilePath(w.Root, w.BaseRoot) {
 		return primary, nil
 	}
 	if _, err := os.Stat(primary); err == nil {
@@ -370,6 +370,8 @@ func (w Workspace) resolveAgainstRoot(root, path string) (string, error) {
 	var abs string
 	if filepath.IsAbs(path) {
 		abs = filepath.Clean(path)
+	} else if resolved, ok := w.resolveWindowsVolumeRootedPath(path); ok {
+		abs = resolved
 	} else {
 		base := root
 		if strings.TrimSpace(base) == "" {
@@ -378,6 +380,55 @@ func (w Workspace) resolveAgainstRoot(root, path string) (string, error) {
 		abs = filepath.Clean(filepath.Join(base, path))
 	}
 	return abs, nil
+}
+
+func (w Workspace) pathLooksAbsoluteForLookup(path string) bool {
+	if filepath.IsAbs(path) {
+		return true
+	}
+	_, ok := w.resolveWindowsVolumeRootedPath(path)
+	return ok
+}
+
+func (w Workspace) resolveWindowsVolumeRootedPath(path string) (string, bool) {
+	if runtime.GOOS != "windows" {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || filepath.IsAbs(trimmed) {
+		return "", false
+	}
+	if (!strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, `\`)) ||
+		strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, `\\`) {
+		return "", false
+	}
+	volume := workspacePathVolume(w.Root)
+	if volume == "" {
+		volume = workspacePathVolume(w.BaseRoot)
+	}
+	if volume == "" {
+		return "", false
+	}
+	relative := strings.TrimLeft(trimmed, `/\`)
+	if relative == "" {
+		return filepath.Clean(volume + string(filepath.Separator)), true
+	}
+	return filepath.Clean(volume + string(filepath.Separator) + filepath.FromSlash(relative)), true
+}
+
+func workspacePathVolume(path string) string {
+	candidate := strings.TrimSpace(path)
+	if candidate == "" {
+		return ""
+	}
+	if volume := filepath.VolumeName(candidate); volume != "" {
+		return volume
+	}
+	abs, err := filepath.Abs(candidate)
+	if err != nil {
+		return ""
+	}
+	return filepath.VolumeName(abs)
 }
 
 func (w Workspace) ensureWithinBaseRoot(originalPath, abs string) (string, error) {
@@ -795,12 +846,19 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return ToolExecutionResult{}, err
-	}
 	startArg := intValue(args, "start_line", 1)
 	endArg := intValue(args, "end_line", 0)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			display, meta := buildMissingReadFileResult(t.ws.Root, path, startArg, endArg)
+			return ToolExecutionResult{
+				DisplayText: display,
+				Meta:        meta,
+			}, fmt.Errorf("read_file target does not exist: %s", relOrAbs(t.ws.Root, path))
+		}
+		return ToolExecutionResult{}, err
+	}
 	cacheKey := readFileCacheKey(path, startArg, endArg)
 	if cached, ok := t.lookupCachedRead(cacheKey, info); ok {
 		normalizedStart, normalizedEnd := normalizeRenderedRangeBounds(cached, startArg, endArg)
@@ -872,6 +930,64 @@ func buildReadFileMeta(root string, path string, requestedStart int, requestedEn
 	}
 }
 
+func buildMissingReadFileResult(root string, path string, requestedStart int, requestedEnd int) (string, map[string]any) {
+	resolvedPath := relOrAbs(root, path)
+	parent := filepath.Dir(path)
+	parentPath := relOrAbs(root, parent)
+	lines := []string{
+		"read_file target does not exist: " + resolvedPath,
+		"Parent directory: " + parentPath,
+	}
+	parentExists := false
+	parentEntryCount := 0
+
+	entries, err := os.ReadDir(parent)
+	switch {
+	case err == nil:
+		parentExists = true
+		parentEntryCount = len(entries)
+		if len(entries) == 0 {
+			lines = append(lines,
+				"Parent directory exists but is empty.",
+				"For document or report authoring tasks, treat this as document not created yet. Use list_files on the parent directory before retrying read_file, or create/update the file with edit tools.",
+			)
+		} else {
+			lines = append(lines, "Known entries in parent:")
+			for _, entry := range entries[:minInt(len(entries), 12)] {
+				item := relOrAbs(root, filepath.Join(parent, entry.Name()))
+				if entry.IsDir() {
+					item += "/"
+				}
+				lines = append(lines, "- "+item)
+			}
+			if len(entries) > 12 {
+				lines = append(lines, fmt.Sprintf("- ... (%d more)", len(entries)-12))
+			}
+			lines = append(lines, "If this path is a generated document, confirm the actual filename with list_files before retrying read_file.")
+		}
+	case os.IsNotExist(err):
+		lines = append(lines,
+			"Parent directory does not exist.",
+			"Use list_files on the nearest existing ancestor before retrying read_file. For document or report authoring tasks, treat this as document not created yet.",
+		)
+	default:
+		lines = append(lines, "Could not inspect parent directory: "+strings.TrimSpace(err.Error()))
+	}
+
+	meta := map[string]any{
+		"path":               resolvedPath,
+		"requested_path":     resolvedPath,
+		"start_line":         requestedStart,
+		"end_line":           requestedEnd,
+		"cache_mode":         "missing",
+		"error_kind":         "not_found",
+		"parent_path":        parentPath,
+		"parent_exists":      parentExists,
+		"parent_entry_count": parentEntryCount,
+	}
+	return strings.Join(lines, "\n"), meta
+}
+
 func normalizeRenderedRangeBounds(output string, requestedStart int, requestedEnd int) (int, int) {
 	normalized := strings.ReplaceAll(strings.TrimSpace(output), "\r\n", "\n")
 	if normalized == "" {
@@ -905,6 +1021,13 @@ func normalizeRenderedRangeBounds(output string, requestedStart int, requestedEn
 
 func readFileCacheKey(path string, start, end int) string {
 	return fmt.Sprintf("%s:%d:%d", normalizeReadFileCachePath(path), start, end)
+}
+
+func minInt(left int, right int) int {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (t *ReadFileTool) lookupCachedRead(cacheKey string, info fs.FileInfo) (string, bool) {
@@ -1683,6 +1806,7 @@ const (
 	shellMutationReadOnly              shellMutationClass = "read_only"
 	shellMutationCacheOnly             shellMutationClass = "cache_only"
 	shellMutationExternalInstall       shellMutationClass = "external_install"
+	shellMutationGitMutation           shellMutationClass = "git_mutation"
 	shellMutationVerificationArtifacts shellMutationClass = "verification_artifacts"
 	shellMutationWorkspaceWrite        shellMutationClass = "workspace_write"
 )
@@ -1693,7 +1817,8 @@ const (
 	shellOutputProgressEvery  = 2 * time.Second
 )
 
-var shellFileWriteRedirectionPattern = regexp.MustCompile(`(^|[\s;(|&])(?:\d+)?>>?\s*[^&\s]`)
+var shellFileWriteRedirectionTargetPattern = regexp.MustCompile(`(?i)(^|[\s;(|&])(?:\*|\d+)?>>?\s*([^\s;|&)]+)`)
+var shellGitMutationPattern = regexp.MustCompile(`(?i)(^|[;&|()])\s*git\s+(add|am|apply|branch|checkout|cherry-pick|clean|clone|commit|config|init|merge|mv|pull|push|rebase|reset|restore|revert|rm|stash|switch|tag)\b`)
 
 type shellCommandAssessment struct {
 	Class  shellMutationClass
@@ -1743,6 +1868,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	command := stringValue(args, "command")
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
+	}
+	if guidance := runShellCompatibilityGuidance(t.ws.Shell, command); guidance != "" {
+		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
 	}
 	assessment := assessShellCommandMutation(command)
 	allowWorkspaceWrites := boolValue(args, "allow_workspace_writes", false)
@@ -1804,6 +1932,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 	}
 	if err != nil {
+		text = appendRunShellGuidance(text, runShellFailureGuidance(t.ws.Shell, command, text, err))
 		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
 			"tool_name": "run_shell",
 			"tool_kind": "shell",
@@ -2154,13 +2283,16 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	if lower == "" {
 		return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "empty command"}
 	}
-	if shellFileWriteRedirectionPattern.MatchString(lower) || strings.Contains(lower, "| tee ") || strings.HasPrefix(lower, "tee ") {
+	if shellCommandHasWorkspaceWriteRedirection(lower) || strings.Contains(lower, "| tee ") || strings.HasPrefix(lower, "tee ") {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: "output redirection or tee can create workspace files"}
 	}
 
 	tokens := splitShellCommandWords(lower)
 	if len(tokens) == 0 {
 		return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
+	}
+	if shellCommandMutatesGitState(lower) {
+		return shellCommandAssessment{Class: shellMutationGitMutation, Reason: "command mutates git state"}
 	}
 
 	if shellCommandHasPrefixTokens(tokens,
@@ -2254,6 +2386,37 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	}
 
 	return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
+}
+
+func shellCommandMutatesGitState(command string) bool {
+	lower := strings.ToLower(strings.TrimSpace(command))
+	if lower == "" {
+		return false
+	}
+	return shellGitMutationPattern.MatchString(lower)
+}
+
+func shellCommandHasWorkspaceWriteRedirection(command string) bool {
+	cleaned := strings.ToLower(strings.TrimSpace(command))
+	if cleaned == "" {
+		return false
+	}
+	matches := shellFileWriteRedirectionTargetPattern.FindAllStringSubmatch(cleaned, -1)
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		target := strings.TrimSpace(match[2])
+		switch target {
+		case "/dev/null", "$null", "nul":
+			continue
+		}
+		if strings.HasPrefix(target, "&") {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func splitShellCommandWords(command string) []string {

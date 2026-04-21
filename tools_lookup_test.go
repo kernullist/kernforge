@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,66 @@ func TestWorkspaceResolveForLookupFallsBackToBaseRoot(t *testing.T) {
 	}
 	if resolved != target {
 		t.Fatalf("expected fallback path %q, got %q", target, resolved)
+	}
+}
+
+func TestWorkspaceResolveForLookupAcceptsWindowsSlashAbsolutePath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("slash-rooted lookup aliases are Windows-specific")
+	}
+
+	base := t.TempDir()
+	target := filepath.Join(base, "guide.md")
+	if err := os.WriteFile(target, []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: base,
+		Root:     base,
+	}
+
+	volume := filepath.VolumeName(base)
+	if volume == "" {
+		t.Fatalf("expected volume for %q", base)
+	}
+	slashPath := strings.TrimPrefix(filepath.ToSlash(target), filepath.ToSlash(volume))
+	resolved, err := ws.ResolveForLookup(slashPath)
+	if err != nil {
+		t.Fatalf("ResolveForLookup: %v", err)
+	}
+	if resolved != target {
+		t.Fatalf("expected slash-rooted alias %q to resolve to %q, got %q", slashPath, target, resolved)
+	}
+}
+
+func TestReadFileToolAcceptsWindowsSlashAbsolutePath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("slash-rooted lookup aliases are Windows-specific")
+	}
+
+	base := t.TempDir()
+	target := filepath.Join(base, "guide.md")
+	if err := os.WriteFile(target, []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	volume := filepath.VolumeName(base)
+	if volume == "" {
+		t.Fatalf("expected volume for %q", base)
+	}
+	slashPath := strings.TrimPrefix(filepath.ToSlash(target), filepath.ToSlash(volume))
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: base,
+		Root:     base,
+	})
+
+	out, err := tool.Execute(context.Background(), map[string]any{"path": slashPath})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "hello") {
+		t.Fatalf("expected slash-rooted read_file lookup to return content, got %q", out)
 	}
 }
 

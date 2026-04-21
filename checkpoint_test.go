@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCheckpointCreateListAndRollback(t *testing.T) {
@@ -112,6 +113,51 @@ func TestCheckpointResolveLatestAndByName(t *testing.T) {
 	}
 	if byName.ID != first.ID {
 		t.Fatalf("expected alpha checkpoint %s, got %s", first.ID, byName.ID)
+	}
+}
+
+func TestCheckpointCreateRetriesWhenTimestampIDCollides(t *testing.T) {
+	workspace := t.TempDir()
+	manager := &CheckpointManager{
+		Root: filepath.Join(t.TempDir(), "checkpoints"),
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "file.txt"), []byte("one"), 0o644); err != nil {
+		t.Fatalf("write file.txt: %v", err)
+	}
+
+	originalNow := checkpointTimeNow
+	t.Cleanup(func() {
+		checkpointTimeNow = originalNow
+	})
+
+	baseTime := time.Date(2026, 4, 20, 12, 0, 0, 123456700, time.UTC)
+	callCount := 0
+	checkpointTimeNow = func() time.Time {
+		callCount++
+		if callCount <= 2 {
+			return baseTime
+		}
+		return baseTime.Add(time.Nanosecond)
+	}
+
+	first, err := manager.Create(workspace, "alpha")
+	if err != nil {
+		t.Fatalf("Create first: %v", err)
+	}
+	second, err := manager.Create(workspace, "beta")
+	if err != nil {
+		t.Fatalf("Create second: %v", err)
+	}
+	if first.ID == second.ID {
+		t.Fatalf("expected unique checkpoint IDs after collision retry, got %s", first.ID)
+	}
+
+	items, err := manager.List(workspace)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected two checkpoints after collision retry, got %#v", items)
 	}
 }
 

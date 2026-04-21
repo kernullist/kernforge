@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -33,6 +34,8 @@ type CheckpointDiffEntry struct {
 	After  []byte
 }
 
+var checkpointTimeNow = time.Now
+
 func NewCheckpointManager() *CheckpointManager {
 	return &CheckpointManager{
 		Root: filepath.Join(userConfigDir(), "checkpoints"),
@@ -44,16 +47,13 @@ func (m *CheckpointManager) Create(workspaceRoot, name string) (CheckpointMetada
 	if err != nil {
 		return CheckpointMetadata{}, err
 	}
-	now := time.Now()
-	id := fmt.Sprintf("%s-%09d", now.Format("20060102-150405"), now.Nanosecond())
+	now, id, dir, err := m.reserveCheckpointDir(root)
+	if err != nil {
+		return CheckpointMetadata{}, err
+	}
 	trimmedName := strings.TrimSpace(name)
 	if trimmedName == "" {
 		trimmedName = "Checkpoint " + id
-	}
-
-	dir := m.checkpointDir(root, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return CheckpointMetadata{}, err
 	}
 	meta := CheckpointMetadata{
 		ID:        id,
@@ -101,9 +101,35 @@ func (m *CheckpointManager) List(workspaceRoot string) ([]CheckpointMetadata, er
 		items = append(items, meta)
 	}
 	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID > items[j].ID
+		}
 		return items[i].CreatedAt.After(items[j].CreatedAt)
 	})
 	return items, nil
+}
+
+func (m *CheckpointManager) reserveCheckpointDir(workspaceRoot string) (time.Time, string, string, error) {
+	base := m.workspaceDir(workspaceRoot)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return time.Time{}, "", "", err
+	}
+	for attempt := 0; attempt < 32; attempt++ {
+		now := checkpointTimeNow()
+		id := fmt.Sprintf("%s-%09d", now.Format("20060102-150405"), now.Nanosecond())
+		if attempt > 0 {
+			id = fmt.Sprintf("%s-r%02d", id, attempt)
+		}
+		dir := filepath.Join(base, id)
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			if errors.Is(err, os.ErrExist) {
+				continue
+			}
+			return time.Time{}, "", "", err
+		}
+		return now, id, dir, nil
+	}
+	return time.Time{}, "", "", fmt.Errorf("could not reserve unique checkpoint directory")
 }
 
 func (m *CheckpointManager) Resolve(workspaceRoot, target string) (CheckpointMetadata, string, error) {

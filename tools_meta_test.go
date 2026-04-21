@@ -37,6 +37,29 @@ func TestReadFileExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	}
 }
 
+func TestReadFileExecuteDetailedReturnsMissingPathHint(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "analysis"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	tool := NewReadFileTool(Workspace{BaseRoot: root, Root: root})
+	registry := NewToolRegistry(tool)
+
+	result, err := registry.ExecuteDetailed(context.Background(), "read_file", `{"path":"analysis/security-review.md"}`)
+	if err == nil {
+		t.Fatalf("expected missing file error")
+	}
+	if !strings.Contains(result.DisplayText, "read_file target does not exist: analysis/security-review.md") {
+		t.Fatalf("expected missing path hint, got %q", result.DisplayText)
+	}
+	if !strings.Contains(result.DisplayText, "Parent directory exists but is empty.") {
+		t.Fatalf("expected empty parent hint, got %q", result.DisplayText)
+	}
+	if toolMetaString(result.Meta, "error_kind") != "not_found" {
+		t.Fatalf("expected not_found meta, got %#v", result.Meta)
+	}
+}
+
 func TestRunShellExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()
 	ws := Workspace{

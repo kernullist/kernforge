@@ -910,6 +910,24 @@ func looksLikeExplicitGitIntent(text string) bool {
 	)
 }
 
+func looksLikeDocumentAuthoringIntent(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	hasDocumentNoun := containsAny(lower,
+		"document", "documents", "doc", "markdown", ".md", "report", "reports", "write-up", "writeup", "research", "paper", "papers", "notes", "spec", "specs",
+		"문서", "문서들", "마크다운", "보고서", "리서치", "연구", "정리", "초안", "명세", "스펙",
+	)
+	if !hasDocumentNoun {
+		return false
+	}
+	return containsAny(lower,
+		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ",
+		"작성", "만들", "생성", "업데이트", "정리", "초안", "추가",
+	)
+}
+
 func baseUserQueryText(text string) string {
 	trimmed := strings.TrimSpace(text)
 	markers := []string{

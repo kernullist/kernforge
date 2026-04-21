@@ -474,7 +474,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	type openAIResponse struct {
 		Choices []struct {
 			Message struct {
-				Content   string           `json:"content"`
+				Content   json.RawMessage  `json:"content"`
 				ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
@@ -600,7 +600,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			if err != nil {
 				return ChatResponse{}, err
 			}
-			fallbackResp.StopReason = markStopReasonAsStreamFallback(fallbackResp.StopReason)
+			fallbackResp.StopReason = markStopReasonAsStreamFallback(streamResp, fallbackResp)
 			return fallbackResp, nil
 		}
 		return streamResp, nil
@@ -626,7 +626,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 
 	choice := decoded.Choices[0]
-	out := Message{Role: "assistant", Text: choice.Message.Content}
+	out := Message{Role: "assistant", Text: extractOpenAIMessageText(choice.Message.Content)}
 	for _, tc := range choice.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
 			ID:        tc.ID,
@@ -654,7 +654,7 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 	type streamChunk struct {
 		Choices []struct {
 			Delta struct {
-				Content   string                `json:"content,omitempty"`
+				Content   json.RawMessage       `json:"content,omitempty"`
 				ToolCalls []streamToolCallDelta `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
@@ -719,10 +719,10 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 			if choice.FinishReason != "" {
 				stopReason = choice.FinishReason
 			}
-			if choice.Delta.Content != "" {
-				textBuilder.WriteString(choice.Delta.Content)
+			if deltaText := extractOpenAIMessageText(choice.Delta.Content); deltaText != "" {
+				textBuilder.WriteString(deltaText)
 				if onTextDelta != nil {
-					onTextDelta(choice.Delta.Content)
+					onTextDelta(deltaText)
 				}
 			}
 			for _, tc := range choice.Delta.ToolCalls {
@@ -821,12 +821,68 @@ func shouldFallbackAfterOpenAIStream(resp ChatResponse) bool {
 	return strings.EqualFold(strings.TrimSpace(resp.StopReason), "stream_incomplete")
 }
 
-func markStopReasonAsStreamFallback(stopReason string) string {
-	base := strings.TrimSpace(stopReason)
+func markStopReasonAsStreamFallback(streamResp, fallbackResp ChatResponse) string {
+	streamWasEmpty := responseLooksEmpty(streamResp)
+	fallbackWasEmpty := responseLooksEmpty(fallbackResp)
+	if fallbackWasEmpty {
+		switch {
+		case streamWasEmpty:
+			return normalizeStopReason("stream_empty_fallback_empty_after_stream_retry")
+		case strings.EqualFold(strings.TrimSpace(streamResp.StopReason), "stream_incomplete"):
+			return normalizeStopReason("stream_incomplete_fallback_empty_after_stream_retry")
+		}
+	}
+	base := strings.TrimSpace(fallbackResp.StopReason)
 	if base == "" {
 		base = "fallback"
 	}
 	return normalizeStopReason(base + "_after_stream_retry")
+}
+
+func responseLooksEmpty(resp ChatResponse) bool {
+	return strings.TrimSpace(resp.Message.Text) == "" && len(resp.Message.ToolCalls) == 0
+}
+
+func extractOpenAIMessageText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return ""
+	}
+
+	var direct string
+	if err := json.Unmarshal(trimmed, &direct); err == nil {
+		return direct
+	}
+
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return ""
+	}
+	return flattenOpenAIContentValue(decoded)
+}
+
+func flattenOpenAIContentValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := flattenOpenAIContentValue(item); strings.TrimSpace(text) != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	case map[string]any:
+		for _, key := range []string{"text", "output_text", "content", "value"} {
+			if candidate, ok := typed[key]; ok {
+				if text := flattenOpenAIContentValue(candidate); strings.TrimSpace(text) != "" {
+					return text
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func assistantMessageContent(text string, hasToolCalls bool) any {
