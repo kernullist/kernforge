@@ -62,6 +62,8 @@ Its current differentiators are:
 
 - Multi-agent project analysis with reusable knowledge packs and a performance lens
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
+- Built-in specialist subagent catalog with editable and read-only routing profiles
+- Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL and one-shot `-prompt` mode
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
 - File, patch, shell, and git-oriented tool use
@@ -77,6 +79,7 @@ Its current differentiators are:
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
 - Plan-review workflow with a separate reviewer model
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
+- Automatic secondary editable workers for disjoint edit leases plus specialist-aware background verification bundle chaining
 
 ## Highlights
 
@@ -127,6 +130,12 @@ Its current differentiators are:
 - Automatic checkpoint creation before the first edit in a request
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
+- In ordinary product development, `implementation-owner` is the default editable specialist, while narrower domain specialists such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-reviewer`, and `memory-inspection-reviewer` take ownership only when the task or paths match strongly.
+- `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned specialist worktree.
+- `/specialists assign <node-id> <specialist> [glob,glob2]` lets you pin an editable specialist and override ownership globs when auto-routing picked a broader default.
+- `/set-specialist-model <specialist> <provider> [model]` pins the LLM used by one specialist in this workspace, and `/set-specialist-model clear <specialist|all>` removes that override.
+- Secondary edit nodes with disjoint leases can run through automatic editable workers, while overlapping leases are deferred instead of racing on the same files.
+- When a parallel specialist edit restarts verification, older background verification bundles for the same owner or same lease are superseded automatically, and verification-like bundle completion closes the owning node.
 
 ### Tracked Feature Workflow
 
@@ -154,7 +163,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, and saved ids such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -331,6 +340,68 @@ Basic flow for telemetry regressions:
 4. Run `/mem-search category:telemetry tag:provider` to recall earlier reasoning and regression context.
 5. Before push or PR, hooks may inject extra review context or require confirmation.
 
+### Specialist Subagents And Worktree Isolation Example
+
+`specialists` are enabled by default, while `worktree_isolation` is off by default. The combination is especially valuable for tracked feature execution, high-risk driver/telemetry/Unreal/memory changes, and any request that touches multiple ownership domains in one turn.
+
+For most ordinary web, backend, tooling, and application development, think of `implementation-owner`, `planner`, and `reviewer` as the default trio. Driver, telemetry, Unreal, and memory specialists are narrower profiles that activate when task text or file paths strongly match those domains.
+
+```json
+{
+  "auto_verify": true,
+  "specialists": {
+    "enabled": true
+  },
+  "worktree_isolation": {
+    "enabled": true,
+    "root_dir": "C:\\Users\\you\\.kernforge\\worktrees",
+    "branch_prefix": "kernforge/",
+    "auto_for_tracked_features": true
+  }
+}
+```
+
+When to use it:
+
+1. Even in normal feature work, you want to touch files like `api/handlers.go`, `pkg/cache/store.go`, and `web/src/settings.tsx` in one request without one edit lane spilling into the others.
+2. You are implementing a tracked feature and want a rollback-friendly isolated git worktree instead of mutating the base workspace directly.
+3. Auto-routing picked the broad default `implementation-owner`, but you want to pin a narrower domain specialist for one node.
+4. You are iterating on the same file repeatedly and do not want to manually clean up stale background verification bundles between attempts.
+
+Recommended flow 1: let Kernforge auto-assign for ordinary feature work
+
+1. Turn on `worktree_isolation.enabled=true` in `.kernforge/config.json`.
+2. Run `/new-feature start settings page and cache invalidation cleanup`.
+3. Run `/new-feature implement`.
+4. Phrase the implementation request with concrete paths. Example: `Safely update web/src/settings.tsx and pkg/cache/store.go, and keep the settings save flow and cache invalidation verification tight.`
+5. Kernforge will assign specialists per task-graph node, then attach editable ownership and lease paths to each node.
+6. If the secondary edit nodes have disjoint leases, an automatic editable worker can create an additional patch in its own specialist worktree.
+7. If verification restarts for the same owner or same lease, the older background verification bundle is superseded automatically, so you do not keep following stale output.
+8. Use `/tasks`, `/specialists status`, `/worktree status`, and `/verify-dashboard` to inspect routing and verification progress.
+9. When the isolated worktree is clean and no longer needed, run `/worktree cleanup`.
+
+Recommended flow 2: pin domain specialists manually
+
+1. Run `/tasks` to inspect the node ids.
+2. Run `/specialists assign plan-02 driver-build-fixer driver/**,*.inf,*.cat`.
+3. Run `/specialists assign plan-03 telemetry-analyst telemetry/**,*.man,*.xml`.
+4. Continue the implementation request.
+5. After that, edit tools and scoped shell writes are only allowed inside that node's ownership and specialist worktree.
+6. If you try to write outside the owned scope, Kernforge will return a reassignment hint instead of silently widening the boundary.
+
+Recommended flow 3: use worktree isolation first
+
+1. Run `/worktree create anti-cheat-hardening`.
+2. Continue the usual review, edit, and verify loop.
+3. Use `/worktree leave` if you want to go back to the base root without deleting the isolated tree yet.
+4. Use `/worktree cleanup` after the tree is clean and you are done with it.
+
+Practical tips:
+
+1. If you want automatic parallel edit lanes, mention concrete paths such as `pkg/cache/store.go`, `web/src/settings.tsx`, or `Config/DefaultGame.ini` directly in the request.
+2. If two edit nodes overlap on the same path or glob, Kernforge intentionally defers the secondary lane and falls back to serial execution.
+3. `specialists.profiles` can override built-in profiles. This is useful when you want a stronger model only for `telemetry-analyst`, or when `driver-build-fixer` should also own `package/**`.
+
 ### Frequently Used Command Cheat Sheet
 
 Verification:
@@ -349,6 +420,16 @@ Memory:
 Policy:
 - `/hooks`
 - `/hook-reload`
+
+Isolated implementation:
+- `/specialists`
+- `/specialists status`
+- `/specialists assign <node-id> <specialist> [glob,glob2]`
+- `/set-specialist-model <specialist> <provider> [model]`
+- `/worktree status`
+- `/worktree create [name]`
+- `/worktree leave`
+- `/worktree cleanup`
 
 ## Command-Line Options
 
@@ -411,6 +492,15 @@ Later sources override earlier ones:
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
   "auto_verify": true,
+  "specialists": {
+    "enabled": true
+  },
+  "worktree_isolation": {
+    "enabled": true,
+    "root_dir": "C:\\Users\\you\\.kernforge\\worktrees",
+    "branch_prefix": "kernforge/",
+    "auto_for_tracked_features": true
+  },
   "msbuild_path": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\MSBuild\\Current\\Bin\\MSBuild.exe",
   "cmake_path": "C:\\Program Files\\CMake\\bin\\cmake.exe",
   "auto_locale": true,
@@ -458,6 +548,8 @@ Later sources override earlier ones:
 | `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
 | `plan_review` | Reviewer model config used by `/do-plan-review` |
 | `review_profiles` | Saved reviewer profiles |
+| `specialists` | Enable specialist subagents and overlay built-in specialist profiles |
+| `worktree_isolation` | Configure isolated git worktree roots, branch prefixes, and tracked-feature auto-isolation |
 
 ### Interactive Loop Durability Notes
 
@@ -468,8 +560,8 @@ Later sources override earlier ones:
 - `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
 - Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.
 - Independent long-running verification commands can also use `run_shell_bundle_background` and `check_shell_bundle` to run and poll several background jobs in parallel. Bundle metadata is persisted in the session, so the agent can resume polling with `bundle_id="latest"` even after compaction.
-- Background work is now node-aware. Long-running verification can carry `owner_node_id`, stale or superseded bundles can be canceled through dedicated tools, and lifecycle state is pushed back into the owning plan node instead of being inferred only from free-form text.
-- Secondary executor nodes can now run automatic read-only worker follow-ups. These workers gather evidence with safe tools such as `grep`, `list_files`, `git_status`, `git_diff`, `check_shell_job`, and `check_shell_bundle`, then persist their summaries back into the task graph for the main executor to consume.
+- Background work is now node-aware. Long-running verification carries `owner_node_id` and owner lease context, newer verification bundles for the same owner or same lease supersede older ones, and verification-like bundle completion syncs back into the owning plan node automatically.
+- Secondary executor nodes can now run not only automatic read-only worker follow-ups but also automatic editable workers. On disjoint leases, a specialist can patch in its own worktree and persist both the edit summary and follow-up verification bundle state back into the task graph.
 
 ### Environment Variables
 
@@ -669,6 +761,7 @@ Explain the structure of this repository
 /config
 /context
 /provider status
+/model
 /status
 /version
 /help
@@ -676,11 +769,14 @@ Explain the structure of this repository
 /hooks
 /hook-reload
 /override
+/specialists
+/worktree status
 ```
 
 - `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter performs a live lookup, while OpenAI and Anthropic expose officially documented limits and billing guidance.
+- `/model` is the unified model-routing hub. It shows the main model, the plan-review reviewer, the analysis worker and reviewer, and any specialist-subagent overrides, then lets you pick one target to reconfigure.
 
 ### Conversation And Session Commands
 
@@ -700,19 +796,27 @@ Explain the structure of this repository
 ```text
 /provider
 /provider status
-/model [name]
+/model
 /profile
 /profile-review
 /set-plan-review [provider]
 /set-analysis-models
+/set-specialist-model [status|clear <specialist|all>|<specialist> <provider> [model]]
 /analyze-project [--mode map|trace|impact|security|performance] <goal>
 /analyze-performance [focus]
 /do-plan-review <task>
 /new-feature <task>
+/specialists
+/worktree [status|create [name]|leave|cleanup]
 /permissions [mode]
 /set-max-tool-iterations <n>
 /locale-auto [on|off]
 ```
+
+- `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
+- `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
+- `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
+- `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
 
 ### Canceling And History
 

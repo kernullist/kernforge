@@ -1417,6 +1417,247 @@ func TestRuntimeStateHandleSetAutoVerifyCommand(t *testing.T) {
 	}
 }
 
+func TestRuntimeStateHandleModelCommandRejectsArguments(t *testing.T) {
+	rt := &runtimeState{}
+	err := rt.handleModelCommand("gpt-5.4")
+	if err == nil {
+		t.Fatalf("expected /model to reject direct arguments")
+	}
+	if !strings.Contains(err.Error(), "usage: /model") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.T) {
+	var out bytes.Buffer
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.PlanReview = &PlanReviewConfig{
+		Provider: "openai",
+		Model:    "gpt-review",
+	}
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{
+		Provider: "anthropic",
+		Model:    "claude-worker",
+	}
+	cfg.ProjectAnalysis.ReviewerProfile = &Profile{
+		Provider: "openai",
+		Model:    "gpt-analysis-review",
+	}
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:     "planner",
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+	}, {
+		Name: "unreal-integrity-reviewer",
+	}, {
+		Name: "memory-inspection-reviewer",
+	}}
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		cfg:     cfg,
+		session: &Session{Provider: "openai", Model: "gpt-main"},
+	}
+
+	if err := rt.handleModelCommand(""); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
+	}
+
+	rendered := out.String()
+	for _, needle := range []string{
+		"Model Routing",
+		"main",
+		"plan_reviewer",
+		"analysis_worker",
+		"analysis_reviewer",
+		"Specialist Subagents",
+		"planner",
+		"gpt-5.4-mini",
+		"unreal-integrity-reviewer:",
+		"memory-inspection-reviewer:",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected model routing output to contain %q, got %q", needle, rendered)
+		}
+	}
+	for _, bad := range []string{
+		"unreal-integrity-reviewer ->",
+		"memory-inspection-reviewer ->",
+	} {
+		if strings.Contains(rendered, bad) {
+			t.Fatalf("expected long specialist names to stay aligned, got %q", rendered)
+		}
+	}
+}
+
+func TestRuntimeStateHandleModelCommandInteractiveRoutesToAnalysisReviewer(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var out bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.APIKey = "test-key"
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("4\n2\n1\n")),
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+		cfg:         cfg,
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-main",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+
+	if err := rt.handleModelCommand(""); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		t.Fatalf("expected analysis reviewer profile to be configured")
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile.Provider != "openai" || rt.cfg.ProjectAnalysis.ReviewerProfile.Model != "gpt-5.4" {
+		t.Fatalf("unexpected analysis reviewer profile: %#v", rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+}
+
+func TestRuntimeStateHandleSetSpecialistModelCommandPersistsWorkspaceOverride(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	output := &bytes.Buffer{}
+	rt := &runtimeState{
+		writer: output,
+		ui:     UI{},
+		cfg:    DefaultConfig(workspace),
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-main",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-main"
+	rt.agent = &Agent{
+		Config: rt.cfg,
+	}
+
+	if err := rt.handleSetSpecialistModelCommand("planner openai gpt-5.4-mini"); err != nil {
+		t.Fatalf("handleSetSpecialistModelCommand: %v", err)
+	}
+	if !strings.Contains(output.String(), "Specialist planner set: openai / gpt-5.4-mini") {
+		t.Fatalf("expected success output, got %q", output.String())
+	}
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "planner")
+	if !ok {
+		t.Fatalf("expected planner profile after override")
+	}
+	if profile.Provider != "openai" || profile.Model != "gpt-5.4-mini" {
+		t.Fatalf("expected runtime override to apply, got %#v", profile)
+	}
+	if len(rt.agent.Config.Specialists.Profiles) == 0 {
+		t.Fatalf("expected agent config to receive specialist overrides")
+	}
+
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	savedProfile, ok := configuredSpecialistProfileByName(saved, "planner")
+	if !ok {
+		t.Fatalf("expected saved planner profile")
+	}
+	if savedProfile.Provider != "openai" || savedProfile.Model != "gpt-5.4-mini" {
+		t.Fatalf("expected saved specialist override, got %#v", savedProfile)
+	}
+}
+
+func TestRuntimeStateHandleSetSpecialistModelCommandClearPreservesOtherOverrides(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:      "planner",
+		Prompt:    "Keep the planning prompt override.",
+		Provider:  "openai",
+		Model:     "gpt-5.4-mini",
+		ReadOnly:  boolPtr(true),
+		Editable:  boolPtr(false),
+		NodeKinds: []string{"task"},
+	}}
+
+	rt := &runtimeState{
+		writer: &bytes.Buffer{},
+		ui:     UI{},
+		cfg:    cfg,
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-main",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+		workspace: Workspace{
+			BaseRoot: workspace,
+			Root:     workspace,
+		},
+		agent: &Agent{
+			Config: cfg,
+		},
+	}
+
+	if err := rt.persistSpecialistOverrides(); err != nil {
+		t.Fatalf("persistSpecialistOverrides: %v", err)
+	}
+	if err := rt.handleSetSpecialistModelCommand("clear planner"); err != nil {
+		t.Fatalf("clear planner: %v", err)
+	}
+
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "planner")
+	if !ok {
+		t.Fatalf("expected planner profile after clear")
+	}
+	if profile.Provider != "" || profile.Model != "" {
+		t.Fatalf("expected planner model override to clear, got %#v", profile)
+	}
+	if profile.Prompt != "Keep the planning prompt override." {
+		t.Fatalf("expected non-model override to be preserved, got %#v", profile)
+	}
+
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	savedProfile, ok := configuredSpecialistProfileByName(saved, "planner")
+	if !ok {
+		t.Fatalf("expected saved planner profile after clear")
+	}
+	if savedProfile.Provider != "" || savedProfile.Model != "" {
+		t.Fatalf("expected saved planner model override to clear, got %#v", savedProfile)
+	}
+	if savedProfile.Prompt != "Keep the planning prompt override." {
+		t.Fatalf("expected saved prompt override to remain, got %#v", savedProfile)
+	}
+}
+
 func TestRuntimeStatePromptResolveAutoVerifyFailureDisableSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

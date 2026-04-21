@@ -6,7 +6,9 @@ import (
 )
 
 func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
-	rt := &runtimeState{}
+	rt := &runtimeState{
+		cfg: DefaultConfig(t.TempDir()),
+	}
 
 	cases := []struct {
 		input       string
@@ -21,6 +23,10 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/checkpoint-auto of", wantBuffer: "/checkpoint-auto off "},
 		{input: "/locale-auto of", wantBuffer: "/locale-auto off "},
 		{input: "/set-auto-verify of", wantBuffer: "/set-auto-verify off "},
+		{input: "/worktree ", wantSuggest: []string{"/worktree status", "/worktree create", "/worktree leave", "/worktree cleanup"}},
+		{input: "/worktree cr", wantBuffer: "/worktree create "},
+		{input: "/specialists ", wantSuggest: []string{"/specialists status", "/specialists assign", "/specialists cleanup"}},
+		{input: "/specialists cl", wantBuffer: "/specialists cleanup "},
 		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider ollama"}},
 		{input: "/provider st", wantBuffer: "/provider status "},
 		{input: "/verify --", wantBuffer: "/verify --full "},
@@ -31,6 +37,10 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/set-analysis-models ", wantSuggest: []string{"/set-analysis-models status", "/set-analysis-models worker", "/set-analysis-models reviewer", "/set-analysis-models clear"}},
 		{input: "/set-analysis-models w", wantBuffer: "/set-analysis-models worker "},
 		{input: "/set-analysis-models worker op", wantBuffer: "/set-analysis-models worker open"},
+		{input: "/set-specialist-model ", wantSuggest: []string{"/set-specialist-model status", "/set-specialist-model clear", "/set-specialist-model attack-surface-reviewer", "/set-specialist-model driver-build-fixer", "/set-specialist-model implementation-owner", "/set-specialist-model kernel-investigator", "/set-specialist-model memory-inspection-reviewer", "/set-specialist-model planner", "/set-specialist-model reviewer", "/set-specialist-model telemetry-analyst", "/set-specialist-model unreal-integrity-reviewer"}},
+		{input: "/set-specialist-model pl", wantBuffer: "/set-specialist-model planner "},
+		{input: "/set-specialist-model planner op", wantBuffer: "/set-specialist-model planner open"},
+		{input: "/set-specialist-model clear al", wantBuffer: "/set-specialist-model clear all "},
 		{input: "/new-feature ", wantSuggest: []string{"/new-feature start", "/new-feature status", "/new-feature list", "/new-feature plan", "/new-feature implement", "/new-feature close"}},
 		{input: "/new-feature im", wantBuffer: "/new-feature implement "},
 		{input: "/investigate ", wantSuggest: []string{"/investigate status", "/investigate start", "/investigate snapshot", "/investigate note", "/investigate stop", "/investigate show", "/investigate list", "/investigate dashboard", "/investigate dashboard-html"}},
@@ -73,6 +83,8 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/invest", wantBuffer: "/investigate"},
 		{input: "/new-f", wantBuffer: "/new-feature "},
 		{input: "/simu", wantBuffer: "/simulate"},
+		{input: "/spec", wantBuffer: "/specialists "},
+		{input: "/workt", wantBuffer: "/worktree "},
 		{input: "/override-a", wantBuffer: "/override-add "},
 		{input: "/hook-r", wantBuffer: "/hook-reload "},
 	}
@@ -201,6 +213,9 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 		"/status":                  "Show current session state, approvals, and extension status.",
 		"/provider status":         "Show the current provider, base URL, key state, and billing visibility.",
 		"/verify":                  "Run manual verification for the current workspace state.",
+		"/specialists":             "Show specialist profiles plus editable ownership and worktree routing state.",
+		"/specialists cleanup":     "Remove one or all specialist worktrees recorded for this session.",
+		"/worktree cleanup":        "Remove the recorded isolated worktree after it is clean.",
 		"/new-feature status":      "Show the current state of a tracked feature.",
 		"/simulate tamper-surface": "Model obvious tamper vectors and exposed surfaces.",
 	}

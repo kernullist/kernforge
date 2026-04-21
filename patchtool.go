@@ -18,7 +18,8 @@ func (t ApplyPatchTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"patch": map[string]any{"type": "string"},
+				"patch":         map[string]any{"type": "string"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"patch"},
 		},
@@ -40,7 +41,7 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if err != nil {
 		return ToolExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
 	}
-	text, err := applyPatchDocument(ctx, t.ws, doc)
+	text, err := applyPatchDocument(ctx, t.ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
 	return ToolExecutionResult{
 		DisplayText: text,
 		Meta:        buildApplyPatchMeta(t.ws.Root, doc),
@@ -89,12 +90,13 @@ type patchDocument struct {
 }
 
 type plannedPatchChange struct {
-	kind     string
-	srcPath  string
-	destPath string
-	before   string
-	after    string
-	summary  string
+	kind        string
+	srcPath     string
+	destPath    string
+	displayRoot string
+	before      string
+	after       string
+	summary     string
 }
 
 type patchOperation struct {
@@ -250,8 +252,8 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 	return op, nil
 }
 
-func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (string, error) {
-	planned, err := planPatchDocument(ws, doc)
+func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ownerNodeID string) (string, error) {
+	planned, err := planPatchDocument(ws, doc, ownerNodeID)
 	if err != nil {
 		return "", err
 	}
@@ -260,9 +262,9 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 	}
 	var previewBlocks []string
 	for _, change := range planned {
-		target := relOrAbs(ws.Root, change.destPath)
+		target := relOrAbs(change.displayRoot, change.destPath)
 		if change.kind == "delete" {
-			target = relOrAbs(ws.Root, change.srcPath)
+			target = relOrAbs(change.displayRoot, change.srcPath)
 		}
 		previewBlocks = append(previewBlocks, buildSelectionAwareEditPreview(ws, target, change.before, change.after))
 	}
@@ -275,7 +277,11 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {
 		return "", err
 	}
-	if err := ws.BeforeEdit(fmt.Sprintf("apply patch (%d file(s))", len(planned))); err != nil {
+	editRoot := ws.Root
+	if len(planned) > 0 {
+		editRoot = firstNonBlankString(planned[0].displayRoot, ws.Root)
+	}
+	if err := ws.BeforeEditForRoot(fmt.Sprintf("apply patch (%d file(s))", len(planned)), editRoot); err != nil {
 		return "", err
 	}
 
@@ -289,26 +295,26 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 		}
 		switch change.kind {
 		case "add":
-			ws.Progress("Writing " + relOrAbs(ws.Root, change.destPath) + "...")
+			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
 				return "", err
 			}
 			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
 				return "", err
 			}
-			ws.Progress("Saved " + relOrAbs(ws.Root, change.destPath) + ".")
+			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
-			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.destPath), "", change.after))
+			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), "", change.after))
 		case "delete":
-			ws.Progress("Deleting " + relOrAbs(ws.Root, change.srcPath) + "...")
+			ws.Progress("Deleting " + relOrAbs(change.displayRoot, change.srcPath) + "...")
 			if err := os.Remove(change.srcPath); err != nil {
 				return "", err
 			}
-			ws.Progress("Deleted " + relOrAbs(ws.Root, change.srcPath) + ".")
+			ws.Progress("Deleted " + relOrAbs(change.displayRoot, change.srcPath) + ".")
 			summaries = append(summaries, change.summary)
-			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.srcPath), change.before, ""))
+			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.srcPath), change.before, ""))
 		case "update":
-			ws.Progress("Writing " + relOrAbs(ws.Root, change.destPath) + "...")
+			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
 			if err := ensureParentDir(change.destPath); err != nil {
 				return "", err
 			}
@@ -320,9 +326,9 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument) (s
 					return "", err
 				}
 			}
-			ws.Progress("Saved " + relOrAbs(ws.Root, change.destPath) + ".")
+			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
-			previews = append(previews, buildEditPreview(relOrAbs(ws.Root, change.destPath), change.before, change.after))
+			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), change.before, change.after))
 		default:
 			return "", fmt.Errorf("unsupported patch operation: %s", change.kind)
 		}
@@ -355,15 +361,16 @@ func ensurePlannedPatchWrites(ws Workspace, planned []plannedPatchChange) error 
 	return nil
 }
 
-func planPatchDocument(ws Workspace, doc patchDocument) ([]plannedPatchChange, error) {
+func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]plannedPatchChange, error) {
 	var planned []plannedPatchChange
 	for _, op := range doc.ops {
 		switch op.kind {
 		case "add":
-			path, err := ws.Resolve(op.path)
+			route, err := ws.ResolveEditPath(op.path, ownerNodeID, false)
 			if err != nil {
 				return nil, err
 			}
+			path := route.AbsolutePath
 			if _, err := os.Stat(path); err == nil {
 				return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
 			}
@@ -372,37 +379,44 @@ func planPatchDocument(ws Workspace, doc patchDocument) ([]plannedPatchChange, e
 				content += "\n"
 			}
 			planned = append(planned, plannedPatchChange{
-				kind:     "add",
-				destPath: path,
-				after:    content,
-				summary:  "added " + relOrAbs(ws.Root, path),
+				kind:        "add",
+				destPath:    path,
+				displayRoot: firstNonBlankString(route.DisplayRoot, ws.Root),
+				after:       content,
+				summary:     "added " + route.DisplayPath(),
 			})
 		case "delete":
-			path, err := ws.ResolveForLookup(op.path)
+			route, err := ws.ResolveEditPath(op.path, ownerNodeID, true)
 			if err != nil {
 				return nil, err
 			}
+			path := route.AbsolutePath
 			original, err := os.ReadFile(path)
 			if err != nil {
 				return nil, err
 			}
 			planned = append(planned, plannedPatchChange{
-				kind:    "delete",
-				srcPath: path,
-				before:  string(original),
-				summary: "deleted " + relOrAbs(ws.Root, path),
+				kind:        "delete",
+				srcPath:     path,
+				displayRoot: firstNonBlankString(route.DisplayRoot, ws.Root),
+				before:      string(original),
+				summary:     "deleted " + route.DisplayPath(),
 			})
 		case "update":
-			srcPath, err := ws.ResolveForLookup(op.path)
+			srcRoute, err := ws.ResolveEditPath(op.path, ownerNodeID, true)
 			if err != nil {
 				return nil, err
 			}
+			srcPath := srcRoute.AbsolutePath
 			destPath := srcPath
+			displayRoot := firstNonBlankString(srcRoute.DisplayRoot, ws.Root)
 			if strings.TrimSpace(op.moveTo) != "" {
-				destPath, err = ws.Resolve(op.moveTo)
+				destRoute, err := ws.ResolveEditPath(op.moveTo, ownerNodeID, false)
 				if err != nil {
 					return nil, err
 				}
+				destPath = destRoute.AbsolutePath
+				displayRoot = firstNonBlankString(destRoute.DisplayRoot, displayRoot, ws.Root)
 			}
 			original, err := os.ReadFile(srcPath)
 			if err != nil {
@@ -412,17 +426,18 @@ func planPatchDocument(ws Workspace, doc patchDocument) ([]plannedPatchChange, e
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", op.path, err)
 			}
-			summary := "updated " + relOrAbs(ws.Root, srcPath)
+			summary := "updated " + relOrAbs(displayRoot, srcPath)
 			if destPath != srcPath {
-				summary = fmt.Sprintf("updated %s -> %s", relOrAbs(ws.Root, srcPath), relOrAbs(ws.Root, destPath))
+				summary = fmt.Sprintf("updated %s -> %s", relOrAbs(displayRoot, srcPath), relOrAbs(displayRoot, destPath))
 			}
 			planned = append(planned, plannedPatchChange{
-				kind:     "update",
-				srcPath:  srcPath,
-				destPath: destPath,
-				before:   string(original),
-				after:    updated,
-				summary:  summary,
+				kind:        "update",
+				srcPath:     srcPath,
+				destPath:    destPath,
+				displayRoot: displayRoot,
+				before:      string(original),
+				after:       updated,
+				summary:     summary,
 			})
 		default:
 			return nil, fmt.Errorf("unsupported patch operation: %s", op.kind)

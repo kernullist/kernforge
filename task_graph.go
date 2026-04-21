@@ -13,23 +13,37 @@ type TaskGraph struct {
 }
 
 type TaskNode struct {
-	ID                    string    `json:"id"`
-	Title                 string    `json:"title"`
-	Kind                  string    `json:"kind,omitempty"`
-	Status                string    `json:"status,omitempty"`
-	DependsOn             []string  `json:"depends_on,omitempty"`
-	LinkedBundleIDs       []string  `json:"linked_bundle_ids,omitempty"`
-	LinkedJobIDs          []string  `json:"linked_job_ids,omitempty"`
-	MicroWorkerBrief      string    `json:"micro_worker_brief,omitempty"`
-	ReadOnlyWorkerTool    string    `json:"read_only_worker_tool,omitempty"`
-	ReadOnlyWorkerSummary string    `json:"read_only_worker_summary,omitempty"`
-	ReadOnlyWorkerAt      time.Time `json:"read_only_worker_at,omitempty"`
-	RetryBudget           int       `json:"retry_budget,omitempty"`
-	RetryUsed             int       `json:"retry_used,omitempty"`
-	LastFailureTool       string    `json:"last_failure_tool,omitempty"`
-	LastFailure           string    `json:"last_failure,omitempty"`
-	LifecycleNote         string    `json:"lifecycle_note,omitempty"`
-	LastUpdated           time.Time `json:"last_updated,omitempty"`
+	ID                     string    `json:"id"`
+	Title                  string    `json:"title"`
+	Kind                   string    `json:"kind,omitempty"`
+	Status                 string    `json:"status,omitempty"`
+	DependsOn              []string  `json:"depends_on,omitempty"`
+	LinkedBundleIDs        []string  `json:"linked_bundle_ids,omitempty"`
+	LinkedJobIDs           []string  `json:"linked_job_ids,omitempty"`
+	AssignedSpecialist     string    `json:"assigned_specialist,omitempty"`
+	SpecialistReason       string    `json:"specialist_reason,omitempty"`
+	SpecialistAt           time.Time `json:"specialist_at,omitempty"`
+	EditableSpecialist     string    `json:"editable_specialist,omitempty"`
+	EditableReason         string    `json:"editable_reason,omitempty"`
+	EditableOwnershipPaths []string  `json:"editable_ownership_paths,omitempty"`
+	EditableLeasePaths     []string  `json:"editable_lease_paths,omitempty"`
+	EditableLeaseReason    string    `json:"editable_lease_reason,omitempty"`
+	EditableLeaseAt        time.Time `json:"editable_lease_at,omitempty"`
+	EditableWorktreeRoot   string    `json:"editable_worktree_root,omitempty"`
+	EditableWorktreeBranch string    `json:"editable_worktree_branch,omitempty"`
+	EditableAt             time.Time `json:"editable_at,omitempty"`
+	EditableWorkerSummary  string    `json:"editable_worker_summary,omitempty"`
+	EditableWorkerAt       time.Time `json:"editable_worker_at,omitempty"`
+	MicroWorkerBrief       string    `json:"micro_worker_brief,omitempty"`
+	ReadOnlyWorkerTool     string    `json:"read_only_worker_tool,omitempty"`
+	ReadOnlyWorkerSummary  string    `json:"read_only_worker_summary,omitempty"`
+	ReadOnlyWorkerAt       time.Time `json:"read_only_worker_at,omitempty"`
+	RetryBudget            int       `json:"retry_budget,omitempty"`
+	RetryUsed              int       `json:"retry_used,omitempty"`
+	LastFailureTool        string    `json:"last_failure_tool,omitempty"`
+	LastFailure            string    `json:"last_failure,omitempty"`
+	LifecycleNote          string    `json:"lifecycle_note,omitempty"`
+	LastUpdated            time.Time `json:"last_updated,omitempty"`
 }
 
 func newTaskGraphFromPlan(items []PlanItem) *TaskGraph {
@@ -131,6 +145,16 @@ func (n *TaskNode) Normalize() {
 	n.DependsOn = normalizeTaskStateList(n.DependsOn, 16)
 	n.LinkedBundleIDs = normalizeTaskStateList(n.LinkedBundleIDs, 16)
 	n.LinkedJobIDs = normalizeTaskStateList(n.LinkedJobIDs, 32)
+	n.AssignedSpecialist = strings.TrimSpace(n.AssignedSpecialist)
+	n.SpecialistReason = strings.TrimSpace(n.SpecialistReason)
+	n.EditableSpecialist = strings.TrimSpace(n.EditableSpecialist)
+	n.EditableReason = strings.TrimSpace(n.EditableReason)
+	n.EditableOwnershipPaths = normalizeTaskStateList(n.EditableOwnershipPaths, 32)
+	n.EditableLeasePaths = normalizeTaskStateList(n.EditableLeasePaths, 32)
+	n.EditableLeaseReason = strings.TrimSpace(n.EditableLeaseReason)
+	n.EditableWorktreeRoot = strings.TrimSpace(n.EditableWorktreeRoot)
+	n.EditableWorktreeBranch = strings.TrimSpace(n.EditableWorktreeBranch)
+	n.EditableWorkerSummary = strings.TrimSpace(n.EditableWorkerSummary)
 	n.MicroWorkerBrief = strings.TrimSpace(n.MicroWorkerBrief)
 	n.ReadOnlyWorkerTool = strings.TrimSpace(n.ReadOnlyWorkerTool)
 	n.ReadOnlyWorkerSummary = strings.TrimSpace(n.ReadOnlyWorkerSummary)
@@ -224,6 +248,48 @@ func mergeTaskNodeRuntimeState(current TaskNode, previous TaskNode) TaskNode {
 	if current.MicroWorkerBrief == "" {
 		current.MicroWorkerBrief = previous.MicroWorkerBrief
 	}
+	if current.AssignedSpecialist == "" {
+		current.AssignedSpecialist = previous.AssignedSpecialist
+	}
+	if current.SpecialistReason == "" {
+		current.SpecialistReason = previous.SpecialistReason
+	}
+	if current.SpecialistAt.IsZero() {
+		current.SpecialistAt = previous.SpecialistAt
+	}
+	if current.EditableSpecialist == "" {
+		current.EditableSpecialist = previous.EditableSpecialist
+	}
+	if current.EditableReason == "" {
+		current.EditableReason = previous.EditableReason
+	}
+	if len(current.EditableOwnershipPaths) == 0 {
+		current.EditableOwnershipPaths = append([]string(nil), previous.EditableOwnershipPaths...)
+	}
+	if len(current.EditableLeasePaths) == 0 {
+		current.EditableLeasePaths = append([]string(nil), previous.EditableLeasePaths...)
+	}
+	if current.EditableLeaseReason == "" {
+		current.EditableLeaseReason = previous.EditableLeaseReason
+	}
+	if current.EditableLeaseAt.IsZero() {
+		current.EditableLeaseAt = previous.EditableLeaseAt
+	}
+	if current.EditableWorktreeRoot == "" {
+		current.EditableWorktreeRoot = previous.EditableWorktreeRoot
+	}
+	if current.EditableWorktreeBranch == "" {
+		current.EditableWorktreeBranch = previous.EditableWorktreeBranch
+	}
+	if current.EditableAt.IsZero() {
+		current.EditableAt = previous.EditableAt
+	}
+	if current.EditableWorkerSummary == "" {
+		current.EditableWorkerSummary = previous.EditableWorkerSummary
+	}
+	if current.EditableWorkerAt.IsZero() {
+		current.EditableWorkerAt = previous.EditableWorkerAt
+	}
 	if current.ReadOnlyWorkerTool == "" {
 		current.ReadOnlyWorkerTool = previous.ReadOnlyWorkerTool
 	}
@@ -280,6 +346,48 @@ func (g *TaskGraph) UpsertNode(node TaskNode) {
 		if strings.EqualFold(g.Nodes[index].ID, node.ID) {
 			if node.MicroWorkerBrief == "" {
 				node.MicroWorkerBrief = g.Nodes[index].MicroWorkerBrief
+			}
+			if node.AssignedSpecialist == "" {
+				node.AssignedSpecialist = g.Nodes[index].AssignedSpecialist
+			}
+			if node.SpecialistReason == "" {
+				node.SpecialistReason = g.Nodes[index].SpecialistReason
+			}
+			if node.SpecialistAt.IsZero() {
+				node.SpecialistAt = g.Nodes[index].SpecialistAt
+			}
+			if node.EditableSpecialist == "" {
+				node.EditableSpecialist = g.Nodes[index].EditableSpecialist
+			}
+			if node.EditableReason == "" {
+				node.EditableReason = g.Nodes[index].EditableReason
+			}
+			if len(node.EditableOwnershipPaths) == 0 {
+				node.EditableOwnershipPaths = append([]string(nil), g.Nodes[index].EditableOwnershipPaths...)
+			}
+			if len(node.EditableLeasePaths) == 0 {
+				node.EditableLeasePaths = append([]string(nil), g.Nodes[index].EditableLeasePaths...)
+			}
+			if node.EditableLeaseReason == "" {
+				node.EditableLeaseReason = g.Nodes[index].EditableLeaseReason
+			}
+			if node.EditableLeaseAt.IsZero() {
+				node.EditableLeaseAt = g.Nodes[index].EditableLeaseAt
+			}
+			if node.EditableWorktreeRoot == "" {
+				node.EditableWorktreeRoot = g.Nodes[index].EditableWorktreeRoot
+			}
+			if node.EditableWorktreeBranch == "" {
+				node.EditableWorktreeBranch = g.Nodes[index].EditableWorktreeBranch
+			}
+			if node.EditableAt.IsZero() {
+				node.EditableAt = g.Nodes[index].EditableAt
+			}
+			if node.EditableWorkerSummary == "" {
+				node.EditableWorkerSummary = g.Nodes[index].EditableWorkerSummary
+			}
+			if node.EditableWorkerAt.IsZero() {
+				node.EditableWorkerAt = g.Nodes[index].EditableWorkerAt
 			}
 			if node.ReadOnlyWorkerTool == "" {
 				node.ReadOnlyWorkerTool = g.Nodes[index].ReadOnlyWorkerTool
@@ -383,6 +491,92 @@ func (g *TaskGraph) RecordMicroWorkerBrief(nodeID string, brief string) {
 	}
 }
 
+func (g *TaskGraph) RecordSpecialistAssignment(nodeID string, specialist string, reason string) {
+	if g == nil {
+		return
+	}
+	specialist = strings.TrimSpace(specialist)
+	reason = strings.TrimSpace(reason)
+	if specialist == "" {
+		return
+	}
+	for index := range g.Nodes {
+		if !strings.EqualFold(g.Nodes[index].ID, strings.TrimSpace(nodeID)) {
+			continue
+		}
+		g.Nodes[index].AssignedSpecialist = specialist
+		g.Nodes[index].SpecialistReason = reason
+		g.Nodes[index].SpecialistAt = time.Now()
+		g.Nodes[index].LastUpdated = time.Now()
+		g.Touch()
+		return
+	}
+}
+
+func (g *TaskGraph) RecordEditableAssignment(nodeID string, specialist string, reason string, ownership []string, worktreeRoot string, worktreeBranch string) {
+	if g == nil {
+		return
+	}
+	specialist = strings.TrimSpace(specialist)
+	reason = strings.TrimSpace(reason)
+	worktreeRoot = strings.TrimSpace(worktreeRoot)
+	worktreeBranch = strings.TrimSpace(worktreeBranch)
+	ownership = normalizeTaskStateList(ownership, 32)
+	if specialist == "" && worktreeRoot == "" && len(ownership) == 0 {
+		return
+	}
+	for index := range g.Nodes {
+		if !strings.EqualFold(g.Nodes[index].ID, strings.TrimSpace(nodeID)) {
+			continue
+		}
+		if specialist != "" {
+			g.Nodes[index].EditableSpecialist = specialist
+		}
+		if reason != "" {
+			g.Nodes[index].EditableReason = reason
+		}
+		if len(ownership) > 0 {
+			g.Nodes[index].EditableOwnershipPaths = append([]string(nil), ownership...)
+		}
+		if worktreeRoot != "" {
+			g.Nodes[index].EditableWorktreeRoot = worktreeRoot
+		}
+		if worktreeBranch != "" {
+			g.Nodes[index].EditableWorktreeBranch = worktreeBranch
+		}
+		g.Nodes[index].EditableAt = time.Now()
+		g.Nodes[index].LastUpdated = time.Now()
+		g.Touch()
+		return
+	}
+}
+
+func (g *TaskGraph) RecordEditableLease(nodeID string, leasePaths []string, reason string) {
+	if g == nil {
+		return
+	}
+	leasePaths = normalizeTaskStateList(leasePaths, 32)
+	reason = strings.TrimSpace(reason)
+	if len(leasePaths) == 0 && reason == "" {
+		return
+	}
+	for index := range g.Nodes {
+		if !strings.EqualFold(g.Nodes[index].ID, strings.TrimSpace(nodeID)) {
+			continue
+		}
+		if len(leasePaths) > 0 {
+			g.Nodes[index].EditableLeasePaths = append([]string(nil), leasePaths...)
+		}
+		if reason != "" {
+			g.Nodes[index].EditableLeaseReason = reason
+		}
+		g.Nodes[index].EditableLeaseAt = time.Now()
+		g.Nodes[index].LastUpdated = time.Now()
+		g.Touch()
+		return
+	}
+}
+
 func (g *TaskGraph) RecordReadOnlyWorkerEvidence(nodeID string, toolName string, summary string) {
 	if g == nil {
 		return
@@ -399,6 +593,26 @@ func (g *TaskGraph) RecordReadOnlyWorkerEvidence(nodeID string, toolName string,
 		g.Nodes[index].ReadOnlyWorkerTool = toolName
 		g.Nodes[index].ReadOnlyWorkerSummary = summary
 		g.Nodes[index].ReadOnlyWorkerAt = time.Now()
+		g.Nodes[index].LastUpdated = time.Now()
+		g.Touch()
+		return
+	}
+}
+
+func (g *TaskGraph) RecordEditableWorkerEvidence(nodeID string, summary string) {
+	if g == nil {
+		return
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return
+	}
+	for index := range g.Nodes {
+		if !strings.EqualFold(g.Nodes[index].ID, strings.TrimSpace(nodeID)) {
+			continue
+		}
+		g.Nodes[index].EditableWorkerSummary = summary
+		g.Nodes[index].EditableWorkerAt = time.Now()
 		g.Nodes[index].LastUpdated = time.Now()
 		g.Touch()
 		return
@@ -575,6 +789,18 @@ func (g *TaskGraph) RenderPromptSection() string {
 		items := make([]string, 0, len(active))
 		for _, node := range active {
 			item := fmt.Sprintf("%s [%s]", node.Title, node.Status)
+			if node.AssignedSpecialist != "" {
+				item += " | specialist=" + compactPromptSection(node.AssignedSpecialist, 40)
+			}
+			if node.EditableSpecialist != "" {
+				item += " | editable=" + compactPromptSection(node.EditableSpecialist, 40)
+			}
+			if len(node.EditableLeasePaths) > 0 {
+				item += " | lease=" + compactPromptSection(strings.Join(node.EditableLeasePaths, ","), 100)
+			}
+			if node.EditableWorkerSummary != "" {
+				item += " | edit_worker=" + compactPromptSection(node.EditableWorkerSummary, 120)
+			}
 			if node.MicroWorkerBrief != "" {
 				item += " | brief=" + compactPromptSection(node.MicroWorkerBrief, 120)
 			}
@@ -604,8 +830,35 @@ func (g *TaskGraph) RenderExportSection() string {
 		if len(node.LinkedJobIDs) > 0 {
 			line += " | jobs=" + strings.Join(node.LinkedJobIDs, ", ")
 		}
+		if node.AssignedSpecialist != "" {
+			line += " | specialist=" + compactPromptSection(node.AssignedSpecialist, 40)
+			if node.SpecialistReason != "" {
+				line += " (" + compactPromptSection(node.SpecialistReason, 80) + ")"
+			}
+		}
+		if node.EditableSpecialist != "" {
+			line += " | editable=" + compactPromptSection(node.EditableSpecialist, 40)
+			if node.EditableReason != "" {
+				line += " (" + compactPromptSection(node.EditableReason, 80) + ")"
+			}
+			if node.EditableWorktreeRoot != "" {
+				line += " | editable_root=" + compactPromptSection(node.EditableWorktreeRoot, 80)
+			}
+			if len(node.EditableOwnershipPaths) > 0 {
+				line += " | ownership=" + compactPromptSection(strings.Join(node.EditableOwnershipPaths, ","), 100)
+			}
+			if len(node.EditableLeasePaths) > 0 {
+				line += " | lease=" + compactPromptSection(strings.Join(node.EditableLeasePaths, ","), 100)
+				if node.EditableLeaseReason != "" {
+					line += " (" + compactPromptSection(node.EditableLeaseReason, 80) + ")"
+				}
+			}
+		}
 		if node.MicroWorkerBrief != "" {
 			line += " | brief=" + compactPromptSection(node.MicroWorkerBrief, 120)
+		}
+		if node.EditableWorkerSummary != "" {
+			line += " | edit_worker=" + compactPromptSection(node.EditableWorkerSummary, 120)
 		}
 		if node.ReadOnlyWorkerSummary != "" {
 			line += " | worker=" + compactPromptSection(firstNonBlankString(node.ReadOnlyWorkerTool, "read_only")+": "+node.ReadOnlyWorkerSummary, 120)
@@ -888,7 +1141,76 @@ func (s *Session) MarkBundleLifecycle(bundleID string, status string, note strin
 	if s == nil || s.TaskGraph == nil {
 		return
 	}
-	s.TaskGraph.SetNodeLifecycle("bundle:"+strings.TrimSpace(bundleID), status, note)
+	trimmedID := strings.TrimSpace(bundleID)
+	if trimmedID == "" {
+		return
+	}
+	bundle, ok := s.BackgroundBundle(trimmedID)
+	if ok {
+		if trimmedStatus := strings.TrimSpace(status); trimmedStatus != "" {
+			bundle.Status = trimmedStatus
+		}
+		if trimmedNote := strings.TrimSpace(note); trimmedNote != "" {
+			bundle.LifecycleNote = trimmedNote
+		}
+		bundle.Normalize()
+		s.UpsertBackgroundBundle(bundle)
+	}
+	s.TaskGraph.SetNodeLifecycle("bundle:"+trimmedID, status, note)
+	if ok {
+		s.syncBackgroundBundleOwnerLifecycle(bundle, note)
+	}
+}
+
+func (s *Session) syncBackgroundBundleOwnerLifecycle(bundle BackgroundShellBundle, note string) {
+	if s == nil || s.TaskGraph == nil {
+		return
+	}
+	ownerNodeID := strings.TrimSpace(bundle.OwnerNodeID)
+	if ownerNodeID == "" {
+		return
+	}
+	node, ok := s.TaskGraph.Node(ownerNodeID)
+	if !ok || !isPrimaryTaskNode(node) {
+		return
+	}
+	lifecycleNote := firstNonBlankString(
+		strings.TrimSpace(note),
+		bundle.LifecycleNote,
+		bundle.CancelReason,
+		bundle.LastSummary,
+		bundle.Summary,
+	)
+	switch canonicalTaskNodeStatus(bundle.Status) {
+	case "running":
+		if canonicalTaskNodeStatus(node.Status) != "completed" {
+			s.SetPlanNodeLifecycle(ownerNodeID, "in_progress", lifecycleNote)
+		}
+	case "completed":
+		if shouldAutoCompleteBackgroundBundleOwner(bundle, node) {
+			s.SetPlanNodeLifecycle(ownerNodeID, "completed", lifecycleNote)
+		}
+	case "failed":
+		if canonicalTaskNodeStatus(node.Status) != "completed" {
+			s.SetPlanNodeLifecycle(ownerNodeID, "blocked", lifecycleNote)
+		}
+	case "stale", "superseded", "canceled", "preempted":
+		if canonicalTaskNodeStatus(node.Status) != "completed" {
+			s.SetPlanNodeLifecycle(ownerNodeID, "pending", lifecycleNote)
+		}
+	}
+}
+
+func shouldAutoCompleteBackgroundBundleOwner(bundle BackgroundShellBundle, node TaskNode) bool {
+	if bundle.VerificationLike {
+		return true
+	}
+	switch strings.TrimSpace(strings.ToLower(node.Kind)) {
+	case "verification":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Session) ReadyTaskGraphNodes(limit int) []TaskNode {
@@ -985,11 +1307,39 @@ func (s *Session) RecordTaskGraphMicroWorkerBrief(nodeID string, brief string) {
 	s.TaskGraph.RecordMicroWorkerBrief(nodeID, brief)
 }
 
+func (s *Session) RecordTaskGraphSpecialistAssignment(nodeID string, specialist string, reason string) {
+	if s == nil || s.TaskGraph == nil {
+		return
+	}
+	s.TaskGraph.RecordSpecialistAssignment(nodeID, specialist, reason)
+}
+
+func (s *Session) RecordTaskGraphEditableAssignment(nodeID string, specialist string, reason string, ownership []string, worktreeRoot string, worktreeBranch string) {
+	if s == nil || s.TaskGraph == nil {
+		return
+	}
+	s.TaskGraph.RecordEditableAssignment(nodeID, specialist, reason, ownership, worktreeRoot, worktreeBranch)
+}
+
+func (s *Session) RecordTaskGraphEditableLease(nodeID string, leasePaths []string, reason string) {
+	if s == nil || s.TaskGraph == nil {
+		return
+	}
+	s.TaskGraph.RecordEditableLease(nodeID, leasePaths, reason)
+}
+
 func (s *Session) RecordTaskGraphReadOnlyWorkerEvidence(nodeID string, toolName string, summary string) {
 	if s == nil || s.TaskGraph == nil {
 		return
 	}
 	s.TaskGraph.RecordReadOnlyWorkerEvidence(nodeID, toolName, summary)
+}
+
+func (s *Session) RecordTaskGraphEditableWorkerEvidence(nodeID string, summary string) {
+	if s == nil || s.TaskGraph == nil {
+		return
+	}
+	s.TaskGraph.RecordEditableWorkerEvidence(nodeID, summary)
 }
 
 func (s *Session) RecordPlanNodeFailure(nodeID string, toolName string, detail string) bool {

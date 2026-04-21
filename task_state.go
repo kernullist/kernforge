@@ -78,8 +78,10 @@ type BackgroundShellBundle struct {
 	CommandSummaries  []string  `json:"command_summaries,omitempty"`
 	JobIDs            []string  `json:"job_ids,omitempty"`
 	OwnerNodeID       string    `json:"owner_node_id,omitempty"`
+	OwnerLeasePaths   []string  `json:"owner_lease_paths,omitempty"`
 	Status            string    `json:"status,omitempty"`
 	LastSummary       string    `json:"last_summary,omitempty"`
+	VerificationLike  bool      `json:"verification_like,omitempty"`
 	SupersededBy      string    `json:"superseded_by,omitempty"`
 	LifecycleNote     string    `json:"lifecycle_note,omitempty"`
 	CancelReason      string    `json:"cancel_reason,omitempty"`
@@ -778,6 +780,7 @@ func (b *BackgroundShellBundle) Normalize() {
 	b.ID = strings.TrimSpace(b.ID)
 	b.Summary = strings.TrimSpace(b.Summary)
 	b.OwnerNodeID = strings.TrimSpace(b.OwnerNodeID)
+	b.OwnerLeasePaths = normalizeTaskStateList(b.OwnerLeasePaths, 32)
 	b.Status = strings.TrimSpace(strings.ToLower(b.Status))
 	if b.Status == "" {
 		b.Status = "running"

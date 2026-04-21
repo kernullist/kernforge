@@ -152,14 +152,14 @@ func (rt *runtimeState) handleCheckpointCommand(args string) error {
 		}
 		name = strings.TrimSpace(value)
 	}
-	ok, err := rt.perms.Allow(ActionWrite, "create checkpoint for "+workspaceSnapshotRoot(rt.workspace))
+	ok, err := rt.perms.Allow(ActionWrite, "create checkpoint for "+workspaceCheckpointRoot(rt.workspace))
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("checkpoint creation canceled")
 	}
-	meta, err := rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), name)
+	meta, err := rt.checkpoints.Create(workspaceCheckpointRoot(rt.workspace), name)
 	if err != nil {
 		return err
 	}
@@ -188,7 +188,7 @@ func (rt *runtimeState) handleCheckpointsCommand() error {
 	if rt.checkpoints == nil {
 		return fmt.Errorf("checkpoint manager is not configured")
 	}
-	items, err := rt.checkpoints.List(workspaceSnapshotRoot(rt.workspace))
+	items, err := rt.checkpoints.List(workspaceCheckpointRoot(rt.workspace))
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func (rt *runtimeState) handleCheckpointDiffCommand(args string) error {
 	if err != nil {
 		return err
 	}
-	meta, diffs, err := rt.checkpoints.Diff(workspaceSnapshotRoot(rt.workspace), target, paths)
+	meta, diffs, err := rt.checkpoints.Diff(workspaceCheckpointRoot(rt.workspace), target, paths)
 	if err != nil {
 		return err
 	}
@@ -245,7 +245,7 @@ func (rt *runtimeState) handleRollbackCommand(args string) error {
 	if err != nil {
 		return err
 	}
-	meta, _, err := rt.checkpoints.Resolve(workspaceSnapshotRoot(rt.workspace), target)
+	meta, _, err := rt.checkpoints.Resolve(workspaceCheckpointRoot(rt.workspace), target)
 	if err != nil {
 		return err
 	}
@@ -270,14 +270,14 @@ func (rt *runtimeState) handleRollbackCommand(args string) error {
 		}
 	}
 	safetyName := "pre-rollback-" + time.Now().Format("20060102-150405")
-	if safety, err := rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), safetyName); err == nil {
+	if safety, err := rt.checkpoints.Create(workspaceCheckpointRoot(rt.workspace), safetyName); err == nil {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Created safety checkpoint "+safety.ID))
 	}
 	var restored CheckpointMetadata
 	if len(paths) > 0 {
-		restored, err = rt.checkpoints.RollbackPaths(workspaceSnapshotRoot(rt.workspace), meta.ID, paths)
+		restored, err = rt.checkpoints.RollbackPaths(workspaceCheckpointRoot(rt.workspace), meta.ID, paths)
 	} else {
-		restored, err = rt.checkpoints.Rollback(workspaceSnapshotRoot(rt.workspace), meta.ID)
+		restored, err = rt.checkpoints.Rollback(workspaceCheckpointRoot(rt.workspace), meta.ID)
 	}
 	if err != nil {
 		return err
@@ -290,7 +290,7 @@ func (rt *runtimeState) handleRollbackCommand(args string) error {
 }
 
 func (rt *runtimeState) pickRollbackCheckpoint() (string, error) {
-	items, err := rt.checkpoints.List(workspaceSnapshotRoot(rt.workspace))
+	items, err := rt.checkpoints.List(workspaceCheckpointRoot(rt.workspace))
 	if err != nil {
 		return "", err
 	}

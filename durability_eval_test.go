@@ -514,11 +514,36 @@ func TestDurabilityEvalParallelReadOnlyWorkerAvoidsGitStatusForGenericStatusNode
 		Status: "ready",
 	}
 
-	plan, ok := buildParallelReadOnlyWorkerPlan(session, node)
+	plan, ok := buildParallelReadOnlyWorkerPlan(session, node, SpecialistAssignment{})
 	if !ok {
 		t.Fatalf("expected a read-only worker plan")
 	}
 	if plan.Call.Name == "git_status" {
 		t.Fatalf("expected generic status wording to avoid git_status, got %#v", plan)
+	}
+}
+
+func TestBuildParallelReadOnlyWorkerPlanUsesReadFileForEditLease(t *testing.T) {
+	session := NewSession("C:\\workspace", "provider", "model", "", "default")
+	node := TaskNode{
+		ID:                 "plan-02",
+		Title:              "Patch telemetry/provider.man and refresh schema",
+		Kind:               "edit",
+		Status:             "ready",
+		EditableLeasePaths: []string{"telemetry/provider.man"},
+	}
+
+	plan, ok := buildParallelReadOnlyWorkerPlan(session, node, SpecialistAssignment{})
+	if !ok {
+		t.Fatalf("expected a parallel warmup plan for leased edit node")
+	}
+	if plan.Call.Name != "read_file" {
+		t.Fatalf("expected read_file warmup for leased edit node, got %#v", plan)
+	}
+	if path := stringValue(toolCallArgumentsMap(plan.Call), "path"); path != "telemetry/provider.man" {
+		t.Fatalf("expected leased path in read_file plan, got %#v", plan)
+	}
+	if ownerNodeID := stringValue(toolCallArgumentsMap(plan.Call), "owner_node_id"); ownerNodeID != "plan-02" {
+		t.Fatalf("expected owner node id in warmup plan, got %#v", plan)
 	}
 }

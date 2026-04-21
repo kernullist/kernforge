@@ -787,6 +787,10 @@ func (rt *runtimeState) handleNewFeatureImplementCommand(arg string) error {
 		}
 	}
 
+	if err := rt.ensureTrackedFeatureWorktree(feature); err != nil {
+		return err
+	}
+
 	feature.Status = featureStatusImplementing
 	if err := store.Save(feature); err != nil {
 		return err

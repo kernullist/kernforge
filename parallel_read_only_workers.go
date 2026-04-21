@@ -13,9 +13,11 @@ import (
 const parallelReadOnlyWorkerCooldown = 8 * time.Second
 
 type parallelReadOnlyWorkerPlan struct {
-	Node   TaskNode
-	Call   ToolCall
-	Reason string
+	Node       TaskNode
+	Call       ToolCall
+	Reason     string
+	Specialist string
+	RouteHint  string
 }
 
 type parallelReadOnlyWorkerResult struct {
@@ -43,11 +45,17 @@ func (a *Agent) maybeRunInteractiveParallelReadOnlyWorkers(ctx context.Context, 
 	if len(candidates) == 0 {
 		return nil
 	}
+	updated := false
 	plans := make([]parallelReadOnlyWorkerPlan, 0, len(candidates))
 	for _, node := range candidates {
-		plan, ok := buildParallelReadOnlyWorkerPlan(a.Session, node)
+		assignment, hasAssignment := selectSpecialistForTaskNode(a.Config, node, a.Session.TaskState, trigger, true)
+		plan, ok := buildParallelReadOnlyWorkerPlan(a.Session, node, assignment)
 		if !ok {
 			continue
+		}
+		if hasAssignment {
+			a.Session.RecordTaskGraphSpecialistAssignment(node.ID, assignment.Profile.Name, assignment.Reason)
+			updated = true
 		}
 		plans = append(plans, plan)
 	}
@@ -56,7 +64,6 @@ func (a *Agent) maybeRunInteractiveParallelReadOnlyWorkers(ctx context.Context, 
 	}
 
 	state := a.Session.EnsureTaskState()
-	updated := false
 	for _, plan := range plans {
 		state.RecordEvent("parallel_worker_start", plan.Node.ID, plan.Call.Name, "Parallel read-only worker started for "+plan.Node.Title, plan.Reason, "started", false)
 		updated = true
@@ -145,7 +152,7 @@ func taskNodeEligibleForParallelReadOnlyWorker(node TaskNode) bool {
 	return true
 }
 
-func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode) (parallelReadOnlyWorkerPlan, bool) {
+func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode, assignment SpecialistAssignment) (parallelReadOnlyWorkerPlan, bool) {
 	makePlan := func(toolName string, args map[string]any, reason string) (parallelReadOnlyWorkerPlan, bool) {
 		payload := cloneMetaMap(args)
 		payload["owner_node_id"] = node.ID
@@ -159,7 +166,9 @@ func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode) (parallelR
 				Name:      toolName,
 				Arguments: string(raw),
 			},
-			Reason: reason,
+			Reason:     reason,
+			Specialist: strings.TrimSpace(assignment.Profile.Name),
+			RouteHint:  strings.TrimSpace(assignment.Reason),
 		}, true
 	}
 
@@ -172,6 +181,9 @@ func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode) (parallelR
 		return makePlan("check_shell_job", map[string]any{
 			"job_id": jobID,
 		}, "Poll the linked background job to gather the latest evidence for this node.")
+	}
+	if plan, ok := buildParallelEditableWarmupPlan(node, assignment, makePlan); ok {
+		return plan, true
 	}
 
 	text := strings.ToLower(strings.Join([]string{
@@ -187,7 +199,7 @@ func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode) (parallelR
 		return makePlan("git_status", map[string]any{}, "Inspect the current git status for this secondary node.")
 	}
 
-	if pattern := buildParallelReadOnlyWorkerSearchPattern(node); pattern != "" {
+	if pattern := buildParallelReadOnlyWorkerSearchPattern(node, assignment.Profile.Keywords); pattern != "" {
 		return makePlan("grep", map[string]any{
 			"pattern":     pattern,
 			"max_results": 20,
@@ -199,6 +211,37 @@ func buildParallelReadOnlyWorkerPlan(session *Session, node TaskNode) (parallelR
 		"recursive":   false,
 		"max_entries": 40,
 	}, "Scan a small directory slice so the executor has current file-level context for this node.")
+}
+
+func buildParallelEditableWarmupPlan(node TaskNode, assignment SpecialistAssignment, makePlan func(string, map[string]any, string) (parallelReadOnlyWorkerPlan, bool)) (parallelReadOnlyWorkerPlan, bool) {
+	if !strings.EqualFold(strings.TrimSpace(node.Kind), "edit") {
+		return parallelReadOnlyWorkerPlan{}, false
+	}
+	lease := bestEffortParallelEditableLeasePaths(node)
+	if len(lease) == 0 {
+		return parallelReadOnlyWorkerPlan{}, false
+	}
+	if concretePath := firstConcreteEditableLeasePath(lease); concretePath != "" {
+		return makePlan("read_file", map[string]any{
+			"path": concretePath,
+		}, "Inspect the leased edit file so the secondary edit node stays scoped to its ownership boundary.")
+	}
+	baseDir := firstEditableLeaseBaseDir(lease)
+	if baseDir == "" {
+		return parallelReadOnlyWorkerPlan{}, false
+	}
+	if pattern := buildParallelReadOnlyWorkerSearchPattern(node, assignment.Profile.Keywords); pattern != "" {
+		return makePlan("grep", map[string]any{
+			"pattern":     pattern,
+			"path":        baseDir,
+			"max_results": 20,
+		}, "Search only inside the leased edit scope so this secondary edit node stays warm without crossing ownership boundaries.")
+	}
+	return makePlan("list_files", map[string]any{
+		"path":        baseDir,
+		"recursive":   true,
+		"max_entries": 40,
+	}, "List files inside the leased edit scope so the executor can prepare the secondary edit lane safely.")
 }
 
 func preferredBundleForParallelWorker(session *Session, node TaskNode) string {
@@ -235,13 +278,21 @@ func preferredJobForParallelWorker(session *Session, node TaskNode) string {
 	return ""
 }
 
-func buildParallelReadOnlyWorkerSearchPattern(node TaskNode) string {
+func buildParallelReadOnlyWorkerSearchPattern(node TaskNode, specialistKeywords []string) string {
 	terms := extractParallelReadOnlyWorkerTerms(strings.Join([]string{
 		node.Title,
 		node.LifecycleNote,
 		node.MicroWorkerBrief,
 		node.LastFailure,
 	}, " "))
+	for _, keyword := range specialistKeywords {
+		trimmed := strings.TrimSpace(keyword)
+		if trimmed == "" {
+			continue
+		}
+		terms = append(terms, trimmed)
+	}
+	terms = uniqueStrings(terms)
 	if len(terms) == 0 {
 		return ""
 	}
