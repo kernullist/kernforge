@@ -28,44 +28,73 @@ type PlanReviewConfig struct {
 	APIKey   string `json:"api_key,omitempty"`
 }
 
+type SpecialistSubagentProfile struct {
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	Prompt         string   `json:"prompt,omitempty"`
+	Provider       string   `json:"provider,omitempty"`
+	Model          string   `json:"model,omitempty"`
+	BaseURL        string   `json:"base_url,omitempty"`
+	APIKey         string   `json:"api_key,omitempty"`
+	NodeKinds      []string `json:"node_kinds,omitempty"`
+	Keywords       []string `json:"keywords,omitempty"`
+	ReadOnly       *bool    `json:"read_only,omitempty"`
+	Editable       *bool    `json:"editable,omitempty"`
+	OwnershipPaths []string `json:"ownership_paths,omitempty"`
+}
+
+type SpecialistSubagentsConfig struct {
+	Enabled  *bool                       `json:"enabled,omitempty"`
+	Profiles []SpecialistSubagentProfile `json:"profiles,omitempty"`
+}
+
+type WorktreeIsolationConfig struct {
+	Enabled                *bool  `json:"enabled,omitempty"`
+	RootDir                string `json:"root_dir,omitempty"`
+	BranchPrefix           string `json:"branch_prefix,omitempty"`
+	AutoForTrackedFeatures *bool  `json:"auto_for_tracked_features,omitempty"`
+}
+
 type Config struct {
-	Provider            string                `json:"provider"`
-	Model               string                `json:"model"`
-	BaseURL             string                `json:"base_url"`
-	APIKey              string                `json:"api_key"`
-	ProviderKeys        map[string]string     `json:"provider_keys,omitempty"`
-	Temperature         float64               `json:"temperature"`
-	MaxTokens           int                   `json:"max_tokens"`
-	MaxToolIterations   int                   `json:"max_tool_iterations"`
-	MaxRequestRetries   int                   `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs int                   `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs  int                   `json:"request_timeout_seconds,omitempty"`
-	ShellTimeoutSecs    int                   `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans       int                   `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries    int                   `json:"read_cache_entries,omitempty"`
-	MSBuildPath         string                `json:"msbuild_path,omitempty"`
-	CMakePath           string                `json:"cmake_path,omitempty"`
-	CTestPath           string                `json:"ctest_path,omitempty"`
-	NinjaPath           string                `json:"ninja_path,omitempty"`
-	Command             string                `json:"command,omitempty"`
-	PermissionMode      string                `json:"permission_mode"`
-	Shell               string                `json:"shell"`
-	SessionDir          string                `json:"session_dir"`
-	AutoCompactChars    int                   `json:"auto_compact_chars"`
-	AutoCheckpointEdits *bool                 `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify          *bool                 `json:"auto_verify,omitempty"`
-	AutoLocale          *bool                 `json:"auto_locale,omitempty"`
-	HooksEnabled        *bool                 `json:"hooks_enabled,omitempty"`
-	HookPresets         []string              `json:"hook_presets,omitempty"`
-	HooksFailClosed     *bool                 `json:"hooks_fail_closed,omitempty"`
-	MemoryFiles         []string              `json:"memory_files"`
-	SkillPaths          []string              `json:"skill_paths,omitempty"`
-	EnabledSkills       []string              `json:"enabled_skills,omitempty"`
-	MCPServers          []MCPServerConfig     `json:"mcp_servers,omitempty"`
-	Profiles            []Profile             `json:"profiles,omitempty"`
-	ProjectAnalysis     ProjectAnalysisConfig `json:"project_analysis,omitempty"`
-	PlanReview          *PlanReviewConfig     `json:"plan_review,omitempty"`
-	ReviewProfiles      []Profile             `json:"review_profiles,omitempty"`
+	Provider            string                    `json:"provider"`
+	Model               string                    `json:"model"`
+	BaseURL             string                    `json:"base_url"`
+	APIKey              string                    `json:"api_key"`
+	ProviderKeys        map[string]string         `json:"provider_keys,omitempty"`
+	Temperature         float64                   `json:"temperature"`
+	MaxTokens           int                       `json:"max_tokens"`
+	MaxToolIterations   int                       `json:"max_tool_iterations"`
+	MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
+	ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
+	MSBuildPath         string                    `json:"msbuild_path,omitempty"`
+	CMakePath           string                    `json:"cmake_path,omitempty"`
+	CTestPath           string                    `json:"ctest_path,omitempty"`
+	NinjaPath           string                    `json:"ninja_path,omitempty"`
+	Command             string                    `json:"command,omitempty"`
+	PermissionMode      string                    `json:"permission_mode"`
+	Shell               string                    `json:"shell"`
+	SessionDir          string                    `json:"session_dir"`
+	AutoCompactChars    int                       `json:"auto_compact_chars"`
+	AutoCheckpointEdits *bool                     `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify          *bool                     `json:"auto_verify,omitempty"`
+	AutoLocale          *bool                     `json:"auto_locale,omitempty"`
+	HooksEnabled        *bool                     `json:"hooks_enabled,omitempty"`
+	HookPresets         []string                  `json:"hook_presets,omitempty"`
+	HooksFailClosed     *bool                     `json:"hooks_fail_closed,omitempty"`
+	MemoryFiles         []string                  `json:"memory_files"`
+	SkillPaths          []string                  `json:"skill_paths,omitempty"`
+	EnabledSkills       []string                  `json:"enabled_skills,omitempty"`
+	MCPServers          []MCPServerConfig         `json:"mcp_servers,omitempty"`
+	Profiles            []Profile                 `json:"profiles,omitempty"`
+	ProjectAnalysis     ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
+	PlanReview          *PlanReviewConfig         `json:"plan_review,omitempty"`
+	ReviewProfiles      []Profile                 `json:"review_profiles,omitempty"`
+	Specialists         SpecialistSubagentsConfig `json:"specialists,omitempty"`
+	WorktreeIsolation   WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
 }
 
 type Profile struct {
@@ -99,6 +128,15 @@ func DefaultConfig(cwd string) Config {
 		AutoLocale:          boolPtr(true),
 		HooksEnabled:        boolPtr(true),
 		HooksFailClosed:     boolPtr(false),
+		Specialists: SpecialistSubagentsConfig{
+			Enabled: boolPtr(true),
+		},
+		WorktreeIsolation: WorktreeIsolationConfig{
+			Enabled:                boolPtr(false),
+			RootDir:                filepath.Join(userConfigDir(), "worktrees"),
+			BranchPrefix:           "kernforge/",
+			AutoForTrackedFeatures: boolPtr(true),
+		},
 	}
 }
 
@@ -356,6 +394,27 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.ReviewProfiles) > 0 {
 		dst.ReviewProfiles = append([]Profile(nil), src.ReviewProfiles...)
 	}
+	if src.Specialists.Enabled != nil {
+		value := *src.Specialists.Enabled
+		dst.Specialists.Enabled = &value
+	}
+	if len(src.Specialists.Profiles) > 0 {
+		dst.Specialists.Profiles = append([]SpecialistSubagentProfile(nil), src.Specialists.Profiles...)
+	}
+	if src.WorktreeIsolation.Enabled != nil {
+		value := *src.WorktreeIsolation.Enabled
+		dst.WorktreeIsolation.Enabled = &value
+	}
+	if strings.TrimSpace(src.WorktreeIsolation.RootDir) != "" {
+		dst.WorktreeIsolation.RootDir = src.WorktreeIsolation.RootDir
+	}
+	if strings.TrimSpace(src.WorktreeIsolation.BranchPrefix) != "" {
+		dst.WorktreeIsolation.BranchPrefix = src.WorktreeIsolation.BranchPrefix
+	}
+	if src.WorktreeIsolation.AutoForTrackedFeatures != nil {
+		value := *src.WorktreeIsolation.AutoForTrackedFeatures
+		dst.WorktreeIsolation.AutoForTrackedFeatures = &value
+	}
 }
 
 func applyEnv(cfg *Config) {
@@ -484,6 +543,28 @@ func normalizeConfigPaths(cfg *Config) {
 	}
 	for i, profile := range cfg.Profiles {
 		cfg.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	}
+	for i, profile := range cfg.Specialists.Profiles {
+		cfg.Specialists.Profiles[i].Name = strings.TrimSpace(profile.Name)
+		cfg.Specialists.Profiles[i].Description = strings.TrimSpace(profile.Description)
+		cfg.Specialists.Profiles[i].Prompt = strings.TrimSpace(profile.Prompt)
+		cfg.Specialists.Profiles[i].Provider = strings.TrimSpace(profile.Provider)
+		cfg.Specialists.Profiles[i].Model = strings.TrimSpace(profile.Model)
+		cfg.Specialists.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		cfg.Specialists.Profiles[i].APIKey = strings.TrimSpace(profile.APIKey)
+		cfg.Specialists.Profiles[i].NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
+		cfg.Specialists.Profiles[i].Keywords = normalizeTaskStateList(profile.Keywords, 32)
+		cfg.Specialists.Profiles[i].OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)
+	}
+	if strings.TrimSpace(cfg.WorktreeIsolation.RootDir) != "" {
+		cfg.WorktreeIsolation.RootDir = expandHome(cfg.WorktreeIsolation.RootDir)
+	}
+	if strings.TrimSpace(cfg.WorktreeIsolation.RootDir) == "" {
+		cfg.WorktreeIsolation.RootDir = filepath.Join(userConfigDir(), "worktrees")
+	}
+	cfg.WorktreeIsolation.BranchPrefix = strings.TrimSpace(cfg.WorktreeIsolation.BranchPrefix)
+	if cfg.WorktreeIsolation.BranchPrefix == "" {
+		cfg.WorktreeIsolation.BranchPrefix = "kernforge/"
 	}
 }
 
@@ -725,6 +806,43 @@ func configAutoLocale(cfg Config) bool {
 	return *cfg.AutoLocale
 }
 
+func configSpecialistsEnabled(cfg Config) bool {
+	if cfg.Specialists.Enabled == nil {
+		return true
+	}
+	return *cfg.Specialists.Enabled
+}
+
+func configWorktreeIsolationEnabled(cfg Config) bool {
+	if cfg.WorktreeIsolation.Enabled == nil {
+		return false
+	}
+	return *cfg.WorktreeIsolation.Enabled
+}
+
+func configWorktreeIsolationRootDir(cfg Config) string {
+	root := strings.TrimSpace(cfg.WorktreeIsolation.RootDir)
+	if root == "" {
+		return filepath.Join(userConfigDir(), "worktrees")
+	}
+	return root
+}
+
+func configWorktreeIsolationBranchPrefix(cfg Config) string {
+	prefix := strings.TrimSpace(cfg.WorktreeIsolation.BranchPrefix)
+	if prefix == "" {
+		return "kernforge/"
+	}
+	return prefix
+}
+
+func configWorktreeIsolationAutoForTrackedFeatures(cfg Config) bool {
+	if cfg.WorktreeIsolation.AutoForTrackedFeatures == nil {
+		return true
+	}
+	return *cfg.WorktreeIsolation.AutoForTrackedFeatures
+}
+
 func parseBoolString(value string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "on", "yes", "y":
@@ -866,23 +984,25 @@ func InitMemoryTemplate(projectName string) string {
 func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 	webResearchServer := defaultWebResearchMCPServer(workspaceRoot)
 	sample := struct {
-		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
-		AutoVerify          *bool             `json:"auto_verify,omitempty"`
-		MaxRequestRetries   int               `json:"max_request_retries,omitempty"`
-		RequestRetryDelayMs int               `json:"request_retry_delay_ms,omitempty"`
-		RequestTimeoutSecs  int               `json:"request_timeout_seconds,omitempty"`
-		ShellTimeoutSecs    int               `json:"shell_timeout_seconds,omitempty"`
-		ReadHintSpans       int               `json:"read_hint_spans,omitempty"`
-		ReadCacheEntries    int               `json:"read_cache_entries,omitempty"`
-		MSBuildPath         string            `json:"msbuild_path,omitempty"`
-		CMakePath           string            `json:"cmake_path,omitempty"`
-		CTestPath           string            `json:"ctest_path,omitempty"`
-		NinjaPath           string            `json:"ninja_path,omitempty"`
-		HooksEnabled        *bool             `json:"hooks_enabled,omitempty"`
-		HookPresets         []string          `json:"hook_presets,omitempty"`
-		SkillPaths          []string          `json:"skill_paths,omitempty"`
-		EnabledSkills       []string          `json:"enabled_skills,omitempty"`
-		MCPServers          []MCPServerConfig `json:"mcp_servers,omitempty"`
+		AutoCheckpointEdits *bool                     `json:"auto_checkpoint_edits,omitempty"`
+		AutoVerify          *bool                     `json:"auto_verify,omitempty"`
+		MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
+		RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
+		RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
+		ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
+		ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
+		ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
+		MSBuildPath         string                    `json:"msbuild_path,omitempty"`
+		CMakePath           string                    `json:"cmake_path,omitempty"`
+		CTestPath           string                    `json:"ctest_path,omitempty"`
+		NinjaPath           string                    `json:"ninja_path,omitempty"`
+		HooksEnabled        *bool                     `json:"hooks_enabled,omitempty"`
+		HookPresets         []string                  `json:"hook_presets,omitempty"`
+		SkillPaths          []string                  `json:"skill_paths,omitempty"`
+		EnabledSkills       []string                  `json:"enabled_skills,omitempty"`
+		MCPServers          []MCPServerConfig         `json:"mcp_servers,omitempty"`
+		Specialists         SpecialistSubagentsConfig `json:"specialists,omitempty"`
+		WorktreeIsolation   WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
 	}{
 		AutoCheckpointEdits: boolPtr(false),
 		AutoVerify:          boolPtr(true),
@@ -900,6 +1020,16 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		HookPresets:         []string{},
 		SkillPaths:          []string{"./.kernforge/skills"},
 		EnabledSkills:       []string{},
+		Specialists: SpecialistSubagentsConfig{
+			Enabled:  boolPtr(true),
+			Profiles: []SpecialistSubagentProfile{},
+		},
+		WorktreeIsolation: WorktreeIsolationConfig{
+			Enabled:                boolPtr(false),
+			RootDir:                filepath.Join("~", userConfigDirName, "worktrees"),
+			BranchPrefix:           "kernforge/",
+			AutoForTrackedFeatures: boolPtr(true),
+		},
 		MCPServers: []MCPServerConfig{
 			{
 				Name:     "example",
@@ -1258,8 +1388,10 @@ Provider And Models:
 /new-feature <task>    Create tracked feature artifacts and generate spec/plan/tasks
 /analyze-project [--mode map|trace|impact|security|performance] <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
 /analyze-performance [focus] Analyze likely performance bottlenecks using the latest architecture knowledge pack
+/specialists           Show specialist profiles plus editable ownership and worktree routing state
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
-/model [name]          Show or change the active model
+/set-specialist-model  Configure the provider/model used by a specialist subagent
+/model                 Show all model routing and interactively reconfigure one target
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
 /set-max-tool-iterations <n> Set the maximum tool iteration count per request
 /profile               Show recent provider/model profiles and switch to one
@@ -1344,6 +1476,7 @@ Workspace Setup:
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
 /locale-auto [on|off]  Show or change automatic locale insertion in prompts
+/worktree [subcommand] Manage isolated git worktrees for tracked implementation
 
 MCP And Skills:
 /mcp                   Show configured MCP servers and tool status
@@ -1442,12 +1575,13 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "analyze-project", "analyze-performance":
+	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
-/model [name]
-- Show the active model or switch to a new one.
+/model
+- Show all current model routing at once, including the main model, plan-review reviewer, analysis models, and specialist subagent models.
+- In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
@@ -1504,10 +1638,27 @@ Provider and model commands control which model is active and how planning/revie
 - Load the latest architecture knowledge pack and performance lens, then analyze likely bottlenecks and hot paths.
 - Add an optional focus such as startup, ETW, scanner, compression, upload, or memory.
 
+/specialists
+- Show the effective specialist catalog plus editable ownership and specialist worktree state for the current session.
+
+/specialists status
+- Show the same catalog explicitly, including active editable specialist assignments and worktree leases.
+
+/specialists assign <node-id> <specialist> [glob,glob2]
+- Bind one task-graph node to an editable specialist, optionally override its ownership globs, and ensure that specialist has an isolated worktree lease.
+
+/specialists cleanup <specialist|all>
+- Remove one specialist worktree or all recorded specialist worktrees after verifying they are clean.
+
 /set-analysis-models
 - Configure dedicated worker and reviewer models used by /analyze-project.
 - Use /set-analysis-models status to show the current analysis model configuration.
 - Use /set-analysis-models clear to reset worker and reviewer to the main active model.
+
+/set-specialist-model
+- Configure the provider/model used by a specific specialist subagent.
+- Use /set-specialist-model status to show effective specialist model routing.
+- Use /set-specialist-model <specialist> <provider> [model] to set an override, or /set-specialist-model clear <specialist|all> to remove overrides.
 `), true
 	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path":
 		return strings.TrimSpace(`
@@ -1734,7 +1885,7 @@ Selection and review commands let you work on a focused code region instead of t
 /edit-selection <task>
 - Run an edit-focused prompt scoped to the active selection.
 `), true
-	case "init", "workspace", "workspace-setup", "locale-auto":
+	case "init", "workspace", "workspace-setup", "locale-auto", "worktree":
 		return strings.TrimSpace(`
 Workspace setup commands generate starter files and adjust workspace-level behavior.
 
@@ -1758,6 +1909,22 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 
 /locale-auto [on|off]
 - Show or change automatic locale insertion in prompts.
+
+/worktree
+- Show the current worktree isolation status for this session.
+
+/worktree status
+- Show the base workspace root, active root, configured worktree root directory, and any attached isolated worktree metadata.
+
+/worktree create [name]
+- Create and attach an isolated git worktree rooted under the configured worktree isolation root.
+- The optional name influences the branch and directory slug.
+
+/worktree leave
+- Detach from the current isolated worktree and return the session to the base workspace root without deleting the worktree.
+
+/worktree cleanup
+- Remove the managed isolated worktree after verifying it has no uncommitted changes, then return the session to the base workspace root.
 `), true
 	case "mcp", "resource", "resources", "prompt", "prompts", "skills":
 		return strings.TrimSpace(`

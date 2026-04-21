@@ -27,14 +27,22 @@ func (c *AutoCheckpointController) Clear() {
 }
 
 func (c *AutoCheckpointController) Prepare(reason string) (*CheckpointMetadata, error) {
+	return c.PrepareAtWorkspace(reason, "")
+}
+
+func (c *AutoCheckpointController) PrepareAtWorkspace(reason string, workspace string) (*CheckpointMetadata, error) {
 	if c == nil || c.Manager == nil || !c.Enabled || !c.Pending {
 		return nil, nil
+	}
+	targetWorkspace := strings.TrimSpace(workspace)
+	if targetWorkspace == "" {
+		targetWorkspace = c.Workspace
 	}
 	name := "auto-before-edit-" + time.Now().Format("20060102-150405")
 	if strings.TrimSpace(reason) != "" {
 		name += " " + compactPersistentMemoryText(reason, 80)
 	}
-	meta, err := c.Manager.Create(c.Workspace, name)
+	meta, err := c.Manager.Create(targetWorkspace, name)
 	if err != nil {
 		return nil, err
 	}

@@ -191,13 +191,12 @@ func run(args []string) error {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}
 
-	mem, err := LoadMemory(cwd, cfg.MemoryFiles)
+	store := NewSessionStore(cfg.SessionDir)
+	sess, err := loadOrCreateSession(store, resumeFlag, cwd, cfg)
 	if err != nil {
 		return err
 	}
-
-	store := NewSessionStore(cfg.SessionDir)
-	sess, err := loadOrCreateSession(store, resumeFlag, cwd, cfg)
+	mem, err := LoadMemory(sessionBaseWorkingDir(sess), cfg.MemoryFiles)
 	if err != nil {
 		return err
 	}
@@ -234,9 +233,9 @@ func run(args []string) error {
 	}
 
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
-	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(cwd, userConfigDirName, "jobs"), sess, store)
+	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
 	rt.workspace = Workspace{
-		BaseRoot:              cwd,
+		BaseRoot:              sessionBaseWorkingDir(sess),
 		Root:                  sess.WorkingDir,
 		Shell:                 cfg.Shell,
 		ShellTimeout:          configShellTimeout(cfg),
@@ -245,6 +244,7 @@ func run(args []string) error {
 		VerificationToolPaths: buildVerificationToolPaths(cfg),
 		Perms:                 rt.perms,
 		PrepareEdit:           rt.prepareEdit,
+		PrepareEditAtRoot:     rt.prepareEditAtRoot,
 		ReportProgress: func(message string) {
 			rt.setThinkingStatus(message)
 			rt.printProgressMessage(message)
@@ -263,6 +263,7 @@ func run(args []string) error {
 		RunHook:        rt.runHook,
 		BackgroundJobs: rt.backgroundJobs,
 	}
+	rt.syncWorkspaceFromSession()
 	if err := rt.ensureConfigured(); err != nil {
 		return err
 	}
@@ -320,7 +321,8 @@ func loadOrCreateSession(store *SessionStore, resumeID, cwd string, cfg Config) 
 	if err != nil {
 		return nil, err
 	}
-	if wsSelections, loadErr := LoadWorkspaceSelections(sess.WorkingDir); loadErr == nil && len(wsSelections) > 0 {
+	sess.normalizeWorkingDirState()
+	if wsSelections, loadErr := LoadWorkspaceSelections(sessionBaseWorkingDir(sess)); loadErr == nil && len(wsSelections) > 0 {
 		for _, wSel := range wsSelections {
 			sess.AddSelection(wSel)
 		}
@@ -545,6 +547,9 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 			lines = append(lines, rt.ui.hintLine("Active workspace root: "+rt.session.WorkingDir))
 			if rejectedPath != "" {
 				lines = append(lines, rt.ui.hintLine("Rejected target path: "+rejectedPath))
+			}
+			if strings.Contains(strings.ToLower(text), "editable ownership") {
+				lines = append(lines, rt.ui.hintLine("The routed specialist owns only a limited file scope. Pick a path that matches its ownership globs, or reassign the node with /specialists assign before editing."))
 			}
 			lines = append(lines, rt.ui.hintLine("Re-read the file from the exact same path before editing again, and avoid crossing into a different worktree."))
 		}
@@ -1500,11 +1505,9 @@ func (rt *runtimeState) changeDirectory(pathArg string) error {
 	}
 	rt.workspace.Root = resolved
 	rt.session.WorkingDir = resolved
-	rt.agent.Session.WorkingDir = resolved
-	rt.reloadExtensions()
-	rt.agent.Workspace = rt.workspace
-	rt.memory, _ = LoadMemory(resolved, rt.cfg.MemoryFiles)
-	rt.agent.Memory = rt.memory
+	if err := rt.reloadSessionContext(); err != nil {
+		return err
+	}
 	if err := rt.store.Save(rt.session); err != nil {
 		return err
 	}
@@ -2793,6 +2796,58 @@ func (rt *runtimeState) handleProviderCommand(args string) error {
 	return err
 }
 
+func (rt *runtimeState) handleModelCommand(args string) error {
+	if strings.TrimSpace(args) != "" {
+		return fmt.Errorf("usage: /model")
+	}
+	if err := rt.showModelRoutingStatus(); err != nil {
+		return err
+	}
+	if !rt.interactive {
+		return nil
+	}
+
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.section("Change Model"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  1. main session model"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  2. plan-review reviewer"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis worker"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  4. analysis reviewer"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  5. specialist subagent"))
+
+	choice, err := rt.promptValue("Select model target", "1")
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return rt.applyModelHubChoice(choice)
+}
+
+func (rt *runtimeState) applyModelHubChoice(choice string) error {
+	selection := strings.ToLower(strings.TrimSpace(choice))
+	var err error
+	switch selection {
+	case "", "1", "main", "main session", "main session model":
+		err = rt.handleProviderCommand("")
+	case "2", "plan", "plan-review", "plan reviewer", "plan-review reviewer":
+		err = rt.handleSetPlanReviewCommand("")
+	case "3", "analysis worker", "worker":
+		err = rt.configureProjectAnalysisRoleInteractive("worker", "")
+	case "4", "analysis reviewer", "reviewer":
+		err = rt.configureProjectAnalysisRoleInteractive("reviewer", "")
+	case "5", "specialist", "specialist subagent", "subagent":
+		err = rt.handleSetSpecialistModelCommand("")
+	default:
+		return fmt.Errorf("unknown model target: %s", choice)
+	}
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	return err
+}
+
 func (rt *runtimeState) handleOpenCommand(pathArg string) error {
 	if strings.TrimSpace(pathArg) == "" {
 		return fmt.Errorf("usage: /open <path>")
@@ -2851,6 +2906,71 @@ func (rt *runtimeState) showProviderStatus() error {
 		rt.printProviderBudgetStatus(provider, base, apiKey)
 	}
 	return nil
+}
+
+func (rt *runtimeState) showModelRoutingStatus() error {
+	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
+	fmt.Fprintln(rt.writer, rt.ui.section("Model Routing"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelLabel(mainProvider, mainModel)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", rt.describePlanReviewModel()))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
+	profiles := configuredSpecialistProfiles(rt.cfg)
+	if len(profiles) == 0 {
+		return nil
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Specialist Subagents"))
+	columnWidth := specialistStatusColumnWidth(profiles)
+	for _, profile := range profiles {
+		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(profile.Name, rt.describeSpecialistModel(profile), columnWidth))
+	}
+	return nil
+}
+
+func specialistStatusColumnWidth(profiles []SpecialistSubagentProfile) int {
+	width := 25
+	for _, profile := range profiles {
+		labelWidth := visibleLen(strings.TrimSpace(profile.Name)) + 1
+		if labelWidth > width {
+			width = labelWidth
+		}
+	}
+	return width
+}
+
+func formatProviderModelLabel(provider string, model string) string {
+	return valueOrUnset(strings.TrimSpace(provider)) + " / " + valueOrUnset(strings.TrimSpace(model))
+}
+
+func (rt *runtimeState) describePlanReviewModel() string {
+	if rt != nil && rt.cfg.PlanReview != nil {
+		return formatProviderModelLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model)
+	}
+	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
+	return formatProviderModelLabel(mainProvider, mainModel) + " (uses main model)"
+}
+
+func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
+	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
+	mainLabel := formatProviderModelLabel(mainProvider, mainModel)
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "worker":
+		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)
+		}
+		return mainLabel + " (uses main model)"
+	case "reviewer":
+		if rt != nil && rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model)
+		}
+		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model) + " (inherits worker model)"
+		}
+		return mainLabel + " (uses main model)"
+	default:
+		return mainLabel
+	}
 }
 
 func (rt *runtimeState) currentProviderStatus() (string, string, string, string) {
@@ -3393,9 +3513,18 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Workspace",
 			kv("cwd", rt.session.WorkingDir),
+			kv("base_root", sessionBaseWorkingDir(rt.session)),
 			kv("session", rt.session.ID),
 			kv("sessions_dir", rt.store.Root()),
 		)
+		if rt.session.Worktree != nil {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_root", valueOrUnset(rt.session.Worktree.Root)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_branch", valueOrUnset(rt.session.Worktree.Branch)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_active", fmt.Sprintf("%t", rt.session.Worktree.Active)))
+		}
+		if len(rt.session.SpecialistWorktrees) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("specialist_worktrees", fmt.Sprintf("%d", len(rt.session.SpecialistWorktrees))))
+		}
 		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
 		}
@@ -3468,18 +3597,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "version":
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()))
 	case "model":
-		if cmd.Args == "" {
-			fmt.Fprintln(rt.writer, rt.ui.infoLine("Current model: "+rt.session.Model))
-			return false, nil
-		}
-		rt.session.Model = cmd.Args
-		rt.cfg.Model = cmd.Args
-		rt.syncClientFromConfig()
-		_ = rt.store.Save(rt.session)
-		if err := rt.saveUserConfig(); err != nil {
+		if err := rt.handleModelCommand(cmd.Args); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Model set to "+cmd.Args))
 	case "permissions":
 		if cmd.Args == "" {
 			fmt.Fprintln(rt.writer, rt.ui.infoLine("Permissions: "+string(rt.perms.Mode())))
@@ -3509,6 +3629,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+fmt.Sprintf("%d", val)))
 	case "verify":
 		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "specialists":
+		if err := rt.handleSpecialistsCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "verify-dashboard":
@@ -3694,6 +3818,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "locale-auto":
 		if err := rt.handleLocaleAutoCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "worktree":
+		if err := rt.handleWorktreeCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "checkpoint-diff":
@@ -3897,17 +4025,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 		rt.session = loaded
-		rt.agent.Session = loaded
 		rt.cfg.Provider = loaded.Provider
 		rt.cfg.Model = loaded.Model
 		rt.cfg.BaseURL = loaded.BaseURL
-		rt.workspace.Root = loaded.WorkingDir
-		rt.memory, _ = LoadMemory(loaded.WorkingDir, rt.cfg.MemoryFiles)
-		rt.agent.Memory = rt.memory
-		rt.reloadExtensions()
-		rt.agent.Workspace = rt.workspace
-		rt.syncClientFromConfig()
 		rt.perms.SetMode(ParseMode(loaded.PermissionMode))
+		if err := rt.reloadSessionContext(); err != nil {
+			return false, err
+		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Resumed %s (%s)", loaded.ID, loaded.Name)))
 	case "rename":
 		if cmd.Args == "" {
@@ -4022,6 +4146,18 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())),
 		)
 		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Specialists",
+			kv("enabled", fmt.Sprintf("%t", configSpecialistsEnabled(rt.cfg))),
+			kv("profiles", fmt.Sprintf("%d", len(configuredSpecialistProfiles(rt.cfg)))),
+		)
+		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Worktree Isolation",
+			kv("enabled", fmt.Sprintf("%t", configWorktreeIsolationEnabled(rt.cfg))),
+			kv("root_dir", configWorktreeIsolationRootDir(rt.cfg)),
+			kv("branch_prefix", configWorktreeIsolationBranchPrefix(rt.cfg)),
+			kv("auto_for_tracked_features", fmt.Sprintf("%t", configWorktreeIsolationAutoForTrackedFeatures(rt.cfg))),
+		)
+		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Tool Paths",
 			kv("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)),
 			kv("cmake_path", valueOrUnset(rt.cfg.CMakePath)),
@@ -4050,6 +4186,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "set-analysis-models":
 		if err := rt.handleSetAnalysisModelsCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "set-specialist-model":
+		if err := rt.handleSetSpecialistModelCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "do-plan-review":
@@ -4712,6 +4852,68 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 	return err
 }
 
+func (rt *runtimeState) handleSetSpecialistModelCommand(args string) error {
+	parts := strings.Fields(args)
+	if len(parts) > 0 {
+		switch strings.ToLower(strings.TrimSpace(parts[0])) {
+		case "status":
+			name := ""
+			if len(parts) > 1 {
+				name = parts[1]
+			}
+			return rt.showSpecialistModelStatus(name)
+		case "clear", "reset":
+			if len(parts) < 2 {
+				return fmt.Errorf("usage: /set-specialist-model clear <specialist|all>")
+			}
+			return rt.clearSpecialistModelOverride(parts[1])
+		default:
+			name := parts[0]
+			provider := ""
+			if len(parts) > 1 {
+				provider = parts[1]
+			}
+			model := ""
+			if len(parts) > 2 {
+				model = strings.Join(parts[2:], " ")
+			}
+			err := rt.configureSpecialistModelInteractive(name, provider, model)
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		}
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.section("Set Specialist Model"))
+	if err := rt.showSpecialistModelStatus(""); err != nil {
+		return err
+	}
+	names := rt.allSpecialistNames()
+	if len(names) == 0 {
+		return fmt.Errorf("no specialist profiles are configured")
+	}
+	for idx, name := range names {
+		fmt.Fprintln(rt.writer, rt.ui.info(fmt.Sprintf("  %d. %s", idx+1, name)))
+	}
+	choice, err := rt.promptValue("Select specialist", "1")
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	selected, err := rt.resolveSpecialistChoice(choice, names)
+	if err != nil {
+		return err
+	}
+	err = rt.configureSpecialistModelInteractive(selected, "", "")
+	if errors.Is(err, ErrPromptCanceled) {
+		return nil
+	}
+	return err
+}
+
 func parsePlanItemsFromText(plan string) []PlanItem {
 	plan = strings.ReplaceAll(plan, "\r\n", "\n")
 	plan = strings.TrimSpace(plan)
@@ -4780,6 +4982,179 @@ func (rt *runtimeState) showProjectAnalysisModelStatus() error {
 	incrementalEnabled := rt.cfg.ProjectAnalysis.Incremental == nil || *rt.cfg.ProjectAnalysis.Incremental
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
 	return nil
+}
+
+func (rt *runtimeState) showSpecialistModelStatus(name string) error {
+	fmt.Fprintln(rt.writer, rt.ui.section("Specialist Models"))
+	target := normalizeSpecialistProfileName(name)
+	selected := make([]SpecialistSubagentProfile, 0, len(configuredSpecialistProfiles(rt.cfg)))
+	for _, profile := range configuredSpecialistProfiles(rt.cfg) {
+		if target != "" && normalizeSpecialistProfileName(profile.Name) != target {
+			continue
+		}
+		selected = append(selected, profile)
+	}
+	if target != "" && len(selected) == 0 {
+		return fmt.Errorf("unknown specialist profile: %s", name)
+	}
+	columnWidth := specialistStatusColumnWidth(selected)
+	for _, profile := range selected {
+		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(profile.Name, rt.describeSpecialistModel(profile), columnWidth))
+	}
+	return nil
+}
+
+func (rt *runtimeState) describeSpecialistModel(profile SpecialistSubagentProfile) string {
+	cfg := Config{}
+	if rt != nil {
+		cfg = rt.cfg
+	}
+	provider := firstNonBlankString(profile.Provider, cfg.Provider)
+	if provider == "" && rt != nil && rt.session != nil {
+		provider = strings.TrimSpace(rt.session.Provider)
+	}
+	model := firstNonBlankString(profile.Model, cfg.Model)
+	if model == "" && rt != nil && rt.session != nil {
+		model = strings.TrimSpace(rt.session.Model)
+	}
+	if provider == "" || model == "" {
+		return "interactive reviewer fallback"
+	}
+	value := provider + " / " + model
+	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
+		value += " (inherits main model)"
+	}
+	return value
+}
+
+func (rt *runtimeState) configureSpecialistModelInteractive(name string, providerArg string, modelArg string) error {
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, name)
+	if !ok {
+		return fmt.Errorf("unknown specialist profile: %s", name)
+	}
+	provider := strings.ToLower(strings.TrimSpace(providerArg))
+	if provider == "" {
+		fmt.Fprintln(rt.writer, rt.ui.section("Set Specialist "+profile.Name))
+		fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
+		fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
+		defaultChoice := "1"
+		switch strings.ToLower(strings.TrimSpace(firstNonBlankString(profile.Provider, rt.cfg.Provider))) {
+		case "anthropic":
+			defaultChoice = "1"
+		case "openai", "openai-compatible":
+			defaultChoice = "2"
+		case "openrouter":
+			defaultChoice = "3"
+		case "ollama":
+			defaultChoice = "4"
+		}
+		choice, err := rt.promptValue("Select provider", defaultChoice)
+		if err != nil {
+			return err
+		}
+		switch strings.ToLower(strings.TrimSpace(choice)) {
+		case "", "1", "anthropic":
+			provider = "anthropic"
+		case "2", "openai", "openai-compatible":
+			provider = "openai"
+		case "3", "openrouter":
+			provider = "openrouter"
+		case "4", "ollama":
+			provider = "ollama"
+		default:
+			return fmt.Errorf("unknown provider: %s", choice)
+		}
+	}
+
+	nextModel := strings.TrimSpace(modelArg)
+	nextBaseURL := ""
+	nextAPIKey := ""
+	currentModel := ""
+	if strings.EqualFold(strings.TrimSpace(profile.Provider), provider) {
+		nextBaseURL = strings.TrimSpace(profile.BaseURL)
+		nextAPIKey = strings.TrimSpace(profile.APIKey)
+		currentModel = strings.TrimSpace(profile.Model)
+	}
+
+	if nextModel == "" {
+		switch provider {
+		case "ollama":
+			defaultURL := nextBaseURL
+			if strings.TrimSpace(defaultURL) == "" {
+				defaultURL = normalizeOllamaBaseURL("")
+			}
+			url, err := rt.promptValue("Ollama URL", defaultURL)
+			if err != nil {
+				return err
+			}
+			url = normalizeOllamaBaseURL(url)
+			models, normalized, fetchErr := rt.fetchAndShowOllamaModels(url)
+			if fetchErr != nil {
+				return fmt.Errorf("could not connect to Ollama server: %w", fetchErr)
+			}
+			if len(models) == 0 {
+				return fmt.Errorf("no Ollama models were returned by %s", normalized)
+			}
+			rt.ollamaModels = models
+			selected, err := rt.chooseOllamaModel(models)
+			if err != nil {
+				return err
+			}
+			nextModel = selected.Name
+			nextBaseURL = normalized
+		case "openrouter":
+			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
+			if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(provider, rt.cfg.Provider) {
+				nextAPIKey = rt.cfg.APIKey
+			}
+			if strings.TrimSpace(nextAPIKey) == "" {
+				apiKey, err := rt.promptRequiredValue(providerDisplayName(provider)+" API key (for specialist "+profile.Name+")", "")
+				if err != nil {
+					return err
+				}
+				nextAPIKey = apiKey
+			}
+			models, normalized, err := rt.fetchAndShowOpenRouterModels(nextBaseURL, nextAPIKey)
+			if err != nil {
+				return err
+			}
+			selected, err := rt.chooseOpenRouterModel(models)
+			if err != nil {
+				return err
+			}
+			nextModel = selected.ID
+			nextBaseURL = normalized
+		case "anthropic":
+			model, err := rt.chooseAnthropicModel(currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+		case "openai":
+			model, err := rt.chooseOpenAIModel(currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+		default:
+			return fmt.Errorf("unsupported provider: %s", provider)
+		}
+	} else {
+		switch provider {
+		case "ollama":
+			nextBaseURL = normalizeOllamaBaseURL(nextBaseURL)
+		case "openrouter":
+			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
+		case "anthropic", "openai":
+			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
+		default:
+			return fmt.Errorf("unsupported provider: %s", provider)
+		}
+	}
+
+	return rt.activateSpecialistModel(profile.Name, provider, nextModel, nextBaseURL, nextAPIKey)
 }
 
 func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, providerArg string) error {
@@ -4927,6 +5302,132 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s / %s", role, provider, model)))
 	return nil
+}
+
+func (rt *runtimeState) activateSpecialistModel(name string, provider string, model string, baseURL string, apiKey string) error {
+	updated := false
+	profiles := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
+	for i := range profiles {
+		if normalizeSpecialistProfileName(profiles[i].Name) != normalizeSpecialistProfileName(name) {
+			continue
+		}
+		profiles[i].Provider = strings.TrimSpace(provider)
+		profiles[i].Model = strings.TrimSpace(model)
+		profiles[i].BaseURL = normalizeProfileBaseURL(provider, baseURL)
+		profiles[i].APIKey = strings.TrimSpace(apiKey)
+		updated = true
+		break
+	}
+	if !updated {
+		profiles = append(profiles, SpecialistSubagentProfile{
+			Name:     strings.TrimSpace(name),
+			Provider: strings.TrimSpace(provider),
+			Model:    strings.TrimSpace(model),
+			BaseURL:  normalizeProfileBaseURL(provider, baseURL),
+			APIKey:   strings.TrimSpace(apiKey),
+		})
+	}
+	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(profiles)
+	if err := rt.persistSpecialistOverrides(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s / %s", name, provider, model)))
+	return nil
+}
+
+func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
+	target := normalizeSpecialistProfileName(name)
+	if target == "" {
+		return fmt.Errorf("usage: /set-specialist-model clear <specialist|all>")
+	}
+	removed := false
+	current := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
+	next := make([]SpecialistSubagentProfile, 0, len(current))
+	for _, profile := range current {
+		match := target == "all" || normalizeSpecialistProfileName(profile.Name) == target
+		if !match {
+			next = append(next, profile)
+			continue
+		}
+		removed = true
+		profile.Provider = ""
+		profile.Model = ""
+		profile.BaseURL = ""
+		profile.APIKey = ""
+		if specialistProfileHasNonModelOverrides(profile) {
+			next = append(next, normalizeSpecialistProfile(profile))
+		}
+	}
+	if !removed {
+		if target == "all" {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("No specialist model overrides were set."))
+			return nil
+		}
+		return fmt.Errorf("no specialist model override found for %s", name)
+	}
+	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(next)
+	if err := rt.persistSpecialistOverrides(); err != nil {
+		return err
+	}
+	if target == "all" {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared all specialist model overrides."))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared specialist model override for "+name+"."))
+	}
+	return nil
+}
+
+func specialistProfileHasNonModelOverrides(profile SpecialistSubagentProfile) bool {
+	return strings.TrimSpace(profile.Description) != "" ||
+		strings.TrimSpace(profile.Prompt) != "" ||
+		len(profile.NodeKinds) > 0 ||
+		len(profile.Keywords) > 0 ||
+		profile.ReadOnly != nil ||
+		profile.Editable != nil ||
+		len(profile.OwnershipPaths) > 0
+}
+
+func (rt *runtimeState) persistSpecialistOverrides() error {
+	if rt == nil {
+		return nil
+	}
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+	}
+	if strings.TrimSpace(rt.workspace.BaseRoot) == "" {
+		return rt.saveUserConfig()
+	}
+	overrides := map[string]any{}
+	if !specialistConfigIsEmpty(rt.cfg.Specialists) {
+		overrides["specialists"] = rt.cfg.Specialists
+	} else {
+		overrides["specialists"] = nil
+	}
+	return SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, overrides)
+}
+
+func specialistConfigIsEmpty(cfg SpecialistSubagentsConfig) bool {
+	enabledDefault := cfg.Enabled == nil
+	if cfg.Enabled != nil && *cfg.Enabled {
+		enabledDefault = true
+	}
+	return enabledDefault && len(cfg.Profiles) == 0
+}
+
+func (rt *runtimeState) resolveSpecialistChoice(choice string, names []string) (string, error) {
+	trimmed := strings.TrimSpace(choice)
+	if trimmed == "" {
+		if len(names) == 0 {
+			return "", fmt.Errorf("no specialist profiles are configured")
+		}
+		return names[0], nil
+	}
+	for idx, name := range names {
+		if trimmed == fmt.Sprintf("%d", idx+1) || strings.EqualFold(trimmed, name) {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("unknown specialist profile: %s", choice)
 }
 
 func (rt *runtimeState) showPlanReviewStatus() error {
@@ -5955,15 +6456,11 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	rt.session.Model = activeModel
 	rt.session.BaseURL = activeBaseURL
 	rt.session.PermissionMode = activePermission
-	rt.workspace.Shell = rt.cfg.Shell
-	rt.workspace.ShellTimeout = configShellTimeout(rt.cfg)
-	rt.workspace.ReadHintSpans = configReadHintSpans(rt.cfg)
-	rt.workspace.ReadCacheEntries = configReadCacheEntries(rt.cfg)
-	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.perms.SetMode(ParseMode(rt.session.PermissionMode))
 	rt.store = NewSessionStore(rt.cfg.SessionDir)
+	rt.syncWorkspaceFromSession()
 
-	rt.memory, err = LoadMemory(rt.session.WorkingDir, rt.cfg.MemoryFiles)
+	rt.memory, err = LoadMemory(rt.workspace.BaseRoot, rt.cfg.MemoryFiles)
 	if err != nil {
 		return err
 	}
@@ -5982,7 +6479,7 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 }
 
 func (rt *runtimeState) reloadExtensions() {
-	rt.skills, rt.skillWarns = LoadSkills(rt.session.WorkingDir, rt.cfg.SkillPaths, rt.cfg.EnabledSkills)
+	rt.skills, rt.skillWarns = LoadSkills(rt.workspace.BaseRoot, rt.cfg.SkillPaths, rt.cfg.EnabledSkills)
 	if rt.agent != nil {
 		rt.agent.Skills = rt.skills
 	}
@@ -6014,7 +6511,7 @@ func (rt *runtimeState) reloadHooks() {
 			if rt.checkpoints == nil {
 				return CheckpointMetadata{}, fmt.Errorf("checkpoint manager is not configured")
 			}
-			return rt.checkpoints.Create(workspaceSnapshotRoot(rt.workspace), note)
+			return rt.checkpoints.Create(workspaceCheckpointRoot(rt.workspace), note)
 		},
 		FailClosed: configHooksFailClosed(rt.cfg),
 		Workspace:  rt.workspace,
@@ -6236,7 +6733,7 @@ func (rt *runtimeState) armAutoCheckpoint() {
 		return
 	}
 	rt.autoCP.Manager = rt.checkpoints
-	rt.autoCP.Arm(configAutoCheckpointEdits(rt.cfg), workspaceSnapshotRoot(rt.workspace))
+	rt.autoCP.Arm(configAutoCheckpointEdits(rt.cfg), workspaceCheckpointRoot(rt.workspace))
 }
 
 func (rt *runtimeState) clearAutoCheckpoint() {
@@ -6267,6 +6764,31 @@ func (rt *runtimeState) prepareEdit(reason string) error {
 	return nil
 }
 
+func (rt *runtimeState) prepareEditAtRoot(reason string, root string) error {
+	if rt == nil || rt.autoCP == nil {
+		return nil
+	}
+	targetRoot := strings.TrimSpace(root)
+	if targetRoot == "" || strings.EqualFold(targetRoot, workspaceCheckpointRoot(rt.workspace)) {
+		return rt.prepareEdit(reason)
+	}
+	if rt.autoCP.Enabled && rt.autoCP.Pending {
+		if !rt.showTransientWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit...")) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
+		}
+	}
+	meta, err := rt.autoCP.PrepareAtWorkspace(reason, targetRoot)
+	if err != nil {
+		return err
+	}
+	if message := formatAutoCheckpointMessage(meta); message != "" {
+		if !rt.showTransientWhileThinking(rt.ui.infoLine(message)) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine(message))
+		}
+	}
+	return nil
+}
+
 func workspaceSnapshotRoot(ws Workspace) string {
 	if strings.TrimSpace(ws.BaseRoot) != "" {
 		return ws.BaseRoot
@@ -6274,19 +6796,26 @@ func workspaceSnapshotRoot(ws Workspace) string {
 	return ws.Root
 }
 
+func workspaceCheckpointRoot(ws Workspace) string {
+	if strings.TrimSpace(ws.Root) != "" {
+		return ws.Root
+	}
+	return workspaceSnapshotRoot(ws)
+}
+
 func (rt *runtimeState) handleInitCommand(args string) error {
 	trimmed := strings.TrimSpace(args)
 	if trimmed == "" {
-		path := filepath.Join(rt.session.WorkingDir, "KERNFORGE.md")
+		path := filepath.Join(sessionBaseWorkingDir(rt.session), "KERNFORGE.md")
 		if _, err := os.Stat(path); err == nil {
 			return fmt.Errorf("%s already exists", path)
 		}
-		projectName := filepath.Base(rt.session.WorkingDir)
+		projectName := filepath.Base(sessionBaseWorkingDir(rt.session))
 		if err := os.WriteFile(path, []byte(InitMemoryTemplate(projectName)), 0o644); err != nil {
 			return err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Created "+path))
-		rt.memory, _ = LoadMemory(rt.session.WorkingDir, rt.cfg.MemoryFiles)
+		rt.memory, _ = LoadMemory(sessionBaseWorkingDir(rt.session), rt.cfg.MemoryFiles)
 		rt.agent.Memory = rt.memory
 		return nil
 	}

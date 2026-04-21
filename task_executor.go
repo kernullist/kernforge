@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -182,6 +183,9 @@ func (s *Session) buildTaskExecutorDecision(node TaskNode) TaskExecutorDecision 
 	if evidence := strings.TrimSpace(node.ReadOnlyWorkerSummary); evidence != "" {
 		decision.Guidance += "\nRead-only worker evidence: " + compactPromptSection(evidence, 180)
 	}
+	if lease := normalizeTaskStateList(node.EditableLeasePaths, 32); len(lease) > 0 {
+		decision.Guidance += "\nEditable lease: " + compactPromptSection(strings.Join(lease, ", "), 180)
+	}
 	return decision
 }
 
@@ -226,6 +230,10 @@ func taskNodesCanRunInParallel(primary TaskNode, candidate TaskNode) bool {
 	kind := strings.TrimSpace(strings.ToLower(candidate.Kind))
 	switch kind {
 	case "inspection", "verification", "task":
+	case "edit":
+		if !taskNodesCanWarmEditablePathInParallel(primary, candidate) {
+			return false
+		}
 	default:
 		return false
 	}
@@ -243,12 +251,32 @@ func taskNodesCanRunInParallel(primary TaskNode, candidate TaskNode) bool {
 	return true
 }
 
+func taskNodesCanWarmEditablePathInParallel(primary TaskNode, candidate TaskNode) bool {
+	candidateLease := bestEffortParallelEditableLeasePaths(candidate)
+	if len(candidateLease) == 0 {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(primary.Kind), "edit") {
+		return true
+	}
+	primaryLease := bestEffortParallelEditableLeasePaths(primary)
+	if len(primaryLease) == 0 {
+		return false
+	}
+	return !editableLeaseCollectionsOverlap(primaryLease, candidateLease)
+}
+
 func buildParallelExecutorGuidance(node TaskNode) string {
 	switch strings.TrimSpace(strings.ToLower(node.Kind)) {
 	case "verification":
 		return fmt.Sprintf("%s: keep a read-only worker on this verification node and poll or inspect the latest output without duplicating work.", node.ID)
 	case "inspection":
 		return fmt.Sprintf("%s: use a read-only worker to gather just enough evidence to unblock this node.", node.ID)
+	case "edit":
+		if lease := bestEffortParallelEditableLeasePaths(node); len(lease) > 0 {
+			return fmt.Sprintf("%s: keep this secondary edit lane scoped to %s while gathering file-local context; do not cross into other ownership paths.", node.ID, compactPromptSection(strings.Join(lease, ", "), 140))
+		}
+		return fmt.Sprintf("%s: keep this secondary edit node read-only until its file scope is narrowed.", node.ID)
 	default:
 		return fmt.Sprintf("%s: keep this node warm with a small read-only follow-up while the main executor advances the primary path.", node.ID)
 	}
@@ -358,6 +386,34 @@ func (a *Agent) syncTaskExecutorFocus() error {
 	} else {
 		if a.Session.SetPlanNodeInProgress(decision.NodeID) {
 			changed = true
+		}
+		if a.Session.TaskGraph != nil {
+			if node, ok := a.Session.TaskGraph.Node(decision.NodeID); ok {
+				if assignment, ok := selectEditableSpecialistForTaskNode(a.Config, node, state, "executor-focus"); ok {
+					currentEditableSpecialist := node.EditableSpecialist
+					currentEditableReason := node.EditableReason
+					currentOwnership := append([]string(nil), node.EditableOwnershipPaths...)
+					currentLeasePaths := append([]string(nil), node.EditableLeasePaths...)
+					currentLeaseReason := node.EditableLeaseReason
+					ownership := specialistOwnershipPaths(assignment.Profile, node.EditableOwnershipPaths)
+					node.EditableSpecialist = assignment.Profile.Name
+					node.EditableReason = assignment.Reason
+					node.EditableOwnershipPaths = ownership
+					leasePaths, leaseReason := deriveEditableLeasePaths(a.Session.TaskGraph, node, assignment.Profile)
+					if !strings.EqualFold(strings.TrimSpace(currentEditableSpecialist), strings.TrimSpace(assignment.Profile.Name)) ||
+						!strings.EqualFold(strings.TrimSpace(currentEditableReason), strings.TrimSpace(assignment.Reason)) ||
+						!slices.Equal(currentOwnership, ownership) {
+						a.Session.RecordTaskGraphEditableAssignment(node.ID, assignment.Profile.Name, assignment.Reason, ownership, node.EditableWorktreeRoot, node.EditableWorktreeBranch)
+						changed = true
+					}
+					if len(leasePaths) > 0 &&
+						(!slices.Equal(currentLeasePaths, leasePaths) ||
+							!strings.EqualFold(strings.TrimSpace(currentLeaseReason), strings.TrimSpace(leaseReason))) {
+						a.Session.RecordTaskGraphEditableLease(node.ID, leasePaths, leaseReason)
+						changed = true
+					}
+				}
+			}
 		}
 		if state.SetExecutorFocus(decision.NodeID, decision.Action, decision.Reason, decision.Guidance) {
 			changed = true

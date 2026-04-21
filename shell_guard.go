@@ -15,36 +15,44 @@ type workspaceFileSignature struct {
 }
 
 func (w Workspace) EnsureScopedShellWrite(command string, writePaths []string) ([]string, error) {
+	return w.EnsureScopedShellWriteForRoot(command, "", "", writePaths)
+}
+
+func (w Workspace) EnsureScopedShellWriteForRoot(command string, workRoot string, ownerNodeID string, writePaths []string) ([]string, error) {
 	if len(writePaths) == 0 {
 		return nil, fmt.Errorf("scoped shell writes require write_paths")
 	}
+	effectiveRoot := firstNonBlankString(strings.TrimSpace(workRoot), w.Root, w.BaseRoot)
 	resolved := make([]string, 0, len(writePaths))
+	relPaths := make([]string, 0, len(writePaths))
 	for _, raw := range writePaths {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
 			continue
 		}
-		path, err := w.Resolve(trimmed)
+		route, err := w.ResolveEditPath(trimmed, ownerNodeID, false)
 		if err != nil {
 			return nil, err
 		}
+		path := route.AbsolutePath
 		if err := w.ensureProtectedEditPath(path); err != nil {
 			return nil, err
 		}
+		targetRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, effectiveRoot)
+		if targetRoot != "" && !sameFilePath(targetRoot, effectiveRoot) {
+			return nil, fmt.Errorf("%w: scoped shell write path %s resolved outside the routed shell root", ErrEditTargetMismatch, route.DisplayPath())
+		}
 		resolved = append(resolved, path)
+		relPaths = append(relPaths, route.DisplayPath())
 	}
 	if len(resolved) == 0 {
 		return nil, fmt.Errorf("scoped shell writes require at least one valid write path")
 	}
-	if err := w.BeforeEdit("scoped mutating shell: " + summarizeShellCommand(command)); err != nil {
+	if err := w.BeforeEditForRoot("scoped mutating shell: "+summarizeShellCommand(command), effectiveRoot); err != nil {
 		return nil, err
 	}
 	if w.Perms == nil {
 		return resolved, nil
-	}
-	relPaths := make([]string, 0, len(resolved))
-	for _, path := range resolved {
-		relPaths = append(relPaths, relOrAbs(w.Root, path))
 	}
 	ok, err := w.Perms.Allow(ActionShellWrite, fmt.Sprintf("%s (scoped to %s)", summarizeShellCommand(command), strings.Join(relPaths, ", ")))
 	if err != nil {

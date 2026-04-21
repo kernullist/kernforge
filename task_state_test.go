@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -221,6 +222,50 @@ func TestSessionSelectTaskExecutorDecisionTracksParallelReadyNodes(t *testing.T)
 	}
 	if decision.ParallelNodeIDs[0] != "plan-02" && decision.ParallelNodeIDs[0] != "plan-03" {
 		t.Fatalf("unexpected parallel node assignments: %#v", decision)
+	}
+}
+
+func TestSessionSelectTaskExecutorDecisionAllowsDisjointParallelEditNode(t *testing.T) {
+	session := NewSession("C:\\workspace", "openai", "gpt-test", "", "default")
+	session.TaskState = &TaskState{}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{ID: "plan-01", Title: "Patch telemetry/provider.man", Kind: "edit", Status: "ready"},
+			{ID: "plan-02", Title: "Patch driver/monitor.inf", Kind: "edit", Status: "ready"},
+			{ID: "plan-03", Title: "Inspect telemetry manifest output", Kind: "inspection", Status: "ready"},
+		},
+		LastUpdated: time.Now(),
+	}
+	session.TaskGraph.Normalize()
+
+	decision := session.SelectTaskExecutorDecision()
+	if decision.NodeID != "plan-01" {
+		t.Fatalf("expected primary edit node to be selected, got %#v", decision)
+	}
+	if !slices.Contains(decision.ParallelNodeIDs, "plan-02") {
+		t.Fatalf("expected disjoint secondary edit node to be parallelizable, got %#v", decision)
+	}
+}
+
+func TestSessionSelectTaskExecutorDecisionRejectsOverlappingParallelEditNode(t *testing.T) {
+	session := NewSession("C:\\workspace", "openai", "gpt-test", "", "default")
+	session.TaskState = &TaskState{}
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{ID: "plan-01", Title: "Patch telemetry/provider.man", Kind: "edit", Status: "ready"},
+			{ID: "plan-02", Title: "Update telemetry/provider.man and refresh schema", Kind: "edit", Status: "ready"},
+			{ID: "plan-03", Title: "Inspect telemetry manifest output", Kind: "inspection", Status: "ready"},
+		},
+		LastUpdated: time.Now(),
+	}
+	session.TaskGraph.Normalize()
+
+	decision := session.SelectTaskExecutorDecision()
+	if decision.NodeID != "plan-01" {
+		t.Fatalf("expected primary edit node to be selected, got %#v", decision)
+	}
+	if slices.Contains(decision.ParallelNodeIDs, "plan-02") {
+		t.Fatalf("expected overlapping secondary edit node to be excluded, got %#v", decision)
 	}
 }
 

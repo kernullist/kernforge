@@ -80,7 +80,7 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 			ui.dim(" / ")+
 			ui.bold(ui.success("verify")),
 	)
-	commandLine := ui.bannerMeta("commands", ui.highlightCommands("/help /status /models /config")) +
+	commandLine := ui.bannerMeta("commands", ui.highlightCommands("/help /status /model /config")) +
 		"  " + ui.bannerMeta("shell", ui.highlightCommands("!cmd")) +
 		"  " + ui.bannerMeta("files", ui.highlightCommands("@path"))
 	tipLine := ui.bannerMeta("tip", ui.info("Esc cancels the active turn. End a line with \\ for multiline input."))
@@ -164,9 +164,21 @@ func (ui UI) statusKV(key, value string) string {
 		trimmedKey = "-"
 	}
 	if ui.shouldCompactStatusKey(trimmedKey) {
-		return ui.bold(ui.accent(padDisplayRight(trimmedKey+":", 25))) + ui.dim(" ") + value
+		return ui.statusKVAligned(trimmedKey, value, 25)
 	}
 	return ui.bold(ui.accent(trimmedKey)) + ui.dim(" -> ") + value
+}
+
+func (ui UI) statusKVAligned(key, value string, width int) string {
+	trimmedKey := strings.TrimSpace(key)
+	if trimmedKey == "" {
+		trimmedKey = "-"
+	}
+	label := trimmedKey + ":"
+	if width <= 0 {
+		width = 25
+	}
+	return ui.bold(ui.accent(padDisplayRight(label, width))) + ui.dim(" ") + value
 }
 
 func (ui UI) section(title string) string {

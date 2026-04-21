@@ -21,7 +21,7 @@ func TestBannerUsesCurrentKernforgeBranding(t *testing.T) {
 		"session=session-123",
 		"workspace=F:\\kernullist\\kernforge",
 		"ready=edit / review / verify",
-		"commands=/help /status /models /config",
+		"commands=/help /status /model /config",
 		"tip=Esc cancels the active turn.",
 	} {
 		if !strings.Contains(banner, needle) {
@@ -50,6 +50,18 @@ func TestStatusKVAlignsShortKeysAndFallsBackForPaths(t *testing.T) {
 	pathLike := ui.statusKV(`F:\kernullist\kernforge`, "workspace root")
 	if !strings.Contains(pathLike, " -> workspace root") {
 		t.Fatalf("expected path-like key to use arrow rendering, got %q", pathLike)
+	}
+}
+
+func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
+	ui := UI{color: false}
+
+	rendered := ui.statusKVAligned("memory-inspection-reviewer", "openrouter / z-ai/glm-5.1", 30)
+	if strings.Contains(rendered, "->") {
+		t.Fatalf("expected aligned helper to avoid arrow fallback, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "memory-inspection-reviewer:") {
+		t.Fatalf("expected aligned helper to keep colon layout, got %q", rendered)
 	}
 }
 

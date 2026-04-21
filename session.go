@@ -18,7 +18,10 @@ type PlanItem struct {
 type Session struct {
 	ID                       string                  `json:"id"`
 	Name                     string                  `json:"name"`
+	BaseWorkingDir           string                  `json:"base_working_dir,omitempty"`
 	WorkingDir               string                  `json:"working_dir"`
+	Worktree                 *SessionWorktree        `json:"worktree,omitempty"`
+	SpecialistWorktrees      []SpecialistWorktree    `json:"specialist_worktrees,omitempty"`
 	Provider                 string                  `json:"provider"`
 	Model                    string                  `json:"model"`
 	BaseURL                  string                  `json:"base_url,omitempty"`
@@ -49,6 +52,7 @@ func NewSession(workingDir, providerName, model, baseURL, permissionMode string)
 	return &Session{
 		ID:             id,
 		Name:           "Session " + id,
+		BaseWorkingDir: workingDir,
 		WorkingDir:     workingDir,
 		Provider:       providerName,
 		Model:          model,
@@ -72,6 +76,15 @@ func (s *Session) ApproxChars() int {
 	}
 	if s.TaskGraph != nil {
 		total += len(s.TaskGraph.RenderExportSection())
+	}
+	for _, lease := range s.SpecialistWorktrees {
+		total += len(lease.Specialist) + len(lease.Root) + len(lease.Branch) + len(lease.LastOwnerNodeID)
+		for _, item := range lease.OwnershipPaths {
+			total += len(item)
+		}
+		for _, item := range lease.NodeIDs {
+			total += len(item)
+		}
 	}
 	for _, job := range s.BackgroundJobs {
 		total += len(job.ID) + len(job.Command) + len(job.Status) + len(job.LastOutput)
@@ -103,11 +116,43 @@ func (s *Session) ExportText() string {
 	fmt.Fprintf(&b, "# %s\n\n", s.Name)
 	fmt.Fprintf(&b, "Session ID: %s\n", s.ID)
 	fmt.Fprintf(&b, "Working dir: %s\n", s.WorkingDir)
+	if baseRoot := sessionBaseWorkingDir(s); baseRoot != "" && !strings.EqualFold(strings.TrimSpace(baseRoot), strings.TrimSpace(s.WorkingDir)) {
+		fmt.Fprintf(&b, "Base working dir: %s\n", baseRoot)
+	}
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", s.Provider, s.Model)
 	if strings.TrimSpace(s.BaseURL) != "" {
 		fmt.Fprintf(&b, "Base URL: %s\n", s.BaseURL)
 	}
 	fmt.Fprintf(&b, "Permission mode: %s\n\n", s.PermissionMode)
+	if s.Worktree != nil && strings.TrimSpace(s.Worktree.Root) != "" {
+		b.WriteString("## Worktree\n\n")
+		fmt.Fprintf(&b, "- Root: %s\n", s.Worktree.Root)
+		if strings.TrimSpace(s.Worktree.Branch) != "" {
+			fmt.Fprintf(&b, "- Branch: %s\n", s.Worktree.Branch)
+		}
+		fmt.Fprintf(&b, "- Active: %t\n", s.Worktree.Active)
+		fmt.Fprintf(&b, "- Managed: %t\n", s.Worktree.Managed)
+		b.WriteString("\n")
+	}
+	if len(s.SpecialistWorktrees) > 0 {
+		b.WriteString("## Specialist Worktrees\n\n")
+		for _, lease := range s.SpecialistWorktrees {
+			lease.Normalize()
+			fmt.Fprintf(&b, "- Specialist: %s\n", lease.Specialist)
+			fmt.Fprintf(&b, "  Root: %s\n", lease.Root)
+			if strings.TrimSpace(lease.Branch) != "" {
+				fmt.Fprintf(&b, "  Branch: %s\n", lease.Branch)
+			}
+			fmt.Fprintf(&b, "  Managed: %t\n", lease.Managed)
+			if len(lease.OwnershipPaths) > 0 {
+				fmt.Fprintf(&b, "  Ownership: %s\n", strings.Join(lease.OwnershipPaths, ", "))
+			}
+			if len(lease.NodeIDs) > 0 {
+				fmt.Fprintf(&b, "  Nodes: %s\n", strings.Join(lease.NodeIDs, ", "))
+			}
+		}
+		b.WriteString("\n")
+	}
 	if strings.TrimSpace(s.Summary) != "" {
 		b.WriteString("## Summary\n\n")
 		b.WriteString(s.Summary)
@@ -255,10 +300,12 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	if err := json.Unmarshal(data, &sess); err != nil {
 		return nil, err
 	}
+	sess.normalizeWorkingDirState()
 	sess.normalizeSelectionState()
 	sess.normalizeTaskStateArtifacts()
 	sess.normalizeBackgroundJobs()
 	sess.normalizeBackgroundBundles()
+	sess.normalizeSpecialistWorktrees()
 	return &sess, nil
 }
 
@@ -321,6 +368,32 @@ func (s *Session) normalizeSelectionState() {
 	}
 	active := s.Selections[s.ActiveSelection]
 	s.LastSelection = &active
+}
+
+func (s *Session) normalizeWorkingDirState() {
+	if s == nil {
+		return
+	}
+	s.BaseWorkingDir = strings.TrimSpace(s.BaseWorkingDir)
+	s.WorkingDir = strings.TrimSpace(s.WorkingDir)
+	if s.BaseWorkingDir == "" {
+		s.BaseWorkingDir = s.WorkingDir
+	}
+	if s.WorkingDir == "" {
+		s.WorkingDir = s.BaseWorkingDir
+	}
+	if s.Worktree == nil {
+		return
+	}
+	s.Worktree.Normalize()
+	if s.Worktree.Active && strings.TrimSpace(s.Worktree.Root) != "" &&
+		(s.WorkingDir == "" || strings.EqualFold(strings.TrimSpace(s.WorkingDir), strings.TrimSpace(s.BaseWorkingDir))) {
+		s.WorkingDir = s.Worktree.Root
+	}
+	if !s.Worktree.Active && s.BaseWorkingDir != "" {
+		s.WorkingDir = s.BaseWorkingDir
+	}
+	s.normalizeSpecialistWorktrees()
 }
 
 func (s *Session) CurrentSelection() *ViewerSelection {
@@ -399,4 +472,71 @@ func (s *Session) SelectionAt(index int) (*ViewerSelection, bool) {
 	}
 	selection := s.Selections[index]
 	return &selection, true
+}
+
+func (s *Session) SpecialistWorktree(name string) (SpecialistWorktree, bool) {
+	if s == nil {
+		return SpecialistWorktree{}, false
+	}
+	for _, lease := range s.SpecialistWorktrees {
+		if strings.EqualFold(strings.TrimSpace(lease.Specialist), strings.TrimSpace(name)) {
+			return lease, true
+		}
+	}
+	return SpecialistWorktree{}, false
+}
+
+func (s *Session) UpsertSpecialistWorktree(lease SpecialistWorktree) {
+	if s == nil {
+		return
+	}
+	lease.Normalize()
+	if strings.TrimSpace(lease.Specialist) == "" {
+		return
+	}
+	for i := range s.SpecialistWorktrees {
+		if strings.EqualFold(strings.TrimSpace(s.SpecialistWorktrees[i].Specialist), strings.TrimSpace(lease.Specialist)) {
+			s.SpecialistWorktrees[i] = lease
+			s.normalizeSpecialistWorktrees()
+			return
+		}
+	}
+	s.SpecialistWorktrees = append(s.SpecialistWorktrees, lease)
+	s.normalizeSpecialistWorktrees()
+}
+
+func (s *Session) RemoveSpecialistWorktree(name string) bool {
+	if s == nil {
+		return false
+	}
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return false
+	}
+	for i := range s.SpecialistWorktrees {
+		if !strings.EqualFold(strings.TrimSpace(s.SpecialistWorktrees[i].Specialist), target) {
+			continue
+		}
+		s.SpecialistWorktrees = append(s.SpecialistWorktrees[:i], s.SpecialistWorktrees[i+1:]...)
+		s.normalizeSpecialistWorktrees()
+		return true
+	}
+	return false
+}
+
+func (s *Session) normalizeSpecialistWorktrees() {
+	if s == nil || len(s.SpecialistWorktrees) == 0 {
+		return
+	}
+	for i := range s.SpecialistWorktrees {
+		s.SpecialistWorktrees[i].Normalize()
+	}
+	sort.Slice(s.SpecialistWorktrees, func(i, j int) bool {
+		left := s.SpecialistWorktrees[i]
+		right := s.SpecialistWorktrees[j]
+		if left.UpdatedAt.Equal(right.UpdatedAt) {
+			return strings.Compare(strings.ToLower(left.Specialist), strings.ToLower(right.Specialist)) < 0
+		}
+		return left.UpdatedAt.After(right.UpdatedAt)
+	})
 }

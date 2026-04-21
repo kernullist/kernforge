@@ -409,13 +409,11 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	if len(candidates) == 0 {
 		return nil
 	}
-	client, model := a.ensureInteractiveReviewerClient()
-	if client == nil || strings.TrimSpace(model) == "" {
-		return nil
-	}
 	type microWorkerResult struct {
-		nodeID string
-		brief  string
+		nodeID     string
+		brief      string
+		specialist string
+		reason     string
 	}
 	workerCount := min(3, len(candidates))
 	results := make(chan microWorkerResult, workerCount)
@@ -427,19 +425,23 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		if node.MicroWorkerBrief != "" || status == "completed" || status == "failed" || status == "stale" || status == "superseded" {
 			continue
 		}
+		assignment, ok := selectSpecialistForTaskNode(a.Config, node, a.Session.TaskState, trigger, true)
+		if !ok {
+			continue
+		}
+		client, model := a.specialistClient(assignment.Profile)
+		if client == nil || strings.TrimSpace(model) == "" {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			resp, err := client.Complete(ctx, ChatRequest{
-				Model: model,
-				System: strings.Join([]string{
-					"You are a micro-worker assisting a terminal coding agent.",
-					"Focus on one task-graph node and return a short brief with the most likely risk, next check, and why the node matters.",
-					"Keep the answer under 4 short bullets.",
-				}, "\n"),
+				Model:  model,
+				System: buildSpecialistMicroWorkerSystemPrompt(assignment.Profile),
 				Messages: []Message{{
 					Role: "user",
-					Text: buildInteractiveMicroWorkerPrompt(a.Session.TaskState, node, trigger),
+					Text: buildSpecialistMicroWorkerPrompt(assignment.Profile, a.Session.TaskState, node, trigger, assignment.Reason),
 				}},
 				MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
 				Temperature: 0.1,
@@ -452,7 +454,12 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 			if brief == "" {
 				return
 			}
-			results <- microWorkerResult{nodeID: node.ID, brief: brief}
+			results <- microWorkerResult{
+				nodeID:     node.ID,
+				brief:      brief,
+				specialist: assignment.Profile.Name,
+				reason:     assignment.Reason,
+			}
 		}()
 	}
 	wg.Wait()
@@ -461,6 +468,7 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		if strings.TrimSpace(result.nodeID) == "" || strings.TrimSpace(result.brief) == "" {
 			continue
 		}
+		a.Session.RecordTaskGraphSpecialistAssignment(result.nodeID, result.specialist, result.reason)
 		a.Session.RecordTaskGraphMicroWorkerBrief(result.nodeID, result.brief)
 		updated = true
 	}
@@ -574,6 +582,14 @@ func buildInteractiveMicroWorkerPrompt(state *TaskState, node TaskNode, trigger 
 	}
 	if node.LastFailure != "" {
 		b.WriteString("- Last failure: " + compactPromptSection(node.LastFailure, 160) + "\n")
+	}
+	if node.EditableSpecialist != "" {
+		b.WriteString("- Editable specialist: " + node.EditableSpecialist + "\n")
+	}
+	if len(node.EditableLeasePaths) > 0 {
+		b.WriteString("- Editable lease: " + strings.Join(node.EditableLeasePaths, ", ") + "\n")
+	} else if len(node.EditableOwnershipPaths) > 0 {
+		b.WriteString("- Editable ownership: " + strings.Join(node.EditableOwnershipPaths, ", ") + "\n")
 	}
 	if node.ReadOnlyWorkerSummary != "" {
 		b.WriteString("- Read-only worker evidence: " + compactPromptSection(node.ReadOnlyWorkerSummary, 180) + "\n")
@@ -1142,11 +1158,13 @@ func backgroundBundleFromToolMeta(meta map[string]any) (BackgroundShellBundle, [
 	bundle := BackgroundShellBundle{
 		ID:               bundleID,
 		OwnerNodeID:      toolMetaString(meta, "owner_node_id"),
+		OwnerLeasePaths:  toolMetaStringSlice(meta, "owner_lease_paths"),
 		Status:           firstNonBlankString(toolMetaString(meta, "bundle_status"), "running"),
 		Summary:          summarizeBackgroundBundleCommands(toolMetaStringSlice(meta, "bundle_command_summaries")),
 		CommandSummaries: toolMetaStringSlice(meta, "bundle_command_summaries"),
 		JobIDs:           toolMetaStringSlice(meta, "bundle_job_ids"),
 		LastSummary:      toolMetaString(meta, "bundle_summary"),
+		VerificationLike: toolMetaBool(meta, "verification_like"),
 		SupersededBy:     toolMetaString(meta, "superseded_by"),
 		LifecycleNote:    toolMetaString(meta, "lifecycle_note"),
 		CancelReason:     toolMetaString(meta, "cancel_reason"),

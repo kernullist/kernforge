@@ -264,6 +264,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
+		_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
 		_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
 		_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
 		turnReq := ChatRequest{
@@ -292,6 +293,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			return "", err
 		}
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
+		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
 		if a.EmitAssistantDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
 			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
@@ -755,6 +757,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.EmitProgress(summary)
 					}
 				}
+				_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 				_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 				_ = a.maybeRunInteractiveMicroWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 			}
@@ -2205,6 +2208,53 @@ func toolCallArgumentsMap(call ToolCall) map[string]any {
 	return args
 }
 
+func toolCallSupportsOwnerNodeID(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "apply_patch", "write_file", "replace_in_file", "run_shell", "run_shell_background", "run_shell_bundle_background":
+		return true
+	default:
+		return false
+	}
+}
+
+func withToolCallOwnerNodeID(call ToolCall, ownerNodeID string) ToolCall {
+	ownerNodeID = strings.TrimSpace(ownerNodeID)
+	if ownerNodeID == "" || !toolCallSupportsOwnerNodeID(call.Name) {
+		return call
+	}
+	args := map[string]any{}
+	if strings.TrimSpace(call.Arguments) != "" {
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			return call
+		}
+	}
+	if existing := strings.TrimSpace(stringValue(args, "owner_node_id")); existing != "" {
+		return call
+	}
+	args["owner_node_id"] = ownerNodeID
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return call
+	}
+	call.Arguments = string(encoded)
+	return call
+}
+
+func assignFocusedOwnerNodeToToolCalls(calls []ToolCall, session *Session) []ToolCall {
+	if len(calls) == 0 || session == nil || session.TaskState == nil {
+		return calls
+	}
+	ownerNodeID := strings.TrimSpace(session.TaskState.ExecutorFocusNode)
+	if ownerNodeID == "" {
+		return calls
+	}
+	out := make([]ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, withToolCallOwnerNodeID(call, ownerNodeID))
+	}
+	return out
+}
+
 func toolCallCommandsArgument(call ToolCall) []string {
 	args := toolCallArgumentsMap(call)
 	return stringSliceValue(args, "commands")
@@ -2378,7 +2428,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Use check_shell_bundle to poll several background shell jobs together when a parallel verification bundle is running.\n")
 	b.WriteString("- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id=\"latest\" instead of reconstructing the job id list from memory.\n")
 	b.WriteString("- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.\n")
-	b.WriteString("- When a long-running verification command belongs to the current focused task-graph node, include owner_node_id in the tool arguments so the runtime can attach that work to the correct node.\n")
+	b.WriteString("- When the current focused task-graph node owns an edit, formatter run, code generator run, or long-running verification command, include owner_node_id in the tool arguments so specialist ownership routing and worktree isolation stay attached to that node.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use && or ||. Use a single command or PowerShell separators and conditionals only when needed.\n")
 	b.WriteString("- For run_shell on Windows PowerShell, do not use Unix shell syntax like find ... -type, chmod, chown, ls -la, or /dev/null redirection, and do not use cmd.exe batch syntax like for /d %x. Rewrite those commands with PowerShell cmdlets, or explicitly invoke cmd /c or bash -lc only when that interpreter is intentionally required.\n")
 	b.WriteString("- For run_shell, the working directory is already set to the workspace root. Do not prepend commands with cd unless changing into a subdirectory is truly necessary.\n")

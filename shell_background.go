@@ -21,6 +21,11 @@ type BackgroundJobManager struct {
 	store   *SessionStore
 }
 
+type BackgroundShellBundleOptions struct {
+	VerificationLike bool
+	OwnerLeasePaths  []string
+}
+
 type backgroundJobStatus struct {
 	Status     string `json:"status"`
 	ExitCode   *int   `json:"exit_code,omitempty"`
@@ -275,7 +280,7 @@ func (m *BackgroundJobManager) FindBundleForJob(jobID string) (BackgroundShellBu
 	return BackgroundShellBundle{}, false
 }
 
-func (m *BackgroundJobManager) RecordShellBundle(jobs []BackgroundShellJob, ownerNodeID string) (BackgroundShellBundle, error) {
+func (m *BackgroundJobManager) RecordShellBundle(jobs []BackgroundShellJob, ownerNodeID string, options BackgroundShellBundleOptions) (BackgroundShellBundle, error) {
 	if m == nil || m.session == nil || m.store == nil {
 		return BackgroundShellBundle{}, fmt.Errorf("background job manager is not configured")
 	}
@@ -299,22 +304,31 @@ func (m *BackgroundJobManager) RecordShellBundle(jobs []BackgroundShellJob, owne
 	if reusable, ok := m.FindReusableShellBundle(jobIDs); ok {
 		if ownerNodeID != "" && reusable.OwnerNodeID == "" {
 			reusable.OwnerNodeID = strings.TrimSpace(ownerNodeID)
-			reusable.Normalize()
-			m.session.UpsertBackgroundBundle(reusable)
-			_ = m.store.Save(m.session)
 		}
+		if !reusable.VerificationLike && (options.VerificationLike || backgroundBundleLooksVerificationLikeCommands(reusable.CommandSummaries)) {
+			reusable.VerificationLike = true
+		}
+		if leasePaths := resolveBackgroundBundleLeasePaths(m.session, ownerNodeID, options.OwnerLeasePaths); len(leasePaths) > 0 && len(reusable.OwnerLeasePaths) == 0 {
+			reusable.OwnerLeasePaths = append([]string(nil), leasePaths...)
+		}
+		reusable.Normalize()
+		m.session.UpsertBackgroundBundle(reusable)
+		_ = m.store.Save(m.session)
 		return reusable, nil
 	}
 	status, summary := summarizeBackgroundBundle(normalizedJobs)
 	now := shellJobNow()
+	leasePaths := resolveBackgroundBundleLeasePaths(m.session, ownerNodeID, options.OwnerLeasePaths)
 	bundle := BackgroundShellBundle{
 		ID:               m.nextShellBundleID(now),
 		Summary:          summarizeBackgroundBundleCommands(commandSummaries),
 		CommandSummaries: commandSummaries,
 		JobIDs:           jobIDs,
 		OwnerNodeID:      strings.TrimSpace(ownerNodeID),
+		OwnerLeasePaths:  append([]string(nil), leasePaths...),
 		Status:           status,
 		LastSummary:      summary,
+		VerificationLike: options.VerificationLike || backgroundBundleLooksVerificationLikeCommands(commandSummaries),
 		StartedAt:        now,
 		UpdatedAt:        now,
 	}
@@ -327,32 +341,96 @@ func (m *BackgroundJobManager) RecordShellBundle(jobs []BackgroundShellJob, owne
 	return bundle, nil
 }
 
+func resolveBackgroundBundleLeasePaths(session *Session, ownerNodeID string, fallback []string) []string {
+	if leasePaths := normalizeTaskStateList(fallback, 32); len(leasePaths) > 0 {
+		return leasePaths
+	}
+	if session == nil || session.TaskGraph == nil {
+		return nil
+	}
+	ownerNodeID = strings.TrimSpace(ownerNodeID)
+	if ownerNodeID == "" {
+		return nil
+	}
+	node, ok := session.TaskGraph.Node(ownerNodeID)
+	if !ok {
+		return nil
+	}
+	if leasePaths := normalizeTaskStateList(node.EditableLeasePaths, 32); len(leasePaths) > 0 {
+		return leasePaths
+	}
+	return normalizeTaskStateList(node.EditableOwnershipPaths, 32)
+}
+
+func backgroundBundleLooksVerificationLikeCommands(commands []string) bool {
+	if len(commands) == 0 {
+		return false
+	}
+	text := strings.ToLower(strings.Join(normalizeBackgroundCommandList(commands, 8), " "))
+	return strings.Contains(text, "test") ||
+		strings.Contains(text, "verify") ||
+		strings.Contains(text, "verification") ||
+		strings.Contains(text, "build") ||
+		strings.Contains(text, "check") ||
+		strings.Contains(text, "ctest") ||
+		strings.Contains(text, "msbuild") ||
+		strings.Contains(text, "ninja") ||
+		strings.Contains(text, "verifier")
+}
+
+func backgroundBundlesShareVerificationScope(current BackgroundShellBundle, bundle BackgroundShellBundle) (bool, string) {
+	if !current.VerificationLike || !bundle.VerificationLike {
+		return false, ""
+	}
+	if ownerNodeID := strings.TrimSpace(current.OwnerNodeID); ownerNodeID != "" && strings.EqualFold(ownerNodeID, strings.TrimSpace(bundle.OwnerNodeID)) {
+		return true, "Replaced by newer background verification bundle for the same owner node."
+	}
+	if editableLeaseCollectionsOverlap(current.OwnerLeasePaths, bundle.OwnerLeasePaths) {
+		return true, "Replaced by newer background verification bundle for the same editable lease."
+	}
+	return false, ""
+}
+
+func backgroundBundleSupersedeReason(current BackgroundShellBundle, bundle BackgroundShellBundle) string {
+	if sameScope, reason := backgroundBundlesShareVerificationScope(current, bundle); sameScope {
+		return reason
+	}
+	targetCommands := normalizeBackgroundCommandList(bundle.CommandSummaries, 8)
+	if slices.Equal(normalizeBackgroundCommandList(current.CommandSummaries, 8), targetCommands) {
+		return "Replaced by newer background verification bundle."
+	}
+	return ""
+}
+
 func (m *BackgroundJobManager) supersedeMatchingBundles(bundle BackgroundShellBundle) {
 	if m == nil || m.session == nil {
 		return
 	}
 	targetCommands := normalizeBackgroundCommandList(bundle.CommandSummaries, 8)
-	if len(targetCommands) == 0 {
-		return
-	}
 	for _, existing := range m.session.BackgroundBundles {
 		current := existing
 		if strings.EqualFold(strings.TrimSpace(current.ID), strings.TrimSpace(bundle.ID)) {
 			continue
 		}
-		if !slices.Equal(normalizeBackgroundCommandList(current.CommandSummaries, 8), targetCommands) {
+		sameCommands := len(targetCommands) > 0 && slices.Equal(normalizeBackgroundCommandList(current.CommandSummaries, 8), targetCommands)
+		sameScope, scopeReason := backgroundBundlesShareVerificationScope(current, bundle)
+		if !sameCommands && !sameScope {
 			continue
+		}
+		reason := firstNonBlankString(scopeReason, backgroundBundleSupersedeReason(current, bundle))
+		if reason == "" {
+			reason = "Replaced by newer background verification bundle."
 		}
 		status := strings.TrimSpace(strings.ToLower(current.Status))
 		if status == "running" {
-			if _, _, err := m.CancelBundle(current.ID, "superseded", "Replaced by newer background verification bundle.", bundle.ID); err == nil {
+			if _, _, err := m.CancelBundle(current.ID, "superseded", reason, bundle.ID); err == nil {
 				continue
 			}
 		}
 		current.Status = "superseded"
 		current.SupersededBy = bundle.ID
 		current.PreemptedBy = bundle.ID
-		current.LifecycleNote = firstNonBlankString(current.LifecycleNote, "Replaced by newer background verification bundle.")
+		current.LifecycleNote = firstNonBlankString(strings.TrimSpace(reason), current.LifecycleNote, "Replaced by newer background verification bundle.")
 		current.UpdatedAt = shellJobNow()
 		current.Normalize()
 		m.session.UpsertBackgroundBundle(current)
@@ -438,8 +516,16 @@ func (m *BackgroundJobManager) CancelBundle(bundleID string, nextStatus string, 
 	if normalizedStatus == "superseded" && bundle.PreemptedBy != "" {
 		bundle.SupersededBy = bundle.PreemptedBy
 	}
-	if bundle.LifecycleNote == "" {
-		bundle.LifecycleNote = strings.TrimSpace(reason)
+	trimmedReason := strings.TrimSpace(reason)
+	switch normalizedStatus {
+	case "stale", "superseded", "canceled", "preempted":
+		if trimmedReason != "" {
+			bundle.LifecycleNote = trimmedReason
+		}
+	default:
+		if bundle.LifecycleNote == "" {
+			bundle.LifecycleNote = trimmedReason
+		}
 	}
 	bundle.UpdatedAt = now
 	bundle.Normalize()
@@ -589,7 +675,8 @@ func (t RunShellBundleBackgroundTool) Definition() ToolDefinition {
 					"type":  "array",
 					"items": map[string]any{"type": "string"},
 				},
-				"owner_node_id": map[string]any{"type": "string"},
+				"owner_node_id":     map[string]any{"type": "string"},
+				"verification_like": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"commands"},
 		},
@@ -605,6 +692,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	args := input.(map[string]any)
 	commands := normalizeBackgroundCommandList(stringSliceValue(args, "commands"), 4)
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	verificationLike := boolValue(args, "verification_like", false)
 	if len(commands) == 0 {
 		return ToolExecutionResult{}, fmt.Errorf("commands are required")
 	}
@@ -614,6 +702,11 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	lines := make([]string, 0, len(commands)+3)
 	lines = append(lines, fmt.Sprintf("started background shell bundle with %d command(s)", len(commands)))
 	bundleJobs := make([]BackgroundShellJob, 0, len(commands))
+	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root)
 	for _, command := range commands {
 		assessment := assessShellCommandMutation(command)
 		if assessment.Class == shellMutationWorkspaceWrite {
@@ -631,7 +724,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		if err := t.ws.EnsureShell(command); err != nil {
 			return ToolExecutionResult{}, err
 		}
-		if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, t.ws.Root); ok {
+		if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
 			if ownerNodeID != "" && reusable.OwnerNodeID == "" {
 				reusable.OwnerNodeID = ownerNodeID
 				t.ws.BackgroundJobs.session.UpsertBackgroundJob(reusable)
@@ -649,7 +742,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			lines = append(lines, fmt.Sprintf("- reused %s [%s] %s", reusable.ID, reusable.Status, reusable.CommandSummary))
 			continue
 		}
-		job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, t.ws.Root, command, assessment, ownerNodeID)
+		job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, ownerNodeID)
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
@@ -665,7 +758,9 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		bundleJobs = append(bundleJobs, job)
 		lines = append(lines, fmt.Sprintf("- started %s [%s] %s", job.ID, job.Status, job.CommandSummary))
 	}
-	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, ownerNodeID)
+	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, ownerNodeID, BackgroundShellBundleOptions{
+		VerificationLike: verificationLike,
+	})
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -675,9 +770,10 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
 		Meta: buildBackgroundBundleMeta(bundle, bundleJobs, map[string]any{
-			"tool_name":    "run_shell_bundle_background",
-			"plan_effect":  "progress",
-			"result_class": "background_start",
+			"tool_name":         "run_shell_bundle_background",
+			"plan_effect":       "progress",
+			"result_class":      "background_start",
+			"verification_like": bundle.VerificationLike,
 		}),
 	}, nil
 }
@@ -689,8 +785,9 @@ func (t RunBackgroundShellTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"command":       map[string]any{"type": "string"},
-				"owner_node_id": map[string]any{"type": "string"},
+				"command":           map[string]any{"type": "string"},
+				"owner_node_id":     map[string]any{"type": "string"},
+				"verification_like": map[string]any{"type": "boolean"},
 			},
 			"required": []string{"command"},
 		},
@@ -706,6 +803,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	args := input.(map[string]any)
 	command := strings.TrimSpace(stringValue(args, "command"))
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
+	verificationLike := boolValue(args, "verification_like", false)
 	if command == "" {
 		return ToolExecutionResult{}, fmt.Errorf("command is required")
 	}
@@ -716,6 +814,11 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if assessment.Class == shellMutationWorkspaceWrite {
 		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
 	}
+	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root)
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
 		"tool_name": "run_shell_background",
 		"tool_kind": "shell",
@@ -728,12 +831,14 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if err := t.ws.EnsureShell(command); err != nil {
 		return ToolExecutionResult{}, err
 	}
-	if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, t.ws.Root); ok {
+	if reusable, ok := t.ws.BackgroundJobs.FindReusableShellJob(command, workDir); ok {
 		if ownerNodeID != "" && reusable.OwnerNodeID == "" {
 			reusable.OwnerNodeID = ownerNodeID
 			t.ws.BackgroundJobs.session.UpsertBackgroundJob(reusable)
 		}
-		bundle, bundleErr := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{reusable}, ownerNodeID)
+		bundle, bundleErr := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{reusable}, ownerNodeID, BackgroundShellBundleOptions{
+			VerificationLike: verificationLike,
+		})
 		if bundleErr != nil {
 			return ToolExecutionResult{}, bundleErr
 		}
@@ -750,18 +855,21 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		return ToolExecutionResult{
 			DisplayText: displayText,
 			Meta: buildBackgroundJobMeta(reusable, &bundle, map[string]any{
-				"tool_name":    "run_shell_background",
-				"reused":       true,
-				"plan_effect":  "progress",
-				"result_class": "background_start",
+				"tool_name":         "run_shell_background",
+				"reused":            true,
+				"plan_effect":       "progress",
+				"result_class":      "background_start",
+				"verification_like": bundle.VerificationLike,
 			}),
 		}, nil
 	}
-	job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, t.ws.Root, command, assessment, ownerNodeID)
+	job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, ownerNodeID)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	bundle, err := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{job}, ownerNodeID)
+	bundle, err := t.ws.BackgroundJobs.RecordShellBundle([]BackgroundShellJob{job}, ownerNodeID, BackgroundShellBundleOptions{
+		VerificationLike: verificationLike,
+	})
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
@@ -778,9 +886,10 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	return ToolExecutionResult{
 		DisplayText: displayText,
 		Meta: buildBackgroundJobMeta(job, &bundle, map[string]any{
-			"tool_name":    "run_shell_background",
-			"plan_effect":  "progress",
-			"result_class": "background_start",
+			"tool_name":         "run_shell_background",
+			"plan_effect":       "progress",
+			"result_class":      "background_start",
+			"verification_like": bundle.VerificationLike,
 		}),
 	}, nil
 }
@@ -1102,6 +1211,12 @@ func buildBackgroundBundleMeta(bundle BackgroundShellBundle, jobs []BackgroundSh
 	if bundle.OwnerNodeID != "" {
 		meta["owner_node_id"] = bundle.OwnerNodeID
 	}
+	if len(bundle.OwnerLeasePaths) > 0 {
+		meta["owner_lease_paths"] = append([]string(nil), bundle.OwnerLeasePaths...)
+	}
+	if bundle.VerificationLike {
+		meta["verification_like"] = true
+	}
 	if bundle.SupersededBy != "" {
 		meta["superseded_by"] = bundle.SupersededBy
 	}
@@ -1167,6 +1282,12 @@ func buildBackgroundJobMeta(job BackgroundShellJob, bundle *BackgroundShellBundl
 		meta["bundle_command_summaries"] = append([]string(nil), bundle.CommandSummaries...)
 		if bundle.OwnerNodeID != "" {
 			meta["owner_node_id"] = bundle.OwnerNodeID
+		}
+		if len(bundle.OwnerLeasePaths) > 0 {
+			meta["owner_lease_paths"] = append([]string(nil), bundle.OwnerLeasePaths...)
+		}
+		if bundle.VerificationLike {
+			meta["verification_like"] = true
 		}
 	}
 	return meta

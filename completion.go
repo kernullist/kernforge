@@ -14,6 +14,7 @@ var slashCommands = []string{
 	"profile",
 	"version",
 	"model",
+	"specialists",
 	"permissions",
 	"verify",
 	"verify-dashboard",
@@ -61,6 +62,7 @@ var slashCommands = []string{
 	"set-auto-verify",
 	"checkpoint-diff",
 	"locale-auto",
+	"worktree",
 	"checkpoints",
 	"rollback",
 	"skills",
@@ -95,6 +97,7 @@ var slashCommands = []string{
 	"export",
 	"config",
 	"set-analysis-models",
+	"set-specialist-model",
 	"set-plan-review",
 	"do-plan-review",
 	"new-feature",
@@ -111,7 +114,8 @@ var slashCommandDescriptions = map[string]string{
 	"provider":                   "Configure the model provider and inspect provider status.",
 	"profile":                    "Manage saved provider and model profiles.",
 	"version":                    "Print the current Kernforge version.",
-	"model":                      "Show or change the active model.",
+	"model":                      "Show model routing and interactively reconfigure one target.",
+	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
 	"permissions":                "Inspect or change the session permission mode.",
 	"verify":                     "Run manual verification for the current workspace state.",
 	"verify-dashboard":           "Summarize recent verification history in the terminal.",
@@ -159,6 +163,7 @@ var slashCommandDescriptions = map[string]string{
 	"set-auto-verify":            "Enable or disable automatic verification after edits.",
 	"checkpoint-diff":            "Compare current workspace files against a checkpoint.",
 	"locale-auto":                "Enable or disable automatic locale switching.",
+	"worktree":                   "Create, inspect, detach, or clean isolated git worktrees.",
 	"checkpoints":                "List saved checkpoints for the workspace.",
 	"rollback":                   "Restore the workspace or selected paths from a checkpoint.",
 	"skills":                     "Inspect and manage loaded Codex skills.",
@@ -193,6 +198,7 @@ var slashCommandDescriptions = map[string]string{
 	"export":                     "Export the current session transcript or artifacts.",
 	"config":                     "Show effective configuration values.",
 	"set-analysis-models":        "Configure worker and reviewer providers for analysis.",
+	"set-specialist-model":       "Configure the provider and model used by one specialist subagent.",
 	"set-plan-review":            "Configure plan review provider behavior.",
 	"do-plan-review":             "Run a focused plan review for a task description.",
 	"new-feature":                "Create or manage tracked feature workspaces.",
@@ -254,6 +260,10 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"reviewer": "Set the provider used for reviewer analysis passes.",
 		"clear":    "Clear provider overrides and use defaults again.",
 	},
+	"set-specialist-model": {
+		"status": "Show the effective provider and model for specialist subagents.",
+		"clear":  "Clear one specialist override or remove all specialist model overrides.",
+	},
 	"analyze-project": {
 		"--mode":      "Choose the analysis mode before describing the goal.",
 		"map":         "Map structure, modules, and relationships across the project.",
@@ -297,6 +307,17 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"memory-policy": "Write or refresh starter memory policy files.",
 		"skill":         "Install a named skill into the workspace setup.",
 		"verify":        "Write or refresh verification configuration files.",
+	},
+	"worktree": {
+		"status":  "Show the current worktree isolation status and attached metadata.",
+		"create":  "Create and attach an isolated git worktree for this session.",
+		"leave":   "Detach from the current isolated worktree without deleting it.",
+		"cleanup": "Remove the recorded isolated worktree after it is clean.",
+	},
+	"specialists": {
+		"status":  "Show specialist profiles plus editable ownership and worktree assignments.",
+		"assign":  "Bind one task-graph node to an editable specialist and ensure its worktree lease.",
+		"cleanup": "Remove one or all specialist worktrees recorded for this session.",
 	},
 }
 
@@ -435,6 +456,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},
+		"worktree":              {"status", "create", "leave", "cleanup"},
+		"specialists":           {"status", "assign", "cleanup"},
 		"provider":              {"status", "anthropic", "openai", "openrouter", "ollama"},
 		"analyze-project":       {"--mode"},
 		"verify":                {"--full"},
@@ -443,6 +466,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"mem-prune":             {"all"},
 		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "ollama"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
+		"set-specialist-model":  {"status", "clear"},
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
 		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
@@ -450,6 +474,11 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	}
 
 	if len(fields) == 0 {
+		if commandName == "set-specialist-model" {
+			options := append([]string{}, firstLevel[commandName]...)
+			options = append(options, rt.allSpecialistNames()...)
+			return normalizeTaskStateList(options, 32), 0, true
+		}
 		if options, ok := firstLevel[commandName]; ok {
 			return options, 0, true
 		}
@@ -464,6 +493,26 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "provider":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "worktree":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "specialists":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "assign") {
+			return rt.recentTaskGraphNodeIDs(), 1, true
+		}
+		if len(fields) == 3 && strings.EqualFold(fields[0], "assign") {
+			return rt.editableSpecialistNames(), 2, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "cleanup") {
+			options := append([]string{"all"}, rt.activeSpecialistNames()...)
+			return normalizeTaskStateList(options, 16), 1, true
 		}
 		return nil, 0, false
 	case "resume":
@@ -491,6 +540,25 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
 			return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+		}
+		return nil, 0, false
+	case "set-specialist-model":
+		if len(fields) == 1 {
+			options := append([]string{}, firstLevel[commandName]...)
+			options = append(options, rt.allSpecialistNames()...)
+			return normalizeTaskStateList(options, 32), 0, true
+		}
+		if len(fields) == 2 {
+			if strings.EqualFold(fields[0], "status") || strings.EqualFold(fields[0], "clear") {
+				options := append([]string{}, rt.allSpecialistNames()...)
+				if strings.EqualFold(fields[0], "clear") {
+					options = append([]string{"all"}, options...)
+				}
+				return normalizeTaskStateList(options, 32), 1, true
+			}
+			if rt.hasSpecialistName(fields[0]) {
+				return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+			}
 		}
 		return nil, 0, false
 	case "analyze-project":
@@ -646,6 +714,75 @@ func (rt *runtimeState) recentFeatureIDs() []string {
 		}
 	}
 	return ids
+}
+
+func (rt *runtimeState) recentTaskGraphNodeIDs() []string {
+	if rt == nil || rt.session == nil || rt.session.TaskGraph == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(rt.session.TaskGraph.Nodes))
+	for _, node := range rt.session.TaskGraph.Nodes {
+		if strings.TrimSpace(node.ID) != "" {
+			ids = append(ids, node.ID)
+		}
+	}
+	return ids
+}
+
+func (rt *runtimeState) editableSpecialistNames() []string {
+	cfg := Config{}
+	if rt != nil {
+		cfg = rt.cfg
+	}
+	names := make([]string, 0)
+	for _, profile := range configuredSpecialistProfiles(cfg) {
+		if !specialistProfileEditable(profile) {
+			continue
+		}
+		names = append(names, profile.Name)
+	}
+	return normalizeTaskStateList(names, 16)
+}
+
+func (rt *runtimeState) allSpecialistNames() []string {
+	cfg := Config{}
+	if rt != nil {
+		cfg = rt.cfg
+	}
+	names := make([]string, 0)
+	for _, profile := range configuredSpecialistProfiles(cfg) {
+		names = append(names, profile.Name)
+	}
+	sort.SliceStable(names, func(i, j int) bool {
+		return strings.Compare(strings.ToLower(names[i]), strings.ToLower(names[j])) < 0
+	})
+	return normalizeTaskStateList(names, 32)
+}
+
+func (rt *runtimeState) hasSpecialistName(name string) bool {
+	target := normalizeSpecialistProfileName(name)
+	if target == "" {
+		return false
+	}
+	for _, item := range rt.allSpecialistNames() {
+		if normalizeSpecialistProfileName(item) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (rt *runtimeState) activeSpecialistNames() []string {
+	if rt == nil || rt.session == nil {
+		return nil
+	}
+	names := make([]string, 0, len(rt.session.SpecialistWorktrees))
+	for _, lease := range rt.session.SpecialistWorktrees {
+		if strings.TrimSpace(lease.Specialist) != "" {
+			names = append(names, lease.Specialist)
+		}
+	}
+	return normalizeTaskStateList(names, 16)
 }
 
 func commandCompletionDescription(item string) string {

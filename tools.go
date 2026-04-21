@@ -223,6 +223,7 @@ type Workspace struct {
 	ToolHints             *ToolHints
 	Perms                 *PermissionManager
 	PrepareEdit           func(string) error
+	PrepareEditAtRoot     func(string, string) error
 	ReportProgress        func(string)
 	CurrentSelection      func() *ViewerSelection
 	PreviewEdit           func(EditPreview) (bool, error)
@@ -230,6 +231,8 @@ type Workspace struct {
 	GetPlan               func() []PlanItem
 	RunHook               func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
 	BackgroundJobs        *BackgroundJobManager
+	ResolveEditTarget     func(EditRoutingRequest) (EditRoutingResult, error)
+	ResolveShellRoot      func(string) (ShellRoutingResult, error)
 }
 
 type EditPreview struct {
@@ -260,6 +263,88 @@ func (w Workspace) Resolve(path string) (string, error) {
 		return "", err
 	}
 	return w.ensureWithinBaseRoot(path, abs)
+}
+
+func (w Workspace) resolveEditFallback(req EditRoutingRequest) (EditRoutingResult, error) {
+	path := strings.TrimSpace(req.Path)
+	if path == "" {
+		path = "."
+	}
+	if !req.ForLookup {
+		abs, err := w.resolveAgainstRoot(w.Root, path)
+		if err != nil {
+			return EditRoutingResult{}, err
+		}
+		abs, err = w.ensureWithinBaseRoot(path, abs)
+		if err != nil {
+			return EditRoutingResult{}, err
+		}
+		return EditRoutingResult{
+			AbsolutePath: abs,
+			DisplayRoot:  w.Root,
+			OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+		}, nil
+	}
+	primary, err := w.Resolve(path)
+	if err != nil {
+		return EditRoutingResult{}, err
+	}
+	if w.pathLooksAbsoluteForLookup(path) || sameFilePath(w.Root, w.BaseRoot) {
+		return EditRoutingResult{
+			AbsolutePath: primary,
+			DisplayRoot:  w.Root,
+			OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+		}, nil
+	}
+	if _, err := os.Stat(primary); err == nil {
+		return EditRoutingResult{
+			AbsolutePath: primary,
+			DisplayRoot:  w.Root,
+			OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+		}, nil
+	} else if !os.IsNotExist(err) {
+		return EditRoutingResult{}, err
+	}
+	fallback, err := w.resolveAgainstRoot(w.BaseRoot, path)
+	if err != nil {
+		return EditRoutingResult{}, err
+	}
+	if _, err := os.Stat(fallback); err == nil {
+		return EditRoutingResult{
+			AbsolutePath: fallback,
+			DisplayRoot:  w.BaseRoot,
+			OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+		}, nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return EditRoutingResult{}, err
+	}
+	return EditRoutingResult{
+		AbsolutePath: primary,
+		DisplayRoot:  w.Root,
+		OwnerNodeID:  strings.TrimSpace(req.OwnerNodeID),
+	}, nil
+}
+
+func (w Workspace) ResolveEditPath(path string, ownerNodeID string, forLookup bool) (EditRoutingResult, error) {
+	req := EditRoutingRequest{
+		Path:        path,
+		OwnerNodeID: ownerNodeID,
+		ForLookup:   forLookup,
+	}
+	if w.ResolveEditTarget != nil {
+		return w.ResolveEditTarget(req)
+	}
+	return w.resolveEditFallback(req)
+}
+
+func (w Workspace) ResolveShellWorkingDir(ownerNodeID string) (ShellRoutingResult, error) {
+	if w.ResolveShellRoot != nil {
+		return w.ResolveShellRoot(ownerNodeID)
+	}
+	return ShellRoutingResult{
+		Root:        firstNonBlankString(w.Root, w.BaseRoot),
+		OwnerNodeID: strings.TrimSpace(ownerNodeID),
+	}, nil
 }
 
 func (w Workspace) toolHints() *ToolHints {
@@ -432,11 +517,11 @@ func workspacePathVolume(path string) string {
 }
 
 func (w Workspace) ensureWithinBaseRoot(originalPath, abs string) (string, error) {
-	baseRoot := w.BaseRoot
-	if strings.TrimSpace(baseRoot) == "" {
-		baseRoot = w.Root
+	activeRoot := w.Root
+	if strings.TrimSpace(activeRoot) == "" {
+		activeRoot = w.BaseRoot
 	}
-	rootAbs, err := filepath.Abs(baseRoot)
+	rootAbs, err := filepath.Abs(activeRoot)
 	if err != nil {
 		return "", err
 	}
@@ -452,7 +537,7 @@ func (w Workspace) ensureWithinBaseRoot(originalPath, abs string) (string, error
 		return targetAbs, nil
 	}
 	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path is outside the workspace root: %s", originalPath)
+		return "", fmt.Errorf("path is outside the active workspace root: %s", originalPath)
 	}
 	return targetAbs, nil
 }
@@ -588,6 +673,13 @@ func (w Workspace) BeforeEdit(reason string) error {
 	return w.PrepareEdit(reason)
 }
 
+func (w Workspace) BeforeEditForRoot(reason string, root string) error {
+	if w.PrepareEditAtRoot != nil {
+		return w.PrepareEditAtRoot(reason, root)
+	}
+	return w.BeforeEdit(reason)
+}
+
 func (w Workspace) Progress(message string) {
 	if w.ReportProgress == nil {
 		return
@@ -686,9 +778,10 @@ func (t ListFilesTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":        map[string]any{"type": "string"},
-				"recursive":   map[string]any{"type": "boolean"},
-				"max_entries": map[string]any{"type": "integer"},
+				"path":          map[string]any{"type": "string"},
+				"recursive":     map[string]any{"type": "boolean"},
+				"max_entries":   map[string]any{"type": "integer"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 		},
 	}
@@ -701,9 +794,15 @@ func (t ListFilesTool) Execute(ctx context.Context, input any) (string, error) {
 
 func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	args := input.(map[string]any)
-	root, err := t.ws.ResolveForLookup(stringValue(args, "path"))
+	ownerNodeID := stringValue(args, "owner_node_id")
+	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
 		return ToolExecutionResult{}, err
+	}
+	root := route.AbsolutePath
+	displayRoot := t.ws.Root
+	if strings.TrimSpace(ownerNodeID) != "" {
+		displayRoot = firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, t.ws.Root)
 	}
 	recursive := boolValue(args, "recursive", false)
 	maxEntries := intValue(args, "max_entries", 200)
@@ -722,7 +821,7 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			if path == root {
 				return nil
 			}
-			rel := relOrAbs(t.ws.Root, path)
+			rel := relOrAbs(displayRoot, path)
 			if d.IsDir() {
 				rel += "/"
 				if d.Name() == ".git" {
@@ -744,7 +843,7 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			return ToolExecutionResult{}, err
 		}
 		for _, entry := range entries {
-			rel := relOrAbs(t.ws.Root, filepath.Join(root, entry.Name()))
+			rel := relOrAbs(displayRoot, filepath.Join(root, entry.Name()))
 			if entry.IsDir() {
 				rel += "/"
 			}
@@ -759,7 +858,7 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		return ToolExecutionResult{
 			DisplayText: text,
 			Meta: map[string]any{
-				"path":        relOrAbs(t.ws.Root, root),
+				"path":        relOrAbs(displayRoot, root),
 				"recursive":   recursive,
 				"max_entries": maxEntries,
 				"entry_count": 0,
@@ -770,7 +869,7 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	return ToolExecutionResult{
 		DisplayText: text,
 		Meta: map[string]any{
-			"path":        relOrAbs(t.ws.Root, root),
+			"path":        relOrAbs(displayRoot, root),
 			"recursive":   recursive,
 			"max_entries": maxEntries,
 			"entry_count": len(lines),
@@ -826,9 +925,10 @@ func (t *ReadFileTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":       map[string]any{"type": "string"},
-				"start_line": map[string]any{"type": "integer"},
-				"end_line":   map[string]any{"type": "integer"},
+				"path":          map[string]any{"type": "string"},
+				"start_line":    map[string]any{"type": "integer"},
+				"end_line":      map[string]any{"type": "integer"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"path"},
 		},
@@ -842,20 +942,26 @@ func (t *ReadFileTool) Execute(ctx context.Context, input any) (string, error) {
 
 func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
+	ownerNodeID := stringValue(args, "owner_node_id")
+	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
 		return ToolExecutionResult{}, err
+	}
+	path := route.AbsolutePath
+	displayRoot := t.ws.Root
+	if strings.TrimSpace(ownerNodeID) != "" {
+		displayRoot = firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, t.ws.Root)
 	}
 	startArg := intValue(args, "start_line", 1)
 	endArg := intValue(args, "end_line", 0)
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			display, meta := buildMissingReadFileResult(t.ws.Root, path, startArg, endArg)
+			display, meta := buildMissingReadFileResult(displayRoot, path, startArg, endArg)
 			return ToolExecutionResult{
 				DisplayText: display,
 				Meta:        meta,
-			}, fmt.Errorf("read_file target does not exist: %s", relOrAbs(t.ws.Root, path))
+			}, fmt.Errorf("read_file target does not exist: %s", relOrAbs(displayRoot, path))
 		}
 		return ToolExecutionResult{}, err
 	}
@@ -864,14 +970,14 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		normalizedStart, normalizedEnd := normalizeRenderedRangeBounds(cached, startArg, endArg)
 		return ToolExecutionResult{
 			DisplayText: "NOTE: returning cached content for an unchanged read_file range.\n" + cached,
-			Meta:        buildReadFileMeta(t.ws.Root, path, startArg, endArg, normalizedStart, normalizedEnd, cached, "exact"),
+			Meta:        buildReadFileMeta(displayRoot, path, startArg, endArg, normalizedStart, normalizedEnd, cached, "exact"),
 		}, nil
 	}
 	if covered, ok := t.lookupCoveredCachedRead(path, startArg, endArg, info); ok {
 		normalizedStart, normalizedEnd := normalizeRenderedRangeBounds(covered, startArg, endArg)
 		return ToolExecutionResult{
 			DisplayText: "NOTE: returning content from a cached overlapping read_file range.\n" + covered,
-			Meta:        buildReadFileMeta(t.ws.Root, path, startArg, endArg, normalizedStart, normalizedEnd, covered, "covered"),
+			Meta:        buildReadFileMeta(displayRoot, path, startArg, endArg, normalizedStart, normalizedEnd, covered, "covered"),
 		}, nil
 	}
 	start := startArg
@@ -892,7 +998,7 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		t.recordReadSpanHint(path, start, normalizedEnd, info)
 		return ToolExecutionResult{
 			DisplayText: "NOTE: returning content assembled from a cached partial overlap plus newly read lines.\n" + result,
-			Meta:        buildReadFileMeta(t.ws.Root, path, startArg, endArg, start, normalizedEnd, result, "partial_overlap"),
+			Meta:        buildReadFileMeta(displayRoot, path, startArg, endArg, start, normalizedEnd, result, "partial_overlap"),
 		}, nil
 	}
 	renderedLines, normalizedEnd, err := readRenderedFileRange(ctx, path, start, end)
@@ -907,7 +1013,7 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	t.recordReadSpanHint(path, start, normalizedEnd, info)
 	return ToolExecutionResult{
 		DisplayText: result,
-		Meta:        buildReadFileMeta(t.ws.Root, path, startArg, endArg, start, normalizedEnd, result, "fresh"),
+		Meta:        buildReadFileMeta(displayRoot, path, startArg, endArg, start, normalizedEnd, result, "fresh"),
 	}, nil
 }
 
@@ -1331,10 +1437,11 @@ func (t GrepTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"pattern":     map[string]any{"type": "string"},
-				"path":        map[string]any{"type": "string"},
-				"glob":        map[string]any{"type": "string"},
-				"max_results": map[string]any{"type": "integer"},
+				"pattern":       map[string]any{"type": "string"},
+				"path":          map[string]any{"type": "string"},
+				"glob":          map[string]any{"type": "string"},
+				"max_results":   map[string]any{"type": "integer"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"pattern"},
 		},
@@ -1348,9 +1455,15 @@ func (t GrepTool) Execute(ctx context.Context, input any) (string, error) {
 
 func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	args := input.(map[string]any)
-	root, err := t.ws.ResolveForLookup(stringValue(args, "path"))
+	ownerNodeID := stringValue(args, "owner_node_id")
+	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), ownerNodeID, true)
 	if err != nil {
 		return ToolExecutionResult{}, err
+	}
+	root := route.AbsolutePath
+	displayRoot := t.ws.Root
+	if strings.TrimSpace(ownerNodeID) != "" {
+		displayRoot = firstNonBlankString(route.DisplayRoot, route.WorktreeRoot, t.ws.Root)
 	}
 	re, err := regexp.Compile(stringValue(args, "pattern"))
 	if err != nil {
@@ -1396,14 +1509,14 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 			lineNo++
 			line := scanner.Text()
 			if re.MatchString(line) {
-				matchPrefix := fmt.Sprintf("%s:%d: %s", relOrAbs(t.ws.Root, path), lineNo, line)
+				matchPrefix := fmt.Sprintf("%s:%d: %s", relOrAbs(displayRoot, path), lineNo, line)
 				if statErr == nil {
 					if hint := t.grepReadCacheHint(path, lineNo, fileInfo); hint != "" {
 						matchPrefix += " " + hint
 					}
 				}
 				matches = append(matches, matchPrefix)
-				matchedFiles[relOrAbs(t.ws.Root, path)] = struct{}{}
+				matchedFiles[relOrAbs(displayRoot, path)] = struct{}{}
 				if len(matches) >= maxResults {
 					return stop
 				}
@@ -1418,7 +1531,7 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 		return ToolExecutionResult{
 			DisplayText: "(no matches)",
 			Meta: map[string]any{
-				"path":          relOrAbs(t.ws.Root, root),
+				"path":          relOrAbs(displayRoot, root),
 				"pattern":       re.String(),
 				"glob":          glob,
 				"match_count":   0,
@@ -1437,7 +1550,7 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 	return ToolExecutionResult{
 		DisplayText: strings.Join(matches, "\n"),
 		Meta: map[string]any{
-			"path":          relOrAbs(t.ws.Root, root),
+			"path":          relOrAbs(displayRoot, root),
 			"pattern":       re.String(),
 			"glob":          glob,
 			"match_count":   len(matches),
@@ -1468,9 +1581,10 @@ func (t WriteFileTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"content": map[string]any{"type": "string"},
-				"append":  map[string]any{"type": "boolean"},
+				"path":          map[string]any{"type": "string"},
+				"content":       map[string]any{"type": "string"},
+				"append":        map[string]any{"type": "boolean"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"path", "content"},
 		},
@@ -1479,10 +1593,13 @@ func (t WriteFileTool) Definition() ToolDefinition {
 
 func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
+	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), stringValue(args, "owner_node_id"), true)
 	if err != nil {
 		return "", err
 	}
+	path := route.AbsolutePath
+	displayPath := route.DisplayPath()
+	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
 	content := stringValue(args, "content")
 	before := ""
 	if existing, err := os.ReadFile(path); err == nil {
@@ -1499,32 +1616,35 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		return "", ctx.Err()
 	default:
 	}
-	reason := "write " + relOrAbs(t.ws.Root, path)
+	reason := "write " + displayPath
 	after := content
 	if boolValue(args, "append", false) {
 		after = before + content
 		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
-			"path":          relOrAbs(t.ws.Root, path),
+			"path":          displayPath,
 			"absolute_path": path,
 			"operation":     "write_file",
 			"reason":        reason,
 			"file_tags":     hookFileTags(path),
+			"owner_node_id": route.OwnerNodeID,
+			"worktree_root": route.WorktreeRoot,
+			"specialist":    route.Specialist,
 		}); err != nil {
 			return "", err
 		}
 		if err := t.ws.ConfirmEdit(EditPreview{
-			Title:   "Append to " + relOrAbs(t.ws.Root, path),
-			Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), before, after),
+			Title:   "Append to " + displayPath,
+			Preview: buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
 		}); err != nil {
 			return "", err
 		}
 		if err := t.ws.EnsureWrite(path); err != nil {
 			return "", err
 		}
-		if err := t.ws.BeforeEdit(reason); err != nil {
+		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
 			return "", err
 		}
-		t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
+		t.ws.Progress("Writing " + displayPath + "...")
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return "", err
@@ -1533,49 +1653,55 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if _, err := f.WriteString(content); err != nil {
 			return "", err
 		}
-		t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
+		t.ws.Progress("Saved " + displayPath + ".")
 	} else {
 		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
-			"path":          relOrAbs(t.ws.Root, path),
+			"path":          displayPath,
 			"absolute_path": path,
 			"operation":     "write_file",
 			"reason":        reason,
 			"file_tags":     hookFileTags(path),
+			"owner_node_id": route.OwnerNodeID,
+			"worktree_root": route.WorktreeRoot,
+			"specialist":    route.Specialist,
 		}); err != nil {
 			return "", err
 		}
 		if err := t.ws.ConfirmEdit(EditPreview{
-			Title:   "Write " + relOrAbs(t.ws.Root, path),
-			Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), before, after),
+			Title:   "Write " + displayPath,
+			Preview: buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
 		}); err != nil {
 			return "", err
 		}
 		if err := t.ws.EnsureWrite(path); err != nil {
 			return "", err
 		}
-		if err := t.ws.BeforeEdit(reason); err != nil {
+		if err := t.ws.BeforeEditForRoot(reason, editRoot); err != nil {
 			return "", err
 		}
-		t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
+		t.ws.Progress("Writing " + displayPath + "...")
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return "", err
 		}
-		t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
+		t.ws.Progress("Saved " + displayPath + ".")
 	}
-	t.ws.Progress("Running post-edit hooks for " + relOrAbs(t.ws.Root, path) + "...")
+	t.ws.Progress("Running post-edit hooks for " + displayPath + "...")
 	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
-		"path":          relOrAbs(t.ws.Root, path),
+		"path":          displayPath,
 		"absolute_path": path,
 		"operation":     "write_file",
 		"reason":        reason,
 		"file_tags":     hookFileTags(path),
+		"owner_node_id": route.OwnerNodeID,
+		"worktree_root": route.WorktreeRoot,
+		"specialist":    route.Specialist,
 	}); err != nil {
 		return "", err
 	}
-	t.ws.Progress("Post-edit hooks finished for " + relOrAbs(t.ws.Root, path) + ".")
+	t.ws.Progress("Post-edit hooks finished for " + displayPath + ".")
 	return joinNonEmpty(
-		fmt.Sprintf("wrote %d bytes to %s", len(content), relOrAbs(t.ws.Root, path)),
-		buildEditPreview(relOrAbs(t.ws.Root, path), before, after),
+		fmt.Sprintf("wrote %d bytes to %s", len(content), displayPath),
+		buildEditPreview(displayPath, before, after),
 	), nil
 }
 
@@ -1588,6 +1714,7 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
 		"changed_count":         1,
 		"append":                boolValue(args, "append", false),
+		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
 		"bytes_written":         len(stringValue(args, "content")),
 		"changed_workspace":     err == nil,
 		"requires_verification": err == nil,
@@ -1667,10 +1794,11 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"path":    map[string]any{"type": "string"},
-				"search":  map[string]any{"type": "string"},
-				"replace": map[string]any{"type": "string"},
-				"all":     map[string]any{"type": "boolean"},
+				"path":          map[string]any{"type": "string"},
+				"search":        map[string]any{"type": "string"},
+				"replace":       map[string]any{"type": "string"},
+				"all":           map[string]any{"type": "boolean"},
+				"owner_node_id": map[string]any{"type": "string"},
 			},
 			"required": []string{"path", "search", "replace"},
 		},
@@ -1679,10 +1807,13 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 
 func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
-	path, err := t.ws.ResolveForLookup(stringValue(args, "path"))
+	route, err := t.ws.ResolveEditPath(stringValue(args, "path"), stringValue(args, "owner_node_id"), true)
 	if err != nil {
 		return "", err
 	}
+	path := route.AbsolutePath
+	displayPath := route.DisplayPath()
+	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
@@ -1713,45 +1844,51 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	default:
 	}
 	if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
-		"path":          relOrAbs(t.ws.Root, path),
+		"path":          displayPath,
 		"absolute_path": path,
 		"operation":     "replace_in_file",
-		"reason":        "replace in " + relOrAbs(t.ws.Root, path),
+		"reason":        "replace in " + displayPath,
 		"file_tags":     hookFileTags(path),
+		"owner_node_id": route.OwnerNodeID,
+		"worktree_root": route.WorktreeRoot,
+		"specialist":    route.Specialist,
 	}); err != nil {
 		return "", err
 	}
 	if err := t.ws.ConfirmEdit(EditPreview{
-		Title:   "Update " + relOrAbs(t.ws.Root, path),
-		Preview: buildSelectionAwareEditPreview(t.ws, relOrAbs(t.ws.Root, path), content, updated),
+		Title:   "Update " + displayPath,
+		Preview: buildSelectionAwareEditPreview(t.ws, displayPath, content, updated),
 	}); err != nil {
 		return "", err
 	}
 	if err := t.ws.EnsureWrite(path); err != nil {
 		return "", err
 	}
-	if err := t.ws.BeforeEdit("replace in " + relOrAbs(t.ws.Root, path)); err != nil {
+	if err := t.ws.BeforeEditForRoot("replace in "+displayPath, editRoot); err != nil {
 		return "", err
 	}
-	t.ws.Progress("Writing " + relOrAbs(t.ws.Root, path) + "...")
+	t.ws.Progress("Writing " + displayPath + "...")
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
-	t.ws.Progress("Saved " + relOrAbs(t.ws.Root, path) + ".")
-	t.ws.Progress("Running post-edit hooks for " + relOrAbs(t.ws.Root, path) + "...")
+	t.ws.Progress("Saved " + displayPath + ".")
+	t.ws.Progress("Running post-edit hooks for " + displayPath + "...")
 	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{
-		"path":          relOrAbs(t.ws.Root, path),
+		"path":          displayPath,
 		"absolute_path": path,
 		"operation":     "replace_in_file",
-		"reason":        "replace in " + relOrAbs(t.ws.Root, path),
+		"reason":        "replace in " + displayPath,
 		"file_tags":     hookFileTags(path),
+		"owner_node_id": route.OwnerNodeID,
+		"worktree_root": route.WorktreeRoot,
+		"specialist":    route.Specialist,
 	}); err != nil {
 		return "", err
 	}
-	t.ws.Progress("Post-edit hooks finished for " + relOrAbs(t.ws.Root, path) + ".")
+	t.ws.Progress("Post-edit hooks finished for " + displayPath + ".")
 	return joinNonEmpty(
-		fmt.Sprintf("updated %s (%d replacement(s))", relOrAbs(t.ws.Root, path), count),
-		buildEditPreview(relOrAbs(t.ws.Root, path), content, updated),
+		fmt.Sprintf("updated %s (%d replacement(s))", displayPath, count),
+		buildEditPreview(displayPath, content, updated),
 	), nil
 }
 
@@ -1775,6 +1912,7 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
 		"changed_count":         1,
 		"all":                   all,
+		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
 		"applied_replacements":  replacements,
 		"changed_workspace":     err == nil,
 		"requires_verification": err == nil,
@@ -1853,6 +1991,7 @@ func (t RunShellTool) Definition() ToolDefinition {
 				"command":                map[string]any{"type": "string"},
 				"timeout_ms":             map[string]any{"type": "integer"},
 				"allow_workspace_writes": map[string]any{"type": "boolean"},
+				"owner_node_id":          map[string]any{"type": "string"},
 				"write_paths": map[string]any{
 					"type":  "array",
 					"items": map[string]any{"type": "string"},
@@ -1866,6 +2005,7 @@ func (t RunShellTool) Definition() ToolDefinition {
 func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	args := input.(map[string]any)
 	command := stringValue(args, "command")
+	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
 	}
@@ -1875,6 +2015,11 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	assessment := assessShellCommandMutation(command)
 	allowWorkspaceWrites := boolValue(args, "allow_workspace_writes", false)
 	writePaths := stringSliceValue(args, "write_paths")
+	shellRoot, err := t.ws.ResolveShellWorkingDir(ownerNodeID)
+	if err != nil {
+		return "", err
+	}
+	workDir := firstNonBlankString(shellRoot.Root, t.ws.Root, t.ws.BaseRoot)
 	var (
 		beforeSnapshot map[string]workspaceFileSignature
 		resolvedWrites []string
@@ -1883,12 +2028,11 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		if !allowWorkspaceWrites {
 			return "", fmt.Errorf("run_shell cannot modify workspace files unless allow_workspace_writes=true with write_paths; use apply_patch or scoped shell mutation instead (%s)", assessment.Reason)
 		}
-		var err error
-		resolvedWrites, err = t.ws.EnsureScopedShellWrite(command, writePaths)
+		resolvedWrites, err = t.ws.EnsureScopedShellWriteForRoot(command, workDir, ownerNodeID, writePaths)
 		if err != nil {
 			return "", err
 		}
-		beforeSnapshot, err = snapshotWorkspaceFiles(t.ws.Root)
+		beforeSnapshot, err = snapshotWorkspaceFiles(workDir)
 		if err != nil {
 			return "", err
 		}
@@ -1897,11 +2041,13 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		t.ws.Progress("run_shell recognized a verification/build command that may write workspace build artifacts. Source edits are still blocked.")
 	}
 	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
-		"tool_name": "run_shell",
-		"tool_kind": "shell",
-		"command":   command,
-		"risk_tags": hookCommandRiskTags(command),
-		"file_tags": normalizedHookFileTagsForPaths(writePaths),
+		"tool_name":     "run_shell",
+		"tool_kind":     "shell",
+		"command":       command,
+		"risk_tags":     hookCommandRiskTags(command),
+		"file_tags":     normalizedHookFileTagsForPaths(writePaths),
+		"owner_node_id": ownerNodeID,
+		"work_dir":      workDir,
 	}); err != nil {
 		return "", err
 	}
@@ -1914,9 +2060,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if timeoutMs := intValue(args, "timeout_ms", 0); timeoutMs > 0 {
 		timeout = time.Duration(timeoutMs) * time.Millisecond
 	}
-	text, err := t.runShellCommand(ctx, command, timeout)
+	text, err := t.runShellCommand(ctx, workDir, command, timeout)
 	if assessment.Class == shellMutationWorkspaceWrite {
-		changedPaths, verifyErr := verifyScopedShellWriteChanges(t.ws.Root, beforeSnapshot, resolvedWrites)
+		changedPaths, verifyErr := verifyScopedShellWriteChanges(workDir, beforeSnapshot, resolvedWrites)
 		if verifyErr != nil {
 			return text, verifyErr
 		}
@@ -1934,12 +2080,14 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if err != nil {
 		text = appendRunShellGuidance(text, runShellFailureGuidance(t.ws.Shell, command, text, err))
 		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-			"tool_name": "run_shell",
-			"tool_kind": "shell",
-			"command":   command,
-			"risk_tags": hookCommandRiskTags(command),
-			"output":    text,
-			"error":     err.Error(),
+			"tool_name":     "run_shell",
+			"tool_kind":     "shell",
+			"command":       command,
+			"risk_tags":     hookCommandRiskTags(command),
+			"output":        text,
+			"error":         err.Error(),
+			"owner_node_id": ownerNodeID,
+			"work_dir":      workDir,
 		})
 		return text, err
 	}
@@ -1947,11 +2095,13 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		text = "(no output)"
 	}
 	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
-		"tool_name": "run_shell",
-		"tool_kind": "shell",
-		"command":   command,
-		"risk_tags": hookCommandRiskTags(command),
-		"output":    text,
+		"tool_name":     "run_shell",
+		"tool_kind":     "shell",
+		"command":       command,
+		"risk_tags":     hookCommandRiskTags(command),
+		"output":        text,
+		"owner_node_id": ownerNodeID,
+		"work_dir":      workDir,
 	}); err != nil {
 		return "", err
 	}
@@ -1961,6 +2111,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	args := input.(map[string]any)
 	command := stringValue(args, "command")
+	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	assessment := assessShellCommandMutation(command)
 	text, err := t.Execute(ctx, input)
 	meta := map[string]any{
@@ -1969,6 +2120,7 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"verification_like":      assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text),
 		"allowed_write_paths":    normalizeTaskStateList(stringSliceValue(args, "write_paths"), 16),
 		"allow_workspace_writes": boolValue(args, "allow_workspace_writes", false),
+		"owner_node_id":          ownerNodeID,
 		"changed_workspace":      assessment.Class == shellMutationWorkspaceWrite && err == nil,
 		"requires_verification":  assessment.Class == shellMutationWorkspaceWrite && err == nil,
 		"effect":                 "execute",
@@ -1976,12 +2128,12 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
-func (t RunShellTool) runShellCommand(ctx context.Context, command string, timeout time.Duration) (string, error) {
+func (t RunShellTool) runShellCommand(ctx context.Context, workDir string, command string, timeout time.Duration) (string, error) {
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	name, shellArgs := shellInvocation(t.ws.Shell, command)
 	cmd := exec.CommandContext(runCtx, name, shellArgs...)
-	cmd.Dir = t.ws.Root
+	cmd.Dir = workDir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return "", err

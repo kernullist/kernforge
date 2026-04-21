@@ -24,9 +24,11 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 
 	text := InitWorkspaceConfigTemplate(workspace)
 	var decoded struct {
-		SkillPaths    []string          `json:"skill_paths"`
-		EnabledSkills []string          `json:"enabled_skills"`
-		MCPServers    []MCPServerConfig `json:"mcp_servers"`
+		SkillPaths        []string                  `json:"skill_paths"`
+		EnabledSkills     []string                  `json:"enabled_skills"`
+		MCPServers        []MCPServerConfig         `json:"mcp_servers"`
+		Specialists       SpecialistSubagentsConfig `json:"specialists"`
+		WorktreeIsolation WorktreeIsolationConfig   `json:"worktree_isolation"`
 	}
 	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
 		t.Fatalf("template must be valid json: %v\n%s", err, text)
@@ -54,6 +56,15 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 	}
 	if len(decoded.MCPServers[1].Capabilities) != 2 || decoded.MCPServers[1].Capabilities[0] != "web_search" || decoded.MCPServers[1].Capabilities[1] != "web_fetch" {
 		t.Fatalf("expected web capability tags in template, got %#v", decoded.MCPServers[1].Capabilities)
+	}
+	if decoded.Specialists.Enabled == nil || !*decoded.Specialists.Enabled {
+		t.Fatalf("expected specialists to be enabled in template, got %#v", decoded.Specialists)
+	}
+	if decoded.WorktreeIsolation.Enabled == nil || *decoded.WorktreeIsolation.Enabled {
+		t.Fatalf("expected worktree isolation to default off in template, got %#v", decoded.WorktreeIsolation)
+	}
+	if decoded.WorktreeIsolation.BranchPrefix != "kernforge/" {
+		t.Fatalf("expected worktree branch prefix, got %#v", decoded.WorktreeIsolation)
 	}
 }
 
@@ -559,7 +570,9 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/detect-verification-tools",
 		"/set-auto-verify [on|off]",
 		"/new-feature <task>",
+		"/specialists",
 		"/provider status",
+		"/worktree [subcommand]",
 		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
 		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
 		`Using a on "Allow git?" enables git auto-approval for the current session only.`,

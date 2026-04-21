@@ -3543,3 +3543,55 @@ func TestNoteVerificationResultRemovesOnlyVerificationPendingCheck(t *testing.T)
 		t.Fatalf("expected next step to point at the remaining background check, got %#v", session.TaskState)
 	}
 }
+
+func TestAssignFocusedOwnerNodeToToolCalls(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		ExecutorFocusNode: "plan-02",
+	}
+
+	calls := []ToolCall{
+		{
+			Name:      "apply_patch",
+			Arguments: `{"patch":"*** Begin Patch\n*** End Patch\n"}`,
+		},
+		{
+			Name:      "run_shell",
+			Arguments: `{"command":"go test ./..."}`,
+		},
+		{
+			Name:      "read_file",
+			Arguments: `{"path":"main.go"}`,
+		},
+	}
+
+	updated := assignFocusedOwnerNodeToToolCalls(calls, session)
+	if got := stringValue(toolCallArgumentsMap(updated[0]), "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected apply_patch owner_node_id to be injected, got %#v", updated[0])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[1]), "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected run_shell owner_node_id to be injected, got %#v", updated[1])
+	}
+	if got := stringValue(toolCallArgumentsMap(updated[2]), "owner_node_id"); got != "" {
+		t.Fatalf("expected read-only tool call to remain unchanged, got %#v", updated[2])
+	}
+}
+
+func TestAssignFocusedOwnerNodeToToolCallsPreservesExplicitOwner(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		ExecutorFocusNode: "plan-02",
+	}
+
+	calls := []ToolCall{
+		{
+			Name:      "run_shell",
+			Arguments: `{"command":"go test ./...","owner_node_id":"plan-99"}`,
+		},
+	}
+
+	updated := assignFocusedOwnerNodeToToolCalls(calls, session)
+	if got := stringValue(toolCallArgumentsMap(updated[0]), "owner_node_id"); got != "plan-99" {
+		t.Fatalf("expected explicit owner_node_id to be preserved, got %#v", updated[0])
+	}
+}

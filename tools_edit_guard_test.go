@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -251,6 +252,107 @@ func TestRunShellRejectsScopedWorkspaceWriteOutsideDeclaredPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "outside write_paths") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunShellRejectsScopedWorkspaceWriteOutsideEditableOwnership(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	repoRoot := t.TempDir()
+	ctx := context.Background()
+
+	if _, err := runGitCommand(ctx, repoRoot, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoRoot, "telemetry"), 0o755); err != nil {
+		t.Fatalf("MkdirAll telemetry: %v", err)
+	}
+	original := "package main\n"
+	if err := os.WriteFile(filepath.Join(repoRoot, "main.go"), []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "telemetry", "provider.man"), []byte("<manifest/>\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile provider.man: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "add", "main.go", "telemetry/provider.man"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+
+	cfg := DefaultConfig(repoRoot)
+	cfg.WorktreeIsolation.Enabled = boolPtr(true)
+	cfg.WorktreeIsolation.RootDir = filepath.Join(t.TempDir(), "managed")
+	session := NewSession(repoRoot, "test", "test-model", "", "default")
+	session.TaskGraph = &TaskGraph{
+		Nodes: []TaskNode{
+			{
+				ID:                     "plan-01",
+				Title:                  "Update telemetry assets",
+				Kind:                   "edit",
+				Status:                 "ready",
+				EditableSpecialist:     "telemetry-analyst",
+				EditableOwnershipPaths: []string{"telemetry/**", "*.man"},
+				LastUpdated:            time.Now(),
+			},
+		},
+		LastUpdated: time.Now(),
+	}
+	rt := &runtimeState{
+		cfg:     cfg,
+		session: session,
+		workspace: Workspace{
+			BaseRoot: repoRoot,
+			Root:     repoRoot,
+		},
+	}
+	rt.syncWorkspaceFromSession()
+	manager := newWorktreeManager(cfg)
+	t.Cleanup(func() {
+		for _, lease := range rt.session.SpecialistWorktrees {
+			_ = manager.Remove(context.Background(), repoRoot, SessionWorktree{
+				Root:    lease.Root,
+				Branch:  lease.Branch,
+				Managed: true,
+			})
+		}
+	})
+
+	tool := NewRunShellTool(rt.workspace)
+	command := "printf 'oops\\n' > main.go"
+	if runtime.GOOS == "windows" {
+		command = "Set-Content main.go 'oops'"
+	}
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command":                command,
+		"allow_workspace_writes": true,
+		"write_paths":            []string{"main.go"},
+		"owner_node_id":          "plan-01",
+	})
+	if err == nil {
+		t.Fatalf("expected editable ownership rejection")
+	}
+	if !errors.Is(err, ErrEditTargetMismatch) {
+		t.Fatalf("expected ErrEditTargetMismatch, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "editable ownership") {
+		t.Fatalf("expected editable ownership guidance, got %v", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(repoRoot, "main.go"))
+	if readErr != nil {
+		t.Fatalf("ReadFile main.go: %v", readErr)
+	}
+	if string(data) != original {
+		t.Fatalf("expected main.go to remain unchanged, got %q", string(data))
 	}
 }
 

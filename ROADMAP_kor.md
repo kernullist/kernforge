@@ -82,8 +82,8 @@
 
 ### Kernforge가 아직 비어 있는 축
 
-1. hook engine 부재
-2. subagent/worker 개념 부재
+1. specialist subagent는 micro-worker/read-only worker 수준까지는 있으나, 독립 profile/worktree/session ownership은 아직 부족함
+2. worktree isolation이 아직 세션/tracked feature 기본 흐름에 붙어 있지 않음
 3. automation/scheduler 부재
 4. cloud delegation 부재
 5. GitHub/PR review automation 부재
@@ -108,14 +108,58 @@
 
 ## 4. 제안 기능 우선순위
 
-### P0. Security Hooks Engine
+### P0. Specialist Subagents And Worktree Isolation
 
 목표:
-- 일반적인 hook 기능을 넘어서 "보안 엔지니어링 안전장치"로 만든다.
+- 현재 존재하는 micro-worker/read-only worker 뼈대를 실제 specialist subagent와 isolated execution boundary로 끌어올린다.
 
 왜 중요한가:
-- Claude Code의 hooks를 따라가는 동시에, Kernforge만의 제품 정체성을 가장 빠르게 만든다.
-- anti-cheat/driver/telemetry 작업은 실수 비용이 크므로, preflight 정책 계층이 가치가 높다.
+- Codex/Claude Code/Hermes와 비교했을 때 가장 체감 차이를 빠르게 줄일 수 있는 축이다.
+- anti-cheat/driver/telemetry 작업은 충돌 없는 병렬 조사와 안전한 rollback 경계가 특히 중요하다.
+
+구현 우선순위:
+1. built-in specialist catalog
+2. node-aware routing
+3. session-attached isolated git worktree
+4. tracked feature 구현 시 auto isolation
+5. specialist/worktree 상태를 `/status`, `/config`, `/specialists`, `/worktree`에 노출
+
+기본 제공 specialist:
+1. `planner`
+2. `reviewer`
+3. `kernel-investigator`
+4. `driver-build-fixer`
+5. `telemetry-analyst`
+6. `unreal-integrity-reviewer`
+7. `memory-inspection-reviewer`
+8. `attack-surface-reviewer`
+
+specialist 설계 원칙:
+1. 각 specialist는 별도 prompt와 선택적 provider/model override를 가진다.
+2. 초기 단계에서는 read-only delegation을 우선하고, edit ownership은 main agent가 유지한다.
+3. routing은 task node kind, failure text, lifecycle note, goal keyword를 함께 사용한다.
+4. specialist assignment는 task graph에 남겨서 재개 시에도 보이게 한다.
+
+worktree isolation 설계 원칙:
+1. base workspace root와 active worktree root를 분리한다.
+2. memory, hooks, feature metadata, workspace config는 base root 기준으로 유지한다.
+3. edit/git/checkpoint는 active root 기준으로 수행한다.
+4. cleanup는 dirty worktree를 강제로 지우지 않고 먼저 중단한다.
+
+성공 조건:
+1. tracked feature 구현이 기본적으로 isolated worktree에서 시작된다.
+2. task graph에 specialist assignment가 축적된다.
+3. active root 밖 편집은 막되, 외부 isolated worktree는 정상 허용된다.
+4. 실패한 tracked feature 구현을 base root 오염 없이 정리할 수 있다.
+
+### P0. Security Hooks Engine Hardening
+
+목표:
+- 기존 hook engine을 "보안 엔지니어링 안전장치"로 더 촘촘하게 만든다.
+
+왜 중요한가:
+- Kernforge는 이미 hook runtime을 갖고 있으므로, 이제는 존재 여부보다 보안 정책 깊이를 높이는 단계다.
+- anti-cheat/driver/telemetry 작업은 실수 비용이 크므로 preflight 정책 계층의 품질이 중요하다.
 
 주요 이벤트:
 1. `SessionStart`
@@ -154,41 +198,9 @@ MVP 범위:
 4. tool/shell/edit/git/verify 이벤트 우선 지원
 
 성공 조건:
-- 보안 민감 작업의 사전 사고율 감소
-- verification coverage 상승
-- "이 작업은 그냥 수정하면 안 된다"를 런타임이 알려줌
-
-### P0. Specialist Subagents
-
-목표:
-- 범용 병렬 agent가 아니라 도메인 분리형 전문 agent를 제공한다.
-
-기본 제공 subagent 제안:
-1. `planner`
-2. `reviewer`
-3. `kernel-investigator`
-4. `driver-build-fixer`
-5. `telemetry-analyst`
-6. `unreal-integrity-reviewer`
-7. `memory-inspection-reviewer`
-8. `attack-surface-reviewer`
-
-핵심 설계:
-1. 각 subagent는 별도 system prompt를 가진다.
-2. 도구 허용 범위를 제한할 수 있다.
-3. 모델 선택을 다르게 할 수 있다.
-4. memory visibility를 제한할 수 있다.
-5. selection/file scope를 전달할 수 있다.
-
-권장 delegation 패턴:
-1. main agent가 task decomposition
-2. evidence 수집용 subagent 병렬 실행
-3. 결과를 main agent가 통합
-4. edit는 한 agent 또는 명시된 owner만 수행
-
-차별화 포인트:
-- 일반 코드 탐색 agent가 아니라 "증거 클래스별" agent로 나눈다.
-- 예: 코드, 로그, dump metadata, ETW, verifier 결과를 각기 다른 subagent가 본다.
+1. 보안 민감 작업의 사전 사고율 감소
+2. verification coverage 상승
+3. "이 작업은 그냥 수정하면 안 된다"를 런타임이 알려줌
 
 ### P1. Security-Aware Verification Planner
 
