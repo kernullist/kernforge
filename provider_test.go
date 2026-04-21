@@ -368,6 +368,91 @@ func TestOpenAIClientStreamsToolCallArguments(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientSuppressesBufferedToolPreambleTextWhenToolCallsAppear(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"Let me inspect the file first.\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"main.go\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		Tools: []ToolDefinition{{
+			Name: "read_file",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(deltas) != 0 {
+		t.Fatalf("expected buffered tool preamble deltas to stay hidden, got %#v", deltas)
+	}
+	if resp.Message.Text != "Let me inspect the file first." {
+		t.Fatalf("unexpected response text: %q", resp.Message.Text)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one streamed tool call, got %#v", resp.Message.ToolCalls)
+	}
+}
+
+func TestOpenAIClientFlushesBufferedShortTextAtEndWhenNoToolCallArrives(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"short final answer\"},\"finish_reason\":\"stop\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		Tools: []ToolDefinition{{
+			Name: "read_file",
+		}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if strings.Join(deltas, "") != "short final answer" {
+		t.Fatalf("expected buffered text to flush at end, got %#v", deltas)
+	}
+	if resp.Message.Text != "short final answer" {
+		t.Fatalf("unexpected response text: %q", resp.Message.Text)
+	}
+}
+
 func TestOpenAIClientStreamHonorsContextCancellation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

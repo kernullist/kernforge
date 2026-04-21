@@ -161,8 +161,12 @@ Its current differentiators are:
 - Pressing `Enter` on an empty main prompt is ignored so the REPL does not create empty turns
 - The REPL uses a compact branded banner, subtle turn dividers, grouped status/config sections, and separate assistant versus tool activity streams for denser terminal UX
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
+- Short tool-turn narration such as "let me inspect" or similar Korean preambles is buffered and collapsed into footer-style progress instead of spawning extra assistant transcript blocks
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
+- Transient in-flight status, short `next` preambles, and tool progress now share a bottom footer panel instead of interleaving with the main transcript
+- Confirmation prompts such as cancel, diff preview, write approval, and verification recovery temporarily take over that same footer slot so they stay visually pinned at the bottom
+- Persistent results such as completion summaries, output paths, warnings, and configuration changes remain in the main transcript while ephemeral progress stays in the footer
 - Abruptly cut-off final answers are retried once as a continuation and merged before the CLI returns to the prompt
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
 - After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
@@ -626,6 +630,29 @@ Mention syntax:
 
 ```text
 @mcp:docs:getting-started summarize this resource
+```
+
+For live web research, Kernforge now deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` either through your shell environment or through `mcp_servers[].env` in config, then run `/reload` if you changed config or environment after startup. This workspace also includes a ready-to-run script at `.kernforge/mcp/web-research-mcp.js` plus a matching `.kernforge/config.json` entry. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection. `/init config` also enables the bundled web-research MCP by default when the script is available.
+
+Minimal workspace config example:
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "web-research",
+      "command": "node",
+      "args": [".kernforge/mcp/web-research-mcp.js"],
+      "env": {
+        "TAVILY_API_KEY": "",
+        "BRAVE_SEARCH_API_KEY": "",
+        "SERPAPI_API_KEY": ""
+      },
+      "cwd": ".",
+      "capabilities": ["web_search", "web_fetch"]
+    }
+  ]
+}
 ```
 
 ## Interactive REPL

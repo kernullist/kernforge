@@ -5,13 +5,35 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+type blockingLineInput struct {
+	started   chan struct{}
+	release   chan struct{}
+	remaining string
+	once      sync.Once
+}
+
+func (b *blockingLineInput) Read(p []byte) (int, error) {
+	b.once.Do(func() {
+		close(b.started)
+	})
+	<-b.release
+	if b.remaining == "" {
+		return 0, io.EOF
+	}
+	n := copy(p, b.remaining)
+	b.remaining = b.remaining[n:]
+	return n, nil
+}
 
 func TestRuntimeStateWithRequestCancelSuspendedDisablesAndRestores(t *testing.T) {
 	rt := &runtimeState{}
@@ -687,6 +709,211 @@ func TestRuntimeStatePrintWhileThinkingDoesNotStartIndicatorWhenInactive(t *test
 	}
 }
 
+func TestRuntimeStateWithPinnedPromptBlocksConcurrentOutput(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	started := make(chan struct{})
+	done := make(chan struct{})
+	err := rt.withPinnedPrompt(func() error {
+		go func() {
+			close(started)
+			rt.writeOutput("stream")
+			close(done)
+		}()
+		<-started
+		select {
+		case <-done:
+			t.Fatalf("expected concurrent output to block while prompt is pinned")
+		case <-time.After(30 * time.Millisecond):
+		}
+		fmt.Fprint(rt.writer, "prompt")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withPinnedPrompt returned error: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected blocked output to resume after pinned prompt finished")
+	}
+	if got := out.String(); got != "promptstream" {
+		t.Fatalf("unexpected pinned prompt output ordering: %q", got)
+	}
+}
+
+func TestRuntimeStateRenderFooterLineReplacesPreviousFooter(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.renderFooterLine("footer status")
+	rt.renderFooterLine("ok")
+
+	want := "footer status\rok           "
+	if got := out.String(); got != want {
+		t.Fatalf("unexpected footer render sequence: %q", got)
+	}
+	if !rt.footerVisible {
+		t.Fatalf("expected footer to remain visible after replacement")
+	}
+	if rt.footerLineCount != 1 {
+		t.Fatalf("expected footer line count to track replacement text, got %d", rt.footerLineCount)
+	}
+}
+
+func TestRuntimeStateWithPinnedPromptClearsFooterBeforePrompt(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.renderFooterLine("footer status")
+
+	err := rt.withPinnedPrompt(func() error {
+		fmt.Fprint(rt.writer, "prompt")
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withPinnedPrompt returned error: %v", err)
+	}
+
+	want := "footer status\r             \rprompt"
+	if got := out.String(); got != want {
+		t.Fatalf("unexpected prompt footer sequence: %q", got)
+	}
+	if rt.footerVisible {
+		t.Fatalf("expected footer to be cleared while prompt owns the bottom line")
+	}
+}
+
+func TestRuntimeStateRenderFooterTextClearsWrappedPanel(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+	}
+
+	rt.renderFooterText("alpha\nbeta")
+	rt.renderFooterText("ok")
+
+	want := "alpha\nbeta\x1b[1A\r\x1b[Jok"
+	if got := out.String(); got != want {
+		t.Fatalf("unexpected wrapped footer render sequence: %q", got)
+	}
+	if rt.footerLineCount != 1 {
+		t.Fatalf("expected wrapped footer replacement to leave one visible line, got %d", rt.footerLineCount)
+	}
+}
+
+func TestRuntimeStatePromptResolveAutoVerifyFailurePinsPromptAgainstConcurrentOutput(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	input := &blockingLineInput{
+		started:   make(chan struct{}),
+		release:   make(chan struct{}),
+		remaining: "y\n",
+	}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		reader:      bufio.NewReader(input),
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+		detectVerificationToolPath: func(string) string {
+			return ""
+		},
+		cfg: DefaultConfig(home),
+		session: &Session{
+			Provider:       "openai",
+			Model:          "gpt-test",
+			BaseURL:        "https://example.test",
+			PermissionMode: "default",
+		},
+	}
+	rt.agent = &Agent{Config: rt.cfg}
+
+	report := VerificationReport{
+		Steps: []VerificationStep{{
+			Label:       "msbuild demo.sln",
+			Command:     "msbuild demo.sln /m",
+			Status:      VerificationFailed,
+			FailureKind: "command_not_found",
+			Hint:        "A required verification tool could not be started.",
+		}},
+	}
+
+	resultCh := make(chan AutoVerifyFailureResolution, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resolution, err := rt.promptResolveAutoVerifyFailure(report)
+		resultCh <- resolution
+		errCh <- err
+	}()
+
+	select {
+	case <-input.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected auto-verify prompt to begin reading input")
+	}
+
+	writeDone := make(chan struct{})
+	go func() {
+		rt.writeOutput("stream")
+		close(writeDone)
+	}()
+
+	select {
+	case <-writeDone:
+		t.Fatal("expected concurrent output to block while auto-verify prompt is pinned")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(input.release)
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("promptResolveAutoVerifyFailure: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected auto-verify prompt to finish after input was released")
+	}
+
+	resolution := <-resultCh
+	if resolution != AutoVerifyFailureDisable {
+		t.Fatalf("expected disable resolution, got %q", resolution)
+	}
+
+	select {
+	case <-writeDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected blocked output to resume after auto-verify prompt finished")
+	}
+
+	rendered := out.String()
+	promptIndex := strings.Index(rendered, "Automatic verification failed because a verification tool could not be started.")
+	streamIndex := strings.Index(rendered, "stream")
+	if promptIndex == -1 {
+		t.Fatalf("expected auto-verify prompt text in output, got %q", rendered)
+	}
+	if streamIndex == -1 {
+		t.Fatalf("expected resumed output marker in output, got %q", rendered)
+	}
+	if streamIndex < promptIndex {
+		t.Fatalf("expected prompt to appear before resumed output, got %q", rendered)
+	}
+}
+
 func TestFormatAssistantErrorAddsGuidanceForToolUseUnsupportedModel(t *testing.T) {
 	rt := &runtimeState{
 		ui: UI{},
@@ -757,7 +984,39 @@ func TestRuntimeStatePrintAssistantFlushesActiveAssistantStream(t *testing.T) {
 	}
 }
 
-func TestRuntimeStatePrintAssistantWhileThinkingUsesNextActivityLine(t *testing.T) {
+func TestRuntimeStatePrintAssistantWhileThinkingUsesFooterPanelWhenInteractive(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	rt.printAssistantWhileThinking("I am going to inspect the auth flow first.")
+	defer rt.stopThinkingIndicator()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rendered := out.String()
+		if strings.Contains(rendered, "[thinking]") {
+			if !strings.Contains(rendered, "[next") {
+				t.Fatalf("expected assistant preamble to render in footer panel, got %q", rendered)
+			}
+			if strings.Contains(rendered, "  | ") {
+				t.Fatalf("expected interactive assistant preamble to avoid persistent progress lines, got %q", rendered)
+			}
+			if rt.footerLineCount < 2 {
+				t.Fatalf("expected next-step footer panel to occupy multiple lines, got %d", rt.footerLineCount)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected footer panel for assistant preamble, got %q", out.String())
+}
+
+func TestRuntimeStatePrintAssistantWhileThinkingFallsBackToProgressLineWhenNonInteractive(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
 		writer: &out,
@@ -768,10 +1027,10 @@ func TestRuntimeStatePrintAssistantWhileThinkingUsesNextActivityLine(t *testing.
 
 	rendered := out.String()
 	if !strings.Contains(rendered, "[next") {
-		t.Fatalf("expected assistant preamble to render as next-step activity, got %q", rendered)
+		t.Fatalf("expected non-interactive assistant preamble to render as next-step activity, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "inspect the auth flow first") {
-		t.Fatalf("expected activity line to include assistant preamble text, got %q", rendered)
+	if !strings.Contains(rendered, "  | ") {
+		t.Fatalf("expected non-interactive assistant preamble to use persistent progress lines, got %q", rendered)
 	}
 }
 
@@ -808,6 +1067,140 @@ func TestPrintProgressMessageClassifiesToolEvents(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "read_file loaded main.go (12 line(s)).") {
 		t.Fatalf("expected tool completion text to be preserved, got %q", rendered)
+	}
+}
+
+func TestPrintProgressMessageUsesFooterWhenInteractive(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	rt.printProgressMessage("Creating automatic checkpoint before edit...")
+	defer rt.stopThinkingIndicator()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rendered := out.String()
+		if strings.Contains(rendered, "[thinking]") {
+			if strings.Contains(rendered, "  | ") {
+				t.Fatalf("expected interactive progress to use footer instead of persistent progress lines, got %q", rendered)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected interactive progress to render via the footer, got %q", out.String())
+}
+
+func TestPrintProgressMessageInteractiveFlushesAssistantStreamBeforeFooter(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	rt.appendAssistantStream("partial reply")
+	rt.printProgressMessage("read_file loaded main.go (12 line(s)).")
+	defer rt.stopThinkingIndicator()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rendered := out.String()
+		if strings.Contains(rendered, "[thinking]") {
+			if !strings.Contains(rendered, "partial reply\n") {
+				t.Fatalf("expected assistant stream to flush before footer progress, got %q", rendered)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected footer progress after assistant flush, got %q", out.String())
+}
+
+func TestShowTransientPanelWhileThinkingRendersMultilineFooter(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	if !rt.showTransientPanelWhileThinking("INFO  analysis wave 1/3", "TIP  shard 4/12") {
+		t.Fatalf("expected transient panel to be enabled in interactive mode")
+	}
+	defer rt.stopThinkingIndicator()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rendered := out.String()
+		if strings.Contains(rendered, "[thinking]") && strings.Contains(rendered, "analysis wave 1/3") {
+			if !strings.Contains(rendered, "TIP  shard 4/12") {
+				t.Fatalf("expected multiline footer details, got %q", rendered)
+			}
+			if rt.footerLineCount < 3 {
+				t.Fatalf("expected footer panel to occupy multiple lines, got %d", rt.footerLineCount)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected multiline transient footer panel, got %q", out.String())
+}
+
+func TestPrintPersistentWhileThinkingKeepsResultsInBodyAfterFooterState(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	if !rt.showTransientWhileThinking("INFO  analysis wave 1/3", "TIP  shard 4/12") {
+		t.Fatalf("expected transient footer state to be enabled")
+	}
+	time.Sleep(30 * time.Millisecond)
+	rt.printPersistentWhileThinking(rt.ui.successLine("Analysis completed with 12 shard(s)."))
+	rt.stopThinkingIndicator()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "OK  Analysis completed with 12 shard(s).") {
+		t.Fatalf("expected result summary to remain in the body output, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "analysis wave 1/3") {
+		t.Fatalf("expected prior transient footer state to render before the result summary, got %q", rendered)
+	}
+	if rt.footerVisible {
+		t.Fatalf("expected persistent body output to clear the transient footer")
+	}
+}
+
+func TestAssistantStreamClearsNextStepFooterPanel(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	rt.printAssistantWhileThinking("I am going to inspect the auth flow first.")
+	time.Sleep(30 * time.Millisecond)
+	rt.appendAssistantStream("Actual answer")
+	rt.finishAssistantStream()
+	rt.stopThinkingIndicator()
+
+	rendered := out.String()
+	if !strings.Contains(rendered, ">> assistant ") || !strings.Contains(rendered, "Actual answer") {
+		t.Fatalf("expected streamed assistant output after footer preamble, got %q", rendered)
+	}
+	if rt.footerVisible {
+		t.Fatalf("expected footer panel to be cleared once assistant streaming begins")
 	}
 }
 
@@ -1601,6 +1994,131 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 	if strings.Contains(text, "write_approval:") {
 		t.Fatalf("did not expect runtime-only approval state in config, got %q", text)
+	}
+}
+
+func TestConfigCommandShowsWebResearchMCPKeySources(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BRAVE_SEARCH_API_KEY", "env-secret")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	cfg := DefaultConfig(root)
+	cfg.MCPServers = []MCPServerConfig{
+		{
+			Name:    "web-research",
+			Command: "node",
+			Args:    []string{".kernforge/mcp/web-research-mcp.js"},
+			Env: map[string]string{
+				"TAVILY_API_KEY":       "config-secret",
+				"BRAVE_SEARCH_API_KEY": "",
+				"SERPAPI_API_KEY":      "",
+			},
+			Capabilities: []string{"web_search", "web_fetch"},
+		},
+	}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       cfg,
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "config"}); err != nil {
+		t.Fatalf("handleCommand(config): %v", err)
+	}
+
+	text := out.String()
+	normalized := strings.Join(strings.Fields(text), " ")
+	for _, needle := range []string{
+		"-- Web Research MCP ",
+		"configured: true",
+		"servers: web-research",
+		"active_search_key: TAVILY_API_KEY (config)",
+		"tavily_api_key: config",
+		"brave_search_api_key: environment",
+		"serpapi_api_key: unset",
+	} {
+		if !strings.Contains(normalized, needle) {
+			t.Fatalf("expected normalized config output to contain %q, got %q", needle, normalized)
+		}
+	}
+}
+
+func TestMCPCommandShowsWebResearchMCPKeySources(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("BRAVE_SEARCH_API_KEY", "env-secret")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	cfg := DefaultConfig(root)
+	cfg.MCPServers = []MCPServerConfig{
+		{
+			Name:    "web-research",
+			Command: "node",
+			Args:    []string{".kernforge/mcp/web-research-mcp.js"},
+			Env: map[string]string{
+				"TAVILY_API_KEY":       "config-secret",
+				"BRAVE_SEARCH_API_KEY": "",
+				"SERPAPI_API_KEY":      "",
+			},
+			Capabilities: []string{"web_search", "web_fetch"},
+		},
+	}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       cfg,
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+		mcp: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: cfg.MCPServers[0],
+					status: MCPServerStatus{
+						Name:          "web-research",
+						Command:       "node",
+						Cwd:           root,
+						ToolCount:     2,
+						ResourceCount: 0,
+						PromptCount:   0,
+					},
+				},
+			},
+			status: []MCPServerStatus{
+				{
+					Name:          "web-research",
+					Command:       "node",
+					Cwd:           root,
+					ToolCount:     2,
+					ResourceCount: 0,
+					PromptCount:   0,
+				},
+			},
+		},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "mcp"}); err != nil {
+		t.Fatalf("handleCommand(mcp): %v", err)
+	}
+
+	normalized := strings.Join(strings.Fields(out.String()), " ")
+	for _, needle := range []string{
+		"== MCP",
+		"web-research tools=2 resources=0 prompts=0",
+		"active_key=TAVILY_API_KEY (config)",
+		"tavily=config",
+		"brave=environment",
+		"serpapi=unset",
+	} {
+		if !strings.Contains(normalized, needle) {
+			t.Fatalf("expected normalized mcp output to contain %q, got %q", needle, normalized)
+		}
 	}
 }
 

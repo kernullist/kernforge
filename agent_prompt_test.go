@@ -89,6 +89,62 @@ func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 	}
 }
 
+func TestSystemPromptIncludesWebResearchGuidanceAndRelevantMCPCapabilities(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Hypervisor 기반 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 작성해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		MCP: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: MCPServerConfig{Name: "web"},
+					tools: []MCPToolDescriptor{
+						{Name: "search_web", Description: "Search the web for current articles and references"},
+						{Name: "echo", Description: "Echo a message"},
+					},
+					prompts: []MCPPromptDescriptor{
+						{Name: "browse_url", Description: "Fetch and summarize a URL"},
+					},
+				},
+			},
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "likely needs current external research") {
+		t.Fatalf("expected latest research guidance, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Relevant MCP web/research capabilities:") {
+		t.Fatalf("expected relevant web MCP catalog, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "mcp__web__search_web") {
+		t.Fatalf("expected namespaced web tool in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "Echo a message") {
+		t.Fatalf("expected non-web MCP tool to be filtered out, got %q", prompt)
+	}
+}
+
+func TestSystemPromptWarnsWhenLatestResearchNeedsWebButNoCapabilityConfigured(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "최신 안티치트 동향을 조사해줘"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "no obvious MCP web-search/browser capability is configured") {
+		t.Fatalf("expected missing web capability warning, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Do not pretend to have live web results.") {
+		t.Fatalf("expected no-fabrication guidance, got %q", prompt)
+	}
+}
+
 func TestSystemPromptMarksAnalysisOnlyRequestsAsReadOnly(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

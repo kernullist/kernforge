@@ -17,12 +17,13 @@ import (
 )
 
 type MCPServerConfig struct {
-	Name     string            `json:"name"`
-	Command  string            `json:"command"`
-	Args     []string          `json:"args,omitempty"`
-	Env      map[string]string `json:"env,omitempty"`
-	Cwd      string            `json:"cwd,omitempty"`
-	Disabled bool              `json:"disabled,omitempty"`
+	Name         string            `json:"name"`
+	Command      string            `json:"command"`
+	Args         []string          `json:"args,omitempty"`
+	Env          map[string]string `json:"env,omitempty"`
+	Cwd          string            `json:"cwd,omitempty"`
+	Capabilities []string          `json:"capabilities,omitempty"`
+	Disabled     bool              `json:"disabled,omitempty"`
 }
 
 type MCPToolDescriptor struct {
@@ -175,7 +176,15 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		env := make([]string, 0, len(cmd.Env)+len(cfg.Env))
 		env = append(env, cmd.Env...)
 		for key, value := range cfg.Env {
-			env = append(env, key+"="+value)
+			trimmedKey := strings.TrimSpace(key)
+			if trimmedKey == "" {
+				continue
+			}
+			trimmedValue := strings.TrimSpace(value)
+			if trimmedValue == "" {
+				continue
+			}
+			env = append(env, trimmedKey+"="+trimmedValue)
 		}
 		cmd.Env = env
 	}
@@ -282,6 +291,18 @@ func (m *MCPManager) Status() []MCPServerStatus {
 	return append([]MCPServerStatus(nil), m.status...)
 }
 
+func (m *MCPManager) ServerConfig(name string) (MCPServerConfig, bool) {
+	if m == nil {
+		return MCPServerConfig{}, false
+	}
+	for _, server := range m.servers {
+		if strings.EqualFold(strings.TrimSpace(server.config.Name), strings.TrimSpace(name)) {
+			return server.config, true
+		}
+	}
+	return MCPServerConfig{}, false
+}
+
 func (m *MCPManager) Resources() []MCPResourceRef {
 	if m == nil {
 		return nil
@@ -383,8 +404,208 @@ func (m *MCPManager) PromptCatalogPrompt() string {
 	return strings.Join(lines, "\n")
 }
 
+func (m *MCPManager) HasWebResearchCapability() bool {
+	return strings.TrimSpace(m.WebResearchCatalogPrompt()) != ""
+}
+
+func (m *MCPManager) IsWebResearchToolName(name string) bool {
+	if m == nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false
+	}
+	for _, server := range m.servers {
+		if serverDeclaresWebResearchCapability(server.config) {
+			serverPromptTool := "mcp__prompt__" + sanitizeMCPName(server.config.Name)
+			serverResourceTool := "mcp__resource__" + sanitizeMCPName(server.config.Name)
+			if trimmed == serverPromptTool || trimmed == serverResourceTool {
+				return true
+			}
+		}
+		if trimmed == "mcp__prompt__"+sanitizeMCPName(server.config.Name) {
+			for _, prompt := range server.prompts {
+				if looksLikeWebResearchMCPText(prompt.Name, prompt.Description) {
+					return true
+				}
+			}
+		}
+		if trimmed == "mcp__resource__"+sanitizeMCPName(server.config.Name) {
+			for _, resource := range server.resources {
+				if looksLikeWebResearchMCPText(resource.URI, resource.Name, resource.Description) {
+					return true
+				}
+			}
+		}
+		for _, tool := range server.tools {
+			if trimmed == namespacedMCPToolName(server.config.Name, tool.Name) &&
+				(serverDeclaresWebResearchCapability(server.config) || looksLikeWebResearchMCPText(tool.Name, tool.Description)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *MCPManager) IsWebResearchToolCall(call ToolCall) bool {
+	if m == nil {
+		return false
+	}
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return false
+	}
+	args := toolCallArgumentsMap(call)
+	for _, server := range m.servers {
+		serverPromptTool := "mcp__prompt__" + sanitizeMCPName(server.config.Name)
+		if name == serverPromptTool {
+			if serverDeclaresWebResearchCapability(server.config) {
+				return true
+			}
+			promptName := strings.TrimSpace(stringValue(args, "name"))
+			for _, prompt := range server.prompts {
+				if promptName != "" && !strings.EqualFold(prompt.Name, promptName) {
+					continue
+				}
+				if looksLikeWebResearchMCPText(prompt.Name, prompt.Description) {
+					return true
+				}
+			}
+		}
+		serverResourceTool := "mcp__resource__" + sanitizeMCPName(server.config.Name)
+		if name == serverResourceTool {
+			if serverDeclaresWebResearchCapability(server.config) {
+				return true
+			}
+			target := strings.TrimSpace(stringValue(args, "uri"))
+			for _, resource := range server.resources {
+				if target != "" && !strings.EqualFold(resource.URI, target) && !strings.EqualFold(resource.Name, target) {
+					continue
+				}
+				if looksLikeWebResearchMCPText(resource.URI, resource.Name, resource.Description) {
+					return true
+				}
+			}
+		}
+		for _, tool := range server.tools {
+			if name != namespacedMCPToolName(server.config.Name, tool.Name) {
+				continue
+			}
+			if serverDeclaresWebResearchCapability(server.config) || looksLikeWebResearchMCPText(tool.Name, tool.Description) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (m *MCPManager) WebResearchCatalogPrompt() string {
+	if m == nil {
+		return ""
+	}
+	seen := map[string]struct{}{}
+	lines := []string{}
+	for _, server := range m.servers {
+		serverName := server.config.Name
+		for _, tool := range server.tools {
+			if !serverDeclaresWebResearchCapability(server.config) && !looksLikeWebResearchMCPText(tool.Name, tool.Description) {
+				continue
+			}
+			desc := strings.TrimSpace(tool.Description)
+			if desc == "" {
+				desc = "MCP web/research tool"
+			}
+			line := fmt.Sprintf("- tool %s: %s - %s", serverName, namespacedMCPToolName(serverName, tool.Name), desc)
+			if _, ok := seen[line]; ok {
+				continue
+			}
+			seen[line] = struct{}{}
+			lines = append(lines, line)
+		}
+		for _, prompt := range server.prompts {
+			if !serverDeclaresWebResearchCapability(server.config) && !looksLikeWebResearchMCPText(prompt.Name, prompt.Description) {
+				continue
+			}
+			args := []string{}
+			for _, arg := range prompt.Arguments {
+				label := arg.Name
+				if arg.Required {
+					label += "*"
+				}
+				args = append(args, label)
+			}
+			signature := prompt.Name + "(" + strings.Join(args, ", ") + ")"
+			desc := strings.TrimSpace(prompt.Description)
+			if desc == "" {
+				desc = "MCP web/research prompt"
+			}
+			line := fmt.Sprintf("- prompt %s: %s - %s", serverName, signature, desc)
+			if _, ok := seen[line]; ok {
+				continue
+			}
+			seen[line] = struct{}{}
+			lines = append(lines, line)
+		}
+		for _, resource := range server.resources {
+			if !serverDeclaresWebResearchCapability(server.config) && !looksLikeWebResearchMCPText(resource.URI, resource.Name, resource.Description) {
+				continue
+			}
+			label := resource.URI
+			if label == "" {
+				label = resource.Name
+			}
+			extra := ""
+			if resource.Name != "" && resource.Name != label {
+				extra = " (" + resource.Name + ")"
+			}
+			desc := strings.TrimSpace(resource.Description)
+			if desc == "" {
+				desc = "MCP web/research resource"
+			}
+			line := fmt.Sprintf("- resource %s: %s%s - %s", serverName, label, extra, desc)
+			if _, ok := seen[line]; ok {
+				continue
+			}
+			seen[line] = struct{}{}
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func serverDeclaresWebResearchCapability(cfg MCPServerConfig) bool {
+	for _, capability := range cfg.Capabilities {
+		switch strings.ToLower(strings.TrimSpace(capability)) {
+		case "web", "web_research", "web_search", "web_fetch", "browser", "browse":
+			return true
+		}
+	}
+	return false
+}
+
 func namespacedMCPToolName(server, tool string) string {
 	return "mcp__" + sanitizeMCPName(server) + "__" + sanitizeMCPName(tool)
+}
+
+func looksLikeWebResearchMCPText(values ...string) bool {
+	joined := strings.ToLower(strings.TrimSpace(strings.Join(values, " ")))
+	if joined == "" {
+		return false
+	}
+	if containsAny(joined,
+		"web search", "search web", "internet search", "search internet",
+		"browser", "browse", "browse url", "visit url", "open url",
+		"fetch url", "read url", "crawl", "crawler", "scrape",
+		"serp", "tavily", "exa", "firecrawl", "duckduckgo", "google search", "bing search",
+		"online article", "news search", "docs search", "documentation search", "documentation lookup", "reference lookup",
+		"http://", "https://",
+	) {
+		return true
+	}
+	return containsAny(joined,
+		"web", "search", "browser", "browse", "fetch", "crawl", "url", "news", "article", "docs",
+	) && !containsAny(joined, "workspace", "local file", "filesystem", "git")
 }
 
 func sanitizeMCPName(value string) string {

@@ -1,0 +1,21 @@
+{
+  "mcp_servers": [
+    {
+      "name": "web-research",
+      "command": "node",
+      "args": [
+        ".kernforge/mcp/web-research-mcp.js"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "",
+        "BRAVE_SEARCH_API_KEY": "",
+        "SERPAPI_API_KEY": ""
+      },
+      "cwd": ".",
+      "capabilities": [
+        "web_search",
+        "web_fetch"
+      ]
+    }
+  ]
+}

@@ -63,6 +63,9 @@ type runtimeState struct {
 	detectVerificationToolPath func(string) string
 	interactive                bool
 	outputMu                   sync.Mutex
+	footerVisible              bool
+	footerLineCount            int
+	footerText                 string
 	thinkingMu                 sync.Mutex
 	thinkingStop               func()
 	streamMu                   sync.Mutex
@@ -75,6 +78,8 @@ type runtimeState struct {
 	suppressThinking           bool
 	thinkingStatusMu           sync.Mutex
 	thinkingStatusOverride     string
+	thinkingDetailMu           sync.Mutex
+	thinkingDetailLines        []string
 	requestCancelMu            sync.Mutex
 	requestCancelPauses        int
 	requestCancelPending       bool
@@ -636,11 +641,13 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 	rt.resetAssistantStream()
 	rt.allowThinkingIndicator()
 	rt.clearThinkingStatus()
+	rt.clearThinkingDetails()
 	rt.clearRequestCancelState()
 	rt.armAutoCheckpoint()
 	defer rt.clearAutoCheckpoint()
 	defer rt.allowThinkingIndicator()
 	defer rt.clearThinkingStatus()
+	defer rt.clearThinkingDetails()
 	defer rt.clearRequestCancelState()
 
 	cancelRequest := func() {
@@ -696,7 +703,6 @@ func (rt *runtimeState) startThinkingIndicator() {
 		ticker := time.NewTicker(120 * time.Millisecond)
 		defer ticker.Stop()
 
-		lastWidth := 0
 		lastRendered := ""
 		startedAt := time.Now()
 		render := func(frame string) {
@@ -706,14 +712,14 @@ func (rt *runtimeState) startThinkingIndicator() {
 			if !shouldAnimateThinkingStatus(status) {
 				renderFrame = "-"
 			}
-			line := rt.ui.thinkingLine(renderFrame, elapsed, status)
-			if line == lastRendered {
+			lines := []string{rt.ui.thinkingLine(renderFrame, elapsed, status)}
+			lines = append(lines, rt.currentThinkingDetails()...)
+			rendered := strings.Join(lines, "\n")
+			if rendered == lastRendered {
 				return
 			}
-			clear := "\r" + strings.Repeat(" ", lastWidth) + "\r"
-			rt.writeOutput(clear + line)
-			lastWidth = visibleLen(line)
-			lastRendered = line
+			rt.renderFooterText(rendered)
+			lastRendered = rendered
 		}
 
 		index := 0
@@ -721,8 +727,7 @@ func (rt *runtimeState) startThinkingIndicator() {
 		for {
 			select {
 			case <-stop:
-				clear := "\r" + strings.Repeat(" ", lastWidth) + "\r"
-				rt.writeOutput(clear)
+				rt.clearFooterLine()
 				close(done)
 				return
 			case <-ticker.C:
@@ -811,6 +816,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.pendingAssistantSpacing = ""
 	}
 	rt.clearThinkingStatus()
+	rt.clearThinkingDetails()
 	rt.suppressThinkingIndicator()
 	if !rt.streamingAssistant {
 		rt.stopThinkingIndicator()
@@ -849,8 +855,9 @@ func (rt *runtimeState) flushAssistantStream() {
 	rt.finishAssistantStream()
 }
 
-func (rt *runtimeState) printWhileThinking(lines ...string) {
+func (rt *runtimeState) printPersistentWhileThinking(lines ...string) {
 	rt.flushAssistantStream()
+	rt.clearThinkingDetails()
 	resumeThinking := rt.suspendThinkingIndicator()
 	defer resumeThinking()
 	rt.outputMu.Lock()
@@ -864,8 +871,57 @@ func (rt *runtimeState) printWhileThinking(lines ...string) {
 	rt.outputMu.Unlock()
 }
 
+func (rt *runtimeState) printWhileThinking(lines ...string) {
+	rt.printPersistentWhileThinking(lines...)
+}
+
+func (rt *runtimeState) showTransientProgressFooter(text string) bool {
+	if !rt.interactive {
+		return false
+	}
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	rt.flushAssistantStream()
+	rt.clearThinkingDetails()
+	rt.allowThinkingIndicator()
+	rt.setThinkingStatus(compactThinkingStatus(rt.cfg, trimmed))
+	rt.startThinkingIndicator()
+	return true
+}
+
+func (rt *runtimeState) showTransientPanelWhileThinking(lines ...string) bool {
+	if !rt.interactive {
+		return false
+	}
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		cleaned = append(cleaned, line)
+	}
+	if len(cleaned) == 0 {
+		return false
+	}
+	rt.flushAssistantStream()
+	rt.allowThinkingIndicator()
+	rt.clearThinkingStatus()
+	rt.setThinkingDetails(cleaned...)
+	rt.startThinkingIndicator()
+	return true
+}
+
+func (rt *runtimeState) showTransientWhileThinking(lines ...string) bool {
+	return rt.showTransientPanelWhileThinking(lines...)
+}
+
 func (rt *runtimeState) printProgressMessage(text string) {
 	if strings.TrimSpace(text) == "" {
+		return
+	}
+	if rt.showTransientProgressFooter(text) {
 		return
 	}
 	rt.printWhileThinking(rt.ui.activityLine(classifyProgressKind(text), text))
@@ -875,6 +931,105 @@ func (rt *runtimeState) writeOutput(text string) {
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
 	fmt.Fprint(rt.writer, text)
+}
+
+func (rt *runtimeState) clearFooterLineLocked() {
+	if !rt.footerVisible {
+		return
+	}
+	if rt.footerLineCount == 1 {
+		width := visibleLen(rt.footerText)
+		if width > 0 {
+			fmt.Fprint(rt.writer, "\r"+strings.Repeat(" ", width)+"\r")
+		} else {
+			fmt.Fprint(rt.writer, "\r")
+		}
+		rt.footerVisible = false
+		rt.footerLineCount = 0
+		rt.footerText = ""
+		return
+	}
+	if rt.footerLineCount > 1 {
+		fmt.Fprintf(rt.writer, "\x1b[%dA", rt.footerLineCount-1)
+	}
+	fmt.Fprint(rt.writer, "\r\x1b[J")
+	rt.footerVisible = false
+	rt.footerLineCount = 0
+	rt.footerText = ""
+}
+
+func footerDisplayLineCount(text string) int {
+	if text == "" {
+		return 0
+	}
+	termW := terminalWidth()
+	if termW <= 0 {
+		termW = 120
+	}
+	total := 0
+	for _, line := range strings.Split(text, "\n") {
+		width := visibleLen(line)
+		if width <= 0 {
+			total++
+			continue
+		}
+		total += ((width - 1) / termW) + 1
+	}
+	return total
+}
+
+func (rt *runtimeState) renderFooterTextLocked(text string) {
+	if strings.TrimSpace(text) == "" {
+		rt.clearFooterLineLocked()
+		return
+	}
+	nextLineCount := footerDisplayLineCount(text)
+	if rt.footerVisible && rt.footerLineCount == 1 && nextLineCount == 1 {
+		oldWidth := visibleLen(rt.footerText)
+		newWidth := visibleLen(text)
+		fmt.Fprint(rt.writer, "\r")
+		fmt.Fprint(rt.writer, text)
+		if newWidth < oldWidth {
+			fmt.Fprint(rt.writer, strings.Repeat(" ", oldWidth-newWidth))
+		}
+		rt.footerVisible = true
+		rt.footerLineCount = 1
+		rt.footerText = text
+		return
+	}
+	rt.clearFooterLineLocked()
+	fmt.Fprint(rt.writer, text)
+	rt.footerVisible = true
+	rt.footerLineCount = nextLineCount
+	rt.footerText = text
+}
+
+func (rt *runtimeState) clearFooterLine() {
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	rt.clearFooterLineLocked()
+}
+
+func (rt *runtimeState) renderFooterText(text string) {
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	rt.renderFooterTextLocked(text)
+}
+
+func (rt *runtimeState) renderFooterLine(text string) {
+	rt.renderFooterText(text)
+}
+
+func (rt *runtimeState) writeOutputLines(lines ...string) {
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			fmt.Fprintln(rt.writer)
+			continue
+		}
+		fmt.Fprintln(rt.writer, line)
+	}
 }
 
 func (rt *runtimeState) setThinkingStatus(text string) {
@@ -887,6 +1042,31 @@ func (rt *runtimeState) clearThinkingStatus() {
 	rt.thinkingStatusMu.Lock()
 	rt.thinkingStatusOverride = ""
 	rt.thinkingStatusMu.Unlock()
+}
+
+func (rt *runtimeState) setThinkingDetails(lines ...string) {
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	rt.thinkingDetailMu.Lock()
+	rt.thinkingDetailLines = filtered
+	rt.thinkingDetailMu.Unlock()
+}
+
+func (rt *runtimeState) clearThinkingDetails() {
+	rt.thinkingDetailMu.Lock()
+	rt.thinkingDetailLines = nil
+	rt.thinkingDetailMu.Unlock()
+}
+
+func (rt *runtimeState) currentThinkingDetails() []string {
+	rt.thinkingDetailMu.Lock()
+	defer rt.thinkingDetailMu.Unlock()
+	return append([]string(nil), rt.thinkingDetailLines...)
 }
 
 func (rt *runtimeState) beginRequestCancel() {
@@ -1155,6 +1335,7 @@ func (rt *runtimeState) printAssistant(text string) {
 	}
 	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
+	rt.clearThinkingDetails()
 	rt.suppressThinkingIndicator()
 	rt.stopThinkingIndicator()
 	rt.outputMu.Lock()
@@ -1166,8 +1347,12 @@ func (rt *runtimeState) printAssistantWhileThinking(text string) {
 	if !rt.shouldPrintAssistant(text) {
 		return
 	}
+	if rt.showTransientPanelWhileThinking(rt.ui.activityLine("next", text)) {
+		return
+	}
 	rt.clearThinkingStatus()
-	rt.printWhileThinking(rt.ui.activityLine("next", text))
+	rt.clearThinkingDetails()
+	rt.printPersistentWhileThinking(rt.ui.activityLine("next", text))
 }
 
 func (rt *runtimeState) shouldHonorRequestCancel() bool {
@@ -1188,7 +1373,7 @@ func (rt *runtimeState) confirmRequestCancel() bool {
 		allowed, err = rt.confirm("Cancel current request?")
 	})
 	if err != nil {
-		rt.printWhileThinking(rt.ui.warnLine("request cancel confirmation failed: " + err.Error()))
+		rt.printPersistentWhileThinking(rt.ui.warnLine("request cancel confirmation failed: " + err.Error()))
 		return false
 	}
 	return allowed
@@ -1450,6 +1635,16 @@ func shouldIgnoreEmptyPromptSubmit(lines []string, initial string, line string) 
 	return len(lines) == 0 && initial == "" && line == ""
 }
 
+func (rt *runtimeState) withPinnedPrompt(fn func() error) error {
+	rt.flushAssistantStream()
+	resumeThinking := rt.suspendThinkingIndicator()
+	defer resumeThinking()
+	rt.outputMu.Lock()
+	defer rt.outputMu.Unlock()
+	rt.clearFooterLineLocked()
+	return fn()
+}
+
 func (rt *runtimeState) confirm(question string) (bool, error) {
 	if !rt.interactive {
 		return false, fmt.Errorf("interactive confirmation unavailable")
@@ -1457,33 +1652,40 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 	if rt.autoApproveConfirmation(question) {
 		return true, nil
 	}
-	resumeThinking := rt.suspendThinkingIndicator()
-	defer resumeThinking()
-	for {
-		label := rt.confirmLabel(question)
-		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
-		if !usedInteractive {
-			fmt.Fprint(rt.writer, label+" ")
-			answer, err = rt.reader.ReadString('\n')
-			if err != nil {
-				return false, err
+	var allowed bool
+	err := rt.withPinnedPrompt(func() error {
+		for {
+			label := rt.confirmLabel(question)
+			answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
+			if !usedInteractive {
+				fmt.Fprint(rt.writer, label+" ")
+				answer, err = rt.reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				answer = strings.TrimSpace(answer)
+			} else if err != nil {
+				if errors.Is(err, ErrPromptCanceled) {
+					allowed = false
+					return nil
+				}
+				return err
 			}
-			answer = strings.TrimSpace(answer)
-		} else if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return false, nil
+			parsedAllowed, always, handled := parseConfirmationAnswer(answer)
+			if !handled {
+				continue
 			}
-			return false, err
+			if parsedAllowed && always {
+				rt.rememberConfirmationApproval(question)
+			}
+			allowed = parsedAllowed
+			return nil
 		}
-		allowed, always, handled := parseConfirmationAnswer(answer)
-		if !handled {
-			continue
-		}
-		if allowed && always {
-			rt.rememberConfirmationApproval(question)
-		}
-		return allowed, nil
+	})
+	if err != nil {
+		return false, err
 	}
+	return allowed, nil
 }
 
 func (rt *runtimeState) prepareAnalysisDirectorySelection(cfg ProjectAnalysisConfig) (ProjectAnalysisConfig, error) {
@@ -1629,15 +1831,23 @@ func (rt *runtimeState) promptValueWithOptions(prompt, defaultValue string, allo
 		label += " " + rt.ui.dim("["+defaultValue+"]")
 	}
 	label += " " + rt.ui.dim("[Esc to cancel]")
-	line, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
-	if !usedInteractive {
-		fmt.Fprint(rt.writer, label+" ")
-		line, err = rt.reader.ReadString('\n')
-		if err != nil {
-			return "", err
+	var line string
+	err := rt.withPinnedPrompt(func() error {
+		var usedInteractive bool
+		var err error
+		line, usedInteractive, err = rt.readInteractiveLine(label+" ", "", nil, true)
+		if !usedInteractive {
+			fmt.Fprint(rt.writer, label+" ")
+			line, err = rt.reader.ReadString('\n')
+			if err != nil {
+				return err
+			}
+			line = strings.TrimSpace(line)
+			return nil
 		}
-		line = strings.TrimSpace(line)
-	} else if err != nil {
+		return err
+	})
+	if err != nil {
 		return "", err
 	}
 	if line == "" {
@@ -3058,6 +3268,104 @@ func (rt *runtimeState) printKVGroup(title string, items ...uiKV) {
 	}
 }
 
+var webResearchEnvKeys = []string{
+	"TAVILY_API_KEY",
+	"BRAVE_SEARCH_API_KEY",
+	"SERPAPI_API_KEY",
+}
+
+func webResearchConfigKVs(cfg Config, getenv func(string) string) []uiKV {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	servers := webResearchMCPServers(cfg.MCPServers)
+	hasRelevantEnv := false
+	for _, key := range webResearchEnvKeys {
+		if strings.TrimSpace(getenv(key)) != "" {
+			hasRelevantEnv = true
+			break
+		}
+	}
+	if len(servers) == 0 && !hasRelevantEnv {
+		return nil
+	}
+
+	items := []uiKV{
+		kv("configured", fmt.Sprintf("%t", len(servers) > 0)),
+	}
+	if len(servers) > 0 {
+		items = append(items,
+			kv("servers", strings.Join(webResearchMCPServerLabels(servers), ", ")),
+			kv("active_search_key", activeWebResearchKeyLabel(servers, getenv)),
+		)
+	}
+	for _, key := range webResearchEnvKeys {
+		items = append(items, kv(strings.ToLower(key), webResearchKeySource(servers, key, getenv)))
+	}
+	return items
+}
+
+func webResearchMCPServers(servers []MCPServerConfig) []MCPServerConfig {
+	out := make([]MCPServerConfig, 0, len(servers))
+	for _, server := range servers {
+		if isWebResearchMCPServer(server) {
+			out = append(out, server)
+		}
+	}
+	return out
+}
+
+func webResearchMCPServerLabels(servers []MCPServerConfig) []string {
+	labels := make([]string, 0, len(servers))
+	for _, server := range servers {
+		label := strings.TrimSpace(server.Name)
+		if label == "" {
+			label = deriveMCPServerName(server)
+		}
+		if label == "" {
+			label = "unnamed"
+		}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func activeWebResearchKeyLabel(servers []MCPServerConfig, getenv func(string) string) string {
+	for _, key := range webResearchEnvKeys {
+		source := webResearchKeySource(servers, key, getenv)
+		if source == "unset" {
+			continue
+		}
+		return fmt.Sprintf("%s (%s)", key, source)
+	}
+	return "unset"
+}
+
+func webResearchKeySource(servers []MCPServerConfig, key string, getenv func(string) string) string {
+	for _, server := range servers {
+		if strings.TrimSpace(server.Env[key]) != "" {
+			return "config"
+		}
+	}
+	if strings.TrimSpace(getenv(key)) != "" {
+		return "environment"
+	}
+	return "unset"
+}
+
+func webResearchMCPStatusSummary(server MCPServerConfig, getenv func(string) string) string {
+	if !isWebResearchMCPServer(server) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"  active_key=%s  tavily=%s  brave=%s  serpapi=%s",
+		activeWebResearchKeyLabel([]MCPServerConfig{server}, getenv),
+		webResearchKeySource([]MCPServerConfig{server}, "TAVILY_API_KEY", getenv),
+		webResearchKeySource([]MCPServerConfig{server}, "BRAVE_SEARCH_API_KEY", getenv),
+		webResearchKeySource([]MCPServerConfig{server}, "SERPAPI_API_KEY", getenv),
+	)
+}
+
 func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	switch cmd.Name {
 	case "help":
@@ -3430,7 +3738,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 				fmt.Fprintf(rt.writer, "%s  error=%s\n", status.Name, status.Error)
 				continue
 			}
-			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  cwd=%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, status.Cwd)
+			extra := ""
+			if rt.mcp != nil {
+				if server, ok := rt.mcp.ServerConfig(status.Name); ok {
+					extra = webResearchMCPStatusSummary(server, os.Getenv)
+				}
+			}
+			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  cwd=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, status.Cwd, extra)
 		}
 	case "resources":
 		items := rt.mcpResources()
@@ -3720,6 +4034,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("enabled_skills", strings.Join(rt.cfg.EnabledSkills, ", ")),
 			kv("mcp_servers", fmt.Sprintf("%d", len(rt.cfg.MCPServers))),
 		)
+		if items := webResearchConfigKVs(rt.cfg, os.Getenv); len(items) > 0 {
+			fmt.Fprintln(rt.writer)
+			rt.printKVGroup("Web Research MCP", items...)
+		}
 		if rt.longMem != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("persistent_memory_path", rt.longMem.Path))
 		}
@@ -4173,21 +4491,27 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 	if !rt.interactive {
 		return AutoVerifyFailureNoAction, nil
 	}
-	resumeThinking := rt.suspendThinkingIndicator()
-	defer resumeThinking()
 
 	toolName := report.MissingCommandTool()
 	label := rt.ui.warnLine("Automatic verification failed because a verification tool could not be started.") + " " + rt.ui.dim("[p=set path/y=disable now/a=always disable for this workspace, Esc=cancel]")
 	for {
-		answer, usedInteractive, err := rt.readInteractiveLine(label+" ", "", nil, true)
-		if !usedInteractive {
-			fmt.Fprint(rt.writer, label+" ")
-			answer, err = rt.reader.ReadString('\n')
-			if err != nil {
-				return AutoVerifyFailureNoAction, err
+		var answer string
+		err := rt.withPinnedPrompt(func() error {
+			var usedInteractive bool
+			var err error
+			answer, usedInteractive, err = rt.readInteractiveLine(label+" ", "", nil, true)
+			if !usedInteractive {
+				fmt.Fprint(rt.writer, label+" ")
+				answer, err = rt.reader.ReadString('\n')
+				if err != nil {
+					return err
+				}
+				answer = strings.TrimSpace(answer)
+				return nil
 			}
-			answer = strings.TrimSpace(answer)
-		} else if err != nil {
+			return err
+		})
+		if err != nil {
 			if errors.Is(err, ErrPromptCanceled) {
 				return AutoVerifyFailureNoAction, nil
 			}
@@ -4197,7 +4521,7 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 		switch strings.ToLower(strings.TrimSpace(answer)) {
 		case "p", "path":
 			if strings.TrimSpace(toolName) == "" {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("Could not identify which verification tool is missing."))
+				rt.writeOutputLines(rt.ui.warnLine("Could not identify which verification tool is missing."))
 				return AutoVerifyFailureNoAction, nil
 			}
 			configKey := verificationToolConfigKey(toolName)
@@ -4220,18 +4544,18 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 			if rt.agent != nil {
 				rt.agent.Config = rt.cfg
 			}
-			fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("%s path saved for this workspace.", strings.ToUpper(toolName))))
+			rt.writeOutputLines(rt.ui.successLine(fmt.Sprintf("%s path saved for this workspace.", strings.ToUpper(toolName))))
 			return AutoVerifyFailureRetry, nil
 		case "y", "yes":
 			rt.cfg.AutoVerify = boolPtr(false)
 			if rt.agent != nil {
 				rt.agent.Config = rt.cfg
 			}
-			fmt.Fprintln(rt.writer, rt.ui.successLine("Automatic verification disabled for this session."))
+			lines := []string{rt.ui.successLine("Automatic verification disabled for this session.")}
 			if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("Latest verification failure:"))
-				fmt.Fprintln(rt.writer, rt.ui.dim(summary))
+				lines = append(lines, rt.ui.warnLine("Latest verification failure:"), rt.ui.dim(summary))
 			}
+			rt.writeOutputLines(lines...)
 			return AutoVerifyFailureDisable, nil
 		case "a", "always":
 			rt.cfg.AutoVerify = boolPtr(false)
@@ -4243,11 +4567,11 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 			}); err != nil {
 				return AutoVerifyFailureNoAction, err
 			}
-			fmt.Fprintln(rt.writer, rt.ui.successLine("Automatic verification disabled for this workspace."))
+			lines := []string{rt.ui.successLine("Automatic verification disabled for this workspace.")}
 			if summary := strings.TrimSpace(report.FailureSummary()); summary != "" {
-				fmt.Fprintln(rt.writer, rt.ui.warnLine("Latest verification failure:"))
-				fmt.Fprintln(rt.writer, rt.ui.dim(summary))
+				lines = append(lines, rt.ui.warnLine("Latest verification failure:"), rt.ui.dim(summary))
 			}
+			rt.writeOutputLines(lines...)
 			return AutoVerifyFailureDisable, nil
 		case "", "n", "no":
 			return AutoVerifyFailureNoAction, nil
@@ -5094,9 +5418,13 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	defer rt.stopThinkingIndicator()
 
 	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, rt.workspace, func(status string) {
-		rt.printWhileThinking(rt.ui.hintLine(status))
+		if !rt.showTransientWhileThinking(rt.ui.hintLine(status)) {
+			rt.printPersistentWhileThinking(rt.ui.hintLine(status))
+		}
 	}, func(debug string) {
-		rt.printWhileThinking(rt.ui.infoLine("analysis: " + debug))
+		if !rt.showTransientWhileThinking(rt.ui.infoLine("analysis: " + debug)) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine("analysis: " + debug))
+		}
 	})
 	analyzer.analysisCfg = analysisCfg
 	run, err := analyzer.Run(requestCtx, goal, mode)
@@ -5107,6 +5435,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		}
 		return err
 	}
+	rt.clearThinkingDetails()
 
 	rt.session.LastAnalysis = &run.Summary
 	rt.session.Summary = mergeSessionSummaryWithAnalysis(rt.session.Summary, run)
@@ -5116,9 +5445,9 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		return err
 	}
 
-	rt.printWhileThinking(rt.ui.successLine(fmt.Sprintf("Analysis completed with %d shard(s).", run.Summary.TotalShards)))
+	rt.printPersistentWhileThinking(rt.ui.successLine(fmt.Sprintf("Analysis completed with %d shard(s).", run.Summary.TotalShards)))
 	if run.Summary.ReviewFailures > 0 {
-		rt.printWhileThinking(rt.ui.statusKV("review_failures", fmt.Sprintf("%d", run.Summary.ReviewFailures)))
+		rt.printPersistentWhileThinking(rt.ui.statusKV("review_failures", fmt.Sprintf("%d", run.Summary.ReviewFailures)))
 	}
 	reused := 0
 	missed := 0
@@ -5135,17 +5464,17 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			missReasons[reason]++
 		}
 	}
-	rt.printWhileThinking(rt.ui.statusKV("cache_reused", fmt.Sprintf("%d", reused)))
-	rt.printWhileThinking(rt.ui.statusKV("cache_miss", fmt.Sprintf("%d", missed)))
+	rt.printPersistentWhileThinking(rt.ui.statusKV("cache_reused", fmt.Sprintf("%d", reused)))
+	rt.printPersistentWhileThinking(rt.ui.statusKV("cache_miss", fmt.Sprintf("%d", missed)))
 	if len(missReasons) > 0 {
 		reasons := make([]string, 0, len(missReasons))
 		for reason, count := range missReasons {
 			reasons = append(reasons, fmt.Sprintf("%s=%d", reason, count))
 		}
 		slices.Sort(reasons)
-		rt.printWhileThinking(rt.ui.statusKV("cache_miss_reasons", strings.Join(reasons, ", ")))
+		rt.printPersistentWhileThinking(rt.ui.statusKV("cache_miss_reasons", strings.Join(reasons, ", ")))
 	}
-	rt.printWhileThinking(rt.ui.statusKV("output", run.Summary.OutputPath))
+	rt.printPersistentWhileThinking(rt.ui.statusKV("output", run.Summary.OutputPath))
 	rt.printAssistant(run.FinalDocument)
 	return nil
 }
@@ -5204,8 +5533,8 @@ func (rt *runtimeState) handleAnalyzePerformanceCommand(args string) error {
 	result := buildPerformanceAnalysisResult(pack, lens, args, knowledgePath, perfPath, reply)
 	reportPath, jsonPath, pathErr := rt.persistPerformanceReport(reply, result, args, analysisCfg.OutputDir)
 	if pathErr == nil {
-		rt.printWhileThinking(rt.ui.statusKV("output", reportPath))
-		rt.printWhileThinking(rt.ui.statusKV("output_json", jsonPath))
+		rt.printPersistentWhileThinking(rt.ui.statusKV("output", reportPath))
+		rt.printPersistentWhileThinking(rt.ui.statusKV("output_json", jsonPath))
 	}
 	rt.printAssistant(reply)
 	return nil
@@ -5922,14 +6251,18 @@ func (rt *runtimeState) prepareEdit(reason string) error {
 		return nil
 	}
 	if rt.autoCP.Enabled && rt.autoCP.Pending {
-		rt.printWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
+		if !rt.showTransientWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit...")) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine("Creating automatic checkpoint before edit..."))
+		}
 	}
 	meta, err := rt.autoCP.Prepare(reason)
 	if err != nil {
 		return err
 	}
 	if message := formatAutoCheckpointMessage(meta); message != "" {
-		rt.printWhileThinking(rt.ui.infoLine(message))
+		if !rt.showTransientWhileThinking(rt.ui.infoLine(message)) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine(message))
+		}
 	}
 	return nil
 }
@@ -5990,7 +6323,7 @@ func (rt *runtimeState) handleInitCommand(args string) error {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(path, []byte(InitWorkspaceConfigTemplate()), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(InitWorkspaceConfigTemplate(rt.workspace.BaseRoot)), 0o644); err != nil {
 			return err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Created "+path))

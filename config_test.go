@@ -10,7 +10,19 @@ import (
 )
 
 func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
-	text := InitWorkspaceConfigTemplate()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	scriptPath := filepath.Join(workspace, ".kernforge", "mcp", "web-research-mcp.js")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(scriptPath, []byte("console.log('ok');\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	text := InitWorkspaceConfigTemplate(workspace)
 	var decoded struct {
 		SkillPaths    []string          `json:"skill_paths"`
 		EnabledSkills []string          `json:"enabled_skills"`
@@ -22,8 +34,491 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 	if len(decoded.SkillPaths) != 1 || decoded.SkillPaths[0] != "./.kernforge/skills" {
 		t.Fatalf("unexpected skill paths: %#v", decoded.SkillPaths)
 	}
-	if len(decoded.MCPServers) != 1 || !decoded.MCPServers[0].Disabled {
-		t.Fatalf("expected one disabled example mcp server, got %#v", decoded.MCPServers)
+	if len(decoded.MCPServers) != 2 {
+		t.Fatalf("expected two example mcp servers, got %#v", decoded.MCPServers)
+	}
+	if !decoded.MCPServers[0].Disabled {
+		t.Fatalf("expected generic example server to stay disabled, got %#v", decoded.MCPServers[0])
+	}
+	if decoded.MCPServers[1].Name != "web-research" {
+		t.Fatalf("expected web-research example, got %#v", decoded.MCPServers[1])
+	}
+	if decoded.MCPServers[1].Disabled {
+		t.Fatalf("expected bundled web-research server to be enabled by default, got %#v", decoded.MCPServers[1])
+	}
+	if len(decoded.MCPServers[1].Args) != 1 || decoded.MCPServers[1].Args[0] != ".kernforge/mcp/web-research-mcp.js" {
+		t.Fatalf("expected bundled web-research path, got %#v", decoded.MCPServers[1].Args)
+	}
+	if decoded.MCPServers[1].Env["TAVILY_API_KEY"] != "" || decoded.MCPServers[1].Env["BRAVE_SEARCH_API_KEY"] != "" || decoded.MCPServers[1].Env["SERPAPI_API_KEY"] != "" {
+		t.Fatalf("expected empty web research env placeholders, got %#v", decoded.MCPServers[1].Env)
+	}
+	if len(decoded.MCPServers[1].Capabilities) != 2 || decoded.MCPServers[1].Capabilities[0] != "web_search" || decoded.MCPServers[1].Capabilities[1] != "web_fetch" {
+		t.Fatalf("expected web capability tags in template, got %#v", decoded.MCPServers[1].Capabilities)
+	}
+}
+
+func TestInitWorkspaceConfigTemplateUsesDeployedWebResearchMCPWhenWorkspaceScriptIsAbsent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	globalScript := filepath.Join(home, ".kernforge", "mcp", "web-research-mcp.js")
+	if err := os.MkdirAll(filepath.Dir(globalScript), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(globalScript, []byte("console.log('global');\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	text := InitWorkspaceConfigTemplate(t.TempDir())
+	var decoded struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("template must be valid json: %v\n%s", err, text)
+	}
+	if len(decoded.MCPServers) != 2 {
+		t.Fatalf("expected two example mcp servers, got %#v", decoded.MCPServers)
+	}
+	if decoded.MCPServers[1].Disabled {
+		t.Fatalf("expected deployed web-research server to be enabled, got %#v", decoded.MCPServers[1])
+	}
+	if len(decoded.MCPServers[1].Args) != 1 || decoded.MCPServers[1].Args[0] != filepath.ToSlash(globalScript) {
+		t.Fatalf("expected deployed web-research path, got %#v", decoded.MCPServers[1].Args)
+	}
+}
+
+func TestInitWorkspaceConfigTemplateKeepsPlaceholderWhenNoWebResearchScriptIsAvailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	text := InitWorkspaceConfigTemplate(t.TempDir())
+	var decoded struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+		t.Fatalf("template must be valid json: %v\n%s", err, text)
+	}
+	if len(decoded.MCPServers) != 2 {
+		t.Fatalf("expected two example mcp servers, got %#v", decoded.MCPServers)
+	}
+	if !decoded.MCPServers[1].Disabled {
+		t.Fatalf("expected placeholder web-research server to stay disabled, got %#v", decoded.MCPServers[1])
+	}
+	if len(decoded.MCPServers[1].Args) != 1 || decoded.MCPServers[1].Args[0] != "path/to/web-research-mcp.js" {
+		t.Fatalf("expected placeholder web-research path, got %#v", decoded.MCPServers[1].Args)
+	}
+}
+
+func TestEnsureUserConfigDeploysBundledWebResearchMCP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	if err := EnsureUserConfig(DefaultConfig(t.TempDir())); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+	deployed := filepath.Join(home, ".kernforge", "mcp", "web-research-mcp.js")
+	data, err := os.ReadFile(deployed)
+	if err != nil {
+		t.Fatalf("ReadFile deployed script: %v", err)
+	}
+	if !strings.Contains(string(data), "search_web") || !strings.Contains(string(data), "fetch_url") {
+		t.Fatalf("expected deployed script contents, got %q", string(data))
+	}
+	cfgData, err := os.ReadFile(filepath.Join(home, ".kernforge", "config.json"))
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	var cfg struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("Unmarshal config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected auto-added web research server, got %#v", cfg.MCPServers)
+	}
+	if cfg.MCPServers[0].Name != "web-research" || len(cfg.MCPServers[0].Args) != 1 || cfg.MCPServers[0].Args[0] != filepath.ToSlash(deployed) {
+		t.Fatalf("expected auto-added deployed web research server, got %#v", cfg.MCPServers[0])
+	}
+	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
+		t.Fatalf("expected empty web research env placeholders, got %#v", cfg.MCPServers[0].Env)
+	}
+}
+
+func TestEnsureUserConfigAppendsWebResearchServerWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{\n  \"provider\": \"openrouter\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := EnsureUserConfig(DefaultConfig(t.TempDir())); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+	cfgData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	var cfg struct {
+		Provider   string            `json:"provider"`
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("Unmarshal config: %v", err)
+	}
+	if cfg.Provider != "openrouter" {
+		t.Fatalf("expected existing provider to be preserved, got %#v", cfg.Provider)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Name != "web-research" {
+		t.Fatalf("expected auto-added web research server, got %#v", cfg.MCPServers)
+	}
+	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
+		t.Fatalf("expected empty web research env placeholders, got %#v", cfg.MCPServers[0].Env)
+	}
+}
+
+func TestEnsureUserConfigDoesNotDuplicateExistingWebResearchServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	existing := filepath.ToSlash(filepath.Join(home, ".kernforge", "mcp", "custom-search.js"))
+	if err := os.WriteFile(configPath, []byte("{\n  \"mcp_servers\": [\n    {\n      \"name\": \"custom-web\",\n      \"command\": \"node\",\n      \"args\": [\""+existing+"\"],\n      \"capabilities\": [\"web_search\", \"web_fetch\"]\n    }\n  ]\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := EnsureUserConfig(DefaultConfig(t.TempDir())); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+	cfgData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	var cfg struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("Unmarshal config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Name != "custom-web" {
+		t.Fatalf("expected existing web research server to be preserved without duplication, got %#v", cfg.MCPServers)
+	}
+	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
+		t.Fatalf("expected existing web research server to receive env placeholders, got %#v", cfg.MCPServers[0].Env)
+	}
+}
+
+func TestEnsureUserConfigBackfillsExistingWebResearchServerEnvAndArgs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{\n  \"mcp_servers\": [\n    {\n      \"name\": \"web-research\",\n      \"command\": \"node\",\n      \"args\": [\".kernforge/mcp/web-research-mcp.js\"],\n      \"cwd\": \".\",\n      \"capabilities\": [\"web_search\", \"web_fetch\"]\n    }\n  ]\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := EnsureUserConfig(DefaultConfig(t.TempDir())); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+	cfgData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	var cfg struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("Unmarshal config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one web research server, got %#v", cfg.MCPServers)
+	}
+	expectedPath := filepath.ToSlash(filepath.Join(home, ".kernforge", "mcp", "web-research-mcp.js"))
+	if len(cfg.MCPServers[0].Args) != 1 || cfg.MCPServers[0].Args[0] != expectedPath {
+		t.Fatalf("expected backfilled deployed path, got %#v", cfg.MCPServers[0].Args)
+	}
+	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
+		t.Fatalf("expected backfilled env placeholders, got %#v", cfg.MCPServers[0].Env)
+	}
+}
+
+func TestEnsureUserConfigBackfillsExistingWebResearchServerCapabilitiesAndEmptyArgs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{\n  \"mcp_servers\": [\n    {\n      \"name\": \"web-research\",\n      \"command\": \"node\",\n      \"args\": [],\n      \"capabilities\": [\"web_search\"]\n    }\n  ]\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := EnsureUserConfig(DefaultConfig(t.TempDir())); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+	cfgData, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config: %v", err)
+	}
+	var cfg struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(cfgData, &cfg); err != nil {
+		t.Fatalf("Unmarshal config: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one web research server, got %#v", cfg.MCPServers)
+	}
+	expectedPath := filepath.ToSlash(filepath.Join(home, ".kernforge", "mcp", "web-research-mcp.js"))
+	if len(cfg.MCPServers[0].Args) != 1 || cfg.MCPServers[0].Args[0] != expectedPath {
+		t.Fatalf("expected deployed path for empty args, got %#v", cfg.MCPServers[0].Args)
+	}
+	if !sliceContainsFold(cfg.MCPServers[0].Capabilities, "web_search") || !sliceContainsFold(cfg.MCPServers[0].Capabilities, "web_fetch") {
+		t.Fatalf("expected missing web capability to be backfilled, got %#v", cfg.MCPServers[0].Capabilities)
+	}
+}
+
+func TestLoadConfigWorkspaceWebResearchMCPInheritsNonEmptyGlobalEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	globalConfigPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll global: %v", err)
+	}
+	globalConfig := "{\n" +
+		"  \"mcp_servers\": [\n" +
+		"    {\n" +
+		"      \"name\": \"web-research\",\n" +
+		"      \"command\": \"node\",\n" +
+		"      \"args\": [\"C:/Users/test/.kernforge/mcp/web-research-mcp.js\"],\n" +
+		"      \"env\": {\n" +
+		"        \"TAVILY_API_KEY\": \"global-secret\",\n" +
+		"        \"BRAVE_SEARCH_API_KEY\": \"\",\n" +
+		"        \"SERPAPI_API_KEY\": \"\"\n" +
+		"      },\n" +
+		"      \"cwd\": \".\",\n" +
+		"      \"capabilities\": [\"web_search\", \"web_fetch\"]\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(globalConfigPath, []byte(globalConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile global config: %v", err)
+	}
+
+	workspace := t.TempDir()
+	workspaceConfigPath := filepath.Join(workspace, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(workspaceConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	workspaceConfig := "{\n" +
+		"  \"mcp_servers\": [\n" +
+		"    {\n" +
+		"      \"name\": \"web-research\",\n" +
+		"      \"command\": \"node\",\n" +
+		"      \"args\": [\".kernforge/mcp/web-research-mcp.js\"],\n" +
+		"      \"env\": {\n" +
+		"        \"TAVILY_API_KEY\": \"\",\n" +
+		"        \"BRAVE_SEARCH_API_KEY\": \"\",\n" +
+		"        \"SERPAPI_API_KEY\": \"\"\n" +
+		"      },\n" +
+		"      \"cwd\": \".\",\n" +
+		"      \"capabilities\": [\"web_search\", \"web_fetch\"]\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(workspaceConfigPath, []byte(workspaceConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile workspace config: %v", err)
+	}
+
+	cfg, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one effective mcp server, got %#v", cfg.MCPServers)
+	}
+	server := cfg.MCPServers[0]
+	if server.Env["TAVILY_API_KEY"] != "global-secret" {
+		t.Fatalf("expected workspace server to inherit global Tavily key, got %#v", server.Env)
+	}
+	if len(server.Args) != 1 || server.Args[0] != ".kernforge/mcp/web-research-mcp.js" {
+		t.Fatalf("expected workspace args to remain in effect, got %#v", server.Args)
+	}
+}
+
+func TestLoadConfigWorkspaceWebResearchMCPOverridesGlobalEnvWhenNonEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	globalConfigPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(globalConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll global: %v", err)
+	}
+	globalConfig := "{\n" +
+		"  \"mcp_servers\": [\n" +
+		"    {\n" +
+		"      \"name\": \"web-research\",\n" +
+		"      \"command\": \"node\",\n" +
+		"      \"args\": [\"C:/Users/test/.kernforge/mcp/web-research-mcp.js\"],\n" +
+		"      \"env\": {\n" +
+		"        \"TAVILY_API_KEY\": \"global-secret\"\n" +
+		"      },\n" +
+		"      \"cwd\": \".\",\n" +
+		"      \"capabilities\": [\"web_search\", \"web_fetch\"]\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(globalConfigPath, []byte(globalConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile global config: %v", err)
+	}
+
+	workspace := t.TempDir()
+	workspaceConfigPath := filepath.Join(workspace, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(workspaceConfigPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll workspace: %v", err)
+	}
+	workspaceConfig := "{\n" +
+		"  \"mcp_servers\": [\n" +
+		"    {\n" +
+		"      \"name\": \"web-research\",\n" +
+		"      \"command\": \"node\",\n" +
+		"      \"args\": [\".kernforge/mcp/web-research-mcp.js\"],\n" +
+		"      \"env\": {\n" +
+		"        \"TAVILY_API_KEY\": \"workspace-secret\"\n" +
+		"      },\n" +
+		"      \"cwd\": \".\",\n" +
+		"      \"capabilities\": [\"web_search\", \"web_fetch\"]\n" +
+		"    }\n" +
+		"  ]\n" +
+		"}\n"
+	if err := os.WriteFile(workspaceConfigPath, []byte(workspaceConfig), 0o644); err != nil {
+		t.Fatalf("WriteFile workspace config: %v", err)
+	}
+
+	cfg, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one effective mcp server, got %#v", cfg.MCPServers)
+	}
+	server := cfg.MCPServers[0]
+	if server.Env["TAVILY_API_KEY"] != "workspace-secret" {
+		t.Fatalf("expected workspace Tavily key to override global value, got %#v", server.Env)
+	}
+}
+
+func TestMergeConfigFileRepairsAppendedMCPSnippet(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "config.json")
+	body := "{\n" +
+		"  \"provider\": \"openrouter\",\n" +
+		"  \"project_analysis\": {\n" +
+		"    \"worker_profile\": {\n" +
+		"      \"provider\": \"openrouter\",\n" +
+		"      \"model\": \"openai/gpt-5-mini\"\n" +
+		"    }\n" +
+		"  },\n" +
+		"  {\n" +
+		"    \"mcp_servers\": [\n" +
+		"      {\n" +
+		"        \"name\": \"web-research\",\n" +
+		"        \"command\": \"node\",\n" +
+		"        \"args\": [\".kernforge/mcp/web-research-mcp.js\"],\n" +
+		"        \"capabilities\": [\"web_search\", \"web_fetch\"]\n" +
+		"      }\n" +
+		"    ]\n" +
+		"  }\n" +
+		"}\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	if err := mergeConfigFile(&cfg, path); err != nil {
+		t.Fatalf("mergeConfigFile: %v", err)
+	}
+	if cfg.Provider != "openrouter" {
+		t.Fatalf("expected provider to survive repair, got %q", cfg.Provider)
+	}
+	if len(cfg.MCPServers) != 1 || cfg.MCPServers[0].Name != "web-research" {
+		t.Fatalf("expected repaired mcp_servers, got %#v", cfg.MCPServers)
+	}
+	repairedData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var repaired Config
+	if err := json.Unmarshal(repairedData, &repaired); err != nil {
+		t.Fatalf("expected repaired file to be valid json, got %v\n%s", err, string(repairedData))
+	}
+}
+
+func TestNormalizeConfigPathsNormalizesMCPCapabilities(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				Name:         "web",
+				Command:      "node",
+				Capabilities: []string{" Web_Search ", "WEB_FETCH", "web_fetch", ""},
+			},
+		},
+	}
+
+	normalizeConfigPaths(cfg)
+
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one server, got %#v", cfg.MCPServers)
+	}
+	got := cfg.MCPServers[0].Capabilities
+	if len(got) != 2 || got[0] != "web_search" || got[1] != "web_fetch" {
+		t.Fatalf("expected normalized capabilities, got %#v", got)
+	}
+}
+
+func TestNormalizeConfigPathsNormalizesMCPEnvEntries(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				Name:    "web",
+				Command: "node",
+				Env: map[string]string{
+					" TAVILY_API_KEY ": "  secret  ",
+					"":                 "ignored",
+				},
+			},
+		},
+	}
+
+	normalizeConfigPaths(cfg)
+
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one server, got %#v", cfg.MCPServers)
+	}
+	got := cfg.MCPServers[0].Env
+	if len(got) != 1 || got["TAVILY_API_KEY"] != "secret" {
+		t.Fatalf("expected normalized env map, got %#v", got)
 	}
 }
 
@@ -93,6 +588,24 @@ func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected provider help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesWebResearchMCPTips(t *testing.T) {
+	detail, ok := HelpDetail("mcp")
+	if !ok {
+		t.Fatalf("expected mcp help detail to resolve")
+	}
+	for _, needle := range []string{
+		`"web_search"`,
+		`"web_fetch"`,
+		`"TAVILY_API_KEY"`,
+		"/init config enables the bundled web-research MCP by default when the script is available",
+		"auto-adds that MCP to ~/.kernforge/config.json",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected mcp help detail to contain %q", needle)
 		}
 	}
 }

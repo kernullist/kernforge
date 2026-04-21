@@ -159,8 +159,12 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 메인 프롬프트에서 빈 입력 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
 - REPL은 compact branded banner, subtle turn divider, grouped status/config section, assistant/tool activity stream 분리로 더 촘촘한 터미널 UX를 사용한다.
 - assistant streaming 출력은 선행 blank chunk를 무시하고, progress/info 출력 전 경계를 정리하며, 반복 follow-on preamble 사이에 줄바꿈을 넣어 더 읽기 쉽게 출력된다.
+- `이제 ... 확인하겠습니다`, `먼저 ... 수정하겠습니다` 같은 짧은 tool 전 narration은 가능한 한 footer형 진행 상태로 흡수해서 불필요한 assistant block이 늘어나지 않게 했다.
 - 기본 대기 문구는 thinking prefix와 중복되지 않게 정리해서 같은 의미를 두 번 보여주지 않는다.
 - 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
+- 진행 중 상태, 짧은 `next` 프리앰블, tool progress는 이제 본문 사이에 끼어들지 않고 하단 footer 패널을 공유한다.
+- 취소 확인, diff preview 확인, write 승인, verification 복구 같은 확인 프롬프트도 같은 footer 슬롯을 잠시 점유해서 화면 맨 아래에 고정된 것처럼 보이게 했다.
+- 완료 요약, output 경로, warning, 설정 변경처럼 나중에 다시 봐야 하는 결과는 본문 transcript에 남기고, 일시적인 진행 상황만 footer로 흘린다.
 - 문장 중간에서 잘린 최종 답변은 한 번 continuation 재시도를 걸고 합쳐서 출력한 뒤 프롬프트로 복귀한다.
 - Windows 콘솔에서 짧게 누른 `Esc`도 안정적으로 요청 취소
 - 요청 취소 직후 다음 프롬프트가 연속 `Esc` 입력으로 자동 취소되지 않도록 안정화
@@ -626,6 +630,29 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 
 ```text
 @mcp:docs:getting-started 이 리소스를 요약해줘
+```
+
+실시간 웹 리서치를 위해 Kernforge는 시작 시 번들된 MCP 스크립트를 `~/.kernforge/mcp/web-research-mcp.js`로 배포하고, 아직 동등한 웹 검색 MCP가 없다면 `~/.kernforge/config.json`에 대응되는 `web-research` 항목도 자동으로 추가합니다. `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, `SERPAPI_API_KEY`는 셸 환경 변수로 넣어도 되고, `config.json`의 `mcp_servers[].env`에 넣어도 됩니다. 시작 이후에 설정이나 환경 변수를 바꿨다면 `/reload`를 실행하면 됩니다. 이 워크스페이스에는 바로 실행 가능한 `.kernforge/mcp/web-research-mcp.js`와 대응되는 `.kernforge/config.json`도 들어 있습니다. 연결되면 Kernforge는 최신/현재 리서치 요청에서 로컬 파일 검사보다 해당 MCP를 먼저 사용하려고 시도합니다. `/init config`도 스크립트를 찾을 수 있으면 기본 활성 상태로 `web-research` MCP를 넣습니다.
+
+최소 워크스페이스 설정 예시는 다음과 같습니다.
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "web-research",
+      "command": "node",
+      "args": [".kernforge/mcp/web-research-mcp.js"],
+      "env": {
+        "TAVILY_API_KEY": "",
+        "BRAVE_SEARCH_API_KEY": "",
+        "SERPAPI_API_KEY": ""
+      },
+      "cwd": ".",
+      "capabilities": ["web_search", "web_fetch"]
+    }
+  ]
+}
 ```
 
 ## 대화형 REPL

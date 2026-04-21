@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -145,10 +146,43 @@ func mergeConfigFile(cfg *Config, path string) error {
 	}
 	var patch Config
 	if err := json.Unmarshal(data, &patch); err != nil {
-		return fmt.Errorf("parse %s: %w", path, err)
+		if repaired, ok := repairAppendedMCPSnippetConfigJSON(data); ok {
+			if repairErr := json.Unmarshal(repaired, &patch); repairErr == nil {
+				_ = os.WriteFile(path, repaired, 0o644)
+				mergeConfig(cfg, patch)
+				return nil
+			}
+		}
+		return fmt.Errorf("parse %s: %w%s", path, err, configParseRepairHint(data))
 	}
 	mergeConfig(cfg, patch)
 	return nil
+}
+
+func repairAppendedMCPSnippetConfigJSON(data []byte) ([]byte, bool) {
+	text := string(data)
+	if !strings.Contains(text, `"mcp_servers"`) {
+		return nil, false
+	}
+	openPattern := regexp.MustCompile(`,\s*\{\s*"mcp_servers"\s*:`)
+	if !openPattern.MatchString(text) {
+		return nil, false
+	}
+	repaired := openPattern.ReplaceAllString(text, ","+"\n"+`  "mcp_servers":`)
+	closePattern := regexp.MustCompile(`\r?\n\s*\}\r?\n\}\s*$`)
+	repaired = closePattern.ReplaceAllString(repaired, "\n}")
+	if repaired == text {
+		return nil, false
+	}
+	return []byte(repaired), true
+}
+
+func configParseRepairHint(data []byte) string {
+	text := string(data)
+	if strings.Contains(text, `"mcp_servers"`) && regexp.MustCompile(`,\s*\{\s*"mcp_servers"\s*:`).MatchString(text) {
+		return " (config appears to contain an extra top-level object; move mcp_servers inside the root JSON object)"
+	}
+	return ""
 }
 
 func mergeConfig(dst *Config, src Config) {
@@ -258,7 +292,7 @@ func mergeConfig(dst *Config, src Config) {
 		dst.EnabledSkills = append([]string(nil), src.EnabledSkills...)
 	}
 	if len(src.MCPServers) > 0 {
-		dst.MCPServers = append([]MCPServerConfig(nil), src.MCPServers...)
+		dst.MCPServers = mergeMCPServerOverrides(dst.MCPServers, src.MCPServers)
 	}
 	if len(src.Profiles) > 0 {
 		dst.Profiles = append([]Profile(nil), src.Profiles...)
@@ -420,6 +454,33 @@ func normalizeConfigPaths(cfg *Config) {
 		if strings.TrimSpace(server.Cwd) != "" {
 			cfg.MCPServers[i].Cwd = expandHome(server.Cwd)
 		}
+		if len(server.Capabilities) > 0 {
+			cleaned := make([]string, 0, len(server.Capabilities))
+			seen := map[string]struct{}{}
+			for _, capability := range server.Capabilities {
+				normalized := strings.ToLower(strings.TrimSpace(capability))
+				if normalized == "" {
+					continue
+				}
+				if _, ok := seen[normalized]; ok {
+					continue
+				}
+				seen[normalized] = struct{}{}
+				cleaned = append(cleaned, normalized)
+			}
+			cfg.MCPServers[i].Capabilities = cleaned
+		}
+		if len(server.Env) > 0 {
+			cleaned := make(map[string]string, len(server.Env))
+			for key, value := range server.Env {
+				trimmedKey := strings.TrimSpace(key)
+				if trimmedKey == "" {
+					continue
+				}
+				cleaned[trimmedKey] = strings.TrimSpace(value)
+			}
+			cfg.MCPServers[i].Env = cleaned
+		}
 	}
 	for i, profile := range cfg.Profiles {
 		cfg.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
@@ -495,12 +556,18 @@ func EnsureUserConfig(cfg Config) error {
 	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
 		return err
 	}
+	if err := ensureBundledUserAssets(); err != nil {
+		return err
+	}
 	if _, err := os.Stat(userConfigPath()); err == nil {
-		return nil
+		return ensureSupportedUserConfigDefaults()
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return SaveUserConfig(cfg)
+	if err := SaveUserConfig(cfg); err != nil {
+		return err
+	}
+	return ensureSupportedUserConfigDefaults()
 }
 
 func envString(key string, dst *string) {
@@ -796,7 +863,8 @@ func InitMemoryTemplate(projectName string) string {
 `, projectName)
 }
 
-func InitWorkspaceConfigTemplate() string {
+func InitWorkspaceConfigTemplate(workspaceRoot string) string {
+	webResearchServer := defaultWebResearchMCPServer(workspaceRoot)
 	sample := struct {
 		AutoCheckpointEdits *bool             `json:"auto_checkpoint_edits,omitempty"`
 		AutoVerify          *bool             `json:"auto_verify,omitempty"`
@@ -832,19 +900,309 @@ func InitWorkspaceConfigTemplate() string {
 		HookPresets:         []string{},
 		SkillPaths:          []string{"./.kernforge/skills"},
 		EnabledSkills:       []string{},
-		MCPServers: []MCPServerConfig{{
-			Name:     "example",
-			Command:  "node",
-			Args:     []string{"path/to/server.js"},
-			Cwd:      ".",
-			Disabled: true,
-		}},
+		MCPServers: []MCPServerConfig{
+			{
+				Name:     "example",
+				Command:  "node",
+				Args:     []string{"path/to/server.js"},
+				Cwd:      ".",
+				Disabled: true,
+			},
+			webResearchServer,
+		},
 	}
 	data, err := json.MarshalIndent(sample, "", "  ")
 	if err != nil {
 		return "{\n  \"skill_paths\": [\"./.kernforge/skills\"]\n}\n"
 	}
 	return string(data) + "\n"
+}
+
+func workspaceHasBundledWebResearchMCP(workspaceRoot string) bool {
+	root := strings.TrimSpace(workspaceRoot)
+	if root == "" {
+		return false
+	}
+	path := filepath.Join(root, userConfigDirName, "mcp", "web-research-mcp.js")
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.IsDir()
+}
+
+func defaultWebResearchMCPServer(workspaceRoot string) MCPServerConfig {
+	server := MCPServerConfig{
+		Name:         "web-research",
+		Command:      "node",
+		Args:         []string{"path/to/web-research-mcp.js"},
+		Env:          defaultWebResearchMCPEnvTemplate(),
+		Cwd:          ".",
+		Capabilities: []string{"web_search", "web_fetch"},
+		Disabled:     true,
+	}
+	if workspaceHasBundledWebResearchMCP(workspaceRoot) {
+		server.Args = []string{filepath.ToSlash(filepath.Join(userConfigDirName, "mcp", "web-research-mcp.js"))}
+		server.Disabled = false
+		return server
+	}
+	if deployedWebResearchMCPScriptAvailable() {
+		server.Args = []string{filepath.ToSlash(deployedWebResearchMCPScriptPath())}
+		server.Disabled = false
+		return server
+	}
+	return server
+}
+
+func defaultUserWebResearchMCPServer() MCPServerConfig {
+	return MCPServerConfig{
+		Name:         "web-research",
+		Command:      "node",
+		Args:         []string{filepath.ToSlash(deployedWebResearchMCPScriptPath())},
+		Env:          defaultWebResearchMCPEnvTemplate(),
+		Cwd:          ".",
+		Capabilities: []string{"web_search", "web_fetch"},
+	}
+}
+
+func defaultWebResearchMCPEnvTemplate() map[string]string {
+	return map[string]string{
+		"TAVILY_API_KEY":       "",
+		"BRAVE_SEARCH_API_KEY": "",
+		"SERPAPI_API_KEY":      "",
+	}
+}
+
+func ensureSupportedUserConfigDefaults() error {
+	if !deployedWebResearchMCPScriptAvailable() {
+		return nil
+	}
+	cfg, err := loadRawConfigFile(userConfigPath())
+	if err != nil {
+		return err
+	}
+	if hasConfiguredWebResearchMCP(cfg.MCPServers) {
+		updatedServers, changed := backfillUserWebResearchMCPServers(cfg.MCPServers)
+		if !changed {
+			return nil
+		}
+		cfg.MCPServers = updatedServers
+		return SaveUserConfig(cfg)
+	}
+	cfg.MCPServers = append(cfg.MCPServers, defaultUserWebResearchMCPServer())
+	return SaveUserConfig(cfg)
+}
+
+func loadRawConfigFile(path string) (Config, error) {
+	var cfg Config
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return cfg, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return cfg, nil
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return cfg, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func hasConfiguredWebResearchMCP(servers []MCPServerConfig) bool {
+	for _, server := range servers {
+		if isWebResearchMCPServer(server) {
+			return true
+		}
+	}
+	return false
+}
+
+func backfillUserWebResearchMCPServers(servers []MCPServerConfig) ([]MCPServerConfig, bool) {
+	updated := append([]MCPServerConfig(nil), servers...)
+	changed := false
+	defaultEnv := defaultWebResearchMCPEnvTemplate()
+	defaultArgs := []string{filepath.ToSlash(deployedWebResearchMCPScriptPath())}
+	defaultCaps := []string{"web_search", "web_fetch"}
+	for i, server := range updated {
+		if !isWebResearchMCPServer(server) {
+			continue
+		}
+		if shouldUseDeployedUserWebResearchPath(server.Args) {
+			updated[i].Args = append([]string(nil), defaultArgs...)
+			changed = true
+		}
+		if len(server.Capabilities) == 0 {
+			updated[i].Capabilities = append([]string(nil), defaultCaps...)
+			changed = true
+		} else {
+			for _, capability := range defaultCaps {
+				if sliceContainsFold(updated[i].Capabilities, capability) {
+					continue
+				}
+				updated[i].Capabilities = append(updated[i].Capabilities, capability)
+				changed = true
+			}
+		}
+		if updated[i].Env == nil {
+			updated[i].Env = map[string]string{}
+		}
+		for key, value := range defaultEnv {
+			if _, ok := updated[i].Env[key]; ok {
+				continue
+			}
+			updated[i].Env[key] = value
+			changed = true
+		}
+	}
+	return updated, changed
+}
+
+func shouldUseDeployedUserWebResearchPath(args []string) bool {
+	if len(args) == 0 {
+		return true
+	}
+	if len(args) != 1 {
+		return false
+	}
+	arg := filepath.ToSlash(strings.TrimSpace(args[0]))
+	if arg == "" {
+		return true
+	}
+	if arg == filepath.ToSlash(deployedWebResearchMCPScriptPath()) {
+		return false
+	}
+	switch arg {
+	case ".kernforge/mcp/web-research-mcp.js", "./.kernforge/mcp/web-research-mcp.js", "path/to/web-research-mcp.js":
+		return true
+	}
+	return false
+}
+
+func mergeMCPServerOverrides(base []MCPServerConfig, overlay []MCPServerConfig) []MCPServerConfig {
+	merged := make([]MCPServerConfig, 0, len(overlay))
+	for _, server := range overlay {
+		inherited := server
+		if parent, ok := findMatchingMCPServer(base, server); ok {
+			inherited = mergeMCPServerConfig(parent, server)
+		} else {
+			inherited = cloneMCPServerConfig(server)
+		}
+		merged = append(merged, inherited)
+	}
+	return merged
+}
+
+func findMatchingMCPServer(servers []MCPServerConfig, target MCPServerConfig) (MCPServerConfig, bool) {
+	for _, server := range servers {
+		if sameMCPServerIdentity(server, target) {
+			return server, true
+		}
+	}
+	return MCPServerConfig{}, false
+}
+
+func sameMCPServerIdentity(a MCPServerConfig, b MCPServerConfig) bool {
+	if strings.TrimSpace(a.Name) != "" && strings.TrimSpace(b.Name) != "" && strings.EqualFold(strings.TrimSpace(a.Name), strings.TrimSpace(b.Name)) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(a.Command), strings.TrimSpace(b.Command)) && sameMCPServerArgs(a.Args, b.Args) {
+		return true
+	}
+	if isWebResearchMCPServer(a) && isWebResearchMCPServer(b) {
+		return true
+	}
+	return false
+}
+
+func sameMCPServerArgs(a []string, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(filepath.ToSlash(strings.TrimSpace(a[i])), filepath.ToSlash(strings.TrimSpace(b[i]))) {
+			return false
+		}
+	}
+	return len(a) > 0
+}
+
+func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServerConfig {
+	merged := cloneMCPServerConfig(base)
+	if strings.TrimSpace(overlay.Name) != "" {
+		merged.Name = overlay.Name
+	}
+	if strings.TrimSpace(overlay.Command) != "" {
+		merged.Command = overlay.Command
+	}
+	if len(overlay.Args) > 0 {
+		merged.Args = append([]string(nil), overlay.Args...)
+	}
+	if strings.TrimSpace(overlay.Cwd) != "" {
+		merged.Cwd = overlay.Cwd
+	}
+	if len(overlay.Capabilities) > 0 {
+		merged.Capabilities = append([]string(nil), overlay.Capabilities...)
+	}
+	merged.Disabled = base.Disabled || overlay.Disabled
+	merged.Env = mergeMCPServerEnv(base.Env, overlay.Env)
+	return merged
+}
+
+func cloneMCPServerConfig(server MCPServerConfig) MCPServerConfig {
+	cloned := server
+	if server.Args != nil {
+		cloned.Args = append([]string(nil), server.Args...)
+	}
+	if server.Capabilities != nil {
+		cloned.Capabilities = append([]string(nil), server.Capabilities...)
+	}
+	if server.Env != nil {
+		cloned.Env = mergeMCPServerEnv(nil, server.Env)
+	}
+	return cloned
+}
+
+func mergeMCPServerEnv(base map[string]string, overlay map[string]string) map[string]string {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := map[string]string{}
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range overlay {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue == "" {
+			if _, ok := merged[trimmedKey]; !ok {
+				merged[trimmedKey] = ""
+			}
+			continue
+		}
+		merged[trimmedKey] = trimmedValue
+	}
+	return merged
+}
+
+func isWebResearchMCPServer(server MCPServerConfig) bool {
+	if serverDeclaresWebResearchCapability(server) {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(server.Name), "web-research") {
+		return true
+	}
+	for _, arg := range server.Args {
+		if strings.EqualFold(filepath.Base(strings.TrimSpace(arg)), "web-research-mcp.js") {
+			return true
+		}
+	}
+	return false
 }
 
 type Command struct {
@@ -1422,6 +1780,13 @@ MCP and skills commands expose local skills plus external MCP tools, resources, 
 
 /prompt <target> [json]
 - Resolve an MCP prompt by server:name, with optional JSON arguments.
+
+Web research setup:
+- Mark web-capable MCP servers with capabilities like "web_search" and "web_fetch" in .kernforge/config.json.
+- You can also put keys like "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", and "SERPAPI_API_KEY" in mcp_servers[].env.
+- /init config enables the bundled web-research MCP by default when the script is available in the workspace or user config directory.
+- On startup, Kernforge deploys the bundled web-research MCP into ~/.kernforge/mcp/web-research-mcp.js and auto-adds that MCP to ~/.kernforge/config.json when no equivalent web-research server is configured yet.
+- Once a web-search/browser MCP is configured, Kernforge can prioritize it for latest/current research requests before local file inspection.
 `), true
 	case "git", "diff":
 		return strings.TrimSpace(`

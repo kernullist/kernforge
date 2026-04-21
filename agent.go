@@ -311,6 +311,25 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
+			if shouldBlockLocalToolCallsBeforeWebResearch(resp.Message.ToolCalls, a.Session, a.MCP) {
+				researchCatalog := ""
+				if a.MCP != nil {
+					researchCatalog = strings.TrimSpace(compactPromptSection(a.MCP.WebResearchCatalogPrompt(), 700))
+				}
+				guidance := "This request likely needs current external research. Before using local inspection or edit tools, first use a relevant MCP web/search/browser capability to gather current external sources, then return to local file work."
+				if researchCatalog != "" {
+					guidance += "\n\nRelevant web/research capabilities:\n" + researchCatalog
+				}
+				guidance += "\n\nRecommended flow:\n1. Break the topic into a few focused search facets.\n2. Use MCP web/search/browser tools to gather multiple current sources.\n3. Compare recency and source authority.\n4. Then inspect local files or write the requested document."
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: guidance,
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls(resp.Message.ToolCalls, a.Session); block {
 				a.Session.AddMessage(Message{
 					Role: "user",
@@ -1103,6 +1122,18 @@ func isAssistantNarrationPreamble(text string) bool {
 	case strings.HasPrefix(lower, "i need to "):
 		return true
 	case strings.HasPrefix(lower, "first, "):
+		return true
+	case strings.HasPrefix(lower, "이제 "):
+		return true
+	case strings.HasPrefix(lower, "먼저 "):
+		return true
+	case strings.HasPrefix(lower, "우선 "):
+		return true
+	case strings.HasPrefix(lower, "잠깐"):
+		return true
+	case strings.HasPrefix(lower, "잠시"):
+		return true
+	case strings.HasPrefix(lower, "다시 "):
 		return true
 	default:
 		return false
@@ -1997,6 +2028,67 @@ func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Sess
 	return false, "", ""
 }
 
+func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Session, mcp *MCPManager) bool {
+	if session == nil || mcp == nil || !mcp.HasWebResearchCapability() {
+		return false
+	}
+	latestUser := baseUserQueryText(latestUserMessageText(session.Messages))
+	if !shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(strings.TrimSpace(latestUser))) {
+		return false
+	}
+	if sessionHasWebResearchToolResult(session, mcp) || toolCallsIncludeWebResearch(calls, mcp) {
+		return false
+	}
+	for _, call := range calls {
+		if toolCallAllowedBeforeWebResearch(call, mcp) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func sessionHasWebResearchToolResult(session *Session, mcp *MCPManager) bool {
+	if session == nil || mcp == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.IsError {
+			continue
+		}
+		if mcp.IsWebResearchToolName(strings.TrimSpace(msg.ToolName)) {
+			return true
+		}
+	}
+	return false
+}
+
+func toolCallsIncludeWebResearch(calls []ToolCall, mcp *MCPManager) bool {
+	if mcp == nil {
+		return false
+	}
+	for _, call := range calls {
+		if mcp.IsWebResearchToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func toolCallAllowedBeforeWebResearch(call ToolCall, mcp *MCPManager) bool {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		return true
+	}
+	if name == "update_plan" {
+		return true
+	}
+	if mcp != nil && mcp.IsWebResearchToolCall(call) {
+		return true
+	}
+	return false
+}
+
 func documentPathConfirmedBySession(session *Session, targetPath string) bool {
 	if session == nil {
 		return false
@@ -2145,6 +2237,7 @@ func (a *Agent) systemPrompt() string {
 	var b strings.Builder
 	latestUser := baseUserQueryText(latestUserMessageText(a.Session.Messages))
 	lowerLatestUser := strings.ToLower(strings.TrimSpace(latestUser))
+	webResearchIntent := shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser)
 	b.WriteString("You are Kernforge, a terminal-based coding agent inspired by Claude Code.\n")
 	b.WriteString("Work like a careful senior engineer inside the user's repository.\n")
 	b.WriteString("Use tools before making assumptions. Read relevant files before editing them. Keep answers concise and implementation-focused.\n")
@@ -2154,6 +2247,15 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString("The latest user request is analysis-only. Investigate and explain the issue, but do not modify files or call edit tools unless the user explicitly asks for a fix.\n")
 	} else if looksLikeExplicitEditIntent(latestUser) {
 		b.WriteString("The latest user request explicitly asks for a fix. Inspect the relevant code and apply the necessary edit directly with the available tools. Do not hand the patch back to the user unless an edit tool actually fails.\n")
+	}
+	if webResearchIntent {
+		if a.MCP != nil && a.MCP.HasWebResearchCapability() {
+			b.WriteString("The latest user request likely needs current external research. Prefer relevant MCP web/search/browser tools before relying on memory or local-only context.\n")
+			b.WriteString("For external research tasks, first break the topic into 3-6 focused query facets, gather multiple sources, compare recency and source authority, then synthesize the results before writing files.\n")
+		} else {
+			b.WriteString("The latest user request likely needs current external research, but no obvious MCP web-search/browser capability is configured in this session.\n")
+			b.WriteString("Do not pretend to have live web results. If current external evidence is required, explicitly say live web research is unavailable here and offer alternatives such as a no-tools best-effort answer, a smaller scoped task, or a retry with a web-capable MCP setup.\n")
+		}
 	}
 	if !looksLikeExplicitGitIntent(latestUser) {
 		b.WriteString("Do not stage, commit, push, or open a PR unless the user explicitly asks for that git action.\n")
@@ -2239,6 +2341,13 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
+	if webResearchIntent {
+		if catalog := strings.TrimSpace(a.MCP.WebResearchCatalogPrompt()); catalog != "" {
+			b.WriteString("\nRelevant MCP web/research capabilities:\n")
+			b.WriteString(compactPromptSection(catalog, 1200))
+			b.WriteString("\n")
+		}
+	}
 
 	if configAutoLocale(a.Config) {
 		locale := getSystemLocale()
@@ -2275,6 +2384,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- For run_shell, the working directory is already set to the workspace root. Do not prepend commands with cd unless changing into a subdirectory is truly necessary.\n")
 	b.WriteString("- When the user asks to create or update ordinary source files or documents, prefer edit tools. Do not use run_shell for repo bootstrap, ACL changes, or git init unless the user explicitly asked for setup work.\n")
 	b.WriteString("- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.\n")
+	b.WriteString("- For latest/current external research tasks, prefer relevant MCP web/search/browser tools before answering from memory. Gather multiple sources, compare recency and authority, then synthesize.\n")
 	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
 	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
 	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")
@@ -2326,6 +2436,21 @@ func shouldIncludeMCPCatalogInSystemPrompt(lowerLatestUser string) bool {
 		return false
 	}
 	return containsAny(lowerLatestUser, "mcp", "resource", "resources", "prompt", "prompts", "리소스", "프롬프트")
+}
+
+func shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser string) bool {
+	if strings.TrimSpace(lowerLatestUser) == "" {
+		return false
+	}
+	if containsAny(lowerLatestUser,
+		"latest", "recent", "current", "today", "now", "news", "trend", "trends",
+		"web", "search", "browse", "browser", "source", "sources", "citation", "citations",
+		"research", "survey", "state of the art", "look up", "find sources",
+		"최신", "최근", "현재", "뉴스", "동향", "웹", "검색", "출처", "자료", "리서치", "조사", "논문",
+	) {
+		return true
+	}
+	return false
 }
 
 func summarizeMessages(messages []Message, instructions string) string {

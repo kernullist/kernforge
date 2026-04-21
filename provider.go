@@ -589,7 +589,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	defer resp.Body.Close()
 
 	if payload.Stream {
-		streamResp, err := readOpenAIStream(ctx, resp.Body, req.OnTextDelta)
+		streamResp, err := readOpenAIStream(ctx, resp.Body, req.OnTextDelta, len(req.Tools) > 0)
 		if err != nil {
 			return ChatResponse{}, err
 		}
@@ -641,7 +641,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}, nil
 }
 
-func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(string)) (ChatResponse, error) {
+func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(string), bufferLeadingText bool) (ChatResponse, error) {
 	type streamToolCallDelta struct {
 		Index    int    `json:"index"`
 		ID       string `json:"id,omitempty"`
@@ -687,9 +687,12 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var textBuilder strings.Builder
+	var pendingText strings.Builder
 	toolCalls := map[int]*toolCallAccumulator{}
 	stopReason := ""
 	sawDone := false
+	streamUnlocked := !bufferLeadingText
+	sawToolCalls := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -722,10 +725,20 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 			if deltaText := extractOpenAIMessageText(choice.Delta.Content); deltaText != "" {
 				textBuilder.WriteString(deltaText)
 				if onTextDelta != nil {
-					onTextDelta(deltaText)
+					if streamUnlocked && !sawToolCalls {
+						onTextDelta(deltaText)
+					} else if !sawToolCalls {
+						pendingText.WriteString(deltaText)
+						if shouldReleaseBufferedStreamText(pendingText.String()) {
+							onTextDelta(pendingText.String())
+							pendingText.Reset()
+							streamUnlocked = true
+						}
+					}
 				}
 			}
 			for _, tc := range choice.Delta.ToolCalls {
+				sawToolCalls = true
 				entry := toolCalls[tc.Index]
 				if entry == nil {
 					entry = &toolCallAccumulator{}
@@ -763,6 +776,9 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 		}
 		return ChatResponse{}, ctxErr
 	}
+	if onTextDelta != nil && !sawToolCalls && pendingText.Len() > 0 {
+		onTextDelta(pendingText.String())
+	}
 
 	out := Message{
 		Role: "assistant",
@@ -792,6 +808,20 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 		result.StopReason = "stream_incomplete"
 	}
 	return result, nil
+}
+
+func shouldReleaseBufferedStreamText(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	if strings.Contains(trimmed, "\n\n") || strings.Contains(trimmed, "```") {
+		return true
+	}
+	if visibleLen(trimmed) >= 120 {
+		return true
+	}
+	return len(strings.Fields(trimmed)) >= 24
 }
 
 func buildPartialStreamResponse(text string, hasToolCalls bool, stopReason string) (ChatResponse, bool) {

@@ -184,6 +184,12 @@ type observingSessionTool struct {
 	onExecute   func([]byte)
 }
 
+type staticTool struct {
+	name   string
+	output string
+	calls  int
+}
+
 type toolUnsupportedThenSuccessClient struct {
 	calls    int
 	requests []ChatRequest
@@ -263,6 +269,23 @@ func (t *observingSessionTool) Execute(ctx context.Context, input any) (string, 
 		}
 	}
 	return t.output, t.err
+}
+
+func (t *staticTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Return a fixed output for agent loop tests.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *staticTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	return t.output, nil
 }
 
 func toolCallResponse(name string, args map[string]any) ChatResponse {
@@ -1337,6 +1360,27 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveToolPlan(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(got), "let me inspect") {
 		t.Fatalf("expected narration preamble to be removed, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantMessageTextRemovesKoreanToolPreambleNarration(t *testing.T) {
+	text := "이제 템플릿 파일을 확인하겠습니다.\n먼저 main.py를 수정하겠습니다."
+
+	got := sanitizeAssistantMessageText(text, true)
+	if got != "" {
+		t.Fatalf("expected korean tool preamble narration to be dropped, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantMessageTextKeepsSubstantiveKoreanToolPlan(t *testing.T) {
+	text := "먼저 providers를 확인하겠습니다.\n구현 계획:\n1. 인터페이스 갱신\n2. reasoning effort 전달"
+
+	got := sanitizeAssistantMessageText(text, true)
+	if !strings.Contains(got, "구현 계획:") {
+		t.Fatalf("expected substantive korean content to be kept, got %q", got)
+	}
+	if strings.Contains(got, "먼저 providers를 확인하겠습니다.") {
+		t.Fatalf("expected korean narration preamble to be removed, got %q", got)
 	}
 }
 
@@ -2556,6 +2600,184 @@ func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
 	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "First use list_files on the parent directory") {
 		t.Fatalf("expected document read guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentBlocksLocalInspectionBeforeWebResearchWhenCapabilityAvailable(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web__search_web",
+		output: "source 1\nsource 2",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			toolCallResponse("mcp__web__search_web", map[string]any{"query": "hypervisor anti-cheat latest"}),
+			{Message: Message{Role: "assistant", Text: "웹 소스를 먼저 수집한 뒤 문서를 진행하겠습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws), webTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: MCPServerConfig{Name: "web"},
+					tools: []MCPToolDescriptor{
+						{Name: "search_web", Description: "Search the web for current articles and references"},
+					},
+				},
+			},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "Hypervisor를 이용한 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 파일로 작성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "웹 소스") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 1 {
+		t.Fatalf("expected web research tool to run once, got %d", webTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected local inspection request to be blocked and retried, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Before using local inspection or edit tools") {
+		t.Fatalf("expected web research guidance, got %#v", lastMessage)
+	}
+}
+
+func TestAgentAllowsLocalInspectionAfterWebResearchToolUsed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web__search_web",
+		output: "source 1\nsource 2",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__web__search_web", map[string]any{"query": "hypervisor anti-cheat latest"}),
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			{Message: Message{Role: "assistant", Text: "웹 조사 후 로컬 문서 경로까지 확인했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(webTool, NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP: &MCPManager{
+			servers: []*MCPClient{
+				{
+					config: MCPServerConfig{Name: "web"},
+					tools: []MCPToolDescriptor{
+						{Name: "search_web", Description: "Search the web for current articles and references"},
+					},
+				},
+			},
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "Hypervisor를 이용한 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 파일로 작성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 문서 경로") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if webTool.calls != 1 {
+		t.Fatalf("expected web research tool to run once, got %d", webTool.calls)
+	}
+	toolMessages := 0
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && !msg.IsError {
+			toolMessages++
+		}
+	}
+	if toolMessages != 2 {
+		t.Fatalf("expected both web research and list_files tool results to be recorded, got %d", toolMessages)
+	}
+}
+
+func TestAgentUsesLoadedWebResearchMCPToolsBeforeLocalInspection(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("workspace\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: root, Root: root}, []MCPServerConfig{{
+		Name:         "web-research",
+		Command:      os.Args[0],
+		Args:         []string{"-test.run=TestMCPWebResearchHelperProcess"},
+		Capabilities: []string{"web_search", "web_fetch"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_WEB_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("list_files", map[string]any{"path": "."}),
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "hypervisor anti-cheat latest"}),
+			toolCallResponse("mcp__web_research__fetch_url", map[string]any{"url": "https://example.test/hypervisor-detection"}),
+			{Message: Message{Role: "assistant", Text: "웹 검색과 본문 fetch까지 마친 뒤 로컬 파일 작업으로 넘어갈 준비가 됐습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     buildRegistry(ws, manager),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		MCP:       manager,
+	}
+
+	reply, err := agent.Reply(context.Background(), "Hypervisor를 이용한 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 파일로 작성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "fetch") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected blocked local inspection plus two web tool turns, got %d requests", len(provider.requests))
+	}
+	lastMessage := provider.requests[1].Messages[len(provider.requests[1].Messages)-1]
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Before using local inspection or edit tools") {
+		t.Fatalf("expected web research guidance, got %#v", lastMessage)
+	}
+	toolMessages := 0
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && !msg.IsError {
+			toolMessages++
+		}
+	}
+	if toolMessages != 2 {
+		t.Fatalf("expected search and fetch tool results to be recorded, got %d", toolMessages)
 	}
 }
 

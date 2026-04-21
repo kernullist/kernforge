@@ -118,16 +118,28 @@ func shouldPrimeInteractivePlan(state *TaskState, readOnlyAnalysis bool, explici
 	if state == nil {
 		return false
 	}
-	if strings.TrimSpace(state.Goal) == "" {
+	goal := strings.TrimSpace(state.Goal)
+	if goal == "" {
 		return false
 	}
 	if strings.TrimSpace(state.PlanSummary) != "" {
 		return false
 	}
+	if shouldSkipInteractivePlanPreflight(goal, readOnlyAnalysis, explicitEditRequest, explicitGitRequest) {
+		return false
+	}
+	return true
+}
+
+func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) bool {
 	_ = readOnlyAnalysis
 	_ = explicitEditRequest
 	_ = explicitGitRequest
-	return true
+	lowerGoal := strings.ToLower(strings.TrimSpace(goal))
+	if shouldPrioritizeWebResearchInSystemPrompt(lowerGoal) {
+		return true
+	}
+	return false
 }
 
 func buildInteractiveExecutionPlanPrompt(state *TaskState, readOnlyAnalysis bool) string {
