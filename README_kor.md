@@ -38,7 +38,7 @@ Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent
 - [한국어 Adversarial Simulation 스펙](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [한국어 차세대 Project Analysis 스펙](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
-가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
+가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
 
 ## 왜 Kernforge인가
 
@@ -112,6 +112,18 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `/detect-verification-tools`, `/set-*-path` 기반 Windows verification tool 경로 탐지와 override
 - recent failed evidence를 이용한 hook 기반 push/PR 경고, 확인, 차단
 - 반복 실패 상황에서 자동 safety checkpoint 생성 가능
+
+### 소스 레벨 Function Fuzzing
+
+- `/fuzz-func <function-name>`, `/fuzz-func <function-name> --file <path>`, `/fuzz-func @<path>`로 함수 단위 또는 파일 단위 source-level fuzzing 시작
+- `@<path>` 또는 `--file <path>`만 주면 시작 파일과 실제 호출 흐름을 기준으로 대표 루트와 입력 지향 함수 후보를 자동 선택
+- `analyze-project`나 `structural_index_v2`가 없어도 워크스페이스 스캔과 on-demand semantic index 복원으로 바로 계획 생성
+- 기본 동작은 네이티브 실행보다 AI source-only fuzzing이며, 공격자 입력 상태, 구체 입력 예시, 비교식, 최소 반례, 분기 차이, 후속 호출 체인까지 소스에서 추론
+- 고위험 finding은 위험도 점수표, 먼저 볼 소스 위치, 시작 파일에서 거기까지의 파일 확장 경로, 대표 루트에서 이어지는 호출 경로를 함께 보여준다.
+- `compile_commands.json`이나 build context가 있으면 후속 네이티브 fuzzing 품질이 올라가고, 없으면 왜 막히는지 먼저 설명한 뒤 진행 여부를 묻는다.
+- 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래의 `report.md`, `harness.cpp`, `plan.json` 등에 저장된다.
+- `/fuzz-func status|show|list|continue|language`로 최근 분석 결과, 보류된 실행, 출력 언어를 관리할 수 있다.
+- 자동완성은 `/fuzz-func ` 단계에서는 함수명/파일 사용 힌트를 보여주고, `@`를 입력하기 시작하면 실제 workspace 파일 후보로 전환된다.
 
 ### 편집 워크플로우
 
@@ -987,6 +999,19 @@ simulation 관련 명령:
 /simulate-dashboard-html
 ```
 
+source-level fuzzing 관련 명령:
+
+```text
+/fuzz-func <function-name>
+/fuzz-func <function-name> --file <path>
+/fuzz-func @<path>
+/fuzz-func status
+/fuzz-func show [id|latest]
+/fuzz-func list
+/fuzz-func continue [id|latest]
+/fuzz-func language [system|english]
+```
+
 hook 및 override 관련 명령:
 
 ```text
@@ -1057,6 +1082,54 @@ hook 및 override 관련 명령:
 2. 생성된 knowledge pack과 shard 산출물을 확인합니다.
 3. `/analyze-performance startup` 또는 `scanner`, `compression`, `upload`, `ETW`, `memory` 같은 focus로 후속 분석을 실행합니다.
 4. 결과를 `/review-selection`, `/edit-selection`, `/verify`, evidence 기반 hook policy에 연결합니다.
+
+## Source-Level Function Fuzzing
+
+`/fuzz-func`는 런타임 harness가 없어도 공격자가 입력 파라미터를 정교하게 조작했을 때 어떤 guard, probe, copy, dispatch, cleanup 경로가 열리는지를 소스만으로 추론하는 기능입니다.
+
+핵심 명령:
+
+```text
+/fuzz-func <function-name>
+/fuzz-func <function-name> --file <path>
+/fuzz-func <function-name> @<path>
+/fuzz-func --file <path>
+/fuzz-func @<path>
+/fuzz-func status
+/fuzz-func show [id|latest]
+/fuzz-func continue [id|latest]
+/fuzz-func language [system|english]
+```
+
+무엇을 하는가:
+
+- 함수 시그니처, 실제 함수 본문의 guard/probe/copy/dispatch/cleanup 관찰, 호출 closure를 함께 모은다.
+- 함수명만 주면 심볼을 자동 찾고, 파일만 주면 include/import와 실제 호출 흐름을 따라 대표 루트를 고른다.
+- `analyze-project`가 없어도 snapshot과 semantic index를 on-demand로 복원한다.
+- 위험도가 높은 경로에 대해 공격자 입력 상태, 구체 입력 예시, 소스에서 뽑은 비교식, 최소 반례, 분기별 대표 결과, 후속 호출 체인을 합성한다.
+- 고위험 시나리오는 위험도 점수표와 함께 먼저 볼 소스 줄, 시작 파일에서 그 파일까지 이어진 경로, 대표 루트에서 이어진 호출 경로를 보여준다.
+- build context가 충분하면 후속 네이티브 harness/run까지 연결하고, 부족하면 왜 막히는지 설명한 뒤 확인을 받는다.
+- `/fuzz-func ` 자동완성은 함수명과 파일 지정 예시를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
+
+이 기능이 특히 좋은 경우:
+
+1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 코드를 빨리 triage하고 싶을 때
+2. 단순 리뷰보다 더 구체적으로 "어떤 값으로 어떤 비교식을 뒤집으면 어느 sink가 열리는지" 보고 싶을 때
+3. large driver/project에서 파일 하나를 지정하고 그 파일이 실제로 끌어오는 input-facing 경로를 보고 싶을 때
+
+출력 해석 요약:
+
+1. `결론`은 가장 우선 확인할 예측 문제와 가장 유용한 분기 차이 요약을 먼저 보여준다.
+2. `위험도 점수표`는 noise가 많은 fallback을 아래로 내리고, 실제 guard/probe/copy 근거가 있는 finding을 위로 올린다.
+3. `상위 예측 문제`는 Kernforge가 내부적으로 가정한 입력 상태와 구체 입력 예시를 보여주며, 사용자가 그대로 수동 재현하라는 뜻은 아니다.
+4. `소스 기반 공격 표면`은 실제 함수 본문에서 뽑은 probe/copy/dispatch/cleanup 근거를 요약한다.
+
+실무 추천 흐름:
+
+1. 파일 단위로 거칠게 보고 싶으면 `/fuzz-func @Driver/Foo.c`
+2. 함수까지 알고 있으면 `/fuzz-func ValidateRequest --file src/guard.cpp`
+3. 결과에서 가장 높은 점수의 finding과 `가장 유용한 분기 차이 요약`, `먼저 볼 관련 소스`부터 확인
+4. 필요하면 더 안쪽 input-facing 함수로 다시 `/fuzz-func`를 걸어 source-level fuzzing 정밀도를 높인다.
 
 ## 참고
 

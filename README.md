@@ -38,7 +38,7 @@ Specs And Roadmap:
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
-The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
+The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
 ## Why Kernforge
 
@@ -114,6 +114,18 @@ Its current differentiators are:
 - Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
+
+### Source-Level Function Fuzzing
+
+- Start function-level or file-level source fuzzing with `/fuzz-func <function-name>`, `/fuzz-func <function-name> --file <path>`, or `/fuzz-func @<path>`
+- When you pass only `@<path>` or `--file <path>`, Kernforge expands from the starting file through include/import plus real call flow and picks a representative root automatically
+- Planning no longer depends on `analyze-project` or a prebuilt `structural_index_v2`; Kernforge can scan the workspace and rebuild the semantic index on demand
+- The default mode is AI source-only fuzzing rather than native execution, so Kernforge derives attacker input states, concrete sample values, branch predicates, minimal counterexamples, branch deltas, and downstream call chains directly from source
+- High-risk findings now show a scored risk table, the first source location to inspect, the file-expansion path from the selected starting file, and the representative call path from the chosen root
+- If `compile_commands.json` or other build context exists, Kernforge can prepare a stronger native follow-up; if it does not, Kernforge explains the missing setup before asking whether to continue
+- Artifacts are stored under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`
+- Use `/fuzz-func status|show|list|continue|language` to inspect saved runs, resume blocked execution, and switch output language
+- Completion shows function-name and file-usage hints after `/fuzz-func `, then switches to real workspace file candidates as soon as you start typing `@`
 
 ### Editing Workflow
 
@@ -987,6 +999,19 @@ Simulation commands:
 /simulate-dashboard-html
 ```
 
+Source-level fuzzing commands:
+
+```text
+/fuzz-func <function-name>
+/fuzz-func <function-name> --file <path>
+/fuzz-func @<path>
+/fuzz-func status
+/fuzz-func show [id|latest]
+/fuzz-func list
+/fuzz-func continue [id|latest]
+/fuzz-func language [system|english]
+```
+
 Hook and override commands:
 
 ```text
@@ -1057,6 +1082,54 @@ Recommended flow:
 2. Review the generated knowledge pack and shard outputs.
 3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
 4. Use the resulting knowledge in `/review-selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
+
+## Source-Level Function Fuzzing
+
+`/fuzz-func` is meant to answer the attacker question directly: if an input parameter is manipulated precisely, which guards, probes, copies, dispatches, and cleanup paths can be pushed into unintended behavior even before you build a runnable harness?
+
+Core commands:
+
+```text
+/fuzz-func <function-name>
+/fuzz-func <function-name> --file <path>
+/fuzz-func <function-name> @<path>
+/fuzz-func --file <path>
+/fuzz-func @<path>
+/fuzz-func status
+/fuzz-func show [id|latest]
+/fuzz-func continue [id|latest]
+/fuzz-func language [system|english]
+```
+
+What it does:
+
+- Combines function signatures, real function-body observations, and reachable call closure.
+- Accepts a function name directly, or a file path and then expands through include/import plus actual call flow to pick a representative root automatically.
+- Rebuilds snapshot and semantic-index context on demand, so `/analyze-project` is optional rather than required.
+- Synthesizes attacker input states, concrete sample values, source-derived branch predicates, minimal counterexamples, pass/fail branch outcomes, and downstream call chains for higher-risk paths.
+- Shows the first source lines to inspect, the path from the selected starting file into the target file, and the representative call path from the chosen root into that implementation.
+- Uses native execution only as an optional follow-up. If build context is incomplete, Kernforge explains the gap first instead of silently failing.
+- `/fuzz-func ` completion starts with usage hints, then flips to real file candidates after `@` so file-scoped runs are easy to launch.
+
+This is especially useful when:
+
+1. You need fast triage on IOCTL handlers, parsers, validators, or buffer-processing code.
+2. A normal source review is too vague and you want concrete "flip this predicate with this value, then this sink opens" guidance.
+3. You only know the suspicious file, not the best root function yet.
+
+How to read the output:
+
+1. `Conclusion` gives the top predicted problem and the most useful branch delta first.
+2. `Risk score table` pushes noisy generic fallbacks down and keeps source-grounded guard/probe/copy findings at the top.
+3. `Top predicted problems` shows Kernforge's internal hypothetical input state and concrete sample values. These are analysis inputs, not instructions for manual reproduction.
+4. `Source-derived attack surface` lists the real probes, copies, dispatches, and cleanup edges that grounded the scenarios.
+
+Recommended workflow:
+
+1. Start coarse with `/fuzz-func @Driver/Foo.c`
+2. If you know the function, narrow with `/fuzz-func ValidateRequest --file src/guard.cpp`
+3. Read the highest-score finding first, especially the branch delta summary and first source location
+4. Re-run `/fuzz-func` on a deeper input-facing helper if you want tighter source-only fuzz reasoning
 
 ## Notes
 

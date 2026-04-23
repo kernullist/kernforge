@@ -33,6 +33,7 @@ var slashCommands = []string{
 	"investigate-dashboard",
 	"investigate-dashboard-html",
 	"simulate",
+	"fuzz-func",
 	"simulate-dashboard",
 	"simulate-dashboard-html",
 	"mem-search",
@@ -134,6 +135,7 @@ var slashCommandDescriptions = map[string]string{
 	"investigate-dashboard":      "Summarize investigation history in the terminal.",
 	"investigate-dashboard-html": "Render the investigation dashboard in HTML.",
 	"simulate":                   "Run or inspect anti-tamper simulation profiles.",
+	"fuzz-func":                  "Auto-plan directed function fuzzing. Use /fuzz-func <function-name> [--file <path>|@<path>] for one function, or /fuzz-func --file <path> / @<path> to analyze a file and its include/import closure.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
 	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
 	"mem-search":                 "Search persistent memory entries.",
@@ -301,6 +303,13 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"stealth-surface":     "Model stealthier attacker paths and blind spots.",
 		"forensic-blind-spot": "Model telemetry gaps that weaken post-incident review.",
 	},
+	"fuzz-func": {
+		"status":   "Show the latest function fuzz planning status.",
+		"show":     "Open one saved function fuzz plan by id.",
+		"list":     "List saved function fuzz planning runs.",
+		"continue": "Approve a pending recovered build configuration and start autonomous fuzzing.",
+		"language": "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
+	},
 	"init": {
 		"config":        "Write or refresh starter config files.",
 		"hooks":         "Write or refresh starter hook configuration.",
@@ -400,6 +409,9 @@ func (rt *runtimeState) completeSlashSubcommand(buffer string, trimmedLeft strin
 		}
 		return buffer, prefixed, true
 	}
+	if strings.TrimSpace(completedArg) == "" {
+		return buffer, nil, true
+	}
 	return leading + "/" + commandName + " " + completedArg, nil, true
 }
 
@@ -407,6 +419,10 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 	trimmedArgs := strings.TrimLeft(argText, " \t")
 	argFields := strings.Fields(trimmedArgs)
 	endsWithSpace := strings.HasSuffix(argText, " ")
+
+	if completedArg, suggestions, ok := rt.completeFuzzFuncAtPathArgument(commandName, argFields, endsWithSpace); ok {
+		return completedArg, suggestions, true
+	}
 
 	suggestions, replaceIndex, ok := rt.slashArgumentSuggestions(commandName, argFields, endsWithSpace)
 	if !ok || len(suggestions) == 0 {
@@ -450,6 +466,36 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 	return "", rendered, true
 }
 
+func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
+	if commandName != "fuzz-func" || endsWithSpace || len(fields) == 0 {
+		return "", nil, false
+	}
+
+	replaceIndex := len(fields) - 1
+	token := strings.TrimSpace(fields[replaceIndex])
+	if !strings.HasPrefix(token, "@") {
+		return "", nil, false
+	}
+
+	completedPath, suggestions, ok := rt.completeWorkspacePathFiltered(strings.TrimPrefix(token, "@"), false)
+	if !ok {
+		return "", nil, true
+	}
+
+	prefixFields := append([]string(nil), fields[:replaceIndex]...)
+	if len(suggestions) > 0 {
+		rendered := make([]string, 0, len(suggestions))
+		for _, suggestion := range suggestions {
+			finalFields := append(prefixFields, "@"+suggestion)
+			rendered = append(rendered, strings.Join(finalFields, " "))
+		}
+		return "", rendered, true
+	}
+
+	finalFields := append(prefixFields, "@"+completedPath)
+	return strings.Join(finalFields, " "), nil, true
+}
+
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
 		"permissions":           {"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -470,6 +516,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
 		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
+		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
 
@@ -597,6 +644,22 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
 			return rt.recentSimulationIDs(), 1, true
+		}
+		return nil, 0, false
+	case "fuzz-func":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "language") || strings.EqualFold(fields[0], "lang")) {
+			return []string{"system", "english"}, 1, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
+			options := append([]string{"latest"}, rt.recentFunctionFuzzIDs()...)
+			return uniqueStrings(options), 1, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "continue") {
+			options := append([]string{"latest"}, rt.recentFunctionFuzzIDs()...)
+			return uniqueStrings(options), 1, true
 		}
 		return nil, 0, false
 	case "init":
@@ -789,6 +852,21 @@ func commandCompletionDescription(item string) string {
 	trimmed := strings.TrimSpace(item)
 	if !strings.HasPrefix(trimmed, "/") {
 		return ""
+	}
+
+	switch trimmed {
+	case "/fuzz-func <function-name>":
+		return "Target one function by name and let Kernforge resolve the best matching symbol automatically."
+	case "/fuzz-func <function-name> --file <path>":
+		return "Target one function by name and pin matching to a specific source file when names collide."
+	case "/fuzz-func <function-name> @<path>":
+		return "Target one function by name and use @<path> as a short file-hint alias."
+	case "/fuzz-func --file <path>":
+		return "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically."
+	case "/fuzz-func @<path>":
+		return "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically."
+	case "/fuzz-func language":
+		return "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English."
 	}
 
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))

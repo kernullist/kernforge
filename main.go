@@ -46,6 +46,7 @@ type runtimeState struct {
 	evidence                   *EvidenceStore
 	investigations             *InvestigationStore
 	simulations                *SimulationStore
+	functionFuzz               *FunctionFuzzStore
 	hookOverrides              *HookOverrideStore
 	checkpoints                *CheckpointManager
 	autoCP                     *AutoCheckpointController
@@ -220,6 +221,7 @@ func run(args []string) error {
 		evidence:       NewEvidenceStore(),
 		investigations: NewInvestigationStore(),
 		simulations:    NewSimulationStore(),
+		functionFuzz:   NewFunctionFuzzStore(),
 		hookOverrides:  NewHookOverrideStore(),
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
@@ -2658,10 +2660,20 @@ func (rt *runtimeState) syncClientFromConfig() {
 }
 
 func (rt *runtimeState) saveUserConfig() error {
-	rt.cfg.Provider = rt.session.Provider
-	rt.cfg.Model = rt.session.Model
-	rt.cfg.BaseURL = rt.session.BaseURL
-	rt.cfg.PermissionMode = rt.session.PermissionMode
+	if rt != nil && rt.session != nil {
+		if strings.TrimSpace(rt.session.Provider) != "" {
+			rt.cfg.Provider = rt.session.Provider
+		}
+		if strings.TrimSpace(rt.session.Model) != "" {
+			rt.cfg.Model = rt.session.Model
+		}
+		if strings.TrimSpace(rt.session.BaseURL) != "" {
+			rt.cfg.BaseURL = rt.session.BaseURL
+		}
+		if strings.TrimSpace(rt.session.PermissionMode) != "" {
+			rt.cfg.PermissionMode = rt.session.PermissionMode
+		}
+	}
 	return SaveUserConfig(rt.cfg)
 }
 
@@ -3720,6 +3732,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSimulateCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "fuzz-func":
+		if err := rt.handleFuzzFuncCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "simulate-dashboard":
 		if err := rt.handleSimulationDashboard(false); err != nil {
 			return false, err
@@ -4138,6 +4154,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("auto_checkpoint_edits", fmt.Sprintf("%t", configAutoCheckpointEdits(rt.cfg))),
 			kv("auto_verify", fmt.Sprintf("%t", configAutoVerify(rt.cfg))),
 			kv("auto_locale", fmt.Sprintf("%t", configAutoLocale(rt.cfg))),
+			kv("fuzz_func_output_language", functionFuzzOutputLanguageSummary(rt.cfg)),
 		)
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Hooks",

@@ -6,8 +6,9 @@ The key loop to remember:
 1. Use `/analyze-project` first when the workspace is large or unfamiliar.
 2. Use `/investigate` when live state matters.
 3. Use `/simulate` when an extra risk lens matters.
-4. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
-5. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
+4. Use `/fuzz-func` when you want attacker-style source-only parameter reasoning before building a harness.
+5. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
+6. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
 ## 1. The Core Loop In Five Minutes
 
@@ -19,6 +20,7 @@ Recommended sequence:
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
+/fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
 /review-selection integrity bypass paths
 /edit-selection harden the selected integrity checks
@@ -31,9 +33,10 @@ What this does:
 2. Capture the current live state.
 3. `driver-visibility` is a lightweight visibility triage snapshot, not a deep driver load diagnostic.
 4. Check the target through an extra risk lens.
-5. Review and edit only the selected code.
-6. Verify with the current context.
-7. Inspect the resulting risk picture.
+5. `/fuzz-func` derives attacker-controlled input states, branch predicates, counterexamples, and sink reachability directly from source.
+6. Review and edit only the selected code.
+7. Verify with the current context.
+8. Inspect the resulting risk picture.
 
 ## 2. Most Common Commands
 
@@ -54,6 +57,14 @@ Adversarial view:
 - `/simulate stealth-surface [target]`
 - `/simulate forensic-blind-spot [target]`
 - `/simulate dashboard`
+
+Source-level fuzzing:
+- `/fuzz-func <function-name>`
+- `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func @<path>`
+- `/fuzz-func status`
+- `/fuzz-func show [id|latest]`
+- `/fuzz-func language [system|english]`
 
 Selection workflow:
 - `/open <path>`
@@ -95,11 +106,25 @@ Provider and runtime inspection:
 /analyze-project driver startup and integrity architecture
 /investigate start driver-visibility guard.sys
 /simulate tamper-surface guard.sys
+/fuzz-func @Driver/guard.cpp
 /open driver/guard.cpp
 /review-selection signing and integrity assumptions
 /verify
 /evidence-dashboard category:driver
 ```
+
+### Input-facing code triage
+
+```text
+/fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+```
+
+What this means:
+1. If you know the function, pin it with a file path.
+2. If you only know the suspicious file, let Kernforge pick the representative root and reachable input-facing path.
+3. Read the highest-score finding, the branch-delta summary, and the first source location before anything else.
 
 ### Telemetry change
 
