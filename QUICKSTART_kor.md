@@ -6,8 +6,9 @@
 1. 워크스페이스가 크거나 낯설면 먼저 `/analyze-project`
 2. live 상태가 중요하면 `/investigate`
 3. 공격자 관점이 중요하면 `/simulate`
-4. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
-5. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
+4. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/fuzz-func`
+5. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
+6. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
 
 ## 1. 5분 안에 익히는 핵심 루프
 
@@ -19,6 +20,7 @@
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
+/fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
 /review-selection integrity bypass paths
 /edit-selection harden the selected integrity checks
@@ -31,9 +33,10 @@
 2. 현재 상태를 캡처한다.
 3. `driver-visibility`는 드라이버 로드 원인 분석기가 아니라 가시성 triage snapshot이다.
 4. 공격자 관점에서 약한 면을 먼저 본다.
-5. 선택한 코드만 집중 리뷰/수정한다.
-6. verification으로 닫는다.
-7. evidence dashboard로 현재 위험 상태를 확인한다.
+5. `/fuzz-func`는 함수나 파일을 기준으로 공격자 입력 상태, 비교식, 반례, sink 도달 경로를 소스만으로 먼저 본다.
+6. 선택한 코드만 집중 리뷰/수정한다.
+7. verification으로 닫는다.
+8. evidence dashboard로 현재 위험 상태를 확인한다.
 
 ## 2. 가장 자주 쓰는 명령
 
@@ -54,6 +57,14 @@
 - `/simulate stealth-surface [target]`
 - `/simulate forensic-blind-spot [target]`
 - `/simulate dashboard`
+
+소스 레벨 fuzzing:
+- `/fuzz-func <function-name>`
+- `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func @<path>`
+- `/fuzz-func status`
+- `/fuzz-func show [id|latest]`
+- `/fuzz-func language [system|english]`
 
 선택 영역 작업:
 - `/open <path>`
@@ -95,11 +106,25 @@ provider 및 런타임 확인:
 /analyze-project driver startup and integrity architecture
 /investigate start driver-visibility guard.sys
 /simulate tamper-surface guard.sys
+/fuzz-func @Driver/guard.cpp
 /open driver/guard.cpp
 /review-selection signing and integrity assumptions
 /verify
 /evidence-dashboard category:driver
 ```
+
+### 입력 지향 코드 triage
+
+```text
+/fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+```
+
+이 시나리오의 의미:
+1. 함수를 바로 알고 있으면 함수명과 파일 경로로 좁힌다.
+2. 함수를 모르면 파일만 지정해도 Kernforge가 대표 루트와 input-facing 경로를 고른다.
+3. 결과에서 가장 높은 점수의 finding, `가장 유용한 분기 차이 요약`, `먼저 볼 관련 소스`를 먼저 읽는다.
 
 ### Telemetry 변경
 

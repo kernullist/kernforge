@@ -56,45 +56,46 @@ type WorktreeIsolationConfig struct {
 }
 
 type Config struct {
-	Provider            string                    `json:"provider"`
-	Model               string                    `json:"model"`
-	BaseURL             string                    `json:"base_url"`
-	APIKey              string                    `json:"api_key"`
-	ProviderKeys        map[string]string         `json:"provider_keys,omitempty"`
-	Temperature         float64                   `json:"temperature"`
-	MaxTokens           int                       `json:"max_tokens"`
-	MaxToolIterations   int                       `json:"max_tool_iterations"`
-	MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
-	ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
-	MSBuildPath         string                    `json:"msbuild_path,omitempty"`
-	CMakePath           string                    `json:"cmake_path,omitempty"`
-	CTestPath           string                    `json:"ctest_path,omitempty"`
-	NinjaPath           string                    `json:"ninja_path,omitempty"`
-	Command             string                    `json:"command,omitempty"`
-	PermissionMode      string                    `json:"permission_mode"`
-	Shell               string                    `json:"shell"`
-	SessionDir          string                    `json:"session_dir"`
-	AutoCompactChars    int                       `json:"auto_compact_chars"`
-	AutoCheckpointEdits *bool                     `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify          *bool                     `json:"auto_verify,omitempty"`
-	AutoLocale          *bool                     `json:"auto_locale,omitempty"`
-	HooksEnabled        *bool                     `json:"hooks_enabled,omitempty"`
-	HookPresets         []string                  `json:"hook_presets,omitempty"`
-	HooksFailClosed     *bool                     `json:"hooks_fail_closed,omitempty"`
-	MemoryFiles         []string                  `json:"memory_files"`
-	SkillPaths          []string                  `json:"skill_paths,omitempty"`
-	EnabledSkills       []string                  `json:"enabled_skills,omitempty"`
-	MCPServers          []MCPServerConfig         `json:"mcp_servers,omitempty"`
-	Profiles            []Profile                 `json:"profiles,omitempty"`
-	ProjectAnalysis     ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
-	PlanReview          *PlanReviewConfig         `json:"plan_review,omitempty"`
-	ReviewProfiles      []Profile                 `json:"review_profiles,omitempty"`
-	Specialists         SpecialistSubagentsConfig `json:"specialists,omitempty"`
-	WorktreeIsolation   WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
+	Provider               string                    `json:"provider"`
+	Model                  string                    `json:"model"`
+	BaseURL                string                    `json:"base_url"`
+	APIKey                 string                    `json:"api_key"`
+	ProviderKeys           map[string]string         `json:"provider_keys,omitempty"`
+	Temperature            float64                   `json:"temperature"`
+	MaxTokens              int                       `json:"max_tokens"`
+	MaxToolIterations      int                       `json:"max_tool_iterations"`
+	MaxRequestRetries      int                       `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs    int                       `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs     int                       `json:"request_timeout_seconds,omitempty"`
+	ShellTimeoutSecs       int                       `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans          int                       `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries       int                       `json:"read_cache_entries,omitempty"`
+	MSBuildPath            string                    `json:"msbuild_path,omitempty"`
+	CMakePath              string                    `json:"cmake_path,omitempty"`
+	CTestPath              string                    `json:"ctest_path,omitempty"`
+	NinjaPath              string                    `json:"ninja_path,omitempty"`
+	Command                string                    `json:"command,omitempty"`
+	PermissionMode         string                    `json:"permission_mode"`
+	Shell                  string                    `json:"shell"`
+	SessionDir             string                    `json:"session_dir"`
+	AutoCompactChars       int                       `json:"auto_compact_chars"`
+	AutoCheckpointEdits    *bool                     `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify             *bool                     `json:"auto_verify,omitempty"`
+	AutoLocale             *bool                     `json:"auto_locale,omitempty"`
+	FuzzFuncOutputLanguage string                    `json:"fuzz_func_output_language,omitempty"`
+	HooksEnabled           *bool                     `json:"hooks_enabled,omitempty"`
+	HookPresets            []string                  `json:"hook_presets,omitempty"`
+	HooksFailClosed        *bool                     `json:"hooks_fail_closed,omitempty"`
+	MemoryFiles            []string                  `json:"memory_files"`
+	SkillPaths             []string                  `json:"skill_paths,omitempty"`
+	EnabledSkills          []string                  `json:"enabled_skills,omitempty"`
+	MCPServers             []MCPServerConfig         `json:"mcp_servers,omitempty"`
+	Profiles               []Profile                 `json:"profiles,omitempty"`
+	ProjectAnalysis        ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
+	PlanReview             *PlanReviewConfig         `json:"plan_review,omitempty"`
+	ReviewProfiles         []Profile                 `json:"review_profiles,omitempty"`
+	Specialists            SpecialistSubagentsConfig `json:"specialists,omitempty"`
+	WorktreeIsolation      WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
 }
 
 type Profile struct {
@@ -108,26 +109,27 @@ type Profile struct {
 
 func DefaultConfig(cwd string) Config {
 	return Config{
-		Provider:            "",
-		Model:               "",
-		Temperature:         0.2,
-		MaxTokens:           4096,
-		MaxToolIterations:   16,
-		MaxRequestRetries:   2,
-		RequestRetryDelayMs: 1500,
-		RequestTimeoutSecs:  1200,
-		ShellTimeoutSecs:    300,
-		ReadHintSpans:       defaultReadHintSpans,
-		ReadCacheEntries:    defaultReadCacheEntries,
-		PermissionMode:      "default",
-		Shell:               defaultShell(),
-		SessionDir:          filepath.Join(userConfigDir(), "sessions"),
-		AutoCompactChars:    45000,
-		AutoCheckpointEdits: boolPtr(false),
-		AutoVerify:          boolPtr(true),
-		AutoLocale:          boolPtr(true),
-		HooksEnabled:        boolPtr(true),
-		HooksFailClosed:     boolPtr(false),
+		Provider:               "",
+		Model:                  "",
+		Temperature:            0.2,
+		MaxTokens:              4096,
+		MaxToolIterations:      16,
+		MaxRequestRetries:      2,
+		RequestRetryDelayMs:    1500,
+		RequestTimeoutSecs:     1200,
+		ShellTimeoutSecs:       300,
+		ReadHintSpans:          defaultReadHintSpans,
+		ReadCacheEntries:       defaultReadCacheEntries,
+		PermissionMode:         "default",
+		Shell:                  defaultShell(),
+		SessionDir:             filepath.Join(userConfigDir(), "sessions"),
+		AutoCompactChars:       45000,
+		AutoCheckpointEdits:    boolPtr(false),
+		AutoVerify:             boolPtr(true),
+		AutoLocale:             boolPtr(true),
+		FuzzFuncOutputLanguage: "english",
+		HooksEnabled:           boolPtr(true),
+		HooksFailClosed:        boolPtr(false),
 		Specialists: SpecialistSubagentsConfig{
 			Enabled: boolPtr(true),
 		},
@@ -309,6 +311,9 @@ func mergeConfig(dst *Config, src Config) {
 		value := *src.AutoLocale
 		dst.AutoLocale = &value
 	}
+	if strings.TrimSpace(src.FuzzFuncOutputLanguage) != "" {
+		dst.FuzzFuncOutputLanguage = strings.TrimSpace(src.FuzzFuncOutputLanguage)
+	}
 	if src.HooksEnabled != nil {
 		value := *src.HooksEnabled
 		dst.HooksEnabled = &value
@@ -438,6 +443,7 @@ func applyEnv(cfg *Config) {
 	envBool("KERNFORGE_AUTO_CHECKPOINT_EDITS", &cfg.AutoCheckpointEdits)
 	envBool("KERNFORGE_AUTO_VERIFY", &cfg.AutoVerify)
 	envBool("KERNFORGE_AUTO_LOCALE", &cfg.AutoLocale)
+	envString("KERNFORGE_FUZZ_FUNC_OUTPUT_LANGUAGE", &cfg.FuzzFuncOutputLanguage)
 	envBool("KERNFORGE_HOOKS_ENABLED", &cfg.HooksEnabled)
 	envBool("KERNFORGE_HOOKS_FAIL_CLOSED", &cfg.HooksFailClosed)
 
@@ -804,6 +810,18 @@ func configAutoLocale(cfg Config) bool {
 		return true
 	}
 	return *cfg.AutoLocale
+}
+
+func configFuzzFuncOutputLanguage(cfg Config) string {
+	mode := strings.ToLower(strings.TrimSpace(cfg.FuzzFuncOutputLanguage))
+	switch mode {
+	case "", "english", "en", "en-us":
+		return "english"
+	case "system", "pc", "locale", "auto":
+		return "system"
+	default:
+		return "english"
+	}
 }
 
 func configSpecialistsEnabled(cfg Config) bool {
@@ -1427,6 +1445,9 @@ Verification And Checkpoints:
 /investigate-dashboard  Show an investigation dashboard for this workspace
 /investigate-dashboard-html Generate and open an HTML investigation dashboard
 /simulate [profile]   Run risk-oriented simulation profiles against recent evidence and investigations
+/fuzz-func <name> [--file <path>|@<path>] Auto-plan directed function fuzzing for one function, recover build settings when possible, and ask before heuristic execution
+/fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
+/fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
@@ -1660,7 +1681,7 @@ Provider and model commands control which model is active and how planning/revie
 - Use /set-specialist-model status to show effective specialist model routing.
 - Use /set-specialist-model <specialist> <provider> [model] to set an override, or /set-specialist-model clear <specialist|all> to remove overrides.
 `), true
-	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path":
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func":
 		return strings.TrimSpace(`
 Verification and checkpoint commands help you validate changes and recover safely.
 
@@ -1679,6 +1700,32 @@ Verification and checkpoint commands help you validate changes and recover safel
 
 /verify-dashboard-html [all]
 - Generate an HTML verification dashboard and try to open it.
+
+/fuzz-func <name> [--file <path>|@<path>]
+- Resolve one function-like symbol from the latest structural_index_v2 or an on-demand workspace scan and plan a directed fuzzing run automatically.
+- Kernforge expands the reachable call closure, infers parameter mutation strategy, scores the risk surface, and writes a harness scaffold plus report artifacts.
+- Minimal input is preferred: pass only the function name unless you need a more explicit symbol match.
+- Use --file <path> when the same function name exists in multiple translation units or you want to pin the target file directly.
+- You can also write @<path> as a shorter file-hint alias.
+- If exact build settings are missing, Kernforge recovers what it can, shows the missing pieces, and asks before heuristic autonomous execution starts.
+
+/fuzz-func --file <path> or /fuzz-func @<path>
+- Analyze the selected file together with files it includes or imports, then let Kernforge choose the best input-facing function inside that file scope automatically.
+- Use this when you know the file you care about but do not want to guess the best starting function by hand.
+
+/fuzz-func list
+- Show recent function fuzz planning runs for the current workspace.
+
+/fuzz-func show [id]
+- Show one saved function fuzz plan in detail. Without an id, the latest run is shown.
+
+/fuzz-func continue [id]
+- Approve a pending recovered build configuration and start autonomous fuzzing for that saved run.
+
+/fuzz-func language [system|english]
+- Show or change the /fuzz-func output language.
+- Use system to follow the PC language.
+- Use english to force English output regardless of the PC language.
 
 /checkpoint [note]
 - Create a workspace checkpoint snapshot. In interactive mode, Kernforge prompts for an optional note when none is provided.

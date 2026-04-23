@@ -15,7 +15,7 @@ Intended readers:
 Goals of this guide:
 1. Explain real usage patterns instead of just listing features.
 2. Show which command combinations fit which kinds of problems.
-3. Teach the full loop of `analyze-project -> analyze-performance -> investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks`.
+3. Teach the full loop of `analyze-project -> analyze-performance -> investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
 ## 1. The Best Way To Think About Kernforge
 
@@ -27,20 +27,22 @@ The best current loop looks like this:
 2. Use `/analyze-performance` to turn the latest knowledge pack into a bottleneck lens when performance or startup paths matter.
 3. If live state matters, use `/investigate` to capture the current system state.
 4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
-5. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
-6. Run `/verify` to execute the verification plan.
-7. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
-8. Let hooks act as the final policy layer before push or PR.
+5. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning.
+6. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
+7. Run `/verify` to execute the verification plan.
+8. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
+9. Let hooks act as the final policy layer before push or PR.
 
 Practical interpretation:
 1. `analyze-project` builds a reusable architecture map instead of a disposable summary.
 2. `analyze-performance` extracts likely hot paths and bottlenecks from the latest architecture knowledge.
 3. `investigate` captures what is happening live.
 4. `simulate` highlights risk-oriented weak spots using lightweight heuristics.
-5. `verify` turns code changes and recent context into a concrete validation plan.
-6. `evidence` stores structured recent signals.
-7. `memory` keeps conclusions across sessions.
-8. `hooks` turn that accumulated context back into guardrails.
+5. `fuzz-func` synthesizes attacker input states, counterexamples, and branch deltas from real source-level guard/probe/copy/dispatch behavior.
+6. `verify` turns code changes and recent context into a concrete validation plan.
+7. `evidence` stores structured recent signals.
+8. `memory` keeps conclusions across sessions.
+9. `hooks` turn that accumulated context back into guardrails.
 
 ## 2. Core Features And When To Use Them
 
@@ -164,6 +166,46 @@ What materially changed for large and Unreal-heavy workspaces:
 9. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
 10. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
 11. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
+
+### Source-Level Function Fuzzing
+
+Purpose:
+1. Show how attacker-controlled parameters could open guard, probe, copy, dispatch, and cleanup paths directly from source.
+2. Go beyond generic review comments by telling you which predicate to flip with which value and which sink opens afterward.
+3. Let you start from either one function or one suspicious file and still converge on the most relevant input-facing path.
+
+Useful commands:
+- `/fuzz-func <function-name>`
+- `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func <function-name> @<path>`
+- `/fuzz-func --file <path>`
+- `/fuzz-func @<path>`
+- `/fuzz-func status`
+- `/fuzz-func show [id|latest]`
+- `/fuzz-func list`
+- `/fuzz-func continue [id|latest]`
+- `/fuzz-func language [system|english]`
+
+Best used when:
+1. You need fast triage on IOCTL handlers, parsers, validators, or buffer-processing code.
+2. You know the suspicious file but not yet the best root function.
+3. You want source-only reasoning about size drift, branch flips, check/use desync, or dispatch divergence before building a runtime harness.
+
+Current behavior:
+1. If you provide a function name, Kernforge resolves the symbol directly. If you provide only a file path, Kernforge expands through include/import plus actual call flow to pick a representative root automatically.
+2. Planning no longer requires `analyze-project` or a prebuilt `structural_index_v2`; Kernforge can rebuild snapshot and semantic-index context on demand.
+3. Kernforge extracts real guard, probe, copy, dispatch, and cleanup observations from function bodies and uses them to synthesize attacker input states.
+4. Higher-risk findings now include concrete sample values, source-derived branch predicates, minimal counterexamples, branch outcomes, and downstream call chains.
+5. Output is organized as `Conclusion`, `Risk score table`, `Top predicted problems`, and `Source-derived attack surface` so the most actionable finding is visible first.
+6. Native execution is an optional follow-up. If build context such as `compile_commands.json` is missing, Kernforge explains the gap before asking whether to continue.
+7. Artifacts are written under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`.
+8. `/fuzz-func ` completion shows function and file usage hints first, then switches to real file candidates after `@`.
+
+Practical interpretation:
+1. `Most useful branch delta` is usually the first line worth reading.
+2. `Concrete hypothetical input examples` are internal analysis inputs synthesized by Kernforge, not instructions for manual reproduction.
+3. `Source-derived attack surface` is the highest-confidence section because it comes from real function-body evidence.
+4. Even high-score findings should still be checked against the cited source excerpt, especially when helper or exploit-side files appear in the closure.
 
 ### 2.1 Hook Engine
 
@@ -741,6 +783,44 @@ Good use cases:
 1. When you want to understand why policy is blocking.
 2. When you need a temporary exception with an audit trail.
 
+### 4.10 `/fuzz-func`
+
+Basic usage:
+
+```text
+/fuzz-func ValidateRequest
+/fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func ValidateRequest @src/guard.cpp
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+/fuzz-func language system
+```
+
+What the planner currently considers:
+1. Function signatures and parameter types
+2. Real size, null, dispatch, and cleanup guards in the function body
+3. Probe, copy, alloc, publish, and cleanup sinks on the same path
+4. The caller/callee chain from the representative root
+5. The file-expansion path from the selected starting file into the cited source file
+6. Build context, `compile_commands.json`, and snapshot or semantic-index availability
+
+Good use cases:
+1. When you want to see branch flips and sink reachability on input-facing driver or anti-cheat code quickly.
+2. When you know the suspicious file but not the best root function yet.
+3. When you want concrete "which value breaks which predicate and opens which copy/probe path" guidance before normal review or editing.
+
+Recommended reading order:
+1. `Conclusion` for the top predicted problem and the most useful branch delta.
+2. `Risk score table` to separate high-signal findings from noisy fallbacks.
+3. `Top predicted problems` for concrete sample values, predicates, counterexamples, and pass/fail branch consequences.
+4. `Source-derived attack surface` for the real probe, copy, dispatch, and cleanup evidence.
+
+Operational notes:
+1. A bare function name triggers automatic symbol resolution, while `--file` or `@path` reduces ambiguity.
+2. `/fuzz-func @path` is valid even if you do not know the function name yet.
+3. Source-only fuzzing results can still be useful even when native auto-run is blocked.
+4. `compile_commands.json` improves native follow-up quality, but it is not a prerequisite for source-only planning.
+
 ## 5. When To Use Each Dashboard
 
 ### 5.1 `/verify-dashboard`
@@ -853,7 +933,21 @@ Recommended progression:
 /simulate-dashboard
 ```
 
-### Scenario D: Tracked Feature With Explicit Execution
+### Scenario D: Source-level fuzzing for input-facing path triage
+
+```text
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func TriggerDoubleFetch --file Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+/verify
+```
+
+Interpretation:
+1. The first run starts coarse at file scope so Kernforge can pick the representative root and the highest-risk reachable path.
+2. The second run pins the target function so predicates, counterexamples, and branch deltas become more precise.
+3. `show latest` lets you re-read the report and source excerpts before moving into verification or code changes.
+
+### Scenario E: Tracked Feature With Explicit Execution
 
 ```text
 /simulate tamper-surface guard.sys
@@ -874,12 +968,13 @@ That means the strongest current loop is:
 
 1. `/investigate`
 2. `/simulate`
-3. `/review-selection` or `/edit-selection`
-4. `/do-plan-review`
-5. `/new-feature`
-6. `/verify`
-7. `/evidence-dashboard`
-8. `/mem-search`
-9. Push or PR under hook policy
+3. `/fuzz-func`
+4. `/review-selection` or `/edit-selection`
+5. `/do-plan-review`
+6. `/new-feature`
+7. `/verify`
+8. `/evidence-dashboard`
+9. `/mem-search`
+10. Push or PR under hook policy
 
 That loop is the clearest current Kernforge differentiator.

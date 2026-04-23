@@ -25,20 +25,22 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 성능이나 startup path가 중요하면 `/analyze-performance`로 최신 knowledge pack을 performance lens로 바꾼다.
 3. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
 4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
-5. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
-6. `/verify`로 verification plan을 돌린다.
-7. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-8. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
+5. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다.
+6. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
+7. `/verify`로 verification plan을 돌린다.
+8. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
+9. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
 1. `analyze-project`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
 2. `analyze-performance`는 최신 구조 지식에서 hot path와 bottleneck 가능성을 끌어낸다.
 3. `investigate`는 실행 중 상태를 관찰한다.
 4. `simulate`는 공격자 관점에서 약한 면을 드러낸다.
-5. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
-6. `evidence`는 결과를 증거 단위로 구조화한다.
-7. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
-8. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
+5. `fuzz-func`는 실제 소스의 guard/probe/copy/dispatch를 바탕으로 공격자 입력 상태, 반례, 분기 차이를 합성한다.
+6. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
+7. `evidence`는 결과를 증거 단위로 구조화한다.
+8. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
+9. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
 
 ## 2. 현재 구현된 핵심 기능과 언제 쓰면 좋은가
 
@@ -162,6 +164,46 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 9. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
 10. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
 11. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
+
+### Source-Level Function Fuzzing
+
+목적:
+1. 공격자가 입력 파라미터를 정교하게 조작했을 때 어떤 guard, probe, copy, dispatch, cleanup 경로가 열리는지 소스만으로 본다.
+2. 단순 리뷰보다 더 구체적으로 "어떤 비교식을 어떤 값으로 뒤집으면 어느 sink가 열린다"를 보여준다.
+3. 함수 하나 또는 파일 하나만 지정해도 실제 호출 흐름을 따라 input-facing path를 빠르게 triage한다.
+
+대표 명령:
+- `/fuzz-func <function-name>`
+- `/fuzz-func <function-name> --file <path>`
+- `/fuzz-func <function-name> @<path>`
+- `/fuzz-func --file <path>`
+- `/fuzz-func @<path>`
+- `/fuzz-func status`
+- `/fuzz-func show [id|latest]`
+- `/fuzz-func list`
+- `/fuzz-func continue [id|latest]`
+- `/fuzz-func language [system|english]`
+
+특히 좋은 상황:
+1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 경로를 빨리 triage하고 싶을 때
+2. large driver/project에서 의심 파일만 알고 있고, 어떤 함수부터 보는 게 좋은지 아직 모를 때
+3. runtime harness 없이도 source-only 기준으로 크기 drift, branch flip, check/use desync, dispatch divergence를 먼저 보고 싶을 때
+
+현재 동작:
+1. 함수명을 주면 심볼을 resolve하고, 파일만 주면 include/import와 실제 호출 흐름을 함께 따라가 representative root를 고른다.
+2. `analyze-project`나 `structural_index_v2`가 없어도 워크스페이스 스캔과 on-demand semantic index 복원으로 planning이 된다.
+3. 실제 소스에서 guard/probe/copy/dispatch/cleanup 관찰을 추출하고, 그 관찰을 기반으로 공격자 입력 상태를 합성한다.
+4. 위험도가 높은 finding에는 구체 입력 예시, 소스에서 뽑은 비교식, 최소 반례, 분기 뒤 대표 결과, 후속 호출 체인이 붙는다.
+5. 결과는 `결론`, `위험도 점수표`, `상위 예측 문제`, `소스 기반 공격 표면` 순으로 나와서 핵심 finding을 먼저 읽기 쉽다.
+6. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
+7. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
+8. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
+
+실무 해석:
+1. `가장 유용한 분기 차이 요약`은 사용자가 가장 먼저 볼 한 줄 결론이다.
+2. `가상의 구체 입력 예시`는 Kernforge가 내부 분석에 사용한 입력 모델이지, 사용자가 그대로 수동 재현하라는 절차는 아니다.
+3. `소스 기반 공격 표면`은 실제 함수 본문에서 뽑은 근거이므로 가장 신뢰도가 높은 섹션이다.
+4. score가 높더라도 exploit/helper 코드가 근거인 finding은 noise 가능성이 있으므로, 먼저 target-side source excerpt를 확인하는 편이 좋다.
 
 ### 2.1 Hook Engine
 
@@ -745,6 +787,44 @@ Kernforge가 도와주는 부분:
 1. 정책이 왜 막는지 먼저 확인하고 싶을 때
 2. 예외를 주더라도 감사 추적을 남기고 싶을 때
 
+### 4.10 `/fuzz-func`
+
+기본 사용:
+
+```text
+/fuzz-func ValidateRequest
+/fuzz-func ValidateRequest --file src/guard.cpp
+/fuzz-func ValidateRequest @src/guard.cpp
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+/fuzz-func language system
+```
+
+현재 planner가 보는 것:
+1. 함수 시그니처와 파라미터 타입
+2. 실제 함수 본문의 size/null/dispatch/cleanup guard
+3. 같은 경로의 probe/copy/alloc/publish sink
+4. representative root에서 이어지는 caller/callee chain
+5. 시작 파일에서 target source까지 이어지는 file expansion path
+6. build context, `compile_commands.json`, snapshot/semantic index availability
+
+좋은 사용 예:
+1. 드라이버나 anti-cheat 코드에서 input-facing 함수의 branch flip과 sink reachability를 빨리 보고 싶을 때
+2. 특정 파일이 의심되지만 어떤 함수가 가장 좋은 root인지 모를 때
+3. 리뷰 전에 source-only 기준으로 "어떤 값으로 어떤 비교식을 넘기면 어떤 copy/probe path가 열린다"를 확인하고 싶을 때
+
+결과를 읽는 순서:
+1. `결론`에서 가장 우선 확인할 예측 문제와 가장 유용한 분기 차이 요약을 본다.
+2. `위험도 점수표`에서 high-score finding과 low-score fallback을 구분한다.
+3. `상위 예측 문제`에서 구체 입력 예시, 비교식, 최소 반례, 분기 뒤 대표 흐름을 본다.
+4. `소스 기반 공격 표면`에서 실제 probe/copy/dispatch 근거 줄을 확인한다.
+
+운영 메모:
+1. 함수명만 넣으면 자동 resolve하고, `--file`이나 `@path`를 주면 ambiguity를 크게 줄일 수 있다.
+2. 파일만 지정한 `/fuzz-func @path`는 함수명을 몰라도 시작 파일 기준의 representative root를 고른다.
+3. 네이티브 자동 실행이 차단돼도 source-only fuzzing 결과는 여전히 유효할 수 있다.
+4. `compile_commands.json`이 있으면 후속 네이티브 fuzzing 품질이 좋아지지만, source-only planning 자체의 선행조건은 아니다.
+
 ## 5. 대시보드는 언제 어떤 것을 보면 좋은가
 
 ### 5.1 `/verify-dashboard`
@@ -856,7 +936,21 @@ Kernforge가 도와주는 부분:
 /simulate-dashboard
 ```
 
-### 시나리오 D: tracked feature를 만들고 명시적으로 실행
+### 시나리오 D: source-level fuzzing으로 input-facing path triage
+
+```text
+/fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func TriggerDoubleFetch --file Driver/HEVD/Windows/DoubleFetch.c
+/fuzz-func show latest
+/verify
+```
+
+해석 포인트:
+1. 첫 실행은 파일 단위로 representative root와 high-risk path를 빠르게 잡는다.
+2. 두 번째 실행은 함수를 직접 고정해서 비교식, 최소 반례, 분기 차이를 더 정밀하게 본다.
+3. `show latest`로 report와 source excerpt를 다시 확인한 뒤 verification이나 실제 수정으로 넘어간다.
+
+### 시나리오 E: tracked feature를 만들고 명시적으로 실행
 
 ```text
 /simulate tamper-surface guard.sys
@@ -877,12 +971,13 @@ Kernforge가 도와주는 부분:
 
 1. `/investigate`
 2. `/simulate`
-3. `/review-selection` 또는 `/edit-selection`
-4. `/do-plan-review`
-5. `/new-feature`
-6. `/verify`
-7. `/evidence-dashboard`
-8. `/mem-search`
-9. push/PR에서 hook policy 적용
+3. `/fuzz-func`
+4. `/review-selection` 또는 `/edit-selection`
+5. `/do-plan-review`
+6. `/new-feature`
+7. `/verify`
+8. `/evidence-dashboard`
+9. `/mem-search`
+10. push/PR에서 hook policy 적용
 
 이 루프가 현재 Kernforge의 가장 큰 차별점이다.

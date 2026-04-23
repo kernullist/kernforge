@@ -18,10 +18,11 @@ const (
 )
 
 type latestAnalysisArtifacts struct {
-	Pack    KnowledgePack
-	Corpus  VectorCorpus
-	Index   SemanticIndex
-	IndexV2 SemanticIndexV2
+	Pack     KnowledgePack
+	Snapshot ProjectSnapshot
+	Corpus   VectorCorpus
+	Index    SemanticIndex
+	IndexV2  SemanticIndexV2
 }
 
 type cachedAnalysisFastPathMetadata struct {
@@ -74,6 +75,9 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 
 	artifacts := latestAnalysisArtifacts{Pack: pack}
 
+	if snapshotData, err := os.ReadFile(filepath.Join(latestDir, "snapshot.json")); err == nil {
+		_ = json.Unmarshal(snapshotData, &artifacts.Snapshot)
+	}
 	if corpusData, err := os.ReadFile(filepath.Join(latestDir, "vector_corpus.json")); err == nil {
 		_ = json.Unmarshal(corpusData, &artifacts.Corpus)
 	}

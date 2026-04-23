@@ -43,3 +43,22 @@ func localizedText(cfg Config, english string, korean string) string {
 	}
 	return english
 }
+
+func resolvedFunctionFuzzLocale(cfg Config) string {
+	if configFuzzFuncOutputLanguage(cfg) == "english" {
+		return "en-US"
+	}
+	return strings.TrimSpace(getSystemLocale())
+}
+
+func functionFuzzPrefersKorean(cfg Config) bool {
+	locale := strings.ToLower(strings.TrimSpace(resolvedFunctionFuzzLocale(cfg)))
+	return strings.HasPrefix(locale, "ko")
+}
+
+func functionFuzzLocalizedText(cfg Config, english string, korean string) string {
+	if functionFuzzPrefersKorean(cfg) {
+		return korean
+	}
+	return english
+}

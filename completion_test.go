@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -47,6 +49,9 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/investigate start d", wantBuffer: "/investigate start driver-visibility "},
 		{input: "/simulate ", wantSuggest: []string{"/simulate status", "/simulate show", "/simulate list", "/simulate dashboard", "/simulate dashboard-html", "/simulate tamper-surface", "/simulate stealth-surface", "/simulate forensic-blind-spot"}},
 		{input: "/simulate t", wantBuffer: "/simulate tamper-surface "},
+		{input: "/fuzz-func ", wantSuggest: []string{"/fuzz-func <function-name>", "/fuzz-func <function-name> --file <path>", "/fuzz-func <function-name> @<path>", "/fuzz-func --file <path>", "/fuzz-func @<path>", "/fuzz-func status", "/fuzz-func show", "/fuzz-func list", "/fuzz-func continue", "/fuzz-func language"}},
+		{input: "/fuzz-func sh", wantBuffer: "/fuzz-func show "},
+		{input: "/fuzz-func language ", wantSuggest: []string{"/fuzz-func language system", "/fuzz-func language english"}},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
 	}
@@ -83,6 +88,7 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/invest", wantBuffer: "/investigate"},
 		{input: "/new-f", wantBuffer: "/new-feature "},
 		{input: "/simu", wantBuffer: "/simulate"},
+		{input: "/fuzz-f", wantBuffer: "/fuzz-func "},
 		{input: "/spec", wantBuffer: "/specialists "},
 		{input: "/workt", wantBuffer: "/worktree "},
 		{input: "/override-a", wantBuffer: "/override-add "},
@@ -96,6 +102,67 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		}
 		if gotBuffer != tc.wantBuffer {
 			t.Fatalf("%q: unexpected buffer: got %q want %q", tc.input, gotBuffer, tc.wantBuffer)
+		}
+	}
+}
+
+func TestCompleteSlashSubcommandFuzzFuncAtPathListsWorkspaceCandidates(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "include"), 0o755); err != nil {
+		t.Fatalf("mkdir include: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "driver.cpp"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write driver.cpp: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "guard.cpp"), []byte(""), 0o644); err != nil {
+		t.Fatalf("write guard.cpp: %v", err)
+	}
+
+	rt := &runtimeState{
+		cfg: DefaultConfig(dir),
+		workspace: Workspace{
+			BaseRoot: dir,
+			Root:     dir,
+		},
+	}
+
+	cases := []struct {
+		input       string
+		wantSuggest []string
+	}{
+		{
+			input:       "/fuzz-func @",
+			wantSuggest: []string{"/fuzz-func @include/", "/fuzz-func @src/"},
+		},
+		{
+			input:       "/fuzz-func ValidateRequest @src/",
+			wantSuggest: []string{"/fuzz-func ValidateRequest @src/driver.cpp", "/fuzz-func ValidateRequest @src/guard.cpp"},
+		},
+	}
+
+	for _, tc := range cases {
+		gotBuffer, gotSuggest, ok := rt.completeSlashCommand(tc.input)
+		if !ok {
+			t.Fatalf("%q: expected completion to apply", tc.input)
+		}
+		if gotBuffer != tc.input {
+			t.Fatalf("%q: unexpected buffer: got %q want %q", tc.input, gotBuffer, tc.input)
+		}
+		if len(gotSuggest) != len(tc.wantSuggest) {
+			t.Fatalf("%q: unexpected suggestion count: got %#v want %#v", tc.input, gotSuggest, tc.wantSuggest)
+		}
+		for i := range tc.wantSuggest {
+			if gotSuggest[i] != tc.wantSuggest[i] {
+				t.Fatalf("%q: unexpected suggestion[%d]: got %q want %q", tc.input, i, gotSuggest[i], tc.wantSuggest[i])
+			}
+		}
+		for _, suggestion := range gotSuggest {
+			if suggestion == "/fuzz-func @<path>" || suggestion == "/fuzz-func ValidateRequest @<path>" {
+				t.Fatalf("%q: placeholder suggestion leaked into @ completion: %#v", tc.input, gotSuggest)
+			}
 		}
 	}
 }
@@ -165,6 +232,19 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append simulation: %v", err)
 	}
+	functionFuzz := &FunctionFuzzStore{Path: dir + "\\function_fuzz.json"}
+	if _, err := functionFuzz.Append(FunctionFuzzRun{
+		ID:               "fuzz-abc",
+		Workspace:        dir,
+		TargetQuery:      "ValidateRequest",
+		TargetSymbolID:   "func:ValidateRequest",
+		TargetSymbolName: "ValidateRequest",
+		CreatedAt:        now,
+		PrimaryEngine:    "libFuzzer + ASan/UBSan",
+		Summary:          "summary",
+	}); err != nil {
+		t.Fatalf("append function fuzz: %v", err)
+	}
 
 	featureStore := NewFeatureStore(dir)
 	feature, err := featureStore.Create(dir, "add tracked feature workflow", "openai / gpt-5.4", "")
@@ -178,6 +258,7 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		longMem:        longMem,
 		investigations: investigations,
 		simulations:    simulations,
+		functionFuzz:   functionFuzz,
 		workspace: Workspace{
 			BaseRoot: dir,
 			Root:     dir,
@@ -194,6 +275,7 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		{input: "/mem-promote mem", wantBuffer: "/mem-promote mem-abc "},
 		{input: "/investigate show inv", wantBuffer: "/investigate show invest-abc "},
 		{input: "/simulate show sim", wantBuffer: "/simulate show sim-abc "},
+		{input: "/fuzz-func show fu", wantBuffer: "/fuzz-func show fuzz-abc "},
 		{input: "/new-feature status " + feature.ID[:8], wantBuffer: "/new-feature status " + feature.ID + " "},
 	}
 
@@ -210,14 +292,23 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 
 func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) {
 	cases := map[string]string{
-		"/status":                  "Show current session state, approvals, and extension status.",
-		"/provider status":         "Show the current provider, base URL, key state, and billing visibility.",
-		"/verify":                  "Run manual verification for the current workspace state.",
-		"/specialists":             "Show specialist profiles plus editable ownership and worktree routing state.",
-		"/specialists cleanup":     "Remove one or all specialist worktrees recorded for this session.",
-		"/worktree cleanup":        "Remove the recorded isolated worktree after it is clean.",
-		"/new-feature status":      "Show the current state of a tracked feature.",
-		"/simulate tamper-surface": "Model obvious tamper vectors and exposed surfaces.",
+		"/status":                    "Show current session state, approvals, and extension status.",
+		"/provider status":           "Show the current provider, base URL, key state, and billing visibility.",
+		"/verify":                    "Run manual verification for the current workspace state.",
+		"/specialists":               "Show specialist profiles plus editable ownership and worktree routing state.",
+		"/specialists cleanup":       "Remove one or all specialist worktrees recorded for this session.",
+		"/worktree cleanup":          "Remove the recorded isolated worktree after it is clean.",
+		"/new-feature status":        "Show the current state of a tracked feature.",
+		"/simulate tamper-surface":   "Model obvious tamper vectors and exposed surfaces.",
+		"/fuzz-func":                 "Auto-plan directed function fuzzing. Use /fuzz-func <function-name> [--file <path>|@<path>] for one function, or /fuzz-func --file <path> / @<path> to analyze a file and its include/import closure.",
+		"/fuzz-func <function-name>": "Target one function by name and let Kernforge resolve the best matching symbol automatically.",
+		"/fuzz-func <function-name> --file <path>": "Target one function by name and pin matching to a specific source file when names collide.",
+		"/fuzz-func <function-name> @<path>":       "Target one function by name and use @<path> as a short file-hint alias.",
+		"/fuzz-func --file <path>":                 "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
+		"/fuzz-func @<path>":                       "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
+		"/fuzz-func language":                      "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
+		"/fuzz-func show":                          "Open one saved function fuzz plan by id.",
+		"/fuzz-func continue":                      "Approve a pending recovered build configuration and start autonomous fuzzing.",
 	}
 
 	for item, want := range cases {
