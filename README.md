@@ -8,13 +8,16 @@
 Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into a reusable knowledge pack, then carries that context into editing, verification, evidence, and policy.  
 Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
+The current product direction has two main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
+
 ## Flagship Capability
 
 If Kernforge has one feature to understand first, it is `multi-agent project analysis`.
 
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>` builds a reusable architecture map instead of a disposable summary
-- The output becomes a durable knowledge pack, performance lens, structural index, and vector-ready analysis set
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds a reusable architecture map instead of a disposable summary, and infers a mode-specific goal when you omit one
+- The output becomes a durable knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard
 - That analysis is then reused in review, editing, verification, and policy workflows
+- The next roadmap focus is expanding the new `/fuzz-campaign` planner from one-command campaign automation into native crash, coverage, evidence, and verification-gate lifecycle management
 
 ## Documentation
 
@@ -28,8 +31,11 @@ Guides:
 
 Playbooks:
 - [Driver Playbook](./PLAYBOOK_driver.md)
+- [한국어 Driver 플레이북](./PLAYBOOK_driver_kor.md)
 - [Telemetry Playbook](./PLAYBOOK_telemetry.md)
+- [한국어 Telemetry 플레이북](./PLAYBOOK_telemetry_kor.md)
 - [Memory-Scan Playbook](./PLAYBOOK_memory_scan.md)
+- [한국어 Memory-Scan 플레이북](./PLAYBOOK_memory_scan_kor.md)
 
 Specs And Roadmap:
 - [Korean Roadmap](./ROADMAP_kor.md)
@@ -60,7 +66,7 @@ Its current differentiators are:
 
 ## What It Currently Supports
 
-- Multi-agent project analysis with reusable knowledge packs and a performance lens
+- Multi-agent project analysis with reusable knowledge packs, a performance lens, operational docs, and an HTML dashboard
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
@@ -85,11 +91,16 @@ Its current differentiators are:
 
 ### Project Analysis
 
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>` runs a conductor plus multiple sub-agents and writes a project document
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` runs a conductor plus multiple sub-agents and writes a project document
 - If you omit `--mode`, the default mode is `map`
+- If you omit the goal, Kernforge infers one from `--mode` and `--path`
+- Non-map modes such as `trace`, `impact`, `surface`, `security`, and `performance` automatically load the most relevant previous `map` run as a baseline architecture map when one exists
+- The analysis confirmation screen shows the selected `baseline_map` before asking whether to proceed
+- Provider rate-limit or transient worker/reviewer failures degrade the affected shard instead of aborting the whole analysis run; the final document marks those sections as low confidence
+- `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
-- Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace
+- Goal text can narrow analysis to matching directories when you explicitly target a sub-area of the workspace; use `--path <dir>` when you want that scope to be explicit and validated before the run
 - Interactive runs can flag hidden or external-looking directories and let you exclude them from the analysis pass
 - Semantic fingerprint invalidation can force recomputation when structure changes even if file scope looks stable
 - Build alignment now lifts `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, and `compile_commands.json` into reusable build-context records
@@ -98,18 +109,27 @@ Its current differentiators are:
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
 - In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a static document portal with search, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- After analysis, Kernforge prints an `Analysis handoff` that points to `/analyze-dashboard`, `/fuzz-campaign run`, a top `/fuzz-func ...` drilldown, or `/verify` when the generated docs support that next step
 - The source-anchor parser now handles modern C++ patterns such as template out-of-line methods, operators, `requires` and `decltype(auto)` headers, API-macro-wrapped scopes, and friend functions
 - Security-mode final documents now add a `Security Surface Decomposition` section so privileged and abuse-sensitive paths do not get flattened into a generic summary
 - Dedicated worker and reviewer models can be configured separately from the main chat model
 - Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
+- `/analyze-dashboard [latest|path]` opens the latest or a selected analysis document portal
+- `/docs-refresh` regenerates the latest operational docs, dashboard, and docs-backed vector corpus deterministically from the saved analysis run
 - `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
+- Performance reports now end with a `Performance handoff` toward `/analyze-dashboard`, `/verify`, `/simulate stealth-surface`, or a concrete `/fuzz-func ...` hotspot drilldown
 
 ### Security Verification And Policy Loop
 
 - Security-aware verification for driver, telemetry, Unreal, and memory-scan changes
 - Verification history and verification dashboards
+- `/verify` now ends with a `Verification handoff`: failures point back to repair/retry dashboards, while passing runs suggest checkpointing and either feature status or close depending on tracked feature state; native fuzz findings are pulled into targeted planner steps
 - Structured evidence capture from verification
 - Evidence search and evidence dashboards
+- `/investigate` and `/simulate` now print handoffs into snapshots, risk simulation, `/verify`, and evidence dashboards so the user does not need to memorize the analysis loop
+- Evidence and memory views now print handoffs back into `/verify`, source dashboards, `/mem-confirm`, `/mem-promote`, or dashboard review when records need action
+- Checkpoints, tracked features, isolated worktrees, and specialist assignments now give short follow-up hints for diff review, implementation, cleanup, preservation, and fuzz verification gates
 - Runtime toggle for automatic verification with `/set-auto-verify [on|off]`
 - Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
@@ -125,6 +145,10 @@ Its current differentiators are:
 - If `compile_commands.json` or other build context exists, Kernforge can prepare a stronger native follow-up; if it does not, Kernforge explains the missing setup before asking whether to continue
 - Artifacts are stored under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`
 - Use `/fuzz-func status|show|list|continue|language` to inspect saved runs, resume blocked execution, and switch output language
+- After `/fuzz-func` produces source-only scenarios, Kernforge prints a campaign handoff so the user sees `/fuzz-campaign run` as the single next command instead of memorizing campaign steps
+- Use `/fuzz-campaign new <name>` to create a campaign manifest under `.kernforge/fuzz/<campaign-id>/` with `corpus`, `crashes`, `coverage`, `reports`, and `logs` directories
+- Campaigns seed their initial target list from the latest generated `FUZZ_TARGETS.md` catalog when analysis docs are available
+- Use `/fuzz-campaign` to see Kernforge's recommended next step, then `/fuzz-campaign run` to let it create, attach, promote source-only seed artifacts, update deduplicated finding lifecycle and coverage gap entries, ingest libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries from run output or the campaign coverage directory, capture sanitizer reports, Windows crash dumps, Application Verifier, Driver Verifier artifacts, and native run reports/evidence, feed the next `FUZZ_TARGETS.md` ranking refresh, and feed `/verify` plus tracked feature gates automatically
 - Completion shows function-name and file-usage hints after `/fuzz-func `, then switches to real workspace file candidates as soon as you start typing `@`
 
 ### Editing Workflow
@@ -153,7 +177,7 @@ Its current differentiators are:
 
 - `/new-feature <task>` creates a tracked feature workspace and writes `spec.md`, `plan.md`, and `tasks.md`
 - Tracked feature artifacts live under `.kernforge/features/<id>` so large work can survive across sessions
-- `/new-feature status|plan|implement|close [id]` lets you inspect, regenerate, execute, and finish the active feature
+- `/new-feature status|plan|implement|close [id]` lets you inspect, regenerate, execute, and finish the active feature; status also surfaces recent fuzz campaign gates when native results exist
 - `/do-plan-review <task>` remains the better fit for one-shot reviewed planning and immediate execution
 
 ### Input And Prompting
@@ -175,7 +199,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, compact fuzz campaign actions, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -809,12 +833,14 @@ Explain the structure of this repository
 /provider
 /provider status
 /model
-/profile
-/profile-review
+/profile [list|<number>|rN|dN|pN]
+/profile-review [list|<number>|rN|dN|pN]
 /set-plan-review [provider]
 /set-analysis-models
 /set-specialist-model [status|clear <specialist|all>|<specialist> <provider> [model]]
-/analyze-project [--mode map|trace|impact|security|performance] <goal>
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+/analyze-dashboard [latest|path]
+/docs-refresh
 /analyze-performance [focus]
 /do-plan-review <task>
 /new-feature <task>
@@ -826,6 +852,10 @@ Explain the structure of this repository
 ```
 
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
+- `/model` is the main entry point for changing the main model, plan-review reviewer, analysis worker/reviewer, and specialist subagent models.
+- Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role.
+- `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
+- User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main and review profiles instead of dropping them when a save payload omits profile arrays.
 - `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
@@ -845,7 +875,8 @@ Explain the structure of this repository
 - Slash commands
 - Command and subcommand descriptions in completion menus
 - `/provider status|anthropic|openai|openrouter|ollama`
-- `/analyze-project --mode ...` and built-in mode values
+- `/analyze-project --path ...`, `/analyze-project --mode ...`, and built-in mode values
+- `/fuzz-campaign status|run|new|list|show`
 - `@file` mentions
 - `/open <path>`
 - `/resource <server:...>`
@@ -1010,6 +1041,11 @@ Source-level fuzzing commands:
 /fuzz-func list
 /fuzz-func continue [id|latest]
 /fuzz-func language [system|english]
+/fuzz-campaign status
+/fuzz-campaign run
+/fuzz-campaign new <name>
+/fuzz-campaign list
+/fuzz-campaign show [id|latest]
 ```
 
 Hook and override commands:
@@ -1029,18 +1065,24 @@ The new project analysis flow is designed for large or risky codebases where you
 Core commands:
 
 ```text
-/analyze-project [--mode map|trace|impact|security|performance] <goal>
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+/analyze-dashboard [latest|path]
+/docs-refresh
 /analyze-performance [focus]
 /set-analysis-models
 ```
 
+The goal is optional. When it is omitted, Kernforge derives a practical default from the selected mode and path.
+When a previous `map` run exists, follow-up modes reuse it as baseline structure while still verifying mode-specific claims against the current files.
+
 Mode summary:
 
 - `map`: default architecture map focused on subsystem ownership and module boundaries
-- `trace`: execution path and caller/callee flow emphasis
-- `impact`: change impact and blast-radius emphasis
-- `security`: trust boundaries, validation, privileged surfaces, and tamper-sensitive paths, with dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` decomposition
-- `performance`: startup cost, hot paths, blocking chains, and contention emphasis
+- `trace`: one runtime/request flow through callers, callees, dispatch points, ownership transitions, and source anchors
+- `impact`: change blast radius, upstream/downstream dependencies, affected files, retest targets, and stale documentation risks
+- `surface`: exposed entry surfaces such as IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets
+- `security`: trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks
+- `performance`: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order
 
 What it does:
 
@@ -1051,6 +1093,12 @@ What it does:
 - Builds a structural index and an Unreal semantic graph
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
 - Writes Markdown and JSON analysis artifacts
+- Generates an operational documentation set with `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
+- Writes a schema-versioned `docs_manifest.json`; readers treat missing `schema_version` as legacy and ignore unknown fields for additive compatibility
+- Writes `dashboard.html` so run summary, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
+- Adds generated-doc graph sections for project edges, trust boundaries, data-flow paths, and attack/data-flow follow-up commands, with graph-specific stale markers reflected in section metadata
+- Recollects generated docs into `vector_corpus.*` as whole-document and section-level records with source anchors, confidence, stale markers, and reuse metadata
+- README describes product scope and flagship commands, the feature guide describes practical operating loops, and generated docs serve as the per-run project knowledge base with source anchors, confidence, and stale markers
 - Maintains a `latest` knowledge pack for follow-up analysis
 - Produces a vector corpus and provider-specific ingestion seeds
 - Reuses unchanged shard results when incremental analysis is enabled
@@ -1074,12 +1122,20 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_vector_pgvector.sql`
 - `.kernforge/analysis/<timestamp>_<goal>_vector_sqlite.sql`
 - `.kernforge/analysis/<timestamp>_<goal>_vector_qdrant.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_docs/`
+- `.kernforge/analysis/<timestamp>_<goal>_docs_manifest.json`
+- `.kernforge/analysis/<timestamp>_<goal>_dashboard.html`
 - `.kernforge/analysis/latest/`
+- `.kernforge/analysis/latest/run.json`
+- `.kernforge/analysis/latest/docs/`
+- `.kernforge/analysis/latest/docs_index.md`
+- `.kernforge/analysis/latest/docs_manifest.json`
+- `.kernforge/analysis/latest/dashboard.html`
 
 Recommended flow:
 
 1. Run `/analyze-project anti-cheat startup and integrity architecture`.
-2. Review the generated knowledge pack and shard outputs.
+2. Open the latest dashboard with `/analyze-dashboard`, then review the generated knowledge pack, docs, and shard outputs.
 3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
 4. Use the resulting knowledge in `/review-selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
 
@@ -1099,6 +1155,11 @@ Core commands:
 /fuzz-func show [id|latest]
 /fuzz-func continue [id|latest]
 /fuzz-func language [system|english]
+/fuzz-campaign status
+/fuzz-campaign run
+/fuzz-campaign new <name>
+/fuzz-campaign list
+/fuzz-campaign show [id|latest]
 ```
 
 What it does:
@@ -1109,6 +1170,10 @@ What it does:
 - Synthesizes attacker input states, concrete sample values, source-derived branch predicates, minimal counterexamples, pass/fail branch outcomes, and downstream call chains for higher-risk paths.
 - Shows the first source lines to inspect, the path from the selected starting file into the target file, and the representative call path from the chosen root into that implementation.
 - Uses native execution only as an optional follow-up. If build context is incomplete, Kernforge explains the gap first instead of silently failing.
+- After a useful `/fuzz-func` result, Kernforge prints the campaign handoff and points to `/fuzz-campaign run` as the next automatic step.
+- `/fuzz-campaign` shows the next recommended campaign action; `/fuzz-campaign run` performs the safe automatic step, including campaign creation, latest `/fuzz-func` attachment, deterministic JSON corpus seed promotion, deduplicated finding lifecycle updates, libFuzzer/llvm-cov/LCOV/JSON coverage report ingestion, sanitizer/verifier/crash-dump artifact capture, coverage gap feedback, artifact graph updates, native result report generation, crash fingerprinting, minimization command capture, evidence recording, `/verify` planner reuse, and tracked feature gate guidance when available.
+- Native crash findings are merged by crash fingerprint, source anchor, and suspected invariant. The manifest preserves duplicate counts plus merged native result and evidence ids so repeated runs strengthen one issue instead of creating noisy copies.
+- Campaign coverage gaps are written into the manifest and reused by the next `analyze-project` docs refresh so unexercised targets receive explicit `FUZZ_TARGETS.md` ranking feedback.
 - `/fuzz-func ` completion starts with usage hints, then flips to real file candidates after `@` so file-scoped runs are easy to launch.
 
 This is especially useful when:

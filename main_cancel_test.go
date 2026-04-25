@@ -1477,6 +1477,7 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 		"gpt-5.4-mini",
 		"unreal-integrity-reviewer:",
 		"memory-inspection-reviewer:",
+		"not configured; follows main model -> openai / gpt-main",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected model routing output to contain %q, got %q", needle, rendered)
@@ -1655,6 +1656,503 @@ func TestRuntimeStateHandleSetSpecialistModelCommandClearPreservesOtherOverrides
 	}
 	if savedProfile.Prompt != "Keep the planning prompt override." {
 		t.Fatalf("expected saved prompt override to remain, got %#v", savedProfile)
+	}
+}
+
+func TestHandleProfileCommandListsWithoutImplicitActivation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(t.TempDir()),
+		ui:     NewUI(),
+		writer: &output,
+		session: &Session{
+			ID:       "session-profile-list",
+			Provider: "openai",
+			Model:    "gpt-current",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-current"
+	rt.cfg.Profiles = []Profile{
+		{Name: "first", Provider: "ollama", Model: "llama3"},
+		{Name: "current", Provider: "openai", Model: "gpt-current"},
+	}
+
+	if err := rt.handleProfileCommand(""); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	if rt.session.Provider != "openai" || rt.session.Model != "gpt-current" {
+		t.Fatalf("expected profile list to avoid implicit activation, got %s/%s", rt.session.Provider, rt.session.Model)
+	}
+	if strings.Contains(output.String(), "Activated profile") {
+		t.Fatalf("expected list-only output, got %q", output.String())
+	}
+}
+
+func TestHandleProfileCommandAcceptsDirectActionArgs(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &output,
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-profile-activate",
+			Provider: "openai",
+			Model:    "gpt-current",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-current"
+	rt.cfg.Profiles = []Profile{
+		{Name: "current", Provider: "openai", Model: "gpt-current"},
+		{Name: "local", Provider: "ollama", Model: "llama3", BaseURL: "http://localhost:11434"},
+	}
+
+	if err := rt.handleProfileCommand("2"); err != nil {
+		t.Fatalf("handleProfileCommand activate: %v", err)
+	}
+	if rt.session.Provider != "ollama" || rt.session.Model != "llama3" {
+		t.Fatalf("expected direct profile activation, got %s/%s", rt.session.Provider, rt.session.Model)
+	}
+	if !strings.Contains(output.String(), "Activated profile local") {
+		t.Fatalf("expected activation output, got %q", output.String())
+	}
+}
+
+func TestHandleProfileCommandAutoSavesCurrentWhenListIsEmpty(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &output,
+		session: &Session{
+			ID:       "session-profile-auto-save-current",
+			Provider: "openai",
+			Model:    "gpt-current",
+		},
+		interactive: false,
+	}
+
+	if err := rt.handleProfileCommand(""); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	if len(rt.cfg.Profiles) != 1 {
+		t.Fatalf("expected one auto-saved profile, got %#v", rt.cfg.Profiles)
+	}
+	if rt.cfg.Profiles[0].Name != "openai / gpt-current" {
+		t.Fatalf("unexpected auto-saved profile: %#v", rt.cfg.Profiles[0])
+	}
+	if !strings.Contains(output.String(), "Saved current provider/model as profile openai / gpt-current") {
+		t.Fatalf("expected auto-save output, got %q", output.String())
+	}
+	if !strings.Contains(output.String(), "Profiles") {
+		t.Fatalf("expected profile list output, got %q", output.String())
+	}
+}
+
+func TestActivateProviderAppendsProfileForDifferentModel(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &bytes.Buffer{},
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-profile-model-append",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+	rt.cfg.Profiles = []Profile{
+		{Name: "openai / gpt-old", Provider: "openai", Model: "gpt-old", APIKey: "openai-key"},
+	}
+	rt.cfg.ProviderKeys = map[string]string{"openai": "openai-key"}
+
+	if err := rt.activateProvider("openai", "gpt-new", ""); err != nil {
+		t.Fatalf("activateProvider: %v", err)
+	}
+	if len(rt.cfg.Profiles) != 2 {
+		t.Fatalf("expected model change to append a profile, got %#v", rt.cfg.Profiles)
+	}
+	if rt.cfg.Profiles[0].Model != "gpt-new" || rt.cfg.Profiles[1].Model != "gpt-old" {
+		t.Fatalf("expected newest profile first and old profile preserved, got %#v", rt.cfg.Profiles)
+	}
+
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(saved.Profiles) != 2 {
+		t.Fatalf("expected saved profiles to preserve both models, got %#v", saved.Profiles)
+	}
+}
+
+func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &bytes.Buffer{},
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-main-only-model-change",
+			Provider: "openai",
+			Model:    "gpt-main-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-main-old"
+	rt.cfg.ProviderKeys = map[string]string{
+		"openai":     "openai-key",
+		"anthropic":  "anthropic-key",
+		"openrouter": "openrouter-key",
+	}
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "anthropic", Model: "claude-review", APIKey: "anthropic-key"}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "worker", Provider: "openrouter", Model: "worker-model", APIKey: "openrouter-key"}
+	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer", APIKey: "openai-key"}
+	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
+		{Name: "kernel-investigator", Provider: "openai", Model: "specialist-model", APIKey: "openai-key"},
+	}
+
+	if err := rt.activateProvider("openai", "gpt-main-new", ""); err != nil {
+		t.Fatalf("activateProvider: %v", err)
+	}
+	if rt.cfg.PlanReview.Model != "claude-review" {
+		t.Fatalf("expected plan review model to stay unchanged, got %#v", rt.cfg.PlanReview)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.Model != "worker-model" {
+		t.Fatalf("expected analysis worker to stay unchanged, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil || rt.cfg.ProjectAnalysis.ReviewerProfile.Model != "analysis-reviewer" {
+		t.Fatalf("expected analysis reviewer to stay unchanged, got %#v", rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "kernel-investigator")
+	if !ok || profile.Model != "specialist-model" {
+		t.Fatalf("expected specialist model to stay unchanged, got %#v", profile)
+	}
+
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.PlanReview == nil || saved.PlanReview.Model != "claude-review" {
+		t.Fatalf("expected saved plan review model to stay unchanged, got %#v", saved.PlanReview)
+	}
+	if saved.ProjectAnalysis.WorkerProfile == nil || saved.ProjectAnalysis.WorkerProfile.Model != "worker-model" {
+		t.Fatalf("expected saved analysis worker to stay unchanged, got %#v", saved.ProjectAnalysis.WorkerProfile)
+	}
+	if saved.ProjectAnalysis.ReviewerProfile == nil || saved.ProjectAnalysis.ReviewerProfile.Model != "analysis-reviewer" {
+		t.Fatalf("expected saved analysis reviewer to stay unchanged, got %#v", saved.ProjectAnalysis.ReviewerProfile)
+	}
+	savedSpecialist, ok := configuredSpecialistProfileByName(saved, "kernel-investigator")
+	if !ok || savedSpecialist.Model != "specialist-model" {
+		t.Fatalf("expected saved specialist model to stay unchanged, got %#v", savedSpecialist)
+	}
+}
+
+func TestCurrentProfileCapturesRoleModelSet(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &bytes.Buffer{},
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-profile-role-capture",
+			Provider: "openai",
+			Model:    "gpt-main",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-main"
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "anthropic", Model: "claude-review"}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "worker", Provider: "openrouter", Model: "worker-model"}
+	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer"}
+	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
+		{Name: "kernel-investigator", Provider: "openai", Model: "specialist-model"},
+	}
+
+	rt.rememberCurrentProfile()
+	if len(rt.cfg.Profiles) != 1 {
+		t.Fatalf("expected one profile, got %#v", rt.cfg.Profiles)
+	}
+	profile := rt.cfg.Profiles[0]
+	if profile.RoleModels == nil {
+		t.Fatalf("expected role models to be captured")
+	}
+	if profile.RoleModels.PlanReviewer == nil || profile.RoleModels.PlanReviewer.Model != "claude-review" {
+		t.Fatalf("expected plan reviewer role model, got %#v", profile.RoleModels.PlanReviewer)
+	}
+	if profile.RoleModels.AnalysisWorker == nil || profile.RoleModels.AnalysisWorker.Model != "worker-model" {
+		t.Fatalf("expected analysis worker role model, got %#v", profile.RoleModels.AnalysisWorker)
+	}
+	if profile.RoleModels.AnalysisReviewer == nil || profile.RoleModels.AnalysisReviewer.Model != "analysis-reviewer" {
+		t.Fatalf("expected analysis reviewer role model, got %#v", profile.RoleModels.AnalysisReviewer)
+	}
+	if len(profile.RoleModels.Specialists) != 1 || profile.RoleModels.Specialists[0].Model != "specialist-model" {
+		t.Fatalf("expected specialist role model, got %#v", profile.RoleModels.Specialists)
+	}
+}
+
+func TestProfileActivationAppliesRoleModelSet(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &output,
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-profile-role-activate",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "old-review"}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "old-worker", Provider: "openai", Model: "old-worker"}
+	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "old-reviewer", Provider: "openai", Model: "old-analysis-reviewer"}
+	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
+		{Name: "kernel-investigator", Provider: "openai", Model: "old-specialist", Prompt: "Keep prompt."},
+	}
+	rt.cfg.Profiles = []Profile{{
+		Name:     "full-profile",
+		Provider: "openrouter",
+		Model:    "main-new",
+		RoleModels: &ProfileRoleModels{
+			PlanReviewer:     &Profile{Name: "plan", Provider: "anthropic", Model: "claude-review"},
+			AnalysisWorker:   &Profile{Name: "worker", Provider: "openrouter", Model: "worker-new"},
+			AnalysisReviewer: &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer-new"},
+			Specialists: []SpecialistSubagentProfile{
+				{Name: "kernel-investigator", Provider: "openai", Model: "specialist-new"},
+			},
+		},
+	}}
+	rt.cfg.ProviderKeys = map[string]string{
+		"openai":     "openai-key",
+		"anthropic":  "anthropic-key",
+		"openrouter": "openrouter-key",
+	}
+
+	if err := rt.handleProfileCommand("1"); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	if rt.cfg.Provider != "openrouter" || rt.cfg.Model != "main-new" {
+		t.Fatalf("expected main profile activation, got %s/%s", rt.cfg.Provider, rt.cfg.Model)
+	}
+	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.Provider != "anthropic" || rt.cfg.PlanReview.Model != "claude-review" {
+		t.Fatalf("expected plan reviewer profile to activate, got %#v", rt.cfg.PlanReview)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.Model != "worker-new" {
+		t.Fatalf("expected analysis worker profile to activate, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil || rt.cfg.ProjectAnalysis.ReviewerProfile.Model != "analysis-reviewer-new" {
+		t.Fatalf("expected analysis reviewer profile to activate, got %#v", rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+	specialist, ok := configuredSpecialistProfileByName(rt.cfg, "kernel-investigator")
+	if !ok || specialist.Model != "specialist-new" || specialist.Prompt != "Keep prompt." {
+		t.Fatalf("expected specialist model profile to activate while preserving non-model fields, got %#v", specialist)
+	}
+}
+
+func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Profiles = []Profile{{
+		Name:     "main",
+		Provider: "openai",
+		Model:    "gpt-main",
+		RoleModels: &ProfileRoleModels{
+			PlanReviewer:     &Profile{Name: "plan", Provider: "anthropic", Model: "claude-review"},
+			AnalysisWorker:   &Profile{Name: "worker", Provider: "ollama", Model: "llama3", BaseURL: "http://localhost:11434"},
+			AnalysisReviewer: &Profile{Name: "analysis-reviewer", Provider: "openai", Model: "gpt-analysis-review"},
+			Specialists: []SpecialistSubagentProfile{
+				{Name: "kernel-investigator", Provider: "openrouter", Model: "meta-llama/llama-3.1-70b"},
+			},
+		},
+	}}
+	rt := &runtimeState{
+		cfg:    cfg,
+		ui:     NewUI(),
+		writer: &output,
+		session: &Session{
+			ID:       "session-profile-role-summary",
+			Provider: "openai",
+			Model:    "gpt-main",
+		},
+		interactive: false,
+	}
+
+	if err := rt.handleProfileCommand(""); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	text := output.String()
+	for _, want := range []string{
+		"plan_reviewer",
+		"anthropic / claude-review",
+		"analysis_worker",
+		"ollama / llama3",
+		"analysis_reviewer",
+		"openai / gpt-analysis-review",
+		"specialist:kernel-investigator",
+		"openrouter / meta-llama/llama-3.1-70b",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected profile output to contain %q, got %q", want, text)
+		}
+	}
+	if strings.Contains(text, "Role Model Profiles") {
+		t.Fatalf("expected profile output to avoid duplicate footer role section, got %q", text)
+	}
+}
+
+func TestRoleModelActivationReusesStoredProviderKeys(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.ProviderKeys = map[string]string{
+		"openai":     "openai-key",
+		"anthropic":  "anthropic-key",
+		"openrouter": "openrouter-key",
+	}
+	rt := &runtimeState{
+		cfg:     cfg,
+		ui:      NewUI(),
+		writer:  &bytes.Buffer{},
+		session: &Session{ID: "session-role-provider-keys"},
+	}
+
+	if err := rt.activatePlanReview("openai", "gpt-review", "", ""); err != nil {
+		t.Fatalf("activatePlanReview: %v", err)
+	}
+	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.APIKey != "openai-key" {
+		t.Fatalf("expected plan review to reuse provider key, got %#v", rt.cfg.PlanReview)
+	}
+
+	if err := rt.activateProjectAnalysisRole("worker", "anthropic", "claude-worker", "", ""); err != nil {
+		t.Fatalf("activateProjectAnalysisRole: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.APIKey != "anthropic-key" {
+		t.Fatalf("expected analysis worker to reuse provider key, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+
+	if err := rt.activateSpecialistModel("kernel-investigator", "openrouter", "meta-llama/llama-3.1-70b", "", ""); err != nil {
+		t.Fatalf("activateSpecialistModel: %v", err)
+	}
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "kernel-investigator")
+	if !ok || profile.APIKey != "openrouter-key" {
+		t.Fatalf("expected specialist to reuse provider key, got %#v", profile)
+	}
+}
+
+func TestHandleProfileReviewCommandListsWithoutImplicitActivation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:         DefaultConfig(t.TempDir()),
+		ui:          NewUI(),
+		writer:      &output,
+		session:     &Session{ID: "session-review-profile-list"},
+		interactive: false,
+	}
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-review"}
+	rt.cfg.ReviewProfiles = []Profile{
+		{Name: "other-reviewer", Provider: "ollama", Model: "llama3"},
+		{Name: "current-reviewer", Provider: "openai", Model: "gpt-review"},
+	}
+
+	if err := rt.handleProfileReviewCommand(""); err != nil {
+		t.Fatalf("handleProfileReviewCommand: %v", err)
+	}
+	if rt.cfg.PlanReview.Provider != "openai" || rt.cfg.PlanReview.Model != "gpt-review" {
+		t.Fatalf("expected review profile list to avoid implicit activation, got %#v", rt.cfg.PlanReview)
+	}
+	if strings.Contains(output.String(), "Activated review profile") {
+		t.Fatalf("expected review list-only output, got %q", output.String())
+	}
+}
+
+func TestHandleProfileReviewCommandAutoSavesCurrentWhenListIsEmpty(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:         DefaultConfig(workspace),
+		ui:          NewUI(),
+		writer:      &output,
+		session:     &Session{ID: "session-review-profile-auto-save-current"},
+		interactive: false,
+	}
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-review"}
+
+	if err := rt.handleProfileReviewCommand(""); err != nil {
+		t.Fatalf("handleProfileReviewCommand: %v", err)
+	}
+	if len(rt.cfg.ReviewProfiles) != 1 {
+		t.Fatalf("expected one auto-saved review profile, got %#v", rt.cfg.ReviewProfiles)
+	}
+	if rt.cfg.ReviewProfiles[0].Name != "openai / gpt-review" {
+		t.Fatalf("unexpected auto-saved review profile: %#v", rt.cfg.ReviewProfiles[0])
+	}
+	if !strings.Contains(output.String(), "Saved current review provider/model as profile openai / gpt-review") {
+		t.Fatalf("expected auto-save output, got %q", output.String())
+	}
+	if !strings.Contains(output.String(), "Review Profiles") {
+		t.Fatalf("expected review profile list output, got %q", output.String())
 	}
 }
 

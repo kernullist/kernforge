@@ -124,6 +124,10 @@ func (rt *runtimeState) handleInvestigationStart(args string) error {
 	}
 	rt.appendInvestigationSessionEvidence(record, "active")
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Started investigation "+record.ID))
+	if handoff := investigationHandoffAfterStart(record); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -156,6 +160,10 @@ func (rt *runtimeState) handleInvestigationSnapshot(args string) error {
 	}
 	rt.appendInvestigationSnapshotEvidence(updated, snapshot)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Captured snapshot %s with %d finding(s)", snapshot.ID, len(snapshot.Findings))))
+	if handoff := investigationHandoffAfterSnapshot(updated, snapshot); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -214,6 +222,10 @@ func (rt *runtimeState) handleInvestigationStop(args string) error {
 	rt.appendInvestigationSessionEvidence(updated, "completed")
 	rt.appendInvestigationMemory(updated)
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Completed investigation "+updated.ID))
+	if handoff := investigationHandoffAfterStop(updated); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 

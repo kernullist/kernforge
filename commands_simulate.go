@@ -109,6 +109,10 @@ func (rt *runtimeState) handleSimulationRun(args string) error {
 	rt.appendSimulationMemory(saved)
 	fmt.Fprintln(rt.writer, rt.ui.section("Simulation"))
 	fmt.Fprintln(rt.writer, renderSimulationResult(saved))
+	if handoff := simulationHandoff(saved); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -150,6 +154,10 @@ func (rt *runtimeState) handleSimulationShow(args string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Simulation Result"))
 	fmt.Fprintln(rt.writer, renderSimulationResult(result))
+	if handoff := simulationHandoff(result); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 

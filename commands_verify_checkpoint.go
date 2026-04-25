@@ -78,7 +78,28 @@ func (rt *runtimeState) handleVerifyCommand(args string) error {
 	})
 	fmt.Fprintln(rt.writer, rt.ui.section("Verification"))
 	fmt.Fprintln(rt.writer, report.RenderTerminal(rt.ui))
+	activeFeature, hasActiveFeature := rt.activeFeatureForHandoff()
+	if handoff := verificationHandoff(report, activeFeature, hasActiveFeature); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
+}
+
+func (rt *runtimeState) activeFeatureForHandoff() (FeatureWorkflow, bool) {
+	if rt == nil || rt.session == nil || strings.TrimSpace(rt.session.ActiveFeatureID) == "" {
+		return FeatureWorkflow{}, false
+	}
+	activeID := strings.TrimSpace(rt.session.ActiveFeatureID)
+	store := rt.featureStore()
+	if store == nil {
+		return FeatureWorkflow{ID: activeID}, true
+	}
+	feature, err := store.Load(activeID)
+	if err != nil {
+		return FeatureWorkflow{ID: activeID}, true
+	}
+	return feature, true
 }
 
 func (rt *runtimeState) handleVerifyDashboardCommand(args string) error {
@@ -164,6 +185,10 @@ func (rt *runtimeState) handleCheckpointCommand(args string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Created checkpoint %s (%s)", meta.ID, meta.Name)))
+	if handoff := checkpointHandoffAfterCreate(meta); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -200,6 +225,10 @@ func (rt *runtimeState) handleCheckpointsCommand() error {
 	for _, item := range items {
 		fmt.Fprintf(rt.writer, "%s  %s  files=%d  size=%dB\n", rt.ui.dim(item.ID), item.Name, item.FileCount, item.TotalBytes)
 	}
+	if handoff := checkpointsHandoff(items); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -223,6 +252,10 @@ func (rt *runtimeState) handleCheckpointDiffCommand(args string) error {
 	}
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, renderCheckpointDiffTerminal(rt.ui, diffs))
+	if handoff := checkpointDiffHandoff(meta, diffs); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 

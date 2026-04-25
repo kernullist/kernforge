@@ -27,11 +27,12 @@ The best current loop looks like this:
 2. Use `/analyze-performance` to turn the latest knowledge pack into a bottleneck lens when performance or startup paths matter.
 3. If live state matters, use `/investigate` to capture the current system state.
 4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
-5. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning.
+5. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning; when a seed handoff is useful, Kernforge prints `/fuzz-campaign run` as the next step.
 6. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
 7. Run `/verify` to execute the verification plan.
 8. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
-9. Let hooks act as the final policy layer before push or PR.
+9. Follow the printed handoff blocks after analysis, investigation, simulation, performance, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, and specialist actions instead of memorizing the command order.
+10. Let hooks act as the final policy layer before push or PR.
 
 Practical interpretation:
 1. `analyze-project` builds a reusable architecture map instead of a disposable summary.
@@ -127,11 +128,23 @@ Purpose:
 3. Keep a `latest` knowledge pack and performance lens for follow-up work.
 4. Reuse unchanged shard results when incremental mode is enabled.
 5. Preserve a structural index, Unreal semantic graph, and vector corpus for downstream automation.
+6. End the run with an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
 
 Useful commands:
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
+- `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
+- `/docs-refresh`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+
+The goal is optional. If omitted, Kernforge infers a practical goal from the selected mode and path.
+Follow-up modes automatically load a previous `map` run as baseline structure when available. This lets `trace`, `impact`, `surface`, `security`, and `performance` start from the architecture map without sharing the same shard cache.
+Before confirmation, the analysis plan prints the selected `baseline_map` so the user can see which map run will be reused.
+Large runs are provider-failure tolerant: worker/reviewer rate limits are recorded as low-confidence shard failures, and synthesis falls back to a local document when the final model request fails.
+
+Role split:
+1. `README.md` is the quick product-scope, flagship-command, and artifact-location document.
+2. This feature guide explains the operating sequence across investigation, simulation, fuzzing, verification, evidence, and memory.
+3. Generated `analyze-project` docs are the per-run project knowledge base with source anchors, confidence, and stale/invalidation markers.
 
 Mode summary:
 1. `map` is the default mode and prioritizes architecture ownership and module boundaries.
@@ -162,9 +175,10 @@ What materially changed for large and Unreal-heavy workspaces:
 5. Source anchors now lift Go, C++, and C# functions into symbol records with line ranges, call edges, build ownership edges, and security overlays.
 6. `trace`, `impact`, and `security` retrieval now expand graph neighborhoods instead of relying only on keyword hits, and they persist `build_context_v2` plus `path_v2` evidence.
 7. The C++ anchor parser now covers template out-of-line methods, operators, `requires`, `decltype(auto)`, API-macro-wrapped scopes, and friend functions.
-8. Output documents now expose subsystem invalidation reasons, evidence, diffs, and top change classes.
-9. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
-10. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
+8. Output documents now expose subsystem invalidation reasons, evidence, diffs, top change classes, and graph-section stale markers.
+9. The dashboard stale diff links graph-related changes directly into trust-boundary, data-flow, and project-edge sections.
+10. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
+11. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
 11. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
 
 ### Source-Level Function Fuzzing
@@ -185,6 +199,8 @@ Useful commands:
 - `/fuzz-func list`
 - `/fuzz-func continue [id|latest]`
 - `/fuzz-func language [system|english]`
+- `/fuzz-campaign`
+- `/fuzz-campaign run`
 
 Best used when:
 1. You need fast triage on IOCTL handlers, parsers, validators, or buffer-processing code.
@@ -199,7 +215,12 @@ Current behavior:
 5. Output is organized as `Conclusion`, `Risk score table`, `Top predicted problems`, and `Source-derived attack surface` so the most actionable finding is visible first.
 6. Native execution is an optional follow-up. If build context such as `compile_commands.json` is missing, Kernforge explains the gap before asking whether to continue.
 7. Artifacts are written under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`.
-8. `/fuzz-func ` completion shows function and file usage hints first, then switches to real file candidates after `@`.
+8. `/fuzz-func` automatically prints a campaign handoff when source-only scenarios are ready, so the user can continue with `/fuzz-campaign run` instead of learning campaign internals.
+9. `/fuzz-campaign` shows the next recommended campaign step and `/fuzz-campaign run` performs the safe automatic action, such as creating a campaign, attaching the latest useful run, promoting source-only scenarios into `corpus/<run-id>/`, updating deduplicated finding lifecycle and coverage gap entries, ingesting libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries, capturing sanitizer reports, Windows crash dumps, Application Verifier, and Driver Verifier artifacts, and recording native run results into reports and evidence.
+10. Campaign manifests now include a finding list, dedup keys, duplicate counts, merged native/evidence links, parsed coverage reports, run artifacts, coverage gaps, and artifact graph that link targets, seeds, native results, coverage reports, sanitizer/verifier artifacts, evidence ids, source anchors, verification gates, and tracked-feature gates.
+11. Native crash findings merge by crash fingerprint, source anchor, and suspected invariant so repeated runs strengthen one tracked issue.
+12. Coverage gaps feed the next generated `FUZZ_TARGETS.md` refresh so unexercised seed targets receive explicit ranking feedback.
+13. `/fuzz-func ` completion shows function and file usage hints first, then switches to real file candidates after `@`.
 
 Practical interpretation:
 1. `Most useful branch delta` is usually the first line worth reading.
@@ -477,7 +498,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
@@ -794,6 +815,8 @@ Basic usage:
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func show latest
 /fuzz-func language system
+/fuzz-campaign
+/fuzz-campaign run
 ```
 
 What the planner currently considers:
@@ -819,7 +842,8 @@ Operational notes:
 1. A bare function name triggers automatic symbol resolution, while `--file` or `@path` reduces ambiguity.
 2. `/fuzz-func @path` is valid even if you do not know the function name yet.
 3. Source-only fuzzing results can still be useful even when native auto-run is blocked.
-4. `compile_commands.json` improves native follow-up quality, but it is not a prerequisite for source-only planning.
+4. Use `/fuzz-campaign` instead of memorizing campaign substeps; Kernforge will suggest the next safe action and `/fuzz-campaign run` will apply it, including deduplicated finding lifecycle updates, libFuzzer/llvm-cov/LCOV/JSON coverage report ingestion, sanitizer/verifier/crash-dump artifact capture, coverage gap feedback, and native result evidence capture when run artifacts exist.
+5. `compile_commands.json` improves native follow-up quality, but it is not a prerequisite for source-only planning.
 
 ## 5. When To Use Each Dashboard
 
@@ -939,6 +963,8 @@ Recommended progression:
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func TriggerDoubleFetch --file Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func show latest
+/fuzz-campaign
+/fuzz-campaign run
 /verify
 ```
 

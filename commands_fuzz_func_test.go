@@ -265,10 +265,11 @@ func TestHandleFuzzFuncCommandCreatesArtifacts(t *testing.T) {
 	var output bytes.Buffer
 	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
 	rt := &runtimeState{
-		cfg:          cfg,
-		writer:       &output,
-		ui:           NewUI(),
-		functionFuzz: store,
+		cfg:           cfg,
+		writer:        &output,
+		ui:            NewUI(),
+		functionFuzz:  store,
+		fuzzCampaigns: &FuzzCampaignStore{Path: filepath.Join(root, "fuzz_campaigns.json")},
 		workspace: Workspace{
 			BaseRoot: root,
 			Root:     root,
@@ -330,6 +331,9 @@ func TestHandleFuzzFuncCommandCreatesArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Top predicted problems:") {
 		t.Fatalf("expected command output to include source-analysis section, got %q", output.String())
+	}
+	if !strings.Contains(output.String(), "Campaign handoff:") || !strings.Contains(output.String(), "Continue: /fuzz-campaign run") {
+		t.Fatalf("expected campaign handoff guidance, got %q", output.String())
 	}
 }
 
@@ -856,6 +860,34 @@ func TestBuildFunctionFuzzRunFromArtifactsSupportsFileOnlyScope(t *testing.T) {
 	rendered := renderFunctionFuzzRunWithConfig(run, DefaultConfig(root))
 	if !strings.Contains(rendered, "Input scope:") {
 		t.Fatalf("expected rendered output to explain file scope, got %q", rendered)
+	}
+}
+
+func TestResolveFunctionFuzzTargetUsesDocsCatalogRanking(t *testing.T) {
+	index := SemanticIndexV2{
+		Symbols: []SymbolRecord{
+			{ID: "func:AlphaHandler@src/a.cpp", Name: "AlphaHandler", Kind: "function", File: "src/a.cpp", Signature: "void AlphaHandler(const uint8_t *data, size_t size)"},
+			{ID: "func:BetaHandler@src/b.cpp", Name: "BetaHandler", Kind: "function", File: "src/b.cpp", Signature: "void BetaHandler(const uint8_t *data, size_t size)"},
+		},
+	}
+	manifest := AnalysisDocsManifest{
+		FuzzTargets: []AnalysisFuzzTargetCatalogEntry{
+			{
+				SymbolID:          "func:BetaHandler@src/b.cpp",
+				Name:              "BetaHandler",
+				File:              "src/b.cpp",
+				PriorityScore:     100,
+				BuildContextLevel: "indexed_build_context",
+				HarnessReadiness:  "ready",
+			},
+		},
+	}
+	target, err := resolveFunctionFuzzTarget(index, functionFuzzTargetSpec{Name: "Handler"}, manifest)
+	if err != nil {
+		t.Fatalf("resolve target: %v", err)
+	}
+	if target.Name != "BetaHandler" {
+		t.Fatalf("expected docs catalog ranking to select BetaHandler, got %+v", target)
 	}
 }
 

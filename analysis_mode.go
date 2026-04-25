@@ -9,6 +9,7 @@ var supportedProjectAnalysisModes = []string{
 	"map",
 	"trace",
 	"impact",
+	"surface",
 	"security",
 	"performance",
 }
@@ -17,7 +18,7 @@ const defaultProjectAnalysisMode = "map"
 
 func normalizeProjectAnalysisMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "map", "trace", "impact", "security", "performance":
+	case "map", "trace", "impact", "surface", "security", "performance":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -32,7 +33,35 @@ func effectiveProjectAnalysisMode(explicitMode string, goal string) string {
 }
 
 func projectAnalysisUsage() string {
-	return fmt.Sprintf("usage: /analyze-project [--mode %s] <goal>", strings.Join(supportedProjectAnalysisModes, "|"))
+	return fmt.Sprintf("usage: /analyze-project [--path <dir>] [--mode %s] [goal]", strings.Join(supportedProjectAnalysisModes, "|"))
+}
+
+func defaultProjectAnalysisGoal(mode string, paths []string) string {
+	scope := "the project"
+	cleanPaths := []string{}
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path != "" {
+			cleanPaths = append(cleanPaths, path)
+		}
+	}
+	if len(cleanPaths) > 0 {
+		scope = strings.Join(cleanPaths, ", ")
+	}
+	switch normalizeProjectAnalysisMode(mode) {
+	case "trace":
+		return "trace the primary runtime flows, dispatch paths, caller/callee chains, and ownership transitions in " + scope
+	case "impact":
+		return "analyze change impact, dependencies, blast radius, retest targets, and stale documentation risks in " + scope
+	case "surface":
+		return "inventory exposed IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, network, and fuzzable surfaces in " + scope
+	case "security":
+		return "analyze trust boundaries, privileged paths, validation, tamper-sensitive state, and enforcement points in " + scope
+	case "performance":
+		return "map startup cost, hot paths, blocking chains, allocation or copy pressure, contention, and profiling priorities in " + scope
+	default:
+		return "map the architecture, subsystems, ownership, module boundaries, entry points, documentation, dashboard, and reusable knowledge base for " + scope
+	}
 }
 
 func projectAnalysisModeStatus(explicitMode string, goal string) string {
@@ -86,7 +115,7 @@ func analysisLensesForMode(mode string) []AnalysisLens {
 				OutputFocus:     []string{"blast radius", "upstream/downstream dependencies", "change-sensitive surfaces"},
 			},
 		}
-	case "security":
+	case "surface", "security":
 		return []AnalysisLens{
 			{
 				Type:            "security_boundary",
@@ -115,10 +144,31 @@ func projectAnalysisModePromptLabel(mode string) string {
 		return "execution trace"
 	case "impact":
 		return "change impact"
+	case "surface":
+		return "security surface"
 	case "security":
 		return "security boundary"
 	case "performance":
 		return "performance hotspot"
+	default:
+		return ""
+	}
+}
+
+func projectAnalysisModeCompletionDescription(mode string) string {
+	switch normalizeProjectAnalysisMode(mode) {
+	case "map":
+		return "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base."
+	case "trace":
+		return "Follow one runtime or request flow through callers, callees, dispatch points, ownership transitions, and source anchors."
+	case "impact":
+		return "Estimate change blast radius: upstream/downstream dependencies, affected files, retest targets, and stale documentation risks."
+	case "surface":
+		return "Inventory exposed entry surfaces: IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets."
+	case "security":
+		return "Analyze trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks."
+	case "performance":
+		return "Map performance risk: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order."
 	default:
 		return ""
 	}
@@ -140,6 +190,11 @@ func projectAnalysisModePromptRequirements(mode string) []string {
 		return []string{
 			"Prioritize upstream/downstream dependencies, blast radius, and symbols or files likely to be affected by change.",
 			"Call out which modules, RPC surfaces, or startup paths would need retesting when this area changes.",
+		}
+	case "surface":
+		return []string{
+			"Prioritize concrete exposed surfaces: IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points.",
+			"Attach source anchors and confidence for each surface so fuzzing and verification can reuse the result directly.",
 		}
 	case "security":
 		return []string{

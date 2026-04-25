@@ -42,6 +42,10 @@ func (rt *runtimeState) handleEvidenceRecent(args string) error {
 		line += "  " + record.Subject
 		fmt.Fprintln(rt.writer, line)
 	}
+	if handoff := evidenceHandoff(records); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -83,6 +87,10 @@ func (rt *runtimeState) handleEvidenceSearch(query string) error {
 			line += "  |  " + compactPersistentMemoryText(record.VerificationSummary, 120)
 		}
 		fmt.Fprintln(rt.writer, line)
+	}
+	if handoff := evidenceHandoff(records); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
 	}
 	return nil
 }
@@ -139,6 +147,10 @@ func (rt *runtimeState) handleEvidenceShow(id string) error {
 		}
 		sort.Strings(attrs)
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("attributes", strings.Join(attrs, ", ")))
+	}
+	if handoff := evidenceHandoff([]EvidenceRecord{record}); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
 	}
 	return nil
 }

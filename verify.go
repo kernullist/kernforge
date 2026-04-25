@@ -159,6 +159,14 @@ func buildVerificationPlanWithTuning(root string, changed []string, mode Verific
 	if len(securitySteps) > 0 {
 		steps = append(securitySteps, steps...)
 	}
+	docSteps, docNote := buildAnalysisDocsVerificationSteps(root, changed)
+	if len(docSteps) > 0 {
+		steps = append(docSteps, steps...)
+	}
+	fuzzSteps, fuzzNote := buildFuzzCampaignVerificationSteps(root, changed)
+	if len(fuzzSteps) > 0 {
+		steps = append(fuzzSteps, steps...)
+	}
 	adversarialSteps, adversarialNote := buildRecentAdversarialVerificationSteps(root)
 	if len(adversarialSteps) > 0 {
 		steps = append(adversarialSteps, steps...)
@@ -166,7 +174,9 @@ func buildVerificationPlanWithTuning(root string, changed []string, mode Verific
 	policy, policyErr := LoadVerificationPolicy(root)
 	steps, policyNote := applyVerificationPolicy(root, steps, changed, mode, policy)
 	steps, reorderNote := reorderVerificationSteps(steps, changed, tuning)
-	note := joinSentence(securityNote, adversarialNote)
+	note := joinSentence(securityNote, docNote)
+	note = joinSentence(note, fuzzNote)
+	note = joinSentence(note, adversarialNote)
 	note = joinSentence(note, policyNote)
 	note = joinSentence(note, renderSecurityVerificationSummary(changed))
 	note = joinSentence(note, reorderNote)
@@ -179,6 +189,144 @@ func buildVerificationPlanWithTuning(root string, changed []string, mode Verific
 		Steps:        steps,
 		PlannerNote:  note,
 	}
+}
+
+func buildFuzzCampaignVerificationSteps(root string, changed []string) ([]VerificationStep, string) {
+	campaigns := loadWorkspaceFuzzCampaignManifests(root, 8)
+	if len(campaigns) == 0 {
+		return nil, ""
+	}
+	steps := []VerificationStep{}
+	for _, campaign := range campaigns {
+		for _, result := range campaign.NativeResults {
+			if !fuzzCampaignNativeResultNeedsVerification(result) {
+				continue
+			}
+			if !fuzzCampaignNativeResultMatchesChanged(result, changed) {
+				continue
+			}
+			finding := fuzzCampaignFindingForNativeResult(campaign, result)
+			label := "fuzz evidence regression: " + strings.ToLower(firstNonBlankString(result.Target, finding.ID, result.RunID))
+			command := "echo Native fuzz evidence requires verification: campaign=" + verificationEchoSafeText(campaign.ID)
+			command += " run=" + verificationEchoSafeText(result.RunID)
+			if strings.TrimSpace(finding.ID) != "" {
+				command += " finding=" + verificationEchoSafeText(finding.ID)
+			}
+			command += " outcome=" + verificationEchoSafeText(result.Outcome)
+			command += " crashes=" + verificationEchoSafeText(fmt.Sprintf("%d", result.CrashCount))
+			if strings.TrimSpace(result.ReportPath) != "" {
+				command += " report=" + verificationEchoSafeText(filepath.ToSlash(result.ReportPath))
+			}
+			if strings.TrimSpace(result.CrashFingerprint) != "" {
+				command += " fingerprint=" + verificationEchoSafeText(result.CrashFingerprint)
+			}
+			if strings.TrimSpace(result.CrashDir) != "" {
+				command += " crash_dir=" + verificationEchoSafeText(filepath.ToSlash(result.CrashDir))
+			}
+			if strings.TrimSpace(result.MinimizeCommand) != "" {
+				command += " minimize=" + verificationEchoSafeText(result.MinimizeCommand)
+			}
+			steps = append(steps, VerificationStep{
+				Label:           label,
+				Command:         command,
+				Scope:           firstNonBlankString(filepath.ToSlash(result.TargetFile), finding.SourceAnchor, campaign.ID),
+				Stage:           "targeted",
+				Tags:            []string{"fuzz", "fuzz_native_result", "fuzz_finding", "evidence"},
+				Status:          VerificationPending,
+				PlannerPriority: 80,
+			})
+			if len(steps) >= 6 {
+				return uniqueVerificationSteps(steps), fmt.Sprintf("Fuzz campaign native results added %d planner step(s).", len(steps))
+			}
+		}
+	}
+	if len(steps) == 0 {
+		return nil, ""
+	}
+	return uniqueVerificationSteps(steps), fmt.Sprintf("Fuzz campaign native results added %d planner step(s).", len(steps))
+}
+
+func loadWorkspaceFuzzCampaignManifests(root string, limit int) []FuzzCampaign {
+	root = normalizePersistentMemoryWorkspace(root)
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	base := filepath.Join(root, ".kernforge", "fuzz")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	sort.Slice(entries, func(i int, j int) bool {
+		return entries[i].Name() > entries[j].Name()
+	})
+	out := []FuzzCampaign{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(base, entry.Name(), "manifest.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var campaign FuzzCampaign
+		if err := json.Unmarshal(data, &campaign); err != nil {
+			continue
+		}
+		campaign = normalizeFuzzCampaign(campaign)
+		if len(campaign.NativeResults) == 0 && len(campaign.SeedArtifacts) == 0 && len(campaign.CoverageGaps) == 0 && len(campaign.SeedTargets) == 0 {
+			continue
+		}
+		out = append(out, campaign)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func fuzzCampaignNativeResultNeedsVerification(result FuzzCampaignNativeResult) bool {
+	outcome := strings.ToLower(strings.TrimSpace(result.Outcome))
+	status := strings.ToLower(strings.TrimSpace(result.Status))
+	return result.CrashCount > 0 || len(result.ArtifactIDs) > 0 || outcome == "failed" || status == "failed" || status == "blocked"
+}
+
+func fuzzCampaignNativeResultMatchesChanged(result FuzzCampaignNativeResult, changed []string) bool {
+	if len(changed) == 0 {
+		return true
+	}
+	candidates := []string{
+		result.TargetFile,
+		result.ReportPath,
+		result.CrashDir,
+		result.BuildLogPath,
+		result.RunLogPath,
+	}
+	for _, rawChanged := range changed {
+		changedPath := normalizeVerificationComparablePath(rawChanged)
+		if changedPath == "" {
+			continue
+		}
+		for _, rawCandidate := range candidates {
+			candidate := normalizeVerificationComparablePath(rawCandidate)
+			if candidate == "" {
+				continue
+			}
+			if strings.Contains(candidate, changedPath) || strings.Contains(changedPath, candidate) || filepath.Base(candidate) == filepath.Base(changedPath) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func normalizeVerificationComparablePath(path string) string {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return ""
+	}
+	path = strings.TrimPrefix(path, "./")
+	return strings.ToLower(path)
 }
 
 func buildVerificationSteps(root string, changed []string, mode VerificationMode) []VerificationStep {
@@ -210,6 +358,117 @@ func buildVerificationSteps(root string, changed []string, mode VerificationMode
 		return steps
 	}
 	return nil
+}
+
+func buildAnalysisDocsVerificationSteps(root string, changed []string) ([]VerificationStep, string) {
+	manifest, ok := loadLatestAnalysisDocsManifest(root)
+	if !ok || len(manifest.VerificationMatrix) == 0 {
+		return nil, ""
+	}
+	matches := analysisVerificationMatrixMatches(manifest, changed)
+	if len(matches) == 0 {
+		return nil, "Generated verification matrix loaded from latest analyze-project docs."
+	}
+	steps := make([]VerificationStep, 0, len(matches))
+	for _, item := range matches {
+		label := "analysis docs verification: " + strings.ToLower(strings.TrimSpace(item.ChangeArea))
+		command := "echo Generated VERIFICATION_MATRIX.md recommends: " + verificationEchoSafeText(item.RequiredVerification)
+		if strings.TrimSpace(item.OptionalVerification) != "" {
+			command += " Optional: " + verificationEchoSafeText(item.OptionalVerification) + "."
+		}
+		scope := "targeted"
+		if len(item.SourceAnchors) > 0 {
+			scope = strings.Join(limitStrings(item.SourceAnchors, 3), ",")
+		}
+		steps = append(steps, VerificationStep{
+			Label:           label,
+			Command:         command,
+			Scope:           scope,
+			Stage:           "targeted",
+			Tags:            []string{"analysis_docs", "verification_matrix"},
+			Status:          VerificationPending,
+			PlannerPriority: 35,
+		})
+	}
+	return uniqueVerificationSteps(steps), fmt.Sprintf("Generated verification matrix added %d planner step(s).", len(steps))
+}
+
+func loadLatestAnalysisDocsManifest(root string) (AnalysisDocsManifest, bool) {
+	cfg := configProjectAnalysis(Config{}, root)
+	paths := []string{
+		filepath.Join(cfg.OutputDir, "latest", "docs_manifest.json"),
+		filepath.Join(cfg.OutputDir, "latest", "docs", "manifest.json"),
+	}
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		manifest, err := decodeAnalysisDocsManifest(data)
+		if err != nil {
+			continue
+		}
+		if len(manifest.Documents) > 0 || len(manifest.VerificationMatrix) > 0 {
+			return manifest, true
+		}
+	}
+	return AnalysisDocsManifest{}, false
+}
+
+func verificationEchoSafeText(value string) string {
+	value = strings.ReplaceAll(strings.TrimSpace(value), "`", "'")
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "|", "/")
+	return strings.TrimSpace(value)
+}
+
+func analysisVerificationMatrixMatches(manifest AnalysisDocsManifest, changed []string) []AnalysisVerificationMatrixEntry {
+	out := []AnalysisVerificationMatrixEntry{}
+	seen := map[string]struct{}{}
+	for _, item := range manifest.VerificationMatrix {
+		if !analysisVerificationMatrixEntryMatches(item, changed) {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(item.ChangeArea) + "|" + strings.TrimSpace(item.RequiredVerification))
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i int, j int) bool {
+		return out[i].ChangeArea < out[j].ChangeArea
+	})
+	return out
+}
+
+func analysisVerificationMatrixEntryMatches(item AnalysisVerificationMatrixEntry, changed []string) bool {
+	area := strings.ToLower(strings.TrimSpace(item.ChangeArea))
+	if area == "" {
+		return false
+	}
+	if len(changed) == 0 {
+		return area == "general source change"
+	}
+	for _, raw := range changed {
+		path := strings.ToLower(filepath.ToSlash(strings.TrimSpace(raw)))
+		switch {
+		case area == "general source change":
+			return true
+		case strings.Contains(area, "security") && containsAny(path, "security", "guard", "driver", "ioctl", "rpc", "telemetry", "memory", "scan", "anti"):
+			return true
+		case strings.Contains(area, "driver") && containsAny(path, "driver", ".sys", "ioctl", "irp", "device"):
+			return true
+		case strings.Contains(area, "ioctl") && containsAny(path, "ioctl", "irp", "device"):
+			return true
+		case strings.Contains(area, "unreal") && containsAny(path, ".uproject", ".uplugin", ".build.cs", "source/", "rpc", "replication"):
+			return true
+		case strings.Contains(area, "build") && containsAny(path, "cmakelists", ".vcxproj", ".sln", "compile_commands", ".build.cs"):
+			return true
+		}
+	}
+	return false
 }
 
 func buildCppVerificationSteps(root string, mode VerificationMode) []VerificationStep {

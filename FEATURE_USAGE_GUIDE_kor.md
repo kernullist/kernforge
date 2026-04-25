@@ -25,11 +25,12 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 성능이나 startup path가 중요하면 `/analyze-performance`로 최신 knowledge pack을 performance lens로 바꾼다.
 3. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
 4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
-5. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다.
+5. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다. seed handoff가 유용하면 Kernforge가 다음 단계로 `/fuzz-campaign run`을 보여준다.
 6. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
 7. `/verify`로 verification plan을 돌린다.
 8. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-9. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
+9. analysis, investigation, simulation, performance, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, specialist action 뒤에 출력되는 handoff block을 따라가면 명령 순서를 외우지 않아도 된다.
+10. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
 1. `analyze-project`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
@@ -125,11 +126,23 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. 후속 작업용 `latest` knowledge pack과 performance lens를 유지한다.
 4. incremental 모드에서는 바뀌지 않은 shard를 재사용한다.
 5. structural index, Unreal semantic graph, vector corpus까지 후속 자동화에 재사용할 수 있게 남긴다.
+6. 실행 마지막에 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
 
 대표 명령:
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
+- `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
+- `/docs-refresh`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
+
+goal은 선택값이다. 생략하면 Kernforge가 선택한 mode와 path를 기준으로 실용적인 기본 goal을 만든다.
+후속 모드는 가능한 경우 이전 `map` 실행을 baseline 구조 지도로 자동 로드한다. 그래서 `trace`, `impact`, `surface`, `security`, `performance`는 같은 shard cache를 공유하지 않으면서도 architecture map을 출발점으로 삼는다.
+confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로 어떤 map run을 재사용할지 사용자가 먼저 확인할 수 있다.
+큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
+
+역할 분리:
+1. `README_kor.md`는 제품 범위, 대표 명령, 산출물 위치를 빠르게 확인하는 문서다.
+2. 이 feature guide는 조사, simulation, fuzzing, verification, evidence, memory를 어떤 순서로 운영할지 설명하는 문서다.
+3. `analyze-project`가 생성하는 docs는 특정 run의 source anchor, confidence, stale/invalidation marker를 담은 프로젝트별 운영 지식 베이스다.
 
 모드 요약:
 1. `map`은 기본 모드이며 architecture ownership과 module boundary를 우선 본다.
@@ -160,9 +173,10 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. Go/C++/C# source anchor를 symbol record, line range, call edge, build ownership edge, security overlay까지 포함하는 구조 자산으로 올린다.
 6. `trace`, `impact`, `security` retrieval은 키워드 hit만 보는 대신 graph neighborhood를 확장하고 `build_context_v2`, `path_v2` 근거를 남긴다.
 7. C++ anchor parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function을 처리한다.
-8. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class가 같이 남는다.
-9. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
-10. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
+8. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class, graph section stale marker가 같이 남는다.
+9. dashboard의 stale diff는 graph 관련 변경을 trust-boundary, data-flow, project-edge 섹션 앵커로 직접 연결한다.
+10. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
+11. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
 11. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
 
 ### Source-Level Function Fuzzing
@@ -183,6 +197,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/fuzz-func list`
 - `/fuzz-func continue [id|latest]`
 - `/fuzz-func language [system|english]`
+- `/fuzz-campaign`
+- `/fuzz-campaign run`
 
 특히 좋은 상황:
 1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 경로를 빨리 triage하고 싶을 때
@@ -197,7 +213,12 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. 결과는 `결론`, `위험도 점수표`, `상위 예측 문제`, `소스 기반 공격 표면` 순으로 나와서 핵심 finding을 먼저 읽기 쉽다.
 6. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
 7. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
-8. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
+8. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.
+9. `/fuzz-campaign`은 다음 권장 campaign 단계를 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 run attach, source-only scenario의 `corpus/<run-id>/` 승격, dedup된 finding lifecycle과 coverage gap 갱신, libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact 수집, native run 결과의 report/evidence 기록 같은 안전한 자동 단계를 수행한다.
+10. campaign manifest에는 target, seed, native result, coverage report, sanitizer/verifier artifact, evidence id, source anchor, verification gate, tracked-feature gate를 연결하는 finding 목록, dedup key, duplicate count, 병합된 native/evidence link, parsed coverage report, run artifact, coverage gap, artifact graph가 포함된다.
+11. native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합되어 반복 실행이 하나의 tracked issue를 강화한다.
+12. coverage gap은 다음 생성 `FUZZ_TARGETS.md` refresh에 반영되어 아직 충분히 실행되지 않은 seed target이 ranking feedback을 받는다.
+13. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
 
 실무 해석:
 1. `가장 유용한 분기 차이 요약`은 사용자가 가장 먼저 볼 한 줄 결론이다.
@@ -474,7 +495,7 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
@@ -798,6 +819,8 @@ Kernforge가 도와주는 부분:
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func show latest
 /fuzz-func language system
+/fuzz-campaign
+/fuzz-campaign run
 ```
 
 현재 planner가 보는 것:
@@ -823,7 +846,8 @@ Kernforge가 도와주는 부분:
 1. 함수명만 넣으면 자동 resolve하고, `--file`이나 `@path`를 주면 ambiguity를 크게 줄일 수 있다.
 2. 파일만 지정한 `/fuzz-func @path`는 함수명을 몰라도 시작 파일 기준의 representative root를 고른다.
 3. 네이티브 자동 실행이 차단돼도 source-only fuzzing 결과는 여전히 유효할 수 있다.
-4. `compile_commands.json`이 있으면 후속 네이티브 fuzzing 품질이 좋아지지만, source-only planning 자체의 선행조건은 아니다.
+4. campaign 하위 단계를 외우지 말고 `/fuzz-campaign`으로 다음 안전한 단계를 확인한 뒤 `/fuzz-campaign run`으로 적용한다. native run artifact가 있으면 dedup된 finding lifecycle, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, evidence 기록까지 이어진다.
+5. `compile_commands.json`이 있으면 후속 네이티브 fuzzing 품질이 좋아지지만, source-only planning 자체의 선행조건은 아니다.
 
 ## 5. 대시보드는 언제 어떤 것을 보면 좋은가
 
@@ -942,6 +966,8 @@ Kernforge가 도와주는 부분:
 /fuzz-func @Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func TriggerDoubleFetch --file Driver/HEVD/Windows/DoubleFetch.c
 /fuzz-func show latest
+/fuzz-campaign
+/fuzz-campaign run
 /verify
 ```
 

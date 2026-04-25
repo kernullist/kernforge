@@ -811,6 +811,10 @@ func (rt *runtimeState) handleSpecialistsAssign(args string) error {
 	if len(patterns) > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("ownership", strings.Join(patterns, ",")))
 	}
+	if handoff := specialistAssignHandoff(node.ID, rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 

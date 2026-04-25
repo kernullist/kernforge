@@ -71,6 +71,7 @@ type ProjectSnapshot struct {
 	Root                string                     `json:"root"`
 	ModulePath          string                     `json:"module_path,omitempty"`
 	AnalysisMode        string                     `json:"analysis_mode,omitempty"`
+	BaselineMap         AnalysisBaselineMap        `json:"baseline_map,omitempty"`
 	GeneratedAt         time.Time                  `json:"generated_at"`
 	Files               []ScannedFile              `json:"files"`
 	Directories         []string                   `json:"directories"`
@@ -100,6 +101,20 @@ type ProjectSnapshot struct {
 	ReverseImportGraph  map[string][]string        `json:"reverse_import_graph"`
 	FilesByPath         map[string]ScannedFile     `json:"-"`
 	FilesByDirectory    map[string][]ScannedFile   `json:"-"`
+}
+
+type AnalysisBaselineMap struct {
+	RunID            string    `json:"run_id,omitempty"`
+	Goal             string    `json:"goal,omitempty"`
+	Mode             string    `json:"mode,omitempty"`
+	ArtifactPath     string    `json:"artifact_path,omitempty"`
+	DocsManifestPath string    `json:"docs_manifest_path,omitempty"`
+	GeneratedAt      time.Time `json:"generated_at,omitempty"`
+	ProjectSummary   string    `json:"project_summary,omitempty"`
+	PrimaryStartup   string    `json:"primary_startup,omitempty"`
+	Subsystems       []string  `json:"subsystems,omitempty"`
+	TopFiles         []string  `json:"top_files,omitempty"`
+	SourceAnchors    []string  `json:"source_anchors,omitempty"`
 }
 
 type SolutionProject struct {
@@ -448,6 +463,7 @@ type ProjectAnalysisRun struct {
 type projectAnalyzer struct {
 	cfg                   Config
 	analysisCfg           ProjectAnalysisConfig
+	explicitScope         AnalysisGoalScope
 	client                ProviderClient
 	workerClient          ProviderClient
 	reviewerClient        ProviderClient
@@ -734,7 +750,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	agentCount := a.estimateAgentCount(snapshot)
 	targetShards := a.estimateShardCount(snapshot, agentCount)
 	shards := a.planShards(snapshot, targetShards)
-	scope, scopedShards := deriveScopedAnalysisShards(goal, snapshot, shards)
+	scope := deriveAnalysisScope(goal, a.explicitScope, snapshot)
+	_, scopedShards := deriveScopedAnalysisShardsForScope(scope, shards)
 	if len(scopedShards) > 0 {
 		shards = scopedShards
 	}
@@ -744,6 +761,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if len(scope.DirectoryPrefixes) > 0 {
 		a.status(fmt.Sprintf("Applying scoped analysis to %s.", strings.Join(scope.DirectoryPrefixes, ", ")))
 		a.debug(fmt.Sprintf("analysis scope matched directories: %s", strings.Join(scope.DirectoryPrefixes, ", ")))
+	}
+	if baseline, ok := a.loadBaselineMapForMode(run.Summary.Mode, scope); ok {
+		snapshot.BaselineMap = baseline
+		run.Snapshot = snapshot
+		a.status(fmt.Sprintf("Loaded map baseline %s for %s analysis.", baseline.RunID, run.Summary.Mode))
+		a.debug(fmt.Sprintf("loaded map baseline: run_id=%s artifact=%s docs_manifest=%s", baseline.RunID, baseline.ArtifactPath, baseline.DocsManifestPath))
 	}
 	if agentCount > len(shards) {
 		agentCount = len(shards)
@@ -825,12 +848,6 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	}
 	run.Summary.CompletedAt = time.Now()
 	outputPath, err := a.persistRun(run)
-	if err != nil {
-		return run, err
-	}
-	run.Summary.OutputPath = outputPath
-
-	outputPath, err = a.persistRun(run)
 	if err != nil {
 		return run, err
 	}
@@ -1103,6 +1120,10 @@ func chooseAnalysisLenses(goal string, mode string) []AnalysisLens {
 
 func deriveScopedAnalysisShards(goal string, snapshot ProjectSnapshot, shards []AnalysisShard) (AnalysisGoalScope, []AnalysisShard) {
 	scope := deriveAnalysisGoalScope(goal, snapshot)
+	return deriveScopedAnalysisShardsForScope(scope, shards)
+}
+
+func deriveScopedAnalysisShardsForScope(scope AnalysisGoalScope, shards []AnalysisShard) (AnalysisGoalScope, []AnalysisShard) {
 	if len(scope.DirectoryPrefixes) == 0 {
 		return AnalysisGoalScope{}, nil
 	}
@@ -1116,6 +1137,13 @@ func deriveScopedAnalysisShards(goal string, snapshot ProjectSnapshot, shards []
 		return AnalysisGoalScope{}, nil
 	}
 	return scope, filtered
+}
+
+func deriveAnalysisScope(goal string, explicitScope AnalysisGoalScope, snapshot ProjectSnapshot) AnalysisGoalScope {
+	if len(explicitScope.DirectoryPrefixes) > 0 {
+		return AnalysisGoalScope{DirectoryPrefixes: compactAnalysisScopePrefixes(explicitScope.DirectoryPrefixes)}
+	}
+	return deriveAnalysisGoalScope(goal, snapshot)
 }
 
 func deriveAnalysisGoalScope(goal string, snapshot ProjectSnapshot) AnalysisGoalScope {
@@ -3879,7 +3907,13 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 		report, err := a.runWorker(ctx, snapshot, shard, goal, revisionPrompt)
 		if err != nil {
 			a.debug(fmt.Sprintf("worker error: shard=%s attempt=%d error=%v", shard.Name, attempt+1, err))
-			return WorkerReport{}, ReviewDecision{}, shard, err
+			if ctx.Err() != nil {
+				return WorkerReport{}, ReviewDecision{}, shard, err
+			}
+			failedReport := softFailWorkerReport(shard, err)
+			failedReview := softFailWorkerReviewDecision(shard, err)
+			a.debug(fmt.Sprintf("worker soft-failed: shard=%s status=%s", shard.Name, failedReview.Status))
+			return failedReport, failedReview, shard, nil
 		}
 		a.debug(fmt.Sprintf("worker done: shard=%s attempt=%d evidence=%d responsibilities=%d", shard.Name, attempt+1, len(report.EvidenceFiles), len(report.Responsibilities)))
 		a.debug(fmt.Sprintf("reviewer start: shard=%s attempt=%d model=%s", shard.Name, attempt+1, a.reviewerModel()))
@@ -4190,7 +4224,11 @@ func (a *projectAnalyzer) synthesizeFinalDocument(ctx context.Context, snapshot 
 		WorkingDir:  a.workspace.Root,
 	})
 	if err != nil {
-		return "", fmt.Errorf("analysis synthesis request failed for model=%s: %w", a.cfg.Model, err)
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("analysis synthesis request failed for model=%s: %w", a.cfg.Model, err)
+		}
+		a.debug(fmt.Sprintf("synthesis soft-failed: model=%s error=%v", a.cfg.Model, err))
+		return "# Analysis With Provider Failures\n\nThe synthesis model request failed after retry, so Kernforge generated this fallback document from available shard reports. Treat sections from failed shards as low confidence and rerun `/analyze-project` when provider rate limits recover.\n\n" + fallbackFinalDocument(snapshot, shards, reports, goal), nil
 	}
 	text := strings.TrimSpace(resp.Message.Text)
 	if text == "" {
@@ -5380,6 +5418,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	}
 	base := analysisArtifactBaseName(run.Summary.RunID, run.Summary.Goal, run.Summary.Mode)
 	mdPath := filepath.Join(a.analysisCfg.OutputDir, base+".md")
+	run.Summary.OutputPath = mdPath
 	jsonPath := filepath.Join(a.analysisCfg.OutputDir, base+".json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
@@ -5396,6 +5435,8 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	vectorPGVectorSQLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_pgvector.sql")
 	vectorSQLiteSQLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_sqlite.sql")
 	vectorQdrantJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_qdrant.jsonl")
+	docsDir := filepath.Join(a.analysisCfg.OutputDir, base+"_docs")
+	dashboardPath := filepath.Join(a.analysisCfg.OutputDir, base+"_dashboard.html")
 	if err := os.WriteFile(mdPath, []byte(run.FinalDocument), 0o644); err != nil {
 		return "", err
 	}
@@ -5491,7 +5532,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 	}
-	if len(run.KnowledgePack.Subsystems) > 0 || strings.TrimSpace(run.KnowledgePack.PrimaryStartup) != "" {
+	{
 		knowledgeData, err := json.MarshalIndent(run.KnowledgePack, "", "  ")
 		if err != nil {
 			return "", err
@@ -5502,8 +5543,43 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(knowledgeDigestPath, []byte(buildKnowledgeDigest(run.KnowledgePack)), 0o644); err != nil {
 			return "", err
 		}
+		docsManifest, err := writeAnalysisDocs(run, docsDir)
+		if err != nil {
+			return "", err
+		}
+		if err := writeAnalysisDashboard(run, dashboardPath, filepath.Base(docsDir)); err != nil {
+			return "", err
+		}
 		latestDir := filepath.Join(a.analysisCfg.OutputDir, "latest")
 		if err := os.MkdirAll(latestDir, 0o755); err != nil {
+			return "", err
+		}
+		latestDocsDir := filepath.Join(latestDir, "docs")
+		latestDocsManifest, err := writeAnalysisDocs(run, latestDocsDir)
+		if err != nil {
+			return "", err
+		}
+		if err := writeAnalysisDashboard(run, filepath.Join(latestDir, "dashboard.html"), "docs"); err != nil {
+			return "", err
+		}
+		docsManifestData, err := json.MarshalIndent(docsManifest, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(a.analysisCfg.OutputDir, base+"_docs_manifest.json"), docsManifestData, 0o644); err != nil {
+			return "", err
+		}
+		latestDocsManifestData, err := json.MarshalIndent(latestDocsManifest, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "docs_manifest.json"), latestDocsManifestData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "docs_index.md"), []byte(buildAnalysisDocs(run)["INDEX.md"]), 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "run.json"), data, 0o644); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
@@ -6037,6 +6113,9 @@ func createProviderClientFromProfile(profile Profile, mainCfg Config) (ProviderC
 	if strings.TrimSpace(apiKey) == "" && strings.EqualFold(profile.Provider, mainCfg.Provider) {
 		apiKey = mainCfg.APIKey
 	}
+	if strings.TrimSpace(apiKey) == "" && mainCfg.ProviderKeys != nil {
+		apiKey = mainCfg.ProviderKeys[strings.ToLower(strings.TrimSpace(profile.Provider))]
+	}
 	cfg := Config{
 		Provider: profile.Provider,
 		Model:    profile.Model,
@@ -6151,6 +6230,217 @@ func (a *projectAnalyzer) loadPreviousRun(goal string, mode string) (*ProjectAna
 		return nil, err
 	}
 	return &run, nil
+}
+
+func (a *projectAnalyzer) loadBaselineMapForMode(mode string, scope AnalysisGoalScope) (AnalysisBaselineMap, bool) {
+	if normalizeProjectAnalysisMode(mode) == "" || normalizeProjectAnalysisMode(mode) == "map" {
+		return AnalysisBaselineMap{}, false
+	}
+	candidates := a.findBaselineMapRunCandidates()
+	if len(candidates) == 0 {
+		return AnalysisBaselineMap{}, false
+	}
+	sort.SliceStable(candidates, func(i int, j int) bool {
+		left := scoreBaselineMapRun(candidates[i], scope)
+		right := scoreBaselineMapRun(candidates[j], scope)
+		if left != right {
+			return left > right
+		}
+		leftTime := candidates[i].run.Summary.CompletedAt
+		if leftTime.IsZero() {
+			leftTime = candidates[i].modTime
+		}
+		rightTime := candidates[j].run.Summary.CompletedAt
+		if rightTime.IsZero() {
+			rightTime = candidates[j].modTime
+		}
+		return leftTime.After(rightTime)
+	})
+	return buildAnalysisBaselineMap(candidates[0]), true
+}
+
+type baselineMapRunCandidate struct {
+	run              ProjectAnalysisRun
+	path             string
+	docsManifestPath string
+	modTime          time.Time
+}
+
+func (a *projectAnalyzer) findBaselineMapRunCandidates() []baselineMapRunCandidate {
+	matches := []string{}
+	seen := map[string]struct{}{}
+	for _, pattern := range []string{
+		filepath.Join(a.analysisCfg.OutputDir, "latest", "run.json"),
+		filepath.Join(a.analysisCfg.OutputDir, "*_map_*.json"),
+		filepath.Join(a.analysisCfg.OutputDir, "*_map.json"),
+	} {
+		items, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
+		for _, item := range items {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			matches = append(matches, item)
+		}
+	}
+	candidates := []baselineMapRunCandidate{}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		run := ProjectAnalysisRun{}
+		if err := json.Unmarshal(data, &run); err != nil {
+			continue
+		}
+		if normalizeProjectAnalysisMode(run.Summary.Mode) != "map" {
+			continue
+		}
+		info, _ := os.Stat(path)
+		modTime := time.Time{}
+		if info != nil {
+			modTime = info.ModTime()
+		}
+		candidates = append(candidates, baselineMapRunCandidate{
+			run:              run,
+			path:             path,
+			docsManifestPath: baselineMapDocsManifestPath(path),
+			modTime:          modTime,
+		})
+	}
+	return candidates
+}
+
+func baselineMapDocsManifestPath(runPath string) string {
+	dir := filepath.Dir(runPath)
+	if strings.EqualFold(filepath.Base(runPath), "run.json") && strings.EqualFold(filepath.Base(dir), "latest") {
+		return filepath.Join(dir, "docs_manifest.json")
+	}
+	ext := filepath.Ext(runPath)
+	if ext == "" {
+		return runPath + "_docs_manifest.json"
+	}
+	return strings.TrimSuffix(runPath, ext) + "_docs_manifest.json"
+}
+
+func scoreBaselineMapRun(candidate baselineMapRunCandidate, scope AnalysisGoalScope) int {
+	score := 0
+	if strings.EqualFold(filepath.Base(candidate.path), "run.json") && strings.EqualFold(filepath.Base(filepath.Dir(candidate.path)), "latest") {
+		score += 8
+	}
+	if strings.TrimSpace(candidate.run.KnowledgePack.ProjectSummary) != "" {
+		score += 8
+	}
+	if len(candidate.run.KnowledgePack.Subsystems) > 0 {
+		score += 6
+	}
+	if hasSemanticIndexV2Data(candidate.run.SemanticIndexV2) {
+		score += 5
+	}
+	if len(candidate.run.VectorCorpus.Documents) > 0 {
+		score += 3
+	}
+	if len(scope.DirectoryPrefixes) > 0 {
+		scopeScore := scoreBaselineScopeOverlap(candidate.run.KnowledgePack, candidate.run.Snapshot, scope)
+		if scopeScore == 0 {
+			score -= 6
+		}
+		score += scopeScore
+	}
+	return score
+}
+
+func scoreBaselineScopeOverlap(pack KnowledgePack, snapshot ProjectSnapshot, scope AnalysisGoalScope) int {
+	score := 0
+	for _, prefix := range scope.DirectoryPrefixes {
+		prefix = strings.ToLower(filepath.ToSlash(strings.Trim(prefix, "/")))
+		if prefix == "" {
+			continue
+		}
+		for _, file := range append(append([]string(nil), pack.TopImportantFiles...), pack.EntrypointFiles...) {
+			lower := strings.ToLower(filepath.ToSlash(strings.Trim(file, "/")))
+			if strings.HasPrefix(lower, prefix+"/") || strings.Contains(lower, prefix) {
+				score += 4
+			}
+		}
+		for _, subsystem := range pack.Subsystems {
+			for _, file := range append(append([]string(nil), subsystem.KeyFiles...), subsystem.EvidenceFiles...) {
+				lower := strings.ToLower(filepath.ToSlash(strings.Trim(file, "/")))
+				if strings.HasPrefix(lower, prefix+"/") || strings.Contains(lower, prefix) {
+					score += 3
+				}
+			}
+		}
+		for _, file := range snapshot.Files {
+			lower := strings.ToLower(filepath.ToSlash(strings.Trim(file.Path, "/")))
+			if strings.HasPrefix(lower, prefix+"/") || strings.Contains(lower, prefix) {
+				score++
+				break
+			}
+		}
+	}
+	if score > 20 {
+		return 20
+	}
+	return score
+}
+
+func buildAnalysisBaselineMap(candidate baselineMapRunCandidate) AnalysisBaselineMap {
+	run := candidate.run
+	generatedAt := run.Summary.CompletedAt
+	if generatedAt.IsZero() {
+		generatedAt = run.Summary.StartedAt
+	}
+	if generatedAt.IsZero() {
+		generatedAt = run.KnowledgePack.GeneratedAt
+	}
+	subsystems := []string{}
+	sourceAnchors := []string{}
+	for _, subsystem := range run.KnowledgePack.Subsystems {
+		if strings.TrimSpace(subsystem.Title) != "" {
+			subsystems = append(subsystems, subsystem.Title)
+		}
+		sourceAnchors = append(sourceAnchors, subsystem.KeyFiles...)
+		sourceAnchors = append(sourceAnchors, subsystem.EvidenceFiles...)
+	}
+	topFiles := append([]string(nil), run.KnowledgePack.TopImportantFiles...)
+	if len(topFiles) == 0 {
+		for _, file := range topImportantFiles(run.Snapshot, 12) {
+			topFiles = append(topFiles, file.Path)
+		}
+	}
+	return AnalysisBaselineMap{
+		RunID:            run.Summary.RunID,
+		Goal:             firstNonBlankAnalysisString(run.Summary.Goal, run.KnowledgePack.Goal),
+		Mode:             "map",
+		ArtifactPath:     filepath.ToSlash(candidate.path),
+		DocsManifestPath: filepath.ToSlash(candidate.docsManifestPath),
+		GeneratedAt:      generatedAt,
+		ProjectSummary:   firstNonBlankAnalysisString(run.KnowledgePack.ProjectSummary, strings.TrimSpace(firstParagraph(run.FinalDocument))),
+		PrimaryStartup:   firstNonBlankAnalysisString(run.KnowledgePack.PrimaryStartup, run.Snapshot.PrimaryStartup),
+		Subsystems:       limitStrings(analysisUniqueStrings(subsystems), 16),
+		TopFiles:         limitStrings(analysisUniqueStrings(topFiles), 16),
+		SourceAnchors:    limitStrings(analysisUniqueStrings(sourceAnchors), 24),
+	}
+}
+
+func firstParagraph(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	paragraphs := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n\n")
+	for _, paragraph := range paragraphs {
+		paragraph = strings.TrimSpace(paragraph)
+		if paragraph == "" || strings.HasPrefix(paragraph, "#") {
+			continue
+		}
+		return strings.Join(strings.Fields(paragraph), " ")
+	}
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func (a *projectAnalyzer) tryReuseShard(previousRun *ProjectAnalysisRun, shard AnalysisShard, reuseState analysisReuseState) (WorkerReport, ReviewDecision, string, bool) {
@@ -7196,6 +7486,11 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 		}
 		b.WriteString("\n")
 	}
+	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, shard); strings.TrimSpace(baseline) != "" {
+		b.WriteString("Baseline architecture map:\n")
+		b.WriteString(baseline)
+		b.WriteString("\n\n")
+	}
 	if intent := analysisShardIntent(shard.Name); intent != "" {
 		fmt.Fprintf(&b, "Shard intent:\n%s\n\n", intent)
 	}
@@ -7263,6 +7558,74 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	return strings.TrimSpace(b.String())
 }
 
+func renderAnalysisBaselineMapPrompt(baseline AnalysisBaselineMap, shard AnalysisShard) string {
+	if strings.TrimSpace(baseline.RunID) == "" && strings.TrimSpace(baseline.ProjectSummary) == "" && len(baseline.Subsystems) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if strings.TrimSpace(baseline.RunID) != "" {
+		fmt.Fprintf(&b, "- Baseline run: %s", baseline.RunID)
+		if strings.TrimSpace(baseline.ArtifactPath) != "" {
+			fmt.Fprintf(&b, " (%s)", baseline.ArtifactPath)
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(baseline.Goal) != "" {
+		fmt.Fprintf(&b, "- Baseline goal: %s\n", baseline.Goal)
+	}
+	if strings.TrimSpace(baseline.ProjectSummary) != "" {
+		fmt.Fprintf(&b, "- Project summary: %s\n", baseline.ProjectSummary)
+	}
+	if strings.TrimSpace(baseline.PrimaryStartup) != "" {
+		fmt.Fprintf(&b, "- Primary startup: %s\n", baseline.PrimaryStartup)
+	}
+	if len(baseline.Subsystems) > 0 {
+		fmt.Fprintf(&b, "- Subsystems: %s\n", strings.Join(limitStrings(baseline.Subsystems, 10), "; "))
+	}
+	relevantAnchors := relevantBaselineAnchors(baseline.SourceAnchors, shard)
+	if len(relevantAnchors) > 0 {
+		fmt.Fprintf(&b, "- Relevant anchors: %s\n", strings.Join(limitStrings(relevantAnchors, 10), "; "))
+	} else if len(baseline.SourceAnchors) > 0 {
+		fmt.Fprintf(&b, "- Source anchors: %s\n", strings.Join(limitStrings(baseline.SourceAnchors, 10), "; "))
+	}
+	if len(baseline.TopFiles) > 0 {
+		fmt.Fprintf(&b, "- Top files: %s\n", strings.Join(limitStrings(baseline.TopFiles, 10), "; "))
+	}
+	b.WriteString("- Use this map as prior structure only; verify trace/security/impact claims against the current assigned files and source anchors.")
+	return strings.TrimSpace(b.String())
+}
+
+func relevantBaselineAnchors(anchors []string, shard AnalysisShard) []string {
+	if len(anchors) == 0 || len(shard.PrimaryFiles)+len(shard.ReferenceFiles) == 0 {
+		return nil
+	}
+	scope := append(append([]string(nil), shard.PrimaryFiles...), shard.ReferenceFiles...)
+	relevant := []string{}
+	for _, anchor := range anchors {
+		anchorLower := strings.ToLower(filepath.ToSlash(strings.Trim(anchor, "/")))
+		if anchorLower == "" {
+			continue
+		}
+		for _, file := range scope {
+			fileLower := strings.ToLower(filepath.ToSlash(strings.Trim(file, "/")))
+			if fileLower == "" {
+				continue
+			}
+			if anchorLower == fileLower || strings.Contains(anchorLower, fileLower) || strings.Contains(fileLower, anchorLower) || sameAnalysisDirectory(anchorLower, fileLower) {
+				relevant = append(relevant, anchor)
+				break
+			}
+		}
+	}
+	return analysisUniqueStrings(relevant)
+}
+
+func sameAnalysisDirectory(left string, right string) bool {
+	leftDir := strings.Trim(filepath.ToSlash(filepath.Dir(left)), ".")
+	rightDir := strings.Trim(filepath.ToSlash(filepath.Dir(right)), ".")
+	return leftDir != "" && rightDir != "" && (strings.HasPrefix(leftDir, rightDir) || strings.HasPrefix(rightDir, leftDir))
+}
+
 func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report WorkerReport, goal string, previousReport WorkerReport, hasPreviousReport bool) string {
 	data, _ := json.MarshalIndent(report, "", "  ")
 	var b strings.Builder
@@ -7294,6 +7657,9 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	}
 	if reviewRules := buildSemanticReviewerChecklist(shard.Name); strings.TrimSpace(reviewRules) != "" {
 		fmt.Fprintf(&b, "Semantic review checklist:\n%s\n", reviewRules)
+	}
+	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, shard); strings.TrimSpace(baseline) != "" {
+		fmt.Fprintf(&b, "Baseline architecture map:\n%s\n", baseline)
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Assigned files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
@@ -7344,6 +7710,9 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 			lensNames = append(lensNames, lens.Type)
 		}
 		fmt.Fprintf(&b, "Analysis lenses: %s\n", strings.Join(lensNames, ", "))
+	}
+	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, AnalysisShard{}); strings.TrimSpace(baseline) != "" {
+		fmt.Fprintf(&b, "\nBaseline architecture map:\n%s\n\n", baseline)
 	}
 	if snapshot.ModulePath != "" {
 		fmt.Fprintf(&b, "Go module: %s\n", snapshot.ModulePath)
@@ -7840,6 +8209,64 @@ func softFailReviewDecision(shard AnalysisShard, report WorkerReport, err error)
 		issues = append(issues, "This shard belongs to external dependencies, so the overall analysis continued with reduced review confidence for this shard.")
 	} else {
 		issues = append(issues, "The overall analysis continued using the worker report, but this shard should be treated as needing manual verification.")
+	}
+	return ReviewDecision{
+		Status:         "review_failed",
+		Issues:         issues,
+		RevisionPrompt: "",
+		Raw:            err.Error(),
+	}
+}
+
+func softFailWorkerReport(shard AnalysisShard, err error) WorkerReport {
+	title := strings.TrimSpace(shard.Name)
+	if title == "" {
+		title = strings.TrimSpace(shard.ID)
+	}
+	if title == "" {
+		title = "analysis shard"
+	}
+	summary := "Worker provider request failed after retry, so this shard was preserved as a low-confidence placeholder instead of aborting the full analysis run."
+	return WorkerReport{
+		ShardID:      shard.ID,
+		Title:        title,
+		ScopeSummary: summary,
+		Responsibilities: []string{
+			"Provider request failed before this shard could be analyzed.",
+		},
+		Facts: []string{
+			fmt.Sprintf("Worker request failed for shard %s.", title),
+		},
+		Inferences: []string{
+			"The project-wide analysis can still continue, but this shard needs a later refresh.",
+		},
+		KeyFiles:      limitStrings(shard.PrimaryFiles, 12),
+		EvidenceFiles: limitStrings(shard.PrimaryFiles, 12),
+		EntryPoints:   []string{},
+		InternalFlow: []string{
+			"Not analyzed because the worker provider request failed.",
+		},
+		Dependencies:  []string{},
+		Collaboration: []string{},
+		Risks: []string{
+			"Low confidence: worker provider failure prevented shard-level analysis.",
+		},
+		Unknowns: []string{
+			"Rerun this analysis when provider rate limits recover.",
+		},
+		Narrative: summary,
+		Raw:       err.Error(),
+	}
+}
+
+func softFailWorkerReviewDecision(shard AnalysisShard, err error) ReviewDecision {
+	issues := []string{
+		fmt.Sprintf("Worker request failed: %v", err),
+		"The overall analysis continued with a low-confidence placeholder for this shard.",
+		"Rerun /analyze-project after provider rate limits recover to refresh this shard.",
+	}
+	if isExternalDependencyShard(shard) {
+		issues = append(issues, "The failed shard is external-dependency scoped, so the main project map may still be partially useful.")
 	}
 	return ReviewDecision{
 		Status:         "review_failed",
@@ -8769,6 +9196,19 @@ func containsAny(text string, needles ...string) bool {
 	return false
 }
 
+func containsString(items []string, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), target) {
+			return true
+		}
+	}
+	return false
+}
+
 func firstNonEmpty(primary []string, fallback []string) []string {
 	if len(primary) > 0 {
 		return primary
@@ -9161,6 +9601,9 @@ func buildVectorCorpus(run ProjectAnalysisRun) VectorCorpus {
 				"shard_id": shardID,
 			},
 		})
+	}
+	for _, doc := range buildAnalysisDocsVectorDocuments(run) {
+		add(doc)
 	}
 	return corpus
 }

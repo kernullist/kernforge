@@ -720,7 +720,40 @@ func (rt *runtimeState) handleNewFeatureStatusCommand(arg string) error {
 			fmt.Fprintln(rt.writer, task)
 		}
 	}
+	if handoff := featureStatusHandoff(feature); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
+	if campaign, ok := rt.latestFeatureFuzzCampaign(); ok {
+		if handoff := featureFuzzHandoff(feature, campaign); strings.TrimSpace(handoff) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, handoff)
+		}
+	}
 	return nil
+}
+
+func (rt *runtimeState) latestFeatureFuzzCampaign() (FuzzCampaign, bool) {
+	if rt == nil || rt.fuzzCampaigns == nil {
+		return FuzzCampaign{}, false
+	}
+	items, err := rt.fuzzCampaigns.ListRecent(workspaceSnapshotRoot(rt.workspace), 1)
+	if err != nil || len(items) == 0 {
+		return FuzzCampaign{}, false
+	}
+	campaign := normalizeFuzzCampaign(items[0])
+	if strings.TrimSpace(campaign.ManifestPath) != "" {
+		if data, err := os.ReadFile(campaign.ManifestPath); err == nil {
+			var manifest FuzzCampaign
+			if json.Unmarshal(data, &manifest) == nil {
+				campaign = normalizeFuzzCampaign(manifest)
+			}
+		}
+	}
+	if len(campaign.NativeResults) == 0 && len(campaign.SeedArtifacts) == 0 {
+		return FuzzCampaign{}, false
+	}
+	return campaign, true
 }
 
 func readFeatureTasksPreview(path string, limit int) []string {
@@ -839,7 +872,10 @@ func (rt *runtimeState) handleNewFeatureImplementCommand(arg string) error {
 	}
 	rt.printAssistant(reply)
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("implementation_path", feature.ImplementationPath))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /new-feature close when you want to mark this tracked feature as done."))
+	if handoff := featureStatusHandoff(feature); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -856,5 +892,9 @@ func (rt *runtimeState) handleNewFeatureCloseCommand(arg string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Marked tracked feature as done: "+feature.ID))
+	if handoff := featureCloseHandoff(feature, rt.session != nil && rt.session.Worktree != nil); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }

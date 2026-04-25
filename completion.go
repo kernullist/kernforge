@@ -34,6 +34,7 @@ var slashCommands = []string{
 	"investigate-dashboard-html",
 	"simulate",
 	"fuzz-func",
+	"fuzz-campaign",
 	"simulate-dashboard",
 	"simulate-dashboard-html",
 	"mem-search",
@@ -103,6 +104,8 @@ var slashCommands = []string{
 	"do-plan-review",
 	"new-feature",
 	"analyze-project",
+	"analyze-dashboard",
+	"docs-refresh",
 	"analyze-performance",
 	"profile-review",
 	"set-max-tool-iterations",
@@ -113,33 +116,34 @@ var slashCommandDescriptions = map[string]string{
 	"help":                       "Show command lists and detailed usage help.",
 	"status":                     "Show current session state, approvals, and extension status.",
 	"provider":                   "Configure the model provider and inspect provider status.",
-	"profile":                    "Manage saved provider and model profiles.",
+	"profile":                    "Show saved main profiles plus each profile's role model set.",
 	"version":                    "Print the current Kernforge version.",
-	"model":                      "Show model routing and interactively reconfigure one target.",
+	"model":                      "Show explicit or inherited model routing and interactively reconfigure one target.",
 	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
 	"permissions":                "Inspect or change the session permission mode.",
-	"verify":                     "Run manual verification for the current workspace state.",
+	"verify":                     "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
 	"verify-dashboard":           "Summarize recent verification history in the terminal.",
 	"verify-dashboard-html":      "Render recent verification history in the HTML dashboard.",
 	"clear":                      "Clear the current terminal screen.",
 	"compact":                    "Compact the session context to reduce prompt weight.",
 	"context":                    "Inspect the current conversation context and memory payloads.",
 	"memory":                     "Show or manage short-term memory loaded for this workspace.",
-	"mem":                        "Alias for memory commands.",
-	"evidence":                   "Capture or review evidence records tied to the workspace.",
-	"evidence-search":            "Search saved evidence records by query.",
-	"evidence-show":              "Open a specific evidence record by id.",
+	"mem":                        "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
+	"evidence":                   "Review evidence records and suggest verification, dashboard, or source follow-up.",
+	"evidence-search":            "Search evidence records and suggest verification, dashboard, or source follow-up.",
+	"evidence-show":              "Open one evidence record and suggest the next verification or dashboard step.",
 	"evidence-dashboard":         "Summarize evidence activity in the terminal.",
 	"evidence-dashboard-html":    "Render the evidence dashboard in HTML.",
-	"investigate":                "Run or manage investigation workflows and snapshots.",
+	"investigate":                "Run investigation workflows and suggest the next snapshot, simulation, or evidence step.",
 	"investigate-dashboard":      "Summarize investigation history in the terminal.",
 	"investigate-dashboard-html": "Render the investigation dashboard in HTML.",
-	"simulate":                   "Run or inspect anti-tamper simulation profiles.",
-	"fuzz-func":                  "Auto-plan directed function fuzzing. Use /fuzz-func <function-name> [--file <path>|@<path>] for one function, or /fuzz-func --file <path> / @<path> to analyze a file and its include/import closure.",
+	"simulate":                   "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
+	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
+	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
 	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
-	"mem-search":                 "Search persistent memory entries.",
-	"mem-show":                   "Open a persistent memory entry by id.",
+	"mem-search":                 "Search persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
+	"mem-show":                   "Open one memory entry and suggest confirm, promote, or verification follow-up.",
 	"mem-promote":                "Promote a memory entry for stronger reuse weight.",
 	"mem-demote":                 "Demote a memory entry so it is reused less often.",
 	"mem-confirm":                "Mark a tentative memory entry as confirmed.",
@@ -151,7 +155,7 @@ var slashCommandDescriptions = map[string]string{
 	"override":                   "Inspect or manage temporary hook override rules.",
 	"override-add":               "Add a temporary hook override rule.",
 	"override-clear":             "Clear active hook override rules.",
-	"checkpoint":                 "Create a rollback checkpoint for the workspace.",
+	"checkpoint":                 "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
 	"checkpoint-auto":            "Enable or disable automatic checkpoints before edits.",
 	"detect-verification-tools":  "Probe common Windows build and test tool locations.",
 	"set-msbuild-path":           "Override the MSBuild executable path for verification.",
@@ -165,7 +169,7 @@ var slashCommandDescriptions = map[string]string{
 	"set-auto-verify":            "Enable or disable automatic verification after edits.",
 	"checkpoint-diff":            "Compare current workspace files against a checkpoint.",
 	"locale-auto":                "Enable or disable automatic locale switching.",
-	"worktree":                   "Create, inspect, detach, or clean isolated git worktrees.",
+	"worktree":                   "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
 	"checkpoints":                "List saved checkpoints for the workspace.",
 	"rollback":                   "Restore the workspace or selected paths from a checkpoint.",
 	"skills":                     "Inspect and manage loaded Codex skills.",
@@ -203,9 +207,11 @@ var slashCommandDescriptions = map[string]string{
 	"set-specialist-model":       "Configure the provider and model used by one specialist subagent.",
 	"set-plan-review":            "Configure plan review provider behavior.",
 	"do-plan-review":             "Run a focused plan review for a task description.",
-	"new-feature":                "Create or manage tracked feature workspaces.",
-	"analyze-project":            "Run project analysis with a selected analysis mode.",
-	"analyze-performance":        "Run a performance-focused project analysis pass.",
+	"new-feature":                "Create or manage tracked feature workspaces with implement, verify, close, and cleanup handoffs.",
+	"analyze-project":            "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
+	"analyze-dashboard":          "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
+	"docs-refresh":               "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
+	"analyze-performance":        "Run a performance-focused analysis pass and suggest the next hotspot follow-up.",
 	"profile-review":             "Review saved model profiles and compare their fit.",
 	"set-max-tool-iterations":    "Adjust the max tool loop count for the session.",
 	"exit":                       "Exit the interactive Kernforge session.",
@@ -249,6 +255,24 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"openrouter": "Switch to OpenRouter provider setup.",
 		"ollama":     "Switch to Ollama provider setup.",
 	},
+	"profile": {
+		"list":   "Show saved provider/model profiles without activating one.",
+		"show":   "Show saved provider/model profiles without activating one.",
+		"status": "Show saved provider/model profiles without activating one.",
+		"pin":    "Pin one saved profile by number.",
+		"unpin":  "Unpin one saved profile by number.",
+		"rename": "Rename one saved profile by number.",
+		"delete": "Delete one saved profile by number.",
+	},
+	"profile-review": {
+		"list":   "Show saved plan-review profiles without activating one.",
+		"show":   "Show saved plan-review profiles without activating one.",
+		"status": "Show saved plan-review profiles without activating one.",
+		"pin":    "Pin one saved review profile by number.",
+		"unpin":  "Unpin one saved review profile by number.",
+		"rename": "Rename one saved review profile by number.",
+		"delete": "Delete one saved review profile by number.",
+	},
 	"set-plan-review": {
 		"status":     "Show the current plan review provider setting.",
 		"anthropic":  "Use Anthropic for plan review passes.",
@@ -267,12 +291,18 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"clear":  "Clear one specialist override or remove all specialist model overrides.",
 	},
 	"analyze-project": {
-		"--mode":      "Choose the analysis mode before describing the goal.",
+		"--mode":      "Choose the analysis mode; Kernforge will infer a default goal when you omit one.",
+		"--docs":      "Explicitly request deterministic project documentation artifacts.",
+		"--path":      "Limit analysis to one workspace directory or file path; a goal is optional.",
 		"map":         "Map structure, modules, and relationships across the project.",
 		"trace":       "Trace a concrete flow across files and call sites.",
 		"impact":      "Estimate what files and behaviors a change will affect.",
+		"surface":     "Focus on concrete IOCTL, RPC, parser, handle, memory, and network surfaces.",
 		"security":    "Focus analysis on attack surface and trust boundaries.",
 		"performance": "Focus analysis on hotspots and performance costs.",
+	},
+	"analyze-dashboard": {
+		"latest": "Open the latest analyze-project document portal.",
 	},
 	"new-feature": {
 		"start":     "Create a tracked feature workspace and seed planning files.",
@@ -309,6 +339,13 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"list":     "List saved function fuzz planning runs.",
 		"continue": "Approve a pending recovered build configuration and start autonomous fuzzing.",
 		"language": "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
+	},
+	"fuzz-campaign": {
+		"status": "Show the latest fuzz campaign plus Kernforge's recommended next step.",
+		"run":    "Let Kernforge create, attach, promote seeds, deduplicate findings, ingest coverage reports and sanitizer/verifier artifacts, and capture native result evidence when supported.",
+		"new":    "Create a fuzz campaign under .kernforge/fuzz/<campaign-id>/.",
+		"list":   "List recent fuzz campaigns for this workspace.",
+		"show":   "Show one fuzz campaign by id or latest.",
 	},
 	"init": {
 		"config":        "Write or refresh starter config files.",
@@ -423,6 +460,9 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 	if completedArg, suggestions, ok := rt.completeFuzzFuncAtPathArgument(commandName, argFields, endsWithSpace); ok {
 		return completedArg, suggestions, true
 	}
+	if completedArg, suggestions, ok := rt.completeAnalyzeProjectPathArgument(commandName, argFields, endsWithSpace); ok {
+		return completedArg, suggestions, true
+	}
 
 	suggestions, replaceIndex, ok := rt.slashArgumentSuggestions(commandName, argFields, endsWithSpace)
 	if !ok || len(suggestions) == 0 {
@@ -496,6 +536,102 @@ func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, field
 	return strings.Join(finalFields, " "), nil, true
 }
 
+func (rt *runtimeState) completeAnalyzeProjectPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
+	if commandName != "analyze-project" || len(fields) == 0 {
+		return "", nil, false
+	}
+	pathIndex := -1
+	pathPrefix := ""
+	if !endsWithSpace {
+		lastIndex := len(fields) - 1
+		last := strings.TrimSpace(fields[lastIndex])
+		if strings.HasPrefix(last, "--path=") {
+			pathIndex = lastIndex
+			pathPrefix = "--path="
+		}
+	}
+	if pathIndex < 0 {
+		for index, field := range fields {
+			if !strings.EqualFold(field, "--path") {
+				continue
+			}
+			if endsWithSpace && index == len(fields)-1 {
+				pathIndex = len(fields)
+				break
+			}
+			if !endsWithSpace && index+1 == len(fields)-1 {
+				pathIndex = index + 1
+				break
+			}
+		}
+	}
+	if pathIndex < 0 {
+		return "", nil, false
+	}
+	typed := ""
+	if pathIndex < len(fields) {
+		typed = strings.TrimPrefix(fields[pathIndex], pathPrefix)
+	}
+	completedPath, suggestions, ok := rt.completeWorkspacePathFiltered(typed, false)
+	if !ok {
+		return "", nil, true
+	}
+	prefixFields := append([]string(nil), fields[:analysisMinInt(pathIndex, len(fields))]...)
+	if len(suggestions) > 0 {
+		rendered := make([]string, 0, len(suggestions))
+		for _, suggestion := range suggestions {
+			item := suggestion
+			if pathPrefix != "" {
+				item = pathPrefix + suggestion
+			}
+			finalFields := append(prefixFields, item)
+			rendered = append(rendered, strings.Join(finalFields, " "))
+		}
+		return "", rendered, true
+	}
+	item := completedPath
+	if pathPrefix != "" {
+		item = pathPrefix + completedPath
+	}
+	finalFields := append(prefixFields, item)
+	return strings.Join(finalFields, " "), nil, true
+}
+
+func analyzeProjectSlashArgumentSuggestions(fields []string, firstLevel []string) ([]string, int, bool) {
+	if len(fields) == 0 {
+		return firstLevel, 0, true
+	}
+	if len(fields) == 1 {
+		return availableAnalyzeProjectFlags(fields, firstLevel), 0, true
+	}
+	for index := 0; index < len(fields); index++ {
+		if strings.EqualFold(fields[index], "--mode") {
+			if index+1 >= len(fields) || index+1 == len(fields)-1 {
+				return supportedProjectAnalysisModes, index + 1, true
+			}
+		}
+	}
+	replaceIndex := len(fields) - 1
+	if strings.HasPrefix(strings.TrimSpace(fields[replaceIndex]), "--") {
+		return availableAnalyzeProjectFlags(fields[:replaceIndex], firstLevel), replaceIndex, true
+	}
+	return nil, 0, false
+}
+
+func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string {
+	used := map[string]bool{}
+	for _, field := range fields {
+		used[strings.ToLower(strings.TrimSpace(field))] = true
+	}
+	var out []string
+	for _, flag := range firstLevel {
+		if !used[strings.ToLower(strings.TrimSpace(flag))] {
+			out = append(out, flag)
+		}
+	}
+	return out
+}
+
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
 		"permissions":           {"default", "acceptEdits", "plan", "bypassPermissions"},
@@ -505,7 +641,10 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"worktree":              {"status", "create", "leave", "cleanup"},
 		"specialists":           {"status", "assign", "cleanup"},
 		"provider":              {"status", "anthropic", "openai", "openrouter", "ollama"},
-		"analyze-project":       {"--mode"},
+		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
+		"profile-review":        {"list", "show", "status", "pin", "unpin", "rename", "delete"},
+		"analyze-project":       {"--mode", "--docs", "--path"},
+		"analyze-dashboard":     {"latest"},
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
@@ -517,6 +656,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"investigate":           {"status", "start", "snapshot", "note", "stop", "show", "list", "dashboard", "dashboard-html"},
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
 		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
+		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
 
@@ -609,13 +749,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		return nil, 0, false
 	case "analyze-project":
-		if len(fields) == 1 {
-			return firstLevel[commandName], 0, true
-		}
-		if len(fields) == 2 && strings.EqualFold(fields[0], "--mode") {
-			return supportedProjectAnalysisModes, 1, true
-		}
-		return nil, 0, false
+		return analyzeProjectSlashArgumentSuggestions(fields, firstLevel[commandName])
 	case "new-feature":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
@@ -660,6 +794,14 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if len(fields) == 2 && strings.EqualFold(fields[0], "continue") {
 			options := append([]string{"latest"}, rt.recentFunctionFuzzIDs()...)
 			return uniqueStrings(options), 1, true
+		}
+		return nil, 0, false
+	case "fuzz-campaign":
+		if len(fields) == 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && strings.EqualFold(fields[0], "show") {
+			return append([]string{"latest"}, rt.recentFuzzCampaignIDs()...), 1, true
 		}
 		return nil, 0, false
 	case "init":
@@ -867,6 +1009,8 @@ func commandCompletionDescription(item string) string {
 		return "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically."
 	case "/fuzz-func language":
 		return "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English."
+	case "/fuzz-campaign":
+		return "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback."
 	}
 
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))
@@ -875,12 +1019,29 @@ func commandCompletionDescription(item string) string {
 	}
 
 	commandName := strings.ToLower(strings.TrimSpace(fields[0]))
+	if commandName == "analyze-project" {
+		for index := 1; index+1 < len(fields); index++ {
+			if !strings.EqualFold(fields[index], "--mode") {
+				continue
+			}
+			if description := projectAnalysisModeCompletionDescription(fields[index+1]); description != "" {
+				return description
+			}
+		}
+	}
 	if len(fields) >= 2 {
-		subcommand := strings.ToLower(strings.TrimSpace(fields[1]))
+		rawSubcommand := strings.TrimSpace(fields[1])
+		subcommand := strings.ToLower(rawSubcommand)
 		if descriptions, ok := slashSubcommandDescriptions[commandName]; ok {
+			if description := strings.TrimSpace(descriptions[rawSubcommand]); description != "" {
+				return description
+			}
 			if description := strings.TrimSpace(descriptions[subcommand]); description != "" {
 				return description
 			}
+		}
+		if commandName == "set-specialist-model" && !strings.HasPrefix(subcommand, "-") {
+			return "Configure the provider and model used by the " + strings.TrimSpace(fields[1]) + " specialist subagent."
 		}
 	}
 	return strings.TrimSpace(slashCommandDescriptions[commandName])

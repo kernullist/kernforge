@@ -158,6 +158,350 @@ func TestEnsureUserConfigDeploysBundledWebResearchMCP(t *testing.T) {
 	}
 }
 
+func TestEnsureUserConfigDoesNotOverwriteExistingProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	existing := DefaultConfig(t.TempDir())
+	existing.Profiles = []Profile{
+		{Name: "old-main", Provider: "openai", Model: "gpt-old"},
+	}
+	existing.ReviewProfiles = []Profile{
+		{Name: "old-review", Provider: "anthropic", Model: "claude-old"},
+	}
+	if err := SaveUserConfig(existing); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	replacement := DefaultConfig(t.TempDir())
+	replacement.Profiles = []Profile{
+		{Name: "new-main", Provider: "ollama", Model: "llama3"},
+	}
+	replacement.ReviewProfiles = []Profile{
+		{Name: "new-review", Provider: "openai", Model: "gpt-new"},
+	}
+	if err := EnsureUserConfig(replacement); err != nil {
+		t.Fatalf("EnsureUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Profiles) != 1 || loaded.Profiles[0].Name != "old-main" {
+		t.Fatalf("expected existing main profile to remain, got %#v", loaded.Profiles)
+	}
+	if len(loaded.ReviewProfiles) != 1 || loaded.ReviewProfiles[0].Name != "old-review" {
+		t.Fatalf("expected existing review profile to remain, got %#v", loaded.ReviewProfiles)
+	}
+}
+
+func TestLoadConfigBackfillsLegacyAPIKeyIntoProviderKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte("{\n  \"provider\": \"openai\",\n  \"api_key\": \"legacy-key\"\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ProviderKeys["openai"] != "legacy-key" {
+		t.Fatalf("expected legacy api_key to backfill provider_keys, got %#v", cfg.ProviderKeys)
+	}
+}
+
+func TestLoadConfigMergesUserAndWorkspaceProfiles(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	userCfg := DefaultConfig(workspace)
+	userCfg.Profiles = []Profile{
+		{Name: "user-main-a", Provider: "openai", Model: "gpt-a"},
+		{Name: "user-main-b", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
+	}
+	userCfg.ReviewProfiles = []Profile{
+		{Name: "user-review", Provider: "openai", Model: "gpt-review"},
+	}
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(workspace, map[string]any{
+		"profiles": []Profile{
+			{Name: "workspace-main", Provider: "ollama", Model: "llama3"},
+		},
+		"review_profiles": []Profile{
+			{Name: "workspace-review", Provider: "anthropic", Model: "claude-review"},
+		},
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Profiles) != 3 {
+		t.Fatalf("expected user and workspace main profiles to merge, got %#v", loaded.Profiles)
+	}
+	for _, want := range []string{"workspace-main", "user-main-a", "user-main-b"} {
+		if !profileListContainsName(loaded.Profiles, want) {
+			t.Fatalf("expected merged profiles to contain %q, got %#v", want, loaded.Profiles)
+		}
+	}
+	if len(loaded.ReviewProfiles) != 2 {
+		t.Fatalf("expected user and workspace review profiles to merge, got %#v", loaded.ReviewProfiles)
+	}
+	for _, want := range []string{"workspace-review", "user-review"} {
+		if !profileListContainsName(loaded.ReviewProfiles, want) {
+			t.Fatalf("expected merged review profiles to contain %q, got %#v", want, loaded.ReviewProfiles)
+		}
+	}
+}
+
+func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	active := Profile{
+		Name:     "deepseek-main",
+		Provider: "openrouter",
+		Model:    "deepseek/deepseek-v4-pro",
+		BaseURL:  normalizeOpenRouterBaseURL(""),
+		RoleModels: &ProfileRoleModels{
+			AnalysisWorker: &Profile{
+				Name:     "deepseek-worker",
+				Provider: "openrouter",
+				Model:    "deepseek/deepseek-v4-flash",
+				BaseURL:  normalizeOpenRouterBaseURL(""),
+			},
+			PlanReviewer: &Profile{
+				Name:     "reviewer",
+				Provider: "openai",
+				Model:    "gpt-review",
+			},
+			Specialists: []SpecialistSubagentProfile{
+				{Name: "planner", Provider: "anthropic", Model: "claude-planner"},
+			},
+		},
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openrouter"
+	cfg.Model = "z-ai/glm-5.1"
+	cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	cfg.Profiles = []Profile{
+		active,
+		{Name: "zai-main", Provider: "openrouter", Model: "z-ai/glm-5.1", BaseURL: normalizeOpenRouterBaseURL("")},
+	}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected active profile main model, got %s / %s", loaded.Provider, loaded.Model)
+	}
+	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("expected active profile analysis worker, got %#v", loaded.ProjectAnalysis.WorkerProfile)
+	}
+	if loaded.PlanReview == nil || loaded.PlanReview.Model != "gpt-review" {
+		t.Fatalf("expected active profile plan reviewer, got %#v", loaded.PlanReview)
+	}
+	if len(loaded.Specialists.Profiles) != 1 || loaded.Specialists.Profiles[0].Model != "claude-planner" {
+		t.Fatalf("expected active profile specialist model, got %#v", loaded.Specialists.Profiles)
+	}
+}
+
+func TestLoadConfigRestoresRoleModelsFromMatchingTopLevelProfile(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openrouter"
+	cfg.Model = "deepseek/deepseek-v4-pro"
+	cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	cfg.Profiles = []Profile{
+		{
+			Name:     "deepseek-main",
+			Provider: "openrouter",
+			Model:    "deepseek/deepseek-v4-pro",
+			BaseURL:  normalizeOpenRouterBaseURL(""),
+			RoleModels: &ProfileRoleModels{
+				AnalysisWorker: &Profile{
+					Provider: "openrouter",
+					Model:    "deepseek/deepseek-v4-flash",
+					BaseURL:  normalizeOpenRouterBaseURL(""),
+				},
+			},
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ActiveProfileKey == "" {
+		t.Fatalf("expected matching profile to become active")
+	}
+	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("expected matching profile analysis worker, got %#v", loaded.ProjectAnalysis.WorkerProfile)
+	}
+}
+
+func profileListContainsName(profiles []Profile, name string) bool {
+	for _, profile := range profiles {
+		if profile.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSaveUserConfigPreservesExistingProviderKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	existing := DefaultConfig(t.TempDir())
+	existing.Provider = "openai"
+	existing.APIKey = "legacy-openai-key"
+	existing.ProviderKeys = map[string]string{
+		"anthropic": "anthropic-key",
+	}
+	if err := SaveUserConfig(existing); err != nil {
+		t.Fatalf("SaveUserConfig existing: %v", err)
+	}
+
+	next := DefaultConfig(t.TempDir())
+	next.Provider = "openrouter"
+	next.Model = "meta-llama/llama-3.1-70b"
+	if err := SaveUserConfig(next); err != nil {
+		t.Fatalf("SaveUserConfig next: %v", err)
+	}
+
+	loaded, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ProviderKeys["openai"] != "legacy-openai-key" {
+		t.Fatalf("expected legacy openai key to remain, got %#v", loaded.ProviderKeys)
+	}
+	if loaded.ProviderKeys["anthropic"] != "anthropic-key" {
+		t.Fatalf("expected existing provider key to remain, got %#v", loaded.ProviderKeys)
+	}
+}
+
+func TestSaveUserConfigPreservesExistingProfilesWhenNextHasNone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	existing := DefaultConfig(t.TempDir())
+	existing.Profiles = []Profile{
+		{Name: "main-a", Provider: "openai", Model: "gpt-a"},
+		{Name: "main-b", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
+	}
+	existing.ReviewProfiles = []Profile{
+		{Name: "review-a", Provider: "anthropic", Model: "claude-a"},
+	}
+	if err := SaveUserConfig(existing); err != nil {
+		t.Fatalf("SaveUserConfig existing: %v", err)
+	}
+
+	next := DefaultConfig(t.TempDir())
+	next.Provider = "openrouter"
+	next.Model = "qwen/qwen3-coder"
+	if err := SaveUserConfig(next); err != nil {
+		t.Fatalf("SaveUserConfig next: %v", err)
+	}
+
+	loaded, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Profiles) != 2 {
+		t.Fatalf("expected existing main profiles to remain, got %#v", loaded.Profiles)
+	}
+	for _, want := range []string{"main-a", "main-b"} {
+		if !profileListContainsName(loaded.Profiles, want) {
+			t.Fatalf("expected main profiles to contain %q, got %#v", want, loaded.Profiles)
+		}
+	}
+	if len(loaded.ReviewProfiles) != 1 || loaded.ReviewProfiles[0].Name != "review-a" {
+		t.Fatalf("expected existing review profiles to remain, got %#v", loaded.ReviewProfiles)
+	}
+}
+
+func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	existing := DefaultConfig(t.TempDir())
+	existing.Profiles = []Profile{
+		{Name: "old-main", Provider: "openai", Model: "gpt-old"},
+	}
+	existing.ReviewProfiles = []Profile{
+		{Name: "old-review", Provider: "anthropic", Model: "claude-old"},
+	}
+	if err := SaveUserConfig(existing); err != nil {
+		t.Fatalf("SaveUserConfig existing: %v", err)
+	}
+
+	next := DefaultConfig(t.TempDir())
+	next.Profiles = []Profile{
+		{Name: "new-main", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
+	}
+	next.ReviewProfiles = []Profile{
+		{Name: "new-review", Provider: "openai", Model: "gpt-new"},
+	}
+	if err := SaveUserConfig(next); err != nil {
+		t.Fatalf("SaveUserConfig next: %v", err)
+	}
+
+	loaded, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Profiles) != 2 {
+		t.Fatalf("expected old and new main profiles to merge, got %#v", loaded.Profiles)
+	}
+	for _, want := range []string{"new-main", "old-main"} {
+		if !profileListContainsName(loaded.Profiles, want) {
+			t.Fatalf("expected main profiles to contain %q, got %#v", want, loaded.Profiles)
+		}
+	}
+	if len(loaded.ReviewProfiles) != 2 {
+		t.Fatalf("expected old and new review profiles to merge, got %#v", loaded.ReviewProfiles)
+	}
+	for _, want := range []string{"new-review", "old-review"} {
+		if !profileListContainsName(loaded.ReviewProfiles, want) {
+			t.Fatalf("expected review profiles to contain %q, got %#v", want, loaded.ReviewProfiles)
+		}
+	}
+}
+
 func TestEnsureUserConfigAppendsWebResearchServerWhenMissing(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -601,6 +945,91 @@ func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected provider help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpTextIncludesAnalyzeProjectDocsCommands(t *testing.T) {
+	help := HelpText()
+	for _, needle := range []string{
+		"/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
+		"infer a mode-specific goal when omitted",
+		"/docs-refresh",
+		"/analyze-dashboard [latest|path]",
+	} {
+		if !strings.Contains(help, needle) {
+			t.Fatalf("expected help text to include %q", needle)
+		}
+	}
+}
+
+func TestHelpTextIncludesFuzzCampaignCommand(t *testing.T) {
+	help := HelpText()
+	for _, needle := range []string{
+		"/fuzz-campaign [status|run|new|list|show]",
+		"deduplicated finding lifecycle",
+		"parsed coverage report feedback",
+		"sanitizer/verifier artifact capture",
+	} {
+		if !strings.Contains(help, needle) {
+			t.Fatalf("expected help text to include %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesFuzzCampaignWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("fuzz-campaign")
+	if !ok {
+		t.Fatalf("expected fuzz-campaign help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/fuzz-campaign [status|run|new <name>|list|show <id|latest>]",
+		".kernforge/fuzz/<campaign-id>/manifest.json",
+		"corpus, crashes, coverage, reports, and logs",
+		"FUZZ_TARGETS.md",
+		"corpus/<run-id>/",
+		"Coverage gaps feed the next generated FUZZ_TARGETS.md refresh",
+		"Native crash findings are merged by crash fingerprint",
+		"native run results into reports and evidence",
+		"libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries",
+		"parsed coverage reports",
+		"sanitizer reports, Windows crash dumps, Application Verifier, and Driver Verifier artifacts",
+		"run artifacts",
+		"intent-driven automation",
+		"Investigation handoff",
+		"Simulation handoff",
+		"Verification handoff",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected fuzz-campaign detail to include %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesAnalyzeProjectDocsWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("analyze-project")
+	if !ok {
+		t.Fatalf("expected analyze-project help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
+		"The goal is optional",
+		"Non-map modes automatically reuse the most relevant previous map run",
+		"--path limits shard execution",
+		"schema-versioned docs_manifest.json",
+		"missing schema_version as legacy",
+		"/docs-refresh",
+		"/analyze-dashboard [latest|path]",
+		"cross-document search",
+		"stale section diff",
+		"trust/data-flow graph context",
+		"graph sections",
+		"vector corpus exports",
+		"evidence and persistent memory",
+		"Analysis handoff",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected analyze-project detail to include %q", needle)
 		}
 	}
 }
