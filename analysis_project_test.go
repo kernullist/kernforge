@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -409,7 +410,7 @@ func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 	}
 }
 
-func TestExecuteShardWrapsWorkerProviderErrorWithShardAndModel(t *testing.T) {
+func TestExecuteShardSoftFailsWorkerProviderErrorWithShardAndModel(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
 		t.Fatalf("write main.go: %v", err)
@@ -431,13 +432,50 @@ func TestExecuteShardWrapsWorkerProviderErrorWithShardAndModel(t *testing.T) {
 		t.Fatalf("expected shards")
 	}
 	reuseState := analyzer.buildReuseState(nil, shards)
-	_, _, _, err = analyzer.executeShard(context.Background(), snapshot, shards[0], "analyze", nil, reuseState)
-	if err == nil {
-		t.Fatalf("expected error")
+	report, review, _, err := analyzer.executeShard(context.Background(), snapshot, shards[0], "analyze", nil, reuseState)
+	if err != nil {
+		t.Fatalf("expected worker provider failure to soft-fail, got %v", err)
 	}
-	text := err.Error()
+	if review.Status != "review_failed" {
+		t.Fatalf("expected review_failed, got %#v", review)
+	}
+	text := strings.Join(append(review.Issues, report.Raw), "\n")
 	if !strings.Contains(text, "analysis worker request failed") || !strings.Contains(text, "shard=") || !strings.Contains(text, "model=analysis-model") {
-		t.Fatalf("expected wrapped worker error, got %q", text)
+		t.Fatalf("expected wrapped worker error to be preserved, got %q", text)
+	}
+	if !strings.Contains(report.ScopeSummary, "low-confidence placeholder") {
+		t.Fatalf("expected low-confidence placeholder report, got %#v", report)
+	}
+}
+
+func TestSynthesizeFinalDocumentFallsBackOnProviderError(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Model = "analysis-model"
+	cfg.ProjectAnalysis.ProviderRetryDelayMs = 1
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &failingAnalysisClient{target: "writing the final Markdown document"}, ws, nil, nil)
+	snapshot := ProjectSnapshot{
+		Root:       root,
+		TotalFiles: 1,
+		TotalLines: 4,
+	}
+	shards := []AnalysisShard{{ID: "shard-01", Name: "runtime", PrimaryFiles: []string{"main.go"}}}
+	reports := []WorkerReport{{
+		ShardID:          "shard-01",
+		Title:            "runtime",
+		ScopeSummary:     "Runtime summary.",
+		Responsibilities: []string{"Run main flow"},
+		KeyFiles:         []string{"main.go"},
+		EvidenceFiles:    []string{"main.go"},
+		Narrative:        "Runtime narrative.",
+	}}
+	doc, err := analyzer.synthesizeFinalDocument(context.Background(), snapshot, shards, reports, "map runtime")
+	if err != nil {
+		t.Fatalf("expected synthesis provider failure to fall back, got %v", err)
+	}
+	if !strings.Contains(doc, "Analysis With Provider Failures") || !strings.Contains(doc, "Runtime narrative") {
+		t.Fatalf("expected fallback document with provider failure banner, got\n%s", doc)
 	}
 }
 
@@ -1501,6 +1539,102 @@ func TestBuildWorkerPromptIncludesSemanticShardFocus(t *testing.T) {
 	}
 }
 
+func TestBuildWorkerPromptIncludesBaselineMapContext(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:         "C:\\repo",
+		AnalysisMode: "trace",
+		BaselineMap: AnalysisBaselineMap{
+			RunID:          "run-map",
+			Goal:           "map TavernKernel architecture",
+			ArtifactPath:   "C:/repo/.kernforge/analysis/run-map_map.json",
+			ProjectSummary: "TavernKernel separates driver dispatch, worker scanning, and reporting.",
+			Subsystems:     []string{"Driver Dispatch", "Worker Scanner"},
+			SourceAnchors:  []string{"TavernKernel/TavernKernel/DriverDispatch.cpp", "TavernKernel/TavernKernel/WorkerScan.cpp"},
+		},
+		FilesByPath: map[string]ScannedFile{
+			"TavernKernel/TavernKernel/DriverDispatch.cpp": {Path: "TavernKernel/TavernKernel/DriverDispatch.cpp", Directory: "TavernKernel/TavernKernel"},
+		},
+	}
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "runtime_flow",
+		PrimaryFiles: []string{"TavernKernel/TavernKernel/DriverDispatch.cpp"},
+	}
+	prompt := buildWorkerPrompt(snapshot, shard, "trace driver dispatch", "")
+	for _, expected := range []string{
+		"Baseline architecture map:",
+		"Baseline run: run-map",
+		"TavernKernel separates driver dispatch",
+		"Relevant anchors: TavernKernel/TavernKernel/DriverDispatch.cpp",
+		"Use this map as prior structure only",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected baseline prompt to contain %q\n%s", expected, prompt)
+		}
+	}
+}
+
+func TestLoadBaselineMapForTraceUsesPreviousMapRun(t *testing.T) {
+	outputDir := t.TempDir()
+	completedAt := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	mapRun := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:       "run-map",
+			Goal:        "map TavernKernel architecture",
+			Mode:        "map",
+			Status:      "completed",
+			CompletedAt: completedAt,
+			OutputPath:  filepath.Join(outputDir, "run-map_map_tavernkernel_architecture.md"),
+		},
+		Snapshot: ProjectSnapshot{
+			Root: "C:\\repo",
+			Files: []ScannedFile{
+				{Path: "TavernKernel/TavernKernel/DriverDispatch.cpp", Directory: "TavernKernel/TavernKernel", ImportanceScore: 10},
+			},
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-map",
+			Goal:           "map TavernKernel architecture",
+			AnalysisMode:   "map",
+			ProjectSummary: "TavernKernel dispatches requests through the driver boundary.",
+			TopImportantFiles: []string{
+				"TavernKernel/TavernKernel/DriverDispatch.cpp",
+			},
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:         "Driver Dispatch",
+					KeyFiles:      []string{"TavernKernel/TavernKernel/DriverDispatch.cpp"},
+					EvidenceFiles: []string{"TavernKernel/TavernKernel/Ioctl.cpp"},
+				},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(mapRun, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal map run: %v", err)
+	}
+	mapPath := filepath.Join(outputDir, "20260425-100000_map_tavernkernel_architecture.json")
+	if err := os.WriteFile(mapPath, data, 0o644); err != nil {
+		t.Fatalf("write map run: %v", err)
+	}
+	analyzer := &projectAnalyzer{
+		analysisCfg: ProjectAnalysisConfig{OutputDir: outputDir},
+	}
+	baseline, ok := analyzer.loadBaselineMapForMode("trace", AnalysisGoalScope{DirectoryPrefixes: []string{"TavernKernel/TavernKernel"}})
+	if !ok {
+		t.Fatalf("expected baseline map to load")
+	}
+	if baseline.RunID != "run-map" {
+		t.Fatalf("expected run-map baseline, got %q", baseline.RunID)
+	}
+	if !strings.Contains(baseline.ProjectSummary, "driver boundary") {
+		t.Fatalf("unexpected baseline summary: %q", baseline.ProjectSummary)
+	}
+	if len(baseline.SourceAnchors) == 0 || baseline.SourceAnchors[0] != "TavernKernel/TavernKernel/DriverDispatch.cpp" {
+		t.Fatalf("unexpected baseline anchors: %#v", baseline.SourceAnchors)
+	}
+}
+
 func TestBuildReviewerPromptIncludesSemanticChecklist(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:        "C:\\repo",
@@ -2162,6 +2296,456 @@ func TestBuildKnowledgePackIncludesAnalysisExecutionSummary(t *testing.T) {
 	}
 	if !strings.Contains(pack.ProjectSummary, "Executive focus: recent changes are concentrated on authority, replication, or security-sensitive boundaries.") {
 		t.Fatalf("expected project summary to include lens-aware executive focus: %s", pack.ProjectSummary)
+	}
+}
+
+func TestBuildAnalysisDocsCreatesOperationalDocumentSet(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:          "run-docs",
+			Goal:           "map driver security surface",
+			Mode:           "security",
+			TotalShards:    2,
+			ApprovedShards: 2,
+		},
+		Snapshot: ProjectSnapshot{
+			Root:            "C:\\repo",
+			AnalysisMode:    "security",
+			TotalFiles:      12,
+			TotalLines:      3400,
+			EntrypointFiles: []string{"driver/dispatch.cpp"},
+			ManifestFiles:   []string{"driver/guard.vcxproj"},
+			RuntimeEdges: []RuntimeEdge{
+				{Source: "launcher.exe", Target: "guard.sys", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"driver/guard.vcxproj"}},
+			},
+			ProjectEdges: []ProjectEdge{
+				{Source: "user-mode client", Target: "kernel driver", Type: "trust_boundary", Confidence: "high", Evidence: []string{"driver/dispatch.cpp"}, Attributes: map[string]string{"kind": "ioctl", "flow": "user_to_kernel"}},
+			},
+			BuildContexts: []BuildContextRecord{
+				{ID: "buildctx:driver", Name: "driver", Kind: "compile", Module: "guard", Files: []string{"driver/dispatch.cpp"}},
+			},
+			CompileCommands: []CompilationCommandRecord{
+				{File: "driver/dispatch.cpp", Compiler: "clang-cl.exe", Source: "compile_commands.json"},
+			},
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-docs",
+			Goal:           "map driver security surface",
+			AnalysisMode:   "security",
+			Root:           "C:\\repo",
+			ProjectSummary: "Driver dispatch owns the user/kernel boundary.",
+			HighRiskFiles:  []string{"driver/dispatch.cpp"},
+			ProjectEdges: []ProjectEdge{
+				{Source: "telemetry parser", Target: "evidence store", Type: "security", Confidence: "medium", Evidence: []string{"telemetry/parser.cpp"}, Attributes: map[string]string{"kind": "telemetry"}},
+			},
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:                "Driver Dispatch",
+					Group:                "Security Surface",
+					Responsibilities:     []string{"Validate IOCTL buffers"},
+					EntryPoints:          []string{"DispatchIoctl"},
+					KeyFiles:             []string{"driver/dispatch.cpp"},
+					Risks:                []string{"Input size can diverge from copy size"},
+					EvidenceFiles:        []string{"driver/dispatch.cpp"},
+					CacheStatuses:        []string{"miss"},
+					InvalidationReasons:  []string{"semantic_primary_changed"},
+					InvalidationEvidence: []string{"driver/dispatch.cpp"},
+				},
+			},
+			AnalysisExecution: AnalysisExecutionSummary{
+				TotalShards:         2,
+				MissedShards:        1,
+				TopChangeClasses:    []string{"ioctl_surface_changed (1)"},
+				InvalidationReasons: []string{"semantic_primary_changed"},
+			},
+		},
+		SemanticIndexV2: SemanticIndexV2{
+			Symbols: []SymbolRecord{
+				{
+					ID:             "func:DispatchIoctl@driver/dispatch.cpp",
+					Name:           "DispatchIoctl",
+					Kind:           "function",
+					File:           "driver/dispatch.cpp",
+					Signature:      "NTSTATUS DispatchIoctl(...)",
+					StartLine:      42,
+					BuildContextID: "buildctx:driver",
+					Tags:           []string{"ioctl", "dispatch"},
+				},
+			},
+			CallEdges: []CallEdge{
+				{SourceID: "func:DispatchIoctl@driver/dispatch.cpp", TargetID: "func:ValidateIoctl@driver/dispatch.cpp", Type: "calls"},
+			},
+		},
+	}
+
+	docs := buildAnalysisDocs(run)
+	for _, name := range []string{"INDEX.md", "ARCHITECTURE.md", "SECURITY_SURFACE.md", "API_AND_ENTRYPOINTS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "FUZZ_TARGETS.md", "OPERATIONS_RUNBOOK.md"} {
+		if strings.TrimSpace(docs[name]) == "" {
+			t.Fatalf("expected generated doc %s", name)
+		}
+	}
+	if !strings.Contains(docs["FUZZ_TARGETS.md"], `/fuzz-func DispatchIoctl --file "driver/dispatch.cpp"`) {
+		t.Fatalf("expected fuzz target suggestion\n%s", docs["FUZZ_TARGETS.md"])
+	}
+	if !strings.Contains(docs["FUZZ_TARGETS.md"], "Priority score:") || !strings.Contains(docs["FUZZ_TARGETS.md"], "Harness readiness:") {
+		t.Fatalf("expected enriched fuzz target catalog\n%s", docs["FUZZ_TARGETS.md"])
+	}
+	if !strings.Contains(docs["SECURITY_SURFACE.md"], "DispatchIoctl") {
+		t.Fatalf("expected security surface to include indexed IOCTL symbol\n%s", docs["SECURITY_SURFACE.md"])
+	}
+	if !strings.Contains(docs["SECURITY_SURFACE.md"], "Source anchors:") || !strings.Contains(docs["SECURITY_SURFACE.md"], "Confidence:") {
+		t.Fatalf("expected security surface doc metadata\n%s", docs["SECURITY_SURFACE.md"])
+	}
+	if !strings.Contains(docs["VERIFICATION_MATRIX.md"], "Driver or IOCTL") {
+		t.Fatalf("expected verification matrix to include driver row\n%s", docs["VERIFICATION_MATRIX.md"])
+	}
+}
+
+func TestWriteAnalysisDocsPersistsManifest(t *testing.T) {
+	dir := t.TempDir()
+	completedAt := time.Date(2026, 4, 24, 12, 0, 0, 0, time.UTC)
+	run := ProjectAnalysisRun{
+		Summary:  ProjectAnalysisSummary{RunID: "run-docs", Goal: "map runtime", Mode: "map", Status: "completed", CompletedAt: completedAt, TotalShards: 1, ApprovedShards: 1},
+		Snapshot: ProjectSnapshot{Root: dir, TotalFiles: 1, TotalLines: 10},
+		KnowledgePack: KnowledgePack{
+			RunID: "run-docs",
+			Goal:  "map runtime",
+			Root:  dir,
+			Subsystems: []KnowledgeSubsystem{
+				{Title: "Runtime", Responsibilities: []string{"Run commands"}},
+			},
+		},
+	}
+	manifest, err := writeAnalysisDocs(run, filepath.Join(dir, "docs"))
+	if err != nil {
+		t.Fatalf("writeAnalysisDocs returned error: %v", err)
+	}
+	if manifest.DocumentCount != 8 {
+		t.Fatalf("expected 8 generated docs, got %+v", manifest)
+	}
+	if !manifest.GeneratedAt.Equal(completedAt) {
+		t.Fatalf("expected deterministic generated_at %s, got %s", completedAt, manifest.GeneratedAt)
+	}
+	if len(manifest.ReuseTargets) == 0 {
+		t.Fatalf("expected manifest reuse targets")
+	}
+	if manifest.SchemaVersion != analysisDocsManifestSchemaVersion {
+		t.Fatalf("expected schema version %q, got %+v", analysisDocsManifestSchemaVersion, manifest)
+	}
+	if manifest.MinReaderVersion != analysisDocsManifestMinReaderVersion {
+		t.Fatalf("expected min reader version %q, got %+v", analysisDocsManifestMinReaderVersion, manifest)
+	}
+	if manifest.CompatibilityPolicy != analysisDocsManifestCompatPolicy {
+		t.Fatalf("expected compatibility policy %q, got %+v", analysisDocsManifestCompatPolicy, manifest)
+	}
+	for _, doc := range manifest.Documents {
+		if strings.TrimSpace(doc.Confidence) == "" {
+			t.Fatalf("expected doc confidence in %+v", doc)
+		}
+		if doc.Name == "ARCHITECTURE.md" && len(doc.ReuseTargets) == 0 {
+			t.Fatalf("expected doc reuse targets in %+v", doc)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "docs", "manifest.json")); err != nil {
+		t.Fatalf("expected manifest on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "docs", "ARCHITECTURE.md")); err != nil {
+		t.Fatalf("expected architecture doc on disk: %v", err)
+	}
+}
+
+func TestDecodeAnalysisDocsManifestBackfillsLegacySchema(t *testing.T) {
+	data := []byte(`{
+		"run_id": "legacy-run",
+		"document_count": 1,
+		"documents": [
+			{"name": "VERIFICATION_MATRIX.md"}
+		],
+		"verification_matrix": [
+			{"change_area": "Driver or IOCTL", "required_verification": "driver build"}
+		]
+	}`)
+	manifest, err := decodeAnalysisDocsManifest(data)
+	if err != nil {
+		t.Fatalf("decodeAnalysisDocsManifest returned error: %v", err)
+	}
+	if manifest.SchemaVersion != analysisDocsManifestLegacySchema {
+		t.Fatalf("expected legacy schema marker, got %+v", manifest)
+	}
+	if manifest.MinReaderVersion != analysisDocsManifestMinReaderVersion {
+		t.Fatalf("expected min reader default, got %+v", manifest)
+	}
+	if manifest.Documents[0].Path != "VERIFICATION_MATRIX.md" {
+		t.Fatalf("expected legacy document path backfill, got %+v", manifest.Documents[0])
+	}
+	if len(manifest.Documents[0].ReuseTargets) == 0 {
+		t.Fatalf("expected legacy document reuse target backfill, got %+v", manifest.Documents[0])
+	}
+}
+
+func TestAnalysisDocsIncludeTrustAndDataFlowGraphSections(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{RunID: "run-graph", Goal: "map security graph", Mode: "security", Status: "completed"},
+		Snapshot: ProjectSnapshot{
+			Root:       "C:\\repo",
+			TotalFiles: 3,
+			TotalLines: 120,
+			ProjectEdges: []ProjectEdge{
+				{Source: "user-mode client", Target: "kernel driver", Type: "trust_boundary", Confidence: "high", Evidence: []string{"driver/dispatch.cpp"}, Attributes: map[string]string{"kind": "ioctl", "flow": "user_to_kernel"}},
+				{Source: "telemetry parser", Target: "evidence store", Type: "dependency_edge", Confidence: "medium", Evidence: []string{"telemetry/parser.cpp"}, Attributes: map[string]string{"kind": "parser", "flow": "decoded_event"}},
+			},
+		},
+		KnowledgePack: KnowledgePack{
+			RunID: "run-graph",
+			Goal:  "map security graph",
+			Root:  "C:\\repo",
+			AnalysisExecution: AnalysisExecutionSummary{
+				TopChangeClasses: []string{"trust_boundary_edge_added (1)", "config_binding_added (1)"},
+			},
+		},
+	}
+	architecture := buildAnalysisArchitectureDoc(run)
+	for _, want := range []string{
+		"## Project Edges",
+		"## Trust Boundary Graph",
+		"## Data Flow Graph",
+		"```mermaid",
+		"user_to_kernel",
+		"decoded_event",
+		"_Section metadata:",
+		"stale/invalidation=trust_boundary_edge_added (1)",
+	} {
+		if !strings.Contains(architecture, want) {
+			t.Fatalf("expected architecture doc to contain %q\n%s", want, architecture)
+		}
+	}
+	security := buildAnalysisSecuritySurfaceDoc(run)
+	for _, want := range []string{
+		"## Trust Boundary Graph",
+		"## Attack And Data Flow View",
+		"`/fuzz-campaign run`",
+	} {
+		if !strings.Contains(security, want) {
+			t.Fatalf("expected security doc to contain %q\n%s", want, security)
+		}
+	}
+	sections := analysisDocSections(run, "ARCHITECTURE.md")
+	sectionText := []string{}
+	for _, section := range sections {
+		sectionText = append(sectionText, section.ID+":"+section.Title)
+		if section.ID == "architecture.trust_boundary_graph" && !containsString(section.StaleMarkers, "trust_boundary_edge_added (1)") {
+			t.Fatalf("expected trust boundary graph stale marker in %+v", section)
+		}
+		if section.ID == "architecture.data_flow_graph" && !containsString(section.StaleMarkers, "config_binding_added (1)") {
+			t.Fatalf("expected data flow graph stale marker in %+v", section)
+		}
+	}
+	joined := strings.Join(sectionText, ",")
+	for _, want := range []string{"architecture.trust_boundary_graph:Trust Boundary Graph", "architecture.data_flow_graph:Data Flow Graph"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected graph section metadata %q in %s", want, joined)
+		}
+	}
+}
+
+func TestAnalysisFuzzTargetsUseCampaignCoverageGapFeedback(t *testing.T) {
+	root := t.TempDir()
+	manifest := AnalysisDocsManifest{
+		RunID: "analysis-seed",
+		FuzzTargets: []AnalysisFuzzTargetCatalogEntry{
+			{
+				Name:             "DispatchIoctl",
+				File:             "driver/dispatch.cpp",
+				SymbolID:         "func:DispatchIoctl@driver/dispatch.cpp",
+				SourceAnchor:     "driver/dispatch.cpp:42",
+				PriorityScore:    60,
+				SuggestedCommand: "/fuzz-func DispatchIoctl --file driver/dispatch.cpp",
+			},
+		},
+	}
+	if _, err := createFuzzCampaignFromWorkspace(root, "coverage feedback", manifest); err != nil {
+		t.Fatalf("create campaign: %v", err)
+	}
+
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID: "run-coverage-feedback",
+			Goal:  "rank fuzz targets",
+			Mode:  "surface",
+		},
+		Snapshot: ProjectSnapshot{
+			Root: root,
+		},
+		KnowledgePack: KnowledgePack{
+			Root: root,
+		},
+		SemanticIndexV2: SemanticIndexV2{
+			Symbols: []SymbolRecord{
+				{
+					ID:        "func:DispatchIoctl@driver/dispatch.cpp",
+					Name:      "DispatchIoctl",
+					Kind:      "function",
+					File:      "driver/dispatch.cpp",
+					Signature: "NTSTATUS DispatchIoctl(void *buffer, size_t length)",
+					StartLine: 42,
+					Tags:      []string{"ioctl", "dispatch"},
+				},
+			},
+		},
+	}
+
+	targets := analysisFuzzTargetCatalog(run)
+	if len(targets) == 0 {
+		t.Fatalf("expected fuzz target catalog")
+	}
+	if targets[0].CoverageGapScore == 0 || !containsAny(strings.Join(targets[0].CoverageFeedback, " "), "coverage gap") {
+		t.Fatalf("expected coverage gap feedback on target, got %#v", targets[0])
+	}
+	doc := buildAnalysisFuzzTargetsDoc(run)
+	if !strings.Contains(doc, "Coverage Feedback") || !strings.Contains(doc, "coverage gap from") {
+		t.Fatalf("expected FUZZ_TARGETS.md to expose coverage feedback\n%s", doc)
+	}
+}
+
+func TestBuildAnalysisDashboardHTMLIncludesCoreSections(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:          "run-dashboard",
+			Goal:           "map driver security surface",
+			Mode:           "security",
+			Status:         "completed",
+			TotalShards:    2,
+			ApprovedShards: 2,
+		},
+		Snapshot: ProjectSnapshot{
+			Root:            "C:\\repo",
+			AnalysisMode:    "security",
+			TotalFiles:      12,
+			TotalLines:      3400,
+			EntrypointFiles: []string{"driver/dispatch.cpp"},
+			ManifestFiles:   []string{"driver/guard.vcxproj"},
+			RuntimeEdges: []RuntimeEdge{
+				{Source: "launcher.exe", Target: "guard.sys", Kind: "dynamic_load", Confidence: "high", Evidence: []string{"driver/guard.vcxproj"}},
+			},
+			ProjectEdges: []ProjectEdge{
+				{Source: "user-mode client", Target: "kernel driver", Type: "trust_boundary", Confidence: "high", Evidence: []string{"driver/dispatch.cpp"}, Attributes: map[string]string{"kind": "ioctl", "flow": "user_to_kernel"}},
+			},
+			BuildContexts: []BuildContextRecord{
+				{ID: "buildctx:driver", Name: "driver", Kind: "compile", Module: "guard", Files: []string{"driver/dispatch.cpp"}},
+			},
+			CompileCommands: []CompilationCommandRecord{
+				{File: "driver/dispatch.cpp", Compiler: "clang-cl.exe", Source: "compile_commands.json"},
+			},
+		},
+		Shards: []AnalysisShard{
+			{ID: "driver", Name: "Driver", CacheStatus: "reused"},
+			{ID: "security", Name: "Security", CacheStatus: "miss"},
+		},
+		KnowledgePack: KnowledgePack{
+			RunID:          "run-dashboard",
+			Goal:           "map driver security surface",
+			AnalysisMode:   "security",
+			Root:           "C:\\repo",
+			ProjectSummary: "Driver dispatch owns the user/kernel boundary.",
+			HighRiskFiles:  []string{"driver/dispatch.cpp"},
+			ProjectEdges: []ProjectEdge{
+				{Source: "telemetry parser", Target: "evidence store", Type: "security", Confidence: "medium", Evidence: []string{"telemetry/parser.cpp"}, Attributes: map[string]string{"kind": "telemetry"}},
+			},
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:               "Driver Dispatch",
+					Group:               "Security Surface",
+					Responsibilities:    []string{"Validate IOCTL buffers"},
+					EntryPoints:         []string{"DispatchIoctl"},
+					KeyFiles:            []string{"driver/dispatch.cpp"},
+					Risks:               []string{"Input size can diverge from copy size"},
+					CacheStatuses:       []string{"miss"},
+					InvalidationReasons: []string{"semantic_primary_changed"},
+					InvalidationDiff:    []string{"security_signal_added: DispatchIoctl -> user_buffer_probe"},
+					InvalidationChanges: []InvalidationChange{{Kind: "security_signal_added", Scope: "integrity_security", Owner: "DispatchIoctl", Subject: "user_buffer_probe", Source: "driver/dispatch.cpp"}},
+				},
+			},
+		},
+		SemanticIndexV2: SemanticIndexV2{
+			Symbols: []SymbolRecord{
+				{
+					ID:             "func:DispatchIoctl@driver/dispatch.cpp",
+					Name:           "DispatchIoctl",
+					Kind:           "function",
+					File:           "driver/dispatch.cpp",
+					Signature:      "NTSTATUS DispatchIoctl(...)",
+					StartLine:      42,
+					BuildContextID: "buildctx:driver",
+					Tags:           []string{"ioctl", "dispatch"},
+				},
+			},
+		},
+	}
+
+	html := buildAnalysisDashboardHTML(run, "docs")
+	for _, want := range []string{"Project Analysis Dashboard", "SECURITY_SURFACE.md", "Document Portal", "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected dashboard HTML to contain %q\n%s", want, html)
+		}
+	}
+}
+
+func TestAnalysisDashboardStaleDiffLinksGraphSections(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary:  ProjectAnalysisSummary{RunID: "run-stale-graph", Goal: "map graph diffs", Mode: "security", Status: "completed"},
+		Snapshot: ProjectSnapshot{Root: "C:\\repo", TotalFiles: 2, TotalLines: 80},
+		KnowledgePack: KnowledgePack{
+			RunID: "run-stale-graph",
+			Goal:  "map graph diffs",
+			Root:  "C:\\repo",
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title: "Driver Dispatch",
+					Group: "Security Surface",
+					InvalidationChanges: []InvalidationChange{
+						{Kind: "trust_boundary_edge_added", Scope: "integrity_security", Owner: "user-mode client", Subject: "kernel driver", After: "ioctl", Source: "driver/dispatch.cpp"},
+					},
+				},
+				{
+					Title: "Runtime Config",
+					Group: "Architecture",
+					InvalidationChanges: []InvalidationChange{
+						{Kind: "config_binding_added", Scope: "runtime_config", Owner: "config loader", Subject: "GuardProfile", Source: "config/guard.ini"},
+					},
+				},
+			},
+		},
+	}
+	html := buildAnalysisDashboardHTML(run, "docs")
+	for _, want := range []string{
+		`docs/SECURITY_SURFACE.md#trust-boundary-graph`,
+		`SECURITY_SURFACE.md / Trust Boundary Graph`,
+		`docs/ARCHITECTURE.md#data-flow-graph`,
+		`ARCHITECTURE.md / Data Flow Graph`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected stale diff graph link %q\n%s", want, html)
+		}
+	}
+}
+
+func TestWriteAnalysisDashboardPersistsHTML(t *testing.T) {
+	dir := t.TempDir()
+	run := ProjectAnalysisRun{
+		Summary:       ProjectAnalysisSummary{RunID: "run-dashboard", Goal: "map runtime", Mode: "map", Status: "completed"},
+		Snapshot:      ProjectSnapshot{Root: dir, TotalFiles: 1, TotalLines: 10},
+		KnowledgePack: KnowledgePack{RunID: "run-dashboard", Goal: "map runtime", Root: dir},
+	}
+	outputPath := filepath.Join(dir, "dashboard.html")
+	if err := writeAnalysisDashboard(run, outputPath, "docs"); err != nil {
+		t.Fatalf("writeAnalysisDashboard returned error: %v", err)
+	}
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected dashboard on disk: %v", err)
+	}
+	if !strings.Contains(string(data), "Project Analysis Dashboard") {
+		t.Fatalf("expected dashboard title in persisted HTML")
 	}
 }
 
@@ -3639,10 +4223,33 @@ func TestBuildVectorCorpusIncludesProjectSubsystemAndShardDocs(t *testing.T) {
 		joined = append(joined, doc.Kind+":"+doc.Title)
 	}
 	text := strings.Join(joined, ",")
-	for _, expected := range []string{"project_summary:Project Summary", "analysis_execution:Analysis Execution Summary", "subsystem:Security Control: network", "shard:unreal_network"} {
+	for _, expected := range []string{
+		"project_summary:Project Summary",
+		"analysis_execution:Analysis Execution Summary",
+		"subsystem:Security Control: network",
+		"shard:unreal_network",
+		"generated_doc:Security Surface",
+		"generated_doc_section:Security Surface / Document Metadata",
+	} {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("expected vector corpus entry %q in %s", expected, text)
 		}
+	}
+	foundGeneratedDocMetadata := false
+	for _, doc := range corpus.Documents {
+		if doc.Kind == "generated_doc_section" && strings.Contains(doc.Title, "Security Surface") {
+			if doc.Metadata["source"] != "generated_docs" {
+				t.Fatalf("expected generated doc metadata source, got %+v", doc.Metadata)
+			}
+			if !strings.Contains(doc.Metadata["reuse_targets"], "verification_planner") {
+				t.Fatalf("expected generated doc reuse target metadata, got %+v", doc.Metadata)
+			}
+			foundGeneratedDocMetadata = true
+			break
+		}
+	}
+	if !foundGeneratedDocMetadata {
+		t.Fatalf("expected generated doc section metadata in vector corpus")
 	}
 }
 
@@ -4668,13 +5275,4 @@ func TestComputeSemanticFingerprintV2ChangesWithSourceAnchorNeighborhood(t *test
 	if firstFingerprint == secondFingerprint {
 		t.Fatalf("expected semantic fingerprint to change with source-anchor neighborhood updates")
 	}
-}
-
-func containsString(items []string, needle string) bool {
-	for _, item := range items {
-		if item == needle {
-			return true
-		}
-	}
-	return false
 }

@@ -317,6 +317,10 @@ func (rt *runtimeState) handleWorktreeCommand(args string) error {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Attached isolated worktree: "+worktree.Root))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("branch", worktree.Branch))
+		if handoff := worktreeHandoff("create", rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, handoff)
+		}
 		return nil
 	case "leave":
 		if rt.session.Worktree == nil || !rt.session.Worktree.Active {
@@ -326,6 +330,10 @@ func (rt *runtimeState) handleWorktreeCommand(args string) error {
 			return err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Returned to base workspace root: "+sessionBaseWorkingDir(rt.session)))
+		if handoff := worktreeHandoff("leave", rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, handoff)
+		}
 		return nil
 	case "cleanup":
 		if rt.session.Worktree == nil {
@@ -351,6 +359,10 @@ func (rt *runtimeState) handleWorktreeCommand(args string) error {
 			return err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Removed isolated worktree"))
+		if handoff := worktreeHandoff("cleanup", rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, handoff)
+		}
 		return nil
 	default:
 		return fmt.Errorf("usage: /worktree [status|create [name]|leave|cleanup]")

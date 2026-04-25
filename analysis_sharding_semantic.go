@@ -367,7 +367,7 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 }
 
 func classifySemanticShardFile(file ScannedFile, signals semanticShardSignals, mode string) string {
-	if normalizeProjectAnalysisMode(mode) == "security" {
+	if normalizeProjectAnalysisMode(mode) == "security" || normalizeProjectAnalysisMode(mode) == "surface" {
 		if securityBucket := classifySecuritySemanticShardFile(file, signals); securityBucket != "" {
 			return securityBucket
 		}

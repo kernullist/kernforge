@@ -47,6 +47,7 @@ type runtimeState struct {
 	investigations             *InvestigationStore
 	simulations                *SimulationStore
 	functionFuzz               *FunctionFuzzStore
+	fuzzCampaigns              *FuzzCampaignStore
 	hookOverrides              *HookOverrideStore
 	checkpoints                *CheckpointManager
 	autoCP                     *AutoCheckpointController
@@ -222,6 +223,7 @@ func run(args []string) error {
 		investigations: NewInvestigationStore(),
 		simulations:    NewSimulationStore(),
 		functionFuzz:   NewFunctionFuzzStore(),
+		fuzzCampaigns:  NewFuzzCampaignStore(),
 		hookOverrides:  NewHookOverrideStore(),
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
@@ -2079,14 +2081,31 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", rt.cfg.Provider, rt.cfg.Model)))
+	if rt.hasInheritedRoleModels() {
+		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Role targets marked as not configured will follow the main model; explicit role model profiles stay unchanged."))
+	}
 	return nil
 }
 
 func (rt *runtimeState) storedProviderKey(provider string) string {
-	if rt.cfg.ProviderKeys == nil {
+	if rt == nil || rt.cfg.ProviderKeys == nil {
 		return ""
 	}
 	return rt.cfg.ProviderKeys[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+func (rt *runtimeState) providerAPIKey(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return ""
+	}
+	if key := strings.TrimSpace(rt.storedProviderKey(provider)); key != "" {
+		return key
+	}
+	if rt != nil && strings.EqualFold(rt.cfg.Provider, provider) && strings.TrimSpace(rt.cfg.APIKey) != "" {
+		return strings.TrimSpace(rt.cfg.APIKey)
+	}
+	return ""
 }
 
 func (rt *runtimeState) storeProviderKey(provider, key string) {
@@ -2151,13 +2170,64 @@ func providerDisplayName(provider string) string {
 	}
 }
 
-func (rt *runtimeState) handleProfileCommand() error {
+func (rt *runtimeState) handleProfileCommand(args string) error {
+	args = strings.TrimSpace(args)
 	if len(rt.cfg.Profiles) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved profiles yet."))
-		return nil
+		if err := rt.rememberCurrentProfileWhenEmpty(); err != nil {
+			return err
+		}
 	}
 
 	rt.cfg.Profiles = normalizedProfileOrder(rt.cfg.Profiles)
+	if len(rt.cfg.Profiles) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved profiles yet."))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure the main model; Kernforge saves the selected model automatically."))
+		return nil
+	}
+	rt.renderProfileList()
+	if args == "" {
+		if !rt.interactive {
+			return nil
+		}
+		choice, err := rt.promptValueAllowEmpty("Profile action", "")
+		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		}
+		args = strings.TrimSpace(choice)
+		if args == "" {
+			return nil
+		}
+	}
+	action, index, newName, err := parseProfileCommandArgs(args, len(rt.cfg.Profiles))
+	if err != nil {
+		return err
+	}
+	if action == "show" {
+		return nil
+	}
+	return rt.applyProfileAction(action, index, newName)
+}
+
+func (rt *runtimeState) rememberCurrentProfileWhenEmpty() error {
+	if len(rt.cfg.Profiles) != 0 {
+		return nil
+	}
+	profile, ok := rt.activeProviderProfile("")
+	if !ok {
+		return nil
+	}
+	rt.cfg.Profiles = upsertProfile(rt.cfg.Profiles, profile, 5)
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Saved current provider/model as profile "+profile.Name))
+	return nil
+}
+
+func (rt *runtimeState) renderProfileList() {
 	fmt.Fprintln(rt.writer, rt.ui.section("Profiles"))
 	if current, ok := rt.currentProfile(); ok {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Current profile: "+current.Name))
@@ -2169,6 +2239,7 @@ func (rt *runtimeState) handleProfileCommand() error {
 			meta = append(meta, "pinned")
 		}
 		fmt.Fprintln(rt.writer, rt.ui.dim(strings.Join(meta, " | ")))
+		rt.renderStoredProfileRoleModels(current, "  ")
 		fmt.Fprintln(rt.writer)
 	}
 	for i, profile := range rt.cfg.Profiles {
@@ -2180,7 +2251,8 @@ func (rt *runtimeState) handleProfileCommand() error {
 		if profile.BaseURL != "" {
 			meta = append(meta, profile.BaseURL)
 		}
-		if strings.EqualFold(profile.Provider, rt.session.Provider) &&
+		if rt.session != nil &&
+			strings.EqualFold(profile.Provider, rt.session.Provider) &&
 			strings.EqualFold(profile.Model, rt.session.Model) &&
 			strings.EqualFold(strings.TrimSpace(profile.BaseURL), strings.TrimSpace(rt.session.BaseURL)) {
 			label += " " + rt.ui.success("[current]")
@@ -2189,30 +2261,67 @@ func (rt *runtimeState) handleProfileCommand() error {
 			label += "  " + rt.ui.dim(strings.Join(meta, " | "))
 		}
 		fmt.Fprintln(rt.writer, label)
+		rt.renderStoredProfileRoleModels(profile, "    ")
 	}
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a number to activate a profile."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use r<number> to rename, d<number> to delete, p<number> to pin or unpin."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /profile <number>, /profile r<number>, /profile d<number>, or /profile p<number>."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure main, review, analysis, or specialist models."))
+}
 
-	choice, err := rt.promptValue("Profile action", "1")
-	if err != nil {
-		if errors.Is(err, ErrPromptCanceled) {
-			return nil
+func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent string) {
+	if profile.RoleModels == nil {
+		fmt.Fprintln(rt.writer, indent+rt.ui.dim("role_models: legacy profile; current role routing is left unchanged when activated"))
+		return
+	}
+	roles := profile.RoleModels
+	rt.renderStoredProfileRoleLine(indent, "plan_reviewer", roles.PlanReviewer, "not configured; follows profile main model")
+	rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "not configured; follows profile main model")
+	if roles.AnalysisReviewer != nil {
+		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", roles.AnalysisReviewer, "")
+	} else if roles.AnalysisWorker != nil {
+		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV("analysis_reviewer", "not configured; follows profile analysis_worker model -> "+formatProviderModelLabel(roles.AnalysisWorker.Provider, roles.AnalysisWorker.Model)))
+	} else {
+		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", nil, "not configured; follows profile main model")
+	}
+	if len(roles.Specialists) == 0 {
+		return
+	}
+	for _, specialist := range roles.Specialists {
+		if strings.TrimSpace(specialist.Name) == "" {
+			continue
 		}
-		return err
+		label := "specialist:" + specialist.Name
+		value := formatProviderModelLabel(specialist.Provider, specialist.Model)
+		if strings.TrimSpace(specialist.BaseURL) != "" {
+			value += " | " + strings.TrimSpace(specialist.BaseURL)
+		}
+		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV(label, value))
 	}
+}
 
-	action, index, err := parseProfileAction(strings.TrimSpace(choice), len(rt.cfg.Profiles))
-	if err != nil {
-		return err
+func (rt *runtimeState) renderStoredProfileRoleLine(indent string, role string, profile *Profile, fallback string) {
+	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV(role, fallback))
+		return
 	}
+	value := formatProviderModelLabel(profile.Provider, profile.Model)
+	if strings.TrimSpace(profile.BaseURL) != "" {
+		value += " | " + strings.TrimSpace(profile.BaseURL)
+	}
+	fmt.Fprintln(rt.writer, indent+rt.ui.statusKV(role, value))
+}
+
+func (rt *runtimeState) applyProfileAction(action string, index int, newName string) error {
 	selected := rt.cfg.Profiles[index-1]
 
 	switch action {
 	case "activate":
 		if strings.TrimSpace(selected.APIKey) != "" {
 			rt.cfg.APIKey = selected.APIKey
-		} else if requiresAPIKey(selected.Provider) && strings.TrimSpace(rt.cfg.APIKey) == "" {
+		} else if key := rt.providerAPIKey(selected.Provider); key != "" {
+			rt.cfg.APIKey = key
+		} else if requiresAPIKey(selected.Provider) {
 			keyPrompt := providerDisplayName(selected.Provider) + " API key"
 			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
 			if err != nil {
@@ -2223,6 +2332,8 @@ func (rt *runtimeState) handleProfileCommand() error {
 			}
 			rt.cfg.APIKey = apiKey
 		}
+		rt.storeProviderKey(selected.Provider, rt.cfg.APIKey)
+		rt.applyProfileRoleModels(selected)
 
 		if err := rt.activateProvider(selected.Provider, selected.Model, selected.BaseURL); err != nil {
 			return err
@@ -2230,12 +2341,16 @@ func (rt *runtimeState) handleProfileCommand() error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Activated profile "+selected.Name))
 		return nil
 	case "rename":
-		newName, err := rt.promptRequiredValue("New profile name", selected.Name)
-		if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return nil
+		newName = strings.TrimSpace(newName)
+		if newName == "" {
+			var err error
+			newName, err = rt.promptRequiredValue("New profile name", selected.Name)
+			if err != nil {
+				if errors.Is(err, ErrPromptCanceled) {
+					return nil
+				}
+				return err
 			}
-			return err
 		}
 		rt.cfg.Profiles[index-1].Name = newName
 		if err := rt.saveUserConfig(); err != nil {
@@ -2244,6 +2359,9 @@ func (rt *runtimeState) handleProfileCommand() error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Renamed profile to "+newName))
 		return nil
 	case "delete":
+		if configProfileKey(selected) == strings.TrimSpace(rt.cfg.ActiveProfileKey) {
+			rt.cfg.ActiveProfileKey = ""
+		}
 		rt.cfg.Profiles = append(rt.cfg.Profiles[:index-1], rt.cfg.Profiles[index:]...)
 		if err := rt.saveUserConfig(); err != nil {
 			return err
@@ -2251,6 +2369,22 @@ func (rt *runtimeState) handleProfileCommand() error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Deleted profile "+selected.Name))
 		return nil
 	case "pin":
+		rt.cfg.Profiles[index-1].Pinned = true
+		rt.cfg.Profiles = normalizedProfileOrder(rt.cfg.Profiles)
+		if err := rt.saveUserConfig(); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("pinned profile "+selected.Name))
+		return nil
+	case "unpin":
+		rt.cfg.Profiles[index-1].Pinned = false
+		rt.cfg.Profiles = normalizedProfileOrder(rt.cfg.Profiles)
+		if err := rt.saveUserConfig(); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("unpinned profile "+selected.Name))
+		return nil
+	case "toggle-pin":
 		newPinned := !rt.cfg.Profiles[index-1].Pinned
 		rt.cfg.Profiles[index-1].Pinned = newPinned
 		rt.cfg.Profiles = normalizedProfileOrder(rt.cfg.Profiles)
@@ -2269,6 +2403,9 @@ func (rt *runtimeState) handleProfileCommand() error {
 }
 
 func (rt *runtimeState) currentProfile() (Profile, bool) {
+	if rt == nil || rt.session == nil {
+		return Profile{}, false
+	}
 	for _, profile := range rt.cfg.Profiles {
 		if strings.EqualFold(profile.Provider, rt.session.Provider) &&
 			strings.EqualFold(profile.Model, rt.session.Model) &&
@@ -2277,6 +2414,175 @@ func (rt *runtimeState) currentProfile() (Profile, bool) {
 		}
 	}
 	return Profile{}, false
+}
+
+func (rt *runtimeState) activeProviderProfile(name string) (Profile, bool) {
+	provider := strings.TrimSpace(rt.cfg.Provider)
+	model := strings.TrimSpace(rt.cfg.Model)
+	baseURL := strings.TrimSpace(rt.cfg.BaseURL)
+	if rt != nil && rt.session != nil {
+		if strings.TrimSpace(rt.session.Provider) != "" {
+			provider = strings.TrimSpace(rt.session.Provider)
+		}
+		if strings.TrimSpace(rt.session.Model) != "" {
+			model = strings.TrimSpace(rt.session.Model)
+		}
+		if strings.TrimSpace(rt.session.BaseURL) != "" {
+			baseURL = strings.TrimSpace(rt.session.BaseURL)
+		}
+	}
+	if provider == "" || model == "" {
+		return Profile{}, false
+	}
+	if strings.TrimSpace(name) == "" {
+		name = profileName(provider, model)
+	}
+	return Profile{
+		Name:       strings.TrimSpace(name),
+		Provider:   provider,
+		Model:      model,
+		BaseURL:    normalizeProfileBaseURL(provider, baseURL),
+		APIKey:     rt.providerAPIKey(provider),
+		RoleModels: rt.currentProfileRoleModels(),
+	}, true
+}
+
+func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
+	if rt == nil {
+		return &ProfileRoleModels{}
+	}
+	roles := &ProfileRoleModels{}
+	if rt.cfg.PlanReview != nil {
+		roles.PlanReviewer = &Profile{
+			Name:     profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
+			Provider: rt.cfg.PlanReview.Provider,
+			Model:    rt.cfg.PlanReview.Model,
+			BaseURL:  normalizeProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
+			APIKey:   rt.cfg.PlanReview.APIKey,
+		}
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+		roles.AnalysisWorker = cloneProfile(rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		roles.AnalysisReviewer = cloneProfile(rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+	for _, profile := range rt.cfg.Specialists.Profiles {
+		if strings.TrimSpace(profile.Name) == "" {
+			continue
+		}
+		if strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			continue
+		}
+		roles.Specialists = append(roles.Specialists, SpecialistSubagentProfile{
+			Name:     strings.TrimSpace(profile.Name),
+			Provider: strings.TrimSpace(profile.Provider),
+			Model:    strings.TrimSpace(profile.Model),
+			BaseURL:  normalizeProfileBaseURL(profile.Provider, profile.BaseURL),
+			APIKey:   strings.TrimSpace(profile.APIKey),
+		})
+	}
+	return roles
+}
+
+func cloneProfile(profile *Profile) *Profile {
+	if profile == nil {
+		return nil
+	}
+	cloned := *profile
+	cloned.Provider = strings.TrimSpace(cloned.Provider)
+	cloned.Model = strings.TrimSpace(cloned.Model)
+	cloned.BaseURL = normalizeProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	if strings.TrimSpace(cloned.Name) == "" && strings.TrimSpace(cloned.Provider) != "" && strings.TrimSpace(cloned.Model) != "" {
+		cloned.Name = profileName(cloned.Provider, cloned.Model)
+	}
+	return &cloned
+}
+
+func (rt *runtimeState) applyProfileRoleModels(profile Profile) {
+	if rt == nil || profile.RoleModels == nil {
+		return
+	}
+	roles := profile.RoleModels
+	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
+		rt.cfg.PlanReview = &PlanReviewConfig{
+			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
+			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
+			BaseURL:  normalizeProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			APIKey:   firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
+		}
+		rt.storeProviderKey(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.APIKey)
+	} else {
+		rt.cfg.PlanReview = nil
+	}
+	rt.cfg.ProjectAnalysis.WorkerProfile = profileRoleModelClone(roles.AnalysisWorker, rt)
+	rt.cfg.ProjectAnalysis.ReviewerProfile = profileRoleModelClone(roles.AnalysisReviewer, rt)
+	rt.applyProfileSpecialistRoleModels(roles.Specialists)
+}
+
+func profileRoleModelClone(profile *Profile, rt *runtimeState) *Profile {
+	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		return nil
+	}
+	cloned := cloneProfile(profile)
+	if strings.TrimSpace(cloned.APIKey) == "" && rt != nil {
+		cloned.APIKey = rt.providerAPIKey(cloned.Provider)
+	}
+	if rt != nil {
+		rt.storeProviderKey(cloned.Provider, cloned.APIKey)
+	}
+	return cloned
+}
+
+func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []SpecialistSubagentProfile) {
+	modelsByName := map[string]SpecialistSubagentProfile{}
+	for _, profile := range roleSpecialists {
+		name := normalizeSpecialistProfileName(profile.Name)
+		if name == "" || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			continue
+		}
+		profile.Name = strings.TrimSpace(profile.Name)
+		profile.Provider = strings.TrimSpace(profile.Provider)
+		profile.Model = strings.TrimSpace(profile.Model)
+		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		if strings.TrimSpace(profile.APIKey) == "" {
+			profile.APIKey = rt.providerAPIKey(profile.Provider)
+		}
+		modelsByName[name] = profile
+		rt.storeProviderKey(profile.Provider, profile.APIKey)
+	}
+	next := make([]SpecialistSubagentProfile, 0, len(rt.cfg.Specialists.Profiles)+len(modelsByName))
+	seen := map[string]bool{}
+	for _, existing := range rt.cfg.Specialists.Profiles {
+		name := normalizeSpecialistProfileName(existing.Name)
+		if name == "" {
+			continue
+		}
+		if model, ok := modelsByName[name]; ok {
+			existing.Provider = model.Provider
+			existing.Model = model.Model
+			existing.BaseURL = model.BaseURL
+			existing.APIKey = model.APIKey
+			seen[name] = true
+			next = append(next, normalizeSpecialistProfile(existing))
+			continue
+		}
+		existing.Provider = ""
+		existing.Model = ""
+		existing.BaseURL = ""
+		existing.APIKey = ""
+		if specialistProfileHasNonModelOverrides(existing) {
+			next = append(next, normalizeSpecialistProfile(existing))
+		}
+		seen[name] = true
+	}
+	for name, model := range modelsByName {
+		if seen[name] {
+			continue
+		}
+		next = append(next, normalizeSpecialistProfile(model))
+	}
+	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(next)
 }
 
 func requiresAPIKey(provider string) bool {
@@ -2628,6 +2934,67 @@ func parseProfileAction(input string, max int) (string, int, error) {
 	return action, index, nil
 }
 
+func parseProfileCommandArgs(input string, max int) (string, int, string, error) {
+	value := strings.TrimSpace(input)
+	if value == "" {
+		return "show", 0, "", nil
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return "show", 0, "", nil
+	}
+	head := strings.ToLower(strings.TrimSpace(fields[0]))
+	switch head {
+	case "add", "create", "new", "save", "save-current", "remember":
+		return "", 0, "", fmt.Errorf("profile commands do not register models directly; use /model to choose the model and Kernforge will save the selection automatically")
+	case "list", "show", "status":
+		return "show", 0, "", nil
+	case "activate", "use", "switch", "select":
+		if len(fields) < 2 {
+			return "", 0, "", fmt.Errorf("usage: /profile %s <number>", fields[0])
+		}
+		index, err := parseProfileIndex(fields[1], max, value)
+		return "activate", index, "", err
+	case "rename", "r":
+		if len(fields) < 2 {
+			return "", 0, "", fmt.Errorf("usage: /profile rename <number> [name]")
+		}
+		index, err := parseProfileIndex(fields[1], max, value)
+		return "rename", index, strings.TrimSpace(strings.Join(fields[2:], " ")), err
+	case "delete", "remove", "d":
+		if len(fields) < 2 {
+			return "", 0, "", fmt.Errorf("usage: /profile delete <number>")
+		}
+		index, err := parseProfileIndex(fields[1], max, value)
+		return "delete", index, "", err
+	case "pin":
+		if len(fields) < 2 {
+			return "", 0, "", fmt.Errorf("usage: /profile pin <number>")
+		}
+		index, err := parseProfileIndex(fields[1], max, value)
+		return "pin", index, "", err
+	case "unpin":
+		if len(fields) < 2 {
+			return "", 0, "", fmt.Errorf("usage: /profile unpin <number>")
+		}
+		index, err := parseProfileIndex(fields[1], max, value)
+		return "unpin", index, "", err
+	}
+	action, index, err := parseProfileAction(value, max)
+	if action == "pin" {
+		action = "toggle-pin"
+	}
+	return action, index, "", err
+}
+
+func parseProfileIndex(input string, max int, original string) (int, error) {
+	index, err := parsePositiveInt(strings.TrimSpace(input))
+	if err != nil || index < 1 || index > max {
+		return 0, fmt.Errorf("invalid profile selection: %s", original)
+	}
+	return index, nil
+}
+
 func normalizedProfileOrder(profiles []Profile) []Profile {
 	pinned := make([]Profile, 0, len(profiles))
 	others := make([]Profile, 0, len(profiles))
@@ -2649,64 +3016,30 @@ func limitProfiles(profiles []Profile, max int) []Profile {
 	return append([]Profile(nil), ordered[:max]...)
 }
 
-func (rt *runtimeState) syncClientFromConfig() {
-	client, clientErr := NewProviderClient(rt.cfg)
-	if rt.agent != nil {
-		rt.agent.Config = rt.cfg
-		rt.agent.Client = client
+func upsertProfile(profiles []Profile, profile Profile, max int) []Profile {
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.Provider = strings.TrimSpace(profile.Provider)
+	profile.Model = strings.TrimSpace(profile.Model)
+	profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	if profile.Name == "" {
+		profile.Name = profileName(profile.Provider, profile.Model)
 	}
-	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
-	rt.clientErr = clientErr
-}
-
-func (rt *runtimeState) saveUserConfig() error {
-	if rt != nil && rt.session != nil {
-		if strings.TrimSpace(rt.session.Provider) != "" {
-			rt.cfg.Provider = rt.session.Provider
-		}
-		if strings.TrimSpace(rt.session.Model) != "" {
-			rt.cfg.Model = rt.session.Model
-		}
-		if strings.TrimSpace(rt.session.BaseURL) != "" {
-			rt.cfg.BaseURL = rt.session.BaseURL
-		}
-		if strings.TrimSpace(rt.session.PermissionMode) != "" {
-			rt.cfg.PermissionMode = rt.session.PermissionMode
-		}
-	}
-	return SaveUserConfig(rt.cfg)
-}
-
-func (rt *runtimeState) rememberCurrentProfile() {
-	if strings.TrimSpace(rt.session.Provider) == "" || strings.TrimSpace(rt.session.Model) == "" {
-		return
-	}
-	profile := Profile{
-		Name:     profileName(rt.session.Provider, rt.session.Model),
-		Provider: rt.session.Provider,
-		Model:    rt.session.Model,
-		BaseURL:  rt.session.BaseURL,
-		APIKey:   rt.cfg.APIKey,
-	}
-
-	for _, existing := range rt.cfg.Profiles {
+	pinned := make([]Profile, 0, len(profiles)+1)
+	others := make([]Profile, 0, len(profiles)+1)
+	for _, existing := range profiles {
 		if strings.EqualFold(existing.Provider, profile.Provider) &&
 			strings.EqualFold(existing.Model, profile.Model) &&
 			strings.EqualFold(strings.TrimSpace(existing.BaseURL), strings.TrimSpace(profile.BaseURL)) {
-			if strings.TrimSpace(existing.Name) != "" {
+			if strings.TrimSpace(existing.Name) != "" && strings.EqualFold(profile.Name, profileName(profile.Provider, profile.Model)) {
 				profile.Name = existing.Name
 			}
+			if strings.TrimSpace(profile.APIKey) == "" {
+				profile.APIKey = existing.APIKey
+			}
+			if profile.RoleModels == nil {
+				profile.RoleModels = existing.RoleModels
+			}
 			profile.Pinned = existing.Pinned
-			break
-		}
-	}
-
-	pinned := make([]Profile, 0, len(rt.cfg.Profiles)+1)
-	others := make([]Profile, 0, len(rt.cfg.Profiles)+1)
-	for _, existing := range rt.cfg.Profiles {
-		if strings.EqualFold(existing.Provider, profile.Provider) &&
-			strings.EqualFold(existing.Model, profile.Model) &&
-			strings.EqualFold(strings.TrimSpace(existing.BaseURL), strings.TrimSpace(profile.BaseURL)) {
 			continue
 		}
 		if existing.Pinned {
@@ -2720,13 +3053,53 @@ func (rt *runtimeState) rememberCurrentProfile() {
 	} else {
 		others = append([]Profile{profile}, others...)
 	}
-	rt.cfg.Profiles = limitProfiles(append(pinned, others...), 5)
+	return limitProfiles(append(pinned, others...), max)
+}
+
+func (rt *runtimeState) syncClientFromConfig() {
+	client, clientErr := NewProviderClient(rt.cfg)
+	if rt.agent != nil {
+		rt.agent.Config = rt.cfg
+		rt.agent.Client = client
+	}
+	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
+	rt.clientErr = clientErr
+}
+
+func (rt *runtimeState) saveUserConfig() error {
+	if rt != nil && rt.session != nil {
+		if strings.TrimSpace(rt.session.PermissionMode) != "" {
+			rt.cfg.PermissionMode = rt.session.PermissionMode
+		}
+	}
+	return SaveUserConfig(rt.cfg)
+}
+
+func (rt *runtimeState) rememberCurrentProfile() {
+	if strings.TrimSpace(rt.session.Provider) == "" || strings.TrimSpace(rt.session.Model) == "" {
+		return
+	}
+	profile := Profile{
+		Name:       profileName(rt.session.Provider, rt.session.Model),
+		Provider:   rt.session.Provider,
+		Model:      rt.session.Model,
+		BaseURL:    rt.session.BaseURL,
+		APIKey:     rt.providerAPIKey(rt.session.Provider),
+		RoleModels: rt.currentProfileRoleModels(),
+	}
+
+	rt.cfg.Profiles = upsertProfile(rt.cfg.Profiles, profile, 5)
+	rt.cfg.ActiveProfileKey = configProfileKey(profile)
 }
 
 func (rt *runtimeState) activateProvider(providerName, model, baseURL string) error {
 	rt.cfg.Provider = providerName
 	rt.cfg.Model = model
 	rt.cfg.BaseURL = baseURL
+	if key := rt.providerAPIKey(providerName); key != "" {
+		rt.cfg.APIKey = key
+		rt.storeProviderKey(providerName, key)
+	}
 	rt.session.Provider = providerName
 	rt.session.Model = model
 	rt.session.BaseURL = baseURL
@@ -2955,12 +3328,38 @@ func formatProviderModelLabel(provider string, model string) string {
 	return valueOrUnset(strings.TrimSpace(provider)) + " / " + valueOrUnset(strings.TrimSpace(model))
 }
 
+func inheritedMainModelLabel(provider string, model string) string {
+	return "not configured; follows main model -> " + formatProviderModelLabel(provider, model)
+}
+
+func inheritedWorkerModelLabel(provider string, model string) string {
+	return "not configured; follows analysis_worker model -> " + formatProviderModelLabel(provider, model)
+}
+
+func (rt *runtimeState) hasInheritedRoleModels() bool {
+	if rt == nil {
+		return false
+	}
+	if rt.cfg.PlanReview == nil {
+		return true
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
+		return true
+	}
+	for _, profile := range configuredSpecialistProfiles(rt.cfg) {
+		if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 func (rt *runtimeState) describePlanReviewModel() string {
 	if rt != nil && rt.cfg.PlanReview != nil {
 		return formatProviderModelLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model)
 	}
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
-	return formatProviderModelLabel(mainProvider, mainModel) + " (uses main model)"
+	return inheritedMainModelLabel(mainProvider, mainModel)
 }
 
 func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
@@ -2971,15 +3370,15 @@ func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
 		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
 			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)
 		}
-		return mainLabel + " (uses main model)"
+		return inheritedMainModelLabel(mainProvider, mainModel)
 	case "reviewer":
 		if rt != nil && rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
 			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model)
 		}
 		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model) + " (inherits worker model)"
+			return inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)
 		}
-		return mainLabel + " (uses main model)"
+		return inheritedMainModelLabel(mainProvider, mainModel)
 	default:
 		return mainLabel
 	}
@@ -2989,10 +3388,7 @@ func (rt *runtimeState) currentProviderStatus() (string, string, string, string)
 	provider := strings.ToLower(firstNonEmptyTrimmed(rt.session.Provider, rt.cfg.Provider))
 	model := firstNonEmptyTrimmed(rt.session.Model, rt.cfg.Model)
 	baseURL := normalizeProviderBaseURL(provider, firstNonEmptyTrimmed(rt.session.BaseURL, rt.cfg.BaseURL))
-	apiKey := strings.TrimSpace(rt.storedProviderKey(provider))
-	if strings.EqualFold(provider, rt.cfg.Provider) && strings.TrimSpace(rt.cfg.APIKey) != "" {
-		apiKey = strings.TrimSpace(rt.cfg.APIKey)
-	}
+	apiKey := rt.providerAPIKey(provider)
 	return provider, model, baseURL, apiKey
 }
 
@@ -3620,6 +4016,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		mode := ParseMode(cmd.Args)
 		rt.perms.SetMode(mode)
 		rt.session.PermissionMode = string(mode)
+		rt.cfg.PermissionMode = string(mode)
 		_ = rt.store.Save(rt.session)
 		if err := rt.saveUserConfig(); err != nil {
 			return false, err
@@ -3734,6 +4131,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "fuzz-func":
 		if err := rt.handleFuzzFuncCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "fuzz-campaign":
+		if err := rt.handleFuzzCampaignCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "simulate-dashboard":
@@ -4108,7 +4509,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "provider":
 		return false, rt.handleProviderCommand(cmd.Args)
 	case "profile":
-		return false, rt.handleProfileCommand()
+		return false, rt.handleProfileCommand(cmd.Args)
 	case "diff":
 		out, err := NewGitDiffTool(rt.workspace).Execute(context.Background(), map[string]any{})
 		if err == nil {
@@ -4221,12 +4622,20 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleAnalyzeProjectCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "analyze-dashboard":
+		if err := rt.handleAnalyzeDashboardCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "docs-refresh":
+		if err := rt.handleDocsRefreshCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "analyze-performance":
 		if err := rt.handleAnalyzePerformanceCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "profile-review":
-		return false, rt.handleProfileReviewCommand()
+		return false, rt.handleProfileReviewCommand(cmd.Args)
 	case "exit", "quit":
 		return true, nil
 	default:
@@ -4820,6 +5229,7 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 		case "clear", "reset":
 			rt.cfg.ProjectAnalysis.WorkerProfile = nil
 			rt.cfg.ProjectAnalysis.ReviewerProfile = nil
+			rt.rememberCurrentProfile()
 			if err := SaveUserConfig(rt.cfg); err != nil {
 				return err
 			}
@@ -4983,15 +5393,15 @@ func (rt *runtimeState) seedSessionPlanFromText(plan string) error {
 func (rt *runtimeState) showProjectAnalysisModelStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Project Analysis Models"))
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", rt.cfg.Provider+" / "+rt.cfg.Model+" (inherits main model)"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model)))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", rt.cfg.ProjectAnalysis.WorkerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.WorkerProfile.Model))
 	}
 	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
 		if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.ProjectAnalysis.WorkerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.WorkerProfile.Model+" (inherits worker model)"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)))
 		} else {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.Provider+" / "+rt.cfg.Model+" (inherits main model)"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model)))
 		}
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.ProjectAnalysis.ReviewerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.ReviewerProfile.Model))
@@ -5039,7 +5449,7 @@ func (rt *runtimeState) describeSpecialistModel(profile SpecialistSubagentProfil
 	}
 	value := provider + " / " + model
 	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
-		value += " (inherits main model)"
+		value = inheritedMainModelLabel(provider, model)
 	}
 	return value
 }
@@ -5094,6 +5504,9 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 		nextAPIKey = strings.TrimSpace(profile.APIKey)
 		currentModel = strings.TrimSpace(profile.Model)
 	}
+	if strings.TrimSpace(nextAPIKey) == "" {
+		nextAPIKey = rt.providerAPIKey(provider)
+	}
 
 	if nextModel == "" {
 		switch provider {
@@ -5123,9 +5536,6 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalized
 		case "openrouter":
 			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
-			if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(provider, rt.cfg.Provider) {
-				nextAPIKey = rt.cfg.APIKey
-			}
 			if strings.TrimSpace(nextAPIKey) == "" {
 				apiKey, err := rt.promptRequiredValue(providerDisplayName(provider)+" API key (for specialist "+profile.Name+")", "")
 				if err != nil {
@@ -5229,6 +5639,9 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		nextBaseURL = current.BaseURL
 		nextAPIKey = current.APIKey
 	}
+	if strings.TrimSpace(nextAPIKey) == "" {
+		nextAPIKey = rt.providerAPIKey(provider)
+	}
 
 	switch provider {
 	case "ollama":
@@ -5256,9 +5669,6 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		nextModel = selected.Name
 		nextBaseURL = normalized
 	case "anthropic", "openai", "openrouter":
-		if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(provider, rt.cfg.Provider) {
-			nextAPIKey = rt.cfg.APIKey
-		}
 		if strings.TrimSpace(nextAPIKey) == "" {
 			keyPrompt := providerDisplayName(provider) + " API key (for analysis " + role + ")"
 			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
@@ -5300,6 +5710,9 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 }
 
 func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string, model string, baseURL string, apiKey string) error {
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = rt.providerAPIKey(provider)
+	}
 	profile := &Profile{
 		Name:     profileName(provider, model),
 		Provider: provider,
@@ -5314,6 +5727,8 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	} else {
 		return fmt.Errorf("unsupported analysis role: %s", role)
 	}
+	rt.storeProviderKey(provider, apiKey)
+	rt.rememberCurrentProfile()
 	if err := SaveUserConfig(rt.cfg); err != nil {
 		return err
 	}
@@ -5322,6 +5737,9 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 }
 
 func (rt *runtimeState) activateSpecialistModel(name string, provider string, model string, baseURL string, apiKey string) error {
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = rt.providerAPIKey(provider)
+	}
 	updated := false
 	profiles := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
 	for i := range profiles {
@@ -5345,6 +5763,8 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 		})
 	}
 	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(profiles)
+	rt.storeProviderKey(provider, apiKey)
+	rt.rememberCurrentProfile()
 	if err := rt.persistSpecialistOverrides(); err != nil {
 		return err
 	}
@@ -5383,6 +5803,7 @@ func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 		return fmt.Errorf("no specialist model override found for %s", name)
 	}
 	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(next)
+	rt.rememberCurrentProfile()
 	if err := rt.persistSpecialistOverrides(); err != nil {
 		return err
 	}
@@ -5471,6 +5892,9 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 		nextBaseURL = rt.cfg.PlanReview.BaseURL
 		nextAPIKey = rt.cfg.PlanReview.APIKey
 	}
+	if strings.TrimSpace(nextAPIKey) == "" {
+		nextAPIKey = rt.providerAPIKey(provider)
+	}
 
 	switch provider {
 	case "ollama":
@@ -5504,10 +5928,6 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 		}
 		nextBaseURL = baseURL
 
-		// Try to inherit API key from main config if same provider
-		if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(provider, rt.cfg.Provider) {
-			nextAPIKey = rt.cfg.APIKey
-		}
 		if strings.TrimSpace(nextAPIKey) == "" {
 			keyPrompt := providerDisplayName(provider) + " API key (for reviewer)"
 			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
@@ -5550,6 +5970,9 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 
 func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey string) error {
 	baseURL = normalizeProfileBaseURL(provider, baseURL)
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = rt.providerAPIKey(provider)
+	}
 	rt.cfg.PlanReview = &PlanReviewConfig{
 		Provider: provider,
 		Model:    model,
@@ -5557,6 +5980,8 @@ func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey stri
 		APIKey:   apiKey,
 	}
 	rt.rememberReviewProfile()
+	rt.storeProviderKey(provider, apiKey)
+	rt.rememberCurrentProfile()
 	if err := SaveUserConfig(rt.cfg); err != nil {
 		return err
 	}
@@ -5580,38 +6005,7 @@ func (rt *runtimeState) rememberReviewProfile() {
 		APIKey:   pr.APIKey,
 	}
 
-	for _, existing := range rt.cfg.ReviewProfiles {
-		if strings.EqualFold(existing.Provider, profile.Provider) &&
-			strings.EqualFold(existing.Model, profile.Model) &&
-			strings.EqualFold(strings.TrimSpace(existing.BaseURL), strings.TrimSpace(profile.BaseURL)) {
-			if strings.TrimSpace(existing.Name) != "" {
-				profile.Name = existing.Name
-			}
-			profile.Pinned = existing.Pinned
-			break
-		}
-	}
-
-	pinned := make([]Profile, 0, len(rt.cfg.ReviewProfiles)+1)
-	others := make([]Profile, 0, len(rt.cfg.ReviewProfiles)+1)
-	for _, existing := range rt.cfg.ReviewProfiles {
-		if strings.EqualFold(existing.Provider, profile.Provider) &&
-			strings.EqualFold(existing.Model, profile.Model) &&
-			strings.EqualFold(strings.TrimSpace(existing.BaseURL), strings.TrimSpace(profile.BaseURL)) {
-			continue
-		}
-		if existing.Pinned {
-			pinned = append(pinned, existing)
-		} else {
-			others = append(others, existing)
-		}
-	}
-	if profile.Pinned {
-		pinned = append([]Profile{profile}, pinned...)
-	} else {
-		others = append([]Profile{profile}, others...)
-	}
-	rt.cfg.ReviewProfiles = limitProfiles(append(pinned, others...), 5)
+	rt.cfg.ReviewProfiles = upsertProfile(rt.cfg.ReviewProfiles, profile, 5)
 }
 
 func (rt *runtimeState) currentReviewProfile() (Profile, bool) {
@@ -5628,13 +6022,85 @@ func (rt *runtimeState) currentReviewProfile() (Profile, bool) {
 	return Profile{}, false
 }
 
-func (rt *runtimeState) handleProfileReviewCommand() error {
+func (rt *runtimeState) handleProfileReviewCommand(args string) error {
+	args = strings.TrimSpace(args)
 	if len(rt.cfg.ReviewProfiles) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved review profiles yet. Use /set-plan-review to add one."))
-		return nil
+		if err := rt.rememberCurrentReviewProfileWhenEmpty(); err != nil {
+			return err
+		}
 	}
 
 	rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
+	if len(rt.cfg.ReviewProfiles) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved review profiles yet."))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model or /set-plan-review to configure the reviewer; Kernforge saves it automatically."))
+		return nil
+	}
+	rt.renderReviewProfileList()
+	if args == "" {
+		if !rt.interactive {
+			return nil
+		}
+		choice, err := rt.promptValueAllowEmpty("Profile action", "")
+		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return nil
+			}
+			return err
+		}
+		args = strings.TrimSpace(choice)
+		if args == "" {
+			return nil
+		}
+	}
+	action, index, newName, err := parseProfileCommandArgs(args, len(rt.cfg.ReviewProfiles))
+	if err != nil {
+		return err
+	}
+	if action == "show" {
+		return nil
+	}
+	return rt.applyReviewProfileAction(action, index, newName)
+}
+
+func (rt *runtimeState) rememberCurrentReviewProfileWhenEmpty() error {
+	if len(rt.cfg.ReviewProfiles) != 0 {
+		return nil
+	}
+	profile, ok := rt.activeReviewProfile("")
+	if !ok {
+		return nil
+	}
+	rt.cfg.ReviewProfiles = upsertProfile(rt.cfg.ReviewProfiles, profile, 5)
+	if err := SaveUserConfig(rt.cfg); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Saved current review provider/model as profile "+profile.Name))
+	return nil
+}
+
+func (rt *runtimeState) activeReviewProfile(name string) (Profile, bool) {
+	if rt.cfg.PlanReview == nil {
+		return Profile{}, false
+	}
+	provider := strings.TrimSpace(rt.cfg.PlanReview.Provider)
+	model := strings.TrimSpace(rt.cfg.PlanReview.Model)
+	if provider == "" || model == "" {
+		return Profile{}, false
+	}
+	if strings.TrimSpace(name) == "" {
+		name = profileName(provider, model)
+	}
+	return Profile{
+		Name:     strings.TrimSpace(name),
+		Provider: provider,
+		Model:    model,
+		BaseURL:  normalizeProfileBaseURL(provider, rt.cfg.PlanReview.BaseURL),
+		APIKey:   rt.providerAPIKey(provider),
+	}, true
+}
+
+func (rt *runtimeState) renderReviewProfileList() {
 	fmt.Fprintln(rt.writer, rt.ui.section("Review Profiles"))
 	if current, ok := rt.currentReviewProfile(); ok {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Current reviewer: "+current.Name))
@@ -5670,27 +6136,18 @@ func (rt *runtimeState) handleProfileReviewCommand() error {
 	}
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a number to activate a review profile."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use r<number> to rename, d<number> to delete, p<number> to pin or unpin."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /profile-review <number>, /profile-review r<number>, /profile-review d<number>, or /profile-review p<number>."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure review, analysis, or specialist models."))
+}
 
-	choice, err := rt.promptValue("Profile action", "1")
-	if err != nil {
-		if errors.Is(err, ErrPromptCanceled) {
-			return nil
-		}
-		return err
-	}
-
-	action, index, err := parseProfileAction(strings.TrimSpace(choice), len(rt.cfg.ReviewProfiles))
-	if err != nil {
-		return err
-	}
+func (rt *runtimeState) applyReviewProfileAction(action string, index int, newName string) error {
 	selected := rt.cfg.ReviewProfiles[index-1]
 
 	switch action {
 	case "activate":
 		apiKey := selected.APIKey
-		if strings.TrimSpace(apiKey) == "" && strings.EqualFold(selected.Provider, rt.cfg.Provider) {
-			apiKey = rt.cfg.APIKey
+		if strings.TrimSpace(apiKey) == "" {
+			apiKey = rt.providerAPIKey(selected.Provider)
 		}
 		if strings.TrimSpace(apiKey) == "" && requiresAPIKey(selected.Provider) {
 			keyPrompt := providerDisplayName(selected.Provider) + " API key (for reviewer)"
@@ -5709,12 +6166,16 @@ func (rt *runtimeState) handleProfileReviewCommand() error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Activated review profile "+selected.Name))
 		return nil
 	case "rename":
-		newName, err := rt.promptRequiredValue("New profile name", selected.Name)
-		if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return nil
+		newName = strings.TrimSpace(newName)
+		if newName == "" {
+			var err error
+			newName, err = rt.promptRequiredValue("New profile name", selected.Name)
+			if err != nil {
+				if errors.Is(err, ErrPromptCanceled) {
+					return nil
+				}
+				return err
 			}
-			return err
 		}
 		rt.cfg.ReviewProfiles[index-1].Name = newName
 		if err := SaveUserConfig(rt.cfg); err != nil {
@@ -5730,6 +6191,22 @@ func (rt *runtimeState) handleProfileReviewCommand() error {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Deleted review profile "+selected.Name))
 		return nil
 	case "pin":
+		rt.cfg.ReviewProfiles[index-1].Pinned = true
+		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
+		if err := SaveUserConfig(rt.cfg); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("pinned review profile "+selected.Name))
+		return nil
+	case "unpin":
+		rt.cfg.ReviewProfiles[index-1].Pinned = false
+		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
+		if err := SaveUserConfig(rt.cfg); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("unpinned review profile "+selected.Name))
+		return nil
+	case "toggle-pin":
 		newPinned := !rt.cfg.ReviewProfiles[index-1].Pinned
 		rt.cfg.ReviewProfiles[index-1].Pinned = newPinned
 		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
@@ -5841,10 +6318,12 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 }
 
 func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
-	mode, goal, err := parseAnalyzeProjectArgs(args)
+	parsed, err := parseAnalyzeProjectCommandArgs(args)
 	if err != nil {
 		return err
 	}
+	mode := parsed.Mode
+	goal := parsed.Goal
 	if rt.agent == nil || rt.agent.Client == nil {
 		return fmt.Errorf("no model provider is configured")
 	}
@@ -5887,7 +6366,12 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
 	plannedShards := analyzer.planShards(previewSnapshot, estimatedTotalShards)
-	scope, scopedShards := deriveScopedAnalysisShards(goal, previewSnapshot, plannedShards)
+	explicitScope, unmatchedPaths := resolveExplicitAnalysisScope(parsed.Paths, previewSnapshot)
+	if len(unmatchedPaths) > 0 {
+		return fmt.Errorf("analysis path not found in scanned workspace: %s", strings.Join(unmatchedPaths, ", "))
+	}
+	scope := deriveAnalysisScope(goal, explicitScope, previewSnapshot)
+	_, scopedShards := deriveScopedAnalysisShardsForScope(scope, plannedShards)
 	if len(scopedShards) > 0 {
 		plannedShards = scopedShards
 		estimatedTotalShards = len(plannedShards)
@@ -5898,6 +6382,28 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			estimatedConcurrency = 1
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_scope", strings.Join(scope.DirectoryPrefixes, ", ")))
+	} else if len(scope.DirectoryPrefixes) > 0 {
+		return fmt.Errorf("analysis scope matched no analyzable shards: %s", strings.Join(scope.DirectoryPrefixes, ", "))
+	} else if analysisGoalHasDirectoryHint(strings.ToLower(filepath.ToSlash(goal))) {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No matching analysis scope was found from the prompt; the plan will cover the scanned workspace."))
+	}
+	effectiveMode := effectiveProjectAnalysisMode(mode, goal)
+	if normalizeProjectAnalysisMode(effectiveMode) != "" && normalizeProjectAnalysisMode(effectiveMode) != "map" {
+		if baseline, ok := analyzer.loadBaselineMapForMode(effectiveMode, scope); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map", baseline.RunID))
+			if strings.TrimSpace(baseline.Goal) != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map_goal", baseline.Goal))
+			}
+			if strings.TrimSpace(baseline.ArtifactPath) != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map_artifact", baseline.ArtifactPath))
+			}
+			if len(baseline.SourceAnchors) > 0 {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map_anchors", fmt.Sprintf("%d", len(baseline.SourceAnchors))))
+			}
+		} else {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map", "none"))
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Run /analyze-project --mode map first to give follow-up modes a reusable architecture baseline."))
+		}
 	}
 	estimatedWaves := ceilDiv(estimatedTotalShards, analysisMaxInt(estimatedConcurrency, 1))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_files", fmt.Sprintf("%d", previewSnapshot.TotalFiles)))
@@ -5945,6 +6451,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		}
 	})
 	analyzer.analysisCfg = analysisCfg
+	analyzer.explicitScope = explicitScope
 	run, err := analyzer.Run(requestCtx, goal, mode)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
@@ -5993,7 +6500,105 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		rt.printPersistentWhileThinking(rt.ui.statusKV("cache_miss_reasons", strings.Join(reasons, ", ")))
 	}
 	rt.printPersistentWhileThinking(rt.ui.statusKV("output", run.Summary.OutputPath))
+	rt.printPersistentWhileThinking(rt.ui.statusKV("dashboard", filepath.Join(analysisCfg.OutputDir, "latest", "dashboard.html")))
+	docsManifest, docsManifestOK := loadLatestAnalysisDocsManifest(rt.workspace.BaseRoot)
+	if docsManifestOK {
+		if recordErr := rt.recordLatestAnalysisDocsArtifacts(run, docsManifest, analysisCfg.OutputDir); recordErr != nil {
+			rt.printPersistentWhileThinking(rt.ui.warnLine("Could not record analysis docs reuse artifacts: " + recordErr.Error()))
+		}
+	} else {
+		rt.printPersistentWhileThinking(rt.ui.warnLine("Could not read latest analysis docs manifest for reuse records."))
+	}
 	rt.printAssistant(run.FinalDocument)
+	handoff := renderAnalysisProjectHandoff(buildAnalysisProjectHandoff(run, docsManifest, docsManifestOK))
+	if strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleAnalyzeDashboardCommand(args string) error {
+	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
+	target := strings.TrimSpace(args)
+	dashboardPath := filepath.Join(analysisCfg.OutputDir, "latest", "dashboard.html")
+	if target != "" && !strings.EqualFold(target, "latest") {
+		dashboardPath = target
+		if !filepath.IsAbs(dashboardPath) {
+			if resolved, err := rt.workspace.ResolveForLookup(target); err == nil {
+				if _, statErr := os.Stat(resolved); statErr == nil {
+					dashboardPath = resolved
+				} else {
+					dashboardPath = filepath.Join(analysisCfg.OutputDir, target)
+				}
+			} else {
+				dashboardPath = filepath.Join(analysisCfg.OutputDir, target)
+			}
+		}
+		if info, err := os.Stat(dashboardPath); err == nil && info.IsDir() {
+			dashboardPath = filepath.Join(dashboardPath, "dashboard.html")
+		}
+	}
+	if _, err := os.Stat(dashboardPath); err != nil {
+		return fmt.Errorf("analysis dashboard not found: %s; run /analyze-project first", dashboardPath)
+	}
+	if err := OpenExternalURL(dashboardPath); err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Found analysis dashboard but could not open it automatically: "+err.Error()))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Opened analysis dashboard: "+dashboardPath))
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleDocsRefreshCommand(args string) error {
+	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	runPath := filepath.Join(latestDir, "run.json")
+	data, err := os.ReadFile(runPath)
+	if err != nil {
+		return fmt.Errorf("latest analysis run not found; run /analyze-project first")
+	}
+	run := ProjectAnalysisRun{}
+	if err := json.Unmarshal(data, &run); err != nil {
+		return fmt.Errorf("read latest analysis run: %w", err)
+	}
+	docsManifest, err := writeAnalysisDocs(run, filepath.Join(latestDir, "docs"))
+	if err != nil {
+		return err
+	}
+	manifestData, err := json.MarshalIndent(docsManifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "docs_manifest.json"), manifestData, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "docs_index.md"), []byte(buildAnalysisDocs(run)["INDEX.md"]), 0o644); err != nil {
+		return err
+	}
+	if err := writeAnalysisDashboard(run, filepath.Join(latestDir, "dashboard.html"), "docs"); err != nil {
+		return err
+	}
+	run.VectorCorpus = buildVectorCorpus(run)
+	run.VectorIngestion = buildVectorIngestionManifest(run.VectorCorpus)
+	if err := writeVectorCorpusArtifactSet(run.VectorCorpus, run.VectorIngestion, latestDir, ""); err != nil {
+		return err
+	}
+	refreshedRunData, err := json.MarshalIndent(run, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(runPath, refreshedRunData, 0o644); err != nil {
+		return err
+	}
+	if err := rt.recordLatestAnalysisDocsArtifacts(run, docsManifest, analysisCfg.OutputDir); err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Could not record analysis docs reuse artifacts: "+err.Error()))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Refreshed latest analysis docs."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("docs", filepath.Join(latestDir, "docs")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("manifest", filepath.Join(latestDir, "docs_manifest.json")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("dashboard", filepath.Join(latestDir, "dashboard.html")))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("vector_corpus", filepath.Join(latestDir, "vector_corpus.jsonl")))
 	return nil
 }
 
@@ -6055,6 +6660,10 @@ func (rt *runtimeState) handleAnalyzePerformanceCommand(args string) error {
 		rt.printPersistentWhileThinking(rt.ui.statusKV("output_json", jsonPath))
 	}
 	rt.printAssistant(reply)
+	if handoff := performanceHandoff(result); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -6604,14 +7213,18 @@ func (rt *runtimeState) mcpPrompts() []MCPPromptRef {
 	return rt.mcp.Prompts()
 }
 
-func parseAnalyzeProjectArgs(raw string) (string, string, error) {
+type analyzeProjectCommandArgs struct {
+	Mode  string
+	Goal  string
+	Paths []string
+}
+
+func parseAnalyzeProjectCommandArgs(raw string) (analyzeProjectCommandArgs, error) {
 	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", "", fmt.Errorf(projectAnalysisUsage())
-	}
 	fields := strings.Fields(trimmed)
 	mode := ""
 	goalParts := []string{}
+	paths := []string{}
 	for index := 0; index < len(fields); index++ {
 		field := strings.TrimSpace(fields[index])
 		switch {
@@ -6619,27 +7232,123 @@ func parseAnalyzeProjectArgs(raw string) (string, string, error) {
 			value := strings.TrimSpace(strings.TrimPrefix(field, "--mode="))
 			mode = normalizeProjectAnalysisMode(value)
 			if mode == "" {
-				return "", "", fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
+				return analyzeProjectCommandArgs{}, fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
 			}
 		case field == "--mode":
 			if index+1 >= len(fields) {
-				return "", "", fmt.Errorf(projectAnalysisUsage())
+				return analyzeProjectCommandArgs{}, fmt.Errorf(projectAnalysisUsage())
 			}
 			index++
 			value := strings.TrimSpace(fields[index])
 			mode = normalizeProjectAnalysisMode(value)
 			if mode == "" {
-				return "", "", fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
+				return analyzeProjectCommandArgs{}, fmt.Errorf("invalid analyze-project mode %q; expected one of %s", value, strings.Join(supportedProjectAnalysisModes, ", "))
 			}
+		case strings.HasPrefix(field, "--path="):
+			value := strings.TrimSpace(strings.TrimPrefix(field, "--path="))
+			if value == "" {
+				return analyzeProjectCommandArgs{}, fmt.Errorf(projectAnalysisUsage())
+			}
+			paths = append(paths, value)
+		case field == "--path":
+			if index+1 >= len(fields) {
+				return analyzeProjectCommandArgs{}, fmt.Errorf(projectAnalysisUsage())
+			}
+			index++
+			value := strings.TrimSpace(fields[index])
+			if value == "" {
+				return analyzeProjectCommandArgs{}, fmt.Errorf(projectAnalysisUsage())
+			}
+			paths = append(paths, value)
+		case field == "--docs":
+			// Accepted for explicit documentation generation; docs are written by default.
 		default:
 			goalParts = append(goalParts, field)
 		}
 	}
 	goal := strings.TrimSpace(strings.Join(goalParts, " "))
 	if goal == "" {
-		return "", "", fmt.Errorf(projectAnalysisUsage())
+		goal = defaultProjectAnalysisGoal(mode, paths)
 	}
-	return mode, goal, nil
+	return analyzeProjectCommandArgs{Mode: mode, Goal: goal, Paths: paths}, nil
+}
+
+func parseAnalyzeProjectArgs(raw string) (string, string, error) {
+	parsed, err := parseAnalyzeProjectCommandArgs(raw)
+	if err != nil {
+		return "", "", err
+	}
+	return parsed.Mode, parsed.Goal, nil
+}
+
+func resolveExplicitAnalysisScope(paths []string, snapshot ProjectSnapshot) (AnalysisGoalScope, []string) {
+	if len(paths) == 0 {
+		return AnalysisGoalScope{}, nil
+	}
+	directories := analysisScopeDirectories(snapshot)
+	prefixes := []string{}
+	unmatched := []string{}
+	for _, raw := range paths {
+		candidate := normalizeAnalysisPathArgument(raw, snapshot.Root)
+		if candidate == "" {
+			continue
+		}
+		if analysisPathMatchesSnapshot(candidate, snapshot, directories) {
+			prefixes = append(prefixes, candidate)
+			continue
+		}
+		unmatched = append(unmatched, raw)
+	}
+	return AnalysisGoalScope{DirectoryPrefixes: compactAnalysisScopePrefixes(prefixes)}, unmatched
+}
+
+func normalizeAnalysisPathArgument(raw string, root string) string {
+	trimmed := strings.Trim(strings.TrimSpace(raw), "\"'")
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	if filepath.IsAbs(cleaned) && strings.TrimSpace(root) != "" {
+		if rel, err := filepath.Rel(root, cleaned); err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) {
+			cleaned = rel
+		}
+	}
+	slashed := filepath.ToSlash(cleaned)
+	slashed = strings.TrimPrefix(slashed, "./")
+	slashed = strings.Trim(slashed, "/")
+	if slashed == "." {
+		return ""
+	}
+	return slashed
+}
+
+func analysisPathMatchesSnapshot(candidate string, snapshot ProjectSnapshot, directories []string) bool {
+	candidate = strings.ToLower(filepath.ToSlash(strings.Trim(candidate, "/")))
+	if candidate == "" {
+		return false
+	}
+	for _, dir := range directories {
+		lowerDir := strings.ToLower(filepath.ToSlash(strings.Trim(dir, "/")))
+		if lowerDir == candidate || strings.HasPrefix(lowerDir+"/", candidate+"/") || strings.HasPrefix(candidate+"/", lowerDir+"/") {
+			return true
+		}
+	}
+	for _, file := range snapshot.Files {
+		lowerFile := strings.ToLower(filepath.ToSlash(strings.Trim(file.Path, "/")))
+		if lowerFile == candidate || strings.HasPrefix(lowerFile, candidate+"/") {
+			return true
+		}
+	}
+	for dir, files := range snapshot.FilesByDirectory {
+		lowerDir := strings.ToLower(filepath.ToSlash(strings.Trim(dir, "/")))
+		if lowerDir == candidate || strings.HasPrefix(lowerDir+"/", candidate+"/") {
+			return true
+		}
+		if len(files) > 0 && strings.HasPrefix(candidate+"/", lowerDir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func parsePromptCommandArgs(raw string) (string, map[string]any, error) {

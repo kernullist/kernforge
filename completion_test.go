@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,10 +19,14 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		wantSuggest []string
 	}{
 		{input: "/permissions a", wantBuffer: "/permissions acceptEdits "},
-		{input: "/analyze-project ", wantBuffer: "/analyze-project --mode "},
+		{input: "/analyze-project ", wantBuffer: "/analyze-project --"},
 		{input: "/analyze-project --m", wantBuffer: "/analyze-project --mode "},
-		{input: "/analyze-project --mode ", wantSuggest: []string{"/analyze-project --mode map", "/analyze-project --mode trace", "/analyze-project --mode impact", "/analyze-project --mode security", "/analyze-project --mode performance"}},
-		{input: "/analyze-project --mode s", wantBuffer: "/analyze-project --mode security "},
+		{input: "/analyze-project --d", wantBuffer: "/analyze-project --docs "},
+		{input: "/analyze-project --p", wantBuffer: "/analyze-project --path "},
+		{input: "/analyze-project --mode ", wantSuggest: []string{"/analyze-project --mode map", "/analyze-project --mode trace", "/analyze-project --mode impact", "/analyze-project --mode surface", "/analyze-project --mode security", "/analyze-project --mode performance"}},
+		{input: "/analyze-project --mode sec", wantBuffer: "/analyze-project --mode security "},
+		{input: "/analyze-project --docs --m", wantBuffer: "/analyze-project --docs --mode "},
+		{input: "/analyze-project --mode surface --d", wantBuffer: "/analyze-project --mode surface --docs "},
 		{input: "/checkpoint-auto of", wantBuffer: "/checkpoint-auto off "},
 		{input: "/locale-auto of", wantBuffer: "/locale-auto off "},
 		{input: "/set-auto-verify of", wantBuffer: "/set-auto-verify off "},
@@ -35,6 +40,8 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/verify-dashboard a", wantBuffer: "/verify-dashboard all "},
 		{input: "/verify-dashboard-html a", wantBuffer: "/verify-dashboard-html all "},
 		{input: "/mem-prune a", wantBuffer: "/mem-prune all "},
+		{input: "/profile ", wantSuggest: []string{"/profile list", "/profile show", "/profile status", "/profile pin", "/profile unpin", "/profile rename", "/profile delete"}},
+		{input: "/profile-review ", wantSuggest: []string{"/profile-review list", "/profile-review show", "/profile-review status", "/profile-review pin", "/profile-review unpin", "/profile-review rename", "/profile-review delete"}},
 		{input: "/set-plan-review an", wantBuffer: "/set-plan-review anthropic "},
 		{input: "/set-analysis-models ", wantSuggest: []string{"/set-analysis-models status", "/set-analysis-models worker", "/set-analysis-models reviewer", "/set-analysis-models clear"}},
 		{input: "/set-analysis-models w", wantBuffer: "/set-analysis-models worker "},
@@ -52,6 +59,8 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/fuzz-func ", wantSuggest: []string{"/fuzz-func <function-name>", "/fuzz-func <function-name> --file <path>", "/fuzz-func <function-name> @<path>", "/fuzz-func --file <path>", "/fuzz-func @<path>", "/fuzz-func status", "/fuzz-func show", "/fuzz-func list", "/fuzz-func continue", "/fuzz-func language"}},
 		{input: "/fuzz-func sh", wantBuffer: "/fuzz-func show "},
 		{input: "/fuzz-func language ", wantSuggest: []string{"/fuzz-func language system", "/fuzz-func language english"}},
+		{input: "/fuzz-campaign ", wantSuggest: []string{"/fuzz-campaign status", "/fuzz-campaign run", "/fuzz-campaign new", "/fuzz-campaign list", "/fuzz-campaign show"}},
+		{input: "/fuzz-campaign sh", wantBuffer: "/fuzz-campaign show "},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
 	}
@@ -77,6 +86,27 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 	}
 }
 
+func TestCompleteAnalyzeProjectPathArgument(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src", "driver"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	rt := &runtimeState{
+		cfg:       DefaultConfig(root),
+		workspace: Workspace{Root: root, BaseRoot: root},
+	}
+	got, suggestions, ok := rt.completeLine("/analyze-project --path src/dr")
+	if !ok {
+		t.Fatalf("expected completion to handle analyze-project path")
+	}
+	if len(suggestions) != 0 {
+		t.Fatalf("expected direct completion, got suggestions %#v", suggestions)
+	}
+	if got != "/analyze-project --path src/driver/" {
+		t.Fatalf("unexpected completion: %q", got)
+	}
+}
+
 func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 	rt := &runtimeState{}
 
@@ -87,8 +117,11 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/evi", wantBuffer: "/evidence"},
 		{input: "/invest", wantBuffer: "/investigate"},
 		{input: "/new-f", wantBuffer: "/new-feature "},
+		{input: "/docs-r", wantBuffer: "/docs-refresh "},
+		{input: "/analyze-d", wantBuffer: "/analyze-dashboard "},
 		{input: "/simu", wantBuffer: "/simulate"},
 		{input: "/fuzz-f", wantBuffer: "/fuzz-func "},
+		{input: "/fuzz-c", wantBuffer: "/fuzz-campaign "},
 		{input: "/spec", wantBuffer: "/specialists "},
 		{input: "/workt", wantBuffer: "/worktree "},
 		{input: "/override-a", wantBuffer: "/override-add "},
@@ -246,6 +279,17 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		t.Fatalf("append function fuzz: %v", err)
 	}
 
+	fuzzCampaigns := &FuzzCampaignStore{Path: dir + "\\fuzz_campaigns.json"}
+	if _, err := fuzzCampaigns.Append(FuzzCampaign{
+		ID:        "campaign-abc",
+		Workspace: dir,
+		Name:      "campaign",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("append fuzz campaign: %v", err)
+	}
+
 	featureStore := NewFeatureStore(dir)
 	feature, err := featureStore.Create(dir, "add tracked feature workflow", "openai / gpt-5.4", "")
 	if err != nil {
@@ -259,6 +303,7 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		investigations: investigations,
 		simulations:    simulations,
 		functionFuzz:   functionFuzz,
+		fuzzCampaigns:  fuzzCampaigns,
 		workspace: Workspace{
 			BaseRoot: dir,
 			Root:     dir,
@@ -276,6 +321,7 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 		{input: "/investigate show inv", wantBuffer: "/investigate show invest-abc "},
 		{input: "/simulate show sim", wantBuffer: "/simulate show sim-abc "},
 		{input: "/fuzz-func show fu", wantBuffer: "/fuzz-func show fuzz-abc "},
+		{input: "/fuzz-campaign show camp", wantBuffer: "/fuzz-campaign show campaign-abc "},
 		{input: "/new-feature status " + feature.ID[:8], wantBuffer: "/new-feature status " + feature.ID + " "},
 	}
 
@@ -292,16 +338,31 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 
 func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) {
 	cases := map[string]string{
-		"/status":                    "Show current session state, approvals, and extension status.",
-		"/provider status":           "Show the current provider, base URL, key state, and billing visibility.",
-		"/verify":                    "Run manual verification for the current workspace state.",
-		"/specialists":               "Show specialist profiles plus editable ownership and worktree routing state.",
-		"/specialists cleanup":       "Remove one or all specialist worktrees recorded for this session.",
-		"/worktree cleanup":          "Remove the recorded isolated worktree after it is clean.",
-		"/new-feature status":        "Show the current state of a tracked feature.",
-		"/simulate tamper-surface":   "Model obvious tamper vectors and exposed surfaces.",
-		"/fuzz-func":                 "Auto-plan directed function fuzzing. Use /fuzz-func <function-name> [--file <path>|@<path>] for one function, or /fuzz-func --file <path> / @<path> to analyze a file and its include/import closure.",
-		"/fuzz-func <function-name>": "Target one function by name and let Kernforge resolve the best matching symbol automatically.",
+		"/status":                                  "Show current session state, approvals, and extension status.",
+		"/provider status":                         "Show the current provider, base URL, key state, and billing visibility.",
+		"/verify":                                  "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
+		"/specialists":                             "Show specialist profiles plus editable ownership and worktree routing state.",
+		"/specialists cleanup":                     "Remove one or all specialist worktrees recorded for this session.",
+		"/worktree cleanup":                        "Remove the recorded isolated worktree after it is clean.",
+		"/new-feature status":                      "Show the current state of a tracked feature.",
+		"/analyze-project":                         "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
+		"/analyze-project --docs":                  "Explicitly request deterministic project documentation artifacts.",
+		"/analyze-project --path":                  "Limit analysis to one workspace directory or file path; a goal is optional.",
+		"/analyze-project --mode map":              "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
+		"/analyze-project --mode trace":            "Follow one runtime or request flow through callers, callees, dispatch points, ownership transitions, and source anchors.",
+		"/analyze-project --mode impact":           "Estimate change blast radius: upstream/downstream dependencies, affected files, retest targets, and stale documentation risks.",
+		"/analyze-project --mode surface":          "Inventory exposed entry surfaces: IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets.",
+		"/analyze-project --mode security":         "Analyze trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks.",
+		"/analyze-project --mode performance":      "Map performance risk: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order.",
+		"/analyze-project --path src/ --mode map":  "Build the default architecture map: subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.",
+		"/analyze-project surface":                 "Focus on concrete IOCTL, RPC, parser, handle, memory, and network surfaces.",
+		"/analyze-dashboard":                       "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
+		"/analyze-dashboard latest":                "Open the latest analyze-project document portal.",
+		"/docs-refresh":                            "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
+		"/set-specialist-model planner":            "Configure the provider and model used by the planner specialist subagent.",
+		"/simulate tamper-surface":                 "Model obvious tamper vectors and exposed surfaces.",
+		"/fuzz-func":                               "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
+		"/fuzz-func <function-name>":               "Target one function by name and let Kernforge resolve the best matching symbol automatically.",
 		"/fuzz-func <function-name> --file <path>": "Target one function by name and pin matching to a specific source file when names collide.",
 		"/fuzz-func <function-name> @<path>":       "Target one function by name and use @<path> as a short file-hint alias.",
 		"/fuzz-func --file <path>":                 "Analyze one file plus the files it includes or imports, then let Kernforge choose the best starting function automatically.",
@@ -309,11 +370,65 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 		"/fuzz-func language":                      "Show or change /fuzz-func output language. Use system to follow the PC language or english to force English.",
 		"/fuzz-func show":                          "Open one saved function fuzz plan by id.",
 		"/fuzz-func continue":                      "Approve a pending recovered build configuration and start autonomous fuzzing.",
+		"/fuzz-campaign":                           "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback.",
+		"/evidence":                                "Review evidence records and suggest verification, dashboard, or source follow-up.",
+		"/mem":                                     "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
+		"/checkpoint":                              "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
+		"/worktree":                                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
 	}
 
 	for item, want := range cases {
 		if got := commandCompletionDescription(item); got != want {
 			t.Fatalf("%q: got %q want %q", item, got, want)
+		}
+	}
+}
+
+func TestCompletionSuggestionsHaveSpecificDescriptions(t *testing.T) {
+	rt := &runtimeState{
+		cfg: DefaultConfig(t.TempDir()),
+	}
+	inputs := []string{
+		"/permissions ",
+		"/checkpoint-auto o",
+		"/locale-auto o",
+		"/set-auto-verify o",
+		"/worktree ",
+		"/specialists ",
+		"/provider ",
+		"/profile ",
+		"/profile-review ",
+		"/analyze-project --",
+		"/analyze-project --mode ",
+		"/set-plan-review ",
+		"/set-analysis-models ",
+		"/set-specialist-model ",
+		"/new-feature ",
+		"/investigate ",
+		"/simulate ",
+		"/fuzz-func ",
+		"/fuzz-func language ",
+		"/fuzz-campaign ",
+		"/init ",
+	}
+
+	for _, input := range inputs {
+		_, suggestions, ok := rt.completeSlashCommand(input)
+		if !ok {
+			t.Fatalf("%q: expected completion suggestions", input)
+		}
+		if len(suggestions) == 0 {
+			t.Fatalf("%q: expected at least one suggestion", input)
+		}
+		for _, suggestion := range suggestions {
+			got := commandCompletionDescription(suggestion)
+			if strings.TrimSpace(got) == "" {
+				t.Fatalf("%q: missing description for suggestion %q", input, suggestion)
+			}
+			commandName := strings.Fields(strings.TrimPrefix(suggestion, "/"))[0]
+			if got == slashCommandDescriptions[commandName] && strings.Contains(strings.TrimPrefix(suggestion, "/"), " ") {
+				t.Fatalf("%q: suggestion %q fell back to parent command description %q", input, suggestion, got)
+			}
 		}
 	}
 }

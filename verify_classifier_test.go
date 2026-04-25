@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,6 +60,91 @@ func TestBuildVerificationPlanIncludesSecuritySummary(t *testing.T) {
 	}
 	if !strings.Contains(plan.PlannerNote, "security_categories=telemetry") {
 		t.Fatalf("unexpected planner note: %q", plan.PlannerNote)
+	}
+}
+
+func TestBuildVerificationPlanUsesLatestAnalysisDocsMatrix(t *testing.T) {
+	root := t.TempDir()
+	analysisCfg := configProjectAnalysis(DefaultConfig(root), root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest: %v", err)
+	}
+	manifest := AnalysisDocsManifest{
+		Documents: []AnalysisGeneratedDoc{{Name: "VERIFICATION_MATRIX.md"}},
+		VerificationMatrix: []AnalysisVerificationMatrixEntry{
+			{
+				ChangeArea:           "Driver or IOCTL",
+				RequiredVerification: "driver build and symbol/signing readiness",
+				OptionalVerification: "Driver Verifier smoke checklist",
+				EvidenceHook:         "driver evidence bundle",
+				SourceAnchors:        []string{"driver/dispatch.cpp:42"},
+				Confidence:           "high",
+			},
+		},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "docs_manifest.json"), data, 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	plan := buildVerificationPlan(root, []string{"driver/dispatch.cpp"}, VerificationAdaptive)
+	found := false
+	for _, step := range plan.Steps {
+		if strings.Contains(step.Label, "analysis docs verification") && strings.Contains(step.Command, "driver build and symbol/signing readiness") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected analysis docs verification step, got %+v", plan.Steps)
+	}
+	if !strings.Contains(plan.PlannerNote, "Generated verification matrix added") {
+		t.Fatalf("expected planner note to cite generated matrix, got %q", plan.PlannerNote)
+	}
+}
+
+func TestBuildVerificationPlanUsesFuzzCampaignNativeResults(t *testing.T) {
+	root := t.TempDir()
+	campaign, err := createFuzzCampaignFromWorkspace(root, "driver fuzz", AnalysisDocsManifest{})
+	if err != nil {
+		t.Fatalf("create campaign: %v", err)
+	}
+	campaign.NativeResults = []FuzzCampaignNativeResult{{
+		RunID:              "ff-1",
+		Target:             "ValidatePacket",
+		TargetFile:         "driver/packet.cpp",
+		Status:             "failed",
+		Outcome:            "failed",
+		CrashCount:         1,
+		CrashFingerprint:   "ff-deadbeef",
+		SuspectedInvariant: "packet length must remain bounded",
+		ReportPath:         filepath.Join(campaign.ReportsDir, "native-result-ff-1-failed.md"),
+		CrashDir:           filepath.Join(campaign.CrashDir, "ff-1"),
+		MinimizeCommand:    "fuzz-driver -merge=1 corpus/minimized corpus",
+	}}
+	if err := writeFuzzCampaignManifest(campaign); err != nil {
+		t.Fatalf("write campaign manifest: %v", err)
+	}
+
+	plan := buildVerificationPlan(root, []string{"driver/packet.cpp"}, VerificationAdaptive)
+	found := false
+	for _, step := range plan.Steps {
+		if strings.Contains(step.Label, "fuzz evidence regression") && strings.Contains(step.Command, "ff-deadbeef") {
+			found = true
+			if !containsString(step.Tags, "fuzz_native_result") {
+				t.Fatalf("expected fuzz_native_result tag, got %#v", step.Tags)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected fuzz native verification step, got %#v", plan.Steps)
+	}
+	if !strings.Contains(plan.PlannerNote, "Fuzz campaign native results added") {
+		t.Fatalf("expected fuzz planner note, got %q", plan.PlannerNote)
 	}
 }
 

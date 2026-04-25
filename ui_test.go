@@ -199,9 +199,9 @@ func TestFormatCompletionSuggestionsShowsCommandDescriptions(t *testing.T) {
 		"/status",
 		"Show current session state, approvals, and extension status.",
 		"/verify",
-		"Run manual verification for the current workspace state.",
+		"Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
 		"/simulate",
-		"Run or inspect anti-tamper simulation profiles.",
+		"Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected command completion rendering to contain %q, got %q", needle, rendered)
@@ -222,5 +222,27 @@ func TestFormatCompletionSuggestionsShowsSubcommandDescriptions(t *testing.T) {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected subcommand completion rendering to contain %q, got %q", needle, rendered)
 		}
+	}
+}
+
+func TestFormatCompletionSuggestionsShowsAnalyzeProjectModeDescriptionsAfterPath(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.formatCompletionSuggestions([]string{
+		"/analyze-project --path TavernKernel/TavernKernel/ --mode map",
+		"/analyze-project --path TavernKernel/TavernKernel/ --mode trace",
+	}, "/analyze-project --path TavernKernel/TavernKernel/ --mode ")
+
+	for _, needle := range []string{
+		"/analyze-project --path TavernKernel/TavernKernel/ --mode map",
+		"Build the default architecture map:",
+		"/analyze-project --path TavernKernel/TavernKernel/ --mode trace",
+		"Follow one runtime or request flow through",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected analyze-project mode completion rendering to contain %q, got %q", needle, rendered)
+		}
+	}
+	if strings.Contains(rendered, "Limit analysis to one workspace directory or file path") {
+		t.Fatalf("expected mode descriptions after --path, got %q", rendered)
 	}
 }

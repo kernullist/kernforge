@@ -18,11 +18,12 @@ const (
 )
 
 type latestAnalysisArtifacts struct {
-	Pack     KnowledgePack
-	Snapshot ProjectSnapshot
-	Corpus   VectorCorpus
-	Index    SemanticIndex
-	IndexV2  SemanticIndexV2
+	Pack         KnowledgePack
+	Snapshot     ProjectSnapshot
+	Corpus       VectorCorpus
+	Index        SemanticIndex
+	IndexV2      SemanticIndexV2
+	DocsManifest AnalysisDocsManifest
 }
 
 type cachedAnalysisFastPathMetadata struct {
@@ -86,6 +87,15 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 	}
 	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index_v2.json")); err == nil {
 		_ = json.Unmarshal(indexData, &artifacts.IndexV2)
+	}
+	if manifestData, err := os.ReadFile(filepath.Join(latestDir, "docs_manifest.json")); err == nil {
+		if manifest, err := decodeAnalysisDocsManifest(manifestData); err == nil {
+			artifacts.DocsManifest = manifest
+		}
+	} else if manifestData, err := os.ReadFile(filepath.Join(latestDir, "docs", "manifest.json")); err == nil {
+		if manifest, err := decodeAnalysisDocsManifest(manifestData); err == nil {
+			artifacts.DocsManifest = manifest
+		}
 	}
 	return artifacts, true
 }
@@ -253,7 +263,8 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 		len(artifacts.Corpus.Documents) == 0 &&
 		len(artifacts.Index.Files) == 0 &&
 		len(artifacts.Index.Symbols) == 0 &&
-		!hasSemanticIndexV2Data(artifacts.IndexV2) {
+		!hasSemanticIndexV2Data(artifacts.IndexV2) &&
+		len(artifacts.DocsManifest.Documents) == 0 {
 		return ""
 	}
 
@@ -333,8 +344,73 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 		b.WriteString(strings.TrimSpace(v2Text))
 		b.WriteString("\n")
 	}
+	if docsText := renderRelevantAnalysisDocsContext(artifacts.DocsManifest, query); strings.TrimSpace(docsText) != "" {
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(docsText))
+		b.WriteString("\n")
+	}
 
 	return compactProjectAnalysisText(strings.TrimSpace(b.String()), defaultAnalysisContextMaxChars)
+}
+
+func renderRelevantAnalysisDocsContext(manifest AnalysisDocsManifest, query string) string {
+	if len(manifest.Documents) == 0 {
+		return ""
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(query))
+	items := []scoredDoc{}
+	for _, doc := range manifest.Documents {
+		corpus := strings.ToLower(strings.Join(append(append([]string{doc.Name, doc.Title, doc.Kind, doc.Confidence}, doc.SourceAnchors...), append(doc.StaleMarkers, doc.ReuseTargets...)...), " "))
+		score := 1
+		if lowerQuery != "" && strings.Contains(corpus, lowerQuery) {
+			score += 20
+		}
+		for _, token := range filterAnalysisQueryTokens(extractPersistentMemoryTokens(lowerQuery)) {
+			if strings.Contains(corpus, token) {
+				score += 4
+			}
+		}
+		if containsAny(corpus, "security", "surface", "fuzz", "verification") {
+			score += 2
+		}
+		items = append(items, scoredDoc{doc: doc, score: score})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].score == items[j].score {
+			return items[i].doc.Name < items[j].doc.Name
+		}
+		return items[i].score > items[j].score
+	})
+	var b strings.Builder
+	b.WriteString("Reusable generated docs:\n")
+	for _, item := range limitScoredAnalysisDocs(items, 4) {
+		fmt.Fprintf(&b, "- %s path=latest/docs/%s confidence=%s\n", item.doc.Title, item.doc.Path, valueOrDefault(item.doc.Confidence, "unknown"))
+		if len(item.doc.SourceAnchors) > 0 {
+			fmt.Fprintf(&b, "  anchors: %s\n", strings.Join(limitStrings(item.doc.SourceAnchors, 4), "; "))
+		}
+		if len(item.doc.StaleMarkers) > 0 {
+			fmt.Fprintf(&b, "  stale: %s\n", strings.Join(limitStrings(item.doc.StaleMarkers, 3), "; "))
+		}
+		if len(item.doc.ReuseTargets) > 0 {
+			fmt.Fprintf(&b, "  reuse: %s\n", strings.Join(limitStrings(item.doc.ReuseTargets, 5), ", "))
+		}
+	}
+	return b.String()
+}
+
+type scoredDoc struct {
+	doc   AnalysisGeneratedDoc
+	score int
+}
+
+func limitScoredAnalysisDocs(items []scoredDoc, limit int) []scoredDoc {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return items
+	}
+	return items[:limit]
 }
 
 func selectRelevantKnowledgeSubsystems(pack KnowledgePack, query string, limit int) []KnowledgeSubsystem {

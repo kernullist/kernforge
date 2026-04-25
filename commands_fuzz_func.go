@@ -1138,6 +1138,17 @@ func loadLatestProjectAnalysisArtifactsForRoot(cfg Config, root string) (latestA
 			loaded = true
 		}
 	}
+	if manifestData, err := os.ReadFile(filepath.Join(latestDir, "docs_manifest.json")); err == nil {
+		if manifest, err := decodeAnalysisDocsManifest(manifestData); err == nil {
+			artifacts.DocsManifest = manifest
+			loaded = true
+		}
+	} else if manifestData, err := os.ReadFile(filepath.Join(latestDir, "docs", "manifest.json")); err == nil {
+		if manifest, err := decodeAnalysisDocsManifest(manifestData); err == nil {
+			artifacts.DocsManifest = manifest
+			loaded = true
+		}
+	}
 	return artifacts, loaded
 }
 
@@ -1296,6 +1307,7 @@ func (rt *runtimeState) handleFunctionFuzzShow(args string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz Run"))
 	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(run, rt.cfg))
+	rt.printFunctionFuzzCampaignHandoff(run)
 	return nil
 }
 
@@ -1321,6 +1333,7 @@ func (rt *runtimeState) handleFunctionFuzzPlan(query string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz"))
 	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, rt.cfg))
+	rt.printFunctionFuzzCampaignHandoff(saved)
 	return nil
 }
 
@@ -1360,7 +1373,93 @@ func (rt *runtimeState) handleFunctionFuzzContinue(args string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz"))
 	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, rt.cfg))
+	rt.printFunctionFuzzCampaignHandoff(saved)
 	return nil
+}
+
+func (rt *runtimeState) printFunctionFuzzCampaignHandoff(run FunctionFuzzRun) {
+	if rt == nil || rt.writer == nil || rt.fuzzCampaigns == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, renderFunctionFuzzCampaignHandoff(rt.fuzzCampaignAutomationPlanForRun(run)))
+}
+
+func (rt *runtimeState) fuzzCampaignAutomationPlanForRun(run FunctionFuzzRun) fuzzCampaignAutomationPlan {
+	if rt == nil {
+		return fuzzCampaignAutomationPlan{}
+	}
+	campaign, ok, err := rt.resolveFuzzCampaign("latest")
+	if err != nil || !ok {
+		campaign = FuzzCampaign{}
+	}
+	run = normalizeFunctionFuzzRun(run)
+	switch {
+	case strings.TrimSpace(run.ID) == "":
+		return fuzzCampaignAutomationPlan{}
+	case len(run.VirtualScenarios) == 0:
+		return fuzzCampaignAutomationPlan{
+			Title: "No campaign seed handoff is needed yet because this /fuzz-func run did not produce source-only scenarios.",
+			Details: []string{
+				"Run: " + run.ID,
+			},
+			CanRun: false,
+		}
+	case strings.TrimSpace(campaign.ID) == "":
+		return fuzzCampaignAutomationPlan{
+			Title: "Suggested next step: create a fuzz campaign and promote this run's source-only scenarios into corpus seeds.",
+			Details: []string{
+				"Run: " + run.ID,
+				fmt.Sprintf("Source-only scenarios: %d", len(run.VirtualScenarios)),
+			},
+			Command: "/fuzz-campaign run",
+			CanRun:  true,
+		}
+	case !containsString(campaign.FunctionRuns, run.ID):
+		return fuzzCampaignAutomationPlan{
+			Title: "Suggested next step: attach this /fuzz-func run to the active campaign and promote seed artifacts.",
+			Details: []string{
+				"Campaign: " + campaign.ID,
+				"Run: " + run.ID,
+			},
+			Command: "/fuzz-campaign run",
+			CanRun:  true,
+		}
+	case !fuzzCampaignHasSeedArtifactForRun(campaign, run.ID):
+		return fuzzCampaignAutomationPlan{
+			Title: "Suggested next step: promote this attached run's source-only scenarios into corpus seeds.",
+			Details: []string{
+				"Campaign: " + campaign.ID,
+				"Run: " + run.ID,
+			},
+			Command: "/fuzz-campaign run",
+			CanRun:  true,
+		}
+	default:
+		return fuzzCampaignAutomationPlan{
+			Title: "This /fuzz-func run is already linked to the active fuzz campaign seed corpus.",
+			Details: []string{
+				"Campaign: " + campaign.ID,
+				"Run: " + run.ID,
+			},
+			CanRun: false,
+		}
+	}
+}
+
+func renderFunctionFuzzCampaignHandoff(plan fuzzCampaignAutomationPlan) string {
+	if strings.TrimSpace(plan.Title) == "" {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Campaign handoff: %s\n", plan.Title)
+	for _, detail := range plan.Details {
+		fmt.Fprintf(&b, "- %s\n", detail)
+	}
+	if plan.CanRun && strings.TrimSpace(plan.Command) != "" {
+		fmt.Fprintf(&b, "Continue: %s\n", plan.Command)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func buildFunctionFuzzRun(cfg Config, root string, query string) (FunctionFuzzRun, error) {
@@ -1374,7 +1473,11 @@ func buildFunctionFuzzRun(cfg Config, root string, query string) (FunctionFuzzRu
 func prepareFunctionFuzzArtifactsForPlanning(cfg Config, root string, query string) (latestAnalysisArtifacts, []string, error) {
 	artifacts, ok := loadLatestProjectAnalysisArtifactsForRoot(cfg, root)
 	if ok && hasSemanticIndexV2Data(artifacts.IndexV2) {
-		return artifacts, nil, nil
+		notes := []string{}
+		if len(artifacts.DocsManifest.Documents) > 0 {
+			notes = append(notes, functionFuzzLocalizedText(cfg, "Loaded generated analysis docs manifest; FUZZ_TARGETS.md and SECURITY_SURFACE.md can guide target discovery.", "생성된 분석 문서 manifest를 로드했습니다. FUZZ_TARGETS.md와 SECURITY_SURFACE.md를 타깃 탐색에 재사용할 수 있습니다."))
+		}
+		return artifacts, notes, nil
 	}
 
 	notes := []string{}
@@ -1436,7 +1539,7 @@ func buildFunctionFuzzRunFromArtifacts(cfg Config, root string, query string, ar
 	if err != nil {
 		return FunctionFuzzRun{}, err
 	}
-	resolved, err := resolveFunctionFuzzPlan(index, spec)
+	resolved, err := resolveFunctionFuzzPlan(index, spec, artifacts.DocsManifest)
 	if err != nil {
 		return FunctionFuzzRun{}, err
 	}
@@ -1487,6 +1590,9 @@ func buildFunctionFuzzRunFromArtifacts(cfg Config, root string, query string, ar
 		Notes:               append(append([]string{}, notes...), resolved.ExtraNotes...),
 		TargetStartLine:     target.StartLine,
 		TargetEndLine:       target.EndLine,
+	}
+	if functionFuzzDocsCatalogBoost(target, artifacts.DocsManifest) > 0 {
+		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg, "Generated FUZZ_TARGETS.md catalog contributed to target ranking for this run.", "생성된 FUZZ_TARGETS.md catalog가 이번 실행의 타깃 순위 결정에 반영되었습니다."))
 	}
 	run.Interpretation, run.NextSteps, run.SuggestedTargets = buildFunctionFuzzGuidance(cfg, target, closure, run)
 	run.SuggestedCommands = functionFuzzSuggestedCommands(target, closure)
@@ -1584,7 +1690,7 @@ func parseFunctionFuzzTargetSpec(query string) (functionFuzzTargetSpec, error) {
 	return spec, nil
 }
 
-func resolveFunctionFuzzTarget(index SemanticIndexV2, spec functionFuzzTargetSpec) (SymbolRecord, error) {
+func resolveFunctionFuzzTarget(index SemanticIndexV2, spec functionFuzzTargetSpec, manifest AnalysisDocsManifest) (SymbolRecord, error) {
 	spec.Raw = strings.TrimSpace(spec.Raw)
 	spec.Name = strings.TrimSpace(spec.Name)
 	spec.FileHint = strings.TrimSpace(spec.FileHint)
@@ -1604,14 +1710,14 @@ func resolveFunctionFuzzTarget(index SemanticIndexV2, spec functionFuzzTargetSpe
 				continue
 			}
 			fileMatched = true
-			score := functionFuzzSymbolScore(symbol, spec.Name, index) + fileScore
+			score := functionFuzzSymbolScore(symbol, spec.Name, index) + fileScore + functionFuzzDocsCatalogBoost(symbol, manifest)
 			if score <= 0 {
 				continue
 			}
 			items = append(items, scored{symbol: symbol, score: score})
 			continue
 		}
-		score := functionFuzzSymbolScore(symbol, spec.Name, index)
+		score := functionFuzzSymbolScore(symbol, spec.Name, index) + functionFuzzDocsCatalogBoost(symbol, manifest)
 		if score <= 0 {
 			continue
 		}
@@ -1637,12 +1743,12 @@ func resolveFunctionFuzzTarget(index SemanticIndexV2, spec functionFuzzTargetSpe
 	return items[0].symbol, nil
 }
 
-func resolveFunctionFuzzPlan(index SemanticIndexV2, spec functionFuzzTargetSpec) (functionFuzzResolvedPlan, error) {
+func resolveFunctionFuzzPlan(index SemanticIndexV2, spec functionFuzzTargetSpec, manifest AnalysisDocsManifest) (functionFuzzResolvedPlan, error) {
 	spec.Raw = strings.TrimSpace(spec.Raw)
 	spec.Name = strings.TrimSpace(spec.Name)
 	spec.FileHint = strings.TrimSpace(spec.FileHint)
 	if spec.Name != "" {
-		target, err := resolveFunctionFuzzTarget(index, spec)
+		target, err := resolveFunctionFuzzTarget(index, spec, manifest)
 		if err != nil {
 			return functionFuzzResolvedPlan{}, err
 		}
@@ -1656,7 +1762,7 @@ func resolveFunctionFuzzPlan(index SemanticIndexV2, spec functionFuzzTargetSpec)
 	if err != nil {
 		return functionFuzzResolvedPlan{}, err
 	}
-	target, err := functionFuzzSelectRepresentativeFileScopeTarget(index, scopeRoot, scopeFiles)
+	target, err := functionFuzzSelectRepresentativeFileScopeTarget(index, scopeRoot, scopeFiles, manifest)
 	if err != nil {
 		return functionFuzzResolvedPlan{}, err
 	}
@@ -1949,7 +2055,7 @@ func functionFuzzReferenceTargetHints(root string, sourceFile string, targetPath
 	return normalizeFunctionFuzzPaths(items)
 }
 
-func functionFuzzSelectRepresentativeFileScopeTarget(index SemanticIndexV2, scopeRootFile string, scopeFiles []string) (SymbolRecord, error) {
+func functionFuzzSelectRepresentativeFileScopeTarget(index SemanticIndexV2, scopeRootFile string, scopeFiles []string, manifest AnalysisDocsManifest) (SymbolRecord, error) {
 	scopeClosure := functionFuzzBuildScopeOnlyClosure(index, scopeRootFile, scopeFiles)
 	if len(scopeClosure.Symbols) == 0 {
 		return SymbolRecord{}, fmt.Errorf("no function-like symbols were found in file scope rooted at %q", scopeRootFile)
@@ -2003,6 +2109,7 @@ func functionFuzzSelectRepresentativeFileScopeTarget(index SemanticIndexV2, scop
 		score += functionFuzzMin(overlayCounts[strings.TrimSpace(symbol.ID)], 2) * 12
 		score += functionFuzzSuggestedTargetPathScore(scopeRootFile, symbol.File)
 		score += functionFuzzSuggestedTargetSignalBonus(symbol, params)
+		score += functionFuzzDocsCatalogBoost(symbol, manifest)
 		if strings.EqualFold(filepath.ToSlash(strings.TrimSpace(symbol.File)), filepath.ToSlash(strings.TrimSpace(scopeRootFile))) {
 			score += 10
 		}
@@ -2405,6 +2512,66 @@ func functionFuzzSymbolScore(symbol SymbolRecord, query string, index SemanticIn
 		score += functionFuzzMin(outgoing, 8)
 	}
 	return score
+}
+
+func functionFuzzDocsCatalogBoost(symbol SymbolRecord, manifest AnalysisDocsManifest) int {
+	if len(manifest.FuzzTargets) == 0 {
+		return 0
+	}
+	best := 0
+	for _, target := range manifest.FuzzTargets {
+		if !functionFuzzDocsCatalogEntryMatchesSymbol(target, symbol) {
+			continue
+		}
+		boost := target.PriorityScore / 4
+		switch strings.TrimSpace(target.HarnessReadiness) {
+		case "ready":
+			boost += 8
+		case "needs_binding":
+			boost += 3
+		}
+		switch strings.TrimSpace(target.BuildContextLevel) {
+		case "symbol_build_context", "indexed_build_context", "compile_commands":
+			boost += 6
+		case "source_only":
+			boost -= 4
+		}
+		if boost > best {
+			best = boost
+		}
+	}
+	if best < 0 {
+		return 0
+	}
+	if best > 40 {
+		return 40
+	}
+	return best
+}
+
+func functionFuzzDocsCatalogEntryMatchesSymbol(entry AnalysisFuzzTargetCatalogEntry, symbol SymbolRecord) bool {
+	if strings.TrimSpace(entry.SymbolID) != "" && strings.EqualFold(strings.TrimSpace(entry.SymbolID), strings.TrimSpace(symbol.ID)) {
+		return true
+	}
+	if strings.TrimSpace(entry.Name) != "" {
+		display := functionFuzzDisplayName(symbol)
+		if strings.EqualFold(strings.TrimSpace(entry.Name), strings.TrimSpace(display)) ||
+			strings.EqualFold(strings.TrimSpace(entry.Name), strings.TrimSpace(symbol.Name)) ||
+			strings.EqualFold(strings.TrimSpace(entry.Name), strings.TrimSpace(symbol.CanonicalName)) {
+			return true
+		}
+	}
+	entryFile := filepath.ToSlash(strings.TrimSpace(entry.File))
+	symbolFile := filepath.ToSlash(strings.TrimSpace(symbol.File))
+	if entryFile != "" && symbolFile != "" && strings.EqualFold(entryFile, symbolFile) {
+		if strings.TrimSpace(entry.Name) == "" {
+			return true
+		}
+		if strings.Contains(strings.ToLower(functionFuzzDisplayName(symbol)), strings.ToLower(strings.TrimSpace(entry.Name))) {
+			return true
+		}
+	}
+	return false
 }
 
 func functionFuzzIsCallableSymbol(symbol SymbolRecord) bool {

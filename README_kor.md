@@ -8,13 +8,16 @@
 현재 Kernforge의 가장 큰 강점은 `multi-agent project analysis pipeline`입니다. 큰 워크스페이스를 재사용 가능한 knowledge pack으로 정리하고, 그 분석 결과를 편집, 검증, evidence, policy 단계까지 그대로 이어갈 수 있습니다.  
 특히 `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback` 흐름을 중심으로, driver, telemetry, memory-scan, Unreal 보안 작업을 더 안전하고 일관되게 진행할 수 있도록 설계되어 있습니다.
 
+현재 제품 방향은 두 축으로 정리됩니다. 첫 번째는 전체 프로젝트 분석 및 문서화입니다. 두 번째는 소스 기반 triage에서 native fuzzing 실행까지 이어지는 퍼징 전문 도구입니다. README 한국어/영어 문서는 같은 내용을 담고, 각 언어 문서는 같은 기능 범위와 로드맵 방향을 서로 번역한 형태로 유지합니다.
+
 ## 대표 강점
 
 Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent project analysis`입니다.
 
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
-- 결과물은 knowledge pack, performance lens, structural index, vector-ready analysis set으로 남는다.
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만들고, goal을 생략하면 mode에 맞는 기본 목표를 추론한다.
+- 결과물은 knowledge pack, performance lens, structural index, vector-ready analysis set, 운영 문서, HTML 대시보드로 남는다.
 - 이 분석 자산은 이후 review, edit, verification, policy 흐름까지 계속 재사용된다.
+- 다음 로드맵의 중심은 새 `/fuzz-campaign` planner를 one-command campaign automation에서 native crash, coverage, evidence, verification gate lifecycle 관리까지 확장하는 것이다.
 
 ## 문서
 
@@ -28,8 +31,11 @@ Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent
 
 플레이북:
 - [Driver 플레이북](./PLAYBOOK_driver_kor.md)
+- [English Driver Playbook](./PLAYBOOK_driver.md)
 - [Telemetry 플레이북](./PLAYBOOK_telemetry_kor.md)
+- [English Telemetry Playbook](./PLAYBOOK_telemetry.md)
 - [Memory-Scan 플레이북](./PLAYBOOK_memory_scan_kor.md)
+- [English Memory-Scan Playbook](./PLAYBOOK_memory_scan.md)
 
 설계 문서:
 - [한국어 로드맵](./ROADMAP_kor.md)
@@ -58,7 +64,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ## 현재 구현된 기능
 
-- 재사용 가능한 knowledge pack과 performance lens를 만드는 multi-agent project analysis
+- 재사용 가능한 knowledge pack, performance lens, 운영 문서, HTML 대시보드를 만드는 multi-agent project analysis
 - `TaskState`, `TaskGraph`, node-aware recovery, executor guidance를 갖춘 구조화된 interactive orchestration
 - built-in specialist subagent catalog와 editable/read-only specialist routing
 - node별 editable ownership/lease, specialist worktree lease, session-level worktree isolation
@@ -83,11 +89,16 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### Project Analysis
 
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`로 conductor와 여러 sub-agent를 사용해 프로젝트 문서를 생성
 - `--mode`를 생략하면 기본 모드는 `map`
+- goal을 생략하면 Kernforge가 `--mode`와 `--path`를 기준으로 실용적인 기본 goal을 만든다.
+- `trace`, `impact`, `surface`, `security`, `performance` 같은 non-map 모드는 이전 `map` 실행이 있으면 가장 관련 높은 결과를 baseline architecture map으로 자동 로드한다.
+- analysis confirmation 화면은 진행 여부를 묻기 전에 선택된 `baseline_map`을 보여준다.
+- provider rate-limit이나 일시적인 worker/reviewer 실패는 전체 analysis run을 중단하지 않고 해당 shard를 저신뢰 섹션으로 낮춰 기록한다.
+- `surface` 모드는 IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, network entry point 같은 노출면을 정식 분석 대상으로 둔다.
 - `security` 모드에서는 관련 경로가 있을 때 `driver`, `IOCTL`, `handle`, `memory`, `RPC` surface로 결과를 분해해서 본다.
 - 변경되지 않은 shard는 가능한 경우 재사용하는 incremental 분석
-- goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다.
+- goal에 특정 디렉토리 힌트가 있으면 해당 하위 영역으로 분석 범위를 좁힐 수 있다. 범위를 명시적으로 고정하고 실행 전에 검증하고 싶으면 `--path <dir>`를 사용한다.
 - interactive 실행에서는 hidden directory나 external-looking directory를 보여 주고 이번 분석에서 제외할지 확인할 수 있다.
 - semantic fingerprint 기반 invalidation으로 file hash만으로 놓치기 쉬운 구조 변화까지 다시 분석
 - `.uproject`, `.uplugin`, `.Build.cs`, `.Target.cs`, `compile_commands.json`를 build alignment에 반영해 재사용 가능한 build context를 만든다.
@@ -96,18 +107,27 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - Unreal project/module/target/type/network/asset/system/config 신호를 구조화해 대형 UE 프로젝트 대응
 - semantic shard planner와 semantic-aware worker/reviewer prompt로 startup, network, UI, GAS, asset/config, integrity 영역을 우선 분석
 - knowledge pack 외에도 structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, vector ingestion export를 함께 생성
+- generated docs와 `dashboard.html`을 함께 생성해 최신 프로젝트 지식 베이스를 search, source anchor, graph-linked stale section diff, trust-boundary/attack-flow view, evidence/memory drilldown, docs-backed vector corpus reuse가 있는 정적 document portal로 확인
+- 분석 후에는 `Analysis handoff`를 출력해서 생성 문서가 지원하는 다음 단계에 따라 `/analyze-dashboard`, `/fuzz-campaign run`, 상위 `/fuzz-func ...` drilldown, `/verify` 중 필요한 명령을 안내한다.
 - source anchor parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function 같은 modern C++ 패턴까지 추적한다.
 - `security` 모드 최종 문서에는 privileged path를 따로 읽기 쉽도록 `Security Surface Decomposition` 섹션이 추가된다.
 - 메인 채팅 모델과 별도로 worker/reviewer 모델을 지정 가능
 - `.kernforge/analysis` 아래에 architecture knowledge pack과 performance lens 출력
+- `/analyze-dashboard [latest|path]`로 최신 또는 특정 analysis document portal 열기
+- `/docs-refresh`로 최신 분석 run에서 운영 문서, 대시보드, docs-backed vector corpus를 deterministic하게 재생성
 - `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
+- performance report는 마지막에 `Performance handoff`를 출력해 `/analyze-dashboard`, `/verify`, `/simulate stealth-surface`, 구체 `/fuzz-func ...` hotspot drilldown으로 이어준다.
 
 ### 보안 검증과 정책 루프
 
 - driver, telemetry, Unreal, memory-scan 중심 security-aware verification
 - verification history와 verification dashboard
+- `/verify`는 마지막에 `Verification handoff`를 출력한다. 실패 시 repair/retry dashboard로, 성공 시 checkpoint와 tracked feature 상태에 맞는 status/close로 안내하며 native fuzz finding도 targeted planner step으로 끌어온다.
 - verification 결과의 evidence store 누적
 - evidence 검색과 evidence dashboard
+- `/investigate`와 `/simulate`는 snapshot, risk simulation, `/verify`, evidence dashboard로 이어지는 handoff를 출력해 사용자가 분석 루프 순서를 외우지 않아도 된다.
+- evidence와 memory 화면은 조치가 필요한 record를 기준으로 `/verify`, source dashboard, `/mem-confirm`, `/mem-promote`, dashboard review로 되돌아가는 handoff를 출력한다.
+- checkpoint, tracked feature, isolated worktree, specialist assignment도 diff review, implementation, cleanup, preservation, fuzz verification gate를 위한 짧은 후속 안내를 제공한다.
 - `/set-auto-verify [on|off]` 기반 automatic verification 런타임 토글
 - `/detect-verification-tools`, `/set-*-path` 기반 Windows verification tool 경로 탐지와 override
 - recent failed evidence를 이용한 hook 기반 push/PR 경고, 확인, 차단
@@ -123,6 +143,10 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `compile_commands.json`이나 build context가 있으면 후속 네이티브 fuzzing 품질이 올라가고, 없으면 왜 막히는지 먼저 설명한 뒤 진행 여부를 묻는다.
 - 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래의 `report.md`, `harness.cpp`, `plan.json` 등에 저장된다.
 - `/fuzz-func status|show|list|continue|language`로 최근 분석 결과, 보류된 실행, 출력 언어를 관리할 수 있다.
+- `/fuzz-func`가 source-only scenario를 만들면 Kernforge가 campaign handoff를 출력해서 사용자가 campaign 단계를 외우지 않고 `/fuzz-campaign run` 하나를 다음 명령으로 볼 수 있다.
+- `/fuzz-campaign new <name>`으로 `.kernforge/fuzz/<campaign-id>/` 아래 campaign manifest와 `corpus`, `crashes`, `coverage`, `reports`, `logs` 디렉터리를 만든다.
+- analysis docs가 있으면 campaign은 최신 생성 `FUZZ_TARGETS.md` catalog에서 초기 target 목록을 seed로 가져온다.
+- `/fuzz-campaign`으로 Kernforge가 추천하는 다음 단계를 보고, `/fuzz-campaign run`으로 campaign 생성, attach, source-only seed artifact 승격, dedup된 finding lifecycle과 coverage gap 갱신, run output 또는 campaign coverage directory의 libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact, native run report/evidence 기록, 다음 `FUZZ_TARGETS.md` ranking refresh, `/verify`와 tracked feature gate 연결을 자동 처리한다.
 - 자동완성은 `/fuzz-func ` 단계에서는 함수명/파일 사용 힌트를 보여주고, `@`를 입력하기 시작하면 실제 workspace 파일 후보로 전환된다.
 
 ### 편집 워크플로우
@@ -151,7 +175,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 - `/new-feature <task>`는 tracked feature workspace를 만들고 `spec.md`, `plan.md`, `tasks.md`를 생성한다.
 - feature artifact는 `.kernforge/features/<id>` 아래에 저장되어 여러 세션에 걸친 작업을 이어가기 쉽다.
-- `/new-feature status|plan|implement|close [id]`로 active feature 상태 확인, 재계획, 실행, 종료를 분리해서 다룰 수 있다.
+- `/new-feature status|plan|implement|close [id]`로 active feature 상태 확인, 재계획, 실행, 종료를 분리해서 다루며 native fuzz 결과가 있으면 status에서 gate로 보여준다.
 - `/do-plan-review <task>`는 여전히 one-shot 계획 검토 후 즉시 실행하는 흐름에 더 적합하다.
 
 ### 입력과 프롬프트
@@ -173,7 +197,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### 사용성
 
-- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/provider status|anthropic|openai|openrouter|ollama` 같은 provider 하위 명령, analyze-project mode, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, `/worktree status|create|leave|cleanup` 같은 저장된 id와 하위 명령까지 `Tab` 완성
+- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/provider status|anthropic|openai|openrouter|ollama` 같은 provider 하위 명령, analyze-project mode, compact fuzz campaign action, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, `/worktree status|create|leave|cleanup` 같은 저장된 id와 하위 명령까지 `Tab` 완성
 - command/subcommand 자동완성 메뉴에 각 후보 설명을 같이 보여줘서 이름만 나열되지 않게 했다.
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`
@@ -809,12 +833,14 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /provider
 /provider status
 /model
-/profile
-/profile-review
+/profile [list|<number>|rN|dN|pN]
+/profile-review [list|<number>|rN|dN|pN]
 /set-plan-review [provider]
 /set-analysis-models
 /set-specialist-model [status|clear <specialist|all>|<specialist> <provider> [model]]
-/analyze-project [--mode map|trace|impact|security|performance] <goal>
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+/analyze-dashboard [latest|path]
+/docs-refresh
 /analyze-performance [focus]
 /do-plan-review <task>
 /new-feature <task>
@@ -826,6 +852,10 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 ```
 
 - `/model`은 파라미터를 받지 않는다. 현재 모델 라우팅을 먼저 보여준 뒤, interactive 모드에서는 변경할 기능 하나를 고르게 한다.
+- `/model`은 main model, plan-review reviewer, analysis worker/reviewer, specialist subagent 모델을 바꾸는 대표 창구다.
+- main model만 바꾸면 명시적으로 설정된 역할별 model profile은 유지된다. `not configured; follows main model`로 표시되는 대상만 의도적으로 main model을 상속하므로, 그 역할을 따로 설정하기 전까지 새 main model이 보인다.
+- `/profile`과 `/profile-review`는 one-shot 모드에서는 프로필 목록만 보여주며 상태를 바꾸지 않는다. 저장된 main profile이 없고 현재 선택된 provider/model이 있으면 현재 설정을 첫 profile로 저장한 뒤 보여준다. Main profile은 plan-review, analysis worker/reviewer, specialist subagent 역할별 model set도 함께 저장한다. `/model`로 역할별 model을 바꾸면 현재 main profile이 그 구성을 기억하고, 해당 profile을 활성화하면 전체 model set이 복원된다. 활성화, rename, delete, pin, unpin은 번호나 action을 명시해야 한다.
+- 사용자 전역 profile과 workspace profile은 로드 시 병합되며, profile 배열이 빠진 설정 저장이 발생해도 기존 main/review profile 목록을 삭제하지 않고 보존한다.
 - `/set-plan-review [provider]`는 plan-review의 reviewer 모델만 바꾼다. planner 쪽은 계속 main 모델을 사용한다.
 - `/set-analysis-models`는 project analysis worker/reviewer 프로필을 따로 설정할 때 쓴다.
 - `/set-specialist-model ...`은 특정 specialist subagent에만 workspace 단위 모델 override를 줄 때 쓴다.
@@ -845,7 +875,8 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 - slash command
 - command/subcommand 설명이 붙은 completion menu
 - `/provider status|anthropic|openai|openrouter|ollama`
-- `/analyze-project --mode ...`와 내장 mode 값
+- `/analyze-project --path ...`, `/analyze-project --mode ...`, 내장 mode 값
+- `/fuzz-campaign status|run|new|list|show`
 - `@file` 멘션
 - `/open <path>`
 - `/resource <server:...>`
@@ -1010,6 +1041,11 @@ source-level fuzzing 관련 명령:
 /fuzz-func list
 /fuzz-func continue [id|latest]
 /fuzz-func language [system|english]
+/fuzz-campaign status
+/fuzz-campaign run
+/fuzz-campaign new <name>
+/fuzz-campaign list
+/fuzz-campaign show [id|latest]
 ```
 
 hook 및 override 관련 명령:
@@ -1029,18 +1065,24 @@ hook 및 override 관련 명령:
 핵심 명령:
 
 ```text
-/analyze-project [--mode map|trace|impact|security|performance] <goal>
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+/analyze-dashboard [latest|path]
+/docs-refresh
 /analyze-performance [focus]
 /set-analysis-models
 ```
 
+goal은 선택값입니다. 생략하면 Kernforge가 선택된 mode와 path에서 실무적으로 쓸 수 있는 기본 목표를 자동으로 만든다.
+이전 `map` 실행이 있으면 후속 모드는 그 결과를 baseline 구조 지도로 재사용하되, mode별 주장은 현재 파일과 source anchor를 기준으로 다시 검증한다.
+
 모드 요약:
 
-- `map`: 기본 아키텍처 맵, subsystem ownership과 module boundary 중심
-- `trace`: 실행 경로와 caller/callee 흐름 중심
-- `impact`: 변경 영향 범위와 blast radius 중심
-- `security`: trust boundary, validation, privileged surface, tamper-sensitive path 중심이며 `driver`, `IOCTL`, `handle`, `memory`, `RPC` 단위로도 분해
-- `performance`: startup cost, hot path, blocking chain, contention 중심
+- `map`: subsystem ownership, module boundary, entry point, 문서, 대시보드, 재사용 knowledge base를 만드는 기본 아키텍처 맵
+- `trace`: caller/callee, dispatch point, ownership transition, source anchor를 따라 하나의 runtime/request flow 추적
+- `impact`: 변경 blast radius, upstream/downstream dependency, 영향 파일, 재검증 대상, stale documentation risk 파악
+- `surface`: IOCTL, RPC, parser, handle, memory-copy path, telemetry decoder, network input, fuzz target 같은 노출 entry surface 목록화
+- `security`: trust boundary, validation, privileged path, tamper-sensitive state, enforcement point, driver/IOCTL/handle/RPC risk 분석
+- `performance`: startup cost, hot path, blocking chain, allocation/copy pressure, contention, profiling order 분석
 
 무엇을 하는가:
 
@@ -1051,6 +1093,12 @@ hook 및 override 관련 명령:
 - structural index와 Unreal semantic graph를 생성
 - semantic fingerprint와 structured invalidation diff로 재사용 여부와 재분석 원인을 추적
 - Markdown과 JSON 분석 산출물 생성
+- `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, `OPERATIONS_RUNBOOK.md`로 구성된 운영 문서 세트 생성
+- schema-versioned `docs_manifest.json`을 생성하며, reader는 누락된 `schema_version`을 legacy로 처리하고 모르는 필드는 additive compatibility를 위해 무시
+- `dashboard.html`로 run 요약, generated docs, source anchor, graph-linked stale section diff, trust-boundary/attack-flow view, evidence/memory follow-up, subsystem map, security surface, fuzz target 후보, verification matrix를 브라우저에서 확인
+- generated docs 본문에 project edge, trust boundary, data-flow path, attack/data-flow 후속 명령을 graph section으로 추가하고, graph 전용 stale marker를 섹션 metadata에 반영
+- generated docs를 source anchor, confidence, stale marker, reuse metadata가 붙은 whole-document/section-level record로 `vector_corpus.*`에 재수집
+- README는 제품 범위와 대표 명령을 설명하고, feature guide는 실제 운영 루프를 설명하며, generated docs는 특정 분석 run의 source anchor, confidence, stale marker를 담은 프로젝트별 지식 베이스 역할을 맡는다.
 - 후속 분석용 `latest` knowledge pack 유지
 - vector corpus와 provider별 ingestion seed를 생성
 - incremental 분석이 켜져 있으면 변경 없는 shard 결과 재사용
@@ -1074,12 +1122,20 @@ hook 및 override 관련 명령:
 - `.kernforge/analysis/<timestamp>_<goal>_vector_pgvector.sql`
 - `.kernforge/analysis/<timestamp>_<goal>_vector_sqlite.sql`
 - `.kernforge/analysis/<timestamp>_<goal>_vector_qdrant.jsonl`
+- `.kernforge/analysis/<timestamp>_<goal>_docs/`
+- `.kernforge/analysis/<timestamp>_<goal>_docs_manifest.json`
+- `.kernforge/analysis/<timestamp>_<goal>_dashboard.html`
 - `.kernforge/analysis/latest/`
+- `.kernforge/analysis/latest/run.json`
+- `.kernforge/analysis/latest/docs/`
+- `.kernforge/analysis/latest/docs_index.md`
+- `.kernforge/analysis/latest/docs_manifest.json`
+- `.kernforge/analysis/latest/dashboard.html`
 
 권장 흐름:
 
 1. `/analyze-project anti-cheat startup and integrity architecture`를 실행합니다.
-2. 생성된 knowledge pack과 shard 산출물을 확인합니다.
+2. `/analyze-dashboard`로 최신 대시보드를 열고 knowledge pack, 문서, shard 산출물을 확인합니다.
 3. `/analyze-performance startup` 또는 `scanner`, `compression`, `upload`, `ETW`, `memory` 같은 focus로 후속 분석을 실행합니다.
 4. 결과를 `/review-selection`, `/edit-selection`, `/verify`, evidence 기반 hook policy에 연결합니다.
 
@@ -1099,6 +1155,11 @@ hook 및 override 관련 명령:
 /fuzz-func show [id|latest]
 /fuzz-func continue [id|latest]
 /fuzz-func language [system|english]
+/fuzz-campaign status
+/fuzz-campaign run
+/fuzz-campaign new <name>
+/fuzz-campaign list
+/fuzz-campaign show [id|latest]
 ```
 
 무엇을 하는가:
@@ -1109,6 +1170,10 @@ hook 및 override 관련 명령:
 - 위험도가 높은 경로에 대해 공격자 입력 상태, 구체 입력 예시, 소스에서 뽑은 비교식, 최소 반례, 분기별 대표 결과, 후속 호출 체인을 합성한다.
 - 고위험 시나리오는 위험도 점수표와 함께 먼저 볼 소스 줄, 시작 파일에서 그 파일까지 이어진 경로, 대표 루트에서 이어진 호출 경로를 보여준다.
 - build context가 충분하면 후속 네이티브 harness/run까지 연결하고, 부족하면 왜 막히는지 설명한 뒤 확인을 받는다.
+- 유용한 `/fuzz-func` 결과가 나오면 Kernforge가 campaign handoff를 출력하고 다음 자동 단계로 `/fuzz-campaign run`을 제안한다.
+- `/fuzz-campaign`은 다음 권장 campaign action을 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 `/fuzz-func` attach, deterministic JSON corpus seed 승격, dedup된 finding lifecycle 갱신, libFuzzer/llvm-cov/LCOV/JSON coverage report 수집, sanitizer/verifier/crash-dump artifact 수집, coverage gap feedback, artifact graph 갱신, native result report 생성, crash fingerprint, minimization command, evidence 기록, `/verify` planner 재사용, tracked feature gate 안내를 가능한 범위에서 자동 수행한다.
+- native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합된다. manifest에는 duplicate count, 병합된 native result id, evidence id가 남아 반복 실행이 noisy issue 복제가 아니라 하나의 issue를 강화하는 방식으로 기록된다.
+- campaign coverage gap은 manifest에 기록되고 다음 `analyze-project` docs refresh에서 재사용되어 아직 충분히 실행되지 않은 target이 `FUZZ_TARGETS.md` ranking feedback을 받는다.
 - `/fuzz-func ` 자동완성은 함수명과 파일 지정 예시를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
 
 이 기능이 특히 좋은 경우:

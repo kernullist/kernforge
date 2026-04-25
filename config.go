@@ -91,6 +91,7 @@ type Config struct {
 	EnabledSkills          []string                  `json:"enabled_skills,omitempty"`
 	MCPServers             []MCPServerConfig         `json:"mcp_servers,omitempty"`
 	Profiles               []Profile                 `json:"profiles,omitempty"`
+	ActiveProfileKey       string                    `json:"active_profile_key,omitempty"`
 	ProjectAnalysis        ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
 	PlanReview             *PlanReviewConfig         `json:"plan_review,omitempty"`
 	ReviewProfiles         []Profile                 `json:"review_profiles,omitempty"`
@@ -99,12 +100,20 @@ type Config struct {
 }
 
 type Profile struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	BaseURL  string `json:"base_url,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
-	Pinned   bool   `json:"pinned,omitempty"`
+	Name       string             `json:"name"`
+	Provider   string             `json:"provider"`
+	Model      string             `json:"model"`
+	BaseURL    string             `json:"base_url,omitempty"`
+	APIKey     string             `json:"api_key,omitempty"`
+	Pinned     bool               `json:"pinned,omitempty"`
+	RoleModels *ProfileRoleModels `json:"role_models,omitempty"`
+}
+
+type ProfileRoleModels struct {
+	PlanReviewer     *Profile                    `json:"plan_reviewer,omitempty"`
+	AnalysisWorker   *Profile                    `json:"analysis_worker,omitempty"`
+	AnalysisReviewer *Profile                    `json:"analysis_reviewer,omitempty"`
+	Specialists      []SpecialistSubagentProfile `json:"specialists,omitempty"`
 }
 
 func DefaultConfig(cwd string) Config {
@@ -151,6 +160,7 @@ func LoadConfig(cwd string) (Config, error) {
 	}
 	applyEnv(&cfg)
 	normalizeConfigPaths(&cfg)
+	applyActiveProfileRoleModels(&cfg)
 	if err := EnsureUserConfig(cfg); err != nil {
 		return cfg, err
 	}
@@ -338,7 +348,10 @@ func mergeConfig(dst *Config, src Config) {
 		dst.MCPServers = mergeMCPServerOverrides(dst.MCPServers, src.MCPServers)
 	}
 	if len(src.Profiles) > 0 {
-		dst.Profiles = append([]Profile(nil), src.Profiles...)
+		dst.Profiles = mergeConfigProfiles(dst.Profiles, src.Profiles)
+	}
+	if strings.TrimSpace(src.ActiveProfileKey) != "" {
+		dst.ActiveProfileKey = strings.TrimSpace(src.ActiveProfileKey)
 	}
 	if src.ProjectAnalysis.Enabled != nil {
 		value := *src.ProjectAnalysis.Enabled
@@ -397,7 +410,7 @@ func mergeConfig(dst *Config, src Config) {
 		dst.PlanReview = &copy
 	}
 	if len(src.ReviewProfiles) > 0 {
-		dst.ReviewProfiles = append([]Profile(nil), src.ReviewProfiles...)
+		dst.ReviewProfiles = mergeConfigProfiles(dst.ReviewProfiles, src.ReviewProfiles)
 	}
 	if src.Specialists.Enabled != nil {
 		value := *src.Specialists.Enabled
@@ -547,6 +560,28 @@ func normalizeConfigPaths(cfg *Config) {
 			cfg.MCPServers[i].Env = cleaned
 		}
 	}
+	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
+	if len(cfg.ProviderKeys) > 0 {
+		cleaned := make(map[string]string, len(cfg.ProviderKeys))
+		for provider, key := range cfg.ProviderKeys {
+			provider = strings.ToLower(strings.TrimSpace(provider))
+			key = strings.TrimSpace(key)
+			if provider == "" || key == "" {
+				continue
+			}
+			cleaned[provider] = key
+		}
+		cfg.ProviderKeys = cleaned
+	}
+	if cfg.Provider != "" && cfg.APIKey != "" {
+		if cfg.ProviderKeys == nil {
+			cfg.ProviderKeys = make(map[string]string)
+		}
+		if strings.TrimSpace(cfg.ProviderKeys[cfg.Provider]) == "" {
+			cfg.ProviderKeys[cfg.Provider] = cfg.APIKey
+		}
+	}
 	for i, profile := range cfg.Profiles {
 		cfg.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 	}
@@ -576,6 +611,7 @@ func normalizeConfigPaths(cfg *Config) {
 
 func SaveUserConfig(cfg Config) error {
 	normalizeConfigPaths(&cfg)
+	preserveExistingUserSecrets(&cfg)
 	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
 		return err
 	}
@@ -584,6 +620,61 @@ func SaveUserConfig(cfg Config) error {
 		return err
 	}
 	return os.WriteFile(userConfigPath(), data, 0o644)
+}
+
+func preserveExistingUserSecrets(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	data, err := os.ReadFile(userConfigPath())
+	if err != nil {
+		return
+	}
+	var existing Config
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return
+	}
+	normalizeConfigPaths(&existing)
+	if strings.TrimSpace(cfg.APIKey) == "" &&
+		strings.TrimSpace(existing.APIKey) != "" &&
+		strings.EqualFold(cfg.Provider, existing.Provider) {
+		cfg.APIKey = strings.TrimSpace(existing.APIKey)
+	}
+	if cfg.ProviderKeys == nil {
+		cfg.ProviderKeys = map[string]string{}
+	}
+	for provider, key := range existing.ProviderKeys {
+		provider = strings.ToLower(strings.TrimSpace(provider))
+		key = strings.TrimSpace(key)
+		if provider == "" || key == "" {
+			continue
+		}
+		if strings.TrimSpace(cfg.ProviderKeys[provider]) == "" {
+			cfg.ProviderKeys[provider] = key
+		}
+	}
+	if strings.TrimSpace(existing.Provider) != "" && strings.TrimSpace(existing.APIKey) != "" {
+		provider := strings.ToLower(strings.TrimSpace(existing.Provider))
+		if strings.TrimSpace(cfg.ProviderKeys[provider]) == "" {
+			cfg.ProviderKeys[provider] = strings.TrimSpace(existing.APIKey)
+		}
+	}
+	if len(cfg.ProviderKeys) == 0 {
+		cfg.ProviderKeys = nil
+	}
+	if len(cfg.Profiles) == 0 && len(existing.Profiles) > 0 {
+		cfg.Profiles = append([]Profile(nil), existing.Profiles...)
+	} else if len(cfg.Profiles) > 0 && len(existing.Profiles) > 0 {
+		cfg.Profiles = mergeConfigProfiles(existing.Profiles, cfg.Profiles)
+	}
+	if strings.TrimSpace(cfg.ActiveProfileKey) == "" && strings.TrimSpace(existing.ActiveProfileKey) != "" {
+		cfg.ActiveProfileKey = strings.TrimSpace(existing.ActiveProfileKey)
+	}
+	if len(cfg.ReviewProfiles) == 0 && len(existing.ReviewProfiles) > 0 {
+		cfg.ReviewProfiles = append([]Profile(nil), existing.ReviewProfiles...)
+	} else if len(cfg.ReviewProfiles) > 0 && len(existing.ReviewProfiles) > 0 {
+		cfg.ReviewProfiles = mergeConfigProfiles(existing.ReviewProfiles, cfg.ReviewProfiles)
+	}
 }
 
 func SaveWorkspaceConfigOverrides(cwd string, overrides map[string]any) error {
@@ -633,6 +724,173 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 	default:
 		return strings.TrimSpace(baseURL)
 	}
+}
+
+func mergeConfigProfiles(base []Profile, overlay []Profile) []Profile {
+	merged := make([]Profile, 0, len(base)+len(overlay))
+	seen := map[string]struct{}{}
+	for _, profile := range overlay {
+		profile = normalizeConfigProfile(profile)
+		key := configProfileKey(profile)
+		if key == "" {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, profile)
+	}
+	for _, profile := range base {
+		profile = normalizeConfigProfile(profile)
+		key := configProfileKey(profile)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, profile)
+	}
+	return merged
+}
+
+func normalizeConfigProfile(profile Profile) Profile {
+	profile.Name = strings.TrimSpace(profile.Name)
+	profile.Provider = strings.TrimSpace(profile.Provider)
+	profile.Model = strings.TrimSpace(profile.Model)
+	profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	profile.APIKey = strings.TrimSpace(profile.APIKey)
+	if profile.Name == "" && profile.Provider != "" && profile.Model != "" {
+		profile.Name = profileName(profile.Provider, profile.Model)
+	}
+	return profile
+}
+
+func configProfileKey(profile Profile) string {
+	provider := strings.ToLower(strings.TrimSpace(profile.Provider))
+	model := strings.ToLower(strings.TrimSpace(profile.Model))
+	if provider == "" || model == "" {
+		return ""
+	}
+	baseURL := strings.ToLower(strings.TrimSpace(normalizeProfileBaseURL(provider, profile.BaseURL)))
+	return provider + "\x00" + model + "\x00" + baseURL
+}
+
+func activeConfigProfileKey(cfg Config) string {
+	return configProfileKey(Profile{
+		Provider: cfg.Provider,
+		Model:    cfg.Model,
+		BaseURL:  cfg.BaseURL,
+	})
+}
+
+func applyActiveProfileRoleModels(cfg *Config) {
+	if cfg == nil || len(cfg.Profiles) == 0 {
+		return
+	}
+	profile, ok := findActiveConfigProfile(*cfg)
+	if !ok || profile.RoleModels == nil {
+		return
+	}
+	cfg.Provider = strings.TrimSpace(profile.Provider)
+	cfg.Model = strings.TrimSpace(profile.Model)
+	cfg.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	if strings.TrimSpace(profile.APIKey) != "" {
+		cfg.APIKey = strings.TrimSpace(profile.APIKey)
+	}
+	if strings.TrimSpace(cfg.ActiveProfileKey) == "" {
+		cfg.ActiveProfileKey = configProfileKey(profile)
+	}
+	applyConfigProfileRoleModels(cfg, profile)
+}
+
+func findActiveConfigProfile(cfg Config) (Profile, bool) {
+	activeKey := strings.TrimSpace(cfg.ActiveProfileKey)
+	if activeKey != "" {
+		for _, profile := range cfg.Profiles {
+			profile = normalizeConfigProfile(profile)
+			if configProfileKey(profile) == activeKey {
+				return profile, true
+			}
+		}
+	}
+	currentKey := activeConfigProfileKey(cfg)
+	if currentKey == "" {
+		return Profile{}, false
+	}
+	for _, profile := range cfg.Profiles {
+		profile = normalizeConfigProfile(profile)
+		if configProfileKey(profile) == currentKey {
+			return profile, true
+		}
+	}
+	return Profile{}, false
+}
+
+func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
+	if cfg == nil || profile.RoleModels == nil {
+		return
+	}
+	roles := profile.RoleModels
+	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
+		cfg.PlanReview = &PlanReviewConfig{
+			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
+			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
+			BaseURL:  normalizeProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			APIKey:   strings.TrimSpace(roles.PlanReviewer.APIKey),
+		}
+	} else {
+		cfg.PlanReview = nil
+	}
+	cfg.ProjectAnalysis.WorkerProfile = cloneConfigProfile(roles.AnalysisWorker)
+	cfg.ProjectAnalysis.ReviewerProfile = cloneConfigProfile(roles.AnalysisReviewer)
+	applyConfigProfileSpecialistRoleModels(cfg, roles.Specialists)
+}
+
+func cloneConfigProfile(profile *Profile) *Profile {
+	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+		return nil
+	}
+	cloned := normalizeConfigProfile(*profile)
+	return &cloned
+}
+
+func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []SpecialistSubagentProfile) {
+	modelsByName := map[string]SpecialistSubagentProfile{}
+	for _, profile := range roleSpecialists {
+		name := strings.ToLower(strings.TrimSpace(profile.Name))
+		if name == "" || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
+			continue
+		}
+		profile.Name = strings.TrimSpace(profile.Name)
+		profile.Provider = strings.TrimSpace(profile.Provider)
+		profile.Model = strings.TrimSpace(profile.Model)
+		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.APIKey = strings.TrimSpace(profile.APIKey)
+		modelsByName[name] = profile
+	}
+	next := make([]SpecialistSubagentProfile, 0, len(cfg.Specialists.Profiles)+len(modelsByName))
+	seen := map[string]bool{}
+	for _, existing := range cfg.Specialists.Profiles {
+		name := strings.ToLower(strings.TrimSpace(existing.Name))
+		if name == "" {
+			continue
+		}
+		if model, ok := modelsByName[name]; ok {
+			existing.Provider = model.Provider
+			existing.Model = model.Model
+			existing.BaseURL = model.BaseURL
+			existing.APIKey = model.APIKey
+			seen[name] = true
+		}
+		next = append(next, existing)
+	}
+	for name, model := range modelsByName {
+		if seen[name] {
+			continue
+		}
+		next = append(next, model)
+	}
+	cfg.Specialists.Profiles = next
 }
 
 func profileName(provider, model string) string {
@@ -1403,17 +1661,19 @@ Conversation And Sessions:
 
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
-/new-feature <task>    Create tracked feature artifacts and generate spec/plan/tasks
-/analyze-project [--mode map|trace|impact|security|performance] <goal> Analyze the workspace with one conductor and multiple sub-agents, then write a document
-/analyze-performance [focus] Analyze likely performance bottlenecks using the latest architecture knowledge pack
+/new-feature <task>    Create tracked feature artifacts and guide implement, verify, close, or cleanup follow-up
+/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
+/docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
+/analyze-dashboard [latest|path] Open the latest or selected project analysis document portal
+/analyze-performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
 /specialists           Show specialist profiles plus editable ownership and worktree routing state
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
 /set-specialist-model  Configure the provider/model used by a specialist subagent
 /model                 Show all model routing and interactively reconfigure one target
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
 /set-max-tool-iterations <n> Set the maximum tool iteration count per request
-/profile               Show recent provider/model profiles and switch to one
-/profile-review        Show and manage saved review profiles
+/profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
+/profile-review [list|<number>|rN|dN|pN] Show saved review profiles or activate/manage one explicitly
 /provider              Choose and configure a provider
 /provider status       Show provider connectivity, key state, and budget visibility
 /set-plan-review [provider] Configure the reviewer model for plan review (interactive)
@@ -1426,7 +1686,7 @@ Provider And Models:
 - Use /config to inspect effective settings such as provider, token limits, hooks, and verification defaults.
 
 Verification And Checkpoints:
-/checkpoint [note]     Create a workspace checkpoint snapshot, optionally with a note
+/checkpoint [note]     Create a workspace checkpoint snapshot and suggest diff/list follow-up
 /checkpoint-auto [on|off] Show or change automatic checkpoint creation before edits
 /detect-verification-tools Detect and save workspace verification tool paths
 /set-msbuild-path <path> Set the MSBuild executable path for workspace verification
@@ -1441,27 +1701,28 @@ Verification And Checkpoints:
 - Quote paths that contain spaces. Example: /set-msbuild-path "C:\Program Files\...\MSBuild.exe"
 /checkpoint-diff [target] [-- path[,path2]] Preview differences between current files and a checkpoint
 /checkpoints           List checkpoints for the current workspace
-/investigate [subcommand] Manage live investigation sessions and snapshots
+/investigate [subcommand] Manage live investigation sessions and guide the next snapshot, simulation, or evidence step
 /investigate-dashboard  Show an investigation dashboard for this workspace
 /investigate-dashboard-html Generate and open an HTML investigation dashboard
-/simulate [profile]   Run risk-oriented simulation profiles against recent evidence and investigations
+/simulate [profile]   Run risk-oriented simulation profiles and guide verification or evidence follow-up
 /fuzz-func <name> [--file <path>|@<path>] Auto-plan directed function fuzzing for one function, recover build settings when possible, and ask before heuristic execution
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
+/fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
-/verify [path,...|--full] Run adaptive or full verification for this workspace or selected paths
+/verify [path,...|--full] Run adaptive or full verification and suggest repair, dashboard, checkpoint, or feature workflow follow-up
 /verify-dashboard [all] Show recent verification history and failure trends
 /verify-dashboard-html [all] Generate and open an HTML verification dashboard report
 
 Memory:
-/evidence              Show recent evidence records for this workspace
-/evidence-search <query> Search evidence records with optional filters
-/evidence-show <id>    Show one evidence record in detail
+/evidence              Show recent evidence records and suggest verification/dashboard/source follow-up
+/evidence-search <query> Search evidence records with optional filters and follow-up guidance
+/evidence-show <id>    Show one evidence record and suggest the next useful action
 /evidence-dashboard [query] Show an evidence dashboard with optional filters
 /evidence-dashboard-html [query] Generate and open an HTML evidence dashboard
-/mem                   Show recent persistent memory entries for this workspace
+/mem                   Show recent persistent memory entries and suggest confirm/promote/verify follow-up
 /mem-confirm <id>      Mark a memory as confirmed
 /mem-dashboard [query] Show a persistent memory dashboard with optional filters
 /mem-dashboard-html [query] Generate and open an HTML persistent memory dashboard
@@ -1497,7 +1758,7 @@ Workspace Setup:
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
 /locale-auto [on|off]  Show or change automatic locale insertion in prompts
-/worktree [subcommand] Manage isolated git worktrees for tracked implementation
+/worktree [subcommand] Manage isolated git worktrees and suggest tracked-feature follow-up
 
 MCP And Skills:
 /mcp                   Show configured MCP servers and tool status
@@ -1596,22 +1857,30 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "analyze-performance", "specialists":
+	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
 /model
 - Show all current model routing at once, including the main model, plan-review reviewer, analysis models, and specialist subagent models.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
+- Changing the main model does not overwrite explicit role model profiles. Targets marked "not configured" follow the main model until configured.
+- Main profiles now store their own role model set. When you change plan-review, analysis, or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
 
 /profile
-- Show saved provider/model profiles and switch to one interactively.
+- Show saved main provider/model profiles and each profile's stored role model set.
+- If no main profile exists but a main provider/model is already selected, Kernforge saves that selection as the first profile automatically.
+- In interactive mode, enter a number to activate, rN to rename, dN to delete, or pN to pin/unpin.
+- In one-shot or scripted mode, /profile only lists profiles; use /profile <number>, /profile rename <number> <name>, /profile delete <number>, /profile pin <number>, or /profile unpin <number> for explicit changes.
+- Use /model as the main entry point for changing main, plan-review, analysis, and specialist models.
 
 /profile-review
 - Show and manage saved reviewer profiles for plan review.
+- Like /profile, it lists without side effects unless you provide an explicit action or answer the interactive prompt.
+- Use /model or /set-plan-review to change the reviewer model; Kernforge saves selected reviewer profiles automatically.
 
 /provider
 - Choose and configure a provider interactively.
@@ -1640,24 +1909,53 @@ Provider and model commands control which model is active and how planning/revie
 
 /new-feature status [id]
 - Show the active or selected tracked feature, including artifact paths and task preview.
+- Planned features point to /new-feature implement; implemented features point to /verify and /new-feature close.
 
 /new-feature plan [id]
 - Regenerate spec.md, plan.md, and tasks.md for the active or selected tracked feature.
 
 /new-feature implement [id]
 - Execute the saved tracked feature plan and persist an implementation summary artifact.
+- After implementation, Kernforge suggests /verify before closing the feature.
 
 /new-feature close [id]
 - Mark the active or selected tracked feature as done.
+- Closing suggests /worktree cleanup when an isolated worktree is attached, plus /checkpoint feature-done.
 
-/analyze-project [--mode map|trace|impact|security|performance] <goal>
-- Analyze the workspace using a conductor and multiple sub-agents, then write a project document.
-- Modes: map, trace, impact, security, performance.
+/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+- Analyze the workspace using a conductor and multiple sub-agents, then write project analysis artifacts.
+- The goal is optional: when omitted, Kernforge infers a mode-specific goal from --mode and --path.
+- Non-map modes automatically reuse the most relevant previous map run as baseline architecture context when available.
+- Always writes .kernforge/analysis/latest/run.json, deterministic docs, schema-versioned docs_manifest.json, docs_index.md, and dashboard.html.
+- Generated docs include architecture, security surface, trust/data-flow graph sections with section-level stale markers, fuzz targets, verification matrix, and operations runbook.
+- Generated docs are recorded as evidence and persistent memory so verification planning and fuzz target discovery can reuse them.
+- After analysis, Kernforge prints an Analysis handoff with the next dashboard, fuzz campaign, target drilldown, or verification command when the generated docs support it.
+- --docs is accepted as an explicit documentation request; docs are generated by default.
+- --path limits shard execution to a matching workspace directory or file prefix. Natural-language prompts such as "src/driver only" still auto-detect scope; if the prompt looks scoped but no directory matches, Kernforge shows that before confirmation.
+- Modes:
+  - map: default architecture map for subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.
+  - trace: one runtime/request flow through callers, callees, dispatch points, ownership transitions, and source anchors.
+  - impact: change blast radius, upstream/downstream dependencies, affected files, retest targets, and stale documentation risks.
+  - surface: exposed entry surfaces such as IOCTL, RPC, parsers, handles, memory-copy paths, telemetry decoders, network inputs, and fuzz targets.
+  - security: trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks.
+  - performance: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order.
 - When omitted, mode is inferred from the goal text.
+
+/docs-refresh
+- Rebuild .kernforge/analysis/latest/docs, graph sections, graph stale markers, schema-versioned docs_manifest.json, docs_index.md, dashboard.html, and vector corpus exports from the latest saved run.json.
+- Manifest readers treat missing schema_version as legacy and ignore unknown fields for additive compatibility.
+- Use this after code or doc-writer changes when you do not need a full model-backed project analysis rerun.
+- Refresh also re-records the generated docs as reusable evidence and memory artifacts, and rewrites run.json with the refreshed docs-backed corpus.
+
+/analyze-dashboard [latest|path]
+- Open .kernforge/analysis/latest/dashboard.html by default.
+- Pass latest, a dashboard HTML file, or a directory containing dashboard.html.
+- The dashboard now acts as a static document portal with cross-document search, source-anchor drilldown, graph-linked stale section diff, trust/data-flow graph context, attack-flow view, and evidence/memory follow-up commands.
 
 /analyze-performance [focus]
 - Load the latest architecture knowledge pack and performance lens, then analyze likely bottlenecks and hot paths.
 - Add an optional focus such as startup, ETW, scanner, compression, upload, or memory.
+- After the report, Kernforge prints a Performance handoff toward /analyze-dashboard, /verify, /simulate stealth-surface, or a hotspot /fuzz-func drilldown when an entry point is available.
 
 /specialists
 - Show the effective specialist catalog plus editable ownership and specialist worktree state for the current session.
@@ -1667,6 +1965,7 @@ Provider and model commands control which model is active and how planning/revie
 
 /specialists assign <node-id> <specialist> [glob,glob2]
 - Bind one task-graph node to an editable specialist, optionally override its ownership globs, and ensure that specialist has an isolated worktree lease.
+- After assignment, Kernforge points back to /specialists status and /new-feature status when a tracked feature is active.
 
 /specialists cleanup <specialist|all>
 - Remove one specialist worktree or all recorded specialist worktrees after verifying they are clean.
@@ -1681,7 +1980,7 @@ Provider and model commands control which model is active and how planning/revie
 - Use /set-specialist-model status to show effective specialist model routing.
 - Use /set-specialist-model <specialist> <provider> [model] to set an override, or /set-specialist-model clear <specialist|all> to remove overrides.
 `), true
-	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func":
+	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign":
 		return strings.TrimSpace(`
 Verification and checkpoint commands help you validate changes and recover safely.
 
@@ -1726,9 +2025,37 @@ Verification and checkpoint commands help you validate changes and recover safel
 - Show or change the /fuzz-func output language.
 - Use system to follow the PC language.
 - Use english to force English output regardless of the PC language.
+- After a /fuzz-func run produces source-only scenarios, Kernforge prints a campaign handoff with the single next command to run.
+
+/fuzz-campaign [status|run|new <name>|list|show <id|latest>]
+- Create and inspect campaign-level fuzzing manifests without forcing the user to remember internal ordering.
+- A new campaign writes .kernforge/fuzz/<campaign-id>/manifest.json plus corpus, crashes, coverage, reports, and logs directories.
+- When latest analyze-project docs include FUZZ_TARGETS.md entries, the campaign manifest seeds its initial target list from that catalog.
+- /fuzz-campaign shows Kernforge's recommended next step.
+- /fuzz-campaign run lets Kernforge create the campaign if needed, attach the latest useful /fuzz-func run, promote source-only scenarios into deterministic JSON seed artifacts under corpus/<run-id>/, update deduplicated finding lifecycle and coverage gap entries, ingest libFuzzer logs, llvm-cov text, LCOV, and JSON coverage summaries from run output or the campaign coverage directory, capture sanitizer reports, Windows crash dumps, Application Verifier, and Driver Verifier artifacts, and capture native run results into reports and evidence when artifacts exist.
+- Campaign manifests include findings, dedup keys, duplicate counts, merged native/evidence links, parsed coverage reports, coverage gaps, run artifacts, and an artifact graph that links campaign, target, seed, native result, coverage report, sanitizer/verifier artifact, evidence, and source-anchor state.
+- Native crash findings are merged by crash fingerprint, source anchor, and suspected invariant so repeated runs preserve the evidence trail without creating noisy duplicate issues.
+- Coverage gaps feed the next generated FUZZ_TARGETS.md refresh and target ranking so unexercised seed targets move back toward the top automatically.
+- Captured native failures feed /verify planner steps and appear in tracked feature status as a verification gate through the same finding lifecycle.
+- Internal expert actions still exist for tests and recovery, but the default UX is intent-driven automation.
+- Use this before moving source-only /fuzz-func findings into crash, coverage, and evidence lifecycle work.
+
+/investigate [start|snapshot|note|stop|show|list|dashboard|dashboard-html]
+- Live investigation commands now print an Investigation handoff after start, snapshot, and stop.
+- The handoff points to /investigate snapshot, /simulate <profile>, /verify, or /evidence-dashboard depending on the captured state.
+
+/simulate <profile> [target]
+- Simulation runs and show output now print a Simulation handoff.
+- The handoff points to /verify when findings exist, plus /simulate-dashboard and /evidence-dashboard for review.
+
+/verify [path,...|--full]
+- Verification output now prints a Verification handoff.
+- Failed runs point back to /verify plus /verify-dashboard and /evidence-dashboard.
+- Passing runs point to /checkpoint verified-state, and to /new-feature status or /new-feature close depending on tracked feature state.
 
 /checkpoint [note]
 - Create a workspace checkpoint snapshot. In interactive mode, Kernforge prompts for an optional note when none is provided.
+- After creation, Kernforge suggests /checkpoint-diff latest and /checkpoints.
 
 /checkpoint-auto [on|off]
 - Show or change automatic checkpoint creation before edits.
@@ -1828,6 +2155,7 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 
 /evidence
 - Show recent evidence records for the current workspace.
+- The strongest actionable record prints an Evidence handoff toward /verify, /evidence-dashboard, or the source dashboard.
 
 /evidence-search <query>
 - Search evidence records.
@@ -1839,9 +2167,11 @@ Memory commands inspect and manage loaded memory files, persistent memory record
   severity:<low|medium|high|critical>
   signal:<name>
   risk:>=<score>
+- Search results also print the same Evidence handoff when a record needs follow-up.
 
 /evidence-show <id>
 - Show one evidence record in detail.
+- Failed, high-risk, simulation, investigation, or analysis evidence points to the relevant next command.
 
 /evidence-dashboard [query]
 - Show a dashboard-style evidence summary in the terminal.
@@ -1855,6 +2185,7 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 
 /mem
 - Show recent persistent memory entries relevant to this workspace.
+- Tentative, high-risk, or verification-linked records print a Memory handoff.
 
 /mem-search <query>
 - Search persistent memory across past sessions.
@@ -1868,9 +2199,11 @@ Memory commands inspect and manage loaded memory files, persistent memory record
   severity:<low|medium|high|critical>
   signal:<name>
   risk:>=<score>
+- Search results can suggest /mem-confirm, /mem-promote, /verify, or /mem-dashboard.
 
 /mem-show <id>
 - Show one persistent memory record in detail.
+- The detail view prints the same confirm/promote/verify guidance when applicable.
 
 /mem-promote <id>
 /mem-demote <id>
@@ -1966,12 +2299,15 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 /worktree create [name]
 - Create and attach an isolated git worktree rooted under the configured worktree isolation root.
 - The optional name influences the branch and directory slug.
+- When a tracked feature is active, creation points back to /new-feature status so Kernforge can choose the right next step.
 
 /worktree leave
 - Detach from the current isolated worktree and return the session to the base workspace root without deleting the worktree.
+- After leaving, Kernforge suggests /worktree status and the active feature status when present.
 
 /worktree cleanup
 - Remove the managed isolated worktree after verifying it has no uncommitted changes, then return the session to the base workspace root.
+- Cleanup keeps the user oriented with /worktree status and active tracked-feature status.
 `), true
 	case "mcp", "resource", "resources", "prompt", "prompts", "skills":
 		return strings.TrimSpace(`

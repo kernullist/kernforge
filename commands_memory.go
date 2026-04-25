@@ -25,6 +25,10 @@ func (rt *runtimeState) handlePersistentMemoryRecent(args string) error {
 	for _, record := range records {
 		fmt.Fprintf(rt.writer, "%s  importance=%s  trust=%s  %s\n", rt.ui.dim(record.Citation()), record.ImportanceLabel(), record.TrustLabel(), compactPersistentMemoryText(record.Summary, 220))
 	}
+	if handoff := memoryHandoff(records); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
 	return nil
 }
 
@@ -46,6 +50,10 @@ func (rt *runtimeState) handlePersistentMemorySearch(query string) error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Memory Search"))
 	for _, hit := range records {
 		fmt.Fprintf(rt.writer, "%s  importance=%s  trust=%s  score=%d  %s\n", rt.ui.dim(hit.Citation), hit.Record.ImportanceLabel(), hit.Record.TrustLabel(), hit.Score, compactPersistentMemoryText(hit.Record.Summary, 260))
+	}
+	if handoff := memoryHandoffFromHits(records); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
 	}
 	return nil
 }
@@ -100,6 +108,10 @@ func (rt *runtimeState) handlePersistentMemoryShow(id string) error {
 	}
 	if len(record.ToolNames) > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("tools", strings.Join(record.ToolNames, ", ")))
+	}
+	if handoff := memoryHandoff([]PersistentMemoryRecord{record}); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
 	}
 	return nil
 }
@@ -184,6 +196,13 @@ func (rt *runtimeState) handlePersistentMemoryPrune(args string) error {
 	for i := range result.DeletedIDs {
 		fmt.Fprintf(rt.writer, "%s  %s\n", rt.ui.dim(result.DeletedIDs[i]), result.DeletedReason[i])
 	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, renderCommandHandoff("Memory", commandHandoffPlan{
+		Title: "Memory was pruned; inspect the remaining reusable context when needed.",
+		Commands: []commandHandoffCommand{
+			{Label: "Inspect", Command: "/mem-dashboard"},
+		},
+	}))
 	return nil
 }
 
