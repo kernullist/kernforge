@@ -136,6 +136,54 @@ Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
 6. cloud delegation 부재
 7. GitHub/PR review automation 부재
 
+### 대화형 에이전트 관점 비교
+
+이 비교는 단순히 "코드를 수정할 수 있는가"가 아니라, 사용자의 직전 작업과 흐름을 이해하고 스스로 다음 행동을 제안하는 대화형 agent runtime 관점에서 본다.
+
+요약:
+- Claude Code는 hook, subagent, external integration을 통해 "사용자/조직이 정책과 전문 agent를 구성하는 능력"이 강하다.
+- Codex는 local workspace, approval/sandbox, tool loop, 병렬 delegation, cloud/task handoff가 잘 결합되어 "작업을 실제로 끝까지 몰고 가는 페어 프로그래머" 경험이 강하다.
+- Kernforge는 최근 `ConversationEventLog`, `ActiveConversationState`, `RecentErrorResolver`, `SituationSnapshot`, `SuggestionMemory`, `/suggest`를 추가하면서 "프롬프트마다 끊기는 CLI"에서 "현재 상황을 기억하고 다음 행동을 제안하는 보안 엔지니어링 agent" 쪽으로 올라왔다.
+- 다만 Claude/Codex가 가진 범용 생태계, cloud delegation, GitHub/PR 자동화, 자연스러운 장기 작업 orchestration은 아직 약하다.
+
+| 항목 | Claude Code | Codex | 현재 Kernforge | 해석 |
+|---|---:|---:|---:|---|
+| 최근 대화/상황 grounding | 5 | 5 | 4 | `ConversationEventLog`와 `ActiveConversationState`로 직전 오류, tool result, handoff, provider/model을 보존한다. 아직 장기 작업 전환과 multi-session continuity는 더 강화해야 한다. |
+| "방금 에러" 같은 지시어 이해 | 5 | 5 | 4 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
+| 현재 작업 이어가기 | 5 | 5 | 4 | pending handoff, compact working memory, open artifact 보존이 들어갔다. self-driving loop와 suggestion task node 연결로 현재 작업의 다음 실행 후보를 TaskGraph에 남긴다. |
+| 스스로 다음 행동 제안 | 4 | 5 | 4 | `SituationSnapshot`과 `ProactiveSuggestionEngine`이 verification gap, stale docs, fuzz gap, provider 429, dirty worktree, recurring verification, PR review automation을 제안한다. 기본 답변 자동 노출은 과잉 제안을 피하려 provider-blocking 위주로 제한했다. |
+| 제안 반복/거절 기억 | 3 | 4 | 4 | `SuggestionMemory`가 shown/accepted/dismissed/executed/cooldown을 session JSON에 보존하고, accepted/dismissed 선호는 persistent memory에도 승격한다. |
+| 작업 계획과 실행 루프 | 4 | 5 | 4 | 일반 구현/수정/실행 요청에서 `SelfDrivingWorkLoop`가 task state와 task graph를 자동 시드하고 inspect -> implement -> verify -> summarize 루프를 system prompt와 종료 조건에 주입한다. 복잡한 작업은 기존 planner/reviewer preflight를 우선 사용한다. |
+| tool 사용 안정성 | 4 | 5 | 4 | Windows shell guard, diff preview, edit approval, verification, checkpoint가 강하다. 다만 tool failure recovery와 model loop self-correction은 Codex가 더 부드럽다. |
+| 병렬/전문 agent 운용 | 5 | 5 | 4 | project analysis conductor/worker/reviewer와 specialist/worktree가 있다. 범용 subagent delegation UX와 병렬 cloud 작업은 Claude/Codex가 앞선다. |
+| 검증/증거 기반 판단 | 3 | 4 | 5 | Kernforge의 verification history, evidence store, analysis docs, fuzz findings 결합은 보안 작업에서는 오히려 강점이다. |
+| 보안/Windows/anti-cheat 도메인 감도 | 2 | 3 | 5 | Kernforge는 IOCTL, ETW, memory scanning, Unreal, driver/build/signing/fuzz workflow에 맞춘 판단 기준을 제품 중심에 둔다. |
+| 외부 시스템 연동 | 5 | 4 | 3 | MCP는 있으나 GitHub/PR, issue tracker, cloud automation은 아직 얇다. 다만 로컬 PR review report automation MVP는 들어갔다. |
+| 자동화/스케줄링 | 3 | 5 | 3 | `/automation`으로 recurring verification과 PR review automation slot을 session에 저장하고 수동 실행할 수 있다. 실제 시간 기반 scheduler, GitHub API 연동, cloud recurring job은 다음 단계다. |
+| UX polish | 4 | 5 | 3 | Kernforge CLI/Windows viewer는 실용적이지만, Codex급 desktop/app experience와 thread-level 시각화는 아직 부족하다. |
+
+대화형 agent 능력만 놓고 본 현재 위치:
+1. Kernforge는 "상황 기억"과 "최근 오류 grounding"에서는 Claude/Codex의 하위 호환 수준까지 올라왔다.
+2. "스스로 판단하고 제안"은 1차 구현이 들어갔지만, 아직 rule-based detector 중심이다. 이 선택은 보안 엔지니어링에서는 장점이다. 이유와 근거가 명확하고 테스트 가능하기 때문이다.
+3. Codex와의 가장 큰 차이였던 "작업을 맡기면 스스로 전체 루프를 굴리는 자연스러움"은 1차 보강이 들어갔다. 일반 구현/수정 요청은 이제 self-driving work loop로 task graph를 만들고, 도구 사용, 자동 검증, 실패 복구, 최종 요약을 하나의 흐름으로 묶는다.
+4. Claude와의 가장 큰 차이는 "사용자 정의 subagent/hook 생태계의 범용성"이다. Kernforge는 보안/Windows 전문성은 강하지만, 조직별 agent 팀과 외부 시스템 연결은 더 얇다.
+
+Kernforge가 차별화해야 할 방향:
+1. Codex를 그대로 복제하기보다 "evidence-backed security engineering agent"로 간다.
+2. 제안은 LLM 추측이 아니라 `SituationSnapshot`에 근거한 rule/data driven 판단으로 시작하고, LLM은 설명과 우선순위 조율에만 쓴다.
+3. verification, fuzz finding, analysis docs stale marker, evidence gap을 "대화 중 자연스러운 next step"으로 계속 승격한다.
+4. Windows security 작업에서는 "자동 실행"보다 "위험도와 근거가 붙은 확인 가능한 제안"이 더 중요하다.
+5. 장기적으로 `/suggest` 결과를 dashboard, task graph, feature lifecycle, automation scheduler와 연결해 "현재 상황 -> 추천 행동 -> 실행 -> 검증 -> evidence 기록" 루프를 완성한다.
+
+다음 보강 우선순위:
+1. 완료: `SuggestionDashboard`를 analysis/verification/evidence dashboard와 통합했다. `/suggest-dashboard-html`은 integrated signals, related dashboard command chips, evidence refs, accept/dismiss command chips를 함께 보여준다.
+2. 완료: `AutonomyMode=confirm`에서 `/suggest accept <id>` 시 safe slash command dispatcher가 허용된 명령을 실행하고 suggestion을 `executed`로 전환한다.
+3. 완료: dismissed/accepted suggestion을 persistent memory로 승격해 session을 넘는 사용자 선호를 학습한다.
+4. 완료: 여러 background job 또는 subagent가 동시에 실패했을 때 recent error resolver가 후보의 kind/source/model/shard/signature를 비교 설명한다.
+5. 완료: 일반 구현/수정/실행 요청을 `SelfDrivingWorkLoop`로 승격해 task graph와 자동 verification/final answer review 종료 조건에 연결했다.
+6. 완료: `/suggest` 후보와 accepted/dismissed/executed 상태를 `TaskGraph`의 `suggest:<id>` node로 동기화한다.
+7. 완료: `/automation`과 `/review-pr` MVP를 추가해 recurring verification slot, PR review report generation, suggestion accept -> automation 등록 흐름을 연결했다.
+
 ## 3. 제품 방향 추천
 
 권장 방향은 "Claude Code + Codex의 범용 기능을 뒤쫓는 제품"이 아니라 아래 포지션이다.
@@ -494,6 +542,26 @@ MVP 범위:
 
 ### P0. Conversational Runtime Memory And Situation Awareness
 
+현재 구현 상태:
+1. 완료: `conversation_events.go`에 append-only `ConversationEvent` log를 추가하고 session JSON에 영속화했다.
+2. 완료: `conversation_state.go`에 `ConversationState` working set을 추가하고 provider/model, active feature, latest analysis, latest verification, open artifact, running background job을 매 turn 갱신한다.
+3. 완료: `context_assembler.go`가 active state와 recent runtime events를 사용자 메시지와 system prompt에 우선 주입한다.
+4. 완료: `turn_intent.go`가 `diagnose_recent_error`, `continue_last_task`, `explain_current_state`, `ask_project_knowledge`, `edit_code`, `run_command`, `plan_or_design`을 분류한다.
+5. 완료: `recent_error_resolver.go`가 "방금 에러", "아까 오류", "왜 실패" 질문을 최근 provider/tool/command error event에서 직접 답한다.
+6. 완료: provider 429, timeout, tool error, command error를 정규화해 `category`, `provider`, `upstream`, `model`, `code`, `shard`, `retryable`, `byok_hint` entity로 저장한다.
+7. 완료: `diagnose_recent_error`, `continue_last_task`, `explain_current_state`에서는 cached project analysis fast-path가 끼어들지 않도록 guard를 추가했다.
+8. 완료: `NEEDS_TOOLS`, `Cached analysis fast-path`, fast-path debug marker를 사용자 답변에서 제거한다.
+9. 완료: verification pass/fail 결과를 conversation event로 기록한다.
+10. 완료: evidence ID가 같은 millisecond 안에서 충돌해 fuzz finding evidence merge가 깨지는 문제를 nanosecond 기반 ID로 수정했다.
+11. 완료: tool call start/result success event를 남겨 command output summary와 tool result가 recent state에 들어오게 했다.
+12. 완료: `Compact()`가 active conversation state, last error, pending handoff, open artifact를 `[Conversation Working Memory]` block으로 summary에 보존한다.
+13. 완료: compact/resume 이후 recent error resolver가 event log와 preserved state 양쪽에서 마지막 오류를 찾는 회귀 테스트를 추가했다.
+14. 완료: handoff block에서 current workflow와 pending next step을 추출해 compaction working memory에 남긴다.
+15. 완료: fuzz native result evidence dedup key에 campaign/run/report/fingerprint discriminator를 추가해 같은 finding으로 병합되더라도 evidence link는 run별로 유지한다.
+
+남은 구현 항목:
+- 없음. P0 범위의 runtime memory, situation awareness, recent error grounding, compact/resume 보존, 회귀 테스트 구현을 완료했다.
+
 목표:
 - Kernforge를 "프롬프트마다 독립적으로 답하는 분석 CLI"가 아니라, Codex/Claude처럼 사용자의 직전 작업, 실패 로그, 열린 artifact, 진행 중인 feature, 실행 중인 background job, 방금 선택한 모델/provider까지 이해하는 대화형 agent runtime으로 확장한다.
 
@@ -618,6 +686,224 @@ MVP 범위:
 4. cached fast-path 오용률
 5. 사용자가 같은 에러 로그를 다시 붙여넣는 빈도 감소
 
+### P0. Proactive Situation Judgment And Suggestions
+
+현재 구현 상태:
+1. 완료: `proactive_suggestions.go`에 `SituationSnapshot`, `Suggestion`, `SuggestionMemory`, `ProactiveSources` schema를 추가했다.
+2. 완료: snapshot builder가 `ActiveConversationState`, recent conversation events, latest analysis docs stale markers, verification history, evidence store, function fuzz store, fuzz campaign store, git dirty state를 읽어 현재 상황을 구조화한다.
+3. 완료: `ProactiveSuggestionEngine` rule set을 추가해 provider 429/timeout, verification gap, stale docs, failed verification, pending handoff, fuzz native/minimization/coverage gap, high-risk dirty worktree checkpoint, evidence capture gap, feature close/cleanup 후보를 생성한다.
+4. 완료: `SuggestionPolicy`가 `dedup_key`, dismissed cooldown, accepted/executed suppression으로 같은 제안 반복을 막는다.
+5. 완료: `NextActionPlanner`가 blocking/risk/cost 기준으로 후보를 ranking하고 기본 답변에는 provider rate-limit처럼 즉시 조치가 명확한 제안만 1개 붙인다. 나머지 후보는 `/suggest`에서 확인한다.
+6. 완료: session JSON에 `suggestion_memory`를 저장하고 shown/accepted/dismissed/executed 상태와 cooldown을 보존한다.
+7. 완료: `Compact()` working memory가 pending/dismissed suggestion을 `[Conversation Working Memory]`에 보존한다.
+8. 완료: `/suggest`, `/suggest accept <id>`, `/suggest dismiss <id>`, `/suggest mode <observe|suggest|confirm>`, `/suggest-dashboard-html` 명령을 추가했다.
+9. 완료: `/suggest-dashboard-html`이 current situation, integrated signals, ranked suggested next actions를 로컬 HTML dashboard로 렌더링한다.
+10. 완료: suggestion card가 관련 dashboard 명령(`/verify-dashboard-html`, `/evidence-dashboard-html`, `/analyze-dashboard` 등), evidence refs, `/suggest accept|dismiss <id>` command chip을 같이 보여준다.
+11. 완료: provider 429 제안 1회 노출, verification/checkpoint gap 생성, fuzz minimization gap 생성, dismissed suggestion compaction 보존, accepted suggestion event 연결 회귀 테스트를 추가했다.
+12. 완료: suggestion dashboard가 analysis/verification/evidence 통합 링크를 렌더링하는 회귀 테스트를 추가했다.
+13. 완료: `/suggest accept <id>`가 `confirm` 모드에서는 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review-pr` 같은 safe command만 실행하고 성공 시 suggestion 상태를 `executed`로 바꾼다.
+14. 완료: accepted/dismissed suggestion을 persistent memory에 `suggestion-preference` category로 승격한다.
+15. 완료: `/suggest` 후보를 `TaskGraph`의 `suggest:<stable-id>` node로 동기화하고 상태를 ready/in_progress/completed/canceled로 반영한다.
+16. 완료: provider/tool/command error 후보가 여러 개 있을 때 recent error answer가 다른 후보 목록을 함께 보여준다.
+17. 완료: `session.Automations`와 `/automation` 명령을 추가해 recurring verification 및 PR review automation slot을 세션에 저장하고 수동 실행한다.
+18. 완료: `/review-pr`가 git status/diff stat/changed files/checklist를 `.kernforge/pr_review/latest.md`로 생성하고 conversation event에 artifact ref를 남긴다.
+
+남은 구현 항목:
+- 없음. P0 범위의 proactive situation snapshot, rule-based suggestion engine, policy/memory, CLI/HTML dashboard, compact 보존, 회귀 테스트 구현을 완료했다.
+
+### P0. Self-Driving Work Loop Orchestration
+
+현재 구현 상태:
+1. 완료: `self_driving_loop.go`를 추가해 일반 구현/수정/실행 요청을 self-driving task로 판정하고, read-only 분석/최근 오류 진단/status 질문은 자동 루프에서 제외한다.
+2. 완료: active task가 없거나 완료된 상태에서 새 구현 요청이 들어오면 `TaskState`, shared plan, `TaskGraph`를 자동으로 시작한다.
+3. 완료: 기본 plan은 inspect, implement, verify, summarize 네 단계로 구성하고 `TaskGraph` node kind가 inspection/edit/verification/summary로 나뉘게 했다.
+4. 완료: reviewer/planner preflight를 사용할 수 있는 세션에서는 기본 plan을 성급히 확정하지 않고 기존 plan-review 루프를 우선 사용한다.
+5. 완료: system prompt에 `Self-driving work loop` section을 추가해 "분석에서 멈추지 말고 inspect -> implement -> verify -> summarize로 진행"하도록 명시했다.
+6. 완료: final answer 직전 `finalizeSelfDrivingWorkLoopOnReturn`이 자동 검증 실패 시 phase를 `recovery`로 유지하고, 검증 문제가 없으면 plan과 task graph를 `completed`로 마감한다.
+7. 완료: compact/resume에 이미 포함되는 `TaskState`/`TaskGraph`에 self-driving event를 기록하므로, 긴 작업 중간에도 현재 goal, phase, next step, pending check가 보존된다.
+8. 완료: `self_driving_loop_test.go`에 plan seeding, recent-error exclusion, prompt guidance, verification failure recovery, unblocked completion 회귀 테스트를 추가했다.
+
+남은 구현 항목:
+- 없음. P0 범위의 자연어 작업 위임 -> task graph 시드 -> 도구 루프 -> 자동 검증 -> 실패 복구/최종 요약 연결을 완료했다.
+
+목표:
+- 사용자가 "이거 구현하자", "남은 항목들을 처리해줘", "테스트까지 돌려서 끝내줘"처럼 작업을 맡기면 Kernforge가 단순 제안이나 부분 답변에서 멈추지 않고 전체 engineering loop를 스스로 유지하게 한다.
+
+동작 원칙:
+1. 명시적 구현/수정/실행 요청은 self-driving loop 후보로 본다.
+2. "왜 에러가 났어?", "현재 상태가 뭐야?", "분석해줘"처럼 read-only 성격이 강한 요청은 자동 편집 루프를 켜지 않는다.
+3. reviewer/planner가 구성되어 있으면 preflight plan-review를 우선 사용하고, 그렇지 않으면 deterministic 기본 plan을 시드한다.
+4. 편집 후 자동 verification이 실패하면 task를 끝내지 않고 recovery phase로 남긴다.
+5. verification이 통과하거나 명확한 fallback이 정리되면 final answer와 함께 shared plan을 완료 처리한다.
+
+### P0. Proactive Situation Judgment And Suggestions - Design Notes
+
+목표:
+- Kernforge가 단순히 사용자의 다음 프롬프트를 기다리는 CLI가 아니라, Codex처럼 현재 작업 상태, 실패/성공 신호, 변경 위험도, 열린 artifact, 검증 공백을 스스로 판단하고 "지금 하면 좋은 다음 행동"을 사용자에게 제안하는 대화형 engineering partner가 되게 한다.
+- 제안은 자동 실행이 아니라 "근거 있는 next step 후보"여야 한다. 사용자가 명시적으로 맡긴 작업은 이어서 수행하되, 위험한 변경/비용 큰 실행/외부 시스템 영향은 제안과 확인을 분리한다.
+
+현재 기반:
+1. 완료된 `ConversationEventLog`와 `ActiveConversationState`가 직전 오류, tool result, handoff, open artifact, provider/model, active workflow를 보존한다.
+2. analysis docs, fuzz campaign, verification history, evidence store, persistent memory, checkpoint/worktree 상태가 이미 독립 저장소로 존재한다.
+3. 각 명령의 handoff 출력은 존재하지만, 아직 agent runtime 전체가 이를 통합해 우선순위화하지는 않는다.
+
+핵심 문제:
+1. "다음에 뭘 해야 하는지"가 각 command handoff에 흩어져 있고, 대화 turn 전체의 decision layer가 없다.
+2. 사용자가 오류를 묻거나 "계속 해"라고 말하면 반응은 가능하지만, 사용자가 묻기 전에 stale docs, missing verification, failed shard, dirty worktree, incomplete fuzz campaign을 먼저 알아채지는 못한다.
+3. 제안이 제품 UX로 정리되지 않으면 assistant 답변이 장황해지거나 매번 같은 checklist를 반복할 위험이 있다.
+4. 보안/커널/anti-cheat 작업에서는 "할 수 있음"보다 "지금 해야 함"의 판단 근거가 중요하다. 변경 위험도, 검증 공백, 재현 가능성, evidence 누락을 함께 봐야 한다.
+
+권장 아키텍처:
+
+1. `SituationSnapshot`
+- 매 assistant turn 직전 생성되는 짧은 구조화 snapshot이다.
+- 입력:
+  1. `ActiveConversationState`
+  2. 최근 `ConversationEvent` window
+  3. 최신 analysis docs manifest와 stale section 목록
+  4. verification history와 최근 실패 signature
+  5. evidence store의 unresolved finding
+  6. fuzz campaign 상태와 native result/crash/minimization gap
+  7. git dirty state, checkpoint, active worktree, active feature
+  8. background job 상태
+- 출력 필드:
+  1. `current_goal`
+  2. `workflow_phase`
+  3. `blocking_issue`
+  4. `risk_level`
+  5. `confidence`
+  6. `open_artifacts`
+  7. `missing_evidence`
+  8. `missing_verification`
+  9. `suggestion_candidates`
+
+2. `ProactiveSuggestionEngine`
+- snapshot을 받아 0개 이상의 suggestion을 생성한다.
+- suggestion schema:
+  1. `id`
+  2. `title`
+  3. `reason`
+  4. `evidence_refs`
+  5. `command`
+  6. `estimated_cost`
+  7. `risk`
+  8. `requires_confirmation`
+  9. `dedup_key`
+  10. `expires_at_event_id`
+- 제안 유형:
+  1. `retry_or_switch_model`: provider 429/timeout 이후 재시도, 모델 변경, BYOK 설정 제안
+  2. `run_verification`: 코드 변경 후 테스트/빌드/보안 검증 누락 제안
+  3. `refresh_analysis`: 소스 변경으로 docs section stale 시 `/docs-refresh` 또는 `/analyze-project --mode impact` 제안
+  4. `inspect_failure`: compile/test/verify 실패 후 root cause drilldown 제안
+  5. `continue_workflow`: 직전 handoff의 pending next step 실행 제안
+  6. `fuzz_next_step`: fuzz target 발견 후 campaign run, crash minimization, corpus promotion 제안
+  7. `checkpoint_or_worktree`: 위험한 편집 전 checkpoint/worktree 생성 제안
+  8. `evidence_capture`: 의미 있는 finding/result가 있는데 evidence record가 없을 때 캡처 제안
+  9. `cleanup_or_close_feature`: feature 구현/검증 후 close, cleanup, summary 제안
+
+3. `SuggestionPolicy`
+- 제안은 "도움이 되는 순간"에만 노출한다.
+- 기본 규칙:
+  1. 같은 `dedup_key` 제안은 상태가 바뀔 때까지 반복하지 않는다.
+  2. 사용자가 명시적으로 좁은 질문을 했으면 최대 1개만 짧게 붙인다.
+  3. 오류/실패/검증 공백처럼 즉시 중요한 항목은 답변 본문에 포함한다.
+  4. 비용 큰 작업, destructive 가능성, 외부 provider 비용 증가, 장시간 job은 자동 실행하지 않고 확인을 받는다.
+  5. 이미 사용자가 거절한 제안은 session scope에서 cooldown한다.
+  6. 제안 근거가 낮은 confidence면 "가능성"으로 표시하고 기본 행동으로 삼지 않는다.
+
+4. `NextActionPlanner`
+- 여러 suggestion을 우선순위화해 "추천 1개 + 대안 1~2개"로 압축한다.
+- 우선순위 기준:
+  1. blocking 여부
+  2. 데이터 손실/작업 손실 방지
+  3. 보안/커널 변경 위험도
+  4. 검증 누락 심각도
+  5. 사용자의 최근 목표와의 직접성
+  6. 비용/시간
+  7. confidence
+- 출력 예:
+  1. 추천: "방금 provider 429 때문에 analysis shard가 실패했으니 같은 shard만 재시도하거나 model을 교체하는 것이 우선입니다."
+  2. 대안: "전체 analysis를 다시 돌리기보다 실패 shard를 low-confidence로 남기고 dashboard에서 gap을 확인할 수 있습니다."
+
+5. `SuggestionMemory`
+- session JSON에 제안 이력을 저장한다.
+- 저장 필드:
+  1. shown suggestions
+  2. accepted suggestions
+  3. dismissed suggestions
+  4. executed command/result
+  5. cooldown state
+- 목적:
+  1. 같은 제안 반복 방지
+  2. 사용자가 선호하는 workflow 학습
+  3. compact/resume 이후 pending suggestion 복원
+
+6. `AutonomyMode`
+- 자동성 수준을 명시한다.
+- 권장 모드:
+  1. `observe`: 제안을 만들지만 출력하지 않고 로그/테스트에만 사용
+  2. `suggest`: 기본 모드. 답변 끝에 짧은 next step을 제안
+  3. `confirm`: 제안된 명령을 실행하기 전 확인을 요청
+  4. `autopilot`: 사용자가 맡긴 bounded task 안에서 안전한 read/test/verify는 자동 실행
+- 초기 구현은 `suggest`와 `confirm`까지만 제품화한다.
+
+구현 단계:
+1. `SituationSnapshot` schema와 builder 추가
+2. analysis docs, verification history, evidence, fuzz campaign, git/checkpoint/worktree 상태를 snapshot source로 연결
+3. `Suggestion` schema와 `ProactiveSuggestionEngine` 추가
+4. provider error, tool failure, verification gap, stale docs, fuzz campaign gap, dirty worktree용 rule-based detector부터 구현
+5. `SuggestionPolicy`와 dedup/cooldown 저장소 추가
+6. `NextActionPlanner`로 suggestion ranking과 답변 내 표시 형식 통일
+7. `Compact()` working memory에 pending suggestion과 dismissed suggestion 보존
+8. `/suggest`, `/suggest accept <id>`, `/suggest dismiss <id>`, `/suggest mode <observe|suggest|confirm>` 명령 추가
+9. normal reply path에서 "명시적 질문 답변 + 필요한 next step 1개"로 조립
+10. dashboard에 current situation과 suggested next actions 패널 추가
+
+MVP rule set:
+1. 직전 provider 429/timeout:
+- 원인 설명 후 "같은 shard 재시도", "model fallback", "BYOK/provider key 설정" 중 하나를 상황별 추천
+
+2. 코드 변경 후 verification 없음:
+- 변경 파일 유형을 보고 `/verify`, build/test, driver signing/symbol check, synthetic regression 중 필요한 검증 제안
+
+3. analysis docs stale:
+- stale section과 변경 파일을 연결해 `/docs-refresh` 또는 scoped `/analyze-project --mode impact --path <dir>` 제안
+
+4. fuzz campaign incomplete:
+- source-only scenario만 있고 native run 없음: `/fuzz-campaign run` 제안
+- crash artifact는 있는데 minimization 없음: minimization command 제안
+- coverage gap 존재: corpus/seed 보강 제안
+
+5. dirty worktree plus risky edit:
+- kernel, anti-cheat, telemetry, memory scanner 파일 변경 전 checkpoint/worktree 제안
+
+6. failed verification:
+- 같은 failure signature가 반복되면 단순 재실행보다 root cause drilldown과 targeted fix를 우선 제안
+
+필수 테스트:
+1. provider 429 event 직후 일반 답변 끝에 model retry/fallback 제안이 1회만 표시되어야 한다.
+2. 같은 상태에서 같은 제안이 매 turn 반복되지 않아야 한다.
+3. 사용자가 좁은 설명 질문을 했을 때 제안은 본문을 방해하지 않는 짧은 한 줄이어야 한다.
+4. 코드 변경 후 verification history가 비어 있으면 변경 유형 기반 검증 제안이 생성되어야 한다.
+5. stale docs manifest가 있으면 docs refresh 제안이 생성되어야 한다.
+6. fuzz campaign에 crash artifact가 있고 minimization이 없으면 minimization 제안이 생성되어야 한다.
+7. dismissed suggestion은 compact/resume 이후에도 즉시 재노출되지 않아야 한다.
+8. accepted suggestion은 command 실행 결과와 conversation event로 연결되어야 한다.
+
+운영 지표:
+1. 사용자가 제안을 accept한 비율
+2. dismissed/repeated suggestion 비율
+3. 검증 누락 상태에서 제안이 나온 비율
+4. 실패 후 해결까지 turn 수 감소
+5. stale docs/fuzz gap/evidence gap의 평균 방치 시간 감소
+
+구현 시 주의점:
+1. 제안 엔진은 처음부터 LLM 판단에 의존하지 말고 rule-based detector로 시작한다.
+2. LLM은 rule 결과를 자연어로 압축하거나 충돌하는 후보를 설명할 때만 사용한다.
+3. 제안은 "명령 실행"과 분리된 data model이어야 한다. 그래야 dashboard, CLI, compact/resume, 테스트가 모두 같은 상태를 볼 수 있다.
+4. 보안/커널 작업에서는 낮은 confidence 제안을 자동 실행하지 않는다.
+5. 사용자 답변을 방해하지 않도록 기본 출력은 최대 추천 1개로 제한한다.
+
 ### P1. Evidence Graph Memory
 
 목표:
@@ -733,15 +1019,24 @@ MVP 범위:
 목표:
 - Codex처럼 반복 작업을 자동화하되, 운영 현실 중심으로 설계한다.
 
+현재 구현 상태:
+1. 완료: `SessionAutomation`을 session JSON에 저장한다.
+2. 완료: `/automation [list|status]`, `/automation add recurring-verification [/verify args]`, `/automation add pr-review [/review-pr]`, `/automation run <id>`, `/automation pause|resume|remove <id>`를 추가했다.
+3. 완료: `/review-pr`가 로컬 PR review automation report를 `.kernforge/pr_review/latest.md`에 생성한다.
+4. 완료: proactive suggestion이 verification gap과 dirty diff를 보고 recurring verification/PR review automation 등록을 제안한다.
+5. 남음: 실제 시간 기반 scheduler, GitHub PR API 연동, recurring background monitor, 실패 알림/digest는 아직 없다.
+
 우선 자동화 대상:
-1. nightly verification digest
-2. recurring telemetry anomaly scan
-3. driver signing readiness check
-4. weekly memory prune and summarize
-5. PR security review autopilot
+1. 완료/MVP: recurring verification slot
+2. 완료/MVP: PR security review report
+3. nightly verification digest
+4. recurring telemetry anomaly scan
+5. driver signing readiness check
+6. weekly memory prune and summarize
+7. PR security review autopilot with GitHub API
 
 주의:
-- 이 기능은 분명 유용하지만, P0/P1보다 먼저 들어가야 하는 기능은 아니다.
+- 로컬 MVP는 들어갔지만, 운영 자동화로 보려면 scheduler, notification, GitHub/issue tracker 연동이 더 필요하다.
 
 ### P1. Desktop UX App Shell
 
@@ -937,12 +1232,12 @@ MVP 범위:
 | verification orchestration | 4 | 3 | 3 | generated verification matrix 기반으로 확장 |
 | verification history/dashboard | 4 | 2 | 2 | 차별화 유지 |
 | persistent memory | 4 | 3 | 4 | analysis docs evidence/memory 연결 완료, evidence graph로 상향 |
-| conversational situation awareness | 2 | 4 | 5 | P0, recent event/error grounding과 context assembly 재설계 |
+| conversational situation awareness | 4 | 4 | 5 | recent event/error grounding, situation snapshot, suggestion memory, task graph 연결 완료 |
 | selection-first workflow | 5 | 2 | 3 | 강점 유지 |
 | hooks/policy runtime | 4 | 5 | 3 | 두 핵심축의 safety gate로 고도화 |
 | subagents | 4 | 5 | 4 | 분석/문서화와 fuzz campaign specialist로 고도화 |
-| automations | 1 | 2 | 4 | P2 |
-| GitHub review automation | 1 | 2 | 4 | P2 |
+| automations | 3 | 2 | 4 | 로컬 `/automation` MVP 완료, scheduler/cloud job은 P2 |
+| GitHub review automation | 2 | 2 | 4 | 로컬 `/review-pr` report MVP 완료, GitHub API 연동은 P2 |
 | Windows security tooling | 3 | 1 | 2 | 분석, fuzz, evidence를 잇는 차별화 |
 | anti-cheat specialization | 3 | 1 | 1 | 분석 문서와 fuzz profile 중심으로 집중 |
 | desktop UX shell | 2 | 2 | 4 | Phase 3 이후 Go core 유지형 Wails app으로 확장 |
@@ -1389,6 +1684,19 @@ MVP 범위:
 19. 신규: internal marker suppression
 - `NEEDS_TOOLS`, `Cached analysis fast-path`, JSON routing marker, debug confidence label이 사용자 답변에 직접 출력되지 않도록 final answer sanitizer 추가
 - 필요하면 "직전 로그 기준"처럼 사용자에게 의미 있는 grounding 문구만 남김
+
+20. 완료: suggestion accept 실행 루프
+- `confirm` 모드에서 `/suggest accept <id>`가 safe command dispatcher를 통해 허용된 명령만 실행
+- 실행 성공 시 suggestion status를 `executed`로 전환하고 TaskGraph node를 completed로 동기화
+
+21. 완료: suggestion preference memory
+- accepted/dismissed suggestion을 persistent memory의 `suggestion-preference` category로 기록
+- session을 넘어 사용자 선호와 거절 이력을 재사용할 기반 마련
+
+22. 완료: automation MVP
+- `/automation`으로 recurring verification 및 PR review automation slot을 저장/실행/일시정지/삭제
+- `/review-pr`로 `.kernforge/pr_review/latest.md` report 생성
+- proactive suggestion이 automation 등록을 next action으로 제안
 
 이 흐름이 정리되면, 현재 구현된 `fuzz_campaign.go`, `commands_fuzz_func.go`, `evidence_store.go`, `shell_background.go`, `analysis_docs.go`, `verify.go`, `feature_workflow.go`에 더해 새 conversation runtime 계층이 붙으면서 source-to-native fuzzing workbench와 Codex급 대화형 agent 경험이 함께 열린다.
 

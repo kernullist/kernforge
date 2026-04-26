@@ -199,6 +199,7 @@ func normalizeEvidenceRecords(records []EvidenceRecord) []EvidenceRecord {
 			record.Category,
 			record.Subject,
 			record.Outcome,
+			evidenceRecordDedupDiscriminator(record),
 		}, "\x1f"))
 		if seen[key] {
 			continue
@@ -209,12 +210,29 @@ func normalizeEvidenceRecords(records []EvidenceRecord) []EvidenceRecord {
 	return out
 }
 
+func evidenceRecordDedupDiscriminator(record EvidenceRecord) string {
+	if !strings.EqualFold(record.Kind, "fuzz_native_result") {
+		return ""
+	}
+	attrs := record.Attributes
+	return strings.Join([]string{
+		record.VerificationSummary,
+		attrs["campaign_id"],
+		attrs["fuzz_run_id"],
+		attrs["finding_id"],
+		attrs["report_path"],
+		attrs["crash_dir"],
+		attrs["crash_fingerprint"],
+		attrs["artifact_ids"],
+	}, "\x1e")
+}
+
 func normalizeEvidenceRecord(record EvidenceRecord) EvidenceRecord {
 	if record.CreatedAt.IsZero() {
 		record.CreatedAt = time.Now()
 	}
 	if strings.TrimSpace(record.ID) == "" {
-		record.ID = fmt.Sprintf("ev-%s-%03d", record.CreatedAt.Format("20060102-150405"), record.CreatedAt.Nanosecond()/1_000_000)
+		record.ID = fmt.Sprintf("ev-%s-%09d", record.CreatedAt.Format("20060102-150405"), record.CreatedAt.Nanosecond())
 	}
 	record.Workspace = normalizePersistentMemoryWorkspace(record.Workspace)
 	record.Kind = strings.TrimSpace(record.Kind)

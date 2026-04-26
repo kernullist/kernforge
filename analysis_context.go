@@ -846,21 +846,8 @@ func formatCachedAnalysisFastPathReply(reply string, meta cachedAnalysisFastPath
 	if trimmed == "" {
 		return ""
 	}
-	var b strings.Builder
-	b.WriteString("Cached analysis fast-path")
-	if strings.TrimSpace(meta.Confidence) != "" {
-		b.WriteString(" (confidence: ")
-		b.WriteString(strings.TrimSpace(meta.Confidence))
-		b.WriteString(")")
-	}
-	if len(meta.Sources) > 0 {
-		b.WriteString(" [sources: ")
-		b.WriteString(strings.Join(meta.Sources, ", "))
-		b.WriteString("]")
-	}
-	b.WriteString(".\n\n")
-	b.WriteString(trimmed)
-	return b.String()
+	_ = meta
+	return trimmed
 }
 
 func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (string, bool, error) {
@@ -914,6 +901,9 @@ func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
 	baseQuery := baseUserQueryText(lastUser)
 	if strings.TrimSpace(baseQuery) == "" {
 		baseQuery = lastUser
+	}
+	if shouldSuppressProjectAnalysisFastPathForIntent(classifyTurnIntent(baseQuery)) {
+		return false
 	}
 	return !looksLikeActionOrToolIntent(baseQuery)
 }

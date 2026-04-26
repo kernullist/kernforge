@@ -898,8 +898,8 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 	if !strings.Contains(reply, "TavernWorker startup begins") {
 		t.Fatalf("unexpected fast-path reply: %q", reply)
 	}
-	if !strings.Contains(reply, "Cached analysis fast-path") || !strings.Contains(reply, "confidence:") {
-		t.Fatalf("expected fast-path provenance and confidence, got %q", reply)
+	if strings.Contains(reply, "Cached analysis fast-path") || strings.Contains(reply, "NEEDS_TOOLS") {
+		t.Fatalf("expected internal fast-path markers to be suppressed, got %q", reply)
 	}
 	if len(provider.requests) != 1 {
 		t.Fatalf("expected only one provider request via fast-path, got %d", len(provider.requests))

@@ -98,6 +98,63 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 명시적으로 수정까지 요청한 프롬프트는 edit tool을 유지하고, 모델이 패치를 사용자에게 넘기려 하면 Kernforge가 한 번 더 직접 수정 도구 사용을 유도한다.
 3. git stage/commit/push/PR 생성은 사용자가 해당 git 작업을 명시적으로 요청하지 않으면 막힌다.
 
+### Self-Driving Work Loop
+
+목적:
+1. 사용자가 자연어로 구현/수정/실행 작업을 맡겼을 때 분석 답변에서 멈추지 않는다.
+2. `TaskState`와 `TaskGraph`에 inspect, implement, verify, summarize 루프를 자동으로 만든다.
+3. 편집 후 자동 검증 실패가 있으면 task를 완료 처리하지 않고 recovery 상태로 유지한다.
+
+현재 동작:
+1. "구현하자", "수정해줘", "남은 항목들을 처리해줘", "테스트까지 돌려서 끝내줘" 같은 요청은 self-driving loop 후보가 된다.
+2. reviewer/planner preflight를 사용할 수 있으면 기존 plan-review가 우선이고, 없으면 deterministic 기본 plan을 사용한다.
+3. "방금 에러는 왜 난거야?", "현재 상태 알려줘", "분석해줘" 같은 read-only 요청은 자동 편집 루프를 켜지 않는다.
+
+### Proactive Suggestion Dashboard
+
+목적:
+1. 현재 상황에서 Kernforge가 추천하는 다음 행동을 한 화면에 모은다.
+2. analysis stale marker, verification gap, evidence gap, changed path를 같은 dashboard에서 비교한다.
+3. 각 suggestion을 관련 dashboard와 연결해 바로 확인할 명령을 보여준다.
+
+대표 명령:
+- `/suggest`
+- `/suggest accept <id>`
+- `/suggest dismiss <id>`
+- `/suggest mode <observe|suggest|confirm>`
+- `/suggest-dashboard-html`
+
+현재 동작:
+1. `/suggest-dashboard-html`은 integrated signals와 suggested next actions를 함께 렌더링한다.
+2. suggestion card에는 관련 명령, evidence ref, `/verify-dashboard-html`, `/evidence-dashboard-html`, `/analyze-dashboard` 같은 dashboard link chip이 포함된다.
+3. 각 card에는 `/suggest accept <id>`와 `/suggest dismiss <id>` chip이 있어 같은 제안을 반복 노출하지 않도록 상태를 관리할 수 있다.
+4. `/suggest` 후보는 `TaskGraph`의 `suggest:<id>` node로 동기화되어 ready/in_progress/completed/canceled 상태를 가진다.
+5. `/suggest mode confirm` 상태에서 `/suggest accept <id>`를 실행하면 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review-pr` 같은 허용된 safe command만 자동 실행된다.
+6. accepted/dismissed suggestion은 persistent memory에도 preference record로 남아 session을 넘는 반복 제안 억제와 선호 학습의 기반이 된다.
+
+### Local Automations MVP
+
+목적:
+1. Codex식 recurring workflow의 최소 기반을 로컬 session 상태로 제공한다.
+2. 반복 verification과 PR review report 생성을 suggestion/TaskGraph 흐름과 연결한다.
+3. 아직 시간 기반 scheduler나 GitHub API를 붙이지 않고도 운영 루프를 검증할 수 있게 한다.
+
+대표 명령:
+- `/automation`
+- `/automation add recurring-verification /verify`
+- `/automation add pr-review /review-pr`
+- `/automation run <id>`
+- `/automation pause <id>`
+- `/automation resume <id>`
+- `/automation remove <id>`
+- `/review-pr`
+
+현재 동작:
+1. automation slot은 session JSON의 `automations`에 저장된다.
+2. `/automation run <id>`는 safe command dispatcher를 통해 등록된 명령을 실행한다.
+3. `/review-pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
+4. verification gap이나 dirty diff가 있으면 `/suggest`가 recurring verification/PR review automation 등록을 다음 행동으로 제안할 수 있다.
+
 ### 대형 파일 읽기 재사용과 반복 스캔 완화
 
 목적:

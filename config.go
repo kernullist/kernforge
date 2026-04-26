@@ -1657,6 +1657,10 @@ Conversation And Sessions:
 /resume <session-id>   Resume a saved session
 /session               Show the current session id and storage path
 /sessions              List recent sessions
+/suggest [status]      Show proactive situation judgment and suggested next actions
+/suggest-dashboard-html Render proactive suggestions as an HTML dashboard
+/automation [status]   Show or manage local verification and PR review automations
+/review-pr             Generate a local PR review automation report
 /tasks                 Show the current task list
 
 Provider And Models:
@@ -1787,6 +1791,41 @@ func HelpDetail(topic string) (string, bool) {
 	switch key {
 	case "":
 		return "", false
+	case "suggest", "suggestions", "proactive":
+		return strings.TrimSpace(`
+/suggest [status|list]
+- Build a SituationSnapshot from conversation state, recent runtime events, docs, verification, evidence, fuzz campaign, git, checkpoint, worktree, and feature state.
+- Show ranked next-action suggestions without executing them.
+
+/suggest accept <id>
+- Mark a suggestion as accepted and keep the associated command visible for manual execution.
+
+/suggest dismiss <id>
+- Dismiss a suggestion and put its dedup key on session cooldown so it does not repeat immediately.
+
+/suggest mode <observe|suggest|confirm>
+- observe: build suggestions for logs/tests only.
+- suggest: append one concise next step when it is useful.
+- confirm: keep suggestions explicit and confirmation-oriented for risky or costly work.
+
+/suggest-dashboard-html
+- Render the current situation and ranked suggestions as a local HTML dashboard.
+
+/automation [list|status]
+- Show saved automation slots for recurring verification and PR review.
+
+/automation add recurring-verification [/verify args]
+- Register a reusable verification automation that can be run with /automation run <id>.
+
+/automation add pr-review [/review-pr]
+- Register a reusable PR review automation report generator.
+
+/automation run <id>
+- Run a configured automation through the same safe command dispatcher used by accepted suggestions.
+
+/review-pr
+- Generate .kernforge/pr_review/latest.md from git status, diff stat, changed files, and a review checklist.
+`), true
 	case "general", "hooks", "hook-reload", "override", "override-add", "override-clear":
 		return strings.TrimSpace(`
 General commands cover high-level runtime inspection and app control.

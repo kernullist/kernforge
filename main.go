@@ -285,6 +285,8 @@ func run(args []string) error {
 		LongMem:       rt.longMem,
 		Evidence:      rt.evidence,
 		VerifyHistory: rt.verifyHistory,
+		FunctionFuzz:  rt.functionFuzz,
+		FuzzCampaigns: rt.fuzzCampaigns,
 		PromptResolveAutoVerifyFailure: func(report VerificationReport) (AutoVerifyFailureResolution, error) {
 			return rt.promptResolveAutoVerifyFailure(report)
 		},
@@ -4044,6 +4046,22 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSpecialistsCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "suggest":
+		if err := rt.handleSuggestCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "suggest-dashboard-html":
+		if err := rt.handleSuggestDashboardHTMLCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "automation":
+		if err := rt.handleAutomationCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "review-pr":
+		if err := rt.handlePRReviewAutomationCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "verify-dashboard":
 		if err := rt.handleVerifyDashboardCommand(cmd.Args); err != nil {
 			return false, err
@@ -4477,6 +4495,11 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "tasks":
 		if len(rt.session.Plan) == 0 {
+			if rt.session.TaskGraph != nil && len(rt.session.TaskGraph.Nodes) > 0 {
+				fmt.Fprintln(rt.writer, rt.ui.section("Tasks"))
+				fmt.Fprintln(rt.writer, rt.session.TaskGraph.RenderExportSection())
+				return false, nil
+			}
 			fmt.Fprintln(rt.writer, rt.ui.warnLine("No active plan."))
 			return false, nil
 		}

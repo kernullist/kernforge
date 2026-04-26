@@ -32,6 +32,8 @@ type Agent struct {
 	LongMem                        *PersistentMemoryStore
 	Evidence                       *EvidenceStore
 	VerifyHistory                  *VerificationHistoryStore
+	FunctionFuzz                   *FunctionFuzzStore
+	FuzzCampaigns                  *FuzzCampaignStore
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	EmitAssistant                  func(string)
@@ -67,15 +69,17 @@ func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
 }
 
 func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
-	if a.Client == nil {
-		return "", fmt.Errorf("no model provider is configured")
-	}
 	a.lastEmittedText = ""
 	startIndex := len(a.Session.Messages)
+	intent := classifyTurnIntent(userText)
+	a.noteUserConversationEvent(userText)
 	readOnlyAnalysis := prefersReadOnlyAnalysisIntent(userText)
 	explicitEditRequest := looksLikeExplicitEditIntent(userText)
 	explicitGitRequest := looksLikeExplicitGitIntent(userText)
 	enriched, mentionImages := a.expandMentions(ctx, userText)
+	if runtimeContext := strings.TrimSpace(a.assembleConversationRuntimeContext(userText)); runtimeContext != "" {
+		enriched += "\n\n" + runtimeContext
+	}
 	if readOnlyAnalysis {
 		enriched += "\n\nRequest mode: analysis-only.\n- Investigate, explain, or document the issue.\n- Do not modify files or call edit tools unless the user explicitly asks for a fix.\n"
 	} else if explicitEditRequest {
@@ -88,7 +92,10 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if memoryContext := strings.TrimSpace(a.LongMem.RelevantContext(a.Workspace.BaseRoot, userText, a.Session.ID)); memoryContext != "" {
 		enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext
 	}
-	analysisContext := strings.TrimSpace(a.latestProjectAnalysisContext(userText))
+	analysisContext := ""
+	if !shouldSuppressProjectAnalysisFastPathForIntent(intent) {
+		analysisContext = strings.TrimSpace(a.latestProjectAnalysisContext(userText))
+	}
 	if analysisContext != "" {
 		enriched += "\n\nRelevant project analysis from past analyze-project runs:\n" + analysisContext
 	}
@@ -108,9 +115,26 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if err := a.Store.Save(a.Session); err != nil {
 		return "", err
 	}
+	if reply, ok := a.maybeAnswerRecentErrorQuestion(userText); ok {
+		reply = a.maybeAppendProactiveSuggestion(reply, userText)
+		if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
+			a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+		}
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+		return reply, nil
+	}
+	if a.Client == nil {
+		return "", fmt.Errorf("no model provider is configured")
+	}
 	reply, err := a.completeLoop(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
 	if err != nil {
 		return "", err
+	}
+	reply = a.maybeAppendProactiveSuggestion(reply, userText)
+	if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
+		a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 	}
 	if a.LongMem != nil {
 		// completeLoop() 내에서 Compact()가 호출되어 메시지가 축소되었을 수 있음
@@ -123,6 +147,9 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if a.Evidence != nil {
 		_ = a.Evidence.CaptureVerification(a.Workspace, a.Session)
 	}
+	a.noteAssistantConversationEvent(reply)
+	a.Session.RefreshConversationState()
+	_ = a.Store.Save(a.Session)
 	return reply, nil
 }
 
@@ -134,6 +161,9 @@ func (a *Agent) Compact(instructions string) string {
 	older := a.Session.Messages[:cut]
 	a.Session.Messages = append([]Message(nil), a.Session.Messages[cut:]...)
 	summary := summarizeMessages(older, instructions)
+	if workingMemory := strings.TrimSpace(renderCompactionWorkingMemory(a.Session)); workingMemory != "" {
+		summary = strings.TrimSpace(summary) + "\n\n" + workingMemory
+	}
 	if strings.TrimSpace(a.Session.Summary) == "" {
 		a.Session.Summary = summary
 	} else {
@@ -146,17 +176,22 @@ func (a *Agent) Compact(instructions string) string {
 func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) (string, error) {
 	a.refreshBackgroundJobs()
 	if reply, ok, err := a.maybeAnswerFromCachedProjectAnalysis(ctx); err != nil {
+		_ = a.Store.Save(a.Session)
 		return "", err
 	} else if ok {
 		a.Session.AddMessage(Message{
 			Role: "assistant",
 			Text: reply,
 		})
+		a.noteAssistantConversationEvent(reply)
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
 		return reply, nil
 	}
+	latestUser := latestUserMessageText(a.Session.Messages)
+	intent := classifyTurnIntent(latestUser)
+	_ = a.primeSelfDrivingWorkLoop(latestUser, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
 	if err := a.maybePrimeInteractivePlan(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest); err != nil {
 		return "", err
 	}
@@ -287,6 +322,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			resp, err = a.completeModelTurn(ctx, turnReq)
 		}
 		if err != nil {
+			_ = a.Store.Save(a.Session)
 			if isToolUseUnsupportedError(err) {
 				return "", fmt.Errorf("selected model does not support tool use for inspect/edit requests: provider=%s model=%s", strings.TrimSpace(a.Session.Provider), strings.TrimSpace(a.Session.Model))
 			}
@@ -558,11 +594,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
-				if a.Session.TaskState != nil && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-					a.Session.TaskState.SetPhase("done")
-					a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-					a.Session.TaskState.ClearExecutorFocus()
-					a.Session.completeSharedPlan()
+				if a.Session.TaskState != nil {
+					if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
+						a.Session.TaskState.SetPhase("done")
+						a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+						a.Session.TaskState.ClearExecutorFocus()
+						a.Session.completeSharedPlan()
+					}
 				}
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -609,6 +647,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.EmitProgress(summary)
 				}
 			}
+			a.noteToolConversationStart(call)
 			a.noteToolExecutionStart(call)
 			toolMsgIndex, saveErr := a.beginToolExecution(call)
 			if saveErr != nil {
@@ -616,6 +655,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			result, err := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
 			sawToolResultThisTurn = true
+			if err == nil {
+				a.noteToolConversationResult(call, result)
+			}
 			toolMsg := Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -711,6 +753,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if err != nil {
+				a.noteToolConversationError(call.Name, err, toolMsg.Text)
 				toolMsg.IsError = true
 				if result.DisplayText == "" {
 					toolMsg.Text = err.Error()
@@ -1086,6 +1129,10 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 	if trimmed == "" {
 		return ""
 	}
+	trimmed = suppressInternalRoutingMarkers(trimmed)
+	if trimmed == "" {
+		return ""
+	}
 	if !hasToolCalls {
 		return trimmed
 	}
@@ -1107,6 +1154,33 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 		return ""
 	}
 	return strings.Join(kept, "\n")
+}
+
+func suppressInternalRoutingMarkers(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		current := strings.TrimSpace(line)
+		if current == "" {
+			kept = append(kept, line)
+			continue
+		}
+		lower := strings.ToLower(current)
+		if strings.EqualFold(current, projectAnalysisFastPathNeedsTools) {
+			continue
+		}
+		if strings.HasPrefix(lower, "cached analysis fast-path") {
+			continue
+		}
+		if strings.HasPrefix(lower, "fast-path check:") {
+			continue
+		}
+		if strings.Contains(lower, "needs_tools") && len(current) <= 80 {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
 }
 
 func isAssistantNarrationPreamble(text string) bool {
@@ -1162,8 +1236,10 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 			return ChatResponse{}, ctx.Err()
 		}
 		if !shouldRetryProviderError(err) || attempt == totalAttempts-1 {
+			a.noteProviderConversationError(err, req, true)
 			return ChatResponse{}, err
 		}
+		a.noteProviderConversationError(err, req, false)
 		delay := providerRetryDelay(baseDelay, attempt)
 		if a.EmitProgress != nil {
 			a.EmitProgress(modelRetryProgressMessage(err, attempt, totalAttempts, delay))
@@ -2323,10 +2399,26 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(compactPromptSection(a.Session.Summary, 900))
 		b.WriteString("\n")
 	}
+	a.Session.RefreshConversationState()
+	if stateText := strings.TrimSpace(renderConversationStatePrompt(a.Session.ConversationState)); stateText != "" {
+		b.WriteString("\nActive conversation state:\n")
+		b.WriteString(compactPromptSection(stateText, 1100))
+		b.WriteString("\n")
+	}
+	if eventsText := strings.TrimSpace(renderRecentConversationEventsPrompt(recentNonUserConversationEvents(a.Session, 5), 5)); eventsText != "" {
+		b.WriteString("\nRecent runtime/session events:\n")
+		b.WriteString(compactPromptSection(eventsText, 1600))
+		b.WriteString("\n")
+	}
 	if a.Session.TaskState != nil {
 		if stateText := strings.TrimSpace(a.Session.TaskState.RenderPromptSection()); stateText != "" {
 			b.WriteString("\nStructured task state:\n")
 			b.WriteString(stateText)
+			b.WriteString("\n")
+		}
+		if loopText := strings.TrimSpace(renderSelfDrivingWorkLoopPrompt(a.Session.TaskState)); loopText != "" {
+			b.WriteString("\n")
+			b.WriteString(loopText)
 			b.WriteString("\n")
 		}
 	}

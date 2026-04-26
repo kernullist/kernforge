@@ -43,6 +43,10 @@ type Session struct {
 	TaskGraph                *TaskGraph              `json:"task_graph,omitempty"`
 	BackgroundJobs           []BackgroundShellJob    `json:"background_jobs,omitempty"`
 	BackgroundBundles        []BackgroundShellBundle `json:"background_bundles,omitempty"`
+	ConversationEvents       []ConversationEvent     `json:"conversation_events,omitempty"`
+	ConversationState        *ConversationState      `json:"conversation_state,omitempty"`
+	SuggestionMemory         *SuggestionMemory       `json:"suggestion_memory,omitempty"`
+	Automations              []SessionAutomation     `json:"automations,omitempty"`
 	Messages                 []Message               `json:"messages"`
 }
 
@@ -96,6 +100,26 @@ func (s *Session) ApproxChars() int {
 		}
 		for _, item := range bundle.JobIDs {
 			total += len(item)
+		}
+	}
+	if s.ConversationState != nil {
+		total += s.ConversationState.ApproxChars()
+	}
+	if s.SuggestionMemory != nil {
+		total += s.SuggestionMemory.ApproxChars()
+	}
+	for _, automation := range s.Automations {
+		total += len(automation.ID) + len(automation.Type) + len(automation.Name)
+		total += len(automation.Command) + len(automation.Status) + len(automation.Schedule)
+		total += len(automation.LastResult)
+	}
+	for _, event := range s.ConversationEvents {
+		total += len(event.Kind) + len(event.Severity) + len(event.Summary) + len(event.Raw) + len(event.CorrelationID)
+		for key, value := range event.Entities {
+			total += len(key) + len(value)
+		}
+		for _, ref := range event.ArtifactRefs {
+			total += len(ref)
 		}
 	}
 	for _, msg := range s.Messages {
@@ -306,6 +330,9 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeBackgroundJobs()
 	sess.normalizeBackgroundBundles()
 	sess.normalizeSpecialistWorktrees()
+	sess.normalizeConversationRuntime()
+	sess.normalizeSuggestionMemory()
+	sess.normalizeAutomations()
 	return &sess, nil
 }
 

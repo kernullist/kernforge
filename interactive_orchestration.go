@@ -888,6 +888,12 @@ func toolExecutionCanUnblockFocusedNode(call ToolCall, meta map[string]any) bool
 func (a *Agent) noteVerificationResult(report VerificationReport) {
 	state := a.Session.EnsureTaskState()
 	if report.HasFailures() {
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:     conversationEventKindVerification,
+			Severity: conversationSeverityError,
+			Summary:  "Verification failed: " + truncateStatusSnippet(report.FailureSummary(), 180),
+			Raw:      compactPromptSection(report.RenderShort(), 900),
+		})
 		state.AddFailedAttempt("Verification failed: " + truncateStatusSnippet(report.FailureSummary(), 180))
 		a.Session.RecordPlanNodeFailure(strings.TrimSpace(state.ExecutorFocusNode), "verify", report.FailureSummary())
 		state.RecordEvent("verification", strings.TrimSpace(state.ExecutorFocusNode), "verify", report.FailureSummary(), report.RenderShort(), "failed", true)
@@ -895,6 +901,12 @@ func (a *Agent) noteVerificationResult(report VerificationReport) {
 		state.SetNextStep("Fix the failing verification or explain the blocker clearly.")
 		return
 	}
+	a.Session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindVerification,
+		Severity: conversationSeverityInfo,
+		Summary:  "Automatic verification passed.",
+		Raw:      compactPromptSection(report.SummaryLine(), 500),
+	})
 	state.AddCompletedStep("Automatic verification passed.")
 	state.RecordEvent("verification", strings.TrimSpace(state.ExecutorFocusNode), "verify", "Automatic verification passed.", report.SummaryLine(), "completed", true)
 	state.RemovePendingCheck(verificationPendingCheck)

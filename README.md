@@ -1,11 +1,21 @@
 # Kernforge
 
 ![Kernforge banner](./branding/kernforge-release-banner-1280x640.png)
-![Kernforge demo](./branding/kernforge_demo.gif)
 
-`Kernforge` is a terminal-first AI coding CLI written in Go. It is built around a practical local workflow with strong Windows support, and is especially tuned for Windows security, anti-cheat, telemetry, driver-oriented workflows, and large project analysis.
+| Axis | Kernforge | Codex | Claude Code |
+|---|---|---|---|
+| Best fit | Windows security, anti-cheat, telemetry, driver workflows, large-project analysis, evidence-backed verification | General coding agent work, local editing loops, task delegation, automation, PR-oriented workflows | General agentic coding, configurable hooks, subagents, external integrations, team policy workflows |
+| Main strength | Turns a large workspace into reusable project intelligence, security docs, fuzz targets, verification history, evidence, and persistent memory | Feels natural when asked to finish a task end to end: inspect, edit, test, recover, summarize | Strong customization surface: hooks, subagents, MCP-style integrations, organization-specific workflows |
+| Conversation memory | Stores conversation events, active state, recent errors, suggestion memory, task graph, and persistent memory | Very strong thread/workspace awareness and task continuity | Strong conversational context with configurable project instructions and agent setup |
+| Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong at deciding the next practical step during implementation | Strong when workflows are encoded through hooks, subagents, and project conventions |
+| Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong test/command loop, but domain evidence modeling is generic | Strong tool loop, but evidence modeling depends on user/project setup |
+| Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
+| Automation maturity | Local MVP: `/automation`, recurring verification slots, `/review-pr` report, suggestion-to-task graph; scheduler/GitHub API still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
+| Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More polished general agent experience, less specialized security/fuzzing knowledge out of the box | More configurable ecosystem, less built-in Windows security/fuzz workbench depth |
 
-Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into a reusable knowledge pack, then carries that context into editing, verification, evidence, and policy.  
+`Kernforge` is a project intelligence and fuzzing workbench for Windows security, anti-cheat engineering, and evidence-backed verification. It is written in Go, runs as a terminal-first local agent, and is tuned for telemetry, driver-oriented workflows, memory inspection, Unreal security, and large project analysis.
+
+Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into reusable project intelligence, then carries that context into editing, verification, evidence, fuzzing, and policy.  
 Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
 The current product direction has two main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
