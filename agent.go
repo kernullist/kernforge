@@ -2491,11 +2491,8 @@ func (a *Agent) systemPrompt() string {
 		}
 	}
 
-	if configAutoLocale(a.Config) {
-		locale := getSystemLocale()
-		if locale != "" {
-			fmt.Fprintf(&b, "\nAlways respond in the following locale language: %s\n", locale)
-		}
+	if instruction := responseLanguageInstructionForUserText(latestUser, a.Config); instruction != "" {
+		fmt.Fprintf(&b, "\nResponse language policy: %s\n", instruction)
 	}
 
 	b.WriteString("\nTool rules:\n")

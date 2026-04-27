@@ -157,8 +157,26 @@ func analysisDocsRecordTags(run ProjectAnalysisRun, manifest AnalysisDocsManifes
 	if strings.TrimSpace(run.Summary.Mode) != "" {
 		tags = append(tags, "mode:"+strings.ToLower(strings.TrimSpace(run.Summary.Mode)))
 	}
+	if analysisDocsManifestHasDeveloperDocs(manifest) {
+		tags = append(tags, "developer-docs")
+	}
 	tags = append(tags, manifest.ReuseTargets...)
 	return analysisUniqueStrings(tags)
+}
+
+func analysisDocsManifestHasDeveloperDocs(manifest AnalysisDocsManifest) bool {
+	for _, doc := range manifest.Documents {
+		name := strings.ToUpper(strings.TrimSpace(doc.Name))
+		if name == "DEVELOPER_OVERVIEW.MD" || name == "FOLDER_MAP.MD" || name == "MODULES.MD" || name == "STRUCTURE_DIAGRAMS.MD" || name == "CODE_STRUCTURE_REFERENCE.MD" {
+			return true
+		}
+		for _, target := range doc.ReuseTargets {
+			if strings.EqualFold(strings.TrimSpace(target), "developer_docs") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func analysisDocsRecordKeywords(run ProjectAnalysisRun, manifest AnalysisDocsManifest) []string {

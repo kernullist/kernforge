@@ -159,6 +159,9 @@ func analysisGraphMermaid(views []analysisGraphEdgeView, limit int) string {
 		return id
 	}
 	for _, view := range views {
+		if strings.EqualFold(strings.TrimSpace(view.Source), strings.TrimSpace(view.Target)) {
+			continue
+		}
 		sourceID := nodeID(view.Source)
 		targetID := nodeID(view.Target)
 		fmt.Fprintf(&b, "  %s -->|%s| %s\n", sourceID, mermaidLabel(firstNonBlankAnalysisString(view.Flow, view.Type)), targetID)

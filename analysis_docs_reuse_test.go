@@ -23,6 +23,9 @@ func TestBuildAnalysisDocsEvidenceRecordCapturesReusableArtifacts(t *testing.T) 
 		GeneratedAt:   generatedAt,
 		DocumentCount: 3,
 		ReuseTargets:  []string{"evidence", "verification_planner"},
+		Documents: []AnalysisGeneratedDoc{
+			{Name: "DEVELOPER_OVERVIEW.md", ReuseTargets: []string{"developer_docs"}},
+		},
 		FuzzTargets: []AnalysisFuzzTargetCatalogEntry{
 			{Name: "ParsePacket", File: "src/parser.cpp"},
 		},
@@ -47,6 +50,9 @@ func TestBuildAnalysisDocsEvidenceRecordCapturesReusableArtifacts(t *testing.T) 
 	}
 	if !sliceContainsFold(record.Tags, "verification_planner") {
 		t.Fatalf("expected reuse target tag, got %#v", record.Tags)
+	}
+	if !sliceContainsFold(record.Tags, "developer-docs") {
+		t.Fatalf("expected developer docs tag, got %#v", record.Tags)
 	}
 }
 

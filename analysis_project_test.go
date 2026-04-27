@@ -695,6 +695,51 @@ func TestScanProjectHonorsExcludePaths(t *testing.T) {
 	}
 }
 
+func TestScanProjectWithExplicitRootDoesNotRescanParentExcludedCandidates(t *testing.T) {
+	root := t.TempDir()
+	writeAnalysisTestFile(t, filepath.Join(root, "external", "ignored.go"), "package external\n")
+	writeAnalysisTestFile(t, filepath.Join(root, "src", "driver", "dispatch.go"), "package driver\nfunc Dispatch() {}\n")
+
+	ws, paths, err := prepareExplicitAnalysisWorkspace(Workspace{BaseRoot: root, Root: root}, []string{"src/driver"})
+	if err != nil {
+		t.Fatalf("prepareExplicitAnalysisWorkspace returned error: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected explicit path to be consumed by scan root narrowing, got %#v", paths)
+	}
+	cfg := Config{}
+	analyzer := newProjectAnalyzer(cfg, nil, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	for _, file := range snapshot.Files {
+		if strings.Contains(file.Path, "external") || strings.Contains(file.Path, "ignored.go") {
+			t.Fatalf("expected parent external directory to stay out of scoped scan, got %#v", snapshot.Files)
+		}
+	}
+	if len(snapshot.Files) != 1 || snapshot.Files[0].Path != "dispatch.go" {
+		t.Fatalf("expected only scoped target file, got %#v", snapshot.Files)
+	}
+	candidates, err := findAnalysisDirectoryCandidates(ws.Root, analyzer.analysisCfg)
+	if err != nil {
+		t.Fatalf("findAnalysisDirectoryCandidates returned error: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected parent external candidate not to be rediscovered from scoped root, got %#v", candidates)
+	}
+}
+
+func writeAnalysisTestFile(t *testing.T, path string, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
 func TestScanProjectExcludesVisualStudioBuildOutputs(t *testing.T) {
 	root := t.TempDir()
 	mustWrite := func(rel string, body string) {
@@ -1477,7 +1522,7 @@ func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
 		PrimaryFiles: []string{"commands_investigate.go"},
 	}
 	prompt := buildWorkerPrompt(snapshot, shard, "goal", "")
-	if !strings.Contains(prompt, "snippet-limited or context-truncated") {
+	if !strings.Contains(prompt, "context-truncated/source-limited") {
 		t.Fatalf("expected truncated-context guidance in worker prompt\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "may include only the first part of the file") {
@@ -2379,10 +2424,19 @@ func TestBuildAnalysisDocsCreatesOperationalDocumentSet(t *testing.T) {
 	}
 
 	docs := buildAnalysisDocs(run)
-	for _, name := range []string{"INDEX.md", "ARCHITECTURE.md", "SECURITY_SURFACE.md", "API_AND_ENTRYPOINTS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "FUZZ_TARGETS.md", "OPERATIONS_RUNBOOK.md"} {
+	for _, name := range analysisGeneratedDocNames() {
 		if strings.TrimSpace(docs[name]) == "" {
 			t.Fatalf("expected generated doc %s", name)
 		}
+	}
+	if !strings.Contains(docs["DEVELOPER_OVERVIEW.md"], "Where To Start By Task") {
+		t.Fatalf("expected developer overview guidance\n%s", docs["DEVELOPER_OVERVIEW.md"])
+	}
+	if !strings.Contains(docs["FOLDER_MAP.md"], "Folder Summary") {
+		t.Fatalf("expected folder map summary\n%s", docs["FOLDER_MAP.md"])
+	}
+	if !strings.Contains(docs["MODULES.md"], "Module Inventory") {
+		t.Fatalf("expected modules inventory\n%s", docs["MODULES.md"])
 	}
 	if !strings.Contains(docs["FUZZ_TARGETS.md"], `/fuzz-func DispatchIoctl --file "driver/dispatch.cpp"`) {
 		t.Fatalf("expected fuzz target suggestion\n%s", docs["FUZZ_TARGETS.md"])
@@ -2420,8 +2474,8 @@ func TestWriteAnalysisDocsPersistsManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeAnalysisDocs returned error: %v", err)
 	}
-	if manifest.DocumentCount != 8 {
-		t.Fatalf("expected 8 generated docs, got %+v", manifest)
+	if manifest.DocumentCount != len(analysisGeneratedDocNames()) {
+		t.Fatalf("expected %d generated docs, got %+v", len(analysisGeneratedDocNames()), manifest)
 	}
 	if !manifest.GeneratedAt.Equal(completedAt) {
 		t.Fatalf("expected deterministic generated_at %s, got %s", completedAt, manifest.GeneratedAt)
@@ -2683,10 +2737,92 @@ func TestBuildAnalysisDashboardHTMLIncludesCoreSections(t *testing.T) {
 	}
 
 	html := buildAnalysisDashboardHTML(run, "docs")
-	for _, want := range []string{"Project Analysis Dashboard", "SECURITY_SURFACE.md", "Document Portal", "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
+	for _, want := range []string{"Project Analysis Dashboard", "SECURITY_SURFACE.md", "Document Portal", "Developer Docs", "developer_docs", "developer document", `data-query="developer_docs"`, "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected dashboard HTML to contain %q\n%s", want, html)
 		}
+	}
+}
+
+func TestAnalysisDashboardUsesQuestionLanguageAndConsistentDocsHref(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:       "run-dashboard-ko",
+			Goal:        "프로젝트 구조를 분석해서 문서로 작성해",
+			Mode:        "map",
+			Status:      "completed",
+			TotalShards: 1,
+		},
+		Snapshot: ProjectSnapshot{
+			Root:           "C:\\repo",
+			PrimaryStartup: "TavernKernelTestConsole",
+			TotalFiles:     2,
+			TotalLines:     100,
+			SolutionProjects: []SolutionProject{
+				{Name: "TavernKernel", OutputType: "driver", EntryFiles: []string{"TavernKernel/TavernKernel.cpp"}},
+				{Name: "TavernKernelTestConsole", OutputType: "application", EntryFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.cpp"}, StartupCandidate: true},
+			},
+		},
+		KnowledgePack: KnowledgePack{
+			Goal:              "프로젝트 구조를 분석해서 문서로 작성해",
+			TopImportantFiles: []string{"BuildCab/TavernKernel.inf"},
+			AnalysisExecution: AnalysisExecutionSummary{
+				InvalidationReasons: []string{"no_previous_run"},
+			},
+		},
+		SemanticIndexV2: SemanticIndexV2{
+			Symbols: []SymbolRecord{
+				{Name: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", Tags: []string{"driver"}},
+				{Name: "DeviceIoControlIrpHandleRoutine", Kind: "function", File: "TavernKernel/TavernKernelCore.cpp", Tags: []string{"ioctl"}},
+			},
+		},
+	}
+
+	html := buildAnalysisDashboardHTML(run, "run-dashboard-ko_docs")
+	for _, want := range []string{
+		`<html lang="ko">`,
+		"프로젝트 분석 대시보드",
+		"생성 문서",
+		"문서 포털",
+		"Startup 후보",
+		"TavernKernelTestConsole",
+		"DriverEntry",
+		"DeviceIoControlIrpHandleRoutine",
+		"run-dashboard-ko_docs/INDEX.md",
+		"baseline:none",
+		"loaded of",
+		"shown /",
+		"Loading document portal",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected localized dashboard HTML to contain %q\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, `href="docs/`) {
+		t.Fatalf("expected all dashboard doc links to use supplied docsHref\n%s", html)
+	}
+}
+
+func TestAnalysisDashboardPortalJSONIsScriptSafe(t *testing.T) {
+	item := analysisDashboardNewPortalItem(
+		"document",
+		`bad </script><script>alert("x")</script>`,
+		"detail",
+		"source.cpp",
+		"docs/INDEX.md",
+		[]string{`reuse </script>`},
+	)
+
+	got := analysisDashboardPortalJSON([]analysisDashboardPortalItem{item})
+	if strings.Contains(strings.ToLower(got), "</script>") {
+		t.Fatalf("expected portal JSON to be safe inside a script tag, got %s", got)
+	}
+	var decoded []analysisDashboardPortalItem
+	if err := json.Unmarshal([]byte(got), &decoded); err != nil {
+		t.Fatalf("expected valid JSON, got %v from %s", err, got)
+	}
+	if len(decoded) != 1 || decoded[0].Title != item.Title {
+		t.Fatalf("expected portal item roundtrip, got %#v", decoded)
 	}
 }
 
@@ -2988,7 +3124,7 @@ func TestEnsureFinalDocumentInsightsInjectsPrimaryStartupProject(t *testing.T) {
 		},
 	}
 	got := ensureFinalDocumentInsights(document, snapshot, nil, nil)
-	if !strings.Contains(got, "Primary startup project:") {
+	if !strings.Contains(got, "Solution startup candidate:") {
 		t.Fatalf("expected startup project snippet\n%s", got)
 	}
 	if !strings.Contains(got, "`Tavern`") {
@@ -3123,6 +3259,55 @@ EndProject
 	}
 }
 
+func TestEnrichSolutionMetadataIgnoresSolutionProjectsOutsideAnalysisRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "Scoped")
+	sibling := filepath.Join(parent, "AOutside")
+	if err := os.MkdirAll(filepath.Join(root, "Local"), 0o755); err != nil {
+		t.Fatalf("mkdir Local: %v", err)
+	}
+	if err := os.MkdirAll(sibling, 0o755); err != nil {
+		t.Fatalf("mkdir sibling: %v", err)
+	}
+	sln := `Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{GUID}") = "AOutside", "..\AOutside\AOutside.vcxproj", "{A}"
+Project("{GUID}") = "Local", "Local\Local.vcxproj", "{B}"
+EndProject
+`
+	vcxprojApp := `<Project><PropertyGroup Label="Configuration"><ConfigurationType>Application</ConfigurationType></PropertyGroup></Project>`
+	if err := os.WriteFile(filepath.Join(root, "Scoped.sln"), []byte(sln), 0o644); err != nil {
+		t.Fatalf("write sln: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Local", "Local.vcxproj"), []byte(vcxprojApp), 0o644); err != nil {
+		t.Fatalf("write local vcxproj: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Local", "main.cpp"), []byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatalf("write local main: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sibling, "AOutside.vcxproj"), []byte(vcxprojApp), 0o644); err != nil {
+		t.Fatalf("write outside vcxproj: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: parent, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	if snapshot.PrimaryStartup != "Local" {
+		t.Fatalf("expected Local as primary startup, got %q with projects %#v", snapshot.PrimaryStartup, snapshot.SolutionProjects)
+	}
+	if len(snapshot.SolutionProjects) != 1 || snapshot.SolutionProjects[0].Name != "Local" {
+		t.Fatalf("expected only in-root solution project, got %#v", snapshot.SolutionProjects)
+	}
+	for _, project := range snapshot.SolutionProjects {
+		if strings.Contains(project.Path, "..") || strings.Contains(project.Path, "AOutside") {
+			t.Fatalf("expected outside project to be ignored, got %#v", snapshot.SolutionProjects)
+		}
+	}
+}
+
 func TestFallbackFinalDocumentIncludesPrimaryStartupProject(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
@@ -3131,8 +3316,28 @@ func TestFallbackFinalDocumentIncludesPrimaryStartupProject(t *testing.T) {
 		TotalLines:     10,
 	}
 	doc := fallbackFinalDocument(snapshot, nil, nil, "goal")
-	if !strings.Contains(doc, "Inferred primary startup project: `Tavern`") {
+	if !strings.Contains(doc, "Solution startup candidate: `Tavern`") {
 		t.Fatalf("expected fallback doc to include primary startup project\n%s", doc)
+	}
+}
+
+func TestBuildWorkerAndSynthesisPromptsFollowKoreanGoalLanguage(t *testing.T) {
+	snapshot := ProjectSnapshot{Root: "C:\\repo"}
+	shard := AnalysisShard{ID: "shard-01", Name: "core", PrimaryFiles: []string{"core.cpp"}}
+	worker := buildWorkerPrompt(snapshot, shard, "프로젝트 구조를 분석해서 문서로 작성해", "")
+	if !strings.Contains(worker, "Response language: Korean") {
+		t.Fatalf("expected Korean worker language guidance\n%s", worker)
+	}
+	report := WorkerReport{
+		ShardID:          "shard-01",
+		Title:            "Core",
+		ScopeSummary:     "summary",
+		Responsibilities: []string{"owns core"},
+		EvidenceFiles:    []string{"core.cpp"},
+	}
+	synthesis := buildSynthesisPrompt(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, "프로젝트 구조를 분석해서 문서로 작성해")
+	if !strings.Contains(synthesis, "final Markdown document in Korean") {
+		t.Fatalf("expected Korean synthesis language guidance\n%s", synthesis)
 	}
 }
 

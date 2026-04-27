@@ -1697,8 +1697,12 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 	return allowed, nil
 }
 
-func (rt *runtimeState) prepareAnalysisDirectorySelection(cfg ProjectAnalysisConfig) (ProjectAnalysisConfig, error) {
-	candidates, err := findAnalysisDirectoryCandidates(rt.workspace.Root, cfg)
+func (rt *runtimeState) prepareAnalysisDirectorySelection(root string, cfg ProjectAnalysisConfig) (ProjectAnalysisConfig, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		root = rt.workspace.Root
+	}
+	candidates, err := findAnalysisDirectoryCandidates(root, cfg)
 	if err != nil {
 		return cfg, err
 	}
@@ -6357,9 +6361,16 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("workspace", rt.session.WorkingDir))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_mode", projectAnalysisModeStatus(mode, goal)))
 	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
-	analysisCfg, err = rt.prepareAnalysisDirectorySelection(analysisCfg)
+	analysisWorkspace, analysisPaths, err := prepareExplicitAnalysisWorkspace(rt.workspace, parsed.Paths)
 	if err != nil {
 		return err
+	}
+	analysisCfg, err = rt.prepareAnalysisDirectorySelection(analysisWorkspace.Root, analysisCfg)
+	if err != nil {
+		return err
+	}
+	if !strings.EqualFold(strings.TrimSpace(analysisWorkspace.Root), strings.TrimSpace(rt.workspace.Root)) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_root", analysisWorkspace.Root))
 	}
 	workerLabel := rt.session.Provider + " / " + rt.session.Model
 	reviewerLabel := workerLabel
@@ -6376,7 +6387,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", reviewerLabel))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
 
-	analyzer := newProjectAnalyzer(rt.cfg, rt.agent.Client, rt.workspace, func(status string) {
+	analyzer := newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, func(status string) {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 	}, func(debug string) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("analysis: "+debug))
@@ -6389,7 +6400,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
 	plannedShards := analyzer.planShards(previewSnapshot, estimatedTotalShards)
-	explicitScope, unmatchedPaths := resolveExplicitAnalysisScope(parsed.Paths, previewSnapshot)
+	explicitScope, unmatchedPaths := resolveExplicitAnalysisScope(analysisPaths, previewSnapshot)
 	if len(unmatchedPaths) > 0 {
 		return fmt.Errorf("analysis path not found in scanned workspace: %s", strings.Join(unmatchedPaths, ", "))
 	}
@@ -6464,7 +6475,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
 
-	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, rt.workspace, func(status string) {
+	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, func(status string) {
 		if !rt.showTransientWhileThinking(rt.ui.hintLine(status)) {
 			rt.printPersistentWhileThinking(rt.ui.hintLine(status))
 		}
@@ -7302,6 +7313,46 @@ func parseAnalyzeProjectArgs(raw string) (string, string, error) {
 		return "", "", err
 	}
 	return parsed.Mode, parsed.Goal, nil
+}
+
+func prepareExplicitAnalysisWorkspace(ws Workspace, paths []string) (Workspace, []string, error) {
+	if len(paths) != 1 {
+		return ws, paths, nil
+	}
+	requested := strings.TrimSpace(paths[0])
+	if requested == "" {
+		return ws, paths, nil
+	}
+	baseRoot := strings.TrimSpace(ws.Root)
+	if baseRoot == "" {
+		baseRoot = strings.TrimSpace(ws.BaseRoot)
+	}
+	if baseRoot == "" {
+		return ws, paths, nil
+	}
+	target := requested
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(baseRoot, filepath.FromSlash(target))
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return ws, paths, nil
+	}
+	info, err := os.Stat(absTarget)
+	if err != nil || !info.IsDir() {
+		return ws, paths, nil
+	}
+	absBase, err := filepath.Abs(baseRoot)
+	if err != nil {
+		return ws, paths, nil
+	}
+	rel, err := filepath.Rel(absBase, absTarget)
+	if err != nil || strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return ws, paths, nil
+	}
+	updated := ws
+	updated.Root = absTarget
+	return updated, nil, nil
 }
 
 func resolveExplicitAnalysisScope(paths []string, snapshot ProjectSnapshot) (AnalysisGoalScope, []string) {
