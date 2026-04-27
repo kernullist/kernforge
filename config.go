@@ -1075,6 +1075,8 @@ func configFuzzFuncOutputLanguage(cfg Config) string {
 	switch mode {
 	case "", "english", "en", "en-us":
 		return "english"
+	case "korean", "ko", "ko-kr":
+		return "korean"
 	case "system", "pc", "locale", "auto":
 		return "system"
 	default:

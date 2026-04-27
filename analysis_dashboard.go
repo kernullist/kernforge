@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 	if docsHref == "" {
 		docsHref = "docs"
 	}
+	labels := analysisDashboardLabelsForRun(run)
 
 	reused, missed := analysisDashboardCacheCounts(run.Shards)
 	securitySurfaces := analysisSecuritySurfaceSymbols(run)
@@ -33,13 +35,16 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 	buildRows := analysisDashboardBuildRows(limitBuildContexts(run.Snapshot.BuildContexts, 8), limitCompileCommands(run.Snapshot.CompileCommands, 8))
 	staleRows := analysisDashboardStaleRows(run)
 	portalIndex := analysisDashboardPortalIndex(run, docsHref)
-	portalRows := analysisDashboardPortalRows(portalIndex)
-	portalData := analysisDashboardPortalJSON(portalIndex)
+	portalTotal := len(portalIndex)
+	inlinePortalIndex := analysisDashboardInlinePortalItems(portalIndex)
+	portalRows := analysisDashboardFallbackRows("", 4, "Loading document portal...")
+	portalData := analysisDashboardPortalJSON(inlinePortalIndex)
 	sourceAnchorRows := analysisDashboardSourceAnchorRows(run, docsHref)
 	evidenceRows := analysisDashboardEvidenceMemoryRows(run, docsHref)
 	staleDiffRows := analysisDashboardStaleDiffRows(run, docsHref)
 	trustBoundaryRows := analysisDashboardTrustBoundaryRows(run)
 	attackFlowRows := analysisDashboardAttackFlowRows(run)
+	runtimeLens := analysisDashboardRuntimeLensPanel(run, labels)
 	riskFiles := analysisDashboardList(run.KnowledgePack.HighRiskFiles, 12)
 	importantFiles := analysisDashboardList(run.KnowledgePack.TopImportantFiles, 12)
 	if importantFiles == "" {
@@ -56,11 +61,11 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 	}
 
 	return fmt.Sprintf(`<!doctype html>
-<html lang="en">
+<html lang="%s">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Project Analysis Dashboard</title>
+<title>%s</title>
 <style>
 :root {
 	--bg: #f5f7fb;
@@ -128,6 +133,10 @@ h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0; }
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
 .metric { padding: 14px; min-height: 82px; }
 .metric strong { font-size: 24px; line-height: 1.2; }
+.lens-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+.lens { padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.lens span { display: block; color: var(--muted); font-size: 12px; }
+.lens strong { display: block; margin-top: 4px; overflow-wrap: anywhere; }
 .layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
 .stack { display: grid; gap: 16px; }
 .panel { padding: 16px; min-width: 0; }
@@ -157,6 +166,29 @@ h3 { margin: 0 0 8px; font-size: 15px; letter-spacing: 0; }
 	background: #fbfcfe;
 	white-space: nowrap;
 }
+.portal-filters {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-bottom: 12px;
+}
+.portal-filter {
+	min-height: 30px;
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	background: #fbfcfe;
+	color: var(--muted);
+	padding: 5px 9px;
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+}
+.portal-filter.active {
+	background: var(--accent-soft);
+	color: var(--accent);
+	border-color: #9bd0c5;
+	font-weight: 700;
+}
 .doc-link {
 	display: block;
 	padding: 10px;
@@ -181,11 +213,11 @@ code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px
 @media (max-width: 980px) {
 	.shell { padding: 18px; }
 	.topbar, .layout { grid-template-columns: 1fr; }
-	.meta-grid, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.meta-grid, .metric-grid, .lens-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 	.doc-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
-	.meta-grid, .metric-grid { grid-template-columns: 1fr; }
+	.meta-grid, .metric-grid, .lens-grid { grid-template-columns: 1fr; }
 	h1 { font-size: 26px; }
 	th, td { padding: 8px 6px; font-size: 13px; }
 }
@@ -196,48 +228,56 @@ code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px
 	<header class="topbar">
 		<div>
 			<div class="eyebrow">Kernforge analyze-project</div>
-			<h1>Project Analysis Dashboard</h1>
+			<h1>%s</h1>
 			<div class="goal">%s</div>
 		</div>
 		<div class="status-pill %s">%s</div>
 	</header>
 	<section class="meta-grid">
-		<div class="meta"><span>Run ID</span><strong>%s</strong></div>
-		<div class="meta"><span>Mode</span><strong>%s</strong></div>
-		<div class="meta"><span>Workspace</span><strong>%s</strong></div>
-		<div class="meta"><span>Completed</span><strong>%s</strong></div>
+		<div class="meta"><span>%s</span><strong>%s</strong></div>
+		<div class="meta"><span>%s</span><strong>%s</strong></div>
+		<div class="meta"><span>%s</span><strong>%s</strong></div>
+		<div class="meta"><span>%s</span><strong>%s</strong></div>
 	</section>
 	<section class="metric-grid">
-		<div class="metric"><span>Files</span><strong>%d</strong></div>
-		<div class="metric"><span>Lines</span><strong>%d</strong></div>
-		<div class="metric"><span>Shards</span><strong>%d</strong></div>
-		<div class="metric"><span>Symbols</span><strong>%d</strong></div>
-		<div class="metric"><span>Subsystems</span><strong>%d</strong></div>
-		<div class="metric"><span>Security Surfaces</span><strong>%d</strong></div>
-		<div class="metric"><span>Fuzz Candidates</span><strong>%d</strong></div>
-		<div class="metric"><span>Entrypoints</span><strong>%d</strong></div>
-		<div class="metric"><span>Cache Reused</span><strong>%d</strong></div>
-		<div class="metric"><span>Cache Miss</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
 	</section>
+	%s
 	<section class="layout">
 		<div class="stack">
 			<section class="panel">
-				<h2>Generated Documents</h2>
+				<h2>%s</h2>
 				<div class="doc-grid">%s</div>
 			</section>
 			<section class="table-panel">
 				<div class="panel" style="border:0; border-radius:8px 8px 0 0;">
-					<h2>Document Portal</h2>
+					<h2>%s</h2>
 					<div class="portal-search">
-						<input id="portal-search" type="search" placeholder="Search docs, anchors, fuzz targets, verification, evidence">
-						<span id="portal-count" class="portal-count">%d items</span>
+						<input id="portal-search" type="search" placeholder="%s">
+						<span id="portal-count" class="portal-count">%d/%d items</span>
+					</div>
+					<div class="portal-filters" aria-label="Document portal filters">
+						<button class="portal-filter active" type="button" data-query="">All</button>
+						<button class="portal-filter" type="button" data-query="developer_docs">Developer Docs</button>
+						<button class="portal-filter" type="button" data-query="verification_planner">Verification</button>
+						<button class="portal-filter" type="button" data-query="fuzz_target_discovery">Fuzz</button>
+						<button class="portal-filter" type="button" data-query="evidence">Evidence</button>
 					</div>
 				</div>
-				<table><thead><tr><th>Kind</th><th>Item</th><th>Source</th><th>Reuse</th></tr></thead><tbody id="portal-results">%s</tbody></table>
+				<table><thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody id="portal-results">%s</tbody></table>
 			</section>
 			<section class="table-panel">
-				<div class="panel" style="border:0; border-radius:8px 8px 0 0;"><h2>Source Anchors</h2></div>
-				<table><thead><tr><th>Anchor</th><th>Document</th><th>Confidence</th><th>State</th></tr></thead><tbody>%s</tbody></table>
+				<div class="panel" style="border:0; border-radius:8px 8px 0 0;"><h2>%s</h2></div>
+				<table><thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>%s</tbody></table>
 			</section>
 			<section class="table-panel">
 				<div class="panel" style="border:0; border-radius:8px 8px 0 0;"><h2>Evidence And Memory Drilldown</h2></div>
@@ -295,21 +335,28 @@ code { color: var(--code); background: #eef2f7; border-radius: 5px; padding: 2px
 </main>
 <script>
 const portalItems = %s;
+const portalTotalItems = %d;
+const portalInlineItems = %d;
+const portalDisplayLimit = 80;
 const portalResults = document.getElementById('portal-results');
 const portalCount = document.getElementById('portal-count');
 const portalSearch = document.getElementById('portal-search');
+const portalFilters = Array.prototype.slice.call(document.querySelectorAll('.portal-filter'));
+let portalFilterQuery = '';
 function escapeHTML(value) {
 	return String(value || '').replace(/[&<>"']/g, function(ch) {
 		return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];
 	});
 }
 function renderPortal(items) {
-	portalCount.textContent = String(items.length) + ' item' + (items.length === 1 ? '' : 's');
+	const visible = Math.min(items.length, portalDisplayLimit);
+	const suffix = portalInlineItems < portalTotalItems ? ' loaded of ' + portalTotalItems + ' total' : ' total';
+	portalCount.textContent = String(visible) + ' shown / ' + String(items.length) + suffix;
 	if (items.length === 0) {
 		portalResults.innerHTML = '<tr><td colspan="4" class="empty">No matching document portal items.</td></tr>';
 		return;
 	}
-	portalResults.innerHTML = items.slice(0, 80).map(function(item) {
+	portalResults.innerHTML = items.slice(0, portalDisplayLimit).map(function(item) {
 		const title = item.href ? '<a href="' + escapeHTML(item.href) + '">' + escapeHTML(item.title) + '</a>' : escapeHTML(item.title);
 		const detail = item.detail ? '<div class="subtle">' + escapeHTML(item.detail) + '</div>' : '';
 		const source = item.source ? '<code>' + escapeHTML(item.source) + '</code>' : '<span class="subtle">none</span>';
@@ -319,39 +366,77 @@ function renderPortal(items) {
 }
 function filterPortal() {
 	const query = portalSearch.value.trim().toLowerCase();
-	if (!query) {
-		renderPortal(portalItems);
-		return;
-	}
 	renderPortal(portalItems.filter(function(item) {
-		return (item.search || '').indexOf(query) >= 0;
+		const search = item.search || '';
+		const matchesText = !query || search.indexOf(query) >= 0;
+		const matchesFilter = !portalFilterQuery || search.indexOf(portalFilterQuery) >= 0;
+		return matchesText && matchesFilter;
 	}));
 }
+portalFilters.forEach(function(button) {
+	button.addEventListener('click', function() {
+		portalFilterQuery = String(button.getAttribute('data-query') || '').toLowerCase();
+		portalFilters.forEach(function(item) { item.classList.remove('active'); });
+		button.classList.add('active');
+		filterPortal();
+	});
+});
 portalSearch.addEventListener('input', filterPortal);
 renderPortal(portalItems);
 </script>
 </body>
 </html>`,
+		htmlEscape(labels.Lang),
+		htmlEscape(labels.Title),
+		htmlEscape(labels.Title),
 		htmlEscape(valueOrDefault(run.Summary.Goal, "Project knowledge base")),
 		statusClass,
 		htmlEscape(valueOrDefault(run.Summary.Status, "completed")),
+		htmlEscape(labels.RunID),
 		htmlEscape(run.Summary.RunID),
+		htmlEscape(labels.Mode),
 		htmlEscape(valueOrDefault(run.Summary.Mode, run.Snapshot.AnalysisMode)),
+		htmlEscape(labels.Workspace),
 		htmlEscape(valueOrDefault(run.Snapshot.Root, run.KnowledgePack.Root)),
+		htmlEscape(labels.Completed),
 		htmlEscape(completedAt.Format(time.RFC3339)),
+		htmlEscape(labels.Files),
 		run.Snapshot.TotalFiles,
+		htmlEscape(labels.Lines),
 		run.Snapshot.TotalLines,
+		htmlEscape(labels.Shards),
 		run.Summary.TotalShards,
+		htmlEscape(labels.Symbols),
 		len(run.SemanticIndexV2.Symbols),
+		htmlEscape(labels.Subsystems),
 		len(run.KnowledgePack.Subsystems),
+		htmlEscape(labels.SecuritySurfaces),
 		len(securitySurfaces),
+		htmlEscape(labels.FuzzCandidates),
 		len(fuzzTargets),
+		htmlEscape(labels.Entrypoints),
 		len(entrypoints),
+		htmlEscape(labels.CacheReused),
 		reused,
+		htmlEscape(labels.CacheMiss),
 		missed,
+		runtimeLens,
+		htmlEscape(labels.GeneratedDocuments),
 		docLinks,
-		len(portalIndex),
+		htmlEscape(labels.DocumentPortal),
+		htmlEscape(labels.PortalPlaceholder),
+		len(inlinePortalIndex),
+		portalTotal,
+		htmlEscape(labels.Kind),
+		htmlEscape(labels.Item),
+		htmlEscape(labels.Source),
+		htmlEscape(labels.Reuse),
 		portalRows,
+		htmlEscape(labels.SourceAnchors),
+		htmlEscape(labels.Anchor),
+		htmlEscape(labels.Document),
+		htmlEscape(labels.Confidence),
+		htmlEscape(labels.State),
 		analysisDashboardFallbackRows(sourceAnchorRows, 4, "No source anchors recorded."),
 		analysisDashboardFallbackRows(evidenceRows, 3, "No evidence or memory drilldown context recorded."),
 		analysisDashboardFallbackRows(staleDiffRows, 4, "No stale section diff recorded."),
@@ -367,6 +452,8 @@ renderPortal(portalItems);
 		analysisDashboardFallbackRows(buildRows, 3, "No build contexts or compile commands found."),
 		htmlEscape(run.Summary.OutputPath),
 		portalData,
+		portalTotal,
+		len(inlinePortalIndex),
 	)
 }
 
@@ -380,6 +467,128 @@ type analysisDashboardPortalItem struct {
 	Search string   `json:"search"`
 }
 
+type analysisDashboardLabels struct {
+	Lang               string
+	Title              string
+	RunID              string
+	Mode               string
+	Workspace          string
+	Completed          string
+	Files              string
+	Lines              string
+	Shards             string
+	Symbols            string
+	Subsystems         string
+	SecuritySurfaces   string
+	FuzzCandidates     string
+	Entrypoints        string
+	CacheReused        string
+	CacheMiss          string
+	GeneratedDocuments string
+	DocumentPortal     string
+	PortalPlaceholder  string
+	Kind               string
+	Item               string
+	Source             string
+	Reuse              string
+	SourceAnchors      string
+	Anchor             string
+	Document           string
+	Confidence         string
+	State              string
+	StartupCandidate   string
+	DriverRuntimeEntry string
+	IOCTLDeviceControl string
+	BuildSigning       string
+	None               string
+	NotInferred        string
+}
+
+func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabels {
+	if textContainsHangul(run.Summary.Goal) || textContainsHangul(run.KnowledgePack.Goal) {
+		return analysisDashboardLabels{
+			Lang:               "ko",
+			Title:              "프로젝트 분석 대시보드",
+			RunID:              "Run ID",
+			Mode:               "모드",
+			Workspace:          "워크스페이스",
+			Completed:          "완료 시각",
+			Files:              "파일",
+			Lines:              "라인",
+			Shards:             "샤드",
+			Symbols:            "심볼",
+			Subsystems:         "서브시스템",
+			SecuritySurfaces:   "보안 표면",
+			FuzzCandidates:     "Fuzz 후보",
+			Entrypoints:        "엔트리포인트",
+			CacheReused:        "캐시 재사용",
+			CacheMiss:          "캐시 미스",
+			GeneratedDocuments: "생성 문서",
+			DocumentPortal:     "문서 포털",
+			PortalPlaceholder:  "문서, anchor, fuzz target, 검증, evidence 검색",
+			Kind:               "종류",
+			Item:               "항목",
+			Source:             "소스",
+			Reuse:              "재사용",
+			SourceAnchors:      "소스 Anchor",
+			Anchor:             "Anchor",
+			Document:           "문서",
+			Confidence:         "신뢰도",
+			State:              "상태",
+			StartupCandidate:   "Startup 후보",
+			DriverRuntimeEntry: "Driver/runtime entry",
+			IOCTLDeviceControl: "IOCTL/device control",
+			BuildSigning:       "Build/signing artifact",
+			None:               "없음",
+			NotInferred:        "추론 안 됨",
+		}
+	}
+	return analysisDashboardLabels{
+		Lang:               "en",
+		Title:              "Project Analysis Dashboard",
+		RunID:              "Run ID",
+		Mode:               "Mode",
+		Workspace:          "Workspace",
+		Completed:          "Completed",
+		Files:              "Files",
+		Lines:              "Lines",
+		Shards:             "Shards",
+		Symbols:            "Symbols",
+		Subsystems:         "Subsystems",
+		SecuritySurfaces:   "Security Surfaces",
+		FuzzCandidates:     "Fuzz Candidates",
+		Entrypoints:        "Entrypoints",
+		CacheReused:        "Cache Reused",
+		CacheMiss:          "Cache Miss",
+		GeneratedDocuments: "Generated Documents",
+		DocumentPortal:     "Document Portal",
+		PortalPlaceholder:  "Search docs, anchors, fuzz targets, verification, evidence",
+		Kind:               "Kind",
+		Item:               "Item",
+		Source:             "Source",
+		Reuse:              "Reuse",
+		SourceAnchors:      "Source Anchors",
+		Anchor:             "Anchor",
+		Document:           "Document",
+		Confidence:         "Confidence",
+		State:              "State",
+		StartupCandidate:   "Startup candidate",
+		DriverRuntimeEntry: "Driver/runtime entry",
+		IOCTLDeviceControl: "IOCTL/device control",
+		BuildSigning:       "Build/signing artifacts",
+		None:               "none",
+		NotInferred:        "not inferred",
+	}
+}
+
+func analysisDashboardInlinePortalItems(items []analysisDashboardPortalItem) []analysisDashboardPortalItem {
+	const inlineLimit = 1200
+	if len(items) <= inlineLimit {
+		return items
+	}
+	return append([]analysisDashboardPortalItem(nil), items[:inlineLimit]...)
+}
+
 func analysisDashboardPortalIndex(run ProjectAnalysisRun, docsHref string) []analysisDashboardPortalItem {
 	docsHref = strings.TrimRight(strings.TrimSpace(filepath.ToSlash(docsHref)), "/")
 	if docsHref == "" {
@@ -388,7 +597,11 @@ func analysisDashboardPortalIndex(run ProjectAnalysisRun, docsHref string) []ana
 	items := []analysisDashboardPortalItem{}
 	for _, doc := range analysisDashboardGeneratedDocs(run) {
 		href := docsHref + "/" + doc.Name
-		items = append(items, analysisDashboardNewPortalItem("document", doc.Title, analysisDocPurpose(doc.Name), doc.Name, href, doc.ReuseTargets))
+		kind := "document"
+		if analysisDashboardIsDeveloperDoc(doc.Name) {
+			kind = "developer document"
+		}
+		items = append(items, analysisDashboardNewPortalItem(kind, doc.Title, analysisDocPurpose(doc.Name), doc.Name, href, doc.ReuseTargets))
 		for _, section := range doc.Sections {
 			sectionHref := href + "#" + analysisDashboardMarkdownAnchor(section.Title)
 			source := strings.Join(limitStrings(section.SourceAnchors, 3), ", ")
@@ -414,14 +627,14 @@ func analysisDashboardPortalIndex(run ProjectAnalysisRun, docsHref string) []ana
 		}
 		items = append(items, analysisDashboardNewPortalItem("verification", row.ChangeArea, detail, source, docsHref+"/VERIFICATION_MATRIX.md", []string{"verification_planner", "evidence"}))
 	}
-	for _, anchor := range analysisDashboardSourceAnchors(run) {
+	for _, anchor := range analysisDashboardSourceAnchorsWithDocsHref(run, docsHref) {
 		items = append(items, analysisDashboardNewPortalItem("source anchor", anchor.Anchor, anchor.Document, anchor.Anchor, anchor.Href, []string{"analysis_context", "evidence"}))
 	}
 	return items
 }
 
 func analysisDashboardGeneratedDocs(run ProjectAnalysisRun) []AnalysisGeneratedDoc {
-	names := []string{"INDEX.md", "ARCHITECTURE.md", "SECURITY_SURFACE.md", "API_AND_ENTRYPOINTS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "FUZZ_TARGETS.md", "OPERATIONS_RUNBOOK.md"}
+	names := analysisGeneratedDocNames()
 	out := make([]AnalysisGeneratedDoc, 0, len(names))
 	generatedAt := analysisDocsGeneratedAt(run)
 	for _, name := range names {
@@ -483,23 +696,11 @@ func analysisDashboardPortalRows(items []analysisDashboardPortalItem) string {
 }
 
 func analysisDashboardPortalJSON(items []analysisDashboardPortalItem) string {
-	parts := []string{}
-	for _, item := range items {
-		reuse := []string{}
-		for _, value := range item.Reuse {
-			reuse = append(reuse, `"`+analysisDashboardJSString(value)+`"`)
-		}
-		parts = append(parts, fmt.Sprintf(`{"kind":"%s","title":"%s","detail":"%s","source":"%s","href":"%s","reuse":[%s],"search":"%s"}`,
-			analysisDashboardJSString(item.Kind),
-			analysisDashboardJSString(item.Title),
-			analysisDashboardJSString(item.Detail),
-			analysisDashboardJSString(item.Source),
-			analysisDashboardJSString(item.Href),
-			strings.Join(reuse, ","),
-			analysisDashboardJSString(item.Search),
-		))
+	data, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
 	}
-	return `[` + strings.Join(parts, ",") + `]`
+	return string(data)
 }
 
 func analysisDashboardJSString(value string) string {
@@ -527,6 +728,11 @@ type analysisDashboardSourceAnchor struct {
 }
 
 func analysisDashboardSourceAnchors(run ProjectAnalysisRun) []analysisDashboardSourceAnchor {
+	return analysisDashboardSourceAnchorsWithDocsHref(run, "docs")
+}
+
+func analysisDashboardSourceAnchorsWithDocsHref(run ProjectAnalysisRun, docsHref string) []analysisDashboardSourceAnchor {
+	docsHref = analysisDashboardNormalizeDocsHref(docsHref)
 	out := []analysisDashboardSourceAnchor{}
 	seen := map[string]struct{}{}
 	for _, doc := range analysisDashboardGeneratedDocs(run) {
@@ -540,16 +746,13 @@ func analysisDashboardSourceAnchors(run ProjectAnalysisRun) []analysisDashboardS
 				continue
 			}
 			seen[key] = struct{}{}
-			state := "fresh"
-			if len(doc.StaleMarkers) > 0 {
-				state = "stale"
-			}
+			state := analysisDashboardStateLabel(doc.StaleMarkers)
 			out = append(out, analysisDashboardSourceAnchor{
 				Anchor:     anchor,
 				Document:   doc.Name,
 				Confidence: firstNonBlankAnalysisString(doc.Confidence, "unknown"),
 				State:      state,
-				Href:       "docs/" + doc.Name,
+				Href:       docsHref + "/" + doc.Name,
 			})
 		}
 		for _, section := range doc.Sections {
@@ -563,16 +766,13 @@ func analysisDashboardSourceAnchors(run ProjectAnalysisRun) []analysisDashboardS
 					continue
 				}
 				seen[key] = struct{}{}
-				state := "fresh"
-				if len(section.StaleMarkers) > 0 {
-					state = "stale"
-				}
+				state := analysisDashboardStateLabel(section.StaleMarkers)
 				out = append(out, analysisDashboardSourceAnchor{
 					Anchor:     anchor,
 					Document:   doc.Name + " / " + section.Title,
 					Confidence: firstNonBlankAnalysisString(section.Confidence, firstNonBlankAnalysisString(doc.Confidence, "unknown")),
 					State:      state,
-					Href:       "docs/" + doc.Name + "#" + analysisDashboardMarkdownAnchor(section.Title),
+					Href:       docsHref + "/" + doc.Name + "#" + analysisDashboardMarkdownAnchor(section.Title),
 				})
 			}
 		}
@@ -581,9 +781,8 @@ func analysisDashboardSourceAnchors(run ProjectAnalysisRun) []analysisDashboardS
 }
 
 func analysisDashboardSourceAnchorRows(run ProjectAnalysisRun, docsHref string) string {
-	_ = docsHref
 	rows := []string{}
-	for _, anchor := range limitAnalysisDashboardSourceAnchors(analysisDashboardSourceAnchors(run), 24) {
+	for _, anchor := range limitAnalysisDashboardSourceAnchors(analysisDashboardSourceAnchorsWithDocsHref(run, docsHref), 24) {
 		rows = append(rows, fmt.Sprintf(`<tr><td><code>%s</code></td><td><a href="%s">%s</a></td><td>%s</td><td>%s</td></tr>`,
 			htmlEscape(anchor.Anchor),
 			htmlEscape(filepath.ToSlash(anchor.Href)),
@@ -593,6 +792,32 @@ func analysisDashboardSourceAnchorRows(run ProjectAnalysisRun, docsHref string) 
 		))
 	}
 	return strings.Join(rows, "")
+}
+
+func analysisDashboardNormalizeDocsHref(docsHref string) string {
+	docsHref = strings.TrimRight(strings.TrimSpace(filepath.ToSlash(docsHref)), "/")
+	if docsHref == "" {
+		return "docs"
+	}
+	return docsHref
+}
+
+func analysisDashboardStateLabel(markers []string) string {
+	markers = analysisUniqueStrings(markers)
+	if len(markers) == 0 {
+		return "fresh"
+	}
+	nonBaseline := []string{}
+	for _, marker := range markers {
+		if strings.EqualFold(strings.TrimSpace(marker), "no_previous_run") {
+			continue
+		}
+		nonBaseline = append(nonBaseline, marker)
+	}
+	if len(nonBaseline) == 0 {
+		return "baseline:none"
+	}
+	return "stale"
 }
 
 func limitAnalysisDashboardSourceAnchors(items []analysisDashboardSourceAnchor, limit int) []analysisDashboardSourceAnchor {
@@ -641,7 +866,7 @@ func analysisDashboardStaleDiffRows(run ProjectAnalysisRun, docsHref string) str
 				}
 				seen[key] = struct{}{}
 				targetDoc, targetSection := analysisDashboardStaleDiffTarget(doc, section, diff, InvalidationChange{})
-				rows = append(rows, analysisDashboardStaleDiffRow(section, targetDoc, targetSection, diff, analysisDashboardStaleDiffImpact(subsystem, diff), "/docs-refresh"))
+				rows = append(rows, analysisDashboardStaleDiffRow(docsHref, section, targetDoc, targetSection, diff, analysisDashboardStaleDiffImpact(subsystem, diff), "/docs-refresh"))
 			}
 		}
 		for _, change := range limitInvalidationChanges(subsystem.InvalidationChanges, 4) {
@@ -652,7 +877,7 @@ func analysisDashboardStaleDiffRows(run ProjectAnalysisRun, docsHref string) str
 			}
 			seen[key] = struct{}{}
 			targetDoc, targetSection := analysisDashboardStaleDiffTarget(doc, section, diff, change)
-			rows = append(rows, analysisDashboardStaleDiffRow(section, targetDoc, targetSection, diff, analysisDashboardInvalidationChangeImpact(change), "/docs-refresh"))
+			rows = append(rows, analysisDashboardStaleDiffRow(docsHref, section, targetDoc, targetSection, diff, analysisDashboardInvalidationChangeImpact(change), "/docs-refresh"))
 		}
 		if len(rows) >= 16 {
 			break
@@ -671,7 +896,7 @@ func analysisDashboardStaleDiffRows(run ProjectAnalysisRun, docsHref string) str
 			}
 			seen[key] = struct{}{}
 			targetDoc, targetSection := analysisDashboardStaleDiffTarget(doc, section, diff, InvalidationChange{})
-			rows = append(rows, analysisDashboardStaleDiffRow(section, targetDoc, targetSection, diff, firstNonBlankAnalysisString(shard.InvalidationReason, "recomputed shard"), "/docs-refresh"))
+			rows = append(rows, analysisDashboardStaleDiffRow(docsHref, section, targetDoc, targetSection, diff, firstNonBlankAnalysisString(shard.InvalidationReason, "recomputed shard"), "/docs-refresh"))
 		}
 	}
 	return strings.Join(rows, "")
@@ -806,8 +1031,8 @@ func limitAnalysisDashboardAttackFlows(items []analysisDashboardAttackFlow, limi
 	return items[:limit]
 }
 
-func analysisDashboardStaleDiffRow(section string, doc string, anchorTitle string, diff string, impact string, command string) string {
-	href := "docs/" + firstNonBlankAnalysisString(doc, "INDEX.md")
+func analysisDashboardStaleDiffRow(docsHref string, section string, doc string, anchorTitle string, diff string, impact string, command string) string {
+	href := analysisDashboardNormalizeDocsHref(docsHref) + "/" + firstNonBlankAnalysisString(doc, "INDEX.md")
 	detail := firstNonBlankAnalysisString(doc, "INDEX.md")
 	if strings.TrimSpace(anchorTitle) != "" {
 		href += "#" + analysisDashboardMarkdownAnchor(anchorTitle)
@@ -969,7 +1194,7 @@ func analysisDashboardCacheCounts(shards []AnalysisShard) (int, int) {
 }
 
 func analysisDashboardDocLinks(run ProjectAnalysisRun, docsHref string) string {
-	names := []string{"INDEX.md", "ARCHITECTURE.md", "SECURITY_SURFACE.md", "API_AND_ENTRYPOINTS.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "FUZZ_TARGETS.md", "OPERATIONS_RUNBOOK.md"}
+	names := analysisGeneratedDocNames()
 	items := []string{}
 	for _, name := range names {
 		href := strings.TrimRight(docsHref, "/") + "/" + name
@@ -977,14 +1202,31 @@ func analysisDashboardDocLinks(run ProjectAnalysisRun, docsHref string) string {
 			`<span class="tag">confidence:` + htmlEscape(firstNonBlankAnalysisString(analysisDocConfidence(run, name), "unknown")) + `</span>`,
 		}
 		if markers := analysisDocStaleMarkers(run, name); len(markers) > 0 {
-			badges = append(badges, `<span class="tag">stale:`+htmlEscape(fmt.Sprintf("%d", len(markers)))+`</span>`)
+			state := analysisDashboardStateLabel(markers)
+			label := state
+			if state == "stale" {
+				label = "stale:" + fmt.Sprintf("%d", len(markers))
+			}
+			badges = append(badges, `<span class="tag">`+htmlEscape(label)+`</span>`)
 		}
 		if sections := analysisDocSections(run, name); len(sections) > 0 {
 			badges = append(badges, `<span class="tag">sections:`+htmlEscape(fmt.Sprintf("%d", len(sections)))+`</span>`)
 		}
+		if analysisDashboardIsDeveloperDoc(name) {
+			badges = append([]string{`<span class="tag">developer_docs</span>`}, badges...)
+		}
 		items = append(items, fmt.Sprintf(`<a class="doc-link" href="%s"><strong>%s</strong><div class="subtle">%s</div><div>%s</div></a>`, htmlEscape(href), htmlEscape(analysisDocTitle(name)), htmlEscape(analysisDocPurpose(name)), strings.Join(badges, "")))
 	}
 	return strings.Join(items, "")
+}
+
+func analysisDashboardIsDeveloperDoc(name string) bool {
+	switch strings.ToUpper(strings.TrimSpace(name)) {
+	case "DEVELOPER_OVERVIEW.MD", "FOLDER_MAP.MD", "MODULES.MD", "STRUCTURE_DIAGRAMS.MD", "CODE_STRUCTURE_REFERENCE.MD":
+		return true
+	default:
+		return false
+	}
 }
 
 func analysisDashboardSubsystems(subsystems []KnowledgeSubsystem) string {
@@ -1072,6 +1314,50 @@ func analysisDashboardBuildRows(contexts []BuildContextRecord, commands []Compil
 		rows = append(rows, fmt.Sprintf(`<tr><td>compile command</td><td>%s</td><td>%s</td></tr>`, htmlEscape(name), htmlEscape(coverage)))
 	}
 	return strings.Join(rows, "")
+}
+
+func analysisDashboardRuntimeLensPanel(run ProjectAnalysisRun, labels analysisDashboardLabels) string {
+	cards := []string{}
+	add := func(label string, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			value = labels.None
+		}
+		cards = append(cards, fmt.Sprintf(`<div class="lens"><span>%s</span><strong>%s</strong></div>`, htmlEscape(label), htmlEscape(value)))
+	}
+	add(labels.StartupCandidate, firstNonBlankAnalysisString(run.Snapshot.PrimaryStartup, labels.NotInferred))
+	driverEntries := driverEntrypointFiles(run)
+	driverEntryItems := append([]string{}, driverEntries...)
+	for _, symbol := range run.SemanticIndexV2.Symbols {
+		if strings.Contains(strings.ToLower(firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name)), "driverentry") {
+			driverEntryItems = append(driverEntryItems, firstNonBlankDeveloperString(symbol.CanonicalName, symbol.Name, symbol.File))
+		}
+	}
+	add(labels.DriverRuntimeEntry, strings.Join(limitStrings(analysisUniqueStrings(driverEntryItems), 3), ", "))
+	ioctlSymbols := developerIOCTLSymbols(run)
+	ioctlNames := []string{}
+	for _, symbol := range limitSymbolRecords(ioctlSymbols, 3) {
+		ioctlNames = append(ioctlNames, firstNonBlankDeveloperString(symbol.CanonicalName, symbol.Name, symbol.ID))
+	}
+	add(labels.IOCTLDeviceControl, strings.Join(ioctlNames, ", "))
+	artifacts := analysisDashboardBuildArtifactSummary(run)
+	add(labels.BuildSigning, artifacts)
+	return `<section class="lens-grid">` + strings.Join(cards, "") + `</section>`
+}
+
+func analysisDashboardBuildArtifactSummary(run ProjectAnalysisRun) string {
+	items := []string{}
+	for _, file := range run.Snapshot.ManifestFiles {
+		if containsAny(strings.ToLower(file), ".vcxproj", ".sln", ".inf", ".ddf", ".bat", ".cmd") {
+			items = append(items, filepath.ToSlash(file))
+		}
+	}
+	for _, file := range run.KnowledgePack.TopImportantFiles {
+		if containsAny(strings.ToLower(file), ".vcxproj", ".sln", ".inf", ".ddf", ".bat", "sign", "cab", "vmp") {
+			items = append(items, filepath.ToSlash(file))
+		}
+	}
+	return strings.Join(limitStrings(analysisUniqueStrings(items), 3), ", ")
 }
 
 func analysisDashboardList(items []string, limit int) string {

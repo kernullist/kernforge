@@ -89,6 +89,36 @@ func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 	}
 }
 
+func TestSystemPromptUsesLatestUserQuestionLanguage(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "TavernKernel 문서를 검토하고 개선점을 찾아줘"})
+	agent := &Agent{
+		Config:  Config{AutoLocale: boolPtr(false)},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Respond in Korean because the latest user request is written in Korean") {
+		t.Fatalf("expected Korean response language policy from question language, got %q", prompt)
+	}
+}
+
+func TestSystemPromptExplicitLanguageOverridesQuestionLanguage(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "TavernKernel 문서를 검토해. Answer in English."})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Always respond in English because the latest user request explicitly asks for English") {
+		t.Fatalf("expected explicit English response language policy, got %q", prompt)
+	}
+}
+
 func TestSystemPromptIncludesWebResearchGuidanceAndRelevantMCPCapabilities(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

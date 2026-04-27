@@ -90,16 +90,39 @@ type AnalysisDocsManifest struct {
 
 func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 	docs := map[string]string{
-		"ARCHITECTURE.md":        buildAnalysisArchitectureDoc(run),
-		"SECURITY_SURFACE.md":    buildAnalysisSecuritySurfaceDoc(run),
-		"API_AND_ENTRYPOINTS.md": buildAnalysisAPIEntrypointsDoc(run),
-		"BUILD_AND_ARTIFACTS.md": buildAnalysisBuildArtifactsDoc(run),
-		"VERIFICATION_MATRIX.md": buildAnalysisVerificationMatrixDoc(run),
-		"FUZZ_TARGETS.md":        buildAnalysisFuzzTargetsDoc(run),
-		"OPERATIONS_RUNBOOK.md":  buildAnalysisOperationsRunbookDoc(run),
+		"ARCHITECTURE.md":             buildAnalysisArchitectureDoc(run),
+		"SECURITY_SURFACE.md":         buildAnalysisSecuritySurfaceDoc(run),
+		"API_AND_ENTRYPOINTS.md":      buildAnalysisAPIEntrypointsDoc(run),
+		"BUILD_AND_ARTIFACTS.md":      buildAnalysisBuildArtifactsDoc(run),
+		"VERIFICATION_MATRIX.md":      buildAnalysisVerificationMatrixDoc(run),
+		"FUZZ_TARGETS.md":             buildAnalysisFuzzTargetsDoc(run),
+		"OPERATIONS_RUNBOOK.md":       buildAnalysisOperationsRunbookDoc(run),
+		"DEVELOPER_OVERVIEW.md":       buildAnalysisDeveloperOverviewDoc(run),
+		"FOLDER_MAP.md":               buildAnalysisFolderMapDoc(run),
+		"MODULES.md":                  buildAnalysisModulesDoc(run),
+		"STRUCTURE_DIAGRAMS.md":       buildAnalysisStructureDiagramsDoc(run),
+		"CODE_STRUCTURE_REFERENCE.md": buildAnalysisCodeStructureReferenceDoc(run),
 	}
 	docs["INDEX.md"] = buildAnalysisDocsIndex(run, docs)
 	return docs
+}
+
+func analysisGeneratedDocNames() []string {
+	return []string{
+		"INDEX.md",
+		"ARCHITECTURE.md",
+		"DEVELOPER_OVERVIEW.md",
+		"FOLDER_MAP.md",
+		"MODULES.md",
+		"STRUCTURE_DIAGRAMS.md",
+		"CODE_STRUCTURE_REFERENCE.md",
+		"SECURITY_SURFACE.md",
+		"API_AND_ENTRYPOINTS.md",
+		"BUILD_AND_ARTIFACTS.md",
+		"VERIFICATION_MATRIX.md",
+		"FUZZ_TARGETS.md",
+		"OPERATIONS_RUNBOOK.md",
+	}
 }
 
 func writeAnalysisDocs(run ProjectAnalysisRun, docsDir string) (AnalysisDocsManifest, error) {
@@ -1010,6 +1033,16 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 	switch name {
 	case "ARCHITECTURE.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.TopImportantFiles, subsystemFiles(run.KnowledgePack.Subsystems)...))
+	case "DEVELOPER_OVERVIEW.md":
+		return analysisDeveloperDocSourceAnchors(run, "DEVELOPER_OVERVIEW.md")
+	case "FOLDER_MAP.md":
+		return analysisDeveloperDocSourceAnchors(run, "FOLDER_MAP.md")
+	case "MODULES.md":
+		return analysisDeveloperDocSourceAnchors(run, "MODULES.md")
+	case "STRUCTURE_DIAGRAMS.md":
+		return analysisDeveloperDocSourceAnchors(run, "STRUCTURE_DIAGRAMS.md")
+	case "CODE_STRUCTURE_REFERENCE.md":
+		return analysisDeveloperDocSourceAnchors(run, "CODE_STRUCTURE_REFERENCE.md")
 	case "SECURITY_SURFACE.md":
 		return analysisUniqueStrings(append(symbolFiles(analysisSecuritySurfaceSymbols(run)), run.KnowledgePack.HighRiskFiles...))
 	case "API_AND_ENTRYPOINTS.md":
@@ -1040,8 +1073,12 @@ func analysisDocConfidence(run ProjectAnalysisRun, name string) string {
 
 func analysisDocStaleMarkers(run ProjectAnalysisRun, name string) []string {
 	switch name {
-	case "ARCHITECTURE.md", "OPERATIONS_RUNBOOK.md":
+	case "ARCHITECTURE.md", "DEVELOPER_OVERVIEW.md", "FOLDER_MAP.md", "MODULES.md", "OPERATIONS_RUNBOOK.md":
 		return analysisRunStaleMarkers(run)
+	case "STRUCTURE_DIAGRAMS.md":
+		return analysisUniqueStrings(append(analysisRunStaleMarkers(run), analysisGraphStaleMarkers(run)...))
+	case "CODE_STRUCTURE_REFERENCE.md":
+		return analysisUniqueStrings(append(run.KnowledgePack.AnalysisExecution.InvalidationReasons, run.KnowledgePack.AnalysisExecution.SemanticInvalidationReasons...))
 	case "SECURITY_SURFACE.md", "FUZZ_TARGETS.md", "VERIFICATION_MATRIX.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.AnalysisExecution.TopChangeClasses, run.KnowledgePack.AnalysisExecution.SemanticInvalidationReasons...))
 	default:
@@ -1119,6 +1156,8 @@ func analysisDocsReuseTargets() []string {
 
 func analysisDocReuseTargets(name string) []string {
 	switch name {
+	case "DEVELOPER_OVERVIEW.md", "FOLDER_MAP.md", "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
+		return []string{"analysis_context", "memory", "developer_docs"}
 	case "SECURITY_SURFACE.md":
 		return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
 	case "VERIFICATION_MATRIX.md":
@@ -1138,6 +1177,40 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 			{"architecture.project_edges", "Project Edges"},
 			{"architecture.trust_boundary_graph", "Trust Boundary Graph"},
 			{"architecture.data_flow_graph", "Data Flow Graph"},
+		},
+		"DEVELOPER_OVERVIEW.md": {
+			{"developer.project_shape", "Project Shape"},
+			{"developer.primary_execution_flow", "Primary Execution Flow"},
+			{"developer.main_development_areas", "Main Development Areas"},
+			{"developer.where_to_start", "Where To Start By Task"},
+			{"developer.reading_order", "Reading Order"},
+		},
+		"FOLDER_MAP.md": {
+			{"folders.summary", "Folder Summary"},
+			{"folders.responsibilities", "Folder Responsibilities"},
+			{"folders.tests", "Folder To Test Mapping"},
+			{"folders.risk", "Folder Risk And Change Notes"},
+		},
+		"MODULES.md": {
+			{"modules.inventory", "Module Inventory"},
+			{"modules.cards", "Module Responsibility Cards"},
+			{"modules.dependencies", "Module Dependencies"},
+			{"modules.verification", "Module Verification Notes"},
+		},
+		"STRUCTURE_DIAGRAMS.md": {
+			{"diagrams.module_dependency_graph", "Module Dependency Graph"},
+			{"diagrams.folder_module_map", "Folder And Module Map"},
+			{"diagrams.primary_runtime_flow", "Primary Runtime Flow"},
+			{"diagrams.build_artifact_flow", "Build And Artifact Flow"},
+			{"diagrams.trust_boundary_summary", "Trust Boundary Summary"},
+		},
+		"CODE_STRUCTURE_REFERENCE.md": {
+			{"code.important_files", "Important Files"},
+			{"code.important_symbols", "Important Symbols"},
+			{"code.call_paths", "Representative Call Paths"},
+			{"code.build_ownership", "Build Ownership"},
+			{"code.generated_artifacts", "Generated Or Derived Artifacts"},
+			{"code.source_anchors", "Source Anchors"},
 		},
 		"SECURITY_SURFACE.md": {
 			{"security.indexed_surfaces", "Indexed Security Surfaces"},
@@ -1210,10 +1283,11 @@ func symbolFiles(symbols []SymbolRecord) []string {
 		if strings.TrimSpace(symbol.File) == "" {
 			continue
 		}
+		file := analysisDocSlashPath(symbol.File)
 		if symbol.StartLine > 0 {
-			items = append(items, fmt.Sprintf("%s:%d", symbol.File, symbol.StartLine))
+			items = append(items, fmt.Sprintf("%s:%d", file, symbol.StartLine))
 		} else {
-			items = append(items, symbol.File)
+			items = append(items, file)
 		}
 	}
 	return items
@@ -1233,6 +1307,16 @@ func analysisDocTitle(name string) string {
 		return "Project Documentation Index"
 	case "ARCHITECTURE.md":
 		return "Architecture"
+	case "DEVELOPER_OVERVIEW.md":
+		return "Developer Overview"
+	case "FOLDER_MAP.md":
+		return "Folder Map"
+	case "MODULES.md":
+		return "Modules"
+	case "STRUCTURE_DIAGRAMS.md":
+		return "Structure Diagrams"
+	case "CODE_STRUCTURE_REFERENCE.md":
+		return "Code Structure Reference"
 	case "SECURITY_SURFACE.md":
 		return "Security Surface"
 	case "API_AND_ENTRYPOINTS.md":
@@ -1258,6 +1342,16 @@ func analysisDocPurpose(name string) string {
 	switch name {
 	case "ARCHITECTURE.md":
 		return "subsystem ownership, runtime flow, and project edges"
+	case "DEVELOPER_OVERVIEW.md":
+		return "developer onboarding map, reading order, and change starting points"
+	case "FOLDER_MAP.md":
+		return "folder responsibilities, key files, tests, build context, and risk notes"
+	case "MODULES.md":
+		return "module inventory, ownership boundaries, entrypoints, and dependencies"
+	case "STRUCTURE_DIAGRAMS.md":
+		return "Mermaid diagrams for module dependencies, folder ownership, runtime flow, build flow, and trust boundaries"
+	case "CODE_STRUCTURE_REFERENCE.md":
+		return "important files, symbols, call paths, build ownership, generated artifacts, and source anchors"
 	case "SECURITY_SURFACE.md":
 		return "privileged, input-facing, and tamper-sensitive surfaces"
 	case "API_AND_ENTRYPOINTS.md":

@@ -2661,7 +2661,10 @@ func parseSolutionProjects(root string, slnPath string) []SolutionProject {
 		if len(fields) < 2 {
 			continue
 		}
-		projectPath := filepath.ToSlash(strings.TrimSpace(fields[1]))
+		projectPath, ok := normalizeSolutionProjectPath(root, slnPath, strings.TrimSpace(fields[1]))
+		if !ok {
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(projectPath))
 		kind := solutionProjectKind(ext)
 		if kind == "" {
@@ -2674,6 +2677,33 @@ func parseSolutionProjects(root string, slnPath string) []SolutionProject {
 		})
 	}
 	return projects
+}
+
+func normalizeSolutionProjectPath(root string, slnPath string, projectPath string) (string, bool) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return "", false
+	}
+	nativeProjectPath := filepath.FromSlash(strings.ReplaceAll(projectPath, "\\", "/"))
+	projectAbs := nativeProjectPath
+	if !filepath.IsAbs(projectAbs) {
+		slnAbs := filepath.Join(root, filepath.FromSlash(slnPath))
+		projectAbs = filepath.Join(filepath.Dir(slnAbs), nativeProjectPath)
+	}
+	projectAbs = filepath.Clean(projectAbs)
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", false
+	}
+	projectAbs, err = filepath.Abs(projectAbs)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(rootAbs, projectAbs)
+	if err != nil || filepath.IsAbs(rel) || strings.HasPrefix(rel, "..") {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
 }
 
 func extractQuotedValues(text string) []string {
@@ -4621,7 +4651,8 @@ func ensureStartupProjectCoverage(document string, snapshot ProjectSnapshot) str
 		return document
 	}
 	entryFiles := startupProjectEntryFiles(snapshot)
-	if strings.Contains(strings.ToLower(document), strings.ToLower("primary startup project")) {
+	lower := strings.ToLower(document)
+	if strings.Contains(lower, "solution startup candidate") || strings.Contains(lower, "primary startup project") {
 		return document
 	}
 
@@ -4640,10 +4671,10 @@ func ensureStartupProjectCoverage(document string, snapshot ProjectSnapshot) str
 func buildStartupCoverageSnippet(snapshot ProjectSnapshot, startup string, entryFiles []string) string {
 	var b strings.Builder
 	runtimeEdges := runtimeEdgesForStartup(snapshot.RuntimeEdges, startup)
-	b.WriteString("Primary startup project:\n")
+	b.WriteString("Solution startup candidate:\n")
 	fmt.Fprintf(&b, "- `%s`\n", startup)
 	if len(entryFiles) > 0 {
-		b.WriteString("Representative startup entry files:\n")
+		b.WriteString("Representative startup-candidate entry files:\n")
 		for _, item := range limitStrings(entryFiles, 3) {
 			fmt.Fprintf(&b, "- `%s`\n", item)
 		}
@@ -4668,8 +4699,15 @@ func buildStartupCoverageSnippet(snapshot ProjectSnapshot, startup string, entry
 			fmt.Fprintf(&b, "- `%s -> %s` (%s)\n", edge.Source, edge.Target, edge.Kind)
 		}
 	}
+	driverEntries := driverEntrypointFiles(ProjectAnalysisRun{Snapshot: snapshot})
+	if len(driverEntries) > 0 {
+		b.WriteString("Driver/runtime entry files:\n")
+		for _, item := range limitStrings(driverEntries, 5) {
+			fmt.Fprintf(&b, "- `%s`\n", item)
+		}
+	}
 	b.WriteString("Startup interpretation:\n")
-	fmt.Fprintf(&b, "- The main execution narrative should begin from `%s` and then describe how bootstrap or service modules connect that executable to background monitoring, worker execution, and protection layers.\n", startup)
+	fmt.Fprintf(&b, "- Treat `%s` as the solution-level startup candidate. If the project contains service, DLL, worker, or driver modules, document their runtime entrypoints as separate activation layers instead of calling the startup executable the sole entrypoint.\n", startup)
 	return strings.TrimSpace(b.String())
 }
 
@@ -7416,7 +7454,7 @@ Rules:
 - key_files should list the most important files in the shard with file names or short file-role labels.
 - internal_flow should describe control flow or data flow inside the shard.
 - collaboration should describe how this shard connects to other subsystems.
-- The provided file context may be truncated to excerpts. If code is visibly partial, say it is snippet-limited or truncated instead of treating it as an architectural unknown.
+- The provided file context may be truncated to excerpts. If code is visibly partial, record that as source-state evidence such as "context-truncated" instead of using informal wording like "snippet-limited" in final prose.
 - If unsure, put the point in unknowns instead of asserting it as fact, but do not list symbols from the visible file as unknown architectural components when the limitation is just truncated context.
 `)
 }
@@ -7456,6 +7494,8 @@ Requirements:
 - Use collaboration to explain subsystem interaction points.
 - Consolidate duplicates across shards and call out uncertain areas explicitly.
 - Write a detailed document, not a compressed summary.
+- Match the user's request language. If the goal is written in Korean, write the final Markdown in Korean while preserving code identifiers, paths, API names, and command names in their original spelling.
+- Avoid informal "snippet" wording in final prose. Use source-state language such as "indexed source에서 확인됨", "구현이 이번 분석 산출물에 포함되지 않음", or "추론" when appropriate.
 - For each subsystem, include:
   - Owned responsibilities
   - Key entry points
@@ -7470,6 +7510,9 @@ Requirements:
 func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal string, revisionPrompt string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
+	if textContainsHangul(goal) {
+		b.WriteString("Response language: Korean. Write narrative fields in Korean; keep code identifiers, API names, paths, and commands unchanged.\n")
+	}
 	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
 		fmt.Fprintf(&b, "Analysis mode: %s", mode)
 		if label := projectAnalysisModePromptLabel(mode); label != "" {
@@ -7513,7 +7556,7 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- entry_points should name files/functions when visible.\n")
 	b.WriteString("- internal_flow should explain execution or data flow in steps.\n")
 	b.WriteString("- collaboration should mention external subsystems or shared files.\n")
-	b.WriteString("- If file excerpts appear truncated, say the analysis is snippet-limited or context-truncated instead of calling visible handlers or symbols architectural unknowns.\n")
+	b.WriteString("- If file excerpts appear truncated, say the analysis is context-truncated/source-limited instead of using informal snippet wording.\n")
 	b.WriteString("- Do not cite files outside the provided primary/reference lists.\n\n")
 	if strings.HasPrefix(shard.Name, "startup") {
 		b.WriteString("- For startup shards, emphasize bootstrap order, target/module ownership, and early runtime handoff.\n")
@@ -7908,10 +7951,10 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 		b.WriteString("\n")
 	}
 	if strings.TrimSpace(snapshot.PrimaryStartup) != "" {
-		fmt.Fprintf(&b, "Inferred primary startup project: %s\n\n", snapshot.PrimaryStartup)
+		fmt.Fprintf(&b, "Solution startup candidate: %s\n\n", snapshot.PrimaryStartup)
 		startupEntries := startupProjectEntryFiles(snapshot)
 		if len(startupEntries) > 0 {
-			fmt.Fprintf(&b, "Primary startup entry files:\n%s\n\n", joinListForPrompt(startupEntries))
+			fmt.Fprintf(&b, "Startup candidate entry files:\n%s\n\n", joinListForPrompt(startupEntries))
 		}
 	}
 	if len(snapshot.EntrypointFiles) > 0 {
@@ -7920,6 +7963,9 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	b.WriteString("Approved shard reports:\n")
 	b.Write(data)
 	b.WriteString("\n\nSynthesis requirements:\n")
+	if textContainsHangul(goal) {
+		b.WriteString("- Write the final Markdown document in Korean because the user's goal is Korean. Keep code identifiers, APIs, filenames, paths, commands, and build configuration names unchanged.\n")
+	}
 	b.WriteString("- Turn internal_flow bullets into a coherent execution-flow section.\n")
 	b.WriteString("- Turn collaboration bullets into explicit subsystem integration descriptions.\n")
 	b.WriteString("- Preserve uncertainty by collecting unknowns under Risks And Unknowns.\n")
@@ -7931,8 +7977,8 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 		b.WriteString("- This workspace matches a Visual Studio / C++ multi-project solution. Prefer higher-level sections such as Bootstrap, Orchestration, Worker And Scanner Execution, Monitoring, Shared Common Services, Protection And Hardening, Build And Release, and Dependency Catalog.\n")
 		b.WriteString("- Keep product-owned modules ahead of dependency catalog content.\n")
 		if strings.TrimSpace(snapshot.PrimaryStartup) != "" {
-			fmt.Fprintf(&b, "- Explicitly state that the inferred primary startup project is %s and relate bootstrap/service modules to that startup binary.\n", snapshot.PrimaryStartup)
-			b.WriteString("- In Project Overview and Execution Flow, describe the primary startup binary first, then explain how helper executables, DLL bootstrap layers, and background worker modules connect to it.\n")
+			fmt.Fprintf(&b, "- Explicitly state that %s is the solution startup candidate, not necessarily the only runtime entrypoint.\n", snapshot.PrimaryStartup)
+			b.WriteString("- In Project Overview and Execution Flow, separate the user-mode startup executable, SCM/service activation path, and driver/runtime entrypoint when the project includes driver or service modules.\n")
 		}
 		if len(runtimeEdges) > 0 {
 			b.WriteString("- Reconstruct one explicit primary startup chain using only the provided high-confidence runtime edges.\n")
@@ -8366,7 +8412,10 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 		fmt.Fprintf(&b, "- Solution profile: `Visual Studio / C++ multi-project`\n")
 	}
 	if strings.TrimSpace(snapshot.PrimaryStartup) != "" {
-		fmt.Fprintf(&b, "- Inferred primary startup project: `%s`\n", snapshot.PrimaryStartup)
+		fmt.Fprintf(&b, "- Solution startup candidate: `%s`\n", snapshot.PrimaryStartup)
+		if driverEntries := driverEntrypointFiles(ProjectAnalysisRun{Snapshot: snapshot}); len(driverEntries) > 0 {
+			fmt.Fprintf(&b, "- Driver/runtime entry files: `%s`\n", strings.Join(limitStrings(driverEntries, 5), "`, `"))
+		}
 	}
 	highRuntimeEdges := highConfidenceRuntimeEdges(snapshot.RuntimeEdges)
 	operationalChain := buildOperationalChain(snapshot, reports)

@@ -67,6 +67,16 @@ func TestHandleFuzzFuncCommandStatusShowsFileHintUsage(t *testing.T) {
 	}
 }
 
+func TestFunctionFuzzCommandConfigCanFollowKoreanQueryLanguage(t *testing.T) {
+	cfg := configWithResponseLanguageForUserText(Config{FuzzFuncOutputLanguage: "english"}, "ValidateRequest를 분석해")
+	if got := configFuzzFuncOutputLanguage(cfg); got != "korean" {
+		t.Fatalf("expected Korean command-local output language, got %q", got)
+	}
+	if !functionFuzzPrefersKorean(cfg) {
+		t.Fatalf("expected function fuzz renderer to prefer Korean")
+	}
+}
+
 func TestParseFunctionFuzzTargetSpecAllowsFileOnly(t *testing.T) {
 	spec, err := parseFunctionFuzzTargetSpec(`--file "src/driver.cpp"`)
 	if err != nil {

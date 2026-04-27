@@ -1242,6 +1242,8 @@ func (rt *runtimeState) handleFunctionFuzzLanguage(args string) error {
 
 func functionFuzzOutputLanguageSummary(cfg Config) string {
 	switch configFuzzFuncOutputLanguage(cfg) {
+	case "korean":
+		return "korean"
 	case "english":
 		return "english"
 	default:
@@ -1316,7 +1318,8 @@ func (rt *runtimeState) handleFunctionFuzzPlan(query string) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("workspace root is not available")
 	}
-	run, err := buildFunctionFuzzRun(rt.cfg, root, query)
+	commandCfg := configWithResponseLanguageForUserText(rt.cfg, query)
+	run, err := buildFunctionFuzzRun(commandCfg, root, query)
 	if err != nil {
 		return err
 	}
@@ -1332,7 +1335,7 @@ func (rt *runtimeState) handleFunctionFuzzPlan(query string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Function Fuzz"))
-	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, rt.cfg))
+	fmt.Fprintln(rt.writer, renderFunctionFuzzRunWithConfig(saved, commandCfg))
 	rt.printFunctionFuzzCampaignHandoff(saved)
 	return nil
 }

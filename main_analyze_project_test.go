@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -86,6 +88,43 @@ func TestResolveExplicitAnalysisScopeMatchesPathPrefix(t *testing.T) {
 	}
 	if len(scope.DirectoryPrefixes) != 1 || scope.DirectoryPrefixes[0] != "src/driver" {
 		t.Fatalf("expected src/driver scope, got %#v", scope)
+	}
+}
+
+func TestPrepareExplicitAnalysisWorkspaceNarrowsSingleDirectoryPath(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "src", "driver")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "external"), 0o755); err != nil {
+		t.Fatalf("mkdir external: %v", err)
+	}
+	ws := Workspace{BaseRoot: root, Root: root}
+	updated, paths, err := prepareExplicitAnalysisWorkspace(ws, []string{"src/driver"})
+	if err != nil {
+		t.Fatalf("prepareExplicitAnalysisWorkspace returned error: %v", err)
+	}
+	if len(paths) != 0 {
+		t.Fatalf("expected path scope to be consumed after root narrowing, got %#v", paths)
+	}
+	if !strings.EqualFold(filepath.Clean(updated.Root), filepath.Clean(target)) {
+		t.Fatalf("expected analysis root %q, got %q", target, updated.Root)
+	}
+}
+
+func TestExplicitAnalysisWorkspaceKeepsMultiplePathsScoped(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{BaseRoot: root, Root: root}
+	updated, paths, err := prepareExplicitAnalysisWorkspace(ws, []string{"src/driver", "src/common"})
+	if err != nil {
+		t.Fatalf("prepareExplicitAnalysisWorkspace returned error: %v", err)
+	}
+	if !strings.EqualFold(filepath.Clean(updated.Root), filepath.Clean(root)) {
+		t.Fatalf("expected workspace root to stay unchanged, got %q", updated.Root)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("expected paths to remain scoped for multi-path analysis, got %#v", paths)
 	}
 }
 
