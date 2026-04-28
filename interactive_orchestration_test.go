@@ -12,6 +12,16 @@ func TestShouldPrimeInteractivePlanSkipsLatestWebResearchRequests(t *testing.T) 
 	}
 }
 
+func TestShouldPrimeInteractivePlanSkipsAnalysisOnlyStructureQuestions(t *testing.T) {
+	state := &TaskState{
+		Goal: "@TavernKernel/TavernKernel/ 드라이버 프로젝트 전체 구조를 자세히 설명해줘",
+	}
+
+	if shouldPrimeInteractivePlan(state, true, false, false) {
+		t.Fatalf("expected analysis-only structure question to skip interactive preflight planning")
+	}
+}
+
 func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 	state := &TaskState{
 		Goal: "Fix the duplicated provider retry logic and verify the result",

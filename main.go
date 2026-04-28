@@ -1963,52 +1963,83 @@ func (rt *runtimeState) configureDetectedOllama(baseURL string, models []OllamaM
 	return nil
 }
 
+type providerChoiceOption struct {
+	Number string
+	ID     string
+	Label  string
+}
+
+func providerChoiceOptions() []providerChoiceOption {
+	return []providerChoiceOption{
+		{Number: "1", ID: "anthropic", Label: "anthropic"},
+		{Number: "2", ID: "openai", Label: "openai"},
+		{Number: "3", ID: "openrouter", Label: "openrouter"},
+		{Number: "4", ID: "ollama", Label: "ollama"},
+		{Number: "5", ID: "opencode", Label: "opencode"},
+		{Number: "6", ID: "opencode-go", Label: "opencode-go"},
+		{Number: "7", ID: "codex-cli", Label: "codex-cli"},
+	}
+}
+
+func (rt *runtimeState) printProviderChoiceOptions() {
+	for _, option := range providerChoiceOptions() {
+		fmt.Fprintln(rt.writer, rt.ui.info("  "+option.Number+". "+option.Label))
+	}
+}
+
+func defaultProviderChoice(provider string) string {
+	normalized := normalizeProviderName(provider)
+	for _, option := range providerChoiceOptions() {
+		if option.ID == normalized {
+			return option.Number
+		}
+	}
+	return "4"
+}
+
+func resolveProviderChoice(choice string) (string, bool) {
+	normalized := normalizeProviderName(choice)
+	for _, option := range providerChoiceOptions() {
+		if strings.EqualFold(strings.TrimSpace(choice), option.Number) || option.ID == normalized {
+			return option.ID, true
+		}
+	}
+	return "", false
+}
+
+func providerChoiceHelpText() string {
+	labels := make([]string, 0, len(providerChoiceOptions())*2)
+	for _, option := range providerChoiceOptions() {
+		labels = append(labels, option.Number)
+	}
+	for _, option := range providerChoiceOptions() {
+		labels = append(labels, option.Label)
+	}
+	return "Choose " + strings.Join(labels, ", ") + "."
+}
+
 func (rt *runtimeState) promptProviderChoice() (string, error) {
-	options := []string{
-		"1. anthropic",
-		"2. openai",
-		"3. openrouter",
-		"4. ollama",
-	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Providers"))
-	for _, option := range options {
-		fmt.Fprintln(rt.writer, rt.ui.info("  "+option))
-	}
-	defaultChoice := "4"
-	switch strings.ToLower(strings.TrimSpace(rt.cfg.Provider)) {
-	case "anthropic":
-		defaultChoice = "1"
-	case "openai", "openai-compatible":
-		defaultChoice = "2"
-	case "openrouter":
-		defaultChoice = "3"
-	case "ollama":
-		defaultChoice = "4"
-	}
+	rt.printProviderChoiceOptions()
+	defaultChoice := defaultProviderChoice(rt.cfg.Provider)
 	for {
 		choice, err := rt.promptValue("Provider number or name", defaultChoice)
 		if err != nil {
 			return "", err
 		}
-		switch strings.ToLower(strings.TrimSpace(choice)) {
-		case "1", "anthropic":
-			return "anthropic", nil
-		case "2", "openai", "openai-compatible":
-			return "openai", nil
-		case "3", "openrouter":
-			return "openrouter", nil
-		case "4", "ollama":
-			return "ollama", nil
+		if provider, ok := resolveProviderChoice(choice); ok {
+			return provider, nil
 		}
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Choose 1, 2, 3, 4, anthropic, openai, openrouter, or ollama."))
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(providerChoiceHelpText()))
 	}
 }
 
 func (rt *runtimeState) configureProviderInteractive(provider string) error {
+	provider = normalizeProviderName(provider)
 	nextProvider := provider
 	nextModel := rt.cfg.Model
 	nextBaseURL := rt.cfg.BaseURL
-	nextAPIKey := rt.storedProviderKey(provider)
+	nextAPIKey := rt.providerAPIKey(provider)
 	if strings.TrimSpace(nextAPIKey) == "" && strings.EqualFold(rt.cfg.Provider, provider) {
 		nextAPIKey = rt.cfg.APIKey
 	}
@@ -2037,6 +2068,46 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 			return err
 		}
 		nextModel = selected.Name
+		nextBaseURL = normalized
+	case "codex-cli":
+		commandDefault := strings.TrimSpace(rt.cfg.CodexCLIPath)
+		if commandDefault == "" {
+			commandDefault = codexCLIDefaultExecutable
+		}
+		commandPath, err := rt.promptValue("Codex CLI command", commandDefault)
+		if err != nil {
+			return err
+		}
+		rt.cfg.CodexCLIPath = strings.TrimSpace(commandPath)
+		model, err := rt.chooseCodexCLIModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = ""
+		nextAPIKey = ""
+	case "opencode", "opencode-go":
+		opencodeBaseURL := normalizeOpenCodeProviderBaseURL(provider, "")
+		if strings.EqualFold(rt.cfg.Provider, provider) && strings.TrimSpace(nextBaseURL) != "" {
+			opencodeBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
+		}
+		nextBaseURL = opencodeBaseURL
+		if strings.TrimSpace(nextAPIKey) == "" {
+			keyPrompt := providerDisplayName(provider) + " API key"
+			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
+			if err != nil {
+				return err
+			}
+			nextAPIKey = apiKey
+		}
+		models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, nextBaseURL, nextAPIKey)
+		if err != nil {
+			return err
+		}
+		nextModel, err = rt.chooseOpenCodeModelForProvider(provider, models, nextModel)
+		if err != nil {
+			return err
+		}
 		nextBaseURL = normalized
 	case "anthropic", "openai", "openrouter":
 		baseURL := ""
@@ -2097,16 +2168,24 @@ func (rt *runtimeState) storedProviderKey(provider string) string {
 	if rt == nil || rt.cfg.ProviderKeys == nil {
 		return ""
 	}
-	return rt.cfg.ProviderKeys[strings.ToLower(strings.TrimSpace(provider))]
+	return rt.cfg.ProviderKeys[normalizeProviderName(provider)]
 }
 
 func (rt *runtimeState) providerAPIKey(provider string) string {
-	provider = strings.ToLower(strings.TrimSpace(provider))
+	provider = normalizeProviderName(provider)
 	if provider == "" {
+		return ""
+	}
+	if provider == "codex-cli" {
 		return ""
 	}
 	if key := strings.TrimSpace(rt.storedProviderKey(provider)); key != "" {
 		return key
+	}
+	if provider == "opencode-go" {
+		if key := strings.TrimSpace(rt.storedProviderKey("opencode")); key != "" {
+			return key
+		}
 	}
 	if rt != nil && strings.EqualFold(rt.cfg.Provider, provider) && strings.TrimSpace(rt.cfg.APIKey) != "" {
 		return strings.TrimSpace(rt.cfg.APIKey)
@@ -2121,7 +2200,7 @@ func (rt *runtimeState) storeProviderKey(provider, key string) {
 	if rt.cfg.ProviderKeys == nil {
 		rt.cfg.ProviderKeys = make(map[string]string)
 	}
-	rt.cfg.ProviderKeys[strings.ToLower(strings.TrimSpace(provider))] = strings.TrimSpace(key)
+	rt.cfg.ProviderKeys[normalizeProviderName(provider)] = strings.TrimSpace(key)
 }
 
 func isMissingKeyError(err error) bool {
@@ -2169,8 +2248,14 @@ func providerDisplayName(provider string) string {
 		return "OpenAI"
 	case "openrouter":
 		return "OpenRouter"
+	case "opencode":
+		return "OpenCode"
+	case "opencode-go":
+		return "OpenCode Go"
 	case "ollama":
 		return "Ollama"
+	case "codex-cli":
+		return "Codex CLI"
 	default:
 		return provider
 	}
@@ -2592,8 +2677,17 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 }
 
 func requiresAPIKey(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "anthropic", "openai", "openai-compatible", "openrouter":
+	switch normalizeProviderName(provider) {
+	case "anthropic", "openai", "openai-compatible", "openrouter", "opencode", "opencode-go":
+		return true
+	default:
+		return false
+	}
+}
+
+func isOpenCodeProvider(provider string) bool {
+	switch normalizeProviderName(provider) {
+	case "opencode", "opencode-go":
 		return true
 	default:
 		return false
@@ -2613,6 +2707,28 @@ func (rt *runtimeState) fetchAndShowOpenRouterModels(baseURL, apiKey string) ([]
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("OpenRouter Models"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
+	return models, normalized, nil
+}
+
+func (rt *runtimeState) fetchAndShowOpenCodeModels(baseURL, apiKey string) ([]OpenCodeModelInfo, string, error) {
+	return rt.fetchAndShowOpenCodeModelsForProvider("opencode", baseURL, apiKey)
+}
+
+func (rt *runtimeState) fetchAndShowOpenCodeModelsForProvider(provider, baseURL, apiKey string) ([]OpenCodeModelInfo, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	models, normalized, err := fetchOpenCodeModelsForProvider(ctx, provider, baseURL, apiKey)
+	if err != nil {
+		return nil, normalized, err
+	}
+	models = normalizeOpenCodeModelInfos(models)
+	if len(models) == 0 {
+		return nil, normalized, fmt.Errorf("no %s models were returned by %s", providerDisplayName(provider), normalized)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section(providerDisplayName(provider)+" Models"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("source", "models returned by the configured "+providerDisplayName(provider)+" API key"))
 	return models, normalized, nil
 }
 
@@ -3099,6 +3215,15 @@ func (rt *runtimeState) rememberCurrentProfile() {
 }
 
 func (rt *runtimeState) activateProvider(providerName, model, baseURL string) error {
+	providerName = normalizeProviderName(providerName)
+	if isOpenCodeProvider(providerName) {
+		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(providerName, model, baseURL, rt.providerAPIKey(providerName), "main provider")
+		if err != nil {
+			return err
+		}
+		model = resolvedModel
+		baseURL = resolvedBaseURL
+	}
 	rt.cfg.Provider = providerName
 	rt.cfg.Model = model
 	rt.cfg.BaseURL = baseURL
@@ -3120,25 +3245,48 @@ func (rt *runtimeState) activateProvider(providerName, model, baseURL string) er
 	return rt.clientErr
 }
 
+func (rt *runtimeState) resolveOpenCodeModelForAPIKey(model string, baseURL string, apiKey string, scope string) (string, string, error) {
+	return rt.resolveOpenCodeModelForProviderAPIKey("opencode", model, baseURL, apiKey, scope)
+}
+
+func (rt *runtimeState) resolveOpenCodeModelForProviderAPIKey(provider string, model string, baseURL string, apiKey string, scope string) (string, string, error) {
+	provider = normalizeProviderName(provider)
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return "", "", fmt.Errorf("%s API key is required to load models for %s", providerDisplayName(provider), strings.TrimSpace(scope))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	models, normalized, err := fetchOpenCodeModelsForProvider(ctx, provider, baseURL, apiKey)
+	if err != nil {
+		return "", normalized, fmt.Errorf("could not load %s models for %s with the configured API key: %w", providerDisplayName(provider), strings.TrimSpace(scope), err)
+	}
+	models = normalizeOpenCodeModelInfos(models)
+	if len(models) == 0 {
+		return "", normalized, fmt.Errorf("%s models API returned no models for %s", providerDisplayName(provider), strings.TrimSpace(scope))
+	}
+	selected := normalizeOpenCodeModelAllowEmptyForProvider(provider, model)
+	if selected == "" {
+		return preferredOpenCodeModelForProvider(provider, models), normalized, nil
+	}
+	if !openCodeModelInListForProvider(provider, models, selected) {
+		return "", normalized, fmt.Errorf("%s model %s is not available for the configured API key while setting %s; choose one of: %s", providerDisplayName(provider), selected, strings.TrimSpace(scope), strings.Join(limitOpenCodeModelLabelsForProvider(provider, models, 8), ", "))
+	}
+	return selected, normalized, nil
+}
+
 func (rt *runtimeState) handleProviderCommand(args string) error {
 	parts := strings.Fields(args)
 	if len(parts) > 0 && strings.EqualFold(parts[0], "status") {
 		return rt.showProviderStatus()
 	}
 	if len(parts) > 0 {
-		var err error
-		switch strings.ToLower(parts[0]) {
-		case "1", "anthropic":
-			err = rt.configureProviderInteractive("anthropic")
-		case "2", "openai", "openai-compatible":
-			err = rt.configureProviderInteractive("openai")
-		case "3", "openrouter":
-			err = rt.configureProviderInteractive("openrouter")
-		case "4", "ollama":
-			err = rt.configureProviderInteractive("ollama")
-		default:
+		provider, ok := resolveProviderChoice(parts[0])
+		if !ok {
 			return fmt.Errorf("unknown provider: %s", parts[0])
 		}
+		err := rt.configureProviderInteractive(provider)
 		if errors.Is(err, ErrPromptCanceled) {
 			return nil
 		}
@@ -3146,22 +3294,9 @@ func (rt *runtimeState) handleProviderCommand(args string) error {
 	}
 
 	fmt.Fprintln(rt.writer, rt.ui.section("Providers"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
+	rt.printProviderChoiceOptions()
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Current provider: "+valueOrUnset(rt.session.Provider)))
-	defaultChoice := "4"
-	switch strings.ToLower(strings.TrimSpace(rt.session.Provider)) {
-	case "anthropic":
-		defaultChoice = "1"
-	case "openai", "openai-compatible":
-		defaultChoice = "2"
-	case "openrouter":
-		defaultChoice = "3"
-	case "ollama":
-		defaultChoice = "4"
-	}
+	defaultChoice := defaultProviderChoice(rt.session.Provider)
 	choice, err := rt.promptValue("Select provider", defaultChoice)
 	if err != nil {
 		if errors.Is(err, ErrPromptCanceled) {
@@ -3169,18 +3304,14 @@ func (rt *runtimeState) handleProviderCommand(args string) error {
 		}
 		return err
 	}
-	switch strings.ToLower(strings.TrimSpace(choice)) {
-	case "", "1", "anthropic":
-		err = rt.configureProviderInteractive("anthropic")
-	case "2", "openai", "openai-compatible":
-		err = rt.configureProviderInteractive("openai")
-	case "3", "openrouter":
-		err = rt.configureProviderInteractive("openrouter")
-	case "4", "ollama":
-		err = rt.configureProviderInteractive("ollama")
-	default:
+	if strings.TrimSpace(choice) == "" {
+		choice = defaultChoice
+	}
+	provider, ok := resolveProviderChoice(choice)
+	if !ok {
 		return fmt.Errorf("unknown provider: %s", choice)
 	}
+	err = rt.configureProviderInteractive(provider)
 	if errors.Is(err, ErrPromptCanceled) {
 		return nil
 	}
@@ -3289,7 +3420,16 @@ func (rt *runtimeState) showProviderStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", valueOrUnset(provider)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", valueOrUnset(base)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("model", valueOrUnset(model)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("api_key", providerAPIKeyState(apiKey)))
+	if strings.EqualFold(provider, "codex-cli") {
+		commandPath := strings.TrimSpace(rt.cfg.CodexCLIPath)
+		if commandPath == "" {
+			commandPath = codexCLIDefaultExecutable
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cli", commandPath))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "managed by Codex CLI"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("api_key", providerAPIKeyState(apiKey)))
+	}
 	if strings.EqualFold(provider, "ollama") {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cached_models", fmt.Sprintf("%d", len(rt.ollamaModels))))
 	}
@@ -3391,7 +3531,7 @@ func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
 }
 
 func (rt *runtimeState) currentProviderStatus() (string, string, string, string) {
-	provider := strings.ToLower(firstNonEmptyTrimmed(rt.session.Provider, rt.cfg.Provider))
+	provider := normalizeProviderName(firstNonEmptyTrimmed(rt.session.Provider, rt.cfg.Provider))
 	model := firstNonEmptyTrimmed(rt.session.Model, rt.cfg.Model)
 	baseURL := normalizeProviderBaseURL(provider, firstNonEmptyTrimmed(rt.session.BaseURL, rt.cfg.BaseURL))
 	apiKey := rt.providerAPIKey(provider)
@@ -3472,9 +3612,20 @@ func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey stri
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use the upstream provider's documented billing and usage endpoints."))
 	case "openrouter":
 		rt.printOpenRouterBudgetStatus(baseURL, apiKey)
+	case "opencode":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Use the OpenCode Zen billing dashboard for credits and reload state."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openCodeAPIURL(baseURL, "/v1/models")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("endpoint_routing", "GPT/Codex -> responses, Claude -> messages, other compatible Zen models -> chat/completions."))
+	case "opencode-go":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "OpenCode Go uses subscription usage limits, not Zen pay-as-you-go balance."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openCodeProviderAPIURL("opencode-go", baseURL, "/v1/models")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("endpoint_routing", "MiniMax M2.5/M2.7 -> messages, other Go models -> chat/completions."))
 	case "ollama":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Not applicable for local providers."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "No remote billing API is expected for local model servers."))
+	case "codex-cli":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Managed by the installed Codex CLI account or API configuration."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use Codex CLI/OpenAI account tooling for usage visibility."))
 	default:
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Unknown provider; budget visibility depends on the upstream API."))
 	}
@@ -3685,6 +3836,193 @@ func (rt *runtimeState) chooseOpenAIModel(currentModel string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("unknown model: %s", choice)
+}
+
+var codexCLIModels = []struct {
+	ID   string
+	Name string
+}{
+	{codexCLIDefaultModel, "Codex CLI default"},
+	{"gpt-5.5", "GPT-5.5"},
+	{"gpt-5.5-pro", "GPT-5.5 Pro"},
+	{"gpt-5.4", "GPT-5.4"},
+	{"gpt-5.4-pro", "GPT-5.4 Pro"},
+	{"gpt-5.4-mini", "GPT-5.4 Mini"},
+	{"gpt-5.3-codex", "GPT-5.3 Codex"},
+	{"gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"},
+	{"gpt-5.2", "GPT-5.2"},
+	{"gpt-5.2-codex", "GPT-5.2 Codex"},
+	{"gpt-5.1", "GPT-5.1"},
+	{"gpt-5.1-codex", "GPT-5.1 Codex"},
+	{"gpt-5.1-codex-max", "GPT-5.1 Codex Max"},
+	{"gpt-5.1-codex-mini", "GPT-5.1 Codex Mini"},
+	{"gpt-5", "GPT-5"},
+	{"gpt-5-codex", "GPT-5 Codex"},
+	{"codex-mini-latest", "Codex Mini Latest"},
+}
+
+func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error) {
+	if !rt.interactive {
+		if strings.TrimSpace(currentModel) != "" {
+			return currentModel, nil
+		}
+		return codexCLIDefaultModel, nil
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.section("Codex CLI Models"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Codex CLI choose its configured model. You can also type any Codex-supported model id directly."))
+	defaultChoice := "1"
+	for i, m := range codexCLIModels {
+		marker := ""
+		if strings.EqualFold(m.ID, strings.TrimSpace(currentModel)) {
+			marker = " " + rt.ui.success("[current]")
+			defaultChoice = fmt.Sprintf("%d", i+1)
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s%s\n", i+1, m.Name, rt.ui.dim(m.ID), marker)
+	}
+
+	choice, err := rt.promptValue("Select model", defaultChoice)
+	if err != nil {
+		return "", err
+	}
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		choice = defaultChoice
+	}
+	if idx, err := strconv.Atoi(choice); err == nil {
+		if idx >= 1 && idx <= len(codexCLIModels) {
+			return codexCLIModels[idx-1].ID, nil
+		}
+		return "", fmt.Errorf("invalid selection: %s", choice)
+	}
+	for _, m := range codexCLIModels {
+		if strings.EqualFold(m.ID, choice) {
+			return m.ID, nil
+		}
+	}
+	return choice, nil
+}
+
+var openCodeFallbackModels = []OpenCodeModelInfo{
+	{ID: "gpt-5.5"},
+	{ID: "gpt-5.5-pro"},
+	{ID: "gpt-5.4"},
+	{ID: "gpt-5.4-pro"},
+	{ID: "gpt-5.3-codex"},
+	{ID: "gpt-5.3-codex-spark"},
+	{ID: "claude-sonnet-4-6"},
+	{ID: "glm-5.1"},
+	{ID: "glm-5"},
+	{ID: "minimax-m2.7"},
+	{ID: "minimax-m2.5"},
+	{ID: "kimi-k2.6"},
+	{ID: "kimi-k2.5"},
+	{ID: "qwen3.6-plus"},
+	{ID: "qwen3.5-plus"},
+}
+
+var openCodeGoFallbackModels = []OpenCodeModelInfo{
+	{ID: "deepseek-v4-pro"},
+	{ID: "glm-5.1"},
+	{ID: "kimi-k2.6"},
+	{ID: "qwen3.6-plus"},
+	{ID: "minimax-m2.7"},
+	{ID: "kimi-k2.5"},
+	{ID: "qwen3.5-plus"},
+	{ID: "deepseek-v4-flash"},
+	{ID: "glm-5"},
+	{ID: "minimax-m2.5"},
+}
+
+func (rt *runtimeState) chooseOpenCodeModel(models []OpenCodeModelInfo, currentModel string) (string, error) {
+	return rt.chooseOpenCodeModelForProvider("opencode", models, currentModel)
+}
+
+func (rt *runtimeState) chooseOpenCodeModelForProvider(provider string, models []OpenCodeModelInfo, currentModel string) (string, error) {
+	provider = normalizeProviderName(provider)
+	models = normalizeOpenCodeModelInfos(models)
+	if !rt.interactive {
+		current := normalizeOpenCodeModelAllowEmptyForProvider(provider, currentModel)
+		if current != "" && (len(models) == 0 || openCodeModelInListForProvider(provider, models, current)) {
+			return current, nil
+		}
+		if len(models) > 0 {
+			return preferredOpenCodeModelForProvider(provider, models), nil
+		}
+		return defaultOpenCodeModelForProvider(provider), nil
+	}
+
+	if len(models) == 0 {
+		if provider == "opencode-go" {
+			models = openCodeGoFallbackModels
+		} else {
+			models = openCodeFallbackModels
+		}
+	}
+
+	prefix := openCodeModelPrefix(provider)
+	fmt.Fprintln(rt.writer, rt.ui.hintLine(providerDisplayName(provider)+" model ids are saved as "+prefix+"/<model-id>. Bare model ids are normalized automatically."))
+	defaultChoice := "1"
+	currentModel = normalizeOpenCodeModelAllowEmptyForProvider(provider, currentModel)
+	for i, m := range models {
+		modelID := normalizeOpenCodeModelForProvider(provider, m.ID)
+		marker := ""
+		if strings.EqualFold(modelID, currentModel) {
+			marker = " " + rt.ui.success("[current]")
+			defaultChoice = fmt.Sprintf("%d", i+1)
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s%s\n", i+1, rt.ui.dim(modelID), marker)
+	}
+	if currentModel != "" && !openCodeModelInListForProvider(provider, models, currentModel) {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Current "+providerDisplayName(provider)+" model is not returned by this API key: "+currentModel))
+	}
+
+	choice, err := rt.promptValue("Select model", defaultChoice)
+	if err != nil {
+		return "", err
+	}
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		choice = defaultChoice
+	}
+	if idx, err := strconv.Atoi(choice); err == nil {
+		if idx >= 1 && idx <= len(models) {
+			return normalizeOpenCodeModelForProvider(provider, models[idx-1].ID), nil
+		}
+		return "", fmt.Errorf("invalid selection: %s", choice)
+	}
+	for _, m := range models {
+		modelID := normalizeOpenCodeModelForProvider(provider, m.ID)
+		if strings.EqualFold(modelID, choice) || strings.EqualFold(openCodeAPIModelID(modelID), choice) {
+			return modelID, nil
+		}
+	}
+	model := normalizeOpenCodeModelForProvider(provider, choice)
+	if len(models) > 0 && !openCodeModelInListForProvider(provider, models, model) {
+		return "", fmt.Errorf("%s model %s was not returned by the configured API key; choose one of: %s", providerDisplayName(provider), model, strings.Join(limitOpenCodeModelLabelsForProvider(provider, models, 8), ", "))
+	}
+	return model, nil
+}
+
+func limitOpenCodeModelLabels(models []OpenCodeModelInfo, limit int) []string {
+	return limitOpenCodeModelLabelsForProvider("opencode", models, limit)
+}
+
+func limitOpenCodeModelLabelsForProvider(provider string, models []OpenCodeModelInfo, limit int) []string {
+	models = normalizeOpenCodeModelInfos(models)
+	if limit <= 0 || len(models) <= limit {
+		out := make([]string, 0, len(models))
+		for _, model := range models {
+			out = append(out, normalizeOpenCodeModelForProvider(provider, model.ID))
+		}
+		return out
+	}
+	out := make([]string, 0, limit+1)
+	for _, model := range models[:limit] {
+		out = append(out, normalizeOpenCodeModelForProvider(provider, model.ID))
+	}
+	out = append(out, fmt.Sprintf("...+%d more", len(models)-limit))
+	return out
 }
 
 func (rt *runtimeState) chooseOllamaModel(models []OllamaModelInfo) (OllamaModelInfo, error) {
@@ -5181,16 +5519,12 @@ func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {
 		switch strings.ToLower(parts[0]) {
 		case "status":
 			return rt.showPlanReviewStatus()
-		case "1", "anthropic":
-			err = rt.configurePlanReviewInteractive("anthropic")
-		case "2", "openai", "openai-compatible":
-			err = rt.configurePlanReviewInteractive("openai")
-		case "3", "openrouter":
-			err = rt.configurePlanReviewInteractive("openrouter")
-		case "4", "ollama":
-			err = rt.configurePlanReviewInteractive("ollama")
 		default:
-			return fmt.Errorf("unknown provider: %s", parts[0])
+			provider, ok := resolveProviderChoice(parts[0])
+			if !ok {
+				return fmt.Errorf("unknown provider: %s", parts[0])
+			}
+			err = rt.configurePlanReviewInteractive(provider)
 		}
 		if errors.Is(err, ErrPromptCanceled) {
 			return nil
@@ -5204,23 +5538,11 @@ func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("No reviewer configured yet."))
 	}
-	fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
+	rt.printProviderChoiceOptions()
 
-	defaultChoice := "1"
+	defaultChoice := defaultProviderChoice("")
 	if rt.cfg.PlanReview != nil {
-		switch strings.ToLower(strings.TrimSpace(rt.cfg.PlanReview.Provider)) {
-		case "anthropic":
-			defaultChoice = "1"
-		case "openai", "openai-compatible":
-			defaultChoice = "2"
-		case "openrouter":
-			defaultChoice = "3"
-		case "ollama":
-			defaultChoice = "4"
-		}
+		defaultChoice = defaultProviderChoice(rt.cfg.PlanReview.Provider)
 	}
 	choice, err := rt.promptValue("Select provider", defaultChoice)
 	if err != nil {
@@ -5229,18 +5551,14 @@ func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {
 		}
 		return err
 	}
-	switch strings.ToLower(strings.TrimSpace(choice)) {
-	case "", "1", "anthropic":
-		err = rt.configurePlanReviewInteractive("anthropic")
-	case "2", "openai", "openai-compatible":
-		err = rt.configurePlanReviewInteractive("openai")
-	case "3", "openrouter":
-		err = rt.configurePlanReviewInteractive("openrouter")
-	case "4", "ollama":
-		err = rt.configurePlanReviewInteractive("ollama")
-	default:
+	if strings.TrimSpace(choice) == "" {
+		choice = defaultChoice
+	}
+	provider, ok := resolveProviderChoice(choice)
+	if !ok {
 		return fmt.Errorf("unknown provider: %s", choice)
 	}
+	err = rt.configurePlanReviewInteractive(provider)
 	if errors.Is(err, ErrPromptCanceled) {
 		return nil
 	}
@@ -5486,40 +5804,23 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 	if !ok {
 		return fmt.Errorf("unknown specialist profile: %s", name)
 	}
-	provider := strings.ToLower(strings.TrimSpace(providerArg))
+	provider := normalizeProviderName(providerArg)
 	if provider == "" {
 		fmt.Fprintln(rt.writer, rt.ui.section("Set Specialist "+profile.Name))
-		fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
-		defaultChoice := "1"
-		switch strings.ToLower(strings.TrimSpace(firstNonBlankString(profile.Provider, rt.cfg.Provider))) {
-		case "anthropic":
-			defaultChoice = "1"
-		case "openai", "openai-compatible":
-			defaultChoice = "2"
-		case "openrouter":
-			defaultChoice = "3"
-		case "ollama":
-			defaultChoice = "4"
-		}
+		rt.printProviderChoiceOptions()
+		defaultChoice := defaultProviderChoice(firstNonBlankString(profile.Provider, rt.cfg.Provider))
 		choice, err := rt.promptValue("Select provider", defaultChoice)
 		if err != nil {
 			return err
 		}
-		switch strings.ToLower(strings.TrimSpace(choice)) {
-		case "", "1", "anthropic":
-			provider = "anthropic"
-		case "2", "openai", "openai-compatible":
-			provider = "openai"
-		case "3", "openrouter":
-			provider = "openrouter"
-		case "4", "ollama":
-			provider = "ollama"
-		default:
+		if strings.TrimSpace(choice) == "" {
+			choice = defaultChoice
+		}
+		resolved, ok := resolveProviderChoice(choice)
+		if !ok {
 			return fmt.Errorf("unknown provider: %s", choice)
 		}
+		provider = resolved
 	}
 
 	nextModel := strings.TrimSpace(modelArg)
@@ -5592,6 +5893,30 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 				return err
 			}
 			nextModel = model
+		case "opencode", "opencode-go":
+			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
+			if strings.TrimSpace(nextAPIKey) == "" {
+				apiKey, err := rt.promptRequiredValue(providerDisplayName(provider)+" API key (for specialist "+profile.Name+")", "")
+				if err != nil {
+					return err
+				}
+				nextAPIKey = apiKey
+			}
+			models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, nextBaseURL, nextAPIKey)
+			if err != nil {
+				return err
+			}
+			nextModel, err = rt.chooseOpenCodeModelForProvider(provider, models, currentModel)
+			if err != nil {
+				return err
+			}
+			nextBaseURL = normalized
+		case "codex-cli":
+			model, err := rt.chooseCodexCLIModel(currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
 		}
@@ -5601,7 +5926,9 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalizeOllamaBaseURL(nextBaseURL)
 		case "openrouter":
 			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
-		case "anthropic", "openai":
+		case "opencode", "opencode-go":
+			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
+		case "anthropic", "openai", "codex-cli":
 			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
@@ -5612,46 +5939,30 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 }
 
 func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, providerArg string) error {
-	provider := strings.ToLower(strings.TrimSpace(providerArg))
+	provider := normalizeProviderName(providerArg)
 	if provider == "" {
 		fmt.Fprintln(rt.writer, rt.ui.section("Set Analysis "+strings.Title(role)))
-		fmt.Fprintln(rt.writer, rt.ui.info("  1. anthropic"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  2. openai"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  3. openrouter"))
-		fmt.Fprintln(rt.writer, rt.ui.info("  4. ollama"))
-		defaultChoice := "1"
+		rt.printProviderChoiceOptions()
+		defaultChoice := defaultProviderChoice("")
 		current := rt.cfg.ProjectAnalysis.WorkerProfile
 		if role == "reviewer" {
 			current = rt.cfg.ProjectAnalysis.ReviewerProfile
 		}
 		if current != nil {
-			switch strings.ToLower(strings.TrimSpace(current.Provider)) {
-			case "anthropic":
-				defaultChoice = "1"
-			case "openai", "openai-compatible":
-				defaultChoice = "2"
-			case "openrouter":
-				defaultChoice = "3"
-			case "ollama":
-				defaultChoice = "4"
-			}
+			defaultChoice = defaultProviderChoice(current.Provider)
 		}
 		choice, err := rt.promptValue("Select provider", defaultChoice)
 		if err != nil {
 			return err
 		}
-		switch strings.ToLower(strings.TrimSpace(choice)) {
-		case "", "1", "anthropic":
-			provider = "anthropic"
-		case "2", "openai", "openai-compatible":
-			provider = "openai"
-		case "3", "openrouter":
-			provider = "openrouter"
-		case "4", "ollama":
-			provider = "ollama"
-		default:
+		if strings.TrimSpace(choice) == "" {
+			choice = defaultChoice
+		}
+		resolved, ok := resolveProviderChoice(choice)
+		if !ok {
 			return fmt.Errorf("unknown provider: %s", choice)
 		}
+		provider = resolved
 	}
 
 	nextModel := ""
@@ -5695,7 +6006,7 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		}
 		nextModel = selected.Name
 		nextBaseURL = normalized
-	case "anthropic", "openai", "openrouter":
+	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
 		if strings.TrimSpace(nextAPIKey) == "" {
 			keyPrompt := providerDisplayName(provider) + " API key (for analysis " + role + ")"
 			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
@@ -5716,6 +6027,17 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 			}
 			nextModel = selected.ID
 			nextBaseURL = normalized
+		} else if isOpenCodeProvider(provider) {
+			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
+			models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, nextBaseURL, nextAPIKey)
+			if err != nil {
+				return err
+			}
+			nextModel, err = rt.chooseOpenCodeModelForProvider(provider, models, nextModel)
+			if err != nil {
+				return err
+			}
+			nextBaseURL = normalized
 		} else if provider == "anthropic" {
 			model, err := rt.chooseAnthropicModel(nextModel)
 			if err != nil {
@@ -5729,6 +6051,14 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 			}
 			nextModel = model
 		}
+	case "codex-cli":
+		model, err := rt.chooseCodexCLIModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = ""
+		nextAPIKey = ""
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -5737,8 +6067,17 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 }
 
 func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string, model string, baseURL string, apiKey string) error {
+	provider = normalizeProviderName(provider)
 	if strings.TrimSpace(apiKey) == "" {
 		apiKey = rt.providerAPIKey(provider)
+	}
+	if isOpenCodeProvider(provider) {
+		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(provider, model, baseURL, apiKey, "analysis "+role)
+		if err != nil {
+			return err
+		}
+		model = resolvedModel
+		baseURL = resolvedBaseURL
 	}
 	profile := &Profile{
 		Name:     profileName(provider, model),
@@ -5764,8 +6103,17 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 }
 
 func (rt *runtimeState) activateSpecialistModel(name string, provider string, model string, baseURL string, apiKey string) error {
+	provider = normalizeProviderName(provider)
 	if strings.TrimSpace(apiKey) == "" {
 		apiKey = rt.providerAPIKey(provider)
+	}
+	if isOpenCodeProvider(provider) {
+		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(provider, model, baseURL, apiKey, "specialist "+name)
+		if err != nil {
+			return err
+		}
+		model = resolvedModel
+		baseURL = resolvedBaseURL
 	}
 	updated := false
 	profiles := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
@@ -5910,6 +6258,7 @@ func (rt *runtimeState) showPlanReviewStatus() error {
 }
 
 func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
+	provider = normalizeProviderName(provider)
 	nextModel := ""
 	nextBaseURL := ""
 	nextAPIKey := ""
@@ -5948,10 +6297,12 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 		}
 		nextModel = selected.Name
 		nextBaseURL = normalized
-	case "anthropic", "openai", "openrouter":
+	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
 		baseURL := ""
 		if provider == "openrouter" {
 			baseURL = normalizeOpenRouterBaseURL("")
+		} else if isOpenCodeProvider(provider) {
+			baseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
 		}
 		nextBaseURL = baseURL
 
@@ -5981,6 +6332,16 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 			}
 			nextModel = selected.ID
 			nextBaseURL = normalized
+		case "opencode", "opencode-go":
+			models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, baseURL, nextAPIKey)
+			if err != nil {
+				return err
+			}
+			nextModel, err = rt.chooseOpenCodeModelForProvider(provider, models, nextModel)
+			if err != nil {
+				return err
+			}
+			nextBaseURL = normalized
 		default:
 			model, err := rt.chooseOpenAIModel(nextModel)
 			if err != nil {
@@ -5988,6 +6349,14 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 			}
 			nextModel = model
 		}
+	case "codex-cli":
+		model, err := rt.chooseCodexCLIModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = ""
+		nextAPIKey = ""
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -5996,9 +6365,18 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 }
 
 func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey string) error {
+	provider = normalizeProviderName(provider)
 	baseURL = normalizeProfileBaseURL(provider, baseURL)
 	if strings.TrimSpace(apiKey) == "" {
 		apiKey = rt.providerAPIKey(provider)
+	}
+	if isOpenCodeProvider(provider) {
+		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(provider, model, baseURL, apiKey, "plan review")
+		if err != nil {
+			return err
+		}
+		model = resolvedModel
+		baseURL = resolvedBaseURL
 	}
 	rt.cfg.PlanReview = &PlanReviewConfig{
 		Provider: provider,
@@ -6508,6 +6886,12 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	if run.Summary.ReviewFailures > 0 {
 		rt.printPersistentWhileThinking(rt.ui.statusKV("review_failures", fmt.Sprintf("%d", run.Summary.ReviewFailures)))
 	}
+	if run.Summary.ReviewProviderFailures > 0 {
+		rt.printPersistentWhileThinking(rt.ui.statusKV("review_provider_failures", fmt.Sprintf("%d", run.Summary.ReviewProviderFailures)))
+	}
+	if run.Summary.ReviewQualityIssues > 0 {
+		rt.printPersistentWhileThinking(rt.ui.statusKV("review_quality_issues", fmt.Sprintf("%d", run.Summary.ReviewQualityIssues)))
+	}
 	reused := 0
 	missed := 0
 	missReasons := map[string]int{}
@@ -6544,6 +6928,10 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		rt.printPersistentWhileThinking(rt.ui.warnLine("Could not read latest analysis docs manifest for reuse records."))
 	}
 	rt.printAssistant(run.FinalDocument)
+	if artifacts := renderAnalysisProjectArtifactPathsStyled(run, analysisCfg.OutputDir, rt.ui); strings.TrimSpace(artifacts) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, artifacts)
+	}
 	handoff := renderAnalysisProjectHandoff(buildAnalysisProjectHandoff(run, docsManifest, docsManifestOK))
 	if strings.TrimSpace(handoff) != "" {
 		fmt.Fprintln(rt.writer)

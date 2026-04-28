@@ -12,6 +12,8 @@ import (
 
 const (
 	defaultAnalysisContextMaxChars    = 3200
+	deepAnalysisContextMaxChars       = 12000
+	deepAnalysisAnswerPackMaxChars    = 10000
 	cachedProjectAnalysisSummaryStart = "[Cached Project Analysis]"
 	cachedProjectAnalysisSummaryEnd   = "[/Cached Project Analysis]"
 	projectAnalysisFastPathNeedsTools = "NEEDS_TOOLS"
@@ -23,6 +25,7 @@ type latestAnalysisArtifacts struct {
 	Corpus       VectorCorpus
 	Index        SemanticIndex
 	IndexV2      SemanticIndexV2
+	UnrealGraph  UnrealSemanticGraph
 	DocsManifest AnalysisDocsManifest
 }
 
@@ -79,6 +82,15 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 	if snapshotData, err := os.ReadFile(filepath.Join(latestDir, "snapshot.json")); err == nil {
 		_ = json.Unmarshal(snapshotData, &artifacts.Snapshot)
 	}
+	if factsData, err := os.ReadFile(filepath.Join(latestDir, "architecture_facts.json")); err == nil {
+		facts := ArchitectureFactPack{}
+		if json.Unmarshal(factsData, &facts) == nil {
+			artifacts.Snapshot.ArchitectureFacts = facts
+			if !architectureFactPackHasData(artifacts.Pack.ArchitectureFacts) {
+				artifacts.Pack.ArchitectureFacts = facts
+			}
+		}
+	}
 	if corpusData, err := os.ReadFile(filepath.Join(latestDir, "vector_corpus.json")); err == nil {
 		_ = json.Unmarshal(corpusData, &artifacts.Corpus)
 	}
@@ -87,6 +99,9 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 	}
 	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index_v2.json")); err == nil {
 		_ = json.Unmarshal(indexData, &artifacts.IndexV2)
+	}
+	if graphData, err := os.ReadFile(filepath.Join(latestDir, "unreal_graph.json")); err == nil {
+		_ = json.Unmarshal(graphData, &artifacts.UnrealGraph)
 	}
 	if manifestData, err := os.ReadFile(filepath.Join(latestDir, "docs_manifest.json")); err == nil {
 		if manifest, err := decodeAnalysisDocsManifest(manifestData); err == nil {
@@ -114,7 +129,26 @@ func (a *Agent) shouldInjectLatestProjectAnalysisContext(artifacts latestAnalysi
 	if currentRunID != "" && !strings.EqualFold(strings.TrimSpace(a.Session.LastAnalysisContextRunID), currentRunID) {
 		return true
 	}
+	if projectAnalysisQAIntentNeedsAnswerPack(classifyProjectAnalysisQAIntent(query)) && a.lastSessionMessageIsUserWithoutAssistantReply() {
+		return true
+	}
 	return analysisQueryMeaningfullyChanged(a.Session.LastAnalysisContextQuery, query)
+}
+
+func (a *Agent) lastSessionMessageIsUserWithoutAssistantReply() bool {
+	if a == nil || a.Session == nil || len(a.Session.Messages) == 0 {
+		return false
+	}
+	for i := len(a.Session.Messages) - 1; i >= 0; i-- {
+		role := strings.ToLower(strings.TrimSpace(a.Session.Messages[i].Role))
+		switch role {
+		case "assistant":
+			return false
+		case "user":
+			return true
+		}
+	}
+	return false
 }
 
 func latestAnalysisArtifactsRunID(artifacts latestAnalysisArtifacts) string {
@@ -124,7 +158,16 @@ func latestAnalysisArtifactsRunID(artifacts latestAnalysisArtifacts) string {
 	if strings.TrimSpace(artifacts.Corpus.RunID) != "" {
 		return strings.TrimSpace(artifacts.Corpus.RunID)
 	}
-	return strings.TrimSpace(artifacts.Index.RunID)
+	if strings.TrimSpace(artifacts.Index.RunID) != "" {
+		return strings.TrimSpace(artifacts.Index.RunID)
+	}
+	if strings.TrimSpace(artifacts.IndexV2.RunID) != "" {
+		return strings.TrimSpace(artifacts.IndexV2.RunID)
+	}
+	if strings.TrimSpace(artifacts.UnrealGraph.RunID) != "" {
+		return strings.TrimSpace(artifacts.UnrealGraph.RunID)
+	}
+	return strings.TrimSpace(artifacts.DocsManifest.RunID)
 }
 
 func analysisQueryMeaningfullyChanged(previous string, current string) bool {
@@ -264,12 +307,24 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 		len(artifacts.Index.Files) == 0 &&
 		len(artifacts.Index.Symbols) == 0 &&
 		!hasSemanticIndexV2Data(artifacts.IndexV2) &&
+		len(artifacts.UnrealGraph.Nodes) == 0 &&
+		len(artifacts.UnrealGraph.Edges) == 0 &&
+		!architectureFactPackHasData(artifacts.Snapshot.ArchitectureFacts) &&
+		!architectureFactPackHasData(artifacts.Pack.ArchitectureFacts) &&
 		len(artifacts.DocsManifest.Documents) == 0 {
 		return ""
 	}
 
 	var b strings.Builder
 	b.WriteString("- Source: latest analyze-project artifacts\n")
+	qaIntent := classifyProjectAnalysisQAIntent(query)
+	if projectAnalysisQAIntentNeedsAnswerPack(qaIntent) {
+		answerPack := buildProjectStructureAnswerPack(artifacts, query)
+		if packText := renderProjectStructureAnswerPack(answerPack, deepAnalysisAnswerPackMaxChars); strings.TrimSpace(packText) != "" {
+			b.WriteString(strings.TrimSpace(packText))
+			b.WriteString("\n")
+		}
+	}
 	if strings.TrimSpace(artifacts.Pack.Goal) != "" {
 		fmt.Fprintf(&b, "- Analysis goal: %s\n", strings.TrimSpace(artifacts.Pack.Goal))
 	}
@@ -350,7 +405,11 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 		b.WriteString("\n")
 	}
 
-	return compactProjectAnalysisText(strings.TrimSpace(b.String()), defaultAnalysisContextMaxChars)
+	limit := defaultAnalysisContextMaxChars
+	if projectAnalysisQAIntentNeedsAnswerPack(qaIntent) {
+		limit = deepAnalysisContextMaxChars
+	}
+	return compactProjectAnalysisText(strings.TrimSpace(b.String()), limit)
 }
 
 func renderRelevantAnalysisDocsContext(manifest AnalysisDocsManifest, query string) string {
@@ -388,8 +447,8 @@ func renderRelevantAnalysisDocsContext(manifest AnalysisDocsManifest, query stri
 		if len(item.doc.SourceAnchors) > 0 {
 			fmt.Fprintf(&b, "  anchors: %s\n", strings.Join(limitStrings(item.doc.SourceAnchors, 4), "; "))
 		}
-		if len(item.doc.StaleMarkers) > 0 {
-			fmt.Fprintf(&b, "  stale: %s\n", strings.Join(limitStrings(item.doc.StaleMarkers, 3), "; "))
+		if markers := analysisRealStaleMarkers(item.doc.StaleMarkers); len(markers) > 0 {
+			fmt.Fprintf(&b, "  stale: %s\n", strings.Join(limitStrings(markers, 3), "; "))
 		}
 		if len(item.doc.ReuseTargets) > 0 {
 			fmt.Fprintf(&b, "  reuse: %s\n", strings.Join(limitStrings(item.doc.ReuseTargets, 5), ", "))
@@ -801,6 +860,32 @@ func compactProjectAnalysisText(text string, limit int) string {
 }
 
 func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, query string) cachedAnalysisFastPathMetadata {
+	if projectAnalysisQAIntentNeedsAnswerPack(classifyProjectAnalysisQAIntent(query)) {
+		pack := buildProjectStructureAnswerPack(artifacts, query)
+		sources := []string{}
+		if len(pack.RelevantDocs) > 0 {
+			sources = append(sources, "generated_docs")
+		}
+		if len(pack.GraphViews) > 0 || len(pack.Symbols) > 0 || len(pack.Files) > 0 {
+			sources = append(sources, "structure_answer_pack")
+		}
+		if hasSemanticIndexV2Data(artifacts.IndexV2) {
+			sources = append(sources, "structural_index_v2")
+		}
+		if len(pack.SecurityOverlays) > 0 {
+			sources = append(sources, "security_overlay")
+		}
+		if len(pack.UnrealEdges) > 0 {
+			sources = append(sources, "unreal_graph")
+		}
+		if len(pack.VerificationEntries) > 0 || len(pack.FuzzTargets) > 0 {
+			sources = append(sources, "verification_or_fuzz")
+		}
+		return cachedAnalysisFastPathMetadata{
+			Confidence: pack.Confidence,
+			Sources:    analysisUniqueStrings(sources),
+		}
+	}
 	subsystems := selectRelevantKnowledgeSubsystems(artifacts.Pack, query, 3)
 	vectorDocs := selectRelevantVectorDocuments(artifacts.Corpus, query, 2)
 	files := selectRelevantIndexedFiles(artifacts.Index, query, 3)
@@ -864,9 +949,13 @@ func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (strin
 	query := baseUserQueryText(latestUserMessageText(a.Session.Messages))
 	meta := buildCachedAnalysisFastPathMetadata(artifacts, query)
 	messages := append([]Message(nil), a.Session.Messages...)
+	fastPathInstruction := "Fast-path check: Use only the cached project analysis already present in this conversation. Do not use tools and do not assume unseen code. If the cached analysis is sufficient to fully answer the user's latest request, answer now. Otherwise reply exactly NEEDS_TOOLS."
+	if projectAnalysisQAIntentNeedsAnswerPack(classifyProjectAnalysisQAIntent(query)) {
+		fastPathInstruction = "Fast-path check: Use only the latest cached project analysis and Project structure answer pack already present in this conversation. Do not use tools and do not assume unseen code. Prefer the latest project analysis over persistent memory; do not cite older memory as a stale caveat unless the answer pack or latest docs report the same marker. For deep structure questions, treat a medium/high confidence Project structure answer pack with source anchors, priority docs, graph views, and domain-specific critical anchors as sufficient for a grounded architecture answer. Respect domain_hints: for windows_driver, describe it as a Windows kernel/WDM .sys driver, not a DLL, unless source artifacts explicitly say DLL; if a file/minifilter subsystem exists, describe it as a subsystem unless build evidence says the whole driver is minifilter-only; describe dynamic kernel API resolver/wrapper modules as resolver/wrapper layers when that is what the anchors show. Separate user-mode IOCTL/control-client wrappers from kernel-side IRP/IOCTL dispatch and validation. Treat the domain flow map as a constrained architecture map, not permission to invent direct call chains; include every relevant Domain-specific flow map spine and every Required driver answer fact in the answer. Keep IRP create/open request-origin validation, IRP_MJ_DEVICE_CONTROL command dispatch, process notify callbacks, object callbacks, and Finalize/Unload teardown paths separate unless explicit call-edge evidence connects them. Do not place runtime filter start/registration symbols in DriverEntry/Core Initialize unless direct evidence says so; initialization symbols prepare state, while start/register symbols usually belong to runtime control or subsystem activation paths. Do not place request-origin validation symbols inside the DeviceIoControl command spine unless call-edge evidence says so; keep control-open validation separate from command-payload validation. Include both the device-control branch spine and REQUIRED device-control command spine when explaining IOCTL flow; do not stop at DeviceIoControl handler -> command dispatch if decrypt/shape/command-validation anchors are present. Spell out exact command spine symbols for payload decrypt/unpack, command validation, and requestor/control-process checks when the answer pack provides them. Use exact slash-separated folder paths and treat root folders as siblings. For top-level directory tables, copy the CLOSED SET or exact top-level directory table from Required driver answer facts and do not add extra rows. Never list paths from 'Never list these paths as top-level directory rows' as top-level directory rows. Do not nest one root folder under another unless the path explicitly says so. Do not invent root directories from source/header files; paths ending in .h, .hpp, .cpp, .c, .cc, .vcxproj, .sln, or .inf are files, not top-level folders. When IRP_MJ_DEVICE_CONTROL reaches DeviceIoControl, describe it as a branch of the IRP router. Use exact symbol names and exact file:line anchors; never replace known line numbers with ellipsis and never relabel helper/accessor anchors as lifecycle functions. Control PID/accessor symbols are not Finalize/Unload lifecycle functions. Cover structure layers, execution or dependency flow, key source anchors, impact or verification points, stale caveats when real markers are present, and next docs or files to read. If no real stale markers are present, say the cached analysis did not report stale markers. Reply exactly NEEDS_TOOLS only when the pack is absent, marked current_source_needed, or lacks source anchors/priority docs needed for the user's question."
+	}
 	messages = append(messages, Message{
 		Role: "user",
-		Text: "Fast-path check: Use only the cached project analysis already present in this conversation. Do not use tools and do not assume unseen code. If the cached analysis is sufficient to fully answer the user's latest request, answer now. Otherwise reply exactly NEEDS_TOOLS.",
+		Text: fastPathInstruction,
 	})
 	resp, err := a.completeModelTurn(ctx, ChatRequest{
 		Model:       a.Session.Model,
@@ -881,10 +970,38 @@ func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (strin
 		return "", false, err
 	}
 	reply := strings.TrimSpace(resp.Message.Text)
-	if strings.EqualFold(reply, projectAnalysisFastPathNeedsTools) || reply == "" {
+	if projectAnalysisFastPathReplyNeedsTools(reply) || reply == "" {
 		return "", false, nil
 	}
+	if projectAnalysisQAIntentNeedsAnswerPack(classifyProjectAnalysisQAIntent(query)) {
+		pack := firstArchitectureFactPack(artifacts.Snapshot.ArchitectureFacts, artifacts.Pack.ArchitectureFacts)
+		evaluation := evaluateArchitectureAnswerAgainstFacts(reply, pack)
+		if architectureAnswerHasBlockingViolations(evaluation) {
+			return "", false, nil
+		}
+	}
 	return formatCachedAnalysisFastPathReply(reply, meta), true, nil
+}
+
+func projectAnalysisFastPathReplyNeedsTools(reply string) bool {
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "" {
+		return false
+	}
+	if strings.EqualFold(trimmed, projectAnalysisFastPathNeedsTools) {
+		return true
+	}
+	firstLine := trimmed
+	if idx := strings.IndexAny(firstLine, "\r\n"); idx >= 0 {
+		firstLine = strings.TrimSpace(firstLine[:idx])
+	}
+	if strings.EqualFold(firstLine, projectAnalysisFastPathNeedsTools) {
+		return true
+	}
+	upper := strings.ToUpper(trimmed)
+	return strings.HasPrefix(upper, projectAnalysisFastPathNeedsTools+" ") ||
+		strings.HasPrefix(upper, projectAnalysisFastPathNeedsTools+":") ||
+		strings.HasPrefix(upper, projectAnalysisFastPathNeedsTools+".")
 }
 
 func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
@@ -925,10 +1042,22 @@ func looksLikeActionOrToolIntent(text string) bool {
 	if strings.HasPrefix(lower, "/") {
 		return true
 	}
+	if looksLikeExecutionFlowQuestion(lower) {
+		return false
+	}
 	return containsAny(lower,
 		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
 		"리뷰", "검토", "고쳐", "구현", "만들", "변경", "빌드", "삭제", "수정", "실행", "적용", "작성", "추가", "테스트", "패치",
 	)
+}
+
+func looksLikeExecutionFlowQuestion(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	return containsAny(lower, "실행 흐름", "실행 경로", "실행 구조", "실행 순서", "runtime flow", "execution flow", "execution path", "startup flow", "request flow") &&
+		containsAny(lower, "설명", "분석", "구조", "어떻게", "trace", "flow", "경로")
 }
 
 func prefersReadOnlyAnalysisIntent(text string) bool {
@@ -955,6 +1084,9 @@ func looksLikeExplicitEditIntent(text string) bool {
 	}
 	if strings.HasPrefix(lower, "/") {
 		return true
+	}
+	if looksLikeExecutionFlowQuestion(lower) {
+		return false
 	}
 	return containsAny(lower,
 		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",

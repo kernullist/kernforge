@@ -178,12 +178,20 @@ func TestDeveloperDocsSeparateStartupHarnessDriverEntryAndIOCTLContract(t *testi
 	}
 
 	overview := buildAnalysisDeveloperOverviewDoc(run)
+	apiDoc := buildAnalysisAPIEntrypointsDoc(run)
 	reference := buildAnalysisCodeStructureReferenceDoc(run)
 	if !strings.Contains(overview, "Solution startup candidate") || !strings.Contains(overview, "Kernel/runtime driver entry files") {
 		t.Fatalf("expected separated startup and driver entry lens\n%s", overview)
 	}
+	if strings.Contains(overview, "Kernel/runtime driver entry files: `TavernKernelTestConsole/TavernKernelTestConsole.cpp`") ||
+		strings.Contains(overview, "Kernel/runtime driver entry files: `TavernKernelTestConsole/TavernKernelTestConsole.cpp`,") {
+		t.Fatalf("expected user-mode startup file not to appear as a kernel/runtime driver entry\n%s", overview)
+	}
 	if strings.Contains(overview, "sole entrypoint") || strings.Contains(overview, "sole entry point") {
 		t.Fatalf("expected docs to avoid sole-entrypoint wording\n%s", overview)
+	}
+	if !strings.Contains(apiDoc, "Kernel/runtime driver entry files") || !strings.Contains(apiDoc, "IOCTL And Device-Control Contract") {
+		t.Fatalf("expected API doc to include driver startup lens and IOCTL contract\n%s", apiDoc)
 	}
 	if !strings.Contains(reference, "IOCTL And Device-Control Contract") || !strings.Contains(reference, "DeviceIoControlIrpHandleRoutine") {
 		t.Fatalf("expected IOCTL contract table\n%s", reference)
@@ -194,18 +202,35 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 	run := ProjectAnalysisRun{
 		Snapshot: ProjectSnapshot{
 			Files: []ScannedFile{
+				{Path: "TavernKernel.sln", Directory: ".", IsManifest: true},
+				{Path: "TavernKernel.vmp", Directory: ".", IsManifest: true},
+				{Path: "Common/UserCommon.h", Directory: "Common", ImportanceScore: 80},
+				{Path: "Common/KernelCommon.h", Directory: "Common", ImportanceScore: 80},
+				{Path: "Common/pehelper.h", Directory: "Common", ImportanceScore: 60},
 				{Path: "TavernKernel/TavernKernel.cpp", Directory: "TavernKernel", IsEntrypoint: true},
+				{Path: "TavernKernel/TavernKernelCore.cpp", Directory: "TavernKernel", ImportanceScore: 90},
 				{Path: "TavernKernelTestConsole/TavernKernelManager.cpp", Directory: "TavernKernelTestConsole", IsEntrypoint: true},
+				{Path: "TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", Directory: "TavernKernelTestConsole", IsManifest: true},
+			},
+			BuildContexts: []BuildContextRecord{
+				{ID: "buildctx:project:TavernKernel", Name: "TavernKernel", Kind: "wdm_driver", Directory: "TavernKernel", Project: "TavernKernel", Target: "tvk.sys", Files: []string{"TavernKernel/TavernKernel.cpp", "TavernKernel/TavernKernelCore.cpp"}},
+				{ID: "buildctx:project:TavernKernelTestConsole", Name: "TavernKernelTestConsole", Kind: "application", Directory: "TavernKernelTestConsole", Project: "TavernKernelTestConsole", Target: "TavernKernelTestConsole.exe", Files: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", "TavernKernelTestConsole/TavernKernelManager.cpp"}},
 			},
 		},
 		KnowledgePack: KnowledgePack{
+			ProjectSummary: "Primary architecture group: Shared Infrastructure | Lead subsystem: Common PE Helper Header",
 			Subsystems: []KnowledgeSubsystem{
 				{Title: "Kernel Driver", Responsibilities: []string{"Provide a templated string class (KnString) supporting WCHAR assignments."}, KeyFiles: []string{"TavernKernel/TavernKernel.cpp"}},
+				{Title: "Shared Infrastructure Common", Responsibilities: []string{"Provide common helper headers."}, KeyFiles: []string{"TavernKernel/TavernKernelCore.cpp"}},
+				{Title: "Build And Release: TavernKernelTestConsole", Responsibilities: []string{"Build and release the console application."}, KeyFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj", "TavernKernelTestConsole/TavernKernelManager.cpp"}},
+				{Title: "Worker Root Noise", Responsibilities: []string{"Driver initialization sets up driver object, device object, registry info, and high-level state."}, KeyFiles: []string{"TavernKernelCore.cpp", "TavernKernelProcessMonitor.cpp"}},
+				{Title: "TestConsole Shared Contract Noise", Responsibilities: []string{"The test console depends on Common/UserCommon.h for service lifecycle enums."}, KeyFiles: []string{"Common/UserCommon.h"}},
 			},
 		},
 		SemanticIndexV2: SemanticIndexV2{
 			Symbols: []SymbolRecord{
 				{Name: "DriverEntry", Kind: "function", File: "TavernKernel/TavernKernel.cpp", Tags: []string{"driver"}},
+				{Name: "DeviceIoControlIrpHandleRoutine", CanonicalName: "TavernKernelCore::DeviceIoControlIrpHandleRoutine", Kind: "ioctl_handler", File: "TavernKernel/TavernKernelCore.cpp", Tags: []string{"ioctl_surface"}},
 				{Name: "CreateDriverService", Kind: "method", File: "TavernKernelTestConsole/TavernKernelManager.cpp", Tags: []string{"service"}},
 			},
 		},
@@ -221,6 +246,134 @@ func TestDeveloperFolderResponsibilityPrefersDriverAndHarnessRoles(t *testing.T)
 	}
 	if !strings.Contains(strings.ToLower(byPath["TavernKernelTestConsole"].Responsibility), "bootstrap") {
 		t.Fatalf("expected harness responsibility, got %+v", byPath["TavernKernelTestConsole"])
+	}
+	if !strings.Contains(strings.ToLower(byPath["Common"].Responsibility), "shared") {
+		t.Fatalf("expected Common to stay shared despite test-console wording, got %+v", byPath["Common"])
+	}
+	if strings.Contains(strings.ToLower(byPath["TavernKernelTestConsole"].Responsibility), "packaging") {
+		t.Fatalf("expected harness responsibility to beat build/release wording, got %+v", byPath["TavernKernelTestConsole"])
+	}
+	if !strings.Contains(strings.ToLower(byPath["."].Responsibility), "solution root") {
+		t.Fatalf("expected solution root responsibility for root manifests, got %+v", byPath["."])
+	}
+	if strings.Contains(strings.ToLower(byPath["."].Responsibility), "driver initialization") {
+		t.Fatalf("expected solution root inference to beat bare-file worker noise, got %+v", byPath["."])
+	}
+	overview := buildAnalysisDeveloperOverviewDoc(run)
+	if strings.Contains(overview, "Lead subsystem: Common PE Helper") {
+		t.Fatalf("expected driver-oriented project shape to override stale/common lead summary\n%s", overview)
+	}
+	if !strings.Contains(overview, "Windows kernel/WDM `.sys` driver solution") || !strings.Contains(overview, "Kernel driver root: `TavernKernel/`") {
+		t.Fatalf("expected driver-oriented overview shape\n%s", overview)
+	}
+	if !strings.Contains(overview, "User-mode harness/control root: `TavernKernelTestConsole/`") {
+		t.Fatalf("expected non-root user-mode harness in project shape\n%s", overview)
+	}
+	if !strings.Contains(overview, "Shared contract root: `Common/`") {
+		t.Fatalf("expected shared contract root in project shape\n%s", overview)
+	}
+	if strings.Contains(overview, "User-mode harness/control root: `./`") {
+		t.Fatalf("expected project shape not to choose solution root as harness\n%s", overview)
+	}
+}
+
+func TestDeveloperIOCTLRolesSeparateUserModeWrappers(t *testing.T) {
+	kernelDispatch := developerIOCTLRole(SymbolRecord{
+		Name:          "DeviceIoControlIrpHandleRoutine",
+		CanonicalName: "DriverCore::DeviceIoControlIrpHandleRoutine",
+		Kind:          "ioctl_handler",
+		File:          "Driver/DriverCore.cpp",
+		Tags:          []string{"ioctl_surface"},
+	})
+	if kernelDispatch != "kernel dispatch or handler" {
+		t.Fatalf("expected kernel dispatch role, got %q", kernelDispatch)
+	}
+
+	userWrapper := developerIOCTLRole(SymbolRecord{
+		Name:          "ControlOperation",
+		CanonicalName: "DriverManager::ControlOperation",
+		Kind:          "ioctl_handler",
+		File:          "DriverTestConsole/DriverManager.cpp",
+		Tags:          []string{"ioctl_surface"},
+	})
+	if userWrapper != "user-mode request issuer" {
+		t.Fatalf("expected user-mode wrapper role, got %q", userWrapper)
+	}
+
+	validation := developerIOCTLRole(SymbolRecord{
+		Name:          "DecryptIoctlData",
+		CanonicalName: "DriverCore::DecryptIoctlData",
+		Kind:          "function",
+		File:          "Driver/DriverCore.cpp",
+		Tags:          []string{"ioctl_surface"},
+	})
+	if validation != "validation or buffer gate" {
+		t.Fatalf("expected validation role, got %q", validation)
+	}
+}
+
+func TestDeveloperFolderRecordsNormalizeAnnotatedFileReferences(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Snapshot: ProjectSnapshot{
+			Files: []ScannedFile{
+				{Path: "Driver/Dispatch.cpp", Directory: "Driver", ImportanceScore: 90},
+				{Path: "Common/UserCommon.h", Directory: "Common", ImportanceScore: 80},
+				{Path: "BuildCab/driver.inf", Directory: "BuildCab", IsManifest: true},
+				{Path: "Batch/build_driver.bat", Directory: "Batch"},
+			},
+			Directories: []string{"Driver", "Common", "BuildCab", "Batch", "Signed", "Signed/QA"},
+			BuildContexts: []BuildContextRecord{
+				{ID: "buildctx:driver", Name: "Driver", Kind: "wdm_driver", Directory: "Driver", Target: "driver.sys", Files: []string{"Driver/Dispatch.cpp"}},
+			},
+		},
+		KnowledgePack: KnowledgePack{
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:            "Driver Core",
+					Responsibilities: []string{"Own driver dispatch and cleanup."},
+					KeyFiles: []string{
+						"DriverCore.h / DriverCore.cpp",
+						"ObjectFilter.h (object filter registration and process/thread callbacks)",
+						"kernel/user-mode contracts",
+					},
+					EvidenceFiles: []string{"Driver/Dispatch.cpp:120"},
+				},
+			},
+			HighRiskFiles: []string{"Driver/Dispatch.cpp:120"},
+		},
+		SemanticIndexV2: SemanticIndexV2{
+			Symbols: []SymbolRecord{
+				{Name: "DriverEntry", Kind: "function", File: "Driver/Dispatch.cpp", Tags: []string{"driver"}},
+			},
+		},
+	}
+
+	folders := buildDeveloperFolderRecords(run)
+	byPath := map[string]DeveloperFolderRecord{}
+	for _, folder := range folders {
+		byPath[folder.Path] = folder
+		if strings.ContainsAny(folder.Path, "()") || strings.Contains(folder.Path, ".h") || strings.Contains(folder.Path, ".cpp") || strings.EqualFold(folder.Path, "process") || strings.EqualFold(folder.Path, "process/thread") || strings.EqualFold(folder.Path, "kernel") || strings.EqualFold(folder.Path, "kernel/user-mode") {
+			t.Fatalf("expected annotated/source file references to stay out of folder paths, got %+v", folders)
+		}
+	}
+	for _, path := range []string{"Driver", "Common", "BuildCab", "Batch", "Signed", "Signed/QA"} {
+		if _, ok := byPath[path]; !ok {
+			t.Fatalf("expected folder %q, got %+v", path, folders)
+		}
+	}
+	if _, ok := byPath["."]; ok {
+		t.Fatalf("did not expect unresolved bare file references to create a root folder record, got %+v", byPath["."])
+	}
+	if !strings.Contains(strings.ToLower(byPath["Driver"].Responsibility), "driver") {
+		t.Fatalf("expected Driver to be classified as driver runtime, got %+v", byPath["Driver"])
+	}
+	if !strings.Contains(strings.ToLower(byPath["Common"].Responsibility), "shared") {
+		t.Fatalf("expected Common to be classified as shared contracts, got %+v", byPath["Common"])
+	}
+	for _, path := range []string{"BuildCab", "Batch"} {
+		if !strings.Contains(strings.ToLower(byPath[path].Responsibility), "build") {
+			t.Fatalf("expected %s to be classified as build tooling, got %+v", path, byPath[path])
+		}
 	}
 }
 

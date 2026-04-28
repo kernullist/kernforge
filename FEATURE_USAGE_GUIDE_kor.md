@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-18
+- 코드베이스 기준: 2026-04-29
 
 대상 사용자:
 - Windows security 엔지니어
@@ -15,7 +15,7 @@
 이 문서의 목적:
 1. 기능 목록을 나열하는 것이 아니라 실제 사용 흐름을 설명한다.
 2. 어떤 문제에서 어떤 명령 조합을 쓰면 좋은지 예시 중심으로 정리한다.
-3. `analyze-project -> analyze-performance -> investigate -> simulate -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
+3. `analyze-project -> analyze-performance -> investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
 
 ## 1. Kernforge를 가장 잘 쓰는 관점
 
@@ -183,7 +183,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. 후속 작업용 `latest` knowledge pack과 performance lens를 유지한다.
 4. incremental 모드에서는 바뀌지 않은 shard를 재사용한다.
 5. structural index, Unreal semantic graph, vector corpus까지 후속 자동화에 재사용할 수 있게 남긴다.
-6. 실행 마지막에 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
+6. cached deep-structure 답변이 source-derived invariant와 맞는지 확인할 수 있도록 deterministic architecture fact를 남긴다.
+7. 실행 마지막에 눈에 띄는 `Analysis artifacts:` 블록과 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
 
 대표 명령:
 - `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -218,9 +219,10 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 1. `snapshot`: 스캔 결과와 runtime/project edge를 담는 구조화된 입력
 2. `structural index`: symbol anchor, reference, build context, build ownership edge, call edge, overlay를 함께 담는 정밀 인덱스
 3. `unreal graph`: UE project/module/network/asset/system/config를 구조화한 semantic graph
-4. `knowledge pack`: 사람이 읽는 architecture digest와 subsystem 요약
-5. `vector corpus`: 임베딩 친화적인 project/subsystem/shard 문서 묶음
-6. `vector ingest exports`: pgvector, sqlite, qdrant로 넘기기 쉬운 seed 파일
+4. `architecture facts`: domain hint, top-level directory fact, critical anchor, dispatch/registration flow, boundary fact, answer invariant를 담는 deterministic fact pack
+5. `knowledge pack`: 사람이 읽는 architecture digest와 subsystem 요약
+6. `vector corpus`: 임베딩 친화적인 project/subsystem/shard 문서 묶음
+7. `vector ingest exports`: pgvector, sqlite, qdrant로 넘기기 쉬운 seed 파일
 
 대규모/UE 프로젝트에서 특히 달라진 점:
 1. semantic shard planner가 `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, `unreal_gameplay` 영역을 우선 분리한다.
@@ -233,8 +235,11 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 8. 결과 문서에는 subsystem별 invalidation reason, evidence, diff, top change class, graph section stale marker가 같이 남는다.
 9. dashboard의 stale diff는 graph 관련 변경을 trust-boundary, data-flow, project-edge 섹션 앵커로 직접 연결한다.
 10. 저장 산출물에는 snapshot, structural index, Unreal semantic graph, vector corpus, ingestion seed 파일까지 포함되어 후속 retrieval 파이프라인에 재사용할 수 있다.
-11. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
-11. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
+11. architecture fact pack은 worker/reviewer/synthesis prompt와 cached answer pack에 함께 들어가며, 추가 tool call 없이 답할 때도 구조 답변이 소스 근거에서 벗어나지 않도록 한다.
+12. C/C++와 드라이버 지향 scanner는 파일명 휴리스틱만 보지 않고 dispatch table, unload/finalize path, callback registration, filter registration, alias, macro, include 기반 registration helper까지 찾는다.
+13. `.kernforge/analysis/latest`는 run마다 교체되어 반복 테스트 중 이전 산출물이 새 retrieval에 섞이지 않는다.
+14. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
+15. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
 
 ### Source-Level Function Fuzzing
 
@@ -552,15 +557,16 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
 토큰 예산 관점에서 달라진 점:
 1. cached `analyze-project` summary가 더 적절하면 auto-scout 코드 조각보다 먼저 주입될 수 있다.
-2. cached project analysis만으로 충분한 질문은 추가 tool iteration 없이 바로 답할 수 있다.
-3. skill/MCP catalog는 실제로 그 정보를 묻는 요청에서만 크게 포함된다.
-4. auto-scout는 후보 수와 문맥 길이를 줄였고, 위치 찾기/정의 찾기/참조 찾기 성격의 질문에 더 집중한다.
+2. cached project analysis와 architecture fact pack만으로 충분한 질문은 추가 tool iteration 없이 바로 답할 수 있다.
+3. 깊은 프로젝트 구조 답변은 deterministic fact, source anchor, 닫힌 directory set, flow invariant와 대조된다. 모순이 있으면 자신 있게 cached 답변을 내지 않고 tool 사용으로 넘어간다.
+4. skill/MCP catalog는 실제로 그 정보를 묻는 요청에서만 크게 포함된다.
+5. auto-scout는 후보 수와 문맥 길이를 줄였고, 위치 찾기/정의 찾기/참조 찾기 성격의 질문에 더 집중한다.
 
 ## 3. 가장 추천하는 실전 흐름
 

@@ -40,18 +40,20 @@ type ProjectAnalysisConfig struct {
 }
 
 type ProjectAnalysisSummary struct {
-	RunID          string    `json:"run_id"`
-	Goal           string    `json:"goal"`
-	Mode           string    `json:"mode,omitempty"`
-	Status         string    `json:"status"`
-	AgentCount     int       `json:"agent_count"`
-	OutputPath     string    `json:"output_path"`
-	StartedAt      time.Time `json:"started_at"`
-	CompletedAt    time.Time `json:"completed_at"`
-	ApprovedShards int       `json:"approved_shards"`
-	ReviewFailures int       `json:"review_failures,omitempty"`
-	RefinedShards  int       `json:"refined_shards,omitempty"`
-	TotalShards    int       `json:"total_shards"`
+	RunID                  string    `json:"run_id"`
+	Goal                   string    `json:"goal"`
+	Mode                   string    `json:"mode,omitempty"`
+	Status                 string    `json:"status"`
+	AgentCount             int       `json:"agent_count"`
+	OutputPath             string    `json:"output_path"`
+	StartedAt              time.Time `json:"started_at"`
+	CompletedAt            time.Time `json:"completed_at"`
+	ApprovedShards         int       `json:"approved_shards"`
+	ReviewFailures         int       `json:"review_failures,omitempty"`
+	ReviewProviderFailures int       `json:"review_provider_failures,omitempty"`
+	ReviewQualityIssues    int       `json:"review_quality_issues,omitempty"`
+	RefinedShards          int       `json:"refined_shards,omitempty"`
+	TotalShards            int       `json:"total_shards"`
 }
 
 type ScannedFile struct {
@@ -95,6 +97,7 @@ type ProjectSnapshot struct {
 	AnalysisLenses      []AnalysisLens             `json:"analysis_lenses,omitempty"`
 	RuntimeEdges        []RuntimeEdge              `json:"runtime_edges,omitempty"`
 	ProjectEdges        []ProjectEdge              `json:"project_edges,omitempty"`
+	ArchitectureFacts   ArchitectureFactPack       `json:"architecture_facts,omitempty"`
 	TotalFiles          int                        `json:"total_files"`
 	TotalLines          int                        `json:"total_lines"`
 	ImportGraph         map[string][]string        `json:"import_graph"`
@@ -431,12 +434,14 @@ type KnowledgePack struct {
 	Unknowns             []string                 `json:"unknowns,omitempty"`
 	AnalysisExecution    AnalysisExecutionSummary `json:"analysis_execution,omitempty"`
 	PerformanceLens      PerformanceLens          `json:"performance_lens,omitempty"`
+	ArchitectureFacts    ArchitectureFactPack     `json:"architecture_facts,omitempty"`
 }
 
 type ReviewDecision struct {
 	Status         string   `json:"status"`
 	Issues         []string `json:"issues,omitempty"`
 	RevisionPrompt string   `json:"revision_prompt,omitempty"`
+	FailureKind    string   `json:"failure_kind,omitempty"`
 	Raw            string   `json:"raw,omitempty"`
 }
 
@@ -458,6 +463,254 @@ type ProjectAnalysisRun struct {
 	VectorIngestion  VectorIngestionManifest `json:"vector_ingestion,omitempty"`
 	DebugEvents      []string                `json:"debug_events,omitempty"`
 	ShardDocuments   map[string]string       `json:"shard_documents,omitempty"`
+}
+
+const (
+	analysisReviewIssueProvider = "provider"
+	analysisReviewIssueQuality  = "quality"
+)
+
+func summarizeReviewDecisions(summary *ProjectAnalysisSummary, reviews []ReviewDecision) {
+	summary.ApprovedShards = 0
+	summary.ReviewFailures = 0
+	summary.ReviewProviderFailures = 0
+	summary.ReviewQualityIssues = 0
+	for _, review := range reviews {
+		if strings.EqualFold(review.Status, "approved") {
+			summary.ApprovedShards++
+			continue
+		}
+		switch classifyReviewIssueKind(review) {
+		case analysisReviewIssueProvider:
+			summary.ReviewProviderFailures++
+		case analysisReviewIssueQuality:
+			summary.ReviewQualityIssues++
+		}
+	}
+	summary.ReviewFailures = summary.ReviewProviderFailures + summary.ReviewQualityIssues
+}
+
+func classifyReviewIssueKind(review ReviewDecision) string {
+	kind := strings.ToLower(strings.TrimSpace(review.FailureKind))
+	switch kind {
+	case analysisReviewIssueProvider, analysisReviewIssueQuality:
+		return kind
+	}
+	status := strings.ToLower(strings.TrimSpace(review.Status))
+	switch status {
+	case "", "approved":
+		return ""
+	case "needs_revision":
+		return analysisReviewIssueQuality
+	case "review_failed":
+		if reviewLooksLikeProviderFailure(review) {
+			return analysisReviewIssueProvider
+		}
+		if reviewLooksLikeQualityFailure(review) {
+			return analysisReviewIssueQuality
+		}
+		return analysisReviewIssueProvider
+	default:
+		return analysisReviewIssueQuality
+	}
+}
+
+func reviewLooksLikeProviderFailure(review ReviewDecision) bool {
+	text := strings.ToLower(strings.Join(append(append([]string{}, review.Issues...), review.Raw), "\n"))
+	for _, token := range []string{
+		"provider",
+		"request failed",
+		"api error",
+		"rate limit",
+		"rate-limited",
+		"timeout",
+		"timed out",
+		"aborted",
+		"service unavailable",
+		"no available workers",
+		"no_available_workers",
+		"worker request failed",
+		"reviewer request failed",
+		"429",
+		"503",
+		"504",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewLooksLikeWorkerProviderFailure(review ReviewDecision) bool {
+	text := strings.ToLower(strings.Join(append(append([]string{}, review.Issues...), review.Raw), "\n"))
+	for _, token := range []string{
+		"worker request failed",
+		"analysis worker request failed",
+		"worker provider request failed",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewLooksLikeReviewerProviderFailure(review ReviewDecision) bool {
+	text := strings.ToLower(strings.Join(append(append([]string{}, review.Issues...), review.Raw), "\n"))
+	for _, token := range []string{
+		"reviewer request failed",
+		"analysis reviewer request failed",
+		"reviewer provider request failed",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewLooksLikeQualityFailure(review ReviewDecision) bool {
+	text := strings.ToLower(strings.Join(append(append([]string{}, review.Issues...), review.Raw), "\n"))
+	for _, token := range []string{
+		"quality",
+		"generic",
+		"missing",
+		"omitted",
+		"not grounded",
+		"needs revision",
+		"invalid report",
+	} {
+		if strings.Contains(text, token) {
+			return true
+		}
+	}
+	return false
+}
+
+func renderAnalysisReviewIssueBanner(summary ProjectAnalysisSummary) string {
+	return renderAnalysisReviewIssueBannerForReviews(summary, nil)
+}
+
+func renderAnalysisReviewIssueBannerForReviews(summary ProjectAnalysisSummary, reviews []ReviewDecision) string {
+	providerFailures := summary.ReviewProviderFailures
+	qualityIssues := summary.ReviewQualityIssues
+	if providerFailures == 0 && qualityIssues == 0 && summary.ReviewFailures > 0 {
+		providerFailures = summary.ReviewFailures
+	}
+	if providerFailures == 0 && qualityIssues == 0 {
+		return ""
+	}
+
+	title := "# Analysis With Review Issues"
+	if providerFailures > 0 && qualityIssues == 0 {
+		title = "# Analysis With Provider Failures"
+	} else if providerFailures == 0 && qualityIssues > 0 {
+		title = "# Analysis With Reviewer Quality Issues"
+	}
+	return title + "\n\n" + renderAnalysisReviewIssueDetailsForReviews(providerFailures, qualityIssues, reviews)
+}
+
+func renderAnalysisReviewIssueDetails(providerFailures int, qualityIssues int) string {
+	return renderAnalysisReviewIssueDetailsForReviews(providerFailures, qualityIssues, nil)
+}
+
+func renderAnalysisReviewIssueDetailsForReviews(providerFailures int, qualityIssues int, reviews []ReviewDecision) string {
+	lines := []string{}
+	if providerFailures > 0 {
+		lines = append(lines, fmt.Sprintf("Provider failures: %d shard(s) could not be completed because a worker or reviewer model/provider request failed. The final document was synthesized from available worker reports and approved shards, so affected sections have reduced review confidence.", providerFailures))
+		if split := renderAnalysisProviderFailureSplit(reviews); strings.TrimSpace(split) != "" {
+			lines = append(lines, split)
+		}
+		if examples := analysisProviderFailureExamples(reviews, 3); len(examples) > 0 {
+			lines = append(lines, "Provider failure examples:\n- "+strings.Join(examples, "\n- "))
+		}
+	}
+	if qualityIssues > 0 {
+		lines = append(lines, fmt.Sprintf("Reviewer quality issues: %d shard report(s) remained rejected or marked as needing revision by the reviewer. Treat those areas as requiring follow-up analysis or manual verification.", qualityIssues))
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func renderAnalysisProviderFailureSplit(reviews []ReviewDecision) string {
+	worker, reviewer, unknown := analysisProviderFailureSplit(reviews)
+	if worker == 0 && reviewer == 0 && unknown == 0 {
+		return ""
+	}
+	parts := []string{}
+	if worker > 0 {
+		parts = append(parts, fmt.Sprintf("worker=%d", worker))
+	}
+	if reviewer > 0 {
+		parts = append(parts, fmt.Sprintf("reviewer=%d", reviewer))
+	}
+	if unknown > 0 {
+		parts = append(parts, fmt.Sprintf("unknown=%d", unknown))
+	}
+	return "Provider failure split: " + strings.Join(parts, ", ") + "."
+}
+
+func analysisProviderFailureSplit(reviews []ReviewDecision) (int, int, int) {
+	worker := 0
+	reviewer := 0
+	unknown := 0
+	for _, review := range reviews {
+		if classifyReviewIssueKind(review) != analysisReviewIssueProvider {
+			continue
+		}
+		switch {
+		case reviewLooksLikeWorkerProviderFailure(review):
+			worker++
+		case reviewLooksLikeReviewerProviderFailure(review):
+			reviewer++
+		default:
+			unknown++
+		}
+	}
+	return worker, reviewer, unknown
+}
+
+func analysisProviderFailureExamples(reviews []ReviewDecision, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	examples := []string{}
+	seen := map[string]bool{}
+	for _, review := range reviews {
+		if classifyReviewIssueKind(review) != analysisReviewIssueProvider {
+			continue
+		}
+		example := summarizeAnalysisProviderFailure(review.Raw)
+		if example == "" {
+			example = summarizeAnalysisProviderFailure(strings.Join(review.Issues, " "))
+		}
+		key := strings.ToLower(example)
+		if example == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		examples = append(examples, example)
+		if len(examples) >= limit {
+			break
+		}
+	}
+	return examples
+}
+
+func summarizeAnalysisProviderFailure(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if text == "" {
+		return ""
+	}
+	if idx := strings.Index(text, "\n"); idx >= 0 {
+		text = strings.TrimSpace(text[:idx])
+	}
+	for _, marker := range []string{" | request=", " request={", "\trequest={"} {
+		if idx := strings.Index(text, marker); idx >= 0 {
+			text = strings.TrimSpace(text[:idx])
+		}
+	}
+	return truncateStatusSnippet(text, 320)
 }
 
 type projectAnalyzer struct {
@@ -745,6 +998,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
 	a.cachedUnrealGraph = buildUnrealSemanticGraph(snapshot, goal, run.Summary.RunID)
 	a.cachedSemanticIndexV2 = buildSemanticIndexV2(snapshot, goal, run.Summary.RunID, a.cachedUnrealGraph)
+	snapshot.ArchitectureFacts = buildArchitectureFactPack(snapshot, a.cachedSemanticIndexV2, a.cachedUnrealGraph, goal)
 	run.Snapshot = snapshot
 
 	agentCount := a.estimateAgentCount(snapshot)
@@ -805,19 +1059,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.Reports = reports
 	run.Reviews = reviews
 	run.Summary.TotalShards = len(shards)
-	for _, review := range run.Reviews {
-		if strings.EqualFold(review.Status, "approved") {
-			run.Summary.ApprovedShards++
-		}
-		if strings.EqualFold(review.Status, "review_failed") {
-			run.Summary.ReviewFailures++
-		}
-	}
+	summarizeReviewDecisions(&run.Summary, run.Reviews)
 	approvalRatio := 0.0
 	if run.Summary.TotalShards > 0 {
 		approvalRatio = float64(run.Summary.ApprovedShards) / float64(run.Summary.TotalShards)
 	}
-	a.debug(fmt.Sprintf("review summary: approved=%d total=%d ratio=%.2f refined=%d", run.Summary.ApprovedShards, run.Summary.TotalShards, approvalRatio, run.Summary.RefinedShards))
+	a.debug(fmt.Sprintf("review summary: approved=%d total=%d ratio=%.2f provider_failures=%d quality_issues=%d refined=%d", run.Summary.ApprovedShards, run.Summary.TotalShards, approvalRatio, run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues, run.Summary.RefinedShards))
 
 	a.status("Writing final document...")
 	document, err := a.synthesizeFinalDocument(ctx, snapshot, shards, reports, goal)
@@ -825,13 +1072,19 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		return run, err
 	}
 	if run.Summary.ApprovedShards == 0 {
-		document = "# Draft Analysis\n\nNo shard report was approved by the reviewer. The generated analysis should be treated as low confidence and rerun after fixing worker/reviewer issues.\n\n" + document
+		draftNotice := "# Draft Analysis\n\nNo shard report was approved by the reviewer. The generated analysis should be treated as low confidence and rerun after fixing worker/reviewer issues."
+		if details := renderAnalysisReviewIssueDetailsForReviews(run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues, run.Reviews); strings.TrimSpace(details) != "" {
+			draftNotice += "\n\n" + details
+		}
+		document = draftNotice + "\n\n" + document
 		run.Summary.Status = "draft"
 		a.debug("analysis downgraded to draft because no shard was approved")
 	} else if run.Summary.ReviewFailures > 0 {
 		run.Summary.Status = "completed_with_review_failures"
-		document = "# Analysis With Review Failures\n\nSome shard reviews timed out or failed at the provider layer. The document was synthesized from available worker reports and approved shards, but the affected shard sections should be treated with reduced confidence.\n\n" + document
-		a.debug(fmt.Sprintf("analysis completed with review failures: %d", run.Summary.ReviewFailures))
+		if banner := renderAnalysisReviewIssueBannerForReviews(run.Summary, run.Reviews); strings.TrimSpace(banner) != "" {
+			document = banner + "\n\n" + document
+		}
+		a.debug(fmt.Sprintf("analysis completed with review issues: provider_failures=%d quality_issues=%d", run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues))
 	}
 	run.FinalDocument = document
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
@@ -4178,9 +4431,10 @@ func (a *projectAnalyzer) runWorker(ctx context.Context, snapshot ProjectSnapsho
 		Model:       a.workerModel(),
 		System:      workerSystemPrompt(),
 		Messages:    []Message{{Role: "user", Text: buildWorkerPrompt(snapshot, shard, goal, revisionPrompt)}},
-		MaxTokens:   a.cfg.MaxTokens,
+		MaxTokens:   a.workerMaxTokens(),
 		Temperature: a.cfg.Temperature,
 		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
 	})
 	if err != nil {
 		return WorkerReport{}, fmt.Errorf("analysis worker request failed for shard=%s model=%s: %w", shard.Name, a.workerModel(), err)
@@ -4189,7 +4443,12 @@ func (a *projectAnalyzer) runWorker(ctx context.Context, snapshot ProjectSnapsho
 	raw := strings.TrimSpace(resp.Message.Text)
 	report, ok := parseWorkerReportPayload(raw, shard)
 	if !ok {
-		a.debug(fmt.Sprintf("worker returned non-JSON output for shard=%s; attempting repair", shard.Name))
+		stopReason := strings.TrimSpace(resp.StopReason)
+		if stopReason != "" {
+			a.debug(fmt.Sprintf("worker returned non-JSON output for shard=%s stop_reason=%s raw_chars=%d; attempting repair", shard.Name, stopReason, len(raw)))
+		} else {
+			a.debug(fmt.Sprintf("worker returned non-JSON output for shard=%s raw_chars=%d; attempting repair", shard.Name, len(raw)))
+		}
 		repaired, repairErr := a.repairWorkerReport(ctx, snapshot, shard, goal, revisionPrompt, raw)
 		if repairErr == nil {
 			return repaired, nil
@@ -4201,14 +4460,19 @@ func (a *projectAnalyzer) runWorker(ctx context.Context, snapshot ProjectSnapsho
 }
 
 func (a *projectAnalyzer) repairWorkerReport(ctx context.Context, snapshot ProjectSnapshot, shard AnalysisShard, goal string, revisionPrompt string, raw string) (WorkerReport, error) {
-	repairPrompt := strings.TrimSpace(buildWorkerPrompt(snapshot, shard, goal, revisionPrompt) + "\n\nThe previous response was not valid JSON. Reformat the analysis into the required JSON schema only.\n\nPrevious invalid response:\n```\n" + raw + "\n```")
+	invalidExcerpt := analysisPromptExcerpt(raw, 6000)
+	if strings.TrimSpace(invalidExcerpt) == "" {
+		invalidExcerpt = "(empty response)"
+	}
+	repairPrompt := strings.TrimSpace(buildWorkerPrompt(snapshot, shard, goal, revisionPrompt) + "\n\nThe previous response was not valid JSON or was truncated. Return a shorter valid JSON object in the required schema only. Keep 3-7 high-value items per list, keep narrative under 900 characters, and do not include raw source excerpts.\n\nPrevious invalid response excerpt:\n```\n" + invalidExcerpt + "\n```")
 	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.workerOrDefaultClient(), "worker-repair", shard.Name, a.workerModel(), ChatRequest{
 		Model:       a.workerModel(),
 		System:      workerSystemPrompt(),
 		Messages:    []Message{{Role: "user", Text: repairPrompt}},
-		MaxTokens:   a.cfg.MaxTokens,
+		MaxTokens:   a.workerMaxTokens(),
 		Temperature: a.cfg.Temperature,
 		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
 	})
 	if err != nil {
 		return WorkerReport{}, fmt.Errorf("analysis worker repair failed for shard=%s model=%s: %w", shard.Name, a.workerModel(), err)
@@ -4228,9 +4492,10 @@ func (a *projectAnalyzer) reviewReport(ctx context.Context, snapshot ProjectSnap
 		Model:       a.reviewerModel(),
 		System:      reviewerSystemPrompt(),
 		Messages:    []Message{{Role: "user", Text: buildReviewerPrompt(snapshot, shard, report, goal, previousReport, hasPreviousReport)}},
-		MaxTokens:   a.cfg.MaxTokens,
+		MaxTokens:   a.reviewerMaxTokens(),
 		Temperature: a.cfg.Temperature,
 		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
 	})
 	if err != nil {
 		return ReviewDecision{}, fmt.Errorf("analysis reviewer request failed for shard=%s model=%s: %w", shard.Name, a.reviewerModel(), err)
@@ -5265,21 +5530,6 @@ func synthesisGroupForShard(shard AnalysisShard, report WorkerReport) string {
 	if isExternalDependencyShard(shard) {
 		return "External Dependencies"
 	}
-	if hasPathPrefix(shard.PrimaryFiles, "TavernMaster/") || hasPathPrefix(shard.PrimaryFiles, "TavernUpd/") {
-		return "Security Control"
-	}
-	if hasPathPrefix(shard.PrimaryFiles, "TavernWorker/") {
-		return "Forensic Analysis"
-	}
-	if hasPathPrefix(shard.PrimaryFiles, "TavernDart/") {
-		return "Protection And Obfuscation"
-	}
-	if hasPathPrefix(shard.PrimaryFiles, "TavernOtto/") {
-		return "Scheduling And Automation"
-	}
-	if hasPathPrefix(shard.PrimaryFiles, "Tavern/") || hasPathPrefix(shard.PrimaryFiles, "TavernCmn/") {
-		return "Core Application"
-	}
 	if hasPathPrefix(shard.PrimaryFiles, "Common/") {
 		return "Shared Infrastructure"
 	}
@@ -5298,11 +5548,43 @@ func synthesisGroupForShard(shard AnalysisShard, report WorkerReport) string {
 	case "docs_specs", "project_manifest", "ops_scripts", "error_artifacts", ".build", "release":
 		return "Operational Metadata"
 	default:
+		corpus := synthesisShardClassificationCorpus(shard, report)
+		if containsAny(corpus, "common", "shared", "include", "headers", "contracts") {
+			return "Shared Infrastructure"
+		}
+		if containsAny(corpus, "build", "release", "deploy", "installer", "batch", "package", "signing", "vmprotect") {
+			return "Build And Release"
+		}
+		if containsAny(corpus, "master", "control", "security", "auth", "policy", "service", "admin", "updater", "update") {
+			return "Security Control"
+		}
+		if containsAny(corpus, "worker", "scanner", "scan", "prefetch", "forensic", "telemetry", "collector", "triage") {
+			return "Forensic Analysis"
+		}
+		if containsAny(corpus, "protect", "protection", "obfusc", "obfuscation", "tamper", "packing", "packer") {
+			return "Protection And Obfuscation"
+		}
+		if containsAny(corpus, "schedule", "scheduler", "automation", "timer", "job", "task") {
+			return "Scheduling And Automation"
+		}
+		if containsAny(corpus, "app", "client", "frontend", "main", "core") {
+			return "Core Application"
+		}
 		if strings.Contains(strings.ToLower(report.Title), "runtime") {
 			return "Agent Runtime"
 		}
 		return "Developer Tooling"
 	}
+}
+
+func synthesisShardClassificationCorpus(shard AnalysisShard, report WorkerReport) string {
+	parts := []string{shard.Name, report.Title, report.ScopeSummary, report.Narrative}
+	parts = append(parts, report.Responsibilities...)
+	parts = append(parts, report.Facts...)
+	parts = append(parts, report.KeyFiles...)
+	parts = append(parts, report.EntryPoints...)
+	parts = append(parts, shard.PrimaryFiles...)
+	return strings.ToLower(filepath.ToSlash(strings.Join(parts, " ")))
 }
 
 func orderSynthesisSections(items []synthesisSection) []synthesisSection {
@@ -5460,6 +5742,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	jsonPath := filepath.Join(a.analysisCfg.OutputDir, base+".json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
+	architectureFactsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_architecture_facts.json")
 	performanceJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.json")
 	performanceDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.md")
 	snapshotJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_snapshot.json")
@@ -5581,6 +5864,13 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(knowledgeDigestPath, []byte(buildKnowledgeDigest(run.KnowledgePack)), 0o644); err != nil {
 			return "", err
 		}
+		factsData, err := json.MarshalIndent(run.Snapshot.ArchitectureFacts, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(architectureFactsJSONPath, factsData, 0o644); err != nil {
+			return "", err
+		}
 		docsManifest, err := writeAnalysisDocs(run, docsDir)
 		if err != nil {
 			return "", err
@@ -5589,6 +5879,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		latestDir := filepath.Join(a.analysisCfg.OutputDir, "latest")
+		if err := os.RemoveAll(latestDir); err != nil {
+			return "", err
+		}
 		if err := os.MkdirAll(latestDir, 0o755); err != nil {
 			return "", err
 		}
@@ -5627,6 +5920,13 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "architecture_digest.md"), []byte(buildKnowledgeDigest(run.KnowledgePack)), 0o644); err != nil {
+			return "", err
+		}
+		factsData, err = json.MarshalIndent(run.Snapshot.ArchitectureFacts, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "architecture_facts.json"), factsData, 0o644); err != nil {
 			return "", err
 		}
 		perfData, err := json.MarshalIndent(run.KnowledgePack.PerformanceLens, "", "  ")
@@ -6136,6 +6436,10 @@ func (a *projectAnalyzer) workerModel() string {
 	return a.cfg.Model
 }
 
+func (a *projectAnalyzer) workerMaxTokens() int {
+	return analysisStructuredMaxTokens(a.workerModel(), a.cfg.MaxTokens)
+}
+
 func (a *projectAnalyzer) reviewerModel() string {
 	if a.analysisCfg.ReviewerProfile != nil && strings.TrimSpace(a.analysisCfg.ReviewerProfile.Model) != "" {
 		return a.analysisCfg.ReviewerProfile.Model
@@ -6146,20 +6450,44 @@ func (a *projectAnalyzer) reviewerModel() string {
 	return a.cfg.Model
 }
 
+func (a *projectAnalyzer) reviewerMaxTokens() int {
+	return analysisStructuredMaxTokens(a.reviewerModel(), a.cfg.MaxTokens)
+}
+
+func analysisStructuredMaxTokens(model string, base int) int {
+	if base <= 0 {
+		return base
+	}
+	if analysisModelNeedsReasoningHeadroom(model) && base < 8192 {
+		return 8192
+	}
+	return base
+}
+
+func analysisModelNeedsReasoningHeadroom(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(openCodeAPIModelID(model)))
+	if model == "" {
+		return false
+	}
+	if strings.HasPrefix(model, "kimi-") || strings.Contains(model, "kimi-k") {
+		return true
+	}
+	return false
+}
+
 func createProviderClientFromProfile(profile Profile, mainCfg Config) (ProviderClient, error) {
 	apiKey := profile.APIKey
 	if strings.TrimSpace(apiKey) == "" && strings.EqualFold(profile.Provider, mainCfg.Provider) {
 		apiKey = mainCfg.APIKey
 	}
 	if strings.TrimSpace(apiKey) == "" && mainCfg.ProviderKeys != nil {
-		apiKey = mainCfg.ProviderKeys[strings.ToLower(strings.TrimSpace(profile.Provider))]
+		apiKey = mainCfg.ProviderKeys[normalizeProviderName(profile.Provider)]
 	}
-	cfg := Config{
-		Provider: profile.Provider,
-		Model:    profile.Model,
-		BaseURL:  profile.BaseURL,
-		APIKey:   apiKey,
-	}
+	cfg := mainCfg
+	cfg.Provider = profile.Provider
+	cfg.Model = profile.Model
+	cfg.BaseURL = profile.BaseURL
+	cfg.APIKey = apiKey
 	return NewProviderClient(cfg)
 }
 
@@ -7426,6 +7754,8 @@ func resolvePathWithExtensions(snapshot ProjectSnapshot, base string, exts []str
 func workerSystemPrompt() string {
 	return strings.TrimSpace(`
 You are a project analysis sub-agent.
+Your entire response must be a single JSON object. The first byte must be "{" and the last byte must be "}".
+Do not include Markdown fences, headings, prose before JSON, prose after JSON, comments, or trailing commas.
 Return strict JSON in this exact shape:
 {
   "report": {
@@ -7447,11 +7777,16 @@ Return strict JSON in this exact shape:
 }
 Rules:
 - Analyze the assigned primary files first and use reference files only to explain dependencies.
+- Treat the deterministic architecture fact pack as authoritative code-derived context. If file excerpts or your reasoning appear to conflict with it, record the conflict in unknowns instead of overriding the fact pack.
+- If a field is unknown or not applicable, keep the JSON key and use [] or "" instead of explanatory prose outside JSON.
+- Keep the JSON compact enough to finish in one response: 3-7 high-value items per list, short strings, and a narrative under 900 characters.
+- Do not include raw source excerpts, project GUIDs, or low-value build metadata unless they change architecture understanding.
 - Every important claim must be grounded in evidence_files.
 - responsibilities should answer what this shard owns.
 - facts should contain direct file-grounded observations.
 - inferences should contain higher-level interpretations derived from those facts.
-- key_files should list the most important files in the shard with file names or short file-role labels.
+- key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.
+- If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.
 - internal_flow should describe control flow or data flow inside the shard.
 - collaboration should describe how this shard connects to other subsystems.
 - The provided file context may be truncated to excerpts. If code is visibly partial, record that as source-state evidence such as "context-truncated" instead of using informal wording like "snippet-limited" in final prose.
@@ -7462,6 +7797,8 @@ Rules:
 func reviewerSystemPrompt() string {
 	return strings.TrimSpace(`
 You are the conductor reviewing a sub-agent report.
+Your entire response must be a single JSON object. The first byte must be "{" and the last byte must be "}".
+Do not include Markdown fences, headings, prose before JSON, prose after JSON, comments, or trailing commas.
 Return strict JSON:
 {
   "decision": {
@@ -7472,6 +7809,7 @@ Return strict JSON:
 }
 Approve only if the report is specific, grounded, and suitable for a final architecture document.
 Reject reports that are generic, omit control/data flow, or cite evidence files outside the shard scope.
+Use the deterministic architecture fact pack as authoritative review context; reject reports that contradict exact source anchors, closed top-level directory facts, or flow separation invariants.
 Prefer reports that separate direct facts from higher-level inferences.
 When a previous approved report is provided for dependency_changed cases, compare it against the new report and reject stale claims that no longer match the dependency context.
 `)
@@ -7488,6 +7826,7 @@ Use these sections:
 5. Dependencies And Integration Points
 6. Risks And Unknowns
 Requirements:
+- Treat the deterministic architecture fact pack as authoritative. If approved shard reports conflict with it, prefer the fact pack and mention the conflict as an uncertainty instead of synthesizing the conflicting claim.
 - Use responsibilities to explain ownership boundaries.
 - Keep direct facts distinct from higher-level inferences when the reports provide both.
 - Use internal_flow to describe actual runtime or data flow.
@@ -7496,6 +7835,10 @@ Requirements:
 - Write a detailed document, not a compressed summary.
 - Match the user's request language. If the goal is written in Korean, write the final Markdown in Korean while preserving code identifiers, paths, API names, and command names in their original spelling.
 - Avoid informal "snippet" wording in final prose. Use source-state language such as "indexed source에서 확인됨", "구현이 이번 분석 산출물에 포함되지 않음", or "추론" when appropriate.
+- For execution flows, include only calls or transitions explicitly reported as observed runtime/internal_flow edges. Declared public methods, available manager operations, lifecycle helper methods, and likely next steps must be listed as available operations, not as executed startup-chain steps.
+- For Windows driver or kernel projects, keep initialization/state setup separate from runtime callback/filter registration. Do not say an Initialize function registers callbacks unless the provided flow explicitly says so. If both Initialize and Start/Register symbols are present, describe Initialize as state setup and Start/Register as the activation or registration path.
+- For driver IOCTL/control flows, separate the user-mode control/client wrapper from the kernel IRP router, kernel device-control branch, command payload validation, and runtime enforcement callbacks. Do not place request-origin/open validation inside the DeviceIoControl command handler unless the provided report explicitly proves that call. Prefer this split when evidence is available: IRP_MJ_CREATE/open validates request origin and establishes controller state; IRP_MJ_DEVICE_CONTROL branches to the device-control handler; the command handler performs decrypt/unpack, size/shape checks, command validation, controller-state lookup, and command-specific dispatch.
+- For Windows driver classification, call the whole project a WDM/kernel .sys driver when build/output evidence says driver/WDM. If the project has a minifilter/file-filter subsystem, describe that as a subsystem instead of labeling the entire project as only a minifilter driver unless build evidence explicitly says minifilter-only.
 - For each subsystem, include:
   - Owned responsibilities
   - Key entry points
@@ -7540,6 +7883,10 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
 		fmt.Fprintf(&b, "Semantic focus:\n%s\n\n", focus)
 	}
+	if factPack := renderArchitectureFactPackForPrompt(snapshot.ArchitectureFacts, shard, 4200); strings.TrimSpace(factPack) != "" {
+		b.WriteString(factPack)
+		b.WriteString("\n\n")
+	}
 	fmt.Fprintf(&b, "Primary files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
 	if len(shard.ReferenceFiles) > 0 {
 		fmt.Fprintf(&b, "Reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
@@ -7549,10 +7896,13 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	}
 	b.WriteString("Output requirements:\n")
 	b.WriteString("- Keep scope_summary to 2-4 sentences.\n")
+	b.WriteString("- Keep each list to the 3-7 strongest architecture points; prefer concise strings over exhaustive inventories.\n")
+	b.WriteString("- Keep narrative under 900 characters and do not repeat every list item inside it.\n")
 	b.WriteString("- List concrete responsibilities, not generic statements.\n")
 	b.WriteString("- facts should be direct observations grounded in the provided files.\n")
 	b.WriteString("- inferences should be clearly labeled interpretations derived from those facts.\n")
-	b.WriteString("- key_files should include the files that best explain the subsystem.\n")
+	b.WriteString("- key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.\n")
+	b.WriteString("- If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.\n")
 	b.WriteString("- entry_points should name files/functions when visible.\n")
 	b.WriteString("- internal_flow should explain execution or data flow in steps.\n")
 	b.WriteString("- collaboration should mention external subsystems or shared files.\n")
@@ -7560,12 +7910,14 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- Do not cite files outside the provided primary/reference lists.\n\n")
 	if strings.HasPrefix(shard.Name, "startup") {
 		b.WriteString("- For startup shards, emphasize bootstrap order, target/module ownership, and early runtime handoff.\n")
+		b.WriteString("- Keep visible main/startup calls separate from declared manager APIs or available lifecycle operations that are not visibly called.\n")
 	}
 	if strings.Contains(shard.Name, "security_driver") {
-		b.WriteString("- For driver shards, identify kernel-facing entry points, load/registration flow, and privileged ownership.\n")
+		b.WriteString("- For driver shards, identify kernel-facing entry points, load/state-initialization flow, runtime callback/filter registration flow, and privileged ownership as separate paths when the code exposes separate Initialize and Start/Register symbols.\n")
+		b.WriteString("- If object/handle filter Initialize and Start/Register symbols both appear, treat Initialize as state setup and Start/Register as callback registration unless a visible direct call proves otherwise.\n")
 	}
 	if strings.Contains(shard.Name, "security_ioctl") {
-		b.WriteString("- For IOCTL shards, identify device-control handlers, validation gates, and privileged request flow.\n")
+		b.WriteString("- For IOCTL shards, identify the IRP router branch, device-control handler, payload decrypt/unpack, size/shape checks, command validation, controller-state lookup, and command-specific dispatch. Keep create/open request-origin validation separate unless the code explicitly calls it from the DeviceIoControl handler.\n")
 	}
 	if strings.Contains(shard.Name, "security_handles") {
 		b.WriteString("- For handle shards, identify handle acquisition, duplication, and access-check boundaries.\n")
@@ -7670,7 +8022,7 @@ func sameAnalysisDirectory(left string, right string) bool {
 }
 
 func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report WorkerReport, goal string, previousReport WorkerReport, hasPreviousReport bool) string {
-	data, _ := json.MarshalIndent(report, "", "  ")
+	data, _ := json.MarshalIndent(workerReportForReview(report), "", "  ")
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
 	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
@@ -7698,6 +8050,9 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	if focus := buildSemanticShardFocus(snapshot, shard); strings.TrimSpace(focus) != "" {
 		fmt.Fprintf(&b, "Semantic focus:\n%s\n", focus)
 	}
+	if factPack := renderArchitectureFactPackForPrompt(snapshot.ArchitectureFacts, shard, 3600); strings.TrimSpace(factPack) != "" {
+		fmt.Fprintf(&b, "Review against this fact pack:\n%s\n", factPack)
+	}
 	if reviewRules := buildSemanticReviewerChecklist(shard.Name); strings.TrimSpace(reviewRules) != "" {
 		fmt.Fprintf(&b, "Semantic review checklist:\n%s\n", reviewRules)
 	}
@@ -7710,7 +8065,7 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 		fmt.Fprintf(&b, "Allowed reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
 	}
 	if hasPreviousReport && (shard.InvalidationReason == "dependency_changed" || shard.InvalidationReason == "semantic_dependency_changed") {
-		previousJSON, _ := json.MarshalIndent(previousReport, "", "  ")
+		previousJSON, _ := json.MarshalIndent(workerReportForReview(previousReport), "", "  ")
 		b.WriteString("Previous approved report for diff-aware review:\n")
 		b.Write(previousJSON)
 		b.WriteString("\n\nReview requirement:\n")
@@ -7725,6 +8080,11 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func workerReportForReview(report WorkerReport) WorkerReport {
+	report.Raw = ""
+	return report
 }
 
 func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) string {
@@ -7757,6 +8117,11 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, AnalysisShard{}); strings.TrimSpace(baseline) != "" {
 		fmt.Fprintf(&b, "\nBaseline architecture map:\n%s\n\n", baseline)
 	}
+	if factPack := renderArchitectureFactPackForPrompt(snapshot.ArchitectureFacts, AnalysisShard{}, 7000); strings.TrimSpace(factPack) != "" {
+		b.WriteString("\n")
+		b.WriteString(factPack)
+		b.WriteString("\n\n")
+	}
 	if snapshot.ModulePath != "" {
 		fmt.Fprintf(&b, "Go module: %s\n", snapshot.ModulePath)
 	}
@@ -7778,6 +8143,25 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 		b.WriteString("Project edges:\n")
 		for _, edge := range limitProjectEdges(snapshot.ProjectEdges, 20) {
 			fmt.Fprintf(&b, "- %s -> %s [%s, confidence=%s]\n", edge.Source, edge.Target, edge.Type, edge.Confidence)
+		}
+		b.WriteString("\n")
+	}
+	if dirs := synthesisTopLevelDirectories(snapshot); len(dirs) > 0 {
+		b.WriteString("Top-level directory facts:\n")
+		b.WriteString("- Closed set for top-level directory maps: " + strings.Join(dirs, ", ") + "\n")
+		b.WriteString("- Do not list headers, source files, project files, INF files, or nested folders as top-level directories.\n\n")
+	}
+	if facts := synthesisDriverArchitectureFacts(snapshot); len(facts) > 0 {
+		b.WriteString("Driver architecture facts:\n")
+		for _, fact := range facts {
+			fmt.Fprintf(&b, "- %s\n", fact)
+		}
+		b.WriteString("\n")
+	}
+	if facts := synthesisReportGuardrailFacts(reports); len(facts) > 0 {
+		b.WriteString("Synthesis guardrails from worker evidence:\n")
+		for _, fact := range facts {
+			fmt.Fprintf(&b, "- %s\n", fact)
 		}
 		b.WriteString("\n")
 	}
@@ -7994,6 +8378,105 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	return strings.TrimSpace(b.String())
 }
 
+func synthesisTopLevelDirectories(snapshot ProjectSnapshot) []string {
+	seen := map[string]string{}
+	add := func(path string) {
+		path = strings.Trim(strings.ReplaceAll(filepathSlashOrEmpty(path), "\\", "/"), "/")
+		if path == "" || path == "." || analysisDocPathLooksLikeFile(path) {
+			return
+		}
+		if idx := strings.Index(path, "/"); idx >= 0 {
+			path = path[:idx]
+		}
+		if path == "" || path == "." || analysisDocPathLooksLikeFile(path) {
+			return
+		}
+		key := strings.ToLower(path)
+		if _, ok := seen[key]; !ok {
+			seen[key] = path
+		}
+	}
+	for _, dir := range snapshot.Directories {
+		add(dir)
+	}
+	for _, file := range snapshot.Files {
+		add(firstNonBlankAnalysisString(file.Directory, analysisDocDir(file.Path)))
+	}
+	for _, project := range snapshot.SolutionProjects {
+		add(firstNonBlankAnalysisString(project.Directory, analysisDocDir(project.Path)))
+	}
+	items := make([]string, 0, len(seen))
+	for key := range seen {
+		items = append(items, key)
+	}
+	sort.Strings(items)
+	out := []string{}
+	for _, item := range items {
+		out = append(out, seen[item]+"/")
+	}
+	return out
+}
+
+func synthesisDriverArchitectureFacts(snapshot ProjectSnapshot) []string {
+	driverProjects := []string{}
+	for _, project := range snapshot.SolutionProjects {
+		if solutionProjectLooksLikeDriverRuntime(project) {
+			driverProjects = append(driverProjects, firstNonBlankAnalysisString(project.Name, project.Path))
+		}
+	}
+	driverEntries := driverEntrypointFiles(ProjectAnalysisRun{Snapshot: snapshot})
+	if len(driverProjects) == 0 && len(driverEntries) == 0 {
+		return nil
+	}
+	facts := []string{}
+	if len(driverProjects) > 0 {
+		facts = append(facts, "Driver build/runtime projects: "+strings.Join(analysisUniqueStrings(driverProjects), ", ")+". Treat these as kernel/WDM .sys runtime layers when output/kind evidence says driver.")
+	}
+	if strings.TrimSpace(snapshot.PrimaryStartup) != "" {
+		facts = append(facts, "Solution startup candidate is "+snapshot.PrimaryStartup+"; do not treat it as the only runtime entrypoint when driver/service layers exist.")
+	}
+	if len(driverEntries) > 0 {
+		facts = append(facts, "Kernel/runtime driver entry files: "+strings.Join(driverEntries, ", ")+". Keep these separate from user-mode startup files.")
+	}
+	facts = append(facts, "If a file/minifilter subsystem exists, describe it as a subsystem unless build evidence says the whole driver is minifilter-only.")
+	return facts
+}
+
+func synthesisReportGuardrailFacts(reports []WorkerReport) []string {
+	corpus := strings.ToLower(workerReportsCorpus(reports))
+	facts := []string{}
+	if containsAny(corpus, "main()") && containsAny(corpus, "declares public", "public methods", "available", "declared methods") {
+		facts = append(facts, "Startup chain guardrail: only calls explicitly described as visible main/startup calls or internal_flow runtime steps are executed startup-chain steps; declared public methods and available lifecycle operations belong in an Available operations/API section.")
+	}
+	if containsAny(corpus, "objectfilter::initialize", "object filter::initialize", "object filter initialize", "objectfilter initialize") &&
+		containsAny(corpus, "startobjectfilter", "start object filter", "obregistercallbacks") {
+		facts = append(facts, "Object/handle filter guardrail: when object-filter Initialize and Start/Register evidence both exist, describe Initialize as state setup and Start/Register/ObRegisterCallbacks as callback registration unless a visible direct call proves Initialize registers callbacks.")
+	}
+	return analysisUniqueStrings(facts)
+}
+
+func workerReportsCorpus(reports []WorkerReport) string {
+	parts := []string{}
+	for _, report := range reports {
+		parts = append(parts,
+			report.Title,
+			report.ScopeSummary,
+			report.Narrative,
+		)
+		parts = append(parts, report.Responsibilities...)
+		parts = append(parts, report.EntryPoints...)
+		parts = append(parts, report.InternalFlow...)
+		parts = append(parts, report.Facts...)
+		parts = append(parts, report.Inferences...)
+		parts = append(parts, report.Collaboration...)
+		parts = append(parts, report.Risks...)
+		parts = append(parts, report.Unknowns...)
+		parts = append(parts, report.KeyFiles...)
+		parts = append(parts, report.EvidenceFiles...)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func buildFileContext(snapshot ProjectSnapshot, paths []string, limit int) []string {
 	out := []string{}
 	seen := map[string]struct{}{}
@@ -8027,13 +8510,25 @@ func buildFileContext(snapshot ProjectSnapshot, paths []string, limit int) []str
 	return out
 }
 
+func analysisPromptExcerpt(text string, limit int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || limit <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "\n... (truncated)"
+}
+
 func fallbackWorkerReport(shard AnalysisShard, raw string) WorkerReport {
 	return WorkerReport{
 		ShardID:       shard.ID,
 		Title:         shard.Name,
 		ScopeSummary:  "Worker returned non-JSON output.",
 		EvidenceFiles: append([]string(nil), shard.PrimaryFiles...),
-		Narrative:     strings.TrimSpace(raw),
+		Unknowns:      []string{"Worker output was not valid JSON and was excluded from synthesis; raw output is preserved in the JSON artifact."},
 		Raw:           strings.TrimSpace(raw),
 	}
 }
@@ -8047,22 +8542,87 @@ func parseWorkerReportPayload(raw string, shard AnalysisShard) (WorkerReport, bo
 	for _, candidate := range candidates {
 		envelope := workerEnvelope{}
 		if err := json.Unmarshal([]byte(candidate), &envelope); err == nil {
+			if !workerReportPayloadHasContent(envelope.Report) {
+				continue
+			}
 			envelope.Report.ShardID = shard.ID
 			envelope.Report.Raw = strings.TrimSpace(raw)
 			normalizeWorkerReport(&envelope.Report, shard)
+			if workerReportLooksLikeSchemaPlaceholder(envelope.Report) {
+				continue
+			}
 			return envelope.Report, true
 		}
 
 		report := WorkerReport{}
 		if err := json.Unmarshal([]byte(candidate), &report); err == nil {
+			if !workerReportPayloadHasContent(report) {
+				continue
+			}
 			report.ShardID = shard.ID
 			report.Raw = strings.TrimSpace(raw)
 			normalizeWorkerReport(&report, shard)
+			if workerReportLooksLikeSchemaPlaceholder(report) {
+				continue
+			}
 			return report, true
 		}
 	}
 
 	return WorkerReport{}, false
+}
+
+func workerReportPayloadHasContent(report WorkerReport) bool {
+	if strings.TrimSpace(report.ScopeSummary) != "" ||
+		strings.TrimSpace(report.Narrative) != "" {
+		return true
+	}
+	return len(report.Responsibilities) > 0 ||
+		len(report.Facts) > 0 ||
+		len(report.Inferences) > 0 ||
+		len(report.KeyFiles) > 0 ||
+		len(report.EntryPoints) > 0 ||
+		len(report.InternalFlow) > 0 ||
+		len(report.Dependencies) > 0 ||
+		len(report.Collaboration) > 0 ||
+		len(report.Risks) > 0 ||
+		len(report.Unknowns) > 0 ||
+		len(report.EvidenceFiles) > 0
+}
+
+func workerReportLooksLikeSchemaPlaceholder(report WorkerReport) bool {
+	placeholder := 0
+	total := 0
+	checkString := func(value string) {
+		value = strings.TrimSpace(strings.ToLower(value))
+		if value == "" {
+			return
+		}
+		total++
+		if value == "string" {
+			placeholder++
+		}
+	}
+	checkList := func(values []string) {
+		for _, value := range values {
+			checkString(value)
+		}
+	}
+	checkString(report.Title)
+	checkString(report.ScopeSummary)
+	checkString(report.Narrative)
+	checkList(report.Responsibilities)
+	checkList(report.Facts)
+	checkList(report.Inferences)
+	checkList(report.KeyFiles)
+	checkList(report.EntryPoints)
+	checkList(report.InternalFlow)
+	checkList(report.Dependencies)
+	checkList(report.Collaboration)
+	checkList(report.Risks)
+	checkList(report.Unknowns)
+	checkList(report.EvidenceFiles)
+	return total >= 6 && placeholder*2 >= total
 }
 
 func parseReviewDecisionPayload(raw string) (ReviewDecision, bool) {
@@ -8078,6 +8638,7 @@ func parseReviewDecisionPayload(raw string) (ReviewDecision, bool) {
 			if strings.TrimSpace(envelope.Decision.Status) == "" {
 				envelope.Decision.Status = "approved"
 			}
+			normalizeReviewDecision(&envelope.Decision)
 			return envelope.Decision, true
 		}
 
@@ -8087,11 +8648,19 @@ func parseReviewDecisionPayload(raw string) (ReviewDecision, bool) {
 			if strings.TrimSpace(decision.Status) == "" {
 				decision.Status = "approved"
 			}
+			normalizeReviewDecision(&decision)
 			return decision, true
 		}
 	}
 
 	return ReviewDecision{}, false
+}
+
+func normalizeReviewDecision(decision *ReviewDecision) {
+	status := strings.ToLower(strings.TrimSpace(decision.Status))
+	if status == "needs_revision" && strings.TrimSpace(decision.FailureKind) == "" {
+		decision.FailureKind = analysisReviewIssueQuality
+	}
 }
 
 func analysisJSONCandidates(raw string) []string {
@@ -8199,7 +8768,7 @@ func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
 	report.Responsibilities = analysisUniqueStrings(report.Responsibilities)
 	report.Facts = analysisUniqueStrings(report.Facts)
 	report.Inferences = analysisUniqueStrings(report.Inferences)
-	report.KeyFiles = analysisUniqueStrings(report.KeyFiles)
+	report.KeyFiles = analysisUniqueStrings(filterEvidence(report.KeyFiles, shard))
 	report.EntryPoints = analysisUniqueStrings(report.EntryPoints)
 	report.InternalFlow = analysisUniqueStrings(report.InternalFlow)
 	report.Dependencies = analysisUniqueStrings(report.Dependencies)
@@ -8243,6 +8812,7 @@ func heuristicReviewDecision(report WorkerReport, raw string) ReviewDecision {
 		decision.Status = "needs_revision"
 		decision.Issues = issues
 		decision.RevisionPrompt = "Revise the report with explicit responsibilities, internal flow, evidence files, and a concise scope summary grounded in the assigned files."
+		decision.FailureKind = analysisReviewIssueQuality
 	}
 	return decision
 }
@@ -8260,6 +8830,7 @@ func softFailReviewDecision(shard AnalysisShard, report WorkerReport, err error)
 		Status:         "review_failed",
 		Issues:         issues,
 		RevisionPrompt: "",
+		FailureKind:    analysisReviewIssueProvider,
 		Raw:            err.Error(),
 	}
 }
@@ -8318,6 +8889,7 @@ func softFailWorkerReviewDecision(shard AnalysisShard, err error) ReviewDecision
 		Status:         "review_failed",
 		Issues:         issues,
 		RevisionPrompt: "",
+		FailureKind:    analysisReviewIssueProvider,
 		Raw:            err.Error(),
 	}
 }
@@ -9015,6 +9587,7 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 		Unknowns:             analysisUniqueStrings(unknowns),
 		AnalysisExecution:    executionSummary,
 		PerformanceLens:      buildPerformanceLens(snapshot, grouped),
+		ArchitectureFacts:    snapshot.ArchitectureFacts,
 	}
 }
 
@@ -9524,6 +10097,9 @@ func buildKnowledgeDigest(pack KnowledgePack) string {
 		fmt.Fprintf(&b, "\n## Analysis Execution\n\n")
 		writeAnalysisExecutionSummary(&b, pack.AnalysisExecution)
 		b.WriteString("\n")
+	}
+	if factText := renderArchitectureFactPackForPrompt(pack.ArchitectureFacts, AnalysisShard{}, 6000); strings.TrimSpace(factText) != "" {
+		fmt.Fprintf(&b, "\n## Deterministic Architecture Facts\n\n%s\n", factText)
 	}
 	if len(pack.Subsystems) > 0 {
 		fmt.Fprintf(&b, "\n## Subsystems\n\n")
@@ -10273,20 +10849,71 @@ func analysisUniqueStrings(items []string) []string {
 }
 
 func filterEvidence(items []string, shard AnalysisShard) []string {
-	allowed := map[string]struct{}{}
+	allowed := map[string]string{}
 	for _, item := range shard.PrimaryFiles {
-		allowed[item] = struct{}{}
+		rememberAllowedEvidencePath(allowed, item)
 	}
 	for _, item := range shard.ReferenceFiles {
-		allowed[item] = struct{}{}
+		rememberAllowedEvidencePath(allowed, item)
 	}
 	out := []string{}
 	for _, item := range items {
-		if _, ok := allowed[strings.TrimSpace(item)]; ok {
-			out = append(out, item)
+		if canonical := canonicalEvidencePath(item, allowed); canonical != "" {
+			out = append(out, canonical)
 		}
 	}
 	return out
+}
+
+func rememberAllowedEvidencePath(allowed map[string]string, path string) {
+	clean := cleanEvidencePath(path)
+	if clean == "" {
+		return
+	}
+	for _, key := range []string{
+		strings.ToLower(clean),
+		strings.ToLower(filepath.ToSlash(filepath.Base(clean))),
+	} {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		if existing, ok := allowed[key]; ok && existing != clean {
+			allowed[key] = ""
+			continue
+		}
+		allowed[key] = clean
+	}
+}
+
+func canonicalEvidencePath(path string, allowed map[string]string) string {
+	clean := cleanEvidencePath(path)
+	if clean == "" {
+		return ""
+	}
+	for _, key := range []string{
+		strings.ToLower(clean),
+		strings.ToLower(filepath.ToSlash(filepath.Base(clean))),
+	} {
+		if canonical, ok := allowed[key]; ok && canonical != "" {
+			return canonical
+		}
+	}
+	return ""
+}
+
+func cleanEvidencePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if idx := strings.Index(path, " ("); idx > 0 {
+		path = strings.TrimSpace(path[:idx])
+	}
+	path = strings.Trim(path, "`\"'")
+	path = filepath.ToSlash(path)
+	path = strings.TrimSpace(path)
+	path = strings.TrimPrefix(path, "./")
+	return path
 }
 
 func joinListForPrompt(items []string) string {

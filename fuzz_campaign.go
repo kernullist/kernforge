@@ -1912,9 +1912,12 @@ func buildFuzzCampaignNativeEvidenceRecord(campaign FuzzCampaign, run FunctionFu
 	} else if strings.EqualFold(result.Outcome, "failed") && risk < 60 {
 		risk = 60
 	}
+	now := time.Now()
 	record := EvidenceRecord{
+		ID:                  fuzzCampaignNativeEvidenceID(campaign, run, result, now),
 		SessionID:           sessionID,
 		Workspace:           workspace,
+		CreatedAt:           now,
 		Kind:                "fuzz_native_result",
 		Category:            "fuzzing",
 		Subject:             firstNonBlankString(result.Target, run.TargetSymbolName, run.ID),
@@ -1941,6 +1944,17 @@ func buildFuzzCampaignNativeEvidenceRecord(campaign FuzzCampaign, run FunctionFu
 		},
 	}
 	return normalizeEvidenceRecord(record)
+}
+
+func fuzzCampaignNativeEvidenceID(campaign FuzzCampaign, run FunctionFuzzRun, result FuzzCampaignNativeResult, createdAt time.Time) string {
+	seed := strings.Join([]string{
+		campaign.ID,
+		run.ID,
+		result.ReportPath,
+		result.CrashFingerprint,
+		strings.Join(result.ArtifactIDs, ","),
+	}, "\x1f")
+	return fmt.Sprintf("ev-%s-%09d-%08x", createdAt.Format("20060102-150405"), createdAt.Nanosecond(), stableHash32(seed))
 }
 
 func writeFuzzCampaignScenarioSeed(dir string, run FunctionFuzzRun, scenario FunctionFuzzVirtualScenario, ordinal int) (FuzzCampaignSeedArtifact, error) {

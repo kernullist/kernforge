@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -25,6 +26,12 @@ func buildAnalysisProjectHandoff(run ProjectAnalysisRun, manifest AnalysisDocsMa
 	}
 	if runID := strings.TrimSpace(run.Summary.RunID); runID != "" {
 		plan.Details = append(plan.Details, "Run: "+runID)
+	}
+	if run.Summary.ReviewProviderFailures > 0 {
+		plan.Details = append(plan.Details, fmt.Sprintf("Provider failures: %d shard(s) need rerun or manual confidence review.", run.Summary.ReviewProviderFailures))
+	}
+	if run.Summary.ReviewQualityIssues > 0 {
+		plan.Details = append(plan.Details, fmt.Sprintf("Review quality issues: %d shard(s) need refinement or manual verification.", run.Summary.ReviewQualityIssues))
 	}
 	if !manifestOK {
 		plan.Title = "The analysis run is ready, but the docs manifest could not be loaded for guided reuse."
@@ -113,4 +120,51 @@ func renderAnalysisProjectHandoff(plan analysisProjectHandoffPlan) string {
 		fmt.Fprintf(&b, "%s: %s\n", command.Label, command.Command)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderAnalysisProjectArtifactPaths(run ProjectAnalysisRun, outputDir string) string {
+	outputPath := strings.TrimSpace(run.Summary.OutputPath)
+	outputDir = strings.TrimSpace(outputDir)
+	paths := []analysisProjectHandoffCommand{}
+	if outputPath != "" {
+		paths = append(paths, analysisProjectHandoffCommand{Label: "Report", Command: outputPath})
+		jsonPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ".json"
+		if strings.TrimSpace(jsonPath) != "" && jsonPath != outputPath {
+			paths = append(paths, analysisProjectHandoffCommand{Label: "Run JSON", Command: jsonPath})
+		}
+	}
+	if outputDir != "" {
+		latestDir := filepath.Join(outputDir, "latest")
+		paths = append(paths,
+			analysisProjectHandoffCommand{Label: "Latest", Command: latestDir},
+			analysisProjectHandoffCommand{Label: "Dashboard", Command: filepath.Join(latestDir, "dashboard.html")},
+			analysisProjectHandoffCommand{Label: "Docs", Command: filepath.Join(latestDir, "docs", "INDEX.md")},
+			analysisProjectHandoffCommand{Label: "Manifest", Command: filepath.Join(latestDir, "docs_manifest.json")},
+		)
+	}
+	normalized := normalizeAnalysisProjectHandoffPlan(analysisProjectHandoffPlan{
+		Title:    "Key output paths for this analysis run.",
+		Commands: paths,
+	})
+	if len(normalized.Commands) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Analysis artifacts: %s\n", normalized.Title)
+	for _, item := range normalized.Commands {
+		fmt.Fprintf(&b, "%s: %s\n", item.Label, item.Command)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func renderAnalysisProjectArtifactPathsStyled(run ProjectAnalysisRun, outputDir string, ui UI) string {
+	return colorizeAnalysisProjectArtifactHeader(renderAnalysisProjectArtifactPaths(run, outputDir), ui)
+}
+
+func colorizeAnalysisProjectArtifactHeader(text string, ui UI) string {
+	const prefix = "Analysis artifacts:"
+	if !strings.HasPrefix(text, prefix) {
+		return text
+	}
+	return ui.bold(ui.accent2(prefix)) + strings.TrimPrefix(text, prefix)
 }

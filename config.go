@@ -61,6 +61,8 @@ type Config struct {
 	BaseURL                string                    `json:"base_url"`
 	APIKey                 string                    `json:"api_key"`
 	ProviderKeys           map[string]string         `json:"provider_keys,omitempty"`
+	CodexCLIPath           string                    `json:"codex_cli_path,omitempty"`
+	CodexCLIArgs           []string                  `json:"codex_cli_args,omitempty"`
 	Temperature            float64                   `json:"temperature"`
 	MaxTokens              int                       `json:"max_tokens"`
 	MaxToolIterations      int                       `json:"max_tool_iterations"`
@@ -253,10 +255,17 @@ func mergeConfig(dst *Config, src Config) {
 			dst.ProviderKeys = make(map[string]string)
 		}
 		for k, v := range src.ProviderKeys {
-			if v != "" {
-				dst.ProviderKeys[k] = v
+			provider := normalizeProviderName(k)
+			if provider != "" && v != "" {
+				dst.ProviderKeys[provider] = v
 			}
 		}
+	}
+	if strings.TrimSpace(src.CodexCLIPath) != "" {
+		dst.CodexCLIPath = strings.TrimSpace(src.CodexCLIPath)
+	}
+	if len(src.CodexCLIArgs) > 0 {
+		dst.CodexCLIArgs = append([]string(nil), src.CodexCLIArgs...)
 	}
 	if src.Temperature != 0 {
 		dst.Temperature = src.Temperature
@@ -440,6 +449,10 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_MODEL", &cfg.Model)
 	envString("KERNFORGE_BASE_URL", &cfg.BaseURL)
 	envString("KERNFORGE_API_KEY", &cfg.APIKey)
+	envString("KERNFORGE_CODEX_CLI_PATH", &cfg.CodexCLIPath)
+	if rawArgs := strings.TrimSpace(os.Getenv("KERNFORGE_CODEX_CLI_ARGS")); rawArgs != "" {
+		cfg.CodexCLIArgs = splitAnalysisCommandLine(rawArgs)
+	}
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
@@ -460,7 +473,7 @@ func applyEnv(cfg *Config) {
 	envBool("KERNFORGE_HOOKS_ENABLED", &cfg.HooksEnabled)
 	envBool("KERNFORGE_HOOKS_FAIL_CLOSED", &cfg.HooksFailClosed)
 
-	switch strings.ToLower(cfg.Provider) {
+	switch normalizeProviderName(cfg.Provider) {
 	case "anthropic":
 		if cfg.APIKey == "" {
 			envString("ANTHROPIC_API_KEY", &cfg.APIKey)
@@ -471,6 +484,29 @@ func applyEnv(cfg *Config) {
 		}
 		if cfg.APIKey == "" {
 			envString("OPENROUTER_API_KEY", &cfg.APIKey)
+		}
+	case "opencode":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeOpenCodeBaseURL("")
+		}
+		if cfg.APIKey == "" {
+			envString("OPENCODE_API_KEY", &cfg.APIKey)
+		}
+		if cfg.APIKey == "" {
+			envString("OPENCODE_ZEN_API_KEY", &cfg.APIKey)
+		}
+	case "opencode-go":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeOpenCodeGoBaseURL("")
+		}
+		if cfg.APIKey == "" {
+			envString("OPENCODE_GO_API_KEY", &cfg.APIKey)
+		}
+		if cfg.APIKey == "" {
+			envString("OPENCODE_API_KEY", &cfg.APIKey)
+		}
+		if cfg.APIKey == "" {
+			envString("OPENCODE_ZEN_API_KEY", &cfg.APIKey)
 		}
 	case "ollama":
 		if cfg.BaseURL == "" {
@@ -499,6 +535,9 @@ func normalizeConfigPaths(cfg *Config) {
 	for i, item := range cfg.SkillPaths {
 		cfg.SkillPaths[i] = expandHome(item)
 	}
+	if strings.TrimSpace(cfg.CodexCLIPath) != "" {
+		cfg.CodexCLIPath = expandHome(cfg.CodexCLIPath)
+	}
 	if strings.TrimSpace(cfg.ProjectAnalysis.OutputDir) != "" {
 		cfg.ProjectAnalysis.OutputDir = expandHome(cfg.ProjectAnalysis.OutputDir)
 	}
@@ -515,10 +554,22 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.NinjaPath = expandHome(cfg.NinjaPath)
 	}
 	if cfg.ProjectAnalysis.WorkerProfile != nil {
+		cfg.ProjectAnalysis.WorkerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.WorkerProfile.Provider)
+		cfg.ProjectAnalysis.WorkerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.Model)
 		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
+		cfg.ProjectAnalysis.WorkerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.APIKey)
 	}
 	if cfg.ProjectAnalysis.ReviewerProfile != nil {
+		cfg.ProjectAnalysis.ReviewerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.ReviewerProfile.Provider)
+		cfg.ProjectAnalysis.ReviewerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.Model)
 		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
+		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
+	}
+	if cfg.PlanReview != nil {
+		cfg.PlanReview.Provider = normalizeProviderName(cfg.PlanReview.Provider)
+		cfg.PlanReview.Model = strings.TrimSpace(cfg.PlanReview.Model)
+		cfg.PlanReview.BaseURL = normalizeProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
+		cfg.PlanReview.APIKey = strings.TrimSpace(cfg.PlanReview.APIKey)
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
@@ -560,12 +611,12 @@ func normalizeConfigPaths(cfg *Config) {
 			cfg.MCPServers[i].Env = cleaned
 		}
 	}
-	cfg.Provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	cfg.Provider = normalizeProviderName(cfg.Provider)
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
 	if len(cfg.ProviderKeys) > 0 {
 		cleaned := make(map[string]string, len(cfg.ProviderKeys))
 		for provider, key := range cfg.ProviderKeys {
-			provider = strings.ToLower(strings.TrimSpace(provider))
+			provider = normalizeProviderName(provider)
 			key = strings.TrimSpace(key)
 			if provider == "" || key == "" {
 				continue
@@ -589,7 +640,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.Specialists.Profiles[i].Name = strings.TrimSpace(profile.Name)
 		cfg.Specialists.Profiles[i].Description = strings.TrimSpace(profile.Description)
 		cfg.Specialists.Profiles[i].Prompt = strings.TrimSpace(profile.Prompt)
-		cfg.Specialists.Profiles[i].Provider = strings.TrimSpace(profile.Provider)
+		cfg.Specialists.Profiles[i].Provider = normalizeProviderName(profile.Provider)
 		cfg.Specialists.Profiles[i].Model = strings.TrimSpace(profile.Model)
 		cfg.Specialists.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 		cfg.Specialists.Profiles[i].APIKey = strings.TrimSpace(profile.APIKey)
@@ -644,7 +695,7 @@ func preserveExistingUserSecrets(cfg *Config) {
 		cfg.ProviderKeys = map[string]string{}
 	}
 	for provider, key := range existing.ProviderKeys {
-		provider = strings.ToLower(strings.TrimSpace(provider))
+		provider = normalizeProviderName(provider)
 		key = strings.TrimSpace(key)
 		if provider == "" || key == "" {
 			continue
@@ -654,7 +705,7 @@ func preserveExistingUserSecrets(cfg *Config) {
 		}
 	}
 	if strings.TrimSpace(existing.Provider) != "" && strings.TrimSpace(existing.APIKey) != "" {
-		provider := strings.ToLower(strings.TrimSpace(existing.Provider))
+		provider := normalizeProviderName(existing.Provider)
 		if strings.TrimSpace(cfg.ProviderKeys[provider]) == "" {
 			cfg.ProviderKeys[provider] = strings.TrimSpace(existing.APIKey)
 		}
@@ -710,7 +761,7 @@ func SaveWorkspaceConfigOverrides(cwd string, overrides map[string]any) error {
 }
 
 func normalizeProfileBaseURL(provider, baseURL string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
+	switch normalizeProviderName(provider) {
 	case "ollama":
 		if strings.TrimSpace(baseURL) == "" {
 			return normalizeOllamaBaseURL("")
@@ -721,6 +772,16 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 			return normalizeOpenRouterBaseURL("")
 		}
 		return normalizeOpenRouterBaseURL(baseURL)
+	case "opencode":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeOpenCodeBaseURL("")
+		}
+		return normalizeOpenCodeBaseURL(baseURL)
+	case "opencode-go":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeOpenCodeGoBaseURL("")
+		}
+		return normalizeOpenCodeGoBaseURL(baseURL)
 	default:
 		return strings.TrimSpace(baseURL)
 	}
@@ -755,7 +816,7 @@ func mergeConfigProfiles(base []Profile, overlay []Profile) []Profile {
 
 func normalizeConfigProfile(profile Profile) Profile {
 	profile.Name = strings.TrimSpace(profile.Name)
-	profile.Provider = strings.TrimSpace(profile.Provider)
+	profile.Provider = normalizeProviderName(profile.Provider)
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
@@ -766,7 +827,7 @@ func normalizeConfigProfile(profile Profile) Profile {
 }
 
 func configProfileKey(profile Profile) string {
-	provider := strings.ToLower(strings.TrimSpace(profile.Provider))
+	provider := normalizeProviderName(profile.Provider)
 	model := strings.ToLower(strings.TrimSpace(profile.Model))
 	if provider == "" || model == "" {
 		return ""
@@ -832,10 +893,11 @@ func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
 	}
 	roles := profile.RoleModels
 	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
+		provider := normalizeProviderName(roles.PlanReviewer.Provider)
 		cfg.PlanReview = &PlanReviewConfig{
-			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
+			Provider: provider,
 			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			BaseURL:  normalizeProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
 			APIKey:   strings.TrimSpace(roles.PlanReviewer.APIKey),
 		}
 	} else {
@@ -862,7 +924,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 			continue
 		}
 		profile.Name = strings.TrimSpace(profile.Name)
-		profile.Provider = strings.TrimSpace(profile.Provider)
+		profile.Provider = normalizeProviderName(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
 		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.APIKey = strings.TrimSpace(profile.APIKey)
@@ -1925,7 +1987,7 @@ Provider and model commands control which model is active and how planning/revie
 
 /provider
 - Choose and configure a provider interactively.
-- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, or /provider ollama.
+- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider opencode, /provider opencode-go, /provider ollama, or /provider codex-cli.
 
 /provider status
 - Show the active provider, normalized base URL, API key presence, and provider-specific budget visibility.

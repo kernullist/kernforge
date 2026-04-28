@@ -29,6 +29,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	if containsAny(base, "현재 상태", "status", "어디까지", "뭐 하는 중", "what happened", "current state") {
 		return TurnIntentExplainCurrentState
 	}
+	if looksLikeExecutionFlowQuestion(base) {
+		return TurnIntentAskProjectKnowledge
+	}
 	if looksLikeExplicitEditIntent(base) {
 		return TurnIntentEditCode
 	}

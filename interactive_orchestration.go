@@ -132,9 +132,9 @@ func shouldPrimeInteractivePlan(state *TaskState, readOnlyAnalysis bool, explici
 }
 
 func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) bool {
-	_ = readOnlyAnalysis
-	_ = explicitEditRequest
-	_ = explicitGitRequest
+	if readOnlyAnalysis && !explicitEditRequest && !explicitGitRequest {
+		return true
+	}
 	lowerGoal := strings.ToLower(strings.TrimSpace(goal))
 	if shouldPrioritizeWebResearchInSystemPrompt(lowerGoal) {
 		return true

@@ -234,19 +234,21 @@ Kernforge가 차별화해야 할 방향:
 현재 구현 상태:
 1. 완료: analysis run에서 deterministic documentation writer가 실행된다.
 2. 완료: `.kernforge/analysis/latest/docs`에 `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, `OPERATIONS_RUNBOOK.md`, `INDEX.md`가 생성된다.
-3. 완료: `.kernforge/analysis/latest/docs_manifest.json`, `docs_index.md`, `run.json`, `snapshot.json`, `dashboard.html`이 생성된다.
+3. 완료: `.kernforge/analysis/latest/docs_manifest.json`, `docs_index.md`, `run.json`, `snapshot.json`, `architecture_facts.json`, `dashboard.html`이 생성된다.
 4. 완료: 문서와 섹션에 source anchor, confidence, stale/invalidation marker, reuse target이 표시된다.
 5. 완료: `/analyze-project --docs`, `/analyze-project --path <dir>`, `/docs-refresh`, `/analyze-project --mode surface`, `/analyze-dashboard`가 help와 completion까지 포함해 노출된다.
 6. 완료: generated docs의 `FUZZ_TARGETS.md` catalog를 `/fuzz-func` target ranking이 재사용한다.
 7. 완료: generated docs의 `VERIFICATION_MATRIX.md`를 `/verify` planner가 재사용한다.
 8. 완료: generated docs manifest는 evidence `kind=analysis_docs`와 persistent memory의 project knowledge-base record로 저장된다.
-9. 완료: `/analyze-project` 완료 후 `Analysis handoff`가 `/analyze-dashboard`, `/fuzz-campaign run`, 상위 `/fuzz-func ...` drilldown, `/verify` 중 필요한 다음 명령을 안내한다.
+9. 완료: `/analyze-project` 완료 후 눈에 띄는 `Analysis artifacts:` 블록으로 주요 산출물 경로를 다시 출력하고, `Analysis handoff`가 `/analyze-dashboard`, `/fuzz-campaign run`, 상위 `/fuzz-func ...` drilldown, `/verify` 중 필요한 다음 명령을 안내한다.
 10. 완료: 자연어 goal의 디렉토리 힌트는 자동 scope로 유지하고, 명시적인 범위 고정이 필요할 때는 `/analyze-project --path <dir>`가 실행 전 검증된 shard scope를 만든다.
 11. 완료: README, feature guide, generated docs의 역할이 분리되고 한국어/영어 README 동기화 기준이 유지된다.
 12. 완료: `/analyze-project --mode <mode>` 또는 `/analyze-project --path <dir> --mode <mode>`에서 goal을 생략해도 mode/path 기반 기본 분석 목표를 자동 생성한다.
 13. 완료: `trace`, `impact`, `surface`, `security`, `performance` 실행 시 이전 `map` run을 baseline architecture map으로 로드해 worker/reviewer/synthesis prompt가 구조 지도를 재사용한다.
 14. 완료: 분석 실행 확인 화면에 선택된 `baseline_map`, goal, artifact, anchor 수를 표시해 사용자가 진행 전에 재사용될 map을 확인할 수 있게 했다.
 15. 완료: worker/reviewer provider rate-limit이나 일시 오류가 전체 analysis run을 중단하지 않도록 shard-level low-confidence failure로 degrade하고, synthesis 실패 시 local fallback document를 생성한다.
+16. 완료: deterministic `architecture_facts.json`을 생성해 worker/reviewer/synthesis, generated docs, cached structure QA, answer evaluator가 같은 source-derived 사실 집합을 공유한다.
+17. 완료: `.kernforge/analysis/latest` persistence는 기존 latest mirror를 교체한 뒤 새 run 산출물을 쓰므로 반복 분석 중 stale 파일이 retrieval에 남지 않는다.
 
 현재 남은 핵심 과제:
 1. 완료: generated docs dashboard를 정적 document portal 수준으로 확장한다.

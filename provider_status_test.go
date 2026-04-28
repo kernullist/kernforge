@@ -18,7 +18,10 @@ func TestNormalizeProviderBaseURLUsesProviderDefaults(t *testing.T) {
 		{provider: "openai", expected: "https://api.openai.com"},
 		{provider: "openai-compatible", expected: "https://api.openai.com"},
 		{provider: "openrouter", expected: "https://openrouter.ai/api/v1"},
+		{provider: "opencode", expected: "https://opencode.ai/zen"},
+		{provider: "opencode-go", expected: "https://opencode.ai/zen/go"},
 		{provider: "ollama", expected: "http://localhost:11434"},
+		{provider: "codex-cli", expected: ""},
 	}
 
 	for _, tc := range cases {

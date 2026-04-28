@@ -34,7 +34,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/worktree cr", wantBuffer: "/worktree create "},
 		{input: "/specialists ", wantSuggest: []string{"/specialists status", "/specialists assign", "/specialists cleanup"}},
 		{input: "/specialists cl", wantBuffer: "/specialists cleanup "},
-		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider ollama"}},
+		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider opencode", "/provider opencode-go", "/provider ollama", "/provider codex-cli"}},
 		{input: "/provider st", wantBuffer: "/provider status "},
 		{input: "/verify --", wantBuffer: "/verify --full "},
 		{input: "/verify-dashboard a", wantBuffer: "/verify-dashboard all "},

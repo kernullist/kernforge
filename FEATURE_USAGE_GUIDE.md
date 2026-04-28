@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-04-18
+- Codebase snapshot: 2026-04-29
 
 Intended readers:
 - Windows security engineers
@@ -128,7 +128,8 @@ Purpose:
 3. Keep a `latest` knowledge pack and performance lens for follow-up work.
 4. Reuse unchanged shard results when incremental mode is enabled.
 5. Preserve a structural index, Unreal semantic graph, and vector corpus for downstream automation.
-6. End the run with an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
+6. Preserve deterministic architecture facts so cached deep-structure answers can be checked against source-derived invariants.
+7. End the run with a highlighted `Analysis artifacts:` block and an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
 
 Useful commands:
 - `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -163,9 +164,10 @@ Additional artifacts now produced by project analysis:
 1. `snapshot`: structured scan output plus runtime and project edges.
 2. `structural index`: symbol anchors, references, build contexts, build ownership edges, call edges, and overlay-oriented analysis state.
 3. `unreal graph`: UE project, module, network, asset, system, and config semantics.
-4. `knowledge pack`: human-readable architecture digest and subsystem summaries.
-5. `vector corpus`: embedding-ready project, subsystem, and shard documents.
-6. `vector ingest exports`: staging files for pgvector, SQLite, and Qdrant pipelines.
+4. `architecture facts`: deterministic domain hints, top-level directory facts, critical anchors, dispatch/registration flows, boundary facts, and answer invariants.
+5. `knowledge pack`: human-readable architecture digest and subsystem summaries.
+6. `vector corpus`: embedding-ready project, subsystem, and shard documents.
+7. `vector ingest exports`: staging files for pgvector, SQLite, and Qdrant pipelines.
 
 What materially changed for large and Unreal-heavy workspaces:
 1. A semantic shard planner now prioritizes `startup`, `build_graph`, `unreal_network`, `unreal_ui`, `unreal_ability`, `asset_config`, `integrity_security`, and `unreal_gameplay`.
@@ -178,8 +180,11 @@ What materially changed for large and Unreal-heavy workspaces:
 8. Output documents now expose subsystem invalidation reasons, evidence, diffs, top change classes, and graph-section stale markers.
 9. The dashboard stale diff links graph-related changes directly into trust-boundary, data-flow, and project-edge sections.
 10. Persisted artifacts now include machine-readable snapshot, structural index, Unreal semantic graph, vector corpus, and ingestion seed files for downstream retrieval pipelines.
-11. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
-11. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
+11. The architecture fact pack is injected into worker/reviewer/synthesis prompts and into cached answer packs so structure answers stay source-grounded even when no extra tool call is needed.
+12. C/C++ and driver-oriented scanners now look for dispatch tables, unload/finalize paths, callback registrations, filter registrations, aliases, macros, and include-driven registration helpers instead of relying only on filename heuristics.
+13. `.kernforge/analysis/latest` is replaced per run, avoiding stale artifact bleed-through across repeated analysis tests.
+14. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
+15. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
 
 ### Source-Level Function Fuzzing
 
@@ -498,15 +503,16 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|ollama`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
 Prompt budget behavior that now matters:
 1. Cached `analyze-project` summaries can be injected ahead of auto-scouted code snippets when they are more relevant.
-2. If the cached project analysis is sufficient to answer a question, Kernforge can reply without spending extra tool iterations.
-3. Skill and MCP catalogs are now included in full only when the request is actually asking about them.
-4. Auto-scout contributes fewer candidates and less text, and it now focuses on locate/definition/reference-style requests.
+2. If the cached project analysis and architecture fact pack are sufficient to answer a question, Kernforge can reply without spending extra tool iterations.
+3. Deep project-structure answers are evaluated against deterministic facts, source anchors, closed directory sets, and flow invariants; contradictions trigger tool use instead of a confident cached answer.
+4. Skill and MCP catalogs are now included in full only when the request is actually asking about them.
+5. Auto-scout contributes fewer candidates and less text, and it now focuses on locate/definition/reference-style requests.
 
 ## 3. Recommended Real-World Flows
 

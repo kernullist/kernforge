@@ -75,6 +75,15 @@ func TestBuildCachedAnalysisFastPathMetadataIncludesStructuralIndexV2Source(t *t
 	}
 }
 
+func TestLatestAnalysisArtifactsRunIDFallsBackToV2AndDocsManifest(t *testing.T) {
+	if got := latestAnalysisArtifactsRunID(latestAnalysisArtifacts{IndexV2: SemanticIndexV2{RunID: "run-v2"}}); got != "run-v2" {
+		t.Fatalf("expected v2 run id fallback, got %q", got)
+	}
+	if got := latestAnalysisArtifactsRunID(latestAnalysisArtifacts{DocsManifest: AnalysisDocsManifest{RunID: "run-docs"}}); got != "run-docs" {
+		t.Fatalf("expected docs manifest run id fallback, got %q", got)
+	}
+}
+
 func TestBuildSessionAnalysisSummaryIncludesMode(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{

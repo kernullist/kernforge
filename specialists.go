@@ -654,7 +654,7 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 	if strings.TrimSpace(profile.APIKey) != "" {
 		cfg.APIKey = strings.TrimSpace(profile.APIKey)
 	} else if cfg.ProviderKeys != nil {
-		if key := strings.TrimSpace(cfg.ProviderKeys[strings.ToLower(provider)]); key != "" {
+		if key := strings.TrimSpace(cfg.ProviderKeys[normalizeProviderName(provider)]); key != "" {
 			cfg.APIKey = key
 		}
 	}

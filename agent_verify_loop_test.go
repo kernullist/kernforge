@@ -913,12 +913,82 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 	}
 }
 
+func TestAgentDeepStructureFastPathReceivesAnswerPackContract(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "GuardRuntime 구조는 Startup, IOCTL/RPC dispatch, validation anchors를 기준으로 설명할 수 있다."}},
+		},
+	}
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	writeDeepStructureAnalysisLatestForTest(t, latestDir)
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "이 프로젝트 구조와 실행 흐름을 자세히 설명해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "GuardRuntime 구조") {
+		t.Fatalf("unexpected fast-path reply: %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected deep QA fast-path to answer in one provider request, got %d", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 {
+		t.Fatalf("expected deep QA fast-path request to expose no tools, got %#v", provider.requests[0].Tools)
+	}
+	injectedUserText := ""
+	for _, msg := range provider.requests[0].Messages {
+		if strings.Contains(msg.Text, "Relevant project analysis from past analyze-project runs") {
+			injectedUserText = msg.Text
+			break
+		}
+	}
+	if !strings.Contains(injectedUserText, "Project structure answer pack") {
+		t.Fatalf("expected deep QA answer pack in injected context, got %q", injectedUserText)
+	}
+	for _, needle := range []string{"Answer contract", "Source anchors", "Graph views", "Relevant structural index v2 hits"} {
+		if !strings.Contains(injectedUserText, needle) {
+			t.Fatalf("expected injected context to contain %q, got %q", needle, injectedUserText)
+		}
+	}
+	lastMessage := provider.requests[0].Messages[len(provider.requests[0].Messages)-1].Text
+	if !strings.Contains(lastMessage, "Project structure answer pack") || !strings.Contains(lastMessage, "structure layers") {
+		t.Fatalf("expected stricter deep QA fast-path instruction, got %q", lastMessage)
+	}
+	for _, needle := range []string{
+		"Prefer the latest project analysis over persistent memory",
+		"Windows kernel/WDM .sys driver, not a DLL",
+		"Separate user-mode IOCTL/control-client wrappers from kernel-side IRP/IOCTL dispatch and validation",
+	} {
+		if !strings.Contains(lastMessage, needle) {
+			t.Fatalf("expected deep QA fast-path instruction to contain %q, got %q", needle, lastMessage)
+		}
+	}
+}
+
 func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsTools(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
-			{Message: Message{Role: "assistant", Text: projectAnalysisFastPathNeedsTools}},
+			{Message: Message{Role: "assistant", Text: projectAnalysisFastPathNeedsTools + "\n\nCached analysis is not enough."}},
 			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
 			{Message: Message{Role: "assistant", Text: "Read the file and answered with verified details."}},
 		},
@@ -980,6 +1050,34 @@ func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsToo
 	}
 	if len(provider.requests[1].Tools) == 0 {
 		t.Fatalf("expected fallback request to expose tools")
+	}
+}
+
+func writeDeepStructureAnalysisLatestForTest(t *testing.T, latestDir string) {
+	t.Helper()
+	run := sampleProjectStructureQARun()
+	manifest := buildAnalysisDocsManifestForTest(run)
+	corpus := VectorCorpus{
+		RunID:     run.Summary.RunID,
+		Goal:      run.Summary.Goal,
+		Documents: buildAnalysisDocsVectorDocuments(run),
+	}
+	items := map[string]any{
+		"knowledge_pack.json":      run.KnowledgePack,
+		"snapshot.json":            run.Snapshot,
+		"vector_corpus.json":       corpus,
+		"structural_index_v2.json": run.SemanticIndexV2,
+		"unreal_graph.json":        run.UnrealGraph,
+		"docs_manifest.json":       manifest,
+	}
+	for name, value := range items {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, name), data, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
 }
 

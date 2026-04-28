@@ -49,10 +49,10 @@ func planReviewSystemPromptRevise() string {
 
 // PlanReviewResult holds the outcome of the plan-review loop.
 type PlanReviewResult struct {
-	FinalPlan    string
-	Rounds       int
-	Approved     bool
-	ReviewLog    []PlanReviewRound
+	FinalPlan string
+	Rounds    int
+	Approved  bool
+	ReviewLog []PlanReviewRound
 }
 
 // PlanReviewRound captures one iteration of plan + review.
@@ -173,11 +173,13 @@ func createReviewerClient(reviewCfg *PlanReviewConfig, mainCfg Config) (Provider
 			apiKey = mainCfg.APIKey
 		}
 	}
-	cfg := Config{
-		Provider: reviewCfg.Provider,
-		Model:    reviewCfg.Model,
-		BaseURL:  reviewCfg.BaseURL,
-		APIKey:   apiKey,
+	if strings.TrimSpace(apiKey) == "" && mainCfg.ProviderKeys != nil {
+		apiKey = mainCfg.ProviderKeys[normalizeProviderName(reviewCfg.Provider)]
 	}
+	cfg := mainCfg
+	cfg.Provider = reviewCfg.Provider
+	cfg.Model = reviewCfg.Model
+	cfg.BaseURL = reviewCfg.BaseURL
+	cfg.APIKey = apiKey
 	return NewProviderClient(cfg)
 }

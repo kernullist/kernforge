@@ -45,6 +45,7 @@ type ChatRequest struct {
 	MaxTokens   int
 	Temperature float64
 	WorkingDir  string
+	JSONMode    bool
 	OnTextDelta func(string)
 }
 
@@ -206,7 +207,7 @@ type ProviderClient interface {
 }
 
 func NewProviderClient(cfg Config) (ProviderClient, error) {
-	switch strings.ToLower(cfg.Provider) {
+	switch normalizeProviderName(cfg.Provider) {
 	case "anthropic":
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("Anthropic provider selected but no API key was found")
@@ -217,8 +218,20 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 			return nil, fmt.Errorf("OpenRouter provider selected but no API key was found")
 		}
 		return NewOpenAIClient(normalizeOpenRouterBaseURL(cfg.BaseURL), cfg.APIKey), nil
+	case "opencode":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("OpenCode provider selected but no API key was found")
+		}
+		return NewOpenCodeClient(cfg.BaseURL, cfg.APIKey), nil
+	case "opencode-go":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("OpenCode Go provider selected but no API key was found")
+		}
+		return NewOpenCodeGoClient(cfg.BaseURL, cfg.APIKey), nil
 	case "ollama":
 		return NewOllamaClient(cfg.BaseURL, cfg.APIKey), nil
+	case "codex-cli":
+		return NewCodexCLIClient(cfg.CodexCLIPath, cfg.CodexCLIArgs), nil
 	case "openai", "openai-compatible":
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("OpenAI-compatible provider selected but no API key was found")
@@ -229,10 +242,24 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 	}
 }
 
+func normalizeProviderName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "codex", "codex-cli", "codex_cli":
+		return "codex-cli"
+	case "opencode", "open-code", "open_code":
+		return "opencode"
+	case "opencode-go", "opencode_go", "open-code-go", "open_code_go", "opencodego":
+		return "opencode-go"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
 type AnthropicClient struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	headers    map[string]string
 }
 
 func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
@@ -373,6 +400,11 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	for key, value := range c.headers {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			httpReq.Header.Set(key, value)
+		}
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -456,11 +488,12 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
 	}
 	type openAIRequest struct {
-		Model       string          `json:"model"`
-		Messages    []openAIMessage `json:"messages"`
-		Temperature float64         `json:"temperature,omitempty"`
-		MaxTokens   int             `json:"max_tokens,omitempty"`
-		Tools       []struct {
+		Model          string          `json:"model"`
+		Messages       []openAIMessage `json:"messages"`
+		Temperature    float64         `json:"temperature,omitempty"`
+		MaxTokens      int             `json:"max_tokens,omitempty"`
+		ResponseFormat any             `json:"response_format,omitempty"`
+		Tools          []struct {
 			Type     string `json:"type"`
 			Function struct {
 				Name        string         `json:"name"`
@@ -492,6 +525,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		Messages:    make([]openAIMessage, 0, len(req.Messages)+1),
 		Temperature: req.Temperature,
 		MaxTokens:   req.MaxTokens,
+	}
+	if req.JSONMode {
+		payload.ResponseFormat = map[string]string{"type": "json_object"}
 	}
 
 	if strings.TrimSpace(req.System) != "" {
@@ -1319,15 +1355,21 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 }
 
 func normalizeProviderBaseURL(provider, baseURL string) string {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
+	switch normalizeProviderName(provider) {
 	case "anthropic":
 		return normalizeAnthropicBaseURL(baseURL)
 	case "openai", "openai-compatible":
 		return normalizeOpenAIBaseURL(baseURL)
 	case "openrouter":
 		return normalizeOpenRouterBaseURL(baseURL)
+	case "opencode":
+		return normalizeOpenCodeBaseURL(baseURL)
+	case "opencode-go":
+		return normalizeOpenCodeGoBaseURL(baseURL)
 	case "ollama":
 		return normalizeOllamaBaseURL(baseURL)
+	case "codex-cli":
+		return strings.TrimSpace(baseURL)
 	default:
 		return strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	}

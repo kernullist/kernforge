@@ -90,9 +90,17 @@ func analysisDocsVectorMetadata(run ProjectAnalysisRun, name string, section Ana
 		"confidence":     confidence,
 		"source_anchors": strings.Join(analysisUniqueStrings(anchors), ";"),
 		"reuse_targets":  strings.Join(analysisUniqueStrings(reuseTargets), ";"),
+		"query_intents":  strings.Join(analysisUniqueStrings(firstNonEmptyStringSlice(section.QueryIntents, analysisDocQueryIntents(name))), ";"),
+		"priority":       fmt.Sprintf("%d", firstNonZeroInt(section.Priority, analysisDocPriority(name))),
 	}
 	if len(staleMarkers) > 0 {
 		metadata["stale_markers"] = strings.Join(analysisUniqueStrings(staleMarkers), ";")
+	}
+	if len(section.EntityRefs) > 0 {
+		metadata["entity_refs"] = strings.Join(analysisUniqueStrings(section.EntityRefs), ";")
+	}
+	if len(section.GraphRefs) > 0 {
+		metadata["graph_refs"] = strings.Join(analysisUniqueStrings(section.GraphRefs), ";")
 	}
 	if strings.TrimSpace(section.ID) != "" {
 		metadata["section_id"] = section.ID
@@ -101,6 +109,20 @@ func analysisDocsVectorMetadata(run ProjectAnalysisRun, name string, section Ana
 		metadata["section_title"] = section.Title
 	}
 	return metadata
+}
+
+func firstNonEmptyStringSlice(primary []string, fallback []string) []string {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
+func firstNonZeroInt(primary int, fallback int) int {
+	if primary != 0 {
+		return primary
+	}
+	return fallback
 }
 
 func analysisDocsVectorSectionByTitle(run ProjectAnalysisRun, name string) map[string]AnalysisDocSection {

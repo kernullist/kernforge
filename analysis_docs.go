@@ -20,6 +20,8 @@ type AnalysisGeneratedDoc struct {
 	Confidence    string               `json:"confidence,omitempty"`
 	StaleMarkers  []string             `json:"stale_markers,omitempty"`
 	ReuseTargets  []string             `json:"reuse_targets,omitempty"`
+	QueryIntents  []string             `json:"query_intents,omitempty"`
+	Priority      int                  `json:"priority,omitempty"`
 	Sections      []AnalysisDocSection `json:"sections,omitempty"`
 }
 
@@ -30,6 +32,10 @@ type AnalysisDocSection struct {
 	Confidence    string   `json:"confidence,omitempty"`
 	StaleMarkers  []string `json:"stale_markers,omitempty"`
 	ReuseTargets  []string `json:"reuse_targets,omitempty"`
+	QueryIntents  []string `json:"query_intents,omitempty"`
+	Priority      int      `json:"priority,omitempty"`
+	EntityRefs    []string `json:"entity_refs,omitempty"`
+	GraphRefs     []string `json:"graph_refs,omitempty"`
 }
 
 type AnalysisFuzzTargetCatalogEntry struct {
@@ -165,6 +171,8 @@ func writeAnalysisDocs(run ProjectAnalysisRun, docsDir string) (AnalysisDocsMani
 			Confidence:    analysisDocConfidence(run, name),
 			StaleMarkers:  analysisDocStaleMarkers(run, name),
 			ReuseTargets:  analysisDocReuseTargets(name),
+			QueryIntents:  analysisDocQueryIntents(name),
+			Priority:      analysisDocPriority(name),
 			Sections:      analysisDocSections(run, name),
 		})
 	}
@@ -212,6 +220,21 @@ func normalizeAnalysisDocsManifest(manifest AnalysisDocsManifest) AnalysisDocsMa
 		}
 		if len(doc.ReuseTargets) == 0 {
 			doc.ReuseTargets = analysisDocReuseTargets(doc.Name)
+		}
+		if len(doc.QueryIntents) == 0 {
+			doc.QueryIntents = analysisDocQueryIntents(doc.Name)
+		}
+		if doc.Priority == 0 {
+			doc.Priority = analysisDocPriority(doc.Name)
+		}
+		for j := range doc.Sections {
+			section := &doc.Sections[j]
+			if len(section.QueryIntents) == 0 {
+				section.QueryIntents = analysisDocSectionQueryIntents(doc.Name, section.ID, section.Title)
+			}
+			if section.Priority == 0 {
+				section.Priority = analysisDocSectionPriority(doc.Name, section.ID, section.Title)
+			}
 		}
 	}
 	return manifest
@@ -349,6 +372,7 @@ func buildAnalysisAPIEntrypointsDoc(run ProjectAnalysisRun) string {
 	fmt.Fprintf(&b, "# API And Entrypoints\n\n")
 	analysisDocsWriteHeader(&b, run)
 	analysisDocsWriteDocMetadata(&b, run, "API_AND_ENTRYPOINTS.md")
+	analysisDocsWriteStartupLens(&b, run)
 	analysisDocsWriteList(&b, "Snapshot Entrypoint Files", run.Snapshot.EntrypointFiles, 20)
 	if len(run.SemanticIndexV2.Symbols) > 0 {
 		fmt.Fprintf(&b, "\n## Indexed Symbols\n\n")
@@ -369,6 +393,8 @@ func buildAnalysisAPIEntrypointsDoc(run ProjectAnalysisRun) string {
 			fmt.Fprintf(&b, "- `%s` -> `%s` (%s)\n", edge.SourceID, edge.TargetID, edge.Type)
 		}
 	}
+	analysisDocsWriteDomainCriticalAnchors(&b, run)
+	analysisDocsWriteIOCTLContract(&b, run)
 	return b.String()
 }
 
@@ -1169,6 +1195,141 @@ func analysisDocReuseTargets(name string) []string {
 	}
 }
 
+func analysisDocQueryIntents(name string) []string {
+	switch name {
+	case "DEVELOPER_OVERVIEW.md":
+		return []string{"deep_map", "module_drilldown"}
+	case "FOLDER_MAP.md":
+		return []string{"deep_map", "module_drilldown", "impact"}
+	case "MODULES.md":
+		return []string{"deep_map", "module_drilldown", "unreal_structure", "build_artifact"}
+	case "STRUCTURE_DIAGRAMS.md":
+		return []string{"deep_map", "flow_trace", "security_surface", "unreal_structure", "build_artifact"}
+	case "CODE_STRUCTURE_REFERENCE.md":
+		return []string{"deep_map", "flow_trace", "impact", "module_drilldown", "security_surface", "build_artifact"}
+	case "ARCHITECTURE.md":
+		return []string{"deep_map", "flow_trace", "security_surface"}
+	case "SECURITY_SURFACE.md":
+		return []string{"security_surface", "unreal_structure", "verification"}
+	case "API_AND_ENTRYPOINTS.md":
+		return []string{"flow_trace", "security_surface"}
+	case "BUILD_AND_ARTIFACTS.md":
+		return []string{"build_artifact", "impact", "unreal_structure"}
+	case "VERIFICATION_MATRIX.md":
+		return []string{"verification", "impact", "security_surface"}
+	case "FUZZ_TARGETS.md":
+		return []string{"security_surface", "verification"}
+	case "OPERATIONS_RUNBOOK.md":
+		return []string{"verification", "deep_map"}
+	default:
+		return []string{"general"}
+	}
+}
+
+func analysisDocPriority(name string) int {
+	switch name {
+	case "DEVELOPER_OVERVIEW.md":
+		return 9
+	case "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
+		return 8
+	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md":
+		return 7
+	case "FOLDER_MAP.md", "API_AND_ENTRYPOINTS.md", "FUZZ_TARGETS.md":
+		return 6
+	default:
+		return 3
+	}
+}
+
+func analysisDocSectionQueryIntents(docName string, sectionID string, sectionTitle string) []string {
+	text := strings.ToLower(strings.Join([]string{docName, sectionID, sectionTitle}, " "))
+	intents := []string{}
+	if containsAny(text, "runtime", "flow", "call", "entry", "startup", "execution", "api") {
+		intents = append(intents, "flow_trace")
+	}
+	if containsAny(text, "security", "surface", "trust", "boundary", "attack", "fuzz") {
+		intents = append(intents, "security_surface")
+	}
+	if containsAny(text, "impact", "dependency", "dependencies", "risk", "verification", "change") {
+		intents = append(intents, "impact", "verification")
+	}
+	if containsAny(text, "module", "folder", "ownership", "responsibility", "public api", "internal") {
+		intents = append(intents, "module_drilldown", "deep_map")
+	}
+	if containsAny(text, "build", "artifact", "compile", "generated", "target") {
+		intents = append(intents, "build_artifact")
+	}
+	if containsAny(text, "unreal", "replication", "reflection", "rpc", "asset", "config") {
+		intents = append(intents, "unreal_structure")
+	}
+	if len(intents) == 0 {
+		intents = append(intents, analysisDocQueryIntents(docName)...)
+	}
+	return analysisUniqueStrings(intents)
+}
+
+func analysisDocSectionPriority(docName string, sectionID string, sectionTitle string) int {
+	priority := analysisDocPriority(docName)
+	text := strings.ToLower(strings.Join([]string{sectionID, sectionTitle}, " "))
+	if containsAny(text, "primary", "runtime", "call", "trust", "security", "module", "source anchor", "verification", "critical anchor", "deterministic", "fact pack") {
+		priority += 2
+	}
+	if containsAny(text, "summary", "overview", "project shape", "inventory") {
+		priority++
+	}
+	return priority
+}
+
+func analysisDocSectionEntityRefs(run ProjectAnalysisRun, docName string, sectionID string, sectionTitle string) []string {
+	items := []string{}
+	text := strings.ToLower(strings.Join([]string{docName, sectionID, sectionTitle}, " "))
+	if containsAny(text, "module", "build", "unreal") {
+		for _, module := range buildDeveloperModuleRecords(run) {
+			items = append(items, module.ID, module.Name, module.Root)
+		}
+	}
+	if containsAny(text, "folder") {
+		for _, folder := range buildDeveloperFolderRecords(run) {
+			items = append(items, folder.Path)
+		}
+	}
+	if containsAny(text, "symbol", "call", "entry", "surface", "security", "verification") {
+		for _, symbol := range limitSymbolRecords(run.SemanticIndexV2.Symbols, 80) {
+			items = append(items, symbol.ID, symbol.Name, symbol.CanonicalName, symbol.File)
+		}
+	}
+	if containsAny(text, "build", "artifact", "compile") {
+		for _, ctx := range run.Snapshot.BuildContexts {
+			items = append(items, ctx.ID, ctx.Name, ctx.Module, ctx.Project, ctx.Target)
+		}
+	}
+	return analysisUniqueStrings(analysisDocSlashPaths(items))
+}
+
+func analysisDocSectionGraphRefs(run ProjectAnalysisRun, docName string, sectionID string, sectionTitle string) []string {
+	text := strings.ToLower(strings.Join([]string{docName, sectionID, sectionTitle}, " "))
+	items := []string{}
+	if containsAny(text, "runtime", "flow", "call", "entry") {
+		items = append(items, "runtime_edges", "call_edges")
+	}
+	if containsAny(text, "build", "artifact", "compile", "generated") {
+		items = append(items, "build_ownership_edges", "generated_code_edges")
+	}
+	if containsAny(text, "trust", "security", "surface", "attack") {
+		items = append(items, "overlay_edges", "trust_boundary_graph")
+	}
+	if containsAny(text, "module", "folder", "dependency") {
+		items = append(items, "module_dependency_graph", "folder_module_map")
+	}
+	if containsAny(text, "unreal", "replication", "rpc", "asset", "config") {
+		items = append(items, "unreal_graph")
+	}
+	if len(run.UnrealGraph.Edges) == 0 && analysisContainsStringCI(items, "unreal_graph") {
+		items = removeAnalysisStringCI(items, "unreal_graph")
+	}
+	return analysisUniqueStrings(items)
+}
+
 func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSection {
 	sectionTitles := map[string][][2]string{
 		"ARCHITECTURE.md": {
@@ -1180,7 +1341,12 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 		},
 		"DEVELOPER_OVERVIEW.md": {
 			{"developer.project_shape", "Project Shape"},
+			{"developer.deterministic_architecture_fact_pack", "Deterministic Architecture Fact Pack"},
+			{"developer.architecture_layers", "Architecture Layers"},
 			{"developer.primary_execution_flow", "Primary Execution Flow"},
+			{"developer.runtime_narratives", "Primary Runtime Narratives"},
+			{"developer.cross_cutting_paths", "Most Important Cross-Cutting Paths"},
+			{"developer.domain_critical_anchors", "Domain Critical Anchors"},
 			{"developer.main_development_areas", "Main Development Areas"},
 			{"developer.where_to_start", "Where To Start By Task"},
 			{"developer.reading_order", "Reading Order"},
@@ -1194,22 +1360,36 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 		"MODULES.md": {
 			{"modules.inventory", "Module Inventory"},
 			{"modules.cards", "Module Responsibility Cards"},
+			{"modules.public_api_boundary", "Public API And Boundary"},
+			{"modules.internal_ownership", "Internal Ownership"},
 			{"modules.dependencies", "Module Dependencies"},
+			{"modules.upstream_downstream", "Upstream Downstream Dependencies"},
+			{"modules.change_impact", "Change Impact Notes"},
 			{"modules.verification", "Module Verification Notes"},
 		},
 		"STRUCTURE_DIAGRAMS.md": {
 			{"diagrams.module_dependency_graph", "Module Dependency Graph"},
 			{"diagrams.folder_module_map", "Folder And Module Map"},
 			{"diagrams.primary_runtime_flow", "Primary Runtime Flow"},
+			{"diagrams.startup_runtime_flow", "Startup To Runtime Flow"},
 			{"diagrams.build_artifact_flow", "Build And Artifact Flow"},
+			{"diagrams.build_ownership_flow", "Build Ownership Flow"},
 			{"diagrams.trust_boundary_summary", "Trust Boundary Summary"},
+			{"diagrams.security_boundary_flow", "Security Boundary Flow"},
+			{"diagrams.unreal_reflection_replication", "Unreal Reflection And Replication Flow"},
 		},
 		"CODE_STRUCTURE_REFERENCE.md": {
 			{"code.important_files", "Important Files"},
 			{"code.important_symbols", "Important Symbols"},
+			{"code.domain_critical_anchors", "Domain Critical Anchors"},
+			{"code.deterministic_architecture_fact_pack", "Deterministic Architecture Fact Pack"},
+			{"code.symbol_clusters", "Symbol Clusters"},
 			{"code.call_paths", "Representative Call Paths"},
+			{"code.caller_callee_hotspots", "Caller Callee Hotspots"},
 			{"code.build_ownership", "Build Ownership"},
+			{"code.build_context_source_mapping", "Build Context To Source Mapping"},
 			{"code.generated_artifacts", "Generated Or Derived Artifacts"},
+			{"code.verification_anchor_map", "Verification Anchor Map"},
 			{"code.source_anchors", "Source Anchors"},
 		},
 		"SECURITY_SURFACE.md": {
@@ -1254,9 +1434,37 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 			Confidence:    analysisDocConfidence(run, name),
 			StaleMarkers:  analysisDocSectionStaleMarkers(run, name, item[0], item[1]),
 			ReuseTargets:  analysisDocReuseTargets(name),
+			QueryIntents:  analysisDocSectionQueryIntents(name, item[0], item[1]),
+			Priority:      analysisDocSectionPriority(name, item[0], item[1]),
+			EntityRefs:    analysisDocSectionEntityRefs(run, name, item[0], item[1]),
+			GraphRefs:     analysisDocSectionGraphRefs(run, name, item[0], item[1]),
 		})
 	}
 	return out
+}
+
+func removeAnalysisStringCI(items []string, value string) []string {
+	out := []string{}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(value)) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func analysisContainsStringCI(items []string, value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item), value) {
+			return true
+		}
+	}
+	return false
 }
 
 func subsystemFiles(subsystems []KnowledgeSubsystem) []string {

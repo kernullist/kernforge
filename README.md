@@ -81,7 +81,7 @@ Its current differentiators are:
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL and one-shot `-prompt` mode
-- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`
+- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `opencode`, `opencode-go`, `codex-cli`
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
@@ -119,12 +119,15 @@ Its current differentiators are:
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
 - In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- The pipeline also emits `architecture_facts.json`, a deterministic fact pack with top-level directory facts, domain hints, source anchors, registration/dispatch flow facts, boundary facts, and invariants used by cached architecture Q&A
 - Generated docs and `dashboard.html` make the latest project knowledge base browsable as a static document portal with search, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- Before the final handoff, Kernforge prints a highlighted `Analysis artifacts:` block with the report, JSON, dashboard, docs, and manifest paths so users do not need to scroll back through a long run
 - After analysis, Kernforge prints an `Analysis handoff` that points to `/analyze-dashboard`, `/fuzz-campaign run`, a top `/fuzz-func ...` drilldown, or `/verify` when the generated docs support that next step
 - The source-anchor parser now handles modern C++ patterns such as template out-of-line methods, operators, `requires` and `decltype(auto)` headers, API-macro-wrapped scopes, and friend functions
 - Security-mode final documents now add a `Security Surface Decomposition` section so privileged and abuse-sensitive paths do not get flattened into a generic summary
 - Dedicated worker and reviewer models can be configured separately from the main chat model
 - Architecture knowledge packs and performance lenses are written under `.kernforge/analysis`
+- `.kernforge/analysis/latest` is replaced on each successful persistence pass so stale files from older runs do not leak into cached retrieval
 - `/analyze-dashboard [latest|path]` opens the latest or a selected analysis document portal
 - `/docs-refresh` regenerates the latest operational docs, dashboard, and docs-backed vector corpus deterministically from the saved analysis run
 - `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
@@ -201,6 +204,7 @@ Its current differentiators are:
 - Multiline input by ending a line with `\`
 - Automatic code scouting when no explicit file mention is provided
 - Recent `analyze-project` results can be injected as cached architecture context before Kernforge rereads large areas
+- Deep project-structure questions use a compact answer pack built from generated docs, `architecture_facts.json`, and current-source probes; cached answers are checked against deterministic facts before Kernforge decides whether it can answer without tools
 - When cached analysis is sufficient for a question, Kernforge can answer directly from that summary without extra tool calls
 - Cached `read_file` NOTE results are now treated as a signal that the relevant lines were already seen, which helps reduce large-file reread loops
 - `grep` cache-nearby hints help the model choose smaller follow-up `read_file` ranges around fresh unmatched lines instead of rescanning a wide block
@@ -209,7 +213,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|ollama`, analyze-project modes, compact fuzz campaign actions, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, analyze-project modes, compact fuzz campaign actions, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -343,6 +347,26 @@ OpenAI-compatible:
 ```powershell
 $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
+```
+
+OpenCode:
+
+```powershell
+$env:OPENCODE_API_KEY = "your_key"
+.\kernforge.exe -provider opencode -model opencode/gpt-5.5
+```
+
+OpenCode Go:
+
+```powershell
+$env:OPENCODE_GO_API_KEY = "your_key"
+.\kernforge.exe -provider opencode-go -model opencode-go/deepseek-v4-pro
+```
+
+Codex CLI:
+
+```powershell
+.\kernforge.exe -provider codex-cli -model gpt-5.5-pro
 ```
 
 Inside the interactive REPL, use `/provider status` to inspect the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility.
@@ -559,7 +583,7 @@ Later sources override earlier ones:
 
 | Field | Description |
 | --- | --- |
-| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible` |
+| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `opencode`, `opencode-go`, `codex-cli` |
 | `model` | Model name sent to the provider |
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
@@ -637,6 +661,9 @@ Provider-specific:
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
 - `OPENROUTER_API_KEY`
+- `OPENCODE_API_KEY`
+- `OPENCODE_ZEN_API_KEY`
+- `OPENCODE_GO_API_KEY`
 - `OLLAMA_HOST`
 - `OLLAMA_API_KEY`
 
@@ -680,6 +707,26 @@ Provider-specific:
 - Requires an explicit `base_url`
 - Applies the same assistant tool-call normalization and request-preview diagnostics as the OpenAI provider
 - `/provider status` can show the normalized endpoint and key presence, but billing visibility depends on the upstream provider
+
+### OpenCode
+
+- Default base URL: `https://opencode.ai/zen`
+- Reads `OPENCODE_API_KEY` and falls back to `OPENCODE_ZEN_API_KEY`
+- Fetches the model list from the configured OpenCode API key, so the picker reflects the subscription/account that will actually be used
+- Routes GPT/Codex-style models through responses, Claude-style models through messages, and compatible chat models through chat completions
+
+### OpenCode Go
+
+- Default base URL: `https://opencode.ai/zen/go`
+- Reads `OPENCODE_GO_API_KEY`, then falls back to `OPENCODE_API_KEY` and `OPENCODE_ZEN_API_KEY`
+- Fetches models using the OpenCode Go key and keeps Go subscription routing separate from Zen pay-as-you-go routing
+- Routes known message-endpoint models through messages and other supported models through chat completions
+
+### Codex CLI
+
+- Uses the installed `codex` command as a local provider bridge instead of sending an API key through Kernforge
+- The provider setup flow asks for the command path and supported model name, including higher-tier Codex CLI models exposed by the installed account
+- `api_key` and provider-key storage are intentionally ignored for `codex-cli`
 
 ## Memory
 
@@ -884,7 +931,7 @@ Explain the structure of this repository
 
 - Slash commands
 - Command and subcommand descriptions in completion menus
-- `/provider status|anthropic|openai|openrouter|ollama`
+- `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`
 - `/analyze-project --path ...`, `/analyze-project --mode ...`, and built-in mode values
 - `/fuzz-campaign status|run|new|list|show`
 - `@file` mentions
@@ -1101,6 +1148,7 @@ What it does:
 - Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
 - Uses a conductor plus multiple worker/reviewer passes
 - Builds a structural index and an Unreal semantic graph
+- Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
 - Writes Markdown and JSON analysis artifacts
 - Generates an operational documentation set with `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
@@ -1110,6 +1158,7 @@ What it does:
 - Recollects generated docs into `vector_corpus.*` as whole-document and section-level records with source anchors, confidence, stale markers, and reuse metadata
 - README describes product scope and flagship commands, the feature guide describes practical operating loops, and generated docs serve as the per-run project knowledge base with source anchors, confidence, and stale markers
 - Maintains a `latest` knowledge pack for follow-up analysis
+- Replaces `.kernforge/analysis/latest` during persistence so old dashboards, docs, or fact packs do not survive into the next retrieval pass
 - Produces a vector corpus and provider-specific ingestion seeds
 - Reuses unchanged shard results when incremental analysis is enabled
 
@@ -1121,6 +1170,7 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
+- `.kernforge/analysis/<timestamp>_<goal>_architecture_facts.json`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.md`
 - `.kernforge/analysis/<timestamp>_<goal>_knowledge.json`
 - `.kernforge/analysis/<timestamp>_<goal>_performance_lens.md`
@@ -1137,6 +1187,7 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_dashboard.html`
 - `.kernforge/analysis/latest/`
 - `.kernforge/analysis/latest/run.json`
+- `.kernforge/analysis/latest/architecture_facts.json`
 - `.kernforge/analysis/latest/docs/`
 - `.kernforge/analysis/latest/docs_index.md`
 - `.kernforge/analysis/latest/docs_manifest.json`

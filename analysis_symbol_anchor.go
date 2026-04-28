@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,11 @@ type sourceFunctionAnchor struct {
 	Body   string
 }
 
+const (
+	registrationIncludeClosureMaxDepth = 6
+	registrationIncludeClosureMaxFiles = 128
+)
+
 type analysisCStyleScope struct {
 	Kind  string
 	Name  string
@@ -40,10 +46,6 @@ type analysisCStyleFunctionHeader struct {
 func collectSourceAnchorsV2(snapshot ProjectSnapshot, existingSymbols map[string]SymbolRecord) sourceAnchorExtraction {
 	extraction := sourceAnchorExtraction{}
 	anchors := collectSourceFunctionAnchors(snapshot)
-	if len(anchors) == 0 {
-		return extraction
-	}
-
 	symbolLookup := buildAnchorSymbolLookup(existingSymbols, anchors)
 	callSeen := map[string]struct{}{}
 	overlaySeen := map[string]struct{}{}
@@ -93,6 +95,49 @@ func collectSourceAnchorsV2(snapshot ProjectSnapshot, existingSymbols map[string
 			callSeen[key] = struct{}{}
 			extraction.Calls = append(extraction.Calls, call)
 		}
+	}
+
+	registrationTables := collectFileLevelRegistrationTableAnchors(snapshot, symbolLookup)
+	for _, symbol := range registrationTables.Symbols {
+		extraction.Symbols = append(extraction.Symbols, symbol)
+		definitionKey := symbol.ID + "|" + symbol.File + "|definition"
+		if _, ok := occurrenceSeen[definitionKey]; !ok {
+			occurrenceSeen[definitionKey] = struct{}{}
+			extraction.Occurrences = append(extraction.Occurrences, SymbolOccurrence{
+				SymbolID: symbol.ID,
+				File:     symbol.File,
+				Role:     "definition",
+			})
+		}
+		for _, ctxID := range buildContextIDsForFile(snapshot, symbol.File) {
+			key := ctxID + "|compiles_symbol|" + symbol.ID
+			if _, ok := buildSeen[key]; ok {
+				continue
+			}
+			buildSeen[key] = struct{}{}
+			extraction.Builds = append(extraction.Builds, BuildOwnershipEdge{
+				SourceID: ctxID,
+				TargetID: symbol.ID,
+				Type:     "compiles_symbol",
+				Evidence: []string{symbol.File},
+			})
+		}
+	}
+	for _, edge := range registrationTables.Calls {
+		key := edge.SourceID + "|" + edge.Type + "|" + edge.TargetID
+		if _, ok := callSeen[key]; ok {
+			continue
+		}
+		callSeen[key] = struct{}{}
+		extraction.Calls = append(extraction.Calls, edge)
+	}
+	for _, edge := range registrationTables.Overlays {
+		key := edge.Domain + "|" + edge.SourceID + "|" + edge.Type + "|" + edge.TargetID
+		if _, ok := overlaySeen[key]; ok {
+			continue
+		}
+		overlaySeen[key] = struct{}{}
+		extraction.Overlays = append(extraction.Overlays, edge)
 	}
 
 	sort.Slice(extraction.Symbols, func(i int, j int) bool {
@@ -1119,12 +1164,15 @@ func sourceAnchorOverlays(symbol SymbolRecord) []OverlayEdge {
 		domain string
 		typ    string
 	}{
-		"ioctl_surface":     {domain: "ioctl_surface", typ: "issues_ioctl"},
-		"handle_surface":    {domain: "handle_surface", typ: "opens_handle"},
-		"memory_surface":    {domain: "memory_surface", typ: "touches_memory"},
-		"rpc_surface":       {domain: "rpc_surface", typ: "dispatches_rpc"},
-		"tamper_surface":    {domain: "tamper_surface", typ: "touches_tamper_surface"},
-		"security_boundary": {domain: "security_boundary", typ: "crosses_trust_boundary"},
+		"ioctl_surface":       {domain: "ioctl_surface", typ: "issues_ioctl"},
+		"handle_surface":      {domain: "handle_surface", typ: "opens_handle"},
+		"memory_surface":      {domain: "memory_surface", typ: "touches_memory"},
+		"rpc_surface":         {domain: "rpc_surface", typ: "dispatches_rpc"},
+		"callback_surface":    {domain: "callback_surface", typ: "registers_callback"},
+		"file_filter_surface": {domain: "file_filter_surface", typ: "registers_file_filter"},
+		"process_surface":     {domain: "process_surface", typ: "registers_process_callback"},
+		"tamper_surface":      {domain: "tamper_surface", typ: "touches_tamper_surface"},
+		"security_boundary":   {domain: "security_boundary", typ: "crosses_trust_boundary"},
 	}
 	out := []OverlayEdge{}
 	for _, tag := range symbol.Tags {
@@ -1139,6 +1187,752 @@ func sourceAnchorOverlays(symbol SymbolRecord) []OverlayEdge {
 		}
 	}
 	return out
+}
+
+func collectFileLevelRegistrationTableAnchors(snapshot ProjectSnapshot, lookup anchorSymbolLookup) sourceAnchorExtraction {
+	out := sourceAnchorExtraction{}
+	for _, file := range snapshot.Files {
+		if !analysisSupportsSourceAnchors(file.Extension) || analysisLanguageForExtension(file.Extension) != "cpp" {
+			continue
+		}
+		abs := filepath.Join(snapshot.Root, filepath.FromSlash(file.Path))
+		data, err := os.ReadFile(abs)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+		masked := analysisMaskCommentsAndStrings(text)
+		aliases := collectRegistrationTableTypeAliasesForFile(snapshot, file, masked)
+		seenTables := map[string]struct{}{}
+		for _, table := range collectRegistrationTableDeclarations(masked, aliases) {
+			key := strconv.Itoa(table.Start) + "|" + table.TableName
+			if _, ok := seenTables[key]; ok {
+				continue
+			}
+			seenTables[key] = struct{}{}
+			includeWithoutTargets := table.SourceKind == "explicit" || table.SourceKind == "alias"
+			out = appendRegistrationTableAnchor(out, snapshot, file, text, masked, table, lookup, includeWithoutTargets)
+		}
+		definitions := collectRegistrationMacroDefinitionsForFile(snapshot, file, masked)
+		out = appendRegistrationMacroAnchors(out, snapshot, file, text, masked, definitions, lookup)
+	}
+	return out
+}
+
+type registrationTableDeclaration struct {
+	TableType  string
+	SourceType string
+	TableName  string
+	Start      int
+	OpenBrace  int
+	CloseBrace int
+	SourceKind string
+}
+
+func collectRegistrationTableDeclarations(masked string, knownAliases map[string]string) []registrationTableDeclaration {
+	aliases := map[string]string{}
+	for key, value := range knownAliases {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			aliases[key] = value
+		}
+	}
+	for key, value := range collectRegistrationTableTypeAliases(masked) {
+		aliases[key] = value
+	}
+	types := []string{"OB_OPERATION_REGISTRATION", "FLT_OPERATION_REGISTRATION"}
+	for alias := range aliases {
+		types = append(types, alias)
+	}
+	sort.Slice(types, func(i int, j int) bool {
+		if len(types[i]) == len(types[j]) {
+			return types[i] < types[j]
+		}
+		return len(types[i]) > len(types[j])
+	})
+	alternatives := []string{}
+	for _, item := range analysisUniqueStrings(types) {
+		alternatives = append(alternatives, regexp.QuoteMeta(item))
+	}
+	out := []registrationTableDeclaration{}
+	if len(alternatives) > 0 {
+		tableRe := regexp.MustCompile(`(?is)\b(?:static\s+|extern\s+|const\s+|CONST\s+|volatile\s+|PAGED\s+|__declspec\s*\([^)]*\)\s*)*(` + strings.Join(alternatives, "|") + `)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*\{`)
+		for _, match := range tableRe.FindAllStringSubmatchIndex(masked, -1) {
+			if len(match) < 6 || match[2] < 0 || match[4] < 0 {
+				continue
+			}
+			sourceType := strings.TrimSpace(masked[match[2]:match[3]])
+			tableName := strings.TrimSpace(masked[match[4]:match[5]])
+			tableType := firstNonBlankString(aliases[sourceType], sourceType)
+			openBrace := match[1] - 1
+			closeBrace := analysisMatchClosingBrace(masked, openBrace)
+			if tableType == "" || tableName == "" || closeBrace <= openBrace {
+				continue
+			}
+			sourceKind := "explicit"
+			if !strings.EqualFold(tableType, sourceType) {
+				sourceKind = "alias"
+			}
+			out = append(out, registrationTableDeclaration{
+				TableType:  tableType,
+				SourceType: sourceType,
+				TableName:  tableName,
+				Start:      match[0],
+				OpenBrace:  openBrace,
+				CloseBrace: closeBrace,
+				SourceKind: sourceKind,
+			})
+		}
+	}
+
+	genericRe := regexp.MustCompile(`(?is)\b(?:static\s+|extern\s+|const\s+|CONST\s+|volatile\s+|PAGED\s+|__declspec\s*\([^)]*\)\s*)*([A-Za-z_][A-Za-z0-9_]*(?:REGISTRATION|Registration|CALLBACKS|Callbacks|CALLBACK|Callback|OPERATIONS|Operations|OPERATION|Operation|FILTER|Filter)[A-Za-z0-9_]*)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]*\])?\s*=\s*\{`)
+	for _, match := range genericRe.FindAllStringSubmatchIndex(masked, -1) {
+		if len(match) < 6 || match[2] < 0 || match[4] < 0 {
+			continue
+		}
+		tableType := strings.TrimSpace(masked[match[2]:match[3]])
+		tableName := strings.TrimSpace(masked[match[4]:match[5]])
+		openBrace := match[1] - 1
+		closeBrace := analysisMatchClosingBrace(masked, openBrace)
+		if tableType == "" || tableName == "" || closeBrace <= openBrace {
+			continue
+		}
+		if !registrationDescriptorLooksRelevant(tableType + " " + tableName + " " + masked[openBrace:closeBrace+1]) {
+			continue
+		}
+		out = append(out, registrationTableDeclaration{
+			TableType:  tableType,
+			SourceType: tableType,
+			TableName:  tableName,
+			Start:      match[0],
+			OpenBrace:  openBrace,
+			CloseBrace: closeBrace,
+			SourceKind: "generic_initializer",
+		})
+	}
+	return out
+}
+
+func collectRegistrationTableTypeAliases(masked string) map[string]string {
+	aliases := map[string]string{}
+	typedefRe := regexp.MustCompile(`(?is)\btypedef\s+((?:OB|FLT)_OPERATION_REGISTRATION)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;`)
+	for _, match := range typedefRe.FindAllStringSubmatch(masked, -1) {
+		if len(match) >= 3 {
+			aliases[strings.TrimSpace(match[2])] = strings.TrimSpace(match[1])
+		}
+	}
+	usingRe := regexp.MustCompile(`(?is)\busing\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*((?:OB|FLT)_OPERATION_REGISTRATION)\s*;`)
+	for _, match := range usingRe.FindAllStringSubmatch(masked, -1) {
+		if len(match) >= 3 {
+			aliases[strings.TrimSpace(match[1])] = strings.TrimSpace(match[2])
+		}
+	}
+	return aliases
+}
+
+func collectRegistrationTableTypeAliasesForFile(snapshot ProjectSnapshot, file ScannedFile, masked string) map[string]string {
+	out := map[string]string{}
+	for _, includePath := range registrationIncludeClosure(snapshot, file, registrationIncludeClosureMaxDepth) {
+		includeMasked, ok := readMaskedAnalysisSourceFile(snapshot, includePath)
+		if !ok {
+			continue
+		}
+		for key, value := range collectRegistrationTableTypeAliases(includeMasked) {
+			out[key] = value
+		}
+	}
+	for key, value := range collectRegistrationTableTypeAliases(masked) {
+		out[key] = value
+	}
+	return out
+}
+
+type registrationMacroDefinition struct {
+	Name   string
+	Params []string
+	Body   string
+}
+
+func collectRegistrationMacroDefinitions(masked string) map[string][]registrationMacroDefinition {
+	out := map[string][]registrationMacroDefinition{}
+	defineRe := regexp.MustCompile(`(?is)^#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(.*)$`)
+	for _, logicalLine := range analysisLogicalPreprocessorLines(masked) {
+		line := strings.TrimSpace(logicalLine)
+		match := defineRe.FindStringSubmatch(line)
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.TrimSpace(match[1])
+		params := []string{}
+		for _, param := range splitCStyleCallArguments(match[2]) {
+			param = strings.TrimSpace(param)
+			if param != "" {
+				params = append(params, param)
+			}
+		}
+		body := strings.TrimSpace(strings.ReplaceAll(match[3], "\\\n", " "))
+		body = strings.TrimSpace(strings.TrimSuffix(body, "\\"))
+		if name == "" || len(params) == 0 || body == "" {
+			continue
+		}
+		out[name] = append(out[name], registrationMacroDefinition{Name: name, Params: params, Body: body})
+	}
+	return out
+}
+
+func collectRegistrationMacroDefinitionsForFile(snapshot ProjectSnapshot, file ScannedFile, masked string) map[string][]registrationMacroDefinition {
+	out := map[string][]registrationMacroDefinition{}
+	for _, includePath := range registrationIncludeClosure(snapshot, file, registrationIncludeClosureMaxDepth) {
+		includeMasked, ok := readMaskedAnalysisSourceFile(snapshot, includePath)
+		if !ok {
+			continue
+		}
+		for key, value := range collectRegistrationMacroDefinitions(includeMasked) {
+			out[key] = append(out[key], value...)
+		}
+	}
+	for key, value := range collectRegistrationMacroDefinitions(masked) {
+		out[key] = value
+	}
+	return out
+}
+
+func registrationIncludeClosure(snapshot ProjectSnapshot, file ScannedFile, maxDepth int) []string {
+	if maxDepth <= 0 {
+		return nil
+	}
+	fileByPath := registrationSnapshotFilesByPath(snapshot)
+	importGraph := snapshot.ImportGraph
+	if len(importGraph) == 0 {
+		importGraph = map[string][]string{}
+		for _, item := range snapshot.Files {
+			importGraph[item.Path] = append([]string(nil), item.Imports...)
+		}
+	}
+	type queueItem struct {
+		path  string
+		depth int
+	}
+	queue := []queueItem{}
+	for _, dep := range append([]string{}, file.Imports...) {
+		queue = append(queue, queueItem{path: dep, depth: 1})
+	}
+	for _, dep := range importGraph[file.Path] {
+		queue = append(queue, queueItem{path: dep, depth: 1})
+	}
+	seen := map[string]struct{}{strings.TrimSpace(file.Path): {}}
+	out := []string{}
+	for len(queue) > 0 {
+		item := queue[0]
+		queue = queue[1:]
+		path := strings.TrimSpace(filepath.ToSlash(item.path))
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		depFile, ok := fileByPath[path]
+		if !ok || !analysisSupportsSourceAnchors(depFile.Extension) || analysisLanguageForExtension(depFile.Extension) != "cpp" {
+			continue
+		}
+		out = append(out, path)
+		if len(out) >= registrationIncludeClosureMaxFiles {
+			break
+		}
+		if item.depth >= maxDepth {
+			continue
+		}
+		for _, next := range append([]string{}, depFile.Imports...) {
+			queue = append(queue, queueItem{path: next, depth: item.depth + 1})
+		}
+		for _, next := range importGraph[path] {
+			queue = append(queue, queueItem{path: next, depth: item.depth + 1})
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func registrationSnapshotFilesByPath(snapshot ProjectSnapshot) map[string]ScannedFile {
+	if len(snapshot.FilesByPath) > 0 {
+		return snapshot.FilesByPath
+	}
+	out := map[string]ScannedFile{}
+	for _, file := range snapshot.Files {
+		out[file.Path] = file
+	}
+	return out
+}
+
+func readMaskedAnalysisSourceFile(snapshot ProjectSnapshot, path string) (string, bool) {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return "", false
+	}
+	abs := filepath.Join(snapshot.Root, filepath.FromSlash(path))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", false
+	}
+	return analysisMaskCommentsAndStrings(string(data)), true
+}
+
+func analysisLogicalPreprocessorLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	out := []string{}
+	for index := 0; index < len(lines); index++ {
+		line := strings.TrimRight(lines[index], " \t\r")
+		if !strings.HasSuffix(line, "\\") {
+			out = append(out, lines[index])
+			continue
+		}
+		var b strings.Builder
+		for {
+			b.WriteString(strings.TrimSuffix(strings.TrimRight(lines[index], " \t\r"), "\\"))
+			b.WriteString("\n")
+			if index+1 >= len(lines) {
+				break
+			}
+			index++
+			next := strings.TrimRight(lines[index], " \t\r")
+			if !strings.HasSuffix(next, "\\") {
+				b.WriteString(next)
+				break
+			}
+		}
+		out = append(out, b.String())
+	}
+	return out
+}
+
+func appendRegistrationTableAnchor(out sourceAnchorExtraction, snapshot ProjectSnapshot, file ScannedFile, text string, masked string, table registrationTableDeclaration, lookup anchorSymbolLookup, includeWithoutTargets bool) sourceAnchorExtraction {
+	descriptor := table.TableType + " " + table.TableName + " " + masked[table.OpenBrace:table.CloseBrace+1]
+	tableKind, edgeType, tags := classifyRegistrationTable(descriptor)
+	startLine := analysisLineNumberAt(text, table.Start)
+	endLine := analysisLineNumberAt(text, table.CloseBrace)
+	symbol := SymbolRecord{
+		ID:             buildRegistrationTableAnchorID(tableKind, table.TableName, file.Path),
+		Name:           table.TableName,
+		CanonicalName:  table.TableName,
+		Kind:           tableKind,
+		Language:       analysisLanguageForExtension(file.Extension),
+		File:           file.Path,
+		Module:         unrealModuleForFile(snapshot, file.Path),
+		BuildContextID: firstSliceValue(buildContextIDsForFile(snapshot, file.Path)),
+		Signature:      analysisTrimSignature(text[table.Start:table.OpenBrace]),
+		StartLine:      startLine,
+		EndLine:        endLine,
+		Tags:           tags,
+		Attributes: map[string]string{
+			"line_start":  strconv.Itoa(startLine),
+			"line_end":    strconv.Itoa(endLine),
+			"table_type":  table.TableType,
+			"source_type": table.SourceType,
+			"source_kind": table.SourceKind,
+		},
+	}
+	calls := registrationCallbackEdgesFromText(symbol, masked[table.OpenBrace:table.CloseBrace+1], table.TableName, table.TableType, edgeType, lookup)
+	if len(calls) == 0 && !includeWithoutTargets {
+		return out
+	}
+	out.Symbols = append(out.Symbols, symbol)
+	out.Overlays = append(out.Overlays, sourceAnchorOverlays(symbol)...)
+	out.Calls = append(out.Calls, calls...)
+	return out
+}
+
+func appendRegistrationMacroAnchors(out sourceAnchorExtraction, snapshot ProjectSnapshot, file ScannedFile, text string, masked string, definitions map[string][]registrationMacroDefinition, lookup anchorSymbolLookup) sourceAnchorExtraction {
+	macroRe := regexp.MustCompile(`(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	matches := macroRe.FindAllStringSubmatchIndex(masked, -1)
+	seen := map[string]struct{}{}
+	for _, match := range matches {
+		if len(match) < 4 || match[2] < 0 {
+			continue
+		}
+		if analysisIndexInPreprocessorDirective(masked, match[0]) {
+			continue
+		}
+		macroName := strings.TrimSpace(masked[match[2]:match[3]])
+		if !registrationMacroNameLooksRelevant(macroName) {
+			continue
+		}
+		openParen := match[1] - 1
+		closeParen := analysisMatchClosingParen(masked, openParen)
+		if closeParen <= openParen {
+			continue
+		}
+		args := masked[openParen+1 : closeParen]
+		if !registrationDescriptorLooksRelevant(macroName + " " + args) {
+			continue
+		}
+		argList := splitCStyleCallArguments(args)
+		expandedVariants := expandRegistrationMacroInvocationVariants(macroName, argList, definitions, 0)
+		if len(expandedVariants) == 0 {
+			expandedVariants = []string{""}
+		}
+		for variantIndex, expanded := range expandedVariants {
+			descriptor := strings.TrimSpace(macroName + " " + args + " " + expanded)
+			tableName := registrationMacroAnchorName(macroName, descriptor, lookup)
+			if tableName == "" {
+				tableName = fmt.Sprintf("%s:%d", macroName, analysisLineNumberAt(text, match[0]))
+			}
+			tableKind, edgeType, tags := classifyRegistrationTable(descriptor)
+			startLine := analysisLineNumberAt(text, match[0])
+			symbolID := buildRegistrationMacroAnchorID(tableKind, macroName, tableName, file.Path, startLine)
+			if len(expandedVariants) > 1 {
+				symbolID += fmt.Sprintf("#%08x", stableHash32(descriptor))
+			}
+			symbol := SymbolRecord{
+				ID:             symbolID,
+				Name:           tableName,
+				CanonicalName:  macroName + "(" + tableName + ")",
+				Kind:           tableKind,
+				Language:       analysisLanguageForExtension(file.Extension),
+				File:           file.Path,
+				Module:         unrealModuleForFile(snapshot, file.Path),
+				BuildContextID: firstSliceValue(buildContextIDsForFile(snapshot, file.Path)),
+				Signature:      analysisTrimSignature(text[match[0] : closeParen+1]),
+				StartLine:      startLine,
+				EndLine:        analysisLineNumberAt(text, closeParen),
+				Tags:           tags,
+				Attributes: map[string]string{
+					"line_start":    strconv.Itoa(startLine),
+					"line_end":      strconv.Itoa(analysisLineNumberAt(text, closeParen)),
+					"macro_name":    macroName,
+					"source_kind":   "macro_invocation",
+					"variant_index": strconv.Itoa(variantIndex),
+				},
+			}
+			calls := registrationCallbackEdgesFromText(symbol, descriptor, tableName, macroName, edgeType, lookup)
+			if len(calls) == 0 {
+				continue
+			}
+			key := symbol.ID
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out.Symbols = append(out.Symbols, symbol)
+			out.Overlays = append(out.Overlays, sourceAnchorOverlays(symbol)...)
+			out.Calls = append(out.Calls, calls...)
+		}
+	}
+	return out
+}
+
+func analysisIndexInPreprocessorDirective(text string, index int) bool {
+	if index < 0 {
+		return false
+	}
+	index = minInt(index, len(text))
+	lineStart := strings.LastIndex(text[:index], "\n")
+	if lineStart < 0 {
+		lineStart = 0
+	} else {
+		lineStart++
+	}
+	for {
+		lineEnd := strings.Index(text[lineStart:], "\n")
+		if lineEnd < 0 {
+			lineEnd = len(text)
+		} else {
+			lineEnd += lineStart
+		}
+		line := strings.TrimSpace(text[lineStart:lineEnd])
+		if strings.HasPrefix(line, "#") {
+			return true
+		}
+		if lineStart == 0 {
+			return false
+		}
+		prevEnd := lineStart - 1
+		prevStart := strings.LastIndex(text[:prevEnd], "\n")
+		if prevStart < 0 {
+			prevStart = 0
+		} else {
+			prevStart++
+		}
+		prevLine := strings.TrimRight(text[prevStart:prevEnd], " \t\r")
+		if !strings.HasSuffix(prevLine, "\\") {
+			return false
+		}
+		lineStart = prevStart
+	}
+}
+
+func expandRegistrationMacroInvocation(name string, args []string, definitions map[string][]registrationMacroDefinition, depth int) string {
+	return strings.Join(expandRegistrationMacroInvocationVariants(name, args, definitions, depth), " ")
+}
+
+func expandRegistrationMacroInvocationVariants(name string, args []string, definitions map[string][]registrationMacroDefinition, depth int) []string {
+	if depth > 4 || len(definitions) == 0 {
+		return nil
+	}
+	defs := definitions[strings.TrimSpace(name)]
+	if len(defs) == 0 {
+		return nil
+	}
+	out := []string{}
+	for _, def := range defs {
+		if expanded := expandRegistrationMacroDefinitionVariant(def, args, definitions, depth); strings.TrimSpace(expanded) != "" {
+			out = append(out, expanded)
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func expandRegistrationMacroDefinitionVariant(def registrationMacroDefinition, args []string, definitions map[string][]registrationMacroDefinition, depth int) string {
+	replacements := map[string]string{}
+	variadicValue := ""
+	for index, param := range def.Params {
+		param = strings.TrimSpace(param)
+		if param == "" {
+			continue
+		}
+		if param == "..." {
+			if index < len(args) {
+				variadicValue = strings.Join(args[index:], ", ")
+			}
+			replacements["__VA_ARGS__"] = variadicValue
+			continue
+		}
+		if strings.HasSuffix(param, "...") {
+			name := strings.TrimSuffix(param, "...")
+			name = strings.TrimSpace(name)
+			if index < len(args) {
+				variadicValue = strings.Join(args[index:], ", ")
+			}
+			replacements[name] = variadicValue
+			replacements["__VA_ARGS__"] = variadicValue
+			continue
+		}
+		if index >= len(args) {
+			continue
+		}
+		replacements[param] = strings.TrimSpace(args[index])
+	}
+	body := def.Body
+	for param, value := range replacements {
+		paramRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(param) + `\b`)
+		body = paramRe.ReplaceAllString(body, value)
+	}
+	body = normalizeRegistrationTokenPaste(body)
+	nested := expandRegistrationNestedMacros(body, definitions, depth+1)
+	if strings.TrimSpace(nested) != "" {
+		body += " " + nested
+	}
+	return body
+}
+
+func expandRegistrationNestedMacros(text string, definitions map[string][]registrationMacroDefinition, depth int) string {
+	if depth > 4 {
+		return ""
+	}
+	callRe := regexp.MustCompile(`(?is)\b([A-Za-z_][A-Za-z0-9_]*)\s*\(`)
+	matches := callRe.FindAllStringSubmatchIndex(text, -1)
+	out := []string{}
+	for _, match := range matches {
+		if len(match) < 4 || match[2] < 0 {
+			continue
+		}
+		name := strings.TrimSpace(text[match[2]:match[3]])
+		if len(definitions[name]) == 0 {
+			continue
+		}
+		openParen := match[1] - 1
+		closeParen := analysisMatchClosingParen(text, openParen)
+		if closeParen <= openParen {
+			continue
+		}
+		for _, expanded := range expandRegistrationMacroInvocationVariants(name, splitCStyleCallArguments(text[openParen+1:closeParen]), definitions, depth+1) {
+			if strings.TrimSpace(expanded) != "" {
+				out = append(out, expanded)
+			}
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func normalizeRegistrationTokenPaste(text string) string {
+	pasteRe := regexp.MustCompile(`\s*##\s*`)
+	for strings.Contains(text, "##") {
+		next := pasteRe.ReplaceAllString(text, "")
+		if next == text {
+			break
+		}
+		text = next
+	}
+	return text
+}
+
+func registrationCallbackEdgesFromText(symbol SymbolRecord, body string, tableName string, tableType string, edgeType string, lookup anchorSymbolLookup) []CallEdge {
+	tokenRe := regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*`)
+	out := []CallEdge{}
+	seenTargets := map[string]struct{}{}
+	for _, token := range tokenRe.FindAllString(body, -1) {
+		token = analysisNormalizeCStyleQualifiedName(strings.TrimPrefix(strings.TrimSpace(token), "&"))
+		if registrationTableIgnoredToken(token, tableName, tableType) {
+			continue
+		}
+		target, ok := resolveAnchorCallTarget(token, symbol, lookup)
+		if !ok || target.ID == symbol.ID {
+			continue
+		}
+		key := edgeType + "|" + target.ID
+		if _, exists := seenTargets[key]; exists {
+			continue
+		}
+		seenTargets[key] = struct{}{}
+		out = append(out, CallEdge{
+			SourceID: symbol.ID,
+			TargetID: target.ID,
+			Type:     edgeType,
+			Evidence: []string{symbol.File},
+		})
+	}
+	return out
+}
+
+func classifyRegistrationTable(descriptor string) (string, string, []string) {
+	upper := strings.ToUpper(strings.TrimSpace(descriptor))
+	switch {
+	case strings.Contains(upper, "OB_OPERATION_REGISTRATION") ||
+		strings.Contains(upper, "OB_OPERATION_") ||
+		strings.Contains(upper, "PSPROCESSTYPE") ||
+		strings.Contains(upper, "PSTHREADTYPE") ||
+		strings.Contains(upper, "OBJECT") ||
+		strings.Contains(upper, "HANDLE"):
+		return "object_callback_table", "registers_object_callback", []string{"registration_table", "callback_surface", "handle_surface", "security_boundary"}
+	case strings.Contains(upper, "FLT_OPERATION_REGISTRATION") ||
+		strings.Contains(upper, "IRP_MJ_") ||
+		strings.Contains(upper, "MINIFILTER") ||
+		strings.Contains(upper, "FILTER"):
+		return "file_filter_callback_table", "registers_file_filter_callback", []string{"registration_table", "callback_surface", "file_filter_surface", "security_boundary"}
+	case strings.Contains(upper, "PROCESS") && strings.Contains(upper, "NOTIFY"):
+		return "notify_callback_table", "registers_process_notify_callback", []string{"registration_table", "callback_surface", "process_surface", "security_boundary"}
+	default:
+		return "registration_table", "registers_callback_table_entry", []string{"registration_table", "callback_surface"}
+	}
+}
+
+func buildRegistrationTableAnchorID(kind string, tableName string, file string) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "registration_table"
+	}
+	return kind + ":" + strings.TrimSpace(tableName) + "@" + strings.TrimSpace(file)
+}
+
+func buildRegistrationMacroAnchorID(kind string, macroName string, tableName string, file string, line int) string {
+	kind = strings.TrimSpace(kind)
+	if kind == "" {
+		kind = "registration_macro"
+	}
+	name := firstNonBlankString(strings.TrimSpace(tableName), strings.TrimSpace(macroName))
+	return kind + ":" + name + "@" + strings.TrimSpace(file) + ":" + strconv.Itoa(line)
+}
+
+func registrationDescriptorLooksRelevant(descriptor string) bool {
+	lower := strings.ToLower(strings.TrimSpace(descriptor))
+	return containsAny(lower,
+		"ob_operation_registration",
+		"flt_operation_registration",
+		"ob_operation_",
+		"irp_mj_",
+		"psprocesstype",
+		"psthreadtype",
+		"object",
+		"handle",
+		"callback",
+		"callbacks",
+		"registration",
+		"register",
+		"table",
+		"operation",
+		"operations",
+		"file",
+		"minifilter",
+		"filter",
+		"notify",
+	)
+}
+
+func registrationMacroNameLooksRelevant(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || analysisIgnoredCallToken(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if !registrationDescriptorLooksRelevant(trimmed) {
+		return false
+	}
+	macroLike := trimmed == strings.ToUpper(trimmed) ||
+		strings.Contains(trimmed, "_") ||
+		strings.HasPrefix(lower, "declare") ||
+		strings.HasPrefix(lower, "define") ||
+		strings.HasPrefix(lower, "init") ||
+		strings.HasPrefix(lower, "make") ||
+		strings.HasPrefix(lower, "register")
+	if !macroLike {
+		return false
+	}
+	return !containsAny(lower, "sizeof", "offsetof")
+}
+
+func registrationMacroAnchorName(macroName string, args string, lookup anchorSymbolLookup) string {
+	tokenRe := regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*`)
+	for _, arg := range splitCStyleCallArguments(args) {
+		for _, token := range tokenRe.FindAllString(arg, -1) {
+			token = analysisNormalizeCStyleQualifiedName(strings.TrimSpace(token))
+			if registrationTableIgnoredToken(token, macroName, macroName) {
+				continue
+			}
+			if _, ok := resolveAnchorCallTarget(token, SymbolRecord{}, lookup); ok {
+				continue
+			}
+			return token
+		}
+	}
+	return ""
+}
+
+func registrationTableIgnoredToken(token string, tableName string, tableType string) bool {
+	normalized := strings.TrimSpace(token)
+	if normalized == "" || analysisIgnoredCallToken(normalized) {
+		return true
+	}
+	shortName := normalized
+	if strings.Contains(shortName, "::") {
+		shortName = shortName[strings.LastIndex(shortName, "::")+2:]
+	}
+	lower := strings.ToLower(shortName)
+	upper := strings.ToUpper(shortName)
+	if strings.EqualFold(shortName, tableName) || strings.EqualFold(shortName, tableType) {
+		return true
+	}
+	switch lower {
+	case "null", "nullptr", "true", "false", "const", "static", "extern", "volatile", "sizeof", "array_size", "psprocesstype", "psthreadtype", "exdesktopobjecttype":
+		return true
+	}
+	switch upper {
+	case "NULL", "TRUE", "FALSE", "OB_OPERATION_REGISTRATION", "FLT_OPERATION_REGISTRATION", "IRP_MJ_OPERATION_END", "FLT_REGISTRATION", "OB_CALLBACK_REGISTRATION":
+		return true
+	}
+	prefixes := []string{
+		"IRP_MJ_",
+		"FLTFL_",
+		"OB_OPERATION_",
+		"FLT_OPERATION_",
+		"FLT_REGISTRATION_",
+		"FLTFL_OPERATION_REGISTRATION_",
+		"FLTFL_REGISTRATION_",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(upper, strings.ToUpper(prefix)) {
+			return true
+		}
+	}
+	return false
 }
 
 type anchorSymbolLookup struct {
@@ -1175,6 +1969,22 @@ func collectAnchorCallEdges(anchor sourceFunctionAnchor, lookup anchorSymbolLook
 	matches := callRe.FindAllStringSubmatch(anchor.Body, -1)
 	out := []CallEdge{}
 	seen := map[string]struct{}{}
+	addEdge := func(target SymbolRecord, edgeType string) {
+		if target.ID == anchor.Symbol.ID {
+			return
+		}
+		key := anchor.Symbol.ID + "|" + edgeType + "|" + target.ID
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, CallEdge{
+			SourceID: anchor.Symbol.ID,
+			TargetID: target.ID,
+			Type:     edgeType,
+			Evidence: []string{anchor.Symbol.File},
+		})
+	}
 	for _, match := range matches {
 		if len(match) < 2 {
 			continue
@@ -1191,11 +2001,6 @@ func collectAnchorCallEdges(anchor sourceFunctionAnchor, lookup anchorSymbolLook
 		if !ok || target.ID == anchor.Symbol.ID {
 			continue
 		}
-		key := anchor.Symbol.ID + "|calls|" + target.ID
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
 		callType := "calls"
 		switch strings.TrimSpace(target.Kind) {
 		case "rpc", "rpc_handler":
@@ -1203,14 +2008,263 @@ func collectAnchorCallEdges(anchor sourceFunctionAnchor, lookup anchorSymbolLook
 		case "ioctl_handler":
 			callType = "dispatches_ioctl"
 		}
+		addEdge(target, callType)
+	}
+	for _, edge := range collectAnchorRegistrationEdges(anchor, lookup) {
+		target := SymbolRecord{ID: edge.TargetID}
+		addEdge(target, edge.Type)
+	}
+	return out
+}
+
+func collectAnchorRegistrationEdges(anchor sourceFunctionAnchor, lookup anchorSymbolLookup) []CallEdge {
+	body := anchor.Body
+	out := []CallEdge{}
+	seen := map[string]struct{}{}
+	add := func(token string, edgeType string) {
+		token = analysisNormalizeCStyleQualifiedName(strings.TrimPrefix(strings.TrimSpace(token), "&"))
+		if token == "" || analysisIgnoredCallToken(token) {
+			return
+		}
+		target, ok := resolveAnchorCallTarget(token, anchor.Symbol, lookup)
+		if !ok || target.ID == anchor.Symbol.ID {
+			return
+		}
+		key := anchor.Symbol.ID + "|" + edgeType + "|" + target.ID
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
 		out = append(out, CallEdge{
 			SourceID: anchor.Symbol.ID,
 			TargetID: target.ID,
-			Type:     callType,
+			Type:     edgeType,
 			Evidence: []string{anchor.Symbol.File},
 		})
 	}
+
+	namePattern := `(?:[A-Za-z_][A-Za-z0-9_]*::)*~?[A-Za-z_][A-Za-z0-9_]*`
+	majorFunctionRe := regexp.MustCompile(`(?is)\bMajorFunction\s*\[\s*IRP_MJ_[A-Z0-9_]+\s*\]\s*=\s*&?\s*(` + namePattern + `)`)
+	for _, match := range majorFunctionRe.FindAllStringSubmatch(body, -1) {
+		if len(match) >= 2 {
+			add(match[1], "registers_irp_dispatch")
+		}
+	}
+
+	callbackAssignmentRe := regexp.MustCompile(`(?is)(?:\.|->|\b)(PreOperation|PostOperation|DriverUnload|UnloadCallback|InstanceSetup|InstanceQueryTeardown|InstanceTeardownStart|InstanceTeardownComplete|GenerateFileNameCallback|NormalizeNameComponentCallback)\s*=\s*&?\s*(` + namePattern + `)`)
+	for _, match := range callbackAssignmentRe.FindAllStringSubmatch(body, -1) {
+		if len(match) < 3 {
+			continue
+		}
+		add(match[2], callbackAssignmentEdgeType(match[1]))
+	}
+
+	for _, call := range collectRegistrationCallArguments(body) {
+		edgeType := registrationCallEdgeType(call.Name)
+		if edgeType == "" {
+			continue
+		}
+		for _, arg := range limitStrings(call.Arguments, 2) {
+			token := firstResolvableCallbackToken(arg)
+			if token != "" {
+				add(token, edgeType)
+			}
+		}
+	}
 	return out
+}
+
+type registrationCallArguments struct {
+	Name      string
+	Arguments []string
+}
+
+func collectRegistrationCallArguments(body string) []registrationCallArguments {
+	namePattern := `(?:[A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*`
+	callRe := regexp.MustCompile(`(?is)\b(` + namePattern + `)\s*\(`)
+	matches := callRe.FindAllStringSubmatchIndex(body, -1)
+	out := []registrationCallArguments{}
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		name := strings.TrimSpace(body[match[2]:match[3]])
+		if registrationCallEdgeType(name) == "" {
+			continue
+		}
+		open := match[1] - 1
+		close := analysisMatchClosingParen(body, open)
+		if close <= open {
+			continue
+		}
+		args := splitCStyleCallArguments(body[open+1 : close])
+		out = append(out, registrationCallArguments{Name: name, Arguments: args})
+	}
+	return out
+}
+
+func analysisMatchClosingParen(text string, open int) int {
+	if open < 0 || open >= len(text) || text[open] != '(' {
+		return -1
+	}
+	depth := 0
+	inString := false
+	inRune := false
+	escaped := false
+	for index := open; index < len(text); index++ {
+		ch := text[index]
+		if inString || inRune {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if inString && ch == '"' {
+				inString = false
+			}
+			if inRune && ch == '\'' {
+				inRune = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '\'':
+			inRune = true
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return index
+			}
+		}
+	}
+	return -1
+}
+
+func splitCStyleCallArguments(args string) []string {
+	out := []string{}
+	start := 0
+	depthParen := 0
+	depthBrace := 0
+	depthBracket := 0
+	inString := false
+	inRune := false
+	escaped := false
+	for index := 0; index < len(args); index++ {
+		ch := args[index]
+		if inString || inRune {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if inString && ch == '"' {
+				inString = false
+			}
+			if inRune && ch == '\'' {
+				inRune = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '\'':
+			inRune = true
+		case '(':
+			depthParen++
+		case ')':
+			if depthParen > 0 {
+				depthParen--
+			}
+		case '{':
+			depthBrace++
+		case '}':
+			if depthBrace > 0 {
+				depthBrace--
+			}
+		case '[':
+			depthBracket++
+		case ']':
+			if depthBracket > 0 {
+				depthBracket--
+			}
+		case ',':
+			if depthParen == 0 && depthBrace == 0 && depthBracket == 0 {
+				out = append(out, strings.TrimSpace(args[start:index]))
+				start = index + 1
+			}
+		}
+	}
+	tail := strings.TrimSpace(args[start:])
+	if tail != "" {
+		out = append(out, tail)
+	}
+	return out
+}
+
+func callbackAssignmentEdgeType(field string) string {
+	lower := strings.ToLower(strings.TrimSpace(field))
+	switch {
+	case strings.Contains(lower, "driverunload") || strings.Contains(lower, "unloadcallback"):
+		return "registers_unload_callback"
+	case strings.Contains(lower, "preoperation") || strings.Contains(lower, "postoperation"):
+		return "assigns_operation_callback"
+	case strings.Contains(lower, "instance"):
+		return "assigns_filter_instance_callback"
+	default:
+		return "assigns_callback"
+	}
+}
+
+func registrationCallEdgeType(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.Contains(lower, "pssetcreateprocessnotifyroutine"):
+		return "registers_process_notify_callback"
+	case strings.Contains(lower, "pssetcreatethreadnotifyroutine"):
+		return "registers_thread_notify_callback"
+	case strings.Contains(lower, "pssetloadimagenotifyroutine"):
+		return "registers_image_notify_callback"
+	case strings.Contains(lower, "cmregistercallback") || strings.Contains(lower, "cmregistercallbackex"):
+		return "registers_registry_callback"
+	case strings.Contains(lower, "setnotifyroutine"):
+		return "registers_notify_callback"
+	default:
+		return ""
+	}
+}
+
+func firstResolvableCallbackToken(arg string) string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return ""
+	}
+	arg = strings.TrimPrefix(arg, "&")
+	if strings.EqualFold(arg, "NULL") || strings.EqualFold(arg, "nullptr") || arg == "0" || strings.EqualFold(arg, "FALSE") || strings.EqualFold(arg, "TRUE") {
+		return ""
+	}
+	tokenRe := regexp.MustCompile(`(?:[A-Za-z_][A-Za-z0-9_]*::)*~?[A-Za-z_][A-Za-z0-9_]*`)
+	for _, token := range tokenRe.FindAllString(arg, -1) {
+		if analysisIgnoredCallToken(token) {
+			continue
+		}
+		lower := strings.ToLower(token)
+		if lower == "null" || lower == "nullptr" || lower == "false" || lower == "true" {
+			continue
+		}
+		return token
+	}
+	return ""
 }
 
 func resolveAnchorCallTarget(token string, source SymbolRecord, lookup anchorSymbolLookup) (SymbolRecord, bool) {

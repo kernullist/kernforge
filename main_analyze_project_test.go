@@ -190,7 +190,9 @@ func TestProjectAnalysisModeStatusReportsDefaultMap(t *testing.T) {
 func TestRenderAnalysisProjectHandoffGuidesNextCommands(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{
-			RunID: "analysis-1",
+			RunID:                  "analysis-1",
+			ReviewProviderFailures: 1,
+			ReviewQualityIssues:    2,
 		},
 	}
 	manifest := AnalysisDocsManifest{
@@ -211,6 +213,8 @@ func TestRenderAnalysisProjectHandoffGuidesNextCommands(t *testing.T) {
 	out := renderAnalysisProjectHandoff(buildAnalysisProjectHandoff(run, manifest, true))
 	for _, needle := range []string{
 		"Analysis handoff:",
+		"Provider failures: 1",
+		"Review quality issues: 2",
 		"Continue: /analyze-dashboard",
 		"Fuzz next: /fuzz-campaign run",
 		"Target drilldown: /fuzz-func ParsePacket",
@@ -237,5 +241,47 @@ func TestRenderAnalysisProjectHandoffSuggestsDocsRefreshWhenManifestMissing(t *t
 		if !strings.Contains(out, needle) {
 			t.Fatalf("expected handoff to include %q, got:\n%s", needle, out)
 		}
+	}
+}
+
+func TestRenderAnalysisProjectArtifactPaths(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			OutputPath: filepath.Join("C:\\repo", ".kernforge", "analysis", "analysis-1_map_goal.md"),
+		},
+	}
+	out := renderAnalysisProjectArtifactPaths(run, filepath.Join("C:\\repo", ".kernforge", "analysis"))
+	for _, needle := range []string{
+		"Analysis artifacts:",
+		"Report:",
+		"Run JSON:",
+		"Latest:",
+		"Dashboard:",
+		"Docs:",
+		"Manifest:",
+		filepath.Join("C:\\repo", ".kernforge", "analysis", "latest", "dashboard.html"),
+		filepath.Join("C:\\repo", ".kernforge", "analysis", "latest", "docs", "INDEX.md"),
+	} {
+		if !strings.Contains(out, needle) {
+			t.Fatalf("expected artifact paths to include %q, got:\n%s", needle, out)
+		}
+	}
+}
+
+func TestRenderAnalysisProjectArtifactPathsStyledHighlightsHeader(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			OutputPath: filepath.Join("C:\\repo", ".kernforge", "analysis", "analysis-1_map_goal.md"),
+		},
+	}
+	out := renderAnalysisProjectArtifactPathsStyled(run, filepath.Join("C:\\repo", ".kernforge", "analysis"), UI{color: true})
+	if !strings.Contains(out, "\x1b[") {
+		t.Fatalf("expected styled artifact paths to include ANSI color, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Analysis artifacts:") {
+		t.Fatalf("expected styled artifact paths to retain readable header, got:\n%s", out)
+	}
+	if strings.HasPrefix(out, "Analysis artifacts:") {
+		t.Fatalf("expected artifact header prefix to be colorized, got:\n%s", out)
 	}
 }

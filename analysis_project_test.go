@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -392,11 +394,20 @@ func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 	if run.Summary.ReviewFailures == 0 {
 		t.Fatalf("expected review failures to be tracked")
 	}
+	if run.Summary.ReviewProviderFailures == 0 {
+		t.Fatalf("expected reviewer provider failures to be tracked separately")
+	}
+	if run.Summary.ReviewQualityIssues != 0 {
+		t.Fatalf("expected no review quality issues, got %d", run.Summary.ReviewQualityIssues)
+	}
 	if strings.TrimSpace(run.FinalDocument) == "" {
 		t.Fatalf("expected final document even when reviewer fails")
 	}
-	if !strings.Contains(run.FinalDocument, "Draft Analysis") && !strings.Contains(run.FinalDocument, "Analysis With Review Failures") {
+	if !strings.Contains(run.FinalDocument, "Draft Analysis") && !strings.Contains(run.FinalDocument, "Analysis With Provider Failures") {
 		t.Fatalf("expected degraded review banner in final document\n%s", run.FinalDocument)
+	}
+	if !strings.Contains(run.FinalDocument, "Provider failures:") {
+		t.Fatalf("expected provider failure details in final document\n%s", run.FinalDocument)
 	}
 	found := false
 	for _, review := range run.Reviews {
@@ -1796,6 +1807,309 @@ func TestRunWorkerRetriesProviderErrors(t *testing.T) {
 	}
 }
 
+func TestAnalysisStructuredMaxTokensAddsKimiHeadroom(t *testing.T) {
+	if got := analysisStructuredMaxTokens("opencode-go/kimi-k2.6", 4096); got != 8192 {
+		t.Fatalf("expected kimi budget headroom, got %d", got)
+	}
+	if got := analysisStructuredMaxTokens("openrouter/z-ai/glm-5.1", 4096); got != 4096 {
+		t.Fatalf("expected non-kimi budget to remain unchanged, got %d", got)
+	}
+	if got := analysisStructuredMaxTokens("opencode-go/kimi-k2.6", 12000); got != 12000 {
+		t.Fatalf("expected explicit larger budget to be preserved, got %d", got)
+	}
+}
+
+func TestFallbackWorkerReportDoesNotInjectRawIntoNarrative(t *testing.T) {
+	report := fallbackWorkerReport(AnalysisShard{
+		ID:           "shard-01",
+		Name:         "runtime",
+		PrimaryFiles: []string{"main.go"},
+	}, `{"report":{"title":"runtime"`)
+	if strings.TrimSpace(report.Narrative) != "" {
+		t.Fatalf("expected malformed raw output to stay out of narrative, got %q", report.Narrative)
+	}
+	if !strings.Contains(report.Raw, `"report"`) {
+		t.Fatalf("expected raw output to be preserved, got %q", report.Raw)
+	}
+	if len(report.Unknowns) == 0 {
+		t.Fatalf("expected unknown marker for malformed worker output")
+	}
+}
+
+func TestParseWorkerReportRejectsSchemaPlaceholder(t *testing.T) {
+	_, ok := parseWorkerReportPayload(`{
+  "report": {
+    "title": "string",
+    "scope_summary": "string",
+    "responsibilities": ["string"],
+    "facts": ["string"],
+    "inferences": ["string"],
+    "key_files": ["string"],
+    "entry_points": ["string"],
+    "internal_flow": ["string"],
+    "dependencies": ["string"],
+    "collaboration": ["string"],
+    "risks": ["string"],
+    "unknowns": ["string"],
+    "evidence_files": ["string"],
+    "narrative": "string"
+  }
+}`, AnalysisShard{ID: "shard-01", Name: "runtime"})
+	if ok {
+		t.Fatalf("expected schema placeholder worker report to be rejected")
+	}
+}
+
+func TestParseWorkerReportRejectsEmptyJSONPayload(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "runtime",
+		PrimaryFiles: []string{"main.go"},
+	}
+	for _, raw := range []string{`{}`, `{"report":{}}`} {
+		if report, ok := parseWorkerReportPayload(raw, shard); ok {
+			t.Fatalf("expected empty worker report %s to be rejected, got %+v", raw, report)
+		}
+	}
+}
+
+func TestNormalizeWorkerReportCanonicalizesEvidencePaths(t *testing.T) {
+	shard := AnalysisShard{
+		ID: "shard-01",
+		PrimaryFiles: []string{
+			"TavernKernel/TavernKernelPolicy.h",
+			"Common/UserCommon.h",
+		},
+		ReferenceFiles: []string{
+			"TavernKernel/TavernKernelPolicy.cpp",
+			"TavernKernel/TavernKernelCore.cpp",
+		},
+	}
+	report := WorkerReport{
+		KeyFiles: []string{
+			"TavernKernelPolicy.h",
+			"TavernKernelPolicy.cpp",
+			"NotInScope.cpp",
+		},
+		EvidenceFiles: []string{
+			"UserCommon.h",
+			"TavernKernelCore.cpp (allowed reference)",
+			"Other.cpp",
+		},
+	}
+	normalizeWorkerReport(&report, shard)
+	wantKey := []string{
+		"TavernKernel/TavernKernelPolicy.h",
+		"TavernKernel/TavernKernelPolicy.cpp",
+	}
+	wantEvidence := []string{
+		"Common/UserCommon.h",
+		"TavernKernel/TavernKernelCore.cpp",
+	}
+	if !reflect.DeepEqual(report.KeyFiles, wantKey) {
+		t.Fatalf("key files = %#v, want %#v", report.KeyFiles, wantKey)
+	}
+	if !reflect.DeepEqual(report.EvidenceFiles, wantEvidence) {
+		t.Fatalf("evidence files = %#v, want %#v", report.EvidenceFiles, wantEvidence)
+	}
+}
+
+func TestNormalizeWorkerReportFiltersMetadataReferencedFilesFromKeyFiles(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		PrimaryFiles: []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters"},
+	}
+	report := WorkerReport{
+		KeyFiles: []string{
+			"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters",
+			"TavernKernelTestConsole/TavernKernelTestConsole.cpp",
+			"TavernKernelTestConsole/TavernKernelManager.cpp",
+			"TavernKernelTestConsole/TavernKernelManager.h",
+		},
+		EvidenceFiles: []string{
+			"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters (inspected)",
+			"TavernKernelTestConsole/TavernKernelManager.cpp (referenced by filter metadata)",
+		},
+	}
+	normalizeWorkerReport(&report, shard)
+	want := []string{"TavernKernelTestConsole/TavernKernelTestConsole.vcxproj.filters"}
+	if !reflect.DeepEqual(report.KeyFiles, want) {
+		t.Fatalf("key files = %#v, want %#v", report.KeyFiles, want)
+	}
+	if !reflect.DeepEqual(report.EvidenceFiles, want) {
+		t.Fatalf("evidence files = %#v, want %#v", report.EvidenceFiles, want)
+	}
+}
+
+func TestBuildReviewerPromptOmitsRawWorkerPayload(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root: "C:\\repo",
+		FilesByPath: map[string]ScannedFile{
+			"core.cpp": {Path: "core.cpp", LineCount: 1},
+		},
+	}
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "core",
+		PrimaryFiles: []string{"core.cpp"},
+	}
+	report := WorkerReport{
+		ShardID:          "shard-01",
+		Title:            "core",
+		ScopeSummary:     "summary",
+		Responsibilities: []string{"owns core"},
+		KeyFiles:         []string{"core.cpp"},
+		EntryPoints:      []string{"Init"},
+		InternalFlow:     []string{"Init -> Run"},
+		EvidenceFiles:    []string{"core.cpp"},
+		Raw:              `{"report":{"evidence_files":["out-of-scope.cpp"]}}`,
+	}
+	prompt := buildReviewerPrompt(snapshot, shard, report, "goal", WorkerReport{}, false)
+	if strings.Contains(prompt, `"raw"`) || strings.Contains(prompt, "out-of-scope.cpp") {
+		t.Fatalf("reviewer prompt should not include raw worker payload\n%s", prompt)
+	}
+}
+
+func TestBuildReviewerPromptOmitsPreviousRawWorkerPayload(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root: "C:\\repo",
+		FilesByPath: map[string]ScannedFile{
+			"core.cpp": {Path: "core.cpp", LineCount: 1},
+		},
+	}
+	shard := AnalysisShard{
+		ID:                 "shard-01",
+		Name:               "core",
+		PrimaryFiles:       []string{"core.cpp"},
+		InvalidationReason: "dependency_changed",
+	}
+	current := WorkerReport{
+		ShardID:          "shard-01",
+		Title:            "core",
+		ScopeSummary:     "summary",
+		Responsibilities: []string{"owns core"},
+		KeyFiles:         []string{"core.cpp"},
+		EntryPoints:      []string{"Init"},
+		InternalFlow:     []string{"Init -> Run"},
+		EvidenceFiles:    []string{"core.cpp"},
+	}
+	previous := current
+	previous.Raw = `{"report":{"evidence_files":["stale-out-of-scope.cpp"]}}`
+	prompt := buildReviewerPrompt(snapshot, shard, current, "goal", previous, true)
+	if strings.Contains(prompt, `"raw"`) || strings.Contains(prompt, "stale-out-of-scope.cpp") {
+		t.Fatalf("reviewer prompt should not include previous raw worker payload\n%s", prompt)
+	}
+}
+
+func TestBuildArchitectureFactPackCapturesDriverFacts(t *testing.T) {
+	run := sampleDriverProjectStructureQARun()
+	pack := buildArchitectureFactPack(run.Snapshot, run.SemanticIndexV2, run.UnrealGraph, run.Summary.Goal)
+	if !architectureFactPackHasData(pack) {
+		t.Fatalf("expected architecture facts")
+	}
+	if !containsStringCI(pack.DomainHints, "windows_driver") {
+		t.Fatalf("expected windows driver domain hint, got %+v", pack.DomainHints)
+	}
+	rootRows := []string{}
+	for _, dir := range pack.TopLevelDirectories {
+		rootRows = append(rootRows, dir.Path)
+	}
+	for _, want := range []string{"Common/", "TavernKernel/", "TavernKernelTestConsole/"} {
+		if !containsString(rootRows, want) {
+			t.Fatalf("expected root directory %s in %+v", want, rootRows)
+		}
+	}
+	for _, bad := range []string{"TavernKernel/BuildCab/", "TavernKernel/BuildCab/TavernKernel.inf"} {
+		if containsString(rootRows, bad) {
+			t.Fatalf("did not expect nested/file path as top-level directory: %+v", rootRows)
+		}
+	}
+	if !containsString(pack.TopLevelNonDirectoryExclusions, "TavernKernel/BuildCab/TavernKernel.inf") {
+		t.Fatalf("expected nested/file exclusion, got %+v", pack.TopLevelNonDirectoryExclusions)
+	}
+	if !architectureAnchorRoleHasLocation(pack.CriticalAnchors, "object_callback_registration", "TavernKernel/TavernKernelObjectFilter.cpp:106") {
+		t.Fatalf("expected exact object callback registration anchor, got %+v", pack.CriticalAnchors)
+	}
+	if !architectureFlowContains(pack.FlowFacts, "REQUIRED device-control command spine", "DecryptIoctlData", "IsValidCommand") {
+		t.Fatalf("expected required IOCTL command spine, got %+v", pack.FlowFacts)
+	}
+}
+
+func TestArchitectureFactPackInjectedIntoPrompts(t *testing.T) {
+	run := sampleDriverProjectStructureQARun()
+	run.Snapshot.ArchitectureFacts = buildArchitectureFactPack(run.Snapshot, run.SemanticIndexV2, run.UnrealGraph, run.Summary.Goal)
+	shard := AnalysisShard{
+		ID:             "shard-ioctl",
+		Name:           "security_ioctl",
+		PrimaryFiles:   []string{"TavernKernel/TavernKernelCore.cpp"},
+		ReferenceFiles: []string{"TavernKernel/TavernKernelAPI.cpp"},
+	}
+	report := WorkerReport{
+		ShardID:          shard.ID,
+		Title:            "security_ioctl",
+		ScopeSummary:     "IOCTL dispatch",
+		Responsibilities: []string{"Own kernel IOCTL dispatch"},
+		KeyFiles:         []string{"TavernKernel/TavernKernelCore.cpp"},
+		EntryPoints:      []string{"TavernKernelCore::DeviceIoControlIrpHandleRoutine"},
+		InternalFlow:     []string{"device control -> decrypt -> command validation"},
+		EvidenceFiles:    []string{"TavernKernel/TavernKernelCore.cpp"},
+	}
+	workerPrompt := buildWorkerPrompt(run.Snapshot, shard, run.Summary.Goal, "")
+	reviewerPrompt := buildReviewerPrompt(run.Snapshot, shard, report, run.Summary.Goal, WorkerReport{}, false)
+	synthesisPrompt := buildSynthesisPrompt(run.Snapshot, []AnalysisShard{shard}, []WorkerReport{report}, run.Summary.Goal)
+	for name, text := range map[string]string{
+		"worker":    workerPrompt,
+		"reviewer":  reviewerPrompt,
+		"synthesis": synthesisPrompt,
+	} {
+		if !strings.Contains(text, "Deterministic architecture fact pack") {
+			t.Fatalf("%s prompt missing architecture fact pack\n%s", name, text)
+		}
+		if !strings.Contains(text, "TavernKernelCore::DeviceIoControlIrpHandleRoutine") {
+			t.Fatalf("%s prompt missing exact IOCTL anchor\n%s", name, text)
+		}
+	}
+	if !strings.Contains(synthesisPrompt, "Closed top-level directory set") {
+		t.Fatalf("synthesis prompt should include closed root set\n%s", synthesisPrompt)
+	}
+}
+
+func architectureAnchorRoleHasLocation(items []ArchitectureAnchorFact, role string, location string) bool {
+	for _, item := range items {
+		if strings.EqualFold(item.Role, role) && strings.EqualFold(item.Location, location) {
+			return true
+		}
+	}
+	return false
+}
+
+func architectureFlowContains(items []ArchitectureFlowFact, name string, tokens ...string) bool {
+	for _, item := range items {
+		text := strings.ToLower(strings.Join(append([]string{item.Name, item.Summary}, item.Steps...), " "))
+		if !strings.Contains(text, strings.ToLower(name)) {
+			continue
+		}
+		missing := false
+		for _, token := range tokens {
+			if !strings.Contains(text, strings.ToLower(token)) {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAnalysisPromptExcerptTruncatesByRune(t *testing.T) {
+	excerpt := analysisPromptExcerpt("가나다라마", 3)
+	if !strings.HasPrefix(excerpt, "가나다") || !strings.Contains(excerpt, "truncated") {
+		t.Fatalf("unexpected excerpt: %q", excerpt)
+	}
+}
+
 func TestGroupedReportsForSynthesisMergesTinyOperationalShards(t *testing.T) {
 	shards := []AnalysisShard{
 		{ID: "shard-01", Name: "project_manifest"},
@@ -3074,6 +3388,71 @@ func TestRunDowngradesToDraftWhenNoShardApproved(t *testing.T) {
 	if !strings.HasPrefix(run.FinalDocument, "# Draft Analysis") {
 		t.Fatalf("expected draft warning prefix\n%s", run.FinalDocument)
 	}
+	if run.Summary.ReviewQualityIssues == 0 {
+		t.Fatalf("expected draft review quality issues to be tracked")
+	}
+	if !strings.Contains(run.FinalDocument, "Reviewer quality issues:") {
+		t.Fatalf("expected draft review quality details\n%s", run.FinalDocument)
+	}
+}
+
+func TestRenderAnalysisReviewIssueBannerSeparatesProviderAndQuality(t *testing.T) {
+	providerOnly := renderAnalysisReviewIssueBanner(ProjectAnalysisSummary{
+		ReviewFailures:         2,
+		ReviewProviderFailures: 2,
+	})
+	if !strings.Contains(providerOnly, "Analysis With Provider Failures") || !strings.Contains(providerOnly, "Provider failures: 2") {
+		t.Fatalf("expected provider-specific banner, got:\n%s", providerOnly)
+	}
+	if strings.Contains(providerOnly, "Reviewer quality issues:") {
+		t.Fatalf("provider-only banner should not include quality issue text:\n%s", providerOnly)
+	}
+
+	qualityOnly := renderAnalysisReviewIssueBanner(ProjectAnalysisSummary{
+		ReviewFailures:      1,
+		ReviewQualityIssues: 1,
+	})
+	if !strings.Contains(qualityOnly, "Analysis With Reviewer Quality Issues") || !strings.Contains(qualityOnly, "Reviewer quality issues: 1") {
+		t.Fatalf("expected quality-specific banner, got:\n%s", qualityOnly)
+	}
+
+	mixed := renderAnalysisReviewIssueBanner(ProjectAnalysisSummary{
+		ReviewFailures:         3,
+		ReviewProviderFailures: 2,
+		ReviewQualityIssues:    1,
+	})
+	for _, needle := range []string{
+		"Analysis With Review Issues",
+		"Provider failures: 2",
+		"Reviewer quality issues: 1",
+	} {
+		if !strings.Contains(mixed, needle) {
+			t.Fatalf("expected mixed banner to include %q, got:\n%s", needle, mixed)
+		}
+	}
+}
+
+func TestRenderAnalysisReviewIssueDetailsSplitsWorkerProviderFailures(t *testing.T) {
+	details := renderAnalysisReviewIssueDetailsForReviews(1, 0, []ReviewDecision{{
+		Status:      "review_failed",
+		FailureKind: analysisReviewIssueProvider,
+		Issues: []string{
+			"Worker request failed: analysis worker request failed for shard=core model=opencode/gpt-5.4-mini: opencode API error (401 Unauthorized): Insufficient balance | request={large}",
+		},
+		Raw: "analysis worker request failed for shard=core model=opencode/gpt-5.4-mini: opencode API error (401 Unauthorized): Insufficient balance | request={large}",
+	}})
+	for _, needle := range []string{
+		"Provider failures: 1",
+		"Provider failure split: worker=1.",
+		"opencode API error (401 Unauthorized): Insufficient balance",
+	} {
+		if !strings.Contains(details, needle) {
+			t.Fatalf("expected details to include %q, got:\n%s", needle, details)
+		}
+	}
+	if strings.Contains(details, "request={") {
+		t.Fatalf("provider failure example should omit request payload:\n%s", details)
+	}
 }
 
 func TestEnsureFinalDocumentInsightsCompactsExternalDependencyAppendix(t *testing.T) {
@@ -3338,6 +3717,88 @@ func TestBuildWorkerAndSynthesisPromptsFollowKoreanGoalLanguage(t *testing.T) {
 	synthesis := buildSynthesisPrompt(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, "프로젝트 구조를 분석해서 문서로 작성해")
 	if !strings.Contains(synthesis, "final Markdown document in Korean") {
 		t.Fatalf("expected Korean synthesis language guidance\n%s", synthesis)
+	}
+}
+
+func TestDriverPromptsSeparateInitializationAndRuntimeRegistration(t *testing.T) {
+	snapshot := ProjectSnapshot{Root: "C:\\repo"}
+	shard := AnalysisShard{ID: "shard-driver", Name: "security_driver", PrimaryFiles: []string{"driver/Driver.cpp"}}
+	worker := buildWorkerPrompt(snapshot, shard, "map driver structure", "")
+	if !strings.Contains(worker, "load/state-initialization flow") || !strings.Contains(worker, "runtime callback/filter registration flow") {
+		t.Fatalf("expected driver worker prompt to separate initialization and runtime registration\n%s", worker)
+	}
+	system := synthesisSystemPrompt()
+	if !strings.Contains(system, "keep initialization/state setup separate from runtime callback/filter registration") {
+		t.Fatalf("expected synthesis prompt to guard driver initialization/register flow\n%s", system)
+	}
+	if !strings.Contains(system, "Do not place request-origin/open validation inside the DeviceIoControl command handler") {
+		t.Fatalf("expected synthesis prompt to separate request-origin validation from DeviceIoControl command handling\n%s", system)
+	}
+	if !strings.Contains(system, "describe that as a subsystem instead of labeling the entire project as only a minifilter driver") {
+		t.Fatalf("expected synthesis prompt to avoid over-classifying WDM drivers as minifilter-only\n%s", system)
+	}
+	ioctlWorker := buildWorkerPrompt(snapshot, AnalysisShard{ID: "shard-ioctl", Name: "security_ioctl", PrimaryFiles: []string{"driver/Ioctl.cpp"}}, "map driver ioctl flow", "")
+	if !strings.Contains(ioctlWorker, "Keep create/open request-origin validation separate") {
+		t.Fatalf("expected IOCTL worker prompt to separate create/open validation\n%s", ioctlWorker)
+	}
+}
+
+func TestSynthesisPromptIncludesClosedTopLevelAndDriverFacts(t *testing.T) {
+	snapshot := ProjectSnapshot{
+		Root:           "C:\\repo",
+		PrimaryStartup: "DriverConsole",
+		Directories:    []string{"Driver", "Common", "DriverConsole", "BuildCab"},
+		Files: []ScannedFile{
+			{Path: "Driver/DriverEntry.cpp", Directory: "Driver", IsEntrypoint: true},
+			{Path: "Common/UserCommon.h", Directory: "Common"},
+			{Path: "DriverConsole/main.cpp", Directory: "DriverConsole", IsEntrypoint: true},
+		},
+		SolutionProjects: []SolutionProject{
+			{Name: "Driver", Path: "Driver/Driver.vcxproj", Directory: "Driver", OutputType: "driver", EntryFiles: []string{"Driver/DriverEntry.cpp"}},
+			{Name: "DriverConsole", Path: "DriverConsole/DriverConsole.vcxproj", Directory: "DriverConsole", OutputType: "application", EntryFiles: []string{"DriverConsole/main.cpp"}, StartupCandidate: true},
+		},
+	}
+	report := WorkerReport{ShardID: "driver", Title: "Driver", ScopeSummary: "summary", Responsibilities: []string{"driver"}, EvidenceFiles: []string{"Driver/DriverEntry.cpp"}}
+	prompt := buildSynthesisPrompt(snapshot, []AnalysisShard{{ID: "driver", Name: "security_driver"}}, []WorkerReport{report}, "map")
+	for _, needle := range []string{
+		"Top-level directory facts:",
+		"Closed set for top-level directory maps: BuildCab/, Common/, Driver/, DriverConsole/",
+		"Do not list headers, source files, project files, INF files, or nested folders as top-level directories.",
+		"Driver architecture facts:",
+		"Solution startup candidate is DriverConsole",
+		"Kernel/runtime driver entry files: Driver/DriverEntry.cpp",
+		"Keep these separate from user-mode startup files.",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected synthesis prompt to include %q\n%s", needle, prompt)
+		}
+	}
+}
+
+func TestSynthesisPromptIncludesWorkerEvidenceGuardrails(t *testing.T) {
+	snapshot := ProjectSnapshot{Root: "C:\\repo"}
+	reports := []WorkerReport{
+		{
+			Title:        "Startup",
+			ScopeSummary: "main() calls CreateService; the manager also declares public methods for StartService and DeviceIoControl.",
+			Facts:        []string{"main() visibly calls CreateService only.", "Declared public methods include StartService and ControlOperation."},
+		},
+		{
+			Title:        "Object Filter",
+			ScopeSummary: "GuardObjectFilter::Initialize and StartObjectFilter are present.",
+			Facts:        []string{"GuardObjectFilter::Initialize sets state.", "StartObjectFilter calls ObRegisterCallbacks."},
+		},
+	}
+	prompt := buildSynthesisPrompt(snapshot, nil, reports, "map")
+	for _, needle := range []string{
+		"Synthesis guardrails from worker evidence:",
+		"declared public methods and available lifecycle operations belong in an Available operations/API section",
+		"Object/handle filter guardrail:",
+		"Initialize as state setup and Start/Register/ObRegisterCallbacks as callback registration",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected synthesis prompt to include %q\n%s", needle, prompt)
+		}
 	}
 }
 
@@ -4634,6 +5095,86 @@ func TestPersistRunWritesKnowledgeArtifacts(t *testing.T) {
 	}
 }
 
+func TestPersistRunReplacesLatestArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+
+	run1 := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID: "run-1",
+			Goal:  "goal",
+		},
+		FinalDocument: "# run 1\n",
+		KnowledgePack: KnowledgePack{
+			RunID: "run-1",
+			Goal:  "goal",
+			Root:  root,
+		},
+		Snapshot: ProjectSnapshot{
+			Root:        root,
+			GeneratedAt: time.Now(),
+		},
+		UnrealGraph: UnrealSemanticGraph{
+			RunID: "run-1",
+			Nodes: []UnrealSemanticNode{
+				{ID: "module:Game", Kind: "module", Name: "Game"},
+			},
+		},
+		VectorCorpus: VectorCorpus{
+			RunID: "run-1",
+			Documents: []VectorCorpusDocument{
+				{ID: "doc-1", Title: "Doc", Text: "indexed text"},
+			},
+		},
+	}
+	run1.VectorIngestion = buildVectorIngestionManifest(run1.VectorCorpus)
+	if _, err := analyzer.persistRun(run1); err != nil {
+		t.Fatalf("persistRun run1 returned error: %v", err)
+	}
+	latestDir := filepath.Join(cfg.ProjectAnalysis.OutputDir, "latest")
+	if _, err := os.Stat(filepath.Join(latestDir, "unreal_graph.json")); err != nil {
+		t.Fatalf("expected run1 latest unreal graph: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(latestDir, "vector_corpus.json")); err != nil {
+		t.Fatalf("expected run1 latest vector corpus: %v", err)
+	}
+
+	run2 := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID: "run-2",
+			Goal:  "goal",
+		},
+		FinalDocument: "# run 2\n",
+		KnowledgePack: KnowledgePack{
+			RunID: "run-2",
+			Goal:  "goal",
+			Root:  root,
+		},
+		Snapshot: ProjectSnapshot{
+			Root:        root,
+			GeneratedAt: time.Now(),
+		},
+	}
+	if _, err := analyzer.persistRun(run2); err != nil {
+		t.Fatalf("persistRun run2 returned error: %v", err)
+	}
+	for _, stale := range []string{"unreal_graph.json", "vector_corpus.json", "vector_corpus.jsonl", "vector_ingest_manifest.json"} {
+		if _, err := os.Stat(filepath.Join(latestDir, stale)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("expected stale latest artifact %s to be removed, stat err=%v", stale, err)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(latestDir, "run.json"))
+	if err != nil {
+		t.Fatalf("expected latest run json: %v", err)
+	}
+	if !strings.Contains(string(data), `"run_id": "run-2"`) {
+		t.Fatalf("expected latest run json to be replaced by run-2, got %s", string(data))
+	}
+}
+
 func TestBuildSemanticIndexIncludesFilesSymbolsAndBuildEdges(t *testing.T) {
 	snapshot := ProjectSnapshot{
 		Root:           "C:\\repo",
@@ -5049,6 +5590,336 @@ bool ScanRemoteMemory() { return ReadProcessMemory(0, 0, 0, 0, 0); }
 	if !foundCompileOwnership {
 		t.Fatalf("expected build-context ownership edge in %+v", index.BuildOwnershipEdges)
 	}
+}
+
+func TestBuildSemanticIndexV2CapturesDriverRegistrationEdges(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Driver/Driver.cpp", `
+void MyCreate() {}
+void MyDeviceControl() {}
+void MyUnload() {}
+void MyProcessNotify() {}
+void DriverEntry()
+{
+    DriverObject->MajorFunction[IRP_MJ_CREATE] = MyCreate;
+    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = MyDeviceControl;
+    DriverObject->DriverUnload = MyUnload;
+    PsSetCreateProcessNotifyRoutineEx(MyProcessNotify, FALSE);
+}
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "map driver", "run-1")
+	index := buildSemanticIndexV2(snapshot, "map driver", "run-1", graph)
+	for _, want := range []struct {
+		source string
+		target string
+		typ    string
+	}{
+		{source: "DriverEntry", target: "MyDeviceControl", typ: "registers_irp_dispatch"},
+		{source: "DriverEntry", target: "MyUnload", typ: "registers_unload_callback"},
+		{source: "DriverEntry", target: "MyProcessNotify", typ: "registers_process_notify_callback"},
+	} {
+		if !testCallEdgeContains(index.CallEdges, want.source, want.target, want.typ) {
+			t.Fatalf("expected %s -> %s (%s), got %+v", want.source, want.target, want.typ, index.CallEdges)
+		}
+	}
+	facts := buildArchitectureFactPack(snapshot, index, graph, "map driver")
+	if !architectureFlowContains(facts.FlowFacts, "registered callback and dispatch edges", "MyDeviceControl", "MyProcessNotify") {
+		t.Fatalf("expected registration flow fact, got %+v", facts.FlowFacts)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesDriverRegistrationTables(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Driver/Callbacks.cpp", `
+void ObjectPreCallback() {}
+void ObjectPostCallback() {}
+void PreCreate() {}
+void PostCreate() {}
+
+OB_OPERATION_REGISTRATION gObjectOperations[] = {
+    { PsProcessType, OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE, ObjectPreCallback, ObjectPostCallback },
+};
+
+const FLT_OPERATION_REGISTRATION gFileOperations[] = {
+    { IRP_MJ_CREATE, 0, PreCreate, PostCreate },
+    { IRP_MJ_OPERATION_END }
+};
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "map driver", "run-1")
+	index := buildSemanticIndexV2(snapshot, "map driver", "run-1", graph)
+	for _, want := range []struct {
+		source string
+		target string
+		typ    string
+	}{
+		{source: "gObjectOperations", target: "ObjectPreCallback", typ: "registers_object_callback"},
+		{source: "gObjectOperations", target: "ObjectPostCallback", typ: "registers_object_callback"},
+		{source: "gFileOperations", target: "PreCreate", typ: "registers_file_filter_callback"},
+		{source: "gFileOperations", target: "PostCreate", typ: "registers_file_filter_callback"},
+	} {
+		if !testCallEdgeContains(index.CallEdges, want.source, want.target, want.typ) {
+			t.Fatalf("expected %s -> %s (%s), got %+v", want.source, want.target, want.typ, index.CallEdges)
+		}
+	}
+	if !testSymbolContains(index.Symbols, "gObjectOperations", "object_callback_table") {
+		t.Fatalf("expected object callback table symbol, got %+v", index.Symbols)
+	}
+	if !testSymbolContains(index.Symbols, "gFileOperations", "file_filter_callback_table") {
+		t.Fatalf("expected file filter callback table symbol, got %+v", index.Symbols)
+	}
+	facts := buildArchitectureFactPack(snapshot, index, graph, "map driver")
+	if !architectureFlowContains(facts.FlowFacts, "registered callback and dispatch edges", "ObjectPreCallback", "PreCreate") {
+		t.Fatalf("expected registration table flow fact, got %+v", facts.FlowFacts)
+	}
+}
+
+func TestBuildSemanticIndexV2CapturesAliasedAndMacroRegistrationTables(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Driver/MacroCallbacks.cpp", `
+#define DECLARE_OBJECT_CALLBACK_TABLE(name, type, pre, post) int name
+#define DECLARE_MINIFILTER_OPERATION_TABLE(name, major, pre, post) int name
+#define BUILD_OBJECT_TABLE(prefix) \
+    DECLARE_OBJECT_CALLBACK_TABLE(prefix##ObjectOps, PsProcessType, prefix##PreOperation, prefix##PostOperation)
+#define BUILD_FILE_TABLE(prefix) \
+    DECLARE_MINIFILTER_OPERATION_TABLE(prefix##FileOps, IRP_MJ_CREATE, prefix##FilePre, prefix##FilePost)
+#define NESTED_FILTER_TABLE(prefix) BUILD_FILE_TABLE(prefix)
+#define VARARG_OBJECT_TABLE(prefix, ...) DECLARE_OBJECT_CALLBACK_TABLE(prefix##VarOps, PsProcessType, __VA_ARGS__)
+#ifdef USE_OBJECT_VARIANT
+#define CONDITIONAL_TABLE(prefix) DECLARE_OBJECT_CALLBACK_TABLE(prefix##ConditionalOps, PsProcessType, prefix##ConditionalPre, prefix##ConditionalPost)
+#else
+#define CONDITIONAL_TABLE(prefix) DECLARE_MINIFILTER_OPERATION_TABLE(prefix##ConditionalFileOps, IRP_MJ_CREATE, prefix##ConditionalFilePre, prefix##ConditionalFilePost)
+#endif
+
+void AliasObjectPre() {}
+void AliasObjectPost() {}
+void AliasFilePre() {}
+void AliasFilePost() {}
+void MacroObjectPre() {}
+void MacroObjectPost() {}
+void MacroFilePre() {}
+void MacroFilePost() {}
+void GenericRegistrationCallback() {}
+void GuardPreOperation() {}
+void GuardPostOperation() {}
+void GuardFilePre() {}
+void GuardFilePost() {}
+void VarPre() {}
+void VarPost() {}
+void MaybeConditionalPre() {}
+void MaybeConditionalPost() {}
+void MaybeConditionalFilePre() {}
+void MaybeConditionalFilePost() {}
+
+typedef OB_OPERATION_REGISTRATION MY_OB_OPERATION_REGISTRATION;
+using MY_FLT_OPERATION_REGISTRATION = FLT_OPERATION_REGISTRATION;
+
+MY_OB_OPERATION_REGISTRATION gAliasObjectOperations[] = {
+    { PsProcessType, OB_OPERATION_HANDLE_CREATE, AliasObjectPre, AliasObjectPost },
+};
+
+MY_FLT_OPERATION_REGISTRATION gAliasFileOperations[] = {
+    { IRP_MJ_CREATE, 0, AliasFilePre, AliasFilePost },
+    { IRP_MJ_OPERATION_END }
+};
+
+CUSTOM_CALLBACK_REGISTRATION gGenericRegistration = {
+    GenericRegistrationCallback,
+    NULL,
+};
+
+DECLARE_OBJECT_CALLBACK_TABLE(gMacroObjectOperations, PsProcessType, MacroObjectPre, MacroObjectPost);
+DECLARE_MINIFILTER_OPERATION_TABLE(gMacroFileOperations, IRP_MJ_CREATE, MacroFilePre, MacroFilePost);
+BUILD_OBJECT_TABLE(Guard);
+NESTED_FILTER_TABLE(Guard);
+VARARG_OBJECT_TABLE(Var, VarPre, VarPost);
+CONDITIONAL_TABLE(Maybe);
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "map driver", "run-1")
+	index := buildSemanticIndexV2(snapshot, "map driver", "run-1", graph)
+	for _, want := range []struct {
+		source string
+		target string
+		typ    string
+	}{
+		{source: "gAliasObjectOperations", target: "AliasObjectPre", typ: "registers_object_callback"},
+		{source: "gAliasFileOperations", target: "AliasFilePre", typ: "registers_file_filter_callback"},
+		{source: "gMacroObjectOperations", target: "MacroObjectPre", typ: "registers_object_callback"},
+		{source: "gMacroFileOperations", target: "MacroFilePre", typ: "registers_file_filter_callback"},
+		{source: "Guard", target: "GuardPreOperation", typ: "registers_object_callback"},
+		{source: "Guard", target: "GuardFilePre", typ: "registers_file_filter_callback"},
+		{source: "Var", target: "VarPre", typ: "registers_object_callback"},
+		{source: "Maybe", target: "MaybeConditionalPre", typ: "registers_object_callback"},
+		{source: "Maybe", target: "MaybeConditionalFilePre", typ: "registers_file_filter_callback"},
+		{source: "gGenericRegistration", target: "GenericRegistrationCallback", typ: "registers_callback_table_entry"},
+	} {
+		if !testCallEdgeContains(index.CallEdges, want.source, want.target, want.typ) {
+			t.Fatalf("expected %s -> %s (%s), got %+v", want.source, want.target, want.typ, index.CallEdges)
+		}
+	}
+	if !testSymbolContains(index.Symbols, "gAliasObjectOperations", "object_callback_table") {
+		t.Fatalf("expected aliased object callback table symbol, got %+v", index.Symbols)
+	}
+	if !testSymbolContains(index.Symbols, "gAliasFileOperations", "file_filter_callback_table") {
+		t.Fatalf("expected aliased file filter table symbol, got %+v", index.Symbols)
+	}
+	facts := buildArchitectureFactPack(snapshot, index, graph, "map driver")
+	if !architectureFlowContains(facts.FlowFacts, "registered callback and dispatch edges", "GuardPreOperation", "MaybeConditionalPre") {
+		t.Fatalf("expected macro registration flow fact, got %+v", facts.FlowFacts)
+	}
+}
+
+func TestBuildSemanticIndexV2ExpandsIncludedRegistrationMacros(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", rel, err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	mustWrite("Driver/RegistrationBase.h", `
+#define INCLUDED_DECLARE_OBJECT(name, type, pre, post) int name
+#define INCLUDED_DECLARE_FILE(name, major, pre, post) int name
+#define INCLUDED_FILE_TABLE(prefix) INCLUDED_DECLARE_FILE(prefix##FileOps, IRP_MJ_CREATE, prefix##FilePre, prefix##FilePost)
+typedef OB_OPERATION_REGISTRATION INCLUDED_OB_REGISTRATION;
+`)
+	mustWrite("Driver/RegistrationLevel4.h", `
+#define INCLUDED_DEEP_OBJECT(prefix) INCLUDED_DECLARE_OBJECT(prefix##DeepOps, PsProcessType, prefix##DeepPre, prefix##DeepPost)
+`)
+	mustWrite("Driver/RegistrationLevel3.h", `
+#include "RegistrationLevel4.h"
+`)
+	mustWrite("Driver/RegistrationLevel2.h", `
+#include "RegistrationLevel3.h"
+`)
+	mustWrite("Driver/RegistrationMacros.h", `
+#include "RegistrationBase.h"
+#include "RegistrationLevel2.h"
+#define INCLUDED_OBJECT_TABLE(prefix) \
+    INCLUDED_DECLARE_OBJECT(prefix##ObjectOps, PsProcessType, prefix##Pre, prefix##Post)
+#define INCLUDED_NESTED_FILE_TABLE(prefix) INCLUDED_FILE_TABLE(prefix)
+`)
+	mustWrite("Driver/IncludedUse.cpp", `
+#include "RegistrationMacros.h"
+
+void IncludedPre() {}
+void IncludedPost() {}
+void IncludedFilePre() {}
+void IncludedFilePost() {}
+void IncludedAliasPre() {}
+void IncludedAliasPost() {}
+void IncludedDeepPre() {}
+void IncludedDeepPost() {}
+
+INCLUDED_OB_REGISTRATION gIncludedAliasOperations[] = {
+    { PsProcessType, OB_OPERATION_HANDLE_CREATE, IncludedAliasPre, IncludedAliasPost },
+};
+
+INCLUDED_OBJECT_TABLE(Included);
+INCLUDED_NESTED_FILE_TABLE(Included);
+INCLUDED_DEEP_OBJECT(Included);
+`)
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	graph := buildUnrealSemanticGraph(snapshot, "map driver", "run-1")
+	index := buildSemanticIndexV2(snapshot, "map driver", "run-1", graph)
+	for _, want := range []struct {
+		source string
+		target string
+		typ    string
+	}{
+		{source: "gIncludedAliasOperations", target: "IncludedAliasPre", typ: "registers_object_callback"},
+		{source: "Included", target: "IncludedPre", typ: "registers_object_callback"},
+		{source: "Included", target: "IncludedFilePre", typ: "registers_file_filter_callback"},
+		{source: "Included", target: "IncludedDeepPre", typ: "registers_object_callback"},
+	} {
+		if !testCallEdgeContains(index.CallEdges, want.source, want.target, want.typ) {
+			t.Fatalf("expected %s -> %s (%s), got %+v", want.source, want.target, want.typ, index.CallEdges)
+		}
+	}
+}
+
+func testCallEdgeContains(edges []CallEdge, source string, target string, typ string) bool {
+	for _, edge := range edges {
+		if strings.Contains(edge.SourceID, source) &&
+			strings.Contains(edge.TargetID, target) &&
+			edge.Type == typ {
+			return true
+		}
+	}
+	return false
+}
+
+func testSymbolContains(symbols []SymbolRecord, name string, kind string) bool {
+	for _, symbol := range symbols {
+		if strings.Contains(symbol.Name, name) && symbol.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildSemanticIndexV2QualifiesInlineScopedMethods(t *testing.T) {

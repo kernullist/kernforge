@@ -257,11 +257,14 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"all": "Prune memory entries without limiting to the current workspace.",
 	},
 	"provider": {
-		"status":     "Show the current provider, base URL, key state, and billing visibility.",
-		"anthropic":  "Switch to Anthropic provider setup.",
-		"openai":     "Switch to OpenAI provider setup.",
-		"openrouter": "Switch to OpenRouter provider setup.",
-		"ollama":     "Switch to Ollama provider setup.",
+		"status":      "Show the current provider, base URL, key state, and billing visibility.",
+		"anthropic":   "Switch to Anthropic provider setup.",
+		"openai":      "Switch to OpenAI provider setup.",
+		"openrouter":  "Switch to OpenRouter provider setup.",
+		"opencode":    "Switch to OpenCode Zen API provider setup.",
+		"opencode-go": "Switch to OpenCode Go subscription provider setup.",
+		"ollama":      "Switch to Ollama provider setup.",
+		"codex-cli":   "Switch to Codex CLI provider setup.",
 	},
 	"profile": {
 		"list":   "Show saved provider/model profiles without activating one.",
@@ -282,11 +285,14 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"delete": "Delete one saved review profile by number.",
 	},
 	"set-plan-review": {
-		"status":     "Show the current plan review provider setting.",
-		"anthropic":  "Use Anthropic for plan review passes.",
-		"openai":     "Use OpenAI for plan review passes.",
-		"openrouter": "Use OpenRouter for plan review passes.",
-		"ollama":     "Use Ollama for plan review passes.",
+		"status":      "Show the current plan review provider setting.",
+		"anthropic":   "Use Anthropic for plan review passes.",
+		"openai":      "Use OpenAI for plan review passes.",
+		"openrouter":  "Use OpenRouter for plan review passes.",
+		"opencode":    "Use OpenCode Zen API for plan review passes.",
+		"opencode-go": "Use OpenCode Go for plan review passes.",
+		"ollama":      "Use Ollama for plan review passes.",
+		"codex-cli":   "Use Codex CLI for plan review passes.",
 	},
 	"set-analysis-models": {
 		"status":   "Show current worker and reviewer analysis providers.",
@@ -648,7 +654,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"set-auto-verify":       {"on", "off"},
 		"worktree":              {"status", "create", "leave", "cleanup"},
 		"specialists":           {"status", "assign", "cleanup"},
-		"provider":              {"status", "anthropic", "openai", "openrouter", "ollama"},
+		"provider":              {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"},
 		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"profile-review":        {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"analyze-project":       {"--mode", "--docs", "--path"},
@@ -657,7 +663,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
 		"mem-prune":             {"all"},
-		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "ollama"},
+		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
 		"set-specialist-model":  {"status", "clear"},
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
@@ -734,7 +740,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return firstLevel[commandName], 0, true
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
-			return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+			return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"}, 1, true
 		}
 		return nil, 0, false
 	case "set-specialist-model":
@@ -752,7 +758,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return normalizeTaskStateList(options, 32), 1, true
 			}
 			if rt.hasSpecialistName(fields[0]) {
-				return []string{"anthropic", "openai", "openrouter", "ollama"}, 1, true
+				return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"}, 1, true
 			}
 		}
 		return nil, 0, false
