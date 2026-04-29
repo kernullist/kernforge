@@ -36,6 +36,7 @@ type Agent struct {
 	FuzzCampaigns                  *FuzzCampaignStore
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
+	UserChangeIsolation            *UserChangeIsolationState
 	EmitAssistant                  func(string)
 	EmitAssistantDelta             func(string)
 	EmitProgress                   func(string)
@@ -107,6 +108,13 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	images := appendUniqueImages(nil, mentionImages...)
 	images = appendUniqueImages(images, extraImages...)
 	a.initializeTaskState(userText)
+	contract := buildAcceptanceContract(userText, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
+	a.Session.AcceptanceContract = &contract
+	a.Session.LastCodingHarnessReport = nil
+	a.Session.LastUserChangeIsolationReport = nil
+	a.Session.LastTestImpactReport = nil
+	a.Session.LastJobSupervisorReport = nil
+	a.startUserChangeIsolation()
 	a.Session.AddMessage(Message{
 		Role:   "user",
 		Text:   enriched,
@@ -223,6 +231,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	manualEditHandoffRetries := 0
 	abruptReplyRetries := 0
 	finalAnswerReviewRevisions := 0
+	finalHarnessRevisions := 0
 	lastReviewedFinalAnswer := ""
 	attemptedEditTool := false
 	sawToolResultThisTurn := false
@@ -573,6 +582,20 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
+				if finalHarnessRevisions < 2 {
+					approved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
+					if !approved {
+						finalHarnessRevisions++
+						a.Session.AddMessage(Message{
+							Role: "user",
+							Text: harnessFeedback,
+						})
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
 				if a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
 					finalAnswerReviewRevisions < 2 &&
 					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
@@ -602,6 +625,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.Session.completeSharedPlan()
 					}
 				}
+				a.finalizePatchTransactionOnReturn()
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
@@ -653,7 +677,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if saveErr != nil {
 				return "", saveErr
 			}
-			result, err := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+			var result ToolExecutionResult
+			var err error
+			if isolationErr := a.checkUserChangeIsolationBeforeTool(call); isolationErr != nil {
+				err = isolationErr
+				result = userChangeIsolationToolResult(call, isolationErr)
+			} else {
+				patchProbe := a.beginPatchTransactionToolProbe(call)
+				result, err = a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
+			}
 			sawToolResultThisTurn = true
 			if err == nil {
 				a.noteToolConversationResult(call, result)
@@ -936,6 +969,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						if repairGuidance != "" {
 							text += "\n\nSuggested repair strategy:\n" + repairGuidance
 						}
+						text = a.appendFailureRepairPrompt(text)
 						a.Session.AddMessage(Message{
 							Role: "user",
 							Text: text,
@@ -2429,6 +2463,41 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
+	if a.Session.ActivePatchTransaction != nil {
+		if txText := strings.TrimSpace(a.Session.ActivePatchTransaction.RenderPromptSection()); txText != "" {
+			b.WriteString("\nActive patch transaction:\n")
+			b.WriteString(txText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.LastCodingHarnessReport != nil {
+		if harnessText := strings.TrimSpace(a.Session.LastCodingHarnessReport.RenderPromptSection()); harnessText != "" {
+			b.WriteString("\nLatest coding harness report:\n")
+			b.WriteString(harnessText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.LastUserChangeIsolationReport != nil {
+		if isolationText := strings.TrimSpace(a.Session.LastUserChangeIsolationReport.RenderPromptSection()); isolationText != "" {
+			b.WriteString("\nLatest user-change isolation report:\n")
+			b.WriteString(isolationText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.LastTestImpactReport != nil {
+		if impactText := strings.TrimSpace(a.Session.LastTestImpactReport.RenderPromptSection()); impactText != "" {
+			b.WriteString("\nLatest test impact report:\n")
+			b.WriteString(impactText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.LastJobSupervisorReport != nil {
+		if jobText := strings.TrimSpace(a.Session.LastJobSupervisorReport.RenderPromptSection()); jobText != "" {
+			b.WriteString("\nLatest job supervisor report:\n")
+			b.WriteString(jobText)
+			b.WriteString("\n")
+		}
+	}
 	if len(a.Session.Plan) > 0 {
 		b.WriteString("\nCurrent shared plan:\n")
 		for _, item := range a.Session.Plan {
@@ -2453,6 +2522,20 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString(a.Session.LastVerification.SummaryLine())
 		}
 		b.WriteString("\n")
+	}
+	if a.Session.AcceptanceContract != nil {
+		if contractText := strings.TrimSpace(a.Session.AcceptanceContract.RenderPromptSection()); contractText != "" {
+			b.WriteString("\nAcceptance contract for this turn:\n")
+			b.WriteString(contractText)
+			b.WriteString("\n")
+		}
+	}
+	if a.Session.ActiveFailureRepair != nil {
+		if repairText := strings.TrimSpace(a.Session.ActiveFailureRepair.RenderPromptSection()); repairText != "" {
+			b.WriteString("\nActive failure repair harness:\n")
+			b.WriteString(repairText)
+			b.WriteString("\n")
+		}
 	}
 	if combined := strings.TrimSpace(a.Memory.Combined()); combined != "" {
 		b.WriteString("\nLoaded memory files:\n")

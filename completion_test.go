@@ -122,6 +122,7 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/simu", wantBuffer: "/simulate"},
 		{input: "/fuzz-f", wantBuffer: "/fuzz-func "},
 		{input: "/fuzz-c", wantBuffer: "/fuzz-campaign "},
+		{input: "/find-r", wantBuffer: "/find-root-cause "},
 		{input: "/spec", wantBuffer: "/specialists "},
 		{input: "/workt", wantBuffer: "/worktree "},
 		{input: "/override-a", wantBuffer: "/override-add "},

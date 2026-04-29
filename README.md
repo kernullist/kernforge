@@ -18,7 +18,7 @@
 Its strongest current value is a `multi-agent project analysis pipeline` that turns a large workspace into reusable project intelligence, then carries that context into editing, verification, evidence, fuzzing, and policy.  
 Kernforge is now centered on `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback`, which makes it especially useful for driver, telemetry, memory-scan, and Unreal security workflows.
 
-The current product direction has two main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
+The current product direction has three main pillars. The first is whole-project analysis and documentation. The second is a specialized fuzzing toolchain that runs from source-based triage into native fuzzing execution. The third is a symptom-driven `/find-root-cause` diagnostic loop that narrows user-reported failures into reviewed causal candidates. The Korean and English README files should contain the same content, with each document maintained as a translation of the same feature scope and roadmap direction.
 
 ## Flagship Capability
 
@@ -27,6 +27,8 @@ If Kernforge has one feature to understand first, it is `multi-agent project ana
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds a reusable architecture map instead of a disposable summary, and infers a mode-specific goal when you omit one
 - The output becomes a durable knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard
 - That analysis is then reused in review, editing, verification, and policy workflows
+- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
+- `/root-cause-patterns` provides built-in symptom/root-cause priors for project types such as Windows services, kernel drivers, Unreal, and web backends, and can collect GitHub issue corpora into local pattern packs
 - The next roadmap focus is expanding the new `/fuzz-campaign` planner from one-command campaign automation into native crash, coverage, evidence, and verification-gate lifecycle management
 
 ## Documentation
@@ -54,7 +56,7 @@ Specs And Roadmap:
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
-The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
+The most practical end-to-end workflow is described in the [English Detailed Usage Guide](./FEATURE_USAGE_GUIDE.md). The highest-value current loop is `analyze-project -> investigate/simulate -> find-root-cause or fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
 ## Why Kernforge
 
@@ -77,6 +79,8 @@ Its current differentiators are:
 ## What It Currently Supports
 
 - Multi-agent project analysis with reusable knowledge packs, a performance lens, operational docs, and an HTML dashboard
+- Symptom-driven `/find-root-cause` plus built-in `/root-cause-patterns` knowledge packs
+- Pre-final coding harnesses for acceptance, artifact quality, scenario replay, subagent evidence, test impact, and background job state
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
@@ -133,6 +137,21 @@ Its current differentiators are:
 - `/analyze-performance [focus]` uses the latest analysis artifacts to reason about hot paths and bottlenecks
 - Performance reports now end with a `Performance handoff` toward `/analyze-dashboard`, `/verify`, `/simulate stealth-surface`, or a concrete `/fuzz-func ...` hotspot drilldown
 
+### Root-Cause Investigation
+
+- `/find-root-cause <problem description>` accepts natural-language symptoms such as party-size limits being bypassed, `sc stop` not terminating a service, or a requested document artifact being missing
+- If the prompt is too short or does not clearly identify the affected component, trigger/repro path, observed failure, or expected invariant, Kernforge does not start agents; it prints the unclear parts plus a better `/find-root-cause ...` command shape
+- Borderline prompts are checked with source hints and an optional model clarity pass so Korean natural-language reports are not rejected only because a keyword heuristic missed them
+- Kernforge scans the workspace, combines symptom keywords, source paths, indexed symbols, and built-in pattern priors, then splits likely source areas into 1-8 worker shards based on code size and candidate count
+- Workers inspect each assigned area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, ids, enums, nullable references, and lifecycle state may be outside the code's expected range
+- Worker candidates must preserve a `trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom` causal chain
+- Reviewer passes verify whether a worker-reported issue can actually lead to the user's symptom, and request additional focused shards when proof is missing
+- Deterministic quality gates downgrade or reject candidates that lack causal stages, evidence files, concrete state signals, valid probes, or symptom overlap
+- Reviewer-approved candidates receive another symbol-aware deep verification pass with focused source excerpts before final synthesis
+- The final report summarizes plausible root causes, confidence breakdowns, evidence files/functions, instrumentation, verification probes, and disproof conditions
+- Artifacts are written with the normal analysis outputs under `.kernforge/analysis/<run-id>/` and `latest`, including `root_cause_audit.md/json`
+- `/root-cause-patterns list|match|github-search|normalize|validate` supports built-in pattern inspection, workspace/symptom matching, and GitHub issue based provisional pack generation. Pattern packs are search priors only; current source evidence and reviewer causality validation are still required
+
 ### Security Verification And Policy Loop
 
 - Security-aware verification for driver, telemetry, Unreal, and memory-scan changes
@@ -169,6 +188,12 @@ Its current differentiators are:
 - WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
+- Before a final answer, the coding harness checks the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, and background job state
+- If a requested document or report artifact is placeholder/TODO content or does not cover the requested topic, the artifact-quality gate blocks the final answer
+- If the user provided a bug scenario with trigger/expected/observed behavior, a code-changing fix claim must include replay/verification evidence or explicitly disclose that the replay was not run
+- Root-cause answers are blocked when worker evidence does not show a causal bridge to the user-visible symptom or when reviewer issues are hidden
+- After verification failures, the failure-repair harness keeps the first meaningful failure line, repeated count, narrow rerun command, and next repair steps in active context
+- If a user changes a target file between tool calls, user-change isolation blocks overwrites and requires a fresh read plus merge-aware edit
 - `read_file` now reuses unchanged exact ranges, covered subranges, and partial overlaps so large-file edit loops avoid redundant rereads
 - `grep` now annotates matches with `[cached-nearby:inside]` or `[cached-nearby:N]` when recent `read_file` context already covers the same area or a nearby span
 - Repeated same-file `read_file` turns now prefer cache-aware nudges before falling back to hard repeated-tool aborts
@@ -213,7 +238,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, analyze-project modes, compact fuzz campaign actions, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request

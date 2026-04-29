@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-04-29
+- Codebase snapshot: 2026-04-30
 
 Intended readers:
 - Windows security engineers
@@ -15,7 +15,7 @@ Intended readers:
 Goals of this guide:
 1. Explain real usage patterns instead of just listing features.
 2. Show which command combinations fit which kinds of problems.
-3. Teach the full loop of `analyze-project -> analyze-performance -> investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
+3. Teach the full loop of `analyze-project -> analyze-performance -> investigate/simulate -> find-root-cause or fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks`.
 
 ## 1. The Best Way To Think About Kernforge
 
@@ -27,23 +27,25 @@ The best current loop looks like this:
 2. Use `/analyze-performance` to turn the latest knowledge pack into a bottleneck lens when performance or startup paths matter.
 3. If live state matters, use `/investigate` to capture the current system state.
 4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
-5. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning; when a seed handoff is useful, Kernforge prints `/fuzz-campaign run` as the next step.
-6. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
-7. Run `/verify` to execute the verification plan.
-8. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
-9. Follow the printed handoff blocks after analysis, investigation, simulation, performance, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, and specialist actions instead of memorizing the command order.
-10. Let hooks act as the final policy layer before push or PR.
+5. If you already have a user-visible symptom and need to narrow likely causes, run `/find-root-cause`.
+6. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning; when a seed handoff is useful, Kernforge prints `/fuzz-campaign run` as the next step.
+7. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
+8. Run `/verify` to execute the verification plan.
+9. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
+10. Follow the printed handoff blocks after analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, and specialist actions instead of memorizing the command order.
+11. Let hooks act as the final policy layer before push or PR.
 
 Practical interpretation:
 1. `analyze-project` builds a reusable architecture map instead of a disposable summary.
 2. `analyze-performance` extracts likely hot paths and bottlenecks from the latest architecture knowledge.
 3. `investigate` captures what is happening live.
 4. `simulate` highlights risk-oriented weak spots using lightweight heuristics.
-5. `fuzz-func` synthesizes attacker input states, counterexamples, and branch deltas from real source-level guard/probe/copy/dispatch behavior.
-6. `verify` turns code changes and recent context into a concrete validation plan.
-7. `evidence` stores structured recent signals.
-8. `memory` keeps conclusions across sessions.
-9. `hooks` turn that accumulated context back into guardrails.
+5. `find-root-cause` turns a symptom, trigger, expected invariant, and observed failure into worker/reviewer causal analysis.
+6. `fuzz-func` synthesizes attacker input states, counterexamples, and branch deltas from real source-level guard/probe/copy/dispatch behavior.
+7. `verify` turns code changes and recent context into a concrete validation plan.
+8. `evidence` stores structured recent signals.
+9. `memory` keeps conclusions across sessions.
+10. `hooks` turn that accumulated context back into guardrails.
 
 ## 2. Core Features And When To Use Them
 
@@ -100,6 +102,86 @@ Current behavior:
 2. Requests that explicitly ask to fix code keep edit tools available and Kernforge nudges the model back toward direct tool use if it tries to hand the patch back to the user.
 3. Git staging, commit, push, and PR creation are blocked unless the user explicitly asked for that git action.
 
+### Self-Driving Work Loop
+
+Purpose:
+1. Keep implementation, fix, and execution requests from stopping at analysis.
+2. Seed `TaskState` and `TaskGraph` with an inspect, implement, verify, summarize loop.
+3. Keep the task in recovery instead of marking it complete when post-edit verification fails.
+
+Current behavior:
+1. Requests such as "implement this", "fix this", "handle the remaining items", or "run the tests and finish" become self-driving candidates.
+2. If reviewer/planner preflight is available, Kernforge prefers the existing plan-review flow; otherwise it uses a deterministic default plan.
+3. Read-only prompts such as "why did that error happen?", "what is the current state?", or "analyze this" do not start an automatic edit loop.
+
+### Proactive Suggestion Dashboard
+
+Purpose:
+1. Collect Kernforge's current next-action suggestions in one view.
+2. Compare analysis stale markers, verification gaps, evidence gaps, and changed paths in the same dashboard.
+3. Link each suggestion to the relevant dashboard or command.
+
+Useful commands:
+- `/suggest`
+- `/suggest accept <id>`
+- `/suggest dismiss <id>`
+- `/suggest mode <observe|suggest|confirm>`
+- `/suggest-dashboard-html`
+
+Current behavior:
+1. `/suggest-dashboard-html` renders integrated signals and suggested next actions together.
+2. Suggestion cards include related command chips, evidence refs, and dashboard links such as `/verify-dashboard-html`, `/evidence-dashboard-html`, and `/analyze-dashboard`.
+3. Cards include `/suggest accept <id>` and `/suggest dismiss <id>` chips so repeated suggestions can be managed.
+4. `/suggest` candidates are synchronized into `TaskGraph` as `suggest:<id>` nodes with ready/in_progress/completed/canceled states.
+5. In `/suggest mode confirm`, accepting a suggestion only runs safe commands such as `/verify`, dashboards, `/docs-refresh`, `/automation add`, and `/review-pr`.
+6. Accepted or dismissed suggestions are also promoted into persistent memory as preference records.
+
+### Local Automations MVP
+
+Purpose:
+1. Provide a local-session foundation for Codex-style recurring workflows.
+2. Connect recurring verification and PR review report generation to suggestions and the task graph.
+3. Validate the operating loop before adding a time-based scheduler or GitHub API integration.
+
+Useful commands:
+- `/automation`
+- `/automation add recurring-verification /verify`
+- `/automation add pr-review /review-pr`
+- `/automation run <id>`
+- `/automation pause <id>`
+- `/automation resume <id>`
+- `/automation remove <id>`
+- `/review-pr`
+
+Current behavior:
+1. Automation slots are stored in the session JSON under `automations`.
+2. `/automation run <id>` executes the registered command through the safe command dispatcher.
+3. `/review-pr` writes git status, diff stat, changed files, and a review checklist to `.kernforge/pr_review/latest.md`, then records an artifact ref in the conversation event log.
+4. When verification gaps or dirty diffs exist, `/suggest` can recommend recurring verification or PR review automation registration.
+
+### Coding Harnesses And Repair Loop
+
+Purpose:
+1. Check the final answer against the real workspace state before it is shown.
+2. Structure the Codex-style completion loop around acceptance, artifacts, scenarios, subagent evidence, test impact, background jobs, failure repair, and user-change isolation.
+3. Treat blockers as feedback that requires revision, verification, or explicit disclosure.
+
+Current behavior:
+1. `AcceptanceContract` extracts expected behavior, non-goals, changed surfaces, required artifacts, and verification requirements from the user request.
+2. Patch transactions record edit tools, scoped shell writes, changed paths, fingerprints, and failed tool calls so the final harness knows what actually changed.
+3. The artifact-quality harness reads requested or claimed document artifacts and flags placeholder/TODO content, very thin content, or missing topic coverage.
+4. The scenario-replay harness detects `when/expected/but observed` bug scenarios and requires replay/verification evidence or an explicit "not run" disclosure before a code-changing fix claim.
+5. The subagent-orchestration harness checks whether root-cause answers connect worker evidence and reviewer validation to a real causal bridge. It blocks hidden reviewer failures or weak worker evidence that cannot lead to the user-visible symptom.
+6. The test-impact harness maps code-like changed paths to recommended verification commands and records a warning when successful verification evidence is missing.
+7. The job-supervisor harness prevents final answers from hiding failed, stale, or still-running background jobs and bundles.
+8. The failure-repair harness keeps the first meaningful failure line, repeated count, narrow rerun command, and next repair steps in active context after verification fails.
+9. User-change isolation blocks overwrites when a target file changed outside the agent after the turn began, forcing a fresh read and merge-aware edit.
+
+Practical interpretation:
+1. Before saying "done", Kernforge rechecks actual artifacts and verification evidence.
+2. For root-cause work, the important bar is not plausibility; it is the causal chain from trigger to invalid state to user-visible symptom.
+3. When a blocker appears, the user does not need to restate the request. Harness feedback is injected into the next model turn so the agent can repair, verify, or disclose the remaining gap.
+
 ### Read Reuse And Large-File Inspection
 
 Purpose:
@@ -144,7 +226,7 @@ Large runs are provider-failure tolerant: worker/reviewer rate limits are record
 
 Role split:
 1. `README.md` is the quick product-scope, flagship-command, and artifact-location document.
-2. This feature guide explains the operating sequence across investigation, simulation, fuzzing, verification, evidence, and memory.
+2. This feature guide explains the operating sequence across investigation, simulation, root-cause, fuzzing, verification, evidence, and memory.
 3. Generated `analyze-project` docs are the per-run project knowledge base with source anchors, confidence, and stale/invalidation markers.
 
 Mode summary:
@@ -185,6 +267,56 @@ What materially changed for large and Unreal-heavy workspaces:
 13. `.kernforge/analysis/latest` is replaced per run, avoiding stale artifact bleed-through across repeated analysis tests.
 14. Goal text can narrow analysis to matching directories when you clearly target a sub-area.
 15. Interactive runs can flag hidden or external-looking directories so you can exclude them before scanning.
+
+### Root-Cause Investigation
+
+Purpose:
+1. Turn a user-reported symptom into source-evidence-backed root-cause candidates.
+2. Select only source files and symbols that appear relevant, then analyze them with 1-8 worker shards.
+3. Require reviewer and deterministic gate validation that a worker-reported issue can actually lead to the user's symptom.
+
+Useful commands:
+- `/find-root-cause <problem description>`
+- `/find-root-cause --pattern-pack <path-or-dir> <problem description>`
+- `/root-cause-patterns list [--type <project_type>] [--json]`
+- `/root-cause-patterns match <problem symptom> [--json]`
+- `/root-cause-patterns github-search [--type <project_type>] [--limit 20] [--out .kernforge/root_cause/github_issues.json] [query words...]`
+- `/root-cause-patterns normalize --in .kernforge/root_cause/github_issues.json --out .kernforge/root_cause/pattern_pack.json [--type <project_type>]`
+- `/root-cause-patterns validate [--in <pattern_pack.json>] [--json]`
+
+Good prompt shape:
+
+```text
+/find-root-cause In <component/feature>, when <input/command/event sequence/state>, expected <normal behavior or invariant>, but observed <failure>. Frequency/env: <how often and where>. Repro/log/value: <exact prompt, API call, command, DB value, or log line>.
+```
+
+Examples:
+
+```text
+/find-root-cause In the party system, after inviting and kicking members repeatedly, expected the party size limit to block new invites, but observed extra members can still be invited.
+/find-root-cause My Win32 service process does not stop through sc stop.
+```
+
+Current behavior:
+1. With no prompt, the command prints usage and examples.
+2. If affected component, trigger/repro, observed failure, or expected behavior/invariant is unclear, Kernforge prints the missing pieces and asks for a sharper `/find-root-cause ...` command before starting agents.
+3. Source hints and an optional model clarity check reduce false rejections for natural-language Korean symptom reports.
+4. Workspace scan, source path/symbol matches, built-in pattern priors, and explicit `--pattern-pack` inputs are combined into candidate code matches.
+5. Worker count is estimated from code size and candidate count, from 1 up to 8 shards.
+6. Workers focus on what happens when input parameters, DB/config values, cached state, counters, ids, enums, nullable references, and lifecycle state fall outside the range the code expects.
+7. Worker candidates must include causal chain, evidence file/function, out-of-range case, required runtime observation, probes, and disproof conditions.
+8. Reviewers check symptom overlap, complete causal stages, and evidence quality.
+9. If reviewers need more proof, `evidence_requests` route additional focused shards, and rejected candidates stay in the audit trail as regression priors.
+10. Deep verification rechecks reviewer-approved candidates with symbol-aware source excerpts and adjusts confidence breakdowns.
+11. Final synthesis deduplicates candidates into clusters and reports confidence, instrumentation, verification probes, and "this is not the root cause if..." disconfirmation conditions.
+
+Pattern pack workflow:
+1. The built-in pack provides search priors for recurring bug classes in Windows services, Windows kernel drivers, Unreal clients/servers, web backends, and Go/CLI agents.
+2. `/root-cause-patterns match` shows pattern candidates for the current workspace type and symptom text.
+3. `/root-cause-patterns github-search` collects closed GitHub issues with bug, fix, or root-cause signals.
+4. `/root-cause-patterns normalize` converts that issue corpus into a provisional pattern pack.
+5. `/root-cause-patterns validate` reports pack quality issues.
+6. Pattern packs are priors, not proof. `/find-root-cause` still requires current source evidence plus reviewer causality validation.
 
 ### Source-Level Function Fuzzing
 

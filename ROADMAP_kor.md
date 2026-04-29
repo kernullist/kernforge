@@ -3,29 +3,32 @@
 이 문서는 현재 Kernforge 구현 상태를 바탕으로 Claude Code 및 Codex와 비교했을 때, 따라가야 하는 범용 기능과 우리만의 강점으로 키워야 하는 기능을 함께 정리한 제품/구현 로드맵이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-24
+- 코드베이스 기준: 2026-04-30
 - 외부 비교 기준:
   - Claude Code 공식 문서
   - OpenAI Codex 공식 도움말 및 공개 저장소
 
 ## 0. 2026-04 방향 재정렬
 
-Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
+Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 
 1. 전체 프로젝트 분석 및 문서화
 2. 퍼징 전문 도구
+3. 증상 기반 root-cause investigation과 coding-agent completion harness
 
-이 재정렬은 현재 구현 상태와 잘 맞는다. 코드베이스에는 이미 `multi-agent project analysis`, deterministic documentation writer, analysis dashboard, `structural_index_v2`, Unreal semantic graph, vector corpus, adaptive verification, evidence store, persistent memory, `/fuzz-func` 기반 source-level fuzzing이 들어가 있다. 따라서 다음 단계는 기능을 흩뿌려 늘리는 것이 아니라, 이 두 축을 제품의 중심 경험으로 고정하고 나머지 기능을 보조 계층으로 재배치하는 것이다.
+이 재정렬은 현재 구현 상태와 잘 맞는다. 코드베이스에는 이미 `multi-agent project analysis`, deterministic documentation writer, analysis dashboard, `structural_index_v2`, Unreal semantic graph, vector corpus, adaptive verification, evidence store, persistent memory, `/fuzz-func` 기반 source-level fuzzing, `/find-root-cause` root-cause analysis, 내장 root-cause pattern pack, final-answer coding harness가 들어가 있다. 따라서 다음 단계는 기능을 흩뿌려 늘리는 것이 아니라, 이 세 축을 제품의 중심 경험으로 고정하고 나머지 기능을 보조 계층으로 재배치하는 것이다.
 
 권장 제품 포지션:
 - 대형 Windows security / anti-cheat / Unreal 프로젝트를 먼저 이해하고 문서화하는 분석 에이전트
 - 소스 기반 triage에서 native fuzzing 실행까지 이어지는 보안 퍼징 워크벤치
+- 사용자가 보고한 증상을 worker/reviewer causal analysis, pattern prior, deterministic gate로 좁히는 root-cause investigator
 - 분석 산출물, fuzz finding, verification, evidence, memory를 한 루프로 묶는 로컬 우선 security engineering runtime
 
 핵심 원칙:
 1. `analyze-project`는 일회성 요약이 아니라 프로젝트 지식 베이스를 만드는 기능으로 키운다.
 2. `/fuzz-func`는 단일 명령 기능이 아니라 입력 표면 발굴, harness 생성, corpus 관리, crash triage까지 포함하는 전문 도구로 키운다.
-3. hooks, specialist, worktree, verification, evidence, desktop shell은 두 축을 더 안전하고 반복 가능하게 만드는 보조 인프라로 둔다.
+3. `/find-root-cause`는 단순 질의응답이 아니라 증상 명확화, source shard 선택, worker/reviewer 검증, deep verification, pattern prior, audit trail이 있는 진단 루프로 키운다.
+4. hooks, specialist, worktree, verification, evidence, desktop shell은 세 축을 더 안전하고 반복 가능하게 만드는 보조 인프라로 둔다.
 
 ## 1. 현재 Kernforge의 실제 강점
 
@@ -52,14 +55,27 @@ Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
 - branch predicate, 최소 반례, pass/fail outcome, downstream call chain 요약
 - build context가 충분할 때 native fuzzing 실행 계획과 corpus/crash directory 준비
 
-3. 안전한 편집 루프
+3. 증상 기반 Root-Cause Investigation
+- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>`
+- 증상 프롬프트 clarity check와 더 정확한 명령 재입력 안내
+- workspace source hint와 model clarity check를 결합한 borderline prompt 보정
+- 코드 크기/후보 수 기반 1-8 worker shard 선택
+- worker는 입력 파라미터, DB/config 값, cache/counter/id/enum/null/lifecycle state의 out-of-range case를 fuzzing처럼 검토
+- reviewer는 worker 후보가 사용자 증상으로 실제 이어질 수 있는지 causal chain을 검증
+- deterministic quality gate가 causal stage, evidence file, concrete state signal, probe, symptom overlap 부족 후보를 reject/downgrade
+- deep verification, candidate clustering, regression/audit trail, root_cause_audit artifact 생성
+- `/root-cause-patterns` 내장 pack, workspace-local pack, GitHub issue search/normalize/validate 흐름
+
+4. 안전한 편집 루프
 - diff preview
 - selection-aware preview
 - 자동 verification
 - 자동 checkpoint
 - rollback
+- final answer coding harness
+- artifact quality, scenario replay, subagent orchestration, test impact, job supervisor, failure repair, user-change isolation
 
-4. 세션을 넘는 누적 맥락
+5. 세션을 넘는 누적 맥락
 - persistent memory
 - analysis docs reuse memory record
 - analysis docs evidence record
@@ -68,17 +84,17 @@ Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
 - memory dashboard
 - verification dashboard
 
-5. Windows 친화 UX
+6. Windows 친화 UX
 - 별도 viewer 창
 - selection-first review/edit 흐름
 - Windows 입력/취소 처리
 - 짧은 `Esc` 탭 취소와 취소 직후 프롬프트 안정화까지 포함한 콘솔 취소 신뢰성
 
-6. planner/reviewer 분리 구조
+7. planner/reviewer 분리 구조
 - `/do-plan-review`
 - reviewer 모델 별도 구성
 
-7. 확장 가능성
+8. 확장 가능성
 - local skill
 - MCP tool/resource/prompt
 
@@ -121,10 +137,12 @@ Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
 1. multi-agent project analysis가 단순 요약을 넘어 재사용 가능한 문서와 인덱스를 생성함
 2. `structural_index_v2`, Unreal semantic graph, vector corpus까지 한 분석 실행에서 함께 남김
 3. `/fuzz-func`가 source-only fuzz triage, harness artifact, native execution readiness를 하나의 흐름으로 묶음
-4. checkpoint + rollback가 기본 흐름에 잘 녹아 있음
-5. verification history와 adaptive verification이 제품 중심 기능으로 존재함
-6. selection-first edit/review UX가 명확함
-7. persistent memory에 trust/importance 개념이 이미 있음
+4. `/find-root-cause`가 worker/reviewer root-cause shard, pattern prior, deep verification, audit trail을 하나로 묶음
+5. final-answer coding harness가 artifact, scenario, worker evidence, background job, test impact를 실제 workspace 상태와 대조함
+6. checkpoint + rollback가 기본 흐름에 잘 녹아 있음
+7. verification history와 adaptive verification이 제품 중심 기능으로 존재함
+8. selection-first edit/review UX가 명확함
+9. persistent memory에 trust/importance 개념이 이미 있음
 
 ### Kernforge가 아직 비어 있는 축
 
@@ -132,9 +150,9 @@ Kernforge의 다음 발전 방향은 크게 두 축으로 잡는다.
 2. generated docs는 API map, security surface, verification matrix, fuzz target catalog, trust/data-flow graph section을 생성하고, 변경 diff view를 graph section stale marker와 연결함
 3. `/fuzz-func`는 강한 source-level triage와 docs catalog ranking을 갖췄지만 coverage-guided fuzzing, corpus lifecycle, crash minimization, sanitizer/coverage report까지 이어지는 전문 워크벤치는 아직 부족함
 4. fuzz finding과 evidence graph, verification history, tracked feature를 하나의 issue lifecycle로 묶는 MVP가 들어갔고, coverage feedback과 dedup도 1차 구현됨. 다음은 coverage report format 확장이 필요함
-5. automation/scheduler 부재
+5. local automation MVP는 들어갔지만 시간 기반 scheduler와 cloud recurring job은 아직 부재
 6. cloud delegation 부재
-7. GitHub/PR review automation 부재
+7. local PR review report MVP는 들어갔지만 GitHub API 연동형 PR review automation은 아직 부재
 
 ### 대화형 에이전트 관점 비교
 
@@ -191,9 +209,10 @@ Kernforge가 차별화해야 할 방향:
 추천 포지션:
 - project intelligence and documentation engine for large security codebases
 - source-to-native fuzzing workbench for Windows security and anti-cheat targets
+- symptom-to-root-cause investigator with reviewer validation and pattern priors
 - safe modification plus live telemetry plus evidence memory runtime
 
-즉, 따라가야 하는 범용 기능은 최소한으로 확보하되, 차별화는 아래 두 축에 둔다.
+즉, 따라가야 하는 범용 기능은 최소한으로 확보하되, 차별화는 아래 세 축에 둔다.
 
 제품 축 A: 전체 프로젝트 분석 및 문서화
 1. architecture map
@@ -214,6 +233,16 @@ Kernforge가 차별화해야 할 방향:
 6. corpus/crash lifecycle
 7. crash triage and minimization
 8. evidence-backed finding lifecycle
+
+제품 축 C: 증상 기반 Root-Cause Investigation과 Coding Harness
+1. ambiguous symptom clarification
+2. root-cause pattern prior pack
+3. source shard selection
+4. worker/reviewer causal validation
+5. deep verification and disconfirmation probes
+6. root_cause_audit artifact
+7. artifact/scenario/subagent/test-impact final-answer gate
+8. failure repair and user-change isolation
 
 이를 떠받치는 공통 인프라는 아래와 같다.
 
@@ -317,6 +346,67 @@ Kernforge가 차별화해야 할 방향:
 3. 달성: fuzz target 후보와 verification matrix가 분석 산출물에서 자동으로 나온다.
 4. 달성: 변경 후 재분석 시 오래된 문서 섹션과 재사용 대상이 명확히 구분된다.
 5. 달성: dashboard에서 문서, source anchor, fuzz target, verification check, evidence/memory follow-up을 한 화면에서 추적할 수 있다.
+
+### P0. Root-Cause Investigation And Pattern Packs
+
+목표:
+- `/find-root-cause`를 "원인 추측 답변"이 아니라 증상 명확화, source shard 선택, worker/reviewer 검증, deep verification, pattern prior, audit trail이 있는 진단 루프로 만든다.
+
+현재 구현 상태:
+1. 완료: `/find-root-cause [--pattern-pack <path-or-dir>] <problem description>` 명령을 추가했다.
+2. 완료: 프롬프트가 비어 있으면 usage와 파티원 제한/Win32 service stop 예시를 출력한다.
+3. 완료: affected component, trigger/repro, observed failure, expected invariant가 불명확하면 부족한 부분과 더 정확한 `/find-root-cause ...` command template를 출력하고 agent 실행을 중단한다.
+4. 완료: source hint와 optional model clarity check로 한국어 자연어 증상이 keyword heuristic 부족만으로 거절되지 않게 했다.
+5. 완료: root-cause mode는 workspace scan, source path/symbol match, pattern prior를 결합해 code match와 hypothesis를 만든다.
+6. 완료: 코드 크기와 후보 수에 따라 1개부터 최대 8개 worker shard를 선택한다.
+7. 완료: worker prompt는 입력 파라미터, DB/config 값, decoded payload, cached state, counter, id, enum, nullable reference, lifecycle state의 out-of-range case를 fuzzing처럼 검토하도록 요구한다.
+8. 완료: worker 후보는 `trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom` causal chain, evidence file/function, runtime observation, verification probe, disproof condition을 갖춰야 한다.
+9. 완료: reviewer는 worker가 보고한 문제가 사용자 증상으로 이어질 수 있는지 검증하고, 부족하면 `evidence_requests`로 추가 focused shard를 요구한다.
+10. 완료: deterministic quality gate가 causal stage, evidence file, concrete state signal, valid probe, symptom overlap 부족 후보를 reject/downgrade한다.
+11. 완료: reviewer-approved candidate에 대해 symbol-aware focused excerpt 기반 deep verification을 수행한다.
+12. 완료: near-duplicate 후보 clustering, rejected/disconfirmed candidate audit trail, code-change-aware regression prior를 보존한다.
+13. 완료: `/root-cause-patterns list|match|github-search|normalize|validate` 명령을 추가했다.
+14. 완료: Windows service, Windows kernel driver, Unreal client/server, web backend, Go/CLI agent 계열 내장 pattern seed pack을 추가했다.
+15. 완료: GitHub issue search는 issue 전용 safe query, quality scoring, closed bug/fix/root-cause 신호, PR 제외, local JSON corpus 저장을 지원한다.
+16. 완료: GitHub issue corpus를 provisional pattern pack으로 normalize하고 validation으로 품질 문제를 확인할 수 있다.
+17. 완료: pattern pack은 search prior로만 쓰고, `/find-root-cause` 최종 판단은 현재 소스 증거와 reviewer causality validation을 요구한다.
+
+남은 구현 항목:
+1. 보류: `DeepVerifierProfile`처럼 profile 설정이 과해질 수 있는 옵션은 아직 노출하지 않는다.
+2. 향후: 실제 운영 repo별 pattern pack promotion workflow와 citation-rich source tracking을 더 엄격하게 만들 수 있다.
+
+성공 조건:
+1. 달성: 사용자가 자연어 증상을 입력하면 불명확한 경우 더 나은 prompt를 먼저 요구한다.
+2. 달성: 명확한 증상은 1-8 worker/reviewer root-cause run으로 전환된다.
+3. 달성: worker가 보고한 후보가 사용자 증상으로 이어질 수 있는지 reviewer와 deterministic gate가 검증한다.
+4. 달성: 내장/로컬/GitHub-derived pattern pack이 후보 prior로 쓰이되 proof를 대체하지 않는다.
+
+### P0. Coding Agent Completion Harnesses
+
+목표:
+- Codex와 비교했을 때 부족했던 "작업 완료 직전 자기검문" harness를 추가해, 모델이 실제 파일/검증/worker 상태와 다른 최종 답변을 내지 않게 한다.
+
+현재 구현 상태:
+1. 완료: `AcceptanceContract`가 사용자 요청에서 expected behavior, non-goal, changed surface, required artifact, verification requirement를 추출한다.
+2. 완료: `PatchTransaction`이 edit tool, scoped shell write, changed path, fingerprint, failed tool call을 기록한다.
+3. 완료: final answer 직전 `CodingHarnessReport`가 blocker/warning을 모아 승인 여부를 결정한다.
+4. 완료: artifact quality harness가 requested/claimed document artifact를 읽어 placeholder/TODO, thin content, topic coverage 부족을 검사한다.
+5. 완료: scenario replay harness가 bug scenario에서 trigger/expected/observed bridge와 replay/verification disclosure를 요구한다.
+6. 완료: subagent orchestration harness가 root-cause 답변의 worker evidence, reviewer validation, review failure disclosure, causal bridge를 검사한다.
+7. 완료: test impact harness가 code-like changed path에 대해 verification planner 추천 명령과 verification evidence gap을 기록한다.
+8. 완료: job supervisor harness가 failed/running/stale background job과 verification bundle을 숨기지 못하게 한다.
+9. 완료: failure repair harness가 verification 실패의 첫 의미 있는 error line, repeated count, narrow rerun command, next repair step을 active context로 보존한다.
+10. 완료: user-change isolation이 turn 시작 이후 사용자가 바꾼 target path overwrite를 막고 fresh read/merge-aware edit을 요구한다.
+11. 완료: scenario replay의 instructional boilerplate false positive와 subagent strict-mode overblocking을 회귀 테스트로 고쳤다.
+
+남은 구현 항목:
+1. 없음. P0 범위의 final-answer completion harness, repair loop, user-change isolation, false-positive regression coverage를 완료했다.
+
+성공 조건:
+1. 달성: "문서 파일을 만들었다"는 답변은 실제 파일 존재와 내용 품질을 통과해야 한다.
+2. 달성: bug fix claim은 scenario replay/verification evidence 또는 명시적 not-run disclosure를 요구한다.
+3. 달성: root-cause claim은 worker evidence가 사용자 증상으로 이어지는 causal bridge를 가져야 한다.
+4. 달성: background work와 verification failure가 남아 있으면 최종 답변에서 숨길 수 없다.
 
 ### P0. Fuzzing Workbench
 
@@ -1229,6 +1319,8 @@ MVP rule set:
 | structural index / semantic graph | 4 | 2 | 2 | P0 문서화와 fuzz target discovery에 연결 |
 | source-level function fuzzing | 4 | 1 | 1 | P0 전문 워크벤치로 확장 |
 | native fuzz campaign 관리 | 2 | 1 | 1 | P0/P1 corpus, crash, coverage lifecycle |
+| 증상 기반 root-cause investigation | 4 | 2 | 3 | worker/reviewer causal validation과 pattern prior를 차별화 축으로 유지 |
+| final-answer coding harness | 4 | 3 | 5 | Codex급 completion safety를 따라가되 artifact/scenario/root-cause evidence는 Kernforge 특화로 강화 |
 | 편집 안전성 | 5 | 3 | 4 | 유지 및 고도화 |
 | checkpoint/rollback | 5 | 2 | 3 | 확실한 차별화 유지 |
 | verification orchestration | 4 | 3 | 3 | generated verification matrix 기반으로 확장 |
@@ -1245,6 +1337,85 @@ MVP rule set:
 | desktop UX shell | 2 | 2 | 4 | Phase 3 이후 Go core 유지형 Wails app으로 확장 |
 
 ## 7. 현재 코드 구조 기준 구현 진입점
+
+### Root-Cause Investigation
+
+주요 파일:
+- `commands_find_root_cause.go`
+- `commands_find_root_cause_test.go`
+- `commands_root_cause_patterns.go`
+- `root_cause_patterns.go`
+- `root_cause_patterns_test.go`
+- `root_cause_patterns/builtin.json`
+- `analysis_project.go`
+- `analysis_mode.go`
+- `analysis_handoff.go`
+- `completion.go`
+- `config.go`
+
+주요 연결 지점:
+1. `runtimeState.handleFindRootCauseCommand`
+- usage, prompt clarity check, analysis config, worker/reviewer profile, cancellation, run persistence를 담당한다.
+
+2. `analyzeRootCausePromptClarityWithSourceHints`
+- affected surface, trigger/repro, observed failure, expected invariant를 확인하고 부족하면 suggested command를 만든다.
+
+3. `projectAnalyzer.planRootCauseInvestigation`
+- symptom profile, hypotheses, code matches, evidence requests를 만든다.
+
+4. `filterRootCauseReportsByReview`, `applyRootCauseDeterministicQualityGate`
+- reviewer validation과 deterministic gate로 후보를 통과/거절한다.
+
+5. `RootCausePatternPack`
+- 내장/local/GitHub-derived pattern prior를 불러오고 현재 workspace/symptom에 매칭한다.
+
+6. `root_cause_audit`
+- rejected/disconfirmed/approved candidate, evidence request, deep verification, pattern usage를 audit trail로 남긴다.
+
+### Coding Agent Completion Harnesses
+
+주요 파일:
+- `coding_harness.go`
+- `coding_harness_semantics.go`
+- `coding_harness_test.go`
+- `coding_harness_advanced_test.go`
+- `artifact_quality.go`
+- `scenario_replay.go`
+- `subagent_orchestration.go`
+- `test_impact.go`
+- `test_impact_test.go`
+- `job_supervisor.go`
+- `job_supervisor_test.go`
+- `failure_repair.go`
+- `failure_repair_test.go`
+- `user_change_isolation.go`
+- `user_change_isolation_test.go`
+- `agent.go`
+- `session.go`
+- `interactive_orchestration.go`
+- `verify.go`
+
+주요 연결 지점:
+1. `Agent.runPreFinalCodingHarnesses`
+- final answer 직전 harness report를 만들고 blocker가 있으면 모델에게 revision을 요구한다.
+
+2. `AcceptanceContract`와 `PatchTransaction`
+- 요청에서 기대 동작/required artifact/verification requirement를 뽑고 실제 edit path와 fingerprint를 기록한다.
+
+3. `ArtifactQualityReport`
+- requested/claimed artifact를 읽어 placeholder, content thinness, topic coverage를 검사한다.
+
+4. `ScenarioReplayReport`
+- bug scenario에 대해 replay/verification evidence 또는 not-run disclosure를 요구한다.
+
+5. `SubagentOrchestrationReport`
+- root-cause 답변의 worker evidence, reviewer approval, review failure disclosure, causal bridge를 검사한다.
+
+6. `TestImpactReport`와 `JobSupervisorReport`
+- changed path 기반 verification recommendation과 background job/bundle 상태를 final harness에 제공한다.
+
+7. `FailureRepairAttempt`와 `UserChangeIsolationReport`
+- verification failure recovery와 user edit overwrite 방지를 active context로 보존한다.
 
 ### Project Intelligence And Documentation
 

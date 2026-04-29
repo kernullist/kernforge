@@ -16,38 +16,47 @@ type PlanItem struct {
 }
 
 type Session struct {
-	ID                       string                  `json:"id"`
-	Name                     string                  `json:"name"`
-	BaseWorkingDir           string                  `json:"base_working_dir,omitempty"`
-	WorkingDir               string                  `json:"working_dir"`
-	Worktree                 *SessionWorktree        `json:"worktree,omitempty"`
-	SpecialistWorktrees      []SpecialistWorktree    `json:"specialist_worktrees,omitempty"`
-	Provider                 string                  `json:"provider"`
-	Model                    string                  `json:"model"`
-	BaseURL                  string                  `json:"base_url,omitempty"`
-	PermissionMode           string                  `json:"permission_mode"`
-	CreatedAt                time.Time               `json:"created_at"`
-	UpdatedAt                time.Time               `json:"updated_at"`
-	Summary                  string                  `json:"summary,omitempty"`
-	LastAnalysisContextQuery string                  `json:"last_analysis_context_query,omitempty"`
-	LastAnalysisContextRunID string                  `json:"last_analysis_context_run_id,omitempty"`
-	ActiveFeatureID          string                  `json:"active_feature_id,omitempty"`
-	LastFeatureID            string                  `json:"last_feature_id,omitempty"`
-	Plan                     []PlanItem              `json:"plan,omitempty"`
-	LastAnalysis             *ProjectAnalysisSummary `json:"last_analysis,omitempty"`
-	LastVerification         *VerificationReport     `json:"last_verification,omitempty"`
-	LastSelection            *ViewerSelection        `json:"last_selection,omitempty"`
-	Selections               []ViewerSelection       `json:"selections,omitempty"`
-	ActiveSelection          int                     `json:"active_selection,omitempty"`
-	TaskState                *TaskState              `json:"task_state,omitempty"`
-	TaskGraph                *TaskGraph              `json:"task_graph,omitempty"`
-	BackgroundJobs           []BackgroundShellJob    `json:"background_jobs,omitempty"`
-	BackgroundBundles        []BackgroundShellBundle `json:"background_bundles,omitempty"`
-	ConversationEvents       []ConversationEvent     `json:"conversation_events,omitempty"`
-	ConversationState        *ConversationState      `json:"conversation_state,omitempty"`
-	SuggestionMemory         *SuggestionMemory       `json:"suggestion_memory,omitempty"`
-	Automations              []SessionAutomation     `json:"automations,omitempty"`
-	Messages                 []Message               `json:"messages"`
+	ID                            string                     `json:"id"`
+	Name                          string                     `json:"name"`
+	BaseWorkingDir                string                     `json:"base_working_dir,omitempty"`
+	WorkingDir                    string                     `json:"working_dir"`
+	Worktree                      *SessionWorktree           `json:"worktree,omitempty"`
+	SpecialistWorktrees           []SpecialistWorktree       `json:"specialist_worktrees,omitempty"`
+	Provider                      string                     `json:"provider"`
+	Model                         string                     `json:"model"`
+	BaseURL                       string                     `json:"base_url,omitempty"`
+	PermissionMode                string                     `json:"permission_mode"`
+	CreatedAt                     time.Time                  `json:"created_at"`
+	UpdatedAt                     time.Time                  `json:"updated_at"`
+	Summary                       string                     `json:"summary,omitempty"`
+	LastAnalysisContextQuery      string                     `json:"last_analysis_context_query,omitempty"`
+	LastAnalysisContextRunID      string                     `json:"last_analysis_context_run_id,omitempty"`
+	ActiveFeatureID               string                     `json:"active_feature_id,omitempty"`
+	LastFeatureID                 string                     `json:"last_feature_id,omitempty"`
+	Plan                          []PlanItem                 `json:"plan,omitempty"`
+	LastAnalysis                  *ProjectAnalysisSummary    `json:"last_analysis,omitempty"`
+	LastVerification              *VerificationReport        `json:"last_verification,omitempty"`
+	AcceptanceContract            *AcceptanceContract        `json:"acceptance_contract,omitempty"`
+	ActivePatchTransaction        *PatchTransaction          `json:"active_patch_transaction,omitempty"`
+	PatchTransactions             []PatchTransaction         `json:"patch_transactions,omitempty"`
+	LastCodingHarnessReport       *CodingHarnessReport       `json:"last_coding_harness_report,omitempty"`
+	LastUserChangeIsolationReport *UserChangeIsolationReport `json:"last_user_change_isolation_report,omitempty"`
+	LastTestImpactReport          *TestImpactReport          `json:"last_test_impact_report,omitempty"`
+	LastJobSupervisorReport       *JobSupervisorReport       `json:"last_job_supervisor_report,omitempty"`
+	ActiveFailureRepair           *FailureRepairAttempt      `json:"active_failure_repair,omitempty"`
+	FailureRepairAttempts         []FailureRepairAttempt     `json:"failure_repair_attempts,omitempty"`
+	LastSelection                 *ViewerSelection           `json:"last_selection,omitempty"`
+	Selections                    []ViewerSelection          `json:"selections,omitempty"`
+	ActiveSelection               int                        `json:"active_selection,omitempty"`
+	TaskState                     *TaskState                 `json:"task_state,omitempty"`
+	TaskGraph                     *TaskGraph                 `json:"task_graph,omitempty"`
+	BackgroundJobs                []BackgroundShellJob       `json:"background_jobs,omitempty"`
+	BackgroundBundles             []BackgroundShellBundle    `json:"background_bundles,omitempty"`
+	ConversationEvents            []ConversationEvent        `json:"conversation_events,omitempty"`
+	ConversationState             *ConversationState         `json:"conversation_state,omitempty"`
+	SuggestionMemory              *SuggestionMemory          `json:"suggestion_memory,omitempty"`
+	Automations                   []SessionAutomation        `json:"automations,omitempty"`
+	Messages                      []Message                  `json:"messages"`
 }
 
 func NewSession(workingDir, providerName, model, baseURL, permissionMode string) *Session {
@@ -80,6 +89,33 @@ func (s *Session) ApproxChars() int {
 	}
 	if s.TaskGraph != nil {
 		total += len(s.TaskGraph.RenderExportSection())
+	}
+	if s.AcceptanceContract != nil {
+		total += len(s.AcceptanceContract.RenderPromptSection())
+	}
+	if s.ActivePatchTransaction != nil {
+		total += len(s.ActivePatchTransaction.RenderPromptSection())
+	}
+	for _, tx := range s.PatchTransactions {
+		total += len(tx.RenderPromptSection())
+	}
+	if s.LastCodingHarnessReport != nil {
+		total += len(s.LastCodingHarnessReport.RenderPromptSection())
+	}
+	if s.LastUserChangeIsolationReport != nil {
+		total += len(s.LastUserChangeIsolationReport.RenderPromptSection())
+	}
+	if s.LastTestImpactReport != nil {
+		total += len(s.LastTestImpactReport.RenderPromptSection())
+	}
+	if s.LastJobSupervisorReport != nil {
+		total += len(s.LastJobSupervisorReport.RenderPromptSection())
+	}
+	if s.ActiveFailureRepair != nil {
+		total += len(s.ActiveFailureRepair.RenderPromptSection())
+	}
+	for _, attempt := range s.FailureRepairAttempts {
+		total += len(attempt.RenderPromptSection())
 	}
 	for _, lease := range s.SpecialistWorktrees {
 		total += len(lease.Specialist) + len(lease.Root) + len(lease.Branch) + len(lease.LastOwnerNodeID)
@@ -216,6 +252,55 @@ func (s *Session) ExportText() string {
 		b.WriteString(s.LastVerification.RenderDetailed())
 		b.WriteString("\n\n")
 	}
+	if s.AcceptanceContract != nil {
+		if rendered := strings.TrimSpace(s.AcceptanceContract.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Acceptance Contract\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.ActivePatchTransaction != nil {
+		if rendered := strings.TrimSpace(s.ActivePatchTransaction.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Active Patch Transaction\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.LastCodingHarnessReport != nil {
+		if rendered := strings.TrimSpace(s.LastCodingHarnessReport.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Last Coding Harness Report\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.LastUserChangeIsolationReport != nil {
+		if rendered := strings.TrimSpace(s.LastUserChangeIsolationReport.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Last User Change Isolation Report\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.LastTestImpactReport != nil {
+		if rendered := strings.TrimSpace(s.LastTestImpactReport.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Last Test Impact Report\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.LastJobSupervisorReport != nil {
+		if rendered := strings.TrimSpace(s.LastJobSupervisorReport.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Last Job Supervisor Report\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if s.ActiveFailureRepair != nil {
+		if rendered := strings.TrimSpace(s.ActiveFailureRepair.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Active Failure Repair\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
 	if s.TaskState != nil {
 		if rendered := strings.TrimSpace(s.TaskState.RenderExportSection()); rendered != "" {
 			b.WriteString("## Task State\n\n")
@@ -327,6 +412,8 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeWorkingDirState()
 	sess.normalizeSelectionState()
 	sess.normalizeTaskStateArtifacts()
+	sess.normalizeCodingHarnessState()
+	sess.normalizeFailureRepairState()
 	sess.normalizeBackgroundJobs()
 	sess.normalizeBackgroundBundles()
 	sess.normalizeSpecialistWorktrees()

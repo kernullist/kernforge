@@ -1777,6 +1777,7 @@ Verification And Checkpoints:
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
+/find-root-cause <problem> Analyze a reported symptom with 1-8 worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
@@ -1889,6 +1890,26 @@ func HelpDetail(topic string) (string, bool) {
 
 /review-pr
 - Generate .kernforge/pr_review/latest.md from git status, diff stat, changed files, and a review checklist.
+`), true
+	case "find-root-cause", "root-cause":
+		return strings.TrimSpace(`
+/find-root-cause <problem description>
+- Investigate a concrete failure symptom, such as party member limits being bypassed after invite/kick churn or a Win32 service that does not stop through sc stop.
+- If the symptom is too ambiguous, Kernforge prints the unclear parts and asks you to rerun /find-root-cause with a more precise prompt before starting agents.
+- Borderline symptom prompts may be checked by a model classifier before agents start, so concrete Korean natural-language reports are not rejected only because a keyword heuristic missed them.
+- Kernforge scans the workspace, selects likely source shards, and runs 1-8 worker agents depending on source size and count.
+- Kernforge matches symptom keywords and hypothesis signals against source paths and indexed symbols before sharding.
+- Workers inspect each assigned code area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, IDs, enum values, nullable references, and lifecycle state may be outside the code's expected range.
+- Workers must structure each candidate as trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
+- Reviewer passes validate each worker report against that causal chain. When more proof is needed, reviewers emit evidence_requests that route additional focused shards.
+- Deterministic quality gates downgrade or reject model-approved candidates that lack causal stages, evidence files, concrete state signals, valid probes, or symptom overlap.
+- Reviewer-approved candidates receive an additional deep verification pass with symbol-aware focused source excerpts before final synthesis.
+- Kernforge deduplicates near-identical candidates into clusters, tracks candidate relationships, keeps code-change-aware previous rejection/disconfirmation memory as a regression prior, and asks for probes with expected signals and disproving conditions.
+- The final answer summarizes plausible root causes, evidence files/functions, confidence breakdowns, concrete instrumentation, verification probes, and writes root_cause_audit.md/json artifacts.
+
+Examples:
+/find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
+/find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
 `), true
 	case "general", "hooks", "hook-reload", "override", "override-add", "override-clear":
 		return strings.TrimSpace(`

@@ -6,9 +6,10 @@ The key loop to remember:
 1. Use `/analyze-project` first when the workspace is large or unfamiliar.
 2. Use `/investigate` when live state matters.
 3. Use `/simulate` when an extra risk lens matters.
-4. Use `/fuzz-func` when you want attacker-style source-only parameter reasoning before building a harness.
-5. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
-6. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
+4. Use `/find-root-cause` when you already have a concrete symptom to explain.
+5. Use `/fuzz-func` when you want attacker-style source-only parameter reasoning before building a harness.
+6. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
+7. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
 ## 1. The Core Loop In Five Minutes
 
@@ -20,6 +21,7 @@ Recommended sequence:
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
+/find-root-cause guard.sys unload leaves the user process stuck in device close. Expected: close returns. Observed: the pending request never completes.
 /fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
 /review-selection integrity bypass paths
@@ -33,15 +35,16 @@ What this does:
 2. Capture the current live state.
 3. `driver-visibility` is a lightweight visibility triage snapshot, not a deep driver load diagnostic.
 4. Check the target through an extra risk lens.
-5. `/fuzz-func` derives attacker-controlled input states, branch predicates, counterexamples, and sink reachability directly from source.
-6. Review and edit only the selected code.
-7. Verify with the current context.
-8. Inspect the resulting risk picture.
+5. `/find-root-cause` starts a worker/reviewer investigation around the symptom, trigger, expected invariant, and observed failure.
+6. `/fuzz-func` derives attacker-controlled input states, branch predicates, counterexamples, and sink reachability directly from source.
+7. Review and edit only the selected code.
+8. Verify with the current context.
+9. Inspect the resulting risk picture.
 
 ## 2. Most Common Commands
 
 Project analysis:
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
+- `/analyze-project [--mode map|trace|impact|surface|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - If you omit `--mode`, the default mode is `map`
@@ -57,6 +60,15 @@ Adversarial view:
 - `/simulate stealth-surface [target]`
 - `/simulate forensic-blind-spot [target]`
 - `/simulate dashboard`
+
+Root-cause investigation:
+- `/find-root-cause <problem description>`
+- `/find-root-cause --pattern-pack <path-or-dir> <problem description>`
+- `/root-cause-patterns list [--type <project_type>]`
+- `/root-cause-patterns match <problem symptom>`
+- `/root-cause-patterns github-search [--type <project_type>] [--limit 20] [query words...]`
+- `/root-cause-patterns normalize --in <github_issues.json> --out <pattern_pack.json>`
+- `/root-cause-patterns validate [--in <pattern_pack.json>]`
 
 Source-level fuzzing:
 - `/fuzz-func <function-name>`
@@ -125,6 +137,19 @@ What this means:
 1. If you know the function, pin it with a file path.
 2. If you only know the suspicious file, let Kernforge pick the representative root and reachable input-facing path.
 3. Read the highest-score finding, the branch-delta summary, and the first source location before anything else.
+
+### Symptom-driven root-cause investigation
+
+```text
+/find-root-cause My Win32 service process does not stop through sc stop
+/find-root-cause In the party system, after inviting and kicking members repeatedly, expected the party size limit to block new invites, but observed extra members can still be invited.
+/root-cause-patterns match sc stop leaves the service process running
+```
+
+What this means:
+1. A good symptom prompt names the component, trigger/repro path, expected invariant, and observed failure.
+2. If the prompt is unclear, Kernforge prints the missing pieces and suggests a sharper `/find-root-cause ...` command.
+3. Pattern packs are priors. Final root-cause claims still require current source evidence and reviewer causality validation.
 
 ### Telemetry change
 

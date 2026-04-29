@@ -6,9 +6,10 @@
 1. 워크스페이스가 크거나 낯설면 먼저 `/analyze-project`
 2. live 상태가 중요하면 `/investigate`
 3. 공격자 관점이 중요하면 `/simulate`
-4. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/fuzz-func`
-5. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
-6. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
+4. 이미 재현되는 증상이 있으면 `/find-root-cause`
+5. 입력 파라미터 관점으로 소스만 먼저 흔들어 보고 싶으면 `/fuzz-func`
+6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
+7. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
 
 ## 1. 5분 안에 익히는 핵심 루프
 
@@ -20,6 +21,7 @@
 /investigate start driver-visibility guard.sys
 /investigate snapshot
 /simulate tamper-surface guard.sys
+/find-root-cause guard.sys unload 후에도 user process가 device close에서 멈춰. expected: close가 반환되어야 하지만 observed: pending request가 끝나지 않아.
 /fuzz-func @driver/guard.cpp
 /open driver/guard.cpp
 /review-selection integrity bypass paths
@@ -33,15 +35,16 @@
 2. 현재 상태를 캡처한다.
 3. `driver-visibility`는 드라이버 로드 원인 분석기가 아니라 가시성 triage snapshot이다.
 4. 공격자 관점에서 약한 면을 먼저 본다.
-5. `/fuzz-func`는 함수나 파일을 기준으로 공격자 입력 상태, 비교식, 반례, sink 도달 경로를 소스만으로 먼저 본다.
-6. 선택한 코드만 집중 리뷰/수정한다.
-7. verification으로 닫는다.
-8. evidence dashboard로 현재 위험 상태를 확인한다.
+5. `/find-root-cause`는 증상, trigger, expected invariant, observed failure를 기준으로 worker/reviewer root-cause 조사를 시작한다.
+6. `/fuzz-func`는 함수나 파일을 기준으로 공격자 입력 상태, 비교식, 반례, sink 도달 경로를 소스만으로 먼저 본다.
+7. 선택한 코드만 집중 리뷰/수정한다.
+8. verification으로 닫는다.
+9. evidence dashboard로 현재 위험 상태를 확인한다.
 
 ## 2. 가장 자주 쓰는 명령
 
 프로젝트 분석:
-- `/analyze-project [--mode map|trace|impact|security|performance] <goal>`
+- `/analyze-project [--mode map|trace|impact|surface|security|performance] <goal>`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - `--mode`를 생략하면 기본 모드는 `map`
@@ -57,6 +60,15 @@
 - `/simulate stealth-surface [target]`
 - `/simulate forensic-blind-spot [target]`
 - `/simulate dashboard`
+
+근본 원인 분석:
+- `/find-root-cause <problem description>`
+- `/find-root-cause --pattern-pack <path-or-dir> <problem description>`
+- `/root-cause-patterns list [--type <project_type>]`
+- `/root-cause-patterns match <problem symptom>`
+- `/root-cause-patterns github-search [--type <project_type>] [--limit 20] [query words...]`
+- `/root-cause-patterns normalize --in <github_issues.json> --out <pattern_pack.json>`
+- `/root-cause-patterns validate [--in <pattern_pack.json>]`
 
 소스 레벨 fuzzing:
 - `/fuzz-func <function-name>`
@@ -125,6 +137,19 @@ provider 및 런타임 확인:
 1. 함수를 바로 알고 있으면 함수명과 파일 경로로 좁힌다.
 2. 함수를 모르면 파일만 지정해도 Kernforge가 대표 루트와 input-facing 경로를 고른다.
 3. 결과에서 가장 높은 점수의 finding, `가장 유용한 분기 차이 요약`, `먼저 볼 관련 소스`를 먼저 읽는다.
+
+### 증상 기반 root-cause 조사
+
+```text
+/find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
+/find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
+/root-cause-patterns match sc stop을 실행해도 서비스 프로세스가 계속 running 상태야
+```
+
+이 시나리오의 의미:
+1. 증상 프롬프트에는 component, trigger/repro, expected invariant, observed failure를 넣을수록 좋다.
+2. 불명확하면 Kernforge가 부족한 부분과 더 정확한 `/find-root-cause ...` 프롬프트를 다시 제안한다.
+3. pattern pack은 후보 prior일 뿐이며, 최종 root cause는 현재 소스 증거와 reviewer causality validation을 거쳐야 한다.
 
 ### Telemetry 변경
 

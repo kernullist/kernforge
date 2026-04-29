@@ -53,6 +53,7 @@ type ProjectAnalysisSummary struct {
 	ReviewProviderFailures int       `json:"review_provider_failures,omitempty"`
 	ReviewQualityIssues    int       `json:"review_quality_issues,omitempty"`
 	RefinedShards          int       `json:"refined_shards,omitempty"`
+	EvidenceShards         int       `json:"evidence_shards,omitempty"`
 	TotalShards            int       `json:"total_shards"`
 }
 
@@ -95,6 +96,8 @@ type ProjectSnapshot struct {
 	BuildContexts       []BuildContextRecord       `json:"build_contexts,omitempty"`
 	PrimaryUnrealModule string                     `json:"primary_unreal_module,omitempty"`
 	AnalysisLenses      []AnalysisLens             `json:"analysis_lenses,omitempty"`
+	ProjectTypes        []string                   `json:"project_types,omitempty"`
+	RootCause           RootCauseInvestigation     `json:"root_cause,omitempty"`
 	RuntimeEdges        []RuntimeEdge              `json:"runtime_edges,omitempty"`
 	ProjectEdges        []ProjectEdge              `json:"project_edges,omitempty"`
 	ArchitectureFacts   ArchitectureFactPack       `json:"architecture_facts,omitempty"`
@@ -262,6 +265,7 @@ type AnalysisShard struct {
 	ID                           string               `json:"id"`
 	Name                         string               `json:"name"`
 	ParentShardID                string               `json:"parent_shard_id,omitempty"`
+	EvidenceRequestID            string               `json:"evidence_request_id,omitempty"`
 	RefinementStage              int                  `json:"refinement_stage,omitempty"`
 	PrimaryFiles                 []string             `json:"primary_files"`
 	ReferenceFiles               []string             `json:"reference_files,omitempty"`
@@ -289,22 +293,210 @@ type InvalidationChange struct {
 }
 
 type WorkerReport struct {
-	ShardID          string   `json:"shard_id"`
-	Title            string   `json:"title"`
-	ScopeSummary     string   `json:"scope_summary"`
-	Responsibilities []string `json:"responsibilities"`
-	Facts            []string `json:"facts,omitempty"`
-	Inferences       []string `json:"inferences,omitempty"`
-	KeyFiles         []string `json:"key_files"`
-	EntryPoints      []string `json:"entry_points"`
-	InternalFlow     []string `json:"internal_flow"`
-	Dependencies     []string `json:"dependencies"`
-	Collaboration    []string `json:"collaboration"`
-	Risks            []string `json:"risks"`
-	Unknowns         []string `json:"unknowns"`
-	EvidenceFiles    []string `json:"evidence_files"`
-	Narrative        string   `json:"narrative"`
-	Raw              string   `json:"raw,omitempty"`
+	ShardID             string               `json:"shard_id"`
+	Title               string               `json:"title"`
+	ScopeSummary        string               `json:"scope_summary"`
+	Responsibilities    []string             `json:"responsibilities"`
+	Facts               []string             `json:"facts,omitempty"`
+	Inferences          []string             `json:"inferences,omitempty"`
+	KeyFiles            []string             `json:"key_files"`
+	EntryPoints         []string             `json:"entry_points"`
+	InternalFlow        []string             `json:"internal_flow"`
+	Dependencies        []string             `json:"dependencies"`
+	Collaboration       []string             `json:"collaboration"`
+	Risks               []string             `json:"risks"`
+	Unknowns            []string             `json:"unknowns"`
+	EvidenceFiles       []string             `json:"evidence_files"`
+	RootCauseCandidates []RootCauseCandidate `json:"root_cause_candidates,omitempty"`
+	Narrative           string               `json:"narrative"`
+	Raw                 string               `json:"raw,omitempty"`
+}
+
+type RootCauseCandidate struct {
+	Title                      string                       `json:"title"`
+	CandidateChain             []string                     `json:"candidate_chain,omitempty"`
+	CausalChain                RootCauseCausalChain         `json:"causal_chain,omitempty"`
+	TriggerValues              []string                     `json:"trigger_values,omitempty"`
+	ExpectedRange              []string                     `json:"expected_range,omitempty"`
+	OutOfRangeCases            []string                     `json:"out_of_range_cases,omitempty"`
+	ObservedFailurePath        []string                     `json:"observed_failure_path,omitempty"`
+	EvidenceFiles              []string                     `json:"evidence_files,omitempty"`
+	DisconfirmingEvidence      []string                     `json:"disconfirming_evidence,omitempty"`
+	CannotBeRootCauseIf        []string                     `json:"cannot_be_root_cause_if,omitempty"`
+	RequiredRuntimeObservation []string                     `json:"required_runtime_observation,omitempty"`
+	VerificationSteps          []string                     `json:"verification_steps,omitempty"`
+	Probes                     []RootCauseProbe             `json:"probes,omitempty"`
+	Confidence                 string                       `json:"confidence,omitempty"`
+	ConfidenceBreakdown        RootCauseConfidenceBreakdown `json:"confidence_breakdown,omitempty"`
+	NeedsCrossShardEvidence    []string                     `json:"needs_cross_shard_evidence,omitempty"`
+	PatternIDs                 []string                     `json:"pattern_ids,omitempty"`
+}
+
+type RootCauseInvestigation struct {
+	Symptom           RootCauseSymptomProfile     `json:"symptom,omitempty"`
+	Hypotheses        []RootCauseHypothesis       `json:"hypotheses,omitempty"`
+	CodeMatches       []RootCauseCodeMatch        `json:"code_matches,omitempty"`
+	DeepVerifications []RootCauseDeepVerification `json:"deep_verifications,omitempty"`
+	JoinedCandidates  []RootCauseJoinedCandidate  `json:"joined_candidates,omitempty"`
+	CandidateClusters []RootCauseCandidateCluster `json:"candidate_clusters,omitempty"`
+	EvidenceRequests  []RootCauseEvidenceRequest  `json:"evidence_requests,omitempty"`
+	PatternMatches    []RootCausePatternMatch     `json:"pattern_matches,omitempty"`
+	AuditTrail        RootCauseAuditTrail         `json:"audit_trail,omitempty"`
+	RegressionMemory  RootCauseAuditTrail         `json:"regression_memory,omitempty"`
+}
+
+type RootCauseSymptomProfile struct {
+	Symptom            string   `json:"symptom,omitempty"`
+	ExpectedBehavior   string   `json:"expected_behavior,omitempty"`
+	ObservedBehavior   string   `json:"observed_behavior,omitempty"`
+	Frequency          string   `json:"frequency,omitempty"`
+	TriggerKeywords    []string `json:"trigger_keywords,omitempty"`
+	AffectedSurface    []string `json:"affected_surface,omitempty"`
+	MustExplain        []string `json:"must_explain,omitempty"`
+	ReproductionInputs []string `json:"reproduction_inputs,omitempty"`
+}
+
+type RootCauseHypothesis struct {
+	ID                 string   `json:"id,omitempty"`
+	Title              string   `json:"title,omitempty"`
+	CandidateMechanism string   `json:"candidate_mechanism,omitempty"`
+	TargetSignals      []string `json:"target_signals,omitempty"`
+	TargetFiles        []string `json:"target_files,omitempty"`
+	MustProve          []string `json:"must_prove,omitempty"`
+	MustDisprove       []string `json:"must_disprove,omitempty"`
+	ReproductionInputs []string `json:"reproduction_inputs,omitempty"`
+}
+
+type RootCauseJoinedCandidate struct {
+	Title                      string                       `json:"title,omitempty"`
+	Classification             string                       `json:"classification,omitempty"`
+	ClusterID                  string                       `json:"cluster_id,omitempty"`
+	ClusterMembers             []string                     `json:"cluster_members,omitempty"`
+	CompetesWith               []string                     `json:"competes_with,omitempty"`
+	DependsOn                  []string                     `json:"depends_on,omitempty"`
+	CanCoexistWith             []string                     `json:"can_coexist_with,omitempty"`
+	JoinedChain                []string                     `json:"joined_chain,omitempty"`
+	CausalChain                RootCauseCausalChain         `json:"causal_chain,omitempty"`
+	SupportingCandidates       []string                     `json:"supporting_candidates,omitempty"`
+	EvidenceFiles              []string                     `json:"evidence_files,omitempty"`
+	DisconfirmingEvidence      []string                     `json:"disconfirming_evidence,omitempty"`
+	CannotBeRootCauseIf        []string                     `json:"cannot_be_root_cause_if,omitempty"`
+	RequiredRuntimeObservation []string                     `json:"required_runtime_observation,omitempty"`
+	VerificationSteps          []string                     `json:"verification_steps,omitempty"`
+	Probes                     []RootCauseProbe             `json:"probes,omitempty"`
+	Confidence                 string                       `json:"confidence,omitempty"`
+	ConfidenceBreakdown        RootCauseConfidenceBreakdown `json:"confidence_breakdown,omitempty"`
+	ConfidenceScore            int                          `json:"confidence_score,omitempty"`
+	PatternIDs                 []string                     `json:"pattern_ids,omitempty"`
+}
+
+type RootCauseCausalChain struct {
+	Trigger            string   `json:"trigger,omitempty"`
+	InvalidState       string   `json:"invalid_state,omitempty"`
+	StateTransition    string   `json:"state_transition,omitempty"`
+	MissingGuard       string   `json:"missing_guard,omitempty"`
+	UserVisibleSymptom string   `json:"user_visible_symptom,omitempty"`
+	EvidenceFiles      []string `json:"evidence_files,omitempty"`
+}
+
+type RootCauseCodeMatch struct {
+	Query          string   `json:"query,omitempty"`
+	File           string   `json:"file,omitempty"`
+	Reason         string   `json:"reason,omitempty"`
+	MatchedSignals []string `json:"matched_signals,omitempty"`
+	Score          int      `json:"score,omitempty"`
+}
+
+type RootCauseDeepVerification struct {
+	CandidateTitle             string                       `json:"candidate_title,omitempty"`
+	ShardID                    string                       `json:"shard_id,omitempty"`
+	ShardName                  string                       `json:"shard_name,omitempty"`
+	Status                     string                       `json:"status,omitempty"`
+	Summary                    string                       `json:"summary,omitempty"`
+	CausalChain                RootCauseCausalChain         `json:"causal_chain,omitempty"`
+	EvidenceFiles              []string                     `json:"evidence_files,omitempty"`
+	InstrumentationSteps       []string                     `json:"instrumentation_steps,omitempty"`
+	DisconfirmingEvidence      []string                     `json:"disconfirming_evidence,omitempty"`
+	CannotBeRootCauseIf        []string                     `json:"cannot_be_root_cause_if,omitempty"`
+	RequiredRuntimeObservation []string                     `json:"required_runtime_observation,omitempty"`
+	Probes                     []RootCauseProbe             `json:"probes,omitempty"`
+	Confidence                 string                       `json:"confidence,omitempty"`
+	ConfidenceBreakdown        RootCauseConfidenceBreakdown `json:"confidence_breakdown,omitempty"`
+	PatternIDs                 []string                     `json:"pattern_ids,omitempty"`
+	Raw                        string                       `json:"raw,omitempty"`
+}
+
+type RootCauseProbe struct {
+	Title          string `json:"title,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	Target         string `json:"target,omitempty"`
+	Command        string `json:"command,omitempty"`
+	ExpectedSignal string `json:"expected_signal,omitempty"`
+	DisprovesWhen  string `json:"disproves_when,omitempty"`
+}
+
+type RootCauseConfidenceBreakdown struct {
+	CausalCompleteness      int      `json:"causal_completeness,omitempty"`
+	EvidenceStrength        int      `json:"evidence_strength,omitempty"`
+	RuntimeObservability    int      `json:"runtime_observability,omitempty"`
+	AlternativeExplanations int      `json:"alternative_explanations,omitempty"`
+	DisconfirmationStrength int      `json:"disconfirmation_strength,omitempty"`
+	Score                   int      `json:"score,omitempty"`
+	Reasons                 []string `json:"reasons,omitempty"`
+}
+
+type RootCauseEvidenceRequest struct {
+	ID                     string   `json:"id,omitempty"`
+	Request                string   `json:"request,omitempty"`
+	TargetSignals          []string `json:"target_signals,omitempty"`
+	TargetFiles            []string `json:"target_files,omitempty"`
+	Reason                 string   `json:"reason,omitempty"`
+	RequiredToProve        string   `json:"required_to_prove,omitempty"`
+	SourceShardID          string   `json:"source_shard_id,omitempty"`
+	Status                 string   `json:"status,omitempty"`
+	RoutedShardIDs         []string `json:"routed_shard_ids,omitempty"`
+	FulfilledByShards      []string `json:"fulfilled_by_shards,omitempty"`
+	SatisfiedEvidenceFiles []string `json:"satisfied_evidence_files,omitempty"`
+}
+
+type RootCauseCandidateCluster struct {
+	ID              string               `json:"id,omitempty"`
+	Title           string               `json:"title,omitempty"`
+	CandidateTitles []string             `json:"candidate_titles,omitempty"`
+	ShardIDs        []string             `json:"shard_ids,omitempty"`
+	EvidenceFiles   []string             `json:"evidence_files,omitempty"`
+	CausalChain     RootCauseCausalChain `json:"causal_chain,omitempty"`
+	ConfidenceScore int                  `json:"confidence_score,omitempty"`
+}
+
+type RootCauseAuditTrail struct {
+	GeneratedAt        time.Time                   `json:"generated_at,omitempty"`
+	Symptom            string                      `json:"symptom,omitempty"`
+	CodeMatches        []RootCauseCodeMatch        `json:"code_matches,omitempty"`
+	EvidenceRequests   []RootCauseEvidenceRequest  `json:"evidence_requests,omitempty"`
+	PatternMatches     []RootCausePatternMatch     `json:"pattern_matches,omitempty"`
+	CandidateDecisions []RootCauseCandidateAudit   `json:"candidate_decisions,omitempty"`
+	DeepVerifications  []RootCauseDeepVerification `json:"deep_verifications,omitempty"`
+	JoinedCandidates   []RootCauseJoinedCandidate  `json:"joined_candidates,omitempty"`
+}
+
+type RootCauseCandidateAudit struct {
+	ShardID                   string   `json:"shard_id,omitempty"`
+	ShardName                 string   `json:"shard_name,omitempty"`
+	ReportTitle               string   `json:"report_title,omitempty"`
+	CandidateTitle            string   `json:"candidate_title,omitempty"`
+	ReviewStatus              string   `json:"review_status,omitempty"`
+	SymptomPossible           string   `json:"symptom_possible,omitempty"`
+	CausalChainStages         []string `json:"causal_chain_stages,omitempty"`
+	CausalChainMissing        []string `json:"causal_chain_missing,omitempty"`
+	Decision                  string   `json:"decision,omitempty"`
+	Reason                    string   `json:"reason,omitempty"`
+	QualityGateIssues         []string `json:"quality_gate_issues,omitempty"`
+	EvidenceFiles             []string `json:"evidence_files,omitempty"`
+	DeepVerificationStatus    string   `json:"deep_verification_status,omitempty"`
+	PatternIDs                []string `json:"pattern_ids,omitempty"`
+	ExplicitPatternIDs        []string `json:"explicit_pattern_ids,omitempty"`
+	InferredRelatedPatternIDs []string `json:"inferred_related_pattern_ids,omitempty"`
 }
 
 type AnalysisGoalScope struct {
@@ -331,6 +523,7 @@ type KnowledgeSubsystem struct {
 	Collaboration        []string             `json:"collaboration,omitempty"`
 	Risks                []string             `json:"risks,omitempty"`
 	Unknowns             []string             `json:"unknowns,omitempty"`
+	RootCauseCandidates  []RootCauseCandidate `json:"root_cause_candidates,omitempty"`
 }
 
 type PerformanceHotspot struct {
@@ -434,15 +627,29 @@ type KnowledgePack struct {
 	Unknowns             []string                 `json:"unknowns,omitempty"`
 	AnalysisExecution    AnalysisExecutionSummary `json:"analysis_execution,omitempty"`
 	PerformanceLens      PerformanceLens          `json:"performance_lens,omitempty"`
+	RootCause            RootCauseInvestigation   `json:"root_cause,omitempty"`
+	RootCausePatterns    []RootCausePatternMatch  `json:"root_cause_patterns,omitempty"`
 	ArchitectureFacts    ArchitectureFactPack     `json:"architecture_facts,omitempty"`
 }
 
 type ReviewDecision struct {
-	Status         string   `json:"status"`
-	Issues         []string `json:"issues,omitempty"`
-	RevisionPrompt string   `json:"revision_prompt,omitempty"`
-	FailureKind    string   `json:"failure_kind,omitempty"`
-	Raw            string   `json:"raw,omitempty"`
+	Status                     string                     `json:"status"`
+	Issues                     []string                   `json:"issues,omitempty"`
+	RevisionPrompt             string                     `json:"revision_prompt,omitempty"`
+	SymptomPossible            string                     `json:"symptom_possible,omitempty"`
+	SymptomCausality           []string                   `json:"symptom_causality,omitempty"`
+	SymptomReproductionBridge  []string                   `json:"symptom_reproduction_bridge,omitempty"`
+	RequiredRuntimeObservation []string                   `json:"required_runtime_observation,omitempty"`
+	DisqualifyingEvidence      []string                   `json:"disqualifying_evidence,omitempty"`
+	CausalChainComplete        bool                       `json:"causal_chain_complete,omitempty"`
+	CausalChainStages          []string                   `json:"causal_chain_stages,omitempty"`
+	CausalChainMissing         []string                   `json:"causal_chain_missing,omitempty"`
+	Disconfirmed               bool                       `json:"disconfirmed,omitempty"`
+	DisconfirmingEvidence      []string                   `json:"disconfirming_evidence,omitempty"`
+	RejectedCandidates         []string                   `json:"rejected_candidates,omitempty"`
+	EvidenceRequests           []RootCauseEvidenceRequest `json:"evidence_requests,omitempty"`
+	FailureKind                string                     `json:"failure_kind,omitempty"`
+	Raw                        string                     `json:"raw,omitempty"`
 }
 
 type ProjectAnalysisRun struct {
@@ -455,6 +662,7 @@ type ProjectAnalysisRun struct {
 	ConductorProfile string                  `json:"conductor_profile,omitempty"`
 	WorkerProfile    string                  `json:"worker_profile,omitempty"`
 	ReviewerProfile  string                  `json:"reviewer_profile,omitempty"`
+	RootCause        RootCauseInvestigation  `json:"root_cause,omitempty"`
 	KnowledgePack    KnowledgePack           `json:"knowledge_pack,omitempty"`
 	SemanticIndex    SemanticIndex           `json:"semantic_index,omitempty"`
 	SemanticIndexV2  SemanticIndexV2         `json:"semantic_index_v2,omitempty"`
@@ -468,6 +676,9 @@ type ProjectAnalysisRun struct {
 const (
 	analysisReviewIssueProvider = "provider"
 	analysisReviewIssueQuality  = "quality"
+
+	rootCauseEvidenceRequestRounds         = 2
+	rootCauseMaxEvidenceRequestShardsRound = 4
 )
 
 func summarizeReviewDecisions(summary *ProjectAnalysisSummary, reviews []ReviewDecision) {
@@ -488,6 +699,478 @@ func summarizeReviewDecisions(summary *ProjectAnalysisSummary, reviews []ReviewD
 		}
 	}
 	summary.ReviewFailures = summary.ReviewProviderFailures + summary.ReviewQualityIssues
+}
+
+func filterRootCauseReportsByReview(snapshot ProjectSnapshot, reports []WorkerReport, reviews []ReviewDecision) []WorkerReport {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" || len(reports) == 0 {
+		return reports
+	}
+	out := append([]WorkerReport(nil), reports...)
+	for index := range out {
+		if index >= len(reviews) {
+			if len(out[index].RootCauseCandidates) > 0 {
+				out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, "Root-cause candidate withheld from synthesis because no reviewer decision was available for this shard."))
+				out[index].RootCauseCandidates = nil
+			}
+			continue
+		}
+		review := reviews[index]
+		if rootCauseReviewApprovesSymptomCausality(review) {
+			if len(review.RejectedCandidates) > 0 && len(out[index].RootCauseCandidates) > 0 {
+				kept := []RootCauseCandidate{}
+				rejectedTitles := []string{}
+				for _, candidate := range out[index].RootCauseCandidates {
+					if rootCauseCandidateRejectedByReview(candidate, review) {
+						rejectedTitles = append(rejectedTitles, firstNonBlankAnalysisString(candidate.Title, "unnamed candidate"))
+						continue
+					}
+					kept = append(kept, candidate)
+				}
+				if len(kept) != len(out[index].RootCauseCandidates) {
+					out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, "Root-cause candidate rejected by reviewer: "+strings.Join(limitStrings(rejectedTitles, 3), " | ")))
+					out[index].RootCauseCandidates = kept
+				}
+			}
+			continue
+		}
+		if len(out[index].RootCauseCandidates) > 0 {
+			out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, rootCauseReviewRejectionNote(review)))
+			out[index].RootCauseCandidates = nil
+		}
+	}
+	return out
+}
+
+func applyRootCauseDeterministicQualityGate(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision) []WorkerReport {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" || len(reports) == 0 {
+		return reports
+	}
+	out := append([]WorkerReport(nil), reports...)
+	for index := range out {
+		shard := AnalysisShard{}
+		if index < len(shards) {
+			shard = shards[index]
+		}
+		review := ReviewDecision{}
+		if index < len(reviews) {
+			review = reviews[index]
+		}
+		kept := []RootCauseCandidate{}
+		for _, candidate := range out[index].RootCauseCandidates {
+			gate := evaluateRootCauseCandidateQualityGate(snapshot, shard, candidate, review)
+			if gate.Reject {
+				out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, rootCauseQualityGateReportNote(candidate, gate)))
+				continue
+			}
+			if len(gate.Issues) > 0 {
+				candidate.NeedsCrossShardEvidence = analysisUniqueStrings(append(candidate.NeedsCrossShardEvidence, gate.Issues...))
+				candidate.ConfidenceBreakdown.Reasons = analysisUniqueStrings(append(candidate.ConfidenceBreakdown.Reasons, gate.Issues...))
+				candidate.ConfidenceBreakdown.Score = analysisMinInt(candidate.ConfidenceBreakdown.Score, gate.MaxScore)
+				candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(candidate.ConfidenceBreakdown, gate.MaxScore)
+				if gate.DowngradeTo != "" {
+					candidate.Confidence = gate.DowngradeTo
+				}
+				out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, rootCauseQualityGateReportNote(candidate, gate)))
+			}
+			kept = append(kept, candidate)
+		}
+		out[index].RootCauseCandidates = normalizeRootCauseCandidates(kept, shard)
+	}
+	return out
+}
+
+type rootCauseQualityGateResult struct {
+	Issues      []string
+	Reject      bool
+	DowngradeTo string
+	MaxScore    int
+}
+
+func evaluateRootCauseCandidateQualityGate(snapshot ProjectSnapshot, shard AnalysisShard, candidate RootCauseCandidate, review ReviewDecision) rootCauseQualityGateResult {
+	result := rootCauseQualityGateResult{MaxScore: 100}
+	stageCount := rootCauseCausalChainStageCount(candidate.CausalChain)
+	if stageCount < 3 {
+		result.Issues = append(result.Issues, fmt.Sprintf("Deterministic gate: only %d causal stage(s) are evidenced; at least 3 are required for a shard-level candidate.", stageCount))
+		result.Reject = true
+		result.MaxScore = 25
+		return result
+	}
+	if stageCount < 4 {
+		result.Issues = append(result.Issues, "Deterministic gate: fewer than 4 causal stages, so this cannot be promoted to root_cause without more evidence.")
+		result.DowngradeTo = rootCauseLowerConfidence(candidate.Confidence, "medium")
+		result.MaxScore = analysisMinInt(result.MaxScore, 60)
+	}
+	if len(candidate.EvidenceFiles) == 0 {
+		result.Issues = append(result.Issues, "Deterministic gate: candidate has no evidence_files.")
+		result.DowngradeTo = rootCauseLowerConfidence(candidate.Confidence, "low")
+		result.MaxScore = analysisMinInt(result.MaxScore, 45)
+	}
+	if !rootCauseCandidateHasValidProbe(candidate) {
+		result.Issues = append(result.Issues, "Deterministic gate: candidate probes must include expected_signal and disproves_when.")
+		result.DowngradeTo = rootCauseLowerConfidence(candidate.Confidence, "medium")
+		result.MaxScore = analysisMinInt(result.MaxScore, 65)
+	}
+	if !rootCauseCandidateHasConcreteStateSignal(candidate) {
+		result.Issues = append(result.Issues, "Deterministic gate: candidate must name at least one concrete variable, field, config key, DB value, enum, boolean, counter, or numeric limit.")
+		result.DowngradeTo = rootCauseLowerConfidence(candidate.Confidence, "medium")
+		result.MaxScore = analysisMinInt(result.MaxScore, 60)
+	}
+	if rootCauseCandidateUserSymptomMismatches(snapshot, candidate) {
+		result.Issues = append(result.Issues, "Deterministic gate: candidate user_visible_symptom does not overlap the reported symptom.")
+		result.Reject = true
+		result.MaxScore = 20
+		return result
+	}
+	if strings.EqualFold(strings.TrimSpace(review.Status), "approved") {
+		if missing := rootCauseReviewContractMissing(review); len(missing) > 0 {
+			result.Issues = append(result.Issues, "Deterministic gate: reviewer approval is missing required root-cause validation fields: "+strings.Join(missing, ", "))
+			result.Reject = true
+			result.MaxScore = 20
+			return result
+		}
+	}
+	if rootCauseReviewApprovesSymptomCausality(review) && strings.EqualFold(review.SymptomPossible, "yes") && stageCount < 4 {
+		result.Issues = append(result.Issues, "Deterministic gate: reviewer marked symptom_possible=yes but source evidence has fewer than 4 causal stages.")
+		result.DowngradeTo = rootCauseLowerConfidence(candidate.Confidence, "medium")
+		result.MaxScore = analysisMinInt(result.MaxScore, 55)
+	}
+	result.Issues = analysisUniqueStrings(result.Issues)
+	if result.MaxScore <= 45 && result.DowngradeTo == "" {
+		result.DowngradeTo = "low"
+	}
+	return result
+}
+
+func rootCauseQualityGateReportNote(candidate RootCauseCandidate, gate rootCauseQualityGateResult) string {
+	title := firstNonBlankAnalysisString(candidate.Title, "unnamed candidate")
+	prefix := "Root-cause candidate downgraded by deterministic gate"
+	if gate.Reject {
+		prefix = "Root-cause candidate rejected by deterministic gate"
+	}
+	return fmt.Sprintf("%s: %s: %s", prefix, title, strings.Join(limitStrings(gate.Issues, 4), " | "))
+}
+
+func rootCauseLowerConfidence(current string, target string) string {
+	rank := map[string]int{"low": 0, "medium": 1, "high": 2}
+	current = normalizeRootCauseConfidence(current, 50)
+	target = normalizeRootCauseConfidence(target, 50)
+	if rank[target] < rank[current] {
+		return target
+	}
+	return current
+}
+
+func rootCauseCandidateHasValidProbe(candidate RootCauseCandidate) bool {
+	for _, probe := range candidate.Probes {
+		if strings.TrimSpace(probe.ExpectedSignal) != "" && strings.TrimSpace(probe.DisprovesWhen) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseCandidateHasConcreteStateSignal(candidate RootCauseCandidate) bool {
+	fields := []string{
+		candidate.CausalChain.Trigger,
+		candidate.CausalChain.InvalidState,
+		candidate.CausalChain.StateTransition,
+		candidate.CausalChain.MissingGuard,
+	}
+	fields = append(fields, candidate.TriggerValues...)
+	fields = append(fields, candidate.ExpectedRange...)
+	fields = append(fields, candidate.OutOfRangeCases...)
+	fields = append(fields, candidate.ObservedFailurePath...)
+	for _, field := range fields {
+		if rootCauseTextHasConcreteStateSignal(field) {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseTextHasConcreteStateSignal(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*(\.|->|::)[A-Za-z_][A-Za-z0-9_]*`).MatchString(trimmed) {
+		return true
+	}
+	if regexp.MustCompile(`[A-Za-z][A-Za-z0-9]*_[A-Za-z0-9_]+`).MatchString(trimmed) {
+		return true
+	}
+	if regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*(Count|Limit|Size|ID|Id|Key|Flag|Status|Handle|Timeout|Value|Config|State|Mode|Enabled|Disabled|Available|Unavailable)\b`).MatchString(trimmed) {
+		return true
+	}
+	for _, token := range []string{"=", "==", "!=", "<", ">", "::", "->"} {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	keywords := map[string]struct{}{
+		"true": {}, "false": {}, "null": {}, "nil": {}, "nullptr": {}, "config": {}, "db": {}, "database": {}, "enum": {}, "flag": {}, "count": {}, "limit": {}, "size": {}, "id": {}, "cache": {}, "timeout": {}, "handle": {}, "status": {}, "value": {}, "key": {}, "counter": {}, "bool": {}, "int": {},
+	}
+	for _, token := range regexp.MustCompile(`[A-Za-z0-9_]+`).FindAllString(lower, -1) {
+		if _, ok := keywords[token]; ok {
+			return true
+		}
+	}
+	for _, r := range lower {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseCandidateUserSymptomMismatches(snapshot ProjectSnapshot, candidate RootCauseCandidate) bool {
+	expected := rootCauseReportedSymptomText(snapshot)
+	actual := firstNonBlankRootCauseString(candidate.CausalChain.UserVisibleSymptom, firstString(candidate.ObservedFailurePath))
+	if strings.TrimSpace(expected) == "" || strings.TrimSpace(actual) == "" {
+		return false
+	}
+	expectedTerms := rootCauseEvidenceTerms(expected)
+	actualTerms := rootCauseEvidenceTerms(actual)
+	if len(expectedTerms) < 2 || len(actualTerms) < 1 {
+		return false
+	}
+	expectedLower := strings.ToLower(expected)
+	actualLower := strings.ToLower(actual)
+	for _, term := range expectedTerms {
+		if rootCauseTextContainsTerm(actualLower, term) {
+			return false
+		}
+	}
+	for _, term := range actualTerms {
+		if rootCauseTextContainsTerm(expectedLower, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func rootCauseReportedSymptomText(snapshot ProjectSnapshot) string {
+	parts := []string{
+		snapshot.RootCause.Symptom.Symptom,
+		snapshot.RootCause.Symptom.ObservedBehavior,
+	}
+	parts = append(parts, snapshot.RootCause.Symptom.MustExplain...)
+	return strings.Join(analysisUniqueStrings(parts), " ")
+}
+
+func rootCauseReviewApprovesSymptomCausality(review ReviewDecision) bool {
+	if review.Disconfirmed {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(review.Status), "approved") {
+		return false
+	}
+	if missing := rootCauseReviewContractMissing(review); len(missing) > 0 {
+		return false
+	}
+	if len(review.SymptomCausality) == 0 {
+		return false
+	}
+	stageCount := rootCauseReviewCausalStageCount(review)
+	switch strings.ToLower(strings.TrimSpace(review.SymptomPossible)) {
+	case "yes", "true", "possible":
+		return review.CausalChainComplete || stageCount >= 4
+	case "partial":
+		return stageCount >= 3
+	default:
+		return false
+	}
+}
+
+func rootCauseReviewContractMissing(review ReviewDecision) []string {
+	if strings.TrimSpace(review.Raw) == "" {
+		return nil
+	}
+	missing := []string{}
+	if len(review.SymptomReproductionBridge) == 0 {
+		missing = append(missing, "symptom_reproduction_bridge")
+	}
+	if len(review.RequiredRuntimeObservation) == 0 {
+		missing = append(missing, "required_runtime_observation")
+	}
+	if len(review.DisqualifyingEvidence) == 0 {
+		missing = append(missing, "disqualifying_evidence")
+	}
+	return missing
+}
+
+func rootCauseReviewCausalStageCount(review ReviewDecision) int {
+	if review.CausalChainComplete {
+		return len(rootCauseCausalChainStageNames())
+	}
+	return len(rootCauseNormalizeCausalStages(review.CausalChainStages))
+}
+
+func rootCauseCausalChainStageNames() []string {
+	return []string{"trigger", "invalid_state", "state_transition", "missing_guard", "user_visible_symptom"}
+}
+
+func rootCauseNormalizeCausalStages(stages []string) []string {
+	out := []string{}
+	for _, stage := range stages {
+		normalized := rootCauseNormalizeCausalStage(stage)
+		if normalized != "" {
+			out = append(out, normalized)
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func rootCauseNormalizeCausalStage(stage string) string {
+	key := strings.ToLower(strings.TrimSpace(stage))
+	key = strings.ReplaceAll(key, "-", "_")
+	key = strings.ReplaceAll(key, " ", "_")
+	switch key {
+	case "trigger", "trigger_value", "trigger_values", "input", "input_state":
+		return "trigger"
+	case "invalid_state", "unexpected_state", "out_of_range", "out_of_range_value", "bad_value":
+		return "invalid_state"
+	case "state_transition", "branch", "branch_transition", "flow", "path":
+		return "state_transition"
+	case "missing_guard", "guard", "missing_validation", "finalization_gate", "missing_finalization":
+		return "missing_guard"
+	case "user_visible_symptom", "symptom", "failure", "observed_failure":
+		return "user_visible_symptom"
+	default:
+		return ""
+	}
+}
+
+func rootCauseCausalChainStageCount(chain RootCauseCausalChain) int {
+	count := 0
+	if strings.TrimSpace(chain.Trigger) != "" {
+		count++
+	}
+	if strings.TrimSpace(chain.InvalidState) != "" {
+		count++
+	}
+	if strings.TrimSpace(chain.StateTransition) != "" {
+		count++
+	}
+	if strings.TrimSpace(chain.MissingGuard) != "" {
+		count++
+	}
+	if strings.TrimSpace(chain.UserVisibleSymptom) != "" {
+		count++
+	}
+	return count
+}
+
+func rootCauseCausalChainStages(chain RootCauseCausalChain) []string {
+	out := []string{}
+	if strings.TrimSpace(chain.Trigger) != "" {
+		out = append(out, "trigger")
+	}
+	if strings.TrimSpace(chain.InvalidState) != "" {
+		out = append(out, "invalid_state")
+	}
+	if strings.TrimSpace(chain.StateTransition) != "" {
+		out = append(out, "state_transition")
+	}
+	if strings.TrimSpace(chain.MissingGuard) != "" {
+		out = append(out, "missing_guard")
+	}
+	if strings.TrimSpace(chain.UserVisibleSymptom) != "" {
+		out = append(out, "user_visible_symptom")
+	}
+	return out
+}
+
+func rootCauseMissingCausalChainStages(chain RootCauseCausalChain) []string {
+	present := map[string]struct{}{}
+	for _, stage := range rootCauseCausalChainStages(chain) {
+		present[stage] = struct{}{}
+	}
+	missing := []string{}
+	for _, stage := range rootCauseCausalChainStageNames() {
+		if _, ok := present[stage]; !ok {
+			missing = append(missing, stage)
+		}
+	}
+	return missing
+}
+
+func normalizeRootCauseCausalChain(chain RootCauseCausalChain, candidate RootCauseCandidate, shard AnalysisShard) RootCauseCausalChain {
+	chain.Trigger = strings.TrimSpace(chain.Trigger)
+	chain.InvalidState = strings.TrimSpace(chain.InvalidState)
+	chain.StateTransition = strings.TrimSpace(chain.StateTransition)
+	chain.MissingGuard = strings.TrimSpace(chain.MissingGuard)
+	chain.UserVisibleSymptom = strings.TrimSpace(chain.UserVisibleSymptom)
+	if chain.Trigger == "" {
+		chain.Trigger = firstNonBlankAnalysisString(firstString(candidate.TriggerValues), firstString(candidate.CandidateChain))
+	}
+	if chain.InvalidState == "" {
+		chain.InvalidState = firstNonBlankAnalysisString(firstString(candidate.OutOfRangeCases), firstString(candidate.ExpectedRange))
+	}
+	if chain.StateTransition == "" {
+		chain.StateTransition = firstNonBlankAnalysisString(firstString(candidate.CandidateChain), firstString(candidate.ObservedFailurePath))
+	}
+	if chain.MissingGuard == "" {
+		chain.MissingGuard = firstNonBlankAnalysisString(firstString(candidate.CannotBeRootCauseIf), firstString(candidate.RequiredRuntimeObservation))
+	}
+	if chain.UserVisibleSymptom == "" {
+		chain.UserVisibleSymptom = firstString(candidate.ObservedFailurePath)
+	}
+	chain.EvidenceFiles = analysisUniqueStrings(filterEvidence(append(chain.EvidenceFiles, candidate.EvidenceFiles...), shard))
+	if len(chain.EvidenceFiles) == 0 {
+		chain.EvidenceFiles = append([]string(nil), shard.PrimaryFiles...)
+	}
+	return chain
+}
+
+func rootCauseCandidateRejectedByReview(candidate RootCauseCandidate, review ReviewDecision) bool {
+	title := rootCauseComparableText(candidate.Title)
+	if title == "" {
+		return false
+	}
+	for _, rejected := range review.RejectedCandidates {
+		needle := rootCauseComparableText(rejected)
+		if len([]rune(needle)) < 4 {
+			continue
+		}
+		if title == needle {
+			return true
+		}
+		if rootCauseComparableTextIsSpecific(title) && strings.Contains(needle, title) {
+			return true
+		}
+		if rootCauseComparableTextIsSpecific(needle) && strings.Contains(title, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseComparableText(raw string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(raw))), " ")
+}
+
+func rootCauseComparableTextIsSpecific(text string) bool {
+	text = strings.TrimSpace(text)
+	return len([]rune(text)) >= 12 || len(strings.Fields(text)) >= 2
+}
+
+func rootCauseReviewRejectionNote(review ReviewDecision) string {
+	parts := []string{"Root-cause candidate withheld from synthesis because reviewer did not validate that it can produce the reported symptom."}
+	if strings.TrimSpace(review.SymptomPossible) != "" {
+		parts = append(parts, "symptom_possible="+strings.TrimSpace(review.SymptomPossible))
+	}
+	if len(review.Issues) > 0 {
+		parts = append(parts, "issues="+strings.Join(limitStrings(review.Issues, 3), " | "))
+	}
+	if len(review.RejectedCandidates) > 0 {
+		parts = append(parts, "rejected="+strings.Join(limitStrings(review.RejectedCandidates, 3), " | "))
+	}
+	if len(review.DisconfirmingEvidence) > 0 {
+		parts = append(parts, "disconfirming="+strings.Join(limitStrings(review.DisconfirmingEvidence, 3), " | "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func classifyReviewIssueKind(review ReviewDecision) string {
@@ -721,6 +1404,7 @@ type projectAnalyzer struct {
 	workerClient          ProviderClient
 	reviewerClient        ProviderClient
 	workspace             Workspace
+	rootCausePatternPacks []string
 	cachedUnrealGraph     UnrealSemanticGraph
 	cachedSemanticIndexV2 SemanticIndexV2
 	onStatus              func(string)
@@ -957,6 +1641,945 @@ func (a *projectAnalyzer) debug(text string) {
 	}
 }
 
+func (a *projectAnalyzer) planRootCauseInvestigation(ctx context.Context, snapshot ProjectSnapshot, goal string) RootCauseInvestigation {
+	fallback := fallbackRootCauseInvestigation(goal)
+	if a.client == nil {
+		return fallback
+	}
+	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.client, "root-cause-plan", "", a.cfg.Model, ChatRequest{
+		Model:       a.cfg.Model,
+		System:      rootCausePlannerSystemPrompt(),
+		Messages:    []Message{{Role: "user", Text: buildRootCausePlannerPrompt(snapshot, goal)}},
+		MaxTokens:   analysisStructuredMaxTokens(a.cfg.Model, a.cfg.MaxTokens),
+		Temperature: a.cfg.Temperature,
+		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
+	})
+	if err != nil {
+		a.debug(fmt.Sprintf("root-cause planner soft-failed: %v", err))
+		return fallback
+	}
+	plan, ok := parseRootCauseInvestigationPayload(resp.Message.Text)
+	if !ok {
+		a.debug("root-cause planner returned non-JSON output; using deterministic fallback")
+		return fallback
+	}
+	normalizeRootCauseInvestigation(&plan)
+	if strings.TrimSpace(plan.Symptom.Symptom) == "" {
+		plan.Symptom = fallback.Symptom
+	}
+	if len(plan.Hypotheses) == 0 {
+		plan.Hypotheses = fallback.Hypotheses
+	}
+	return plan
+}
+
+func rootCausePlannerSystemPrompt() string {
+	return strings.TrimSpace(`
+You normalize a user-reported bug symptom and plan source-code hypotheses for a root-cause investigation.
+Your entire response must be a single JSON object. The first byte must be "{" and the last byte must be "}".
+Return strict JSON:
+{
+  "root_cause": {
+    "symptom": {
+      "symptom": "string",
+      "expected_behavior": "string",
+      "observed_behavior": "string",
+      "frequency": "string",
+      "trigger_keywords": ["string"],
+      "affected_surface": ["string"],
+      "must_explain": ["string"],
+      "reproduction_inputs": ["string"]
+    },
+    "hypotheses": [
+      {
+        "id": "H1",
+        "title": "string",
+        "candidate_mechanism": "string",
+        "target_signals": ["string"],
+        "target_files": ["string"],
+        "must_prove": ["string"],
+        "must_disprove": ["string"],
+        "reproduction_inputs": ["string"]
+      }
+    ]
+  }
+}
+Rules:
+- Normalize the symptom into expected behavior, observed behavior, frequency, and must_explain.
+- Create 3-8 falsifiable hypotheses. Each hypothesis must include must_prove and must_disprove.
+- Prefer hypotheses that route workers to concrete source areas: intent parsing, state transitions, persistence, lifecycle, finalization, write paths, guard conditions, permission paths, or generated artifact paths.
+- target_files may use exact scanned paths when obvious, otherwise use signal words.
+`)
+}
+
+func buildRootCausePlannerPrompt(snapshot ProjectSnapshot, goal string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Goal:\n%s\n\n", strings.TrimSpace(goal))
+	fmt.Fprintf(&b, "Workspace: %s\n", snapshot.Root)
+	fmt.Fprintf(&b, "Files: %d\nLines: %d\n\n", snapshot.TotalFiles, snapshot.TotalLines)
+	if len(snapshot.ProjectTypes) > 0 {
+		fmt.Fprintf(&b, "Inferred project types: %s\n\n", strings.Join(snapshot.ProjectTypes, ", "))
+	}
+	if patterns := renderRootCausePatternMatchesForPrompt(snapshot.RootCause.PatternMatches, 8); strings.TrimSpace(patterns) != "" {
+		b.WriteString(patterns)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("Top candidate files:\n")
+	for _, file := range topImportantFiles(snapshot, 24) {
+		fmt.Fprintf(&b, "- %s (score=%d reasons=%s)\n", file.Path, file.ImportanceScore, strings.Join(limitStrings(file.ImportanceReasons, 4), ", "))
+	}
+	if len(snapshot.ManifestFiles) > 0 {
+		b.WriteString("\nManifest files:\n")
+		for _, item := range limitStrings(snapshot.ManifestFiles, 12) {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
+	b.WriteString("\nReturn the JSON plan only.")
+	return strings.TrimSpace(b.String())
+}
+
+func parseRootCauseInvestigationPayload(raw string) (RootCauseInvestigation, bool) {
+	type envelope struct {
+		RootCause RootCauseInvestigation `json:"root_cause"`
+	}
+	for _, candidate := range analysisJSONCandidates(raw) {
+		wrapped := envelope{}
+		if err := json.Unmarshal([]byte(candidate), &wrapped); err == nil {
+			if rootCauseInvestigationHasContent(wrapped.RootCause) {
+				normalizeRootCauseInvestigation(&wrapped.RootCause)
+				return wrapped.RootCause, true
+			}
+		}
+		plan := RootCauseInvestigation{}
+		if err := json.Unmarshal([]byte(candidate), &plan); err == nil {
+			if rootCauseInvestigationHasContent(plan) {
+				normalizeRootCauseInvestigation(&plan)
+				return plan, true
+			}
+		}
+	}
+	return RootCauseInvestigation{}, false
+}
+
+func rootCauseInvestigationHasContent(plan RootCauseInvestigation) bool {
+	return strings.TrimSpace(plan.Symptom.Symptom) != "" ||
+		strings.TrimSpace(plan.Symptom.ExpectedBehavior) != "" ||
+		strings.TrimSpace(plan.Symptom.ObservedBehavior) != "" ||
+		len(plan.Hypotheses) > 0 ||
+		len(plan.CodeMatches) > 0 ||
+		len(plan.DeepVerifications) > 0 ||
+		len(plan.JoinedCandidates) > 0 ||
+		len(plan.CandidateClusters) > 0 ||
+		len(plan.EvidenceRequests) > 0 ||
+		len(plan.PatternMatches) > 0 ||
+		rootCauseAuditTrailHasContent(plan.RegressionMemory)
+}
+
+func normalizeRootCauseInvestigation(plan *RootCauseInvestigation) {
+	plan.Symptom.Symptom = strings.TrimSpace(plan.Symptom.Symptom)
+	plan.Symptom.ExpectedBehavior = strings.TrimSpace(plan.Symptom.ExpectedBehavior)
+	plan.Symptom.ObservedBehavior = strings.TrimSpace(plan.Symptom.ObservedBehavior)
+	plan.Symptom.Frequency = strings.TrimSpace(plan.Symptom.Frequency)
+	plan.Symptom.TriggerKeywords = analysisUniqueStrings(plan.Symptom.TriggerKeywords)
+	plan.Symptom.AffectedSurface = analysisUniqueStrings(plan.Symptom.AffectedSurface)
+	plan.Symptom.MustExplain = analysisUniqueStrings(plan.Symptom.MustExplain)
+	plan.Symptom.ReproductionInputs = analysisUniqueStrings(plan.Symptom.ReproductionInputs)
+	for i := range plan.Hypotheses {
+		h := &plan.Hypotheses[i]
+		h.ID = strings.TrimSpace(h.ID)
+		if h.ID == "" {
+			h.ID = fmt.Sprintf("H%d", i+1)
+		}
+		h.Title = strings.TrimSpace(h.Title)
+		h.CandidateMechanism = strings.TrimSpace(h.CandidateMechanism)
+		h.TargetSignals = analysisUniqueStrings(h.TargetSignals)
+		h.TargetFiles = analysisUniqueStrings(h.TargetFiles)
+		h.MustProve = analysisUniqueStrings(h.MustProve)
+		h.MustDisprove = analysisUniqueStrings(h.MustDisprove)
+		h.ReproductionInputs = analysisUniqueStrings(h.ReproductionInputs)
+	}
+	plan.CodeMatches = normalizeRootCauseCodeMatches(plan.CodeMatches)
+	plan.DeepVerifications = normalizeRootCauseDeepVerifications(plan.DeepVerifications)
+	plan.JoinedCandidates = normalizeRootCauseJoinedCandidates(plan.JoinedCandidates)
+	plan.CandidateClusters = normalizeRootCauseCandidateClusters(plan.CandidateClusters)
+	plan.EvidenceRequests = normalizeRootCauseEvidenceRequests(plan.EvidenceRequests)
+	plan.PatternMatches = normalizeRootCausePatternMatches(plan.PatternMatches)
+}
+
+func normalizeRootCauseCodeMatches(matches []RootCauseCodeMatch) []RootCauseCodeMatch {
+	out := []RootCauseCodeMatch{}
+	for _, match := range matches {
+		match.Query = strings.TrimSpace(match.Query)
+		match.File = strings.TrimSpace(match.File)
+		match.Reason = strings.TrimSpace(match.Reason)
+		match.MatchedSignals = analysisUniqueStrings(match.MatchedSignals)
+		if match.Score < 0 {
+			match.Score = 0
+		}
+		if match.File == "" && match.Query == "" {
+			continue
+		}
+		out = append(out, match)
+	}
+	sort.SliceStable(out, func(i int, j int) bool {
+		if out[i].Score == out[j].Score {
+			return out[i].File < out[j].File
+		}
+		return out[i].Score > out[j].Score
+	})
+	return out
+}
+
+func normalizeRootCauseDeepVerifications(items []RootCauseDeepVerification) []RootCauseDeepVerification {
+	out := []RootCauseDeepVerification{}
+	for _, item := range items {
+		item.CandidateTitle = strings.TrimSpace(item.CandidateTitle)
+		item.ShardID = strings.TrimSpace(item.ShardID)
+		item.ShardName = strings.TrimSpace(item.ShardName)
+		item.Status = normalizeRootCauseDeepVerificationStatus(item.Status)
+		item.Summary = strings.TrimSpace(item.Summary)
+		item.CausalChain = normalizeJoinedRootCauseCausalChain(item.CausalChain)
+		item.EvidenceFiles = analysisUniqueStrings(item.EvidenceFiles)
+		item.InstrumentationSteps = analysisUniqueStrings(item.InstrumentationSteps)
+		item.DisconfirmingEvidence = analysisUniqueStrings(item.DisconfirmingEvidence)
+		item.CannotBeRootCauseIf = analysisUniqueStrings(item.CannotBeRootCauseIf)
+		item.RequiredRuntimeObservation = analysisUniqueStrings(item.RequiredRuntimeObservation)
+		item.Probes = normalizeRootCauseProbes(item.Probes)
+		item.PatternIDs = analysisUniqueStrings(item.PatternIDs)
+		if strings.TrimSpace(item.Confidence) != "" {
+			item.Confidence = normalizeRootCauseConfidence(item.Confidence, 0)
+		}
+		if len(item.Probes) == 0 {
+			item.Probes = deriveRootCauseVerificationProbes(item)
+		}
+		item.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(item.ConfidenceBreakdown, rootCauseDeepVerificationScore(item))
+		item.Raw = strings.TrimSpace(item.Raw)
+		if item.CandidateTitle == "" && item.Summary == "" {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func normalizeRootCauseProbes(probes []RootCauseProbe) []RootCauseProbe {
+	out := []RootCauseProbe{}
+	for _, probe := range probes {
+		probe.Title = strings.TrimSpace(probe.Title)
+		probe.Kind = normalizeRootCauseProbeKind(probe.Kind)
+		probe.Target = strings.TrimSpace(probe.Target)
+		probe.Command = strings.TrimSpace(probe.Command)
+		probe.ExpectedSignal = strings.TrimSpace(probe.ExpectedSignal)
+		probe.DisprovesWhen = strings.TrimSpace(probe.DisprovesWhen)
+		if probe.Title == "" && probe.Target == "" && probe.ExpectedSignal == "" {
+			continue
+		}
+		if probe.Kind == "" {
+			probe.Kind = "trace"
+		}
+		if probe.Title == "" {
+			probe.Title = firstNonBlankRootCauseString(probe.ExpectedSignal, probe.Target, "Root-cause probe")
+		}
+		out = append(out, probe)
+	}
+	return dedupeRootCauseProbes(out)
+}
+
+func normalizeRootCauseProbeKind(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "log", "logging":
+		return "log"
+	case "assert", "assertion":
+		return "assert"
+	case "test", "unit_test", "integration_test":
+		return "test"
+	case "repro", "reproduction":
+		return "repro"
+	case "db_config_dump", "db", "config", "dump":
+		return "db_config_dump"
+	case "trace", "instrument", "instrumentation":
+		return "trace"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+}
+
+func dedupeRootCauseProbes(probes []RootCauseProbe) []RootCauseProbe {
+	seen := map[string]struct{}{}
+	out := []RootCauseProbe{}
+	for _, probe := range probes {
+		key := strings.ToLower(strings.TrimSpace(probe.Kind + "\x00" + probe.Target + "\x00" + probe.ExpectedSignal + "\x00" + probe.Command))
+		if key == "\x00\x00\x00" {
+			key = strings.ToLower(strings.TrimSpace(probe.Title))
+		}
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, probe)
+	}
+	return out
+}
+
+func normalizeRootCauseConfidenceBreakdown(breakdown RootCauseConfidenceBreakdown, fallbackScore int) RootCauseConfidenceBreakdown {
+	breakdown.CausalCompleteness = clampRootCauseScore(breakdown.CausalCompleteness)
+	breakdown.EvidenceStrength = clampRootCauseScore(breakdown.EvidenceStrength)
+	breakdown.RuntimeObservability = clampRootCauseScore(breakdown.RuntimeObservability)
+	breakdown.AlternativeExplanations = clampRootCauseScore(breakdown.AlternativeExplanations)
+	breakdown.DisconfirmationStrength = clampRootCauseScore(breakdown.DisconfirmationStrength)
+	breakdown.Score = clampRootCauseScore(breakdown.Score)
+	breakdown.Reasons = analysisUniqueStrings(breakdown.Reasons)
+	if fallbackScore < 0 {
+		fallbackScore = 0
+	}
+	if fallbackScore > 100 {
+		fallbackScore = 100
+	}
+	if breakdown.Score == 0 {
+		total := 0
+		count := 0
+		for _, value := range []int{
+			breakdown.CausalCompleteness,
+			breakdown.EvidenceStrength,
+			breakdown.RuntimeObservability,
+			breakdown.AlternativeExplanations,
+			breakdown.DisconfirmationStrength,
+		} {
+			if value > 0 {
+				total += value
+				count++
+			}
+		}
+		if count > 0 {
+			breakdown.Score = total / count
+		}
+	}
+	if breakdown.Score == 0 && fallbackScore > 0 {
+		breakdown.Score = fallbackScore
+	}
+	if breakdown.CausalCompleteness == 0 &&
+		breakdown.EvidenceStrength == 0 &&
+		breakdown.RuntimeObservability == 0 &&
+		breakdown.AlternativeExplanations == 0 &&
+		breakdown.DisconfirmationStrength == 0 &&
+		breakdown.Score > 0 {
+		breakdown.CausalCompleteness = breakdown.Score
+		breakdown.EvidenceStrength = analysisMaxInt(25, breakdown.Score-10)
+		breakdown.RuntimeObservability = analysisMaxInt(20, breakdown.Score-15)
+		breakdown.AlternativeExplanations = analysisMaxInt(20, breakdown.Score-20)
+		breakdown.DisconfirmationStrength = analysisMaxInt(20, breakdown.Score-20)
+	}
+	return breakdown
+}
+
+func clampRootCauseScore(score int) int {
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+func rootCauseDeepVerificationScore(item RootCauseDeepVerification) int {
+	score := 20 + rootCauseCausalChainStageCount(item.CausalChain)*12
+	switch item.Status {
+	case "supported":
+		score += 25
+	case "weak":
+		score += 10
+	case "disconfirmed":
+		score = 15
+	case "unknown":
+		score += 0
+	}
+	score += analysisMinInt(len(item.EvidenceFiles)*4, 12)
+	score += analysisMinInt((len(item.InstrumentationSteps)+len(item.Probes))*4, 16)
+	if len(item.DisconfirmingEvidence) > 0 || len(item.CannotBeRootCauseIf) > 0 {
+		score += 6
+	}
+	return clampRootCauseScore(score)
+}
+
+func buildRootCauseConfidenceBreakdown(candidate RootCauseCandidate, review ReviewDecision) RootCauseConfidenceBreakdown {
+	stageCount := rootCauseCausalChainStageCount(candidate.CausalChain)
+	score := rootCauseConfidenceScore(candidate, review)
+	reasons := []string{}
+	if stageCount > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d causal stage(s) are evidenced.", stageCount))
+	}
+	if len(candidate.EvidenceFiles) > 0 {
+		reasons = append(reasons, fmt.Sprintf("%d evidence file(s) support the candidate.", len(candidate.EvidenceFiles)))
+	}
+	if len(candidate.RequiredRuntimeObservation) > 0 || len(candidate.VerificationSteps) > 0 || len(candidate.Probes) > 0 {
+		reasons = append(reasons, "Runtime observation or test probes are available.")
+	}
+	if len(candidate.NeedsCrossShardEvidence) > 0 {
+		reasons = append(reasons, "Cross-shard evidence is still needed.")
+	}
+	if len(candidate.DisconfirmingEvidence) > 0 || len(candidate.CannotBeRootCauseIf) > 0 {
+		reasons = append(reasons, "Falsification conditions are documented.")
+	}
+	return normalizeRootCauseConfidenceBreakdown(RootCauseConfidenceBreakdown{
+		CausalCompleteness:      clampRootCauseScore(stageCount * 20),
+		EvidenceStrength:        clampRootCauseScore(20 + len(candidate.EvidenceFiles)*12 + len(review.SymptomCausality)*8),
+		RuntimeObservability:    clampRootCauseScore(20 + (len(candidate.RequiredRuntimeObservation)+len(candidate.VerificationSteps)+len(candidate.Probes))*12),
+		AlternativeExplanations: clampRootCauseScore(55 - len(candidate.NeedsCrossShardEvidence)*10),
+		DisconfirmationStrength: clampRootCauseScore(25 + (len(candidate.DisconfirmingEvidence)+len(candidate.CannotBeRootCauseIf))*15),
+		Score:                   score,
+		Reasons:                 reasons,
+	}, score)
+}
+
+func deriveRootCauseCandidateProbes(candidate RootCauseCandidate, shard AnalysisShard) []RootCauseProbe {
+	target := firstString(candidate.EvidenceFiles)
+	if target == "" {
+		target = firstString(shard.PrimaryFiles)
+	}
+	trigger := firstNonBlankRootCauseString(candidate.CausalChain.Trigger, firstString(candidate.TriggerValues), candidate.Title, "reported trigger")
+	invalidState := firstNonBlankRootCauseString(candidate.CausalChain.InvalidState, firstString(candidate.OutOfRangeCases), "out-of-range state")
+	disproves := firstNonBlankAnalysisString(firstString(candidate.CannotBeRootCauseIf), "The reported symptom reproduces without this state transition.")
+	probes := []RootCauseProbe{}
+	for _, observation := range limitStrings(candidate.RequiredRuntimeObservation, 2) {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Trace required runtime observation",
+			Kind:           "trace",
+			Target:         target,
+			ExpectedSignal: observation,
+			DisprovesWhen:  disproves,
+		})
+	}
+	for _, step := range limitStrings(candidate.VerificationSteps, 2) {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Execute focused verification step",
+			Kind:           rootCauseProbeKindFromText(step),
+			Target:         target,
+			Command:        step,
+			ExpectedSignal: invalidState,
+			DisprovesWhen:  disproves,
+		})
+	}
+	if len(probes) == 0 {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Reproduce and trace candidate chain",
+			Kind:           "repro",
+			Target:         target,
+			Command:        "Drive the reported trigger while tracing: " + trigger,
+			ExpectedSignal: invalidState,
+			DisprovesWhen:  disproves,
+		})
+	}
+	if target != "" && invalidState != "" {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Add guard/assertion probe",
+			Kind:           "assert",
+			Target:         target,
+			ExpectedSignal: invalidState,
+			DisprovesWhen:  disproves,
+		})
+	}
+	return normalizeRootCauseProbes(probes)
+}
+
+func deriveRootCauseVerificationProbes(item RootCauseDeepVerification) []RootCauseProbe {
+	target := firstString(item.EvidenceFiles)
+	disproves := firstNonBlankAnalysisString(firstString(item.CannotBeRootCauseIf), "The symptom reproduces while the candidate path is not taken.")
+	probes := []RootCauseProbe{}
+	for _, step := range limitStrings(item.InstrumentationSteps, 3) {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Deep verification instrumentation",
+			Kind:           rootCauseProbeKindFromText(step),
+			Target:         target,
+			Command:        step,
+			ExpectedSignal: firstNonBlankRootCauseString(firstString(item.RequiredRuntimeObservation), item.CausalChain.InvalidState, item.Summary),
+			DisprovesWhen:  disproves,
+		})
+	}
+	for _, observation := range limitStrings(item.RequiredRuntimeObservation, 2) {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Observe deep-verification signal",
+			Kind:           "trace",
+			Target:         target,
+			ExpectedSignal: observation,
+			DisprovesWhen:  disproves,
+		})
+	}
+	return normalizeRootCauseProbes(probes)
+}
+
+func rootCauseProbeKindFromText(text string) string {
+	lower := strings.ToLower(text)
+	switch {
+	case strings.Contains(lower, "test"):
+		return "test"
+	case strings.Contains(lower, "assert") || strings.Contains(lower, "invariant"):
+		return "assert"
+	case strings.Contains(lower, "log") || strings.Contains(lower, "dump"):
+		return "log"
+	case strings.Contains(lower, "db") || strings.Contains(lower, "config"):
+		return "db_config_dump"
+	case strings.Contains(lower, "repro"):
+		return "repro"
+	default:
+		return "trace"
+	}
+}
+
+func enhanceRootCauseReportProbesWithRepoCommands(snapshot ProjectSnapshot, reports []WorkerReport) []WorkerReport {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" || len(reports) == 0 {
+		return reports
+	}
+	out := append([]WorkerReport(nil), reports...)
+	for reportIndex := range out {
+		for candidateIndex := range out[reportIndex].RootCauseCandidates {
+			candidate := &out[reportIndex].RootCauseCandidates[candidateIndex]
+			candidate.Probes = enhanceRootCauseProbesWithRepoCommands(snapshot, candidate.Probes, candidate.EvidenceFiles)
+		}
+	}
+	return out
+}
+
+func enhanceRootCauseJoinedProbesWithRepoCommands(snapshot ProjectSnapshot, candidates []RootCauseJoinedCandidate) []RootCauseJoinedCandidate {
+	out := append([]RootCauseJoinedCandidate(nil), candidates...)
+	for index := range out {
+		out[index].Probes = enhanceRootCauseProbesWithRepoCommands(snapshot, out[index].Probes, out[index].EvidenceFiles)
+	}
+	return out
+}
+
+func enhanceRootCauseDeepVerificationProbesWithRepoCommands(snapshot ProjectSnapshot, items []RootCauseDeepVerification) []RootCauseDeepVerification {
+	out := append([]RootCauseDeepVerification(nil), items...)
+	for index := range out {
+		out[index].Probes = enhanceRootCauseProbesWithRepoCommands(snapshot, out[index].Probes, out[index].EvidenceFiles)
+	}
+	return out
+}
+
+func enhanceRootCauseProbesWithRepoCommands(snapshot ProjectSnapshot, probes []RootCauseProbe, evidenceFiles []string) []RootCauseProbe {
+	out := normalizeRootCauseProbes(probes)
+	for index := range out {
+		if rootCauseProbeHasConcreteCommand(out[index].Command) {
+			continue
+		}
+		out[index].Command = rootCauseProbeCommandForSnapshot(snapshot, out[index], evidenceFiles)
+	}
+	return normalizeRootCauseProbes(out)
+}
+
+func rootCauseProbeHasConcreteCommand(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	lower := strings.ToLower(command)
+	for _, generic := range []string{"drive the reported symptom", "trace the joined causal chain", "reported trigger"} {
+		if strings.Contains(lower, generic) {
+			return false
+		}
+	}
+	return strings.Contains(command, " ") || strings.Contains(command, ".") || strings.Contains(command, "/") || strings.Contains(command, "\\")
+}
+
+func rootCauseProbeCommandForSnapshot(snapshot ProjectSnapshot, probe RootCauseProbe, evidenceFiles []string) string {
+	target := firstNonBlankRootCauseString(probe.Target, firstString(evidenceFiles))
+	symptom := strings.ToLower(rootCauseReportedSymptomText(snapshot) + " " + probe.Title + " " + probe.ExpectedSignal + " " + probe.Command)
+	if strings.Contains(symptom, "sc stop") || strings.Contains(symptom, "service") || strings.Contains(symptom, "서비스") {
+		serviceName := rootCauseInferServiceName(snapshot, evidenceFiles)
+		return fmt.Sprintf("sc.exe stop %s && sc.exe query %s", serviceName, serviceName)
+	}
+	if len(snapshot.UnrealProjects) > 0 {
+		project := snapshot.UnrealProjects[0].Path
+		if strings.TrimSpace(project) == "" {
+			project = "*.uproject"
+		}
+		return fmt.Sprintf("UnrealEditor-Cmd.exe \"%s\" -ExecCmds=\"Automation RunTests Project; Quit\" -unattended -nop4", project)
+	}
+	if rootCauseSnapshotHasExtension(snapshot, ".go") || strings.TrimSpace(snapshot.ModulePath) != "" {
+		return "go test ./... -run TestRootCauseProbe -count=1"
+	}
+	if rootCauseSnapshotHasAnyExtension(snapshot, []string{".cs"}) {
+		return "dotnet test --filter RootCauseProbe"
+	}
+	if rootCauseSnapshotHasAnyExtension(snapshot, []string{".cpp", ".cc", ".cxx", ".c", ".h", ".hpp"}) {
+		if rootCauseSnapshotHasBuildFile(snapshot, "CMakeLists.txt") {
+			return "ctest --output-on-failure -R RootCauseProbe"
+		}
+		return "cmake --build . --config Debug"
+	}
+	if rootCauseSnapshotHasAnyExtension(snapshot, []string{".ps1"}) {
+		return "powershell -ExecutionPolicy Bypass -File .\\root-cause-probe.ps1"
+	}
+	if target != "" {
+		return "Add the probe at " + target + " and run the nearest project test for that module."
+	}
+	return "Run the smallest repro that triggers the reported symptom and capture the expected_signal."
+}
+
+func rootCauseInferServiceName(snapshot ProjectSnapshot, evidenceFiles []string) string {
+	for _, path := range evidenceFiles {
+		base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		if strings.Contains(strings.ToLower(base), "service") && base != "" {
+			return base
+		}
+	}
+	for _, project := range snapshot.SolutionProjects {
+		if strings.Contains(strings.ToLower(project.Name), "service") {
+			return project.Name
+		}
+	}
+	return "<service-name>"
+}
+
+func rootCauseSnapshotHasExtension(snapshot ProjectSnapshot, ext string) bool {
+	return rootCauseSnapshotHasAnyExtension(snapshot, []string{ext})
+}
+
+func rootCauseSnapshotHasAnyExtension(snapshot ProjectSnapshot, exts []string) bool {
+	set := map[string]struct{}{}
+	for _, ext := range exts {
+		set[strings.ToLower(ext)] = struct{}{}
+	}
+	for _, file := range rootCauseSnapshotFiles(snapshot) {
+		if _, ok := set[strings.ToLower(file.Extension)]; ok {
+			return true
+		}
+		if _, ok := set[strings.ToLower(filepath.Ext(file.Path))]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseSnapshotHasBuildFile(snapshot ProjectSnapshot, base string) bool {
+	for _, file := range rootCauseSnapshotFiles(snapshot) {
+		if strings.EqualFold(filepath.Base(file.Path), base) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeRootCauseDeepVerificationStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "supported", "support", "confirmed":
+		return "supported"
+	case "weak", "partial", "needs_more_evidence":
+		return "weak"
+	case "disconfirmed", "rejected", "false":
+		return "disconfirmed"
+	default:
+		return "unknown"
+	}
+}
+
+func fallbackRootCauseInvestigation(goal string) RootCauseInvestigation {
+	symptomText := strings.TrimSpace(goal)
+	if strings.HasPrefix(strings.ToLower(symptomText), "find the most likely root cause") {
+		if idx := strings.Index(symptomText, ":"); idx >= 0 {
+			symptomText = strings.TrimSpace(symptomText[idx+1:])
+		}
+		if idx := strings.Index(symptomText, "\n"); idx >= 0 {
+			symptomText = strings.TrimSpace(symptomText[:idx])
+		}
+	}
+	lower := strings.ToLower(symptomText)
+	keywords := extractParallelReadOnlyWorkerTerms(symptomText)
+	if len(keywords) > 10 {
+		keywords = keywords[:10]
+	}
+	affected := []string{"state transition", "validation", "finalization gate", "persistence/config read"}
+	if containsAny(lower, "document", "문서", "report", "markdown", "file", "파일") {
+		affected = []string{"intent classification", "tool availability", "document write path", "final answer gate", "artifact path"}
+	}
+	return RootCauseInvestigation{
+		Symptom: RootCauseSymptomProfile{
+			Symptom:          symptomText,
+			ExpectedBehavior: "The system should follow the user's requested behavior.",
+			ObservedBehavior: symptomText,
+			Frequency:        "unspecified or intermittent",
+			TriggerKeywords:  keywords,
+			AffectedSurface:  affected,
+			MustExplain: []string{
+				"why the observed behavior can happen",
+				"which unexpected input or state value triggers the path",
+				"what evidence confirms or rejects the candidate",
+			},
+			ReproductionInputs: []string{symptomText},
+		},
+		Hypotheses: []RootCauseHypothesis{
+			{
+				ID:                 "H1",
+				Title:              "Input or intent classification routes to the wrong execution path",
+				CandidateMechanism: "A user input phrase or decoded request value falls outside the expected category and selects a non-mutating or incomplete path.",
+				TargetSignals:      []string{"intent", "classify", "mode", "read-only", "write", "document", "request"},
+				MustProve:          []string{"show the branch that selects the wrong path", "show how the selected path can produce the symptom"},
+				MustDisprove:       []string{"show the input is classified correctly", "show a later guard forces the expected behavior anyway"},
+				ReproductionInputs: []string{symptomText},
+			},
+			{
+				ID:                 "H2",
+				Title:              "State transition or finalization gate accepts incomplete work",
+				CandidateMechanism: "A loop, lifecycle state, or final answer gate reaches success without verifying the requested output exists.",
+				TargetSignals:      []string{"final", "done", "complete", "loop", "gate", "artifact", "exists", "verify"},
+				MustProve:          []string{"show completion can occur without the requested output", "show no later existence check rejects it"},
+				MustDisprove:       []string{"show output existence is mandatory before completion"},
+				ReproductionInputs: []string{symptomText},
+			},
+			{
+				ID:                 "H3",
+				Title:              "Write path, permission, hook, or path resolution prevents the artifact",
+				CandidateMechanism: "The write attempt fails, is canceled, writes to a different root, or is blocked by guard logic.",
+				TargetSignals:      []string{"write_file", "apply_patch", "permission", "hook", "path", "worktree", "artifact"},
+				MustProve:          []string{"show a write attempt can fail or target a different path", "show the failure is surfaced as the observed symptom"},
+				MustDisprove:       []string{"show no write attempt is made", "show write failures are always reported distinctly"},
+				ReproductionInputs: []string{symptomText},
+			},
+		},
+	}
+}
+
+func applyRootCausePlanToImportance(snapshot *ProjectSnapshot, plan RootCauseInvestigation) {
+	if snapshot == nil || len(plan.Hypotheses) == 0 {
+		return
+	}
+	signals := []string{}
+	targets := map[string]struct{}{}
+	for _, hypothesis := range plan.Hypotheses {
+		signals = append(signals, hypothesis.TargetSignals...)
+		for _, file := range hypothesis.TargetFiles {
+			key := strings.ToLower(filepath.ToSlash(strings.TrimSpace(file)))
+			if key != "" {
+				targets[key] = struct{}{}
+			}
+		}
+	}
+	signals = analysisUniqueStrings(signals)
+	for i := range snapshot.Files {
+		file := snapshot.Files[i]
+		lowerPath := strings.ToLower(filepath.ToSlash(file.Path))
+		boost := 0
+		if _, ok := targets[lowerPath]; ok {
+			boost += 28
+		}
+		for _, signal := range signals {
+			signal = strings.ToLower(strings.TrimSpace(signal))
+			if signal != "" && strings.Contains(lowerPath, signal) {
+				boost += 8
+			}
+		}
+		if boost <= 0 {
+			continue
+		}
+		file.ImportanceScore += boost
+		file.ImportanceReasons = analysisUniqueStrings(append(file.ImportanceReasons, "root_cause_hypothesis"))
+		snapshot.Files[i] = file
+		snapshot.FilesByPath[file.Path] = file
+		if dirFiles := snapshot.FilesByDirectory[file.Directory]; len(dirFiles) > 0 {
+			for j := range dirFiles {
+				if dirFiles[j].Path == file.Path {
+					dirFiles[j] = file
+				}
+			}
+			snapshot.FilesByDirectory[file.Directory] = dirFiles
+		}
+	}
+}
+
+func deriveRootCauseCodeMatches(snapshot ProjectSnapshot, plan RootCauseInvestigation, goal string, limit int) []RootCauseCodeMatch {
+	if limit <= 0 {
+		limit = 16
+	}
+	signals := []string{}
+	signals = append(signals, plan.Symptom.TriggerKeywords...)
+	signals = append(signals, plan.Symptom.AffectedSurface...)
+	signals = append(signals, extractParallelReadOnlyWorkerTerms(goal)...)
+	targetFiles := map[string]string{}
+	for _, hypothesis := range plan.Hypotheses {
+		signals = append(signals, hypothesis.TargetSignals...)
+		signals = append(signals, extractParallelReadOnlyWorkerTerms(hypothesis.Title)...)
+		signals = append(signals, extractParallelReadOnlyWorkerTerms(hypothesis.CandidateMechanism)...)
+		for _, target := range hypothesis.TargetFiles {
+			trimmed := strings.ToLower(filepath.ToSlash(strings.TrimSpace(target)))
+			if trimmed != "" {
+				targetFiles[trimmed] = hypothesis.ID
+			}
+		}
+	}
+	signals = rootCauseRelevantSignals(signals)
+	matches := []RootCauseCodeMatch{}
+	for _, file := range snapshot.Files {
+		lowerPath := strings.ToLower(filepath.ToSlash(file.Path))
+		score := 0
+		reasons := []string{}
+		matched := []string{}
+		if id, ok := targetFiles[lowerPath]; ok {
+			score += 60
+			reasons = append(reasons, "hypothesis_target:"+id)
+			matched = append(matched, file.Path)
+		}
+		for target, id := range targetFiles {
+			if target != "" && (strings.Contains(lowerPath, target) || strings.Contains(target, lowerPath)) {
+				score += 30
+				reasons = append(reasons, "target_overlap:"+id)
+				matched = append(matched, target)
+			}
+		}
+		for _, signal := range signals {
+			lowerSignal := strings.ToLower(strings.TrimSpace(signal))
+			if lowerSignal == "" {
+				continue
+			}
+			if strings.Contains(lowerPath, lowerSignal) {
+				score += 14
+				matched = append(matched, signal)
+			}
+			for _, reason := range file.ImportanceReasons {
+				if strings.Contains(strings.ToLower(reason), lowerSignal) {
+					score += 4
+					matched = append(matched, signal)
+					break
+				}
+			}
+		}
+		if score == 0 {
+			continue
+		}
+		if file.IsEntrypoint {
+			score += 5
+		}
+		if file.IsManifest {
+			score += 3
+		}
+		matches = append(matches, RootCauseCodeMatch{
+			Query:          strings.Join(limitStrings(signals, 8), ", "),
+			File:           file.Path,
+			Reason:         strings.Join(analysisUniqueStrings(reasons), ", "),
+			MatchedSignals: analysisUniqueStrings(matched),
+			Score:          score,
+		})
+	}
+	matches = normalizeRootCauseCodeMatches(matches)
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches
+}
+
+func rootCauseRelevantSignals(signals []string) []string {
+	out := []string{}
+	for _, signal := range signals {
+		signal = strings.ToLower(strings.TrimSpace(signal))
+		signal = strings.Trim(signal, " \t\r\n.,;:!?()[]{}<>\"'`~")
+		if len([]rune(signal)) < 3 || rootCausePromptIsGenericToken(signal) {
+			continue
+		}
+		out = append(out, signal)
+	}
+	return analysisUniqueStrings(out)
+}
+
+func applyRootCauseCodeMatchesToImportance(snapshot *ProjectSnapshot, matches []RootCauseCodeMatch) {
+	if snapshot == nil || len(matches) == 0 {
+		return
+	}
+	matchByPath := map[string]RootCauseCodeMatch{}
+	for _, match := range matches {
+		if strings.TrimSpace(match.File) != "" {
+			matchByPath[match.File] = match
+		}
+	}
+	for i := range snapshot.Files {
+		file := snapshot.Files[i]
+		match, ok := matchByPath[file.Path]
+		if !ok {
+			continue
+		}
+		file.ImportanceScore += analysisMinInt(24, analysisMaxInt(4, match.Score/4))
+		file.ImportanceReasons = analysisUniqueStrings(append(file.ImportanceReasons, "root_cause_code_match"))
+		snapshot.Files[i] = file
+		snapshot.FilesByPath[file.Path] = file
+		if dirFiles := snapshot.FilesByDirectory[file.Directory]; len(dirFiles) > 0 {
+			for j := range dirFiles {
+				if dirFiles[j].Path == file.Path {
+					dirFiles[j] = file
+				}
+			}
+			snapshot.FilesByDirectory[file.Directory] = dirFiles
+		}
+	}
+}
+
+func augmentRootCauseCodeMatchesWithSemanticIndex(plan RootCauseInvestigation, index SemanticIndexV2, goal string, limit int) []RootCauseCodeMatch {
+	matches := append([]RootCauseCodeMatch(nil), plan.CodeMatches...)
+	if len(index.Symbols) == 0 {
+		return normalizeRootCauseCodeMatches(matches)
+	}
+	signals := []string{}
+	signals = append(signals, plan.Symptom.TriggerKeywords...)
+	signals = append(signals, plan.Symptom.AffectedSurface...)
+	signals = append(signals, extractParallelReadOnlyWorkerTerms(goal)...)
+	for _, hypothesis := range plan.Hypotheses {
+		signals = append(signals, hypothesis.TargetSignals...)
+		signals = append(signals, extractParallelReadOnlyWorkerTerms(hypothesis.Title)...)
+		signals = append(signals, extractParallelReadOnlyWorkerTerms(hypothesis.CandidateMechanism)...)
+	}
+	signals = rootCauseRelevantSignals(signals)
+	byFile := map[string]int{}
+	for i, match := range matches {
+		if strings.TrimSpace(match.File) != "" {
+			byFile[match.File] = i
+		}
+	}
+	for _, symbol := range index.Symbols {
+		if strings.TrimSpace(symbol.File) == "" {
+			continue
+		}
+		corpus := strings.ToLower(strings.Join([]string{
+			symbol.ID,
+			symbol.Name,
+			symbol.CanonicalName,
+			symbol.Kind,
+			symbol.Signature,
+			strings.Join(symbol.Tags, " "),
+		}, " "))
+		matched := []string{}
+		for _, signal := range signals {
+			if signal != "" && strings.Contains(corpus, strings.ToLower(signal)) {
+				matched = append(matched, signal)
+			}
+		}
+		if len(matched) == 0 {
+			continue
+		}
+		symbolName := firstNonBlankAnalysisString(symbol.CanonicalName, firstNonBlankAnalysisString(symbol.Name, symbol.ID))
+		reason := "symbol_match:" + symbolName
+		if index, ok := byFile[symbol.File]; ok {
+			matches[index].Score += 18 + len(matched)*4
+			matches[index].Reason = strings.Trim(strings.Join(analysisUniqueStrings([]string{matches[index].Reason, reason}), ", "), ", ")
+			matches[index].MatchedSignals = analysisUniqueStrings(append(matches[index].MatchedSignals, append([]string{"symbol:" + firstNonBlankAnalysisString(symbol.Name, symbol.ID)}, matched...)...))
+			continue
+		}
+		byFile[symbol.File] = len(matches)
+		matches = append(matches, RootCauseCodeMatch{
+			Query:          strings.Join(limitStrings(signals, 8), ", "),
+			File:           symbol.File,
+			Reason:         reason,
+			MatchedSignals: analysisUniqueStrings(append([]string{"symbol:" + firstNonBlankAnalysisString(symbol.Name, symbol.ID)}, matched...)),
+			Score:          18 + len(matched)*4,
+		})
+	}
+	matches = normalizeRootCauseCodeMatches(matches)
+	if limit > 0 && len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches
+}
+
 func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (ProjectAnalysisRun, error) {
 	run := ProjectAnalysisRun{}
 	a.debugMu.Lock()
@@ -995,9 +2618,37 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	snapshot.AnalysisMode = run.Summary.Mode
 	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses(goal, run.Summary.Mode))
 	a.scoreFileImportance(&snapshot, snapshot.AnalysisLenses)
+	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+		snapshot.ProjectTypes = inferRootCauseProjectTypes(snapshot, goal)
+		patternPack, patternDiagnostics := loadRootCausePatternPackWithDiagnostics(snapshot.Root, a.rootCausePatternPacks)
+		for _, diagnostic := range patternDiagnostics {
+			a.debug(diagnostic)
+		}
+		snapshot.RootCause.PatternMatches = matchRootCausePatternsFromPack(snapshot, goal, patternPack, 12)
+		applyRootCausePatternMatchesToImportance(&snapshot, snapshot.RootCause.PatternMatches)
+		a.debug(fmt.Sprintf("root-cause pattern priors prepared: project_types=%s packs=%d matches=%d", strings.Join(snapshot.ProjectTypes, ","), len(rootCausePatternPackInputPaths(snapshot.Root, a.rootCausePatternPacks)), len(snapshot.RootCause.PatternMatches)))
+		a.status("Normalizing symptom and planning root-cause hypotheses...")
+		rootCausePlan := a.planRootCauseInvestigation(ctx, snapshot, goal)
+		rootCausePlan.PatternMatches = snapshot.RootCause.PatternMatches
+		snapshot.RootCause = rootCausePlan
+		run.RootCause = rootCausePlan
+		applyRootCausePlanToImportance(&snapshot, rootCausePlan)
+		rootCausePlan.CodeMatches = deriveRootCauseCodeMatches(snapshot, rootCausePlan, goal, 18)
+		rootCausePlan.CodeMatches = normalizeRootCauseCodeMatches(append(rootCausePlan.CodeMatches, deriveRootCausePatternCodeMatches(snapshot, rootCausePlan.PatternMatches, 18)...))
+		applyRootCauseCodeMatchesToImportance(&snapshot, rootCausePlan.CodeMatches)
+		snapshot.RootCause = rootCausePlan
+		run.RootCause = rootCausePlan
+		a.debug(fmt.Sprintf("root-cause plan prepared: hypotheses=%d symptom=%q", len(rootCausePlan.Hypotheses), rootCausePlan.Symptom.Symptom))
+	}
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
 	a.cachedUnrealGraph = buildUnrealSemanticGraph(snapshot, goal, run.Summary.RunID)
 	a.cachedSemanticIndexV2 = buildSemanticIndexV2(snapshot, goal, run.Summary.RunID, a.cachedUnrealGraph)
+	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+		snapshot.RootCause.CodeMatches = augmentRootCauseCodeMatchesWithSemanticIndex(snapshot.RootCause, a.cachedSemanticIndexV2, goal, 24)
+		snapshot.RootCause.CodeMatches = normalizeRootCauseCodeMatches(append(snapshot.RootCause.CodeMatches, deriveRootCausePatternCodeMatches(snapshot, snapshot.RootCause.PatternMatches, 24)...))
+		applyRootCauseCodeMatchesToImportance(&snapshot, snapshot.RootCause.CodeMatches)
+		run.RootCause = snapshot.RootCause
+	}
 	snapshot.ArchitectureFacts = buildArchitectureFactPack(snapshot, a.cachedSemanticIndexV2, a.cachedUnrealGraph, goal)
 	run.Snapshot = snapshot
 
@@ -1036,6 +2687,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if previousRun != nil {
 		a.status("Loaded previous analysis for incremental reuse.")
 		a.debug(fmt.Sprintf("loaded previous analysis run: shards=%d approved=%d", len(previousRun.Shards), previousRun.Summary.ApprovedShards))
+		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" && rootCauseAuditTrailHasContent(previousRun.RootCause.AuditTrail) {
+			snapshot.RootCause.RegressionMemory = previousRun.RootCause.AuditTrail
+			run.RootCause.RegressionMemory = previousRun.RootCause.AuditTrail
+			run.Snapshot = snapshot
+			a.debug(fmt.Sprintf("loaded root-cause regression memory: decisions=%d deep=%d joined=%d", len(previousRun.RootCause.AuditTrail.CandidateDecisions), len(previousRun.RootCause.AuditTrail.DeepVerifications), len(previousRun.RootCause.AuditTrail.JoinedCandidates)))
+		}
 	}
 
 	a.status(fmt.Sprintf("Running %d sub-agent(s)...", len(shards)))
@@ -1044,6 +2701,11 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if err != nil {
 		return run, err
 	}
+	auditShards := append([]AnalysisShard(nil), shards...)
+	auditReports := append([]WorkerReport(nil), reports...)
+	auditReviews := append([]ReviewDecision(nil), reviews...)
+	reports = filterRootCauseReportsByReview(snapshot, reports, reviews)
+	reports = applyRootCauseDeterministicQualityGate(snapshot, shards, reports, reviews)
 	refinementShards, replacedShardIDs := a.planRefinementShards(snapshot, shards, reports, reviews)
 	if len(refinementShards) > 0 {
 		run.Summary.RefinedShards = len(refinementShards)
@@ -1053,13 +2715,72 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		if err != nil {
 			return run, err
 		}
+		auditShards, auditReports, auditReviews = mergeRefinedShardResults(auditShards, auditReports, auditReviews, refinementShards, refinedReports, refinedReviews, replacedShardIDs)
+		refinedReports = filterRootCauseReportsByReview(snapshot, refinedReports, refinedReviews)
+		refinedReports = applyRootCauseDeterministicQualityGate(snapshot, refinementShards, refinedReports, refinedReviews)
 		shards, reports, reviews = mergeRefinedShardResults(shards, reports, reviews, refinementShards, refinedReports, refinedReviews, replacedShardIDs)
+	}
+	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+		memoryChanges := buildRootCauseRegressionMemoryChangeState(previousRun, shards)
+		reports = applyRootCauseRegressionMemoryToReportsWithChanges(reports, snapshot.RootCause.RegressionMemory, memoryChanges)
+		reports = enhanceRootCauseReportProbesWithRepoCommands(snapshot, reports)
+		for round := 1; round <= rootCauseEvidenceRequestRounds; round++ {
+			snapshot.RootCause.EvidenceRequests = mergeRootCauseEvidenceRequestState(snapshot.RootCause.EvidenceRequests, rootCauseEvidenceRequestsFromReviews(reviews))
+			run.RootCause = snapshot.RootCause
+			evidenceShards := a.planRootCauseEvidenceRequestShards(snapshot, shards, reviews, round, rootCauseMaxEvidenceRequestShardsRound)
+			if len(evidenceShards) == 0 {
+				break
+			}
+			snapshot.RootCause.EvidenceRequests = markRootCauseEvidenceRequestsRouted(snapshot.RootCause.EvidenceRequests, evidenceShards)
+			run.Summary.EvidenceShards += len(evidenceShards)
+			a.status(fmt.Sprintf("Routing %d root-cause evidence request shard(s)...", len(evidenceShards)))
+			a.debug(fmt.Sprintf("root-cause evidence request round %d planned: shards=%d", round, len(evidenceShards)))
+			evidenceReports, evidenceReviews, err := a.executeShards(ctx, snapshot, evidenceShards, goal, previousRun, analysisReuseState{})
+			if err != nil {
+				return run, err
+			}
+			auditShards = append(auditShards, evidenceShards...)
+			auditReports = append(auditReports, evidenceReports...)
+			auditReviews = append(auditReviews, evidenceReviews...)
+			evidenceReports = filterRootCauseReportsByReview(snapshot, evidenceReports, evidenceReviews)
+			evidenceReports = applyRootCauseDeterministicQualityGate(snapshot, evidenceShards, evidenceReports, evidenceReviews)
+			evidenceReports = applyRootCauseRegressionMemoryToReportsWithChanges(evidenceReports, snapshot.RootCause.RegressionMemory, memoryChanges)
+			evidenceReports = enhanceRootCauseReportProbesWithRepoCommands(snapshot, evidenceReports)
+			snapshot.RootCause.EvidenceRequests = markRootCauseEvidenceRequestsFulfilled(snapshot.RootCause.EvidenceRequests, evidenceShards, evidenceReports)
+			shards = append(shards, evidenceShards...)
+			reports = append(reports, evidenceReports...)
+			reviews = append(reviews, evidenceReviews...)
+		}
 	}
 	run.Shards = shards
 	run.Reports = reports
 	run.Reviews = reviews
 	run.Summary.TotalShards = len(shards)
 	summarizeReviewDecisions(&run.Summary, run.Reviews)
+	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+		a.status("Deep-verifying reviewer-approved root-cause candidates...")
+		deepVerifications := a.deepVerifyRootCauseCandidates(ctx, snapshot, shards, reports, reviews, goal)
+		reports = applyRootCauseDeepVerificationsToReports(snapshot, shards, reports, deepVerifications)
+		reports = applyRootCauseDeterministicQualityGate(snapshot, shards, reports, reviews)
+		reports = enhanceRootCauseReportProbesWithRepoCommands(snapshot, reports)
+		run.Reports = reports
+		run.RootCause = snapshot.RootCause
+		run.RootCause.DeepVerifications = deepVerifications
+		snapshot.RootCause = run.RootCause
+		run.Snapshot = snapshot
+		a.debug(fmt.Sprintf("root-cause deep verification completed: targets=%d", len(deepVerifications)))
+		a.status("Joining root-cause evidence across shards...")
+		joined := a.joinRootCauseCandidates(ctx, snapshot, shards, reports, reviews, goal)
+		joined = applyRootCauseJoinedQualityGate(snapshot, joined)
+		joined = enhanceRootCauseJoinedProbesWithRepoCommands(snapshot, joined)
+		run.RootCause = snapshot.RootCause
+		run.RootCause.JoinedCandidates = joined
+		run.RootCause.CandidateClusters = buildRootCauseCandidateClusters(shards, reports, reviews, joined)
+		run.RootCause.AuditTrail = buildRootCauseAuditTrail(snapshot, auditShards, auditReports, auditReviews, reports, deepVerifications, joined)
+		snapshot.RootCause = run.RootCause
+		run.Snapshot = snapshot
+		a.debug(fmt.Sprintf("root-cause join completed: joined_candidates=%d", len(joined)))
+	}
 	approvalRatio := 0.0
 	if run.Summary.TotalShards > 0 {
 		approvalRatio = float64(run.Summary.ApprovedShards) / float64(run.Summary.TotalShards)
@@ -1287,8 +3008,8 @@ func (a *projectAnalyzer) estimateAgentCount(snapshot ProjectSnapshot) int {
 	if count > a.analysisCfg.MaxAgents {
 		count = a.analysisCfg.MaxAgents
 	}
-	if count < 2 {
-		count = 2
+	if count < 1 {
+		count = 1
 	}
 	return count
 }
@@ -1298,8 +3019,11 @@ func (a *projectAnalyzer) estimateShardCount(snapshot ProjectSnapshot, concurren
 	count = analysisMaxInt(count, ceilDiv(snapshot.TotalFiles, 120))
 	count = analysisMaxInt(count, ceilDiv(snapshot.TotalLines, 15000))
 	count = analysisMaxInt(count, ceilDiv(len(snapshot.Directories), 2))
-	if count < 2 {
-		count = 2
+	if count < a.analysisCfg.MinAgents {
+		count = a.analysisCfg.MinAgents
+	}
+	if count < 1 {
+		count = 1
 	}
 	if a.analysisCfg.MaxTotalShards > 0 && count > a.analysisCfg.MaxTotalShards {
 		count = a.analysisCfg.MaxTotalShards
@@ -1652,6 +3376,10 @@ func (a *projectAnalyzer) scoreFileImportance(snapshot *ProjectSnapshot, lenses 
 		if _, ok := lensTypes["security_boundary"]; ok && containsAny(lowerPath, "kernel", "driver", "policy", "integrity", "signature", "protect") {
 			score += 14
 			reasons = append(reasons, "security_lens_priority")
+		}
+		if _, ok := lensTypes["root_cause"]; ok && containsAny(lowerPath, "agent", "intent", "context", "tool", "write", "document", "docs", "final", "review", "loop", "command", "completion", "config") {
+			score += 22
+			reasons = append(reasons, "root_cause_lens_priority")
 		}
 		if containsAny(lowerPath, ".uproject", ".uplugin", ".build.cs", ".target.cs") {
 			score += 26
@@ -4199,6 +5927,21 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			return failedReport, failedReview, shard, nil
 		}
 		a.debug(fmt.Sprintf("worker done: shard=%s attempt=%d evidence=%d responsibilities=%d", shard.Name, attempt+1, len(report.EvidenceFiles), len(report.Responsibilities)))
+		if lintIssues := lintWorkerReportForRootCause(snapshot, shard, report); len(lintIssues) > 0 {
+			if attempt < a.analysisCfg.MaxRevisionRounds {
+				lastReport = report
+				lastReview = ReviewDecision{
+					Status:         "needs_revision",
+					Issues:         lintIssues,
+					RevisionPrompt: buildRootCauseWorkerLintRevisionPrompt(lintIssues),
+					FailureKind:    analysisReviewIssueQuality,
+				}
+				revisionPrompt = lastReview.RevisionPrompt
+				a.debug(fmt.Sprintf("worker root-cause lint requested revision: shard=%s issues=%d", shard.Name, len(lintIssues)))
+				continue
+			}
+			report.Unknowns = analysisUniqueStrings(append(report.Unknowns, "Root-cause worker lint issues remained after revisions: "+strings.Join(limitStrings(lintIssues, 4), " | ")))
+		}
 		a.debug(fmt.Sprintf("reviewer start: shard=%s attempt=%d model=%s", shard.Name, attempt+1, a.reviewerModel()))
 		review, err := a.reviewReport(ctx, snapshot, shard, report, goal, previousRun, reuseState)
 		if err != nil {
@@ -4307,6 +6050,428 @@ func (a *projectAnalyzer) planRefinementShards(snapshot ProjectSnapshot, shards 
 	return refined, replaced
 }
 
+func (a *projectAnalyzer) planRootCauseEvidenceRequestShards(snapshot ProjectSnapshot, existingShards []AnalysisShard, reviews []ReviewDecision, round int, limit int) []AnalysisShard {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" || limit <= 0 {
+		return nil
+	}
+	existingPrimary := map[string]struct{}{}
+	for _, shard := range existingShards {
+		for _, path := range shard.PrimaryFiles {
+			existingPrimary[path] = struct{}{}
+		}
+	}
+	requests := rootCauseEvidenceRequestsFromReviews(reviews)
+	if len(snapshot.RootCause.EvidenceRequests) > 0 {
+		requests = snapshot.RootCause.EvidenceRequests
+	}
+	if len(requests) == 0 {
+		return nil
+	}
+	out := []AnalysisShard{}
+	seenRequest := map[string]struct{}{}
+	nextID := len(existingShards) + 1
+	maxFiles := a.analysisCfg.MaxFilesPerShard
+	if maxFiles <= 0 || maxFiles > 12 {
+		maxFiles = 12
+	}
+	for _, request := range requests {
+		if rootCauseEvidenceRequestAlreadySatisfied(request) {
+			continue
+		}
+		key := rootCauseEvidenceRequestKey(request)
+		if key == "" {
+			continue
+		}
+		if _, ok := seenRequest[key]; ok {
+			continue
+		}
+		seenRequest[key] = struct{}{}
+		files := rootCauseFilesForEvidenceRequest(snapshot, request, existingPrimary, maxFiles)
+		if len(files) == 0 {
+			continue
+		}
+		chunks := chunkFiles(files, maxFiles, analysisMaxInt(1200, a.analysisCfg.MaxLinesPerShard/2))
+		if len(chunks) == 0 {
+			chunks = [][]ScannedFile{files}
+		}
+		for chunkIndex, chunk := range chunks {
+			if len(out) >= limit {
+				break
+			}
+			shard := AnalysisShard{
+				ID:                 fmt.Sprintf("shard-evidence-%02d-%02d", round, len(out)+1),
+				Name:               rootCauseEvidenceShardName(request, round, chunkIndex+1),
+				ParentShardID:      "",
+				EvidenceRequestID:  request.ID,
+				RefinementStage:    round + 1,
+				PrimaryFiles:       filesToPaths(chunk),
+				EstimatedFiles:     len(chunk),
+				EstimatedLines:     sumLines(chunk),
+				InvalidationReason: "root_cause_evidence_request",
+			}
+			if shard.ID == "" {
+				shard.ID = fmt.Sprintf("shard-%02d", nextID)
+			}
+			nextID++
+			a.finalizeShard(snapshot, &shard, 12)
+			out = append(out, shard)
+			for _, path := range shard.PrimaryFiles {
+				existingPrimary[path] = struct{}{}
+			}
+		}
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func rootCauseEvidenceRequestAlreadySatisfied(request RootCauseEvidenceRequest) bool {
+	switch normalizeRootCauseEvidenceRequestStatus(request.Status) {
+	case "fulfilled", "blocked", "routed":
+		return true
+	default:
+		return false
+	}
+}
+
+func rootCauseEvidenceRequestsFromReviews(reviews []ReviewDecision) []RootCauseEvidenceRequest {
+	out := []RootCauseEvidenceRequest{}
+	for _, review := range reviews {
+		out = append(out, normalizeRootCauseEvidenceRequests(review.EvidenceRequests)...)
+		if len(review.EvidenceRequests) == 0 && strings.EqualFold(review.SymptomPossible, "partial") {
+			signals := append([]string(nil), review.CausalChainMissing...)
+			signals = append(signals, review.SymptomCausality...)
+			if len(signals) > 0 {
+				out = append(out, RootCauseEvidenceRequest{
+					Request:         "Find the missing code evidence needed to complete the partial root-cause causal chain.",
+					TargetSignals:   signals,
+					Reason:          "Reviewer marked symptom causality as partial.",
+					RequiredToProve: strings.Join(limitStrings(review.CausalChainMissing, 3), ", "),
+				})
+			}
+		}
+	}
+	return normalizeRootCauseEvidenceRequests(out)
+}
+
+func normalizeRootCauseEvidenceRequests(requests []RootCauseEvidenceRequest) []RootCauseEvidenceRequest {
+	out := []RootCauseEvidenceRequest{}
+	for _, request := range requests {
+		request.ID = strings.TrimSpace(request.ID)
+		request.Request = strings.TrimSpace(request.Request)
+		request.TargetSignals = analysisUniqueStrings(request.TargetSignals)
+		request.TargetFiles = analysisUniqueStrings(request.TargetFiles)
+		request.Reason = strings.TrimSpace(request.Reason)
+		request.RequiredToProve = strings.TrimSpace(request.RequiredToProve)
+		request.SourceShardID = strings.TrimSpace(request.SourceShardID)
+		request.Status = normalizeRootCauseEvidenceRequestStatus(request.Status)
+		request.RoutedShardIDs = analysisUniqueStrings(request.RoutedShardIDs)
+		request.FulfilledByShards = analysisUniqueStrings(request.FulfilledByShards)
+		request.SatisfiedEvidenceFiles = analysisUniqueStrings(request.SatisfiedEvidenceFiles)
+		if request.Request == "" && len(request.TargetSignals) == 0 && len(request.TargetFiles) == 0 && request.RequiredToProve == "" {
+			continue
+		}
+		if request.ID == "" {
+			request.ID = rootCauseEvidenceRequestID(request)
+		}
+		if request.Status == "" {
+			request.Status = "open"
+		}
+		out = append(out, request)
+	}
+	return out
+}
+
+func normalizeRootCauseEvidenceRequestStatus(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "open", "routed", "fulfilled", "partial", "blocked":
+		return strings.ToLower(strings.TrimSpace(raw))
+	default:
+		return "open"
+	}
+}
+
+func rootCauseEvidenceRequestID(request RootCauseEvidenceRequest) string {
+	key := rootCauseEvidenceRequestKey(RootCauseEvidenceRequest{
+		Request:         request.Request,
+		TargetSignals:   request.TargetSignals,
+		TargetFiles:     request.TargetFiles,
+		Reason:          request.Reason,
+		RequiredToProve: request.RequiredToProve,
+		SourceShardID:   request.SourceShardID,
+	})
+	if key == "" {
+		key = "evidence-request"
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "er-" + hex.EncodeToString(sum[:])[:10]
+}
+
+func rootCauseEvidenceRequestKey(request RootCauseEvidenceRequest) string {
+	parts := []string{
+		rootCauseComparableText(request.Request),
+		rootCauseComparableText(strings.Join(request.TargetSignals, " ")),
+		rootCauseComparableText(strings.Join(request.TargetFiles, " ")),
+		rootCauseComparableText(request.RequiredToProve),
+		rootCauseComparableText(request.SourceShardID),
+	}
+	return strings.Join(analysisUniqueStrings(parts), "\x00")
+}
+
+func mergeRootCauseEvidenceRequestState(existing []RootCauseEvidenceRequest, incoming []RootCauseEvidenceRequest) []RootCauseEvidenceRequest {
+	out := normalizeRootCauseEvidenceRequests(existing)
+	indexByID := map[string]int{}
+	for index, request := range out {
+		indexByID[request.ID] = index
+	}
+	for _, request := range normalizeRootCauseEvidenceRequests(incoming) {
+		if existingIndex, ok := indexByID[request.ID]; ok {
+			out[existingIndex].TargetSignals = analysisUniqueStrings(append(out[existingIndex].TargetSignals, request.TargetSignals...))
+			out[existingIndex].TargetFiles = analysisUniqueStrings(append(out[existingIndex].TargetFiles, request.TargetFiles...))
+			out[existingIndex].RoutedShardIDs = analysisUniqueStrings(append(out[existingIndex].RoutedShardIDs, request.RoutedShardIDs...))
+			out[existingIndex].FulfilledByShards = analysisUniqueStrings(append(out[existingIndex].FulfilledByShards, request.FulfilledByShards...))
+			out[existingIndex].SatisfiedEvidenceFiles = analysisUniqueStrings(append(out[existingIndex].SatisfiedEvidenceFiles, request.SatisfiedEvidenceFiles...))
+			if out[existingIndex].Status == "open" && request.Status != "" {
+				out[existingIndex].Status = request.Status
+			}
+			continue
+		}
+		indexByID[request.ID] = len(out)
+		out = append(out, request)
+	}
+	return normalizeRootCauseEvidenceRequests(out)
+}
+
+func markRootCauseEvidenceRequestsRouted(requests []RootCauseEvidenceRequest, shards []AnalysisShard) []RootCauseEvidenceRequest {
+	out := normalizeRootCauseEvidenceRequests(requests)
+	indexByID := map[string]int{}
+	for index, request := range out {
+		indexByID[request.ID] = index
+	}
+	for _, shard := range shards {
+		if strings.TrimSpace(shard.EvidenceRequestID) == "" {
+			continue
+		}
+		if index, ok := indexByID[shard.EvidenceRequestID]; ok {
+			out[index].RoutedShardIDs = analysisUniqueStrings(append(out[index].RoutedShardIDs, shard.ID))
+			if out[index].Status == "open" {
+				out[index].Status = "routed"
+			}
+		}
+	}
+	return normalizeRootCauseEvidenceRequests(out)
+}
+
+func markRootCauseEvidenceRequestsFulfilled(requests []RootCauseEvidenceRequest, shards []AnalysisShard, reports []WorkerReport) []RootCauseEvidenceRequest {
+	out := normalizeRootCauseEvidenceRequests(requests)
+	indexByID := map[string]int{}
+	for index, request := range out {
+		indexByID[request.ID] = index
+	}
+	for index, shard := range shards {
+		requestID := strings.TrimSpace(shard.EvidenceRequestID)
+		if requestID == "" {
+			continue
+		}
+		requestIndex, ok := indexByID[requestID]
+		if !ok {
+			continue
+		}
+		out[requestIndex].RoutedShardIDs = analysisUniqueStrings(append(out[requestIndex].RoutedShardIDs, shard.ID))
+		evidenceFiles := append([]string(nil), shard.PrimaryFiles...)
+		if index < len(reports) {
+			evidenceFiles = append(evidenceFiles, reports[index].EvidenceFiles...)
+			for _, candidate := range reports[index].RootCauseCandidates {
+				evidenceFiles = append(evidenceFiles, candidate.EvidenceFiles...)
+			}
+		}
+		out[requestIndex].SatisfiedEvidenceFiles = analysisUniqueStrings(append(out[requestIndex].SatisfiedEvidenceFiles, evidenceFiles...))
+		if index < len(reports) && (len(reports[index].Facts) > 0 || len(reports[index].RootCauseCandidates) > 0 || len(reports[index].EvidenceFiles) > 0) {
+			out[requestIndex].FulfilledByShards = analysisUniqueStrings(append(out[requestIndex].FulfilledByShards, shard.ID))
+			out[requestIndex].Status = "fulfilled"
+		} else if out[requestIndex].Status != "fulfilled" {
+			out[requestIndex].Status = "partial"
+		}
+	}
+	return normalizeRootCauseEvidenceRequests(out)
+}
+
+func rootCauseEvidenceShardName(request RootCauseEvidenceRequest, round int, index int) string {
+	source := firstNonBlankRootCauseString(request.Request, strings.Join(request.TargetSignals, "_"), strings.Join(request.TargetFiles, "_"), "evidence")
+	tokens := rootCauseEvidenceTerms(source)
+	if len(tokens) == 0 {
+		tokens = []string{"evidence"}
+	}
+	return fmt.Sprintf("root_cause_evidence_%02d_%02d_%s", round, index, sanitizeFileName(strings.Join(limitStrings(tokens, 4), "_")))
+}
+
+func rootCauseFilesForEvidenceRequest(snapshot ProjectSnapshot, request RootCauseEvidenceRequest, existingPrimary map[string]struct{}, limit int) []ScannedFile {
+	type scoredFile struct {
+		File  ScannedFile
+		Score int
+	}
+	scores := map[string]scoredFile{}
+	addFile := func(path string, score int) {
+		file, ok := rootCauseSnapshotFile(snapshot, path)
+		if !ok {
+			return
+		}
+		if _, exists := existingPrimary[file.Path]; exists {
+			return
+		}
+		current := scores[file.Path]
+		current.File = file
+		current.Score += score
+		scores[file.Path] = current
+	}
+	for _, target := range request.TargetFiles {
+		if path := resolveRootCauseEvidenceTargetFile(snapshot, target); path != "" {
+			addFile(path, 100)
+		}
+	}
+	terms := rootCauseEvidenceTerms(strings.Join([]string{
+		request.Request,
+		strings.Join(request.TargetSignals, " "),
+		request.Reason,
+		request.RequiredToProve,
+	}, " "))
+	for _, match := range snapshot.RootCause.CodeMatches {
+		matchScore := 0
+		for _, term := range terms {
+			if rootCauseTextContainsTerm(match.File, term) || rootCauseTextContainsTerm(match.Query, term) || rootCauseTextContainsTerm(strings.Join(match.MatchedSignals, " "), term) || rootCauseTextContainsTerm(match.Reason, term) {
+				matchScore += 20
+			}
+		}
+		if matchScore > 0 {
+			addFile(match.File, matchScore+analysisMaxInt(match.Score/2, 1))
+		}
+	}
+	for _, file := range rootCauseSnapshotFiles(snapshot) {
+		if _, exists := existingPrimary[file.Path]; exists {
+			continue
+		}
+		score := 0
+		corpus := strings.ToLower(strings.Join([]string{
+			file.Path,
+			file.Directory,
+			file.Extension,
+			strings.Join(file.ImportanceReasons, " "),
+			strings.Join(file.RawImports, " "),
+			strings.Join(file.Imports, " "),
+		}, " "))
+		for _, term := range terms {
+			if rootCauseTextContainsTerm(file.Path, term) {
+				score += 18
+			}
+			if rootCauseTextContainsTerm(filepath.Base(file.Path), term) {
+				score += 16
+			}
+			if strings.Contains(corpus, strings.ToLower(term)) {
+				score += 8
+			}
+		}
+		if score > 0 {
+			score += analysisMinInt(file.ImportanceScore, 20)
+			addFile(file.Path, score)
+		}
+	}
+	items := make([]scoredFile, 0, len(scores))
+	for _, item := range scores {
+		items = append(items, item)
+	}
+	sort.SliceStable(items, func(i int, j int) bool {
+		if items[i].Score == items[j].Score {
+			if items[i].File.ImportanceScore == items[j].File.ImportanceScore {
+				return items[i].File.Path < items[j].File.Path
+			}
+			return items[i].File.ImportanceScore > items[j].File.ImportanceScore
+		}
+		return items[i].Score > items[j].Score
+	})
+	out := []ScannedFile{}
+	for _, item := range items {
+		out = append(out, item.File)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func rootCauseSnapshotFiles(snapshot ProjectSnapshot) []ScannedFile {
+	if len(snapshot.Files) > 0 {
+		return append([]ScannedFile(nil), snapshot.Files...)
+	}
+	out := make([]ScannedFile, 0, len(snapshot.FilesByPath))
+	for _, file := range snapshot.FilesByPath {
+		out = append(out, file)
+	}
+	sort.SliceStable(out, func(i int, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out
+}
+
+func rootCauseSnapshotFile(snapshot ProjectSnapshot, path string) (ScannedFile, bool) {
+	path = cleanEvidencePath(path)
+	if path == "" {
+		return ScannedFile{}, false
+	}
+	if file, ok := snapshot.FilesByPath[path]; ok {
+		return file, true
+	}
+	for _, file := range snapshot.Files {
+		if file.Path == path {
+			return file, true
+		}
+	}
+	return ScannedFile{}, false
+}
+
+func resolveRootCauseEvidenceTargetFile(snapshot ProjectSnapshot, target string) string {
+	target = cleanEvidencePath(target)
+	if target == "" {
+		return ""
+	}
+	allowed := map[string]string{}
+	for _, file := range rootCauseSnapshotFiles(snapshot) {
+		rememberAllowedEvidencePath(allowed, file.Path)
+	}
+	if canonical := canonicalEvidencePath(target, allowed); canonical != "" {
+		return canonical
+	}
+	targetLower := strings.ToLower(filepath.ToSlash(target))
+	for _, file := range rootCauseSnapshotFiles(snapshot) {
+		pathLower := strings.ToLower(filepath.ToSlash(file.Path))
+		if strings.HasSuffix(pathLower, targetLower) || strings.Contains(pathLower, targetLower) {
+			return file.Path
+		}
+	}
+	return ""
+}
+
+func rootCauseEvidenceTerms(text string) []string {
+	terms := []string{}
+	for _, raw := range regexp.MustCompile(`[A-Za-z0-9_가-힣]+`).FindAllString(text, -1) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if len([]rune(raw)) < 3 {
+			continue
+		}
+		terms = append(terms, raw)
+	}
+	return analysisUniqueStrings(terms)
+}
+
+func rootCauseTextContainsTerm(text string, term string) bool {
+	text = strings.ToLower(strings.TrimSpace(text))
+	term = strings.ToLower(strings.TrimSpace(term))
+	return text != "" && term != "" && strings.Contains(text, term)
+}
+
 func (a *projectAnalyzer) refinementChunks(snapshot ProjectSnapshot, shard AnalysisShard) [][]ScannedFile {
 	if len(shard.PrimaryFiles) < 3 {
 		return nil
@@ -4385,6 +6550,15 @@ func scoreRefinementCandidate(shard AnalysisShard, report WorkerReport, review R
 		score += 5
 	}
 	score += analysisMinInt(len(report.Unknowns), 5)
+	if len(report.RootCauseCandidates) > 0 {
+		score += analysisMinInt(len(report.RootCauseCandidates)*3, 9)
+	}
+	for _, candidate := range report.RootCauseCandidates {
+		score += analysisMinInt(len(candidate.NeedsCrossShardEvidence), 3)
+		if strings.EqualFold(strings.TrimSpace(candidate.Confidence), "low") {
+			score += 1
+		}
+	}
 	if len(report.InternalFlow) == 0 {
 		score += 2
 	}
@@ -4424,6 +6598,77 @@ func shardHasSignal(shard AnalysisShard, report WorkerReport, tokens []string) b
 		}
 	}
 	return false
+}
+
+func lintWorkerReportForRootCause(snapshot ProjectSnapshot, shard AnalysisShard, report WorkerReport) []string {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" {
+		return nil
+	}
+	issues := []string{}
+	if len(report.RootCauseCandidates) == 0 {
+		if len(report.Unknowns) == 0 && shardLikelyRootCauseRelevant(snapshot, shard) {
+			issues = append(issues, "Explain why this shard cannot affect the symptom or provide a concrete root_cause_candidates item.")
+		}
+		return issues
+	}
+	for _, candidate := range report.RootCauseCandidates {
+		title := firstNonBlankAnalysisString(candidate.Title, "unnamed candidate")
+		if rootCauseCausalChainStageCount(candidate.CausalChain) < 3 {
+			issues = append(issues, fmt.Sprintf("%s: causal_chain needs at least trigger, invalid_state, and state_transition.", title))
+		}
+		if len(candidate.EvidenceFiles) == 0 {
+			issues = append(issues, fmt.Sprintf("%s: evidence_files must cite exact assigned files.", title))
+		}
+		if !rootCauseCandidateHasConcreteStateSignal(candidate) {
+			issues = append(issues, fmt.Sprintf("%s: name the exact variable/field/config key/DB value/enum/counter/limit that leaves the expected range.", title))
+		}
+		if len(candidate.OutOfRangeCases) > 0 && !rootCauseListHasConcreteStateSignal(candidate.OutOfRangeCases) {
+			issues = append(issues, fmt.Sprintf("%s: out_of_range_cases must include concrete value/state examples, not only prose.", title))
+		}
+		if len(candidate.CannotBeRootCauseIf) == 0 || len(candidate.RequiredRuntimeObservation) == 0 {
+			issues = append(issues, fmt.Sprintf("%s: fill cannot_be_root_cause_if and required_runtime_observation.", title))
+		}
+		if !rootCauseCandidateHasValidProbe(candidate) {
+			issues = append(issues, fmt.Sprintf("%s: probes need expected_signal and disproves_when.", title))
+		}
+	}
+	return analysisUniqueStrings(issues)
+}
+
+func shardLikelyRootCauseRelevant(snapshot ProjectSnapshot, shard AnalysisShard) bool {
+	corpus := strings.ToLower(strings.Join(append(append([]string{shard.Name}, shard.PrimaryFiles...), shard.ReferenceFiles...), " "))
+	for _, token := range rootCauseEvidenceTerms(rootCauseReportedSymptomText(snapshot)) {
+		if rootCauseTextContainsTerm(corpus, token) {
+			return true
+		}
+	}
+	for _, match := range snapshot.RootCause.CodeMatches {
+		for _, path := range shard.PrimaryFiles {
+			if cleanEvidencePath(match.File) == cleanEvidencePath(path) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rootCauseListHasConcreteStateSignal(items []string) bool {
+	for _, item := range items {
+		if rootCauseTextHasConcreteStateSignal(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildRootCauseWorkerLintRevisionPrompt(issues []string) string {
+	var b strings.Builder
+	b.WriteString("Revise the root-cause report before reviewer evaluation. Fix these deterministic lint issues:\n")
+	for _, issue := range limitStrings(issues, 8) {
+		fmt.Fprintf(&b, "- %s\n", issue)
+	}
+	b.WriteString("\nReturn the same JSON schema only. Each candidate must name exact variables/fields/config or DB values, include a five-stage causal_chain when evidence allows, cite assigned evidence_files, and provide probes with expected_signal and disproves_when.")
+	return strings.TrimSpace(b.String())
 }
 
 func (a *projectAnalyzer) runWorker(ctx context.Context, snapshot ProjectSnapshot, shard AnalysisShard, goal string, revisionPrompt string) (WorkerReport, error) {
@@ -4506,7 +6751,1681 @@ func (a *projectAnalyzer) reviewReport(ctx context.Context, snapshot ProjectSnap
 	if !ok {
 		return heuristicReviewDecision(report, raw), nil
 	}
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		decision = enforceRootCauseReviewContract(decision)
+	}
 	return decision, nil
+}
+
+func enforceRootCauseReviewContract(decision ReviewDecision) ReviewDecision {
+	if !strings.EqualFold(strings.TrimSpace(decision.Status), "approved") {
+		return decision
+	}
+	missing := rootCauseReviewContractMissing(decision)
+	if len(missing) == 0 {
+		return decision
+	}
+	decision.Status = "needs_revision"
+	decision.FailureKind = analysisReviewIssueQuality
+	decision.Issues = analysisUniqueStrings(append(decision.Issues, "Root-cause reviewer approval is missing required fields: "+strings.Join(missing, ", ")))
+	if strings.TrimSpace(decision.RevisionPrompt) == "" {
+		decision.RevisionPrompt = "Revise the review decision with symptom_reproduction_bridge, required_runtime_observation, and disqualifying_evidence. Approve only if these fields concretely connect the candidate to the reported symptom."
+	}
+	return decision
+}
+
+type rootCauseDeepVerificationTarget struct {
+	ShardID     string             `json:"shard_id"`
+	ShardName   string             `json:"shard_name"`
+	ReportTitle string             `json:"report_title"`
+	Candidate   RootCauseCandidate `json:"candidate"`
+	Review      ReviewDecision     `json:"review"`
+}
+
+func (a *projectAnalyzer) deepVerifyRootCauseCandidates(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision, goal string) []RootCauseDeepVerification {
+	targets := selectRootCauseDeepVerificationTargets(shards, reports, reviews, 4)
+	if len(targets) == 0 {
+		return nil
+	}
+	fallback := enhanceRootCauseDeepVerificationProbesWithRepoCommands(snapshot, fallbackRootCauseDeepVerifications(targets))
+	if a.client == nil {
+		return fallback
+	}
+	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.client, "root-cause-deep-verify", "", a.cfg.Model, ChatRequest{
+		Model:       a.cfg.Model,
+		System:      rootCauseDeepVerificationSystemPrompt(),
+		Messages:    []Message{{Role: "user", Text: buildRootCauseDeepVerificationPromptWithIndex(snapshot, shards, targets, goal, a.cachedSemanticIndexV2)}},
+		MaxTokens:   analysisStructuredMaxTokens(a.cfg.Model, a.cfg.MaxTokens),
+		Temperature: a.cfg.Temperature,
+		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
+	})
+	if err != nil {
+		a.debug(fmt.Sprintf("root-cause deep verification soft-failed: %v", err))
+		return fallback
+	}
+	verified, ok := parseRootCauseDeepVerificationPayload(resp.Message.Text)
+	if !ok || len(verified) == 0 {
+		a.debug("root-cause deep verification returned non-JSON output; using deterministic fallback")
+		return fallback
+	}
+	return enhanceRootCauseDeepVerificationProbesWithRepoCommands(snapshot, verified)
+}
+
+func selectRootCauseDeepVerificationTargets(shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision, limit int) []rootCauseDeepVerificationTarget {
+	targets := []rootCauseDeepVerificationTarget{}
+	for index, report := range reports {
+		if index >= len(shards) || index >= len(reviews) {
+			continue
+		}
+		review := reviews[index]
+		if !rootCauseReviewApprovesSymptomCausality(review) {
+			continue
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			if rootCauseCandidateRejectedByReview(candidate, review) {
+				continue
+			}
+			targets = append(targets, rootCauseDeepVerificationTarget{
+				ShardID:     shards[index].ID,
+				ShardName:   shards[index].Name,
+				ReportTitle: report.Title,
+				Candidate:   candidate,
+				Review:      rootCauseReviewForDeepVerification(review),
+			})
+		}
+	}
+	sort.SliceStable(targets, func(i int, j int) bool {
+		left := rootCauseConfidenceScore(targets[i].Candidate, targets[i].Review)
+		right := rootCauseConfidenceScore(targets[j].Candidate, targets[j].Review)
+		if left == right {
+			return rootCauseCausalChainStageCount(targets[i].Candidate.CausalChain) > rootCauseCausalChainStageCount(targets[j].Candidate.CausalChain)
+		}
+		return left > right
+	})
+	if limit > 0 && len(targets) > limit {
+		targets = targets[:limit]
+	}
+	return targets
+}
+
+func rootCauseReviewForDeepVerification(review ReviewDecision) ReviewDecision {
+	review.Raw = ""
+	review.RevisionPrompt = ""
+	return review
+}
+
+func rootCauseDeepVerificationSystemPrompt() string {
+	return strings.TrimSpace(`
+You are a senior deep verifier for root-cause candidates already approved by a reviewer.
+Return strict JSON only:
+{
+  "verifications": [
+    {
+      "candidate_title": "string",
+      "shard_id": "string",
+      "shard_name": "string",
+      "status": "supported|weak|disconfirmed|unknown",
+      "summary": "string",
+      "causal_chain": {
+        "trigger": "string",
+        "invalid_state": "string",
+        "state_transition": "string",
+        "missing_guard": "string",
+        "user_visible_symptom": "string",
+        "evidence_files": ["string"]
+      },
+      "evidence_files": ["string"],
+      "instrumentation_steps": ["string"],
+      "disconfirming_evidence": ["string"],
+      "cannot_be_root_cause_if": ["string"],
+      "required_runtime_observation": ["string"],
+      "probes": [
+        {
+          "title": "string",
+          "kind": "log|assert|test|repro|db_config_dump|trace",
+          "target": "file or function",
+          "command": "string",
+          "expected_signal": "string",
+          "disproves_when": "string"
+        }
+      ],
+      "confidence": "low|medium|high",
+      "confidence_breakdown": {
+        "causal_completeness": 0,
+        "evidence_strength": 0,
+        "runtime_observability": 0,
+        "alternative_explanations": 0,
+        "disconfirmation_strength": 0,
+        "score": 0,
+        "reasons": ["string"]
+      }
+    }
+  ]
+}
+Rules:
+- Verify whether the candidate can cause the user's exact symptom, not whether it is merely a bug.
+- Fill the five causal_chain stages from source evidence. If evidence is missing, status should be weak or unknown.
+- Use disconfirmed when visible code proves the symptom cannot follow from the candidate.
+- instrumentation_steps must be concrete: where to log/assert, which value to dump, or which branch to trace.
+- probes must be executable or directly implementable checks with expected_signal and disproves_when.
+- confidence_breakdown must justify the status with 0-100 component scores.
+- Do not introduce evidence files outside the provided file context.
+`)
+}
+
+func buildRootCauseDeepVerificationPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, targets []rootCauseDeepVerificationTarget, goal string) string {
+	return buildRootCauseDeepVerificationPromptWithIndex(snapshot, shards, targets, goal, SemanticIndexV2{})
+}
+
+func buildRootCauseDeepVerificationPromptWithIndex(snapshot ProjectSnapshot, shards []AnalysisShard, targets []rootCauseDeepVerificationTarget, goal string, index SemanticIndexV2) string {
+	data, _ := json.MarshalIndent(targets, "", "  ")
+	files := []string{}
+	shardsByID := map[string]AnalysisShard{}
+	for _, shard := range shards {
+		shardsByID[shard.ID] = shard
+	}
+	for _, target := range targets {
+		files = append(files, target.Candidate.EvidenceFiles...)
+		if shard, ok := shardsByID[target.ShardID]; ok {
+			files = append(files, shard.PrimaryFiles...)
+		}
+	}
+	files = analysisUniqueStrings(files)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Goal:\n%s\n\n", strings.TrimSpace(goal))
+	if plan := renderRootCauseInvestigationForPrompt(snapshot.RootCause, 5000); strings.TrimSpace(plan) != "" {
+		b.WriteString("Normalized root-cause plan:\n")
+		b.WriteString(plan)
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "Reviewer-approved candidate targets:\n%s\n\n", string(data))
+	if context := buildFocusedRootCauseEvidenceContext(snapshot, shards, targets, index, 12, 4); strings.TrimSpace(context) != "" {
+		b.WriteString("Focused source excerpts:\n")
+		b.WriteString(context)
+		b.WriteString("\n")
+	} else if len(files) > 0 {
+		b.WriteString("File context:\n")
+		for _, section := range buildFileContext(snapshot, limitStrings(files, 12), 8) {
+			b.WriteString(section)
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\nReturn JSON only.")
+	return strings.TrimSpace(b.String())
+}
+
+func buildFocusedRootCauseEvidenceContext(snapshot ProjectSnapshot, shards []AnalysisShard, targets []rootCauseDeepVerificationTarget, index SemanticIndexV2, maxFiles int, contextLines int) string {
+	if maxFiles <= 0 {
+		maxFiles = 8
+	}
+	if contextLines <= 0 {
+		contextLines = 3
+	}
+	shardsByID := map[string]AnalysisShard{}
+	for _, shard := range shards {
+		shardsByID[shard.ID] = shard
+	}
+	type targetFile struct {
+		Path    string
+		Signals []string
+	}
+	files := []targetFile{}
+	fileIndex := map[string]int{}
+	for _, target := range targets {
+		signals := rootCauseFocusedSignals(target.Candidate)
+		paths := append([]string(nil), target.Candidate.EvidenceFiles...)
+		paths = append(paths, target.Candidate.CausalChain.EvidenceFiles...)
+		if shard, ok := shardsByID[target.ShardID]; ok {
+			paths = append(paths, shard.PrimaryFiles...)
+		}
+		for _, path := range analysisUniqueStrings(paths) {
+			if _, ok := rootCauseSnapshotFile(snapshot, path); !ok {
+				continue
+			}
+			if index, ok := fileIndex[path]; ok {
+				files[index].Signals = analysisUniqueStrings(append(files[index].Signals, signals...))
+				continue
+			}
+			fileIndex[path] = len(files)
+			files = append(files, targetFile{Path: path, Signals: signals})
+		}
+	}
+	var b strings.Builder
+	count := 0
+	for _, item := range files {
+		if count >= maxFiles {
+			break
+		}
+		semanticRanges := rootCauseSemanticFocusedLineRanges(index, item.Path, item.Signals)
+		excerpt := focusedSourceExcerptForFile(snapshot, item.Path, item.Signals, semanticRanges, contextLines, 90)
+		if strings.TrimSpace(excerpt) == "" {
+			continue
+		}
+		b.WriteString(excerpt)
+		b.WriteString("\n")
+		count++
+	}
+	return strings.TrimSpace(b.String())
+}
+
+type rootCauseLineRange struct {
+	Start  int
+	End    int
+	Reason string
+}
+
+func rootCauseSemanticFocusedLineRanges(index SemanticIndexV2, path string, signals []string) []rootCauseLineRange {
+	if len(index.Symbols) == 0 {
+		return nil
+	}
+	path = cleanEvidencePath(path)
+	signalText := strings.ToLower(strings.Join(rootCauseEvidenceTerms(strings.Join(signals, " ")), " "))
+	out := []rootCauseLineRange{}
+	for _, symbol := range index.Symbols {
+		if cleanEvidencePath(symbol.File) != path {
+			continue
+		}
+		if symbol.StartLine <= 0 {
+			continue
+		}
+		corpus := strings.ToLower(strings.Join([]string{
+			symbol.ID,
+			symbol.Name,
+			symbol.CanonicalName,
+			symbol.Kind,
+			symbol.Signature,
+			strings.Join(symbol.Tags, " "),
+		}, " "))
+		if signalText != "" && !rootCauseSemanticCorpusMatchesSignals(corpus, signals) && !rootCauseSemanticCorpusMatchesSignals(signalText, []string{symbol.Name, symbol.CanonicalName}) {
+			continue
+		}
+		start := symbol.StartLine
+		end := symbol.EndLine
+		if end < start {
+			end = start
+		}
+		out = append(out, rootCauseLineRange{
+			Start:  start,
+			End:    end,
+			Reason: "symbol:" + firstNonBlankRootCauseString(symbol.CanonicalName, symbol.Name, symbol.ID),
+		})
+	}
+	for _, edge := range append(append([]CallEdge(nil), index.CallEdges...), rootCauseCallEdgesFromReferences(index.References)...) {
+		if !edgeTouchesFiles(edge.Evidence, map[string]struct{}{path: {}}) {
+			continue
+		}
+		for _, symbol := range rootCauseSymbolsForEdge(index, edge, path) {
+			if symbol.StartLine <= 0 {
+				continue
+			}
+			out = append(out, rootCauseLineRange{
+				Start:  symbol.StartLine,
+				End:    analysisMaxInt(symbol.StartLine, symbol.EndLine),
+				Reason: "edge:" + firstNonBlankRootCauseString(symbol.CanonicalName, symbol.Name, symbol.ID),
+			})
+		}
+	}
+	sort.SliceStable(out, func(i int, j int) bool {
+		if out[i].Start == out[j].Start {
+			return out[i].End < out[j].End
+		}
+		return out[i].Start < out[j].Start
+	})
+	deduped := []rootCauseLineRange{}
+	seen := map[string]struct{}{}
+	for _, item := range out {
+		key := fmt.Sprintf("%d-%d-%s", item.Start, item.End, item.Reason)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		deduped = append(deduped, item)
+		if len(deduped) >= 8 {
+			break
+		}
+	}
+	return deduped
+}
+
+func rootCauseSemanticCorpusMatchesSignals(corpus string, signals []string) bool {
+	corpus = strings.ToLower(corpus)
+	for _, signal := range signals {
+		for _, term := range rootCauseEvidenceTerms(signal) {
+			if rootCauseTextContainsTerm(corpus, term) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rootCauseCallEdgesFromReferences(refs []ReferenceRecord) []CallEdge {
+	out := []CallEdge{}
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.SourceID) == "" || strings.TrimSpace(ref.TargetID) == "" {
+			continue
+		}
+		out = append(out, CallEdge{
+			SourceID: ref.SourceID,
+			TargetID: ref.TargetID,
+			Type:     ref.Type,
+			Evidence: ref.Evidence,
+		})
+	}
+	return out
+}
+
+func rootCauseSymbolsForEdge(index SemanticIndexV2, edge CallEdge, path string) []SymbolRecord {
+	out := []SymbolRecord{}
+	for _, symbol := range index.Symbols {
+		if cleanEvidencePath(symbol.File) != path {
+			continue
+		}
+		if symbol.ID == edge.SourceID || symbol.ID == edge.TargetID {
+			out = append(out, symbol)
+		}
+	}
+	return out
+}
+
+func rootCauseFocusedSignals(candidate RootCauseCandidate) []string {
+	signals := []string{
+		candidate.Title,
+		candidate.CausalChain.Trigger,
+		candidate.CausalChain.InvalidState,
+		candidate.CausalChain.StateTransition,
+		candidate.CausalChain.MissingGuard,
+		candidate.CausalChain.UserVisibleSymptom,
+	}
+	signals = append(signals, candidate.TriggerValues...)
+	signals = append(signals, candidate.ExpectedRange...)
+	signals = append(signals, candidate.OutOfRangeCases...)
+	signals = append(signals, candidate.ObservedFailurePath...)
+	signals = append(signals, candidate.RequiredRuntimeObservation...)
+	signals = append(signals, candidate.VerificationSteps...)
+	terms := []string{}
+	for _, signal := range signals {
+		terms = append(terms, rootCauseEvidenceTerms(signal)...)
+	}
+	return limitStrings(analysisUniqueStrings(terms), 16)
+}
+
+func focusedSourceExcerptForFile(snapshot ProjectSnapshot, path string, signals []string, semanticRanges []rootCauseLineRange, contextLines int, maxLines int) string {
+	file, ok := rootCauseSnapshotFile(snapshot, path)
+	if !ok {
+		return ""
+	}
+	abs := filepath.Join(snapshot.Root, filepath.FromSlash(file.Path))
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return ""
+	}
+	lines := splitLines(string(data))
+	if len(lines) == 0 {
+		return ""
+	}
+	matched := map[int]struct{}{}
+	reasons := []string{}
+	for _, item := range semanticRanges {
+		start := analysisMaxInt(1, item.Start-contextLines)
+		end := analysisMinInt(len(lines), item.End+contextLines)
+		for line := start; line <= end; line++ {
+			matched[line-1] = struct{}{}
+		}
+		if strings.TrimSpace(item.Reason) != "" {
+			reasons = append(reasons, item.Reason)
+		}
+	}
+	for index, line := range lines {
+		for _, signal := range signals {
+			if rootCauseTextContainsTerm(line, signal) {
+				start := analysisMaxInt(0, index-contextLines)
+				end := analysisMinInt(len(lines)-1, index+contextLines)
+				for current := start; current <= end; current++ {
+					matched[current] = struct{}{}
+				}
+				break
+			}
+		}
+		if len(matched) >= maxLines {
+			break
+		}
+	}
+	if len(matched) == 0 {
+		fallbackEnd := analysisMinInt(len(lines), analysisMaxInt(20, maxLines/2))
+		for index := 0; index < fallbackEnd; index++ {
+			matched[index] = struct{}{}
+		}
+	}
+	indexes := make([]int, 0, len(matched))
+	for index := range matched {
+		indexes = append(indexes, index)
+	}
+	sort.Ints(indexes)
+	if maxLines > 0 && len(indexes) > maxLines {
+		indexes = indexes[:maxLines]
+	}
+	imports := file.Imports
+	if len(imports) == 0 {
+		imports = file.RawImports
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "FILE %s\n- focused_lines: %d/%d\n- imports: %s\n", file.Path, len(indexes), len(lines), strings.Join(imports, ", "))
+	if len(reasons) > 0 {
+		fmt.Fprintf(&b, "- semantic_focus: %s\n", strings.Join(limitStrings(analysisUniqueStrings(reasons), 6), ", "))
+	}
+	b.WriteString("```\n")
+	last := -2
+	for _, index := range indexes {
+		if last >= 0 && index > last+1 {
+			b.WriteString("...\n")
+		}
+		fmt.Fprintf(&b, "%04d: %s\n", index+1, lines[index])
+		last = index
+	}
+	b.WriteString("```\n")
+	return strings.TrimSpace(b.String())
+}
+
+func parseRootCauseDeepVerificationPayload(raw string) ([]RootCauseDeepVerification, bool) {
+	type envelope struct {
+		Verifications []RootCauseDeepVerification `json:"verifications"`
+	}
+	for _, candidate := range analysisJSONCandidates(raw) {
+		wrapped := envelope{}
+		if err := json.Unmarshal([]byte(candidate), &wrapped); err == nil && len(wrapped.Verifications) > 0 {
+			out := normalizeRootCauseDeepVerifications(wrapped.Verifications)
+			for i := range out {
+				out[i].Raw = strings.TrimSpace(raw)
+			}
+			return out, true
+		}
+		items := []RootCauseDeepVerification{}
+		if err := json.Unmarshal([]byte(candidate), &items); err == nil && len(items) > 0 {
+			out := normalizeRootCauseDeepVerifications(items)
+			for i := range out {
+				out[i].Raw = strings.TrimSpace(raw)
+			}
+			return out, true
+		}
+	}
+	return nil, false
+}
+
+func fallbackRootCauseDeepVerifications(targets []rootCauseDeepVerificationTarget) []RootCauseDeepVerification {
+	out := []RootCauseDeepVerification{}
+	for _, target := range targets {
+		stageCount := rootCauseCausalChainStageCount(target.Candidate.CausalChain)
+		status := "weak"
+		if stageCount >= 4 {
+			status = "supported"
+		}
+		out = append(out, RootCauseDeepVerification{
+			CandidateTitle:             target.Candidate.Title,
+			ShardID:                    target.ShardID,
+			ShardName:                  target.ShardName,
+			Status:                     status,
+			Summary:                    fmt.Sprintf("Deterministic deep verification fallback preserved the reviewer-approved candidate with %d causal stage(s).", stageCount),
+			CausalChain:                target.Candidate.CausalChain,
+			EvidenceFiles:              append([]string(nil), target.Candidate.EvidenceFiles...),
+			InstrumentationSteps:       append([]string(nil), target.Candidate.VerificationSteps...),
+			DisconfirmingEvidence:      append([]string(nil), target.Candidate.DisconfirmingEvidence...),
+			CannotBeRootCauseIf:        append([]string(nil), target.Candidate.CannotBeRootCauseIf...),
+			RequiredRuntimeObservation: append([]string(nil), target.Candidate.RequiredRuntimeObservation...),
+			Probes:                     append([]RootCauseProbe(nil), target.Candidate.Probes...),
+			Confidence:                 target.Candidate.Confidence,
+			ConfidenceBreakdown:        buildRootCauseConfidenceBreakdown(target.Candidate, target.Review),
+		})
+	}
+	return normalizeRootCauseDeepVerifications(out)
+}
+
+func applyRootCauseDeepVerificationsToReports(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, verifications []RootCauseDeepVerification) []WorkerReport {
+	if len(verifications) == 0 || len(reports) == 0 {
+		return reports
+	}
+	byKey := map[string]RootCauseDeepVerification{}
+	for _, verification := range verifications {
+		key := rootCauseCandidateKey(verification.ShardID, verification.CandidateTitle)
+		if key != "" {
+			byKey[key] = verification
+		}
+	}
+	out := append([]WorkerReport(nil), reports...)
+	for index := range out {
+		shard := AnalysisShard{}
+		if index < len(shards) {
+			shard = shards[index]
+		}
+		kept := []RootCauseCandidate{}
+		for _, candidate := range out[index].RootCauseCandidates {
+			verification, ok := byKey[rootCauseCandidateKey(shard.ID, candidate.Title)]
+			if !ok {
+				kept = append(kept, candidate)
+				continue
+			}
+			switch verification.Status {
+			case "disconfirmed":
+				out[index].Unknowns = analysisUniqueStrings(append(out[index].Unknowns, "Root-cause candidate disconfirmed by deep verification: "+firstNonBlankAnalysisString(candidate.Title, "unnamed candidate")))
+				continue
+			case "supported", "weak", "unknown":
+				candidate = mergeRootCauseCandidateWithDeepVerification(candidate, verification, shard)
+			}
+			kept = append(kept, candidate)
+		}
+		out[index].RootCauseCandidates = normalizeRootCauseCandidates(kept, shard)
+	}
+	return out
+}
+
+func mergeRootCauseCandidateWithDeepVerification(candidate RootCauseCandidate, verification RootCauseDeepVerification, shard AnalysisShard) RootCauseCandidate {
+	if rootCauseCausalChainStageCount(verification.CausalChain) > rootCauseCausalChainStageCount(candidate.CausalChain) {
+		candidate.CausalChain = verification.CausalChain
+	}
+	candidate.EvidenceFiles = analysisUniqueStrings(append(candidate.EvidenceFiles, verification.EvidenceFiles...))
+	candidate.DisconfirmingEvidence = analysisUniqueStrings(append(candidate.DisconfirmingEvidence, verification.DisconfirmingEvidence...))
+	candidate.CannotBeRootCauseIf = analysisUniqueStrings(append(candidate.CannotBeRootCauseIf, verification.CannotBeRootCauseIf...))
+	candidate.RequiredRuntimeObservation = analysisUniqueStrings(append(candidate.RequiredRuntimeObservation, verification.RequiredRuntimeObservation...))
+	candidate.VerificationSteps = analysisUniqueStrings(append(candidate.VerificationSteps, verification.InstrumentationSteps...))
+	candidate.Probes = normalizeRootCauseProbes(append(candidate.Probes, verification.Probes...))
+	if verification.Status == "weak" || verification.Status == "unknown" {
+		candidate.NeedsCrossShardEvidence = analysisUniqueStrings(append(candidate.NeedsCrossShardEvidence, "Deep verification did not prove the full causal chain."))
+		if strings.EqualFold(candidate.Confidence, "high") {
+			candidate.Confidence = "medium"
+		}
+	}
+	if verification.Status == "supported" && strings.TrimSpace(verification.Confidence) != "" {
+		candidate.Confidence = verification.Confidence
+	}
+	candidate.CausalChain = normalizeRootCauseCausalChain(candidate.CausalChain, candidate, shard)
+	if len(candidate.Probes) == 0 {
+		candidate.Probes = deriveRootCauseCandidateProbes(candidate, shard)
+	}
+	candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(verification.ConfidenceBreakdown, rootCauseConfidenceScore(candidate, ReviewDecision{}))
+	return candidate
+}
+
+func rootCauseCandidateKey(shardID string, title string) string {
+	shardID = strings.TrimSpace(shardID)
+	title = rootCauseComparableText(title)
+	if shardID == "" || title == "" {
+		return ""
+	}
+	return shardID + "\x00" + title
+}
+
+func buildRootCauseAuditTrail(snapshot ProjectSnapshot, auditShards []AnalysisShard, auditReports []WorkerReport, auditReviews []ReviewDecision, finalReports []WorkerReport, deepVerifications []RootCauseDeepVerification, joined []RootCauseJoinedCandidate) RootCauseAuditTrail {
+	finalCandidateKeys := map[string]struct{}{}
+	for index, report := range finalReports {
+		if index >= len(auditShards) {
+			continue
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			if key := rootCauseCandidateKey(auditShards[index].ID, candidate.Title); key != "" {
+				finalCandidateKeys[key] = struct{}{}
+			}
+		}
+	}
+	deepStatus := map[string]string{}
+	for _, verification := range deepVerifications {
+		key := rootCauseCandidateKey(verification.ShardID, verification.CandidateTitle)
+		if key != "" {
+			deepStatus[key] = verification.Status
+		}
+	}
+	decisions := []RootCauseCandidateAudit{}
+	for index, report := range auditReports {
+		if index >= len(auditShards) {
+			continue
+		}
+		review := ReviewDecision{}
+		if index < len(auditReviews) {
+			review = auditReviews[index]
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			key := rootCauseCandidateKey(auditShards[index].ID, candidate.Title)
+			explicitPatternIDs := rootCauseExplicitPatternIDsForCandidate(candidate, snapshot.RootCause.PatternMatches)
+			inferredPatternIDs := rootCauseInferredRelatedPatternIDsForCandidate(candidate, snapshot.RootCause.PatternMatches)
+			decision := "withheld"
+			reason := rootCauseReviewRejectionNote(review)
+			qualityGate := evaluateRootCauseCandidateQualityGate(snapshot, auditShards[index], candidate, review)
+			qualityGateIssues := analysisUniqueStrings(append(rootCauseQualityGateIssuesForCandidate(report, candidate), qualityGate.Issues...))
+			if _, ok := finalCandidateKeys[key]; ok {
+				decision = "included"
+				reason = "Reviewer validated symptom causality and deep verification did not disconfirm the candidate."
+			} else if rootCauseCandidateRejectedByReview(candidate, review) {
+				decision = "reviewer_rejected"
+				reason = "Reviewer listed this candidate in rejected_candidates."
+			} else if status := deepStatus[key]; status == "disconfirmed" {
+				decision = "deep_disconfirmed"
+				reason = "Deep verification disconfirmed the candidate."
+			} else if qualityGate.Reject || len(qualityGateIssues) > 0 {
+				decision = "quality_gate_rejected"
+				reason = strings.Join(limitStrings(qualityGateIssues, 3), " | ")
+			} else if !rootCauseReviewApprovesSymptomCausality(review) {
+				decision = "review_failed"
+			}
+			decisions = append(decisions, RootCauseCandidateAudit{
+				ShardID:                   auditShards[index].ID,
+				ShardName:                 auditShards[index].Name,
+				ReportTitle:               report.Title,
+				CandidateTitle:            candidate.Title,
+				ReviewStatus:              review.Status,
+				SymptomPossible:           review.SymptomPossible,
+				CausalChainStages:         rootCauseCausalChainStages(candidate.CausalChain),
+				CausalChainMissing:        rootCauseMissingCausalChainStages(candidate.CausalChain),
+				Decision:                  decision,
+				Reason:                    reason,
+				QualityGateIssues:         qualityGateIssues,
+				EvidenceFiles:             append([]string(nil), candidate.EvidenceFiles...),
+				DeepVerificationStatus:    deepStatus[key],
+				PatternIDs:                analysisUniqueStrings(append(append([]string{}, explicitPatternIDs...), inferredPatternIDs...)),
+				ExplicitPatternIDs:        explicitPatternIDs,
+				InferredRelatedPatternIDs: inferredPatternIDs,
+			})
+		}
+	}
+	patternMatches := markRootCausePatternMatchUsage(snapshot.RootCause.PatternMatches, auditReports, auditReviews, finalReports)
+	return RootCauseAuditTrail{
+		GeneratedAt:        time.Now(),
+		Symptom:            snapshot.RootCause.Symptom.Symptom,
+		CodeMatches:        append([]RootCauseCodeMatch(nil), snapshot.RootCause.CodeMatches...),
+		EvidenceRequests:   append([]RootCauseEvidenceRequest(nil), snapshot.RootCause.EvidenceRequests...),
+		PatternMatches:     patternMatches,
+		CandidateDecisions: decisions,
+		DeepVerifications:  append([]RootCauseDeepVerification(nil), deepVerifications...),
+		JoinedCandidates:   append([]RootCauseJoinedCandidate(nil), joined...),
+	}
+}
+
+func rootCauseQualityGateIssuesForCandidate(report WorkerReport, candidate RootCauseCandidate) []string {
+	title := rootCauseComparableText(candidate.Title)
+	if title == "" {
+		return nil
+	}
+	out := []string{}
+	for _, unknown := range report.Unknowns {
+		lower := rootCauseComparableText(unknown)
+		if !strings.Contains(lower, "deterministic gate") {
+			continue
+		}
+		if strings.Contains(lower, title) || strings.Contains(title, lower) {
+			out = append(out, unknown)
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func rootCauseAuditTrailHasContent(audit RootCauseAuditTrail) bool {
+	return strings.TrimSpace(audit.Symptom) != "" ||
+		len(audit.CodeMatches) > 0 ||
+		len(audit.EvidenceRequests) > 0 ||
+		len(audit.PatternMatches) > 0 ||
+		len(audit.CandidateDecisions) > 0 ||
+		len(audit.DeepVerifications) > 0 ||
+		len(audit.JoinedCandidates) > 0
+}
+
+func applyRootCauseRegressionMemoryToReports(reports []WorkerReport, memory RootCauseAuditTrail) []WorkerReport {
+	return applyRootCauseRegressionMemoryToReportsWithChanges(reports, memory, nil)
+}
+
+func applyRootCauseRegressionMemoryToReportsWithChanges(reports []WorkerReport, memory RootCauseAuditTrail, changedMemory map[string]bool) []WorkerReport {
+	if !rootCauseAuditTrailHasContent(memory) || len(reports) == 0 {
+		return reports
+	}
+	negative := []RootCauseCandidateAudit{}
+	for _, item := range memory.CandidateDecisions {
+		switch strings.ToLower(strings.TrimSpace(item.Decision)) {
+		case "reviewer_rejected", "deep_disconfirmed", "review_failed":
+			negative = append(negative, item)
+		}
+	}
+	if len(negative) == 0 {
+		return reports
+	}
+	out := append([]WorkerReport(nil), reports...)
+	for reportIndex := range out {
+		for candidateIndex := range out[reportIndex].RootCauseCandidates {
+			candidate := &out[reportIndex].RootCauseCandidates[candidateIndex]
+			for _, previous := range negative {
+				if !rootCauseCandidateMatchesAudit(*candidate, previous) {
+					continue
+				}
+				note := fmt.Sprintf("Regression memory: previous run marked a similar candidate as %s", previous.Decision)
+				if strings.TrimSpace(previous.Reason) != "" {
+					note += " (" + previous.Reason + ")"
+				}
+				changed := changedMemory[rootCauseCandidateAuditChangeKey(previous)]
+				if changed {
+					note += "; related code changed since that run, so this memory is a weaker prior."
+				}
+				candidate.DisconfirmingEvidence = analysisUniqueStrings(append(candidate.DisconfirmingEvidence, note))
+				candidate.NeedsCrossShardEvidence = analysisUniqueStrings(append(candidate.NeedsCrossShardEvidence, "Re-check the previous rejection/disconfirmation before accepting this candidate."))
+				if changed {
+					candidate.Confidence = rootCauseLowerConfidence(candidate.Confidence, "medium")
+					candidate.ConfidenceBreakdown.Score = analysisMinInt(rootCauseConfidenceScore(*candidate, ReviewDecision{}), 65)
+				} else {
+					candidate.Confidence = "low"
+					candidate.ConfidenceBreakdown.Score = analysisMinInt(rootCauseConfidenceScore(*candidate, ReviewDecision{}), 45)
+				}
+				candidate.ConfidenceBreakdown.Reasons = analysisUniqueStrings(append(candidate.ConfidenceBreakdown.Reasons, note))
+				candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(candidate.ConfidenceBreakdown, candidate.ConfidenceBreakdown.Score)
+			}
+		}
+	}
+	return out
+}
+
+func buildRootCauseRegressionMemoryChangeState(previousRun *ProjectAnalysisRun, currentShards []AnalysisShard) map[string]bool {
+	out := map[string]bool{}
+	if previousRun == nil || !rootCauseAuditTrailHasContent(previousRun.RootCause.AuditTrail) {
+		return out
+	}
+	currentByPrimary := map[string]AnalysisShard{}
+	for _, shard := range currentShards {
+		currentByPrimary[primaryFilesKey(shard.PrimaryFiles)] = shard
+	}
+	previousByID := map[string]AnalysisShard{}
+	for _, shard := range previousRun.Shards {
+		previousByID[shard.ID] = shard
+	}
+	for _, audit := range previousRun.RootCause.AuditTrail.CandidateDecisions {
+		previousShard, ok := previousByID[audit.ShardID]
+		if !ok {
+			out[rootCauseCandidateAuditChangeKey(audit)] = true
+			continue
+		}
+		currentShard, ok := currentByPrimary[primaryFilesKey(previousShard.PrimaryFiles)]
+		if !ok {
+			out[rootCauseCandidateAuditChangeKey(audit)] = true
+			continue
+		}
+		changed := previousShard.PrimaryFingerprint != currentShard.PrimaryFingerprint ||
+			previousShard.PrimarySemanticFingerprint != currentShard.PrimarySemanticFingerprint ||
+			previousShard.ReferenceFingerprint != currentShard.ReferenceFingerprint ||
+			previousShard.ReferenceSemanticFingerprint != currentShard.ReferenceSemanticFingerprint
+		out[rootCauseCandidateAuditChangeKey(audit)] = changed
+	}
+	return out
+}
+
+func rootCauseCandidateAuditChangeKey(audit RootCauseCandidateAudit) string {
+	return rootCauseComparableText(strings.Join([]string{audit.ShardID, audit.CandidateTitle}, "\x00"))
+}
+
+func rootCauseCandidateMatchesAudit(candidate RootCauseCandidate, audit RootCauseCandidateAudit) bool {
+	title := rootCauseComparableText(candidate.Title)
+	previous := rootCauseComparableText(audit.CandidateTitle)
+	if title != "" && previous != "" {
+		if title == previous {
+			return true
+		}
+		if rootCauseComparableTextIsSpecific(title) && strings.Contains(previous, title) {
+			return true
+		}
+		if rootCauseComparableTextIsSpecific(previous) && strings.Contains(title, previous) {
+			return true
+		}
+	}
+	candidateFiles := map[string]struct{}{}
+	for _, path := range candidate.EvidenceFiles {
+		candidateFiles[cleanEvidencePath(path)] = struct{}{}
+	}
+	for _, path := range audit.EvidenceFiles {
+		if _, ok := candidateFiles[cleanEvidencePath(path)]; ok && title != "" && previous != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func renderRootCauseRegressionMemoryForPrompt(memory RootCauseAuditTrail, limit int) string {
+	if !rootCauseAuditTrailHasContent(memory) {
+		return ""
+	}
+	var b strings.Builder
+	if strings.TrimSpace(memory.Symptom) != "" {
+		fmt.Fprintf(&b, "- Previous symptom: %s\n", memory.Symptom)
+	}
+	if len(memory.CandidateDecisions) > 0 {
+		b.WriteString("Previous candidate decisions:\n")
+		for _, item := range limitRootCauseCandidateAudits(memory.CandidateDecisions, 8) {
+			fmt.Fprintf(&b, "- %s [%s] shard=%s symptom=%s deep=%s\n", firstNonBlankAnalysisString(item.CandidateTitle, "candidate"), item.Decision, item.ShardID, item.SymptomPossible, item.DeepVerificationStatus)
+			if strings.TrimSpace(item.Reason) != "" {
+				fmt.Fprintf(&b, "  reason=%s\n", item.Reason)
+			}
+			if len(item.EvidenceFiles) > 0 {
+				fmt.Fprintf(&b, "  evidence=%s\n", strings.Join(limitStrings(item.EvidenceFiles, 4), ", "))
+			}
+		}
+	}
+	if len(memory.JoinedCandidates) > 0 {
+		b.WriteString("Previous joined findings:\n")
+		for _, item := range limitRootCauseJoinedCandidates(memory.JoinedCandidates, 5) {
+			fmt.Fprintf(&b, "- %s (%s, confidence=%s, score=%d)\n", item.Title, item.Classification, item.Confidence, item.ConfidenceScore)
+		}
+	}
+	text := strings.TrimSpace(b.String())
+	if limit > 0 {
+		text = analysisPromptExcerpt(text, limit)
+	}
+	return strings.TrimSpace(text)
+}
+
+func limitRootCauseCandidateAudits(items []RootCauseCandidateAudit, limit int) []RootCauseCandidateAudit {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func (a *projectAnalyzer) joinRootCauseCandidates(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision, goal string) []RootCauseJoinedCandidate {
+	fallback := fallbackRootCauseJoin(snapshot, shards, reports, reviews)
+	if len(fallback) == 0 || a.client == nil {
+		return fallback
+	}
+	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.client, "root-cause-join", "", a.cfg.Model, ChatRequest{
+		Model:       a.cfg.Model,
+		System:      rootCauseJoinSystemPrompt(),
+		Messages:    []Message{{Role: "user", Text: buildRootCauseJoinPrompt(snapshot, shards, reports, reviews, goal)}},
+		MaxTokens:   analysisStructuredMaxTokens(a.cfg.Model, a.cfg.MaxTokens),
+		Temperature: a.cfg.Temperature,
+		WorkingDir:  a.workspace.Root,
+		JSONMode:    true,
+	})
+	if err != nil {
+		a.debug(fmt.Sprintf("root-cause join soft-failed: %v", err))
+		return fallback
+	}
+	joined, ok := parseRootCauseJoinPayload(resp.Message.Text)
+	if !ok {
+		a.debug("root-cause join returned non-JSON output; using deterministic fallback")
+		return fallback
+	}
+	joined = normalizeRootCauseJoinedCandidates(joined)
+	if len(joined) == 0 {
+		return fallback
+	}
+	return joined
+}
+
+func rootCauseJoinSystemPrompt() string {
+	return strings.TrimSpace(`
+You join reviewed shard-level root-cause candidates into final root cause findings.
+Your entire response must be a single JSON object. The first byte must be "{" and the last byte must be "}".
+Return strict JSON:
+{
+  "joined_candidates": [
+    {
+      "title": "string",
+      "classification": "root_cause|contributing_factor|detection_gap|operational_trigger|unknown",
+      "cluster_id": "string",
+      "cluster_members": ["string"],
+      "competes_with": ["cluster_id or title"],
+      "depends_on": ["cluster_id or title"],
+      "can_coexist_with": ["cluster_id or title"],
+      "joined_chain": ["string"],
+      "causal_chain": {
+        "trigger": "string",
+        "invalid_state": "string",
+        "state_transition": "string",
+        "missing_guard": "string",
+        "user_visible_symptom": "string",
+        "evidence_files": ["string"]
+      },
+      "supporting_candidates": ["string"],
+      "evidence_files": ["string"],
+      "disconfirming_evidence": ["string"],
+      "cannot_be_root_cause_if": ["string"],
+      "required_runtime_observation": ["string"],
+      "verification_steps": ["string"],
+      "probes": [
+        {
+          "title": "string",
+          "kind": "log|assert|test|repro|db_config_dump|trace",
+          "target": "file or function",
+          "command": "string",
+          "expected_signal": "string",
+          "disproves_when": "string"
+        }
+      ],
+      "confidence": "low|medium|high",
+      "confidence_breakdown": {
+        "causal_completeness": 0,
+        "evidence_strength": 0,
+        "runtime_observability": 0,
+        "alternative_explanations": 0,
+        "disconfirmation_strength": 0,
+        "score": 0,
+        "reasons": ["string"]
+      },
+      "confidence_score": 0,
+      "pattern_ids": ["known pattern id if current source evidence supports it"]
+    }
+  ]
+}
+Rules:
+- Join across shards. Do not merely restate a single worker candidate unless one shard proves the whole chain.
+- Known root-cause patterns are priors only. Preserve pattern_ids only when the joined source evidence independently proves the pattern.
+- Cluster and deduplicate near-identical candidates. Use the same cluster_id for candidates that share the same causal mechanism or evidence path.
+- Fill competes_with, depends_on, and can_coexist_with when candidates are mutually exclusive, causally dependent, or can all be true.
+- Separate root_cause, contributing_factor, detection_gap, and operational_trigger.
+- A root_cause must explain the exact user symptom end to end.
+- A root_cause must have at least four of the five causal_chain stages. If the chain is weaker, classify it as contributing_factor, detection_gap, operational_trigger, or unknown.
+- Include disconfirming evidence and cannot_be_root_cause_if so the result remains falsifiable.
+- Include concrete probes that a developer can run or implement to confirm and disprove the joined candidate.
+- confidence_score is 0-100 and should consider chain completeness, evidence files, reviewer symptom_causality, remaining missing edges, and verification feasibility.
+- confidence_breakdown must show those scoring factors explicitly.
+`)
+}
+
+func buildRootCauseJoinPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision, goal string) string {
+	type reviewedCandidate struct {
+		ShardID          string                     `json:"shard_id"`
+		ShardName        string                     `json:"shard_name"`
+		ReportTitle      string                     `json:"report_title"`
+		Candidate        RootCauseCandidate         `json:"candidate"`
+		SymptomPossible  string                     `json:"symptom_possible,omitempty"`
+		SymptomCausality []string                   `json:"symptom_causality,omitempty"`
+		Rejected         []string                   `json:"rejected_candidates,omitempty"`
+		EvidenceRequests []RootCauseEvidenceRequest `json:"evidence_requests,omitempty"`
+	}
+	items := []reviewedCandidate{}
+	for index, report := range reports {
+		if index >= len(shards) {
+			continue
+		}
+		review := ReviewDecision{}
+		if index < len(reviews) {
+			review = reviews[index]
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			items = append(items, reviewedCandidate{
+				ShardID:          shards[index].ID,
+				ShardName:        shards[index].Name,
+				ReportTitle:      report.Title,
+				Candidate:        candidate,
+				SymptomPossible:  review.SymptomPossible,
+				SymptomCausality: review.SymptomCausality,
+				Rejected:         review.RejectedCandidates,
+				EvidenceRequests: review.EvidenceRequests,
+			})
+		}
+	}
+	data, _ := json.MarshalIndent(items, "", "  ")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Goal:\n%s\n\n", goal)
+	if rootCausePlan := renderRootCauseInvestigationForPrompt(snapshot.RootCause, 6000); strings.TrimSpace(rootCausePlan) != "" {
+		b.WriteString("Normalized symptom and hypotheses:\n")
+		b.WriteString(rootCausePlan)
+		b.WriteString("\n\n")
+	}
+	fmt.Fprintf(&b, "Reviewed candidate inputs:\n%s\n\n", string(data))
+	b.WriteString("Join requirements:\n")
+	b.WriteString("- Build joined_candidates only from reviewer symptom-approved or partial candidates.\n")
+	b.WriteString("- If candidates are weakly related, classify them as contributing_factor or detection_gap rather than root_cause.\n")
+	b.WriteString("- Every joined candidate must include a falsification path.\n")
+	return strings.TrimSpace(b.String())
+}
+
+func parseRootCauseJoinPayload(raw string) ([]RootCauseJoinedCandidate, bool) {
+	type envelope struct {
+		JoinedCandidates []RootCauseJoinedCandidate `json:"joined_candidates"`
+	}
+	for _, candidate := range analysisJSONCandidates(raw) {
+		wrapped := envelope{}
+		if err := json.Unmarshal([]byte(candidate), &wrapped); err == nil && len(wrapped.JoinedCandidates) > 0 {
+			return normalizeRootCauseJoinedCandidates(wrapped.JoinedCandidates), true
+		}
+		items := []RootCauseJoinedCandidate{}
+		if err := json.Unmarshal([]byte(candidate), &items); err == nil && len(items) > 0 {
+			return normalizeRootCauseJoinedCandidates(items), true
+		}
+	}
+	return nil, false
+}
+
+func fallbackRootCauseJoin(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision) []RootCauseJoinedCandidate {
+	out := []RootCauseJoinedCandidate{}
+	for index, report := range reports {
+		if index >= len(shards) {
+			continue
+		}
+		review := ReviewDecision{}
+		if index < len(reviews) {
+			review = reviews[index]
+		}
+		if !rootCauseReviewApprovesSymptomCausality(review) {
+			continue
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			if rootCauseCandidateRejectedByReview(candidate, review) {
+				continue
+			}
+			joined := RootCauseJoinedCandidate{
+				Title:                      candidate.Title,
+				Classification:             rootCauseClassificationForCandidate(candidate, review),
+				JoinedChain:                analysisUniqueStrings(append(append([]string(nil), candidate.CandidateChain...), candidate.ObservedFailurePath...)),
+				CausalChain:                candidate.CausalChain,
+				SupportingCandidates:       []string{strings.TrimSpace(report.Title)},
+				EvidenceFiles:              append([]string(nil), candidate.EvidenceFiles...),
+				DisconfirmingEvidence:      append([]string(nil), candidate.DisconfirmingEvidence...),
+				CannotBeRootCauseIf:        append([]string(nil), candidate.CannotBeRootCauseIf...),
+				RequiredRuntimeObservation: append([]string(nil), candidate.RequiredRuntimeObservation...),
+				VerificationSteps:          append([]string(nil), candidate.VerificationSteps...),
+				Probes:                     append([]RootCauseProbe(nil), candidate.Probes...),
+				Confidence:                 candidate.Confidence,
+				ConfidenceBreakdown:        buildRootCauseConfidenceBreakdown(candidate, review),
+				ConfidenceScore:            rootCauseConfidenceScore(candidate, review),
+				PatternIDs:                 rootCausePatternIDsForCandidate(candidate, snapshot.RootCause.PatternMatches),
+			}
+			if len(joined.JoinedChain) == 0 {
+				joined.JoinedChain = append(joined.JoinedChain, candidate.Title)
+			}
+			if len(joined.EvidenceFiles) == 0 && index < len(shards) {
+				joined.EvidenceFiles = append([]string(nil), shards[index].PrimaryFiles...)
+			}
+			if len(joined.RequiredRuntimeObservation) == 0 {
+				joined.RequiredRuntimeObservation = append(joined.RequiredRuntimeObservation, "Reproduce the reported symptom while tracing this candidate path.")
+			}
+			if len(joined.CannotBeRootCauseIf) == 0 {
+				joined.CannotBeRootCauseIf = append(joined.CannotBeRootCauseIf, "The reported symptom reproduces while this candidate path is not taken.")
+			}
+			if len(joined.Probes) == 0 {
+				joined.Probes = deriveRootCauseJoinedProbes(joined)
+			}
+			out = append(out, joined)
+		}
+	}
+	return normalizeRootCauseJoinedCandidates(out)
+}
+
+func rootCauseClassificationForCandidate(candidate RootCauseCandidate, review ReviewDecision) string {
+	if strings.EqualFold(candidate.Confidence, "high") && strings.EqualFold(review.SymptomPossible, "yes") && rootCauseCausalChainStageCount(candidate.CausalChain) >= 4 {
+		return "root_cause"
+	}
+	if len(candidate.NeedsCrossShardEvidence) > 0 || strings.EqualFold(review.SymptomPossible, "partial") {
+		return "contributing_factor"
+	}
+	return "contributing_factor"
+}
+
+func rootCauseConfidenceScore(candidate RootCauseCandidate, review ReviewDecision) int {
+	score := 20
+	if strings.EqualFold(review.SymptomPossible, "yes") {
+		score += 25
+	} else if strings.EqualFold(review.SymptomPossible, "partial") {
+		score += 12
+	}
+	score += analysisMinInt(len(candidate.CandidateChain)*6, 18)
+	score += rootCauseCausalChainStageCount(candidate.CausalChain) * 5
+	score += analysisMinInt(len(candidate.ObservedFailurePath)*6, 18)
+	score += analysisMinInt(len(candidate.EvidenceFiles)*4, 12)
+	if len(candidate.DisconfirmingEvidence) > 0 || len(candidate.CannotBeRootCauseIf) > 0 {
+		score += 7
+	}
+	if len(candidate.RequiredRuntimeObservation) > 0 || len(candidate.VerificationSteps) > 0 || len(candidate.Probes) > 0 {
+		score += 5
+	}
+	switch strings.ToLower(strings.TrimSpace(candidate.Confidence)) {
+	case "high":
+		score += 10
+	case "low":
+		score -= 10
+	}
+	if len(candidate.NeedsCrossShardEvidence) > 0 {
+		score -= analysisMinInt(len(candidate.NeedsCrossShardEvidence)*4, 12)
+	}
+	if score < 0 {
+		return 0
+	}
+	if score > 100 {
+		return 100
+	}
+	return score
+}
+
+func normalizeRootCauseJoinedCandidates(candidates []RootCauseJoinedCandidate) []RootCauseJoinedCandidate {
+	out := []RootCauseJoinedCandidate{}
+	for _, candidate := range candidates {
+		candidate.Title = strings.TrimSpace(candidate.Title)
+		candidate.Classification = normalizeRootCauseClassification(candidate.Classification)
+		candidate.ClusterID = strings.TrimSpace(candidate.ClusterID)
+		candidate.ClusterMembers = analysisUniqueStrings(candidate.ClusterMembers)
+		candidate.CompetesWith = analysisUniqueStrings(candidate.CompetesWith)
+		candidate.DependsOn = analysisUniqueStrings(candidate.DependsOn)
+		candidate.CanCoexistWith = analysisUniqueStrings(candidate.CanCoexistWith)
+		candidate.JoinedChain = analysisUniqueStrings(candidate.JoinedChain)
+		candidate.CausalChain = normalizeJoinedRootCauseCausalChain(candidate.CausalChain)
+		candidate.SupportingCandidates = analysisUniqueStrings(candidate.SupportingCandidates)
+		candidate.EvidenceFiles = analysisUniqueStrings(candidate.EvidenceFiles)
+		candidate.DisconfirmingEvidence = analysisUniqueStrings(candidate.DisconfirmingEvidence)
+		candidate.CannotBeRootCauseIf = analysisUniqueStrings(candidate.CannotBeRootCauseIf)
+		candidate.RequiredRuntimeObservation = analysisUniqueStrings(candidate.RequiredRuntimeObservation)
+		candidate.VerificationSteps = analysisUniqueStrings(candidate.VerificationSteps)
+		candidate.Probes = normalizeRootCauseProbes(candidate.Probes)
+		candidate.PatternIDs = analysisUniqueStrings(candidate.PatternIDs)
+		if len(candidate.Probes) == 0 {
+			candidate.Probes = deriveRootCauseJoinedProbes(candidate)
+		}
+		candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(candidate.ConfidenceBreakdown, candidate.ConfidenceScore)
+		if candidate.ConfidenceScore == 0 && candidate.ConfidenceBreakdown.Score > 0 {
+			candidate.ConfidenceScore = candidate.ConfidenceBreakdown.Score
+		}
+		if candidate.ConfidenceScore == 0 {
+			switch strings.ToLower(strings.TrimSpace(candidate.Confidence)) {
+			case "high":
+				candidate.ConfidenceScore = 75
+			case "medium":
+				candidate.ConfidenceScore = 50
+			case "low":
+				candidate.ConfidenceScore = 30
+			}
+		}
+		candidate.Confidence = normalizeRootCauseConfidence(candidate.Confidence, candidate.ConfidenceScore)
+		if candidate.ConfidenceScore < 0 {
+			candidate.ConfidenceScore = 0
+		}
+		if candidate.ConfidenceScore > 100 {
+			candidate.ConfidenceScore = 100
+		}
+		if candidate.Title == "" && len(candidate.JoinedChain) == 0 {
+			continue
+		}
+		if candidate.Title == "" {
+			candidate.Title = "Root-cause candidate"
+		}
+		if candidate.ClusterID == "" {
+			candidate.ClusterID = rootCauseClusterID(rootCauseJoinedClusterKey(candidate))
+		}
+		if len(candidate.ClusterMembers) == 0 {
+			candidate.ClusterMembers = analysisUniqueStrings(append([]string{candidate.Title}, candidate.SupportingCandidates...))
+		}
+		candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(candidate.ConfidenceBreakdown, candidate.ConfidenceScore)
+		out = append(out, candidate)
+	}
+	out = dedupeRootCauseJoinedCandidates(out)
+	out = inferRootCauseJoinedCandidateRelations(out)
+	sort.SliceStable(out, func(i int, j int) bool {
+		if out[i].Classification == out[j].Classification {
+			return out[i].ConfidenceScore > out[j].ConfidenceScore
+		}
+		return rootCauseClassificationRank(out[i].Classification) < rootCauseClassificationRank(out[j].Classification)
+	})
+	return out
+}
+
+func applyRootCauseJoinedQualityGate(snapshot ProjectSnapshot, candidates []RootCauseJoinedCandidate) []RootCauseJoinedCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	out := append([]RootCauseJoinedCandidate(nil), candidates...)
+	for index := range out {
+		issues := []string{}
+		stageCount := rootCauseCausalChainStageCount(out[index].CausalChain)
+		if normalizeRootCauseClassification(out[index].Classification) == "root_cause" && stageCount < 4 {
+			out[index].Classification = "contributing_factor"
+			issues = append(issues, "Deterministic gate: root_cause classification requires at least 4 causal stages.")
+		}
+		if len(out[index].EvidenceFiles) == 0 {
+			out[index].Confidence = rootCauseLowerConfidence(out[index].Confidence, "low")
+			out[index].ConfidenceScore = analysisMinInt(out[index].ConfidenceScore, 45)
+			issues = append(issues, "Deterministic gate: joined candidate has no evidence_files.")
+		}
+		if !rootCauseJoinedCandidateHasValidProbe(out[index]) {
+			out[index].Confidence = rootCauseLowerConfidence(out[index].Confidence, "medium")
+			out[index].ConfidenceScore = analysisMinInt(out[index].ConfidenceScore, 65)
+			issues = append(issues, "Deterministic gate: joined candidate probes must include expected_signal and disproves_when.")
+		}
+		if rootCauseJoinedCandidateUserSymptomMismatches(snapshot, out[index]) {
+			out[index].Classification = "unknown"
+			out[index].Confidence = "low"
+			out[index].ConfidenceScore = analysisMinInt(out[index].ConfidenceScore, 25)
+			issues = append(issues, "Deterministic gate: joined user_visible_symptom does not overlap the reported symptom.")
+		}
+		if len(issues) > 0 {
+			out[index].ConfidenceBreakdown.Reasons = analysisUniqueStrings(append(out[index].ConfidenceBreakdown.Reasons, issues...))
+			out[index].ConfidenceBreakdown.Score = analysisMinInt(out[index].ConfidenceBreakdown.Score, out[index].ConfidenceScore)
+			out[index].ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(out[index].ConfidenceBreakdown, out[index].ConfidenceScore)
+			out[index].NeedsRelationNormalization()
+		}
+	}
+	return normalizeRootCauseJoinedCandidates(out)
+}
+
+func (candidate *RootCauseJoinedCandidate) NeedsRelationNormalization() {
+	candidate.CompetesWith = analysisUniqueStrings(candidate.CompetesWith)
+	candidate.DependsOn = analysisUniqueStrings(candidate.DependsOn)
+	candidate.CanCoexistWith = analysisUniqueStrings(candidate.CanCoexistWith)
+}
+
+func rootCauseJoinedCandidateHasValidProbe(candidate RootCauseJoinedCandidate) bool {
+	for _, probe := range candidate.Probes {
+		if strings.TrimSpace(probe.ExpectedSignal) != "" && strings.TrimSpace(probe.DisprovesWhen) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseJoinedCandidateUserSymptomMismatches(snapshot ProjectSnapshot, candidate RootCauseJoinedCandidate) bool {
+	expected := rootCauseReportedSymptomText(snapshot)
+	actual := firstNonBlankRootCauseString(candidate.CausalChain.UserVisibleSymptom, strings.Join(candidate.JoinedChain, " "))
+	if strings.TrimSpace(expected) == "" || strings.TrimSpace(actual) == "" {
+		return false
+	}
+	expectedTerms := rootCauseEvidenceTerms(expected)
+	actualTerms := rootCauseEvidenceTerms(actual)
+	if len(expectedTerms) < 2 || len(actualTerms) < 1 {
+		return false
+	}
+	for _, term := range expectedTerms {
+		if rootCauseTextContainsTerm(actual, term) {
+			return false
+		}
+	}
+	for _, term := range actualTerms {
+		if rootCauseTextContainsTerm(expected, term) {
+			return false
+		}
+	}
+	return true
+}
+
+func deriveRootCauseJoinedProbes(candidate RootCauseJoinedCandidate) []RootCauseProbe {
+	target := firstString(candidate.EvidenceFiles)
+	expected := firstNonBlankRootCauseString(firstString(candidate.RequiredRuntimeObservation), candidate.CausalChain.InvalidState, candidate.CausalChain.StateTransition, candidate.Title)
+	disproves := firstNonBlankRootCauseString(firstString(candidate.CannotBeRootCauseIf), "The symptom reproduces while the joined chain is not taken.")
+	probes := []RootCauseProbe{}
+	for _, step := range limitStrings(candidate.VerificationSteps, 3) {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Verify joined root-cause chain",
+			Kind:           rootCauseProbeKindFromText(step),
+			Target:         target,
+			Command:        step,
+			ExpectedSignal: expected,
+			DisprovesWhen:  disproves,
+		})
+	}
+	if len(probes) == 0 {
+		probes = append(probes, RootCauseProbe{
+			Title:          "Reproduce joined root-cause chain",
+			Kind:           "repro",
+			Target:         target,
+			Command:        "Drive the reported symptom and trace the joined causal chain.",
+			ExpectedSignal: expected,
+			DisprovesWhen:  disproves,
+		})
+	}
+	return normalizeRootCauseProbes(probes)
+}
+
+func dedupeRootCauseJoinedCandidates(candidates []RootCauseJoinedCandidate) []RootCauseJoinedCandidate {
+	indexByKey := map[string]int{}
+	out := []RootCauseJoinedCandidate{}
+	for _, candidate := range candidates {
+		key := rootCauseJoinedClusterKey(candidate)
+		if strings.TrimSpace(candidate.ClusterID) != "" {
+			key = "cluster:" + strings.TrimSpace(candidate.ClusterID)
+		}
+		if key == "" {
+			key = strings.ToLower(strings.TrimSpace(candidate.Title))
+		}
+		if existingIndex, ok := indexByKey[key]; ok {
+			out[existingIndex] = mergeRootCauseJoinedCandidate(out[existingIndex], candidate, key)
+			continue
+		}
+		candidate.ClusterID = firstNonBlankRootCauseString(candidate.ClusterID, rootCauseClusterID(key))
+		indexByKey[key] = len(out)
+		out = append(out, candidate)
+	}
+	return out
+}
+
+func mergeRootCauseJoinedCandidate(left RootCauseJoinedCandidate, right RootCauseJoinedCandidate, key string) RootCauseJoinedCandidate {
+	if rootCauseClassificationRank(right.Classification) < rootCauseClassificationRank(left.Classification) {
+		left.Classification = right.Classification
+	}
+	if right.ConfidenceScore > left.ConfidenceScore {
+		left.ConfidenceScore = right.ConfidenceScore
+		left.Confidence = right.Confidence
+	}
+	if rootCauseCausalChainStageCount(right.CausalChain) > rootCauseCausalChainStageCount(left.CausalChain) {
+		left.CausalChain = right.CausalChain
+	}
+	left.ClusterID = firstNonBlankRootCauseString(left.ClusterID, right.ClusterID, rootCauseClusterID(key))
+	left.ClusterMembers = analysisUniqueStrings(append(append(left.ClusterMembers, right.ClusterMembers...), right.Title))
+	left.CompetesWith = analysisUniqueStrings(append(left.CompetesWith, right.CompetesWith...))
+	left.DependsOn = analysisUniqueStrings(append(left.DependsOn, right.DependsOn...))
+	left.CanCoexistWith = analysisUniqueStrings(append(left.CanCoexistWith, right.CanCoexistWith...))
+	left.JoinedChain = analysisUniqueStrings(append(left.JoinedChain, right.JoinedChain...))
+	left.SupportingCandidates = analysisUniqueStrings(append(left.SupportingCandidates, right.SupportingCandidates...))
+	left.EvidenceFiles = analysisUniqueStrings(append(left.EvidenceFiles, right.EvidenceFiles...))
+	left.DisconfirmingEvidence = analysisUniqueStrings(append(left.DisconfirmingEvidence, right.DisconfirmingEvidence...))
+	left.CannotBeRootCauseIf = analysisUniqueStrings(append(left.CannotBeRootCauseIf, right.CannotBeRootCauseIf...))
+	left.RequiredRuntimeObservation = analysisUniqueStrings(append(left.RequiredRuntimeObservation, right.RequiredRuntimeObservation...))
+	left.VerificationSteps = analysisUniqueStrings(append(left.VerificationSteps, right.VerificationSteps...))
+	left.Probes = normalizeRootCauseProbes(append(left.Probes, right.Probes...))
+	left.ConfidenceBreakdown = mergeRootCauseConfidenceBreakdown(left.ConfidenceBreakdown, right.ConfidenceBreakdown, left.ConfidenceScore)
+	return left
+}
+
+func inferRootCauseJoinedCandidateRelations(candidates []RootCauseJoinedCandidate) []RootCauseJoinedCandidate {
+	out := append([]RootCauseJoinedCandidate(nil), candidates...)
+	for i := range out {
+		for j := range out {
+			if i == j {
+				continue
+			}
+			leftID := firstNonBlankRootCauseString(out[i].ClusterID, out[i].Title)
+			rightID := firstNonBlankRootCauseString(out[j].ClusterID, out[j].Title)
+			if leftID == "" || rightID == "" {
+				continue
+			}
+			if rootCauseJoinedCandidatesCompete(out[i], out[j]) {
+				out[i].CompetesWith = analysisUniqueStrings(append(out[i].CompetesWith, rightID))
+				continue
+			}
+			if rootCauseJoinedCandidateDependsOn(out[i], out[j]) {
+				out[i].DependsOn = analysisUniqueStrings(append(out[i].DependsOn, rightID))
+				continue
+			}
+			if rootCauseJoinedCandidatesCanCoexist(out[i], out[j]) {
+				out[i].CanCoexistWith = analysisUniqueStrings(append(out[i].CanCoexistWith, rightID))
+			}
+		}
+	}
+	return out
+}
+
+func rootCauseJoinedCandidatesCompete(left RootCauseJoinedCandidate, right RootCauseJoinedCandidate) bool {
+	if left.ClusterID != "" && left.ClusterID == right.ClusterID {
+		return false
+	}
+	if normalizeRootCauseClassification(left.Classification) == "unknown" || normalizeRootCauseClassification(right.Classification) == "unknown" {
+		return false
+	}
+	if rootCauseEvidenceFilesOverlap(left.EvidenceFiles, right.EvidenceFiles) && rootCauseCausalSymptomOverlap(left.CausalChain, right.CausalChain) {
+		return true
+	}
+	return false
+}
+
+func rootCauseJoinedCandidateDependsOn(left RootCauseJoinedCandidate, right RootCauseJoinedCandidate) bool {
+	rightTitle := rootCauseComparableText(right.Title)
+	rightCluster := rootCauseComparableText(right.ClusterID)
+	if rightTitle == "" && rightCluster == "" {
+		return false
+	}
+	corpus := rootCauseComparableText(strings.Join(append(append([]string{}, left.JoinedChain...), left.RequiredRuntimeObservation...), " "))
+	return (rightTitle != "" && strings.Contains(corpus, rightTitle)) || (rightCluster != "" && strings.Contains(corpus, rightCluster))
+}
+
+func rootCauseJoinedCandidatesCanCoexist(left RootCauseJoinedCandidate, right RootCauseJoinedCandidate) bool {
+	if rootCauseJoinedCandidatesCompete(left, right) {
+		return false
+	}
+	if normalizeRootCauseClassification(left.Classification) != normalizeRootCauseClassification(right.Classification) {
+		return true
+	}
+	return !rootCauseEvidenceFilesOverlap(left.EvidenceFiles, right.EvidenceFiles)
+}
+
+func rootCauseEvidenceFilesOverlap(left []string, right []string) bool {
+	set := map[string]struct{}{}
+	for _, item := range left {
+		set[cleanEvidencePath(item)] = struct{}{}
+	}
+	for _, item := range right {
+		if _, ok := set[cleanEvidencePath(item)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func rootCauseCausalSymptomOverlap(left RootCauseCausalChain, right RootCauseCausalChain) bool {
+	leftText := rootCauseComparableText(strings.Join([]string{left.InvalidState, left.StateTransition, left.MissingGuard, left.UserVisibleSymptom}, " "))
+	rightText := rootCauseComparableText(strings.Join([]string{right.InvalidState, right.StateTransition, right.MissingGuard, right.UserVisibleSymptom}, " "))
+	if leftText == "" || rightText == "" {
+		return false
+	}
+	for _, term := range rootCauseEvidenceTerms(leftText) {
+		if rootCauseTextContainsTerm(rightText, term) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeRootCauseConfidenceBreakdown(left RootCauseConfidenceBreakdown, right RootCauseConfidenceBreakdown, fallbackScore int) RootCauseConfidenceBreakdown {
+	left.CausalCompleteness = analysisMaxInt(left.CausalCompleteness, right.CausalCompleteness)
+	left.EvidenceStrength = analysisMaxInt(left.EvidenceStrength, right.EvidenceStrength)
+	left.RuntimeObservability = analysisMaxInt(left.RuntimeObservability, right.RuntimeObservability)
+	left.AlternativeExplanations = analysisMaxInt(left.AlternativeExplanations, right.AlternativeExplanations)
+	left.DisconfirmationStrength = analysisMaxInt(left.DisconfirmationStrength, right.DisconfirmationStrength)
+	left.Score = analysisMaxInt(left.Score, right.Score)
+	left.Reasons = analysisUniqueStrings(append(left.Reasons, right.Reasons...))
+	return normalizeRootCauseConfidenceBreakdown(left, fallbackScore)
+}
+
+func rootCauseJoinedClusterKey(candidate RootCauseJoinedCandidate) string {
+	parts := []string{}
+	chainKey := strings.Join([]string{
+		rootCauseComparableText(candidate.CausalChain.InvalidState),
+		rootCauseComparableText(candidate.CausalChain.StateTransition),
+		rootCauseComparableText(candidate.CausalChain.MissingGuard),
+		rootCauseComparableText(candidate.CausalChain.UserVisibleSymptom),
+	}, " ")
+	if strings.TrimSpace(chainKey) != "" {
+		parts = append(parts, chainKey)
+	}
+	if len(candidate.EvidenceFiles) > 0 {
+		files := append([]string(nil), candidate.EvidenceFiles...)
+		sort.Strings(files)
+		parts = append(parts, strings.Join(limitStrings(files, 3), "|"))
+	}
+	title := rootCauseComparableText(candidate.Title)
+	if title != "" && len(parts) == 0 {
+		parts = append(parts, title)
+	}
+	return strings.Join(analysisUniqueStrings(parts), "\x00")
+}
+
+func rootCauseCandidateClusterKey(candidate RootCauseCandidate) string {
+	return rootCauseJoinedClusterKey(RootCauseJoinedCandidate{
+		Title:         candidate.Title,
+		CausalChain:   candidate.CausalChain,
+		EvidenceFiles: candidate.EvidenceFiles,
+	})
+}
+
+func rootCauseClusterID(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		key = "root-cause-candidate"
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "rc-" + hex.EncodeToString(sum[:])[:10]
+}
+
+func normalizeRootCauseCandidateClusters(items []RootCauseCandidateCluster) []RootCauseCandidateCluster {
+	out := []RootCauseCandidateCluster{}
+	for _, item := range items {
+		item.ID = strings.TrimSpace(item.ID)
+		item.Title = strings.TrimSpace(item.Title)
+		item.CandidateTitles = analysisUniqueStrings(item.CandidateTitles)
+		item.ShardIDs = analysisUniqueStrings(item.ShardIDs)
+		item.EvidenceFiles = analysisUniqueStrings(item.EvidenceFiles)
+		item.CausalChain = normalizeJoinedRootCauseCausalChain(item.CausalChain)
+		item.ConfidenceScore = clampRootCauseScore(item.ConfidenceScore)
+		if item.Title == "" && len(item.CandidateTitles) == 0 {
+			continue
+		}
+		if item.Title == "" {
+			item.Title = firstString(item.CandidateTitles)
+		}
+		if item.ID == "" {
+			item.ID = rootCauseClusterID(strings.Join(append(item.CandidateTitles, item.EvidenceFiles...), "\x00"))
+		}
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i int, j int) bool {
+		if out[i].ConfidenceScore == out[j].ConfidenceScore {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].ConfidenceScore > out[j].ConfidenceScore
+	})
+	return out
+}
+
+func buildRootCauseCandidateClusters(shards []AnalysisShard, reports []WorkerReport, reviews []ReviewDecision, joined []RootCauseJoinedCandidate) []RootCauseCandidateCluster {
+	clustersByID := map[string]int{}
+	out := []RootCauseCandidateCluster{}
+	shardIDsByCandidate := rootCauseCandidateShardIndex(shards, reports)
+	addCluster := func(id string, title string, candidateTitles []string, shardIDs []string, evidenceFiles []string, chain RootCauseCausalChain, score int) {
+		id = firstNonBlankRootCauseString(id, rootCauseClusterID(strings.Join(append(candidateTitles, evidenceFiles...), "\x00")))
+		if existing, ok := clustersByID[id]; ok {
+			item := &out[existing]
+			item.CandidateTitles = analysisUniqueStrings(append(item.CandidateTitles, candidateTitles...))
+			item.ShardIDs = analysisUniqueStrings(append(item.ShardIDs, shardIDs...))
+			item.EvidenceFiles = analysisUniqueStrings(append(item.EvidenceFiles, evidenceFiles...))
+			if rootCauseCausalChainStageCount(chain) > rootCauseCausalChainStageCount(item.CausalChain) {
+				item.CausalChain = chain
+			}
+			if score > item.ConfidenceScore {
+				item.ConfidenceScore = score
+			}
+			return
+		}
+		clustersByID[id] = len(out)
+		out = append(out, RootCauseCandidateCluster{
+			ID:              id,
+			Title:           firstNonBlankRootCauseString(title, firstString(candidateTitles), "Root-cause cluster"),
+			CandidateTitles: analysisUniqueStrings(candidateTitles),
+			ShardIDs:        analysisUniqueStrings(shardIDs),
+			EvidenceFiles:   analysisUniqueStrings(evidenceFiles),
+			CausalChain:     chain,
+			ConfidenceScore: clampRootCauseScore(score),
+		})
+	}
+	for _, candidate := range joined {
+		candidateTitles := append([]string{candidate.Title}, candidate.ClusterMembers...)
+		addCluster(candidate.ClusterID, candidate.Title, candidateTitles, rootCauseShardIDsForCandidateTitles(candidateTitles, shardIDsByCandidate), candidate.EvidenceFiles, candidate.CausalChain, candidate.ConfidenceScore)
+	}
+	if len(out) == 0 {
+		for index, report := range reports {
+			if index >= len(shards) {
+				continue
+			}
+			review := ReviewDecision{}
+			if index < len(reviews) {
+				review = reviews[index]
+			}
+			if !rootCauseReviewApprovesSymptomCausality(review) {
+				continue
+			}
+			for _, candidate := range report.RootCauseCandidates {
+				key := rootCauseCandidateClusterKey(candidate)
+				addCluster(rootCauseClusterID(key), candidate.Title, []string{candidate.Title}, []string{shards[index].ID}, candidate.EvidenceFiles, candidate.CausalChain, rootCauseConfidenceScore(candidate, review))
+			}
+		}
+	}
+	return normalizeRootCauseCandidateClusters(out)
+}
+
+func rootCauseCandidateShardIndex(shards []AnalysisShard, reports []WorkerReport) map[string][]string {
+	out := map[string][]string{}
+	for index, report := range reports {
+		if index >= len(shards) {
+			continue
+		}
+		for _, candidate := range report.RootCauseCandidates {
+			key := rootCauseComparableText(candidate.Title)
+			if key == "" {
+				continue
+			}
+			out[key] = analysisUniqueStrings(append(out[key], shards[index].ID))
+		}
+	}
+	return out
+}
+
+func rootCauseShardIDsForCandidateTitles(titles []string, shardIDsByCandidate map[string][]string) []string {
+	out := []string{}
+	for _, title := range titles {
+		key := rootCauseComparableText(title)
+		if key == "" {
+			continue
+		}
+		out = append(out, shardIDsByCandidate[key]...)
+		for existing, shardIDs := range shardIDsByCandidate {
+			if rootCauseComparableTextIsSpecific(key) && strings.Contains(existing, key) {
+				out = append(out, shardIDs...)
+				continue
+			}
+			if rootCauseComparableTextIsSpecific(existing) && strings.Contains(key, existing) {
+				out = append(out, shardIDs...)
+			}
+		}
+	}
+	return analysisUniqueStrings(out)
+}
+
+func normalizeJoinedRootCauseCausalChain(chain RootCauseCausalChain) RootCauseCausalChain {
+	chain.Trigger = strings.TrimSpace(chain.Trigger)
+	chain.InvalidState = strings.TrimSpace(chain.InvalidState)
+	chain.StateTransition = strings.TrimSpace(chain.StateTransition)
+	chain.MissingGuard = strings.TrimSpace(chain.MissingGuard)
+	chain.UserVisibleSymptom = strings.TrimSpace(chain.UserVisibleSymptom)
+	chain.EvidenceFiles = analysisUniqueStrings(chain.EvidenceFiles)
+	return chain
+}
+
+func normalizeRootCauseClassification(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "root_cause", "root cause", "cause":
+		return "root_cause"
+	case "contributing_factor", "contributing factor", "factor":
+		return "contributing_factor"
+	case "detection_gap", "detection gap", "gap":
+		return "detection_gap"
+	case "operational_trigger", "operational trigger", "trigger":
+		return "operational_trigger"
+	default:
+		return "unknown"
+	}
+}
+
+func rootCauseClassificationRank(classification string) int {
+	switch normalizeRootCauseClassification(classification) {
+	case "root_cause":
+		return 0
+	case "contributing_factor":
+		return 1
+	case "detection_gap":
+		return 2
+	case "operational_trigger":
+		return 3
+	default:
+		return 4
+	}
+}
+
+func normalizeRootCauseConfidence(raw string, score int) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "low", "medium", "high":
+		return strings.ToLower(strings.TrimSpace(raw))
+	}
+	if score >= 75 {
+		return "high"
+	}
+	if score >= 45 {
+		return "medium"
+	}
+	return "low"
 }
 
 func (a *projectAnalyzer) synthesizeFinalDocument(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) (string, error) {
@@ -4554,6 +8473,7 @@ type synthesisSection struct {
 	Collaboration       []string             `json:"collaboration,omitempty"`
 	Risks               []string             `json:"risks,omitempty"`
 	Unknowns            []string             `json:"unknowns,omitempty"`
+	RootCauseCandidates []RootCauseCandidate `json:"root_cause_candidates,omitempty"`
 }
 
 func groupedReportsForSynthesis(shards []AnalysisShard, reports []WorkerReport) []synthesisSection {
@@ -4625,6 +8545,7 @@ func mergeSynthesisSection(section *synthesisSection, shard AnalysisShard, repor
 	section.Collaboration = analysisUniqueStrings(append(section.Collaboration, report.Collaboration...))
 	section.Risks = analysisUniqueStrings(append(section.Risks, report.Risks...))
 	section.Unknowns = analysisUniqueStrings(append(section.Unknowns, report.Unknowns...))
+	section.RootCauseCandidates = append(section.RootCauseCandidates, report.RootCauseCandidates...)
 }
 
 func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport) string {
@@ -4634,9 +8555,11 @@ func ensureFinalDocumentInsights(text string, snapshot ProjectSnapshot, shards [
 	}
 	items := groupedReportsForSynthesis(shards, reports)
 	trimmed = normalizeFinalDocumentHeadings(trimmed)
-	trimmed = ensureStartupProjectCoverage(trimmed, snapshot)
-	trimmed = ensureExecutionChainCoverage(trimmed, snapshot, reports)
-	trimmed = ensureSecuritySurfaceCoverage(trimmed, snapshot, items)
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) != "root-cause" {
+		trimmed = ensureStartupProjectCoverage(trimmed, snapshot)
+		trimmed = ensureExecutionChainCoverage(trimmed, snapshot, reports)
+		trimmed = ensureSecuritySurfaceCoverage(trimmed, snapshot, items)
+	}
 	trimmed = ensureAnalysisExecutionCoverage(trimmed, shards)
 	trimmed = normalizeUnexpectedLocaleArtifacts(trimmed)
 	missingEvidence := sectionsMissingCoverage(trimmed, items, "evidence")
@@ -5267,6 +9190,15 @@ func firstNonBlankAnalysisString(primary string, fallback string) string {
 	return fallback
 }
 
+func firstNonBlankRootCauseString(items ...string) string {
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			return item
+		}
+	}
+	return ""
+}
+
 func buildOperationalChain(snapshot ProjectSnapshot, reports []WorkerReport) []RuntimeEdge {
 	high := highConfidenceRuntimeEdges(snapshot.RuntimeEdges)
 	operational := analysisUniqueRuntimeEdges(append([]RuntimeEdge{}, high...))
@@ -5743,6 +9675,8 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
 	architectureFactsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_architecture_facts.json")
+	rootCauseAuditJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_root_cause_audit.json")
+	rootCauseAuditMDPath := filepath.Join(a.analysisCfg.OutputDir, base+"_root_cause_audit.md")
 	performanceJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.json")
 	performanceDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.md")
 	snapshotJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_snapshot.json")
@@ -5871,6 +9805,18 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(architectureFactsJSONPath, factsData, 0o644); err != nil {
 			return "", err
 		}
+		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+			auditData, err := json.MarshalIndent(run.RootCause.AuditTrail, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(rootCauseAuditJSONPath, auditData, 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(rootCauseAuditMDPath, []byte(buildRootCauseAuditDigest(run.RootCause.AuditTrail)), 0o644); err != nil {
+				return "", err
+			}
+		}
 		docsManifest, err := writeAnalysisDocs(run, docsDir)
 		if err != nil {
 			return "", err
@@ -5928,6 +9874,18 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "architecture_facts.json"), factsData, 0o644); err != nil {
 			return "", err
+		}
+		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+			auditData, err := json.MarshalIndent(run.RootCause.AuditTrail, "", "  ")
+			if err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "root_cause_audit.json"), auditData, 0o644); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(filepath.Join(latestDir, "root_cause_audit.md"), []byte(buildRootCauseAuditDigest(run.RootCause.AuditTrail)), 0o644); err != nil {
+				return "", err
+			}
 		}
 		perfData, err := json.MarshalIndent(run.KnowledgePack.PerformanceLens, "", "  ")
 		if err != nil {
@@ -7772,6 +11730,51 @@ Return strict JSON in this exact shape:
     "risks": ["string"],
     "unknowns": ["string"],
     "evidence_files": ["string"],
+    "root_cause_candidates": [
+      {
+        "title": "string",
+        "candidate_chain": ["string"],
+        "causal_chain": {
+          "trigger": "string",
+          "invalid_state": "string",
+          "state_transition": "string",
+          "missing_guard": "string",
+          "user_visible_symptom": "string",
+          "evidence_files": ["string"]
+        },
+        "trigger_values": ["string"],
+        "expected_range": ["string"],
+        "out_of_range_cases": ["string"],
+        "observed_failure_path": ["string"],
+        "evidence_files": ["string"],
+        "disconfirming_evidence": ["string"],
+        "cannot_be_root_cause_if": ["string"],
+        "required_runtime_observation": ["string"],
+        "verification_steps": ["string"],
+        "probes": [
+          {
+            "title": "string",
+            "kind": "log|assert|test|repro|db_config_dump|trace",
+            "target": "file or function",
+            "command": "string",
+            "expected_signal": "string",
+            "disproves_when": "string"
+          }
+        ],
+        "confidence": "low|medium|high",
+        "confidence_breakdown": {
+          "causal_completeness": 0,
+          "evidence_strength": 0,
+          "runtime_observability": 0,
+          "alternative_explanations": 0,
+          "disconfirmation_strength": 0,
+          "score": 0,
+          "reasons": ["string"]
+        },
+        "needs_cross_shard_evidence": ["string"],
+        "pattern_ids": ["known pattern id if the current source evidence actually matches it"]
+      }
+    ],
     "narrative": "string"
   }
 }
@@ -7789,6 +11792,13 @@ Rules:
 - If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.
 - internal_flow should describe control flow or data flow inside the shard.
 - collaboration should describe how this shard connects to other subsystems.
+- For root-cause mode, root_cause_candidates should describe concrete failure chains. Focus on variables and state that may violate assumed ranges, especially input parameters, decoded payload fields, DB/config values, cached state, counters, IDs, enum values, nullable references, timestamps, and lifecycle flags.
+- For root-cause mode, known root-cause patterns are only search priors. Put a pattern id in pattern_ids only when the assigned source evidence matches that pattern and the causal chain is code-supported.
+- For root-cause mode, causal_chain must fill the five stages when evidence allows: trigger, invalid_state, state_transition, missing_guard, user_visible_symptom. Leave a stage empty only when this shard cannot prove it.
+- For root-cause mode, needs_cross_shard_evidence should name the other subsystem evidence needed to prove or reject the candidate, not generic uncertainty.
+- For root-cause mode, every candidate must be falsifiable: fill disconfirming_evidence, cannot_be_root_cause_if, and required_runtime_observation when possible.
+- For root-cause mode, probes must be concrete places to log/assert/test/dump state, including the expected signal and the condition that would disprove the candidate.
+- For root-cause mode, confidence_breakdown scores are 0-100 and must explain causal completeness, evidence strength, runtime observability, alternative explanations, and disconfirmation strength.
 - The provided file context may be truncated to excerpts. If code is visibly partial, record that as source-state evidence such as "context-truncated" instead of using informal wording like "snippet-limited" in final prose.
 - If unsure, put the point in unknowns instead of asserting it as fact, but do not list symbols from the visible file as unknown architectural components when the limitation is just truncated context.
 `)
@@ -7804,13 +11814,46 @@ Return strict JSON:
   "decision": {
     "status": "approved" | "needs_revision",
     "issues": ["string"],
-    "revision_prompt": "string"
+    "revision_prompt": "string",
+    "symptom_possible": "yes|no|partial|unknown",
+    "symptom_causality": ["string"],
+    "symptom_reproduction_bridge": ["string"],
+    "required_runtime_observation": ["string"],
+    "disqualifying_evidence": ["string"],
+    "causal_chain_complete": false,
+    "causal_chain_stages": ["trigger|invalid_state|state_transition|missing_guard|user_visible_symptom"],
+    "causal_chain_missing": ["trigger|invalid_state|state_transition|missing_guard|user_visible_symptom"],
+    "disconfirmed": false,
+    "disconfirming_evidence": ["string"],
+    "rejected_candidates": ["string"],
+    "evidence_requests": [
+      {
+        "request": "string",
+        "target_signals": ["string"],
+        "target_files": ["string"],
+        "reason": "string",
+        "required_to_prove": "string"
+      }
+    ]
   }
 }
-Approve only if the report is specific, grounded, and suitable for a final architecture document.
+Approve only if the report is specific, grounded, and suitable for the requested mode-specific final document.
 Reject reports that are generic, omit control/data flow, or cite evidence files outside the shard scope.
 Use the deterministic architecture fact pack as authoritative review context; reject reports that contradict exact source anchors, closed top-level directory facts, or flow separation invariants.
 Prefer reports that separate direct facts from higher-level inferences.
+For root-cause mode, validate causality against the exact user-reported symptom, not just whether the candidate is a real bug.
+For root-cause mode, known root-cause patterns are priors only; approve pattern-backed claims only when current source evidence independently proves the causal chain.
+For root-cause mode, evaluate the five causal stages: trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
+For root-cause mode, set symptom_possible:
+- yes: the report shows a complete plausible chain from trigger value/state to the reported symptom.
+- partial: the shard shows a necessary part of the chain and names specific cross-shard evidence needed.
+- no: the issue may be real but cannot produce the reported symptom.
+- unknown: the report lacks enough evidence to judge symptom causality.
+For root-cause mode, set causal_chain_complete=true only when all five stages are supported by evidence. Fill causal_chain_stages with supported stages and causal_chain_missing with missing stages.
+For root-cause mode, approved decisions must fill symptom_reproduction_bridge, required_runtime_observation, and disqualifying_evidence. Missing any of these means needs_revision.
+For root-cause mode, set disconfirmed=true when the file evidence shows the candidate cannot produce the symptom, and explain why in disconfirming_evidence.
+For root-cause mode, fill evidence_requests when the candidate is plausible but another file, symbol, config/DB read, lifecycle path, or runtime state must be inspected before the conductor can accept it. Each request must include target_signals or target_files specific enough to route another shard.
+For root-cause mode, approve only when symptom_possible is yes with at least four causal stages and specific symptom_causality, or partial with at least three causal stages plus specific needs_cross_shard_evidence. Reject reports that are concrete bugs but do not explain how the user's symptom would happen or are disconfirmed by code evidence.
 When a previous approved report is provided for dependency_changed cases, compare it against the new report and reject stale claims that no longer match the dependency context.
 `)
 }
@@ -7818,13 +11861,23 @@ When a previous approved report is provided for dependency_changed cases, compar
 func synthesisSystemPrompt() string {
 	return strings.TrimSpace(`
 You are the conductor writing the final Markdown document.
-Use these sections:
+Use these sections by default:
 1. Project Overview
 2. Directory And Module Map
 3. Execution Flow And Entry Points
 4. Subsystem Breakdown
 5. Dependencies And Integration Points
 6. Risks And Unknowns
+For root-cause investigations, replace the default structure with:
+1. Reported Symptom
+2. Root Causes
+3. Contributing Factors
+4. Detection Gaps
+5. Operational Triggers
+6. Evidence Trail
+7. Value And State Assumption Failures
+8. Verification And Falsification Steps
+9. Remaining Unknowns
 Requirements:
 - Treat the deterministic architecture fact pack as authoritative. If approved shard reports conflict with it, prefer the fact pack and mention the conflict as an uncertainty instead of synthesizing the conflicting claim.
 - Use responsibilities to explain ownership boundaries.
@@ -7871,6 +11924,23 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 		b.WriteString("\n")
+	}
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		if plan := renderRootCauseInvestigationForPrompt(snapshot.RootCause, 5000); strings.TrimSpace(plan) != "" {
+			b.WriteString("Normalized symptom and investigation hypotheses:\n")
+			b.WriteString(plan)
+			b.WriteString("\n\n")
+		}
+		b.WriteString("Root-cause worker checklist:\n")
+		b.WriteString("- Treat this as a bounded bug triage task, not an architecture summary.\n")
+		b.WriteString("- First decide whether this shard can directly affect the reported symptom. If not, explain why and list only cross-shard evidence needed.\n")
+		b.WriteString("- Search for branch conditions, guard clauses, state transitions, counters, limits, cache flags, persistence reads, retry loops, lifecycle state, tool availability, and finalization gates.\n")
+		b.WriteString("- For every candidate, structure causal_chain as five stages: trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.\n")
+		b.WriteString("- For every candidate, fill root_cause_candidates with trigger_values, expected_range, out_of_range_cases, observed_failure_path, confidence, and evidence_files.\n")
+		b.WriteString("- Also fill disconfirming_evidence, cannot_be_root_cause_if, required_runtime_observation, and verification_steps so the reviewer can reject false positives.\n")
+		b.WriteString("- Fill probes and confidence_breakdown. Probes should name where to log/assert/test/dump state, expected_signal, and disproves_when.\n")
+		b.WriteString("- If regression memory lists a previous rejection/disconfirmation, treat it as a prior to re-check, not as proof by itself.\n")
+		b.WriteString("- Prefer one concrete candidate over many vague risks. A candidate must link an unexpected value/state to the observed symptom.\n\n")
 	}
 	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, shard); strings.TrimSpace(baseline) != "" {
 		b.WriteString("Baseline architecture map:\n")
@@ -7990,6 +12060,201 @@ func renderAnalysisBaselineMapPrompt(baseline AnalysisBaselineMap, shard Analysi
 	return strings.TrimSpace(b.String())
 }
 
+func renderRootCauseInvestigationForPrompt(plan RootCauseInvestigation, limit int) string {
+	if !rootCauseInvestigationHasContent(plan) {
+		return ""
+	}
+	var b strings.Builder
+	if strings.TrimSpace(plan.Symptom.Symptom) != "" {
+		fmt.Fprintf(&b, "- Symptom: %s\n", plan.Symptom.Symptom)
+	}
+	if strings.TrimSpace(plan.Symptom.ExpectedBehavior) != "" {
+		fmt.Fprintf(&b, "- Expected behavior: %s\n", plan.Symptom.ExpectedBehavior)
+	}
+	if strings.TrimSpace(plan.Symptom.ObservedBehavior) != "" {
+		fmt.Fprintf(&b, "- Observed behavior: %s\n", plan.Symptom.ObservedBehavior)
+	}
+	if strings.TrimSpace(plan.Symptom.Frequency) != "" {
+		fmt.Fprintf(&b, "- Frequency: %s\n", plan.Symptom.Frequency)
+	}
+	if len(plan.Symptom.TriggerKeywords) > 0 {
+		fmt.Fprintf(&b, "- Trigger keywords: %s\n", strings.Join(limitStrings(plan.Symptom.TriggerKeywords, 10), ", "))
+	}
+	if len(plan.Symptom.AffectedSurface) > 0 {
+		fmt.Fprintf(&b, "- Affected surface: %s\n", strings.Join(limitStrings(plan.Symptom.AffectedSurface, 10), ", "))
+	}
+	if len(plan.Symptom.MustExplain) > 0 {
+		fmt.Fprintf(&b, "- Must explain: %s\n", strings.Join(limitStrings(plan.Symptom.MustExplain, 8), " | "))
+	}
+	if len(plan.Hypotheses) > 0 {
+		b.WriteString("Hypotheses:\n")
+		for _, h := range limitRootCauseHypotheses(plan.Hypotheses, 8) {
+			fmt.Fprintf(&b, "- %s %s: %s\n", strings.TrimSpace(h.ID), strings.TrimSpace(h.Title), strings.TrimSpace(h.CandidateMechanism))
+			if len(h.TargetSignals) > 0 {
+				fmt.Fprintf(&b, "  target_signals=%s\n", strings.Join(limitStrings(h.TargetSignals, 8), ", "))
+			}
+			if len(h.TargetFiles) > 0 {
+				fmt.Fprintf(&b, "  target_files=%s\n", strings.Join(limitStrings(h.TargetFiles, 6), ", "))
+			}
+			if len(h.MustProve) > 0 {
+				fmt.Fprintf(&b, "  must_prove=%s\n", strings.Join(limitStrings(h.MustProve, 4), " | "))
+			}
+			if len(h.MustDisprove) > 0 {
+				fmt.Fprintf(&b, "  must_disprove=%s\n", strings.Join(limitStrings(h.MustDisprove, 4), " | "))
+			}
+		}
+	}
+	if len(plan.CodeMatches) > 0 {
+		b.WriteString("Code matches:\n")
+		for _, match := range limitRootCauseCodeMatches(plan.CodeMatches, 10) {
+			fmt.Fprintf(&b, "- %s score=%d query=%s signals=%s\n", match.File, match.Score, match.Query, strings.Join(limitStrings(match.MatchedSignals, 5), ", "))
+		}
+	}
+	if patterns := renderRootCausePatternMatchesForPrompt(plan.PatternMatches, 8); strings.TrimSpace(patterns) != "" {
+		b.WriteString(patterns)
+		b.WriteString("\n")
+	}
+	if memory := renderRootCauseRegressionMemoryForPrompt(plan.RegressionMemory, 1800); strings.TrimSpace(memory) != "" {
+		b.WriteString("Regression memory from previous run:\n")
+		b.WriteString(memory)
+		b.WriteString("\n")
+	}
+	if len(plan.EvidenceRequests) > 0 {
+		b.WriteString("Evidence requests:\n")
+		for _, request := range limitRootCauseEvidenceRequests(plan.EvidenceRequests, 8) {
+			fmt.Fprintf(&b, "- %s [%s] request=%s signals=%s files=%s routed=%s fulfilled=%s\n",
+				request.ID,
+				request.Status,
+				firstNonBlankRootCauseString(request.Request, request.RequiredToProve),
+				strings.Join(limitStrings(request.TargetSignals, 4), ", "),
+				strings.Join(limitStrings(request.TargetFiles, 4), ", "),
+				strings.Join(limitStrings(request.RoutedShardIDs, 4), ", "),
+				strings.Join(limitStrings(request.FulfilledByShards, 4), ", "))
+		}
+	}
+	if len(plan.DeepVerifications) > 0 {
+		b.WriteString("Deep verifications:\n")
+		for _, item := range limitRootCauseDeepVerifications(plan.DeepVerifications, 6) {
+			fmt.Fprintf(&b, "- %s [%s, confidence=%s]: %s\n", item.CandidateTitle, item.Status, item.Confidence, item.Summary)
+			if len(item.Probes) > 0 {
+				fmt.Fprintf(&b, "  probes=%s\n", renderRootCauseProbeList(item.Probes, 2))
+			}
+		}
+	}
+	if len(plan.JoinedCandidates) > 0 {
+		b.WriteString("Joined candidates:\n")
+		for _, c := range limitRootCauseJoinedCandidates(plan.JoinedCandidates, 8) {
+			fmt.Fprintf(&b, "- %s (%s, cluster=%s, confidence=%s, score=%d)\n", c.Title, c.Classification, c.ClusterID, c.Confidence, c.ConfidenceScore)
+			if rootCauseCausalChainStageCount(c.CausalChain) > 0 {
+				fmt.Fprintf(&b, "  causal_chain=%s\n", renderRootCauseCausalChainInline(c.CausalChain))
+			}
+			for _, step := range limitStrings(c.JoinedChain, 4) {
+				fmt.Fprintf(&b, "  chain=%s\n", step)
+			}
+			if len(c.CannotBeRootCauseIf) > 0 {
+				fmt.Fprintf(&b, "  cannot_be_root_cause_if=%s\n", strings.Join(limitStrings(c.CannotBeRootCauseIf, 3), " | "))
+			}
+			if len(c.Probes) > 0 {
+				fmt.Fprintf(&b, "  probes=%s\n", renderRootCauseProbeList(c.Probes, 2))
+			}
+			if len(c.CompetesWith)+len(c.DependsOn)+len(c.CanCoexistWith) > 0 {
+				fmt.Fprintf(&b, "  relations=competes:%s depends:%s coexist:%s\n", strings.Join(limitStrings(c.CompetesWith, 3), ", "), strings.Join(limitStrings(c.DependsOn, 3), ", "), strings.Join(limitStrings(c.CanCoexistWith, 3), ", "))
+			}
+			if len(c.ConfidenceBreakdown.Reasons) > 0 {
+				fmt.Fprintf(&b, "  confidence_reasons=%s\n", strings.Join(limitStrings(c.ConfidenceBreakdown.Reasons, 2), " | "))
+			}
+		}
+	}
+	if len(plan.CandidateClusters) > 0 {
+		b.WriteString("Candidate clusters:\n")
+		for _, cluster := range limitRootCauseCandidateClusters(plan.CandidateClusters, 8) {
+			fmt.Fprintf(&b, "- %s %s score=%d candidates=%s\n", cluster.ID, cluster.Title, cluster.ConfidenceScore, strings.Join(limitStrings(cluster.CandidateTitles, 4), " | "))
+		}
+	}
+	text := strings.TrimSpace(b.String())
+	if limit > 0 {
+		text = analysisPromptExcerpt(text, limit)
+	}
+	return strings.TrimSpace(text)
+}
+
+func limitRootCauseHypotheses(items []RootCauseHypothesis, limit int) []RootCauseHypothesis {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitRootCauseCodeMatches(items []RootCauseCodeMatch, limit int) []RootCauseCodeMatch {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitRootCauseDeepVerifications(items []RootCauseDeepVerification, limit int) []RootCauseDeepVerification {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitRootCauseJoinedCandidates(items []RootCauseJoinedCandidate, limit int) []RootCauseJoinedCandidate {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitRootCauseCandidateClusters(items []RootCauseCandidateCluster, limit int) []RootCauseCandidateCluster {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitRootCauseEvidenceRequests(items []RootCauseEvidenceRequest, limit int) []RootCauseEvidenceRequest {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func renderRootCauseProbeList(probes []RootCauseProbe, limit int) string {
+	parts := []string{}
+	for _, probe := range limitRootCauseProbes(probes, limit) {
+		parts = append(parts, fmt.Sprintf("%s:%s->%s", probe.Kind, firstNonBlankRootCauseString(probe.Target, probe.Title), firstNonBlankRootCauseString(probe.ExpectedSignal, probe.Command)))
+	}
+	return strings.Join(parts, " | ")
+}
+
+func limitRootCauseProbes(items []RootCauseProbe, limit int) []RootCauseProbe {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func renderRootCauseCausalChainInline(chain RootCauseCausalChain) string {
+	parts := []string{}
+	if strings.TrimSpace(chain.Trigger) != "" {
+		parts = append(parts, "trigger="+strings.TrimSpace(chain.Trigger))
+	}
+	if strings.TrimSpace(chain.InvalidState) != "" {
+		parts = append(parts, "invalid_state="+strings.TrimSpace(chain.InvalidState))
+	}
+	if strings.TrimSpace(chain.StateTransition) != "" {
+		parts = append(parts, "state_transition="+strings.TrimSpace(chain.StateTransition))
+	}
+	if strings.TrimSpace(chain.MissingGuard) != "" {
+		parts = append(parts, "missing_guard="+strings.TrimSpace(chain.MissingGuard))
+	}
+	if strings.TrimSpace(chain.UserVisibleSymptom) != "" {
+		parts = append(parts, "user_visible_symptom="+strings.TrimSpace(chain.UserVisibleSymptom))
+	}
+	return strings.Join(parts, " -> ")
+}
+
 func relevantBaselineAnchors(anchors []string, shard AnalysisShard) []string {
 	if len(anchors) == 0 || len(shard.PrimaryFiles)+len(shard.ReferenceFiles) == 0 {
 		return nil
@@ -8040,6 +12305,22 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 		b.WriteString("\n")
+	}
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		b.WriteString("Root-cause review checklist:\n")
+		b.WriteString("- Approve only candidates that connect a concrete unexpected value/state to the reported symptom.\n")
+		b.WriteString("- If a worker cites pattern_ids, verify the assigned source actually matches the known pattern; pattern similarity alone is not evidence.\n")
+		b.WriteString("- Validate the full causality chain: trigger -> invalid_state -> state_transition -> missing_guard -> exact user_visible_symptom.\n")
+		b.WriteString("- Fill causal_chain_complete, causal_chain_stages, and causal_chain_missing. Do not approve yes unless at least four stages are evidenced.\n")
+		b.WriteString("- A candidate that describes a real defect but cannot produce the reported symptom must be rejected or listed in rejected_candidates.\n")
+		b.WriteString("- Fill symptom_possible and symptom_causality. symptom_causality must explain why the symptom can happen, not just why the code is suspicious.\n")
+		b.WriteString("- Fill symptom_reproduction_bridge with the concrete trigger-to-symptom path, required_runtime_observation with the runtime value/log/assert needed to confirm it, and disqualifying_evidence with what would falsify it.\n")
+		b.WriteString("- Set disconfirmed=true and fill disconfirming_evidence when this shard proves the candidate cannot produce the symptom.\n")
+		b.WriteString("- Reject or revise reports that only restate architecture, list generic risks, or omit trigger_values/out_of_range_cases/observed_failure_path.\n")
+		b.WriteString("- If this shard has partial evidence that needs another subsystem, approve only when needs_cross_shard_evidence is specific enough for the conductor to route the next shard.\n")
+		b.WriteString("- When more evidence is needed, fill evidence_requests with exact target_signals or target_files so the conductor can run additional worker shards.\n")
+		b.WriteString("- Verify worker probes and confidence_breakdown; reject candidates whose probes cannot observe or disprove the user-visible symptom chain.\n")
+		b.WriteString("- Prefer low confidence over false certainty when the assigned files cannot prove the full chain.\n\n")
 	}
 	if strings.TrimSpace(shard.InvalidationReason) != "" {
 		fmt.Fprintf(&b, "Invalidation reason: %s\n", describeAnalysisInvalidationReasonWithContext(shard.InvalidationReason, []string{shard.Name}))
@@ -8103,6 +12384,15 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 			for _, item := range requirements {
 				fmt.Fprintf(&b, "- %s\n", item)
 			}
+			if normalizeProjectAnalysisMode(mode) == "root-cause" {
+				b.WriteString("- Rank suspected root causes by likelihood and impact; include confidence and the strongest evidence files for each candidate.\n")
+				b.WriteString("- Do not present reviewer-rejected or weakly grounded speculation as fact; keep it under Remaining Unknowns or Verification Steps.\n")
+				b.WriteString("- Include concrete reproduction or instrumentation steps that would confirm the candidate path.\n")
+				b.WriteString("- Split final findings into Root Causes, Contributing Factors, Detection Gaps, Operational Triggers, and Remaining Unknowns.\n")
+				b.WriteString("- For each root cause, include cannot_be_root_cause_if and required_runtime_observation so the user can falsify it.\n")
+				b.WriteString("- Include concrete probes and confidence breakdowns when joined candidates provide them.\n")
+				b.WriteString("- Mention candidate clusters only when they clarify duplicate findings across shards.\n")
+			}
 			b.WriteString("\n")
 		}
 	}
@@ -8113,6 +12403,13 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 			lensNames = append(lensNames, lens.Type)
 		}
 		fmt.Fprintf(&b, "Analysis lenses: %s\n", strings.Join(lensNames, ", "))
+	}
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		if plan := renderRootCauseInvestigationForPrompt(snapshot.RootCause, 9000); strings.TrimSpace(plan) != "" {
+			b.WriteString("\nRoot-cause normalized symptom, hypotheses, and joined candidates:\n")
+			b.WriteString(plan)
+			b.WriteString("\n\n")
+		}
 	}
 	if baseline := renderAnalysisBaselineMapPrompt(snapshot.BaselineMap, AnalysisShard{}); strings.TrimSpace(baseline) != "" {
 		fmt.Fprintf(&b, "\nBaseline architecture map:\n%s\n\n", baseline)
@@ -8473,6 +12770,28 @@ func workerReportsCorpus(reports []WorkerReport) string {
 		parts = append(parts, report.Unknowns...)
 		parts = append(parts, report.KeyFiles...)
 		parts = append(parts, report.EvidenceFiles...)
+		for _, candidate := range report.RootCauseCandidates {
+			parts = append(parts,
+				candidate.Title,
+				candidate.Confidence,
+				candidate.CausalChain.Trigger,
+				candidate.CausalChain.InvalidState,
+				candidate.CausalChain.StateTransition,
+				candidate.CausalChain.MissingGuard,
+				candidate.CausalChain.UserVisibleSymptom,
+			)
+			parts = append(parts, candidate.CandidateChain...)
+			parts = append(parts, candidate.TriggerValues...)
+			parts = append(parts, candidate.ExpectedRange...)
+			parts = append(parts, candidate.OutOfRangeCases...)
+			parts = append(parts, candidate.ObservedFailurePath...)
+			parts = append(parts, candidate.EvidenceFiles...)
+			parts = append(parts, candidate.DisconfirmingEvidence...)
+			parts = append(parts, candidate.CannotBeRootCauseIf...)
+			parts = append(parts, candidate.RequiredRuntimeObservation...)
+			parts = append(parts, candidate.VerificationSteps...)
+			parts = append(parts, candidate.NeedsCrossShardEvidence...)
+		}
 	}
 	return strings.Join(parts, "\n")
 }
@@ -8587,7 +12906,8 @@ func workerReportPayloadHasContent(report WorkerReport) bool {
 		len(report.Collaboration) > 0 ||
 		len(report.Risks) > 0 ||
 		len(report.Unknowns) > 0 ||
-		len(report.EvidenceFiles) > 0
+		len(report.EvidenceFiles) > 0 ||
+		len(report.RootCauseCandidates) > 0
 }
 
 func workerReportLooksLikeSchemaPlaceholder(report WorkerReport) bool {
@@ -8622,6 +12942,26 @@ func workerReportLooksLikeSchemaPlaceholder(report WorkerReport) bool {
 	checkList(report.Risks)
 	checkList(report.Unknowns)
 	checkList(report.EvidenceFiles)
+	for _, candidate := range report.RootCauseCandidates {
+		checkString(candidate.Title)
+		checkString(candidate.CausalChain.Trigger)
+		checkString(candidate.CausalChain.InvalidState)
+		checkString(candidate.CausalChain.StateTransition)
+		checkString(candidate.CausalChain.MissingGuard)
+		checkString(candidate.CausalChain.UserVisibleSymptom)
+		checkList(candidate.CandidateChain)
+		checkList(candidate.TriggerValues)
+		checkList(candidate.ExpectedRange)
+		checkList(candidate.OutOfRangeCases)
+		checkList(candidate.ObservedFailurePath)
+		checkList(candidate.EvidenceFiles)
+		checkList(candidate.DisconfirmingEvidence)
+		checkList(candidate.CannotBeRootCauseIf)
+		checkList(candidate.RequiredRuntimeObservation)
+		checkList(candidate.VerificationSteps)
+		checkString(candidate.Confidence)
+		checkList(candidate.NeedsCrossShardEvidence)
+	}
 	return total >= 6 && placeholder*2 >= total
 }
 
@@ -8660,6 +13000,34 @@ func normalizeReviewDecision(decision *ReviewDecision) {
 	status := strings.ToLower(strings.TrimSpace(decision.Status))
 	if status == "needs_revision" && strings.TrimSpace(decision.FailureKind) == "" {
 		decision.FailureKind = analysisReviewIssueQuality
+	}
+	decision.SymptomPossible = normalizeSymptomPossible(decision.SymptomPossible)
+	decision.SymptomCausality = analysisUniqueStrings(decision.SymptomCausality)
+	decision.SymptomReproductionBridge = analysisUniqueStrings(decision.SymptomReproductionBridge)
+	decision.RequiredRuntimeObservation = analysisUniqueStrings(decision.RequiredRuntimeObservation)
+	decision.DisqualifyingEvidence = analysisUniqueStrings(decision.DisqualifyingEvidence)
+	decision.CausalChainStages = rootCauseNormalizeCausalStages(decision.CausalChainStages)
+	decision.CausalChainMissing = rootCauseNormalizeCausalStages(decision.CausalChainMissing)
+	decision.DisconfirmingEvidence = analysisUniqueStrings(decision.DisconfirmingEvidence)
+	decision.RejectedCandidates = analysisUniqueStrings(decision.RejectedCandidates)
+	decision.EvidenceRequests = normalizeRootCauseEvidenceRequests(decision.EvidenceRequests)
+}
+
+func normalizeSymptomPossible(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "yes", "true", "possible":
+		if strings.TrimSpace(raw) == "" {
+			return ""
+		}
+		return "yes"
+	case "partial", "partially":
+		return "partial"
+	case "no", "false", "impossible":
+		return "no"
+	case "unknown", "unclear":
+		return "unknown"
+	default:
+		return strings.ToLower(strings.TrimSpace(raw))
 	}
 }
 
@@ -8776,6 +13144,7 @@ func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
 	report.Risks = analysisUniqueStrings(report.Risks)
 	report.Unknowns = analysisUniqueStrings(report.Unknowns)
 	report.EvidenceFiles = analysisUniqueStrings(filterEvidence(report.EvidenceFiles, shard))
+	report.RootCauseCandidates = normalizeRootCauseCandidates(report.RootCauseCandidates, shard)
 	if len(report.EvidenceFiles) == 0 {
 		report.EvidenceFiles = append([]string(nil), shard.PrimaryFiles...)
 	}
@@ -8785,6 +13154,48 @@ func normalizeWorkerReport(report *WorkerReport, shard AnalysisShard) {
 			report.KeyFiles = report.KeyFiles[:8]
 		}
 	}
+}
+
+func normalizeRootCauseCandidates(candidates []RootCauseCandidate, shard AnalysisShard) []RootCauseCandidate {
+	out := []RootCauseCandidate{}
+	for _, candidate := range candidates {
+		candidate.Title = strings.TrimSpace(candidate.Title)
+		candidate.CandidateChain = analysisUniqueStrings(candidate.CandidateChain)
+		candidate.TriggerValues = analysisUniqueStrings(candidate.TriggerValues)
+		candidate.ExpectedRange = analysisUniqueStrings(candidate.ExpectedRange)
+		candidate.OutOfRangeCases = analysisUniqueStrings(candidate.OutOfRangeCases)
+		candidate.ObservedFailurePath = analysisUniqueStrings(candidate.ObservedFailurePath)
+		candidate.EvidenceFiles = analysisUniqueStrings(filterEvidence(candidate.EvidenceFiles, shard))
+		candidate.DisconfirmingEvidence = analysisUniqueStrings(candidate.DisconfirmingEvidence)
+		candidate.CannotBeRootCauseIf = analysisUniqueStrings(candidate.CannotBeRootCauseIf)
+		candidate.RequiredRuntimeObservation = analysisUniqueStrings(candidate.RequiredRuntimeObservation)
+		candidate.VerificationSteps = analysisUniqueStrings(candidate.VerificationSteps)
+		candidate.Confidence = strings.TrimSpace(candidate.Confidence)
+		candidate.NeedsCrossShardEvidence = analysisUniqueStrings(candidate.NeedsCrossShardEvidence)
+		candidate.PatternIDs = analysisUniqueStrings(candidate.PatternIDs)
+		candidate.CausalChain = normalizeRootCauseCausalChain(candidate.CausalChain, candidate, shard)
+		if candidate.Title == "" &&
+			len(candidate.CandidateChain) == 0 &&
+			len(candidate.TriggerValues) == 0 &&
+			len(candidate.OutOfRangeCases) == 0 &&
+			len(candidate.ObservedFailurePath) == 0 {
+			continue
+		}
+		if len(candidate.EvidenceFiles) == 0 {
+			candidate.EvidenceFiles = append([]string(nil), shard.PrimaryFiles...)
+		}
+		if candidate.Confidence == "" {
+			candidate.Confidence = "medium"
+		}
+		candidate.Confidence = normalizeRootCauseConfidence(candidate.Confidence, rootCauseConfidenceScore(candidate, ReviewDecision{}))
+		candidate.Probes = normalizeRootCauseProbes(candidate.Probes)
+		if len(candidate.Probes) == 0 {
+			candidate.Probes = deriveRootCauseCandidateProbes(candidate, shard)
+		}
+		candidate.ConfidenceBreakdown = normalizeRootCauseConfidenceBreakdown(candidate.ConfidenceBreakdown, rootCauseConfidenceScore(candidate, ReviewDecision{}))
+		out = append(out, candidate)
+	}
+	return out
 }
 
 func heuristicReviewDecision(report WorkerReport, raw string) ReviewDecision {
@@ -8894,7 +13305,221 @@ func softFailWorkerReviewDecision(shard AnalysisShard, err error) ReviewDecision
 	}
 }
 
+func fallbackRootCauseDocument(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) string {
+	var b strings.Builder
+	b.WriteString("# Root Cause Investigation\n\n")
+	b.WriteString("## Reported Symptom\n\n")
+	if strings.TrimSpace(snapshot.RootCause.Symptom.Symptom) != "" {
+		fmt.Fprintf(&b, "- Symptom: %s\n", snapshot.RootCause.Symptom.Symptom)
+	} else {
+		fmt.Fprintf(&b, "- Goal: %s\n", goal)
+	}
+	if strings.TrimSpace(snapshot.RootCause.Symptom.ExpectedBehavior) != "" {
+		fmt.Fprintf(&b, "- Expected behavior: %s\n", snapshot.RootCause.Symptom.ExpectedBehavior)
+	}
+	if strings.TrimSpace(snapshot.RootCause.Symptom.ObservedBehavior) != "" {
+		fmt.Fprintf(&b, "- Observed behavior: %s\n", snapshot.RootCause.Symptom.ObservedBehavior)
+	}
+	if strings.TrimSpace(snapshot.RootCause.Symptom.Frequency) != "" {
+		fmt.Fprintf(&b, "- Frequency: %s\n", snapshot.RootCause.Symptom.Frequency)
+	}
+	b.WriteString("\n")
+	writeRootCauseJoinedSection(&b, "Root Causes", snapshot.RootCause.JoinedCandidates, "root_cause")
+	writeRootCauseJoinedSection(&b, "Contributing Factors", snapshot.RootCause.JoinedCandidates, "contributing_factor")
+	writeRootCauseJoinedSection(&b, "Detection Gaps", snapshot.RootCause.JoinedCandidates, "detection_gap")
+	writeRootCauseJoinedSection(&b, "Operational Triggers", snapshot.RootCause.JoinedCandidates, "operational_trigger")
+	if len(snapshot.RootCause.JoinedCandidates) == 0 {
+		b.WriteString("## Root Causes\n\n")
+		b.WriteString("- No reviewer-validated root-cause candidate survived symptom-causality review.\n\n")
+	}
+	b.WriteString("## Evidence Trail\n\n")
+	wroteEvidence := false
+	for index, report := range reports {
+		if index >= len(shards) {
+			continue
+		}
+		if len(report.RootCauseCandidates) == 0 && len(report.Facts) == 0 && len(report.Unknowns) == 0 {
+			continue
+		}
+		wroteEvidence = true
+		fmt.Fprintf(&b, "### %s (%s)\n\n", firstNonBlankAnalysisString(report.Title, shards[index].Name), shards[index].ID)
+		writeSectionList(&b, "Facts", report.Facts)
+		writeSectionList(&b, "Unknowns", report.Unknowns)
+		writeRootCauseCandidates(&b, report.RootCauseCandidates)
+	}
+	if !wroteEvidence {
+		b.WriteString("- No shard evidence was available.\n\n")
+	}
+	if len(snapshot.RootCause.Hypotheses) > 0 {
+		b.WriteString("## Remaining Unknowns\n\n")
+		for _, hypothesis := range snapshot.RootCause.Hypotheses {
+			if len(hypothesis.MustDisprove) == 0 {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s: %s\n", firstNonBlankAnalysisString(hypothesis.ID, "H"), strings.Join(limitStrings(hypothesis.MustDisprove, 3), " | "))
+		}
+	}
+	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func buildRootCauseAuditDigest(audit RootCauseAuditTrail) string {
+	var b strings.Builder
+	b.WriteString("# Root Cause Audit Trail\n\n")
+	if strings.TrimSpace(audit.Symptom) != "" {
+		fmt.Fprintf(&b, "- Symptom: %s\n", audit.Symptom)
+	}
+	if !audit.GeneratedAt.IsZero() {
+		fmt.Fprintf(&b, "- Generated at: %s\n", audit.GeneratedAt.Format(time.RFC3339))
+	}
+	if len(audit.CodeMatches) > 0 {
+		b.WriteString("\n## Code Matches\n\n")
+		for _, match := range limitRootCauseCodeMatches(audit.CodeMatches, 16) {
+			fmt.Fprintf(&b, "- %s score=%d signals=%s\n", match.File, match.Score, strings.Join(limitStrings(match.MatchedSignals, 6), ", "))
+		}
+	}
+	if len(audit.EvidenceRequests) > 0 {
+		b.WriteString("\n## Evidence Requests\n\n")
+		for _, request := range limitRootCauseEvidenceRequests(audit.EvidenceRequests, 16) {
+			fmt.Fprintf(&b, "- %s [%s] %s\n", request.ID, request.Status, firstNonBlankRootCauseString(request.Request, request.RequiredToProve, strings.Join(request.TargetSignals, ", ")))
+			if len(request.RoutedShardIDs) > 0 {
+				fmt.Fprintf(&b, "  - routed: %s\n", strings.Join(limitStrings(request.RoutedShardIDs, 5), ", "))
+			}
+			if len(request.FulfilledByShards) > 0 {
+				fmt.Fprintf(&b, "  - fulfilled_by: %s\n", strings.Join(limitStrings(request.FulfilledByShards, 5), ", "))
+			}
+			if len(request.SatisfiedEvidenceFiles) > 0 {
+				fmt.Fprintf(&b, "  - evidence: %s\n", strings.Join(limitStrings(request.SatisfiedEvidenceFiles, 5), ", "))
+			}
+		}
+	}
+	if len(audit.PatternMatches) > 0 {
+		b.WriteString("\n## Known Pattern Priors\n\n")
+		for _, match := range limitRootCausePatternMatches(audit.PatternMatches, 16) {
+			fmt.Fprintf(&b, "- %s score=%d confidence=%s types=%s\n", match.PatternID, match.Score, match.Confidence, strings.Join(match.ProjectTypes, ", "))
+			if strings.TrimSpace(match.Title) != "" {
+				fmt.Fprintf(&b, "  - title: %s\n", match.Title)
+			}
+			if len(match.MatchedSignals) > 0 {
+				fmt.Fprintf(&b, "  - signals: %s\n", strings.Join(limitStrings(match.MatchedSignals, 5), ", "))
+			}
+			if len(match.MatchedFiles) > 0 {
+				fmt.Fprintf(&b, "  - files: %s\n", strings.Join(limitStrings(match.MatchedFiles, 5), ", "))
+			}
+		}
+	}
+	if len(audit.CandidateDecisions) > 0 {
+		b.WriteString("\n## Candidate Decisions\n\n")
+		for _, item := range audit.CandidateDecisions {
+			fmt.Fprintf(&b, "- %s [%s] shard=%s review=%s symptom=%s deep=%s\n", firstNonBlankAnalysisString(item.CandidateTitle, "candidate"), item.Decision, item.ShardID, item.ReviewStatus, item.SymptomPossible, item.DeepVerificationStatus)
+			if strings.TrimSpace(item.Reason) != "" {
+				fmt.Fprintf(&b, "  - reason: %s\n", item.Reason)
+			}
+			if len(item.CausalChainStages) > 0 {
+				fmt.Fprintf(&b, "  - stages: %s\n", strings.Join(item.CausalChainStages, ", "))
+			}
+			if len(item.CausalChainMissing) > 0 {
+				fmt.Fprintf(&b, "  - missing: %s\n", strings.Join(item.CausalChainMissing, ", "))
+			}
+			if len(item.PatternIDs) > 0 {
+				fmt.Fprintf(&b, "  - patterns: %s\n", strings.Join(limitStrings(item.PatternIDs, 5), ", "))
+			}
+			if len(item.ExplicitPatternIDs) > 0 {
+				fmt.Fprintf(&b, "  - explicit_patterns: %s\n", strings.Join(limitStrings(item.ExplicitPatternIDs, 5), ", "))
+			}
+			if len(item.InferredRelatedPatternIDs) > 0 {
+				fmt.Fprintf(&b, "  - inferred_related_patterns: %s\n", strings.Join(limitStrings(item.InferredRelatedPatternIDs, 5), ", "))
+			}
+		}
+	}
+	if len(audit.DeepVerifications) > 0 {
+		b.WriteString("\n## Deep Verifications\n\n")
+		for _, item := range audit.DeepVerifications {
+			fmt.Fprintf(&b, "- %s [%s, confidence=%s]: %s\n", item.CandidateTitle, item.Status, item.Confidence, item.Summary)
+			if len(item.InstrumentationSteps) > 0 {
+				fmt.Fprintf(&b, "  - instrumentation: %s\n", strings.Join(limitStrings(item.InstrumentationSteps, 4), " | "))
+			}
+			if len(item.Probes) > 0 {
+				fmt.Fprintf(&b, "  - probes: %s\n", renderRootCauseProbeList(item.Probes, 3))
+			}
+			if len(item.PatternIDs) > 0 {
+				fmt.Fprintf(&b, "  - patterns: %s\n", strings.Join(limitStrings(item.PatternIDs, 5), ", "))
+			}
+		}
+	}
+	if len(audit.JoinedCandidates) > 0 {
+		b.WriteString("\n## Joined Candidates\n\n")
+		for _, item := range limitRootCauseJoinedCandidates(audit.JoinedCandidates, 12) {
+			fmt.Fprintf(&b, "- %s [%s, %s, %d/100, cluster=%s]\n", item.Title, item.Classification, item.Confidence, item.ConfidenceScore, item.ClusterID)
+			if len(item.ConfidenceBreakdown.Reasons) > 0 {
+				fmt.Fprintf(&b, "  - confidence: %s\n", strings.Join(limitStrings(item.ConfidenceBreakdown.Reasons, 3), " | "))
+			}
+			if len(item.Probes) > 0 {
+				fmt.Fprintf(&b, "  - probes: %s\n", renderRootCauseProbeList(item.Probes, 3))
+			}
+		}
+	}
+	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func writeRootCauseJoinedSection(b *strings.Builder, title string, candidates []RootCauseJoinedCandidate, classification string) {
+	filtered := []RootCauseJoinedCandidate{}
+	for _, candidate := range candidates {
+		if normalizeRootCauseClassification(candidate.Classification) == classification {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "## %s\n\n", title)
+	for _, candidate := range filtered {
+		fmt.Fprintf(b, "### %s\n\n", firstNonBlankAnalysisString(candidate.Title, "Candidate"))
+		fmt.Fprintf(b, "- Confidence: %s (%d/100)\n", candidate.Confidence, candidate.ConfidenceScore)
+		if strings.TrimSpace(candidate.ClusterID) != "" {
+			fmt.Fprintf(b, "- Cluster: %s\n", candidate.ClusterID)
+		}
+		if len(candidate.ConfidenceBreakdown.Reasons) > 0 {
+			fmt.Fprintf(b, "- Confidence reasons: %s\n", strings.Join(limitStrings(candidate.ConfidenceBreakdown.Reasons, 3), " | "))
+		}
+		writeIndentedSectionList(b, "Pattern ids", candidate.PatternIDs)
+		writeIndentedSectionList(b, "Joined chain", candidate.JoinedChain)
+		writeIndentedSectionList(b, "Evidence files", candidate.EvidenceFiles)
+		writeIndentedSectionList(b, "Cannot be root cause if", candidate.CannotBeRootCauseIf)
+		writeIndentedSectionList(b, "Required runtime observation", candidate.RequiredRuntimeObservation)
+		writeIndentedSectionList(b, "Verification steps", candidate.VerificationSteps)
+		writeRootCauseProbeSection(b, candidate.Probes)
+		writeIndentedSectionList(b, "Competes with", candidate.CompetesWith)
+		writeIndentedSectionList(b, "Depends on", candidate.DependsOn)
+		writeIndentedSectionList(b, "Can coexist with", candidate.CanCoexistWith)
+		writeIndentedSectionList(b, "Disconfirming evidence", candidate.DisconfirmingEvidence)
+		b.WriteString("\n")
+	}
+}
+
+func writeRootCauseProbeSection(b *strings.Builder, probes []RootCauseProbe) {
+	if len(probes) == 0 {
+		return
+	}
+	b.WriteString("- Probes:\n")
+	for _, probe := range limitRootCauseProbes(probes, 5) {
+		fmt.Fprintf(b, "  - %s %s", probe.Kind, firstNonBlankRootCauseString(probe.Title, probe.Target))
+		if strings.TrimSpace(probe.Target) != "" {
+			fmt.Fprintf(b, " target=%s", probe.Target)
+		}
+		if strings.TrimSpace(probe.ExpectedSignal) != "" {
+			fmt.Fprintf(b, " expected=%s", probe.ExpectedSignal)
+		}
+		if strings.TrimSpace(probe.DisprovesWhen) != "" {
+			fmt.Fprintf(b, " disproves_when=%s", probe.DisprovesWhen)
+		}
+		b.WriteString("\n")
+	}
+}
+
 func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) string {
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
+		return fallbackRootCauseDocument(snapshot, shards, reports, goal)
+	}
 	type subsystemSection struct {
 		Title               string
 		Group               string
@@ -8914,6 +13539,7 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 		Collaboration       []string
 		Risks               []string
 		Unknowns            []string
+		RootCauseCandidates []RootCauseCandidate
 	}
 
 	allEntryPoints := []string{}
@@ -8943,6 +13569,7 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 			Collaboration:       report.Collaboration,
 			Risks:               report.Risks,
 			Unknowns:            report.Unknowns,
+			RootCauseCandidates: report.RootCauseCandidates,
 		})
 		allEntryPoints = append(allEntryPoints, report.EntryPoints...)
 		allFlow = append(allFlow, report.InternalFlow...)
@@ -9419,6 +14046,26 @@ func fallbackFinalDocument(snapshot ProjectSnapshot, shards []AnalysisShard, rep
 			}
 			b.WriteString("\n")
 		}
+		if len(section.RootCauseCandidates) > 0 {
+			b.WriteString("Root-cause candidates:\n")
+			for _, candidate := range section.RootCauseCandidates {
+				fmt.Fprintf(&b, "- %s", firstNonBlankAnalysisString(candidate.Title, "Candidate"))
+				if strings.TrimSpace(candidate.Confidence) != "" {
+					fmt.Fprintf(&b, " (confidence=%s)", candidate.Confidence)
+				}
+				b.WriteString("\n")
+				for _, item := range limitStrings(candidate.CandidateChain, 3) {
+					fmt.Fprintf(&b, "  chain: %s\n", item)
+				}
+				for _, item := range limitStrings(candidate.ObservedFailurePath, 3) {
+					fmt.Fprintf(&b, "  failure_path: %s\n", item)
+				}
+				for _, item := range limitStrings(candidate.EvidenceFiles, 3) {
+					fmt.Fprintf(&b, "  evidence: %s\n", item)
+				}
+			}
+			b.WriteString("\n")
+		}
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "## Dependencies And Integration Points\n\n")
@@ -9504,6 +14151,7 @@ func buildShardDocuments(snapshot ProjectSnapshot, shards []AnalysisShard, repor
 		writeSectionList(&b, "Risks", report.Risks)
 		writeSectionList(&b, "Unknowns", report.Unknowns)
 		writeSectionList(&b, "Evidence Files", report.EvidenceFiles)
+		writeRootCauseCandidates(&b, report.RootCauseCandidates)
 		b.WriteString("## Narrative\n\n")
 		b.WriteString(strings.TrimSpace(report.Narrative))
 		b.WriteString("\n")
@@ -9542,6 +14190,7 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 			Collaboration:        append([]string(nil), section.Collaboration...),
 			Risks:                append([]string(nil), section.Risks...),
 			Unknowns:             append([]string(nil), section.Unknowns...),
+			RootCauseCandidates:  append([]RootCauseCandidate(nil), section.RootCauseCandidates...),
 		})
 		if strings.TrimSpace(section.Group) != "" {
 			groups = append(groups, section.Group)
@@ -9587,6 +14236,8 @@ func buildKnowledgePack(snapshot ProjectSnapshot, shards []AnalysisShard, report
 		Unknowns:             analysisUniqueStrings(unknowns),
 		AnalysisExecution:    executionSummary,
 		PerformanceLens:      buildPerformanceLens(snapshot, grouped),
+		RootCause:            snapshot.RootCause,
+		RootCausePatterns:    append([]RootCausePatternMatch(nil), snapshot.RootCause.PatternMatches...),
 		ArchitectureFacts:    snapshot.ArchitectureFacts,
 	}
 }
@@ -10627,6 +15278,50 @@ func writeSectionList(b *strings.Builder, title string, items []string) {
 	fmt.Fprintf(b, "\n## %s\n\n", title)
 	for _, item := range items {
 		fmt.Fprintf(b, "- %s\n", item)
+	}
+}
+
+func writeRootCauseCandidates(b *strings.Builder, candidates []RootCauseCandidate) {
+	if len(candidates) == 0 {
+		return
+	}
+	b.WriteString("\n## Root Cause Candidates\n\n")
+	for _, candidate := range candidates {
+		title := strings.TrimSpace(candidate.Title)
+		if title == "" {
+			title = "Candidate"
+		}
+		fmt.Fprintf(b, "### %s\n\n", title)
+		if strings.TrimSpace(candidate.Confidence) != "" {
+			fmt.Fprintf(b, "- Confidence: %s\n", candidate.Confidence)
+		}
+		if len(candidate.ConfidenceBreakdown.Reasons) > 0 {
+			fmt.Fprintf(b, "- Confidence reasons: %s\n", strings.Join(limitStrings(candidate.ConfidenceBreakdown.Reasons, 3), " | "))
+		}
+		writeIndentedSectionList(b, "Pattern ids", candidate.PatternIDs)
+		writeIndentedSectionList(b, "Candidate chain", candidate.CandidateChain)
+		writeIndentedSectionList(b, "Trigger values", candidate.TriggerValues)
+		writeIndentedSectionList(b, "Expected range", candidate.ExpectedRange)
+		writeIndentedSectionList(b, "Out-of-range cases", candidate.OutOfRangeCases)
+		writeIndentedSectionList(b, "Observed failure path", candidate.ObservedFailurePath)
+		writeIndentedSectionList(b, "Evidence files", candidate.EvidenceFiles)
+		writeIndentedSectionList(b, "Disconfirming evidence", candidate.DisconfirmingEvidence)
+		writeIndentedSectionList(b, "Cannot be root cause if", candidate.CannotBeRootCauseIf)
+		writeIndentedSectionList(b, "Required runtime observation", candidate.RequiredRuntimeObservation)
+		writeIndentedSectionList(b, "Verification steps", candidate.VerificationSteps)
+		writeRootCauseProbeSection(b, candidate.Probes)
+		writeIndentedSectionList(b, "Needs cross-shard evidence", candidate.NeedsCrossShardEvidence)
+		b.WriteString("\n")
+	}
+}
+
+func writeIndentedSectionList(b *strings.Builder, title string, items []string) {
+	if len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "- %s:\n", title)
+	for _, item := range items {
+		fmt.Fprintf(b, "  - %s\n", item)
 	}
 }
 

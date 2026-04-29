@@ -268,6 +268,26 @@ func TestRenderAnalysisProjectArtifactPaths(t *testing.T) {
 	}
 }
 
+func TestRenderAnalysisProjectArtifactPathsIncludesRootCauseAudit(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			Mode:       "root-cause",
+			OutputPath: filepath.Join("C:\\repo", ".kernforge", "analysis", "analysis-1_root-cause_goal.md"),
+		},
+	}
+	out := renderAnalysisProjectArtifactPaths(run, filepath.Join("C:\\repo", ".kernforge", "analysis"))
+	for _, needle := range []string{
+		"Root-cause audit:",
+		"Root-cause audit JSON:",
+		filepath.Join("C:\\repo", ".kernforge", "analysis", "latest", "root_cause_audit.md"),
+		filepath.Join("C:\\repo", ".kernforge", "analysis", "latest", "root_cause_audit.json"),
+	} {
+		if !strings.Contains(out, needle) {
+			t.Fatalf("expected root-cause artifact paths to include %q, got:\n%s", needle, out)
+		}
+	}
+}
+
 func TestRenderAnalysisProjectArtifactPathsStyledHighlightsHeader(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{

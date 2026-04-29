@@ -615,6 +615,16 @@ func (a *Agent) shouldReviewInteractiveFinalAnswer(reply string, attemptedEditTo
 	if unresolvedVerification || attemptedEditTool {
 		return true
 	}
+	if a.Session.AcceptanceContract != nil &&
+		(a.Session.AcceptanceContract.VerificationRequired || len(a.Session.AcceptanceContract.RequiredArtifacts) > 0) {
+		return true
+	}
+	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+		return true
+	}
+	if a.Session.LastCodingHarnessReport != nil && !a.Session.LastCodingHarnessReport.Approved {
+		return true
+	}
 	if len(state.CompletedSteps) > 0 || len(state.FailedAttempts) > 0 || len(state.PendingChecks) > 0 {
 		return true
 	}
@@ -647,7 +657,7 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 		}, "\n"),
 		Messages: []Message{{
 			Role: "user",
-			Text: buildInteractiveFinalAnswerReviewerPrompt(a.Session.TaskState, a.Session.TaskGraph, a.Session.BackgroundJobs, a.Session.BackgroundBundles, reply, unresolvedVerification),
+			Text: buildInteractiveFinalAnswerReviewerPrompt(a.Session, reply, unresolvedVerification),
 		}},
 		MaxTokens:   min(512, max(256, a.Config.MaxTokens/4)),
 		Temperature: 0.1,
@@ -665,9 +675,19 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 	return false, text
 }
 
-func buildInteractiveFinalAnswerReviewerPrompt(state *TaskState, graph *TaskGraph, jobs []BackgroundShellJob, bundles []BackgroundShellBundle, reply string, unresolvedVerification bool) string {
+func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, unresolvedVerification bool) string {
 	var b strings.Builder
 	b.WriteString("Review the following proposed final answer from a coding agent.\n")
+	var state *TaskState
+	var graph *TaskGraph
+	var jobs []BackgroundShellJob
+	var bundles []BackgroundShellBundle
+	if session != nil {
+		state = session.TaskState
+		graph = session.TaskGraph
+		jobs = session.BackgroundJobs
+		bundles = session.BackgroundBundles
+	}
 	if state != nil {
 		if rendered := strings.TrimSpace(state.RenderPromptSection()); rendered != "" {
 			b.WriteString("\nTask state:\n")
@@ -695,9 +715,60 @@ func buildInteractiveFinalAnswerReviewerPrompt(state *TaskState, graph *TaskGrap
 	if unresolvedVerification {
 		b.WriteString("\nVerification status: unresolved failures remain.\n")
 	}
+	if session != nil {
+		if session.AcceptanceContract != nil {
+			if rendered := strings.TrimSpace(session.AcceptanceContract.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nAcceptance contract:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.ActiveFailureRepair != nil {
+			if rendered := strings.TrimSpace(session.ActiveFailureRepair.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nFailure repair harness:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.ActivePatchTransaction != nil {
+			if rendered := strings.TrimSpace(session.ActivePatchTransaction.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nPatch transaction:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.LastCodingHarnessReport != nil {
+			if rendered := strings.TrimSpace(session.LastCodingHarnessReport.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nCoding harness report:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.LastUserChangeIsolationReport != nil {
+			if rendered := strings.TrimSpace(session.LastUserChangeIsolationReport.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nUser-change isolation report:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.LastTestImpactReport != nil {
+			if rendered := strings.TrimSpace(session.LastTestImpactReport.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nTest impact report:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+		if session.LastJobSupervisorReport != nil {
+			if rendered := strings.TrimSpace(session.LastJobSupervisorReport.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nJob supervisor report:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
+	}
 	b.WriteString("\nProposed final answer:\n")
 	b.WriteString(reply)
-	b.WriteString("\n\nApprove only if it does not ignore pending checks, active background jobs, or unresolved verification.")
+	b.WriteString("\n\nApprove only if it does not ignore pending checks, active background jobs, unresolved verification, patch-transaction evidence, or coding-harness blockers.")
 	return b.String()
 }
 
@@ -723,6 +794,7 @@ func (a *Agent) noteToolExecutionResult(call ToolCall, out string, err error) {
 
 func (a *Agent) noteToolExecutionResultDetailed(call ToolCall, result ToolExecutionResult, err error) {
 	state := a.Session.EnsureTaskState()
+	a.recordPatchTransactionFromToolMetaIfNeeded(call, result, err)
 	summary := summarizeToolInvocation(a.Config, call)
 	if summary == "" {
 		summary = strings.TrimSpace(call.Name)
@@ -763,6 +835,9 @@ func (a *Agent) noteToolExecutionResultDetailed(call ToolCall, result ToolExecut
 	case "run_shell":
 		planHandled := a.applyToolExecutionPolicy(policy, call, summary, out)
 		state.AddCompletedStep(summary)
+		if toolMetaBool(meta, "verification_like") || runShellOutputLooksLikeVerification(out) {
+			state.RemovePendingCheck(verificationPendingCheck)
+		}
 		if !planHandled && toolExecutionShouldAdvancePlanDetailed(call, out, meta) {
 			a.Session.advanceSharedPlan()
 		}
@@ -888,6 +963,7 @@ func toolExecutionCanUnblockFocusedNode(call ToolCall, meta map[string]any) bool
 func (a *Agent) noteVerificationResult(report VerificationReport) {
 	state := a.Session.EnsureTaskState()
 	if report.HasFailures() {
+		a.startFailureRepairAttempt(report)
 		a.Session.AppendConversationEvent(ConversationEvent{
 			Kind:     conversationEventKindVerification,
 			Severity: conversationSeverityError,
@@ -907,6 +983,7 @@ func (a *Agent) noteVerificationResult(report VerificationReport) {
 		Summary:  "Automatic verification passed.",
 		Raw:      compactPromptSection(report.SummaryLine(), 500),
 	})
+	a.resolveFailureRepairAttempt(report)
 	state.AddCompletedStep("Automatic verification passed.")
 	state.RecordEvent("verification", strings.TrimSpace(state.ExecutorFocusNode), "verify", "Automatic verification passed.", report.SummaryLine(), "completed", true)
 	state.RemovePendingCheck(verificationPendingCheck)

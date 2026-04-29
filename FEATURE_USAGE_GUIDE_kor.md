@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-29
+- 코드베이스 기준: 2026-04-30
 
 대상 사용자:
 - Windows security 엔지니어
@@ -15,7 +15,7 @@
 이 문서의 목적:
 1. 기능 목록을 나열하는 것이 아니라 실제 사용 흐름을 설명한다.
 2. 어떤 문제에서 어떤 명령 조합을 쓰면 좋은지 예시 중심으로 정리한다.
-3. `analyze-project -> analyze-performance -> investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
+3. `analyze-project -> analyze-performance -> investigate/simulate -> find-root-cause 또는 fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 자연스럽게 익히도록 돕는다.
 
 ## 1. Kernforge를 가장 잘 쓰는 관점
 
@@ -25,23 +25,25 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. 성능이나 startup path가 중요하면 `/analyze-performance`로 최신 knowledge pack을 performance lens로 바꾼다.
 3. live 상태가 중요하면 `/investigate`로 현장 상태를 수집한다.
 4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
-5. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다. seed handoff가 유용하면 Kernforge가 다음 단계로 `/fuzz-campaign run`을 보여준다.
-6. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
-7. `/verify`로 verification plan을 돌린다.
-8. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-9. analysis, investigation, simulation, performance, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, specialist action 뒤에 출력되는 handoff block을 따라가면 명령 순서를 외우지 않아도 된다.
-10. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
+5. 이미 사용자에게 보이는 증상이 있고 원인 후보를 좁히고 싶으면 `/find-root-cause`를 실행한다.
+6. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다. seed handoff가 유용하면 Kernforge가 다음 단계로 `/fuzz-campaign run`을 보여준다.
+7. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
+8. `/verify`로 verification plan을 돌린다.
+9. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
+10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, specialist action 뒤에 출력되는 handoff block을 따라가면 명령 순서를 외우지 않아도 된다.
+11. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
 1. `analyze-project`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만든다.
 2. `analyze-performance`는 최신 구조 지식에서 hot path와 bottleneck 가능성을 끌어낸다.
 3. `investigate`는 실행 중 상태를 관찰한다.
 4. `simulate`는 공격자 관점에서 약한 면을 드러낸다.
-5. `fuzz-func`는 실제 소스의 guard/probe/copy/dispatch를 바탕으로 공격자 입력 상태, 반례, 분기 차이를 합성한다.
-6. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
-7. `evidence`는 결과를 증거 단위로 구조화한다.
-8. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
-9. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
+5. `find-root-cause`는 증상, trigger, expected invariant, observed failure를 worker/reviewer causal analysis로 바꾼다.
+6. `fuzz-func`는 실제 소스의 guard/probe/copy/dispatch를 바탕으로 공격자 입력 상태, 반례, 분기 차이를 합성한다.
+7. `verify`는 변경과 최근 상태를 바탕으로 검증 계획을 조립한다.
+8. `evidence`는 결과를 증거 단위로 구조화한다.
+9. `memory`는 세션을 넘어가는 장기 맥락을 저장한다.
+10. `hooks`는 그 축적된 맥락을 다시 정책으로 바꾼다.
 
 ## 2. 현재 구현된 핵심 기능과 언제 쓰면 좋은가
 
@@ -155,6 +157,29 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 3. `/review-pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
 4. verification gap이나 dirty diff가 있으면 `/suggest`가 recurring verification/PR review automation 등록을 다음 행동으로 제안할 수 있다.
 
+### Coding Harness와 Repair Loop
+
+목적:
+1. 모델이 실제 workspace 상태와 다른 최종 답변을 내지 않도록 final answer 직전에 검문한다.
+2. Codex식 작업 완료 루프에 필요한 acceptance, artifact, scenario, subagent evidence, test impact, background job, failure repair, user-change isolation을 구조화한다.
+3. blocker는 최종 답변을 막고 모델에게 수정, 재검증, disclosure 중 하나를 요구한다.
+
+현재 동작:
+1. `AcceptanceContract`는 사용자 요청에서 기대 동작, non-goal, 변경 surface, required artifact, verification 필요성을 추출한다.
+2. patch transaction은 edit tool, scoped shell write, 변경 path, fingerprint, 실패한 tool call을 기록해 "무엇을 실제로 바꿨는지"를 final harness에 제공한다.
+3. artifact quality harness는 요청/주장된 문서 artifact를 읽어 placeholder/TODO, 너무 얇은 본문, 요청 주제 coverage 부족을 blocker 또는 warning으로 분류한다.
+4. scenario replay harness는 `when/expected/but observed` 형태의 bug scenario에서, 코드 변경 후 해결을 주장하려면 replay/verification 결과 또는 "실행하지 못했다"는 명시적 disclosure를 요구한다.
+5. subagent orchestration harness는 root-cause 답변이 worker evidence와 reviewer validation을 실제 causal bridge로 연결하는지 확인한다. worker가 보고한 문제가 사용자 증상으로 이어질 수 있는지 reviewer가 검증하지 못했거나 review failure를 숨기면 blocker가 된다.
+6. test impact harness는 code-like path 변경을 보고 verification planner가 추천하는 좁은 명령을 기록하고, 성공한 verification evidence가 없으면 warning으로 남긴다.
+7. job supervisor harness는 background job/bundle이 실패, stale, running 상태인데 최종 답변에서 숨기지 않도록 막는다.
+8. failure repair harness는 verification 실패 시 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 repair step을 active context로 유지한다.
+9. user-change isolation은 turn 시작 이후 사용자가 target path를 바꿨는데 agent가 그 파일을 덮어쓰려 하면 edit를 막고 fresh read와 merge-aware edit을 요구한다.
+
+실무 해석:
+1. "완료했습니다"라고 말하기 전에 Kernforge는 실제 artifact와 verification evidence를 다시 본다.
+2. root-cause 작업에서는 "그럴듯한 원인"보다 `trigger -> invalid_state -> state_transition -> missing_guard -> symptom` 인과 연결이 중요하다.
+3. blocker가 뜨면 사용자는 같은 요청을 다시 설명할 필요가 없다. harness feedback이 다음 모델 턴에 들어가서 수정/검증/disclosure 중 필요한 행동으로 이어진다.
+
 ### 대형 파일 읽기 재사용과 반복 스캔 완화
 
 목적:
@@ -199,7 +224,7 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 
 역할 분리:
 1. `README_kor.md`는 제품 범위, 대표 명령, 산출물 위치를 빠르게 확인하는 문서다.
-2. 이 feature guide는 조사, simulation, fuzzing, verification, evidence, memory를 어떤 순서로 운영할지 설명하는 문서다.
+2. 이 feature guide는 조사, simulation, root-cause, fuzzing, verification, evidence, memory를 어떤 순서로 운영할지 설명하는 문서다.
 3. `analyze-project`가 생성하는 docs는 특정 run의 source anchor, confidence, stale/invalidation marker를 담은 프로젝트별 운영 지식 베이스다.
 
 모드 요약:
@@ -240,6 +265,56 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 13. `.kernforge/analysis/latest`는 run마다 교체되어 반복 테스트 중 이전 산출물이 새 retrieval에 섞이지 않는다.
 14. goal에 특정 디렉토리나 하위 영역이 드러나면 해당 경로 위주로 분석 shard를 좁힐 수 있다.
 15. interactive 실행에서는 hidden directory나 external-looking directory를 분석 전에 제외할지 확인할 수 있다.
+
+### Root-Cause Investigation
+
+목적:
+1. 사용자가 보고한 증상을 source evidence 기반 root-cause 후보로 좁힌다.
+2. 큰 코드베이스에서 문제와 관련 있어 보이는 파일/심볼만 골라 1개부터 8개 worker shard로 병렬 분석한다.
+3. worker가 제시한 문제가 실제 사용자 증상으로 이어질 수 있는지 reviewer와 deterministic gate가 다시 검증한다.
+
+대표 명령:
+- `/find-root-cause <problem description>`
+- `/find-root-cause --pattern-pack <path-or-dir> <problem description>`
+- `/root-cause-patterns list [--type <project_type>] [--json]`
+- `/root-cause-patterns match <problem symptom> [--json]`
+- `/root-cause-patterns github-search [--type <project_type>] [--limit 20] [--out .kernforge/root_cause/github_issues.json] [query words...]`
+- `/root-cause-patterns normalize --in .kernforge/root_cause/github_issues.json --out .kernforge/root_cause/pattern_pack.json [--type <project_type>]`
+- `/root-cause-patterns validate [--in <pattern_pack.json>] [--json]`
+
+좋은 프롬프트 형태:
+
+```text
+/find-root-cause In <component/feature>, when <input/command/event sequence/state>, expected <normal behavior or invariant>, but observed <failure>. Frequency/env: <how often and where>. Repro/log/value: <exact prompt, API call, command, DB value, or log line>.
+```
+
+예시:
+
+```text
+/find-root-cause 내 게임에서 파티원을 초대하고 추방하다 보면 파티원 제한 숫자를 넘어서서 파티원을 초대할 수 있게 돼
+/find-root-cause 내 Win32 서비스 프로세스가 sc stop으로 종료되지 않아
+```
+
+현재 동작:
+1. 프롬프트가 비어 있으면 usage와 예시를 출력한다.
+2. affected component, trigger/repro, observed failure, expected behavior/invariant가 불명확하면 부족한 부분을 보여 주고 더 정확한 `/find-root-cause ...` 명령을 다시 입력하게 한다.
+3. source hint와 optional model clarity check가 있어 한국어 자연어 증상이 단순 키워드 부족 때문에 거절되는 일을 줄인다.
+4. workspace scan, source path/symbol match, built-in pattern prior, explicit `--pattern-pack`을 결합해 후보 code match를 만든다.
+5. code size와 후보 수에 따라 worker 수를 1개부터 최대 8개까지 추정하고 shard를 나눈다.
+6. worker는 입력 파라미터, DB/config 조회값, cache/state/counter/id/enum/null/lifecycle 값이 코드가 예상한 범위를 벗어날 때 어떤 전이가 생기는지 집중해서 본다.
+7. worker 후보는 causal chain, evidence file/function, out-of-range case, required runtime observation, probe, disproof condition을 포함해야 한다.
+8. reviewer는 worker 후보가 사용자가 말한 증상과 겹치는지, causal stage가 빠지지 않았는지, 필요한 증거가 있는지 확인한다.
+9. reviewer가 더 많은 proof를 요구하면 `evidence_requests`가 focused shard로 이어지고, rejected candidate는 audit trail에 남아 regression prior로 재사용된다.
+10. deep verification은 reviewer-approved 후보를 symbol-aware excerpt로 다시 확인하고 confidence breakdown을 보정한다.
+11. 최종 문서는 root cause 후보를 cluster/dedup하고, confidence, concrete instrumentation, verification probe, "이 조건이면 이 후보는 root cause가 아니다"라는 disconfirmation 조건을 함께 제공한다.
+
+Pattern pack 운영:
+1. 내장 pack은 Windows user service, Windows kernel driver, Unreal client/server, web backend, Go/CLI agent 등 반복 버그 패턴을 search prior로 제공한다.
+2. `/root-cause-patterns match`는 현재 workspace type과 증상 텍스트를 기준으로 pattern 후보를 보여준다.
+3. `/root-cause-patterns github-search`는 GitHub issues API에서 closed bug/fix/root-cause 신호가 있는 issue corpus를 수집한다.
+4. `/root-cause-patterns normalize`는 issue corpus를 provisional pattern pack으로 바꾼다.
+5. `/root-cause-patterns validate`는 pattern 품질 문제를 찾는다.
+6. pattern pack은 증거가 아니라 prior다. `/find-root-cause`는 항상 현재 소스, worker evidence, reviewer causality validation을 다시 요구한다.
 
 ### Source-Level Function Fuzzing
 

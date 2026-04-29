@@ -18,7 +18,7 @@
 현재 Kernforge의 가장 큰 강점은 `multi-agent project analysis pipeline`입니다. 큰 워크스페이스를 재사용 가능한 project intelligence로 정리하고, 그 분석 결과를 편집, 검증, evidence, fuzzing, policy 단계까지 그대로 이어갈 수 있습니다.  
 특히 `project analysis -> performance lens -> adaptive verification -> evidence store -> persistent memory -> hook policy -> checkpoint/rollback` 흐름을 중심으로, driver, telemetry, memory-scan, Unreal 보안 작업을 더 안전하고 일관되게 진행할 수 있도록 설계되어 있습니다.
 
-현재 제품 방향은 두 축으로 정리됩니다. 첫 번째는 전체 프로젝트 분석 및 문서화입니다. 두 번째는 소스 기반 triage에서 native fuzzing 실행까지 이어지는 퍼징 전문 도구입니다. README 한국어/영어 문서는 같은 내용을 담고, 각 언어 문서는 같은 기능 범위와 로드맵 방향을 서로 번역한 형태로 유지합니다.
+현재 제품 방향은 세 축으로 정리됩니다. 첫 번째는 전체 프로젝트 분석 및 문서화입니다. 두 번째는 소스 기반 triage에서 native fuzzing 실행까지 이어지는 퍼징 전문 도구입니다. 세 번째는 사용자가 보고한 증상에서 근본 원인을 좁혀 가는 `/find-root-cause` 기반 진단 루프입니다. README 한국어/영어 문서는 같은 내용을 담고, 각 언어 문서는 같은 기능 범위와 로드맵 방향을 서로 번역한 형태로 유지합니다.
 
 ## 대표 강점
 
@@ -27,6 +27,8 @@ Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`는 일회성 요약이 아니라 재사용 가능한 architecture map을 만들고, goal을 생략하면 mode에 맞는 기본 목표를 추론한다.
 - 결과물은 knowledge pack, performance lens, structural index, vector-ready analysis set, 운영 문서, HTML 대시보드로 남는다.
 - 이 분석 자산은 이후 review, edit, verification, policy 흐름까지 계속 재사용된다.
+- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>`은 증상 프롬프트를 명확성 검사한 뒤 1개부터 최대 8개의 worker shard, reviewer causality validation, deep verification, deterministic quality gate를 통해 가능한 근본 원인을 좁힌다.
+- `/root-cause-patterns`는 Windows service, kernel driver, Unreal, web/backend 같은 프로젝트 타입별로 자주 반복되는 증상/원인 패턴을 내장 지식 pack으로 제공하고, GitHub issue corpus를 수집해 로컬 pattern pack으로 정규화할 수 있게 한다.
 - 다음 로드맵의 중심은 새 `/fuzz-campaign` planner를 one-command campaign automation에서 native crash, coverage, evidence, verification gate lifecycle 관리까지 확장하는 것이다.
 
 ## 문서
@@ -54,7 +56,7 @@ Kernforge에서 가장 먼저 봐야 할 기능 하나를 꼽으면 `multi-agent
 - [한국어 Adversarial Simulation 스펙](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [한국어 차세대 Project Analysis 스펙](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
 
-가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `investigate -> simulate -> fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
+가장 추천되는 실사용 흐름은 [한국어 상세 사용 가이드](./FEATURE_USAGE_GUIDE_kor.md)에 정리되어 있습니다. 특히 `analyze-project -> investigate/simulate -> find-root-cause 또는 fuzz-func -> review/edit/plan -> verify -> evidence/memory/hooks` 루프를 그대로 따라가 보면 현재 Kernforge의 핵심 가치를 가장 빨리 체감할 수 있습니다.
 
 ## 왜 Kernforge인가
 
@@ -75,6 +77,8 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 ## 현재 구현된 기능
 
 - 재사용 가능한 knowledge pack, performance lens, 운영 문서, HTML 대시보드를 만드는 multi-agent project analysis
+- 증상 기반 `/find-root-cause`와 내장 `/root-cause-patterns` 지식 pack
+- final answer 직전 acceptance, artifact quality, scenario replay, subagent evidence, test impact, background job 상태를 점검하는 coding harness
 - `TaskState`, `TaskGraph`, node-aware recovery, executor guidance를 갖춘 구조화된 interactive orchestration
 - built-in specialist subagent catalog와 editable/read-only specialist routing
 - node별 editable ownership/lease, specialist worktree lease, session-level worktree isolation
@@ -131,6 +135,20 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `/analyze-performance [focus]`로 최신 분석 산출물을 기준으로 병목과 hot path 분석
 - performance report는 마지막에 `Performance handoff`를 출력해 `/analyze-dashboard`, `/verify`, `/simulate stealth-surface`, 구체 `/fuzz-func ...` hotspot drilldown으로 이어준다.
 
+### Root-Cause Investigation
+
+- `/find-root-cause <problem description>`은 파티원 제한 초과, `sc stop` 미종료, 문서 artifact 누락처럼 사용자가 자연어로 설명한 증상을 받아 근본 원인 후보를 찾는다.
+- 프롬프트가 너무 짧거나 영향을 받는 컴포넌트, trigger/repro, observed failure, expected invariant가 불명확하면 agent를 시작하지 않고 부족한 부분과 더 정확한 `/find-root-cause ...` 예시를 출력한다.
+- borderline prompt는 source hint와 모델 기반 clarity check를 거쳐 한국어 자연어 증상이 키워드 부족만으로 거절되지 않게 한다.
+- workspace를 스캔해 증상 키워드, source path, indexed symbol, 내장 pattern prior를 결합하고 코드 크기와 후보 수에 따라 1개부터 8개 worker shard로 나눈다.
+- worker는 각 코드 영역에서 입력 파라미터, decoded payload, DB/config 값, cache state, counter, id, enum, nullable reference, lifecycle state가 코드가 기대한 범위를 벗어나는 경우를 fuzzing처럼 검토한다.
+- worker 후보는 `trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom` causal chain을 갖춰야 한다.
+- reviewer는 worker가 제시한 문제가 사용자가 요청한 증상으로 실제 이어질 수 있는지 검증하고, 증거가 부족하면 추가 focused shard를 요구한다.
+- deterministic quality gate는 causal stage, evidence file, concrete state signal, valid probe, symptom overlap이 부족한 후보를 downgrade 또는 reject한다.
+- reviewer-approved 후보는 symbol-aware focused excerpt로 deep verification을 한 번 더 거치고, 최종 문서는 root cause 후보, confidence breakdown, evidence file/function, instrumentation, verification probe, disproof condition을 정리한다.
+- 산출물은 일반 analysis artifact와 함께 `.kernforge/analysis/<run-id>/` 및 `latest` 아래에 남고, `root_cause_audit.md/json` 형태의 audit trail도 보존된다.
+- `/root-cause-patterns list|match|github-search|normalize|validate`는 내장 pattern pack 확인, 현재 workspace와 증상 매칭, GitHub issue 기반 provisional pack 생성을 지원한다. pattern pack은 search prior일 뿐이며, 최종 판단은 항상 현재 소스 증거와 reviewer causality validation을 요구한다.
+
 ### 보안 검증과 정책 루프
 
 - driver, telemetry, Unreal, memory-scan 중심 security-aware verification
@@ -167,6 +185,12 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - 파일 쓰기 전 WebView2 diff review
 - selection-aware edit preview
 - 편집 후 자동 verification
+- final answer 직전 coding harness가 acceptance contract, 실제 변경 path, artifact 생성 여부, artifact 내용 품질, scenario replay 상태, subagent/reviewer 근거, test impact, background job 상태를 검토한다.
+- 요청한 문서나 보고서 artifact가 placeholder/TODO이거나 핵심 주제를 전혀 담지 않으면 artifact quality blocker로 최종 답변을 막는다.
+- 사용자가 trigger/expected/observed가 있는 bug scenario를 준 경우, 코드 변경 후 replay/verification 결과 또는 "실행하지 못했다"는 명시적 disclosure 없이 해결을 주장하면 scenario replay blocker가 걸린다.
+- root-cause 답변에서 worker evidence가 사용자 증상으로 이어지는 causal bridge를 제공하지 못하거나 reviewer issue를 숨기면 subagent orchestration blocker가 걸린다.
+- verification 실패가 발생하면 failure repair harness가 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 수리 단계를 active context로 유지한다.
+- tool 실행 사이에 사용자가 같은 target file을 바꾼 경우 user-change isolation이 overwrite를 막고 fresh read/merge-aware edit을 요구한다.
 - 큰 파일 편집 루프에서 `read_file`는 변경되지 않은 동일 범위, 포함되는 하위 범위, 부분 겹침 범위를 재사용해서 불필요한 재읽기를 줄인다.
 - 최근 `read_file` 문맥과 겹치거나 가까운 `grep` 결과에는 `[cached-nearby:inside]`, `[cached-nearby:N]` 힌트가 붙어 다음 읽기 범위를 더 좁게 잡도록 돕는다.
 - 같은 파일에 대한 반복 `read_file` 턴은 캐시 기반 경고를 먼저 주고, 그래도 진전이 없을 때만 강한 반복 호출 중단으로 넘어간다.
@@ -211,7 +235,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### 사용성
 
-- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli` 같은 provider 하위 명령, analyze-project mode, compact fuzz campaign action, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, `/worktree status|create|leave|cleanup` 같은 저장된 id와 하위 명령까지 `Tab` 완성
+- 명령, 경로, 멘션, MCP 대상, 고정 인자, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli` 같은 provider 하위 명령, analyze-project mode, compact fuzz campaign action, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, `/worktree status|create|leave|cleanup` 같은 저장된 id와 하위 명령까지 `Tab` 완성
 - command/subcommand 자동완성 메뉴에 각 후보 설명을 같이 보여줘서 이름만 나열되지 않게 했다.
 - 현재 입력 취소를 위한 `Esc`
 - 진행 중 요청 취소를 위한 `Esc`

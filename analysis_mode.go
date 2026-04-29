@@ -18,7 +18,7 @@ const defaultProjectAnalysisMode = "map"
 
 func normalizeProjectAnalysisMode(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "map", "trace", "impact", "surface", "security", "performance":
+	case "map", "trace", "impact", "surface", "security", "performance", "root-cause":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -34,6 +34,10 @@ func effectiveProjectAnalysisMode(explicitMode string, goal string) string {
 
 func projectAnalysisUsage() string {
 	return fmt.Sprintf("usage: /analyze-project [--path <dir>] [--mode %s] [goal]", strings.Join(supportedProjectAnalysisModes, "|"))
+}
+
+func rootCauseUsage() string {
+	return "usage: /find-root-cause [--pattern-pack <path-or-dir>] <problem description>"
 }
 
 func defaultProjectAnalysisGoal(mode string, paths []string) string {
@@ -59,6 +63,8 @@ func defaultProjectAnalysisGoal(mode string, paths []string) string {
 		return "analyze trust boundaries, privileged paths, validation, tamper-sensitive state, and enforcement points in " + scope
 	case "performance":
 		return "map startup cost, hot paths, blocking chains, allocation or copy pressure, contention, and profiling priorities in " + scope
+	case "root-cause":
+		return "find likely root causes for the described runtime failure in " + scope
 	default:
 		return "map the architecture, subsystems, ownership, module boundaries, entry points, documentation, dashboard, and reusable knowledge base for " + scope
 	}
@@ -131,6 +137,24 @@ func analysisLensesForMode(mode string) []AnalysisLens {
 				OutputFocus:     []string{"hot path ownership", "blocking chain", "startup cost"},
 			},
 		}
+	case "root-cause":
+		return []AnalysisLens{
+			{
+				Type:            "root_cause",
+				PrioritySignals: []string{"intent", "tool", "write", "document", "final", "guard", "state", "limit", "count", "handler", "validation"},
+				OutputFocus:     []string{"failure trigger", "range assumption", "finalization gate"},
+			},
+			{
+				Type:            "runtime_flow",
+				PrioritySignals: []string{"state", "limit", "count", "handler", "dispatch", "database", "query", "validation", "stop", "shutdown", "lifecycle"},
+				OutputFocus:     []string{"failure path", "state transition", "caller/callee chain"},
+			},
+			{
+				Type:            "security_boundary",
+				PrioritySignals: []string{"input", "parameter", "validation", "authority", "trust", "bounds", "range"},
+				OutputFocus:     []string{"invalid input handling", "authority boundary", "range assumptions"},
+			},
+		}
 	default:
 		return nil
 	}
@@ -150,6 +174,8 @@ func projectAnalysisModePromptLabel(mode string) string {
 		return "security boundary"
 	case "performance":
 		return "performance hotspot"
+	case "root-cause":
+		return "root cause investigation"
 	default:
 		return ""
 	}
@@ -169,6 +195,8 @@ func projectAnalysisModeCompletionDescription(mode string) string {
 		return "Analyze trust boundaries, validation, privileged paths, tamper-sensitive state, enforcement points, and driver/IOCTL/handle/RPC risks."
 	case "performance":
 		return "Map performance risk: startup cost, hot paths, blocking chains, allocation/copy pressure, contention, and profiling order."
+	case "root-cause":
+		return "Investigate a reported failure by selecting likely source paths, fuzzing assumptions about inputs and persisted state, and reporting plausible root causes."
 	default:
 		return ""
 	}
@@ -205,6 +233,13 @@ func projectAnalysisModePromptRequirements(mode string) []string {
 		return []string{
 			"Prioritize startup cost, hot path ownership, blocking calls, allocation or copy pressure, and contention risk.",
 			"Call out where the runtime would likely pay latency or throughput cost, even if exact profiling data is unavailable.",
+		}
+	case "root-cause":
+		return []string{
+			"Prioritize code paths that can produce the reported symptom, including state transitions, limits, counters, lifecycle handlers, persistence reads, and dispatch branches.",
+			"Analyze variables as if fuzzed: input parameters, decoded payload fields, DB/config values, cached state, counts, IDs, timestamps, enum values, nullable references, and cross-thread state may be outside the expected range.",
+			"For each suspected cause, explain the concrete chain from unexpected value to observed failure, cite exact files/functions when visible, and state what evidence would confirm or reject it.",
+			"Prefer root-cause candidates over broad architecture summaries; low-confidence candidates should be marked as such instead of hidden.",
 		}
 	default:
 		return nil

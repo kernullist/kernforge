@@ -4497,6 +4497,14 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleFuzzCampaignCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "find-root-cause":
+		if err := rt.handleFindRootCauseCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "root-cause-patterns":
+		if err := rt.handleRootCausePatternsCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "simulate-dashboard":
 		if err := rt.handleSimulationDashboard(false); err != nil {
 			return false, err

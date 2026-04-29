@@ -141,6 +141,12 @@ func renderAnalysisProjectArtifactPaths(run ProjectAnalysisRun, outputDir string
 			analysisProjectHandoffCommand{Label: "Docs", Command: filepath.Join(latestDir, "docs", "INDEX.md")},
 			analysisProjectHandoffCommand{Label: "Manifest", Command: filepath.Join(latestDir, "docs_manifest.json")},
 		)
+		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
+			paths = append(paths,
+				analysisProjectHandoffCommand{Label: "Root-cause audit", Command: filepath.Join(latestDir, "root_cause_audit.md")},
+				analysisProjectHandoffCommand{Label: "Root-cause audit JSON", Command: filepath.Join(latestDir, "root_cause_audit.json")},
+			)
+		}
 	}
 	normalized := normalizeAnalysisProjectHandoffPlan(analysisProjectHandoffPlan{
 		Title:    "Key output paths for this analysis run.",

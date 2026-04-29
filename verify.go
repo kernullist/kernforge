@@ -857,6 +857,10 @@ func collectSessionChangedPaths(sess *Session) []string {
 		if msg.Role != "tool" {
 			continue
 		}
+		if metaPaths := toolMetaStringSlice(msg.ToolMeta, "changed_paths"); len(metaPaths) > 0 {
+			out = append(out, metaPaths...)
+			continue
+		}
 		switch msg.ToolName {
 		case "write_file":
 			out = append(out, collectVerificationPathsFromToolText(msg.Text, "to ")...)
