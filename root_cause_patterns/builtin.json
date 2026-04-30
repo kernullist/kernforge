@@ -108,6 +108,134 @@
       "sources": [{"type": "curated_seed", "evidence": "Common driver fuzzing finding pattern."}]
     },
     {
+      "id": "win_driver_clfs_metadata_lifetime_and_bounds",
+      "title": "CLFS log metadata parser trusts mutable BLF offsets, lengths, or object lifetime",
+      "project_types": ["windows_kernel_driver"],
+      "symptoms": ["local privilege escalation through CLFS", "clfs.sys crashes while opening or closing log files", "SYSTEM privileges gained after crafted log metadata is processed", "pool corruption or use-after-free in Common Log File System paths"],
+      "root_causes": ["CLFS base log file metadata contains attacker-influenced offsets, counts, or size fields that are not validated against the decoded block bounds before allocation, copy, or memset operations", "client, container, or security context metadata can corrupt persisted runtime pointers when symbol-zone and signature offsets are accepted out of range", "log object lifetime is not protected across close, container update, metadata writeback, and cleanup paths, leaving stale CLFS objects reachable after free"],
+      "code_signals": ["clfs.sys", "CreateLogFile", "AddLogContainer", "CLFS_LOG_BLOCK_HEADER", "CLFS_BASE_RECORD_HEADER", "CLFS_CONTAINER_CONTEXT", "CClfsBaseFilePersisted", "WriteMetadataBlock", "RemoveContainer", "SignaturesOffset", "cbSymbolZone"],
+      "state_variables": ["SignaturesOffset", "cbSymbolZone", "RecordOffsets", "ClientContextOffset", "ContainerContextOffset", "pContainer", "LogBlockHeader", "BaseRecordHeader", "ReferenceCount", "CloseState"],
+      "out_of_range_cases": ["offset plus size wraps or lands outside the metadata block", "symbol-zone length is accepted after a corrupted signature offset changes the validation window", "container context stores or restores a kernel pointer from corrupted persisted metadata", "close path releases a log object while another CLFS operation still has a reachable reference"],
+      "likely_files": ["clfs.sys", "clfs", "logfile", "metadata", "container", "basefile", "persisted"],
+      "verification_probes": ["fuzz CLFS BLF control, base, and truncate records with short, huge, wrapped, and cross-block offsets", "assert every decoded offset and count is range-checked before pointer arithmetic", "enable Special Pool, pool cookies, and Driver Verifier on CLFS-like metadata parsers", "trace reference ownership across create, add container, write metadata, close, and cleanup paths"],
+      "confidence": "high",
+      "tags": ["clfs", "cve", "metadata", "bounds", "use-after-free", "heap-overflow", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2025-29824", "evidence": "MSRC classifies CVE-2025-29824 as a CLFS elevation-of-privilege use-after-free with exploitation detected.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-49138", "evidence": "MSRC classifies CVE-2024-49138 as a CLFS elevation-of-privilege heap-based buffer overflow with public disclosure and exploitation detected.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-28252", "evidence": "MSRC classifies CVE-2023-28252 as a CLFS elevation-of-privilege heap-based buffer overflow with exploitation detected.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-36424", "evidence": "MSRC classifies CVE-2023-36424 as a CLFS elevation-of-privilege out-of-bounds read.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-38144", "evidence": "MSRC classifies CVE-2023-38144 as a CLFS elevation-of-privilege buffer over-read.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-36900", "evidence": "MSRC classifies CVE-2023-36900 as a CLFS elevation-of-privilege integer overflow or wraparound.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-23376", "evidence": "MSRC classifies CVE-2023-23376 as a CLFS elevation-of-privilege heap-based buffer overflow with exploitation detected.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-37969", "evidence": "MSRC lists CVE-2022-37969 as a CLFS elevation-of-privilege vulnerability with public disclosure and exploitation detected.", "confidence": "medium"},
+        {"type": "research", "url": "https://www.zscaler.com/blogs/security-research/technical-analysis-windows-clfs-zero-day-vulnerability-cve-2022-37969-part", "evidence": "Zscaler root-cause analysis ties CVE-2022-37969 to insufficient bounds checks on BLF metadata offsets that can corrupt CLFS container context state.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-35803", "evidence": "MSRC lists CVE-2022-35803 as a CLFS elevation-of-privilege vulnerability.", "confidence": "medium"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-24521", "evidence": "MSRC lists CVE-2022-24521 as a CLFS elevation-of-privilege vulnerability with exploitation detected.", "confidence": "medium"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-40467", "evidence": "MSRC lists CVE-2021-40467 as a CLFS elevation-of-privilege vulnerability.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "win_driver_afd_socket_context_lifetime_and_pointer_trust",
+      "title": "AFD socket IOCTL path trusts endpoint context lifetime, pointers, or locked buffers",
+      "project_types": ["windows_kernel_driver"],
+      "symptoms": ["local privilege escalation through afd.sys", "socket operation crashes in AFD", "network endpoint IOCTL corrupts pool memory", "kernel dereferences user-influenced socket state", "sensitive data remains reachable after locked-memory handling"],
+      "root_causes": ["AFD IOCTL handlers accept user-controlled socket context, pointer, length, or count fields without a full capture, probe, lock, and bounds validation sequence", "endpoint, buffer, or MDL lifetime is not reference-protected across asynchronous socket state transitions and cancel or close paths", "locked pages or kernel buffers are reused, unlocked, or disclosed without clearing sensitive state and ownership metadata"],
+      "code_signals": ["afd.sys", "NtDeviceIoControlFile", "IOCTL_AFD", "AFD_ENDPOINT", "AFD_BUFFER", "AFD_POLL_INFO", "AFD_CONNECT_INFO", "AFD_RECV_INFO", "ProbeForRead", "ProbeForWrite", "MmProbeAndLockPages", "IoAllocateMdl"],
+      "state_variables": ["EndpointRefCount", "SocketState", "UserBuffer", "Mdl", "LockedPageCount", "AfdBufferLength", "PollHandleCount", "DisconnectState", "CancelState"],
+      "out_of_range_cases": ["user pointer is dereferenced after validation but before capture", "endpoint close races an outstanding poll, send, receive, or connect request", "buffer count exceeds the captured IOCTL input length", "locked memory contains stale kernel or cross-request data after failure cleanup"],
+      "likely_files": ["afd.sys", "afd", "winsock", "socket", "ioctl", "network", "endpoint"],
+      "verification_probes": ["fuzz AFD-like IOCTLs with invalid pointers, stale handles, huge counts, zero lengths, and concurrent close or cancel", "assert every METHOD_NEITHER pointer is captured or probed under SEH before use", "trace endpoint reference ownership across async socket operations", "scrub and unlock MDLs on every success and failure path"],
+      "confidence": "high",
+      "tags": ["afd", "winsock", "cve", "ioctl", "use-after-free", "pointer-trust", "locked-memory", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-38193", "evidence": "MSRC classifies CVE-2024-38193 as an AFD elevation-of-privilege use-after-free with exploitation detected.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-38141", "evidence": "MSRC classifies CVE-2024-38141 as an AFD elevation-of-privilege use-after-free.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-43563", "evidence": "MSRC classifies CVE-2024-43563 as AFD sensitive data storage in improperly locked memory leading to elevation of privilege.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-21768", "evidence": "MSRC classifies CVE-2023-21768 as an AFD elevation-of-privilege untrusted pointer dereference.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-28218", "evidence": "MSRC classifies CVE-2023-28218 as an AFD elevation-of-privilege heap-based buffer overflow.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-30151", "evidence": "MSRC lists CVE-2022-30151 as an AFD elevation-of-privilege vulnerability.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "win32k_user_callback_object_state_confusion",
+      "title": "Win32k object state changes during user-mode callback are not revalidated",
+      "project_types": ["windows_kernel_driver"],
+      "symptoms": ["Win32k elevation of privilege", "window or menu object type confusion", "kernel GUI object is accessed with stale flags", "object memory corruption after NtUser or GDI callback", "sandbox escape through GUI subsystem"],
+      "root_causes": ["win32k returns from a user-mode callback without revalidating tagWND, menu, class, or console flags that can change during reentrancy", "kernel code interprets a field as an offset, pointer, handle, or extra-bytes buffer based on stale object type state", "window traversal or object lookup uses a user-influenced field without verifying style, ownership, and queue membership invariants after callback return"],
+      "code_signals": ["win32k.sys", "win32kfull.sys", "win32kbase.sys", "NtUserCreateWindowEx", "NtUserConsoleControl", "NtSetWindowLongPtr", "xxxClientAllocWindowClassExtraBytes", "xxxCreateWindowEx", "xxxNextWindow", "tagWND", "WndExtra"],
+      "state_variables": ["tagWNDFlags", "WndExtra", "ConsoleWindowFlag", "WindowStyle", "cbWndExtra", "spmenu", "KernelCallbackTable", "DesktopHeapOffset", "ObjectType"],
+      "out_of_range_cases": ["callback changes a window flag but caller continues with the old interpretation", "WndExtra switches between user pointer and desktop-heap offset without a synchronized flag update", "child window style or ID field is accepted without validating the returned tagWND", "menu or window object is destroyed or retyped while still referenced by a traversal path"],
+      "likely_files": ["win32k", "win32kfull.sys", "win32kbase.sys", "user", "gdi", "window", "menu"],
+      "verification_probes": ["audit every win32k user-mode callback for state that must be rechecked after return", "add invariant assertions for tagWND flags, object type, owner thread, and desktop heap range", "fuzz NtUser window creation and menu paths with callback reentrancy enabled", "run variant analysis for fields whose meaning depends on a mutable flag"],
+      "confidence": "high",
+      "tags": ["win32k", "cve", "callback", "type-confusion", "object-lifetime", "reentrancy", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-29336", "evidence": "MSRC classifies CVE-2023-29336 as a Win32k elevation-of-privilege use-after-free with exploitation detected.", "confidence": "high"},
+        {"type": "research", "url": "https://googleprojectzero.github.io/0days-in-the-wild//0day-RCAs/2022/CVE-2022-21882.html", "evidence": "Project Zero describes CVE-2022-21882 as a win32k window object type confusion where object type state changed across a callback and was not rechecked.", "confidence": "high"},
+        {"type": "research", "url": "https://googleprojectzero.github.io/0days-in-the-wild//0day-RCAs/2021/CVE-2021-1732.html", "evidence": "Project Zero describes CVE-2021-1732 as win32k flag state going out of sync in the create-window path after a user-mode callback.", "confidence": "high"},
+        {"type": "research", "url": "https://www.mcafee.com/blogs/other-blogs/mcafee-labs/digging-windows-kernel-privilege-escalation-vulnerability-cve-2016-7255/", "evidence": "McAfee patch analysis ties CVE-2016-7255 to missing validation in win32k xxxNextWindow after user-influenced window state changes.", "confidence": "high"},
+        {"type": "cve_record", "url": "https://www.cve.org/CVERecord?id=CVE-2018-8453", "evidence": "The CVE record describes CVE-2018-8453 as Win32k failing to properly handle objects in memory, resulting in elevation of privilege.", "confidence": "medium"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2022-21882", "evidence": "MSRC lists CVE-2022-21882 as a Win32k elevation-of-privilege vulnerability with exploitation detected.", "confidence": "medium"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2021-1732", "evidence": "MSRC lists CVE-2021-1732 as a Windows Win32k elevation-of-privilege vulnerability with exploitation detected.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "win32k_graphics_composition_bounds_and_pointer_trust",
+      "title": "Win32k graphics or composition path trusts command buffers, stack sizes, or shared pointers",
+      "project_types": ["windows_kernel_driver"],
+      "symptoms": ["Win32k GRFX or ICOMP elevation of privilege", "DWM or composition path dereferences an untrusted pointer", "stack or heap overflow while processing graphics commands", "graphics kernel path corrupts memory from user-driven composition state"],
+      "root_causes": ["graphics or composition command decoding copies variable-sized regions to stack or heap buffers without checking element count, stride, or nested length fields", "ICOMP or DWM shared state carries pointers or handles from a user-influenced process boundary without capture and revalidation", "use-after-free in composition object lifetime allows stale surfaces, channels, or command objects to be reused"],
+      "code_signals": ["win32kfull.sys", "win32kbase.sys", "dwmcore.dll", "ICOMP", "GRFX", "HBITMAP", "SURFOBJ", "Eng", "Gre", "DComp", "CompositionSurface", "SharedHandle"],
+      "state_variables": ["CommandLength", "SurfaceStride", "ClipRectCount", "BitmapSize", "CompositionChannel", "SharedPointer", "ObjectRefCount", "StackCopySize", "HeapAllocationSize"],
+      "out_of_range_cases": ["clip or region count overflows allocation size", "stack copy uses an attacker-controlled command length", "shared composition pointer is freed or retyped before kernel use", "DWM shared handle resolves to an object with unexpected type or owner"],
+      "likely_files": ["win32k", "grfx", "icomp", "dwm", "graphics", "composition", "surface"],
+      "verification_probes": ["fuzz graphics and composition command streams with nested length mismatches", "assert RtlSizeT arithmetic before every stack or heap copy", "reference-check shared composition objects across channel teardown", "validate object owner, type, and desktop session before dereferencing shared pointers"],
+      "confidence": "high",
+      "tags": ["win32k", "graphics", "composition", "bounds", "pointer-trust", "use-after-free", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-30038", "evidence": "MSRC classifies CVE-2024-30038 as a Win32K ICOMP elevation-of-privilege heap-based buffer overflow.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-38246", "evidence": "MSRC classifies CVE-2024-38246 as a Win32K GRFX elevation-of-privilege stack-based buffer overflow.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-26241", "evidence": "MSRC classifies CVE-2024-26241 as a Win32K ICOMP elevation-of-privilege use-after-free.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-43636", "evidence": "MSRC classifies CVE-2024-43636 as a DWM Core Library Win32k elevation-of-privilege untrusted pointer dereference.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "win_kernel_streaming_shared_state_race",
+      "title": "Kernel Streaming driver updates shared filter or pin state without sufficient synchronization",
+      "project_types": ["windows_kernel_driver"],
+      "symptoms": ["Kernel Streaming Service Driver elevation of privilege", "race-dependent crash in audio or video streaming IOCTLs", "filter, pin, event, or property state changes during concurrent close or cancel", "shared KS object is used after teardown"],
+      "root_causes": ["KSPROPERTY, KSMETHOD, or KSEVENT handling reads and writes shared filter, pin, allocator, or event state without holding the same lock across validation and use", "IRP cancellation or handle close can race an in-flight streaming request and leave an object owned by neither path", "reference count transitions are split from list insertion or removal for shared KS resources"],
+      "code_signals": ["ks.sys", "KSPROPERTY", "KSMETHOD", "KSEVENT", "KSPIN", "KSFILTER", "KSCATEGORY", "IRP_MJ_DEVICE_CONTROL", "IoCancelIrp", "ExAcquireFastMutex", "KeAcquireSpinLock"],
+      "state_variables": ["PinState", "FilterState", "EventList", "AllocatorFraming", "CancelState", "ReferenceCount", "QueueLock", "StreamingIrp"],
+      "out_of_range_cases": ["two threads change pin state while one request still uses old allocator framing", "event list entry is removed during notification", "cancel path completes an IRP while property path still references its context", "close path frees a filter object before pending work drains"],
+      "likely_files": ["ks.sys", "kernel_streaming", "avstream", "pin", "filter", "property", "event"],
+      "verification_probes": ["run concurrent property, method, event, close, and cancel fuzzing against KS-style devices", "assert reference acquisition and list membership happen under one synchronization discipline", "enable Driver Verifier deadlock, IRQL, pool, and I/O verification", "trace lock ownership and object refcount across every streaming state transition"],
+      "confidence": "high",
+      "tags": ["kernel-streaming", "race", "synchronization", "irp", "lifecycle", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-38191", "evidence": "MSRC classifies CVE-2024-38191 as a Kernel Streaming Service Driver elevation-of-privilege race condition.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "win_network_stack_length_arithmetic_wrap",
+      "title": "Network stack parser uses wrapped length arithmetic for packet or ICS state",
+      "project_types": ["windows_kernel_driver", "server"],
+      "symptoms": ["remote code execution in tcpip.sys", "local or network service privilege escalation from malformed network state", "packet parser allocates too small a buffer", "IPv6 or ICS path crashes on crafted lengths"],
+      "root_causes": ["packet or network-service parser subtracts header, option, or payload lengths without proving the minuend is large enough", "integer overflow or underflow converts a rejected packet length into a small allocation or large copy", "fragment, extension-header, or connection-sharing metadata is trusted across layers without normalizing length and count invariants"],
+      "code_signals": ["tcpip.sys", "IPv6", "ExtensionHeader", "FragmentHeader", "PacketLength", "PayloadLength", "OptionLength", "IphlpSvc", "SharedAccess", "ICS", "RtlSizeTAdd", "RtlSizeTSub"],
+      "state_variables": ["PacketLength", "RemainingLength", "HeaderLength", "OptionLength", "FragmentOffset", "PayloadLength", "AllocationSize", "CopyLength", "InterfaceState"],
+      "out_of_range_cases": ["header length exceeds remaining packet length before subtraction", "fragment reassembly length wraps below zero", "option length plus header length overflows allocation size", "ICS state transition trusts a count from a lower layer without bounds normalization"],
+      "likely_files": ["tcpip.sys", "network", "ipv6", "packet", "fragment", "ics", "sharedaccess"],
+      "verification_probes": ["fuzz IPv6 extension-header and fragmentation paths with zero, tiny, maximum, and wrapped lengths", "replace raw arithmetic with checked RtlSizeTAdd and RtlSizeTSub-style helpers", "assert allocation size and copy length derive from the same validated normalized length", "run packet parser tests under Driver Verifier and kernel memory sanitization where available"],
+      "confidence": "high",
+      "tags": ["tcpip", "network", "ipv6", "integer-underflow", "integer-overflow", "parser", "github_quality:promotable"],
+      "sources": [
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2024-38063", "evidence": "MSRC classifies CVE-2024-38063 as a critical Windows TCP/IP remote code execution integer underflow.", "confidence": "high"},
+        {"type": "msrc_cve", "url": "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2023-35632", "evidence": "MSRC classifies CVE-2023-35632 as a Windows Internet Connection Sharing elevation-of-privilege integer overflow or wraparound.", "confidence": "high"}
+      ]
+    },
+    {
       "id": "unreal_party_count_stale_after_kick",
       "title": "Party member count is stale after invite or kick churn",
       "project_types": ["unreal5_game_client", "unreal5_game_server"],
@@ -181,6 +309,245 @@
       "confidence": "medium",
       "tags": ["prediction", "rollback", "replication"],
       "sources": [{"type": "curated_seed", "evidence": "Common multiplayer prediction consistency pattern."}]
+    },
+    {
+      "id": "unreal_repo_assets_or_submodules_missing",
+      "title": "UE project checkout is missing assets, plugins, submodules, or generated binaries",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["project reports missing plugin", "Content folder is absent", "uasset appears corrupted after download", "module is missing or built with a different engine version", "GitHub source zip cannot be extracted or opened"],
+      "root_causes": ["developer opened a GitHub ZIP or release source archive that omits submodules, Git LFS payloads, or private Content", "plugin submodule paths are empty because the repo was cloned without --recurse-submodules or submodule URLs require a different protocol", "Binaries and Intermediate are intentionally absent and the project must be regenerated and built locally"],
+      "code_signals": [".gitmodules", ".gitattributes", "filter=lfs", "Plugins/", "Content/", "Binaries/", "Intermediate/", ".uproject", "Modules", "AdditionalDependencies"],
+      "state_variables": ["PluginDirectories", "SubmoduleStatus", "LfsPointerFiles", "ContentAvailability", "ModuleBinaryVersion", "ProjectAssociation"],
+      "out_of_range_cases": ["plugin directory exists but contains no uplugin", "uasset file is a Git LFS pointer or truncated archive member", "Content is intentionally private or contains marketplace assets that cannot be redistributed", "GitHub release Source code zip is used instead of git clone"],
+      "likely_files": [".gitmodules", ".gitattributes", "*.uproject", "*.uplugin", "Plugins", "Content", "Source"],
+      "verification_probes": ["run git submodule status --recursive and check for empty plugin directories", "verify large uasset and umap files are real binary assets rather than LFS pointers", "regenerate Visual Studio or Xcode project files and build modules before treating missing binary dialogs as source failures", "confirm whether the repository intentionally excludes Content or marketplace assets"],
+      "confidence": "high",
+      "tags": ["unreal", "assets", "submodules", "lfs", "setup", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/JanSeliv/Bomber/issues/64", "evidence": "Missing FootTrailsGenerator dependency was traced to empty plugin submodules and fixed by recursive submodule checkout and HTTPS submodule URLs.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/JanSeliv/Bomber/issues/65", "evidence": "A corrupted source archive report was resolved by using git clone instead of GitHub's generated source ZIP for a very large UE project.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/JediKnightChan/EternalCrusadeResurrection/issues/59", "evidence": "The maintainer confirmed the public repo intentionally excludes Content because it contains external assets and internal game logic.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/vahabahmadvand/ActionRPG_UE5/issues/6", "evidence": "Missing module dialog was explained as expected because the GitHub project does not include binary builds.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "unreal_engine_version_api_drift",
+      "title": "UE engine or branch mismatch hits API and header drift",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["project compiles on one UE version but fails on another", "UnrealHeaderTool cannot find a class", "deprecated API warning becomes compile failure", "Visual Studio or Xcode reports missing Unreal symbols", "branch named for one engine version fails in a newer editor"],
+      "root_causes": ["project branch, .uproject EngineAssociation, and installed engine version are out of sync", "engine upgrade renamed or moved APIs and headers such as UCameraShake, IsPendingKill, or platform time helpers", "Unity builds or precompiled headers hide missing includes until non-unity or another compiler is used"],
+      "code_signals": ["EngineAssociation", "DefaultBuildSettings", "IncludeOrderVersion", "UCameraShake", "UCameraShakeBase", "IsPendingKill", "IsValid", "FWindowsPlatformTime", "FPlatformTime", "CoreMinimal.h"],
+      "state_variables": ["EngineVersion", "BranchName", "TargetPlatform", "CompilerToolchain", "UnityBuildEnabled", "IncludeOrder"],
+      "out_of_range_cases": ["UE4 branch is compiled with UE5", "Mac build includes a Windows-only platform type", "deprecated helper was removed in the target engine", "header is transitively available only under unity builds"],
+      "likely_files": ["*.uproject", "*.Build.cs", "*.Target.cs", "Source", "Config/DefaultEngine.ini"],
+      "verification_probes": ["compare .uproject EngineAssociation and README branch guidance against the installed editor", "run a clean non-unity build on each supported platform", "replace platform-specific helpers with engine-generic APIs where possible", "audit UHT errors for renamed engine classes before changing game logic"],
+      "confidence": "high",
+      "tags": ["unreal", "build", "engine-upgrade", "headers", "cross-platform", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/tomlooman/ActionRoguelike/issues/17", "evidence": "Compile failure on an older branch was traced to UCameraShake being renamed to UCameraShakeBase in newer project code.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/tomlooman/ActionRoguelike/issues/19", "evidence": "Mac UE5.5 build failed because game code used FWindowsPlatformTime in cross-platform code.", "confidence": "high"},
+        {"type": "github_commit", "url": "https://github.com/tomlooman/ActionRoguelike/commit/0ab8b4ee38cf6814b14b999cd301d9399fd5c9e4", "evidence": "The fix replaced Windows-specific timing with FPlatformTime so non-Windows builds compile.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/tomlooman/ActionRoguelike/issues/5", "evidence": "IsPendingKill deprecation was called out as an engine-version compatibility issue requiring IsValid-style checks.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_platform_packaging_config_asset_gap",
+      "title": "Platform packaging fails from config or asset assumptions",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["Android package fails with missing drawable resource", "Mac build or cook fails while Windows works", "packaged build crashes after host or connect", "mobile build runs but input or lighting is unusable"],
+      "root_causes": ["platform-specific manifest, icon, dylib, or plugin configuration references assets that do not exist for that target", "desktop input, lighting, scalability, or networking assumptions were not validated on mobile", "packaged builds expose memory or asset loading paths that PIE did not execute"],
+      "code_signals": ["AndroidManifestUpdates", "roundIcon", "icon_round", "AdditionalAssetDirectoriesToCook", "Target.cs", "RuntimeDependencies", "libsteam_api.dylib", "DefaultScalability.ini", "InputMappingContext"],
+      "state_variables": ["TargetPlatform", "CookedAssetSet", "ManifestResources", "ScalabilityLevel", "MobileInputBindings", "PackagedBuildConfiguration"],
+      "out_of_range_cases": ["manifest references @drawable/icon_round but the drawable is absent", "virtual thumbstick or touch action mapping is missing", "Mac uses a Windows-only code path", "packaged host/connect path allocates or loads differently from editor play"],
+      "likely_files": ["Config/Android", "Build/Android", "*.Target.cs", "*.Build.cs", "Config/DefaultInput.ini", "Config/DefaultScalability.ini", "Source"],
+      "verification_probes": ["run cook/package for every advertised target before release", "validate Android manifest resource references against Build/Android assets", "test host, connect, and first gameplay transition in packaged builds", "run mobile builds with platform-specific input and scalability profiles"],
+      "confidence": "high",
+      "tags": ["unreal", "packaging", "android", "macos", "cook", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/vahabahmadvand/ActionRPG_UE5/issues/4", "evidence": "Android packaging failed because the manifest referenced drawable/icon_round; the workaround removed the roundIcon manifest update.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/JanSeliv/Bomber/issues/67", "evidence": "Android support was possible but still had critical lighting, performance, and virtual thumbstick gaps.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/JanSeliv/Bomber/issues/62", "evidence": "Mac build problems were closed after project-side fixes and use of a native UE5.2 install.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/tomlooman/ActionRoguelike/issues/18", "evidence": "A source-built UE5.5 packaged build crashed on Host or Connect, showing a packaged-only path not covered by editor startup.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_pooled_actor_component_reset_gap",
+      "title": "Pooled Actor or Component is reused without a complete reset",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["projectile pooling crashes in Reset", "pooled actor keeps stale state", "pooled KD tree node corrupts spatial queries", "component initializes twice or is uninitialized unexpectedly", "widget or actor is recreated on every input press"],
+      "root_causes": ["pool return path does not fully undo transient state, delegates, owner references, movement state, or initialized flags", "reuse path calls InitializeComponent without checking whether the component is already initialized", "custom pooled data structures do not provide a forced reset contract for every object type"],
+      "code_signals": ["InitializeComponent", "UninitializeComponent", "HasBeenInitialized", "Reset", "BeginPlay", "EndPlay", "OnComponentActivated", "ObjectPool", "TQueue", "UClass", "GetClass"],
+      "state_variables": ["bHasBeenInitialized", "PoolState", "OwningActor", "Velocity", "DelegatesBound", "NodeParent", "NodeChildren", "ActiveWidget"],
+      "out_of_range_cases": ["same component enters pool while still active", "delegate remains bound after return to pool", "pooled node still points to an old tree branch", "input toggles create duplicate widgets instead of reusing an existing one"],
+      "likely_files": ["pool", "projectile", "movement", "component", "kdtree", "widget", "actor"],
+      "verification_probes": ["stress spawn and return objects for thousands of iterations", "assert every pooled object has ResetForPool and ActivateFromPool coverage", "trace component initialized and uninitialized transitions", "check for duplicate widgets, bound delegates, and stale owner pointers after reuse"],
+      "confidence": "high",
+      "tags": ["unreal", "pooling", "lifecycle", "crash", "state-reset", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/tomlooman/ActionRoguelike/issues/12", "evidence": "Projectile pooling could crash in USProjectileMovementComponent::Reset; the report proposed guarding initialization with HasBeenInitialized and uninitialization.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/83", "evidence": "Argus tracked a KD tree bug caused by node pooling and the need for a generalized forced reset interface.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/57", "evidence": "Actor pooling design centered on mapping UClass to queues of empty instances, making class-specific reset behavior important.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/Ahtat204/ShootTrainner/issues/4", "evidence": "A widget was recreated on every key press even when already visible, a UI-side pooling/lifecycle variant.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_ui_pause_input_mode_lifecycle_gap",
+      "title": "UI, pause, and input mode state is not restored or gated",
+      "project_types": ["unreal5_game_client"],
+      "symptoms": ["widget only appears in Simulate mode", "game stays paused after calling SetGamePaused false", "camera pans while hovering UI", "left mouse click is unresponsive", "UI freezes after starting gameplay"],
+      "root_causes": ["widget creation runs with the wrong owning player, viewport, input mode, or game-paused tick policy", "pause and input-mode transitions are not centralized and leave PlayerController, cursor capture, focus, or time dilation in an inconsistent state", "gameplay input is not gated against UI hover/focus state"],
+      "code_signals": ["CreateWidget", "AddToViewport", "SetGamePaused", "SetInputModeGameOnly", "SetInputModeUIOnly", "SetInputModeGameAndUI", "bShowMouseCursor", "SetTickableWhenPaused", "IsHovered"],
+      "state_variables": ["ActiveMenuWidget", "bIsPaused", "InputMode", "FocusedWidget", "OwningPlayer", "ViewportClient", "bShowMouseCursor", "MouseCaptureMode"],
+      "out_of_range_cases": ["widget has no owning local player", "pause menu ticks disabled while paused", "old UI-only input mode remains after closing menu", "camera or click command ignores Slate hover state"],
+      "likely_files": ["player_controller", "hud", "widget", "ui", "input", "camera", "menu"],
+      "verification_probes": ["log widget owner, viewport add, focus, cursor, and input mode for every menu transition", "test PIE, Standalone, packaged build, and Simulate separately", "assert a single source of truth for pause and active menu state", "block gameplay camera or command input while pointer is over interactive UI"],
+      "confidence": "medium",
+      "tags": ["unreal", "ui", "input", "pause", "viewport", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Ahtat204/ShootTrainner/issues/1", "evidence": "Widget Blueprint appeared only in Simulate mode despite CreateWidget and AddToViewport attempts.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/Ahtat204/ShootTrainner/issues/3", "evidence": "Game remained frozen even after SetGamePaused false, pointing at broader pause/input lifecycle state.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/117", "evidence": "Camera panning needed to be prevented while hovering UI elements.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/vahabahmadvand/ActionRPG_UE5/issues/7", "evidence": "Open report describes unresponsive left click on PC and UI freeze after starting gameplay on Android.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_gas_ability_scope_cooldown_and_cue_gap",
+      "title": "GAS ability state leaks across instances, scanner types, or cooked cue discovery",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["canceling a non-instanced ability is unreliable", "cooldown blocks all ability variants instead of the active type", "GameplayCue works in editor but not packaged", "switching ability variants leaves altered visual state", "ability activation failure needs a gameplay-visible delegate"],
+      "root_causes": ["ability-wide state is used where the design requires per ability spec, per source object, or per scanner type state", "non-instanced abilities have no lightweight active-operation record to cancel their own montage or effect", "GameplayCue blueprint classes are discovered indirectly and are not cooked unless explicitly referenced or included"],
+      "code_signals": ["UGameplayAbility", "InstancingPolicy", "NonInstanced", "GameplayCue", "GameplayCueNotify", "TryActivateAbility", "CooldownGameplayEffect", "FGameplayAbilitySpecHandle", "AbilitySystemComponent", "BlueprintImplementableEvent"],
+      "state_variables": ["AbilitySpecHandle", "ScannerType", "CooldownTags", "ActiveAbilityRecords", "MontageInstance", "GameplayCueTag", "CookedCueAssets"],
+      "out_of_range_cases": ["one cooldown tag applies to every scanner type", "ability switch occurs while a visual effect is shrinking back to default", "packaged build omits a cue blueprint because no hard reference exists", "cancel path cannot identify which non-instanced ability action is active"],
+      "likely_files": ["ability", "gameplay_ability", "gameplaycue", "cooldown", "scanner", "ability_system", "asset_manager"],
+      "verification_probes": ["activate two ability variants and assert cooldowns are tracked per intended scope", "package a build and verify GameplayCue classes are included in the cooked asset set", "track active non-instanced ability operations with handles that can be canceled", "switch variants during effect rollback and assert visual state returns to the new variant baseline"],
+      "confidence": "high",
+      "tags": ["unreal", "gas", "gameplay-ability", "gameplaycue", "cooldown", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/6", "evidence": "The project recorded Epic's caveat that canceling a non-instanced ability may require a lightweight active ability record.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/8", "evidence": "GameplayCue limitations included single listener behavior, cooked asset inclusion, and editor discovery restart caveats.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/48", "evidence": "Ability-wide scan cooldown incorrectly disabled every scanner type and needed ScannerType-specific cooldowns.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/44", "evidence": "Switching scanners while a beam-width ability was shrinking left the new scanner height wrong.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "unreal_data_driven_soft_reference_load_gap",
+      "title": "Data-driven UE records use hard references or late asset resolution",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["spawn definitions are duplicated across code and Blueprints", "static data records cannot be loaded safely at runtime", "ability overrides are missing until first use", "data table entries cannot drive valid enum-like choices", "raw asset pointers break editor or packaged behavior"],
+      "root_causes": ["gameplay definitions are hard-coded or stored as raw UObject pointers instead of data assets, soft object/class references, or stable record IDs", "runtime systems resolve assets lazily without an async preload or cache path", "editor-facing data lacks safe ID serialization and validation at PostEditChangeProperty time"],
+      "code_signals": ["UDataAsset", "UPrimaryDataAsset", "TSoftObjectPtr", "TSoftClassPtr", "FSoftObjectPath", "StreamableManager", "AssetManager", "DataTable", "PostEditChangeProperty", "StaticData"],
+      "state_variables": ["RecordId", "SoftObjectPath", "TransientObject", "AssetLoadState", "StaticDataDatabase", "SpawnTable", "AbilityOverrideSet"],
+      "out_of_range_cases": ["record stores a full object reference that is not cooked", "record ID is assigned only at runtime and changes between sessions", "ability override is requested before async preload completes", "Blueprint dropdown points at stale data"],
+      "likely_files": ["data_asset", "static_data", "asset_loading", "spawn", "ability", "data_table", "subsystem"],
+      "verification_probes": ["load every data record in a cooked build before gameplay starts", "validate soft references and record IDs in editor and CI", "trace async preload completion before systems consume overrides", "replace hard-coded class references with data-driven specs where designers need variation"],
+      "confidence": "high",
+      "tags": ["unreal", "data-assets", "soft-references", "asset-loading", "cook", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/23", "evidence": "Argus converted entity templates from raw pointers to soft pointers.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/160", "evidence": "Static data needed an Asset Loading Component for async pre-loading of records.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/217", "evidence": "Ability overrides needed async preload before use.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/24", "evidence": "ScanFun centralized scannable spawn definitions into a single data table or asset-driven place.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_spatial_query_center_or_boundary_gap",
+      "title": "Spatial query uses center points or wrong boundaries instead of full extents",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["large-radius entities clip or are missed by range queries", "KD tree range search follows the wrong branch", "surface spawning embeds meshes in the floor or floats them", "fog or rasterization misses the right edge of a triangle", "revealed area does not cover the full playable space"],
+      "root_causes": ["query compares only actor or node centers and ignores radius, bounds, pivot, or mesh origin", "inclusive/exclusive bounds are inconsistent at polygon or raster edges", "KD tree pruning uses branch decisions that are valid for points but not for extents", "asset origin offsets are assumed to be normalized"],
+      "code_signals": ["FBox", "FBoxSphereBounds", "GetActorBounds", "Bounds.Origin", "Bounds.BoxExtent", "KDTree", "FindEntitiesWithinXYBounds", "RasterizeTriangle", "OverlapMulti", "LineTrace"],
+      "state_variables": ["EntityRadius", "SearchExtent", "NodeBounds", "MeshOrigin", "BoxExtent", "TriangleRightEdge", "PlayableBounds", "RevealRadius"],
+      "out_of_range_cases": ["radius overlaps query box but center lies outside", "mesh origin is centered while placement expects bottom pivot", "triangle pixel at the right extreme is skipped", "obstacle edge segment is longer than KD tree assumptions"],
+      "likely_files": ["spatial_partitioning", "kdtree", "avoidance", "fog_of_war", "spawning", "geometry", "bounds"],
+      "verification_probes": ["seed entities whose radius overlaps a query range while centers are outside", "test min and max boundary pixels for rasterization", "spawn meshes with different pivots and bounds on the same surface", "visualize node bounds, query extents, and accepted/rejected candidates"],
+      "confidence": "high",
+      "tags": ["unreal", "spatial-query", "kdtree", "bounds", "geometry", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/122", "evidence": "KD tree range query branch choice needed correction when finding nodes within range.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/161", "evidence": "KD tree queries had to account for entity radius rather than only entity center points.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/224", "evidence": "Node radius consideration was added to overlap and range checks to prevent clipping with large entities.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/barbarabugajak/ScanFun/issues/16", "evidence": "On-surface spawning broke for meshes with inconsistent origin offsets even though the code worked for normalized default cube assets.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "unreal_orca_avoidance_group_oscillation",
+      "title": "ORCA or flocking avoidance oscillates from group, obstacle, or coordinate mismatch",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["units orbit forever around the target", "group members split into different avoidance groups", "trailing unit oscillates", "entities body-block at the stable range boundary", "units face tiny movement directions or jitter"],
+      "root_causes": ["avoidance group membership resets or splits when a new move command or waypoint starts", "ORCA line generation uses the wrong coordinate handedness, obstacle offset, effort coefficient, or time horizon", "same-group entities and construction entities are not excluded or weighted differently from true blockers", "tiny movement vectors drive rotation and avoidance when they should be ignored"],
+      "code_signals": ["ORCA", "RVO", "AvoidanceSystems", "FlockingSystems", "AvoidanceGroup", "DesiredVelocity", "TimeHorizon", "EffortCoefficient", "MoveToEntity", "NavigationPath"],
+      "state_variables": ["AvoidanceGroupId", "DesiredVelocity", "ObstaclePoint", "ORCALines", "EffortCoefficient", "WaypointIndex", "bConstructing", "StableRange"],
+      "out_of_range_cases": ["same selected group generates full avoidance responsibility against itself", "new move command clears group identity too early", "left-handed and right-handed calculations are mixed", "obstacle points are exactly on the navmesh edge and create unstable constraints"],
+      "likely_files": ["avoidance", "flocking", "navigation", "transform_systems", "movement", "orca", "rvo"],
+      "verification_probes": ["record avoidance group id across path completion and new command start", "visualize ORCA lines, obstacle points, and chosen velocity every frame", "run deterministic tests for center-intersection, long-segment, trailing, and cornering cases", "clamp rotation and velocity updates below a tiny movement epsilon"],
+      "confidence": "high",
+      "tags": ["unreal", "ai", "avoidance", "orca", "flocking", "movement", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/103", "evidence": "Argus tracked a perpetual orbiting issue in avoidance.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/107", "evidence": "Avoidance had to be converted from left-handed to right-handed coordinates for ORCA.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/229", "evidence": "Starting a new move command reset avoidance groups incorrectly.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/235", "evidence": "The fix checklist covered group splits at waypoints, clumped group oscillation, same-group ORCA range reduction, target-within-own-group splits, and obstacle point offsets.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/244", "evidence": "Open trailing oscillation issue suggests effort coefficient scaling by distance as a likely correction axis.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_ecs_entity_lifecycle_query_filter_gap",
+      "title": "ECS or gameplay queries keep dead, passenger, or inactive entities in active systems",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["dead actors can still be selected", "dead entities remain in avoidance groups", "reticle stays after casting entity dies", "passengers are considered nearby blockers or targets", "combat state requires extra input before movement resumes"],
+      "root_causes": ["range, selection, targeting, reticle, and avoidance queries do not share a lifecycle predicate for alive, active, controllable, and visible entities", "component removal or death state does not invalidate cached groups, reticles, passengers, or target references", "state transitions from combat, garrison, death, and ability casting leave stale membership in ECS sets"],
+      "code_signals": ["ArgusEntity", "IdentityComponent", "TargetingComponent", "ReticleComponent", "Passenger", "Carrier", "Dead", "Alive", "DestroyEntity", "RemoveComponentsForEntity"],
+      "state_variables": ["bIsDead", "bIsPassenger", "bIsSelectable", "TargetEntityId", "AvoidanceGroupId", "ReticleOwner", "CombatState", "ComponentMask"],
+      "out_of_range_cases": ["entity dies while reticle ability is active", "passenger remains in spatial partitioning as a normal blocker", "dead entity remains selected after destruction", "combat target is cleared but movement task still waits for old combat state"],
+      "likely_files": ["entity", "targeting", "selection", "reticle", "avoidance", "garrison", "combat", "spatial_partitioning"],
+      "verification_probes": ["apply the same alive and active predicate to every spatial and gameplay query", "kill or garrison entities while selected, targeted, moving, and casting", "assert death removes or invalidates reticles, targets, groups, and UI entries", "unit-test component masks after DestroyEntity and RemoveComponentsForEntity"],
+      "confidence": "high",
+      "tags": ["unreal", "ecs", "lifecycle", "selection", "targeting", "query-filter", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/148", "evidence": "Assorted bugs included dead entities in avoidance groups, selecting dead actors, and movement requiring a double-click after combat.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/147", "evidence": "Garrison flow needed range predicates that ignore passengers and dead entities.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/167", "evidence": "Reticle ability needed to disappear when the casting entity dies.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/246", "evidence": "Reticle components had a bug around respecting one reticle per cast.", "confidence": "medium"}
+      ]
+    },
+    {
+      "id": "unreal_fog_of_war_raster_visibility_bounds_gap",
+      "title": "Fog-of-war raster visibility misses bounds, obstacles, or update throttling cases",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["revealed area does not cover the full playable space", "fog ignores obstacles", "blurred reveal edge artifacts appear", "fog updates are too slow", "right-edge pixels are missing from revealed triangles"],
+      "root_causes": ["visibility rasterization has off-by-one or triangle-boundary errors", "line-of-sight obstacle intersection is calculated at the exact obstacle point without a stabilizing offset", "active reveal updates are throttled without considering nearby moving allies", "CPU blur and decay smoothing are not batched or parallelized for the reveal workload"],
+      "code_signals": ["FogOfWar", "RasterizeCircle", "RasterizeTriangle", "RevealPixelAlphaForEntity", "LineOfSight", "Obstacle", "GaussianBlur", "DecaySmoothing", "ParallelFor", "TBitArray"],
+      "state_variables": ["RevealAlpha", "ActivelyRevealedPixels", "ObstacleIntersection", "PlayableBounds", "BlurRadius", "MovingAllies", "PixelIndex", "TriangleBounds"],
+      "out_of_range_cases": ["triangle right extreme is excluded", "reveal exits early while a nearby ally is moving", "obstacle intersection lies exactly on an edge and flickers", "full playable extent is larger than the reveal buffer assumptions"],
+      "likely_files": ["fog_of_war", "visibility", "raster", "obstacle", "spatial_partitioning", "blur", "smoothing"],
+      "verification_probes": ["snapshot fog buffers for min and max playable bounds", "unit-test triangle and circle rasterization edge pixels", "compare CPU and GPU blur output for the same alpha field", "simulate moving allies near reveal boundaries and obstacles"],
+      "confidence": "medium",
+      "tags": ["unreal", "fog-of-war", "rasterization", "visibility", "performance", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/187", "evidence": "Fog updates needed to be constrained based on whether entities or allies were moving nearby.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/191", "evidence": "Fog of war needed to respect obstacles for reveal state.", "confidence": "medium"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/206", "evidence": "Triangle rasterization needed a bugfix at the right extreme of bounds.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Karazaa/Argus/issues/228", "evidence": "TeamCommander revealed areas failed to cover the full extent of playable space.", "confidence": "high"}
+      ]
+    },
+    {
+      "id": "unreal_hit_overlap_metric_initialization_gap",
+      "title": "Hit or overlap metric is read before the callback state is valid",
+      "project_types": ["unreal5_game_client", "unreal5_game_server"],
+      "symptoms": ["impact distance is always zero", "debugger shows garbage values during overlap handling", "bullet hole visibility distance is wrong", "hit scoring differs from visual impact location"],
+      "root_causes": ["distance or hit-derived state is inspected before assignment or before the overlap call stack has completed", "impact point, component center, and target actor origin are mixed without validating which coordinate each value represents", "debug-only observation happens before the code path that initializes the metric"],
+      "code_signals": ["OnHit", "OnOverlap", "FHitResult", "ImpactPoint", "FVector::Dist", "GetComponentLocation", "OtherActor", "Cast<", "LineTraceSingleByChannel"],
+      "state_variables": ["ImpactPoint", "TargetCenter", "Distance", "HitActor", "OtherActor", "BulletHoleDecal", "VisibilityDistance"],
+      "out_of_range_cases": ["distance is read before the assignment statement executes", "component location equals impact point because the wrong component is used", "target center is uninitialized or still default", "debugger watches a variable before the callback branch initializes it"],
+      "likely_files": ["hit", "overlap", "projectile", "bullet", "target", "decal", "score"],
+      "verification_probes": ["log impact point, target center, component name, and assigned distance after the branch that computes them", "initialize hit metrics to sentinel values and assert they are overwritten before use", "draw debug impact and center positions in the same coordinate space", "test direct center hit and edge hit cases"],
+      "confidence": "medium",
+      "tags": ["unreal", "collision", "hit-result", "debugging", "initialization", "github_quality:promotable"],
+      "sources": [
+        {"type": "github_issue", "url": "https://github.com/Ahtat204/ShootTrainner/issues/7", "evidence": "Distance appeared as zero or garbage in the debugger until checked after initialization in the overlap branch.", "confidence": "high"},
+        {"type": "github_issue", "url": "https://github.com/Ahtat204/ShootTrainner/issues/6", "evidence": "Bullet hole visibility distance was tracked as a related hit-distance visibility issue.", "confidence": "medium"}
+      ]
     },
     {
       "id": "backend_idempotency_key_missing",
