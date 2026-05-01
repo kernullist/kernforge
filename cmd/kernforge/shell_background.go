@@ -1313,6 +1313,7 @@ func buildBackgroundJobStatusList(jobs []BackgroundShellJob) []map[string]any {
 			"status":          job.Status,
 			"owner_node_id":   job.OwnerNodeID,
 			"command_summary": job.CommandSummary,
+			"log_path":        job.LogPath,
 			"cancel_reason":   job.CancelReason,
 			"preempted_by":    job.PreemptedBy,
 		})

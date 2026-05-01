@@ -4802,6 +4802,42 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
 		}
+		if rt.session.ActiveEditLoop != nil {
+			loop := *rt.session.ActiveEditLoop
+			loop.Normalize()
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Edit Loop"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("edit_loop", firstNonBlankString(loop.ID, "active")))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("edit_loop_status", valueOrUnset(loop.Status)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(loop.ChangedPaths))))
+			if len(loop.ChangedPaths) > 0 {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_changed", strings.Join(limitStrings(loop.ChangedPaths, 4), ", ")))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worker_evidence", fmt.Sprintf("%d", len(loop.WorkerEvidence))))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification", valueOrUnset(firstNonBlankString(loop.VerificationStatus, loop.VerificationSummary))))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_evidence", fmt.Sprintf("%d", len(loop.VerificationEvidence))))
+			if loop.VerificationBundleID != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_bundle", loop.VerificationBundleID))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("retry_count", fmt.Sprintf("%d", loop.RetryCount)))
+			if len(loop.RetryDecisions) > 0 {
+				decision := loop.RetryDecisions[len(loop.RetryDecisions)-1]
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("retry_decision", valueOrUnset(decision.Action)))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_risks", fmt.Sprintf("%d", len(loop.RemainingRisks))))
+			if loop.FinalReviewVerdict != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("final_review", loop.FinalReviewVerdict))
+			}
+		} else if len(rt.session.EditLoops) > 0 {
+			loop := rt.session.EditLoops[0]
+			loop.Normalize()
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Edit Loop"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_edit_loop", loop.ID))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_edit_loop_status", valueOrUnset(loop.Status)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", valueOrUnset(loop.VerificationStatus)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_remaining_risks", fmt.Sprintf("%d", len(loop.RemainingRisks))))
+		}
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}

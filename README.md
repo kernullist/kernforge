@@ -101,6 +101,7 @@ Its current differentiators are:
 - Multi-agent project analysis with reusable knowledge packs, a performance lens, operational docs, and an HTML dashboard
 - Symptom-driven `/find-root-cause` plus built-in `/root-cause-patterns` knowledge packs
 - Pre-final coding harnesses for acceptance, artifact quality, scenario replay, subagent evidence, test impact, and background job state
+- Evidence-backed apply/verify/retry edit-loop ledger that carries worker edits, patch evidence, background verification bundles, retry decisions, final review, and remaining risk into the final answer
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
@@ -210,7 +211,9 @@ Its current differentiators are:
 - WebView2 diff review before file writes
 - Selection-aware edit previews
 - Automatic verification after edits when applicable
+- Each edit request keeps an apply/verify/retry ledger so main edits, worker edits, patch transaction ids, background verification bundles, verification reports, retry decisions, final-review verdicts, and remaining risk stay tied together through compaction and final handoff
 - Before a final answer, the coding harness checks the acceptance contract, actual changed paths, requested artifact existence, artifact content quality, scenario replay state, subagent/reviewer evidence, test impact, and background job state
+- The final-answer reviewer receives the edit-loop ledger plus a typed outcome contract and expects one coherent summary of what changed, what verified, what was retried, and what risk remains
 - If a requested document or report artifact is placeholder/TODO content or does not cover the requested topic, the artifact-quality gate blocks the final answer
 - If the user provided a bug scenario with trigger/expected/observed behavior, a code-changing fix claim must include replay/verification evidence or explicitly disclose that the replay was not run
 - Root-cause answers are blocked when worker evidence does not show a causal bridge to the user-visible symptom or when reviewer issues are hidden
@@ -702,6 +705,7 @@ Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` valu
 - The interactive loop now attempts planner/reviewer preflight by default for each new request. If no dedicated review profile is configured, Kernforge falls back to an auxiliary client created from the active main provider/model.
 - Before returning a substantial final answer, the interactive loop now asks the reviewer to approve or request revision. Recovery can also trigger a refreshed execution plan instead of repeating the same failing path.
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
+- The interactive runtime also persists an edit-loop ledger for apply/verify/retry/final-review state. It records changed paths, worker evidence, patch transaction ids, verification bundle/job/log evidence, retry decisions, reviewer verdict, and remaining risk, then exposes that ledger to the system prompt, final reviewer, `/status`, session export, and pre-final coding harness.
 - Task-graph nodes now track retry budgets and recent failure context. Repeated failures on the same node can block that node explicitly, which pushes the executor toward a materially different recovery path instead of repeating the same failing step forever.
 - `run_shell` now supports scoped workspace writes when the agent provides `allow_workspace_writes=true` together with `write_paths`. This path is intended for formatters, code generators, or setup commands that are safer to run than re-creating the change by hand.
 - Long-running build, test, and verification commands can use `run_shell_background` and `check_shell_job` so the agent can poll an existing job instead of restarting the same expensive command. Matching running jobs are reused automatically.

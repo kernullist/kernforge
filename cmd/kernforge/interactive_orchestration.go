@@ -684,6 +684,7 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 		System: strings.Join([]string{
 			"You review a coding agent's proposed final answer before it is shown to the user.",
 			"Approve only if the answer matches the task state and does not skip an obvious remaining step.",
+			"After edits, require one coherent outcome narrative that ties together applied worker changes, verification results, retries, and remaining risk.",
 			"Start with APPROVED or NEEDS_REVISION.",
 			"If revision is needed, give short concrete feedback.",
 		}, "\n"),
@@ -701,9 +702,11 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 	text := strings.TrimSpace(resp.Message.Text)
 	if strings.HasPrefix(strings.ToUpper(text), "APPROVED") {
 		a.Session.TaskState.NoteFinalReview("approved", text)
+		a.recordEditLoopFinalReview("approved", text)
 		return true, text
 	}
 	a.Session.TaskState.NoteFinalReview("needs_revision", text)
+	a.recordEditLoopFinalReview("needs_revision", text)
 	return false, text
 }
 
@@ -769,6 +772,18 @@ func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, u
 				b.WriteString("\n")
 			}
 		}
+		if session.ActiveEditLoop != nil {
+			if rendered := strings.TrimSpace(session.ActiveEditLoop.RenderPromptSection()); rendered != "" {
+				b.WriteString("\nApply/verify/retry ledger:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+			if rendered := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(session.ActiveEditLoop)); rendered != "" {
+				b.WriteString("\nExpected final answer outcome contract:\n")
+				b.WriteString(rendered)
+				b.WriteString("\n")
+			}
+		}
 		if session.LastCodingHarnessReport != nil {
 			if rendered := strings.TrimSpace(session.LastCodingHarnessReport.RenderPromptSection()); rendered != "" {
 				b.WriteString("\nCoding harness report:\n")
@@ -800,7 +815,7 @@ func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, u
 	}
 	b.WriteString("\nProposed final answer:\n")
 	b.WriteString(reply)
-	b.WriteString("\n\nApprove only if it does not ignore pending checks, active background jobs, unresolved verification, patch-transaction evidence, or coding-harness blockers.")
+	b.WriteString("\n\nApprove only if it does not ignore pending checks, active background jobs, unresolved verification, patch-transaction evidence, edit-loop outcome contract fields, or coding-harness blockers.")
 	return b.String()
 }
 
@@ -835,6 +850,7 @@ func (a *Agent) noteToolExecutionResultDetailed(call ToolCall, result ToolExecut
 	meta := result.Meta
 	a.syncTaskGraphFromToolMeta(meta)
 	policy := buildToolExecutionPolicy(call, result, a.Session)
+	a.recordEditLoopToolResult(call, result, err)
 	if err != nil {
 		state.AddFailedAttempt(summary + ": " + truncateStatusSnippet(firstNonEmptyLine(err.Error()), 160))
 		a.Session.RecordPlanNodeFailure(policy.OwnerNodeID, call.Name, err.Error())
@@ -994,6 +1010,7 @@ func toolExecutionCanUnblockFocusedNode(call ToolCall, meta map[string]any) bool
 
 func (a *Agent) noteVerificationResult(report VerificationReport) {
 	state := a.Session.EnsureTaskState()
+	a.recordEditLoopVerification(report)
 	if report.HasFailures() {
 		a.startFailureRepairAttempt(report)
 		a.Session.AppendConversationEvent(ConversationEvent{
@@ -1221,6 +1238,20 @@ func (a *Agent) markBackgroundBundlesStale(reason string) {
 			a.Session.MarkBundleLifecycle(current.ID, current.Status, current.LifecycleNote)
 		}
 		a.Session.EnsureTaskState().RecordEvent("background_preempt", current.OwnerNodeID, "background_bundle", current.Summary, firstNonBlankString(current.CancelReason, current.LifecycleNote), current.Status, true)
+		if current.VerificationLike {
+			a.Session.RecordEditLoopEvent(editLoopGoal(a.Session), EditLoopEvent{
+				Kind:        "verification",
+				Source:      "background",
+				ToolName:    "background_bundle",
+				OwnerNodeID: current.OwnerNodeID,
+				Summary:     "Background verification bundle became stale after a newer edit.",
+				Detail:      firstNonBlankString(current.CancelReason, current.LifecycleNote),
+				Status:      "stale",
+				BundleID:    current.ID,
+				JobIDs:      current.JobIDs,
+			})
+			a.recordEditLoopRisk("Background verification bundle became stale.", firstNonBlankString(current.CancelReason, current.LifecycleNote))
+		}
 		changed = true
 	}
 	if changed {
@@ -1317,6 +1348,7 @@ func backgroundJobsFromMeta(meta map[string]any) []BackgroundShellJob {
 				Status:         toolMetaString(meta, "job_status"),
 				OwnerNodeID:    toolMetaString(meta, "owner_node_id"),
 				CommandSummary: toolMetaString(meta, "command_summary"),
+				LogPath:        toolMetaString(meta, "log_path"),
 				CancelReason:   toolMetaString(meta, "cancel_reason"),
 				PreemptedBy:    toolMetaString(meta, "preempted_by"),
 			}}
@@ -1332,6 +1364,7 @@ func backgroundJobsFromMeta(meta map[string]any) []BackgroundShellJob {
 				Status:         toolMetaString(item, "status"),
 				OwnerNodeID:    toolMetaString(item, "owner_node_id"),
 				CommandSummary: toolMetaString(item, "command_summary"),
+				LogPath:        toolMetaString(item, "log_path"),
 				CancelReason:   toolMetaString(item, "cancel_reason"),
 				PreemptedBy:    toolMetaString(item, "preempted_by"),
 			})
@@ -1353,6 +1386,7 @@ func backgroundJobsFromMeta(meta map[string]any) []BackgroundShellJob {
 			Status:         toolMetaString(entry, "status"),
 			OwnerNodeID:    toolMetaString(entry, "owner_node_id"),
 			CommandSummary: toolMetaString(entry, "command_summary"),
+			LogPath:        toolMetaString(entry, "log_path"),
 			CancelReason:   toolMetaString(entry, "cancel_reason"),
 			PreemptedBy:    toolMetaString(entry, "preempted_by"),
 		})

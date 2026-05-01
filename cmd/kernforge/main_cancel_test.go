@@ -2698,6 +2698,48 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	}
 }
 
+func TestStatusCommandShowsEditLoopState(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	session.RecordEditLoopEvent("fix main", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "wrote main.go",
+		Status:       "ok",
+		ChangedPaths: []string{"main.go"},
+	})
+	session.RecordEditLoopEvent("fix main", EditLoopEvent{
+		Kind:     "verification",
+		Source:   "auto",
+		ToolName: "verify",
+		Summary:  "go test ./... passed",
+		Status:   "passed",
+	})
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeDefault, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "status"}); err != nil {
+		t.Fatalf("handleCommand(status): %v", err)
+	}
+
+	text := out.String()
+	for _, want := range []string{"-- Edit Loop ", "edit_loop_status:", "worker_evidence:", "verification_evidence:", "main.go"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected status output to include %q, got %q", want, text)
+		}
+	}
+}
+
 func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

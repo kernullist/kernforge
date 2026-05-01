@@ -39,6 +39,8 @@ type Session struct {
 	AcceptanceContract            *AcceptanceContract        `json:"acceptance_contract,omitempty"`
 	ActivePatchTransaction        *PatchTransaction          `json:"active_patch_transaction,omitempty"`
 	PatchTransactions             []PatchTransaction         `json:"patch_transactions,omitempty"`
+	ActiveEditLoop                *EditLoopState             `json:"active_edit_loop,omitempty"`
+	EditLoops                     []EditLoopState            `json:"edit_loops,omitempty"`
 	LastCodingHarnessReport       *CodingHarnessReport       `json:"last_coding_harness_report,omitempty"`
 	LastUserChangeIsolationReport *UserChangeIsolationReport `json:"last_user_change_isolation_report,omitempty"`
 	LastTestImpactReport          *TestImpactReport          `json:"last_test_impact_report,omitempty"`
@@ -98,6 +100,12 @@ func (s *Session) ApproxChars() int {
 	}
 	for _, tx := range s.PatchTransactions {
 		total += len(tx.RenderPromptSection())
+	}
+	if s.ActiveEditLoop != nil {
+		total += len(s.ActiveEditLoop.RenderPromptSection())
+	}
+	for _, loop := range s.EditLoops {
+		total += len(loop.RenderPromptSection())
 	}
 	if s.LastCodingHarnessReport != nil {
 		total += len(s.LastCodingHarnessReport.RenderPromptSection())
@@ -266,6 +274,22 @@ func (s *Session) ExportText() string {
 			b.WriteString("\n\n")
 		}
 	}
+	if s.ActiveEditLoop != nil {
+		if rendered := strings.TrimSpace(s.ActiveEditLoop.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Active Edit Loop\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if len(s.EditLoops) > 0 {
+		b.WriteString("## Recent Edit Loops\n\n")
+		for _, loop := range s.EditLoops {
+			if rendered := strings.TrimSpace(loop.RenderPromptSection()); rendered != "" {
+				b.WriteString(rendered)
+				b.WriteString("\n\n")
+			}
+		}
+	}
 	if s.LastCodingHarnessReport != nil {
 		if rendered := strings.TrimSpace(s.LastCodingHarnessReport.RenderPromptSection()); rendered != "" {
 			b.WriteString("## Last Coding Harness Report\n\n")
@@ -414,6 +438,7 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeTaskStateArtifacts()
 	sess.normalizeCodingHarnessState()
 	sess.normalizeFailureRepairState()
+	sess.normalizeEditLoopState()
 	sess.normalizeBackgroundJobs()
 	sess.normalizeBackgroundBundles()
 	sess.normalizeSpecialistWorktrees()
