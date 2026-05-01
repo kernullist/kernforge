@@ -45,7 +45,7 @@ If Kernforge has one feature to understand first, it is `multi-agent project ana
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds a reusable architecture map instead of a disposable summary, and infers a mode-specific goal when you omit one
 - The output becomes a durable knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard
 - That analysis is then reused in review, editing, verification, and policy workflows
-- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
+- `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
 - `/root-cause-patterns` provides built-in symptom/root-cause priors for project types such as Windows services, kernel drivers, Unreal, and web backends, and can collect GitHub issue corpora into local pattern packs
 - The next roadmap focus is expanding the new `/fuzz-campaign` planner from one-command campaign automation into native crash, coverage, evidence, and verification-gate lifecycle management
 
@@ -132,7 +132,7 @@ Its current differentiators are:
 - Non-map modes such as `trace`, `impact`, `surface`, `security`, and `performance` automatically load the most relevant previous `map` run as a baseline architecture map when one exists
 - The analysis confirmation screen shows the selected `baseline_map` before asking whether to proceed
 - Provider rate-limit or transient worker/reviewer failures degrade the affected shard instead of aborting the whole analysis run; the final document marks those sections as low confidence
-- In single-model setups where the worker and reviewer share the same provider/model route, default shard concurrency is reduced to 1 to avoid retry storms and low-confidence placeholder cascades. Explicit agent caps still take precedence.
+- When worker and reviewer share a provider/model route, shard concurrency follows the model route limit to avoid retry storms and low-confidence placeholder cascades. Local providers default to a route limit of 1, while cloud/API routes keep their configured concurrency instead of being forced to serial execution.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
@@ -164,7 +164,7 @@ Its current differentiators are:
 - `/find-root-cause <problem description>` accepts natural-language symptoms such as party-size limits being bypassed, `sc stop` not terminating a service, or a requested document artifact being missing
 - If the prompt is too short or does not clearly identify the affected component, trigger/repro path, observed failure, or expected invariant, Kernforge does not start agents; it prints the unclear parts plus a better `/find-root-cause ...` command shape
 - Borderline prompts are checked with source hints and an optional model clarity pass so Korean natural-language reports are not rejected only because a keyword heuristic missed them
-- Kernforge scans the workspace, combines symptom keywords, source paths, indexed symbols, and built-in pattern priors, then splits likely source areas into 1-8 worker shards based on code size and candidate count
+- Kernforge scans the workspace, combines symptom keywords, source paths, indexed symbols, and built-in pattern priors, then splits likely source areas into 1-8 worker shards based on code size and candidate count; concurrent model calls still follow `model_routes`
 - Workers inspect each assigned area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, ids, enums, nullable references, and lifecycle state may be outside the code's expected range
 - Worker candidates must preserve a `trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom` causal chain
 - Reviewer passes verify whether a worker-reported issue can actually lead to the user's symptom, and request additional focused shards when proof is missing
@@ -665,7 +665,7 @@ Later sources override earlier ones:
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
-| `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers and single-model routes are serialized by default to reduce rate-limit pressure, local server overload, and placeholder shard fallout. |
+| `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
 | `max_tool_iterations` | Max tool loop count per request |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
@@ -685,6 +685,8 @@ Later sources override earlier ones:
 | `skill_paths` | Extra skill search paths |
 | `enabled_skills` | Skills always injected into prompts |
 | `mcp_servers` | MCP server definitions |
+
+Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
 | `profiles` | Saved recent or pinned provider/model profiles |
 | `hooks_enabled` | Enable or disable the hook engine |
 | `hook_presets` | Hook preset names loaded for the workspace |

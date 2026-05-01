@@ -3085,46 +3085,69 @@ func (a *projectAnalyzer) effectiveShardConcurrency(concurrency int, shardCount 
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	if concurrency > 1 && a.shouldSerializeSingleAnalysisRoute(mode) {
-		return 1
+	if concurrency > 1 {
+		if routeLimit, shared := a.sharedAnalysisRouteConcurrencyLimit(); shared {
+			if routeLimit > 0 && concurrency > routeLimit {
+				return routeLimit
+			}
+		}
 	}
 	return concurrency
 }
 
-func (a *projectAnalyzer) shouldSerializeSingleAnalysisRoute(mode string) bool {
-	if a.analysisCfg.minAgentsConfigured || a.analysisCfg.maxAgentsConfigured {
-		return false
+func (a *projectAnalyzer) sharedAnalysisRouteConcurrencyLimit() (int, bool) {
+	workerRoute := analysisRouteForProfile(a.analysisCfg.WorkerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
+	reviewerProfile := a.analysisCfg.ReviewerProfile
+	if reviewerProfile == nil && a.analysisCfg.WorkerProfile != nil {
+		reviewerProfile = a.analysisCfg.WorkerProfile
 	}
-	return a.analysisWorkerReviewerShareRoute()
+	reviewerRoute := analysisRouteForProfile(reviewerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
+	if strings.TrimSpace(workerRoute.Key) == "" || workerRoute.Key != reviewerRoute.Key {
+		return 0, false
+	}
+	limit := modelRoutePolicyFromConfig(a.cfg).LimitFor(workerRoute)
+	if limit < 1 {
+		return 0, true
+	}
+	return limit, true
 }
 
-func (a *projectAnalyzer) analysisWorkerReviewerShareRoute() bool {
-	workerRoute := analysisRouteKey(a.analysisCfg.WorkerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
-	reviewerFallbackProfile := a.analysisCfg.WorkerProfile
-	reviewerRoute := analysisRouteKey(a.analysisCfg.ReviewerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
-	if a.analysisCfg.ReviewerProfile == nil && reviewerFallbackProfile != nil {
-		reviewerRoute = analysisRouteKey(reviewerFallbackProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
-	}
-	return workerRoute != "" && workerRoute == reviewerRoute
-}
-
-func analysisRouteKey(profile *Profile, fallbackProvider string, fallbackModel string, fallbackBaseURL string) string {
-	provider := strings.TrimSpace(fallbackProvider)
+func analysisRouteForProfile(profile *Profile, fallbackProvider string, fallbackModel string, fallbackBaseURL string) ModelRoute {
+	fallbackProvider = normalizeProviderName(fallbackProvider)
+	provider := fallbackProvider
 	model := strings.TrimSpace(fallbackModel)
 	baseURL := strings.TrimSpace(fallbackBaseURL)
 	if profile != nil {
-		if strings.TrimSpace(profile.Provider) != "" {
-			provider = strings.TrimSpace(profile.Provider)
+		profileProvider := normalizeProviderName(profile.Provider)
+		if profileProvider != "" {
+			provider = profileProvider
 		}
 		if strings.TrimSpace(profile.Model) != "" {
 			model = strings.TrimSpace(profile.Model)
 		}
-		baseURL = strings.TrimSpace(profile.BaseURL)
+		profileBaseURL := strings.TrimSpace(profile.BaseURL)
+		if profileBaseURL != "" {
+			baseURL = profileBaseURL
+		} else if provider != fallbackProvider {
+			baseURL = ""
+		}
 	}
-	if provider == "" && model == "" {
+	baseURL = normalizeProviderBaseURL(provider, baseURL)
+	return ModelRoute{
+		Key:      modelRouteKeyFromParts(provider, model, baseURL, ""),
+		Label:    modelRouteLabel(provider, model, baseURL, ""),
+		Provider: provider,
+		Model:    strings.TrimSpace(model),
+		BaseURL:  normalizeModelRouteBaseURL(provider, baseURL),
+	}
+}
+
+func analysisRouteKey(profile *Profile, fallbackProvider string, fallbackModel string, fallbackBaseURL string) string {
+	route := analysisRouteForProfile(profile, fallbackProvider, fallbackModel, fallbackBaseURL)
+	if strings.TrimSpace(route.Provider) == "" && strings.TrimSpace(route.Model) == "" {
 		return ""
 	}
-	return modelRouteKeyFromParts(provider, model, baseURL, "")
+	return route.Key
 }
 
 func chooseAnalysisLenses(goal string, mode string) []AnalysisLens {
@@ -10532,17 +10555,30 @@ func analysisModelNeedsReasoningHeadroom(model string) bool {
 }
 
 func createProviderClientFromProfile(profile Profile, mainCfg Config) (ProviderClient, error) {
-	apiKey := profile.APIKey
-	if strings.TrimSpace(apiKey) == "" && strings.EqualFold(profile.Provider, mainCfg.Provider) {
-		apiKey = mainCfg.APIKey
+	provider := normalizeProviderName(profile.Provider)
+	if provider == "" {
+		return nil, fmt.Errorf("profile provider is empty")
+	}
+	model := strings.TrimSpace(profile.Model)
+	if model == "" {
+		return nil, fmt.Errorf("profile model is empty")
+	}
+	mainProvider := normalizeProviderName(mainCfg.Provider)
+	apiKey := strings.TrimSpace(profile.APIKey)
+	if apiKey == "" && provider == mainProvider {
+		apiKey = strings.TrimSpace(mainCfg.APIKey)
 	}
 	if strings.TrimSpace(apiKey) == "" && mainCfg.ProviderKeys != nil {
-		apiKey = mainCfg.ProviderKeys[normalizeProviderName(profile.Provider)]
+		apiKey = strings.TrimSpace(mainCfg.ProviderKeys[provider])
+	}
+	baseURL := strings.TrimSpace(profile.BaseURL)
+	if baseURL == "" && provider == mainProvider {
+		baseURL = strings.TrimSpace(mainCfg.BaseURL)
 	}
 	cfg := mainCfg
-	cfg.Provider = profile.Provider
-	cfg.Model = profile.Model
-	cfg.BaseURL = profile.BaseURL
+	cfg.Provider = provider
+	cfg.Model = model
+	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
 	return NewProviderClient(cfg)
 }

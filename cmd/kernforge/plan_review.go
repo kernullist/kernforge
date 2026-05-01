@@ -72,14 +72,28 @@ type ModelRequestPolicy struct {
 }
 
 func modelRequestPolicyFromConfig(cfg Config) ModelRequestPolicy {
+	return modelRequestPolicyFromConfigWithScheduler(cfg, defaultModelRouteScheduler())
+}
+
+func modelRequestPolicyFromConfigWithScheduler(cfg Config, scheduler *ModelRouteScheduler) ModelRequestPolicy {
+	if scheduler == nil {
+		scheduler = defaultModelRouteScheduler()
+	}
 	return ModelRequestPolicy{
 		MaxRetries:       configMaxRequestRetries(cfg),
 		RetryDelay:       configRequestRetryDelay(cfg),
 		Timeout:          configRequestTimeout(cfg),
-		ModelRoutes:      defaultModelRouteScheduler(),
+		ModelRoutes:      scheduler,
 		ModelRouteConfig: cfg,
 		ModelRoutePolicy: modelRoutePolicyFromConfig(cfg),
 	}
+}
+
+func modelRequestPolicyFromAgent(a *Agent) ModelRequestPolicy {
+	if a == nil {
+		return modelRequestPolicyFromConfig(Config{})
+	}
+	return modelRequestPolicyFromConfigWithScheduler(a.Config, a.modelRouteScheduler())
 }
 
 // RunPlanReview orchestrates the iterative plan-review loop between two models.
@@ -256,22 +270,38 @@ func completePlanReviewRequest(ctx context.Context, client ProviderClient, req C
 	return ChatResponse{}, fmt.Errorf("%s plan-review request failed after retry", strings.TrimSpace(stage))
 }
 
-// createReviewerClient builds a ProviderClient from PlanReviewConfig, falling back to
-// the main config's API key for the same provider.
+// createReviewerClient builds a ProviderClient from PlanReviewConfig, inheriting
+// same-provider API key and base URL settings when the reviewer leaves them empty.
 func createReviewerClient(reviewCfg *PlanReviewConfig, mainCfg Config) (ProviderClient, error) {
-	apiKey := reviewCfg.APIKey
+	if reviewCfg == nil {
+		return nil, fmt.Errorf("no plan-review reviewer configured")
+	}
+	provider := normalizeProviderName(reviewCfg.Provider)
+	if provider == "" {
+		return nil, fmt.Errorf("plan-review provider is empty")
+	}
+	model := strings.TrimSpace(reviewCfg.Model)
+	if model == "" {
+		return nil, fmt.Errorf("plan-review model is empty")
+	}
+	mainProvider := normalizeProviderName(mainCfg.Provider)
+	apiKey := strings.TrimSpace(reviewCfg.APIKey)
 	if strings.TrimSpace(apiKey) == "" {
-		if strings.EqualFold(reviewCfg.Provider, mainCfg.Provider) {
-			apiKey = mainCfg.APIKey
+		if provider == mainProvider {
+			apiKey = strings.TrimSpace(mainCfg.APIKey)
 		}
 	}
 	if strings.TrimSpace(apiKey) == "" && mainCfg.ProviderKeys != nil {
-		apiKey = mainCfg.ProviderKeys[normalizeProviderName(reviewCfg.Provider)]
+		apiKey = strings.TrimSpace(mainCfg.ProviderKeys[provider])
+	}
+	baseURL := strings.TrimSpace(reviewCfg.BaseURL)
+	if baseURL == "" && provider == mainProvider {
+		baseURL = strings.TrimSpace(mainCfg.BaseURL)
 	}
 	cfg := mainCfg
-	cfg.Provider = reviewCfg.Provider
-	cfg.Model = reviewCfg.Model
-	cfg.BaseURL = reviewCfg.BaseURL
+	cfg.Provider = provider
+	cfg.Model = model
+	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
 	return NewProviderClient(cfg)
 }

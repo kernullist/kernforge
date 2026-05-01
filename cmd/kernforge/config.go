@@ -600,19 +600,19 @@ func normalizeConfigPaths(cfg *Config) {
 	if cfg.ProjectAnalysis.WorkerProfile != nil {
 		cfg.ProjectAnalysis.WorkerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.WorkerProfile.Provider)
 		cfg.ProjectAnalysis.WorkerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.Model)
-		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
+		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
 		cfg.ProjectAnalysis.WorkerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.APIKey)
 	}
 	if cfg.ProjectAnalysis.ReviewerProfile != nil {
 		cfg.ProjectAnalysis.ReviewerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.ReviewerProfile.Provider)
 		cfg.ProjectAnalysis.ReviewerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.Model)
-		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
+		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
 		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
 	}
 	if cfg.PlanReview != nil {
 		cfg.PlanReview.Provider = normalizeProviderName(cfg.PlanReview.Provider)
 		cfg.PlanReview.Model = strings.TrimSpace(cfg.PlanReview.Model)
-		cfg.PlanReview.BaseURL = normalizeProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
+		cfg.PlanReview.BaseURL = normalizeOptionalProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
 		cfg.PlanReview.APIKey = strings.TrimSpace(cfg.PlanReview.APIKey)
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
@@ -714,7 +714,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.Specialists.Profiles[i].Prompt = strings.TrimSpace(profile.Prompt)
 		cfg.Specialists.Profiles[i].Provider = normalizeProviderName(profile.Provider)
 		cfg.Specialists.Profiles[i].Model = strings.TrimSpace(profile.Model)
-		cfg.Specialists.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		cfg.Specialists.Profiles[i].BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		cfg.Specialists.Profiles[i].APIKey = strings.TrimSpace(profile.APIKey)
 		cfg.Specialists.Profiles[i].NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 		cfg.Specialists.Profiles[i].Keywords = normalizeTaskStateList(profile.Keywords, 32)
@@ -869,6 +869,14 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 	}
 }
 
+func normalizeOptionalProfileBaseURL(provider, baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	return normalizeProfileBaseURL(provider, baseURL)
+}
+
 func normalizeReasoningEffort(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "", "default", "undefined", "none", "off", "unset", "clear":
@@ -1015,7 +1023,7 @@ func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
 		cfg.PlanReview = &PlanReviewConfig{
 			Provider: provider,
 			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
 			APIKey:   strings.TrimSpace(roles.PlanReviewer.APIKey),
 		}
 	} else {
@@ -1030,7 +1038,15 @@ func cloneConfigProfile(profile *Profile) *Profile {
 	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
 		return nil
 	}
-	cloned := normalizeConfigProfile(*profile)
+	cloned := *profile
+	cloned.Name = strings.TrimSpace(cloned.Name)
+	cloned.Provider = normalizeProviderName(cloned.Provider)
+	cloned.Model = strings.TrimSpace(cloned.Model)
+	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	cloned.APIKey = strings.TrimSpace(cloned.APIKey)
+	if cloned.Name == "" && cloned.Provider != "" && cloned.Model != "" {
+		cloned.Name = profileName(cloned.Provider, cloned.Model)
+	}
 	return &cloned
 }
 
@@ -1044,7 +1060,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 		profile.Name = strings.TrimSpace(profile.Name)
 		profile.Provider = normalizeProviderName(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
-		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.APIKey = strings.TrimSpace(profile.APIKey)
 		modelsByName[name] = profile
 	}
@@ -1910,7 +1926,7 @@ Verification And Checkpoints:
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
-/find-root-cause <problem> Analyze a reported symptom with 1-8 worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
+/find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
@@ -2030,7 +2046,7 @@ func HelpDetail(topic string) (string, bool) {
 - Investigate a concrete failure symptom, such as party member limits being bypassed after invite/kick churn or a Win32 service that does not stop through sc stop.
 - If the symptom is too ambiguous, Kernforge prints the unclear parts and asks you to rerun /find-root-cause with a more precise prompt before starting agents.
 - Borderline symptom prompts may be checked by a model classifier before agents start, so concrete Korean natural-language reports are not rejected only because a keyword heuristic missed them.
-- Kernforge scans the workspace, selects likely source shards, and runs 1-8 worker agents depending on source size and count.
+- Kernforge scans the workspace, selects likely source shards, and plans 1-8 worker agents depending on source size and count. Concurrent model calls follow the configured model route policy, so local single-model routes default to serial execution while cloud/API routes are not forced down to one request.
 - Kernforge matches symptom keywords and hypothesis signals against source paths and indexed symbols before sharding.
 - Workers inspect each assigned code area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, IDs, enum values, nullable references, and lifecycle state may be outside the code's expected range.
 - Workers must structure each candidate as trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.

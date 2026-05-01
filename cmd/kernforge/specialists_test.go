@@ -106,6 +106,126 @@ func TestSelectEditableSpecialistForTaskNodePrefersImplementationOwner(t *testin
 	}
 }
 
+func TestSpecialistBatchRouteLimiterSerializesLocalDuplicateRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "ollama"
+	cfg.Model = "llama-local"
+	agent := &Agent{Config: cfg}
+	client := NewOllamaClient(cfg.BaseURL, cfg.APIKey)
+	route := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+
+	limiter := agent.specialistBatchRouteLimiter([]ModelRoute{route, route})
+	sem := limiter.semaphores[route.Key]
+	if sem == nil || cap(sem) != 1 {
+		t.Fatalf("expected duplicate local specialist route to get limit 1 semaphore, got %#v", sem)
+	}
+}
+
+func TestSpecialistClientInheritsMainBaseURLForSameProviderAfterNormalize(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "lmstudio"
+	cfg.Model = "main-local"
+	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:     "local-reviewer",
+		Provider: "lmstudio",
+		Model:    "worker-local",
+	}}
+	normalizeConfigPaths(&cfg)
+	if got := cfg.Specialists.Profiles[0].BaseURL; got != "" {
+		t.Fatalf("expected empty specialist base URL to remain inheritable, got %q", got)
+	}
+
+	agent := &Agent{Config: cfg}
+	client, _ := agent.specialistClient(cfg.Specialists.Profiles[0])
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected specialist client to expose route metadata, got %T", client)
+	}
+	meta := metaProvider.ModelRouteMetadata()
+	want := normalizeProviderBaseURL("lmstudio", cfg.BaseURL)
+	if meta.BaseURL != want {
+		t.Fatalf("expected specialist to inherit main base URL %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestSpecialistClientUsesDifferentProviderDefaultBaseURL(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "ollama"
+	cfg.Model = "main-local"
+	cfg.BaseURL = "http://127.0.0.1:11435"
+	agent := &Agent{Config: cfg}
+
+	client, _ := agent.specialistClient(SpecialistSubagentProfile{
+		Name:     "lmstudio-worker",
+		Provider: "lmstudio",
+		Model:    "worker-local",
+	})
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected specialist client to expose route metadata, got %T", client)
+	}
+	meta := metaProvider.ModelRouteMetadata()
+	want := normalizeProviderBaseURL("lmstudio", "")
+	if meta.BaseURL != want {
+		t.Fatalf("expected different-provider specialist to use provider default base URL %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestSpecialistClientDoesNotLeakMainAPIKeyToDifferentProvider(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "main-cloud"
+	cfg.APIKey = "main-key"
+	cfg.ProviderKeys = map[string]string{"openrouter": "router-key"}
+	agent := &Agent{Config: cfg}
+
+	client, _ := agent.specialistClient(SpecialistSubagentProfile{
+		Name:     "router-reviewer",
+		Provider: "openrouter",
+		Model:    "router-model",
+	})
+	openAIClient, ok := client.(*OpenAIClient)
+	if !ok {
+		t.Fatalf("expected openrouter specialist to use OpenAI-compatible client, got %T", client)
+	}
+	if openAIClient.apiKey != "router-key" {
+		t.Fatalf("expected specialist to use provider key, got %q", openAIClient.apiKey)
+	}
+}
+
+func TestSpecialistBatchRouteLimiterDoesNotForceCloudDuplicateRouteToSerial(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-test"
+	cfg.APIKey = "test-key"
+	agent := &Agent{Config: cfg}
+	client := NewOpenAIClient(cfg.BaseURL, cfg.APIKey)
+	route := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+
+	limiter := agent.specialistBatchRouteLimiter([]ModelRoute{route, route, route})
+	if _, ok := limiter.semaphores[route.Key]; ok {
+		t.Fatalf("expected duplicate cloud specialist route to avoid a semaphore below requested concurrency")
+	}
+}
+
+func TestSpecialistBatchRouteLimiterHonorsExplicitCloudProviderLimit(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-test"
+	cfg.APIKey = "test-key"
+	cfg.ModelRoutes.ProviderLimits = map[string]int{"openai": 2}
+	agent := &Agent{Config: cfg}
+	client := NewOpenAIClient(cfg.BaseURL, cfg.APIKey)
+	route := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+
+	limiter := agent.specialistBatchRouteLimiter([]ModelRoute{route, route, route})
+	sem := limiter.semaphores[route.Key]
+	if sem == nil || cap(sem) != 2 {
+		t.Fatalf("expected explicit cloud specialist provider limit to create limit 2 semaphore, got %#v", sem)
+	}
+}
+
 func TestFormatSpecialistCatalogAlignsDescriptionsAndSeparatesHints(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 

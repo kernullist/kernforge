@@ -202,6 +202,30 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 	return false
 }
 
+func providerErrorSuggestsJSONModeUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	apiErr := &ProviderAPIError{}
+	if errors.As(err, &apiErr) {
+		msg := strings.ToLower(strings.Join([]string{apiErr.Message, apiErr.ErrorType, apiErr.Param, apiErr.Code, apiErr.RawBody}, " "))
+		return providerErrorTextSuggestsJSONModeUnsupported(msg)
+	}
+	return providerErrorTextSuggestsJSONModeUnsupported(strings.ToLower(err.Error()))
+}
+
+func providerErrorTextSuggestsJSONModeUnsupported(msg string) bool {
+	msg = strings.ToLower(strings.TrimSpace(msg))
+	if strings.Contains(msg, "response_format") || strings.Contains(msg, "json_object") {
+		return true
+	}
+	if strings.Contains(msg, "json") &&
+		(strings.Contains(msg, "unsupported parameter") || strings.Contains(msg, "unsupported param")) {
+		return true
+	}
+	return false
+}
+
 type ProviderClient interface {
 	Name() string
 	Complete(ctx context.Context, req ChatRequest) (ChatResponse, error)
@@ -682,7 +706,13 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		if err != nil {
 			return ChatResponse{}, err
 		}
-		return ChatResponse{}, newProviderHTTPError(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
+		apiErr := newProviderHTTPError(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
+		if req.JSONMode && providerErrorSuggestsJSONModeUnsupported(apiErr) {
+			fallbackReq := req
+			fallbackReq.JSONMode = false
+			return c.Complete(ctx, fallbackReq)
+		}
+		return ChatResponse{}, apiErr
 	}
 
 	if payload.Stream {
@@ -713,7 +743,13 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, newProviderMessageError(providerName, decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+		apiErr := newProviderMessageError(providerName, decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+		if req.JSONMode && providerErrorSuggestsJSONModeUnsupported(apiErr) {
+			fallbackReq := req
+			fallbackReq.JSONMode = false
+			return c.Complete(ctx, fallbackReq)
+		}
+		return ChatResponse{}, apiErr
 	}
 	if len(decoded.Choices) == 0 {
 		return ChatResponse{}, newProviderMessageError(providerName, "empty choices", "", "", nil, nil)

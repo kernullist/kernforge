@@ -12,7 +12,8 @@ func TestBuildRootCauseGoalIncludesFuzzLikeInvestigationRequirements(t *testing.
 	for _, needle := range []string{
 		"Find the most likely root cause",
 		"fuzzing-driven bug investigation",
-		"1 to 8 parallel worker shards",
+		"1 to 8 worker shards",
+		"configured model route policy",
 		"inputs and persisted state",
 		"five-stage causal chain",
 		"deep-verify reviewer-approved candidates",

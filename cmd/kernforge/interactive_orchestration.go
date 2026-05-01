@@ -92,7 +92,7 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
 		nil,
-		modelRequestPolicyFromConfig(a.Config),
+		modelRequestPolicyFromAgent(a),
 	)
 	if err != nil {
 		state.SetReviewerGuidance("planner_error", "Planner/reviewer preflight was unavailable: "+err.Error())
@@ -292,7 +292,7 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
 		nil,
-		modelRequestPolicyFromConfig(a.Config),
+		modelRequestPolicyFromAgent(a),
 	)
 	if err != nil {
 		return ""
@@ -422,10 +422,11 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		assignment SpecialistAssignment
 		client     ProviderClient
 		model      string
+		route      ModelRoute
 	}
 	workerCount := min(3, len(candidates))
 	plans := make([]microWorkerPlan, 0, workerCount)
-	routes := make([]string, 0, workerCount)
+	routes := make([]ModelRoute, 0, workerCount)
 	for _, node := range candidates[:workerCount] {
 		node := node
 		status := strings.TrimSpace(strings.ToLower(node.Status))
@@ -440,14 +441,15 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		if client == nil || strings.TrimSpace(model) == "" {
 			continue
 		}
-		routeKey := a.specialistRouteKey(assignment.Profile)
+		route := modelRouteForRequest(a.Config, client, ChatRequest{Model: model})
 		plans = append(plans, microWorkerPlan{
 			node:       node,
 			assignment: assignment,
 			client:     client,
 			model:      model,
+			route:      route,
 		})
-		routes = append(routes, routeKey)
+		routes = append(routes, route)
 	}
 	if len(plans) == 0 {
 		return nil
@@ -479,22 +481,19 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 			reason:     plan.assignment.Reason,
 		}
 	}
-	if duplicateSpecialistRouteKeys(routes) {
-		for _, plan := range plans {
-			runPlan(plan)
-		}
-	} else {
-		var wg sync.WaitGroup
-		for _, plan := range plans {
-			plan := plan
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+	limiter := a.specialistBatchRouteLimiter(routes)
+	var wg sync.WaitGroup
+	for _, plan := range plans {
+		plan := plan
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			limiter.run(ctx, plan.route, func() {
 				runPlan(plan)
-			}()
-		}
-		wg.Wait()
+			})
+		}()
 	}
+	wg.Wait()
 	close(results)
 	updated := false
 	for result := range results {

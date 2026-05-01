@@ -156,7 +156,7 @@ var slashCommandDescriptions = map[string]string{
 	"simulate":                   "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
-	"find-root-cause":            "Analyze a reported problem with 1-8 worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
+	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
 	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",

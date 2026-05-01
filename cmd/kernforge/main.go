@@ -2757,7 +2757,7 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			Name:     profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
 			Provider: rt.cfg.PlanReview.Provider,
 			Model:    rt.cfg.PlanReview.Model,
-			BaseURL:  normalizeProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
 			APIKey:   rt.cfg.PlanReview.APIKey,
 		}
 	}
@@ -2778,7 +2778,7 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			Name:     strings.TrimSpace(profile.Name),
 			Provider: strings.TrimSpace(profile.Provider),
 			Model:    strings.TrimSpace(profile.Model),
-			BaseURL:  normalizeProfileBaseURL(profile.Provider, profile.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL),
 			APIKey:   strings.TrimSpace(profile.APIKey),
 		})
 	}
@@ -2792,7 +2792,7 @@ func cloneProfile(profile *Profile) *Profile {
 	cloned := *profile
 	cloned.Provider = strings.TrimSpace(cloned.Provider)
 	cloned.Model = strings.TrimSpace(cloned.Model)
-	cloned.BaseURL = normalizeProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
 	if strings.TrimSpace(cloned.Name) == "" && strings.TrimSpace(cloned.Provider) != "" && strings.TrimSpace(cloned.Model) != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
@@ -2808,7 +2808,7 @@ func (rt *runtimeState) applyProfileRoleModels(profile Profile) {
 		rt.cfg.PlanReview = &PlanReviewConfig{
 			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
 			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
 			APIKey:   firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
 		}
 		rt.storeProviderKey(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.APIKey)
@@ -2844,7 +2844,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		profile.Name = strings.TrimSpace(profile.Name)
 		profile.Provider = strings.TrimSpace(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
-		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		if strings.TrimSpace(profile.APIKey) == "" {
 			profile.APIKey = rt.providerAPIKey(profile.Provider)
 		}
@@ -7272,7 +7272,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 		func(status string) {
 			fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 		},
-		modelRequestPolicyFromConfig(rt.cfg),
+		modelRequestPolicyFromConfigWithScheduler(rt.cfg, rt.modelRoutes),
 	)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {

@@ -603,7 +603,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 			func(status string) {
 				fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 			},
-			modelRequestPolicyFromConfig(rt.cfg),
+			modelRequestPolicyFromConfigWithScheduler(rt.cfg, rt.modelRoutes),
 		)
 		if runErr != nil {
 			if requestCtx.Err() == context.Canceled {
