@@ -21,13 +21,41 @@ func TestNormalizeProviderBaseURLUsesProviderDefaults(t *testing.T) {
 		{provider: "opencode", expected: "https://opencode.ai/zen"},
 		{provider: "opencode-go", expected: "https://opencode.ai/zen/go"},
 		{provider: "ollama", expected: "http://localhost:11434"},
+		{provider: "lmstudio", expected: "http://localhost:1234/v1"},
+		{provider: "vllm", expected: "http://localhost:8000/v1"},
+		{provider: "llama.cpp", expected: "http://localhost:8080/v1"},
 		{provider: "codex-cli", expected: ""},
+		{provider: "openai-codex", expected: "https://chatgpt.com/backend-api/codex"},
 	}
 
 	for _, tc := range cases {
 		if got := normalizeProviderBaseURL(tc.provider, ""); got != tc.expected {
 			t.Fatalf("normalizeProviderBaseURL(%q) = %q, want %q", tc.provider, got, tc.expected)
 		}
+	}
+}
+
+func TestModelRoutingStatusDoesNotDisplayReasoningEffort(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		cfg: Config{
+			Provider:        "openai-codex",
+			Model:           "gpt-5.5",
+			ReasoningEffort: "high",
+		},
+		session: &Session{
+			Provider: "openai-codex",
+			Model:    "gpt-5.5",
+		},
+		writer: &out,
+		ui:     NewUI(),
+	}
+	if err := rt.showModelRoutingStatus(); err != nil {
+		t.Fatalf("showModelRoutingStatus: %v", err)
+	}
+	rendered := out.String()
+	if strings.Contains(rendered, "reasoning_effort") || strings.Contains(rendered, "high") {
+		t.Fatalf("/model output should not display effort state; got %q", rendered)
 	}
 }
 
@@ -96,6 +124,31 @@ func TestFetchOpenRouterCreditsParsesCreditsPayload(t *testing.T) {
 	}
 	if credits.TotalUsage == nil || *credits.TotalUsage != 25.75 {
 		t.Fatalf("expected total_usage to be parsed, got %#v", credits.TotalUsage)
+	}
+}
+
+func TestFetchOpenAICompatibleModelsParsesLocalModelsWithoutAPIKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "" {
+			t.Fatalf("authorization header should be omitted, got %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"local-a"},{"id":"local-a"},{"id":"local-b","owned_by":"test"}]}`))
+	}))
+	defer server.Close()
+
+	models, normalized, err := FetchOpenAICompatibleModels(context.Background(), "vllm", server.URL+"/v1", "")
+	if err != nil {
+		t.Fatalf("FetchOpenAICompatibleModels: %v", err)
+	}
+	if normalized != server.URL+"/v1" {
+		t.Fatalf("expected normalized base URL %q, got %q", server.URL+"/v1", normalized)
+	}
+	if len(models) != 2 || models[0].ID != "local-a" || models[1].ID != "local-b" {
+		t.Fatalf("unexpected models: %#v", models)
 	}
 }
 

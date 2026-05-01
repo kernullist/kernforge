@@ -65,6 +65,65 @@ func TestOpenAIClientOmitsToolChoiceWithoutTools(t *testing.T) {
 	}
 }
 
+func TestLocalOpenAICompatibleClientOmitsAuthorizationWithoutAPIKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("authorization"); got != "" {
+			t.Fatalf("authorization header should be omitted, got %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewProviderClient(Config{
+		Provider: "lmstudio",
+		Model:    "local-model",
+		BaseURL:  server.URL + "/v1",
+	})
+	if err != nil {
+		t.Fatalf("NewProviderClient: %v", err)
+	}
+	if client.Name() != "lmstudio" {
+		t.Fatalf("expected lmstudio client name, got %q", client.Name())
+	}
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "local-model",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "ok" {
+		t.Fatalf("expected ok response, got %#v", resp)
+	}
+}
+
+func TestOpenAICompatibleClientsReportProviderName(t *testing.T) {
+	cases := []struct {
+		provider string
+		want     string
+	}{
+		{provider: "openrouter", want: "openrouter"},
+		{provider: "openai-compatible", want: "openai-compatible"},
+	}
+	for _, tc := range cases {
+		client, err := NewProviderClient(Config{
+			Provider: tc.provider,
+			Model:    "test-model",
+			APIKey:   "test-key",
+		})
+		if err != nil {
+			t.Fatalf("NewProviderClient(%q): %v", tc.provider, err)
+		}
+		if got := client.Name(); got != tc.want {
+			t.Fatalf("NewProviderClient(%q).Name() = %q, want %q", tc.provider, got, tc.want)
+		}
+	}
+}
+
 func TestOpenAIClientSetsToolChoiceWhenToolsExist(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +331,43 @@ func TestOpenAIClientIncludesRequestPreviewOnHTTPError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `request={"model":"openai/gpt-4.1"`) {
 		t.Fatalf("expected request preview in error, got %q", err.Error())
+	}
+}
+
+func TestOpenAIClientDoesNotRetryStreamingHTTPErrorAsFallback(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"error":{"message":"bad token","type":"authentication_error"}}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICompatibleClient("openai-compatible", server.URL, "bad-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "test-model",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+		OnTextDelta: func(string) {},
+	})
+	if err == nil {
+		t.Fatalf("expected streaming HTTP error")
+	}
+	var providerErr *ProviderAPIError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("expected ProviderAPIError, got %T", err)
+	}
+	if providerErr.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected HTTP 401, got %d", providerErr.StatusCode)
+	}
+	if providerErr.Provider != "openai-compatible" {
+		t.Fatalf("expected provider name openai-compatible, got %q", providerErr.Provider)
+	}
+	if requests != 1 {
+		t.Fatalf("expected streaming HTTP error to be returned without fallback retry, got %d requests", requests)
 	}
 }
 

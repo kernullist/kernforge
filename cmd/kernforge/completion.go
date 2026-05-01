@@ -14,6 +14,9 @@ var slashCommands = []string{
 	"profile",
 	"version",
 	"model",
+	"effort",
+	"codex-auth",
+	"codex-login",
 	"specialists",
 	"suggest",
 	"suggest-dashboard-html",
@@ -125,6 +128,9 @@ var slashCommandDescriptions = map[string]string{
 	"profile":                    "Show saved main profiles plus each profile's role model set.",
 	"version":                    "Print the current Kernforge version.",
 	"model":                      "Show explicit or inherited model routing and interactively reconfigure one target.",
+	"effort":                     "Show or set the OpenAI Codex reasoning effort.",
+	"codex-auth":                 "Manage Kernforge-owned OpenAI Codex OAuth login state.",
+	"codex-login":                "Start Kernforge-owned OpenAI Codex OAuth login.",
 	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
 	"suggest":                    "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
 	"suggest-dashboard-html":     "Render proactive situation judgment and suggestions in an HTML dashboard.",
@@ -261,14 +267,32 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"all": "Prune memory entries without limiting to the current workspace.",
 	},
 	"provider": {
-		"status":      "Show the current provider, base URL, key state, and billing visibility.",
-		"anthropic":   "Switch to Anthropic provider setup.",
-		"openai":      "Switch to OpenAI provider setup.",
-		"openrouter":  "Switch to OpenRouter provider setup.",
-		"opencode":    "Switch to OpenCode Zen API provider setup.",
-		"opencode-go": "Switch to OpenCode Go subscription provider setup.",
-		"ollama":      "Switch to Ollama provider setup.",
-		"codex-cli":   "Switch to Codex CLI provider setup.",
+		"status":       "Show the current provider, base URL, key state, and billing visibility.",
+		"anthropic":    "Switch to Anthropic provider setup.",
+		"openai":       "Switch to OpenAI provider setup.",
+		"openrouter":   "Switch to OpenRouter provider setup.",
+		"opencode":     "Switch to OpenCode Zen API provider setup.",
+		"opencode-go":  "Switch to OpenCode Go subscription provider setup.",
+		"ollama":       "Switch to Ollama provider setup.",
+		"codex-cli":    "Switch to Codex CLI provider setup.",
+		"openai-codex": "Switch to direct OpenAI Codex OAuth provider setup.",
+		"lmstudio":     "Switch to local LM Studio OpenAI-compatible provider setup.",
+		"vllm":         "Switch to local vLLM OpenAI-compatible provider setup.",
+		"llama.cpp":    "Switch to local llama.cpp OpenAI-compatible provider setup.",
+	},
+	"effort": {
+		"undefined": "Do not send a reasoning effort override.",
+		"minimal":   "Use minimal reasoning where the selected model supports it.",
+		"low":       "Favor speed and lower reasoning token use.",
+		"medium":    "Use balanced reasoning effort.",
+		"high":      "Favor deeper reasoning.",
+		"xhigh":     "Request extra-high reasoning for providers that support it.",
+	},
+	"codex-auth": {
+		"status": "Show Kernforge-owned OpenAI Codex OAuth state.",
+		"login":  "Start device OAuth login for OpenAI Codex.",
+		"logout": "Remove the Kernforge-owned OpenAI Codex OAuth file.",
+		"path":   "Show the OpenAI Codex OAuth auth file path.",
 	},
 	"profile": {
 		"list":   "Show saved provider/model profiles without activating one.",
@@ -289,14 +313,18 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"delete": "Delete one saved review profile by number.",
 	},
 	"set-plan-review": {
-		"status":      "Show the current plan review provider setting.",
-		"anthropic":   "Use Anthropic for plan review passes.",
-		"openai":      "Use OpenAI for plan review passes.",
-		"openrouter":  "Use OpenRouter for plan review passes.",
-		"opencode":    "Use OpenCode Zen API for plan review passes.",
-		"opencode-go": "Use OpenCode Go for plan review passes.",
-		"ollama":      "Use Ollama for plan review passes.",
-		"codex-cli":   "Use Codex CLI for plan review passes.",
+		"status":       "Show the current plan review provider setting.",
+		"anthropic":    "Use Anthropic for plan review passes.",
+		"openai":       "Use OpenAI for plan review passes.",
+		"openrouter":   "Use OpenRouter for plan review passes.",
+		"opencode":     "Use OpenCode Zen API for plan review passes.",
+		"opencode-go":  "Use OpenCode Go for plan review passes.",
+		"ollama":       "Use Ollama for plan review passes.",
+		"codex-cli":    "Use Codex CLI for plan review passes.",
+		"openai-codex": "Use direct OpenAI Codex OAuth for plan review passes.",
+		"lmstudio":     "Use local LM Studio for plan review passes.",
+		"vllm":         "Use local vLLM for plan review passes.",
+		"llama.cpp":    "Use local llama.cpp for plan review passes.",
 	},
 	"set-analysis-models": {
 		"status":   "Show current worker and reviewer analysis providers.",
@@ -668,7 +696,9 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"set-auto-verify":       {"on", "off"},
 		"worktree":              {"status", "create", "leave", "cleanup"},
 		"specialists":           {"status", "assign", "cleanup"},
-		"provider":              {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"},
+		"provider":              {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
+		"effort":                {"undefined", "minimal", "low", "medium", "high", "xhigh"},
+		"codex-auth":            {"status", "login", "logout", "path"},
 		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"profile-review":        {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"analyze-project":       {"--mode", "--docs", "--path"},
@@ -677,7 +707,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
 		"mem-prune":             {"all"},
-		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"},
+		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
 		"set-specialist-model":  {"status", "clear"},
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
@@ -705,6 +735,16 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	}
 
 	switch commandName {
+	case "effort":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "codex-auth":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
 	case "provider":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
@@ -754,7 +794,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return firstLevel[commandName], 0, true
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
-			return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"}, 1, true
+			return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
 		}
 		return nil, 0, false
 	case "set-specialist-model":
@@ -772,7 +812,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return normalizeTaskStateList(options, 32), 1, true
 			}
 			if rt.hasSpecialistName(fields[0]) {
-				return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli"}, 1, true
+				return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
 			}
 		}
 		return nil, 0, false

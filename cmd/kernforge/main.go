@@ -175,6 +175,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	loadedProvider := normalizeProviderName(cfg.Provider)
 	if providerFlag != "" {
 		cfg.Provider = providerFlag
 	}
@@ -183,6 +184,16 @@ func run(args []string) error {
 	}
 	if baseURLFlag != "" {
 		cfg.BaseURL = baseURLFlag
+	}
+	if providerFlag != "" && baseURLFlag == "" && loadedProvider != normalizeProviderName(providerFlag) {
+		switch normalizeProviderName(providerFlag) {
+		case "openai-codex":
+			cfg.BaseURL = normalizeOpenAICodexBaseURL("")
+		case "lmstudio", "vllm", "llama.cpp":
+			cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(providerFlag, "")
+		case "codex-cli":
+			cfg.BaseURL = ""
+		}
 	}
 	if permissionFlag != "" {
 		cfg.PermissionMode = permissionFlag
@@ -332,12 +343,7 @@ func run(args []string) error {
 			rt.printProgressMessage(text)
 		},
 	}
-	if rt.cfg.PlanReview != nil {
-		if reviewerClient, reviewerErr := createReviewerClient(rt.cfg.PlanReview, rt.cfg); reviewerErr == nil {
-			rt.agent.ReviewerClient = reviewerClient
-			rt.agent.ReviewerModel = rt.cfg.PlanReview.Model
-		}
-	}
+	rt.syncAgentReviewerClientFromConfig()
 	rt.reloadExtensions()
 
 	if promptFlag != "" {
@@ -2006,9 +2012,13 @@ func providerChoiceOptions() []providerChoiceOption {
 		{Number: "2", ID: "openai", Label: "openai"},
 		{Number: "3", ID: "openrouter", Label: "openrouter"},
 		{Number: "4", ID: "ollama", Label: "ollama"},
-		{Number: "5", ID: "opencode", Label: "opencode"},
-		{Number: "6", ID: "opencode-go", Label: "opencode-go"},
+		{Number: "5", ID: "opencode", Label: "OpenCode Zen"},
+		{Number: "6", ID: "opencode-go", Label: "OpenCode Go"},
 		{Number: "7", ID: "codex-cli", Label: "codex-cli"},
+		{Number: "8", ID: "openai-codex", Label: "openai-codex"},
+		{Number: "9", ID: "lmstudio", Label: "LM Studio"},
+		{Number: "10", ID: "vllm", Label: "vLLM"},
+		{Number: "11", ID: "llama.cpp", Label: "llama.cpp"},
 	}
 }
 
@@ -2117,6 +2127,29 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 		nextModel = model
 		nextBaseURL = ""
 		nextAPIKey = ""
+	case "openai-codex":
+		model, err := rt.chooseOpenAICodexModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		if !strings.EqualFold(normalizeProviderName(rt.cfg.Provider), "openai-codex") {
+			nextBaseURL = ""
+		}
+		nextBaseURL = normalizeOpenAICodexBaseURL(nextBaseURL)
+		nextAPIKey = ""
+	case "lmstudio", "vllm", "llama.cpp":
+		localBaseURL := nextBaseURL
+		if !strings.EqualFold(normalizeProviderName(rt.cfg.Provider), provider) {
+			localBaseURL = ""
+		}
+		model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, nextModel, localBaseURL, nextAPIKey, "main provider")
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalized
+		nextAPIKey = apiKey
 	case "opencode", "opencode-go":
 		opencodeBaseURL := normalizeOpenCodeProviderBaseURL(provider, "")
 		if strings.EqualFold(rt.cfg.Provider, provider) && strings.TrimSpace(nextBaseURL) != "" {
@@ -2207,7 +2240,7 @@ func (rt *runtimeState) providerAPIKey(provider string) string {
 	if provider == "" {
 		return ""
 	}
-	if provider == "codex-cli" {
+	if provider == "codex-cli" || provider == "openai-codex" {
 		return ""
 	}
 	if key := strings.TrimSpace(rt.storedProviderKey(provider)); key != "" {
@@ -2252,6 +2285,10 @@ func isAuthError(err error) bool {
 
 func (rt *runtimeState) handleAuthError() error {
 	provider := strings.ToLower(strings.TrimSpace(rt.session.Provider))
+	if normalizeProviderName(provider) == "openai-codex" {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("OpenAI Codex OAuth appears to be invalid. Run /codex-auth login or set "+openAICodexAccessTokenEnv+"."))
+		return nil
+	}
 	fmt.Fprintln(rt.writer, rt.ui.warnLine("API key appears to be invalid. Please enter a new key."))
 	keyPrompt := providerDisplayName(provider) + " API key"
 	apiKey, err := rt.promptRequiredValue(keyPrompt, "")
@@ -2271,6 +2308,136 @@ func (rt *runtimeState) handleAuthError() error {
 	return nil
 }
 
+func (rt *runtimeState) handleOpenAICodexAuthCommand(args string) error {
+	parts := strings.Fields(args)
+	action := "status"
+	if len(parts) > 0 {
+		action = strings.ToLower(strings.TrimSpace(parts[0]))
+	}
+	switch action {
+	case "status", "show":
+		return rt.showOpenAICodexAuthStatus()
+	case "login":
+		return rt.loginOpenAICodexOAuth()
+	case "logout", "clear", "reset":
+		return rt.logoutOpenAICodexOAuth()
+	case "path":
+		fmt.Fprintln(rt.writer, rt.ui.section("OpenAI Codex OAuth"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", codexOAuthAuthFilePath()))
+		return nil
+	default:
+		return fmt.Errorf("usage: /codex-auth [status|login|logout|path]")
+	}
+}
+
+func (rt *runtimeState) showOpenAICodexAuthStatus() error {
+	path := codexOAuthAuthFilePath()
+	fmt.Fprintln(rt.writer, rt.ui.section("OpenAI Codex OAuth"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", path))
+	if strings.TrimSpace(os.Getenv(openAICodexAuthFileEnv)) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file_source", openAICodexAuthFileEnv))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file_source", "kernforge default"))
+	}
+	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("access_token", "set via "+openAICodexAccessTokenEnv))
+		if expiresAt, ok := jwtExpiresAt(token); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("access_token_expires_at", expiresAt.Format(time.RFC3339)))
+		}
+		return nil
+	}
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "not configured"))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Run /codex-auth login to create a Kernforge-owned OAuth file."))
+		return nil
+	}
+	_, auth, err := readCodexOAuthAuthFile(path)
+	if err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "invalid"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("error", err.Error()))
+		return nil
+	}
+	access := strings.TrimSpace(auth.Tokens.AccessToken)
+	refresh := strings.TrimSpace(auth.Tokens.RefreshToken)
+	if tokenUsable(access, openAICodexTokenRefreshSkew) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "ready"))
+	} else if refresh != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "access token expired; refresh token available"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "access token expired; refresh token missing"))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_mode", valueOrUnset(auth.AuthMode)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("refresh_token", presentState(refresh != "")))
+	if expiresAt, ok := jwtExpiresAt(access); ok {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("access_token_expires_at", expiresAt.Format(time.RFC3339)))
+	}
+	return nil
+}
+
+func (rt *runtimeState) loginOpenAICodexOAuth() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+	if _, err := runCodexOAuthDeviceLogin(ctx, rt.writer, codexOAuthAuthFilePath(), nil); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (rt *runtimeState) logoutOpenAICodexOAuth() error {
+	path := codexOAuthAuthFilePath()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("OpenAI Codex OAuth file removed: "+path))
+	if strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(openAICodexAccessTokenEnv+" is still set and will continue to override file auth."))
+	}
+	return nil
+}
+
+func (rt *runtimeState) ensureOpenAICodexAuthInteractive() error {
+	if strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" || codexOAuthAuthFileUsable("") {
+		return nil
+	}
+	if !rt.interactive {
+		return fmt.Errorf("OpenAI Codex OAuth is not configured; run /codex-auth login")
+	}
+	fmt.Fprintln(rt.writer, rt.ui.warnLine("OpenAI Codex OAuth is not configured for Kernforge."))
+	ok, err := rt.confirm("Run OpenAI Codex OAuth login now?")
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("OpenAI Codex OAuth is not configured; run /codex-auth login")
+	}
+	return rt.loginOpenAICodexOAuth()
+}
+
+func openAICodexAuthStatusSummary() string {
+	if strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" {
+		return "access token env override"
+	}
+	_, auth, err := readCodexOAuthAuthFile(codexOAuthAuthFilePath())
+	if err != nil {
+		return "not configured"
+	}
+	if tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) {
+		return "ready"
+	}
+	if strings.TrimSpace(auth.Tokens.RefreshToken) != "" {
+		return "refresh available"
+	}
+	return "expired"
+}
+
+func presentState(ok bool) string {
+	if ok {
+		return "present"
+	}
+	return "missing"
+}
+
 func providerDisplayName(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "anthropic":
@@ -2280,11 +2447,19 @@ func providerDisplayName(provider string) string {
 	case "openrouter":
 		return "OpenRouter"
 	case "opencode":
-		return "OpenCode"
+		return "OpenCode Zen"
 	case "opencode-go":
 		return "OpenCode Go"
 	case "ollama":
 		return "Ollama"
+	case "lmstudio":
+		return "LM Studio"
+	case "vllm":
+		return "vLLM"
+	case "llama.cpp":
+		return "llama.cpp"
+	case "openai-codex":
+		return "OpenAI Codex"
 	case "codex-cli":
 		return "Codex CLI"
 	default:
@@ -3214,9 +3389,31 @@ func (rt *runtimeState) syncClientFromConfig() {
 	if rt.agent != nil {
 		rt.agent.Config = rt.cfg
 		rt.agent.Client = client
+		rt.syncAgentReviewerClientFromConfig()
 	}
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.clientErr = clientErr
+}
+
+func (rt *runtimeState) syncAgentReviewerClientFromConfig() {
+	if rt == nil || rt.agent == nil {
+		return
+	}
+	rt.agent.AuxReviewerClient = nil
+	rt.agent.AuxReviewerModel = ""
+	if rt.cfg.PlanReview == nil || strings.TrimSpace(rt.cfg.PlanReview.Provider) == "" || strings.TrimSpace(rt.cfg.PlanReview.Model) == "" {
+		rt.agent.ReviewerClient = nil
+		rt.agent.ReviewerModel = ""
+		return
+	}
+	reviewerClient, err := createReviewerClient(rt.cfg.PlanReview, rt.cfg)
+	if err != nil {
+		rt.agent.ReviewerClient = nil
+		rt.agent.ReviewerModel = ""
+		return
+	}
+	rt.agent.ReviewerClient = reviewerClient
+	rt.agent.ReviewerModel = rt.cfg.PlanReview.Model
 }
 
 func (rt *runtimeState) saveUserConfig() error {
@@ -3401,6 +3598,38 @@ func (rt *runtimeState) applyModelHubChoice(choice string) error {
 	return err
 }
 
+func (rt *runtimeState) handleEffortCommand(args string) error {
+	args = strings.TrimSpace(args)
+	if args == "" || strings.EqualFold(args, "status") || strings.EqualFold(args, "show") {
+		return rt.showReasoningEffortStatus()
+	}
+	parts := strings.Fields(args)
+	if len(parts) != 1 {
+		return fmt.Errorf("usage: /effort [undefined|minimal|low|medium|high|xhigh]")
+	}
+	return rt.setReasoningEffort(parts[0])
+}
+
+func (rt *runtimeState) showReasoningEffortStatus() error {
+	fmt.Fprintln(rt.writer, rt.ui.section("Reasoning Effort"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("effort", reasoningEffortDisplay(rt.cfg.ReasoningEffort)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("applies_to", "all openai-codex Responses requests"))
+	return nil
+}
+
+func (rt *runtimeState) setReasoningEffort(effort string) error {
+	if !validReasoningEffort(effort) {
+		return fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(effort))
+	}
+	rt.cfg.ReasoningEffort = normalizeReasoningEffort(effort)
+	rt.syncClientFromConfig()
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("reasoning_effort set to "+reasoningEffortDisplay(rt.cfg.ReasoningEffort)))
+	return nil
+}
+
 func (rt *runtimeState) handleOpenCommand(pathArg string) error {
 	if strings.TrimSpace(pathArg) == "" {
 		return fmt.Errorf("usage: /open <path>")
@@ -3457,7 +3686,11 @@ func (rt *runtimeState) showProviderStatus() error {
 			commandPath = codexCLIDefaultExecutable
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cli", commandPath))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "managed by Codex CLI"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "ChatGPT OAuth via Codex CLI"))
+	} else if strings.EqualFold(provider, "openai-codex") {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "ChatGPT OAuth direct Codex Responses"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", codexOAuthAuthFilePath()))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_status", openAICodexAuthStatusSummary()))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("api_key", providerAPIKeyState(apiKey)))
 	}
@@ -3641,6 +3874,10 @@ func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey stri
 	case "openai-compatible":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Depends on the upstream provider; no generic standard endpoint is assumed."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use the upstream provider's documented billing and usage endpoints."))
+	case "lmstudio", "vllm", "llama.cpp":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Not applicable for local OpenAI-compatible providers."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openAIAPIURL(baseURL, "/v1/models")))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("endpoint_routing", "Uses OpenAI-compatible chat/completions with optional API key support."))
 	case "openrouter":
 		rt.printOpenRouterBudgetStatus(baseURL, apiKey)
 	case "opencode":
@@ -3648,15 +3885,20 @@ func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey stri
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openCodeAPIURL(baseURL, "/v1/models")))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("endpoint_routing", "GPT/Codex -> responses, Claude -> messages, other compatible Zen models -> chat/completions."))
 	case "opencode-go":
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "OpenCode Go uses subscription usage limits, not Zen pay-as-you-go balance."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "OpenCode Go uses subscription usage limits, not OpenCode Zen pay-as-you-go balance."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openCodeProviderAPIURL("opencode-go", baseURL, "/v1/models")))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("endpoint_routing", "MiniMax M2.5/M2.7 -> messages, other Go models -> chat/completions."))
 	case "ollama":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Not applicable for local providers."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "No remote billing API is expected for local model servers."))
 	case "codex-cli":
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Managed by the installed Codex CLI account or API configuration."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "Managed by the installed Codex CLI ChatGPT account or API configuration."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models", "Use codex debug models to see models exposed by the current ChatGPT OAuth account."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use Codex CLI/OpenAI account tooling for usage visibility."))
+	case "openai-codex":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "Uses ChatGPT OAuth tokens for the Codex backend; no OpenAI API key is required."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models", "Uses the models exposed by the current ChatGPT/Codex OAuth account."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use ChatGPT/Codex account tooling for subscription and usage visibility."))
 	default:
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Unknown provider; budget visibility depends on the upstream API."))
 	}
@@ -3869,10 +4111,119 @@ func (rt *runtimeState) chooseOpenAIModel(currentModel string) (string, error) {
 	return "", fmt.Errorf("unknown model: %s", choice)
 }
 
-var codexCLIModels = []struct {
+func (rt *runtimeState) configureLocalOpenAICompatibleModel(provider string, currentModel string, baseURL string, apiKey string, scope string) (string, string, string, error) {
+	provider = normalizeProviderName(provider)
+	defaultURL := normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
+	url := defaultURL
+	if rt.interactive {
+		var err error
+		url, err = rt.promptValue(providerDisplayName(provider)+" URL", defaultURL)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	url = normalizeLocalOpenAICompatibleBaseURL(provider, url)
+	models, normalized, err := rt.fetchAndShowOpenAICompatibleModels(provider, url, apiKey)
+	if err != nil {
+		return "", normalized, "", fmt.Errorf("could not load %s models for %s from %s: %w", providerDisplayName(provider), strings.TrimSpace(scope), normalized, err)
+	}
+	if len(models) == 0 {
+		return "", normalized, "", fmt.Errorf("%s models API returned no models from %s", providerDisplayName(provider), normalized)
+	}
+	model, err := rt.chooseOpenAICompatibleModel(provider, models, currentModel)
+	if err != nil {
+		return "", normalized, "", err
+	}
+	return model, normalized, strings.TrimSpace(apiKey), nil
+}
+
+func (rt *runtimeState) fetchAndShowOpenAICompatibleModels(provider string, url string, apiKey string) ([]OpenAICompatibleModelInfo, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, normalized, err := FetchOpenAICompatibleModels(ctx, provider, url, apiKey)
+	if err != nil {
+		return nil, normalized, err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section(providerDisplayName(provider)+" Models"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
+	for i, model := range models {
+		label := strings.TrimSpace(model.Name)
+		if label == "" {
+			label = model.ID
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s\n", i+1, label, rt.ui.dim(model.ID))
+	}
+	return models, normalized, nil
+}
+
+func (rt *runtimeState) chooseOpenAICompatibleModel(provider string, models []OpenAICompatibleModelInfo, currentModel string) (string, error) {
+	models = dedupeOpenAICompatibleModels(models)
+	if len(models) == 0 {
+		return "", fmt.Errorf("no %s models available", providerDisplayName(provider))
+	}
+	currentModel = strings.TrimSpace(currentModel)
+	if !rt.interactive {
+		if currentModel != "" {
+			for _, model := range models {
+				if strings.EqualFold(model.ID, currentModel) {
+					return model.ID, nil
+				}
+			}
+		}
+		return models[0].ID, nil
+	}
+	defaultChoice := "1"
+	for i, model := range models {
+		if strings.EqualFold(model.ID, currentModel) {
+			defaultChoice = fmt.Sprintf("%d", i+1)
+			break
+		}
+	}
+	choice, err := rt.promptValue("Select model number or id", defaultChoice)
+	if err != nil {
+		return "", err
+	}
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		choice = defaultChoice
+	}
+	if idx, err := strconv.Atoi(choice); err == nil {
+		if idx >= 1 && idx <= len(models) {
+			return models[idx-1].ID, nil
+		}
+		return "", fmt.Errorf("invalid selection: %s", choice)
+	}
+	for _, model := range models {
+		if strings.EqualFold(model.ID, choice) || strings.EqualFold(model.Name, choice) {
+			return model.ID, nil
+		}
+	}
+	return "", fmt.Errorf("%s model %s was not returned by the configured server; choose one of: %s", providerDisplayName(provider), choice, strings.Join(limitOpenAICompatibleModelLabels(models, 8), ", "))
+}
+
+func limitOpenAICompatibleModelLabels(models []OpenAICompatibleModelInfo, limit int) []string {
+	models = dedupeOpenAICompatibleModels(models)
+	if limit <= 0 || len(models) <= limit {
+		out := make([]string, 0, len(models))
+		for _, model := range models {
+			out = append(out, model.ID)
+		}
+		return out
+	}
+	out := make([]string, 0, limit+1)
+	for _, model := range models[:limit] {
+		out = append(out, model.ID)
+	}
+	out = append(out, fmt.Sprintf("...+%d more", len(models)-limit))
+	return out
+}
+
+type codexCLIModelOption struct {
 	ID   string
 	Name string
-}{
+}
+
+var codexCLIModels = []codexCLIModelOption{
 	{codexCLIDefaultModel, "Codex CLI default"},
 	{"gpt-5.5", "GPT-5.5"},
 	{"gpt-5.5-pro", "GPT-5.5 Pro"},
@@ -3900,10 +4251,12 @@ func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error)
 		return codexCLIDefaultModel, nil
 	}
 
+	models := rt.codexCLIModelChoices(currentModel)
 	fmt.Fprintln(rt.writer, rt.ui.section("Codex CLI Models"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Codex CLI choose its configured model. You can also type any Codex-supported model id directly."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Codex CLI choose its configured model. Live models are loaded from the ChatGPT OAuth-backed Codex account when available."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("You can also type any Codex-supported model id directly."))
 	defaultChoice := "1"
-	for i, m := range codexCLIModels {
+	for i, m := range models {
 		marker := ""
 		if strings.EqualFold(m.ID, strings.TrimSpace(currentModel)) {
 			marker = " " + rt.ui.success("[current]")
@@ -3921,17 +4274,151 @@ func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error)
 		choice = defaultChoice
 	}
 	if idx, err := strconv.Atoi(choice); err == nil {
-		if idx >= 1 && idx <= len(codexCLIModels) {
-			return codexCLIModels[idx-1].ID, nil
+		if idx >= 1 && idx <= len(models) {
+			return models[idx-1].ID, nil
 		}
 		return "", fmt.Errorf("invalid selection: %s", choice)
 	}
-	for _, m := range codexCLIModels {
+	for _, m := range models {
 		if strings.EqualFold(m.ID, choice) {
 			return m.ID, nil
 		}
 	}
 	return choice, nil
+}
+
+func (rt *runtimeState) chooseOpenAICodexModel(currentModel string) (string, error) {
+	if !rt.interactive {
+		if strings.TrimSpace(currentModel) != "" {
+			return currentModel, nil
+		}
+		return openAICodexDefaultModel, nil
+	}
+	if err := rt.ensureOpenAICodexAuthInteractive(); err != nil {
+		return "", err
+	}
+
+	models := rt.openAICodexModelChoices(currentModel)
+	fmt.Fprintln(rt.writer, rt.ui.section("OpenAI Codex Models"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Live models are loaded from the ChatGPT OAuth-backed Codex account when available."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("You can also type any Codex-supported model id directly."))
+	defaultChoice := "1"
+	for i, m := range models {
+		marker := ""
+		if strings.EqualFold(m.ID, strings.TrimSpace(currentModel)) {
+			marker = " " + rt.ui.success("[current]")
+			defaultChoice = fmt.Sprintf("%d", i+1)
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s%s\n", i+1, m.Name, rt.ui.dim(m.ID), marker)
+	}
+
+	choice, err := rt.promptValue("Select model", defaultChoice)
+	if err != nil {
+		return "", err
+	}
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		choice = defaultChoice
+	}
+	if idx, err := strconv.Atoi(choice); err == nil {
+		if idx >= 1 && idx <= len(models) {
+			return models[idx-1].ID, nil
+		}
+		return "", fmt.Errorf("invalid selection: %s", choice)
+	}
+	for _, m := range models {
+		if strings.EqualFold(m.ID, choice) {
+			return m.ID, nil
+		}
+	}
+	return choice, nil
+}
+
+func (rt *runtimeState) codexCLIModelChoices(currentModel string) []codexCLIModelOption {
+	commandPath := strings.TrimSpace(rt.cfg.CodexCLIPath)
+	if commandPath == "" {
+		commandPath = codexCLIDefaultExecutable
+	}
+	workingDir := ""
+	if rt.session != nil {
+		workingDir = sessionBaseWorkingDir(rt.session)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	liveModels, err := FetchCodexCLIModels(ctx, commandPath, workingDir)
+	if err != nil || len(liveModels) == 0 {
+		return codexCLIModels
+	}
+	choices := []codexCLIModelOption{{ID: codexCLIDefaultModel, Name: "Codex CLI default"}}
+	seen := map[string]bool{strings.ToLower(codexCLIDefaultModel): true}
+	for _, model := range liveModels {
+		id := strings.TrimSpace(model.ID)
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		name := strings.TrimSpace(model.Name)
+		if name == "" {
+			name = id
+		}
+		choices = append(choices, codexCLIModelOption{ID: id, Name: name})
+		seen[strings.ToLower(id)] = true
+	}
+	currentModel = strings.TrimSpace(currentModel)
+	if currentModel != "" && !seen[strings.ToLower(currentModel)] {
+		choices = append(choices, codexCLIModelOption{ID: currentModel, Name: "Current configured model"})
+	}
+	if len(choices) <= 1 {
+		return codexCLIModels
+	}
+	return choices
+}
+
+func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIModelOption {
+	baseURL := normalizeOpenAICodexBaseURL("")
+	if rt != nil && strings.EqualFold(normalizeProviderName(rt.cfg.Provider), "openai-codex") {
+		baseURL = normalizeOpenAICodexBaseURL(rt.cfg.BaseURL)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	liveModels, err := FetchOpenAICodexModels(ctx, baseURL, nil, nil)
+	choices := make([]codexCLIModelOption, 0, len(liveModels))
+	seen := map[string]bool{}
+	if err == nil {
+		for _, model := range liveModels {
+			id := strings.TrimSpace(model.ID)
+			if id == "" || seen[strings.ToLower(id)] {
+				continue
+			}
+			name := strings.TrimSpace(model.Name)
+			if name == "" {
+				name = id
+			}
+			choices = append(choices, codexCLIModelOption{ID: id, Name: name})
+			seen[strings.ToLower(id)] = true
+		}
+	}
+	if len(choices) == 0 {
+		choices = openAICodexFallbackModels()
+		for _, choice := range choices {
+			seen[strings.ToLower(choice.ID)] = true
+		}
+	}
+	currentModel = strings.TrimSpace(currentModel)
+	if currentModel != "" && !seen[strings.ToLower(currentModel)] {
+		choices = append(choices, codexCLIModelOption{ID: currentModel, Name: "Current configured model"})
+	}
+	return choices
+}
+
+func openAICodexFallbackModels() []codexCLIModelOption {
+	out := make([]codexCLIModelOption, 0, len(codexCLIModels))
+	for _, model := range codexCLIModels {
+		if model.ID == codexCLIDefaultModel {
+			continue
+		}
+		out = append(out, model)
+	}
+	return out
 }
 
 var openCodeFallbackModels = []OpenCodeModelInfo{
@@ -4381,6 +4868,18 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()))
 	case "model":
 		if err := rt.handleModelCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "effort":
+		if err := rt.handleEffortCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "codex-auth":
+		if err := rt.handleOpenAICodexAuthCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "codex-login":
+		if err := rt.handleOpenAICodexAuthCommand("login"); err != nil {
 			return false, err
 		}
 	case "permissions":
@@ -4943,6 +5442,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.printKVGroup("Model",
 			kv("provider", valueOrUnset(rt.cfg.Provider)),
 			kv("model", valueOrUnset(rt.cfg.Model)),
+			kv("reasoning_effort", reasoningEffortDisplay(rt.cfg.ReasoningEffort)),
 			kv("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)),
 			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
 		)
@@ -5956,6 +6456,22 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 				return err
 			}
 			nextModel = model
+		case "openai-codex":
+			model, err := rt.chooseOpenAICodexModel(currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+			nextBaseURL = normalizeOpenAICodexBaseURL(nextBaseURL)
+			nextAPIKey = ""
+		case "lmstudio", "vllm", "llama.cpp":
+			model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, currentModel, nextBaseURL, nextAPIKey, "specialist "+profile.Name)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+			nextBaseURL = normalized
+			nextAPIKey = apiKey
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
 		}
@@ -5967,7 +6483,7 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
 		case "opencode", "opencode-go":
 			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
-		case "anthropic", "openai", "codex-cli":
+		case "anthropic", "openai", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp":
 			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
@@ -6045,6 +6561,14 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		}
 		nextModel = selected.Name
 		nextBaseURL = normalized
+	case "lmstudio", "vllm", "llama.cpp":
+		model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, nextModel, nextBaseURL, nextAPIKey, "analysis "+role)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalized
+		nextAPIKey = apiKey
 	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
 		if strings.TrimSpace(nextAPIKey) == "" {
 			keyPrompt := providerDisplayName(provider) + " API key (for analysis " + role + ")"
@@ -6090,6 +6614,14 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 			}
 			nextModel = model
 		}
+	case "openai-codex":
+		model, err := rt.chooseOpenAICodexModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalizeOpenAICodexBaseURL(nextBaseURL)
+		nextAPIKey = ""
 	case "codex-cli":
 		model, err := rt.chooseCodexCLIModel(nextModel)
 		if err != nil {
@@ -6336,6 +6868,14 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 		}
 		nextModel = selected.Name
 		nextBaseURL = normalized
+	case "lmstudio", "vllm", "llama.cpp":
+		model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, nextModel, nextBaseURL, nextAPIKey, "plan review")
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalized
+		nextAPIKey = apiKey
 	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
 		baseURL := ""
 		if provider == "openrouter" {
@@ -6388,6 +6928,14 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 			}
 			nextModel = model
 		}
+	case "openai-codex":
+		model, err := rt.chooseOpenAICodexModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = normalizeOpenAICodexBaseURL(nextBaseURL)
+		nextAPIKey = ""
 	case "codex-cli":
 		model, err := rt.chooseCodexCLIModel(nextModel)
 		if err != nil {
@@ -6429,6 +6977,7 @@ func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey stri
 	if err := SaveUserConfig(rt.cfg); err != nil {
 		return err
 	}
+	rt.syncAgentReviewerClientFromConfig()
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Plan review reviewer set: %s / %s", provider, model)))
 	return nil
 }

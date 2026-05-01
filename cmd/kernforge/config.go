@@ -64,6 +64,7 @@ type Config struct {
 	CodexCLIPath           string                    `json:"codex_cli_path,omitempty"`
 	CodexCLIArgs           []string                  `json:"codex_cli_args,omitempty"`
 	Temperature            float64                   `json:"temperature"`
+	ReasoningEffort        string                    `json:"reasoning_effort,omitempty"`
 	MaxTokens              int                       `json:"max_tokens"`
 	MaxToolIterations      int                       `json:"max_tool_iterations"`
 	MaxRequestRetries      int                       `json:"max_request_retries,omitempty"`
@@ -270,6 +271,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Temperature != 0 {
 		dst.Temperature = src.Temperature
 	}
+	if strings.TrimSpace(src.ReasoningEffort) != "" {
+		dst.ReasoningEffort = normalizeReasoningEffort(src.ReasoningEffort)
+	}
 	if src.MaxTokens != 0 {
 		dst.MaxTokens = src.MaxTokens
 	}
@@ -456,6 +460,7 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
+	envString("KERNFORGE_REASONING_EFFORT", &cfg.ReasoningEffort)
 	envInt("KERNFORGE_MAX_REQUEST_RETRIES", &cfg.MaxRequestRetries)
 	envInt("KERNFORGE_REQUEST_RETRY_DELAY_MS", &cfg.RequestRetryDelayMs)
 	envInt("KERNFORGE_REQUEST_TIMEOUT_SECONDS", &cfg.RequestTimeoutSecs)
@@ -515,6 +520,14 @@ func applyEnv(cfg *Config) {
 		if cfg.APIKey == "" {
 			envString("OLLAMA_API_KEY", &cfg.APIKey)
 		}
+	case "openai-codex":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeOpenAICodexBaseURL("")
+		}
+	case "lmstudio", "vllm", "llama.cpp":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(cfg.Provider, "")
+		}
 	case "openai", "openai-compatible":
 		if cfg.APIKey == "" {
 			envString("OPENAI_API_KEY", &cfg.APIKey)
@@ -523,6 +536,7 @@ func applyEnv(cfg *Config) {
 }
 
 func normalizeConfigPaths(cfg *Config) {
+	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	if cfg.SessionDir != "" {
 		cfg.SessionDir = expandHome(cfg.SessionDir)
 	}
@@ -576,6 +590,12 @@ func normalizeConfigPaths(cfg *Config) {
 	}
 	if strings.EqualFold(cfg.Provider, "openrouter") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	}
+	if strings.EqualFold(normalizeProviderName(cfg.Provider), "openai-codex") && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeOpenAICodexBaseURL("")
+	}
+	if isLocalOpenAICompatibleProvider(cfg.Provider) && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(cfg.Provider, "")
 	}
 	for i, server := range cfg.MCPServers {
 		cfg.MCPServers[i].Name = strings.TrimSpace(server.Name)
@@ -782,9 +802,55 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 			return normalizeOpenCodeGoBaseURL("")
 		}
 		return normalizeOpenCodeGoBaseURL(baseURL)
+	case "openai-codex":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeOpenAICodexBaseURL("")
+		}
+		return normalizeOpenAICodexBaseURL(baseURL)
+	case "lmstudio", "vllm", "llama.cpp":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeLocalOpenAICompatibleBaseURL(provider, "")
+		}
+		return normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
 	default:
 		return strings.TrimSpace(baseURL)
 	}
+}
+
+func normalizeReasoningEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "", "default", "undefined", "none", "off", "unset", "clear":
+		return ""
+	case "min", "minimal":
+		return "minimal"
+	case "lo", "low", "light":
+		return "low"
+	case "med", "medium", "normal":
+		return "medium"
+	case "hi", "high":
+		return "high"
+	case "xhigh", "x-high", "extra-high", "extra_high", "heavy":
+		return "xhigh"
+	default:
+		return strings.ToLower(strings.TrimSpace(effort))
+	}
+}
+
+func validReasoningEffort(effort string) bool {
+	switch normalizeReasoningEffort(effort) {
+	case "", "minimal", "low", "medium", "high", "xhigh":
+		return true
+	default:
+		return false
+	}
+}
+
+func reasoningEffortDisplay(effort string) string {
+	effort = normalizeReasoningEffort(effort)
+	if effort == "" {
+		return "undefined"
+	}
+	return effort
 }
 
 func mergeConfigProfiles(base []Profile, overlay []Profile) []Profile {
@@ -1738,6 +1804,8 @@ Provider And Models:
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
 /set-specialist-model  Configure the provider/model used by a specialist subagent
 /model                 Show all model routing and interactively reconfigure one target
+/effort [value]        Show or set reasoning effort: undefined, minimal, low, medium, high, xhigh
+/codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
 /set-max-tool-iterations <n> Set the maximum tool iteration count per request
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
@@ -1981,7 +2049,7 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
+	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
@@ -1990,6 +2058,11 @@ Provider and model commands control which model is active and how planning/revie
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
 - Changing the main model does not overwrite explicit role model profiles. Targets marked "not configured" follow the main model until configured.
 - Main profiles now store their own role model set. When you change plan-review, analysis, or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
+
+/effort [undefined|minimal|low|medium|high|xhigh]
+- Show the current reasoning effort when no value is provided. Empty config is displayed as undefined.
+- Set the default reasoning effort sent with openai-codex Responses requests across main, plan-review, analysis, and specialist roles.
+- /model does not read or write reasoning effort; use /effort for that setting.
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
@@ -2008,12 +2081,18 @@ Provider and model commands control which model is active and how planning/revie
 
 /provider
 - Choose and configure a provider interactively.
-- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider opencode, /provider opencode-go, /provider ollama, or /provider codex-cli.
+- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider opencode, /provider opencode-go, /provider ollama, /provider codex-cli, /provider openai-codex, /provider lmstudio, /provider vllm, or /provider llama.cpp.
+- LM Studio, vLLM, and llama.cpp use provider-specific local defaults unless you pass or save a base URL; custom base URLs are preserved when reconfiguring the same provider.
 
 /provider status
 - Show the active provider, normalized base URL, API key presence, and provider-specific budget visibility.
 - OpenRouter performs a live key lookup and, for management keys, also shows account credits.
 - OpenAI and Anthropic show officially documented billing and usage visibility limits instead of guessing a live balance endpoint.
+
+/codex-auth [status|login|logout|path]
+- Manage Kernforge-owned OpenAI Codex OAuth tokens for the openai-codex provider.
+- The default auth file is under Kernforge config, not the Codex CLI auth file. Set KERNFORGE_CODEX_AUTH_FILE to override it.
+- /codex-login is a shortcut for /codex-auth login.
 
 /set-plan-review [provider]
 - Configure the reviewer model used by /do-plan-review.

@@ -147,6 +147,9 @@ func (r *kernforgeMCPServerRuntime) ensureServer(workspace string, source string
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}
+	if isLocalOpenAICompatibleProvider(cfg.Provider) && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(cfg.Provider, "")
+	}
 	rt, err := newRuntimeStateForMCPServer(resolved, cfg, r.resumeID, io.Discard)
 	if err != nil {
 		return nil, err
@@ -178,14 +181,27 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) {
 	if cfg == nil {
 		return
 	}
+	providerOverride := normalizeProviderName(o.Provider)
+	baseURLOverride := strings.TrimSpace(o.BaseURL)
+	currentProvider := normalizeProviderName(cfg.Provider)
 	if strings.TrimSpace(o.Provider) != "" {
-		cfg.Provider = strings.TrimSpace(o.Provider)
+		cfg.Provider = providerOverride
+		if baseURLOverride == "" && currentProvider != providerOverride {
+			switch providerOverride {
+			case "openai-codex":
+				cfg.BaseURL = normalizeOpenAICodexBaseURL("")
+			case "lmstudio", "vllm", "llama.cpp":
+				cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(providerOverride, "")
+			case "codex-cli":
+				cfg.BaseURL = ""
+			}
+		}
 	}
 	if strings.TrimSpace(o.Model) != "" {
 		cfg.Model = strings.TrimSpace(o.Model)
 	}
-	if strings.TrimSpace(o.BaseURL) != "" {
-		cfg.BaseURL = strings.TrimSpace(o.BaseURL)
+	if baseURLOverride != "" {
+		cfg.BaseURL = baseURLOverride
 	}
 	if strings.TrimSpace(o.PermissionMode) != "" {
 		cfg.PermissionMode = strings.TrimSpace(o.PermissionMode)

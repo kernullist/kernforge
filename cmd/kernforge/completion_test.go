@@ -34,8 +34,12 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/worktree cr", wantBuffer: "/worktree create "},
 		{input: "/specialists ", wantSuggest: []string{"/specialists status", "/specialists assign", "/specialists cleanup"}},
 		{input: "/specialists cl", wantBuffer: "/specialists cleanup "},
-		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider opencode", "/provider opencode-go", "/provider ollama", "/provider codex-cli"}},
+		{input: "/effort ", wantSuggest: []string{"/effort undefined", "/effort minimal", "/effort low", "/effort medium", "/effort high", "/effort xhigh"}},
+		{input: "/effort h", wantBuffer: "/effort high "},
+		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider opencode", "/provider opencode-go", "/provider ollama", "/provider codex-cli", "/provider openai-codex", "/provider lmstudio", "/provider vllm", "/provider llama.cpp"}},
 		{input: "/provider st", wantBuffer: "/provider status "},
+		{input: "/codex-auth ", wantSuggest: []string{"/codex-auth status", "/codex-auth login", "/codex-auth logout", "/codex-auth path"}},
+		{input: "/codex-auth lo", wantBuffer: "/codex-auth log"},
 		{input: "/verify --", wantBuffer: "/verify --full "},
 		{input: "/verify-dashboard a", wantBuffer: "/verify-dashboard all "},
 		{input: "/verify-dashboard-html a", wantBuffer: "/verify-dashboard-html all "},
@@ -127,6 +131,9 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/workt", wantBuffer: "/worktree "},
 		{input: "/override-a", wantBuffer: "/override-add "},
 		{input: "/hook-r", wantBuffer: "/hook-reload "},
+		{input: "/eff", wantBuffer: "/effort "},
+		{input: "/codex-a", wantBuffer: "/codex-auth "},
+		{input: "/codex-l", wantBuffer: "/codex-login "},
 	}
 
 	for _, tc := range cases {
@@ -340,7 +347,9 @@ func TestCompleteSlashSubcommandDynamicIdentifiers(t *testing.T) {
 func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) {
 	cases := map[string]string{
 		"/status":                                  "Show current session state, approvals, and extension status.",
+		"/effort high":                             "Favor deeper reasoning.",
 		"/provider status":                         "Show the current provider, base URL, key state, and billing visibility.",
+		"/codex-auth login":                        "Start device OAuth login for OpenAI Codex.",
 		"/verify":                                  "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
 		"/specialists":                             "Show specialist profiles plus editable ownership and worktree routing state.",
 		"/specialists cleanup":                     "Remove one or all specialist worktrees recorded for this session.",
@@ -396,7 +405,9 @@ func TestCompletionSuggestionsHaveSpecificDescriptions(t *testing.T) {
 		"/set-auto-verify o",
 		"/worktree ",
 		"/specialists ",
+		"/effort ",
 		"/provider ",
+		"/codex-auth ",
 		"/profile ",
 		"/profile-review ",
 		"/analyze-project --",

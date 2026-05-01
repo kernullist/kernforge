@@ -38,15 +38,16 @@ type Message struct {
 }
 
 type ChatRequest struct {
-	Model       string
-	System      string
-	Messages    []Message
-	Tools       []ToolDefinition
-	MaxTokens   int
-	Temperature float64
-	WorkingDir  string
-	JSONMode    bool
-	OnTextDelta func(string)
+	Model           string
+	System          string
+	Messages        []Message
+	Tools           []ToolDefinition
+	MaxTokens       int
+	Temperature     float64
+	ReasoningEffort string
+	WorkingDir      string
+	JSONMode        bool
+	OnTextDelta     func(string)
 }
 
 type ChatResponse struct {
@@ -217,10 +218,10 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("OpenRouter provider selected but no API key was found")
 		}
-		return NewOpenAIClient(normalizeOpenRouterBaseURL(cfg.BaseURL), cfg.APIKey), nil
+		return NewOpenAICompatibleClient("openrouter", cfg.BaseURL, cfg.APIKey), nil
 	case "opencode":
 		if strings.TrimSpace(cfg.APIKey) == "" {
-			return nil, fmt.Errorf("OpenCode provider selected but no API key was found")
+			return nil, fmt.Errorf("OpenCode Zen provider selected but no API key was found")
 		}
 		return NewOpenCodeClient(cfg.BaseURL, cfg.APIKey), nil
 	case "opencode-go":
@@ -230,13 +231,22 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 		return NewOpenCodeGoClient(cfg.BaseURL, cfg.APIKey), nil
 	case "ollama":
 		return NewOllamaClient(cfg.BaseURL, cfg.APIKey), nil
+	case "lmstudio", "vllm", "llama.cpp":
+		return NewOpenAICompatibleClient(cfg.Provider, cfg.BaseURL, cfg.APIKey), nil
+	case "openai-codex":
+		return NewOpenAICodexClientWithReasoningEffort(cfg.BaseURL, cfg.ReasoningEffort), nil
 	case "codex-cli":
 		return NewCodexCLIClient(cfg.CodexCLIPath, cfg.CodexCLIArgs), nil
-	case "openai", "openai-compatible":
+	case "openai":
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("OpenAI-compatible provider selected but no API key was found")
 		}
 		return NewOpenAIClient(cfg.BaseURL, cfg.APIKey), nil
+	case "openai-compatible":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("OpenAI-compatible provider selected but no API key was found")
+		}
+		return NewOpenAICompatibleClient("openai-compatible", cfg.BaseURL, cfg.APIKey), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Provider)
 	}
@@ -246,10 +256,18 @@ func normalizeProviderName(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "codex", "codex-cli", "codex_cli":
 		return "codex-cli"
-	case "opencode", "open-code", "open_code":
+	case "openai-codex", "openai_codex":
+		return "openai-codex"
+	case "opencode", "open-code", "open_code", "opencode-zen", "opencode_zen", "opencode zen", "open-code-zen", "open_code_zen", "open code zen":
 		return "opencode"
-	case "opencode-go", "opencode_go", "open-code-go", "open_code_go", "opencodego":
+	case "opencode-go", "opencode_go", "opencode go", "open-code-go", "open_code_go", "open code go", "opencodego":
 		return "opencode-go"
+	case "lmstudio", "lm-studio", "lm_studio", "lm studio":
+		return "lmstudio"
+	case "vllm", "v-llm", "v_llm":
+		return "vllm"
+	case "llama.cpp", "llamacpp", "llama-cpp", "llama_cpp", "llama cpp":
+		return "llama.cpp"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}
@@ -456,6 +474,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 type OpenAIClient struct {
 	apiKey     string
 	baseURL    string
+	name       string
 	httpClient *http.Client
 }
 
@@ -463,15 +482,33 @@ func NewOpenAIClient(baseURL, apiKey string) *OpenAIClient {
 	return &OpenAIClient{
 		apiKey:     apiKey,
 		baseURL:    normalizeOpenAIBaseURL(baseURL),
+		name:       "openai",
+		httpClient: &http.Client{},
+	}
+}
+
+func NewOpenAICompatibleClient(provider, baseURL, apiKey string) *OpenAIClient {
+	provider = normalizeProviderName(provider)
+	if provider == "" {
+		provider = "openai-compatible"
+	}
+	return &OpenAIClient{
+		apiKey:     strings.TrimSpace(apiKey),
+		baseURL:    normalizeProviderBaseURL(provider, baseURL),
+		name:       provider,
 		httpClient: &http.Client{},
 	}
 }
 
 func (c *OpenAIClient) Name() string {
+	if c != nil && strings.TrimSpace(c.name) != "" {
+		return strings.TrimSpace(c.name)
+	}
 	return "openai"
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	providerName := c.Name()
 	type openAIToolCall struct {
 		ID       string `json:"id,omitempty"`
 		Type     string `json:"type,omitempty"`
@@ -616,7 +653,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("authorization", "Bearer "+c.apiKey)
+	if strings.TrimSpace(c.apiKey) != "" {
+		httpReq.Header.Set("authorization", "Bearer "+strings.TrimSpace(c.apiKey))
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -624,8 +663,16 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 300 {
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		return ChatResponse{}, newProviderHTTPError(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
+	}
+
 	if payload.Stream {
-		streamResp, err := readOpenAIStream(ctx, resp.Body, req.OnTextDelta, len(req.Tools) > 0)
+		streamResp, err := readOpenAIStream(ctx, providerName, resp.Body, req.OnTextDelta, len(req.Tools) > 0)
 		if err != nil {
 			return ChatResponse{}, err
 		}
@@ -646,19 +693,16 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	if resp.StatusCode >= 300 {
-		return ChatResponse{}, newProviderHTTPError("openai", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
-	}
 
 	var decoded openAIResponse
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return ChatResponse{}, err
 	}
 	if decoded.Error != nil {
-		return ChatResponse{}, newProviderMessageError("openai", decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+		return ChatResponse{}, newProviderMessageError(providerName, decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
 	}
 	if len(decoded.Choices) == 0 {
-		return ChatResponse{}, newProviderMessageError("openai", "empty choices", "", "", nil, nil)
+		return ChatResponse{}, newProviderMessageError(providerName, "empty choices", "", "", nil, nil)
 	}
 
 	choice := decoded.Choices[0]
@@ -677,7 +721,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}, nil
 }
 
-func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(string), bufferLeadingText bool) (ChatResponse, error) {
+func readOpenAIStream(ctx context.Context, providerName string, body io.ReadCloser, onTextDelta func(string), bufferLeadingText bool) (ChatResponse, error) {
+	providerName = normalizeProviderName(providerName)
+	if providerName == "" {
+		providerName = "openai"
+	}
 	type streamToolCallDelta struct {
 		Index    int    `json:"index"`
 		ID       string `json:"id,omitempty"`
@@ -752,7 +800,7 @@ func readOpenAIStream(ctx context.Context, body io.ReadCloser, onTextDelta func(
 			return ChatResponse{}, err
 		}
 		if chunk.Error != nil {
-			return ChatResponse{}, newProviderMessageError("openai", chunk.Error.Message, chunk.Error.Type, chunk.Error.Param, chunk.Error.Code, []byte(payload))
+			return ChatResponse{}, newProviderMessageError(providerName, chunk.Error.Message, chunk.Error.Type, chunk.Error.Param, chunk.Error.Code, []byte(payload))
 		}
 		for _, choice := range chunk.Choices {
 			if choice.FinishReason != "" {
@@ -1080,6 +1128,13 @@ type OpenRouterModelInfo struct {
 	SupportedParameters []string `json:"supported_parameters,omitempty"`
 }
 
+type OpenAICompatibleModelInfo struct {
+	ID      string `json:"id"`
+	Name    string `json:"name,omitempty"`
+	Object  string `json:"object,omitempty"`
+	OwnedBy string `json:"owned_by,omitempty"`
+}
+
 type OllamaClient struct {
 	apiKey     string
 	baseURL    string
@@ -1354,6 +1409,39 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 	return strings.TrimRight(base, "/")
 }
 
+func isLocalOpenAICompatibleProvider(provider string) bool {
+	switch normalizeProviderName(provider) {
+	case "lmstudio", "vllm", "llama.cpp":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultLocalOpenAICompatibleBaseURL(provider string) string {
+	switch normalizeProviderName(provider) {
+	case "lmstudio":
+		return "http://localhost:1234/v1"
+	case "vllm":
+		return "http://localhost:8000/v1"
+	case "llama.cpp":
+		return "http://localhost:8080/v1"
+	default:
+		return "http://localhost:8000/v1"
+	}
+}
+
+func normalizeLocalOpenAICompatibleBaseURL(provider, baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		base = defaultLocalOpenAICompatibleBaseURL(provider)
+	}
+	if !strings.Contains(base, "://") {
+		base = "http://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
+
 func normalizeProviderBaseURL(provider, baseURL string) string {
 	switch normalizeProviderName(provider) {
 	case "anthropic":
@@ -1368,6 +1456,10 @@ func normalizeProviderBaseURL(provider, baseURL string) string {
 		return normalizeOpenCodeGoBaseURL(baseURL)
 	case "ollama":
 		return normalizeOllamaBaseURL(baseURL)
+	case "lmstudio", "vllm", "llama.cpp":
+		return normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
+	case "openai-codex":
+		return normalizeOpenAICodexBaseURL(baseURL)
 	case "codex-cli":
 		return strings.TrimSpace(baseURL)
 	default:
@@ -1591,4 +1683,77 @@ func FetchOpenRouterModels(ctx context.Context, baseURL, apiKey string) ([]OpenR
 		return nil, normalized, newProviderMessageError("openrouter", decoded.Error.Message, "", "", nil, data)
 	}
 	return decoded.Data, normalized, nil
+}
+
+func FetchOpenAICompatibleModels(ctx context.Context, provider, baseURL, apiKey string) ([]OpenAICompatibleModelInfo, string, error) {
+	type modelsResponse struct {
+		Data   []OpenAICompatibleModelInfo `json:"data"`
+		Models []OpenAICompatibleModelInfo `json:"models"`
+		Error  *struct {
+			Message string `json:"message"`
+			Type    string `json:"type,omitempty"`
+			Param   string `json:"param,omitempty"`
+			Code    any    `json:"code,omitempty"`
+		} `json:"error,omitempty"`
+	}
+
+	provider = normalizeProviderName(provider)
+	if provider == "" {
+		provider = "openai-compatible"
+	}
+	normalized := normalizeProviderBaseURL(provider, baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIAPIURL(normalized, "/v1/models"), nil)
+	if err != nil {
+		return nil, normalized, err
+	}
+	req.Header.Set("content-type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, normalized, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, normalized, err
+	}
+	if resp.StatusCode >= 300 {
+		return nil, normalized, newProviderHTTPError(provider, resp.StatusCode, resp.Status, data, "")
+	}
+
+	var decoded modelsResponse
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, normalized, err
+	}
+	if decoded.Error != nil && strings.TrimSpace(decoded.Error.Message) != "" {
+		return nil, normalized, newProviderMessageError(provider, decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+	}
+	models := decoded.Data
+	if len(models) == 0 {
+		models = decoded.Models
+	}
+	return dedupeOpenAICompatibleModels(models), normalized, nil
+}
+
+func dedupeOpenAICompatibleModels(models []OpenAICompatibleModelInfo) []OpenAICompatibleModelInfo {
+	out := make([]OpenAICompatibleModelInfo, 0, len(models))
+	seen := map[string]bool{}
+	for _, model := range models {
+		model.ID = strings.TrimSpace(model.ID)
+		model.Name = strings.TrimSpace(model.Name)
+		if model.ID == "" || seen[strings.ToLower(model.ID)] {
+			continue
+		}
+		if model.Name == "" {
+			model.Name = model.ID
+		}
+		out = append(out, model)
+		seen[strings.ToLower(model.ID)] = true
+	}
+	return out
 }

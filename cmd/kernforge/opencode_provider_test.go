@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewProviderClientSupportsOpenCodeAPIAliases(t *testing.T) {
-	for _, provider := range []string{"opencode", "open-code", "open_code"} {
+	for _, provider := range []string{"opencode", "open-code", "open_code", "OpenCode Zen", "opencode-zen", "open-code-zen"} {
 		client, err := NewProviderClient(Config{Provider: provider, Model: openCodeDefaultModel, APIKey: "test-key"})
 		if err != nil {
 			t.Fatalf("NewProviderClient(%q): %v", provider, err)
@@ -22,7 +22,7 @@ func TestNewProviderClientSupportsOpenCodeAPIAliases(t *testing.T) {
 }
 
 func TestNewProviderClientSupportsOpenCodeGoAliases(t *testing.T) {
-	for _, provider := range []string{"opencode-go", "opencode_go", "open-code-go", "open_code_go"} {
+	for _, provider := range []string{"opencode-go", "opencode_go", "OpenCode Go", "opencode go", "open-code-go", "open_code_go"} {
 		client, err := NewProviderClient(Config{Provider: provider, Model: openCodeGoDefaultModel, APIKey: "test-key"})
 		if err != nil {
 			t.Fatalf("NewProviderClient(%q): %v", provider, err)

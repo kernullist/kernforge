@@ -55,6 +55,30 @@ func TestBuildCodexCLIArgsUsesModelConfigOverride(t *testing.T) {
 	}
 }
 
+func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing.T) {
+	models, err := parseCodexCLIModelsJSON([]byte(strings.Join([]string{
+		"plugin warning before json",
+		`{"models":[` +
+			`{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list","priority":0},` +
+			`{"slug":"gpt-5.5","display_name":"duplicate","supported_in_api":true,"visibility":"list","priority":1},` +
+			`{"slug":"hidden-model","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},` +
+			`{"slug":"unsupported-model","display_name":"Unsupported","supported_in_api":false,"visibility":"list"},` +
+			`{"id":"custom-codex","name":"Custom Codex","visibility":"list"}` +
+			`]}`,
+		"plugin warning after json",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("parseCodexCLIModelsJSON: %v", err)
+	}
+	want := []CodexCLIModelInfo{
+		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0},
+		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0},
+	}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("models = %#v, want %#v", models, want)
+	}
+}
+
 func TestCodexCLIModelListIncludesGPT55Pro(t *testing.T) {
 	for _, model := range codexCLIModels {
 		if model.ID == "gpt-5.5-pro" {

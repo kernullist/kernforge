@@ -105,7 +105,7 @@ Its current differentiators are:
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL and one-shot `-prompt` mode
-- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `opencode`, `opencode-go`, `codex-cli`
+- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
@@ -258,7 +258,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/specialists status|assign|cleanup`, and `/worktree status|create|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -394,7 +394,7 @@ $env:OPENAI_API_KEY = "your_key"
 .\kernforge.exe -provider openai-compatible -base-url http://localhost:8000/v1 -model my-model
 ```
 
-OpenCode:
+OpenCode Zen:
 
 ```powershell
 $env:OPENCODE_API_KEY = "your_key"
@@ -419,7 +419,19 @@ Inside the interactive REPL, use `/provider status` to inspect the active provid
 LM Studio:
 
 ```powershell
-.\kernforge.exe -provider openai-compatible -base-url http://localhost:1234/v1 -model local-model-id
+.\kernforge.exe -provider lmstudio -model local-model-id
+```
+
+vLLM:
+
+```powershell
+.\kernforge.exe -provider vllm -model local-model-id
+```
+
+llama.cpp:
+
+```powershell
+.\kernforge.exe -provider llama.cpp -model local-model-id
 ```
 
 ### Windows Security Workflow Example
@@ -628,11 +640,12 @@ Later sources override earlier ones:
 
 | Field | Description |
 | --- | --- |
-| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `opencode`, `opencode-go`, `codex-cli` |
+| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex` |
 | `model` | Model name sent to the provider |
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
 | `temperature` | Model temperature |
+| `reasoning_effort` | Optional OpenAI Codex reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; unset is shown as `undefined` |
 | `max_tokens` | Max completion tokens |
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
@@ -686,6 +699,7 @@ General overrides:
 - `KERNFORGE_MODEL`
 - `KERNFORGE_BASE_URL`
 - `KERNFORGE_API_KEY`
+- `KERNFORGE_REASONING_EFFORT`
 - `KERNFORGE_PERMISSION_MODE`
 - `KERNFORGE_SHELL`
 - `KERNFORGE_SESSION_DIR`
@@ -743,6 +757,7 @@ Provider-specific:
 - Reads `OPENROUTER_API_KEY`
 - Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
 - Uses the same request-timeout, streamed partial-text, incomplete-stream fallback, and single-retry behavior as the OpenAI-compatible client
+- Streaming HTTP errors are surfaced as OpenRouter provider errors instead of being mistaken for empty SSE streams
 - `/provider status` performs a live `/key` lookup for key-level `limit_remaining` and `usage`, and it also queries `/credits` when the key is a management key
 
 ### OpenAI-compatible
@@ -751,20 +766,32 @@ Provider-specific:
 - Reads `OPENAI_API_KEY` unless overridden by config/env
 - Requires an explicit `base_url`
 - Applies the same assistant tool-call normalization and request-preview diagnostics as the OpenAI provider
+- Provider-specific error names are preserved for OpenRouter and generic OpenAI-compatible endpoints
+- Streaming HTTP errors are reported immediately with the provider response body and are not retried as empty-stream fallbacks
 - `/provider status` can show the normalized endpoint and key presence, but billing visibility depends on the upstream provider
 
-### OpenCode
+### Local OpenAI-compatible Providers
+
+- `lmstudio`: default base URL `http://localhost:1234/v1`
+- `vllm`: default base URL `http://localhost:8000/v1`
+- `llama.cpp`: default base URL `http://localhost:8080/v1`
+- These providers use OpenAI-style chat completions and discover models from `/v1/models`
+- API keys are optional, so local servers work without setting `OPENAI_API_KEY`
+- Switching from another provider resets to the selected local provider's default URL unless you pass `-base-url`; switching within the same local provider preserves a custom `base_url`
+
+### OpenCode Zen (`opencode`)
 
 - Default base URL: `https://opencode.ai/zen`
 - Reads `OPENCODE_API_KEY` and falls back to `OPENCODE_ZEN_API_KEY`
-- Fetches the model list from the configured OpenCode API key, so the picker reflects the subscription/account that will actually be used
+- Fetches the model list from the configured OpenCode Zen API key, so the picker reflects the subscription/account that will actually be used
+- The provider id remains `opencode` for CLI/config compatibility.
 - Routes GPT/Codex-style models through responses, Claude-style models through messages, and compatible chat models through chat completions
 
-### OpenCode Go
+### OpenCode Go (`opencode-go`)
 
 - Default base URL: `https://opencode.ai/zen/go`
 - Reads `OPENCODE_GO_API_KEY`, then falls back to `OPENCODE_API_KEY` and `OPENCODE_ZEN_API_KEY`
-- Fetches models using the OpenCode Go key and keeps Go subscription routing separate from Zen pay-as-you-go routing
+- Fetches models using the OpenCode Go key and keeps Go subscription routing separate from OpenCode Zen pay-as-you-go routing
 - Routes known message-endpoint models through messages and other supported models through chat completions
 
 ### Codex CLI
@@ -772,6 +799,18 @@ Provider-specific:
 - Uses the installed `codex` command as a local provider bridge instead of sending an API key through Kernforge
 - The provider setup flow asks for the command path and supported model name, including higher-tier Codex CLI models exposed by the installed account
 - `api_key` and provider-key storage are intentionally ignored for `codex-cli`
+
+### OpenAI Codex OAuth
+
+- The `openai-codex` provider calls the Codex Responses backend directly with ChatGPT OAuth tokens
+- Default base URL: `https://chatgpt.com/backend-api/codex`
+- Authentication uses a Kernforge-owned OAuth file at the Kernforge config path, `codex_auth.json`, and refreshes it when needed. Run `/codex-auth login` to create it, `/codex-auth status` to inspect it, or `/codex-auth logout` to remove it
+- Kernforge no longer defaults to the Codex CLI `~/.codex/auth.json` file for the direct provider. Set `KERNFORGE_CODEX_AUTH_FILE` for a different auth file or `KERNFORGE_CODEX_ACCESS_TOKEN` for a temporary access token override
+- Use `/effort` to show the current reasoning effort, or `/effort high` to set it. Unset effort is displayed as `undefined`
+- Reasoning effort applies to every `openai-codex` Responses request, including the main model, plan reviewer, analysis worker/reviewer, and specialist subagents when those roles use `openai-codex`
+- `/model` does not read or write reasoning effort; use `/effort` for that setting
+- Unlike the `codex-cli` bridge, this provider is wired into Kernforge's main LLM tool loop, so conversation context, tool calls, and tool results stay in the Kernforge session
+- Only models exposed to the current ChatGPT/Codex account are usable. Example: `.\kernforge.exe -provider openai-codex -model gpt-5.5`
 
 ## Memory
 
@@ -900,6 +939,7 @@ Explain the structure of this repository
 /context
 /provider status
 /model
+/effort
 /status
 /version
 /help
@@ -915,6 +955,7 @@ Explain the structure of this repository
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter performs a live lookup, while OpenAI and Anthropic expose officially documented limits and billing guidance.
 - `/model` is the unified model-routing hub. It shows the main model, the plan-review reviewer, the analysis worker and reviewer, and any specialist-subagent overrides, then lets you pick one target to reconfigure.
+- `/effort` shows or sets the `openai-codex` reasoning effort independently from `/model`.
 
 ### Conversation And Session Commands
 
@@ -935,6 +976,7 @@ Explain the structure of this repository
 /provider
 /provider status
 /model
+/effort [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
 /profile-review [list|<number>|rN|dN|pN]
 /set-plan-review [provider]
@@ -955,6 +997,7 @@ Explain the structure of this repository
 
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
 - `/model` is the main entry point for changing the main model, plan-review reviewer, analysis worker/reviewer, and specialist subagent models.
+- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints the current value, and `/effort undefined` clears the override.
 - Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role.
 - `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main and review profiles instead of dropping them when a save payload omits profile arrays.
@@ -976,7 +1019,7 @@ Explain the structure of this repository
 
 - Slash commands
 - Command and subcommand descriptions in completion menus
-- `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`
+- `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`
 - `/analyze-project --path ...`, `/analyze-project --mode ...`, and built-in mode values
 - `/fuzz-campaign status|run|new|list|show`
 - `@file` mentions

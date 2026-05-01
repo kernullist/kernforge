@@ -20,6 +20,14 @@ const (
 
 type codexCLICommandRunner func(ctx context.Context, executable string, args []string, dir string, env []string) ([]byte, error)
 
+type CodexCLIModelInfo struct {
+	ID             string
+	Name           string
+	SupportedInAPI bool
+	Visibility     string
+	Priority       int
+}
+
 type CodexCLIClient struct {
 	executable string
 	extraArgs  []string
@@ -119,6 +127,93 @@ func runCodexCLICommand(ctx context.Context, executable string, args []string, d
 		cmd.Env = env
 	}
 	return cmd.CombinedOutput()
+}
+
+func FetchCodexCLIModels(ctx context.Context, executable string, dir string) ([]CodexCLIModelInfo, error) {
+	executable = strings.TrimSpace(executable)
+	if executable == "" {
+		executable = codexCLIDefaultExecutable
+	}
+	env := append(os.Environ(), "NO_COLOR=1", "TERM=dumb", "CI=1")
+	data, err := runCodexCLICommand(ctx, executable, []string{"debug", "models"}, dir, env)
+	text := sanitizeCodexCLIOutput(string(data))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, fmt.Errorf("codex CLI executable not found: %s", executable)
+		}
+		if text != "" {
+			return nil, fmt.Errorf("codex CLI model discovery failed: %w\n%s", err, text)
+		}
+		return nil, fmt.Errorf("codex CLI model discovery failed: %w", err)
+	}
+	return parseCodexCLIModelsJSON([]byte(text))
+}
+
+func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
+	text := sanitizeCodexCLIOutput(string(data))
+	if text == "" {
+		return nil, fmt.Errorf("empty Codex CLI model list")
+	}
+	payload := text
+	if !looksLikeStandaloneJSONOutput(payload) {
+		if candidate := lastValidJSONObject(payload); candidate != "" {
+			payload = candidate
+		}
+	}
+	var decoded struct {
+		Models []struct {
+			Slug           string `json:"slug"`
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			DisplayName    string `json:"display_name"`
+			SupportedInAPI *bool  `json:"supported_in_api"`
+			Visibility     string `json:"visibility"`
+			Priority       int    `json:"priority"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return nil, fmt.Errorf("parse Codex CLI model list: %w", err)
+	}
+	models := make([]CodexCLIModelInfo, 0, len(decoded.Models))
+	seen := make(map[string]bool)
+	for _, item := range decoded.Models {
+		id := strings.TrimSpace(item.Slug)
+		if id == "" {
+			id = strings.TrimSpace(item.ID)
+		}
+		if id == "" {
+			id = strings.TrimSpace(item.Name)
+		}
+		if id == "" || seen[strings.ToLower(id)] {
+			continue
+		}
+		if item.SupportedInAPI != nil && !*item.SupportedInAPI {
+			continue
+		}
+		visibility := strings.ToLower(strings.TrimSpace(item.Visibility))
+		if visibility == "hide" || visibility == "hidden" {
+			continue
+		}
+		name := strings.TrimSpace(item.DisplayName)
+		if name == "" {
+			name = strings.TrimSpace(item.Name)
+		}
+		if name == "" {
+			name = id
+		}
+		models = append(models, CodexCLIModelInfo{
+			ID:             id,
+			Name:           name,
+			SupportedInAPI: item.SupportedInAPI == nil || *item.SupportedInAPI,
+			Visibility:     strings.TrimSpace(item.Visibility),
+			Priority:       item.Priority,
+		})
+		seen[strings.ToLower(id)] = true
+	}
+	return models, nil
 }
 
 func buildCodexCLIArgs(model string, extraArgs []string, prompt string) []string {

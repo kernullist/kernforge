@@ -51,6 +51,57 @@ func TestKernforgeMCPServerAcceptsJSONLineFrames(t *testing.T) {
 	}
 }
 
+func TestMCPConfigProviderOverrideResetsProviderSpecificBaseURL(t *testing.T) {
+	cases := []struct {
+		name          string
+		startProvider string
+		startBaseURL  string
+		override      mcpServerConfigOverrides
+		want          string
+	}{
+		{
+			name:     "openai-codex",
+			override: mcpServerConfigOverrides{Provider: "openai-codex"},
+			want:     openAICodexDefaultBaseURL,
+		},
+		{
+			name:     "lmstudio",
+			override: mcpServerConfigOverrides{Provider: "lmstudio"},
+			want:     "http://localhost:1234/v1",
+		},
+		{
+			name:     "vllm explicit",
+			override: mcpServerConfigOverrides{Provider: "vllm", BaseURL: "http://127.0.0.1:9000/v1"},
+			want:     "http://127.0.0.1:9000/v1",
+		},
+		{
+			name:          "same provider preserves custom URL",
+			startProvider: "lmstudio",
+			startBaseURL:  "http://192.0.2.10:1234/v1",
+			override:      mcpServerConfigOverrides{Provider: "lmstudio"},
+			want:          "http://192.0.2.10:1234/v1",
+		},
+		{
+			name:     "codex-cli",
+			override: mcpServerConfigOverrides{Provider: "codex-cli"},
+			want:     "",
+		},
+	}
+
+	for _, tc := range cases {
+		startProvider := firstNonBlankString(tc.startProvider, "openai")
+		startBaseURL := firstNonBlankString(tc.startBaseURL, "https://api.openai.com/v1")
+		cfg := Config{
+			Provider: startProvider,
+			BaseURL:  startBaseURL,
+		}
+		tc.override.apply(&cfg)
+		if got := cfg.BaseURL; got != tc.want {
+			t.Fatalf("%s: BaseURL = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestKernforgeMCPServerUsesInitializeRootURI(t *testing.T) {
 	fallbackRoot := t.TempDir()
 	clientRoot := t.TempDir()
