@@ -51,12 +51,14 @@
 4. `trace`, `impact`, `security` retrieval은 keyword hit만 고르는 방식에서 graph neighborhood/path expansion 기반으로 강화되어 `build_context_v2`, `path_v2` 근거를 남긴다.
 5. incremental reuse는 file hash만이 아니라 symbol neighborhood를 반영한 semantic fingerprint 경로를 사용한다.
 6. C++ parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function 같은 modern C++ 패턴을 처리한다.
+7. 단일 provider/model 환경에서는 worker/reviewer가 같은 route를 공유할 때 기본 shard concurrency를 1로 낮추고, 전역 provider/model route scheduler가 provider/model/base_url/reasoning_effort 단위로 실제 모델 호출을 조율한다.
+8. `/analyze-project`는 docs를 기본 생성하며, 예전 `--docs` 플래그는 하위 호환용 hidden parser input으로만 유지한다. 문서 재생성은 `/docs-refresh`가 담당한다.
 
 아직 남아 있는 대표 항목은 다음과 같다.
 
-1. 독립적인 `surface` 모드 정식 노출
-2. build condition과 generated code를 더 정밀하게 반영하는 parser/ingestion 계층
-3. symbol-level invalidation의 세분화와 UE generated artifact 연계 강화
+1. build condition과 generated code를 더 정밀하게 반영하는 parser/ingestion 계층
+2. symbol-level invalidation의 세분화와 UE generated artifact 연계 강화
+3. 여러 Kernforge 프로세스가 같은 local provider를 동시에 쓰는 경우까지 포괄하는 cross-process route lease
 
 ## 2. 기존 방법론 검토
 

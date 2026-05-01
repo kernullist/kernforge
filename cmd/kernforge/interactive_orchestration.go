@@ -80,7 +80,7 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 		return nil
 	}
 	memoryContext := strings.TrimSpace(a.Memory.Combined())
-	result, err := RunPlanReview(
+	result, err := RunPlanReviewWithPolicy(
 		ctx,
 		a.Client,
 		a.Session.Model,
@@ -92,6 +92,7 @@ func (a *Agent) maybePrimeInteractivePlan(ctx context.Context, readOnlyAnalysis 
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
 		nil,
+		modelRequestPolicyFromConfig(a.Config),
 	)
 	if err != nil {
 		state.SetReviewerGuidance("planner_error", "Planner/reviewer preflight was unavailable: "+err.Error())
@@ -210,7 +211,7 @@ func (a *Agent) requestReviewerGuidance(ctx context.Context, reason string, rece
 	if client == nil || strings.TrimSpace(model) == "" || a.Session == nil || a.Session.TaskState == nil {
 		return ""
 	}
-	resp, err := client.Complete(ctx, ChatRequest{
+	resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
 		System: strings.Join([]string{
 			"You are a recovery reviewer for a coding agent.",
@@ -279,7 +280,7 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
 		return ""
 	}
-	result, err := RunPlanReview(
+	result, err := RunPlanReviewWithPolicy(
 		ctx,
 		a.Client,
 		a.Session.Model,
@@ -291,6 +292,7 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 		max(768, a.Config.MaxTokens/2),
 		a.Config.Temperature,
 		nil,
+		modelRequestPolicyFromConfig(a.Config),
 	)
 	if err != nil {
 		return ""
@@ -415,10 +417,15 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		specialist string
 		reason     string
 	}
+	type microWorkerPlan struct {
+		node       TaskNode
+		assignment SpecialistAssignment
+		client     ProviderClient
+		model      string
+	}
 	workerCount := min(3, len(candidates))
-	results := make(chan microWorkerResult, workerCount)
-	var wg sync.WaitGroup
-	updated := false
+	plans := make([]microWorkerPlan, 0, workerCount)
+	routes := make([]string, 0, workerCount)
 	for _, node := range candidates[:workerCount] {
 		node := node
 		status := strings.TrimSpace(strings.ToLower(node.Status))
@@ -433,37 +440,63 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		if client == nil || strings.TrimSpace(model) == "" {
 			continue
 		}
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp, err := client.Complete(ctx, ChatRequest{
-				Model:  model,
-				System: buildSpecialistMicroWorkerSystemPrompt(assignment.Profile),
-				Messages: []Message{{
-					Role: "user",
-					Text: buildSpecialistMicroWorkerPrompt(assignment.Profile, a.Session.TaskState, node, trigger, assignment.Reason),
-				}},
-				MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
-				Temperature: 0.1,
-				WorkingDir:  a.Session.WorkingDir,
-			})
-			if err != nil {
-				return
-			}
-			brief := compactPromptSection(strings.TrimSpace(resp.Message.Text), 220)
-			if brief == "" {
-				return
-			}
-			results <- microWorkerResult{
-				nodeID:     node.ID,
-				brief:      brief,
-				specialist: assignment.Profile.Name,
-				reason:     assignment.Reason,
-			}
-		}()
+		routeKey := a.specialistRouteKey(assignment.Profile)
+		plans = append(plans, microWorkerPlan{
+			node:       node,
+			assignment: assignment,
+			client:     client,
+			model:      model,
+		})
+		routes = append(routes, routeKey)
 	}
-	wg.Wait()
+	if len(plans) == 0 {
+		return nil
+	}
+	results := make(chan microWorkerResult, len(plans))
+	runPlan := func(plan microWorkerPlan) {
+		resp, err := a.completeModelTurnWithClient(ctx, plan.client, ChatRequest{
+			Model:  plan.model,
+			System: buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
+			Messages: []Message{{
+				Role: "user",
+				Text: buildSpecialistMicroWorkerPrompt(plan.assignment.Profile, a.Session.TaskState, plan.node, trigger, plan.assignment.Reason),
+			}},
+			MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
+			Temperature: 0.1,
+			WorkingDir:  a.Session.WorkingDir,
+		})
+		if err != nil {
+			return
+		}
+		brief := compactPromptSection(strings.TrimSpace(resp.Message.Text), 220)
+		if brief == "" {
+			return
+		}
+		results <- microWorkerResult{
+			nodeID:     plan.node.ID,
+			brief:      brief,
+			specialist: plan.assignment.Profile.Name,
+			reason:     plan.assignment.Reason,
+		}
+	}
+	if duplicateSpecialistRouteKeys(routes) {
+		for _, plan := range plans {
+			runPlan(plan)
+		}
+	} else {
+		var wg sync.WaitGroup
+		for _, plan := range plans {
+			plan := plan
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				runPlan(plan)
+			}()
+		}
+		wg.Wait()
+	}
 	close(results)
+	updated := false
 	for result := range results {
 		if strings.TrimSpace(result.nodeID) == "" || strings.TrimSpace(result.brief) == "" {
 			continue
@@ -647,7 +680,7 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 	if client == nil || strings.TrimSpace(model) == "" || a.Session == nil || a.Session.TaskState == nil {
 		return true, ""
 	}
-	resp, err := client.Complete(ctx, ChatRequest{
+	resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
 		Model: model,
 		System: strings.Join([]string{
 			"You review a coding agent's proposed final answer before it is shown to the user.",

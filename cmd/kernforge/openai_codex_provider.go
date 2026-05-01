@@ -71,6 +71,17 @@ func (c *OpenAICodexClient) Name() string {
 	return "openai-codex"
 }
 
+func (c *OpenAICodexClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "openai-codex"}
+	}
+	return ModelRouteMetadata{
+		Provider:        "openai-codex",
+		BaseURL:         c.baseURL,
+		ReasoningEffort: c.reasoningEffort,
+	}
+}
+
 func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	if c == nil {
 		return ChatResponse{}, fmt.Errorf("OpenAI Codex provider is not configured")

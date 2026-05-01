@@ -212,9 +212,10 @@ Purpose:
 5. Preserve a structural index, Unreal semantic graph, and vector corpus for downstream automation.
 6. Preserve deterministic architecture facts so cached deep-structure answers can be checked against source-derived invariants.
 7. End the run with a highlighted `Analysis artifacts:` block and an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
+8. In single-provider/model or local-provider setups, serialize shared worker/reviewer model routes through the global scheduler to reduce provider saturation and low-confidence placeholder cascades.
 
 Useful commands:
-- `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
 - `/docs-refresh`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
@@ -223,6 +224,8 @@ The goal is optional. If omitted, Kernforge infers a practical goal from the sel
 Follow-up modes automatically load a previous `map` run as baseline structure when available. This lets `trace`, `impact`, `surface`, `security`, and `performance` start from the architecture map without sharing the same shard cache.
 Before confirmation, the analysis plan prints the selected `baseline_map` so the user can see which map run will be reused.
 Large runs are provider-failure tolerant: worker/reviewer rate limits are recorded as low-confidence shard failures, and synthesis falls back to a local document when the final model request fails.
+When worker and reviewer use the same provider/model/base_url/reasoning_effort route, shard execution is serialized by default. If you need higher throughput, split worker and reviewer onto different routes or set agent caps explicitly.
+`/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
 
 Role split:
 1. `README.md` is the quick product-scope, flagship-command, and artifact-location document.

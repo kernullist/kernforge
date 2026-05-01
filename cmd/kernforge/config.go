@@ -70,6 +70,7 @@ type Config struct {
 	MaxRequestRetries      int                       `json:"max_request_retries,omitempty"`
 	RequestRetryDelayMs    int                       `json:"request_retry_delay_ms,omitempty"`
 	RequestTimeoutSecs     int                       `json:"request_timeout_seconds,omitempty"`
+	ModelRoutes            ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
 	ShellTimeoutSecs       int                       `json:"shell_timeout_seconds,omitempty"`
 	ReadHintSpans          int                       `json:"read_hint_spans,omitempty"`
 	ReadCacheEntries       int                       `json:"read_cache_entries,omitempty"`
@@ -288,6 +289,35 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if src.RequestTimeoutSecs != 0 {
 		dst.RequestTimeoutSecs = src.RequestTimeoutSecs
+	}
+	if src.ModelRoutes.Enabled != nil {
+		value := *src.ModelRoutes.Enabled
+		dst.ModelRoutes.Enabled = &value
+	}
+	if src.ModelRoutes.DefaultMaxConcurrent != 0 {
+		dst.ModelRoutes.DefaultMaxConcurrent = src.ModelRoutes.DefaultMaxConcurrent
+	}
+	if len(src.ModelRoutes.ProviderLimits) > 0 {
+		if dst.ModelRoutes.ProviderLimits == nil {
+			dst.ModelRoutes.ProviderLimits = map[string]int{}
+		}
+		for provider, limit := range src.ModelRoutes.ProviderLimits {
+			provider = normalizeProviderName(provider)
+			if provider != "" && limit > 0 {
+				dst.ModelRoutes.ProviderLimits[provider] = limit
+			}
+		}
+	}
+	if len(src.ModelRoutes.RouteLimits) > 0 {
+		if dst.ModelRoutes.RouteLimits == nil {
+			dst.ModelRoutes.RouteLimits = map[string]int{}
+		}
+		for route, limit := range src.ModelRoutes.RouteLimits {
+			route = strings.TrimSpace(route)
+			if route != "" && limit > 0 {
+				dst.ModelRoutes.RouteLimits[route] = limit
+			}
+		}
 	}
 	if src.ShellTimeoutSecs != 0 {
 		dst.ShellTimeoutSecs = src.ShellTimeoutSecs
@@ -652,6 +682,28 @@ func normalizeConfigPaths(cfg *Config) {
 		if strings.TrimSpace(cfg.ProviderKeys[cfg.Provider]) == "" {
 			cfg.ProviderKeys[cfg.Provider] = cfg.APIKey
 		}
+	}
+	if len(cfg.ModelRoutes.ProviderLimits) > 0 {
+		cleaned := make(map[string]int, len(cfg.ModelRoutes.ProviderLimits))
+		for provider, limit := range cfg.ModelRoutes.ProviderLimits {
+			provider = normalizeProviderName(provider)
+			if provider == "" || limit <= 0 {
+				continue
+			}
+			cleaned[provider] = limit
+		}
+		cfg.ModelRoutes.ProviderLimits = cleaned
+	}
+	if len(cfg.ModelRoutes.RouteLimits) > 0 {
+		cleaned := make(map[string]int, len(cfg.ModelRoutes.RouteLimits))
+		for route, limit := range cfg.ModelRoutes.RouteLimits {
+			route = strings.TrimSpace(route)
+			if route == "" || limit <= 0 {
+				continue
+			}
+			cleaned[route] = limit
+		}
+		cfg.ModelRoutes.RouteLimits = cleaned
 	}
 	for i, profile := range cfg.Profiles {
 		cfg.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
@@ -1395,6 +1447,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
 		RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
 		RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
+		ModelRoutes         ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
 		ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
 		ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
 		ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
@@ -1415,17 +1468,29 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		MaxRequestRetries:   2,
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
-		ShellTimeoutSecs:    300,
-		ReadHintSpans:       defaultReadHintSpans,
-		ReadCacheEntries:    defaultReadCacheEntries,
-		MSBuildPath:         "",
-		CMakePath:           "",
-		CTestPath:           "",
-		NinjaPath:           "",
-		HooksEnabled:        boolPtr(true),
-		HookPresets:         []string{},
-		SkillPaths:          []string{"./.kernforge/skills"},
-		EnabledSkills:       []string{},
+		ModelRoutes: ModelRouteSchedulerConfig{
+			Enabled:              boolPtr(true),
+			DefaultMaxConcurrent: 4,
+			ProviderLimits: map[string]int{
+				"codex-cli":   1,
+				"lmstudio":    1,
+				"ollama":      1,
+				"opencode":    1,
+				"opencode-go": 1,
+				"vllm":        1,
+			},
+		},
+		ShellTimeoutSecs: 300,
+		ReadHintSpans:    defaultReadHintSpans,
+		ReadCacheEntries: defaultReadCacheEntries,
+		MSBuildPath:      "",
+		CMakePath:        "",
+		CTestPath:        "",
+		NinjaPath:        "",
+		HooksEnabled:     boolPtr(true),
+		HookPresets:      []string{},
+		SkillPaths:       []string{"./.kernforge/skills"},
+		EnabledSkills:    []string{},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled:  boolPtr(true),
 			Profiles: []SpecialistSubagentProfile{},
@@ -1796,7 +1861,7 @@ Conversation And Sessions:
 Provider And Models:
 /do-plan-review <task> Generate and iteratively review an implementation plan, then execute
 /new-feature <task>    Create tracked feature artifacts and guide implement, verify, close, or cleanup follow-up
-/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
 /docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
 /analyze-dashboard [latest|path] Open the latest or selected project analysis document portal
 /analyze-performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
@@ -2125,7 +2190,7 @@ Provider and model commands control which model is active and how planning/revie
 - Mark the active or selected tracked feature as done.
 - Closing suggests /worktree cleanup when an isolated worktree is attached, plus /checkpoint feature-done.
 
-/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
+/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 - Analyze the workspace using a conductor and multiple sub-agents, then write project analysis artifacts.
 - The goal is optional: when omitted, Kernforge infers a mode-specific goal from --mode and --path.
 - Non-map modes automatically reuse the most relevant previous map run as baseline architecture context when available.
@@ -2133,7 +2198,6 @@ Provider and model commands control which model is active and how planning/revie
 - Generated docs include architecture, security surface, trust/data-flow graph sections with section-level stale markers, fuzz targets, verification matrix, and operations runbook.
 - Generated docs are recorded as evidence and persistent memory so verification planning and fuzz target discovery can reuse them.
 - After analysis, Kernforge prints an Analysis handoff with the next dashboard, fuzz campaign, target drilldown, or verification command when the generated docs support it.
-- --docs is accepted as an explicit documentation request; docs are generated by default.
 - --path limits shard execution to a matching workspace directory or file prefix. Natural-language prompts such as "src/driver only" still auto-detect scope; if the prompt looks scoped but no directory matches, Kernforge shows that before confirmation.
 - Modes:
   - map: default architecture map for subsystems, ownership, module boundaries, entry points, docs, dashboard, and reusable knowledge base.

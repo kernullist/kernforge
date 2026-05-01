@@ -555,7 +555,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Generating feature specification..."))
 	specPrompt := rt.appendSimulationPlanningContext(buildNewFeatureSpecPrompt(feature.Request, analysisContext), feature.Request)
-	specResp, err := rt.agent.Client.Complete(requestCtx, ChatRequest{
+	specResp, err := rt.agent.completeModelTurn(requestCtx, ChatRequest{
 		Model:       rt.session.Model,
 		System:      newFeatureSystemPromptSpecifier(rt.session.WorkingDir, memoryContext),
 		Messages:    []Message{{Role: "user", Text: specPrompt}},
@@ -589,7 +589,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 		if reviewErr != nil {
 			return fmt.Errorf("failed to create reviewer client: %w", reviewErr)
 		}
-		result, runErr := RunPlanReview(
+		result, runErr := RunPlanReviewWithPolicy(
 			requestCtx,
 			rt.agent.Client,
 			rt.session.Model,
@@ -603,6 +603,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 			func(status string) {
 				fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 			},
+			modelRequestPolicyFromConfig(rt.cfg),
 		)
 		if runErr != nil {
 			if requestCtx.Err() == context.Canceled {
@@ -624,7 +625,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 		planRounds = result.Rounds
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("Generating implementation plan with the active model..."))
-		planResp, planErr := rt.agent.Client.Complete(requestCtx, ChatRequest{
+		planResp, planErr := rt.agent.completeModelTurn(requestCtx, ChatRequest{
 			Model:       rt.session.Model,
 			System:      planReviewSystemPromptPlanner(rt.session.WorkingDir, memoryContext),
 			Messages:    []Message{{Role: "user", Text: planPrompt}},

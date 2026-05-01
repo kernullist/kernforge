@@ -57,6 +57,21 @@ func (c *CodexCLIClient) Name() string {
 	return "codex-cli"
 }
 
+func (c *CodexCLIClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "codex-cli"}
+	}
+	executable := strings.TrimSpace(c.executable)
+	if executable == "" {
+		executable = codexCLIDefaultExecutable
+	}
+	endpoint := executable
+	if len(c.extraArgs) > 0 {
+		endpoint += " " + strings.Join(c.extraArgs, " ")
+	}
+	return ModelRouteMetadata{Provider: "codex-cli", BaseURL: endpoint}
+}
+
 func (c *CodexCLIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	if c == nil {
 		return ChatResponse{}, fmt.Errorf("codex CLI client is not configured")

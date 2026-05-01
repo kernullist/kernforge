@@ -37,11 +37,7 @@ func (rt *runtimeState) handleFindRootCauseCommand(args string) error {
 
 	analysisWorkspace := rt.workspace
 	analysisCfg := configProjectAnalysis(rt.cfg, rt.workspace.BaseRoot)
-	analysisCfg.MinAgents = 1
-	analysisCfg.MaxAgents = 8
-	analysisCfg.MaxTotalShards = 8
-	analysisCfg.MaxRefinementShards = 8
-	analysisCfg.MaxRevisionRounds = analysisMaxInt(analysisCfg.MaxRevisionRounds, 2)
+	analysisCfg = rootCauseProjectAnalysisConfig(analysisCfg)
 	analysisCfg, err := rt.prepareAnalysisDirectorySelection(analysisWorkspace.Root, analysisCfg)
 	if err != nil {
 		return err
@@ -82,6 +78,7 @@ func (rt *runtimeState) handleFindRootCauseCommand(args string) error {
 	}
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
+	estimatedConcurrency = analyzer.effectiveShardConcurrency(estimatedConcurrency, estimatedTotalShards, "root-cause")
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_files", fmt.Sprintf("%d", previewSnapshot.TotalFiles)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_lines", fmt.Sprintf("%d", previewSnapshot.TotalLines)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_workers", fmt.Sprintf("%d", estimatedConcurrency)))
@@ -391,7 +388,7 @@ func (rt *runtimeState) refineRootCausePromptClarityWithModel(ctx context.Contex
 	if rt == nil || rt.agent == nil || rt.agent.Client == nil {
 		return fallback, false
 	}
-	resp, err := rt.agent.Client.Complete(ctx, ChatRequest{
+	resp, err := rt.agent.completeModelTurn(ctx, ChatRequest{
 		Model:       rt.session.Model,
 		System:      rootCausePromptClaritySystemPrompt(),
 		Messages:    []Message{{Role: "user", Text: buildRootCausePromptClarityPrompt(problem, fallback)}},

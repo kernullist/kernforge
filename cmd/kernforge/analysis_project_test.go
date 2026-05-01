@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -187,6 +188,66 @@ func (c *failingAnalysisClient) Complete(ctx context.Context, req ChatRequest) (
 	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
 }
 
+type singleRouteAnalysisClient struct {
+	mu                 sync.Mutex
+	active             int
+	maxActive          int
+	concurrentFailures int
+}
+
+func (c *singleRouteAnalysisClient) Name() string {
+	return "single-route"
+}
+
+func (c *singleRouteAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.mu.Lock()
+	c.active++
+	if c.active > c.maxActive {
+		c.maxActive = c.active
+	}
+	overlapped := c.active > 1
+	if overlapped {
+		c.concurrentFailures++
+	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.active--
+		c.mu.Unlock()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ChatResponse{}, ctx.Err()
+	case <-time.After(10 * time.Millisecond):
+	}
+	if overlapped {
+		return ChatResponse{}, fmt.Errorf("single provider/model route received concurrent analysis request")
+	}
+	if strings.Contains(req.System, "project analysis sub-agent") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"report":{"title":"core","scope_summary":"summary","responsibilities":["boot"],"facts":["file participates in runtime"],"inferences":["runtime is analyzable"],"entry_points":["main.go"],"internal_flow":["main starts"],"dependencies":[],"collaboration":[],"risks":[],"unknowns":[],"evidence_files":["main.go"],"narrative":"ok"}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "conductor reviewing a sub-agent report") {
+		return ChatResponse{
+			Message: Message{
+				Text: `{"decision":{"status":"approved","issues":[],"revision_prompt":""}}`,
+			},
+		}, nil
+	}
+	if strings.Contains(req.System, "writing the final Markdown document") {
+		return ChatResponse{
+			Message: Message{
+				Text: "# Analysis\n\nbody\n",
+			},
+		}, nil
+	}
+	return ChatResponse{}, fmt.Errorf("unexpected system prompt")
+}
+
 type flakyAnalysisClient struct {
 	failuresRemaining int
 	calls             int
@@ -244,7 +305,7 @@ func TestProjectAnalyzerRunCreatesArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if run.Summary.AgentCount < 2 || run.Summary.AgentCount > 16 {
+	if run.Summary.AgentCount < 1 || run.Summary.AgentCount > 16 {
 		t.Fatalf("unexpected agent count: %d", run.Summary.AgentCount)
 	}
 	if run.Summary.TotalShards == 0 {
@@ -456,6 +517,134 @@ func TestExecuteShardSoftFailsWorkerProviderErrorWithShardAndModel(t *testing.T)
 	}
 	if !strings.Contains(report.ScopeSummary, "low-confidence placeholder") {
 		t.Fatalf("expected low-confidence placeholder report, got %#v", report)
+	}
+}
+
+func TestProjectAnalyzerSerializesDefaultSingleModelRoute(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 6; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir pkg%d: %v", i, err)
+		}
+		body := fmt.Sprintf("package pkg%d\n\nfunc Run%d() int {\n\treturn %d\n}\n", i, i, i)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.go", i)), []byte(body), 0o644); err != nil {
+			t.Fatalf("write file%d.go: %v", i, err)
+		}
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai"
+	cfg.Model = "one-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &singleRouteAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project", "map")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.TotalShards < 2 {
+		t.Fatalf("expected multiple shards for concurrency guard, got %d", run.Summary.TotalShards)
+	}
+	if run.Summary.AgentCount != 1 {
+		t.Fatalf("expected default single model route to serialize, got agent count %d", run.Summary.AgentCount)
+	}
+	if client.concurrentFailures != 0 || client.maxActive != 1 {
+		t.Fatalf("expected no overlapping provider calls, failures=%d max_active=%d", client.concurrentFailures, client.maxActive)
+	}
+	if run.Summary.ReviewProviderFailures != 0 {
+		t.Fatalf("expected no provider failures after serialization, got %d", run.Summary.ReviewProviderFailures)
+	}
+}
+
+func TestProjectAnalyzerSerializesDefaultSingleModelRouteForRootCause(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 6; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir pkg%d: %v", i, err)
+		}
+		body := fmt.Sprintf("package pkg%d\n\nfunc Check%d(value int) bool {\n\treturn value == %d\n}\n", i, i, i)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.go", i)), []byte(body), 0o644); err != nil {
+			t.Fatalf("write file%d.go: %v", i, err)
+		}
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai"
+	cfg.Model = "one-model"
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &singleRouteAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), buildRootCauseGoal("Check fails for value 7"), "root-cause")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.TotalShards < 2 {
+		t.Fatalf("expected multiple root-cause shards for concurrency guard, got %d", run.Summary.TotalShards)
+	}
+	if run.Summary.AgentCount != 1 {
+		t.Fatalf("expected default single model root-cause route to serialize, got agent count %d", run.Summary.AgentCount)
+	}
+	if client.concurrentFailures != 0 || client.maxActive != 1 {
+		t.Fatalf("expected no overlapping provider calls, failures=%d max_active=%d", client.concurrentFailures, client.maxActive)
+	}
+}
+
+func TestConfigProjectAnalysisAllowsSingleAgentCap(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.MaxAgents = 1
+
+	analysisCfg := configProjectAnalysis(cfg, root)
+	if analysisCfg.MinAgents != 1 || analysisCfg.MaxAgents != 1 {
+		t.Fatalf("expected max_agents=1 to be respected, got min=%d max=%d", analysisCfg.MinAgents, analysisCfg.MaxAgents)
+	}
+}
+
+func TestRootCauseProjectAnalysisConfigPreservesExplicitSingleAgentCap(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.MaxAgents = 1
+
+	analysisCfg := rootCauseProjectAnalysisConfig(configProjectAnalysis(cfg, root))
+	if analysisCfg.MinAgents != 1 || analysisCfg.MaxAgents != 1 {
+		t.Fatalf("expected root-cause limits to preserve explicit max_agents=1, got min=%d max=%d", analysisCfg.MinAgents, analysisCfg.MaxAgents)
+	}
+	if analysisCfg.MaxTotalShards != 8 || analysisCfg.MaxRefinementShards != 8 {
+		t.Fatalf("expected root-cause shard caps to stay at 8, got total=%d refine=%d", analysisCfg.MaxTotalShards, analysisCfg.MaxRefinementShards)
+	}
+}
+
+func TestCompleteAnalysisRequestWithRetryUsesRequestTimeout(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestTimeoutSecs = 1
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	client := &blockingProviderClient{started: make(chan struct{})}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	analyzer.analysisCfg.MaxProviderRetries = 0
+
+	start := time.Now()
+	_, err := analyzer.completeAnalysisRequestWithRetry(context.Background(), client, "worker", "shard-01", "model", ChatRequest{
+		Model: "model",
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected request timeout, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("expected timeout wrapper to return promptly, elapsed=%s", elapsed)
 	}
 }
 

@@ -952,7 +952,7 @@ func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
 func TestHelpTextIncludesAnalyzeProjectDocsCommands(t *testing.T) {
 	help := HelpText()
 	for _, needle := range []string{
-		"/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
+		"/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
 		"infer a mode-specific goal when omitted",
 		"/docs-refresh",
 		"/analyze-dashboard [latest|path]",
@@ -960,6 +960,9 @@ func TestHelpTextIncludesAnalyzeProjectDocsCommands(t *testing.T) {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to include %q", needle)
 		}
+	}
+	if strings.Contains(help, "/analyze-project [--docs]") {
+		t.Fatalf("expected analyze-project help to hide deprecated --docs flag")
 	}
 }
 
@@ -1012,7 +1015,7 @@ func TestHelpDetailIncludesAnalyzeProjectDocsWorkflow(t *testing.T) {
 		t.Fatalf("expected analyze-project help detail to resolve")
 	}
 	for _, needle := range []string{
-		"/analyze-project [--docs] [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
+		"/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance]",
 		"The goal is optional",
 		"Non-map modes automatically reuse the most relevant previous map run",
 		"--path limits shard execution",
@@ -1031,6 +1034,9 @@ func TestHelpDetailIncludesAnalyzeProjectDocsWorkflow(t *testing.T) {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected analyze-project detail to include %q", needle)
 		}
+	}
+	if strings.Contains(detail, "--docs") {
+		t.Fatalf("expected analyze-project detail to hide deprecated --docs flag")
 	}
 }
 

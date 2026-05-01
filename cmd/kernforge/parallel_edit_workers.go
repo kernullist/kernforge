@@ -126,16 +126,26 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 	}
 
 	results := make(chan parallelEditableWorkerResult, len(plans))
-	var wg sync.WaitGroup
+	routes := make([]string, 0, len(plans))
 	for _, plan := range plans {
-		plan := plan
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			results <- a.runParallelEditableWorker(ctx, plan)
-		}()
+		routes = append(routes, a.specialistRouteKey(plan.Assignment.Profile))
 	}
-	wg.Wait()
+	if duplicateSpecialistRouteKeys(routes) {
+		for _, plan := range plans {
+			results <- a.runParallelEditableWorker(ctx, plan)
+		}
+	} else {
+		var wg sync.WaitGroup
+		for _, plan := range plans {
+			plan := plan
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results <- a.runParallelEditableWorker(ctx, plan)
+			}()
+		}
+		wg.Wait()
+	}
 	close(results)
 
 	for item := range results {
@@ -794,7 +804,7 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, configRequestTimeout(a.Config))
-		resp, err := completeModelTurnOnceWithClient(attemptCtx, client, req)
+		resp, err := completeModelTurnOnceWithModelRoutes(attemptCtx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, client, req)
 		cancel()
 		if err == nil {
 			return resp, nil
@@ -820,6 +830,18 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 }
 
 func completeModelTurnOnceWithClient(ctx context.Context, client ProviderClient, req ChatRequest) (ChatResponse, error) {
+	return completeModelTurnOnceWithModelRoutes(ctx, defaultModelRouteScheduler(), modelRoutePolicyFromConfig(Config{}), Config{}, client, req)
+}
+
+func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
+	if client == nil {
+		return ChatResponse{}, fmt.Errorf("no model provider is configured")
+	}
+	release, _, err := acquireModelRoute(ctx, scheduler, policy, cfg, client, req)
+	if err != nil {
+		return ChatResponse{}, err
+	}
+
 	type result struct {
 		resp ChatResponse
 		err  error
@@ -827,6 +849,7 @@ func completeModelTurnOnceWithClient(ctx context.Context, client ProviderClient,
 
 	done := make(chan result, 1)
 	go func() {
+		defer release()
 		resp, err := client.Complete(ctx, req)
 		done <- result{resp: resp, err: err}
 	}()

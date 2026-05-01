@@ -292,6 +292,13 @@ func (c *AnthropicClient) Name() string {
 	return "anthropic"
 }
 
+func (c *AnthropicClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "anthropic"}
+	}
+	return ModelRouteMetadata{Provider: "anthropic", BaseURL: c.baseURL}
+}
+
 func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	type anthropicTool struct {
 		Name        string         `json:"name"`
@@ -505,6 +512,13 @@ func (c *OpenAIClient) Name() string {
 		return strings.TrimSpace(c.name)
 	}
 	return "openai"
+}
+
+func (c *OpenAIClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "openai"}
+	}
+	return ModelRouteMetadata{Provider: c.Name(), BaseURL: c.baseURL}
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
@@ -1151,6 +1165,13 @@ func NewOllamaClient(baseURL, apiKey string) *OllamaClient {
 
 func (c *OllamaClient) Name() string {
 	return "ollama"
+}
+
+func (c *OllamaClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "ollama"}
+	}
+	return ModelRouteMetadata{Provider: "ollama", BaseURL: c.baseURL}
 }
 
 func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {

@@ -53,6 +53,7 @@ type runtimeState struct {
 	autoCP                     *AutoCheckpointController
 	verifyHistory              *VerificationHistoryStore
 	backgroundJobs             *BackgroundJobManager
+	modelRoutes                *ModelRouteScheduler
 	hooks                      *HookRuntime
 	hookWarns                  []string
 	skills                     SkillCatalog
@@ -270,6 +271,7 @@ func run(args []string) error {
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
+		modelRoutes:    defaultModelRouteScheduler(),
 		interactive:    promptFlag == "",
 	}
 	defer rt.closeExtensions()
@@ -319,6 +321,7 @@ func run(args []string) error {
 	rt.agent = &Agent{
 		Config:        rt.cfg,
 		Client:        client,
+		ModelRoutes:   rt.modelRoutes,
 		Tools:         buildRegistry(rt.workspace, nil),
 		Workspace:     rt.workspace,
 		Session:       rt.session,
@@ -3389,6 +3392,7 @@ func (rt *runtimeState) syncClientFromConfig() {
 	if rt.agent != nil {
 		rt.agent.Config = rt.cfg
 		rt.agent.Client = client
+		rt.agent.ModelRoutes = rt.modelRoutes
 		rt.syncAgentReviewerClientFromConfig()
 	}
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
@@ -5447,6 +5451,14 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
 		)
 		fmt.Fprintln(rt.writer)
+		routePolicy := modelRoutePolicyFromConfig(rt.cfg)
+		rt.printKVGroup("Model Route Scheduler",
+			kv("enabled", fmt.Sprintf("%t", routePolicy.Enabled)),
+			kv("default_max_concurrent", fmt.Sprintf("%d", routePolicy.DefaultMaxConcurrent)),
+			kv("provider_limits", fmt.Sprintf("%d", len(routePolicy.ProviderLimits))),
+			kv("active_routes", fmt.Sprintf("%d", len(rt.modelRoutes.Snapshot()))),
+		)
+		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Runtime",
 			kv("shell", valueOrUnset(rt.cfg.Shell)),
 			kv("permission_mode", string(rt.perms.Mode())),
@@ -7246,7 +7258,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
 	defer stopEscapeWatcher()
 
-	result, err := RunPlanReview(
+	result, err := RunPlanReviewWithPolicy(
 		requestCtx,
 		rt.agent.Client,
 		rt.session.Model,
@@ -7260,6 +7272,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 		func(status string) {
 			fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 		},
+		modelRequestPolicyFromConfig(rt.cfg),
 	)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
@@ -7349,6 +7362,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		reviewerLabel = workerLabel
 	}
 	incrementalEnabled := analysisCfg.Incremental == nil || *analysisCfg.Incremental
+	effectiveMode := effectiveProjectAnalysisMode(mode, goal)
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", workerLabel))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", reviewerLabel))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
@@ -7387,7 +7401,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	} else if analysisGoalHasDirectoryHint(strings.ToLower(filepath.ToSlash(goal))) {
 		fmt.Fprintln(rt.writer, rt.ui.warnLine("No matching analysis scope was found from the prompt; the plan will cover the scanned workspace."))
 	}
-	effectiveMode := effectiveProjectAnalysisMode(mode, goal)
+	estimatedConcurrency = analyzer.effectiveShardConcurrency(estimatedConcurrency, len(plannedShards), effectiveMode)
 	if normalizeProjectAnalysisMode(effectiveMode) != "" && normalizeProjectAnalysisMode(effectiveMode) != "map" {
 		if baseline, ok := analyzer.loadBaselineMapForMode(effectiveMode, scope); ok {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("baseline_map", baseline.RunID))

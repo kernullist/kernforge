@@ -106,6 +106,7 @@ Its current differentiators are:
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL and one-shot `-prompt` mode
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
+- A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
 - Local file mentions, image mentions, and MCP resource mentions
@@ -131,6 +132,7 @@ Its current differentiators are:
 - Non-map modes such as `trace`, `impact`, `surface`, `security`, and `performance` automatically load the most relevant previous `map` run as a baseline architecture map when one exists
 - The analysis confirmation screen shows the selected `baseline_map` before asking whether to proceed
 - Provider rate-limit or transient worker/reviewer failures degrade the affected shard instead of aborting the whole analysis run; the final document marks those sections as low confidence
+- In single-model setups where the worker and reviewer share the same provider/model route, default shard concurrency is reduced to 1 to avoid retry storms and low-confidence placeholder cascades. Explicit agent caps still take precedence.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
@@ -615,6 +617,19 @@ Later sources override earlier ones:
   "permission_mode": "default",
   "shell": "powershell",
   "request_timeout_seconds": 1200,
+  "model_routes": {
+    "enabled": true,
+    "default_max_concurrent": 4,
+    "provider_limits": {
+      "ollama": 1,
+      "lmstudio": 1,
+      "vllm": 1,
+      "llama.cpp": 1,
+      "opencode": 1,
+      "opencode-go": 1,
+      "codex-cli": 1
+    }
+  },
   "max_tool_iterations": 16,
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
@@ -650,6 +665,7 @@ Later sources override earlier ones:
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
+| `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers and single-model routes are serialized by default to reduce rate-limit pressure, local server overload, and placeholder shard fallout. |
 | `max_tool_iterations` | Max tool loop count per request |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
@@ -998,12 +1014,14 @@ Explain the structure of this repository
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
 - `/model` is the main entry point for changing the main model, plan-review reviewer, analysis worker/reviewer, and specialist subagent models.
 - `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints the current value, and `/effort undefined` clears the override.
+- `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
 - Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role.
 - `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main and review profiles instead of dropping them when a save payload omits profile arrays.
 - `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
+- `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.
 
 ### Canceling And History
 

@@ -665,6 +665,53 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 	return client, cfg.Model
 }
 
+func (a *Agent) specialistRouteKey(profile SpecialistSubagentProfile) string {
+	if a == nil {
+		return ""
+	}
+	cfg := a.Config
+	provider := firstNonBlankString(profile.Provider, cfg.Provider)
+	if provider == "" && a.Session != nil {
+		provider = strings.TrimSpace(a.Session.Provider)
+	}
+	model := firstNonBlankString(profile.Model, cfg.Model)
+	if model == "" && a.Session != nil {
+		model = strings.TrimSpace(a.Session.Model)
+	}
+	if model == "" && strings.TrimSpace(a.ReviewerModel) != "" {
+		model = strings.TrimSpace(a.ReviewerModel)
+		if provider == "" && a.ReviewerClient != nil {
+			provider = strings.TrimSpace(a.ReviewerClient.Name())
+		}
+	}
+	if model == "" && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		model = strings.TrimSpace(a.AuxReviewerModel)
+		if provider == "" && a.AuxReviewerClient != nil {
+			provider = strings.TrimSpace(a.AuxReviewerClient.Name())
+		}
+	}
+	baseURL := strings.TrimSpace(cfg.BaseURL)
+	if strings.TrimSpace(profile.BaseURL) != "" {
+		baseURL = strings.TrimSpace(profile.BaseURL)
+	}
+	return analysisRouteKey(nil, provider, model, baseURL)
+}
+
+func duplicateSpecialistRouteKeys(routes []string) bool {
+	seen := map[string]struct{}{}
+	for _, route := range routes {
+		route = strings.TrimSpace(route)
+		if route == "" {
+			continue
+		}
+		if _, ok := seen[route]; ok {
+			return true
+		}
+		seen[route] = struct{}{}
+	}
+	return false
+}
+
 func buildSpecialistMicroWorkerSystemPrompt(profile SpecialistSubagentProfile) string {
 	lines := []string{
 		"You are a specialist micro-worker assisting a terminal coding agent.",

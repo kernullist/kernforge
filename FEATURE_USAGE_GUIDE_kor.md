@@ -210,9 +210,10 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 5. structural index, Unreal semantic graph, vector corpus까지 후속 자동화에 재사용할 수 있게 남긴다.
 6. cached deep-structure 답변이 source-derived invariant와 맞는지 확인할 수 있도록 deterministic architecture fact를 남긴다.
 7. 실행 마지막에 눈에 띄는 `Analysis artifacts:` 블록과 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
+8. 단일 provider/model 또는 local provider 환경에서는 같은 모델 route의 worker/reviewer 요청을 전역 scheduler로 직렬화해 provider 포화와 저신뢰 placeholder 연쇄를 줄인다.
 
 대표 명령:
-- `/analyze-project [--mode map|trace|impact|surface|security|performance] [goal]`
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
 - `/docs-refresh`
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
@@ -221,6 +222,8 @@ goal은 선택값이다. 생략하면 Kernforge가 선택한 mode와 path를 기
 후속 모드는 가능한 경우 이전 `map` 실행을 baseline 구조 지도로 자동 로드한다. 그래서 `trace`, `impact`, `surface`, `security`, `performance`는 같은 shard cache를 공유하지 않으면서도 architecture map을 출발점으로 삼는다.
 confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로 어떤 map run을 재사용할지 사용자가 먼저 확인할 수 있다.
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
+worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 기본 구성에서는 shard 실행이 자동으로 직렬화된다. 더 높은 병렬성이 필요한 경우에는 worker/reviewer를 다른 route로 분리하거나 agent cap을 명시적으로 설정한다.
+`/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 
 역할 분리:
 1. `README_kor.md`는 제품 범위, 대표 명령, 산출물 위치를 빠르게 확인하는 문서다.

@@ -40,7 +40,7 @@ func TestParseAnalyzeProjectArgsParsesEqualsMode(t *testing.T) {
 	}
 }
 
-func TestParseAnalyzeProjectArgsAcceptsDocsAndSurfaceMode(t *testing.T) {
+func TestParseAnalyzeProjectArgsAcceptsDeprecatedDocsFlag(t *testing.T) {
 	mode, goal, err := parseAnalyzeProjectArgs("--docs --mode surface ioctl rpc parser surfaces")
 	if err != nil {
 		t.Fatalf("parseAnalyzeProjectArgs returned error: %v", err)

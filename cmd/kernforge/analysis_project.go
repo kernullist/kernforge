@@ -37,6 +37,8 @@ type ProjectAnalysisConfig struct {
 	WorkerProfile        *Profile `json:"worker_profile,omitempty"`
 	ReviewerProfile      *Profile `json:"reviewer_profile,omitempty"`
 	Incremental          *bool    `json:"incremental,omitempty"`
+	minAgentsConfigured  bool
+	maxAgentsConfigured  bool
 }
 
 type ProjectAnalysisSummary struct {
@@ -1403,6 +1405,7 @@ type projectAnalyzer struct {
 	client                ProviderClient
 	workerClient          ProviderClient
 	reviewerClient        ProviderClient
+	modelRoutes           *ModelRouteScheduler
 	workspace             Workspace
 	rootCausePatternPacks []string
 	cachedUnrealGraph     UnrealSemanticGraph
@@ -1444,6 +1447,8 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 		value := *cfg.ProjectAnalysis.Enabled
 		out.Enabled = &value
 	}
+	minAgentsConfigured := cfg.ProjectAnalysis.MinAgents > 0
+	maxAgentsConfigured := cfg.ProjectAnalysis.MaxAgents > 0
 	if cfg.ProjectAnalysis.MinAgents > 0 {
 		out.MinAgents = cfg.ProjectAnalysis.MinAgents
 	}
@@ -1495,14 +1500,26 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 		value := *cfg.ProjectAnalysis.Incremental
 		out.Incremental = &value
 	}
-	if out.MinAgents < 2 {
-		out.MinAgents = 2
+	out.minAgentsConfigured = minAgentsConfigured
+	out.maxAgentsConfigured = maxAgentsConfigured
+	if out.MinAgents < 1 {
+		out.MinAgents = 1
 	}
-	if out.MaxAgents < out.MinAgents {
-		out.MaxAgents = out.MinAgents
+	if out.MinAgents > 16 {
+		out.MinAgents = 16
+	}
+	if out.MaxAgents < 1 {
+		out.MaxAgents = 1
 	}
 	if out.MaxAgents > 16 {
 		out.MaxAgents = 16
+	}
+	if out.MaxAgents < out.MinAgents {
+		if maxAgentsConfigured && !minAgentsConfigured {
+			out.MinAgents = out.MaxAgents
+		} else {
+			out.MaxAgents = out.MinAgents
+		}
 	}
 	if out.MaxRefinementShards < 0 {
 		out.MaxRefinementShards = 0
@@ -1513,11 +1530,34 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	return out
 }
 
+func rootCauseProjectAnalysisConfig(cfg ProjectAnalysisConfig) ProjectAnalysisConfig {
+	if !cfg.minAgentsConfigured {
+		cfg.MinAgents = 1
+	}
+	if !cfg.maxAgentsConfigured || cfg.MaxAgents > 8 {
+		cfg.MaxAgents = 8
+	}
+	if cfg.MinAgents < 1 {
+		cfg.MinAgents = 1
+	}
+	if cfg.MaxAgents < 1 {
+		cfg.MaxAgents = 1
+	}
+	if cfg.MinAgents > cfg.MaxAgents {
+		cfg.MinAgents = cfg.MaxAgents
+	}
+	cfg.MaxTotalShards = 8
+	cfg.MaxRefinementShards = 8
+	cfg.MaxRevisionRounds = analysisMaxInt(cfg.MaxRevisionRounds, 2)
+	return cfg
+}
+
 func newProjectAnalyzer(cfg Config, client ProviderClient, ws Workspace, onStatus func(string), onDebug func(string)) *projectAnalyzer {
 	return &projectAnalyzer{
 		cfg:         cfg,
 		analysisCfg: configProjectAnalysis(cfg, ws.BaseRoot),
 		client:      client,
+		modelRoutes: defaultModelRouteScheduler(),
 		workspace:   ws,
 		onStatus:    onStatus,
 		onDebug:     onDebug,
@@ -2679,6 +2719,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if agentCount < 1 {
 		agentCount = 1
 	}
+	agentCount = a.effectiveShardConcurrency(agentCount, len(shards), run.Summary.Mode)
 	run.Summary.AgentCount = agentCount
 	run.Summary.TotalShards = len(shards)
 	run.Shards = shards
@@ -2697,7 +2738,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 
 	a.status(fmt.Sprintf("Running %d sub-agent(s)...", len(shards)))
 	reuseState := a.buildReuseState(previousRun, shards)
-	reports, reviews, err := a.executeShards(ctx, snapshot, shards, goal, previousRun, reuseState)
+	reports, reviews, err := a.executeShards(ctx, snapshot, shards, goal, previousRun, reuseState, agentCount)
 	if err != nil {
 		return run, err
 	}
@@ -2711,7 +2752,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		run.Summary.RefinedShards = len(refinementShards)
 		a.status(fmt.Sprintf("Refining %d high-value sub-agent shard(s)...", len(refinementShards)))
 		a.debug(fmt.Sprintf("stage-2 refinement planned: shards=%d parents=%d", len(refinementShards), len(replacedShardIDs)))
-		refinedReports, refinedReviews, err := a.executeShards(ctx, snapshot, refinementShards, goal, previousRun, analysisReuseState{})
+		refinedReports, refinedReviews, err := a.executeShards(ctx, snapshot, refinementShards, goal, previousRun, analysisReuseState{}, agentCount)
 		if err != nil {
 			return run, err
 		}
@@ -2735,7 +2776,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 			run.Summary.EvidenceShards += len(evidenceShards)
 			a.status(fmt.Sprintf("Routing %d root-cause evidence request shard(s)...", len(evidenceShards)))
 			a.debug(fmt.Sprintf("root-cause evidence request round %d planned: shards=%d", round, len(evidenceShards)))
-			evidenceReports, evidenceReviews, err := a.executeShards(ctx, snapshot, evidenceShards, goal, previousRun, analysisReuseState{})
+			evidenceReports, evidenceReviews, err := a.executeShards(ctx, snapshot, evidenceShards, goal, previousRun, analysisReuseState{}, agentCount)
 			if err != nil {
 				return run, err
 			}
@@ -3029,6 +3070,61 @@ func (a *projectAnalyzer) estimateShardCount(snapshot ProjectSnapshot, concurren
 		count = a.analysisCfg.MaxTotalShards
 	}
 	return count
+}
+
+func (a *projectAnalyzer) effectiveShardConcurrency(concurrency int, shardCount int, mode string) int {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if a.analysisCfg.MaxAgents > 0 && concurrency > a.analysisCfg.MaxAgents {
+		concurrency = a.analysisCfg.MaxAgents
+	}
+	if shardCount > 0 && concurrency > shardCount {
+		concurrency = shardCount
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	if concurrency > 1 && a.shouldSerializeSingleAnalysisRoute(mode) {
+		return 1
+	}
+	return concurrency
+}
+
+func (a *projectAnalyzer) shouldSerializeSingleAnalysisRoute(mode string) bool {
+	if a.analysisCfg.minAgentsConfigured || a.analysisCfg.maxAgentsConfigured {
+		return false
+	}
+	return a.analysisWorkerReviewerShareRoute()
+}
+
+func (a *projectAnalyzer) analysisWorkerReviewerShareRoute() bool {
+	workerRoute := analysisRouteKey(a.analysisCfg.WorkerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
+	reviewerFallbackProfile := a.analysisCfg.WorkerProfile
+	reviewerRoute := analysisRouteKey(a.analysisCfg.ReviewerProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
+	if a.analysisCfg.ReviewerProfile == nil && reviewerFallbackProfile != nil {
+		reviewerRoute = analysisRouteKey(reviewerFallbackProfile, a.cfg.Provider, a.cfg.Model, a.cfg.BaseURL)
+	}
+	return workerRoute != "" && workerRoute == reviewerRoute
+}
+
+func analysisRouteKey(profile *Profile, fallbackProvider string, fallbackModel string, fallbackBaseURL string) string {
+	provider := strings.TrimSpace(fallbackProvider)
+	model := strings.TrimSpace(fallbackModel)
+	baseURL := strings.TrimSpace(fallbackBaseURL)
+	if profile != nil {
+		if strings.TrimSpace(profile.Provider) != "" {
+			provider = strings.TrimSpace(profile.Provider)
+		}
+		if strings.TrimSpace(profile.Model) != "" {
+			model = strings.TrimSpace(profile.Model)
+		}
+		baseURL = strings.TrimSpace(profile.BaseURL)
+	}
+	if provider == "" && model == "" {
+		return ""
+	}
+	return modelRouteKeyFromParts(provider, model, baseURL, "")
 }
 
 func chooseAnalysisLenses(goal string, mode string) []AnalysisLens {
@@ -5831,10 +5927,10 @@ func (a *projectAnalyzer) planRootSubsystemShards(snapshot ProjectSnapshot, file
 	return shards
 }
 
-func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, goal string, previousRun *ProjectAnalysisRun, reuseState analysisReuseState) ([]WorkerReport, []ReviewDecision, error) {
+func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, goal string, previousRun *ProjectAnalysisRun, reuseState analysisReuseState, concurrency int) ([]WorkerReport, []ReviewDecision, error) {
 	reports := make([]WorkerReport, len(shards))
 	reviews := make([]ReviewDecision, len(shards))
-	concurrency := analysisMinInt(len(shards), a.analysisCfg.MaxAgents)
+	concurrency = analysisMinInt(len(shards), concurrency)
 	if concurrency < 1 {
 		concurrency = 1
 	}
@@ -9602,7 +9698,9 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		resp, err := client.Complete(ctx, req)
+		attemptCtx, cancel := context.WithTimeout(ctx, configRequestTimeout(a.cfg))
+		resp, err := completeModelTurnOnceWithModelRoutes(attemptCtx, a.modelRoutes, modelRoutePolicyFromConfig(a.cfg), a.cfg, client, req)
+		cancel()
 		if err == nil {
 			return resp, nil
 		}

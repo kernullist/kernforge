@@ -18,6 +18,7 @@ import (
 type Agent struct {
 	Config                         Config
 	Client                         ProviderClient
+	ModelRoutes                    *ModelRouteScheduler
 	ReviewerClient                 ProviderClient
 	ReviewerModel                  string
 	AuxReviewerClient              ProviderClient
@@ -1319,23 +1320,10 @@ func isToolUseUnsupportedError(err error) bool {
 }
 
 func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (ChatResponse, error) {
-	type result struct {
-		resp ChatResponse
-		err  error
+	if a == nil {
+		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
-
-	done := make(chan result, 1)
-	go func() {
-		resp, err := a.Client.Complete(ctx, req)
-		done <- result{resp: resp, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return ChatResponse{}, ctx.Err()
-	case out := <-done:
-		return out.resp, out.err
-	}
+	return completeModelTurnOnceWithModelRoutes(ctx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, a.Client, req)
 }
 
 func toolCallSignature(calls []ToolCall) string {

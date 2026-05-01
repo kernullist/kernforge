@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const planReviewMaxRounds = 3
@@ -61,6 +62,26 @@ type PlanReviewRound struct {
 	Review string
 }
 
+type ModelRequestPolicy struct {
+	MaxRetries       int
+	RetryDelay       time.Duration
+	Timeout          time.Duration
+	ModelRoutes      *ModelRouteScheduler
+	ModelRouteConfig Config
+	ModelRoutePolicy ModelRoutePolicy
+}
+
+func modelRequestPolicyFromConfig(cfg Config) ModelRequestPolicy {
+	return ModelRequestPolicy{
+		MaxRetries:       configMaxRequestRetries(cfg),
+		RetryDelay:       configRequestRetryDelay(cfg),
+		Timeout:          configRequestTimeout(cfg),
+		ModelRoutes:      defaultModelRouteScheduler(),
+		ModelRouteConfig: cfg,
+		ModelRoutePolicy: modelRoutePolicyFromConfig(cfg),
+	}
+}
+
 // RunPlanReview orchestrates the iterative plan-review loop between two models.
 // plannerClient is the model that creates/revises the plan.
 // reviewerClient is the model that reviews the plan.
@@ -77,6 +98,23 @@ func RunPlanReview(
 	temperature float64,
 	onStatus func(string),
 ) (PlanReviewResult, error) {
+	return RunPlanReviewWithPolicy(ctx, plannerClient, plannerModel, reviewerClient, reviewerModel, userPrompt, workspaceRoot, memoryContext, maxTokens, temperature, onStatus, ModelRequestPolicy{})
+}
+
+func RunPlanReviewWithPolicy(
+	ctx context.Context,
+	plannerClient ProviderClient,
+	plannerModel string,
+	reviewerClient ProviderClient,
+	reviewerModel string,
+	userPrompt string,
+	workspaceRoot string,
+	memoryContext string,
+	maxTokens int,
+	temperature float64,
+	onStatus func(string),
+	policy ModelRequestPolicy,
+) (PlanReviewResult, error) {
 	result := PlanReviewResult{}
 
 	// Round 1: generate initial plan
@@ -87,13 +125,13 @@ func RunPlanReview(
 	plannerMessages := []Message{
 		{Role: "user", Text: userPrompt},
 	}
-	planResp, err := plannerClient.Complete(ctx, ChatRequest{
+	planResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 		Model:       plannerModel,
 		System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext),
 		Messages:    plannerMessages,
 		MaxTokens:   maxTokens,
 		Temperature: temperature,
-	})
+	}, policy, onStatus, "planner")
 	if err != nil {
 		return result, fmt.Errorf("planner failed to generate initial plan: %w", err)
 	}
@@ -109,13 +147,13 @@ func RunPlanReview(
 		reviewMessages := []Message{
 			{Role: "user", Text: fmt.Sprintf("Please review the following implementation plan:\n\n%s", currentPlan)},
 		}
-		reviewResp, err := reviewerClient.Complete(ctx, ChatRequest{
+		reviewResp, err := completePlanReviewRequest(ctx, reviewerClient, ChatRequest{
 			Model:       reviewerModel,
 			System:      planReviewSystemPromptReviewer(),
 			Messages:    reviewMessages,
 			MaxTokens:   maxTokens,
 			Temperature: temperature,
-		})
+		}, policy, onStatus, "reviewer")
 		if err != nil {
 			return result, fmt.Errorf("reviewer failed at round %d: %w", round+1, err)
 		}
@@ -143,13 +181,13 @@ func RunPlanReview(
 			revisionPrompt := fmt.Sprintf("The reviewer provided the following feedback on your plan:\n\n%s\n\nPlease revise your plan to address this feedback.", reviewText)
 			plannerMessages = append(plannerMessages, Message{Role: "user", Text: revisionPrompt})
 
-			reviseResp, err := plannerClient.Complete(ctx, ChatRequest{
+			reviseResp, err := completePlanReviewRequest(ctx, plannerClient, ChatRequest{
 				Model:       plannerModel,
 				System:      planReviewSystemPromptPlanner(workspaceRoot, memoryContext) + "\n\n" + planReviewSystemPromptRevise(),
 				Messages:    plannerMessages,
 				MaxTokens:   maxTokens,
 				Temperature: temperature,
-			})
+			}, policy, onStatus, "planner-revision")
 			if err != nil {
 				return result, fmt.Errorf("planner failed to revise plan at round %d: %w", round+1, err)
 			}
@@ -162,6 +200,60 @@ func RunPlanReview(
 	result.FinalPlan = currentPlan
 	result.Approved = false
 	return result, nil
+}
+
+func completePlanReviewRequest(ctx context.Context, client ProviderClient, req ChatRequest, policy ModelRequestPolicy, onStatus func(string), stage string) (ChatResponse, error) {
+	if client == nil {
+		return ChatResponse{}, fmt.Errorf("no model provider is configured")
+	}
+	maxRetries := policy.MaxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	timeout := policy.Timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Minute
+	}
+	baseDelay := policy.RetryDelay
+	if baseDelay <= 0 {
+		baseDelay = 1500 * time.Millisecond
+	}
+	totalAttempts := maxRetries + 1
+	for attempt := 0; attempt < totalAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return ChatResponse{}, err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, timeout)
+		routePolicy := policy.ModelRoutePolicy
+		if !routePolicy.configured {
+			routePolicy = modelRoutePolicyFromConfig(policy.ModelRouteConfig)
+		}
+		resp, err := completeModelTurnOnceWithModelRoutes(attemptCtx, policy.ModelRoutes, routePolicy, policy.ModelRouteConfig, client, req)
+		cancel()
+		if err == nil {
+			return resp, nil
+		}
+		if ctx.Err() != nil {
+			return ChatResponse{}, ctx.Err()
+		}
+		if !shouldRetryProviderError(err) || attempt == totalAttempts-1 {
+			return ChatResponse{}, err
+		}
+		delay := providerRetryDelay(baseDelay, attempt)
+		if onStatus != nil {
+			onStatus(modelRetryProgressMessage(err, attempt, totalAttempts, delay))
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ChatResponse{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return ChatResponse{}, fmt.Errorf("%s plan-review request failed after retry", strings.TrimSpace(stage))
 }
 
 // createReviewerClient builds a ProviderClient from PlanReviewConfig, falling back to

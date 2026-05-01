@@ -52,6 +52,13 @@ func (c *OpenCodeClient) Name() string {
 	return c.providerName()
 }
 
+func (c *OpenCodeClient) ModelRouteMetadata() ModelRouteMetadata {
+	if c == nil {
+		return ModelRouteMetadata{Provider: "opencode"}
+	}
+	return ModelRouteMetadata{Provider: c.providerName(), BaseURL: c.baseURL}
+}
+
 func (c *OpenCodeClient) providerName() string {
 	provider := normalizeProviderName(c.provider)
 	if provider == "" {

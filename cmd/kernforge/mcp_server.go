@@ -364,6 +364,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		checkpoints:    NewCheckpointManager(),
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
+		modelRoutes:    defaultModelRouteScheduler(),
 		interactive:    false,
 	}
 	rt.perms = NewPermissionManager(ModeBypass, nil)
@@ -403,6 +404,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 	rt.agent = &Agent{
 		Config:        rt.cfg,
 		Client:        client,
+		ModelRoutes:   rt.modelRoutes,
 		Tools:         buildRegistry(rt.workspace, nil),
 		Workspace:     rt.workspace,
 		Session:       rt.session,
@@ -3918,12 +3920,7 @@ func (s *kernforgeMCPServer) toolFindRootCause(ctx context.Context, args map[str
 	if !clarity.Clear {
 		return renderRootCauseClarityForMCP(problem, clarity), nil
 	}
-	analysisCfg := configProjectAnalysis(s.rt.cfg, s.rt.workspace.BaseRoot)
-	analysisCfg.MinAgents = 1
-	analysisCfg.MaxAgents = 8
-	analysisCfg.MaxTotalShards = 8
-	analysisCfg.MaxRefinementShards = 8
-	analysisCfg.MaxRevisionRounds = analysisMaxInt(analysisCfg.MaxRevisionRounds, 2)
+	analysisCfg := rootCauseProjectAnalysisConfig(configProjectAnalysis(s.rt.cfg, s.rt.workspace.BaseRoot))
 	if maxTotal := intValue(args, "max_total_shards", 0); maxTotal > 0 {
 		analysisCfg.MaxTotalShards = maxTotal
 	}
@@ -4008,6 +4005,7 @@ func (s *kernforgeMCPServer) ensureProviderReady() error {
 	}
 	s.rt.agent.Client = client
 	s.rt.agent.Config = s.rt.cfg
+	s.rt.agent.ModelRoutes = s.rt.modelRoutes
 	return nil
 }
 

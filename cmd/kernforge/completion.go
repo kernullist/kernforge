@@ -338,7 +338,6 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	},
 	"analyze-project": {
 		"--mode":      "Choose the analysis mode; Kernforge will infer a default goal when you omit one.",
-		"--docs":      "Explicitly request deterministic project documentation artifacts.",
 		"--path":      "Limit analysis to one workspace directory or file path; a goal is optional.",
 		"map":         "Map structure, modules, and relationships across the project.",
 		"trace":       "Trace a concrete flow across files and call sites.",
@@ -701,7 +700,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"codex-auth":            {"status", "login", "logout", "path"},
 		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"profile-review":        {"list", "show", "status", "pin", "unpin", "rename", "delete"},
-		"analyze-project":       {"--mode", "--docs", "--path"},
+		"analyze-project":       {"--mode", "--path"},
 		"analyze-dashboard":     {"latest"},
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
