@@ -26,6 +26,7 @@ type CompletionAuditArtifact struct {
 	Provider          string                `json:"provider,omitempty"`
 	Model             string                `json:"model,omitempty"`
 	ActiveFeatureID   string                `json:"active_feature_id,omitempty"`
+	ActiveGoalID      string                `json:"active_goal_id,omitempty"`
 	Objective         string                `json:"objective,omitempty"`
 	Ready             bool                  `json:"ready"`
 	Status            string                `json:"status"`
@@ -137,6 +138,7 @@ func (rt *runtimeState) buildCompletionAuditArtifact(root string, note string) C
 		Provider:        auditSession.Provider,
 		Model:           auditSession.Model,
 		ActiveFeatureID: auditSession.ActiveFeatureID,
+		ActiveGoalID:    auditSession.ActiveGoalID,
 		Objective:       completionAuditObjective(auditSession, note),
 	}
 	artifact.ChangedFiles = delegationChangedFiles(root)
@@ -221,7 +223,8 @@ func completionAuditPopulateChecklist(root string, session *Session, artifact *C
 	})
 	completionAuditAcceptance(root, session, artifact)
 	completionAuditVerification(session, artifact)
-	completionAuditTaskGraph(artifact)
+	completionAuditTaskGraph(session, artifact)
+	completionAuditGoals(session, artifact)
 	completionAuditEditLoop(session, artifact)
 	completionAuditFailureRepair(session, artifact)
 	completionAuditBackground(session, artifact)
@@ -257,10 +260,16 @@ func completionAuditAcceptance(root string, session *Session, artifact *Completi
 		Source:      "acceptance",
 	})
 	for _, expected := range contract.ExpectedBehaviors {
+		status := completionAuditStatusWarning
+		evidence := "Tracked in acceptance contract; semantic proof depends on verification and review evidence."
+		if completionAuditSessionOwnsGoal(session, artifact) {
+			status = completionAuditStatusPassed
+			evidence = "Tracked by the active autonomous goal; goal completion is gated by verification, completion audit, and progress ledger."
+		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
 			Requirement: "Expected behavior: " + expected,
-			Evidence:    "Tracked in acceptance contract; semantic proof depends on verification and review evidence.",
-			Status:      completionAuditStatusWarning,
+			Evidence:    evidence,
+			Status:      status,
 			Source:      "acceptance",
 		})
 	}
@@ -378,8 +387,14 @@ func completionAuditVerificationHasPassedStep(report VerificationReport) bool {
 	return false
 }
 
-func completionAuditTaskGraph(artifact *CompletionAuditArtifact) {
-	if len(artifact.OpenTasks) == 0 {
+func completionAuditTaskGraph(session *Session, artifact *CompletionAuditArtifact) {
+	openTasks := artifact.OpenTasks
+	if session != nil {
+		if goal, ok := session.ActiveGoal(); ok && completionAuditSameObjective(goal.Objective, artifact.Objective) {
+			openTasks = filterCompletionAuditOpenGoalTasks(openTasks)
+		}
+	}
+	if len(openTasks) == 0 {
 		completionAuditAddItem(artifact, CompletionAuditItem{
 			Requirement: "No open task graph nodes remain",
 			Evidence:    "No open tasks recorded.",
@@ -390,10 +405,85 @@ func completionAuditTaskGraph(artifact *CompletionAuditArtifact) {
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
 		Requirement: "No open task graph nodes remain",
-		Evidence:    strings.Join(limitStrings(artifact.OpenTasks, 4), " | "),
+		Evidence:    strings.Join(limitStrings(openTasks, 4), " | "),
 		Status:      completionAuditStatusBlocked,
 		Source:      "task_graph",
 	})
+}
+
+func filterCompletionAuditOpenGoalTasks(openTasks []string) []string {
+	if len(openTasks) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(openTasks))
+	for _, task := range openTasks {
+		lower := strings.ToLower(strings.TrimSpace(task))
+		if strings.HasPrefix(lower, "plan-") {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
+}
+
+func completionAuditGoals(session *Session, artifact *CompletionAuditArtifact) {
+	if session == nil || artifact == nil {
+		return
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Autonomous goal state is settled",
+			Evidence:    "No active autonomous goal recorded.",
+			Status:      completionAuditStatusPassed,
+			Source:      "goals",
+		})
+		return
+	}
+	if completionAuditSameObjective(goal.Objective, artifact.Objective) {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Autonomous goal state is settled",
+			Evidence:    fmt.Sprintf("Active goal %s owns this audit; status=%s iteration=%d.", goal.ID, goal.Status, goal.Iteration),
+			Status:      completionAuditStatusPassed,
+			Source:      "goals",
+		})
+		return
+	}
+	if goalStatusTerminal(goal.Status) {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Autonomous goal state is settled",
+			Evidence:    fmt.Sprintf("Active goal %s is terminal: %s.", goal.ID, goal.Status),
+			Status:      completionAuditStatusPassed,
+			Source:      "goals",
+		})
+		return
+	}
+	completionAuditAddItem(artifact, CompletionAuditItem{
+		Requirement: "Autonomous goal state is settled",
+		Evidence:    fmt.Sprintf("Active goal %s remains %s at iteration %d.", goal.ID, goal.Status, goal.Iteration),
+		Status:      completionAuditStatusWarning,
+		Source:      "goals",
+	})
+}
+
+func completionAuditSessionOwnsGoal(session *Session, artifact *CompletionAuditArtifact) bool {
+	if session == nil || artifact == nil {
+		return false
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		return false
+	}
+	return completionAuditSameObjective(goal.Objective, artifact.Objective)
+}
+
+func completionAuditSameObjective(a string, b string) bool {
+	left := strings.Join(strings.Fields(strings.TrimSpace(a)), " ")
+	right := strings.Join(strings.Fields(strings.TrimSpace(b)), " ")
+	if left == "" || right == "" {
+		return false
+	}
+	return strings.EqualFold(left, right)
 }
 
 func completionAuditEditLoop(session *Session, artifact *CompletionAuditArtifact) {
@@ -699,10 +789,14 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 			"cmd/kernforge/goals.go::handleGoalCommand",
 			"cmd/kernforge/goals.go::GoalState",
 			"cmd/kernforge/goals.go::runGoalLoop",
+			"cmd/kernforge/goals_runtime.go::runGoalIteration",
+			"cmd/kernforge/goals_runtime.go::goalAcceptanceContract",
+			"cmd/kernforge/goals_runtime.go::evaluateGoalProgress",
 			"cmd/kernforge/goals.go::buildGoalImplementationPrompt",
 			"cmd/kernforge/goals.go::buildGoalReviewPrompt",
 			"cmd/kernforge/goals_test.go::TestGoalStartFromMarkdownNoRunPersistsArtifacts",
 			"cmd/kernforge/goals_test.go::TestGoalRunWithFakeAgentCompletesAfterAudit",
+			"cmd/kernforge/goals_test.go::TestGoalReviewNeedsRevisionRunsRepairPass",
 			"README.md::/goal",
 			"FEATURE_USAGE_GUIDE.md::Autonomous Goals",
 		})

@@ -197,9 +197,11 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - `/goal start @GOAL.md`와 `kernforge -goal-file GOAL.md`는 markdown 파일에서 목표를 읽는다.
 - `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행한다.
 - 각 iteration은 agent에게 실제 코드 확인, 개발, 수정, 자체 리뷰, 버그 수정을 사용자 확인 없이 수행하게 한다.
+- goal runtime은 각 목표를 acceptance contract, task graph, 독립 review verdict, progress ledger, command history, checkpoint 저장소가 설정된 경우 iteration별 checkpoint에 연결한다.
 - 그 다음 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행한 뒤 다음 iteration으로 넘어간다.
-- completion audit이 ready가 되거나, 목표가 cancel되거나, provider failure/iteration cap 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
+- completion audit이 ready가 되거나, 목표가 cancel되거나, provider failure/iteration cap/반복 failure signature/no-progress loop 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
 - 목표 상태와 이력은 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 및 goal별 사본으로 남는다.
+- `--time-budget 10m`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
 - `/goal status`, `/goal audit`, `/goal run`, `/goal cancel`로 active goal을 확인, 재감사, 재개, 중단할 수 있다.
 
 ### 소스 레벨 Function Fuzzing

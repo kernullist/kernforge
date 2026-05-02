@@ -200,6 +200,8 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/goal "missing recovery test와 docs를 추가해"`
 - `/goal start @GOAL.md`
 - `/goal start --file GOAL.md --max-iterations 12`
+- `/goal start --time-budget 10m --until-complete @GOAL.md`
+- `/goal start --rollback-on-regression "refactor를 끝내고 verification green 유지"`
 - `/goal start --no-run @GOAL.md`
 - `/goal run latest`
 - `/goal status`
@@ -211,12 +213,15 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 현재 동작:
 1. `/goal`은 session에 `GoalState`를 만들고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다.
 2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있다.
-3. 각 iteration은 agent에게 구현 prompt와 bug-finding review prompt를 차례로 보낸다.
-4. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
-5. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행하고 다음 iteration으로 넘어간다.
-6. completion audit이 `ready=true`가 되어야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration cap에 걸릴 때까지 계속 반복한다.
-7. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
-8. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행한다.
+3. goal start는 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다.
+4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
+5. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다.
+6. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
+7. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행하고 다음 iteration으로 넘어간다.
+8. progress ledger는 changed files, verification, audit blockers/warnings, review verdict, no-progress count, repeated failure signature, command history를 기록한다.
+9. completion audit이 `ready=true`가 되어야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
+10. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
+11. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행한다.
 
 ### Local Automations MVP
 

@@ -22,19 +22,29 @@ const (
 )
 
 type GoalState struct {
-	ID            string          `json:"id"`
-	Objective     string          `json:"objective"`
-	SourcePath    string          `json:"source_path,omitempty"`
-	Status        string          `json:"status"`
-	Iteration     int             `json:"iteration"`
-	MaxIterations int             `json:"max_iterations,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
-	CompletedAt   time.Time       `json:"completed_at,omitempty"`
-	LastError     string          `json:"last_error,omitempty"`
-	LastAudit     *GoalAuditState `json:"last_audit,omitempty"`
-	Iterations    []GoalIteration `json:"iterations,omitempty"`
-	ArtifactRefs  []string        `json:"artifact_refs,omitempty"`
+	ID                      string              `json:"id"`
+	Objective               string              `json:"objective"`
+	SourcePath              string              `json:"source_path,omitempty"`
+	Status                  string              `json:"status"`
+	Iteration               int                 `json:"iteration"`
+	MaxIterations           int                 `json:"max_iterations,omitempty"`
+	TimeBudgetSeconds       int                 `json:"time_budget_seconds,omitempty"`
+	AutoRollback            bool                `json:"auto_rollback,omitempty"`
+	CreatedAt               time.Time           `json:"created_at"`
+	UpdatedAt               time.Time           `json:"updated_at"`
+	CompletedAt             time.Time           `json:"completed_at,omitempty"`
+	LastError               string              `json:"last_error,omitempty"`
+	LastAudit               *GoalAuditState     `json:"last_audit,omitempty"`
+	LastProgress            *GoalProgressState  `json:"last_progress,omitempty"`
+	LastProgressFingerprint string              `json:"last_progress_fingerprint,omitempty"`
+	NoProgressCount         int                 `json:"no_progress_count,omitempty"`
+	LastFailureSignature    string              `json:"last_failure_signature,omitempty"`
+	RepeatedFailureCount    int                 `json:"repeated_failure_count,omitempty"`
+	CompletionCriteria      []string            `json:"completion_criteria,omitempty"`
+	CheckpointRefs          []GoalCheckpointRef `json:"checkpoint_refs,omitempty"`
+	CommandHistory          []GoalCommandRecord `json:"command_history,omitempty"`
+	Iterations              []GoalIteration     `json:"iterations,omitempty"`
+	ArtifactRefs            []string            `json:"artifact_refs,omitempty"`
 }
 
 type GoalAuditState struct {
@@ -45,29 +55,73 @@ type GoalAuditState struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 
+type GoalProgressState struct {
+	Score            int      `json:"score,omitempty"`
+	Fingerprint      string   `json:"fingerprint,omitempty"`
+	Signals          []string `json:"signals,omitempty"`
+	ChangedFiles     []string `json:"changed_files,omitempty"`
+	Verification     string   `json:"verification,omitempty"`
+	AuditReady       bool     `json:"audit_ready,omitempty"`
+	AuditStatus      string   `json:"audit_status,omitempty"`
+	BlockerCount     int      `json:"blocker_count,omitempty"`
+	WarningCount     int      `json:"warning_count,omitempty"`
+	OpenTaskCount    int      `json:"open_task_count,omitempty"`
+	NoProgressCount  int      `json:"no_progress_count,omitempty"`
+	FailureSignature string   `json:"failure_signature,omitempty"`
+	RepeatedFailures int      `json:"repeated_failures,omitempty"`
+}
+
+type GoalCheckpointRef struct {
+	Iteration int       `json:"iteration,omitempty"`
+	ID        string    `json:"id,omitempty"`
+	Name      string    `json:"name,omitempty"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	Status    string    `json:"status,omitempty"`
+}
+
+type GoalCommandRecord struct {
+	Iteration  int       `json:"iteration,omitempty"`
+	Name       string    `json:"name,omitempty"`
+	Status     string    `json:"status,omitempty"`
+	Summary    string    `json:"summary,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+}
+
 type GoalIteration struct {
-	Index          int       `json:"index"`
-	Status         string    `json:"status"`
-	StartedAt      time.Time `json:"started_at"`
-	FinishedAt     time.Time `json:"finished_at"`
-	ImplementReply string    `json:"implement_reply,omitempty"`
-	ReviewReply    string    `json:"review_reply,omitempty"`
-	ReplySummary   string    `json:"reply_summary,omitempty"`
-	Verification   string    `json:"verification,omitempty"`
-	AuditID        string    `json:"audit_id,omitempty"`
-	AuditReady     bool      `json:"audit_ready,omitempty"`
-	AuditStatus    string    `json:"audit_status,omitempty"`
-	Blockers       []string  `json:"blockers,omitempty"`
-	Warnings       []string  `json:"warnings,omitempty"`
-	RecoveryStatus string    `json:"recovery_status,omitempty"`
-	Error          string    `json:"error,omitempty"`
+	Index            int                 `json:"index"`
+	Status           string              `json:"status"`
+	StartedAt        time.Time           `json:"started_at"`
+	FinishedAt       time.Time           `json:"finished_at"`
+	CheckpointID     string              `json:"checkpoint_id,omitempty"`
+	CheckpointName   string              `json:"checkpoint_name,omitempty"`
+	ImplementReply   string              `json:"implement_reply,omitempty"`
+	ReviewReply      string              `json:"review_reply,omitempty"`
+	ReviewerVerdict  string              `json:"reviewer_verdict,omitempty"`
+	ReviewerFeedback string              `json:"reviewer_feedback,omitempty"`
+	RepairReply      string              `json:"repair_reply,omitempty"`
+	ReplySummary     string              `json:"reply_summary,omitempty"`
+	Verification     string              `json:"verification,omitempty"`
+	AuditID          string              `json:"audit_id,omitempty"`
+	AuditReady       bool                `json:"audit_ready,omitempty"`
+	AuditStatus      string              `json:"audit_status,omitempty"`
+	Progress         *GoalProgressState  `json:"progress,omitempty"`
+	ChangedFiles     []string            `json:"changed_files,omitempty"`
+	Blockers         []string            `json:"blockers,omitempty"`
+	Warnings         []string            `json:"warnings,omitempty"`
+	Commands         []GoalCommandRecord `json:"commands,omitempty"`
+	RecoveryStatus   string              `json:"recovery_status,omitempty"`
+	RollbackStatus   string              `json:"rollback_status,omitempty"`
+	Error            string              `json:"error,omitempty"`
 }
 
 type goalStartOptions struct {
-	Objective     string
-	SourcePath    string
-	Run           bool
-	MaxIterations int
+	Objective         string
+	SourcePath        string
+	Run               bool
+	MaxIterations     int
+	TimeBudgetSeconds int
+	AutoRollback      bool
 }
 
 func (rt *runtimeState) handleGoalCommand(args string) error {
@@ -133,16 +187,18 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	}
 	now := time.Now()
 	goal := GoalState{
-		ID:            fmt.Sprintf("goal-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000),
-		Objective:     strings.TrimSpace(options.Objective),
-		SourcePath:    strings.TrimSpace(options.SourcePath),
-		Status:        goalStatusPending,
-		MaxIterations: options.MaxIterations,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:                fmt.Sprintf("goal-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000),
+		Objective:         strings.TrimSpace(options.Objective),
+		SourcePath:        strings.TrimSpace(options.SourcePath),
+		Status:            goalStatusPending,
+		MaxIterations:     options.MaxIterations,
+		TimeBudgetSeconds: options.TimeBudgetSeconds,
+		AutoRollback:      options.AutoRollback,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	goal.Normalize()
-	rt.session.StartTaskState(goal.Objective)
+	rt.primeGoalRuntimeState(&goal, "created")
 	rt.session.UpsertGoal(goal)
 	rt.session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindGoal,
@@ -185,6 +241,10 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 			options.Run = false
 		case "--run":
 			options.Run = true
+		case "--rollback-on-regression":
+			options.AutoRollback = true
+		case "--no-rollback":
+			options.AutoRollback = false
 		case "--until-complete":
 			options.MaxIterations = 0
 		case "--file", "-f":
@@ -203,6 +263,16 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 				return options, fmt.Errorf("invalid max iterations: %s", fields[i])
 			}
 			options.MaxIterations = value
+		case "--time-budget", "--time-budget-seconds":
+			if i+1 >= len(fields) {
+				return options, fmt.Errorf("%s requires seconds or a Go duration", field)
+			}
+			i++
+			value, err := parseGoalTimeBudgetSeconds(fields[i])
+			if err != nil {
+				return options, err
+			}
+			options.TimeBudgetSeconds = value
 		default:
 			if strings.HasPrefix(field, "@") && options.SourcePath == "" {
 				candidate := strings.TrimPrefix(field, "@")
@@ -256,8 +326,8 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	}
 	goal.Status = goalStatusRunning
 	goal.Touch()
+	rt.primeGoalRuntimeState(&goal, "run")
 	rt.session.UpsertGoal(goal)
-	rt.session.StartTaskState(goal.Objective)
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}
@@ -305,125 +375,12 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
 			return nil
 		}
-		iteration := GoalIteration{
-			Index:     goal.Iteration + 1,
-			Status:    goalStatusRunning,
-			StartedAt: time.Now(),
-		}
-		fmt.Fprintln(rt.writer, rt.ui.subsection(fmt.Sprintf("Goal iteration %d", iteration.Index)))
-		implementReply, err := rt.runGoalAgentReply(ctx, buildGoalImplementationPrompt(goal, iteration.Index))
-		iteration.ImplementReply = compactPromptSection(implementReply, 900)
+		updated, done, err := rt.runGoalIteration(ctx, goal)
 		if err != nil {
-			iteration.Error = err.Error()
-			iteration.Status = goalStatusBlocked
-			iteration.FinishedAt = time.Now()
-			goal.Iteration = iteration.Index
-			goal.Status = goalStatusBlocked
-			goal.LastError = err.Error()
-			goal.Iterations = append(goal.Iterations, iteration)
-			goal.Touch()
-			rt.session.UpsertGoal(goal)
-			_ = rt.writeGoalArtifacts(goal)
-			if rt.store != nil {
-				_ = rt.store.Save(rt.session)
-			}
 			return err
 		}
-		reviewReply, err := rt.runGoalAgentReply(ctx, buildGoalReviewPrompt(goal, iteration.Index))
-		iteration.ReviewReply = compactPromptSection(reviewReply, 900)
-		if err != nil {
-			iteration.Error = err.Error()
-			iteration.Status = goalStatusBlocked
-			iteration.FinishedAt = time.Now()
-			goal.Iteration = iteration.Index
-			goal.Status = goalStatusBlocked
-			goal.LastError = err.Error()
-			goal.Iterations = append(goal.Iterations, iteration)
-			goal.Touch()
-			rt.session.UpsertGoal(goal)
-			_ = rt.writeGoalArtifacts(goal)
-			if rt.store != nil {
-				_ = rt.store.Save(rt.session)
-			}
-			return err
-		}
-		if err := rt.handleVerifyCommand("--full"); err != nil {
-			iteration.Error = err.Error()
-			iteration.Status = goalStatusBlocked
-			goal.Status = goalStatusBlocked
-			goal.LastError = err.Error()
-		}
-		if rt.session.LastVerification != nil {
-			iteration.Verification = rt.session.LastVerification.SummaryLine()
-		}
-		audit, err := rt.runGoalCompletionAudit(goal)
-		if err != nil {
-			iteration.Error = err.Error()
-			iteration.Status = goalStatusBlocked
-			goal.Status = goalStatusBlocked
-			goal.LastError = err.Error()
-		} else {
-			iteration.AuditID = audit.ID
-			iteration.AuditReady = audit.Ready
-			iteration.AuditStatus = audit.Status
-			iteration.Blockers = append([]string(nil), audit.Blockers...)
-			iteration.Warnings = append([]string(nil), audit.Warnings...)
-			goal.LastAudit = &GoalAuditState{
-				ID:       audit.ID,
-				Ready:    audit.Ready,
-				Status:   audit.Status,
-				Blockers: append([]string(nil), audit.Blockers...),
-				Warnings: append([]string(nil), audit.Warnings...),
-			}
-			if audit.Ready {
-				iteration.Status = goalStatusComplete
-				goal.Status = goalStatusComplete
-				goal.CompletedAt = time.Now()
-				goal.LastError = ""
-			} else if goal.Status != goalStatusBlocked {
-				iteration.Status = goalStatusPending
-				if err := rt.handleRecoverCommand("execute-safe goal " + goal.ID); err != nil {
-					iteration.RecoveryStatus = "failed: " + err.Error()
-				} else {
-					iteration.RecoveryStatus = "executed"
-				}
-			}
-		}
-		if iteration.Status == "" || iteration.Status == goalStatusRunning {
-			iteration.Status = goal.Status
-		}
-		iteration.ReplySummary = compactPromptSection(strings.Join([]string{iteration.ImplementReply, iteration.ReviewReply}, "\n\n"), 1200)
-		iteration.FinishedAt = time.Now()
-		goal.Iteration = iteration.Index
-		goal.Iterations = append(goal.Iterations, iteration)
-		goal.Touch()
-		rt.session.UpsertGoal(goal)
-		rt.session.AppendConversationEvent(ConversationEvent{
-			Kind:     conversationEventKindGoal,
-			Severity: goalEventSeverity(goal),
-			Summary:  fmt.Sprintf("goal iteration %d: %s", iteration.Index, goal.Status),
-			Entities: map[string]string{
-				"goal":         goal.ID,
-				"status":       goal.Status,
-				"iteration":    fmt.Sprintf("%d", iteration.Index),
-				"audit_status": iteration.AuditStatus,
-				"audit_ready":  fmt.Sprintf("%t", iteration.AuditReady),
-			},
-		})
-		if err := rt.writeGoalArtifacts(goal); err != nil {
-			return err
-		}
-		if rt.store != nil {
-			if err := rt.store.Save(rt.session); err != nil {
-				return err
-			}
-		}
-		if goal.Status == goalStatusComplete {
-			fmt.Fprintln(rt.writer, rt.ui.successLine("Goal complete: "+goal.ID))
-			return nil
-		}
-		if goal.Status == goalStatusBlocked {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal blocked: "+goal.LastError))
+		goal = updated
+		if done {
 			return nil
 		}
 	}
@@ -434,6 +391,42 @@ func (rt *runtimeState) runGoalAgentReply(ctx context.Context, prompt string) (s
 		return rt.goalReply(ctx, prompt)
 	}
 	return rt.runAgentReply(ctx, prompt)
+}
+
+func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string) (string, error) {
+	if rt == nil {
+		return "", fmt.Errorf("no active runtime")
+	}
+	if rt.goalReply != nil {
+		return rt.goalReply(ctx, prompt)
+	}
+	if rt.agent == nil {
+		return rt.runGoalAgentReply(ctx, prompt)
+	}
+	client, model := rt.agent.ensureInteractiveReviewerClient()
+	if client == nil || strings.TrimSpace(model) == "" {
+		return rt.runGoalAgentReply(ctx, prompt)
+	}
+	resp, err := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
+		Model: model,
+		System: strings.Join([]string{
+			"You are an independent goal reviewer for a coding agent.",
+			"Review the actual workspace state against the goal.",
+			"Start with APPROVED or NEEDS_REVISION.",
+			"If revision is needed, identify exact fixes or verification gaps.",
+		}, "\n"),
+		Messages: []Message{{
+			Role: "user",
+			Text: prompt,
+		}},
+		MaxTokens:   min(768, max(256, rt.cfg.MaxTokens/3)),
+		Temperature: 0.1,
+		WorkingDir:  rt.session.WorkingDir,
+	})
+	if err != nil {
+		return rt.runGoalAgentReply(ctx, prompt+"\n\nReviewer provider failed: "+err.Error()+"\nRun the review/fix pass with the main agent now.")
+	}
+	return strings.TrimSpace(resp.Message.Text), nil
 }
 
 func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
@@ -448,6 +441,23 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 	b.WriteString("4. Keep user changes intact and avoid unrelated refactors.\n")
 	b.WriteString("5. Run narrow tests or checks when useful before you return.\n")
 	b.WriteString("6. If you find a blocker, record the exact blocker and the next repair action.\n\n")
+	if len(goal.CompletionCriteria) > 0 {
+		b.WriteString("Completion criteria:\n")
+		for _, item := range goal.CompletionCriteria {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+		b.WriteString("\n")
+	}
+	if goal.LastProgress != nil {
+		b.WriteString("Latest progress ledger:\n")
+		fmt.Fprintf(&b, "- Score: %d\n", goal.LastProgress.Score)
+		fmt.Fprintf(&b, "- No-progress count: %d\n", goal.NoProgressCount)
+		fmt.Fprintf(&b, "- Repeated failure count: %d\n", goal.RepeatedFailureCount)
+		for _, signal := range limitStrings(goal.LastProgress.Signals, 6) {
+			fmt.Fprintf(&b, "- Signal: %s\n", signal)
+		}
+		b.WriteString("\n")
+	}
 	if goal.LastAudit != nil && (!goal.LastAudit.Ready || len(goal.LastAudit.Blockers) > 0 || len(goal.LastAudit.Warnings) > 0) {
 		b.WriteString("Latest completion audit state:\n")
 		fmt.Fprintf(&b, "- Status: %s ready=%t\n", goal.LastAudit.Status, goal.LastAudit.Ready)
@@ -465,15 +475,21 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 
 func buildGoalReviewPrompt(goal GoalState, iteration int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Autonomous goal review pass for iteration %d.\n\n", iteration)
+	fmt.Fprintf(&b, "Autonomous goal independent review pass for iteration %d.\n\n", iteration)
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
 	b.WriteString("Review the changes and implementation state as if doing a bug-finding code review.\n")
 	b.WriteString("Required behavior:\n")
 	b.WriteString("1. Inspect the actual diff or relevant files.\n")
 	b.WriteString("2. Look for correctness, security, stability, missing tests, and documentation gaps.\n")
-	b.WriteString("3. Fix any bug you find directly.\n")
+	b.WriteString("3. Start with APPROVED if the implementation can proceed to verification, or NEEDS_REVISION if a concrete fix is still required.\n")
 	b.WriteString("4. Do not ask the user whether to proceed.\n")
 	b.WriteString("5. Do not claim completion unless the state is ready for /verify and /completion-audit.\n")
+	if len(goal.CompletionCriteria) > 0 {
+		b.WriteString("\nCompletion criteria:\n")
+		for _, item := range goal.CompletionCriteria {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
 	return b.String()
 }
 
@@ -581,6 +597,14 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("status", goal.Status))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("iteration", fmt.Sprintf("%d", goal.Iteration)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_iterations", goalMaxIterationsLabel(goal.MaxIterations)))
+	if goal.TimeBudgetSeconds > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_budget", fmt.Sprintf("%ds", goal.TimeBudgetSeconds)))
+	}
+	if goal.LastProgress != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("progress_score", fmt.Sprintf("%d", goal.LastProgress.Score)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("no_progress", fmt.Sprintf("%d", goal.NoProgressCount)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("repeated_failure", fmt.Sprintf("%d", goal.RepeatedFailureCount)))
+	}
 	if goal.SourcePath != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("source", goal.SourcePath))
 	}
@@ -589,6 +613,10 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	}
 	if goal.LastError != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_error", goal.LastError))
+	}
+	if len(goal.CheckpointRefs) > 0 {
+		lastCheckpoint := goal.CheckpointRefs[len(goal.CheckpointRefs)-1]
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_checkpoint", lastCheckpoint.ID))
 	}
 	if len(goal.ArtifactRefs) > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("artifacts", strings.Join(goal.ArtifactRefs, ", ")))
@@ -649,6 +677,12 @@ func renderGoalMarkdown(goal GoalState) string {
 	fmt.Fprintf(&b, "Status: %s\n", goal.Status)
 	fmt.Fprintf(&b, "Iteration: %d\n", goal.Iteration)
 	fmt.Fprintf(&b, "Max iterations: %s\n", goalMaxIterationsLabel(goal.MaxIterations))
+	if goal.TimeBudgetSeconds > 0 {
+		fmt.Fprintf(&b, "Time budget: %ds\n", goal.TimeBudgetSeconds)
+	}
+	if goal.AutoRollback {
+		fmt.Fprintf(&b, "Auto rollback: true\n")
+	}
 	fmt.Fprintf(&b, "Created: %s\n", goal.CreatedAt.Format(time.RFC3339))
 	fmt.Fprintf(&b, "Updated: %s\n", goal.UpdatedAt.Format(time.RFC3339))
 	if !goal.CompletedAt.IsZero() {
@@ -658,6 +692,21 @@ func renderGoalMarkdown(goal GoalState) string {
 		fmt.Fprintf(&b, "Source: %s\n", goal.SourcePath)
 	}
 	fmt.Fprintf(&b, "\n## Objective\n\n%s\n", strings.TrimSpace(goal.Objective))
+	if len(goal.CompletionCriteria) > 0 {
+		fmt.Fprintf(&b, "\n## Completion Criteria\n\n")
+		for _, item := range goal.CompletionCriteria {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
+	if goal.LastProgress != nil {
+		fmt.Fprintf(&b, "\n## Progress Ledger\n\n")
+		fmt.Fprintf(&b, "- Score: %d\n", goal.LastProgress.Score)
+		fmt.Fprintf(&b, "- No-progress count: %d\n", goal.NoProgressCount)
+		fmt.Fprintf(&b, "- Repeated failure count: %d\n", goal.RepeatedFailureCount)
+		for _, signal := range goal.LastProgress.Signals {
+			fmt.Fprintf(&b, "- Signal: %s\n", signal)
+		}
+	}
 	if goal.LastAudit != nil {
 		fmt.Fprintf(&b, "\n## Latest Audit\n\n")
 		fmt.Fprintf(&b, "- ID: %s\n", valueOrUnset(goal.LastAudit.ID))
@@ -673,18 +722,39 @@ func renderGoalMarkdown(goal GoalState) string {
 	if goal.LastError != "" {
 		fmt.Fprintf(&b, "\n## Last Error\n\n%s\n", goal.LastError)
 	}
+	if len(goal.CheckpointRefs) > 0 {
+		fmt.Fprintf(&b, "\n## Checkpoints\n\n")
+		for _, ref := range goal.CheckpointRefs {
+			fmt.Fprintf(&b, "- Iteration %d: %s [%s] %s\n", ref.Iteration, valueOrUnset(ref.ID), valueOrUnset(ref.Status), ref.Name)
+		}
+	}
 	if len(goal.Iterations) > 0 {
 		fmt.Fprintf(&b, "\n## Iterations\n\n")
 		for _, iteration := range goal.Iterations {
 			fmt.Fprintf(&b, "### %d. %s\n\n", iteration.Index, valueOrUnset(iteration.Status))
+			if iteration.CheckpointID != "" {
+				fmt.Fprintf(&b, "- Checkpoint: %s (%s)\n", iteration.CheckpointID, iteration.CheckpointName)
+			}
+			if iteration.ReviewerVerdict != "" {
+				fmt.Fprintf(&b, "- Reviewer: %s\n", iteration.ReviewerVerdict)
+			}
 			if iteration.Verification != "" {
 				fmt.Fprintf(&b, "- Verification: %s\n", iteration.Verification)
 			}
 			if iteration.AuditStatus != "" {
 				fmt.Fprintf(&b, "- Audit: %s ready=%t\n", iteration.AuditStatus, iteration.AuditReady)
 			}
+			if iteration.Progress != nil {
+				fmt.Fprintf(&b, "- Progress score: %d\n", iteration.Progress.Score)
+				for _, signal := range iteration.Progress.Signals {
+					fmt.Fprintf(&b, "- Progress: %s\n", signal)
+				}
+			}
 			if iteration.RecoveryStatus != "" {
 				fmt.Fprintf(&b, "- Recovery: %s\n", iteration.RecoveryStatus)
+			}
+			if iteration.RollbackStatus != "" {
+				fmt.Fprintf(&b, "- Rollback: %s\n", iteration.RollbackStatus)
 			}
 			if iteration.Error != "" {
 				fmt.Fprintf(&b, "- Error: %s\n", iteration.Error)
@@ -824,6 +894,18 @@ func (g *GoalState) Normalize() {
 	if g.MaxIterations < 0 {
 		g.MaxIterations = defaultGoalMaxIterations
 	}
+	if g.TimeBudgetSeconds < 0 {
+		g.TimeBudgetSeconds = 0
+	}
+	g.CompletionCriteria = normalizeTaskStateList(g.CompletionCriteria, 16)
+	for i := range g.CheckpointRefs {
+		g.CheckpointRefs[i].Normalize()
+	}
+	g.CheckpointRefs = normalizeGoalCheckpointRefs(g.CheckpointRefs, 32)
+	for i := range g.CommandHistory {
+		g.CommandHistory[i].Normalize()
+	}
+	g.CommandHistory = normalizeGoalCommandRecords(g.CommandHistory, 64)
 	for i := range g.Iterations {
 		g.Iterations[i].Normalize()
 	}
@@ -834,6 +916,17 @@ func (g *GoalState) Normalize() {
 	if g.LastAudit != nil {
 		g.LastAudit.Blockers = normalizeTaskStateList(g.LastAudit.Blockers, 16)
 		g.LastAudit.Warnings = normalizeTaskStateList(g.LastAudit.Warnings, 16)
+	}
+	if g.LastProgress != nil {
+		g.LastProgress.Normalize()
+	}
+	g.LastProgressFingerprint = strings.TrimSpace(g.LastProgressFingerprint)
+	if g.NoProgressCount < 0 {
+		g.NoProgressCount = 0
+	}
+	g.LastFailureSignature = strings.TrimSpace(g.LastFailureSignature)
+	if g.RepeatedFailureCount < 0 {
+		g.RepeatedFailureCount = 0
 	}
 }
 
@@ -849,15 +942,29 @@ func (i *GoalIteration) Normalize() {
 		return
 	}
 	i.Status = strings.TrimSpace(strings.ToLower(i.Status))
+	i.CheckpointID = strings.TrimSpace(i.CheckpointID)
+	i.CheckpointName = strings.TrimSpace(i.CheckpointName)
 	i.ImplementReply = compactPromptSection(strings.TrimSpace(i.ImplementReply), 1200)
 	i.ReviewReply = compactPromptSection(strings.TrimSpace(i.ReviewReply), 1200)
+	i.ReviewerVerdict = strings.TrimSpace(strings.ToLower(i.ReviewerVerdict))
+	i.ReviewerFeedback = compactPromptSection(strings.TrimSpace(i.ReviewerFeedback), 1200)
+	i.RepairReply = compactPromptSection(strings.TrimSpace(i.RepairReply), 1200)
 	i.ReplySummary = compactPromptSection(strings.TrimSpace(i.ReplySummary), 1600)
 	i.Verification = strings.TrimSpace(i.Verification)
 	i.AuditStatus = strings.TrimSpace(i.AuditStatus)
 	i.RecoveryStatus = strings.TrimSpace(i.RecoveryStatus)
+	i.RollbackStatus = strings.TrimSpace(i.RollbackStatus)
 	i.Error = compactPromptSection(strings.TrimSpace(i.Error), 600)
+	if i.Progress != nil {
+		i.Progress.Normalize()
+	}
+	i.ChangedFiles = normalizeTaskStateList(i.ChangedFiles, 64)
 	i.Blockers = normalizeTaskStateList(i.Blockers, 16)
 	i.Warnings = normalizeTaskStateList(i.Warnings, 16)
+	for index := range i.Commands {
+		i.Commands[index].Normalize()
+	}
+	i.Commands = normalizeGoalCommandRecords(i.Commands, 16)
 }
 
 func goalStatusTerminal(status string) bool {

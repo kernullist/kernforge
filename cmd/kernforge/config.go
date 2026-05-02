@@ -2099,8 +2099,15 @@ func HelpDetail(topic string) (string, bool) {
 /goal start @GOAL.md
 /goal start --file GOAL.md
 - Create an autonomous Codex-style goal from inline text or a markdown file and immediately run it.
-- Kernforge asks the agent to inspect, implement, review, verify, and fix bugs without user intervention.
+- Kernforge primes an acceptance contract, task graph, completion criteria, progress ledger, and per-iteration checkpoint when checkpoint storage is configured.
+- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, and fix bugs without user intervention.
 - Each loop iteration runs the agent, /verify --full, /completion-audit, and when needed /recover execute-safe.
+
+/goal start --max-iterations N <objective>
+/goal start --until-complete <objective>
+/goal start --time-budget 10m <objective>
+/goal start --rollback-on-regression <objective>
+- Tune stop and recovery policy. The loop also stops on repeated no-progress or repeated failure signatures.
 
 /goal start --no-run <objective>
 - Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.

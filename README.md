@@ -201,9 +201,11 @@ Its current differentiators are:
 - `/goal start @GOAL.md` and `kernforge -goal-file GOAL.md` load the objective from a markdown file
 - `kernforge -goal "..."` runs the same loop without entering the REPL
 - Each iteration asks the agent to inspect, develop, modify, review its own changes, and fix bugs without asking the user for confirmation
+- The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
 - Kernforge then runs `/verify --full`, `/completion-audit`, and if needed `/recover execute-safe` before the next iteration
-- The loop stops only when the completion audit is ready, the goal is canceled, or an unrecoverable blocker such as provider failure or iteration cap is recorded
+- The loop stops only when the completion audit is ready, the goal is canceled, or an unrecoverable blocker such as provider failure, iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
+- Use `--time-budget 10m`, `--until-complete`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
 - `/goal status`, `/goal audit`, `/goal run`, and `/goal cancel` inspect, re-audit, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing

@@ -202,6 +202,8 @@ Useful commands:
 - `/goal "add the missing recovery tests and update docs"`
 - `/goal start @GOAL.md`
 - `/goal start --file GOAL.md --max-iterations 12`
+- `/goal start --time-budget 10m --until-complete @GOAL.md`
+- `/goal start --rollback-on-regression "finish the refactor and keep verification green"`
 - `/goal start --no-run @GOAL.md`
 - `/goal run latest`
 - `/goal status`
@@ -213,12 +215,15 @@ Useful commands:
 Current behavior:
 1. `/goal` creates a `GoalState` in the session and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`.
 2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag.
-3. Each iteration sends an implementation prompt and then a bug-finding review prompt to the agent.
-4. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
-5. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, and if the audit is not ready, runs `/recover execute-safe` before the next iteration.
-6. The loop completes only when the completion audit is `ready=true`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, or stopped by the configured iteration cap.
-7. `/goal run` resumes a pending or blocked goal from the latest persisted state.
-8. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass.
+3. Goal start primes an acceptance contract, task graph, completion criteria, and status artifact before execution.
+4. Each iteration records a checkpoint when checkpoint storage is configured, sends an implementation prompt, then runs an independent review verdict gate.
+5. A `NEEDS_REVISION` review triggers an automatic repair pass before verification.
+6. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
+7. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, and if the audit is not ready, runs `/recover execute-safe` before the next iteration.
+8. The progress ledger tracks changed files, verification, audit blockers/warnings, review verdicts, no-progress count, repeated failure signatures, and command history.
+9. The loop completes only when the completion audit is `ready=true`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, stopped by the configured iteration/time cap, or stopped by repeated no-progress/failure detection.
+10. `/goal run` resumes a pending or blocked goal from the latest persisted state.
+11. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass.
 
 ### Local Automations MVP
 
