@@ -520,7 +520,7 @@ func TestExecuteShardSoftFailsWorkerProviderErrorWithShardAndModel(t *testing.T)
 	}
 }
 
-func TestProjectAnalyzerSerializesDefaultSingleModelRoute(t *testing.T) {
+func TestProjectAnalyzerSerializesDefaultLocalModelRoute(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {
 		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
@@ -534,8 +534,8 @@ func TestProjectAnalyzerSerializesDefaultSingleModelRoute(t *testing.T) {
 	}
 
 	cfg := DefaultConfig(root)
-	cfg.Provider = "openai"
-	cfg.Model = "one-model"
+	cfg.Provider = "ollama"
+	cfg.Model = "one-local-model"
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &singleRouteAnalysisClient{}
 	ws := Workspace{
@@ -551,7 +551,7 @@ func TestProjectAnalyzerSerializesDefaultSingleModelRoute(t *testing.T) {
 		t.Fatalf("expected multiple shards for concurrency guard, got %d", run.Summary.TotalShards)
 	}
 	if run.Summary.AgentCount != 1 {
-		t.Fatalf("expected default single model route to serialize, got agent count %d", run.Summary.AgentCount)
+		t.Fatalf("expected default local model route to serialize, got agent count %d", run.Summary.AgentCount)
 	}
 	if client.concurrentFailures != 0 || client.maxActive != 1 {
 		t.Fatalf("expected no overlapping provider calls, failures=%d max_active=%d", client.concurrentFailures, client.maxActive)
@@ -561,7 +561,65 @@ func TestProjectAnalyzerSerializesDefaultSingleModelRoute(t *testing.T) {
 	}
 }
 
-func TestProjectAnalyzerSerializesDefaultSingleModelRouteForRootCause(t *testing.T) {
+func TestProjectAnalyzerDoesNotForceCloudSharedRouteToSerial(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai"
+	cfg.Model = "one-cloud-model"
+	cfg.ProjectAnalysis.MinAgents = 8
+	cfg.ProjectAnalysis.MaxAgents = 8
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, nil, ws, nil, nil)
+	got := analyzer.effectiveShardConcurrency(8, 8, "map")
+	if got != 4 {
+		t.Fatalf("expected shared cloud route to follow default route limit 4 instead of serializing, got %d", got)
+	}
+}
+
+func TestProjectAnalyzerCapsExplicitAgentConfigToLocalRouteLimit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 6; i++ {
+		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir pkg%d: %v", i, err)
+		}
+		body := fmt.Sprintf("package pkg%d\n\nfunc Run%d() int {\n\treturn %d\n}\n", i, i, i)
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.go", i)), []byte(body), 0o644); err != nil {
+			t.Fatalf("write file%d.go: %v", i, err)
+		}
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.Provider = "ollama"
+	cfg.Model = "one-local-model"
+	cfg.ProjectAnalysis.MinAgents = 4
+	cfg.ProjectAnalysis.MaxAgents = 4
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
+	client := &singleRouteAnalysisClient{}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, client, ws, nil, nil)
+	run, err := analyzer.Run(context.Background(), "map the project", "map")
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if run.Summary.TotalShards < 2 {
+		t.Fatalf("expected multiple shards for concurrency guard, got %d", run.Summary.TotalShards)
+	}
+	if run.Summary.AgentCount != 1 {
+		t.Fatalf("expected local route limit to cap explicit agent config, got agent count %d", run.Summary.AgentCount)
+	}
+	if client.concurrentFailures != 0 || client.maxActive != 1 {
+		t.Fatalf("expected no overlapping provider calls, failures=%d max_active=%d", client.concurrentFailures, client.maxActive)
+	}
+}
+
+func TestProjectAnalyzerSerializesDefaultLocalModelRouteForRootCause(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {
 		dir := filepath.Join(root, fmt.Sprintf("pkg%d", i))
@@ -575,8 +633,8 @@ func TestProjectAnalyzerSerializesDefaultSingleModelRouteForRootCause(t *testing
 	}
 
 	cfg := DefaultConfig(root)
-	cfg.Provider = "openai"
-	cfg.Model = "one-model"
+	cfg.Provider = "ollama"
+	cfg.Model = "one-local-model"
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &singleRouteAnalysisClient{}
 	ws := Workspace{
@@ -592,10 +650,107 @@ func TestProjectAnalyzerSerializesDefaultSingleModelRouteForRootCause(t *testing
 		t.Fatalf("expected multiple root-cause shards for concurrency guard, got %d", run.Summary.TotalShards)
 	}
 	if run.Summary.AgentCount != 1 {
-		t.Fatalf("expected default single model root-cause route to serialize, got agent count %d", run.Summary.AgentCount)
+		t.Fatalf("expected default local model root-cause route to serialize, got agent count %d", run.Summary.AgentCount)
 	}
 	if client.concurrentFailures != 0 || client.maxActive != 1 {
 		t.Fatalf("expected no overlapping provider calls, failures=%d max_active=%d", client.concurrentFailures, client.maxActive)
+	}
+}
+
+func TestCreateProviderClientFromProfileInheritsMainBaseURLForSameProvider(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "lmstudio"
+	cfg.Model = "main-local"
+	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
+
+	client, err := createProviderClientFromProfile(Profile{
+		Provider: "lmstudio",
+		Model:    "worker-local",
+	}, cfg)
+	if err != nil {
+		t.Fatalf("createProviderClientFromProfile: %v", err)
+	}
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected analysis role client to expose route metadata, got %T", client)
+	}
+	meta := metaProvider.ModelRouteMetadata()
+	want := normalizeProviderBaseURL("lmstudio", cfg.BaseURL)
+	if meta.BaseURL != want {
+		t.Fatalf("expected analysis role client to inherit main base URL %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestNormalizeConfigPathsPreservesAnalysisRoleEmptyBaseURLForInheritance(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "lmstudio"
+	cfg.Model = "main-local"
+	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{
+		Provider: "lmstudio",
+		Model:    "worker-local",
+	}
+
+	normalizeConfigPaths(&cfg)
+	if cfg.ProjectAnalysis.WorkerProfile == nil {
+		t.Fatalf("expected worker profile")
+	}
+	if cfg.ProjectAnalysis.WorkerProfile.BaseURL != "" {
+		t.Fatalf("expected empty worker base URL to remain inheritable, got %q", cfg.ProjectAnalysis.WorkerProfile.BaseURL)
+	}
+
+	client, err := createProviderClientFromProfile(*cfg.ProjectAnalysis.WorkerProfile, cfg)
+	if err != nil {
+		t.Fatalf("createProviderClientFromProfile: %v", err)
+	}
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected analysis role client to expose route metadata, got %T", client)
+	}
+	meta := metaProvider.ModelRouteMetadata()
+	want := normalizeProviderBaseURL("lmstudio", cfg.BaseURL)
+	if meta.BaseURL != want {
+		t.Fatalf("expected normalized analysis role to inherit main base URL %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestCreateProviderClientFromProfileUsesProfileBaseURLOverride(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "lmstudio"
+	cfg.Model = "main-local"
+	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
+	override := "http://127.0.0.1:8766/v1/"
+
+	client, err := createProviderClientFromProfile(Profile{
+		Provider: "lmstudio",
+		Model:    "worker-local",
+		BaseURL:  override,
+	}, cfg)
+	if err != nil {
+		t.Fatalf("createProviderClientFromProfile: %v", err)
+	}
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected analysis role client to expose route metadata, got %T", client)
+	}
+	meta := metaProvider.ModelRouteMetadata()
+	want := normalizeProviderBaseURL("lmstudio", override)
+	if meta.BaseURL != want {
+		t.Fatalf("expected analysis role client base URL override %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestAnalysisRouteForProfileMatchesInheritedBaseURL(t *testing.T) {
+	route := analysisRouteForProfile(&Profile{
+		Provider: "lmstudio",
+		Model:    "worker-local",
+	}, "lmstudio", "main-local", "http://127.0.0.1:8765/v1/")
+	want := normalizeModelRouteBaseURL("lmstudio", "http://127.0.0.1:8765/v1/")
+	if route.BaseURL != want {
+		t.Fatalf("expected same-provider analysis route to inherit base URL %q, got %q", want, route.BaseURL)
+	}
+	if !strings.Contains(route.Label, want) {
+		t.Fatalf("expected route label to include inherited base URL %q, got %q", want, route.Label)
 	}
 }
 

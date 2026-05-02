@@ -56,6 +56,32 @@ func TestVerificationGapSuggestionFromChangedPaths(t *testing.T) {
 	}
 }
 
+func TestFailedVerificationSuggestionUsesRecoverBrief(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastVerification = &VerificationReport{
+		GeneratedAt: time.Now(),
+		Workspace:   root,
+		Steps: []VerificationStep{{
+			Label:       "go test",
+			Command:     "go test ./...",
+			Status:      VerificationFailed,
+			FailureKind: "test_failure",
+			Output:      "FAIL package",
+		}},
+	}
+	items := BuildProactiveSuggestions(SituationSnapshot{}, ProactiveSources{Session: session})
+	for _, item := range items {
+		if item.Type == "inspect_failure" {
+			if item.Command != "/recover" {
+				t.Fatalf("expected failed verification suggestion to use /recover, got %#v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected inspect_failure suggestion, got %#v", items)
+}
+
 func TestFuzzCrashWithoutMinimizationSuggestion(t *testing.T) {
 	root := t.TempDir()
 	store := &FuzzCampaignStore{Path: filepath.Join(root, "campaigns.json")}

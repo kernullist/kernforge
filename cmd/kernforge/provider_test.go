@@ -101,6 +101,76 @@ func TestLocalOpenAICompatibleClientOmitsAuthorizationWithoutAPIKey(t *testing.T
 	}
 }
 
+func TestOpenAIClientRetriesJSONModeWithoutResponseFormatWhenUnsupported(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := body["response_format"]; !ok {
+				t.Fatalf("expected first request to include response_format")
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"unsupported parameter: response_format","type":"invalid_request_error","param":"response_format"}}`))
+			return
+		}
+		if _, ok := body["response_format"]; ok {
+			t.Fatalf("expected fallback request to omit response_format")
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "local-model",
+		Messages: []Message{{
+			Role: "user",
+			Text: "return json",
+		}},
+		JSONMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected two attempts, got %d", attempts)
+	}
+	if !strings.Contains(resp.Message.Text, `"ok":true`) {
+		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestProviderErrorSuggestsJSONModeUnsupportedIgnoresRequestSummaryOnly(t *testing.T) {
+	err := &ProviderAPIError{
+		Provider:       "openai",
+		StatusCode:     http.StatusBadRequest,
+		Message:        "model not found",
+		RequestSummary: `{"response_format":{"type":"json_object"}}`,
+	}
+	if providerErrorSuggestsJSONModeUnsupported(err) {
+		t.Fatalf("expected request summary alone not to trigger JSON-mode fallback")
+	}
+}
+
+func TestProviderErrorSuggestsJSONModeUnsupportedFromStructuredParam(t *testing.T) {
+	err := &ProviderAPIError{
+		Provider:   "openai",
+		StatusCode: http.StatusBadRequest,
+		Message:    "unsupported parameter",
+		Param:      "response_format",
+	}
+	if !providerErrorSuggestsJSONModeUnsupported(err) {
+		t.Fatalf("expected response_format param to trigger JSON-mode fallback")
+	}
+}
+
 func TestOpenAICompatibleClientsReportProviderName(t *testing.T) {
 	cases := []struct {
 		provider string

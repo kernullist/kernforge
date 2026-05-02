@@ -627,6 +627,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 				}
 				a.finalizePatchTransactionOnReturn()
+				a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
@@ -932,6 +933,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						if resolution == AutoVerifyFailureRetry && !autoVerifyRetryAttempted {
 							autoVerifyRetryAttempted = true
+							a.recordEditLoopRetry("Retry automatic verification after tool-path update.", report.FailureSummary())
 							if a.EmitProgress != nil {
 								a.EmitProgress("Verification tool path updated. Retrying automatic verification...")
 							}
@@ -951,6 +953,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							unresolvedVerification = false
 							autoVerifyInfraFailureCount = 0
 							autoVerifyDisabledAfterPrompt = true
+							a.recordEditLoopRisk("Automatic verification disabled after tool startup failure.", report.FailureSummary())
 							if a.EmitProgress != nil {
 								a.EmitProgress("Automatic verification was disabled after repeated tool-path verification failures.")
 							}
@@ -971,6 +974,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							text += "\n\nSuggested repair strategy:\n" + repairGuidance
 						}
 						text = a.appendFailureRepairPrompt(text)
+						if decision := a.recordEditLoopRetry("Verification failed; continue the repair loop.", strings.Join([]string{failureSummary, repairGuidance}, "\n")); decision != nil {
+							if policy := editLoopRetryDecisionPrompt(*decision); policy != "" {
+								text += "\n\nRetry loop policy:\n" + policy
+							}
+						}
 						a.Session.AddMessage(Message{
 							Role: "user",
 							Text: text,
@@ -2456,6 +2464,19 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\nActive patch transaction:\n")
 			b.WriteString(txText)
 			b.WriteString("\n")
+		}
+	}
+	if a.Session.ActiveEditLoop != nil {
+		if loopText := strings.TrimSpace(a.Session.ActiveEditLoop.RenderPromptSection()); loopText != "" {
+			b.WriteString("\nActive apply/verify/retry ledger:\n")
+			b.WriteString(loopText)
+			b.WriteString("\n")
+			if contractText := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(a.Session.ActiveEditLoop)); contractText != "" {
+				b.WriteString("Expected final answer outcome contract:\n")
+				b.WriteString(contractText)
+				b.WriteString("\n")
+			}
+			b.WriteString("Use this ledger before final answers: connect what changed, worker evidence, verification outcome, retry state, final review, and any remaining risk in one coherent summary.\n")
 		}
 	}
 	if a.Session.LastCodingHarnessReport != nil {

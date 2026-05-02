@@ -406,6 +406,28 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	if session.LastVerification == nil || session.LastVerification.HasFailures() {
 		t.Fatalf("expected final verification report to be passing, got %#v", session.LastVerification)
 	}
+	if session.ActiveEditLoop != nil {
+		t.Fatalf("expected edit loop to be finalized, got %#v", session.ActiveEditLoop)
+	}
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected finalized edit-loop ledger")
+	}
+	loop := session.EditLoops[0]
+	if loop.Status != editLoopStatusCompleted {
+		t.Fatalf("expected completed edit-loop status, got %#v", loop)
+	}
+	if loop.VerificationStatus != "passed" {
+		t.Fatalf("expected passing verification in edit loop, got %#v", loop)
+	}
+	if loop.RetryCount == 0 {
+		t.Fatalf("expected failed verification retry to be recorded, got %#v", loop)
+	}
+	if !slices.Contains(loop.ChangedPaths, "main.go") {
+		t.Fatalf("expected changed path in edit loop, got %#v", loop.ChangedPaths)
+	}
+	if len(loop.RemainingRisks) != 0 {
+		t.Fatalf("expected passing retry to clear stale verification risks, got %#v", loop.RemainingRisks)
+	}
 }
 
 func TestAgentAnalysisOnlyRequestHidesEditTools(t *testing.T) {
@@ -3376,6 +3398,111 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	}
 	if session.TaskState == nil || session.TaskState.FinalReviewVerdict != "approved" {
 		t.Fatalf("expected final review verdict to be approved, got %#v", session.TaskState)
+	}
+}
+
+func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
+	root := t.TempDir()
+	mainProvider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "1. Update main.go\n2. Run focused verification\n3. Summarize changes and remaining risk",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Updated main.go, go test ./... passed, and no remaining blockers were recorded.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe execution plan is sound.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "APPROVED\nThe final answer ties the edit to verification and remaining risk.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model: "model",
+		},
+		Client:         mainProvider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Status: VerificationPassed,
+					Output: "ok",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.go and verify the result")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "go test ./... passed") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	var finalReviewPrompt string
+	for _, req := range reviewer.requests {
+		if len(req.Messages) == 0 {
+			continue
+		}
+		text := req.Messages[len(req.Messages)-1].Text
+		if strings.Contains(text, "Proposed final answer:") {
+			finalReviewPrompt = text
+		}
+	}
+	if finalReviewPrompt == "" {
+		t.Fatalf("expected final-review prompt, got %#v", reviewer.requests)
+	}
+	for _, want := range []string{
+		"Apply/verify/retry ledger:",
+		"Expected final answer outcome contract:",
+		"main.go",
+		"Verification [passed]",
+		"Worker/apply summary",
+	} {
+		if !strings.Contains(finalReviewPrompt, want) {
+			t.Fatalf("expected final-review prompt to include %q, got:\n%s", want, finalReviewPrompt)
+		}
+	}
+	if session.ActiveEditLoop != nil {
+		t.Fatalf("expected edit loop to be finalized after return, got %#v", session.ActiveEditLoop)
+	}
+	if len(session.EditLoops) == 0 || session.EditLoops[0].FinalReviewVerdict != "approved" {
+		t.Fatalf("expected approved final review in edit loop, got %#v", session.EditLoops)
 	}
 }
 

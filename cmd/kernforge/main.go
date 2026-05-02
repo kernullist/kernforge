@@ -64,6 +64,7 @@ type runtimeState struct {
 	clientErr                  error
 	workspace                  Workspace
 	detectVerificationToolPath func(string) string
+	goalReply                  func(context.Context, string) (string, error)
 	interactive                bool
 	outputMu                   sync.Mutex
 	footerVisible              bool
@@ -124,6 +125,14 @@ func run(args []string) error {
 		viewerFileFlag    string
 		viewerResultFlag  string
 		promptFlag        string
+		commandFlag       string
+		goalFlag          string
+		goalFileFlag      string
+		goalMaxIterations int
+		goalTimeBudget    string
+		goalTokenBudget   int
+		goalUntilComplete bool
+		goalAutoRollback  bool
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
@@ -142,6 +151,14 @@ func run(args []string) error {
 	fs.StringVar(&viewerFileFlag, "viewer-file", "", "internal viewer file path")
 	fs.StringVar(&viewerResultFlag, "viewer-result-file", "", "internal viewer result path")
 	fs.StringVar(&promptFlag, "prompt", "", "single prompt mode")
+	fs.StringVar(&commandFlag, "command", "", "single slash command mode")
+	fs.StringVar(&goalFlag, "goal", "", "autonomous goal objective")
+	fs.StringVar(&goalFileFlag, "goal-file", "", "markdown file containing an autonomous goal objective")
+	fs.IntVar(&goalMaxIterations, "goal-max-iterations", -1, "maximum autonomous goal iterations")
+	fs.StringVar(&goalTimeBudget, "goal-time-budget", "", "autonomous goal time budget, for example 10m")
+	fs.IntVar(&goalTokenBudget, "goal-token-budget", 0, "autonomous goal token budget estimate")
+	fs.BoolVar(&goalUntilComplete, "goal-until-complete", false, "run autonomous goal until completion gates approve")
+	fs.BoolVar(&goalAutoRollback, "goal-rollback-on-regression", false, "rollback autonomous goal checkpoints after repeated regression blockers")
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
@@ -248,6 +265,14 @@ func run(args []string) error {
 	if strings.TrimSpace(imageFlag) != "" && strings.TrimSpace(promptFlag) == "" {
 		return fmt.Errorf("-image requires -prompt; use @path/to/image.png in the interactive prompt")
 	}
+	if strings.TrimSpace(promptFlag) != "" && strings.TrimSpace(commandFlag) != "" {
+		return fmt.Errorf("-prompt and -command cannot be used together")
+	}
+	if strings.TrimSpace(goalFlag) != "" || strings.TrimSpace(goalFileFlag) != "" {
+		if strings.TrimSpace(promptFlag) != "" || strings.TrimSpace(commandFlag) != "" {
+			return fmt.Errorf("-goal/-goal-file cannot be combined with -prompt or -command")
+		}
+	}
 	cliImages, err := parseImageInputList(sess.WorkingDir, imageFlag)
 	if err != nil {
 		return err
@@ -272,7 +297,7 @@ func run(args []string) error {
 		autoCP:         &AutoCheckpointController{},
 		verifyHistory:  NewVerificationHistoryStore(),
 		modelRoutes:    defaultModelRouteScheduler(),
-		interactive:    promptFlag == "",
+		interactive:    promptFlag == "" && commandFlag == "",
 	}
 	defer rt.closeExtensions()
 
@@ -352,6 +377,24 @@ func run(args []string) error {
 	if promptFlag != "" {
 		return rt.runSinglePrompt(promptFlag, cliImages)
 	}
+	if commandFlag != "" {
+		return rt.runSingleCommand(commandFlag)
+	}
+	if strings.TrimSpace(goalFlag) != "" || strings.TrimSpace(goalFileFlag) != "" {
+		if goalMaxIterations < -1 {
+			return fmt.Errorf("-goal-max-iterations must be zero or greater")
+		}
+		if goalTokenBudget < 0 {
+			return fmt.Errorf("-goal-token-budget must be zero or greater")
+		}
+		return rt.runSingleGoal(goalFlag, goalFileFlag, singleGoalOptions{
+			MaxIterations: goalMaxIterations,
+			TimeBudget:    goalTimeBudget,
+			TokenBudget:   goalTokenBudget,
+			UntilComplete: goalUntilComplete,
+			AutoRollback:  goalAutoRollback,
+		})
+	}
 	return rt.runREPL()
 }
 
@@ -419,6 +462,58 @@ func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) er
 	return nil
 }
 
+func (rt *runtimeState) runSingleCommand(command string) error {
+	line := strings.TrimSpace(command)
+	if line == "" {
+		return fmt.Errorf("-command requires a slash command or !shell command")
+	}
+	if strings.HasPrefix(line, "!") {
+		return rt.runShell(strings.TrimPrefix(line, "!"))
+	}
+	cmd, ok := ParseCommand(line)
+	if !ok {
+		return fmt.Errorf("-command only accepts slash commands or !shell commands: %s", command)
+	}
+	_, err := rt.handleCommand(cmd)
+	return err
+}
+
+type singleGoalOptions struct {
+	MaxIterations int
+	TimeBudget    string
+	TokenBudget   int
+	UntilComplete bool
+	AutoRollback  bool
+}
+
+func (rt *runtimeState) runSingleGoal(objective string, filePath string, options ...singleGoalOptions) error {
+	fields := []string{}
+	if len(options) > 0 {
+		option := options[0]
+		if option.UntilComplete {
+			fields = append(fields, "--until-complete")
+		} else if option.MaxIterations >= 0 {
+			fields = append(fields, "--max-iterations", strconv.Itoa(option.MaxIterations))
+		}
+		if strings.TrimSpace(option.TimeBudget) != "" {
+			fields = append(fields, "--time-budget", strings.TrimSpace(option.TimeBudget))
+		}
+		if option.TokenBudget > 0 {
+			fields = append(fields, "--token-budget", strconv.Itoa(option.TokenBudget))
+		}
+		if option.AutoRollback {
+			fields = append(fields, "--rollback-on-regression")
+		}
+	}
+	if strings.TrimSpace(filePath) != "" {
+		fields = append(fields, "--file", strings.TrimSpace(filePath))
+	}
+	if strings.TrimSpace(objective) != "" {
+		fields = append(fields, strings.TrimSpace(objective))
+	}
+	return rt.handleGoalStart(fields)
+}
+
 func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 	if !rt.interactive {
 		return true, nil
@@ -477,6 +572,7 @@ func (rt *runtimeState) redrawScreen() {
 
 func (rt *runtimeState) runREPL() error {
 	rt.redrawScreen()
+	rt.printAutomationStartupNotice(time.Now())
 
 	for {
 		nextTurn := rt.promptTurn + 1
@@ -1510,6 +1606,7 @@ func (rt *runtimeState) runShell(command string) error {
 	if strings.TrimSpace(out) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.shell(out))
 	}
+	rt.noteLocalShellCommand(trimmed, out, err)
 	return err
 }
 
@@ -2757,7 +2854,7 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			Name:     profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
 			Provider: rt.cfg.PlanReview.Provider,
 			Model:    rt.cfg.PlanReview.Model,
-			BaseURL:  normalizeProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
 			APIKey:   rt.cfg.PlanReview.APIKey,
 		}
 	}
@@ -2778,7 +2875,7 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			Name:     strings.TrimSpace(profile.Name),
 			Provider: strings.TrimSpace(profile.Provider),
 			Model:    strings.TrimSpace(profile.Model),
-			BaseURL:  normalizeProfileBaseURL(profile.Provider, profile.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL),
 			APIKey:   strings.TrimSpace(profile.APIKey),
 		})
 	}
@@ -2792,7 +2889,7 @@ func cloneProfile(profile *Profile) *Profile {
 	cloned := *profile
 	cloned.Provider = strings.TrimSpace(cloned.Provider)
 	cloned.Model = strings.TrimSpace(cloned.Model)
-	cloned.BaseURL = normalizeProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
 	if strings.TrimSpace(cloned.Name) == "" && strings.TrimSpace(cloned.Provider) != "" && strings.TrimSpace(cloned.Model) != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
@@ -2808,7 +2905,7 @@ func (rt *runtimeState) applyProfileRoleModels(profile Profile) {
 		rt.cfg.PlanReview = &PlanReviewConfig{
 			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
 			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
 			APIKey:   firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
 		}
 		rt.storeProviderKey(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.APIKey)
@@ -2844,7 +2941,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		profile.Name = strings.TrimSpace(profile.Name)
 		profile.Provider = strings.TrimSpace(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
-		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		if strings.TrimSpace(profile.APIKey) == "" {
 			profile.APIKey = rt.providerAPIKey(profile.Provider)
 		}
@@ -4802,6 +4899,46 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
 		}
+		if goal, ok := rt.session.ActiveGoal(); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal", goal.ID+" ["+goal.Status+"]"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal_iteration", fmt.Sprintf("%d", goal.Iteration)))
+		}
+		if rt.session.ActiveEditLoop != nil {
+			loop := *rt.session.ActiveEditLoop
+			loop.Normalize()
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Edit Loop"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("edit_loop", firstNonBlankString(loop.ID, "active")))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("edit_loop_status", valueOrUnset(loop.Status)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(loop.ChangedPaths))))
+			if len(loop.ChangedPaths) > 0 {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_changed", strings.Join(limitStrings(loop.ChangedPaths, 4), ", ")))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("worker_evidence", fmt.Sprintf("%d", len(loop.WorkerEvidence))))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification", valueOrUnset(firstNonBlankString(loop.VerificationStatus, loop.VerificationSummary))))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_evidence", fmt.Sprintf("%d", len(loop.VerificationEvidence))))
+			if loop.VerificationBundleID != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_bundle", loop.VerificationBundleID))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("retry_count", fmt.Sprintf("%d", loop.RetryCount)))
+			if len(loop.RetryDecisions) > 0 {
+				decision := loop.RetryDecisions[len(loop.RetryDecisions)-1]
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("retry_decision", valueOrUnset(decision.Action)))
+			}
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_risks", fmt.Sprintf("%d", len(loop.RemainingRisks))))
+			if loop.FinalReviewVerdict != "" {
+				fmt.Fprintln(rt.writer, rt.ui.statusKV("final_review", loop.FinalReviewVerdict))
+			}
+		} else if len(rt.session.EditLoops) > 0 {
+			loop := rt.session.EditLoops[0]
+			loop.Normalize()
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Edit Loop"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_edit_loop", loop.ID))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_edit_loop_status", valueOrUnset(loop.Status)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_verification", valueOrUnset(loop.VerificationStatus)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("last_remaining_risks", fmt.Sprintf("%d", len(loop.RemainingRisks))))
+		}
 		if rt.session.LastSelection != nil && rt.session.LastSelection.HasSelection() {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("selection", rt.session.LastSelection.Summary(rt.workspace.Root)))
 		}
@@ -4811,6 +4948,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("persistent_memory", fmt.Sprintf("%d", rt.persistentMemoryCount())),
 			kv("evidence_records", fmt.Sprintf("%d", rt.evidenceCount())),
 		)
+		automationSummary := summarizeAutomations(rt.session.Automations, time.Now())
+		if automationSummary.Total > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("automations", automationSummaryLine(automationSummary)))
+		}
 		if rt.investigations != nil {
 			if count, active, last, err := rt.investigations.Stats(rt.workspace.BaseRoot); err == nil {
 				fmt.Fprintln(rt.writer, rt.ui.statusKV("investigation_sessions", fmt.Sprintf("%d", count)))
@@ -4930,12 +5071,40 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSuggestDashboardHTMLCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "session-dashboard-html":
+		if err := rt.handleSessionDashboardHTMLCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "events":
+		if err := rt.handleEventsCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "continuity":
+		if err := rt.handleContinuityCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "completion-audit":
+		if err := rt.handleCompletionAuditCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "recover":
+		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "jobs":
+		if err := rt.handleJobsCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "automation":
 		if err := rt.handleAutomationCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "review-pr":
 		if err := rt.handlePRReviewAutomationCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "goal", "goals":
+		if err := rt.handleGoalCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "verify-dashboard":
@@ -5376,6 +5545,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.section("Sessions"))
 		for _, item := range items {
 			fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
+		}
+	case "handoff":
+		if err := rt.handleDelegationHandoffCommand(cmd.Args); err != nil {
+			return false, err
 		}
 	case "tasks":
 		if len(rt.session.Plan) == 0 {
@@ -7272,7 +7445,7 @@ func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
 		func(status string) {
 			fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
 		},
-		modelRequestPolicyFromConfig(rt.cfg),
+		modelRequestPolicyFromConfigWithScheduler(rt.cfg, rt.modelRoutes),
 	)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {

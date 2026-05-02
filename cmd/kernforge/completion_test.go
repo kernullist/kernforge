@@ -30,7 +30,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/checkpoint-auto of", wantBuffer: "/checkpoint-auto off "},
 		{input: "/locale-auto of", wantBuffer: "/locale-auto off "},
 		{input: "/set-auto-verify of", wantBuffer: "/set-auto-verify off "},
-		{input: "/worktree ", wantSuggest: []string{"/worktree status", "/worktree create", "/worktree leave", "/worktree cleanup"}},
+		{input: "/worktree ", wantSuggest: []string{"/worktree status", "/worktree list", "/worktree create", "/worktree enter", "/worktree attach", "/worktree leave", "/worktree cleanup"}},
 		{input: "/worktree cr", wantBuffer: "/worktree create "},
 		{input: "/specialists ", wantSuggest: []string{"/specialists status", "/specialists assign", "/specialists cleanup"}},
 		{input: "/specialists cl", wantBuffer: "/specialists cleanup "},
@@ -134,6 +134,8 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/eff", wantBuffer: "/effort "},
 		{input: "/codex-a", wantBuffer: "/codex-auth "},
 		{input: "/codex-l", wantBuffer: "/codex-login "},
+		{input: "/completion-a", wantBuffer: "/completion-audit "},
+		{input: "/recov", wantBuffer: "/recover "},
 	}
 
 	for _, tc := range cases {
@@ -384,6 +386,9 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 		"/mem":                                     "Show persistent memory and suggest confirm, promote, verify, or dashboard follow-up.",
 		"/checkpoint":                              "Create a rollback checkpoint and suggest diff or checkpoint-list follow-up.",
 		"/worktree":                                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
+		"/events":                                  "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
+		"/completion-audit":                        "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+		"/recover":                                 "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
 	}
 
 	for item, want := range cases {

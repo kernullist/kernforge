@@ -20,8 +20,15 @@ var slashCommands = []string{
 	"specialists",
 	"suggest",
 	"suggest-dashboard-html",
+	"session-dashboard-html",
+	"events",
+	"continuity",
+	"completion-audit",
+	"recover",
+	"jobs",
 	"automation",
 	"review-pr",
+	"goal",
 	"permissions",
 	"verify",
 	"verify-dashboard",
@@ -103,6 +110,7 @@ var slashCommands = []string{
 	"rename",
 	"session",
 	"sessions",
+	"handoff",
 	"tasks",
 	"diff",
 	"export",
@@ -134,8 +142,15 @@ var slashCommandDescriptions = map[string]string{
 	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
 	"suggest":                    "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
 	"suggest-dashboard-html":     "Render proactive situation judgment and suggestions in an HTML dashboard.",
-	"automation":                 "Manage reusable recurring verification and PR review automation slots.",
-	"review-pr":                  "Generate a local PR review automation report from git status and diff context.",
+	"session-dashboard-html":     "Render the current session thread, task graph, automation, and artifact state in an HTML dashboard.",
+	"events":                     "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
+	"continuity":                 "Write a long-task continuity packet with recovery actions, worktrees, jobs, changed files, and next commands.",
+	"completion-audit":           "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+	"recover":                    "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
+	"jobs":                       "Inspect or cancel persistent background shell jobs and bundles from the terminal.",
+	"automation":                 "Manage reusable scheduled verification and PR review automation slots.",
+	"review-pr":                  "Generate a PR review automation report, draft comments, and optionally post them through gh when explicit.",
+	"goal":                       "Run an autonomous Codex-style goal loop from a prompt or markdown file until audit-ready or blocked.",
 	"permissions":                "Inspect or change the session permission mode.",
 	"verify":                     "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
 	"verify-dashboard":           "Summarize recent verification history in the terminal.",
@@ -156,7 +171,7 @@ var slashCommandDescriptions = map[string]string{
 	"simulate":                   "Run anti-tamper simulation profiles and suggest verification or evidence follow-up.",
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
-	"find-root-cause":            "Analyze a reported problem with 1-8 worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
+	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
 	"simulate-dashboard-html":    "Render the simulation dashboard in HTML.",
@@ -217,6 +232,7 @@ var slashCommandDescriptions = map[string]string{
 	"rename":                     "Rename the current session.",
 	"session":                    "Show the current session metadata.",
 	"sessions":                   "List recent sessions.",
+	"handoff":                    "Generate a compact delegation handoff artifact for another agent or cloud task.",
 	"tasks":                      "Show the active plan and task progress.",
 	"diff":                       "Show the current workspace diff.",
 	"export":                     "Export the current session transcript or artifacts.",
@@ -411,9 +427,19 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	},
 	"worktree": {
 		"status":  "Show the current worktree isolation status and attached metadata.",
+		"list":    "List session, specialist, and git worktree records for continuity.",
 		"create":  "Create and attach an isolated git worktree for this session.",
+		"enter":   "Re-enter the recorded isolated worktree after leaving it.",
+		"attach":  "Attach an existing git worktree path to this session.",
 		"leave":   "Detach from the current isolated worktree without deleting it.",
 		"cleanup": "Remove the recorded isolated worktree after it is clean.",
+	},
+	"jobs": {
+		"status":        "Show persisted background shell jobs and bundles.",
+		"check":         "Poll one background job by id or latest.",
+		"bundle":        "Poll one background bundle by id or latest.",
+		"cancel":        "Cancel one background job by id or latest.",
+		"cancel-bundle": "Cancel one background bundle by id or latest.",
 	},
 	"specialists": {
 		"status":  "Show specialist profiles plus editable ownership and worktree assignments.",
@@ -693,7 +719,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},
-		"worktree":              {"status", "create", "leave", "cleanup"},
+		"worktree":              {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
+		"jobs":                  {"status", "check", "bundle", "cancel", "cancel-bundle"},
 		"specialists":           {"status", "assign", "cleanup"},
 		"provider":              {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"effort":                {"undefined", "minimal", "low", "medium", "high", "xhigh"},
@@ -705,6 +732,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
+		"review-pr":             {"--github", "--draft-comments", "--post-comments", "--resolve-thread", "--draft-issue", "--create-issue", "--label", "--assignee", "--milestone"},
+		"handoff":               {"import"},
 		"mem-prune":             {"all"},
 		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
@@ -714,6 +743,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"simulate":              {"status", "show", "list", "dashboard", "dashboard-html", "tamper-surface", "stealth-surface", "forensic-blind-spot"},
 		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
+		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
 
@@ -752,6 +782,17 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "worktree":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
+		}
+		return nil, 0, false
+	case "jobs":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "check") || strings.EqualFold(fields[0], "job") || strings.EqualFold(fields[0], "cancel")) {
+			return append([]string{"latest"}, rt.recentBackgroundJobIDs()...), 1, true
+		}
+		if len(fields) == 2 && (strings.EqualFold(fields[0], "bundle") || strings.EqualFold(fields[0], "check-bundle") || strings.EqualFold(fields[0], "cancel-bundle")) {
+			return append([]string{"latest"}, rt.recentBackgroundBundleIDs()...), 1, true
 		}
 		return nil, 0, false
 	case "specialists":
@@ -999,6 +1040,32 @@ func (rt *runtimeState) recentTaskGraphNodeIDs() []string {
 		}
 	}
 	return ids
+}
+
+func (rt *runtimeState) recentBackgroundJobIDs() []string {
+	if rt == nil || rt.session == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(rt.session.BackgroundJobs))
+	for _, job := range rt.session.BackgroundJobs {
+		if strings.TrimSpace(job.ID) != "" {
+			ids = append(ids, job.ID)
+		}
+	}
+	return normalizeTaskStateList(ids, 16)
+}
+
+func (rt *runtimeState) recentBackgroundBundleIDs() []string {
+	if rt == nil || rt.session == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(rt.session.BackgroundBundles))
+	for _, bundle := range rt.session.BackgroundBundles {
+		if strings.TrimSpace(bundle.ID) != "" {
+			ids = append(ids, bundle.ID)
+		}
+	}
+	return normalizeTaskStateList(ids, 16)
 }
 
 func (rt *runtimeState) editableSpecialistNames() []string {

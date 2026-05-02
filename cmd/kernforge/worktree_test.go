@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,130 @@ func TestWorktreeManagerCreateAndRemove(t *testing.T) {
 	}
 	if _, err := os.Stat(worktree.Root); !os.IsNotExist(err) {
 		t.Fatalf("expected worktree root to be removed, got err=%v", err)
+	}
+}
+
+func TestWorktreeListCommandShowsSessionSpecialistAndGitEntries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	repoRoot := initTestGitRepo(t)
+	session := NewSession(repoRoot, "provider", "model", "", "default")
+	session.Worktree = &SessionWorktree{
+		ID:      "session-worktree",
+		Root:    filepath.Join(repoRoot, "..", "session-worktree"),
+		Branch:  "kernforge/session-worktree",
+		Managed: true,
+		Active:  true,
+	}
+	session.SpecialistWorktrees = []SpecialistWorktree{{
+		Specialist:     "driver-build-fixer",
+		Root:           filepath.Join(repoRoot, "..", "driver-worktree"),
+		Branch:         "kernforge/driver-worktree",
+		OwnershipPaths: []string{"drivers/**"},
+		NodeIDs:        []string{"plan-01"},
+		Managed:        true,
+		AutoCreated:    true,
+	}}
+	var output strings.Builder
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		workspace: Workspace{
+			BaseRoot: repoRoot,
+			Root:     repoRoot,
+		},
+	}
+
+	if err := rt.handleWorktreeCommand("list"); err != nil {
+		t.Fatalf("handleWorktreeCommand list: %v", err)
+	}
+	text := output.String()
+	for _, want := range []string{"Worktrees", "Session Worktree", "Specialist Worktrees", "driver-build-fixer", "Git Worktree List", "branch=main"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected worktree list output to contain %q, got %q", want, text)
+		}
+	}
+}
+
+func TestWorktreeEnterReattachesRecordedInactiveWorktree(t *testing.T) {
+	repoRoot := t.TempDir()
+	worktreeRoot := t.TempDir()
+	session := NewSession(repoRoot, "provider", "model", "", "default")
+	session.Worktree = &SessionWorktree{
+		ID:      "session-worktree",
+		Root:    worktreeRoot,
+		Branch:  "kernforge/session-worktree",
+		Managed: true,
+		Active:  false,
+	}
+	store := NewSessionStore(filepath.Join(repoRoot, "sessions"))
+	var output strings.Builder
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   store,
+		workspace: Workspace{
+			BaseRoot: repoRoot,
+			Root:     repoRoot,
+		},
+	}
+
+	if err := rt.handleWorktreeCommand("enter"); err != nil {
+		t.Fatalf("handleWorktreeCommand enter: %v", err)
+	}
+	if !session.Worktree.Active || !strings.EqualFold(session.WorkingDir, worktreeRoot) {
+		t.Fatalf("expected session to enter recorded worktree, got working_dir=%q worktree=%#v", session.WorkingDir, session.Worktree)
+	}
+	if !strings.Contains(output.String(), "Entered isolated worktree") {
+		t.Fatalf("expected enter output, got %q", output.String())
+	}
+}
+
+func TestWorktreeAttachExistingWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	repoRoot := initTestGitRepo(t)
+	attachedRoot := filepath.Join(t.TempDir(), "attached")
+	if _, err := runGitCommand(context.Background(), repoRoot, "worktree", "add", "-b", "kernforge/attached", attachedRoot); err != nil {
+		t.Fatalf("git worktree add: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = runGitCommand(context.Background(), repoRoot, "worktree", "remove", attachedRoot)
+	})
+	session := NewSession(repoRoot, "provider", "model", "", "default")
+	store := NewSessionStore(filepath.Join(repoRoot, "sessions"))
+	var output strings.Builder
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   store,
+		workspace: Workspace{
+			BaseRoot: repoRoot,
+			Root:     repoRoot,
+		},
+	}
+
+	if err := rt.handleWorktreeCommand("attach " + strconv.Quote(attachedRoot)); err != nil {
+		t.Fatalf("handleWorktreeCommand attach: %v", err)
+	}
+	if session.Worktree == nil || !session.Worktree.Active || session.Worktree.Managed {
+		t.Fatalf("expected unmanaged active attached worktree, got %#v", session.Worktree)
+	}
+	if !strings.EqualFold(session.WorkingDir, filepath.Clean(attachedRoot)) {
+		t.Fatalf("expected working dir to attached root, got %q", session.WorkingDir)
+	}
+	if session.Worktree.Branch != "kernforge/attached" {
+		t.Fatalf("expected detected branch, got %q", session.Worktree.Branch)
+	}
+	if !strings.Contains(output.String(), "Attached existing worktree") {
+		t.Fatalf("expected attach output, got %q", output.String())
 	}
 }
 

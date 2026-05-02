@@ -39,6 +39,8 @@ type Session struct {
 	AcceptanceContract            *AcceptanceContract        `json:"acceptance_contract,omitempty"`
 	ActivePatchTransaction        *PatchTransaction          `json:"active_patch_transaction,omitempty"`
 	PatchTransactions             []PatchTransaction         `json:"patch_transactions,omitempty"`
+	ActiveEditLoop                *EditLoopState             `json:"active_edit_loop,omitempty"`
+	EditLoops                     []EditLoopState            `json:"edit_loops,omitempty"`
 	LastCodingHarnessReport       *CodingHarnessReport       `json:"last_coding_harness_report,omitempty"`
 	LastUserChangeIsolationReport *UserChangeIsolationReport `json:"last_user_change_isolation_report,omitempty"`
 	LastTestImpactReport          *TestImpactReport          `json:"last_test_impact_report,omitempty"`
@@ -56,6 +58,8 @@ type Session struct {
 	ConversationState             *ConversationState         `json:"conversation_state,omitempty"`
 	SuggestionMemory              *SuggestionMemory          `json:"suggestion_memory,omitempty"`
 	Automations                   []SessionAutomation        `json:"automations,omitempty"`
+	ActiveGoalID                  string                     `json:"active_goal_id,omitempty"`
+	Goals                         []GoalState                `json:"goals,omitempty"`
 	Messages                      []Message                  `json:"messages"`
 }
 
@@ -98,6 +102,12 @@ func (s *Session) ApproxChars() int {
 	}
 	for _, tx := range s.PatchTransactions {
 		total += len(tx.RenderPromptSection())
+	}
+	if s.ActiveEditLoop != nil {
+		total += len(s.ActiveEditLoop.RenderPromptSection())
+	}
+	for _, loop := range s.EditLoops {
+		total += len(loop.RenderPromptSection())
 	}
 	if s.LastCodingHarnessReport != nil {
 		total += len(s.LastCodingHarnessReport.RenderPromptSection())
@@ -147,7 +157,23 @@ func (s *Session) ApproxChars() int {
 	for _, automation := range s.Automations {
 		total += len(automation.ID) + len(automation.Type) + len(automation.Name)
 		total += len(automation.Command) + len(automation.Status) + len(automation.Schedule)
-		total += len(automation.LastResult)
+		total += len(automation.NextRunHint) + len(automation.LastResult)
+		if !automation.NextRunAt.IsZero() {
+			total += len(automation.NextRunAt.Format(time.RFC3339))
+		}
+	}
+	for _, goal := range s.Goals {
+		total += len(goal.ID) + len(goal.Status) + len(goal.Objective) + len(goal.SourcePath)
+		for _, iteration := range goal.Iterations {
+			total += len(iteration.Status) + len(iteration.ReplySummary) + len(iteration.Error)
+			total += len(iteration.Verification) + len(iteration.AuditStatus) + len(iteration.RecoveryStatus)
+			for _, item := range iteration.Blockers {
+				total += len(item)
+			}
+			for _, item := range iteration.Warnings {
+				total += len(item)
+			}
+		}
 	}
 	for _, event := range s.ConversationEvents {
 		total += len(event.Kind) + len(event.Severity) + len(event.Summary) + len(event.Raw) + len(event.CorrelationID)
@@ -264,6 +290,22 @@ func (s *Session) ExportText() string {
 			b.WriteString("## Active Patch Transaction\n\n")
 			b.WriteString(rendered)
 			b.WriteString("\n\n")
+		}
+	}
+	if s.ActiveEditLoop != nil {
+		if rendered := strings.TrimSpace(s.ActiveEditLoop.RenderPromptSection()); rendered != "" {
+			b.WriteString("## Active Edit Loop\n\n")
+			b.WriteString(rendered)
+			b.WriteString("\n\n")
+		}
+	}
+	if len(s.EditLoops) > 0 {
+		b.WriteString("## Recent Edit Loops\n\n")
+		for _, loop := range s.EditLoops {
+			if rendered := strings.TrimSpace(loop.RenderPromptSection()); rendered != "" {
+				b.WriteString(rendered)
+				b.WriteString("\n\n")
+			}
 		}
 	}
 	if s.LastCodingHarnessReport != nil {
@@ -414,12 +456,14 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeTaskStateArtifacts()
 	sess.normalizeCodingHarnessState()
 	sess.normalizeFailureRepairState()
+	sess.normalizeEditLoopState()
 	sess.normalizeBackgroundJobs()
 	sess.normalizeBackgroundBundles()
 	sess.normalizeSpecialistWorktrees()
 	sess.normalizeConversationRuntime()
 	sess.normalizeSuggestionMemory()
 	sess.normalizeAutomations()
+	sess.normalizeGoals()
 	return &sess, nil
 }
 

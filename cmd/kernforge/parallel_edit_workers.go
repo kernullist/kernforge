@@ -27,6 +27,7 @@ type parallelEditableWorkerPlan struct {
 	LeasePaths []string
 	Reason     string
 	RouteHint  string
+	Route      ModelRoute
 	Trigger    string
 }
 
@@ -126,26 +127,30 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 	}
 
 	results := make(chan parallelEditableWorkerResult, len(plans))
-	routes := make([]string, 0, len(plans))
+	routes := make([]ModelRoute, 0, len(plans))
+	for i := range plans {
+		plan := plans[i]
+		client, model := a.specialistClient(plan.Assignment.Profile)
+		if client == nil || strings.TrimSpace(model) == "" {
+			continue
+		}
+		route := modelRouteForRequest(a.Config, client, ChatRequest{Model: model})
+		plans[i].Route = route
+		routes = append(routes, route)
+	}
+	limiter := a.specialistBatchRouteLimiter(routes)
+	var wg sync.WaitGroup
 	for _, plan := range plans {
-		routes = append(routes, a.specialistRouteKey(plan.Assignment.Profile))
-	}
-	if duplicateSpecialistRouteKeys(routes) {
-		for _, plan := range plans {
-			results <- a.runParallelEditableWorker(ctx, plan)
-		}
-	} else {
-		var wg sync.WaitGroup
-		for _, plan := range plans {
-			plan := plan
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+		plan := plan
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			limiter.run(ctx, plan.Route, func() {
 				results <- a.runParallelEditableWorker(ctx, plan)
-			}()
-		}
-		wg.Wait()
+			})
+		}()
 	}
+	wg.Wait()
 	close(results)
 
 	for item := range results {

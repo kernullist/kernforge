@@ -310,7 +310,7 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 			Type:                 "inspect_failure",
 			Title:                "반복 실행보다 실패 원인 drilldown",
 			Reason:               compactPromptSection(failed, 220),
-			Command:              "/verify",
+			Command:              "/recover",
 			EstimatedCost:        "medium",
 			Risk:                 "medium",
 			RequiresConfirmation: false,
