@@ -107,7 +107,7 @@ Its current differentiators are:
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
-- Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, and recovery without user prompts
+- Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
@@ -199,14 +199,14 @@ Its current differentiators are:
 
 - `/goal <objective>` or `/goal start <objective>` creates a persistent goal and immediately starts an autonomous loop
 - `/goal start @GOAL.md` and `kernforge -goal-file GOAL.md` load the objective from a markdown file
-- `kernforge -goal "..."` runs the same loop without entering the REPL
-- Each iteration asks the agent to inspect, develop, modify, review its own changes, and fix bugs without asking the user for confirmation
+- `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, and `-goal-rollback-on-regression` controls
+- Each iteration asks the agent to inspect, develop, modify, review its own changes, run final semantic goal review, and fix bugs without asking the user for confirmation
 - The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
-- Kernforge then runs `/verify --full`, `/completion-audit`, and if needed `/recover execute-safe` before the next iteration
-- The loop stops only when the completion audit is ready, the goal is canceled, or an unrecoverable blocker such as provider failure, iteration cap, repeated failure signature, or no-progress loop is recorded
+- Kernforge then runs `/verify --full`, `/completion-audit`, final semantic review, and if needed `/recover execute-safe` before the next iteration
+- The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
-- Use `--time-budget 10m`, `--until-complete`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
-- `/goal status`, `/goal audit`, `/goal run`, and `/goal cancel` inspect, re-audit, resume, or stop the active goal
+- Use `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
+- `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, and `/goal cancel` inspect, re-audit, explicitly complete, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing
 

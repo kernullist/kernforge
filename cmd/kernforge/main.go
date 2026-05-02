@@ -128,6 +128,11 @@ func run(args []string) error {
 		commandFlag       string
 		goalFlag          string
 		goalFileFlag      string
+		goalMaxIterations int
+		goalTimeBudget    string
+		goalTokenBudget   int
+		goalUntilComplete bool
+		goalAutoRollback  bool
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
@@ -149,6 +154,11 @@ func run(args []string) error {
 	fs.StringVar(&commandFlag, "command", "", "single slash command mode")
 	fs.StringVar(&goalFlag, "goal", "", "autonomous goal objective")
 	fs.StringVar(&goalFileFlag, "goal-file", "", "markdown file containing an autonomous goal objective")
+	fs.IntVar(&goalMaxIterations, "goal-max-iterations", -1, "maximum autonomous goal iterations")
+	fs.StringVar(&goalTimeBudget, "goal-time-budget", "", "autonomous goal time budget, for example 10m")
+	fs.IntVar(&goalTokenBudget, "goal-token-budget", 0, "autonomous goal token budget estimate")
+	fs.BoolVar(&goalUntilComplete, "goal-until-complete", false, "run autonomous goal until completion gates approve")
+	fs.BoolVar(&goalAutoRollback, "goal-rollback-on-regression", false, "rollback autonomous goal checkpoints after repeated regression blockers")
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
@@ -371,7 +381,19 @@ func run(args []string) error {
 		return rt.runSingleCommand(commandFlag)
 	}
 	if strings.TrimSpace(goalFlag) != "" || strings.TrimSpace(goalFileFlag) != "" {
-		return rt.runSingleGoal(goalFlag, goalFileFlag)
+		if goalMaxIterations < -1 {
+			return fmt.Errorf("-goal-max-iterations must be zero or greater")
+		}
+		if goalTokenBudget < 0 {
+			return fmt.Errorf("-goal-token-budget must be zero or greater")
+		}
+		return rt.runSingleGoal(goalFlag, goalFileFlag, singleGoalOptions{
+			MaxIterations: goalMaxIterations,
+			TimeBudget:    goalTimeBudget,
+			TokenBudget:   goalTokenBudget,
+			UntilComplete: goalUntilComplete,
+			AutoRollback:  goalAutoRollback,
+		})
 	}
 	return rt.runREPL()
 }
@@ -456,8 +478,33 @@ func (rt *runtimeState) runSingleCommand(command string) error {
 	return err
 }
 
-func (rt *runtimeState) runSingleGoal(objective string, filePath string) error {
+type singleGoalOptions struct {
+	MaxIterations int
+	TimeBudget    string
+	TokenBudget   int
+	UntilComplete bool
+	AutoRollback  bool
+}
+
+func (rt *runtimeState) runSingleGoal(objective string, filePath string, options ...singleGoalOptions) error {
 	fields := []string{}
+	if len(options) > 0 {
+		option := options[0]
+		if option.UntilComplete {
+			fields = append(fields, "--until-complete")
+		} else if option.MaxIterations >= 0 {
+			fields = append(fields, "--max-iterations", strconv.Itoa(option.MaxIterations))
+		}
+		if strings.TrimSpace(option.TimeBudget) != "" {
+			fields = append(fields, "--time-budget", strings.TrimSpace(option.TimeBudget))
+		}
+		if option.TokenBudget > 0 {
+			fields = append(fields, "--token-budget", strconv.Itoa(option.TokenBudget))
+		}
+		if option.AutoRollback {
+			fields = append(fields, "--rollback-on-regression")
+		}
+	}
 	if strings.TrimSpace(filePath) != "" {
 		fields = append(fields, "--file", strings.TrimSpace(filePath))
 	}

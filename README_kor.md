@@ -104,7 +104,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - built-in specialist subagent catalog와 editable/read-only specialist routing
 - node별 editable ownership/lease, specialist worktree lease, session-level worktree isolation
 - 대화형 REPL, `-prompt` 기반 one-shot 실행, scheduler용 `-command` slash command 실행
-- `/goal`, `-goal`, `-goal-file` 기반 Codex식 autonomous goal. prompt 또는 markdown 목표를 받아 구현, 자체 리뷰, 검증, completion audit, recovery를 사용자 확인 없이 반복한다.
+- `/goal`, `-goal`, `-goal-file` 기반 Codex식 autonomous goal. prompt 또는 markdown 목표를 받아 구현, 자체 리뷰, 검증, completion audit, 최종 semantic review, recovery를 사용자 확인 없이 반복한다.
 - `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex` provider 지원
 - provider/model/base_url/reasoning_effort 단위 model route scheduler로 단일 local 모델이나 같은 route를 공유하는 worker/reviewer 요청을 안전하게 조율
 - 파일, 패치, 셸, git 중심 도구 호출
@@ -195,14 +195,14 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 - `/goal <objective>` 또는 `/goal start <objective>`는 persistent goal을 만들고 즉시 autonomous loop를 시작한다.
 - `/goal start @GOAL.md`와 `kernforge -goal-file GOAL.md`는 markdown 파일에서 목표를 읽는다.
-- `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행한다.
-- 각 iteration은 agent에게 실제 코드 확인, 개발, 수정, 자체 리뷰, 버그 수정을 사용자 확인 없이 수행하게 한다.
+- `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행하며, `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, `-goal-rollback-on-regression` 제어도 지원한다.
+- 각 iteration은 agent에게 실제 코드 확인, 개발, 수정, 자체 리뷰, 최종 semantic goal review, 버그 수정을 사용자 확인 없이 수행하게 한다.
 - goal runtime은 각 목표를 acceptance contract, task graph, 독립 review verdict, progress ledger, command history, checkpoint 저장소가 설정된 경우 iteration별 checkpoint에 연결한다.
-- 그 다음 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행한 뒤 다음 iteration으로 넘어간다.
-- completion audit이 ready가 되거나, 목표가 cancel되거나, provider failure/iteration cap/반복 failure signature/no-progress loop 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
+- 그 다음 Kernforge가 `/verify --full`, `/completion-audit`, 최종 semantic review, 필요 시 `/recover execute-safe`를 실행한 뒤 다음 iteration으로 넘어간다.
+- completion audit이 ready이고 최종 semantic review가 승인하거나, 목표가 cancel되거나, provider failure/token/time/iteration cap/반복 failure signature/no-progress loop 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
 - 목표 상태와 이력은 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 및 goal별 사본으로 남는다.
-- `--time-budget 10m`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
-- `/goal status`, `/goal audit`, `/goal run`, `/goal cancel`로 active goal을 확인, 재감사, 재개, 중단할 수 있다.
+- `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
+- `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, `/goal cancel`로 active goal을 확인, 재감사, 명시적 완료, 재개, 중단할 수 있다.
 
 ### 소스 레벨 Function Fuzzing
 

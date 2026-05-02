@@ -1135,9 +1135,9 @@ MVP rule set:
 20. 완료/MVP: `/recover`가 `.kernforge/recovery/latest.md/json`에 최근 provider/tool/command error, verification failure, active failure repair, background job/bundle, open task, next command를 모아 즉시 재개 가능한 failure runbook을 만든다.
 21. 완료: `/recover execute-safe`가 `/verify` 실패 report와 `ready=false` completion audit를 실패 action으로 승격하고, `stop_on_failure`가 있는 뒤 액션을 skip한다.
 22. 완료: safe-auto recovery shell replay를 좁은 Go/Git verification/status 명령으로 제한하고 `-exec`, `-toolexec`, `-vettool`, output/profile 생성 flag 같은 고위험 옵션을 차단했다.
-23. 완료/MVP: `/goal`, `-goal`, `-goal-file`을 추가해 inline prompt 또는 markdown 파일 목표를 persistent `GoalState`로 만들고, 구현 -> 자체 리뷰 -> `/verify --full` -> `/completion-audit` -> 필요 시 `/recover execute-safe`를 반복하는 autonomous goal loop를 제공한다.
+23. 완료: `/goal`, `-goal`, `-goal-file`을 추가해 inline prompt 또는 markdown 파일 목표를 persistent `GoalState`로 만들고, 구현 -> 자체 리뷰 -> `/verify --full` -> `/completion-audit` -> 최종 semantic review -> 필요 시 `/recover execute-safe` 또는 repair pass를 반복하는 autonomous goal loop를 제공한다.
 24. 완료/MVP: goal loop는 실행 중 write/diff/shell/git approval을 session 내에서 bypass해 사용자 확인으로 멈추지 않으며, `.kernforge/goals/latest.md/json`과 goal별 artifact로 상태와 audit 결과를 남긴다.
-25. 완료: goal runtime이 acceptance contract, TaskGraph, completion criteria, independent review verdict, repair pass, progress ledger, command history, iteration checkpoint, no-progress/repeated-failure blocker를 기록해 Codex식 목표 달성 판단과 복구 루프에 더 가깝게 동작한다.
+25. 완료: goal runtime이 acceptance contract, TaskGraph, completion criteria, independent review verdict, final semantic verdict, explicit `/goal complete` gate, token/time budget, repair pass, progress ledger, command history, iteration checkpoint, no-progress/repeated-failure blocker를 기록해 Codex식 목표 달성 판단과 복구 루프에 더 가깝게 동작한다.
 26. 완료/MVP: `-command "<slash-command>"`가 REPL 없이 `/automation monitor --notify` 같은 slash command를 실행해 Windows Task Scheduler, service wrapper, CI에서 automation을 호출할 수 있게 한다.
 27. 완료/MVP: `/automation daemon-start|daemon-status|daemon-stop`이 `-command "/automation watch ..."` 기반 process-detached local daemon을 띄우고 `.kernforge/automation/daemon.json/log`에 state와 log를 남긴다.
 28. 남음: 실제 cloud recurring/delegated execution backend는 아직 없다.

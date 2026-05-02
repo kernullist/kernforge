@@ -110,6 +110,9 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 		},
 		goalReply: func(ctx context.Context, prompt string) (string, error) {
 			replyCount++
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "APPROVED: audit, verification, and goal criteria are satisfied", nil
+			}
 			return "fake goal agent reply", nil
 		},
 	}
@@ -125,11 +128,14 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 	if goal.Status != goalStatusComplete {
 		t.Fatalf("expected goal complete, got %#v", goal)
 	}
-	if replyCount != 2 {
-		t.Fatalf("expected implement and review prompts, got %d", replyCount)
+	if replyCount != 3 {
+		t.Fatalf("expected implement, review, and semantic prompts, got %d", replyCount)
 	}
 	if goal.LastAudit == nil || !goal.LastAudit.Ready || goal.LastAudit.Status != "ready" {
 		t.Fatalf("expected ready goal audit, got %#v", goal.LastAudit)
+	}
+	if goal.LastSemanticReview == nil || !goal.LastSemanticReview.Approved {
+		t.Fatalf("expected approved semantic review, got %#v", goal.LastSemanticReview)
 	}
 	if goal.LastProgress == nil || goal.LastProgress.Score == 0 || goal.NoProgressCount != 0 {
 		t.Fatalf("expected progress ledger without no-progress count, got %#v no_progress=%d", goal.LastProgress, goal.NoProgressCount)
@@ -154,6 +160,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 		"implementation done",
 		"NEEDS_REVISION: add the missing review repair",
 		"repair done",
+		"APPROVED: repaired, verified, and audit is ready",
 	}
 	rt := &runtimeState{
 		writer:        &output,
@@ -193,6 +200,143 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 	}
 	if len(goal.Iterations) != 1 || goal.Iterations[0].ReviewerVerdict != "needs_revision" || goal.Iterations[0].RepairReply == "" {
 		t.Fatalf("expected repair iteration evidence, got %#v", goal.Iterations)
+	}
+}
+
+func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	replyCount := 0
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			replyCount++
+			return "unexpected", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --token-budget 1 finish sample objective"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusBlocked || !strings.Contains(goal.LastError, "token budget") {
+		t.Fatalf("expected token budget blocker, got %#v", goal)
+	}
+	if goal.TokenBudget != 1 || goal.TokenUsedEstimate <= goal.TokenBudget {
+		t.Fatalf("expected token estimate over budget, got budget=%d used=%d", goal.TokenBudget, goal.TokenUsedEstimate)
+	}
+	if replyCount != 0 {
+		t.Fatalf("expected no agent prompt before token budget block, got %d", replyCount)
+	}
+}
+
+func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "NEEDS_REVISION: final evidence is intentionally incomplete", nil
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	err := rt.handleGoalCommand("complete latest")
+	if err == nil || !strings.Contains(err.Error(), "cannot be marked complete") {
+		t.Fatalf("expected semantic complete gate error, got %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusBlocked {
+		t.Fatalf("expected blocked goal, got %#v", goal)
+	}
+	if goal.LastSemanticReview == nil || goal.LastSemanticReview.Approved {
+		t.Fatalf("expected rejected semantic review, got %#v", goal.LastSemanticReview)
+	}
+}
+
+func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "APPROVED: verification and completion audit satisfy the objective", nil
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := rt.handleGoalCommand("complete latest"); err != nil {
+		t.Fatalf("complete goal: %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusComplete || goal.CompletedAt.IsZero() {
+		t.Fatalf("expected complete goal, got %#v", goal)
+	}
+	if goal.LastAudit == nil || !goal.LastAudit.Ready {
+		t.Fatalf("expected ready audit, got %#v", goal.LastAudit)
+	}
+	if goal.LastSemanticReview == nil || !goal.LastSemanticReview.Approved {
+		t.Fatalf("expected approved semantic review, got %#v", goal.LastSemanticReview)
 	}
 }
 
@@ -249,7 +393,12 @@ func TestRunSingleGoalPreservesCLIObjectiveText(t *testing.T) {
 		},
 	}
 
-	err := rt.runSingleGoal(`fix "quoted" objective`, "")
+	err := rt.runSingleGoal(`fix "quoted" objective`, "", singleGoalOptions{
+		MaxIterations: 3,
+		TimeBudget:    "1m",
+		TokenBudget:   100000,
+		AutoRollback:  true,
+	})
 	if err == nil || !strings.Contains(err.Error(), "provider unavailable") {
 		t.Fatalf("expected provider error, got %v", err)
 	}
@@ -262,6 +411,9 @@ func TestRunSingleGoalPreservesCLIObjectiveText(t *testing.T) {
 	}
 	if goal.Status != goalStatusBlocked {
 		t.Fatalf("expected blocked goal after provider error, got %#v", goal)
+	}
+	if goal.MaxIterations != 3 || goal.TimeBudgetSeconds != 60 || goal.TokenBudget != 100000 || !goal.AutoRollback {
+		t.Fatalf("expected CLI goal options to persist, got %#v", goal)
 	}
 }
 

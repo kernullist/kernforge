@@ -1879,7 +1879,7 @@ Conversation And Sessions:
 /jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
 /review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Generate a local PR review automation report, optionally with gh PR metadata or explicit GitHub writes
-/goal [start|run|status|audit|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
+/goal [start|run|status|audit|complete|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
 /tasks                 Show the current task list
 
 Provider And Models:
@@ -2100,12 +2100,13 @@ func HelpDetail(topic string) (string, bool) {
 /goal start --file GOAL.md
 - Create an autonomous Codex-style goal from inline text or a markdown file and immediately run it.
 - Kernforge primes an acceptance contract, task graph, completion criteria, progress ledger, and per-iteration checkpoint when checkpoint storage is configured.
-- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, and fix bugs without user intervention.
-- Each loop iteration runs the agent, /verify --full, /completion-audit, and when needed /recover execute-safe.
+- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without user intervention.
+- Each loop iteration runs the agent, /verify --full, /completion-audit, final semantic review, and when needed /recover execute-safe.
 
 /goal start --max-iterations N <objective>
 /goal start --until-complete <objective>
 /goal start --time-budget 10m <objective>
+/goal start --token-budget N <objective>
 /goal start --rollback-on-regression <objective>
 - Tune stop and recovery policy. The loop also stops on repeated no-progress or repeated failure signatures.
 
@@ -2113,13 +2114,16 @@ func HelpDetail(topic string) (string, bool) {
 - Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.
 
 /goal run [id|latest]
-- Resume a pending or blocked goal and continue until completion audit is ready or an unrecoverable blocker is recorded.
+- Resume a pending or blocked goal and continue until completion audit and final semantic review are ready or an unrecoverable blocker is recorded.
 
 /goal status [id|latest]
 - Show the active goal, status, iteration count, latest audit state, and artifact paths.
 
 /goal audit [id|latest]
-- Re-run /completion-audit for the goal objective and attach the result to the goal state.
+- Re-run /completion-audit for the goal objective and attach the result to the goal state without marking it complete.
+
+/goal complete [id|latest]
+- Re-run completion audit, run the final semantic goal reviewer, and mark the goal complete only when both gates approve.
 
 /goal cancel [id|latest]
 - Mark a goal canceled without deleting its artifact history.

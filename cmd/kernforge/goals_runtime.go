@@ -75,7 +75,7 @@ func goalAcceptanceContract(objective string) *AcceptanceContract {
 		contract.Mode = "inspect_and_fix"
 	}
 	contract.ExpectedBehaviors = append(contract.ExpectedBehaviors,
-		"Run autonomous implementation, review, verification, completion-audit, and recovery loops until ready or blocked.",
+		"Run autonomous implementation, review, verification, completion-audit, final semantic review, and recovery loops until ready or blocked.",
 	)
 	contract.VerificationNotes = append(contract.VerificationNotes, "Autonomous goals should run /verify --full before completion audit when verification steps are available.")
 	contract.Normalize()
@@ -89,6 +89,7 @@ func goalCompletionCriteria(objective string, contract *AcceptanceContract) []st
 		"Independent review pass has run and any concrete revision request has been repaired.",
 		"Latest /verify --full has no failing steps when verification steps are available.",
 		"Latest /completion-audit is ready with no blockers or warnings.",
+		"Final semantic goal review has approved the completed state.",
 		"No unrecovered repeated failure or no-progress loop remains.",
 	}
 	if contract != nil {
@@ -123,6 +124,19 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	if goal.TimeBudgetSeconds > 0 && !goal.CreatedAt.IsZero() && time.Since(goal.CreatedAt) > time.Duration(goal.TimeBudgetSeconds)*time.Second {
 		goal.Status = goalStatusBlocked
 		goal.LastError = fmt.Sprintf("goal exceeded time budget (%ds)", goal.TimeBudgetSeconds)
+		goal.Touch()
+		rt.session.UpsertGoal(goal)
+		_ = rt.writeGoalArtifacts(goal)
+		if rt.store != nil {
+			_ = rt.store.Save(rt.session)
+		}
+		fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
+		return goal, true, nil
+	}
+	goal.updateUsageEstimate(rt.session)
+	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
+		goal.Status = goalStatusBlocked
+		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
 		goal.Touch()
 		rt.session.UpsertGoal(goal)
 		_ = rt.writeGoalArtifacts(goal)
@@ -213,11 +227,38 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		iteration.ChangedFiles = append([]string(nil), progress.ChangedFiles...)
 		goal.applyProgress(progress)
 		if audit.Ready {
-			iteration.Status = goalStatusComplete
-			goal.Status = goalStatusComplete
-			goal.CompletedAt = time.Now()
-			goal.LastError = ""
-			rt.session.SetPlanNodeLifecycle("plan-06", "completed", "No recovery needed; completion audit is ready.")
+			semanticCommand := startGoalCommand(iteration.Index, "semantic-review", "independent semantic goal review")
+			semanticReview, semanticErr := rt.runGoalSemanticReview(ctx, goal, audit, iteration)
+			semanticCommand.finish(statusForErr(semanticErr), semanticReviewSummaryOrError(semanticReview, semanticErr))
+			iteration.Commands = append(iteration.Commands, semanticCommand)
+			if semanticErr != nil {
+				iteration.Error = semanticErr.Error()
+				iteration.Status = goalStatusBlocked
+				goal.Status = goalStatusBlocked
+				goal.LastError = semanticErr.Error()
+			} else {
+				iteration.SemanticReview = &semanticReview
+				goal.LastSemanticReview = &semanticReview
+				if semanticReview.Approved {
+					iteration.Status = goalStatusComplete
+					goal.Status = goalStatusComplete
+					goal.CompletedAt = time.Now()
+					goal.LastError = ""
+					rt.session.SetPlanNodeLifecycle("plan-06", "completed", "Completion audit and semantic goal review are ready.")
+				} else {
+					repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalSemanticRepairPrompt(goal, iteration, semanticReview))
+					iteration.RepairReply = compactPromptSection(strings.Join([]string{iteration.RepairReply, repairReply}, "\n\n"), 1200)
+					if repairErr != nil {
+						iteration.Error = repairErr.Error()
+						iteration.Status = goalStatusBlocked
+						goal.Status = goalStatusBlocked
+						goal.LastError = repairErr.Error()
+					} else {
+						iteration.Status = goalStatusPending
+						rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Semantic goal review requested a repair before completion.")
+					}
+				}
+			}
 		} else if goal.Status != goalStatusBlocked {
 			if blocker := goalStagnationBlocker(goal); blocker != "" {
 				iteration.Status = goalStatusBlocked
@@ -242,6 +283,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			}
 		}
 	}
+	goal.updateUsageEstimate(rt.session)
 	return rt.finishGoalIteration(goal, iteration), goalStatusTerminal(goal.Status), nil
 }
 
@@ -266,7 +308,11 @@ func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIterat
 	if iteration.Status == "" || iteration.Status == goalStatusRunning {
 		iteration.Status = goal.Status
 	}
-	iteration.ReplySummary = compactPromptSection(strings.Join([]string{iteration.ImplementReply, iteration.ReviewReply, iteration.RepairReply}, "\n\n"), 1200)
+	semanticSummary := ""
+	if iteration.SemanticReview != nil {
+		semanticSummary = semanticReviewSummaryOrError(*iteration.SemanticReview, nil)
+	}
+	iteration.ReplySummary = compactPromptSection(strings.Join([]string{iteration.ImplementReply, iteration.ReviewReply, iteration.RepairReply, semanticSummary}, "\n\n"), 1200)
 	iteration.FinishedAt = time.Now()
 	goal.Iteration = iteration.Index
 	goal.CommandHistory = append(goal.CommandHistory, iteration.Commands...)
@@ -345,6 +391,92 @@ func (rt *runtimeState) rollbackGoalIterationCheckpoint(goal GoalState, iteratio
 	return "rolled back to checkpoint " + iteration.CheckpointID
 }
 
+func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration) (GoalSemanticReview, error) {
+	if completionAuditSessionOwnsGoal(rt.session, &audit) {
+		audit.OpenTasks = filterCompletionAuditOpenGoalTasks(audit.OpenTasks)
+	}
+	reply, err := rt.runGoalReviewerReply(ctx, buildGoalSemanticReviewPrompt(goal, audit, iteration))
+	if err != nil {
+		return GoalSemanticReview{}, err
+	}
+	review := parseGoalSemanticReview(reply)
+	if !audit.Ready && review.Approved {
+		review.Approved = false
+		review.Verdict = "needs_revision"
+		review.Feedback = compactPromptSection("Completion audit is not ready; approval cannot be accepted. "+review.Feedback, 1200)
+	}
+	return review, nil
+}
+
+func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Final semantic goal review for autonomous goal %s.\n\n", valueOrUnset(goal.ID))
+	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
+	b.WriteString("Decide whether the actual workspace state satisfies the goal, not merely whether a command succeeded.\n")
+	b.WriteString("Start with APPROVED only if the objective, completion criteria, verification result, and completion audit evidence are all sufficient.\n")
+	b.WriteString("Start with NEEDS_REVISION if any meaningful implementation, test, documentation, artifact, or evidence gap remains.\n\n")
+	if len(goal.CompletionCriteria) > 0 {
+		b.WriteString("Completion criteria:\n")
+		for _, item := range goal.CompletionCriteria {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Latest audit:\n")
+	fmt.Fprintf(&b, "- Status: %s\n", valueOrDefault(audit.Status, "unknown"))
+	fmt.Fprintf(&b, "- Ready: %t\n", audit.Ready)
+	fmt.Fprintf(&b, "- Blockers: %d\n", len(audit.Blockers))
+	for _, blocker := range limitStrings(audit.Blockers, 8) {
+		fmt.Fprintf(&b, "  - %s\n", blocker)
+	}
+	fmt.Fprintf(&b, "- Warnings: %d\n", len(audit.Warnings))
+	for _, warning := range limitStrings(audit.Warnings, 8) {
+		fmt.Fprintf(&b, "  - %s\n", warning)
+	}
+	if audit.Verification != "" {
+		fmt.Fprintf(&b, "- Audit verification: %s\n", audit.Verification)
+	}
+	if len(audit.OpenTasks) > 0 {
+		b.WriteString("- Open tasks:\n")
+		for _, task := range limitStrings(audit.OpenTasks, 8) {
+			fmt.Fprintf(&b, "  - %s\n", task)
+		}
+	}
+	b.WriteString("\nIteration evidence:\n")
+	fmt.Fprintf(&b, "- Iteration: %d\n", iteration.Index)
+	if iteration.Verification != "" {
+		fmt.Fprintf(&b, "- Verification: %s\n", iteration.Verification)
+	}
+	if iteration.ReviewerVerdict != "" {
+		fmt.Fprintf(&b, "- Review verdict: %s\n", iteration.ReviewerVerdict)
+	}
+	if iteration.ReviewerFeedback != "" {
+		fmt.Fprintf(&b, "- Review feedback: %s\n", compactPromptSection(iteration.ReviewerFeedback, 500))
+	}
+	if len(iteration.ChangedFiles) > 0 {
+		b.WriteString("- Changed files:\n")
+		for _, path := range limitStrings(iteration.ChangedFiles, 16) {
+			fmt.Fprintf(&b, "  - %s\n", path)
+		}
+	}
+	if iteration.Progress != nil {
+		fmt.Fprintf(&b, "- Progress score: %d\n", iteration.Progress.Score)
+		for _, signal := range limitStrings(iteration.Progress.Signals, 8) {
+			fmt.Fprintf(&b, "  - %s\n", signal)
+		}
+	}
+	if len(goal.CommandHistory) > 0 {
+		b.WriteString("\nRecent goal commands:\n")
+		for _, command := range limitGoalCommands(goal.CommandHistory, 8) {
+			fmt.Fprintf(&b, "- %s [%s] %s\n", valueOrUnset(command.Name), valueOrUnset(command.Status), compactPromptSection(command.Summary, 180))
+		}
+	}
+	b.WriteString("\nReturn one of these exact leading verdicts:\n")
+	b.WriteString("APPROVED: <concise evidence>\n")
+	b.WriteString("NEEDS_REVISION: <concrete missing work>\n")
+	return b.String()
+}
+
 func parseGoalReviewDecision(text string) goalReviewDecision {
 	trimmed := strings.TrimSpace(text)
 	upper := strings.ToUpper(trimmed)
@@ -384,6 +516,51 @@ func buildGoalRepairPrompt(goal GoalState, iteration GoalIteration, decision goa
 	}
 	b.WriteString("\nAfter repairing, return a concise status and do not claim completion before verification and completion audit.")
 	return b.String()
+}
+
+func buildGoalSemanticRepairPrompt(goal GoalState, iteration GoalIteration, review GoalSemanticReview) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Autonomous final-goal repair pass for iteration %d.\n\n", iteration.Index)
+	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
+	b.WriteString("The final semantic goal reviewer did not approve completion. Fix the missing work directly without asking the user.\n")
+	if strings.TrimSpace(review.Feedback) != "" {
+		b.WriteString("\nSemantic review feedback:\n")
+		b.WriteString(review.Feedback)
+		b.WriteString("\n")
+	}
+	if len(goal.CompletionCriteria) > 0 {
+		b.WriteString("\nCompletion criteria:\n")
+		for _, item := range goal.CompletionCriteria {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+	}
+	b.WriteString("\nAfter repairing, return a concise status. The runtime will re-run verification, completion audit, and final semantic review.")
+	return b.String()
+}
+
+func parseGoalSemanticReview(text string) GoalSemanticReview {
+	trimmed := strings.TrimSpace(text)
+	upper := strings.ToUpper(trimmed)
+	review := GoalSemanticReview{
+		Verdict:    "needs_revision",
+		Approved:   false,
+		Feedback:   trimmed,
+		ReviewedAt: time.Now(),
+	}
+	switch {
+	case strings.HasPrefix(upper, "APPROVED"):
+		review.Verdict = "approved"
+		review.Approved = true
+	case strings.HasPrefix(upper, "NEEDS_REVISION"), strings.HasPrefix(upper, "NEEDS REVISION"), strings.HasPrefix(upper, "REJECTED"):
+		review.Verdict = "needs_revision"
+	case containsAny(strings.ToLower(trimmed), "not ready", "missing", "must fix", "blocker", "수정 필요", "준비되지", "부족"):
+		review.Verdict = "needs_revision"
+	default:
+		if trimmed == "" {
+			review.Feedback = "semantic review returned no verdict"
+		}
+	}
+	return review
 }
 
 func applyGoalAuditToIteration(iteration *GoalIteration, audit CompletionAuditArtifact) {
@@ -572,11 +749,80 @@ func completionAuditSummaryOrError(audit CompletionAuditArtifact, err error) str
 	return fmt.Sprintf("%s ready=%t blockers=%d warnings=%d", valueOrDefault(audit.Status, "unknown"), audit.Ready, len(audit.Blockers), len(audit.Warnings))
 }
 
+func semanticReviewSummaryOrError(review GoalSemanticReview, err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return fmt.Sprintf("%s approved=%t %s", valueOrDefault(review.Verdict, "unknown"), review.Approved, compactPromptSection(review.Feedback, 220))
+}
+
 func progressScore(progress *GoalProgressState) int {
 	if progress == nil {
 		return 0
 	}
 	return progress.Score
+}
+
+func (g *GoalState) updateUsageEstimate(session *Session) {
+	if g == nil {
+		return
+	}
+	chars := len(g.ID) + len(g.Status) + len(g.Objective) + len(g.SourcePath) + len(g.LastError)
+	for _, item := range g.CompletionCriteria {
+		chars += len(item)
+	}
+	if g.LastAudit != nil {
+		chars += len(g.LastAudit.ID) + len(g.LastAudit.Status)
+		for _, item := range g.LastAudit.Blockers {
+			chars += len(item)
+		}
+		for _, item := range g.LastAudit.Warnings {
+			chars += len(item)
+		}
+	}
+	if g.LastSemanticReview != nil {
+		chars += len(g.LastSemanticReview.Verdict) + len(g.LastSemanticReview.Feedback)
+	}
+	if g.LastProgress != nil {
+		chars += len(g.LastProgress.Fingerprint) + len(g.LastProgress.Verification) + len(g.LastProgress.AuditStatus) + len(g.LastProgress.FailureSignature)
+		for _, item := range g.LastProgress.Signals {
+			chars += len(item)
+		}
+		for _, item := range g.LastProgress.ChangedFiles {
+			chars += len(item)
+		}
+	}
+	for _, command := range g.CommandHistory {
+		chars += len(command.Name) + len(command.Status) + len(command.Summary)
+	}
+	for _, iteration := range g.Iterations {
+		chars += len(iteration.Status) + len(iteration.ImplementReply) + len(iteration.ReviewReply) + len(iteration.ReviewerVerdict)
+		chars += len(iteration.ReviewerFeedback) + len(iteration.RepairReply) + len(iteration.ReplySummary)
+		chars += len(iteration.Verification) + len(iteration.AuditStatus) + len(iteration.RecoveryStatus) + len(iteration.RollbackStatus) + len(iteration.Error)
+		if iteration.SemanticReview != nil {
+			chars += len(iteration.SemanticReview.Verdict) + len(iteration.SemanticReview.Feedback)
+		}
+		for _, item := range iteration.ChangedFiles {
+			chars += len(item)
+		}
+		for _, item := range iteration.Blockers {
+			chars += len(item)
+		}
+		for _, item := range iteration.Warnings {
+			chars += len(item)
+		}
+		for _, command := range iteration.Commands {
+			chars += len(command.Name) + len(command.Status) + len(command.Summary)
+		}
+	}
+	if session != nil {
+		chars += session.ApproxChars()
+	}
+	if chars <= 0 {
+		g.TokenUsedEstimate = 0
+		return
+	}
+	g.TokenUsedEstimate = (chars + 3) / 4
 }
 
 func (p *GoalProgressState) Normalize() {
@@ -667,6 +913,16 @@ func normalizeGoalCommandRecords(items []GoalCommandRecord, limit int) []GoalCom
 		out = append([]GoalCommandRecord(nil), out[len(out)-limit:]...)
 	}
 	return out
+}
+
+func limitGoalCommands(items []GoalCommandRecord, limit int) []GoalCommandRecord {
+	if len(items) == 0 {
+		return nil
+	}
+	if limit <= 0 || len(items) <= limit {
+		return append([]GoalCommandRecord(nil), items...)
+	}
+	return append([]GoalCommandRecord(nil), items[len(items)-limit:]...)
 }
 
 func relGoalPath(root string, path string) string {

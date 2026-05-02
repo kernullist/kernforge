@@ -194,34 +194,38 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 목적:
 1. 사용자가 Codex식 목표를 한 번 지정하면 Kernforge가 추가 확인 없이 계속 작업하게 한다.
 2. inline prompt와 markdown 파일 목표를 모두 지원한다.
-3. 구현, 자체 리뷰, 검증, recovery, completion audit를 목표 완료 또는 구체 blocker 기록까지 반복한다.
+3. 구현, 자체 리뷰, 검증, completion audit, 최종 semantic review, recovery를 목표 완료 또는 구체 blocker 기록까지 반복한다.
 
 대표 명령:
 - `/goal "missing recovery test와 docs를 추가해"`
 - `/goal start @GOAL.md`
 - `/goal start --file GOAL.md --max-iterations 12`
 - `/goal start --time-budget 10m --until-complete @GOAL.md`
+- `/goal start --token-budget 120000 "context budget을 넘기지 않고 refactor를 끝내"`
 - `/goal start --rollback-on-regression "refactor를 끝내고 verification green 유지"`
 - `/goal start --no-run @GOAL.md`
 - `/goal run latest`
 - `/goal status`
 - `/goal audit`
+- `/goal complete`
 - `/goal cancel`
 - `kernforge -goal "verification policy change를 끝내"`
+- `kernforge -goal "refactor를 끝내" -goal-token-budget 120000 -goal-max-iterations 12`
 - `kernforge -goal-file GOAL.md`
 
 현재 동작:
 1. `/goal`은 session에 `GoalState`를 만들고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다.
-2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있다.
+2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있으며 one-shot `-goal`도 max-iteration, time-budget, token-budget, until-complete, rollback flag를 지원한다.
 3. goal start는 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다.
 4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
 5. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다.
 6. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
-7. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행하고 다음 iteration으로 넘어간다.
-8. progress ledger는 changed files, verification, audit blockers/warnings, review verdict, no-progress count, repeated failure signature, command history를 기록한다.
-9. completion audit이 `ready=true`가 되어야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
+7. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, audit ready 시 최종 semantic reviewer를 실행하고, 필요 시 `/recover execute-safe` 또는 semantic repair pass를 실행한 뒤 다음 iteration으로 넘어간다.
+8. progress ledger는 changed files, verification, audit blockers/warnings, review verdict, final semantic verdict, no-progress count, repeated failure signature, token usage estimate, command history를 기록한다.
+9. completion audit이 `ready=true`이고 최종 semantic review가 `APPROVED`를 반환해야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time/token cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
 10. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
-11. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행한다.
+11. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행하고 goal을 완료 처리하지 않는다.
+12. `/goal complete`는 명시적 완료 게이트다. audit을 다시 실행하고 semantic review를 거쳐 둘 다 통과할 때만 complete로 표시한다.
 
 ### Local Automations MVP
 
