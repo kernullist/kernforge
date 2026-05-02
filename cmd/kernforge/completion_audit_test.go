@@ -379,6 +379,15 @@ func TestCompletionAuditObjectiveEvidenceMapsGoalArtifacts(t *testing.T) {
 		"cmd/kernforge/conversation_events.go::conversationEventKindEventStream",
 		"README.md::/events [tail|export]",
 		"FEATURE_USAGE_GUIDE.md::/events export",
+		"cmd/kernforge/goals.go::handleGoalCommand",
+		"cmd/kernforge/goals.go::GoalState",
+		"cmd/kernforge/goals.go::runGoalLoop",
+		"cmd/kernforge/goals.go::buildGoalImplementationPrompt",
+		"cmd/kernforge/goals.go::buildGoalReviewPrompt",
+		"cmd/kernforge/goals_test.go::TestGoalStartFromMarkdownNoRunPersistsArtifacts",
+		"cmd/kernforge/goals_test.go::TestGoalRunWithFakeAgentCompletesAfterAudit",
+		"README.md::/goal",
+		"FEATURE_USAGE_GUIDE.md::Autonomous Goals",
 	}
 	for _, spec := range specs {
 		path, symbol := splitCompletionAuditEvidenceSpec(spec)
@@ -407,7 +416,7 @@ func TestCompletionAuditObjectiveEvidenceMapsGoalArtifacts(t *testing.T) {
 		},
 	}
 
-	artifact := rt.buildCompletionAuditArtifact(root, "natural failure recovery multi-agent worktree long-task continuity local edit command loop Codex")
+	artifact := rt.buildCompletionAuditArtifact(root, "natural failure recovery multi-agent worktree long-task continuity local edit command loop Codex autonomous goals")
 
 	for _, requirement := range []string{
 		"Natural failure recovery command and tests",
@@ -415,6 +424,7 @@ func TestCompletionAuditObjectiveEvidenceMapsGoalArtifacts(t *testing.T) {
 		"Long-task continuity packet and job polling",
 		"Local edit and command loop recovery gates",
 		"Codex-style local event stream",
+		"Autonomous goals command and loop",
 	} {
 		item, ok := completionAuditChecklistItem(artifact, requirement)
 		if !ok {

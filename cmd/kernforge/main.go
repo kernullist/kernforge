@@ -64,6 +64,7 @@ type runtimeState struct {
 	clientErr                  error
 	workspace                  Workspace
 	detectVerificationToolPath func(string) string
+	goalReply                  func(context.Context, string) (string, error)
 	interactive                bool
 	outputMu                   sync.Mutex
 	footerVisible              bool
@@ -125,6 +126,8 @@ func run(args []string) error {
 		viewerResultFlag  string
 		promptFlag        string
 		commandFlag       string
+		goalFlag          string
+		goalFileFlag      string
 		resumeFlag        string
 		permissionFlag    string
 		yesFlag           bool
@@ -144,6 +147,8 @@ func run(args []string) error {
 	fs.StringVar(&viewerResultFlag, "viewer-result-file", "", "internal viewer result path")
 	fs.StringVar(&promptFlag, "prompt", "", "single prompt mode")
 	fs.StringVar(&commandFlag, "command", "", "single slash command mode")
+	fs.StringVar(&goalFlag, "goal", "", "autonomous goal objective")
+	fs.StringVar(&goalFileFlag, "goal-file", "", "markdown file containing an autonomous goal objective")
 	fs.StringVar(&resumeFlag, "resume", "", "resume session by id")
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
@@ -253,6 +258,11 @@ func run(args []string) error {
 	if strings.TrimSpace(promptFlag) != "" && strings.TrimSpace(commandFlag) != "" {
 		return fmt.Errorf("-prompt and -command cannot be used together")
 	}
+	if strings.TrimSpace(goalFlag) != "" || strings.TrimSpace(goalFileFlag) != "" {
+		if strings.TrimSpace(promptFlag) != "" || strings.TrimSpace(commandFlag) != "" {
+			return fmt.Errorf("-goal/-goal-file cannot be combined with -prompt or -command")
+		}
+	}
 	cliImages, err := parseImageInputList(sess.WorkingDir, imageFlag)
 	if err != nil {
 		return err
@@ -360,6 +370,9 @@ func run(args []string) error {
 	if commandFlag != "" {
 		return rt.runSingleCommand(commandFlag)
 	}
+	if strings.TrimSpace(goalFlag) != "" || strings.TrimSpace(goalFileFlag) != "" {
+		return rt.runSingleGoal(goalFlag, goalFileFlag)
+	}
 	return rt.runREPL()
 }
 
@@ -441,6 +454,17 @@ func (rt *runtimeState) runSingleCommand(command string) error {
 	}
 	_, err := rt.handleCommand(cmd)
 	return err
+}
+
+func (rt *runtimeState) runSingleGoal(objective string, filePath string) error {
+	fields := []string{}
+	if strings.TrimSpace(filePath) != "" {
+		fields = append(fields, "--file", strings.TrimSpace(filePath))
+	}
+	if strings.TrimSpace(objective) != "" {
+		fields = append(fields, strings.TrimSpace(objective))
+	}
+	return rt.handleGoalStart(fields)
 }
 
 func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
@@ -4828,6 +4852,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if strings.TrimSpace(rt.session.ActiveFeatureID) != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_feature", rt.session.ActiveFeatureID))
 		}
+		if goal, ok := rt.session.ActiveGoal(); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal", goal.ID+" ["+goal.Status+"]"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal_iteration", fmt.Sprintf("%d", goal.Iteration)))
+		}
 		if rt.session.ActiveEditLoop != nil {
 			loop := *rt.session.ActiveEditLoop
 			loop.Normalize()
@@ -5026,6 +5054,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "review-pr":
 		if err := rt.handlePRReviewAutomationCommand(cmd.Args); err != nil {
+			return false, err
+		}
+	case "goal", "goals":
+		if err := rt.handleGoalCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "verify-dashboard":

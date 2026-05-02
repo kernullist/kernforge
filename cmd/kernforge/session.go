@@ -58,6 +58,8 @@ type Session struct {
 	ConversationState             *ConversationState         `json:"conversation_state,omitempty"`
 	SuggestionMemory              *SuggestionMemory          `json:"suggestion_memory,omitempty"`
 	Automations                   []SessionAutomation        `json:"automations,omitempty"`
+	ActiveGoalID                  string                     `json:"active_goal_id,omitempty"`
+	Goals                         []GoalState                `json:"goals,omitempty"`
 	Messages                      []Message                  `json:"messages"`
 }
 
@@ -158,6 +160,19 @@ func (s *Session) ApproxChars() int {
 		total += len(automation.NextRunHint) + len(automation.LastResult)
 		if !automation.NextRunAt.IsZero() {
 			total += len(automation.NextRunAt.Format(time.RFC3339))
+		}
+	}
+	for _, goal := range s.Goals {
+		total += len(goal.ID) + len(goal.Status) + len(goal.Objective) + len(goal.SourcePath)
+		for _, iteration := range goal.Iterations {
+			total += len(iteration.Status) + len(iteration.ReplySummary) + len(iteration.Error)
+			total += len(iteration.Verification) + len(iteration.AuditStatus) + len(iteration.RecoveryStatus)
+			for _, item := range iteration.Blockers {
+				total += len(item)
+			}
+			for _, item := range iteration.Warnings {
+				total += len(item)
+			}
 		}
 	}
 	for _, event := range s.ConversationEvents {
@@ -448,6 +463,7 @@ func (s *SessionStore) Load(id string) (*Session, error) {
 	sess.normalizeConversationRuntime()
 	sess.normalizeSuggestionMemory()
 	sess.normalizeAutomations()
+	sess.normalizeGoals()
 	return &sess, nil
 }
 

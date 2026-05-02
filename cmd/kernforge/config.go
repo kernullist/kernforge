@@ -1879,6 +1879,7 @@ Conversation And Sessions:
 /jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
 /review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Generate a local PR review automation report, optionally with gh PR metadata or explicit GitHub writes
+/goal [start|run|status|audit|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
 /tasks                 Show the current task list
 
 Provider And Models:
@@ -2090,6 +2091,31 @@ func HelpDetail(topic string) (string, bool) {
 - With --resolve-thread <id>, run the GitHub GraphQL resolveReviewThread mutation through gh api graphql. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
 - With --draft-issue, generate .kernforge/pr_review/issue.md. With --create-issue, also run gh issue create --title ... --body-file .kernforge/pr_review/issue.md. Issue creation is explicit-only.
 - Issue drafts and create calls accept repeated --label, --assignee, and --milestone values. Comma-separated labels or assignees are split and passed as repeated gh flags.
+`), true
+	case "goal", "goals":
+		return strings.TrimSpace(`
+/goal <objective>
+/goal start <objective>
+/goal start @GOAL.md
+/goal start --file GOAL.md
+- Create an autonomous Codex-style goal from inline text or a markdown file and immediately run it.
+- Kernforge asks the agent to inspect, implement, review, verify, and fix bugs without user intervention.
+- Each loop iteration runs the agent, /verify --full, /completion-audit, and when needed /recover execute-safe.
+
+/goal start --no-run <objective>
+- Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.
+
+/goal run [id|latest]
+- Resume a pending or blocked goal and continue until completion audit is ready or an unrecoverable blocker is recorded.
+
+/goal status [id|latest]
+- Show the active goal, status, iteration count, latest audit state, and artifact paths.
+
+/goal audit [id|latest]
+- Re-run /completion-audit for the goal objective and attach the result to the goal state.
+
+/goal cancel [id|latest]
+- Mark a goal canceled without deleting its artifact history.
 `), true
 	case "events", "event-stream":
 		return strings.TrimSpace(`

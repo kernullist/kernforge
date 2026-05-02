@@ -694,6 +694,19 @@ func completionAuditObjectiveEvidence(root string, artifact *CompletionAuditArti
 			"FEATURE_USAGE_GUIDE.md::/events export",
 		})
 	}
+	if containsAny(objective, "goal", "goals", "autonomous", "자율", "목표") {
+		completionAuditFeatureEvidence(root, artifact, "Autonomous goals command and loop", []string{
+			"cmd/kernforge/goals.go::handleGoalCommand",
+			"cmd/kernforge/goals.go::GoalState",
+			"cmd/kernforge/goals.go::runGoalLoop",
+			"cmd/kernforge/goals.go::buildGoalImplementationPrompt",
+			"cmd/kernforge/goals.go::buildGoalReviewPrompt",
+			"cmd/kernforge/goals_test.go::TestGoalStartFromMarkdownNoRunPersistsArtifacts",
+			"cmd/kernforge/goals_test.go::TestGoalRunWithFakeAgentCompletesAfterAudit",
+			"README.md::/goal",
+			"FEATURE_USAGE_GUIDE.md::Autonomous Goals",
+		})
+	}
 }
 
 func completionAuditFeatureEvidence(root string, artifact *CompletionAuditArtifact, requirement string, specs []string) {

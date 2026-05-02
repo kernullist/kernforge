@@ -28,6 +28,7 @@ const (
 	conversationEventKindCompletionAudit = "completion_audit"
 	conversationEventKindRecovery        = "recovery"
 	conversationEventKindEventStream     = "event_stream"
+	conversationEventKindGoal            = "goal"
 
 	conversationSeverityInfo  = "info"
 	conversationSeverityWarn  = "warn"

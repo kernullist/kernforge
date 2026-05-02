@@ -107,6 +107,7 @@ Its current differentiators are:
 - Built-in specialist subagent catalog with editable and read-only routing profiles
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
+- Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, and recovery without user prompts
 - Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
@@ -193,6 +194,17 @@ Its current differentiators are:
 - Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
 - Automatic safety checkpoint creation for repeated high-risk failure patterns
+
+### Autonomous Goals
+
+- `/goal <objective>` or `/goal start <objective>` creates a persistent goal and immediately starts an autonomous loop
+- `/goal start @GOAL.md` and `kernforge -goal-file GOAL.md` load the objective from a markdown file
+- `kernforge -goal "..."` runs the same loop without entering the REPL
+- Each iteration asks the agent to inspect, develop, modify, review its own changes, and fix bugs without asking the user for confirmation
+- Kernforge then runs `/verify --full`, `/completion-audit`, and if needed `/recover execute-safe` before the next iteration
+- The loop stops only when the completion audit is ready, the goal is canceled, or an unrecoverable blocker such as provider failure or iteration cap is recorded
+- Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
+- `/goal status`, `/goal audit`, `/goal run`, and `/goal cancel` inspect, re-audit, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing
 

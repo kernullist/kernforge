@@ -191,6 +191,35 @@ Current behavior:
 10. Slash actions are validated against their recorded artifacts: failed `/verify` reports and non-ready `/completion-audit` results become failed recovery actions, and `stop_on_failure` skips dependent actions.
 11. The safe-auto shell whitelist allows narrow commands such as `go test`, `go vet`, `go list`, `git status`, and `git diff --check`, but rejects high-risk Go/Git flags that can launch external tools or write side artifacts.
 
+### Autonomous Goals
+
+Purpose:
+1. Let the user define a Codex-style goal once, then let Kernforge keep working without follow-up prompts.
+2. Support objectives written inline or stored in markdown files.
+3. Repeat implementation, self-review, verification, recovery, and completion audit until the goal is complete or a concrete blocker is recorded.
+
+Useful commands:
+- `/goal "add the missing recovery tests and update docs"`
+- `/goal start @GOAL.md`
+- `/goal start --file GOAL.md --max-iterations 12`
+- `/goal start --no-run @GOAL.md`
+- `/goal run latest`
+- `/goal status`
+- `/goal audit`
+- `/goal cancel`
+- `kernforge -goal "finish the verification policy change"`
+- `kernforge -goal-file GOAL.md`
+
+Current behavior:
+1. `/goal` creates a `GoalState` in the session and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json`.
+2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag.
+3. Each iteration sends an implementation prompt and then a bug-finding review prompt to the agent.
+4. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
+5. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, and if the audit is not ready, runs `/recover execute-safe` before the next iteration.
+6. The loop completes only when the completion audit is `ready=true`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, or stopped by the configured iteration cap.
+7. `/goal run` resumes a pending or blocked goal from the latest persisted state.
+8. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass.
+
 ### Local Automations MVP
 
 Purpose:

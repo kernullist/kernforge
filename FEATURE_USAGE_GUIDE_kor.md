@@ -189,6 +189,35 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 10. slash action은 실행 여부만 보지 않고 기록된 artifact를 다시 확인한다. `/verify` 실패 report와 `ready=false`인 `/completion-audit` 결과는 recovery action 실패로 승격되고, `stop_on_failure`가 있으면 뒤 액션은 skip된다.
 11. safe-auto shell whitelist는 `go test`, `go vet`, `go list`, `git status`, `git diff --check` 같은 좁은 명령만 허용하며 외부 도구 실행이나 side artifact 생성을 유발할 수 있는 고위험 Go/Git flag는 거부한다.
 
+### Autonomous Goals
+
+목적:
+1. 사용자가 Codex식 목표를 한 번 지정하면 Kernforge가 추가 확인 없이 계속 작업하게 한다.
+2. inline prompt와 markdown 파일 목표를 모두 지원한다.
+3. 구현, 자체 리뷰, 검증, recovery, completion audit를 목표 완료 또는 구체 blocker 기록까지 반복한다.
+
+대표 명령:
+- `/goal "missing recovery test와 docs를 추가해"`
+- `/goal start @GOAL.md`
+- `/goal start --file GOAL.md --max-iterations 12`
+- `/goal start --no-run @GOAL.md`
+- `/goal run latest`
+- `/goal status`
+- `/goal audit`
+- `/goal cancel`
+- `kernforge -goal "verification policy change를 끝내"`
+- `kernforge -goal-file GOAL.md`
+
+현재 동작:
+1. `/goal`은 session에 `GoalState`를 만들고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다.
+2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있다.
+3. 각 iteration은 agent에게 구현 prompt와 bug-finding review prompt를 차례로 보낸다.
+4. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
+5. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, 필요 시 `/recover execute-safe`를 실행하고 다음 iteration으로 넘어간다.
+6. completion audit이 `ready=true`가 되어야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration cap에 걸릴 때까지 계속 반복한다.
+7. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
+8. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행한다.
+
 ### Local Automations MVP
 
 목적:
