@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
@@ -121,6 +122,17 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	if rt == nil || rt.session == nil {
 		return goal, true, fmt.Errorf("no active session")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		iteration := GoalIteration{
+			Index:     goal.Iteration + 1,
+			Status:    goalStatusCanceled,
+			StartedAt: time.Now(),
+		}
+		return rt.finishGoalIterationError(goal, iteration, err)
+	}
 	if goal.TimeBudgetSeconds > 0 && !goal.CreatedAt.IsZero() && time.Since(goal.CreatedAt) > time.Duration(goal.TimeBudgetSeconds)*time.Second {
 		goal.Status = goalStatusBlocked
 		goal.LastError = fmt.Sprintf("goal exceeded time budget (%ds)", goal.TimeBudgetSeconds)
@@ -194,9 +206,12 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	rt.session.SetPlanNodeLifecycle("plan-03", "completed", "Review pass completed and concrete findings were repaired or cleared.")
 
 	verifyCommand := startGoalCommand(iteration.Index, "verify", "/verify --full")
-	verifyErr := rt.handleVerifyCommand("--full")
+	verifyErr := rt.handleVerifyCommandContext(ctx, "--full")
 	verifyCommand.finish(statusForErr(verifyErr), verificationSummaryOrError(rt.session, verifyErr))
 	iteration.Commands = append(iteration.Commands, verifyCommand)
+	if isGoalCancellationError(verifyErr) {
+		return rt.finishGoalIterationError(goal, iteration, verifyErr)
+	}
 	if verifyErr != nil {
 		iteration.Error = verifyErr.Error()
 		iteration.Status = goalStatusBlocked
@@ -209,6 +224,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		iteration.Verification = rt.session.LastVerification.SummaryLine()
 	}
 
+	if err := ctx.Err(); err != nil {
+		return rt.finishGoalIterationError(goal, iteration, err)
+	}
 	rt.session.SetPlanNodeLifecycle("plan-05", "completed", "Completion audit is being generated for the goal.")
 	auditCommand := startGoalCommand(iteration.Index, "completion-audit", "/completion-audit <goal objective>")
 	audit, auditErr := rt.runGoalCompletionAudit(goal)
@@ -231,6 +249,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			semanticReview, semanticErr := rt.runGoalSemanticReview(ctx, goal, audit, iteration)
 			semanticCommand.finish(statusForErr(semanticErr), semanticReviewSummaryOrError(semanticReview, semanticErr))
 			iteration.Commands = append(iteration.Commands, semanticCommand)
+			if isGoalCancellationError(semanticErr) {
+				return rt.finishGoalIterationError(goal, iteration, semanticErr)
+			}
 			if semanticErr != nil {
 				iteration.Error = semanticErr.Error()
 				iteration.Status = goalStatusBlocked
@@ -248,6 +269,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 				} else {
 					repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalSemanticRepairPrompt(goal, iteration, semanticReview))
 					iteration.RepairReply = compactPromptSection(strings.Join([]string{iteration.RepairReply, repairReply}, "\n\n"), 1200)
+					if isGoalCancellationError(repairErr) {
+						return rt.finishGoalIterationError(goal, iteration, repairErr)
+					}
 					if repairErr != nil {
 						iteration.Error = repairErr.Error()
 						iteration.Status = goalStatusBlocked
@@ -271,10 +295,16 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			} else {
 				iteration.Status = goalStatusPending
 				rt.session.SetPlanNodeLifecycle("plan-06", "in_progress", "Completion audit is not ready; executing safe recovery actions.")
+				if err := ctx.Err(); err != nil {
+					return rt.finishGoalIterationError(goal, iteration, err)
+				}
 				recoveryCommand := startGoalCommand(iteration.Index, "recover", "/recover execute-safe goal "+goal.ID)
-				recoveryErr := rt.handleRecoverCommand("execute-safe goal " + goal.ID)
+				recoveryErr := rt.handleRecoverCommandContext(ctx, "execute-safe goal "+goal.ID)
 				recoveryCommand.finish(statusForErr(recoveryErr), errorOrText(recoveryErr, "safe recovery plan executed"))
 				iteration.Commands = append(iteration.Commands, recoveryCommand)
+				if isGoalCancellationError(recoveryErr) {
+					return rt.finishGoalIterationError(goal, iteration, recoveryErr)
+				}
 				if recoveryErr != nil {
 					iteration.RecoveryStatus = "failed: " + recoveryErr.Error()
 				} else {
@@ -288,6 +318,9 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 }
 
 func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalIteration, err error) (GoalState, bool, error) {
+	if isGoalCancellationError(err) {
+		return rt.finishGoalIterationCanceled(goal, iteration, err)
+	}
 	iteration.Error = err.Error()
 	iteration.Status = goalStatusBlocked
 	iteration.FinishedAt = time.Now()
@@ -302,6 +335,42 @@ func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalI
 		_ = rt.store.Save(rt.session)
 	}
 	return goal, true, err
+}
+
+func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration GoalIteration, err error) (GoalState, bool, error) {
+	reason := goalCancellationReason(err)
+	if iteration.Index <= 0 {
+		iteration.Index = goal.Iteration + 1
+	}
+	if iteration.StartedAt.IsZero() {
+		iteration.StartedAt = time.Now()
+	}
+	iteration.Error = reason
+	iteration.Status = goalStatusCanceled
+	iteration.FinishedAt = time.Now()
+	goal.Iteration = iteration.Index
+	goal.Status = goalStatusCanceled
+	goal.LastError = reason
+	goal.CommandHistory = append(goal.CommandHistory, iteration.Commands...)
+	goal.Iterations = append(goal.Iterations, iteration)
+	goal.Touch()
+	rt.session.UpsertGoal(goal)
+	rt.session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindGoal,
+		Severity: conversationSeverityInfo,
+		Summary:  fmt.Sprintf("goal iteration %d canceled", iteration.Index),
+		Entities: map[string]string{
+			"goal":      goal.ID,
+			"status":    goal.Status,
+			"iteration": fmt.Sprintf("%d", iteration.Index),
+		},
+	})
+	_ = rt.writeGoalArtifacts(goal)
+	if rt.store != nil {
+		_ = rt.store.Save(rt.session)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal canceled: "+goal.ID))
+	return goal, true, nil
 }
 
 func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIteration) GoalState {
@@ -719,10 +788,35 @@ func (r *GoalCommandRecord) finish(status string, summary string) {
 }
 
 func statusForErr(err error) string {
+	if isGoalCancellationError(err) {
+		return "canceled"
+	}
 	if err != nil {
 		return "failed"
 	}
 	return "passed"
+}
+
+func isGoalCancellationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "request canceled") || strings.Contains(text, "context canceled")
+}
+
+func goalCancellationReason(err error) string {
+	if err == nil {
+		return "goal canceled by user"
+	}
+	text := strings.TrimSpace(err.Error())
+	if text == "" || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(text), "context canceled") {
+		return "goal canceled by user"
+	}
+	return text
 }
 
 func errorOrText(err error, text string) string {

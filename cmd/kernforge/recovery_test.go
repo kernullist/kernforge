@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,6 +187,62 @@ func TestRecoverExecuteSafeRunsWhitelistedActionAndLogsStatus(t *testing.T) {
 	}
 	if !strings.Contains(string(md), "## Execution Log") || !strings.Contains(string(md), "event-command-rerun-01") {
 		t.Fatalf("expected execution log in markdown, got %q", string(md))
+	}
+}
+
+func TestRecoverExecuteSafeHonorsCanceledContext(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AppendConversationEvent(ConversationEvent{
+		Kind:     conversationEventKindCommandError,
+		Severity: conversationSeverityError,
+		Summary:  "shell command failed: git status --short",
+		Raw:      "previous failure",
+		Entities: map[string]string{
+			"tool":    "shell",
+			"command": "git status --short",
+		},
+	})
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Shell:    defaultShell(),
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := rt.handleRecoverCommandContext(ctx, "execute-safe check status")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+
+	data, readErr := os.ReadFile(filepath.Join(root, ".kernforge", "recovery", "latest.json"))
+	if readErr != nil {
+		t.Fatalf("read recovery json: %v", readErr)
+	}
+	brief := RecoveryBrief{}
+	if err := json.Unmarshal(data, &brief); err != nil {
+		t.Fatalf("unmarshal recovery brief: %v", err)
+	}
+	action, ok := recoveryTestActionByID(brief.ActionPlan, "event-command-rerun-01")
+	if !ok {
+		t.Fatalf("expected event command action in %#v", brief.ActionPlan)
+	}
+	if action.Status != recoveryActionStatusSkipped {
+		t.Fatalf("expected canceled recovery action to be skipped, got %#v", action)
+	}
+	if len(brief.ExecutionLog) != 0 {
+		t.Fatalf("expected no recovery execution log after pre-cancel, got %#v", brief.ExecutionLog)
+	}
+	if strings.Contains(output.String(), "Generated recovery brief") {
+		t.Fatalf("expected canceled recovery command not to print success, got %q", output.String())
 	}
 }
 

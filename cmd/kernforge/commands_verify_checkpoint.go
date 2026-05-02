@@ -10,6 +10,13 @@ import (
 )
 
 func (rt *runtimeState) handleVerifyCommand(args string) error {
+	return rt.handleVerifyCommandContext(context.Background(), args)
+}
+
+func (rt *runtimeState) handleVerifyCommandContext(ctx context.Context, args string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	changed := collectVerificationChangedPaths(rt.workspace.Root, rt.session)
 	mode := VerificationAdaptive
 	if strings.TrimSpace(args) != "" {
@@ -40,7 +47,7 @@ func (rt *runtimeState) handleVerifyCommand(args string) error {
 		fmt.Fprintln(rt.writer, rt.ui.warnLine("No recommended verification steps were found for this workspace."))
 		return nil
 	}
-	if verdict, err := rt.workspace.Hook(context.Background(), HookPreVerification, HookPayload{
+	if verdict, err := rt.workspace.Hook(ctx, HookPreVerification, HookPayload{
 		"trigger":       "manual",
 		"mode":          string(plan.Mode),
 		"changed_files": append([]string(nil), changed...),
@@ -63,13 +70,13 @@ func (rt *runtimeState) handleVerifyCommand(args string) error {
 	} else {
 		return err
 	}
-	report := executeVerificationSteps(context.Background(), rt.workspace, "manual", plan)
+	report := executeVerificationSteps(ctx, rt.workspace, "manual", plan)
 	rt.session.LastVerification = &report
 	_ = rt.store.Save(rt.session)
 	if rt.verifyHistory != nil {
 		_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
 	}
-	_, _ = rt.workspace.Hook(context.Background(), HookPostVerification, HookPayload{
+	_, _ = rt.workspace.Hook(ctx, HookPostVerification, HookPayload{
 		"trigger":       "manual",
 		"mode":          string(report.Mode),
 		"changed_files": append([]string(nil), changed...),
@@ -82,6 +89,9 @@ func (rt *runtimeState) handleVerifyCommand(args string) error {
 	if handoff := verificationHandoff(report, activeFeature, hasActiveFeature); strings.TrimSpace(handoff) != "" {
 		fmt.Fprintln(rt.writer)
 		fmt.Fprintln(rt.writer, handoff)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return nil
 }

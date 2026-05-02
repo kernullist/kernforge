@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -1225,13 +1226,23 @@ func automationDigestSeverity(summary automationRuntimeSummary) string {
 }
 
 func (rt *runtimeState) executeSafeSuggestionCommand(command string) (string, error) {
+	return rt.executeSafeSuggestionCommandContext(context.Background(), command)
+}
+
+func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context, command string) (string, error) {
 	cmd, ok := ParseCommand(command)
 	if !ok {
 		return "", fmt.Errorf("suggestion command must be a slash command: %s", command)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	switch cmd.Name {
 	case "verify":
-		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
+		if err := rt.handleVerifyCommandContext(ctx, cmd.Args); err != nil {
 			return "", err
 		}
 		return "executed /verify", nil
@@ -1261,7 +1272,7 @@ func (rt *runtimeState) executeSafeSuggestionCommand(command string) (string, er
 		}
 		return "executed /continuity", nil
 	case "recover":
-		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
+		if err := rt.handleRecoverCommandContext(ctx, cmd.Args); err != nil {
 			return "", err
 		}
 		return "executed /recover", nil

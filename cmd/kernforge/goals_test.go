@@ -242,6 +242,162 @@ func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
 	}
 }
 
+func TestGoalRunCancelsBeforeIteration(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			t.Fatalf("unexpected goal prompt after cancellation: %s", prompt)
+			return "", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := rt.runGoalLoop(ctx, goal.ID); err != nil {
+		t.Fatalf("runGoalLoop: %v", err)
+	}
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
+		t.Fatalf("expected canceled goal, got %#v", active)
+	}
+	if len(active.Iterations) != 0 {
+		t.Fatalf("expected no iteration to start after pre-cancel, got %#v", active.Iterations)
+	}
+	if !strings.Contains(output.String(), "Goal canceled") {
+		t.Fatalf("expected cancel output, got %q", output.String())
+	}
+}
+
+func TestGoalRunCancelsDuringAgentPrompt(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	replyCount := 0
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			replyCount++
+			cancel()
+			return "", ctx.Err()
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if err := rt.runGoalLoop(ctx, goal.ID); err != nil {
+		t.Fatalf("runGoalLoop: %v", err)
+	}
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
+		t.Fatalf("expected canceled goal, got %#v", active)
+	}
+	if replyCount != 1 {
+		t.Fatalf("expected one goal prompt before cancellation, got %d", replyCount)
+	}
+	if len(active.Iterations) != 1 || active.Iterations[0].Status != goalStatusCanceled {
+		t.Fatalf("expected canceled iteration evidence, got %#v", active.Iterations)
+	}
+	if !strings.Contains(output.String(), "Goal canceled") {
+		t.Fatalf("expected cancel output, got %q", output.String())
+	}
+}
+
+func TestGoalRunCancelsDuringVerification(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	replyCount := 0
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			replyCount++
+			if replyCount == 2 {
+				cancel()
+			}
+			return "fake goal reply", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if err := rt.runGoalLoop(ctx, goal.ID); err != nil {
+		t.Fatalf("runGoalLoop: %v", err)
+	}
+
+	active, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
+		t.Fatalf("expected canceled goal, got %#v", active)
+	}
+	if replyCount != 2 {
+		t.Fatalf("expected implementation and review prompts before verification cancellation, got %d", replyCount)
+	}
+	if len(active.Iterations) != 1 || active.Iterations[0].Status != goalStatusCanceled {
+		t.Fatalf("expected canceled iteration evidence, got %#v", active.Iterations)
+	}
+	if len(active.CommandHistory) == 0 || active.CommandHistory[0].Name != "verify" || active.CommandHistory[0].Status != "canceled" {
+		t.Fatalf("expected canceled verify command evidence, got %#v", active.CommandHistory)
+	}
+}
+
 func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)

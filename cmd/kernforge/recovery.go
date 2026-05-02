@@ -86,8 +86,15 @@ type RecoveryExecutionRecord struct {
 }
 
 func (rt *runtimeState) handleRecoverCommand(args string) error {
+	return rt.handleRecoverCommandContext(context.Background(), args)
+}
+
+func (rt *runtimeState) handleRecoverCommandContext(ctx context.Context, args string) error {
 	if rt == nil || rt.session == nil {
 		return fmt.Errorf("no active session")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	options := parseRecoverCommandOptions(args)
 	root := workspaceSnapshotRoot(rt.workspace)
@@ -99,7 +106,7 @@ func (rt *runtimeState) handleRecoverCommand(args string) error {
 	}
 	brief := rt.buildRecoveryBrief(root, options.Note)
 	if options.ExecuteSafe {
-		rt.executeRecoverySafePlan(&brief)
+		rt.executeRecoverySafePlanContext(ctx, &brief)
 		brief.LastVerification = ""
 		brief.VerificationFailure = ""
 		if rt.session.LastVerification != nil {
@@ -148,6 +155,9 @@ func (rt *runtimeState) handleRecoverCommand(args string) error {
 		if err := rt.store.Save(rt.session); err != nil {
 			return err
 		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Generated recovery brief: "+mdPath))
 	if strings.TrimSpace(brief.PrimaryFailure) != "" {
@@ -674,18 +684,31 @@ func recoveryVerificationSatisfied(session *Session) bool {
 }
 
 func (rt *runtimeState) executeRecoverySafePlan(brief *RecoveryBrief) {
+	rt.executeRecoverySafePlanContext(context.Background(), brief)
+}
+
+func (rt *runtimeState) executeRecoverySafePlanContext(ctx context.Context, brief *RecoveryBrief) {
 	if rt == nil || brief == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	for index := range brief.ActionPlan {
 		action := &brief.ActionPlan[index]
+		if ctx.Err() != nil {
+			if action.Status == recoveryActionStatusPending {
+				action.Status = recoveryActionStatusSkipped
+			}
+			continue
+		}
 		if !action.SafeAuto || strings.TrimSpace(action.Command) == "" {
 			if action.Status == recoveryActionStatusPending {
 				action.Status = recoveryActionStatusManualOnly
 			}
 			continue
 		}
-		record := rt.executeRecoveryAction(*action)
+		record := rt.executeRecoveryActionContext(ctx, *action)
 		brief.ExecutionLog = append(brief.ExecutionLog, record)
 		action.Status = record.Status
 		if action.StopOnFailure && record.Status != recoveryActionStatusExecuted {
@@ -701,6 +724,10 @@ func (rt *runtimeState) executeRecoverySafePlan(brief *RecoveryBrief) {
 }
 
 func (rt *runtimeState) executeRecoveryAction(action RecoveryActionPlanItem) (record RecoveryExecutionRecord) {
+	return rt.executeRecoveryActionContext(context.Background(), action)
+}
+
+func (rt *runtimeState) executeRecoveryActionContext(ctx context.Context, action RecoveryActionPlanItem) (record RecoveryExecutionRecord) {
 	command := strings.TrimSpace(action.Command)
 	record = RecoveryExecutionRecord{
 		ActionID:  strings.TrimSpace(action.ID),
@@ -717,12 +744,20 @@ func (rt *runtimeState) executeRecoveryAction(action RecoveryActionPlanItem) (re
 		record.Output = "No command attached to recovery action."
 		return record
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		record.Status = recoveryActionStatusFailed
+		record.Output = "command canceled"
+		return record
+	}
 	if strings.HasPrefix(command, "!") {
-		record = rt.executeRecoveryShellAction(action, strings.TrimSpace(strings.TrimPrefix(command, "!")))
+		record = rt.executeRecoveryShellActionContext(ctx, action, strings.TrimSpace(strings.TrimPrefix(command, "!")))
 		return record
 	}
 	if strings.HasPrefix(command, "/") {
-		if err := rt.executeRecoverySlashAction(command); err != nil {
+		if err := rt.executeRecoverySlashActionContext(ctx, command); err != nil {
 			record.Status = recoveryActionStatusFailed
 			record.Output = err.Error()
 			return record
@@ -741,9 +776,19 @@ func (rt *runtimeState) executeRecoveryAction(action RecoveryActionPlanItem) (re
 }
 
 func (rt *runtimeState) executeRecoverySlashAction(command string) error {
+	return rt.executeRecoverySlashActionContext(context.Background(), command)
+}
+
+func (rt *runtimeState) executeRecoverySlashActionContext(ctx context.Context, command string) error {
 	cmd, ok := ParseCommand(command)
 	if !ok {
 		return fmt.Errorf("recovery slash command is invalid: %s", command)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	switch cmd.Name {
 	case "jobs":
@@ -751,7 +796,7 @@ func (rt *runtimeState) executeRecoverySlashAction(command string) error {
 	case "tasks":
 		return rt.printRecoveryTasks()
 	default:
-		_, err := rt.executeSafeSuggestionCommand(command)
+		_, err := rt.executeSafeSuggestionCommandContext(ctx, command)
 		return err
 	}
 }
@@ -821,11 +866,18 @@ func (rt *runtimeState) printRecoveryTasks() error {
 }
 
 func (rt *runtimeState) executeRecoveryShellAction(action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {
+	return rt.executeRecoveryShellActionContext(context.Background(), action, command)
+}
+
+func (rt *runtimeState) executeRecoveryShellActionContext(ctx context.Context, action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {
 	record := RecoveryExecutionRecord{
 		ActionID:  strings.TrimSpace(action.ID),
 		Command:   "!" + strings.TrimSpace(command),
 		Status:    recoveryActionStatusSkipped,
 		StartedAt: time.Now(),
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if !recoveryCommandAutoRunnable(command) {
 		record.Output = "Command is not in the recovery safe-auto whitelist."
@@ -846,10 +898,10 @@ func (rt *runtimeState) executeRecoveryShellAction(action RecoveryActionPlanItem
 	if timeout <= 0 {
 		timeout = 90 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	name, args := shellInvocation(rt.workspace.Shell, command)
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := exec.CommandContext(runCtx, name, args...)
 	cmd.Dir = rt.workspace.Root
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
@@ -862,12 +914,21 @@ func (rt *runtimeState) executeRecoveryShellAction(action RecoveryActionPlanItem
 		exitCode := exitErr.ExitCode()
 		record.ExitCode = &exitCode
 	}
-	if ctx.Err() == context.DeadlineExceeded {
+	if runCtx.Err() == context.Canceled {
+		record.Status = recoveryActionStatusFailed
+		if record.Output == "" {
+			record.Output = "command canceled"
+		}
+		rt.noteLocalShellCommand(command, record.Output, runCtx.Err())
+		rt.recordRecoveryVerification(action, command, record)
+		return record
+	}
+	if runCtx.Err() == context.DeadlineExceeded {
 		record.Status = recoveryActionStatusFailed
 		if record.Output == "" {
 			record.Output = "command timed out"
 		}
-		rt.noteLocalShellCommand(command, record.Output, ctx.Err())
+		rt.noteLocalShellCommand(command, record.Output, runCtx.Err())
 		rt.recordRecoveryVerification(action, command, record)
 		return record
 	}

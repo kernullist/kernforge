@@ -379,7 +379,21 @@ func (rt *runtimeState) runGoalBySelector(selector string, maxIterationsOverride
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("id", goal.ID))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("mode", "autonomous"))
 	return rt.withAutonomousGoalPermissions(func() error {
-		return rt.runGoalLoop(context.Background(), goal.ID)
+		requestCtx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		rt.clearRequestCancelState()
+		defer rt.clearRequestCancelState()
+		cancelRequest := func() {
+			rt.beginRequestCancel()
+			cancel()
+		}
+		stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
+		defer stopEscapeWatcher()
+		err := rt.runGoalLoop(requestCtx, goal.ID)
+		if requestCtx.Err() == context.Canceled {
+			rt.noteRecentRequestCancel()
+		}
+		return err
 	})
 }
 
@@ -391,6 +405,10 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 		}
 		goal := rt.session.Goals[index]
 		if goalStatusTerminal(goal.Status) {
+			return nil
+		}
+		if ctx != nil && ctx.Err() != nil {
+			rt.cancelGoalExecution(goal, "goal canceled by user")
 			return nil
 		}
 		if goal.MaxIterations > 0 && goal.Iteration >= goal.MaxIterations {
@@ -414,6 +432,22 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 			return nil
 		}
 	}
+}
+
+func (rt *runtimeState) cancelGoalExecution(goal GoalState, reason string) GoalState {
+	if strings.TrimSpace(reason) == "" {
+		reason = "goal canceled"
+	}
+	goal.Status = goalStatusCanceled
+	goal.LastError = reason
+	goal.Touch()
+	rt.session.UpsertGoal(goal)
+	_ = rt.writeGoalArtifacts(goal)
+	if rt.store != nil {
+		_ = rt.store.Save(rt.session)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal canceled: "+goal.ID))
+	return goal
 }
 
 func (rt *runtimeState) runGoalAgentReply(ctx context.Context, prompt string) (string, error) {
