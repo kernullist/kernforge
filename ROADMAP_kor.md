@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge 구현 상태를 바탕으로 Claude Code 및 Codex와 비교했을 때, 따라가야 하는 범용 기능과 우리만의 강점으로 키워야 하는 기능을 함께 정리한 제품/구현 로드맵이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-04-30
+- 코드베이스 기준: 2026-05-02
 - 외부 비교 기준:
   - Claude Code 공식 문서
   - OpenAI Codex 공식 도움말 및 공개 저장소
@@ -144,15 +144,16 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 8. selection-first edit/review UX가 명확함
 9. persistent memory에 trust/importance 개념이 이미 있음
 
-### Kernforge가 아직 비어 있는 축
+### Kernforge에 남은 보강 축
 
 1. analysis dashboard는 rich document portal, cross-doc search, evidence drill-down, trust-boundary/attack-flow MVP, docs-backed vector corpus 재수집까지 갖췄지만 아직 graph UX의 상호작용성은 부족함
 2. generated docs는 API map, security surface, verification matrix, fuzz target catalog, trust/data-flow graph section을 생성하고, 변경 diff view를 graph section stale marker와 연결함
 3. `/fuzz-func`는 강한 source-level triage와 docs catalog ranking을 갖췄지만 coverage-guided fuzzing, corpus lifecycle, crash minimization, sanitizer/coverage report까지 이어지는 전문 워크벤치는 아직 부족함
 4. fuzz finding과 evidence graph, verification history, tracked feature를 하나의 issue lifecycle로 묶는 MVP가 들어갔고, coverage feedback과 dedup도 1차 구현됨. 다음은 coverage report format 확장이 필요함
-5. local automation MVP는 들어갔지만 시간 기반 scheduler와 cloud recurring job은 아직 부재
-6. cloud delegation 부재
-7. local PR review report MVP는 들어갔지만 GitHub API 연동형 PR review automation은 아직 부재
+5. local automation은 interval due 판단, digest/monitor/watch, process-detached daemon, notify artifact/webhook, `-command` scheduler runner, PR review report, gh metadata, safe comment draft/post까지 들어갔다. 다음은 cloud recurring job이다.
+6. long-task continuity는 `/continuity` packet, `/recover` failure runbook, `/jobs` terminal polling/cancel, 직접 `!shell` 실패의 `command_error` event 기록, `/worktree list`, `/completion-audit` readiness gate로 로컬 재개/복구/완료 판정 UX를 보강했다.
+7. cloud delegation은 `/handoff` artifact, `/handoff import`, `/session-dashboard-html` snapshot으로 이어받기 packet, 결과 merge, 현재 thread/task/automation 시각화를 만들 수 있다. 다음은 실제 cloud execution backend이다.
+8. PR review automation은 local report, gh metadata, comment draft/post, review thread resolve, follow-up issue draft/create, label/assignee/milestone까지 들어갔다. 다음은 상주 PR monitor와 cloud-backed review workflow다.
 
 ### 대화형 에이전트 관점 비교
 
@@ -166,19 +167,19 @@ Kernforge의 다음 발전 방향은 크게 세 축으로 잡는다.
 
 | 항목 | Claude Code | Codex | 현재 Kernforge | 해석 |
 |---|---:|---:|---:|---|
-| 최근 대화/상황 grounding | 5 | 5 | 4 | `ConversationEventLog`와 `ActiveConversationState`로 직전 오류, tool result, handoff, provider/model을 보존한다. 아직 장기 작업 전환과 multi-session continuity는 더 강화해야 한다. |
-| "방금 에러" 같은 지시어 이해 | 5 | 5 | 4 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
-| 현재 작업 이어가기 | 5 | 5 | 4 | pending handoff, compact working memory, open artifact 보존이 들어갔다. self-driving loop와 suggestion task node 연결로 현재 작업의 다음 실행 후보를 TaskGraph에 남긴다. |
+| 최근 대화/상황 grounding | 5 | 5 | 5 | `ConversationEventLog`, `ActiveConversationState`, `/session-dashboard-html`, `/continuity`로 직전 오류, tool result, handoff, provider/model, artifact ref, recovery action을 보존하고 시각화한다. |
+| "방금 에러" 같은 지시어 이해 | 5 | 5 | 5 | `RecentErrorResolver`가 provider/tool/command error를 직접 찾아 답하고, `/recover`가 같은 실패 맥락을 `.kernforge/recovery/latest.md/json` runbook으로 외부화한다. 여러 오류 후보가 있으면 가장 가까운 오류를 설명하면서 다른 후보의 kind/source/model/shard/signature도 함께 보여준다. |
+| 현재 작업 이어가기 | 5 | 5 | 5 | pending handoff, compact working memory, open artifact 보존에 더해 `/continuity`가 changed files, open tasks, worktree, background job, verification failure, next command를 하나의 resume packet으로 묶고 `/completion-audit`가 완료 차단 조건을 파일로 남긴다. |
 | 스스로 다음 행동 제안 | 4 | 5 | 4 | `SituationSnapshot`과 `ProactiveSuggestionEngine`이 verification gap, stale docs, fuzz gap, provider 429, dirty worktree, recurring verification, PR review automation을 제안한다. 기본 답변 자동 노출은 과잉 제안을 피하려 provider-blocking 위주로 제한했다. |
 | 제안 반복/거절 기억 | 3 | 4 | 4 | `SuggestionMemory`가 shown/accepted/dismissed/executed/cooldown을 session JSON에 보존하고, accepted/dismissed 선호는 persistent memory에도 승격한다. |
-| 작업 계획과 실행 루프 | 4 | 5 | 4 | 일반 구현/수정/실행 요청에서 `SelfDrivingWorkLoop`가 task state와 task graph를 자동 시드하고 inspect -> implement -> verify -> summarize 루프를 system prompt와 종료 조건에 주입한다. 복잡한 작업은 기존 planner/reviewer preflight를 우선 사용한다. |
-| tool 사용 안정성 | 4 | 5 | 4 | Windows shell guard, diff preview, edit approval, verification, checkpoint가 강하다. 다만 tool failure recovery와 model loop self-correction은 Codex가 더 부드럽다. |
-| 병렬/전문 agent 운용 | 5 | 5 | 4 | project analysis conductor/worker/reviewer와 specialist/worktree가 있다. 범용 subagent delegation UX와 병렬 cloud 작업은 Claude/Codex가 앞선다. |
+| 작업 계획과 실행 루프 | 4 | 5 | 5 | 일반 구현/수정/실행 요청에서 `SelfDrivingWorkLoop`가 task state와 task graph를 자동 시드하고 inspect -> implement -> verify -> summarize 루프를 system prompt와 종료 조건에 주입한다. 복잡한 작업은 기존 planner/reviewer preflight를 우선 사용하고 `/completion-audit`가 final readiness를 외부 artifact로 검문한다. |
+| tool 사용 안정성 | 4 | 5 | 5 | Windows shell guard, diff preview, edit approval, verification, checkpoint, failure repair harness, 직접 `!shell` 실패 event 기록, `/recover`, `/jobs` polling/cancel이 연결되어 local command loop recovery가 더 자연스러워졌다. |
+| 병렬/전문 agent 운용 | 5 | 5 | 4 | project analysis conductor/worker/reviewer와 specialist/worktree가 있고 `/handoff`와 `/handoff import`로 다른 agent/cloud task가 이어받고 결과를 merge할 compact packet을 만든다. 실제 병렬 cloud 실행은 Claude/Codex가 앞선다. |
 | 검증/증거 기반 판단 | 3 | 4 | 5 | Kernforge의 verification history, evidence store, analysis docs, fuzz findings 결합은 보안 작업에서는 오히려 강점이다. |
 | 보안/Windows/anti-cheat 도메인 감도 | 2 | 3 | 5 | Kernforge는 IOCTL, ETW, memory scanning, Unreal, driver/build/signing/fuzz workflow에 맞춘 판단 기준을 제품 중심에 둔다. |
-| 외부 시스템 연동 | 5 | 4 | 3 | MCP는 있으나 GitHub/PR, issue tracker, cloud automation은 아직 얇다. 다만 로컬 PR review report automation MVP는 들어갔다. |
-| 자동화/스케줄링 | 3 | 5 | 3 | `/automation`으로 recurring verification과 PR review automation slot을 session에 저장하고 수동 실행할 수 있다. 실제 시간 기반 scheduler, GitHub API 연동, cloud recurring job은 다음 단계다. |
-| UX polish | 4 | 5 | 3 | Kernforge CLI/Windows viewer는 실용적이지만, Codex급 desktop/app experience와 thread-level 시각화는 아직 부족하다. |
+| 외부 시스템 연동 | 5 | 4 | 3 | MCP, gh 기반 PR metadata, review comment draft/post/thread resolve, issue create, issue 운영 필드, webhook notification, handoff artifact는 들어갔다. cloud automation은 아직 얇다. |
+| 자동화/스케줄링 | 3 | 5 | 4 | `/automation`으로 recurring verification/PR review slot, interval due 판단, digest, monitor/watch, process-detached daemon, notify artifact/webhook, safe dispatcher, `-command` scheduler runner 실행을 제공한다. cloud recurring job은 다음 단계다. |
+| UX polish | 4 | 5 | 3 | Kernforge CLI/Windows viewer와 `/session-dashboard-html` 정적 dashboard는 실용적이지만, Codex급 desktop/app experience와 interactive thread visualization은 아직 부족하다. |
 
 대화형 agent 능력만 놓고 본 현재 위치:
 1. Kernforge는 "상황 기억"과 "최근 오류 grounding"에서는 Claude/Codex의 하위 호환 수준까지 올라왔다.
@@ -1113,10 +1114,33 @@ MVP rule set:
 
 현재 구현 상태:
 1. 완료: `SessionAutomation`을 session JSON에 저장한다.
-2. 완료: `/automation [list|status]`, `/automation add recurring-verification [/verify args]`, `/automation add pr-review [/review-pr]`, `/automation run <id>`, `/automation pause|resume|remove <id>`를 추가했다.
+2. 완료: `/automation [list|status|due|digest|monitor|run-due]`, `/automation add recurring-verification [--every <duration>] [/verify args]`, `/automation add pr-review [--every <duration>] [/review-pr]`, `/automation run <id>`, `/automation pause|resume|remove <id>`를 추가했다.
 3. 완료: `/review-pr`가 로컬 PR review automation report를 `.kernforge/pr_review/latest.md`에 생성한다.
-4. 완료: proactive suggestion이 verification gap과 dirty diff를 보고 recurring verification/PR review automation 등록을 제안한다.
-5. 남음: 실제 시간 기반 scheduler, GitHub PR API 연동, recurring background monitor, 실패 알림/digest는 아직 없다.
+4. 완료/MVP: `/review-pr --github`가 `gh pr view --json ...` 결과를 report에 붙여 PR URL, 상태, review decision, comments, checks 요약을 기록한다.
+5. 완료/MVP: `/review-pr --draft-comments`가 `.kernforge/pr_review/comments.md`에 file-level GitHub review comment 초안을 만들고 실제 게시는 하지 않는다.
+6. 완료/MVP: `/review-pr --post-comments`가 명시적 요청에서만 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`로 draft를 게시한다. suggestion accept와 scheduled automation에서는 차단한다.
+7. 완료/MVP: `/review-pr --resolve-thread <id>`가 명시적 요청에서만 GitHub GraphQL `resolveReviewThread` mutation을 실행한다. suggestion accept와 scheduled automation에서는 차단한다.
+8. 완료/MVP: `/review-pr --draft-issue`가 `.kernforge/pr_review/issue.md`를 만들고, `/review-pr --create-issue`가 명시적 요청에서만 `gh issue create --title ... --body-file ...`를 실행한다.
+9. 완료/MVP: `/review-pr --draft-issue|--create-issue`가 반복/쉼표 구분 `--label`, 반복/쉼표 구분 `--assignee`, quoted `--milestone`을 받아 draft metadata와 `gh issue create` flag에 반영한다.
+10. 완료: proactive suggestion이 verification gap과 dirty diff를 보고 recurring verification/PR review automation 등록을 제안한다.
+11. 완료/MVP: interval schedule을 `next_run_at`으로 저장하고 `/automation due`, `/automation run-due`로 due slot을 safe command dispatcher에서 실행한다.
+12. 완료/MVP: `/automation digest`, `/automation monitor`, `/status`, REPL 시작 notice가 due/failed/paused automation 요약과 실패 결과를 노출한다.
+13. 완료/MVP: `/automation watch [--interval 5m] [--cycles N|--once] [--notify]`가 foreground standing monitor loop로 due automation 실행, digest 출력, notify artifact 갱신을 반복한다.
+14. 완료/MVP: `/automation notify`와 `/automation monitor --notify`가 `.kernforge/automation/latest_digest.md`를 생성해 외부 watcher/CI가 digest를 읽을 수 있게 한다.
+15. 완료/MVP: `/automation notify|monitor|watch --webhook-url <url>`이 digest JSON을 외부 receiver로 POST하고 URL secret을 event에서 redaction한다.
+16. 완료/MVP: `/handoff`가 `.kernforge/handoff/latest.md/json`에 changed files, open tasks, verification, recent events, artifact refs, continuation prompt를 저장한다.
+17. 완료/MVP: `/session-dashboard-html`이 `.kernforge/session_dashboard/latest.html`에 thread event, task graph, automation due/failed 상태, changed files, background jobs, artifact refs를 렌더링한다.
+18. 완료/MVP: `/handoff import <path>`가 cloud/local delegated result를 `.kernforge/handoff/imports/*.json/md`로 정규화하고 conversation event와 matching TaskGraph `completed_tasks` 상태에 merge한다.
+19. 완료/MVP: `/completion-audit`가 `.kernforge/completion_audit/latest.md/json`에 objective, acceptance, required artifact, verification, open task, edit/failure repair, background job, recent error, coding harness blocker/warning을 기록해 완료 선언 전 evidence gate를 만든다.
+20. 완료/MVP: `/recover`가 `.kernforge/recovery/latest.md/json`에 최근 provider/tool/command error, verification failure, active failure repair, background job/bundle, open task, next command를 모아 즉시 재개 가능한 failure runbook을 만든다.
+21. 완료: `/recover execute-safe`가 `/verify` 실패 report와 `ready=false` completion audit를 실패 action으로 승격하고, `stop_on_failure`가 있는 뒤 액션을 skip한다.
+22. 완료: safe-auto recovery shell replay를 좁은 Go/Git verification/status 명령으로 제한하고 `-exec`, `-toolexec`, `-vettool`, output/profile 생성 flag 같은 고위험 옵션을 차단했다.
+23. 완료: `/goal`, `-goal`, `-goal-file`을 추가해 inline prompt 또는 markdown 파일 목표를 persistent `GoalState`로 만들고, 구현 -> 자체 리뷰 -> `/verify --full` -> `/completion-audit` -> 최종 semantic review -> 필요 시 `/recover execute-safe` 또는 repair pass를 반복하는 autonomous goal loop를 제공한다.
+24. 완료/MVP: goal loop는 실행 중 write/diff/shell/git approval을 session 내에서 bypass해 사용자 확인으로 멈추지 않으며, `.kernforge/goals/latest.md/json`과 goal별 artifact로 상태와 audit 결과를 남긴다.
+25. 완료: goal runtime이 acceptance contract, TaskGraph, completion criteria, independent review verdict, final semantic verdict, explicit `/goal complete` gate, token/time budget, repair pass, progress ledger, command history, iteration checkpoint, no-progress/repeated-failure blocker를 기록해 Codex식 목표 달성 판단과 복구 루프에 더 가깝게 동작한다.
+26. 완료/MVP: `-command "<slash-command>"`가 REPL 없이 `/automation monitor --notify` 같은 slash command를 실행해 Windows Task Scheduler, service wrapper, CI에서 automation을 호출할 수 있게 한다.
+27. 완료/MVP: `/automation daemon-start|daemon-status|daemon-stop`이 `-command "/automation watch ..."` 기반 process-detached local daemon을 띄우고 `.kernforge/automation/daemon.json/log`에 state와 log를 남긴다.
+28. 남음: 실제 cloud recurring/delegated execution backend는 아직 없다.
 
 우선 자동화 대상:
 1. 완료/MVP: recurring verification slot
@@ -1128,7 +1152,7 @@ MVP rule set:
 7. PR security review autopilot with GitHub API
 
 주의:
-- 로컬 MVP는 들어갔지만, 운영 자동화로 보려면 scheduler, notification, GitHub/issue tracker 연동이 더 필요하다.
+- 로컬 due scheduler, digest, gh PR metadata MVP는 들어갔지만, 운영 자동화로 보려면 상주 monitor, external notification, GitHub/issue tracker write-side 연동이 더 필요하다.
 
 ### P1. Desktop UX App Shell
 
@@ -1326,12 +1350,12 @@ MVP rule set:
 | verification orchestration | 4 | 3 | 3 | generated verification matrix 기반으로 확장 |
 | verification history/dashboard | 4 | 2 | 2 | 차별화 유지 |
 | persistent memory | 4 | 3 | 4 | analysis docs evidence/memory 연결 완료, evidence graph로 상향 |
-| conversational situation awareness | 4 | 4 | 5 | recent event/error grounding, situation snapshot, suggestion memory, task graph 연결 완료 |
+| conversational situation awareness | 4 | 4 | 5 | recent event/error grounding, situation snapshot, suggestion memory, task graph, session dashboard 연결 완료 |
 | selection-first workflow | 5 | 2 | 3 | 강점 유지 |
 | hooks/policy runtime | 4 | 5 | 3 | 두 핵심축의 safety gate로 고도화 |
 | subagents | 4 | 5 | 4 | 분석/문서화와 fuzz campaign specialist로 고도화 |
-| automations | 3 | 2 | 4 | 로컬 `/automation` MVP 완료, scheduler/cloud job은 P2 |
-| GitHub review automation | 2 | 2 | 4 | 로컬 `/review-pr` report MVP 완료, GitHub API 연동은 P2 |
+| automations | 3 | 2 | 4 | interval due, digest, monitor/watch, process-detached daemon, notify artifact/webhook, safe dispatcher, `-command` scheduler runner, session dashboard MVP 완료. cloud job은 P2 |
+| GitHub review automation | 2 | 2 | 4 | `/review-pr --github --draft-comments --post-comments --resolve-thread --create-issue`와 issue label/assignee/milestone MVP 완료. 상주 PR monitor는 P2 |
 | Windows security tooling | 3 | 1 | 2 | 분석, fuzz, evidence를 잇는 차별화 |
 | anti-cheat specialization | 3 | 1 | 1 | 분석 문서와 fuzz profile 중심으로 집중 |
 | desktop UX shell | 2 | 2 | 4 | Phase 3 이후 Go core 유지형 Wails app으로 확장 |

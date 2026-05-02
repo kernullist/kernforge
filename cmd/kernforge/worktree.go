@@ -37,6 +37,14 @@ type WorktreeManager struct {
 	BranchPrefix string
 }
 
+type GitWorktreeListEntry struct {
+	Root     string
+	Branch   string
+	Head     string
+	Detached bool
+	Bare     bool
+}
+
 var worktreeSlugPattern = regexp.MustCompile(`[^a-z0-9._-]+`)
 
 func (w *SessionWorktree) Normalize() {
@@ -298,6 +306,12 @@ func (rt *runtimeState) handleWorktreeCommand(args string) error {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_managed", fmt.Sprintf("%t", rt.session.Worktree.Managed)))
 		}
 		return nil
+	case "list":
+		return rt.handleWorktreeListCommand()
+	case "enter", "resume":
+		return rt.handleWorktreeEnterCommand()
+	case "attach":
+		return rt.handleWorktreeAttachCommand(args)
 	case "create":
 		if rt.session.Worktree != nil {
 			return fmt.Errorf("this session already has worktree metadata; use /worktree cleanup before creating another isolated worktree")
@@ -365,8 +379,242 @@ func (rt *runtimeState) handleWorktreeCommand(args string) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("usage: /worktree [status|create [name]|leave|cleanup]")
+		return fmt.Errorf("usage: /worktree [status|list|create [name]|enter|attach <path> [branch]|leave|cleanup]")
 	}
+}
+
+func (rt *runtimeState) handleWorktreeEnterCommand() error {
+	if rt == nil || rt.session == nil {
+		return fmt.Errorf("session is not initialized")
+	}
+	if rt.session.Worktree == nil || strings.TrimSpace(rt.session.Worktree.Root) == "" {
+		return fmt.Errorf("no recorded session worktree to enter")
+	}
+	worktree := *rt.session.Worktree
+	worktree.Normalize()
+	if _, err := os.Stat(worktree.Root); err != nil {
+		return fmt.Errorf("recorded worktree is not accessible: %w", err)
+	}
+	if worktree.Active && strings.EqualFold(strings.TrimSpace(rt.session.WorkingDir), strings.TrimSpace(worktree.Root)) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Already inside isolated worktree: "+worktree.Root))
+		return nil
+	}
+	if err := rt.attachWorktree(worktree); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Entered isolated worktree: "+worktree.Root))
+	if worktree.Branch != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("branch", worktree.Branch))
+	}
+	if handoff := worktreeHandoff("enter", rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleWorktreeAttachCommand(args string) error {
+	if rt == nil || rt.session == nil {
+		return fmt.Errorf("session is not initialized")
+	}
+	fields := splitAnalysisCommandLine(strings.TrimSpace(args))
+	if len(fields) < 2 {
+		return fmt.Errorf("usage: /worktree attach <path> [branch]")
+	}
+	if rt.session.Worktree != nil {
+		return fmt.Errorf("this session already has worktree metadata; use /worktree enter or /worktree cleanup before attaching another worktree")
+	}
+	baseRoot := sessionBaseWorkingDir(rt.session)
+	targetRoot := strings.Trim(fields[1], "\"'")
+	if targetRoot == "" {
+		return fmt.Errorf("worktree path is required")
+	}
+	if !filepath.IsAbs(targetRoot) {
+		targetRoot = filepath.Join(baseRoot, targetRoot)
+	}
+	absRoot, err := filepath.Abs(targetRoot)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("worktree path is not a directory: %s", absRoot)
+	}
+	branch := ""
+	if len(fields) > 2 {
+		branch = strings.TrimSpace(fields[2])
+	}
+	if branch == "" {
+		if detected, err := gitCurrentBranch(context.Background(), absRoot); err == nil {
+			branch = detected
+		}
+	}
+	worktree := SessionWorktree{
+		ID:        sanitizeWorktreeSlug(filepath.Base(absRoot)),
+		Root:      filepath.Clean(absRoot),
+		Branch:    branch,
+		Managed:   false,
+		Active:    true,
+		CreatedAt: time.Now(),
+	}
+	if err := rt.attachWorktree(worktree); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Attached existing worktree: "+worktree.Root))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("managed", "false"))
+	if branch != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("branch", branch))
+	}
+	if handoff := worktreeHandoff("attach", rt.session.ActiveFeatureID); strings.TrimSpace(handoff) != "" {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, handoff)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleWorktreeListCommand() error {
+	if rt == nil || rt.session == nil {
+		return fmt.Errorf("session is not initialized")
+	}
+	root := sessionBaseWorkingDir(rt.session)
+	if strings.TrimSpace(root) == "" {
+		root = rt.session.WorkingDir
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Worktrees"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("base_root", valueOrUnset(root)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("active_root", valueOrUnset(rt.session.WorkingDir)))
+	if rt.session.Worktree != nil {
+		worktree := *rt.session.Worktree
+		worktree.Normalize()
+		if strings.TrimSpace(worktree.Root) != "" {
+			fmt.Fprintln(rt.writer)
+			fmt.Fprintln(rt.writer, rt.ui.subsection("Session Worktree"))
+			fmt.Fprintln(rt.writer, formatSessionWorktreeLine(worktree))
+		}
+	}
+	if len(rt.session.SpecialistWorktrees) > 0 {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.subsection("Specialist Worktrees"))
+		for _, lease := range rt.session.SpecialistWorktrees {
+			fmt.Fprintln(rt.writer, formatSpecialistWorktreeLine(lease))
+		}
+	}
+	entries, err := gitWorktreeList(root)
+	if err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("git worktree list failed: "+err.Error()))
+		return nil
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No git worktrees reported."))
+		return nil
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Git Worktree List"))
+	for _, entry := range entries {
+		fmt.Fprintln(rt.writer, formatGitWorktreeLine(entry))
+	}
+	return nil
+}
+
+func formatSessionWorktreeLine(worktree SessionWorktree) string {
+	worktree.Normalize()
+	parts := []string{
+		"- root=" + valueOrUnset(worktree.Root),
+		"branch=" + valueOrUnset(worktree.Branch),
+		fmt.Sprintf("active=%t", worktree.Active),
+		fmt.Sprintf("managed=%t", worktree.Managed),
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatSpecialistWorktreeLine(lease SpecialistWorktree) string {
+	lease.Normalize()
+	parts := []string{
+		"- specialist=" + valueOrUnset(lease.Specialist),
+		"root=" + valueOrUnset(lease.Root),
+	}
+	if lease.Branch != "" {
+		parts = append(parts, "branch="+lease.Branch)
+	}
+	if len(lease.OwnershipPaths) > 0 {
+		parts = append(parts, "ownership="+strings.Join(lease.OwnershipPaths, ","))
+	}
+	if len(lease.NodeIDs) > 0 {
+		parts = append(parts, "nodes="+strings.Join(lease.NodeIDs, ","))
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatGitWorktreeLine(entry GitWorktreeListEntry) string {
+	parts := []string{
+		"- root=" + valueOrUnset(entry.Root),
+	}
+	if entry.Branch != "" {
+		parts = append(parts, "branch="+entry.Branch)
+	}
+	if entry.Head != "" {
+		parts = append(parts, "head="+entry.Head)
+	}
+	if entry.Detached {
+		parts = append(parts, "detached=true")
+	}
+	if entry.Bare {
+		parts = append(parts, "bare=true")
+	}
+	return strings.Join(parts, " ")
+}
+
+func gitWorktreeList(root string) ([]GitWorktreeListEntry, error) {
+	output := strings.TrimSpace(runGitText(root, "worktree", "list", "--porcelain"))
+	if output == "" {
+		return nil, nil
+	}
+	lower := strings.ToLower(output)
+	if strings.Contains(lower, "fatal:") || strings.HasPrefix(lower, "exit status ") {
+		return nil, fmt.Errorf("%s", compactPromptSection(output, 300))
+	}
+	entries := []GitWorktreeListEntry{}
+	current := GitWorktreeListEntry{}
+	flush := func() {
+		if strings.TrimSpace(current.Root) == "" {
+			current = GitWorktreeListEntry{}
+			return
+		}
+		entries = append(entries, current)
+		current = GitWorktreeListEntry{}
+	}
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			flush()
+			continue
+		}
+		key, value, ok := strings.Cut(line, " ")
+		if !ok {
+			key = line
+			value = ""
+		}
+		switch key {
+		case "worktree":
+			flush()
+			current.Root = strings.TrimSpace(value)
+		case "HEAD":
+			current.Head = strings.TrimSpace(value)
+		case "branch":
+			branch := strings.TrimSpace(value)
+			branch = strings.TrimPrefix(branch, "refs/heads/")
+			current.Branch = branch
+		case "detached":
+			current.Detached = true
+		case "bare":
+			current.Bare = true
+		}
+	}
+	flush()
+	return entries, nil
 }
 
 func (rt *runtimeState) ensureTrackedFeatureWorktree(feature FeatureWorkflow) error {

@@ -600,19 +600,19 @@ func normalizeConfigPaths(cfg *Config) {
 	if cfg.ProjectAnalysis.WorkerProfile != nil {
 		cfg.ProjectAnalysis.WorkerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.WorkerProfile.Provider)
 		cfg.ProjectAnalysis.WorkerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.Model)
-		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
+		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
 		cfg.ProjectAnalysis.WorkerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.APIKey)
 	}
 	if cfg.ProjectAnalysis.ReviewerProfile != nil {
 		cfg.ProjectAnalysis.ReviewerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.ReviewerProfile.Provider)
 		cfg.ProjectAnalysis.ReviewerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.Model)
-		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
+		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
 		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
 	}
 	if cfg.PlanReview != nil {
 		cfg.PlanReview.Provider = normalizeProviderName(cfg.PlanReview.Provider)
 		cfg.PlanReview.Model = strings.TrimSpace(cfg.PlanReview.Model)
-		cfg.PlanReview.BaseURL = normalizeProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
+		cfg.PlanReview.BaseURL = normalizeOptionalProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
 		cfg.PlanReview.APIKey = strings.TrimSpace(cfg.PlanReview.APIKey)
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
@@ -714,7 +714,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.Specialists.Profiles[i].Prompt = strings.TrimSpace(profile.Prompt)
 		cfg.Specialists.Profiles[i].Provider = normalizeProviderName(profile.Provider)
 		cfg.Specialists.Profiles[i].Model = strings.TrimSpace(profile.Model)
-		cfg.Specialists.Profiles[i].BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		cfg.Specialists.Profiles[i].BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		cfg.Specialists.Profiles[i].APIKey = strings.TrimSpace(profile.APIKey)
 		cfg.Specialists.Profiles[i].NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 		cfg.Specialists.Profiles[i].Keywords = normalizeTaskStateList(profile.Keywords, 32)
@@ -869,6 +869,14 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 	}
 }
 
+func normalizeOptionalProfileBaseURL(provider, baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return ""
+	}
+	return normalizeProfileBaseURL(provider, baseURL)
+}
+
 func normalizeReasoningEffort(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "", "default", "undefined", "none", "off", "unset", "clear":
@@ -1015,7 +1023,7 @@ func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
 		cfg.PlanReview = &PlanReviewConfig{
 			Provider: provider,
 			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
+			BaseURL:  normalizeOptionalProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
 			APIKey:   strings.TrimSpace(roles.PlanReviewer.APIKey),
 		}
 	} else {
@@ -1030,7 +1038,15 @@ func cloneConfigProfile(profile *Profile) *Profile {
 	if profile == nil || strings.TrimSpace(profile.Provider) == "" || strings.TrimSpace(profile.Model) == "" {
 		return nil
 	}
-	cloned := normalizeConfigProfile(*profile)
+	cloned := *profile
+	cloned.Name = strings.TrimSpace(cloned.Name)
+	cloned.Provider = normalizeProviderName(cloned.Provider)
+	cloned.Model = strings.TrimSpace(cloned.Model)
+	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	cloned.APIKey = strings.TrimSpace(cloned.APIKey)
+	if cloned.Name == "" && cloned.Provider != "" && cloned.Model != "" {
+		cloned.Name = profileName(cloned.Provider, cloned.Model)
+	}
 	return &cloned
 }
 
@@ -1044,7 +1060,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 		profile.Name = strings.TrimSpace(profile.Name)
 		profile.Provider = normalizeProviderName(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
-		profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.APIKey = strings.TrimSpace(profile.APIKey)
 		modelsByName[name] = profile
 	}
@@ -1852,10 +1868,18 @@ Conversation And Sessions:
 /resume <session-id>   Resume a saved session
 /session               Show the current session id and storage path
 /sessions              List recent sessions
+/handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
 /suggest [status]      Show proactive situation judgment and suggested next actions
 /suggest-dashboard-html Render proactive suggestions as an HTML dashboard
-/automation [status]   Show or manage local verification and PR review automations
-/review-pr             Generate a local PR review automation report
+/session-dashboard-html Generate and open a session thread, task graph, automation, and artifact dashboard
+/events [tail|export] Tail or export session conversation events as JSONL for local clients
+/continuity [note]     Generate a long-task resume/recovery packet with worktrees, jobs, failures, and next commands
+/completion-audit [note] Generate a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence
+/recover [note]        Generate a focused recovery brief from recent errors, verification failure, jobs, and next commands
+/jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
+/automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
+/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Generate a local PR review automation report, optionally with gh PR metadata or explicit GitHub writes
+/goal [start|run|status|audit|complete|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
 /tasks                 Show the current task list
 
 Provider And Models:
@@ -1910,7 +1934,7 @@ Verification And Checkpoints:
 /fuzz-func --file <path> or @<path> Analyze one file plus its include/import closure, then auto-pick the best representative function root
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
-/find-root-cause <problem> Analyze a reported symptom with 1-8 worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
+/find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
 /rollback [target]     Restore the workspace to a selected checkpoint, or a specific target if provided
@@ -1960,7 +1984,7 @@ Workspace Setup:
 /init skill <name>     Create a starter SKILL.md in .kernforge/skills/<name>
 /init verify           Create a workspace .kernforge/verify.json template
 /locale-auto [on|off]  Show or change automatic locale insertion in prompts
-/worktree [subcommand] Manage isolated git worktrees and suggest tracked-feature follow-up
+/worktree [status|list|create|enter|attach|leave|cleanup] Manage isolated git worktrees and suggest tracked-feature follow-up
 
 MCP And Skills:
 /mcp                   Show configured MCP servers and tool status
@@ -2009,20 +2033,170 @@ func HelpDetail(topic string) (string, bool) {
 /suggest-dashboard-html
 - Render the current situation and ranked suggestions as a local HTML dashboard.
 
+/session-dashboard-html
+- Generate .kernforge/session_dashboard/latest.html with session metadata, task graph status, automation due/failed state, recent thread events, changed files, background jobs, and artifact refs.
+- In interactive mode, Kernforge tries to open the generated dashboard automatically.
+
+/events [tail [n]]
+- Print recent session conversation events as JSONL records with session id, workspace, provider, model, and event payload.
+
+/events export [path]
+- Write the current session event stream to .kernforge/events/<session-id>.jsonl and refresh .kernforge/events/latest.jsonl unless an explicit path is provided.
+- Use this as the local app-server style event feed for dashboards, schedulers, test harnesses, and external supervisors.
+
 /automation [list|status]
-- Show saved automation slots for recurring verification and PR review.
+- Show saved automation slots for recurring verification and PR review, including interval schedule and due state.
 
-/automation add recurring-verification [/verify args]
-- Register a reusable verification automation that can be run with /automation run <id>.
+/automation add recurring-verification [--every 30m|--hourly|--daily|--manual] [/verify args]
+- Register a reusable verification automation. Interval schedules can be checked with /automation due and executed with /automation run-due.
 
-/automation add pr-review [/review-pr]
+/automation add pr-review [--every 1d|--manual] [/review-pr]
 - Register a reusable PR review automation report generator.
 
 /automation run <id>
 - Run a configured automation through the same safe command dispatcher used by accepted suggestions.
 
-/review-pr
+/automation due
+- Show active scheduled automations whose next_run_at has passed.
+
+/automation digest
+- Summarize total, scheduled, due, failed, and paused automations, and print the due or failed items.
+
+/automation monitor [--notify] [--webhook-url <url>]
+- Print the automation digest, run due active scheduled automations, then print the post-run digest. With --notify, also write .kernforge/automation/latest_digest.md for external watchers. With --webhook-url, POST the digest JSON to an external receiver.
+
+/automation watch [--interval 5m] [--cycles N|--once] [--notify] [--webhook-url <url>]
+- Run a foreground automation monitor loop. Each cycle checks due active scheduled automations, runs them through the safe dispatcher, prints the digest, and optionally refreshes .kernforge/automation/latest_digest.md or POSTs digest JSON to a webhook. Without --cycles or --once, the loop continues until the process is interrupted.
+
+/automation daemon-start [--interval 5m] [--notify] [--webhook-url <url>]
+- Start a process-detached automation daemon that runs /automation watch through the non-interactive -command runner. State and logs are written to .kernforge/automation/daemon.json and daemon.log.
+
+/automation daemon-status
+- Show whether the detached automation daemon recorded for this workspace is running or stale.
+
+/automation daemon-stop
+- Stop the detached automation daemon recorded for this workspace and remove its state file.
+
+/automation notify [--webhook-url <url>] [--no-file]
+- Print the automation digest and write .kernforge/automation/latest_digest.md without running due automations. With --webhook-url, also POST digest JSON; --no-file sends only the webhook.
+
+/automation run-due
+- Run all due active scheduled automations through the safe command dispatcher.
+
+/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--draft-issue|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>]
 - Generate .kernforge/pr_review/latest.md from git status, diff stat, changed files, and a review checklist.
+- With --github, collect current PR metadata through gh pr view --json when the gh CLI is installed and authenticated. If gh is unavailable or the branch has no PR, the report keeps the local review sections and records the GitHub reason.
+- With --draft-comments, generate .kernforge/pr_review/comments.md as a safe file-level review comment draft. It does not post to GitHub.
+- With --post-comments, also run gh pr review --comment --body-file .kernforge/pr_review/comments.md. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
+- With --resolve-thread <id>, run the GitHub GraphQL resolveReviewThread mutation through gh api graphql. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
+- With --draft-issue, generate .kernforge/pr_review/issue.md. With --create-issue, also run gh issue create --title ... --body-file .kernforge/pr_review/issue.md. Issue creation is explicit-only.
+- Issue drafts and create calls accept repeated --label, --assignee, and --milestone values. Comma-separated labels or assignees are split and passed as repeated gh flags.
+`), true
+	case "goal", "goals":
+		return strings.TrimSpace(`
+/goal <objective>
+/goal start <objective>
+/goal start @GOAL.md
+/goal start --file GOAL.md
+- Create an autonomous Codex-style goal from inline text or a markdown file and immediately run it.
+- Kernforge primes an acceptance contract, task graph, completion criteria, progress ledger, and per-iteration checkpoint when checkpoint storage is configured.
+- Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without user intervention.
+- Each loop iteration runs the agent, /verify --full, /completion-audit, final semantic review, and when needed /recover execute-safe.
+
+/goal start --max-iterations N <objective>
+/goal start --until-complete <objective>
+/goal start --time-budget 10m <objective>
+/goal start --token-budget N <objective>
+/goal start --rollback-on-regression <objective>
+- Tune stop and recovery policy. The loop also stops on repeated no-progress or repeated failure signatures.
+
+/goal start --no-run <objective>
+- Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.
+
+/goal run [id|latest]
+- Resume a pending or blocked goal and continue until completion audit and final semantic review are ready or an unrecoverable blocker is recorded.
+
+/goal status [id|latest]
+- Show the active goal, status, iteration count, latest audit state, and artifact paths.
+
+/goal audit [id|latest]
+- Re-run /completion-audit for the goal objective and attach the result to the goal state without marking it complete.
+
+/goal complete [id|latest]
+- Re-run completion audit, run the final semantic goal reviewer, and mark the goal complete only when both gates approve.
+
+/goal cancel [id|latest]
+- Mark a goal canceled without deleting its artifact history.
+`), true
+	case "events", "event-stream":
+		return strings.TrimSpace(`
+/events
+/events tail [n]
+- Print recent session conversation events as JSONL records.
+- Each record includes session_id, workspace, provider, model, and the normalized event payload.
+
+/events export [path]
+- Write a durable JSONL event stream for the current session.
+- Without a path, Kernforge writes .kernforge/events/<session-id>.jsonl and refreshes .kernforge/events/latest.jsonl.
+- Use the exported stream as a local Codex App Server style feed for dashboards, schedulers, test harnesses, or external supervisors.
+`), true
+	case "continuity", "resume-brief", "recovery":
+		return strings.TrimSpace(`
+/continuity [note]
+- Generate .kernforge/continuity/latest.md and latest.json as a local long-task resume and failure-recovery packet.
+- The packet includes active/base workspace roots, branch, provider/model, changed files, open task graph nodes, worktree leases, active edit loop, active failure repair, latest verification failure, background jobs/bundles, recent runtime errors, artifact refs, recovery actions, next commands, and a suggested continuation prompt.
+- Use it before resuming after context compaction, switching models, delegating work, or recovering from a failed verification/shell command.
+- Direct !shell command failures are recorded as command_error conversation events, so /continuity can surface them without requiring you to paste the error again.
+`), true
+	case "completion-audit", "completion", "final-audit":
+		return strings.TrimSpace(`
+/completion-audit [note]
+- Generate .kernforge/completion_audit/latest.md and latest.json as an explicit completion readiness gate.
+- The audit checks the objective, acceptance contract, required artifacts, latest verification, open task graph nodes, active edit/failure-repair state, background jobs/bundles, recent runtime errors, and the latest coding harness report.
+- Status is blocked when hard evidence is missing or failing, needs_review when warnings or uncertainty remain, and ready only when no blockers or warnings remain.
+- Use this before finalizing long coding work so the final answer does not overclaim completed tasks, verification, artifacts, or background job state.
+`), true
+	case "recover", "failure-recovery":
+		return strings.TrimSpace(`
+/recover [note]
+- Generate .kernforge/recovery/latest.md and latest.json as a focused failure recovery brief.
+- The brief pulls from the most recent provider/tool/command error, latest verification failure, active failure repair attempt, failed/stale/running background jobs or bundles, changed files, open tasks, worktrees, and artifact refs.
+- It prints a primary failure, structured diagnosis, action plan with lifecycle status, recovery actions, next commands, and a continuation prompt so a local user or -command runner can resume without pasting logs back into the model.
+- Use /recover immediately after a failed shell command, failed /verify, stale background job, or provider/tool error.
+
+/recover execute-safe [note]
+- Generate the same recovery brief, then execute only safe_auto actions such as whitelisted verification reruns, /jobs inspection, /continuity, and /completion-audit.
+- Shell commands are not replayed unless they pass the recovery safe-auto whitelist, for example go test, go vet, go list, git status, or git diff --check without shell chaining or redirection.
+- Execution status and output are recorded in the recovery action plan and execution log.
+`), true
+	case "jobs", "background-jobs", "background":
+		return strings.TrimSpace(`
+/jobs
+/jobs status
+- Show persisted background shell jobs and bundles, including running, completed, failed, stale, canceled, preempted, and superseded counts.
+
+/jobs check <job-id|latest>
+- Poll one background shell job and show its latest status, exit code, log path, and output tail.
+
+/jobs bundle <bundle-id|latest>
+- Poll one background shell bundle and summarize the member jobs.
+
+/jobs cancel <job-id|latest> [reason]
+- Cancel one background shell job when it is stale, superseded, or no longer needed.
+
+/jobs cancel-bundle <bundle-id|latest> [reason]
+- Cancel every job in a background shell bundle and mark the bundle canceled.
+`), true
+	case "handoff", "delegation":
+		return strings.TrimSpace(`
+/handoff [note]
+- Generate .kernforge/handoff/latest.md and latest.json as a compact delegation packet for another local agent, Codex cloud task, or human reviewer.
+- The packet includes workspace, branch, provider/model, changed files, open task graph nodes, last verification summary, recent events, artifact refs, and a suggested continuation prompt.
+- The command does not push, post, or run external services.
+
+/handoff import <artifact.json|result.md>
+- Import a result packet from another local agent, human reviewer, or cloud task.
+- The import is normalized into .kernforge/handoff/imports/*.json and *.md, added to the conversation event log, and any completed_tasks IDs are marked completed in the TaskGraph when they match existing nodes.
 `), true
 	case "find-root-cause", "root-cause":
 		return strings.TrimSpace(`
@@ -2030,7 +2204,7 @@ func HelpDetail(topic string) (string, bool) {
 - Investigate a concrete failure symptom, such as party member limits being bypassed after invite/kick churn or a Win32 service that does not stop through sc stop.
 - If the symptom is too ambiguous, Kernforge prints the unclear parts and asks you to rerun /find-root-cause with a more precise prompt before starting agents.
 - Borderline symptom prompts may be checked by a model classifier before agents start, so concrete Korean natural-language reports are not rejected only because a keyword heuristic missed them.
-- Kernforge scans the workspace, selects likely source shards, and runs 1-8 worker agents depending on source size and count.
+- Kernforge scans the workspace, selects likely source shards, and plans 1-8 worker agents depending on source size and count. Concurrent model calls follow the configured model route policy, so local single-model routes default to serial execution while cloud/API routes are not forced down to one request.
 - Kernforge matches symptom keywords and hypothesis signals against source paths and indexed symbols before sharding.
 - Workers inspect each assigned code area like a fuzzing investigation: input parameters, decoded payloads, DB/config values, cached state, counters, IDs, enum values, nullable references, and lifecycle state may be outside the code's expected range.
 - Workers must structure each candidate as trigger -> invalid_state -> state_transition -> missing_guard -> user_visible_symptom.
@@ -2086,7 +2260,7 @@ General commands cover high-level runtime inspection and app control.
 /version
 - Show the current application version.
 `), true
-	case "conversation", "sessions", "session":
+	case "conversation", "sessions", "session", "session-dashboard-html":
 		return strings.TrimSpace(`
 Conversation and session commands manage chat history and saved sessions.
 
@@ -2107,6 +2281,18 @@ Conversation and session commands manage chat history and saved sessions.
 
 /session
 - Show the current session id and save location.
+
+/session-dashboard-html
+- Generate and open .kernforge/session_dashboard/latest.html for the current session thread, task graph, automations, and artifact refs.
+
+/continuity [note]
+- Generate .kernforge/continuity/latest.md and latest.json for long-task resume, recovery actions, background jobs, worktrees, and next commands.
+
+/completion-audit [note]
+- Generate .kernforge/completion_audit/latest.md and latest.json with completion blockers, warnings, verification, tasks, background jobs, and artifact evidence.
+
+/recover [note]
+- Generate .kernforge/recovery/latest.md and latest.json from recent errors, verification failure, active failure repair, background jobs, open tasks, and next commands.
 
 /sessions
 - List recent saved sessions.
@@ -2563,10 +2749,20 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 /worktree status
 - Show the base workspace root, active root, configured worktree root directory, and any attached isolated worktree metadata.
 
+/worktree list
+- Show the session worktree, editable specialist worktree leases, and git worktree list --porcelain output in one terminal view.
+- Use this before switching roots or resuming delegated work so edits do not cross into the wrong worktree.
+
 /worktree create [name]
 - Create and attach an isolated git worktree rooted under the configured worktree isolation root.
 - The optional name influences the branch and directory slug.
 - When a tracked feature is active, creation points back to /new-feature status so Kernforge can choose the right next step.
+
+/worktree enter
+- Re-enter the recorded isolated worktree after /worktree leave without creating a new branch.
+
+/worktree attach <path> [branch]
+- Attach an existing git worktree path to this session. Kernforge records it as unmanaged, switches the active root to that path, and preserves the base workspace root for later /worktree leave.
 
 /worktree leave
 - Detach from the current isolated worktree and return the session to the base workspace root without deleting the worktree.

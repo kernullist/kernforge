@@ -916,7 +916,10 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/new-feature <task>",
 		"/specialists",
 		"/provider status",
-		"/worktree [subcommand]",
+		"/worktree [status|list|create|enter|attach|leave|cleanup]",
+		"/events [tail|export]",
+		"/completion-audit [note]",
+		"/recover [note]",
 		`Using a on "Allow write?" enables write auto-approval for the current session only.`,
 		`Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.`,
 		`Using a on "Allow git?" enables git auto-approval for the current session only.`,
@@ -928,6 +931,64 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 	} {
 		if !strings.Contains(help, needle) {
 			t.Fatalf("expected help text to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesEventsWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("events")
+	if !ok {
+		t.Fatalf("expected events help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/events tail [n]",
+		"/events export [path]",
+		".kernforge/events/latest.jsonl",
+		"JSONL",
+		"local Codex App Server style feed",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected events help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesCompletionAuditWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("completion-audit")
+	if !ok {
+		t.Fatalf("expected completion-audit help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/completion-audit [note]",
+		".kernforge/completion_audit/latest.md",
+		"required artifacts",
+		"latest verification",
+		"background jobs",
+		"needs_review",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected completion-audit help detail to contain %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesRecoverWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("recover")
+	if !ok {
+		t.Fatalf("expected recover help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/recover [note]",
+		".kernforge/recovery/latest.md",
+		"/recover execute-safe [note]",
+		"structured diagnosis",
+		"safe-auto whitelist",
+		"latest verification failure",
+		"background jobs",
+		"without pasting logs",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected recover help detail to contain %q", needle)
 		}
 	}
 }

@@ -633,9 +633,10 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 		return nil, ""
 	}
 	cfg := a.Config
-	provider := firstNonBlankString(profile.Provider, cfg.Provider)
+	mainProvider := normalizeProviderName(cfg.Provider)
+	provider := normalizeProviderName(firstNonBlankString(profile.Provider, cfg.Provider))
 	if provider == "" && a.Session != nil {
-		provider = strings.TrimSpace(a.Session.Provider)
+		provider = normalizeProviderName(a.Session.Provider)
 	}
 	model := firstNonBlankString(profile.Model, cfg.Model)
 	if model == "" && a.Session != nil {
@@ -647,17 +648,22 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 	cfg.Provider = provider
 	cfg.Model = model
 	if strings.TrimSpace(profile.BaseURL) != "" {
-		cfg.BaseURL = strings.TrimSpace(profile.BaseURL)
-	} else {
+		cfg.BaseURL = normalizeProfileBaseURL(provider, profile.BaseURL)
+	} else if provider == mainProvider {
 		cfg.BaseURL = normalizeProfileBaseURL(provider, cfg.BaseURL)
+	} else {
+		cfg.BaseURL = normalizeProfileBaseURL(provider, "")
 	}
-	if strings.TrimSpace(profile.APIKey) != "" {
-		cfg.APIKey = strings.TrimSpace(profile.APIKey)
-	} else if cfg.ProviderKeys != nil {
+	apiKey := strings.TrimSpace(profile.APIKey)
+	if apiKey == "" && provider == mainProvider {
+		apiKey = strings.TrimSpace(a.Config.APIKey)
+	}
+	if apiKey == "" && cfg.ProviderKeys != nil {
 		if key := strings.TrimSpace(cfg.ProviderKeys[normalizeProviderName(provider)]); key != "" {
-			cfg.APIKey = key
+			apiKey = key
 		}
 	}
+	cfg.APIKey = apiKey
 	client, err := NewProviderClient(cfg)
 	if err != nil {
 		return a.ensureInteractiveReviewerClient()
@@ -665,51 +671,63 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 	return client, cfg.Model
 }
 
-func (a *Agent) specialistRouteKey(profile SpecialistSubagentProfile) string {
-	if a == nil {
-		return ""
-	}
-	cfg := a.Config
-	provider := firstNonBlankString(profile.Provider, cfg.Provider)
-	if provider == "" && a.Session != nil {
-		provider = strings.TrimSpace(a.Session.Provider)
-	}
-	model := firstNonBlankString(profile.Model, cfg.Model)
-	if model == "" && a.Session != nil {
-		model = strings.TrimSpace(a.Session.Model)
-	}
-	if model == "" && strings.TrimSpace(a.ReviewerModel) != "" {
-		model = strings.TrimSpace(a.ReviewerModel)
-		if provider == "" && a.ReviewerClient != nil {
-			provider = strings.TrimSpace(a.ReviewerClient.Name())
-		}
-	}
-	if model == "" && strings.TrimSpace(a.AuxReviewerModel) != "" {
-		model = strings.TrimSpace(a.AuxReviewerModel)
-		if provider == "" && a.AuxReviewerClient != nil {
-			provider = strings.TrimSpace(a.AuxReviewerClient.Name())
-		}
-	}
-	baseURL := strings.TrimSpace(cfg.BaseURL)
-	if strings.TrimSpace(profile.BaseURL) != "" {
-		baseURL = strings.TrimSpace(profile.BaseURL)
-	}
-	return analysisRouteKey(nil, provider, model, baseURL)
+type specialistBatchRouteLimiter struct {
+	semaphores map[string]chan struct{}
 }
 
-func duplicateSpecialistRouteKeys(routes []string) bool {
-	seen := map[string]struct{}{}
+func (a *Agent) specialistBatchRouteLimiter(routes []ModelRoute) specialistBatchRouteLimiter {
+	counts := map[string]int{}
+	byKey := map[string]ModelRoute{}
 	for _, route := range routes {
-		route = strings.TrimSpace(route)
-		if route == "" {
+		key := strings.TrimSpace(route.Key)
+		if key == "" {
 			continue
 		}
-		if _, ok := seen[route]; ok {
-			return true
+		counts[key]++
+		if _, ok := byKey[key]; !ok {
+			byKey[key] = route
 		}
-		seen[route] = struct{}{}
 	}
-	return false
+	limiter := specialistBatchRouteLimiter{semaphores: map[string]chan struct{}{}}
+	policy := modelRoutePolicyFromConfig(Config{})
+	if a != nil {
+		policy = a.modelRoutePolicy()
+	}
+	for key, count := range counts {
+		if count <= 1 {
+			continue
+		}
+		routeLimit := policy.LimitFor(byKey[key])
+		if routeLimit > 0 && routeLimit < count {
+			limiter.semaphores[key] = make(chan struct{}, routeLimit)
+		}
+	}
+	return limiter
+}
+
+func (l specialistBatchRouteLimiter) run(ctx context.Context, route ModelRoute, fn func()) bool {
+	if fn == nil {
+		return true
+	}
+	if l.semaphores == nil {
+		fn()
+		return true
+	}
+	sem := l.semaphores[strings.TrimSpace(route.Key)]
+	if sem == nil {
+		fn()
+		return true
+	}
+	select {
+	case sem <- struct{}{}:
+		defer func() {
+			<-sem
+		}()
+		fn()
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func buildSpecialistMicroWorkerSystemPrompt(profile SpecialistSubagentProfile) string {

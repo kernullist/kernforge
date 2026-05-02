@@ -942,6 +942,59 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 			Detail:   "The task state still recommends verification after edits. The final answer should avoid claiming verification passed unless a focused build/test was recorded.",
 		})
 	}
+	if loop := a.Session.ActiveEditLoop; loop != nil {
+		loop.Normalize()
+		if strings.TrimSpace(loop.ID) != "" && (len(loop.ChangedPaths) > 0 || len(loop.WorkerSummaries) > 0 || loop.VerificationSummary != "" || len(loop.RemainingRisks) > 0) {
+			check := "edit loop ledger: " + loop.ID
+			if len(loop.ChangedPaths) > 0 {
+				check += " changed " + strings.Join(loop.ChangedPaths, ", ")
+			}
+			report.Checks = append(report.Checks, check)
+		}
+		if len(loop.ChangedPaths) > 0 || len(loop.WorkerSummaries) > 0 {
+			switch strings.TrimSpace(strings.ToLower(loop.VerificationStatus)) {
+			case "":
+				if !sessionHasSuccessfulVerificationEvidence(a.Session) && !replyMentionsVerificationNotRun(reply) && !replyMentionsVerificationBlocker(reply) {
+					report.Findings = append(report.Findings, CodingHarnessFinding{
+						Severity: "warning",
+						Title:    "Edit loop verification outcome is unstated",
+						Detail:   "The edit-loop ledger has code changes but no successful verification evidence. The final answer should say whether verification was run or explicitly not run.",
+					})
+				}
+			case "failed":
+				if !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+					report.Findings = append(report.Findings, CodingHarnessFinding{
+						Severity: "blocker",
+						Title:    "Edit loop verification failure is unstated",
+						Detail:   "The edit-loop ledger records a failed verification outcome, but the final answer does not clearly state the blocker.",
+					})
+				}
+			default:
+				if !replyMentionsVerificationOutcome(reply) {
+					report.Findings = append(report.Findings, CodingHarnessFinding{
+						Severity: "warning",
+						Title:    "Edit loop verification outcome is omitted",
+						Detail:   "The edit-loop ledger records verification status " + loop.VerificationStatus + ". The final answer should tie that outcome to the applied changes.",
+					})
+				}
+			}
+		}
+		if len(loop.RemainingRisks) > 0 {
+			if replyClaimsNoRemainingRisk(reply) {
+				report.Findings = append(report.Findings, CodingHarnessFinding{
+					Severity: "blocker",
+					Title:    "Final answer contradicts remaining edit-loop risk",
+					Detail:   "The edit-loop ledger still records remaining risk, but the final answer claims no remaining blockers or risk.",
+				})
+			} else if !replyMentionsRemainingRisk(reply) && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+				report.Findings = append(report.Findings, CodingHarnessFinding{
+					Severity: "warning",
+					Title:    "Edit loop remaining risk is omitted",
+					Detail:   "The edit-loop ledger records remaining risk. The final answer should mention the residual risk or blocker before concluding.",
+				})
+			}
+		}
+	}
 	for _, path := range extractClaimedArtifactPaths(reply) {
 		abs, rel, ok := resolveClaimedArtifactPath(a.Workspace.Root, path)
 		if !ok {
@@ -1342,6 +1395,80 @@ func replyMentionsVerificationBlocker(reply string) bool {
 		"빌드 실패",
 		"블로커",
 		"막혀",
+	)
+}
+
+func replyMentionsVerificationOutcome(reply string) bool {
+	if replyMentionsVerificationNotRun(reply) || replyMentionsVerificationBlocker(reply) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	return containsAny(lower,
+		"verified",
+		"verification passed",
+		"verification now passes",
+		"verification succeeded",
+		"tests passed",
+		"test passed",
+		"build passed",
+		"build succeeds",
+		"go test",
+		"npm test",
+		"cargo test",
+		"pytest",
+		"검증 통과",
+		"검증 완료",
+		"검증했고",
+		"테스트 통과",
+		"테스트를 실행",
+		"빌드 통과",
+	)
+}
+
+func replyMentionsRemainingRisk(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	return containsAny(lower,
+		"remaining risk",
+		"residual risk",
+		"remaining blocker",
+		"remaining blockers",
+		"no remaining risk",
+		"no remaining blockers",
+		"no blockers remain",
+		"known risk",
+		"known blocker",
+		"caveat",
+		"unresolved",
+		"남은 리스크",
+		"잔여 리스크",
+		"남은 위험",
+		"잔여 위험",
+		"남은 블로커",
+		"잔여 블로커",
+		"남은 문제",
+		"미해결",
+		"리스크 없음",
+		"블로커 없음",
+	)
+}
+
+func replyClaimsNoRemainingRisk(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	return containsAny(lower,
+		"no remaining risk",
+		"no residual risk",
+		"no remaining blocker",
+		"no remaining blockers",
+		"no blockers remain",
+		"nothing remains blocked",
+		"남은 리스크 없음",
+		"잔여 리스크 없음",
+		"남은 위험 없음",
+		"잔여 위험 없음",
+		"남은 블로커 없음",
+		"잔여 블로커 없음",
+		"남은 문제 없음",
+		"미해결 없음",
 	)
 }
 

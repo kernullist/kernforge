@@ -969,7 +969,7 @@ func executeVerificationSteps(ctx context.Context, ws Workspace, trigger string,
 			continue
 		}
 		start := time.Now()
-		runCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		runCtx, cancel := context.WithTimeout(ctx, ws.defaultShellTimeout())
 		name, args := shellInvocation(ws.Shell, resolvedCommand)
 		cmd := exec.CommandContext(runCtx, name, args...)
 		cmd.Dir = ws.Root

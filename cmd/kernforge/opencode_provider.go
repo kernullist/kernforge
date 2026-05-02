@@ -649,17 +649,7 @@ func openCodeShouldOmitJSONMode(provider, model string) bool {
 }
 
 func openCodeShouldRetryWithoutJSONMode(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	if strings.Contains(msg, "response_format") || strings.Contains(msg, "json_object") {
-		return true
-	}
-	if strings.Contains(msg, "unsupported parameter") || strings.Contains(msg, "unsupported param") {
-		return true
-	}
-	return false
+	return providerErrorSuggestsJSONModeUnsupported(err)
 }
 
 func retagProviderError(err error, provider string) error {
