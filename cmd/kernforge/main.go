@@ -650,6 +650,10 @@ func (rt *runtimeState) runAgentReply(ctx context.Context, input string) (string
 	return rt.runAgentReplyWithImages(ctx, input, nil)
 }
 
+func (rt *runtimeState) runAgentReplyWithExistingCancel(ctx context.Context, input string) (string, error) {
+	return rt.runAgentReplyWithImagesManagedCancel(ctx, input, nil, false)
+}
+
 func (rt *runtimeState) printTurnSeparator(turn int) {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.turnSeparator(turn, rt.session.Provider, rt.session.Model))
@@ -775,6 +779,13 @@ func parseToolLoopDiagnostics(text string) (string, string, string) {
 }
 
 func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input string, images []MessageImage) (string, error) {
+	return rt.runAgentReplyWithImagesManagedCancel(ctx, input, images, true)
+}
+
+func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context, input string, images []MessageImage, installCancelWatcher bool) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if verdict, err := rt.runHook(ctx, HookUserPromptSubmit, HookPayload{
 		"user_text": input,
 	}); err != nil {
@@ -782,27 +793,33 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 	} else if len(verdict.ContextAdds) > 0 {
 		input = strings.TrimSpace(input) + "\n\nAdditional hook guidance:\n- " + strings.Join(verdict.ContextAdds, "\n- ")
 	}
-	requestCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	requestCtx := ctx
+	cancel := func() {}
+	if installCancelWatcher {
+		requestCtx, cancel = context.WithCancel(ctx)
+		defer cancel()
+	}
 	rt.resetAssistantDedup()
 	rt.resetAssistantStream()
 	rt.allowThinkingIndicator()
 	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
-	rt.clearRequestCancelState()
 	rt.armAutoCheckpoint()
 	defer rt.clearAutoCheckpoint()
 	defer rt.allowThinkingIndicator()
 	defer rt.clearThinkingStatus()
 	defer rt.clearThinkingDetails()
-	defer rt.clearRequestCancelState()
 
-	cancelRequest := func() {
-		rt.beginRequestCancel()
-		cancel()
+	if installCancelWatcher {
+		rt.clearRequestCancelState()
+		defer rt.clearRequestCancelState()
+		cancelRequest := func() {
+			rt.beginRequestCancel()
+			cancel()
+		}
+		stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
+		defer stopEscapeWatcher()
 	}
-	stopEscapeWatcher := startEscapeWatcher(cancelRequest, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
-	defer stopEscapeWatcher()
 
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
@@ -810,7 +827,7 @@ func (rt *runtimeState) runAgentReplyWithImages(ctx context.Context, input strin
 
 	reply, err := rt.agent.ReplyWithImages(requestCtx, input, images)
 	if err != nil {
-		if requestCtx.Err() == context.Canceled && ctx.Err() == nil {
+		if installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
 			rt.noteRecentRequestCancel()
 			return "", fmt.Errorf("request canceled by user")
 		}

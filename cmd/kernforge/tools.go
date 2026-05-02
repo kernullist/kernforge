@@ -2175,16 +2175,48 @@ func (t RunShellTool) runShellCommand(ctx context.Context, workDir string, comma
 		close(events)
 		close(streamErrs)
 	}()
-	for event := range events {
-		collector.AppendBytes(event.data)
-	}
-	err = <-waitErrs
-	for readErr := range streamErrs {
-		if err == nil {
-			err = readErr
+	var waitErr error
+	waitDone := false
+	eventsClosed := false
+	for !waitDone || !eventsClosed {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				eventsClosed = true
+				continue
+			}
+			collector.AppendBytes(event.data)
+		case err := <-waitErrs:
+			waitErr = err
+			waitDone = true
+			if !eventsClosed {
+				_ = drainShellOutputEvents(collector, events, 200*time.Millisecond)
+				eventsClosed = true
+			}
+		case <-runCtx.Done():
+			if cmd.Process != nil {
+				_ = terminateBackgroundProcess(cmd.Process.Pid)
+			}
+			_ = drainShellOutputEvents(collector, events, 500*time.Millisecond)
+			eventsClosed = true
+			select {
+			case err := <-waitErrs:
+				waitErr = err
+				waitDone = true
+			case <-time.After(1500 * time.Millisecond):
+				return collector.Text(), runCtx.Err()
+			}
 		}
 	}
+	err = waitErr
+	err = mergeShellStreamErrors(err, streamErrs, 100*time.Millisecond)
 	text := collector.Text()
+	if runCtx.Err() == context.Canceled {
+		if text == "" {
+			text = "command canceled"
+		}
+		return text, runCtx.Err()
+	}
 	if runCtx.Err() == context.DeadlineExceeded {
 		return text, fmt.Errorf("command timed out after %s", timeout)
 	}
@@ -2195,6 +2227,40 @@ func (t RunShellTool) runShellCommand(ctx context.Context, workDir string, comma
 		return text, fmt.Errorf("command failed [%s]: %w", summarizeShellCommand(command), err)
 	}
 	return text, nil
+}
+
+func mergeShellStreamErrors(err error, streamErrs <-chan error, limit time.Duration) error {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	for {
+		select {
+		case readErr, ok := <-streamErrs:
+			if !ok {
+				return err
+			}
+			if err == nil {
+				err = readErr
+			}
+		case <-timer.C:
+			return err
+		}
+	}
+}
+
+func drainShellOutputEvents(collector *shellOutputCollector, events <-chan shellOutputEvent, limit time.Duration) bool {
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	for {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				return true
+			}
+			collector.AppendBytes(event.data)
+		case <-timer.C:
+			return false
+		}
+	}
 }
 
 func summarizeShellCommand(command string) string {
@@ -2239,7 +2305,11 @@ func streamShellOutput(ctx context.Context, reader io.Reader, events chan<- shel
 		n, err := reader.Read(buffer)
 		if n > 0 {
 			chunk := append([]byte(nil), buffer[:n]...)
-			events <- shellOutputEvent{data: chunk}
+			select {
+			case events <- shellOutputEvent{data: chunk}:
+			case <-ctx.Done():
+				return nil
+			}
 		}
 		if err == nil {
 			continue

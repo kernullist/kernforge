@@ -96,7 +96,10 @@ func startEscapeWatcher(cancel func(), shouldCancel func() bool, confirmCancel f
 
 	return func() {
 		close(stop)
-		<-done
+		select {
+		case <-done:
+		case <-time.After(300 * time.Millisecond):
+		}
 	}
 }
 

@@ -164,6 +164,42 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestRunShellReturnsPromptlyOnContextCancel(t *testing.T) {
+	root := t.TempDir()
+	command := "sleep 10; echo done"
+	if runtime.GOOS == "windows" {
+		command = "Start-Sleep -Seconds 10; Write-Output done"
+	}
+	tool := NewRunShellTool(Workspace{
+		BaseRoot:     root,
+		Root:         root,
+		Shell:        defaultShell(),
+		ShellTimeout: 30 * time.Second,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		_, err := tool.ExecuteDetailed(ctx, map[string]any{"command": command})
+		done <- err
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+		if elapsed := time.Since(start); elapsed > 4*time.Second {
+			t.Fatalf("expected prompt cancellation, took %s", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("run_shell did not return promptly after cancellation")
+	}
+}
+
 func TestRunShellAllowsExternalInstallCommands(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})

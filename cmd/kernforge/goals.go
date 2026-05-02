@@ -454,7 +454,7 @@ func (rt *runtimeState) runGoalAgentReply(ctx context.Context, prompt string) (s
 	if rt.goalReply != nil {
 		return rt.goalReply(ctx, prompt)
 	}
-	return rt.runAgentReply(ctx, prompt)
+	return rt.runAgentReplyWithExistingCancel(ctx, prompt)
 }
 
 func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string) (string, error) {
