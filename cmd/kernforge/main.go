@@ -7567,9 +7567,16 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	if err != nil {
 		return err
 	}
+	for _, note := range analyzer.applyAdaptiveAnalysisShardSizing(previewSnapshot) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("adaptive_shard_sizing", note))
+	}
+	analysisCfg = analyzer.analysisCfg
 	estimatedConcurrency := analyzer.estimateAgentCount(previewSnapshot)
 	estimatedTotalShards := analyzer.estimateShardCount(previewSnapshot, estimatedConcurrency)
 	plannedShards := analyzer.planShards(previewSnapshot, estimatedTotalShards)
+	if len(plannedShards) > 0 {
+		estimatedTotalShards = len(plannedShards)
+	}
 	explicitScope, unmatchedPaths := resolveExplicitAnalysisScope(analysisPaths, previewSnapshot)
 	if len(unmatchedPaths) > 0 {
 		return fmt.Errorf("analysis path not found in scanned workspace: %s", strings.Join(unmatchedPaths, ", "))
@@ -7619,6 +7626,8 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_concurrency", fmt.Sprintf("%d", estimatedConcurrency)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_total_shards", fmt.Sprintf("%d", estimatedTotalShards)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("estimated_waves", fmt.Sprintf("%d", estimatedWaves)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_files_per_shard", fmt.Sprintf("%d", analysisCfg.MaxFilesPerShard)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_lines_per_shard", fmt.Sprintf("%d", analysisCfg.MaxLinesPerShard)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("max_total_shards", fmt.Sprintf("%d", analysisCfg.MaxTotalShards)))
 	fmt.Fprintln(rt.writer)
 
@@ -7662,7 +7671,39 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			rt.noteRecentRequestCancel()
 			return fmt.Errorf("project analysis canceled by user")
 		}
-		return err
+		if analysisShouldRetryWithSmallerShards(err) {
+			initialErr := err
+			recoveryCfg, recoveryNote, ok := analysisProviderFailureRecoveryConfig(analyzer.analysisCfg, previewSnapshot)
+			if ok {
+				rt.printPersistentWhileThinking(rt.ui.warnLine("Project analysis hit a model/provider timeout or transient error; retrying once with smaller shards."))
+				rt.printPersistentWhileThinking(rt.ui.statusKV("adaptive_retry_shards", recoveryNote))
+				analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, func(status string) {
+					if !rt.showTransientWhileThinking(rt.ui.hintLine(status)) {
+						rt.printPersistentWhileThinking(rt.ui.hintLine(status))
+					}
+				}, func(debug string) {
+					if !rt.showTransientWhileThinking(rt.ui.infoLine("analysis: " + debug)) {
+						rt.printPersistentWhileThinking(rt.ui.infoLine("analysis: " + debug))
+					}
+				})
+				analyzer.analysisCfg = recoveryCfg
+				analyzer.explicitScope = explicitScope
+				run, err = analyzer.Run(requestCtx, goal, mode)
+				if err == nil {
+					analysisCfg = recoveryCfg
+				}
+				if err != nil {
+					if requestCtx.Err() == context.Canceled {
+						rt.noteRecentRequestCancel()
+						return fmt.Errorf("project analysis canceled by user")
+					}
+					return fmt.Errorf("project analysis failed after automatic smaller-shard retry: initial error: %v; retry error: %w", initialErr, err)
+				}
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 	rt.clearThinkingDetails()
 

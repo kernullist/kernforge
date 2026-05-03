@@ -137,6 +137,7 @@ Its current differentiators are:
 - Non-map modes such as `trace`, `impact`, `surface`, `security`, and `performance` automatically load the most relevant previous `map` run as a baseline architecture map when one exists
 - The analysis confirmation screen shows the selected `baseline_map` before asking whether to proceed
 - Provider rate-limit or transient worker/reviewer failures degrade the affected shard instead of aborting the whole analysis run; the final document marks those sections as low confidence
+- Local-model runs adapt shard sizing from provider, model size, max tokens, and request timeout when shard limits are not explicitly configured. If a final provider timeout or 5xx/overload-style error still stops the run, Kernforge tells the user it is retrying and reruns once with smaller `max_lines_per_shard` / `max_files_per_shard` plus a higher shard cap. Rate limits are not retried this way because smaller shards would usually increase request pressure.
 - When worker and reviewer share a provider/model route, shard concurrency follows the model route limit to avoid retry storms and low-confidence placeholder cascades. Local providers default to a route limit of 1, while cloud/API routes keep their configured concurrency instead of being forced to serial execution.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
@@ -203,6 +204,7 @@ Its current differentiators are:
 - `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, and `-goal-rollback-on-regression` controls
 - Each iteration asks the agent to inspect, develop, modify, review its own changes, run final semantic goal review, and fix bugs without asking the user for confirmation
 - The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
+- Goal reviewers receive concrete workspace evidence, including implementation replies, checkpoint diffs when available, git status/diff context, and bounded untracked-file excerpts. If review says `NEEDS_REVISION`, the repair prompt preserves structured reviewer issues and the same implementation context so the worker can act on the actual findings instead of a vague summary.
 - Kernforge then runs `/verify --full`, `/completion-audit`, final semantic review, and if needed `/recover execute-safe` before the next iteration
 - The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
@@ -714,6 +716,7 @@ Later sources override earlier ones:
 | `mcp_servers` | MCP server definitions |
 
 Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
+`project_analysis.max_files_per_shard`, `project_analysis.max_lines_per_shard`, and `project_analysis.max_total_shards` can be set explicitly for deterministic sizing. Leaving them unset lets Kernforge apply local-model adaptive sizing and the smaller-shard recovery retry described above. `project_analysis.max_provider_retries` may be set to `-1` to disable per-request provider retries.
 | `profiles` | Saved recent or pinned provider/model profiles |
 | `hooks_enabled` | Enable or disable the hook engine |
 | `hook_presets` | Hook preset names loaded for the workspace |

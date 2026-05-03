@@ -188,7 +188,8 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	rt.session.SetPlanNodeLifecycle("plan-01", "completed", "Implementation pass inspected current goal state.")
 	rt.session.SetPlanNodeLifecycle("plan-02", "completed", "Implementation pass completed or confirmed no code change was needed.")
 
-	reviewReply, err := rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration.Index))
+	reviewRoot := rt.goalWorkspaceRoot()
+	reviewReply, err := rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, reviewRoot, rt.checkpoints))
 	iteration.ReviewReply = compactPromptSection(reviewReply, 900)
 	if err != nil {
 		return rt.finishGoalIterationError(goal, iteration, err)
@@ -197,7 +198,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	iteration.ReviewerVerdict = decision.Verdict
 	iteration.ReviewerFeedback = compactPromptSection(decision.Feedback, 900)
 	if decision.NeedsRevision {
-		repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalRepairPrompt(goal, iteration, decision))
+		repairReply, repairErr := rt.runGoalAgentReply(ctx, buildGoalRepairPrompt(goal, iteration, decision, reviewRoot, rt.checkpoints))
 		iteration.RepairReply = compactPromptSection(repairReply, 900)
 		if repairErr != nil {
 			return rt.finishGoalIterationError(goal, iteration, repairErr)
@@ -418,6 +419,17 @@ func (rt *runtimeState) finishGoalIteration(goal GoalState, iteration GoalIterat
 	return goal
 }
 
+func (rt *runtimeState) goalWorkspaceRoot() string {
+	if rt == nil {
+		return ""
+	}
+	root := workspaceSnapshotRoot(rt.workspace)
+	if strings.TrimSpace(root) == "" && rt.session != nil {
+		root = rt.session.WorkingDir
+	}
+	return strings.TrimSpace(root)
+}
+
 func (rt *runtimeState) createGoalCheckpoint(goal GoalState, iteration int) (GoalCheckpointRef, error) {
 	if rt == nil || rt.checkpoints == nil {
 		return GoalCheckpointRef{}, nil
@@ -464,7 +476,7 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 	if completionAuditSessionOwnsGoal(rt.session, &audit) {
 		audit.OpenTasks = filterCompletionAuditOpenGoalTasks(audit.OpenTasks)
 	}
-	reply, err := rt.runGoalReviewerReply(ctx, buildGoalSemanticReviewPrompt(goal, audit, iteration))
+	reply, err := rt.runGoalReviewerReply(ctx, buildGoalSemanticReviewPrompt(goal, audit, iteration, rt.goalWorkspaceRoot(), rt.checkpoints))
 	if err != nil {
 		return GoalSemanticReview{}, err
 	}
@@ -477,7 +489,7 @@ func (rt *runtimeState) runGoalSemanticReview(ctx context.Context, goal GoalStat
 	return review, nil
 }
 
-func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration) string {
+func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration, root string, checkpoints *CheckpointManager) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Final semantic goal review for autonomous goal %s.\n\n", valueOrUnset(goal.ID))
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
@@ -540,6 +552,11 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 			fmt.Fprintf(&b, "- %s [%s] %s\n", valueOrUnset(command.Name), valueOrUnset(command.Status), compactPromptSection(command.Summary, 180))
 		}
 	}
+	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+		b.WriteString("\nWorkspace review evidence:\n")
+		b.WriteString(evidence)
+		b.WriteString("\n")
+	}
 	b.WriteString("\nReturn one of these exact leading verdicts:\n")
 	b.WriteString("APPROVED: <concise evidence>\n")
 	b.WriteString("NEEDS_REVISION: <concrete missing work>\n")
@@ -560,14 +577,38 @@ func parseGoalReviewDecision(text string) goalReviewDecision {
 	case strings.HasPrefix(upper, "NEEDS_REVISION"), strings.HasPrefix(upper, "NEEDS REVISION"), strings.HasPrefix(upper, "REJECTED"):
 		decision.Verdict = "needs_revision"
 		decision.NeedsRevision = true
-	case containsAny(strings.ToLower(trimmed), "needs_revision", "must fix", "blocking issue", "not ready", "수정 필요", "준비되지"):
+	case containsAny(
+		strings.ToLower(trimmed),
+		"needs_revision",
+		"needs revision",
+		"requires revision",
+		"revision required",
+		"must fix",
+		"fix required",
+		"blocking issue",
+		"blocker",
+		"not ready",
+		"missing",
+		"failed",
+		"failure",
+		"incomplete",
+		"수정 필요",
+		"수정해야",
+		"보완 필요",
+		"준비되지",
+		"누락",
+		"미흡",
+		"실패",
+		"문제",
+		"부족",
+	):
 		decision.Verdict = "needs_revision"
 		decision.NeedsRevision = true
 	}
 	return decision
 }
 
-func buildGoalRepairPrompt(goal GoalState, iteration GoalIteration, decision goalReviewDecision) string {
+func buildGoalRepairPrompt(goal GoalState, iteration GoalIteration, decision goalReviewDecision, root string, checkpoints *CheckpointManager) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Autonomous goal repair pass for iteration %d.\n\n", iteration.Index)
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
@@ -575,6 +616,11 @@ func buildGoalRepairPrompt(goal GoalState, iteration GoalIteration, decision goa
 	if strings.TrimSpace(decision.Feedback) != "" {
 		b.WriteString("\nReviewer feedback:\n")
 		b.WriteString(decision.Feedback)
+		b.WriteString("\n")
+	}
+	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+		b.WriteString("\nImplementation context:\n")
+		b.WriteString(evidence)
 		b.WriteString("\n")
 	}
 	if len(goal.CompletionCriteria) > 0 {

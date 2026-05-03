@@ -162,6 +162,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 		"repair done",
 		"APPROVED: repaired, verified, and audit is ready",
 	}
+	prompts := []string{}
 	rt := &runtimeState{
 		writer:        &output,
 		ui:            NewUI(),
@@ -175,6 +176,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 			ShellTimeout: 30 * time.Second,
 		},
 		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			prompts = append(prompts, prompt)
 			if len(replies) == 0 {
 				t.Fatalf("unexpected extra goal prompt: %s", prompt)
 			}
@@ -200,6 +202,157 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 	}
 	if len(goal.Iterations) != 1 || goal.Iterations[0].ReviewerVerdict != "needs_revision" || goal.Iterations[0].RepairReply == "" {
 		t.Fatalf("expected repair iteration evidence, got %#v", goal.Iterations)
+	}
+	if len(prompts) != 4 {
+		t.Fatalf("expected implement, review, repair, and semantic prompts, got %d", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "Review evidence:") ||
+		!strings.Contains(prompts[1], "Implementation pass reply:") ||
+		!strings.Contains(prompts[1], "implementation done") ||
+		!strings.Contains(prompts[1], "Git status:") ||
+		!strings.Contains(prompts[1], "go.mod") {
+		t.Fatalf("expected review prompt to include implementation and workspace evidence:\n%s", prompts[1])
+	}
+	if !strings.Contains(prompts[2], "Reviewer feedback:") ||
+		!strings.Contains(prompts[2], "add the missing review repair") ||
+		!strings.Contains(prompts[2], "Implementation context:") ||
+		!strings.Contains(prompts[2], "implementation done") {
+		t.Fatalf("expected repair prompt to preserve review feedback and implementation context:\n%s", prompts[2])
+	}
+}
+
+func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	if err := os.WriteFile(filepath.Join(root, "preexisting.md"), []byte("preexisting dirty content should stay out of the goal diff\n"), 0o644); err != nil {
+		t.Fatalf("write preexisting file: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	prompts := []string{}
+	rt := &runtimeState{
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		checkpoints:   &CheckpointManager{Root: filepath.Join(t.TempDir(), "checkpoints")},
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			prompts = append(prompts, prompt)
+			switch {
+			case strings.Contains(prompt, "Autonomous goal iteration"):
+				if err := os.WriteFile(filepath.Join(root, "generated.md"), []byte("# Generated\n\nreview me\n"), 0o644); err != nil {
+					t.Fatalf("write generated file: %v", err)
+				}
+				return "created generated.md", nil
+			case strings.Contains(prompt, "Autonomous goal independent review pass"):
+				return "APPROVED: checkpoint diff shows generated.md", nil
+			case strings.Contains(prompt, "Final semantic goal review"):
+				return "APPROVED: semantic evidence includes generated.md", nil
+			default:
+				t.Fatalf("unexpected prompt: %s", prompt)
+				return "", nil
+			}
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --max-iterations 1 create generated review artifact"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+	if len(prompts) != 3 {
+		t.Fatalf("expected implement, review, and semantic prompts, got %d", len(prompts))
+	}
+	if !strings.Contains(prompts[1], "Changes since iteration checkpoint:") ||
+		!strings.Contains(prompts[1], "generated.md") ||
+		!strings.Contains(prompts[1], "review me") {
+		t.Fatalf("expected review prompt to include generated checkpoint diff:\n%s", prompts[1])
+	}
+	if strings.Contains(prompts[1], "preexisting dirty content") {
+		t.Fatalf("review prompt should not include preexisting dirty content:\n%s", prompts[1])
+	}
+	if !strings.Contains(prompts[2], "Workspace review evidence:") ||
+		!strings.Contains(prompts[2], "Changes since iteration checkpoint:") ||
+		!strings.Contains(prompts[2], "generated.md") {
+		t.Fatalf("expected semantic review prompt to include checkpoint workspace evidence:\n%s", prompts[2])
+	}
+	if strings.Contains(prompts[2], ".kernforge/completion_audit") {
+		t.Fatalf("semantic review evidence should omit internal completion audit artifacts:\n%s", prompts[2])
+	}
+}
+
+func TestGoalReviewGitTextKeepsFatalTextInDiff(t *testing.T) {
+	root := initTestGitRepo(t)
+	path := filepath.Join(root, "fatal.txt")
+	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+		t.Fatalf("write fatal.txt: %v", err)
+	}
+	mustRunGit(t, root, "add", "fatal.txt")
+	mustRunGit(t, root, "commit", "-m", "Add fatal text fixture")
+	if err := os.WriteFile(path, []byte("fatal: this is source text, not a git error\n"), 0o644); err != nil {
+		t.Fatalf("modify fatal.txt: %v", err)
+	}
+
+	diff := goalReviewGitText(root, "diff", "--", "fatal.txt")
+	if !strings.Contains(diff, "fatal: this is source text") {
+		t.Fatalf("expected diff text containing fatal marker to be preserved, got:\n%s", diff)
+	}
+}
+
+func TestBuildGoalUntrackedFileReviewEvidenceLimitsLargeFiles(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "huge.log"), []byte(strings.Repeat("A", 20000)), 0o644); err != nil {
+		t.Fatalf("write huge.log: %v", err)
+	}
+
+	evidence := buildGoalUntrackedFileReviewEvidence(root, 1, 1200)
+	if !strings.Contains(evidence, "huge.log") {
+		t.Fatalf("expected untracked evidence to include huge.log, got:\n%s", evidence)
+	}
+	if !strings.Contains(evidence, "... (truncated)") {
+		t.Fatalf("expected large untracked evidence to be truncated, got:\n%s", evidence)
+	}
+	if len(evidence) > 1800 {
+		t.Fatalf("expected large untracked evidence to stay compact, len=%d", len(evidence))
+	}
+}
+
+func TestGoalReviewPathWithinRootAllowsDotDotPrefixNames(t *testing.T) {
+	root := t.TempDir()
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatalf("abs root: %v", err)
+	}
+	if !goalReviewPathWithinRoot(rootAbs, filepath.Join(root, "..not-parent.txt")) {
+		t.Fatalf("expected dot-dot-prefixed file name inside root to be allowed")
+	}
+	if goalReviewPathWithinRoot(rootAbs, filepath.Join(root, "..", "outside.txt")) {
+		t.Fatalf("expected parent traversal outside root to be rejected")
+	}
+}
+
+func TestParseGoalReviewDecisionRecognizesRevisionWording(t *testing.T) {
+	cases := []string{
+		"보완 필요: 테스트가 누락되었습니다.",
+		"누락된 문서 검증이 있습니다.",
+		"missing tests for the new goal flow",
+		"blocker: verification is incomplete",
+	}
+	for _, text := range cases {
+		decision := parseGoalReviewDecision(text)
+		if !decision.NeedsRevision || decision.Verdict != "needs_revision" {
+			t.Fatalf("expected needs_revision for %q, got %#v", text, decision)
+		}
+	}
+
+	approved := parseGoalReviewDecision("APPROVED: no missing work remains")
+	if approved.NeedsRevision || approved.Verdict != "approved" {
+		t.Fatalf("expected explicit approval to win over keyword text, got %#v", approved)
 	}
 }
 

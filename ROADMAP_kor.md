@@ -279,6 +279,7 @@ Kernforge가 차별화해야 할 방향:
 15. 완료: worker/reviewer provider rate-limit이나 일시 오류가 전체 analysis run을 중단하지 않도록 shard-level low-confidence failure로 degrade하고, synthesis 실패 시 local fallback document를 생성한다.
 16. 완료: deterministic `architecture_facts.json`을 생성해 worker/reviewer/synthesis, generated docs, cached structure QA, answer evaluator가 같은 source-derived 사실 집합을 공유한다.
 17. 완료: `.kernforge/analysis/latest` persistence는 기존 latest mirror를 교체한 뒤 새 run 산출물을 쓰므로 반복 분석 중 stale 파일이 retrieval에 남지 않는다.
+18. 완료: local model analysis에서는 명시 shard 제한이 없으면 provider/model/token/timeout 신호로 shard 크기를 자동 조절하고, 최종 timeout 또는 5xx/overload 계열 실패 후에는 더 작은 shard로 한 번 자동 재실행한다.
 
 현재 남은 핵심 과제:
 1. 완료: generated docs dashboard를 정적 document portal 수준으로 확장한다.
@@ -1138,9 +1139,10 @@ MVP rule set:
 23. 완료: `/goal`, `-goal`, `-goal-file`을 추가해 inline prompt 또는 markdown 파일 목표를 persistent `GoalState`로 만들고, 구현 -> 자체 리뷰 -> `/verify --full` -> `/completion-audit` -> 최종 semantic review -> 필요 시 `/recover execute-safe` 또는 repair pass를 반복하는 autonomous goal loop를 제공한다.
 24. 완료/MVP: goal loop는 실행 중 write/diff/shell/git approval을 session 내에서 bypass해 사용자 확인으로 멈추지 않으며, `.kernforge/goals/latest.md/json`과 goal별 artifact로 상태와 audit 결과를 남긴다.
 25. 완료: goal runtime이 acceptance contract, TaskGraph, completion criteria, independent review verdict, final semantic verdict, explicit `/goal complete` gate, token/time budget, repair pass, progress ledger, command history, iteration checkpoint, no-progress/repeated-failure blocker를 기록해 Codex식 목표 달성 판단과 복구 루프에 더 가깝게 동작한다.
-26. 완료/MVP: `-command "<slash-command>"`가 REPL 없이 `/automation monitor --notify` 같은 slash command를 실행해 Windows Task Scheduler, service wrapper, CI에서 automation을 호출할 수 있게 한다.
-27. 완료/MVP: `/automation daemon-start|daemon-status|daemon-stop`이 `-command "/automation watch ..."` 기반 process-detached local daemon을 띄우고 `.kernforge/automation/daemon.json/log`에 state와 log를 남긴다.
-28. 남음: 실제 cloud recurring/delegated execution backend는 아직 없다.
+26. 완료: goal reviewer와 repair worker가 checkpoint diff, 구현 응답, git diff/status, 제한된 untracked excerpt, 구조화된 reviewer issue를 공유해 실제 작업 증거 기반으로 수정 루프를 돌린다.
+27. 완료/MVP: `-command "<slash-command>"`가 REPL 없이 `/automation monitor --notify` 같은 slash command를 실행해 Windows Task Scheduler, service wrapper, CI에서 automation을 호출할 수 있게 한다.
+28. 완료/MVP: `/automation daemon-start|daemon-status|daemon-stop`이 `-command "/automation watch ..."` 기반 process-detached local daemon을 띄우고 `.kernforge/automation/daemon.json/log`에 state와 log를 남긴다.
+29. 남음: 실제 cloud recurring/delegated execution backend는 아직 없다.
 
 우선 자동화 대상:
 1. 완료/MVP: recurring verification slot

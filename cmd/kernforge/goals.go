@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -478,12 +479,13 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 			"Review the actual workspace state against the goal.",
 			"Start with APPROVED or NEEDS_REVISION.",
 			"If revision is needed, identify exact fixes or verification gaps.",
+			"If the provided evidence is insufficient to inspect the actual work, start with NEEDS_REVISION and name the missing evidence.",
 		}, "\n"),
 		Messages: []Message{{
 			Role: "user",
 			Text: prompt,
 		}},
-		MaxTokens:   min(768, max(256, rt.cfg.MaxTokens/3)),
+		MaxTokens:   min(1536, max(512, rt.cfg.MaxTokens/2)),
 		Temperature: 0.1,
 		WorkingDir:  rt.session.WorkingDir,
 	})
@@ -545,13 +547,13 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 	return b.String()
 }
 
-func buildGoalReviewPrompt(goal GoalState, iteration int) string {
+func buildGoalReviewPrompt(goal GoalState, iteration GoalIteration, root string, checkpoints *CheckpointManager) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Autonomous goal independent review pass for iteration %d.\n\n", iteration)
+	fmt.Fprintf(&b, "Autonomous goal independent review pass for iteration %d.\n\n", iteration.Index)
 	fmt.Fprintf(&b, "Objective:\n%s\n\n", strings.TrimSpace(goal.Objective))
 	b.WriteString("Review the changes and implementation state as if doing a bug-finding code review.\n")
 	b.WriteString("Required behavior:\n")
-	b.WriteString("1. Inspect the actual diff or relevant files.\n")
+	b.WriteString("1. Inspect the review evidence below and the actual diff or relevant files when available.\n")
 	b.WriteString("2. Look for correctness, security, stability, missing tests, and documentation gaps.\n")
 	b.WriteString("3. Start with APPROVED if the implementation can proceed to verification, or NEEDS_REVISION if a concrete fix is still required.\n")
 	b.WriteString("4. Do not ask the user whether to proceed.\n")
@@ -562,7 +564,262 @@ func buildGoalReviewPrompt(goal GoalState, iteration int) string {
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 	}
+	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+		b.WriteString("\nReview evidence:\n")
+		b.WriteString(evidence)
+		b.WriteString("\n")
+	}
 	return b.String()
+}
+
+func buildGoalIterationReviewEvidence(root string, iteration GoalIteration, checkpoints *CheckpointManager) string {
+	var b strings.Builder
+	if strings.TrimSpace(iteration.CheckpointID) != "" || strings.TrimSpace(iteration.CheckpointName) != "" {
+		b.WriteString("Checkpoint before implementation:\n")
+		if strings.TrimSpace(iteration.CheckpointID) != "" {
+			fmt.Fprintf(&b, "- ID: %s\n", strings.TrimSpace(iteration.CheckpointID))
+		}
+		if strings.TrimSpace(iteration.CheckpointName) != "" {
+			fmt.Fprintf(&b, "- Name: %s\n", strings.TrimSpace(iteration.CheckpointName))
+		}
+		b.WriteString("\n")
+	}
+	if strings.TrimSpace(iteration.ImplementReply) != "" {
+		b.WriteString("Implementation pass reply:\n")
+		b.WriteString(compactPromptSection(iteration.ImplementReply, 1200))
+		b.WriteString("\n\n")
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return strings.TrimSpace(b.String())
+	}
+	if checkpointEvidence, checkpointOK := buildGoalCheckpointReviewEvidence(root, iteration, checkpoints); checkpointEvidence != "" {
+		b.WriteString(checkpointEvidence)
+		b.WriteString("\n\n")
+		if checkpointOK {
+			return strings.TrimSpace(b.String())
+		}
+	}
+	status := goalReviewGitText(root, "status", "--short")
+	diffStat := goalReviewGitText(root, "diff", "--stat", "HEAD", "--")
+	diffNames := goalReviewGitText(root, "diff", "--name-only", "HEAD", "--")
+	diffExcerpt := goalReviewGitText(root, "diff", "--unified=3", "HEAD", "--")
+	changedFiles := delegationChangedFiles(root)
+	untrackedEvidence := buildGoalUntrackedFileReviewEvidence(root, 6, 1200)
+	if len(changedFiles) > 0 || status != "" || diffStat != "" || diffNames != "" || diffExcerpt != "" {
+		b.WriteString("Workspace review context:\n")
+		appendGoalReviewList(&b, "Changed files", limitStrings(changedFiles, 32))
+		if status != "" {
+			fmt.Fprintf(&b, "- Git status:\n%s\n", indentPromptBlock(compactPromptSection(status, 1600), "  "))
+		}
+		if diffStat != "" {
+			fmt.Fprintf(&b, "- Git diff stat:\n%s\n", indentPromptBlock(compactPromptSection(diffStat, 1600), "  "))
+		}
+		if diffNames != "" {
+			fmt.Fprintf(&b, "- Git diff tracked files:\n%s\n", indentPromptBlock(compactPromptSection(diffNames, 1600), "  "))
+		}
+		if diffExcerpt != "" {
+			fmt.Fprintf(&b, "- Git diff excerpt:\n%s\n", indentPromptBlock(compactPromptSection(diffExcerpt, 7000), "  "))
+		}
+		if untrackedEvidence != "" {
+			fmt.Fprintf(&b, "- Untracked file excerpts:\n%s\n", indentPromptBlock(untrackedEvidence, "  "))
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func buildGoalCheckpointReviewEvidence(root string, iteration GoalIteration, checkpoints *CheckpointManager) (string, bool) {
+	root = strings.TrimSpace(root)
+	checkpointID := strings.TrimSpace(iteration.CheckpointID)
+	if root == "" || checkpointID == "" || checkpoints == nil {
+		return "", false
+	}
+	_, diffs, err := checkpoints.Diff(root, checkpointID, nil)
+	if err != nil {
+		return "Checkpoint diff unavailable; falling back to git workspace context: " + err.Error(), false
+	}
+	reviewDiffs, omitted := goalReviewCheckpointDiffs(diffs, 32)
+	var b strings.Builder
+	b.WriteString("Changes since iteration checkpoint:\n")
+	fmt.Fprintf(&b, "- Summary: %s\n", checkpointDiffSummary(reviewDiffs))
+	if omitted > 0 {
+		fmt.Fprintf(&b, "- Omitted internal, noisy, or over-limit files: %d\n", omitted)
+	}
+	appendGoalReviewList(&b, "Files", checkpointDiffPaths(reviewDiffs, 48))
+	if len(reviewDiffs) > 0 {
+		fmt.Fprintf(&b, "- Checkpoint diff excerpt:\n%s\n", indentPromptBlock(compactPromptSection(renderCheckpointDiff(reviewDiffs), 9000), "  "))
+	}
+	return strings.TrimSpace(b.String()), true
+}
+
+func goalReviewCheckpointDiffs(diffs []CheckpointDiffEntry, limit int) ([]CheckpointDiffEntry, int) {
+	if len(diffs) == 0 {
+		return nil, 0
+	}
+	out := make([]CheckpointDiffEntry, 0, len(diffs))
+	omitted := 0
+	for _, diff := range diffs {
+		if shouldSkipGoalReviewEvidencePath(diff.Path) {
+			omitted++
+			continue
+		}
+		if limit > 0 && len(out) >= limit {
+			omitted++
+			continue
+		}
+		out = append(out, diff)
+	}
+	return out, omitted
+}
+
+func checkpointDiffPaths(diffs []CheckpointDiffEntry, limit int) []string {
+	if len(diffs) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(diffs))
+	for _, diff := range diffs {
+		path := strings.TrimSpace(diff.Path)
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return limitStrings(analysisUniqueStrings(paths), limit)
+}
+
+func goalReviewGitText(root string, args ...string) string {
+	text := strings.TrimSpace(runGitText(root, args...))
+	if text == "" {
+		return ""
+	}
+	if goalReviewGitOutputLooksLikeError(text) {
+		return ""
+	}
+	return text
+}
+
+func goalReviewGitOutputLooksLikeError(text string) bool {
+	for _, line := range splitLines(text) {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lower, "fatal:") || strings.HasPrefix(lower, "exit status ") {
+			return true
+		}
+	}
+	return false
+}
+
+func buildGoalUntrackedFileReviewEvidence(root string, maxFiles int, maxBytes int) string {
+	root = strings.TrimSpace(root)
+	if root == "" || maxFiles <= 0 || maxBytes <= 0 {
+		return ""
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return ""
+	}
+	raw := goalReviewGitText(root, "ls-files", "--others", "--exclude-standard")
+	if raw == "" {
+		return ""
+	}
+	var b strings.Builder
+	count := 0
+	for _, line := range splitLines(raw) {
+		path := filepath.ToSlash(strings.TrimSpace(line))
+		if path == "" || shouldSkipGoalReviewEvidencePath(path) {
+			continue
+		}
+		if count >= maxFiles {
+			break
+		}
+		fullPath := filepath.Clean(filepath.Join(root, filepath.FromSlash(path)))
+		if !goalReviewPathWithinRoot(rootAbs, fullPath) {
+			continue
+		}
+		info, err := os.Stat(fullPath)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		data, ok := readGoalReviewEvidenceFile(fullPath, maxBytes)
+		if !ok {
+			continue
+		}
+		count++
+		fmt.Fprintf(&b, "%s:\n%s\n\n", path, indentPromptBlock(analysisPromptExcerpt(string(data), maxBytes), "  "))
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func readGoalReviewEvidenceFile(path string, maxBytes int) ([]byte, bool) {
+	if maxBytes <= 0 {
+		return nil, false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false
+	}
+	defer file.Close()
+	readLimit := int64(maxBytes)
+	if readLimit < 4096 {
+		readLimit = 4096
+	}
+	readLimit++
+	data, err := io.ReadAll(io.LimitReader(file, readLimit))
+	if err != nil || !isText(data) {
+		return nil, false
+	}
+	return data, true
+}
+
+func goalReviewPathWithinRoot(rootAbs string, target string) bool {
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	parentPrefix := ".." + string(filepath.Separator)
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, parentPrefix) && !filepath.IsAbs(rel))
+}
+
+func shouldSkipGoalReviewEvidencePath(path string) bool {
+	path = strings.TrimSpace(filepath.ToSlash(path))
+	if path == "" {
+		return true
+	}
+	lower := strings.ToLower(path)
+	return lower == ".git" ||
+		strings.HasPrefix(lower, ".git/") ||
+		lower == ".kernforge" ||
+		strings.HasPrefix(lower, ".kernforge/") ||
+		lower == ".claude" ||
+		strings.HasPrefix(lower, ".claude/") ||
+		strings.HasSuffix(lower, ".exe") ||
+		strings.HasSuffix(lower, ".dll") ||
+		strings.HasSuffix(lower, ".pdb") ||
+		strings.HasSuffix(lower, ".zip")
+}
+
+func appendGoalReviewList(b *strings.Builder, label string, items []string) {
+	if b == nil || len(items) == 0 {
+		return
+	}
+	fmt.Fprintf(b, "- %s:\n", label)
+	for _, item := range items {
+		fmt.Fprintf(b, "  - %s\n", item)
+	}
+}
+
+func indentPromptBlock(text string, prefix string) string {
+	lines := splitLines(strings.TrimSpace(text))
+	if len(lines) == 0 {
+		return ""
+	}
+	for i, line := range lines {
+		lines[i] = prefix + line
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (rt *runtimeState) runGoalCompletionAudit(goal GoalState) (CompletionAuditArtifact, error) {

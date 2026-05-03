@@ -218,14 +218,16 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. Markdown goal은 `@GOAL.md`, `--file GOAL.md`, `-goal-file` CLI flag로 지정할 수 있으며 one-shot `-goal`도 max-iteration, time-budget, token-budget, until-complete, rollback flag를 지원한다.
 3. goal start는 실행 전에 acceptance contract, task graph, completion criteria, status artifact를 준비한다.
 4. 각 iteration은 checkpoint 저장소가 설정된 경우 checkpoint를 남기고, 구현 prompt 뒤에 독립 review verdict gate를 실행한다.
-5. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다.
-6. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
-7. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, audit ready 시 최종 semantic reviewer를 실행하고, 필요 시 `/recover execute-safe` 또는 semantic repair pass를 실행한 뒤 다음 iteration으로 넘어간다.
-8. progress ledger는 changed files, verification, audit blockers/warnings, review verdict, final semantic verdict, no-progress count, repeated failure signature, token usage estimate, command history를 기록한다.
-9. completion audit이 `ready=true`이고 최종 semantic review가 `APPROVED`를 반환해야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time/token cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
-10. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
-11. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행하고 goal을 완료 처리하지 않는다.
-12. `/goal complete`는 명시적 완료 게이트다. audit을 다시 실행하고 semantic review를 거쳐 둘 다 통과할 때만 complete로 표시한다.
+5. review prompt는 가능한 경우 implementation reply, iteration 시작 checkpoint diff, git status/diff context, changed-file summary, 제한된 untracked 파일 excerpt 같은 실제 증거를 포함한다.
+6. review가 `NEEDS_REVISION`이면 verification 전에 자동 repair pass를 한 번 더 실행한다. repair prompt는 구조화된 reviewer issue와 같은 implementation context를 보존하므로 worker는 짧고 모호한 revision summary가 아니라 실제 지적 사항을 받는다.
+7. goal 실행 중에는 write, diff preview, shell, git approval을 session 안에서 bypass해서 사용자 확인으로 멈추지 않는다.
+8. agent pass 뒤에는 Kernforge가 `/verify --full`, `/completion-audit`, audit ready 시 최종 semantic reviewer를 실행하고, 필요 시 `/recover execute-safe` 또는 semantic repair pass를 실행한 뒤 다음 iteration으로 넘어간다.
+9. 최종 semantic reviewer도 같은 workspace evidence 모델을 받으며, 증거가 부족하거나 실제 작업을 확인할 수 없으면 approval이 아니라 `NEEDS_REVISION`으로 처리한다.
+10. progress ledger는 changed files, verification, audit blockers/warnings, review verdict, final semantic verdict, no-progress count, repeated failure signature, token usage estimate, command history를 기록한다.
+11. completion audit이 `ready=true`이고 최종 semantic review가 `APPROVED`를 반환해야 완료된다. 그 전에는 취소, 회복 불가능 runtime error, iteration/time/token cap, repeated no-progress/failure 감지에 걸릴 때까지 계속 반복한다.
+12. `/goal run`은 pending 또는 blocked goal을 최신 영속 상태에서 재개한다.
+13. `/goal audit`은 구현 pass 없이 goal objective 기준 completion audit만 다시 실행하고 goal을 완료 처리하지 않는다.
+14. `/goal complete`는 명시적 완료 게이트다. audit을 다시 실행하고 semantic review를 거쳐 둘 다 통과할 때만 complete로 표시한다.
 
 ### Local Automations MVP
 
@@ -356,6 +358,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 6. cached deep-structure 답변이 source-derived invariant와 맞는지 확인할 수 있도록 deterministic architecture fact를 남긴다.
 7. 실행 마지막에 눈에 띄는 `Analysis artifacts:` 블록과 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
 8. local provider 또는 명시적으로 route-limited인 환경에서는 같은 모델 route의 worker/reviewer 요청을 전역 scheduler로 제한해 provider 포화와 저신뢰 placeholder 연쇄를 줄인다.
+9. shard 제한을 직접 설정하지 않은 local model 환경에서는 Kernforge가 shard 크기를 자동 조절하고, 최종 timeout 또는 5xx/overload 계열 provider error로 run이 멈추면 더 작은 shard로 한 번 자동 재실행한다.
 
 대표 명령:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -367,6 +370,7 @@ goal은 선택값이다. 생략하면 Kernforge가 선택한 mode와 path를 기
 후속 모드는 가능한 경우 이전 `map` 실행을 baseline 구조 지도로 자동 로드한다. 그래서 `trace`, `impact`, `surface`, `security`, `performance`는 같은 shard cache를 공유하지 않으면서도 architecture map을 출발점으로 삼는다.
 confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로 어떤 map run을 재사용할지 사용자가 먼저 확인할 수 있다.
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
+LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_files_per_shard` / `max_lines_per_shard`가 비어 있으면 confirmation 전에 provider, 모델 크기, max token, request timeout을 보고 값을 조정한다. 일반 request retry를 모두 소진한 뒤에도 timeout, 5xx, overload, empty response, connection reset 같은 provider-pressure error로 run이 끝나면 Kernforge는 `adaptive_retry_shards` 줄을 출력하고 더 작은 shard 제한으로 한 번 다시 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 방식으로 재시도하지 않는다.
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
 analysis worker/reviewer, plan reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.

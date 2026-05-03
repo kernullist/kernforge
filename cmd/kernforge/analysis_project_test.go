@@ -100,6 +100,54 @@ func (c *draftAnalysisClient) Name() string {
 	return "draft"
 }
 
+func TestBuildWorkerRevisionPromptFromReviewPreservesStructuredFeedback(t *testing.T) {
+	review := ReviewDecision{
+		Status: "needs_revision",
+		Issues: []string{
+			"missing depth",
+		},
+		SymptomCausality: []string{
+			"show how the invalid state reaches the user-visible symptom",
+		},
+		RequiredRuntimeObservation: []string{
+			"trace retry_count before the failed transition",
+		},
+		DisqualifyingEvidence: []string{
+			"candidate is invalid if retry_count is never persisted",
+		},
+		EvidenceRequests: []RootCauseEvidenceRequest{
+			{
+				Request:         "Inspect the persistence shard for retry_count writes.",
+				TargetSignals:   []string{"retry_count write path"},
+				TargetFiles:     []string{"state/store.go"},
+				Reason:          "The worker report needs cross-shard evidence.",
+				RequiredToProve: "retry_count can survive restart",
+			},
+		},
+	}
+
+	prompt := buildWorkerRevisionPromptFromReview(review)
+	required := []string{
+		"Reviewer issues:",
+		"missing depth",
+		"Symptom causality:",
+		"user-visible symptom",
+		"Required runtime observation:",
+		"trace retry_count",
+		"Disqualifying evidence:",
+		"candidate is invalid",
+		"Evidence requests:",
+		"Inspect the persistence shard",
+		"retry_count write path",
+		"state/store.go",
+	}
+	for _, item := range required {
+		if !strings.Contains(prompt, item) {
+			t.Fatalf("expected revision prompt to contain %q:\n%s", item, prompt)
+		}
+	}
+}
+
 func (c *draftAnalysisClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	if strings.Contains(req.System, "project analysis sub-agent") {
 		return ChatResponse{
@@ -776,6 +824,126 @@ func TestRootCauseProjectAnalysisConfigPreservesExplicitSingleAgentCap(t *testin
 	}
 	if analysisCfg.MaxTotalShards != 8 || analysisCfg.MaxRefinementShards != 8 {
 		t.Fatalf("expected root-cause shard caps to stay at 8, got total=%d refine=%d", analysisCfg.MaxTotalShards, analysisCfg.MaxRefinementShards)
+	}
+}
+
+func TestConfigProjectAnalysisAllowsDisablingProviderRetries(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.MaxProviderRetries = -1
+
+	analysisCfg := configProjectAnalysis(cfg, root)
+	if analysisCfg.MaxProviderRetries != -1 {
+		t.Fatalf("expected max_provider_retries=-1 to disable retries, got %d", analysisCfg.MaxProviderRetries)
+	}
+}
+
+func TestAdaptiveProjectAnalysisShardSizingUsesLocalModelDefaults(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen/qwen3.6-27b"
+	cfg.MaxTokens = 4096
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot := ProjectSnapshot{
+		TotalFiles:  163,
+		TotalLines:  45122,
+		Directories: []string{"Source", "Public", "Private"},
+	}
+
+	notes := analyzer.applyAdaptiveAnalysisShardSizing(snapshot)
+	if len(notes) == 0 {
+		t.Fatalf("expected adaptive sizing note")
+	}
+	if analyzer.analysisCfg.MaxLinesPerShard != 5000 {
+		t.Fatalf("expected qwen 27b local max_lines_per_shard=5000, got %d", analyzer.analysisCfg.MaxLinesPerShard)
+	}
+	if analyzer.analysisCfg.MaxFilesPerShard != 50 {
+		t.Fatalf("expected qwen 27b local max_files_per_shard=50, got %d", analyzer.analysisCfg.MaxFilesPerShard)
+	}
+	shards := analyzer.estimateShardCount(snapshot, 1)
+	if shards < 10 {
+		t.Fatalf("expected shard estimate to reflect adaptive line cap, got %d", shards)
+	}
+}
+
+func TestAdaptiveProjectAnalysisShardSizingPreservesExplicitShardLimits(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen/qwen3.6-27b"
+	cfg.ProjectAnalysis.MaxLinesPerShard = 12000
+	cfg.ProjectAnalysis.MaxFilesPerShard = 90
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot := ProjectSnapshot{
+		TotalFiles: 120,
+		TotalLines: 48000,
+	}
+
+	_ = analyzer.applyAdaptiveAnalysisShardSizing(snapshot)
+	if analyzer.analysisCfg.MaxLinesPerShard != 12000 {
+		t.Fatalf("expected explicit max_lines_per_shard to be preserved, got %d", analyzer.analysisCfg.MaxLinesPerShard)
+	}
+	if analyzer.analysisCfg.MaxFilesPerShard != 90 {
+		t.Fatalf("expected explicit max_files_per_shard to be preserved, got %d", analyzer.analysisCfg.MaxFilesPerShard)
+	}
+}
+
+func TestAnalysisShouldRetryWithSmallerShardsRecognizesProviderTimeouts(t *testing.T) {
+	if !analysisShouldRetryWithSmallerShards(context.DeadlineExceeded) {
+		t.Fatalf("expected wrapped deadline exceeded errors to trigger smaller-shard retry")
+	}
+	if !analysisShouldRetryWithSmallerShards(errors.New("context deadline exceeded")) {
+		t.Fatalf("expected plain deadline exceeded text to trigger smaller-shard retry")
+	}
+	if analysisShouldRetryWithSmallerShards(context.Canceled) {
+		t.Fatalf("expected user cancellation to skip automatic retry")
+	}
+	if !analysisShouldRetryWithSmallerShards(&ProviderAPIError{StatusCode: 503, Message: "service unavailable"}) {
+		t.Fatalf("expected provider 5xx errors to trigger smaller-shard retry")
+	}
+	if analysisShouldRetryWithSmallerShards(&ProviderAPIError{StatusCode: 429, Message: "rate limit"}) {
+		t.Fatalf("expected rate limits to skip smaller-shard retry")
+	}
+	if analysisShouldRetryWithSmallerShards(errors.New("invalid prompt template")) {
+		t.Fatalf("expected non-transient provider errors to skip automatic retry")
+	}
+}
+
+func TestAnalysisProviderFailureRecoveryConfigShrinksShards(t *testing.T) {
+	cfg := ProjectAnalysisConfig{
+		MaxLinesPerShard: 5000,
+		MaxFilesPerShard: 50,
+		MaxTotalShards:   8,
+	}
+	snapshot := ProjectSnapshot{
+		TotalFiles: 163,
+		TotalLines: 45122,
+	}
+
+	next, note, ok := analysisProviderFailureRecoveryConfig(cfg, snapshot)
+	if !ok {
+		t.Fatalf("expected recovery config to change shard sizing")
+	}
+	if next.MaxLinesPerShard != 2500 {
+		t.Fatalf("expected max_lines_per_shard to shrink to 2500, got %d", next.MaxLinesPerShard)
+	}
+	if next.MaxFilesPerShard != 25 {
+		t.Fatalf("expected max_files_per_shard to shrink to 25, got %d", next.MaxFilesPerShard)
+	}
+	if next.MaxTotalShards <= cfg.MaxTotalShards {
+		t.Fatalf("expected max_total_shards to grow past %d, got %d", cfg.MaxTotalShards, next.MaxTotalShards)
+	}
+	for _, want := range []string{
+		"max_lines_per_shard=5000->2500",
+		"max_files_per_shard=50->25",
+		"max_total_shards=8->",
+	} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("expected recovery note to contain %q, got %q", want, note)
+		}
 	}
 }
 

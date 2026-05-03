@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,25 +21,28 @@ import (
 )
 
 type ProjectAnalysisConfig struct {
-	Enabled              *bool    `json:"enabled,omitempty"`
-	MinAgents            int      `json:"min_agents,omitempty"`
-	MaxAgents            int      `json:"max_agents,omitempty"`
-	MaxTotalShards       int      `json:"max_total_shards,omitempty"`
-	MaxRefinementShards  int      `json:"max_refinement_shards,omitempty"`
-	MaxRevisionRounds    int      `json:"max_revision_rounds,omitempty"`
-	MaxProviderRetries   int      `json:"max_provider_retries,omitempty"`
-	ProviderRetryDelayMs int      `json:"provider_retry_delay_ms,omitempty"`
-	MaxFilesPerShard     int      `json:"max_files_per_shard,omitempty"`
-	MaxLinesPerShard     int      `json:"max_lines_per_shard,omitempty"`
-	ExcludeDirs          []string `json:"exclude_dirs,omitempty"`
-	ExcludePaths         []string `json:"exclude_paths,omitempty"`
-	OutputDir            string   `json:"output_dir,omitempty"`
-	MaxFileBytes         int64    `json:"max_file_bytes,omitempty"`
-	WorkerProfile        *Profile `json:"worker_profile,omitempty"`
-	ReviewerProfile      *Profile `json:"reviewer_profile,omitempty"`
-	Incremental          *bool    `json:"incremental,omitempty"`
-	minAgentsConfigured  bool
-	maxAgentsConfigured  bool
+	Enabled                    *bool    `json:"enabled,omitempty"`
+	MinAgents                  int      `json:"min_agents,omitempty"`
+	MaxAgents                  int      `json:"max_agents,omitempty"`
+	MaxTotalShards             int      `json:"max_total_shards,omitempty"`
+	MaxRefinementShards        int      `json:"max_refinement_shards,omitempty"`
+	MaxRevisionRounds          int      `json:"max_revision_rounds,omitempty"`
+	MaxProviderRetries         int      `json:"max_provider_retries,omitempty"`
+	ProviderRetryDelayMs       int      `json:"provider_retry_delay_ms,omitempty"`
+	MaxFilesPerShard           int      `json:"max_files_per_shard,omitempty"`
+	MaxLinesPerShard           int      `json:"max_lines_per_shard,omitempty"`
+	ExcludeDirs                []string `json:"exclude_dirs,omitempty"`
+	ExcludePaths               []string `json:"exclude_paths,omitempty"`
+	OutputDir                  string   `json:"output_dir,omitempty"`
+	MaxFileBytes               int64    `json:"max_file_bytes,omitempty"`
+	WorkerProfile              *Profile `json:"worker_profile,omitempty"`
+	ReviewerProfile            *Profile `json:"reviewer_profile,omitempty"`
+	Incremental                *bool    `json:"incremental,omitempty"`
+	minAgentsConfigured        bool
+	maxAgentsConfigured        bool
+	maxTotalShardsConfigured   bool
+	maxFilesPerShardConfigured bool
+	maxLinesPerShardConfigured bool
 }
 
 type ProjectAnalysisSummary struct {
@@ -1449,6 +1453,9 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	}
 	minAgentsConfigured := cfg.ProjectAnalysis.MinAgents > 0
 	maxAgentsConfigured := cfg.ProjectAnalysis.MaxAgents > 0
+	maxTotalShardsConfigured := cfg.ProjectAnalysis.MaxTotalShards > 0
+	maxFilesPerShardConfigured := cfg.ProjectAnalysis.MaxFilesPerShard > 0
+	maxLinesPerShardConfigured := cfg.ProjectAnalysis.MaxLinesPerShard > 0
 	if cfg.ProjectAnalysis.MinAgents > 0 {
 		out.MinAgents = cfg.ProjectAnalysis.MinAgents
 	}
@@ -1464,7 +1471,7 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	if cfg.ProjectAnalysis.MaxRevisionRounds > 0 {
 		out.MaxRevisionRounds = cfg.ProjectAnalysis.MaxRevisionRounds
 	}
-	if cfg.ProjectAnalysis.MaxProviderRetries > 0 {
+	if cfg.ProjectAnalysis.MaxProviderRetries != 0 {
 		out.MaxProviderRetries = cfg.ProjectAnalysis.MaxProviderRetries
 	}
 	if cfg.ProjectAnalysis.ProviderRetryDelayMs > 0 {
@@ -1502,6 +1509,9 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	}
 	out.minAgentsConfigured = minAgentsConfigured
 	out.maxAgentsConfigured = maxAgentsConfigured
+	out.maxTotalShardsConfigured = maxTotalShardsConfigured
+	out.maxFilesPerShardConfigured = maxFilesPerShardConfigured
+	out.maxLinesPerShardConfigured = maxLinesPerShardConfigured
 	if out.MinAgents < 1 {
 		out.MinAgents = 1
 	}
@@ -1528,6 +1538,273 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 		out.OutputDir = filepath.Clean(filepath.Join(cwd, out.OutputDir))
 	}
 	return out
+}
+
+func (a *projectAnalyzer) applyAdaptiveAnalysisShardSizing(snapshot ProjectSnapshot) []string {
+	if a == nil {
+		return nil
+	}
+	policy := a.adaptiveAnalysisShardPolicy(snapshot)
+	if policy.MaxLinesPerShard <= 0 && policy.MaxFilesPerShard <= 0 && policy.MaxTotalShards <= 0 {
+		return nil
+	}
+	notes := []string{}
+	beforeLines := a.analysisCfg.MaxLinesPerShard
+	beforeFiles := a.analysisCfg.MaxFilesPerShard
+	beforeTotal := a.analysisCfg.MaxTotalShards
+	if !a.analysisCfg.maxLinesPerShardConfigured && policy.MaxLinesPerShard > 0 && policy.MaxLinesPerShard < a.analysisCfg.MaxLinesPerShard {
+		a.analysisCfg.MaxLinesPerShard = policy.MaxLinesPerShard
+	}
+	if !a.analysisCfg.maxFilesPerShardConfigured && policy.MaxFilesPerShard > 0 && policy.MaxFilesPerShard < a.analysisCfg.MaxFilesPerShard {
+		a.analysisCfg.MaxFilesPerShard = policy.MaxFilesPerShard
+	}
+	if !a.analysisCfg.maxTotalShardsConfigured && policy.MaxTotalShards > a.analysisCfg.MaxTotalShards {
+		a.analysisCfg.MaxTotalShards = policy.MaxTotalShards
+	}
+	if beforeLines != a.analysisCfg.MaxLinesPerShard || beforeFiles != a.analysisCfg.MaxFilesPerShard || beforeTotal != a.analysisCfg.MaxTotalShards {
+		notes = append(notes, fmt.Sprintf(
+			"%s; max_lines_per_shard=%d->%d max_files_per_shard=%d->%d max_total_shards=%d->%d",
+			policy.Reason,
+			beforeLines,
+			a.analysisCfg.MaxLinesPerShard,
+			beforeFiles,
+			a.analysisCfg.MaxFilesPerShard,
+			beforeTotal,
+			a.analysisCfg.MaxTotalShards,
+		))
+	}
+	return notes
+}
+
+type adaptiveAnalysisShardPolicy struct {
+	MaxFilesPerShard int
+	MaxLinesPerShard int
+	MaxTotalShards   int
+	Reason           string
+}
+
+func (a *projectAnalyzer) adaptiveAnalysisShardPolicy(snapshot ProjectSnapshot) adaptiveAnalysisShardPolicy {
+	provider, model := a.analysisWorkerProviderAndModel()
+	provider = normalizeProviderName(provider)
+	if !analysisProviderShouldUseAdaptiveShardSizing(provider) {
+		return adaptiveAnalysisShardPolicy{}
+	}
+	maxLines := 8000
+	maxFiles := 80
+	reasons := []string{fmt.Sprintf("adaptive local-model shard sizing provider=%s model=%s", valueOrUnset(provider), valueOrUnset(model))}
+
+	billions := analysisModelParameterBillions(model)
+	if billions >= 70 {
+		maxLines = analysisMinInt(maxLines, 3500)
+		maxFiles = analysisMinInt(maxFiles, 35)
+		reasons = append(reasons, "large-model>=70b")
+	} else if billions >= 25 {
+		maxLines = analysisMinInt(maxLines, 5000)
+		maxFiles = analysisMinInt(maxFiles, 50)
+		reasons = append(reasons, "large-model>=25b")
+	} else if billions >= 13 {
+		maxLines = analysisMinInt(maxLines, 6500)
+		maxFiles = analysisMinInt(maxFiles, 70)
+		reasons = append(reasons, "model>=13b")
+	}
+
+	lowerModel := strings.ToLower(strings.TrimSpace(openCodeAPIModelID(model)))
+	if strings.Contains(lowerModel, "qwen") && (strings.Contains(lowerModel, "3") || strings.Contains(lowerModel, "qwq")) {
+		maxLines = analysisMinInt(maxLines, 5000)
+		maxFiles = analysisMinInt(maxFiles, 50)
+		reasons = append(reasons, "qwen-reasoning-family")
+	}
+	if a.cfg.MaxTokens > 0 && a.cfg.MaxTokens <= 2048 {
+		maxLines = analysisMinInt(maxLines, 3000)
+		maxFiles = analysisMinInt(maxFiles, 35)
+		reasons = append(reasons, "low-max-tokens")
+	} else if a.cfg.MaxTokens > 0 && a.cfg.MaxTokens <= 4096 {
+		maxLines = analysisMinInt(maxLines, 5000)
+		maxFiles = analysisMinInt(maxFiles, 55)
+		reasons = append(reasons, "moderate-max-tokens")
+	}
+	timeout := configRequestTimeout(a.cfg)
+	if timeout > 0 && timeout <= 5*time.Minute {
+		maxLines = analysisMinInt(maxLines, 3000)
+		maxFiles = analysisMinInt(maxFiles, 35)
+		reasons = append(reasons, "short-request-timeout")
+	} else if timeout > 0 && timeout <= 10*time.Minute {
+		maxLines = analysisMinInt(maxLines, 4500)
+		maxFiles = analysisMinInt(maxFiles, 45)
+		reasons = append(reasons, "bounded-request-timeout")
+	}
+	if maxLines < 1200 {
+		maxLines = 1200
+	}
+	if maxFiles < 8 {
+		maxFiles = 8
+	}
+
+	estimatedShards := analysisMaxInt(ceilDiv(snapshot.TotalLines, maxLines), ceilDiv(snapshot.TotalFiles, maxFiles))
+	maxTotal := 0
+	if estimatedShards > 64 {
+		maxTotal = analysisMinInt(128, estimatedShards+8)
+	}
+	return adaptiveAnalysisShardPolicy{
+		MaxFilesPerShard: maxFiles,
+		MaxLinesPerShard: maxLines,
+		MaxTotalShards:   maxTotal,
+		Reason:           strings.Join(analysisUniqueStrings(reasons), ", "),
+	}
+}
+
+func (a *projectAnalyzer) analysisWorkerProviderAndModel() (string, string) {
+	if a == nil {
+		return "", ""
+	}
+	if a.analysisCfg.WorkerProfile != nil {
+		provider := strings.TrimSpace(a.analysisCfg.WorkerProfile.Provider)
+		model := strings.TrimSpace(a.analysisCfg.WorkerProfile.Model)
+		if provider != "" || model != "" {
+			return firstNonBlankRootCauseString(provider, a.cfg.Provider), firstNonBlankRootCauseString(model, a.cfg.Model)
+		}
+	}
+	return strings.TrimSpace(a.cfg.Provider), strings.TrimSpace(a.cfg.Model)
+}
+
+func analysisProviderShouldUseAdaptiveShardSizing(provider string) bool {
+	provider = normalizeProviderName(provider)
+	return isLocalOpenAICompatibleProvider(provider) || provider == "ollama"
+}
+
+func analysisModelParameterBillions(model string) float64 {
+	lower := strings.ToLower(strings.TrimSpace(openCodeAPIModelID(model)))
+	if lower == "" {
+		return 0
+	}
+	re := regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*b`)
+	matches := re.FindAllStringSubmatch(lower, -1)
+	best := 0.0
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		value, err := strconv.ParseFloat(match[1], 64)
+		if err != nil {
+			continue
+		}
+		if value > best {
+			best = value
+		}
+	}
+	return best
+}
+
+func analysisShouldRetryWithSmallerShards(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var providerErr *ProviderAPIError
+	if errors.As(err, &providerErr) {
+		if providerErr.StatusCode == 429 {
+			return false
+		}
+		if providerErr.StatusCode >= 500 && providerErr.StatusCode <= 504 {
+			return true
+		}
+	}
+	text := strings.ToLower(err.Error())
+	shardPressureHints := []string{
+		"deadline exceeded",
+		"timeout",
+		"timed out",
+		"client.timeout exceeded",
+		"gateway timeout",
+		"temporarily unavailable",
+		"server error",
+		"bad gateway",
+		"service unavailable",
+		"overloaded",
+		"server_overloaded",
+		"server_error",
+		"timeout_error",
+		"unexpected eof",
+		"connection reset",
+		"model returned an empty response",
+	}
+	for _, hint := range shardPressureHints {
+		if strings.Contains(text, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+func analysisProviderFailureRecoveryConfig(cfg ProjectAnalysisConfig, snapshot ProjectSnapshot) (ProjectAnalysisConfig, string, bool) {
+	out := cfg
+	beforeLines := out.MaxLinesPerShard
+	beforeFiles := out.MaxFilesPerShard
+	beforeTotal := out.MaxTotalShards
+	if beforeLines <= 0 {
+		beforeLines = 40000
+		out.MaxLinesPerShard = beforeLines
+	}
+	if beforeFiles <= 0 {
+		beforeFiles = 250
+		out.MaxFilesPerShard = beforeFiles
+	}
+	nextLines := shrinkAnalysisShardLimit(beforeLines, 1200)
+	nextFiles := shrinkAnalysisShardLimit(beforeFiles, 12)
+	if nextLines < out.MaxLinesPerShard {
+		out.MaxLinesPerShard = nextLines
+	}
+	if nextFiles < out.MaxFilesPerShard {
+		out.MaxFilesPerShard = nextFiles
+	}
+	estimatedByLines := ceilDiv(snapshot.TotalLines, analysisMaxInt(out.MaxLinesPerShard, 1))
+	estimatedByFiles := ceilDiv(snapshot.TotalFiles, analysisMaxInt(out.MaxFilesPerShard, 1))
+	desiredTotal := analysisMaxInt(analysisMaxInt(estimatedByLines, estimatedByFiles)+8, out.MaxTotalShards)
+	if desiredTotal > 256 {
+		desiredTotal = 256
+	}
+	if desiredTotal > out.MaxTotalShards {
+		out.MaxTotalShards = desiredTotal
+	}
+	changed := out.MaxLinesPerShard != cfg.MaxLinesPerShard || out.MaxFilesPerShard != cfg.MaxFilesPerShard || out.MaxTotalShards != cfg.MaxTotalShards
+	if !changed {
+		return cfg, "", false
+	}
+	note := fmt.Sprintf(
+		"max_lines_per_shard=%d->%d max_files_per_shard=%d->%d max_total_shards=%d->%d",
+		cfg.MaxLinesPerShard,
+		out.MaxLinesPerShard,
+		cfg.MaxFilesPerShard,
+		out.MaxFilesPerShard,
+		beforeTotal,
+		out.MaxTotalShards,
+	)
+	return out, note, true
+}
+
+func shrinkAnalysisShardLimit(value int, floor int) int {
+	if value <= 0 {
+		return floor
+	}
+	if floor <= 0 {
+		floor = 1
+	}
+	next := value / 2
+	if value > floor*8 {
+		next = value / 4
+	}
+	if next < floor {
+		next = floor
+	}
+	if next >= value && value > floor {
+		next = value - 1
+	}
+	return next
 }
 
 func rootCauseProjectAnalysisConfig(cfg ProjectAnalysisConfig) ProjectAnalysisConfig {
@@ -2655,6 +2932,10 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if err != nil {
 		return run, err
 	}
+	for _, note := range a.applyAdaptiveAnalysisShardSizing(snapshot) {
+		a.status(note)
+		a.debug(note)
+	}
 	snapshot.AnalysisMode = run.Summary.Mode
 	snapshot.AnalysisLenses = refineAnalysisLensesForSnapshot(snapshot, chooseAnalysisLenses(goal, run.Summary.Mode))
 	a.scoreFileImportance(&snapshot, snapshot.AnalysisLenses)
@@ -3059,6 +3340,12 @@ func (a *projectAnalyzer) estimateShardCount(snapshot ProjectSnapshot, concurren
 	count := concurrentAgents
 	count = analysisMaxInt(count, ceilDiv(snapshot.TotalFiles, 120))
 	count = analysisMaxInt(count, ceilDiv(snapshot.TotalLines, 15000))
+	if a.analysisCfg.MaxFilesPerShard > 0 {
+		count = analysisMaxInt(count, ceilDiv(snapshot.TotalFiles, a.analysisCfg.MaxFilesPerShard))
+	}
+	if a.analysisCfg.MaxLinesPerShard > 0 {
+		count = analysisMaxInt(count, ceilDiv(snapshot.TotalLines, a.analysisCfg.MaxLinesPerShard))
+	}
 	count = analysisMaxInt(count, ceilDiv(len(snapshot.Directories), 2))
 	if count < a.analysisCfg.MinAgents {
 		count = a.analysisCfg.MinAgents
@@ -6076,7 +6363,7 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			a.debug(fmt.Sprintf("shard approved: %s", shard.Name))
 			return report, review, shard, nil
 		}
-		revisionPrompt = strings.TrimSpace(review.RevisionPrompt)
+		revisionPrompt = buildWorkerRevisionPromptFromReview(review)
 		if revisionPrompt == "" {
 			a.debug(fmt.Sprintf("shard %s review requested revision without prompt; stopping retries", shard.Name))
 			break
@@ -6084,6 +6371,72 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 		a.debug(fmt.Sprintf("shard revision requested: %s", shard.Name))
 	}
 	return lastReport, lastReview, shard, nil
+}
+
+func buildWorkerRevisionPromptFromReview(review ReviewDecision) string {
+	var b strings.Builder
+	addText := func(label string, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		fmt.Fprintf(&b, "%s:\n%s\n\n", label, value)
+	}
+	addList := func(label string, items []string) {
+		items = limitStrings(analysisUniqueStrings(items), 12)
+		if len(items) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "%s:\n", label)
+		for _, item := range items {
+			fmt.Fprintf(&b, "- %s\n", item)
+		}
+		b.WriteString("\n")
+	}
+
+	addText("Reviewer revision prompt", review.RevisionPrompt)
+	addList("Reviewer issues", review.Issues)
+	addText("Failure kind", review.FailureKind)
+	addText("Symptom possible", review.SymptomPossible)
+	addList("Symptom causality", review.SymptomCausality)
+	addList("Symptom reproduction bridge", review.SymptomReproductionBridge)
+	addList("Required runtime observation", review.RequiredRuntimeObservation)
+	addList("Disqualifying evidence", review.DisqualifyingEvidence)
+	addList("Causal chain stages already supported", review.CausalChainStages)
+	addList("Causal chain stages still missing", review.CausalChainMissing)
+	if review.Disconfirmed {
+		addText("Disconfirmed", "true")
+	}
+	addList("Disconfirming evidence", review.DisconfirmingEvidence)
+	addList("Rejected candidates", review.RejectedCandidates)
+	if len(review.EvidenceRequests) > 0 {
+		b.WriteString("Evidence requests:\n")
+		for _, request := range limitRootCauseEvidenceRequests(review.EvidenceRequests, 8) {
+			requestText := strings.TrimSpace(request.Request)
+			if requestText == "" {
+				requestText = "Inspect the requested cross-shard evidence."
+			}
+			fmt.Fprintf(&b, "- Request: %s\n", requestText)
+			if len(request.TargetSignals) > 0 {
+				fmt.Fprintf(&b, "  Target signals: %s\n", strings.Join(limitStrings(request.TargetSignals, 6), " | "))
+			}
+			if len(request.TargetFiles) > 0 {
+				fmt.Fprintf(&b, "  Target files: %s\n", strings.Join(limitStrings(request.TargetFiles, 6), " | "))
+			}
+			if strings.TrimSpace(request.Reason) != "" {
+				fmt.Fprintf(&b, "  Reason: %s\n", strings.TrimSpace(request.Reason))
+			}
+			if strings.TrimSpace(request.RequiredToProve) != "" {
+				fmt.Fprintf(&b, "  Required to prove: %s\n", strings.TrimSpace(request.RequiredToProve))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	if strings.TrimSpace(b.String()) == "" && strings.EqualFold(review.Status, "needs_revision") {
+		b.WriteString("Reviewer requested revision but did not provide structured details. Re-check the report against the reviewer system requirements, fill missing concrete evidence, and return a stricter grounded JSON report.\n")
+	}
+	return strings.TrimSpace(b.String())
 }
 
 type refinementCandidate struct {
@@ -9764,6 +10117,7 @@ func shouldRetryProviderError(err error) bool {
 	text := strings.ToLower(err.Error())
 	retryHints := []string{
 		"provider returned error",
+		"deadline exceeded",
 		"rate limit",
 		"timeout",
 		"temporarily unavailable",

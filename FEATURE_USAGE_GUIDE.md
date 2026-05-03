@@ -220,14 +220,16 @@ Current behavior:
 2. Markdown goals can be passed as `@GOAL.md`, `--file GOAL.md`, or the `-goal-file` CLI flag; one-shot `-goal` runs support matching max-iteration, time-budget, token-budget, until-complete, and rollback flags.
 3. Goal start primes an acceptance contract, task graph, completion criteria, and status artifact before execution.
 4. Each iteration records a checkpoint when checkpoint storage is configured, sends an implementation prompt, then runs an independent review verdict gate.
-5. A `NEEDS_REVISION` review triggers an automatic repair pass before verification.
-6. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
-7. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, runs a final semantic reviewer when the audit is ready, and if needed runs `/recover execute-safe` or a semantic repair pass before the next iteration.
-8. The progress ledger tracks changed files, verification, audit blockers/warnings, review verdicts, final semantic verdicts, no-progress count, repeated failure signatures, token usage estimate, and command history.
-9. The loop completes only when the completion audit is `ready=true` and final semantic review returns `APPROVED`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, stopped by the configured iteration/time/token cap, or stopped by repeated no-progress/failure detection.
-10. `/goal run` resumes a pending or blocked goal from the latest persisted state.
-11. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass or marking the goal complete.
-12. `/goal complete` is the explicit completion gate: it re-runs audit, runs semantic review, and marks complete only if both approve.
+5. The review prompt includes concrete evidence whenever available: the implementation reply, checkpoint diff from the iteration start, git status/diff context, changed-file summaries, and bounded untracked-file excerpts.
+6. A `NEEDS_REVISION` review triggers an automatic repair pass before verification. The repair prompt preserves structured reviewer issues plus the same implementation context, so the worker receives actionable findings rather than only a short revision summary.
+7. During goal execution, write, diff preview, shell, and git approvals are session-bypassed so the loop does not stop for user confirmation.
+8. After the agent pass, Kernforge runs `/verify --full`, writes `/completion-audit`, runs a final semantic reviewer when the audit is ready, and if needed runs `/recover execute-safe` or a semantic repair pass before the next iteration.
+9. The final semantic reviewer receives the same workspace evidence model, and unclear or insufficient review evidence is treated as `NEEDS_REVISION` instead of approval.
+10. The progress ledger tracks changed files, verification, audit blockers/warnings, review verdicts, final semantic verdicts, no-progress count, repeated failure signatures, token usage estimate, and command history.
+11. The loop completes only when the completion audit is `ready=true` and final semantic review returns `APPROVED`; otherwise it keeps iterating until canceled, blocked by an unrecoverable runtime error, stopped by the configured iteration/time/token cap, or stopped by repeated no-progress/failure detection.
+12. `/goal run` resumes a pending or blocked goal from the latest persisted state.
+13. `/goal audit` re-runs the completion audit for the goal objective without running another implementation pass or marking the goal complete.
+14. `/goal complete` is the explicit completion gate: it re-runs audit, runs semantic review, and marks complete only if both approve.
 
 ### Local Automations MVP
 
@@ -358,6 +360,7 @@ Purpose:
 6. Preserve deterministic architecture facts so cached deep-structure answers can be checked against source-derived invariants.
 7. End the run with a highlighted `Analysis artifacts:` block and an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
 8. In local-provider or explicitly route-limited setups, cap shared worker/reviewer model routes through the global scheduler to reduce provider saturation and low-confidence placeholder cascades.
+9. Let Kernforge adapt shard size for local models when shard limits are not configured, then automatically retry once with smaller shards when a final timeout or 5xx/overload-style provider error still stops the run.
 
 Useful commands:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -369,6 +372,7 @@ The goal is optional. If omitted, Kernforge infers a practical goal from the sel
 Follow-up modes automatically load a previous `map` run as baseline structure when available. This lets `trace`, `impact`, `surface`, `security`, and `performance` start from the architecture map without sharing the same shard cache.
 Before confirmation, the analysis plan prints the selected `baseline_map` so the user can see which map run will be reused.
 Large runs are provider-failure tolerant: worker/reviewer rate limits are recorded as low-confidence shard failures, and synthesis falls back to a local document when the final model request fails.
+For local-model providers such as LM Studio, vLLM, llama.cpp, and Ollama, unset `max_files_per_shard` / `max_lines_per_shard` values are adjusted from provider, model size, max tokens, and request timeout before the plan is confirmed. If the run still ends in a timeout, 5xx, overload, empty response, connection reset, or similar provider-pressure error after normal request retries are exhausted, Kernforge prints an `adaptive_retry_shards` line and reruns once with smaller shard limits. Rate limits are not retried this way because smaller shards usually create more requests.
 When worker and reviewer use the same provider/model/base_url/reasoning_effort route, shard execution is capped by the model route limit. Local providers default to serial execution with a route limit of 1; cloud/API routes are not forced to serial execution unless `model_routes` says so.
 Role-specific `base_url` values for analysis worker/reviewer, plan reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.

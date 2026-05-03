@@ -53,6 +53,8 @@
 6. C++ parser는 template out-of-line method, operator, `requires`, `decltype(auto)`, API macro가 낀 scope, friend function 같은 modern C++ 패턴을 처리한다.
 7. 단일 provider/model 환경에서는 worker/reviewer가 같은 route를 공유할 때 기본 shard concurrency를 1로 낮추고, 전역 provider/model route scheduler가 provider/model/base_url/reasoning_effort 단위로 실제 모델 호출을 조율한다.
 8. `/analyze-project`는 docs를 기본 생성하며, 예전 `--docs` 플래그는 하위 호환용 hidden parser input으로만 유지한다. 문서 재생성은 `/docs-refresh`가 담당한다.
+9. local provider에서는 `max_files_per_shard` / `max_lines_per_shard`를 명시하지 않았을 때 provider, 모델 크기, max token, request timeout 신호로 shard 크기를 자동 조정한다.
+10. provider timeout, 5xx, overload, empty response, connection reset 같은 최종 provider-pressure 실패가 남으면 `/analyze-project`가 사용자에게 `adaptive_retry_shards`를 보여 주고 더 작은 shard로 한 번 자동 재실행한다. rate limit은 요청 수를 더 늘릴 수 있으므로 이 경로에서 제외한다.
 
 아직 남아 있는 대표 항목은 다음과 같다.
 
