@@ -627,6 +627,24 @@ func TestProjectAnalyzerDoesNotForceCloudSharedRouteToSerial(t *testing.T) {
 	}
 }
 
+func TestProjectAnalyzerCapsOpenRouterSharedRouteToProviderLimit(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openrouter"
+	cfg.Model = "deepseek/deepseek-v4-pro"
+	cfg.ProjectAnalysis.MinAgents = 8
+	cfg.ProjectAnalysis.MaxAgents = 8
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, nil, ws, nil, nil)
+	got := analyzer.effectiveShardConcurrency(8, 8, "map")
+	if got != 2 {
+		t.Fatalf("expected shared OpenRouter route to follow default provider limit 2, got %d", got)
+	}
+}
+
 func TestProjectAnalyzerCapsExplicitAgentConfigToLocalRouteLimit(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {
@@ -785,6 +803,29 @@ func TestCreateProviderClientFromProfileUsesProfileBaseURLOverride(t *testing.T)
 	want := normalizeProviderBaseURL("lmstudio", override)
 	if meta.BaseURL != want {
 		t.Fatalf("expected analysis role client base URL override %q, got %q", want, meta.BaseURL)
+	}
+}
+
+func TestCreateProviderClientFromProfileUsesProfileReasoningEffort(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "low"
+
+	client, err := createProviderClientFromProfile(Profile{
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}, cfg)
+	if err != nil {
+		t.Fatalf("createProviderClientFromProfile: %v", err)
+	}
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected analysis role client to expose route metadata, got %T", client)
+	}
+	if got := metaProvider.ModelRouteMetadata().ReasoningEffort; got != "high" {
+		t.Fatalf("expected analysis role reasoning effort high, got %q", got)
 	}
 }
 

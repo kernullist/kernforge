@@ -989,6 +989,7 @@ func TestRuntimeStatePrintAssistantWhileThinkingUsesFooterPanelWhenInteractive(t
 	rt := &runtimeState{
 		writer:      &out,
 		ui:          UI{},
+		cfg:         Config{ProgressDisplay: "compact"},
 		interactive: true,
 	}
 
@@ -1075,6 +1076,7 @@ func TestPrintProgressMessageUsesFooterWhenInteractive(t *testing.T) {
 	rt := &runtimeState{
 		writer:      &out,
 		ui:          UI{},
+		cfg:         Config{ProgressDisplay: "compact"},
 		interactive: true,
 	}
 
@@ -1096,11 +1098,62 @@ func TestPrintProgressMessageUsesFooterWhenInteractive(t *testing.T) {
 	t.Fatalf("expected interactive progress to render via the footer, got %q", out.String())
 }
 
+func TestPrintProgressMessageAutoPersistsToolEventsWhenInteractive(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{ProgressDisplay: "auto"},
+		interactive: true,
+	}
+
+	rt.printProgressMessage("read_file loaded main.go (12 line(s)).")
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "[tool") {
+		t.Fatalf("expected auto progress display to persist tool activity, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "  | ") {
+		t.Fatalf("expected auto progress display to use persistent progress line, got %q", rendered)
+	}
+	if rt.footerVisible {
+		t.Fatalf("expected persistent tool activity to avoid transient footer")
+	}
+}
+
+func TestPrintProgressMessageCompactKeepsToolEventsInFooter(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{ProgressDisplay: "compact"},
+		interactive: true,
+	}
+
+	rt.printProgressMessage("read_file loaded main.go (12 line(s)).")
+	defer rt.stopThinkingIndicator()
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rendered := out.String()
+		if strings.Contains(rendered, "[thinking]") {
+			if strings.Contains(rendered, "  | ") {
+				t.Fatalf("expected compact progress display to keep tool activity in footer, got %q", rendered)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("expected compact progress display to render footer, got %q", out.String())
+}
+
 func TestPrintProgressMessageInteractiveFlushesAssistantStreamBeforeFooter(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
 		writer:      &out,
 		ui:          UI{},
+		cfg:         Config{ProgressDisplay: "compact"},
 		interactive: true,
 	}
 
@@ -1811,6 +1864,82 @@ func TestActivateProviderAppendsProfileForDifferentModel(t *testing.T) {
 	}
 }
 
+func TestActivateProviderDefaultsUndefinedReasoningEffortForEffortProvider(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     UI{},
+		writer: &output,
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-effort-default-main",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+
+	if err := rt.activateProvider("openai-codex", "gpt-5.5", ""); err != nil {
+		t.Fatalf("activateProvider: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "low" {
+		t.Fatalf("expected reasoning effort to default to low, got %q", rt.cfg.ReasoningEffort)
+	}
+	if !strings.Contains(output.String(), "defaulted to low") {
+		t.Fatalf("expected default effort notice, got %q", output.String())
+	}
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.ReasoningEffort != "low" {
+		t.Fatalf("expected saved reasoning effort low, got %q", saved.ReasoningEffort)
+	}
+}
+
+func TestActivateProviderRestoresProfileReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     UI{},
+		writer: &bytes.Buffer{},
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-effort-preserve-main",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+	rt.cfg.Profiles = []Profile{{
+		Name:            "codex-high",
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		BaseURL:         normalizeOpenAICodexBaseURL(""),
+		ReasoningEffort: "high",
+	}}
+
+	if err := rt.activateProvider("openai-codex", "gpt-5.5", ""); err != nil {
+		t.Fatalf("activateProvider: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "high" {
+		t.Fatalf("expected profile reasoning effort to be restored, got %q", rt.cfg.ReasoningEffort)
+	}
+}
+
 func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
@@ -1995,6 +2124,258 @@ func TestProfileActivationAppliesRoleModelSet(t *testing.T) {
 	}
 }
 
+func TestSingleModelProfileActivationClearsStaleAnalysisRoles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(home),
+		ui:     NewUI(),
+		writer: &output,
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-single-profile",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "old-review"}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "old-worker", Provider: "openai", Model: "old-worker"}
+	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "old-reviewer", Provider: "openai", Model: "old-reviewer"}
+	rt.cfg.Profiles = []Profile{{
+		Name:     "single-profile",
+		Provider: "ollama",
+		Model:    "qwen3.5:14b",
+	}}
+
+	if err := rt.handleProfileCommand("1"); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	if rt.cfg.Provider != "ollama" || rt.cfg.Model != "qwen3.5:14b" {
+		t.Fatalf("expected main profile activation, got %s/%s", rt.cfg.Provider, rt.cfg.Model)
+	}
+	if rt.cfg.PlanReview != nil {
+		t.Fatalf("expected plan reviewer to clear, got %#v", rt.cfg.PlanReview)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil || rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected stale analysis roles to clear, got worker=%#v reviewer=%#v", rt.cfg.ProjectAnalysis.WorkerProfile, rt.cfg.ProjectAnalysis.ReviewerProfile)
+	}
+	if len(rt.cfg.Profiles) == 0 || rt.cfg.Profiles[0].RoleModels == nil {
+		t.Fatalf("expected activated single-model profile to be saved with an empty role model set, got %#v", rt.cfg.Profiles)
+	}
+}
+
+func TestMainPromptReasoningEffortOnlyForEffortCapableProvider(t *testing.T) {
+	rt := &runtimeState{
+		cfg: Config{
+			Provider:        "openai-codex",
+			Model:           "gpt-5.5",
+			ReasoningEffort: "high",
+		},
+		session: &Session{
+			Provider: "openai-codex",
+			Model:    "gpt-5.5",
+		},
+	}
+	if got := rt.mainPromptReasoningEffort(); got != "high" {
+		t.Fatalf("mainPromptReasoningEffort = %q, want high", got)
+	}
+
+	rt.session.Provider = "deepseek"
+	rt.cfg.Provider = "deepseek"
+	rt.cfg.ReasoningEffort = ""
+	if got := rt.mainPromptReasoningEffort(); got != "undefined" {
+		t.Fatalf("mainPromptReasoningEffort = %q, want undefined", got)
+	}
+
+	rt.session.Provider = "openai"
+	rt.cfg.Provider = "openai"
+	rt.cfg.ReasoningEffort = "high"
+	if got := rt.mainPromptReasoningEffort(); got != "" {
+		t.Fatalf("mainPromptReasoningEffort = %q, want empty for non-effort provider", got)
+	}
+}
+
+func TestActivateRoleModelDefaultsUndefinedReasoningEffortForEffortProvider(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     UI{},
+		writer: &output,
+		session: &Session{
+			ID:       "session-effort-default-role",
+			Provider: "openai",
+			Model:    "gpt-main",
+		},
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-main"
+
+	if err := rt.activatePlanReview("openai-codex", "gpt-5.5", "", ""); err != nil {
+		t.Fatalf("activatePlanReview: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "" {
+		t.Fatalf("expected main reasoning effort to stay unchanged, got %q", rt.cfg.ReasoningEffort)
+	}
+	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.ReasoningEffort != "low" {
+		t.Fatalf("expected plan-review reasoning effort to default to low, got %#v", rt.cfg.PlanReview)
+	}
+	if !strings.Contains(output.String(), "defaulted to low") {
+		t.Fatalf("expected default effort notice, got %q", output.String())
+	}
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if saved.PlanReview == nil || saved.PlanReview.ReasoningEffort != "low" {
+		t.Fatalf("expected saved plan-review reasoning effort low, got %#v", saved.PlanReview)
+	}
+}
+
+func TestProfileActivationDefaultsUndefinedReasoningEffortForRoleModel(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     UI{},
+		writer: &output,
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-effort-default-profile-role",
+			Provider: "openai",
+			Model:    "gpt-old",
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openai"
+	rt.cfg.Model = "gpt-old"
+	rt.cfg.APIKey = "openai-key"
+	rt.cfg.ProviderKeys = map[string]string{"openai": "openai-key"}
+	rt.cfg.Profiles = []Profile{{
+		Name:     "main-with-codex-reviewer",
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		RoleModels: &ProfileRoleModels{
+			PlanReviewer: &Profile{
+				Provider: "openai-codex",
+				Model:    "gpt-5.5",
+			},
+		},
+	}}
+
+	if err := rt.handleProfileCommand("1"); err != nil {
+		t.Fatalf("handleProfileCommand: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "" {
+		t.Fatalf("expected main reasoning effort to stay unchanged, got %q", rt.cfg.ReasoningEffort)
+	}
+	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.ReasoningEffort != "low" {
+		t.Fatalf("expected profile role reasoning effort to default to low, got %#v", rt.cfg.PlanReview)
+	}
+	if !strings.Contains(output.String(), "defaulted to low") {
+		t.Fatalf("expected default effort notice, got %q", output.String())
+	}
+}
+
+func TestEffortCommandSetsMainAndRoleEffortIndependently(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     UI{},
+		writer: &bytes.Buffer{},
+		session: &Session{
+			ID:       "session-effort-independent",
+			Provider: "openai-codex",
+			Model:    "gpt-5.5",
+		},
+	}
+	rt.cfg.Provider = "openai-codex"
+	rt.cfg.Model = "gpt-5.5"
+	rt.cfg.ReasoningEffort = "low"
+	rt.cfg.PlanReview = &PlanReviewConfig{
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "medium",
+	}
+
+	if err := rt.handleEffortCommand("plan-review high"); err != nil {
+		t.Fatalf("handleEffortCommand plan-review: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "low" {
+		t.Fatalf("expected main effort to remain low, got %q", rt.cfg.ReasoningEffort)
+	}
+	if rt.cfg.PlanReview.ReasoningEffort != "high" {
+		t.Fatalf("expected plan-review effort high, got %q", rt.cfg.PlanReview.ReasoningEffort)
+	}
+
+	if err := rt.handleEffortCommand("xhigh"); err != nil {
+		t.Fatalf("handleEffortCommand main: %v", err)
+	}
+	if rt.cfg.ReasoningEffort != "xhigh" {
+		t.Fatalf("expected main effort xhigh, got %q", rt.cfg.ReasoningEffort)
+	}
+	if rt.cfg.PlanReview.ReasoningEffort != "high" {
+		t.Fatalf("expected plan-review effort to remain high, got %q", rt.cfg.PlanReview.ReasoningEffort)
+	}
+}
+
+func TestRoleModelStatusDisplaysReasoningEffort(t *testing.T) {
+	var output bytes.Buffer
+	rt := &runtimeState{
+		cfg:    DefaultConfig(t.TempDir()),
+		ui:     UI{},
+		writer: &output,
+	}
+	rt.cfg.Provider = "openai-codex"
+	rt.cfg.Model = "gpt-5.5"
+	rt.cfg.ReasoningEffort = "low"
+	rt.cfg.PlanReview = &PlanReviewConfig{
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{
+		Provider:        "deepseek",
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "medium",
+	}
+
+	if err := rt.showPlanReviewStatus(); err != nil {
+		t.Fatalf("showPlanReviewStatus: %v", err)
+	}
+	if err := rt.showProjectAnalysisModelStatus(); err != nil {
+		t.Fatalf("showProjectAnalysisModelStatus: %v", err)
+	}
+	text := strings.Join(strings.Fields(output.String()), " ")
+	for _, want := range []string{
+		"reasoning_effort: high",
+		"worker: deepseek / deepseek-v4-pro / effort=medium",
+		"reviewer: not configured; follows analysis_worker model -> deepseek / deepseek-v4-pro / effort=medium",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected status output to contain %q, got %q", want, text)
+		}
+	}
+}
+
 func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
@@ -2090,6 +2471,41 @@ func TestRoleModelActivationReusesStoredProviderKeys(t *testing.T) {
 	profile, ok := configuredSpecialistProfileByName(rt.cfg, "kernel-investigator")
 	if !ok || profile.APIKey != "openrouter-key" {
 		t.Fatalf("expected specialist to reuse provider key, got %#v", profile)
+	}
+}
+
+func TestClearSpecialistModelOverrideClearsStoredReasoningEffort(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:       DefaultConfig(workspace),
+		ui:        UI{},
+		writer:    &bytes.Buffer{},
+		workspace: Workspace{BaseRoot: workspace, Root: workspace},
+	}
+	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:            "kernel-investigator",
+		Prompt:          "Keep this non-model override.",
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}}
+
+	if err := rt.clearSpecialistModelOverride("kernel-investigator"); err != nil {
+		t.Fatalf("clearSpecialistModelOverride: %v", err)
+	}
+	profile, ok := configuredSpecialistProfileByName(rt.cfg, "kernel-investigator")
+	if !ok {
+		t.Fatalf("expected non-model specialist override to remain")
+	}
+	if profile.Provider != "" || profile.Model != "" || profile.ReasoningEffort != "" {
+		t.Fatalf("expected model and effort override to clear, got %#v", profile)
+	}
+	if profile.Prompt != "Keep this non-model override." {
+		t.Fatalf("expected prompt override to remain, got %#v", profile)
 	}
 }
 
@@ -2775,6 +3191,48 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 	if strings.Contains(text, "write_approval:") {
 		t.Fatalf("did not expect runtime-only approval state in config, got %q", text)
+	}
+}
+
+func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	root := t.TempDir()
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{},
+		cfg:    DefaultConfig(root),
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "progress-display"}); err != nil {
+		t.Fatalf("handleCommand(progress-display): %v", err)
+	}
+	if !strings.Contains(out.String(), "progress_display: auto") {
+		t.Fatalf("expected current progress display, got %q", out.String())
+	}
+
+	out.Reset()
+	if _, err := rt.handleCommand(Command{Name: "progress-display", Args: "stream"}); err != nil {
+		t.Fatalf("handleCommand(progress-display stream): %v", err)
+	}
+	if got := configProgressDisplay(rt.cfg); got != "stream" {
+		t.Fatalf("expected runtime progress_display stream, got %q", got)
+	}
+	loaded, err := LoadConfig(root)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := configProgressDisplay(loaded); got != "stream" {
+		t.Fatalf("expected saved progress_display stream, got %q", got)
+	}
+	if !strings.Contains(out.String(), "progress_display set to stream") {
+		t.Fatalf("expected success output, got %q", out.String())
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "progress-display", Args: "surprise"}); err == nil {
+		t.Fatalf("expected invalid progress display to fail")
 	}
 }
 

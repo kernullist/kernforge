@@ -132,7 +132,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		}
 		return ChatResponse{}, newProviderHTTPError("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body))
 	}
-	out, err := readOpenAICodexStream(ctx, resp.Body)
+	out, err := readOpenAICodexStream(ctx, resp.Body, req.OnProgressEvent)
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -403,12 +403,14 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 }
 
 type openAICodexStreamToolCall struct {
-	ID        string
-	Name      string
-	Arguments strings.Builder
+	ID           string
+	Name         string
+	Arguments    strings.Builder
+	ArgsStarted  bool
+	ReadyEmitted bool
 }
 
-func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, error) {
+func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent ...func(ProgressEvent)) (ChatResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -417,6 +419,10 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
 	stopReason := ""
+	var progress func(ProgressEvent)
+	if len(onProgressEvent) > 0 {
+		progress = onProgressEvent[0]
+	}
 
 	ensureToolCall := func(index int) *openAICodexStreamToolCall {
 		item := toolCalls[index]
@@ -426,6 +432,19 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 			toolOrder = append(toolOrder, index)
 		}
 		return item
+	}
+	emitToolReady := func(item *openAICodexStreamToolCall) {
+		if item == nil || item.ReadyEmitted {
+			return
+		}
+		item.ReadyEmitted = true
+		emitProgressEvent(progress, ProgressEvent{
+			Kind:             progressKindModelStreamToolReady,
+			Provider:         "openai-codex",
+			ToolName:         item.Name,
+			ToolCallID:       item.ID,
+			ArgumentsPreview: summarizeToolArgumentsPreview(item.Arguments.String()),
+		})
 	}
 
 	for scanner.Scan() {
@@ -486,9 +505,24 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 				if strings.TrimSpace(event.Item.Arguments) != "" && item.Arguments.Len() == 0 {
 					item.Arguments.WriteString(event.Item.Arguments)
 				}
+				emitProgressEvent(progress, ProgressEvent{
+					Kind:       progressKindModelStreamToolCall,
+					Provider:   "openai-codex",
+					ToolName:   item.Name,
+					ToolCallID: item.ID,
+				})
 			}
 		case "response.function_call_arguments.delta":
 			item := ensureToolCall(event.OutputIndex)
+			if !item.ArgsStarted {
+				item.ArgsStarted = true
+				emitProgressEvent(progress, ProgressEvent{
+					Kind:       progressKindModelStreamToolArgs,
+					Provider:   "openai-codex",
+					ToolName:   item.Name,
+					ToolCallID: item.ID,
+				})
+			}
 			item.Arguments.WriteString(event.Delta)
 		case "response.function_call_arguments.done":
 			item := ensureToolCall(event.OutputIndex)
@@ -497,6 +531,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 				item.Arguments.Reset()
 				item.Arguments.WriteString(arguments)
 			}
+			emitToolReady(item)
 		case "response.output_item.done":
 			if event.Item.Type == "message" && text.Len() == 0 {
 				for _, content := range event.Item.Content {
@@ -512,6 +547,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 					item.Arguments.Reset()
 					item.Arguments.WriteString(event.Item.Arguments)
 				}
+				emitToolReady(item)
 			}
 		case "response.completed":
 			if len(event.Response) > 0 {
@@ -543,6 +579,26 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader) (ChatResponse, e
 	if len(completedResponse) > 0 {
 		resp, err := parseOpenAICodexResponse(completedResponse)
 		if err == nil {
+			emittedReady := map[string]bool{}
+			for _, item := range toolCalls {
+				if item == nil || !item.ReadyEmitted {
+					continue
+				}
+				emittedReady[strings.TrimSpace(item.ID)] = true
+			}
+			for _, call := range resp.Message.ToolCalls {
+				callID := strings.TrimSpace(call.ID)
+				if emittedReady[callID] {
+					continue
+				}
+				emitProgressEvent(progress, ProgressEvent{
+					Kind:             progressKindModelStreamToolReady,
+					Provider:         "openai-codex",
+					ToolName:         call.Name,
+					ToolCallID:       callID,
+					ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+				})
+			}
 			return resp, nil
 		}
 	}

@@ -61,10 +61,13 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 4. 요청 취소 뒤에는 `Esc` release를 잠깐 기다리고 pending console input을 정리한 뒤 다음 입력을 받는다.
 5. assistant streaming은 선행 빈 chunk를 무시하고, progress 출력 전 경계를 정리하며, 반복 follow-on preamble을 별도 줄로 나눠 가독성을 높인다.
 6. 기본 대기 문구는 thinking prefix와 중복되지 않도록 정리한다.
-7. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
-8. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
-9. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
-10. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
+7. thinking elapsed timer는 phase 전환마다 기준 시간이 재설정되고, 비정상 stale 값은 2시간 표시로 clamp된다.
+8. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
+9. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
+10. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
+11. `progress_display`가 진행 표시 방식을 제어하며 `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있다. `auto`는 tool/model/route ledger를 transcript에 남기고 고빈도 shell tail 출력은 transient로 유지하며, `compact`는 footer 중심, `stream`은 모든 update 지속 기록 방식이다.
+12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
+13. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
 
 ### 런타임 상태 확인과 승인 상태
 
@@ -83,10 +86,11 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
 3. `/provider status`는 active provider, 정규화된 endpoint, API key 존재 여부, provider별 budget visibility를 보여준다.
 4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.
-5. OpenAI와 Anthropic에서는 `/provider status`가 임의의 live balance endpoint를 추정하지 않고 공식 문서 기준의 billing/usage visibility 제약을 보여준다.
-6. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
-7. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
-8. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
+5. DeepSeek에서는 API key가 설정되어 있으면 `/provider status`가 live `/user/balance`를 조회하고 provider의 dynamic concurrency 안내를 함께 보여준다.
+6. OpenAI와 Anthropic에서는 `/provider status`가 임의의 live balance endpoint를 추정하지 않고 공식 문서 기준의 billing/usage visibility 제약을 보여준다.
+7. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
+8. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
+9. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
 
 ### 프롬프트 의도 라우팅
 
@@ -321,6 +325,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 8. `/completion-audit`는 final readiness gate를 `.kernforge/completion_audit/latest.md/json`으로 외부화해서, 사람이나 scheduler가 모델 턴 밖에서도 blocker와 warning을 볼 수 있게 한다.
 9. failure repair harness는 verification 실패 시 첫 의미 있는 실패 줄, 반복 횟수, 좁은 재실행 명령, 다음 repair step을 active context로 유지한다.
 10. user-change isolation은 turn 시작 이후 사용자가 target path를 바꿨는데 agent가 그 파일을 덮어쓰려 하면 edit를 막고 fresh read와 merge-aware edit을 요구한다.
+11. final-answer reviewer는 unresolved verification, coding harness blocker, 실제 patch transaction 변경이 있을 때만 추가로 돈다. 계획이 있거나 task graph가 있다는 이유만으로는 추가 reviewer/revision 왕복을 만들지 않는다.
 
 실무 해석:
 1. "완료했습니다"라고 말하기 전에 Kernforge는 실제 artifact와 verification evidence를 다시 본다.
@@ -372,6 +377,7 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
 LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_files_per_shard` / `max_lines_per_shard`가 비어 있으면 confirmation 전에 provider, 모델 크기, max token, request timeout을 보고 값을 조정한다. 일반 request retry를 모두 소진한 뒤에도 timeout, 5xx, overload, empty response, connection reset 같은 provider-pressure error로 run이 끝나면 Kernforge는 `adaptive_retry_shards` 줄을 출력하고 더 작은 shard 제한으로 한 번 다시 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 방식으로 재시도하지 않는다.
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
+reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, plan-review reviewer, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있고, effort 지원 target을 새로 선택했는데 undefined이면 해당 target만 기본 `low`로 저장된다.
 analysis worker/reviewer, plan reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 
@@ -590,7 +596,7 @@ Pattern pack 운영:
 2. Windows에서 `msbuild`, `cmake`, `ctest`, `ninja`가 없으면 Kernforge가 automatic verification 비활성화 또는 실행 파일 경로 저장을 제안할 수 있다.
 3. 공백이 있는 경로는 따옴표로 감싸는 편이 안전하다.
 4. 예: `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
-5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, timeout 난 model turn은 한 번 자동 재시도한다.
+5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, `max_request_retries`와 `request_retry_delay_ms`로 timeout 또는 transient provider error 재시도를 제어한다.
 
 ### 2.3 Evidence Store
 
@@ -749,6 +755,7 @@ diff workflow 메모:
 현재 연동:
 1. recent simulation finding이 task와 겹치면 planning prompt에 자동 주입된다.
 2. 최종 plan 실행 prompt에도 같은 관점이 자동 주입된다.
+3. 명시 timeout policy가 없으면 plan-review의 planner/reviewer 요청은 attempt당 2분 timeout을 사용한다. 긴 preflight 대기로 전체 턴을 붙잡기보다 빠르게 실패하고 다음 recovery path로 넘어가는 쪽을 우선한다.
 
 ### 2.9 Tracked Feature Workflow
 
@@ -785,7 +792,7 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
@@ -795,6 +802,9 @@ diff workflow 메모:
 3. 깊은 프로젝트 구조 답변은 deterministic fact, source anchor, 닫힌 directory set, flow invariant와 대조된다. 모순이 있으면 자신 있게 cached 답변을 내지 않고 tool 사용으로 넘어간다.
 4. skill/MCP catalog는 실제로 그 정보를 묻는 요청에서만 크게 포함된다.
 5. auto-scout는 후보 수와 문맥 길이를 줄였고, 위치 찾기/정의 찾기/참조 찾기 성격의 질문에 더 집중한다.
+6. 기본 `max_tokens`는 `8192`이며, 예전 기본값 `4096`이 config에 남아 있으면 시작 또는 `/reload` 때 자동 마이그레이션된다.
+7. 기본 `max_tool_iterations`는 `0`(unlimited)이다. 파일 검색/대형 문서화처럼 tool call이 많이 필요한 턴은 더 이상 기본 16회 제한으로 중단되지 않으며, 필요하면 `/set-max-tool-iterations 24`처럼 양수 제한을 다시 걸 수 있다.
+8. project analysis worker/reviewer가 main 모델과 같은 OpenRouter 또는 DeepSeek route를 공유하면 기본 model-route limit은 2다. upstream rate-limit 또는 dynamic-concurrency cascade를 줄이기 위한 값이며, key/provider pool이 충분할 때만 `model_routes.provider_limits.openrouter`나 `model_routes.provider_limits.deepseek`를 더 높인다.
 
 ## 3. 가장 추천하는 실전 흐름
 

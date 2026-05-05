@@ -30,13 +30,15 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/checkpoint-auto of", wantBuffer: "/checkpoint-auto off "},
 		{input: "/locale-auto of", wantBuffer: "/locale-auto off "},
 		{input: "/set-auto-verify of", wantBuffer: "/set-auto-verify off "},
+		{input: "/progress-display ", wantSuggest: []string{"/progress-display auto", "/progress-display compact", "/progress-display stream"}},
+		{input: "/progress-display st", wantBuffer: "/progress-display stream "},
 		{input: "/worktree ", wantSuggest: []string{"/worktree status", "/worktree list", "/worktree create", "/worktree enter", "/worktree attach", "/worktree leave", "/worktree cleanup"}},
 		{input: "/worktree cr", wantBuffer: "/worktree create "},
 		{input: "/specialists ", wantSuggest: []string{"/specialists status", "/specialists assign", "/specialists cleanup"}},
 		{input: "/specialists cl", wantBuffer: "/specialists cleanup "},
 		{input: "/effort ", wantSuggest: []string{"/effort undefined", "/effort minimal", "/effort low", "/effort medium", "/effort high", "/effort xhigh"}},
 		{input: "/effort h", wantBuffer: "/effort high "},
-		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider opencode", "/provider opencode-go", "/provider ollama", "/provider codex-cli", "/provider openai-codex", "/provider lmstudio", "/provider vllm", "/provider llama.cpp"}},
+		{input: "/provider ", wantSuggest: []string{"/provider status", "/provider anthropic", "/provider openai", "/provider openrouter", "/provider deepseek", "/provider opencode", "/provider opencode-go", "/provider ollama", "/provider codex-cli", "/provider openai-codex", "/provider lmstudio", "/provider vllm", "/provider llama.cpp"}},
 		{input: "/provider st", wantBuffer: "/provider status "},
 		{input: "/codex-auth ", wantSuggest: []string{"/codex-auth status", "/codex-auth login", "/codex-auth logout", "/codex-auth path"}},
 		{input: "/codex-auth lo", wantBuffer: "/codex-auth log"},
@@ -136,6 +138,7 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/codex-l", wantBuffer: "/codex-login "},
 		{input: "/completion-a", wantBuffer: "/completion-audit "},
 		{input: "/recov", wantBuffer: "/recover "},
+		{input: "/progress-d", wantBuffer: "/progress-display "},
 	}
 
 	for _, tc := range cases {

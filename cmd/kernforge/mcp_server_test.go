@@ -65,6 +65,11 @@ func TestMCPConfigProviderOverrideResetsProviderSpecificBaseURL(t *testing.T) {
 			want:     openAICodexDefaultBaseURL,
 		},
 		{
+			name:     "deepseek",
+			override: mcpServerConfigOverrides{Provider: "deepseek"},
+			want:     "https://api.deepseek.com",
+		},
+		{
 			name:     "lmstudio",
 			override: mcpServerConfigOverrides{Provider: "lmstudio"},
 			want:     "http://localhost:1234/v1",
@@ -99,6 +104,23 @@ func TestMCPConfigProviderOverrideResetsProviderSpecificBaseURL(t *testing.T) {
 		if got := cfg.BaseURL; got != tc.want {
 			t.Fatalf("%s: BaseURL = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestMCPConfigOverrideDefaultsUndefinedReasoningEffort(t *testing.T) {
+	cfg := Config{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+	}
+	override := mcpServerConfigOverrides{
+		Provider: "openai-codex",
+		Model:    "gpt-5.5",
+	}
+
+	override.apply(&cfg)
+
+	if cfg.ReasoningEffort != "low" {
+		t.Fatalf("expected reasoning effort to default to low, got %q", cfg.ReasoningEffort)
 	}
 }
 

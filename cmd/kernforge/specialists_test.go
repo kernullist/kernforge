@@ -172,6 +172,28 @@ func TestSpecialistClientUsesDifferentProviderDefaultBaseURL(t *testing.T) {
 	}
 }
 
+func TestSpecialistClientUsesSpecialistReasoningEffort(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "low"
+	agent := &Agent{Config: cfg}
+
+	client, _ := agent.specialistClient(SpecialistSubagentProfile{
+		Name:            "codex-specialist",
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	})
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected specialist client to expose route metadata, got %T", client)
+	}
+	if got := metaProvider.ModelRouteMetadata().ReasoningEffort; got != "high" {
+		t.Fatalf("expected specialist reasoning effort high, got %q", got)
+	}
+}
+
 func TestSpecialistClientDoesNotLeakMainAPIKeyToDifferentProvider(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai"

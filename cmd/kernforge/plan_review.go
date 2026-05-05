@@ -220,6 +220,15 @@ func completePlanReviewRequest(ctx context.Context, client ProviderClient, req C
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
+	if req.OnProgressEvent == nil && onStatus != nil {
+		req.OnProgressEvent = func(event ProgressEvent) {
+			message := strings.TrimSpace(formatProgressEventMessage(policy.ModelRouteConfig, event))
+			if message == "" {
+				return
+			}
+			onStatus(message)
+		}
+	}
 	maxRetries := policy.MaxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -306,5 +315,6 @@ func createReviewerClient(reviewCfg *PlanReviewConfig, mainCfg Config) (Provider
 	cfg.Model = model
 	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
+	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, reviewCfg.ReasoningEffort)
 	return NewProviderClient(cfg)
 }

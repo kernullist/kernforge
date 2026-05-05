@@ -85,6 +85,29 @@ func TestCreateReviewerClientUsesReviewerBaseURLOverride(t *testing.T) {
 	}
 }
 
+func TestCreateReviewerClientUsesReviewerReasoningEffort(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "low"
+
+	client, err := createReviewerClient(&PlanReviewConfig{
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "high",
+	}, cfg)
+	if err != nil {
+		t.Fatalf("createReviewerClient: %v", err)
+	}
+	metaProvider, ok := client.(modelRouteMetadataProvider)
+	if !ok {
+		t.Fatalf("expected reviewer client to expose route metadata, got %T", client)
+	}
+	if got := metaProvider.ModelRouteMetadata().ReasoningEffort; got != "high" {
+		t.Fatalf("expected reviewer reasoning effort high, got %q", got)
+	}
+}
+
 func TestModelRequestPolicyFromAgentUsesAgentScheduler(t *testing.T) {
 	scheduler := NewModelRouteScheduler()
 	agent := &Agent{

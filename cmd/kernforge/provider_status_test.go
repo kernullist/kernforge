@@ -17,6 +17,7 @@ func TestNormalizeProviderBaseURLUsesProviderDefaults(t *testing.T) {
 		{provider: "anthropic", expected: "https://api.anthropic.com"},
 		{provider: "openai", expected: "https://api.openai.com"},
 		{provider: "openai-compatible", expected: "https://api.openai.com"},
+		{provider: "deepseek", expected: "https://api.deepseek.com"},
 		{provider: "openrouter", expected: "https://openrouter.ai/api/v1"},
 		{provider: "opencode", expected: "https://opencode.ai/zen"},
 		{provider: "opencode-go", expected: "https://opencode.ai/zen/go"},
@@ -35,7 +36,7 @@ func TestNormalizeProviderBaseURLUsesProviderDefaults(t *testing.T) {
 	}
 }
 
-func TestModelRoutingStatusDoesNotDisplayReasoningEffort(t *testing.T) {
+func TestModelRoutingStatusDisplaysReasoningEffort(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{
 		cfg: Config{
@@ -54,8 +55,8 @@ func TestModelRoutingStatusDoesNotDisplayReasoningEffort(t *testing.T) {
 		t.Fatalf("showModelRoutingStatus: %v", err)
 	}
 	rendered := out.String()
-	if strings.Contains(rendered, "reasoning_effort") || strings.Contains(rendered, "high") {
-		t.Fatalf("/model output should not display effort state; got %q", rendered)
+	if !strings.Contains(rendered, "effort=high") {
+		t.Fatalf("/model output should display effort state, got %q", rendered)
 	}
 }
 
@@ -152,6 +153,59 @@ func TestFetchOpenAICompatibleModelsParsesLocalModelsWithoutAPIKey(t *testing.T)
 	}
 }
 
+func TestFetchOpenAICompatibleModelsUsesDeepSeekModelsEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer deepseek-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"deepseek-v4-flash"},{"id":"deepseek-v4-pro","owned_by":"deepseek"}]}`))
+	}))
+	defer server.Close()
+
+	models, normalized, err := FetchOpenAICompatibleModels(context.Background(), "deepseek", server.URL, "deepseek-key")
+	if err != nil {
+		t.Fatalf("FetchOpenAICompatibleModels: %v", err)
+	}
+	if normalized != server.URL {
+		t.Fatalf("expected normalized base URL %q, got %q", server.URL, normalized)
+	}
+	if len(models) != 2 || models[0].ID != "deepseek-v4-flash" || models[1].ID != "deepseek-v4-pro" {
+		t.Fatalf("unexpected models: %#v", models)
+	}
+}
+
+func TestFetchDeepSeekBalanceParsesBalancePayload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user/balance" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer deepseek-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"is_available":true,"balance_infos":[{"currency":"USD","total_balance":"12.50","granted_balance":"2.00","topped_up_balance":"10.50"}]}`))
+	}))
+	defer server.Close()
+
+	balance, normalized, err := FetchDeepSeekBalance(context.Background(), server.URL, "deepseek-key")
+	if err != nil {
+		t.Fatalf("FetchDeepSeekBalance: %v", err)
+	}
+	if normalized != server.URL {
+		t.Fatalf("expected normalized base URL %q, got %q", server.URL, normalized)
+	}
+	if !balance.IsAvailable || len(balance.BalanceInfos) != 1 {
+		t.Fatalf("unexpected balance: %#v", balance)
+	}
+	if balance.BalanceInfos[0].TotalBalance != "12.50" {
+		t.Fatalf("unexpected total balance: %#v", balance.BalanceInfos[0])
+	}
+}
+
 func TestRuntimeStateShowProviderStatusShowsOpenRouterBudgetDetails(t *testing.T) {
 	originalKeyFetcher := fetchOpenRouterKeyStatus
 	originalCreditsFetcher := fetchOpenRouterCredits
@@ -222,6 +276,66 @@ func TestRuntimeStateShowProviderStatusShowsOpenRouterBudgetDetails(t *testing.T
 	}
 	if strings.Contains(rendered, "http://localhost:11434") {
 		t.Fatalf("provider status should not fall back to the Ollama base URL, got %q", rendered)
+	}
+}
+
+func TestRuntimeStateShowProviderStatusShowsDeepSeekBalance(t *testing.T) {
+	originalBalanceFetcher := fetchDeepSeekBalance
+	t.Cleanup(func() {
+		fetchDeepSeekBalance = originalBalanceFetcher
+	})
+
+	fetchDeepSeekBalance = func(ctx context.Context, baseURL, apiKey string) (DeepSeekBalance, string, error) {
+		if baseURL != "https://api.deepseek.com" {
+			t.Fatalf("expected normalized DeepSeek base URL, got %q", baseURL)
+		}
+		if apiKey != "deepseek-key" {
+			t.Fatalf("expected configured API key, got %q", apiKey)
+		}
+		return DeepSeekBalance{
+			IsAvailable: true,
+			BalanceInfos: []DeepSeekBalanceInfo{{
+				Currency:        "USD",
+				TotalBalance:    "12.50",
+				GrantedBalance:  "2.00",
+				ToppedUpBalance: "10.50",
+			}},
+		}, baseURL, nil
+	}
+
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: false},
+		cfg: Config{
+			Provider: "deepseek",
+			Model:    "deepseek-v4-pro",
+			APIKey:   "deepseek-key",
+		},
+		session: &Session{
+			Provider: "deepseek",
+			Model:    "deepseek-v4-pro",
+		},
+	}
+
+	if err := rt.showProviderStatus(); err != nil {
+		t.Fatalf("showProviderStatus: %v", err)
+	}
+
+	rendered := out.String()
+	for _, needle := range []string{
+		"https://api.deepseek.com",
+		"api_key",
+		"configured",
+		"balance_api",
+		deepSeekBalanceDocsURL,
+		deepSeekRateLimitDocsURL,
+		"usd_total_balance",
+		"12.50",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected provider status to contain %q, got %q", needle, rendered)
+		}
 	}
 }
 

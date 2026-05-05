@@ -188,6 +188,8 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) {
 		cfg.Provider = providerOverride
 		if baseURLOverride == "" && currentProvider != providerOverride {
 			switch providerOverride {
+			case "deepseek":
+				cfg.BaseURL = normalizeDeepSeekBaseURL("")
 			case "openai-codex":
 				cfg.BaseURL = normalizeOpenAICodexBaseURL("")
 			case "lmstudio", "vllm", "llama.cpp":
@@ -199,6 +201,9 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) {
 	}
 	if strings.TrimSpace(o.Model) != "" {
 		cfg.Model = strings.TrimSpace(o.Model)
+	}
+	if strings.TrimSpace(o.Provider) != "" || strings.TrimSpace(o.Model) != "" {
+		applyDefaultReasoningEffortForProvider(cfg, cfg.Provider)
 	}
 	if baseURLOverride != "" {
 		cfg.BaseURL = baseURLOverride

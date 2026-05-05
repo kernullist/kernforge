@@ -109,7 +109,7 @@ Its current differentiators are:
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
 - Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
-- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
+- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `deepseek`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
@@ -284,7 +284,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -293,10 +293,14 @@ Its current differentiators are:
 - Assistant streaming output now suppresses leading blank chunks, flushes cleanly before progress lines, and inserts line breaks between repeated follow-on preambles
 - Short tool-turn narration such as "let me inspect" or similar Korean preambles is buffered and collapsed into footer-style progress instead of spawning extra assistant transcript blocks
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
+- Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
-- Transient in-flight status, short `next` preambles, and tool progress now share a bottom footer panel instead of interleaving with the main transcript
+- `progress_display` controls in-flight visibility and can be changed from the REPL with `/progress-display auto|compact|stream`: `auto` preserves important tool/model/route events as transcript ledger lines, `compact` keeps them in the footer, and `stream` writes every progress update persistently
+- OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
+- Progress-only model streams keep the same incomplete-stream fallback behavior as normal assistant streams; if a streamed OpenAI-compatible response is empty or incomplete, the retry is forced back through the non-stream path instead of re-entering streaming only because progress events are enabled
+- High-frequency shell output and heartbeat updates stay transient in `auto` mode, while durable tool start/result/retry events remain visible in the main transcript
 - Confirmation prompts such as cancel, diff preview, write approval, and verification recovery temporarily take over that same footer slot so they stay visually pinned at the bottom
-- Persistent results such as completion summaries, output paths, warnings, and configuration changes remain in the main transcript while ephemeral progress stays in the footer
+- Persistent results such as completion summaries, output paths, warnings, and configuration changes remain in the main transcript while ephemeral progress stays in the footer or progress ledger depending on `progress_display`
 - Abruptly cut-off final answers are retried once as a continuation and merged before the CLI returns to the prompt
 - On Windows consoles, short `Esc` taps are treated as request cancel reliably
 - After a request cancel, the next prompt is stabilized so leftover `Esc` input does not auto-cancel it
@@ -405,6 +409,13 @@ OpenRouter:
 ```powershell
 $env:OPENROUTER_API_KEY = "your_key"
 .\kernforge.exe -provider openrouter -model openrouter/auto
+```
+
+DeepSeek:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your_key"
+.\kernforge.exe -provider deepseek -model deepseek-v4-pro
 ```
 
 Ollama:
@@ -646,6 +657,8 @@ Later sources override earlier ones:
   "permission_mode": "default",
   "shell": "powershell",
   "request_timeout_seconds": 1200,
+  "progress_display": "auto",
+  "max_tokens": 8192,
   "model_routes": {
     "enabled": true,
     "default_max_concurrent": 4,
@@ -656,10 +669,13 @@ Later sources override earlier ones:
       "llama.cpp": 1,
       "opencode": 1,
       "opencode-go": 1,
+      "deepseek": 2,
+      "openrouter": 2,
+      "openai-codex": 2,
       "codex-cli": 1
     }
   },
-  "max_tool_iterations": 16,
+  "max_tool_iterations": 0,
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
   "auto_verify": true,
@@ -684,18 +700,19 @@ Later sources override earlier ones:
 
 | Field | Description |
 | --- | --- |
-| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex` |
+| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `deepseek`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex` |
 | `model` | Model name sent to the provider |
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
 | `temperature` | Model temperature |
-| `reasoning_effort` | Optional OpenAI Codex reasoning effort: `minimal`, `low`, `medium`, `high`, or `xhigh`; unset is shown as `undefined` |
-| `max_tokens` | Max completion tokens |
+| `reasoning_effort` | Optional OpenAI Codex and DeepSeek reasoning effort for the active main model: `minimal`, `low`, `medium`, `high`, or `xhigh`; unset is shown as `undefined`. Saved profiles, review profiles, analysis role profiles, and specialist profiles can each store their own `reasoning_effort`. DeepSeek maps `minimal`/`low`/`medium`/`high` to `high` and `xhigh` to `max`. |
+| `max_tokens` | Max completion tokens. Default is `8192` |
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
+| `progress_display` | Runtime progress style: `auto` keeps durable tool/model ledger lines while high-frequency shell output stays in the footer; `compact` keeps progress transient; `stream` writes every progress update into the transcript |
 | `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
-| `max_tool_iterations` | Max tool loop count per request |
+| `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
 | `shell` | Shell used by `run_shell` |
 | `shell_timeout_seconds` | Default timeout in seconds used by `run_shell` |
@@ -714,9 +731,6 @@ Later sources override earlier ones:
 | `skill_paths` | Extra skill search paths |
 | `enabled_skills` | Skills always injected into prompts |
 | `mcp_servers` | MCP server definitions |
-
-Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
-`project_analysis.max_files_per_shard`, `project_analysis.max_lines_per_shard`, and `project_analysis.max_total_shards` can be set explicitly for deterministic sizing. Leaving them unset lets Kernforge apply local-model adaptive sizing and the smaller-shard recovery retry described above. `project_analysis.max_provider_retries` may be set to `-1` to disable per-request provider retries.
 | `profiles` | Saved recent or pinned provider/model profiles |
 | `hooks_enabled` | Enable or disable the hook engine |
 | `hook_presets` | Hook preset names loaded for the workspace |
@@ -727,10 +741,15 @@ Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` valu
 | `specialists` | Enable specialist subagents and overlay built-in specialist profiles |
 | `worktree_isolation` | Configure isolated git worktree roots, branch prefixes, and tracked-feature auto-isolation |
 
+Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
+On startup and `/reload`, Kernforge migrates config files that still hold the old literal defaults `max_tool_iterations: 16` or `max_tokens: 4096` to `0` (unlimited) and `8192`, then prints a one-time `INFO` notice. Other explicitly chosen values are preserved; if you intentionally want the old numbers, set them again after the notice.
+`project_analysis.max_files_per_shard`, `project_analysis.max_lines_per_shard`, and `project_analysis.max_total_shards` can be set explicitly for deterministic sizing. Leaving them unset lets Kernforge apply local-model adaptive sizing and the smaller-shard recovery retry described above. `project_analysis.max_provider_retries` may be set to `-1` to disable per-request provider retries.
+
 ### Interactive Loop Durability Notes
 
 - The interactive loop now attempts planner/reviewer preflight by default for each new request. If no dedicated review profile is configured, Kernforge falls back to an auxiliary client created from the active main provider/model.
-- Before returning a substantial final answer, the interactive loop now asks the reviewer to approve or request revision. Recovery can also trigger a refreshed execution plan instead of repeating the same failing path.
+- Plan-review requests default to a 2-minute per-attempt timeout unless a policy overrides it, favoring fast failure and recovery over long blocked preflight waits.
+- The final-answer reviewer now runs only when there is unresolved verification, a coding-harness blocker, or actual patch transaction changed paths. Read-only replies, plan state, or task-graph presence alone no longer create an extra LLM round-trip.
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
 - The interactive runtime also persists an edit-loop ledger for apply/verify/retry/final-review state. It records changed paths, worker evidence, patch transaction ids, verification bundle/job/log evidence, retry decisions, reviewer verdict, and remaining risk, then exposes that ledger to the system prompt, final reviewer, `/status`, session export, and pre-final coding harness.
 - Task-graph nodes now track retry budgets and recent failure context. Repeated failures on the same node can block that node explicitly, which pushes the executor toward a materially different recovery path instead of repeating the same failing step forever.
@@ -774,6 +793,7 @@ Provider-specific:
 - `ANTHROPIC_API_KEY`
 - `OPENAI_API_KEY`
 - `OPENROUTER_API_KEY`
+- `DEEPSEEK_API_KEY`
 - `OPENCODE_API_KEY`
 - `OPENCODE_ZEN_API_KEY`
 - `OPENCODE_GO_API_KEY`
@@ -810,9 +830,20 @@ Provider-specific:
 - Default base URL: `https://openrouter.ai/api/v1`
 - Reads `OPENROUTER_API_KEY`
 - Interactive picker supports paging, filtering, curated recommendations, reasoning-only filtering, and sorting
-- Uses the same request-timeout, streamed partial-text, incomplete-stream fallback, and single-retry behavior as the OpenAI-compatible client
+- Uses the same request-timeout, streamed partial-text, incomplete-stream fallback, and configured retry behavior as the OpenAI-compatible client
 - Streaming HTTP errors are surfaced as OpenRouter provider errors instead of being mistaken for empty SSE streams
 - `/provider status` performs a live `/key` lookup for key-level `limit_remaining` and `usage`, and it also queries `/credits` when the key is a management key
+
+### DeepSeek
+
+- Default base URL: `https://api.deepseek.com`
+- Reads `DEEPSEEK_API_KEY`
+- Uses DeepSeek's OpenAI-compatible Chat Completions API at `/chat/completions`; explicit `/v1` base URLs are preserved for compatible proxy setups
+- The model picker reads `/models` and prefers `deepseek-v4-pro`, then `deepseek-v4-flash`; legacy `deepseek-chat` and `deepseek-reasoner` are still recognized but are marked by DeepSeek for deprecation on 2026-07-24
+- `/effort` applies to DeepSeek thinking-mode requests: `minimal`/`low`/`medium`/`high` map to DeepSeek `high`, while `xhigh` maps to `max`
+- DeepSeek thinking-mode tool loops preserve and replay `reasoning_content` on assistant tool-call messages, including streamed tool calls, so follow-up tool-result requests remain compatible with DeepSeek's required multi-turn context shape
+- `/provider status` performs a live `/user/balance` lookup when an API key is configured and shows DeepSeek's dynamic concurrency/rate-limit guidance
+- The default shared model-route limit is `2` because DeepSeek dynamically limits user concurrency and returns HTTP 429 when the current limit is reached
 
 ### OpenAI-compatible
 
@@ -860,9 +891,9 @@ Provider-specific:
 - Default base URL: `https://chatgpt.com/backend-api/codex`
 - Authentication uses a Kernforge-owned OAuth file at the Kernforge config path, `codex_auth.json`, and refreshes it when needed. Run `/codex-auth login` to create it, `/codex-auth status` to inspect it, or `/codex-auth logout` to remove it
 - Kernforge no longer defaults to the Codex CLI `~/.codex/auth.json` file for the direct provider. Set `KERNFORGE_CODEX_AUTH_FILE` for a different auth file or `KERNFORGE_CODEX_ACCESS_TOKEN` for a temporary access token override
-- Use `/effort` to show the current reasoning effort, or `/effort high` to set it. Unset effort is displayed as `undefined`
-- Reasoning effort applies to every `openai-codex` Responses request, including the main model, plan reviewer, analysis worker/reviewer, and specialist subagents when those roles use `openai-codex`
-- `/model` does not read or write reasoning effort; use `/effort` for that setting
+- Use `/effort` to show per-target reasoning effort, `/effort high` to set the active main model, or `/effort plan-review high`, `/effort analysis-worker low`, `/effort analysis-reviewer medium`, and `/effort specialist <name> high` for role-specific models. Unset effort is displayed as `undefined`
+- Reasoning effort is stored per configured model target. Main profiles, review profiles, analysis worker/reviewer profiles, and specialist profiles can use different values even when they share the same provider family
+- When model selection through `/model`, `/provider`, or role-specific model commands selects an effort-capable model while that target's effort is `undefined`, Kernforge defaults that target to `low`. Use `/effort` to change or clear it afterward
 - Unlike the `codex-cli` bridge, this provider is wired into Kernforge's main LLM tool loop, so conversation context, tool calls, and tool results stay in the Kernforge session
 - Only models exposed to the current ChatGPT/Codex account are usable. Example: `.\kernforge.exe -provider openai-codex -model gpt-5.5`
 
@@ -1007,9 +1038,9 @@ Explain the structure of this repository
 
 - `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
-- `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter performs a live lookup, while OpenAI and Anthropic expose officially documented limits and billing guidance.
+- `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter and DeepSeek perform live lookups, while OpenAI and Anthropic expose officially documented limits and billing guidance.
 - `/model` is the unified model-routing hub. It shows the main model, the plan-review reviewer, the analysis worker and reviewer, and any specialist-subagent overrides, then lets you pick one target to reconfigure.
-- `/effort` shows or sets the `openai-codex` reasoning effort independently from `/model`.
+- `/effort` shows or sets the `openai-codex` and DeepSeek reasoning effort per configured model target.
 
 ### Conversation And Session Commands
 
@@ -1044,7 +1075,7 @@ Explain the structure of this repository
 /provider
 /provider status
 /model
-/effort [undefined|minimal|low|medium|high|xhigh]
+/effort [target] [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
 /profile-review [list|<number>|rN|dN|pN]
 /set-plan-review [provider]
@@ -1059,13 +1090,15 @@ Explain the structure of this repository
 /specialists
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
 /permissions [mode]
-/set-max-tool-iterations <n>
+/set-max-tool-iterations <n|0|unlimited|none|off>
+/progress-display [auto|compact|stream]
 /locale-auto [on|off]
 ```
 
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
 - `/model` is the main entry point for changing the main model, plan-review reviewer, analysis worker/reviewer, and specialist subagent models.
-- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints the current value, and `/effort undefined` clears the override.
+- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort plan-review high` or `/effort specialist <name> low` changes a role-specific model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
+- If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
 - Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role.
 - `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
@@ -1073,6 +1106,8 @@ Explain the structure of this repository
 - `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
+- `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
+- `/progress-display` shows or saves the runtime progress mode. Use `auto` for durable tool/model ledger lines with transient noisy output, `compact` for footer-only progress, and `stream` for a fully persistent progress transcript.
 - `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.
 
 ### Canceling And History
@@ -1089,7 +1124,7 @@ Explain the structure of this repository
 
 - Slash commands
 - Command and subcommand descriptions in completion menus
-- `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`
+- `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`
 - `/analyze-project --path ...`, `/analyze-project --mode ...`, and built-in mode values
 - `/fuzz-campaign status|run|new|list|show`
 - `@file` mentions

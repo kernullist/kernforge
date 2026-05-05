@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -102,9 +103,12 @@ var bulletPlanItemPattern = regexp.MustCompile(`^[-*]\s+(.+)$`)
 
 var fetchOpenRouterKeyStatus = FetchOpenRouterKeyStatus
 var fetchOpenRouterCredits = FetchOpenRouterCredits
+var fetchDeepSeekBalance = FetchDeepSeekBalance
 
 const openRouterCurrentKeyDocsURL = "https://openrouter.ai/docs/api/api-reference/api-keys/get-current-key"
 const openRouterCreditsDocsURL = "https://openrouter.ai/docs/api/api-reference/credits/get-credits"
+const deepSeekBalanceDocsURL = "https://api-docs.deepseek.com/api/get-user-balance"
+const deepSeekRateLimitDocsURL = "https://api-docs.deepseek.com/quick_start/rate_limit"
 const anthropicBillingHelpURL = "https://support.anthropic.com/en/articles/8977456-how-do-i-pay-for-my-api-usage"
 const anthropicUsageCostDocsURL = "https://platform.claude.com/docs/en/api/usage-cost-api"
 const openAIUsageAPIDocsURL = "https://platform.openai.com/docs/api-reference/usage/costs?api-mode=responses&lang=curl"
@@ -208,8 +212,13 @@ func run(args []string) error {
 	if baseURLFlag != "" {
 		cfg.BaseURL = baseURLFlag
 	}
+	if providerFlag != "" || modelFlag != "" {
+		applyDefaultReasoningEffortForProvider(&cfg, cfg.Provider)
+	}
 	if providerFlag != "" && baseURLFlag == "" && loadedProvider != normalizeProviderName(providerFlag) {
 		switch normalizeProviderName(providerFlag) {
+		case "deepseek":
+			cfg.BaseURL = normalizeDeepSeekBaseURL("")
 		case "openai-codex":
 			cfg.BaseURL = normalizeOpenAICodexBaseURL("")
 		case "lmstudio", "vllm", "llama.cpp":
@@ -381,6 +390,10 @@ func run(args []string) error {
 			rt.resetThinkingTimer()
 			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
 			rt.printProgressMessage(text)
+		},
+		EmitProgressEvent: func(event ProgressEvent) {
+			rt.resetThinkingTimer()
+			rt.printProgressEvent(event)
 		},
 	}
 	rt.syncAgentReviewerClientFromConfig()
@@ -589,7 +602,7 @@ func (rt *runtimeState) runREPL() error {
 	for {
 		nextTurn := rt.promptTurn + 1
 		rt.printTurnSeparator(nextTurn)
-		input, err := rt.readInput(rt.ui.prompt(rt.session.Provider, rt.session.Model))
+		input, err := rt.readInput(rt.ui.prompt(rt.session.Provider, rt.session.Model, rt.mainPromptReasoningEffort()))
 		if err != nil {
 			if errors.Is(err, ErrPromptCanceled) {
 				continue
@@ -1100,10 +1113,92 @@ func (rt *runtimeState) printProgressMessage(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
+	rt.printProgressEvent(ProgressEvent{
+		Kind:    classifyProgressKind(text),
+		Message: text,
+	})
+}
+
+func (rt *runtimeState) printProgressEvent(event ProgressEvent) {
+	text := strings.TrimSpace(formatProgressEventMessage(rt.cfg, event))
+	if text == "" {
+		return
+	}
+	kind := progressEventActivityKind(event, text)
+	rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
+	if rt.shouldPersistProgressEvent(event, text) {
+		rt.printPersistentWhileThinking(rt.ui.activityLine(kind, text))
+		return
+	}
 	if rt.showTransientProgressFooter(text) {
 		return
 	}
-	rt.printWhileThinking(rt.ui.activityLine(classifyProgressKind(text), text))
+	rt.printWhileThinking(rt.ui.activityLine(kind, text))
+}
+
+func progressEventActivityKind(event ProgressEvent, text string) string {
+	switch strings.TrimSpace(event.Kind) {
+	case progressKindModelRequestStart, progressKindModelRequestWait, progressKindModelRequestDone,
+		progressKindModelRouteWait, progressKindModelRouteAcquired,
+		progressKindModelStreamToolCall, progressKindModelStreamToolArgs, progressKindModelStreamToolReady,
+		progressKindProviderRetry:
+		return "model"
+	case progressKindToolStarted, progressKindToolCompleted, progressKindToolFailed:
+		return "tool"
+	default:
+		return classifyProgressKind(text)
+	}
+}
+
+func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text string) bool {
+	if rt == nil || !rt.interactive {
+		return true
+	}
+	mode := configProgressDisplay(rt.cfg)
+	switch mode {
+	case "compact":
+		return false
+	case "stream":
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, "run_shell output:") ||
+		strings.Contains(lower, "run_shell still running after") ||
+		strings.Contains(lower, "shell still running after") {
+		return false
+	}
+	switch strings.TrimSpace(event.Kind) {
+	case progressKindToolStarted, progressKindToolCompleted, progressKindToolFailed,
+		progressKindModelStreamToolCall, progressKindModelStreamToolReady,
+		progressKindProviderRetry:
+		return true
+	case progressKindModelRouteAcquired:
+		return event.Elapsed >= time.Second
+	case progressKindModelRequestStart:
+		return true
+	case progressKindModelRequestWait:
+		return event.Elapsed >= 5*time.Second
+	case progressKindModelRequestDone:
+		return strings.EqualFold(event.Status, "failed") || event.Elapsed >= 5*time.Second
+	}
+	switch classifyProgressKind(text) {
+	case "tool", "verify":
+		return true
+	case "edit":
+		return strings.Contains(lower, "patch applied") ||
+			strings.Contains(lower, "file updated") ||
+			strings.Contains(lower, "replacement applied") ||
+			strings.Contains(lower, "edit saved")
+	case "model":
+		return strings.Contains(lower, "retry") ||
+			strings.Contains(lower, "timed out") ||
+			strings.Contains(lower, "tool call")
+	default:
+		return false
+	}
 }
 
 func (rt *runtimeState) writeOutput(text string) {
@@ -2180,6 +2275,7 @@ func providerChoiceOptions() []providerChoiceOption {
 		{Number: "9", ID: "lmstudio", Label: "LM Studio"},
 		{Number: "10", ID: "vllm", Label: "vLLM"},
 		{Number: "11", ID: "llama.cpp", Label: "llama.cpp"},
+		{Number: "12", ID: "deepseek", Label: "DeepSeek"},
 	}
 }
 
@@ -2334,10 +2430,15 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 			return err
 		}
 		nextBaseURL = normalized
-	case "anthropic", "openai", "openrouter":
+	case "anthropic", "openai", "openrouter", "deepseek":
 		baseURL := ""
 		if provider == "openrouter" {
 			baseURL = normalizeOpenRouterBaseURL("")
+		} else if provider == "deepseek" {
+			baseURL = normalizeDeepSeekBaseURL("")
+			if strings.EqualFold(normalizeProviderName(rt.cfg.Provider), provider) && strings.TrimSpace(nextBaseURL) != "" {
+				baseURL = normalizeDeepSeekBaseURL(nextBaseURL)
+			}
 		}
 		nextBaseURL = baseURL
 		if strings.TrimSpace(nextAPIKey) == "" {
@@ -2365,6 +2466,13 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 				return err
 			}
 			nextModel = selected.ID
+			nextBaseURL = normalized
+		case "deepseek":
+			model, normalized, err := rt.fetchAndChooseDeepSeekModel(baseURL, nextAPIKey, nextModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
 			nextBaseURL = normalized
 		default:
 			model, err := rt.chooseOpenAIModel(nextModel)
@@ -2605,6 +2713,8 @@ func providerDisplayName(provider string) string {
 		return "Anthropic"
 	case "openai", "openai-compatible":
 		return "OpenAI"
+	case "deepseek":
+		return "DeepSeek"
 	case "openrouter":
 		return "OpenRouter"
 	case "opencode":
@@ -2728,11 +2838,10 @@ func (rt *runtimeState) renderProfileList() {
 }
 
 func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent string) {
-	if profile.RoleModels == nil {
-		fmt.Fprintln(rt.writer, indent+rt.ui.dim("role_models: legacy profile; current role routing is left unchanged when activated"))
-		return
-	}
 	roles := profile.RoleModels
+	if roles == nil {
+		roles = &ProfileRoleModels{}
+	}
 	rt.renderStoredProfileRoleLine(indent, "plan_reviewer", roles.PlanReviewer, "not configured; follows profile main model")
 	rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "not configured; follows profile main model")
 	if roles.AnalysisReviewer != nil {
@@ -2750,7 +2859,7 @@ func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent st
 			continue
 		}
 		label := "specialist:" + specialist.Name
-		value := formatProviderModelLabel(specialist.Provider, specialist.Model)
+		value := formatProviderModelEffortLabel(specialist.Provider, specialist.Model, specialist.ReasoningEffort)
 		if strings.TrimSpace(specialist.BaseURL) != "" {
 			value += " | " + strings.TrimSpace(specialist.BaseURL)
 		}
@@ -2763,7 +2872,7 @@ func (rt *runtimeState) renderStoredProfileRoleLine(indent string, role string, 
 		fmt.Fprintln(rt.writer, indent+rt.ui.statusKV(role, fallback))
 		return
 	}
-	value := formatProviderModelLabel(profile.Provider, profile.Model)
+	value := formatProviderModelEffortLabel(profile.Provider, profile.Model, profile.ReasoningEffort)
 	if strings.TrimSpace(profile.BaseURL) != "" {
 		value += " | " + strings.TrimSpace(profile.BaseURL)
 	}
@@ -2791,10 +2900,13 @@ func (rt *runtimeState) applyProfileAction(action string, index int, newName str
 			rt.cfg.APIKey = apiKey
 		}
 		rt.storeProviderKey(selected.Provider, rt.cfg.APIKey)
-		rt.applyProfileRoleModels(selected)
+		roleDefaultEffortProvider := rt.applyProfileRoleModels(selected)
 
 		if err := rt.activateProvider(selected.Provider, selected.Model, selected.BaseURL); err != nil {
 			return err
+		}
+		if roleDefaultEffortProvider != "" {
+			rt.printReasoningEffortDefaultNotice(roleDefaultEffortProvider, true)
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Activated profile "+selected.Name))
 		return nil
@@ -2896,12 +3008,13 @@ func (rt *runtimeState) activeProviderProfile(name string) (Profile, bool) {
 		name = profileName(provider, model)
 	}
 	return Profile{
-		Name:       strings.TrimSpace(name),
-		Provider:   provider,
-		Model:      model,
-		BaseURL:    normalizeProfileBaseURL(provider, baseURL),
-		APIKey:     rt.providerAPIKey(provider),
-		RoleModels: rt.currentProfileRoleModels(),
+		Name:            strings.TrimSpace(name),
+		Provider:        provider,
+		Model:           model,
+		BaseURL:         normalizeProfileBaseURL(provider, baseURL),
+		APIKey:          rt.providerAPIKey(provider),
+		ReasoningEffort: normalizeReasoningEffort(rt.cfg.ReasoningEffort),
+		RoleModels:      rt.currentProfileRoleModels(),
 	}, true
 }
 
@@ -2912,11 +3025,12 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 	roles := &ProfileRoleModels{}
 	if rt.cfg.PlanReview != nil {
 		roles.PlanReviewer = &Profile{
-			Name:     profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
-			Provider: rt.cfg.PlanReview.Provider,
-			Model:    rt.cfg.PlanReview.Model,
-			BaseURL:  normalizeOptionalProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
-			APIKey:   rt.cfg.PlanReview.APIKey,
+			Name:            profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
+			Provider:        rt.cfg.PlanReview.Provider,
+			Model:           rt.cfg.PlanReview.Model,
+			BaseURL:         normalizeOptionalProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
+			APIKey:          rt.cfg.PlanReview.APIKey,
+			ReasoningEffort: normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort),
 		}
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
@@ -2933,11 +3047,12 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			continue
 		}
 		roles.Specialists = append(roles.Specialists, SpecialistSubagentProfile{
-			Name:     strings.TrimSpace(profile.Name),
-			Provider: strings.TrimSpace(profile.Provider),
-			Model:    strings.TrimSpace(profile.Model),
-			BaseURL:  normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL),
-			APIKey:   strings.TrimSpace(profile.APIKey),
+			Name:            strings.TrimSpace(profile.Name),
+			Provider:        strings.TrimSpace(profile.Provider),
+			Model:           strings.TrimSpace(profile.Model),
+			BaseURL:         normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL),
+			APIKey:          strings.TrimSpace(profile.APIKey),
+			ReasoningEffort: normalizeReasoningEffort(profile.ReasoningEffort),
 		})
 	}
 	return roles
@@ -2951,31 +3066,77 @@ func cloneProfile(profile *Profile) *Profile {
 	cloned.Provider = strings.TrimSpace(cloned.Provider)
 	cloned.Model = strings.TrimSpace(cloned.Model)
 	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
+	cloned.ReasoningEffort = normalizeReasoningEffort(cloned.ReasoningEffort)
 	if strings.TrimSpace(cloned.Name) == "" && strings.TrimSpace(cloned.Provider) != "" && strings.TrimSpace(cloned.Model) != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
 	return &cloned
 }
 
-func (rt *runtimeState) applyProfileRoleModels(profile Profile) {
-	if rt == nil || profile.RoleModels == nil {
-		return
+func (rt *runtimeState) applyProfileRoleModels(profile Profile) string {
+	if rt == nil {
+		return ""
 	}
 	roles := profile.RoleModels
+	if roles == nil {
+		roles = &ProfileRoleModels{}
+	}
+	defaultedEffortTarget := ""
+	roleEffort := func(label string, provider string, effort string) string {
+		resolved, defaulted := reasoningEffortOrDefaultForProvider(provider, effort)
+		if defaulted && defaultedEffortTarget == "" {
+			defaultedEffortTarget = label
+		}
+		return resolved
+	}
+	profileRoleEffort := func(label string, profile *Profile) string {
+		if profile == nil {
+			return ""
+		}
+		return roleEffort(label, profile.Provider, profile.ReasoningEffort)
+	}
+	specialistRoleEffort := func(profile SpecialistSubagentProfile) string {
+		label := "specialist " + strings.TrimSpace(profile.Name)
+		if strings.TrimSpace(profile.Name) == "" {
+			label = "specialist model"
+		}
+		return roleEffort(label, profile.Provider, profile.ReasoningEffort)
+	}
+	defaultProfileEffort := func(profile *Profile, label string) {
+		if profile == nil {
+			return
+		}
+		profile.ReasoningEffort = profileRoleEffort(label, profile)
+	}
 	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
+		planEffort := profileRoleEffort("plan-review reviewer", roles.PlanReviewer)
 		rt.cfg.PlanReview = &PlanReviewConfig{
-			Provider: strings.TrimSpace(roles.PlanReviewer.Provider),
-			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeOptionalProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
-			APIKey:   firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
+			Provider:        strings.TrimSpace(roles.PlanReviewer.Provider),
+			Model:           strings.TrimSpace(roles.PlanReviewer.Model),
+			BaseURL:         normalizeOptionalProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
+			APIKey:          firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
+			ReasoningEffort: planEffort,
 		}
 		rt.storeProviderKey(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.APIKey)
 	} else {
 		rt.cfg.PlanReview = nil
 	}
+	if roles.AnalysisWorker != nil && strings.TrimSpace(roles.AnalysisWorker.Provider) != "" && strings.TrimSpace(roles.AnalysisWorker.Model) != "" {
+		defaultProfileEffort(roles.AnalysisWorker, "analysis worker")
+	}
+	if roles.AnalysisReviewer != nil && strings.TrimSpace(roles.AnalysisReviewer.Provider) != "" && strings.TrimSpace(roles.AnalysisReviewer.Model) != "" {
+		defaultProfileEffort(roles.AnalysisReviewer, "analysis reviewer")
+	}
+	for i, specialist := range roles.Specialists {
+		if strings.TrimSpace(specialist.Provider) == "" || strings.TrimSpace(specialist.Model) == "" {
+			continue
+		}
+		roles.Specialists[i].ReasoningEffort = specialistRoleEffort(specialist)
+	}
 	rt.cfg.ProjectAnalysis.WorkerProfile = profileRoleModelClone(roles.AnalysisWorker, rt)
 	rt.cfg.ProjectAnalysis.ReviewerProfile = profileRoleModelClone(roles.AnalysisReviewer, rt)
 	rt.applyProfileSpecialistRoleModels(roles.Specialists)
+	return defaultedEffortTarget
 }
 
 func profileRoleModelClone(profile *Profile, rt *runtimeState) *Profile {
@@ -3003,6 +3164,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		profile.Provider = strings.TrimSpace(profile.Provider)
 		profile.Model = strings.TrimSpace(profile.Model)
 		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
+		profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
 		if strings.TrimSpace(profile.APIKey) == "" {
 			profile.APIKey = rt.providerAPIKey(profile.Provider)
 		}
@@ -3021,6 +3183,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 			existing.Model = model.Model
 			existing.BaseURL = model.BaseURL
 			existing.APIKey = model.APIKey
+			existing.ReasoningEffort = model.ReasoningEffort
 			seen[name] = true
 			next = append(next, normalizeSpecialistProfile(existing))
 			continue
@@ -3029,6 +3192,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		existing.Model = ""
 		existing.BaseURL = ""
 		existing.APIKey = ""
+		existing.ReasoningEffort = ""
 		if specialistProfileHasNonModelOverrides(existing) {
 			next = append(next, normalizeSpecialistProfile(existing))
 		}
@@ -3045,7 +3209,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 
 func requiresAPIKey(provider string) bool {
 	switch normalizeProviderName(provider) {
-	case "anthropic", "openai", "openai-compatible", "openrouter", "opencode", "opencode-go":
+	case "anthropic", "openai", "openai-compatible", "deepseek", "openrouter", "opencode", "opencode-go":
 		return true
 	default:
 		return false
@@ -3097,6 +3261,33 @@ func (rt *runtimeState) fetchAndShowOpenCodeModelsForProvider(provider, baseURL,
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("source", "models returned by the configured "+providerDisplayName(provider)+" API key"))
 	return models, normalized, nil
+}
+
+func (rt *runtimeState) fetchAndChooseDeepSeekModel(baseURL, apiKey string, currentModel string) (string, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	models, normalized, err := FetchOpenAICompatibleModels(ctx, "deepseek", normalizeDeepSeekBaseURL(baseURL), apiKey)
+	if err != nil {
+		return "", normalized, err
+	}
+	models = prepareDeepSeekModels(models)
+	if len(models) == 0 {
+		return "", normalized, fmt.Errorf("DeepSeek models API returned no models from %s", normalized)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("DeepSeek Models"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("server", normalized))
+	for i, model := range models {
+		label := strings.TrimSpace(model.Name)
+		if label == "" {
+			label = model.ID
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s\n", i+1, label, rt.ui.dim(model.ID))
+	}
+	model, err := rt.chooseOpenAICompatibleModel("deepseek", models, currentModel)
+	if err != nil {
+		return "", normalized, err
+	}
+	return model, normalized, nil
 }
 
 func (rt *runtimeState) chooseOpenRouterModel(models []OpenRouterModelInfo) (OpenRouterModelInfo, error) {
@@ -3525,6 +3716,9 @@ func upsertProfile(profiles []Profile, profile Profile, max int) []Profile {
 			if strings.TrimSpace(profile.APIKey) == "" {
 				profile.APIKey = existing.APIKey
 			}
+			if strings.TrimSpace(profile.ReasoningEffort) == "" {
+				profile.ReasoningEffort = existing.ReasoningEffort
+			}
 			if profile.RoleModels == nil {
 				profile.RoleModels = existing.RoleModels
 			}
@@ -3588,20 +3782,115 @@ func (rt *runtimeState) saveUserConfig() error {
 }
 
 func (rt *runtimeState) rememberCurrentProfile() {
+	if rt == nil || rt.session == nil {
+		return
+	}
 	if strings.TrimSpace(rt.session.Provider) == "" || strings.TrimSpace(rt.session.Model) == "" {
 		return
 	}
 	profile := Profile{
-		Name:       profileName(rt.session.Provider, rt.session.Model),
-		Provider:   rt.session.Provider,
-		Model:      rt.session.Model,
-		BaseURL:    rt.session.BaseURL,
-		APIKey:     rt.providerAPIKey(rt.session.Provider),
-		RoleModels: rt.currentProfileRoleModels(),
+		Name:            profileName(rt.session.Provider, rt.session.Model),
+		Provider:        rt.session.Provider,
+		Model:           rt.session.Model,
+		BaseURL:         rt.session.BaseURL,
+		APIKey:          rt.providerAPIKey(rt.session.Provider),
+		ReasoningEffort: normalizeReasoningEffort(rt.cfg.ReasoningEffort),
+		RoleModels:      rt.currentProfileRoleModels(),
 	}
 
 	rt.cfg.Profiles = upsertProfile(rt.cfg.Profiles, profile, 5)
 	rt.cfg.ActiveProfileKey = configProfileKey(profile)
+}
+
+func (rt *runtimeState) mainReasoningEffortForActivation(providerName, model, baseURL string) (string, bool) {
+	providerName = normalizeProviderName(providerName)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeProfileBaseURL(providerName, baseURL)
+	for _, profile := range rt.cfg.Profiles {
+		profile = normalizeConfigProfile(profile)
+		if !sameProfileRoute(profile.Provider, profile.Model, profile.BaseURL, providerName, model, baseURL) {
+			continue
+		}
+		if effort := normalizeReasoningEffort(profile.ReasoningEffort); effort != "" {
+			return effort, false
+		}
+	}
+	if sameProfileRoute(rt.cfg.Provider, rt.cfg.Model, rt.cfg.BaseURL, providerName, model, baseURL) {
+		if effort := normalizeReasoningEffort(rt.cfg.ReasoningEffort); effort != "" {
+			return effort, false
+		}
+	}
+	return reasoningEffortOrDefaultForProvider(providerName, "")
+}
+
+func (rt *runtimeState) planReviewReasoningEffortForActivation(providerName, model, baseURL string) (string, bool) {
+	providerName = normalizeProviderName(providerName)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeProfileBaseURL(providerName, baseURL)
+	if rt != nil && rt.cfg.PlanReview != nil &&
+		sameProfileRoute(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.BaseURL, providerName, model, baseURL) {
+		if effort := normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort); effort != "" {
+			return effort, false
+		}
+	}
+	if rt != nil {
+		for _, profile := range rt.cfg.ReviewProfiles {
+			profile = normalizeConfigProfile(profile)
+			if !sameProfileRoute(profile.Provider, profile.Model, profile.BaseURL, providerName, model, baseURL) {
+				continue
+			}
+			if effort := normalizeReasoningEffort(profile.ReasoningEffort); effort != "" {
+				return effort, false
+			}
+		}
+	}
+	return reasoningEffortOrDefaultForProvider(providerName, "")
+}
+
+func (rt *runtimeState) profileReasoningEffortForActivation(current *Profile, providerName, model, baseURL string) (string, bool) {
+	providerName = normalizeProviderName(providerName)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeProfileBaseURL(providerName, baseURL)
+	if current != nil && sameProfileRoute(current.Provider, current.Model, current.BaseURL, providerName, model, baseURL) {
+		if effort := normalizeReasoningEffort(current.ReasoningEffort); effort != "" {
+			return effort, false
+		}
+	}
+	return reasoningEffortOrDefaultForProvider(providerName, "")
+}
+
+func (rt *runtimeState) specialistReasoningEffortForActivation(name, providerName, model, baseURL string) (string, bool) {
+	providerName = normalizeProviderName(providerName)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeProfileBaseURL(providerName, baseURL)
+	if rt != nil {
+		target := normalizeSpecialistProfileName(name)
+		for _, profile := range rt.cfg.Specialists.Profiles {
+			if normalizeSpecialistProfileName(profile.Name) != target {
+				continue
+			}
+			if sameProfileRoute(profile.Provider, profile.Model, profile.BaseURL, providerName, model, baseURL) {
+				if effort := normalizeReasoningEffort(profile.ReasoningEffort); effort != "" {
+					return effort, false
+				}
+			}
+		}
+	}
+	return reasoningEffortOrDefaultForProvider(providerName, "")
+}
+
+func sameProfileRoute(leftProvider, leftModel, leftBaseURL, rightProvider, rightModel, rightBaseURL string) bool {
+	leftProvider = normalizeProviderName(leftProvider)
+	rightProvider = normalizeProviderName(rightProvider)
+	if !strings.EqualFold(leftProvider, rightProvider) {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(leftModel), strings.TrimSpace(rightModel)) {
+		return false
+	}
+	leftBaseURL = normalizeProfileBaseURL(leftProvider, leftBaseURL)
+	rightBaseURL = normalizeProfileBaseURL(rightProvider, rightBaseURL)
+	return strings.EqualFold(strings.TrimSpace(leftBaseURL), strings.TrimSpace(rightBaseURL))
 }
 
 func (rt *runtimeState) activateProvider(providerName, model, baseURL string) error {
@@ -3614,9 +3903,11 @@ func (rt *runtimeState) activateProvider(providerName, model, baseURL string) er
 		model = resolvedModel
 		baseURL = resolvedBaseURL
 	}
+	nextEffort, defaultedEffort := rt.mainReasoningEffortForActivation(providerName, model, baseURL)
 	rt.cfg.Provider = providerName
 	rt.cfg.Model = model
 	rt.cfg.BaseURL = baseURL
+	rt.cfg.ReasoningEffort = nextEffort
 	if key := rt.providerAPIKey(providerName); key != "" {
 		rt.cfg.APIKey = key
 		rt.storeProviderKey(providerName, key)
@@ -3632,6 +3923,7 @@ func (rt *runtimeState) activateProvider(providerName, model, baseURL string) er
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
+	rt.printReasoningEffortDefaultNotice("main "+providerDisplayName(providerName)+" model", defaultedEffort)
 	return rt.clientErr
 }
 
@@ -3766,30 +4058,225 @@ func (rt *runtimeState) handleEffortCommand(args string) error {
 		return rt.showReasoningEffortStatus()
 	}
 	parts := strings.Fields(args)
-	if len(parts) != 1 {
-		return fmt.Errorf("usage: /effort [undefined|minimal|low|medium|high|xhigh]")
+	if len(parts) == 1 {
+		if validReasoningEffort(parts[0]) {
+			return rt.setMainReasoningEffort(parts[0])
+		}
+		return fmt.Errorf("usage: /effort [target] [undefined|minimal|low|medium|high|xhigh]")
 	}
-	return rt.setReasoningEffort(parts[0])
+	if len(parts) == 2 {
+		return rt.setReasoningEffortTarget(parts[0], parts[1])
+	}
+	if len(parts) == 3 && strings.EqualFold(parts[0], "specialist") {
+		return rt.setSpecialistReasoningEffort(parts[1], parts[2])
+	}
+	return fmt.Errorf("usage: /effort [main|plan-review|analysis-worker|analysis-reviewer|specialist <name>] [undefined|minimal|low|medium|high|xhigh]")
 }
 
 func (rt *runtimeState) showReasoningEffortStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Reasoning Effort"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("effort", reasoningEffortDisplay(rt.cfg.ReasoningEffort)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("applies_to", "all openai-codex Responses requests"))
+	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
+	if rt.cfg.PlanReview != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
+	}
+	if rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model, rt.cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)))
+	} else if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
+	}
+	for _, profile := range configuredSpecialistProfiles(rt.cfg) {
+		if strings.TrimSpace(profile.Name) == "" {
+			continue
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("specialist:"+profile.Name, rt.describeSpecialistModel(profile)))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("applies_to", "openai-codex Responses and DeepSeek thinking-mode requests per configured model target"))
 	return nil
 }
 
-func (rt *runtimeState) setReasoningEffort(effort string) error {
-	if !validReasoningEffort(effort) {
-		return fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(effort))
+func (rt *runtimeState) mainPromptReasoningEffort() string {
+	if rt == nil {
+		return ""
 	}
-	rt.cfg.ReasoningEffort = normalizeReasoningEffort(effort)
+	provider := ""
+	if rt.session != nil {
+		provider = strings.TrimSpace(rt.session.Provider)
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(rt.cfg.Provider)
+	}
+	if !providerSupportsPromptReasoningEffort(provider) {
+		return ""
+	}
+	return reasoningEffortDisplay(rt.cfg.ReasoningEffort)
+}
+
+func providerSupportsPromptReasoningEffort(provider string) bool {
+	return providerSupportsReasoningEffort(provider)
+}
+
+func providerSupportsReasoningEffort(provider string) bool {
+	switch normalizeProviderName(provider) {
+	case "openai-codex", "deepseek":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultReasoningEffortForProvider(provider string) string {
+	if providerSupportsReasoningEffort(provider) {
+		return "low"
+	}
+	return ""
+}
+
+func reasoningEffortOrDefaultForProvider(provider string, effort string) (string, bool) {
+	normalized := normalizeReasoningEffort(effort)
+	if normalized != "" {
+		return normalized, false
+	}
+	defaultEffort := defaultReasoningEffortForProvider(provider)
+	if defaultEffort == "" {
+		return "", false
+	}
+	return defaultEffort, true
+}
+
+func applyDefaultReasoningEffortForProvider(cfg *Config, provider string) bool {
+	if cfg == nil {
+		return false
+	}
+	effort, defaulted := reasoningEffortOrDefaultForProvider(provider, cfg.ReasoningEffort)
+	cfg.ReasoningEffort = effort
+	return defaulted
+}
+
+func (rt *runtimeState) printReasoningEffortDefaultNotice(target string, defaulted bool) {
+	if !defaulted || rt == nil || rt.writer == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("reasoning_effort was undefined; defaulted to low for "+target+"."))
+}
+
+func validateReasoningEffortTarget(provider string, effort string, target string) (string, error) {
+	if !validReasoningEffort(effort) {
+		return "", fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(effort))
+	}
+	normalized := normalizeReasoningEffort(effort)
+	if normalized != "" && !providerSupportsReasoningEffort(provider) {
+		return "", fmt.Errorf("%s does not support reasoning effort: %s", strings.TrimSpace(target), providerDisplayName(provider))
+	}
+	return normalized, nil
+}
+
+func (rt *runtimeState) setMainReasoningEffort(effort string) error {
+	normalized, err := validateReasoningEffortTarget(rt.cfg.Provider, effort, "main model")
+	if err != nil {
+		return err
+	}
+	rt.cfg.ReasoningEffort = normalized
 	rt.syncClientFromConfig()
+	rt.rememberCurrentProfile()
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("reasoning_effort set to "+reasoningEffortDisplay(rt.cfg.ReasoningEffort)))
+	fmt.Fprintln(rt.writer, rt.ui.successLine("main reasoning_effort set to "+reasoningEffortDisplay(rt.cfg.ReasoningEffort)))
 	return nil
+}
+
+func (rt *runtimeState) setReasoningEffortTarget(target string, effort string) error {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "main", "session", "main-model", "main_model":
+		return rt.setMainReasoningEffort(effort)
+	case "plan", "plan-review", "plan_reviewer", "plan-reviewer", "reviewer":
+		if rt.cfg.PlanReview == nil {
+			return fmt.Errorf("no plan-review reviewer configured")
+		}
+		normalized, err := validateReasoningEffortTarget(rt.cfg.PlanReview.Provider, effort, "plan-review reviewer")
+		if err != nil {
+			return err
+		}
+		rt.cfg.PlanReview.ReasoningEffort = normalized
+		rt.rememberReviewProfile()
+		rt.rememberCurrentProfile()
+		rt.syncAgentReviewerClientFromConfig()
+		if err := rt.saveUserConfig(); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("plan-review reasoning_effort set to "+reasoningEffortDisplay(normalized)))
+		return nil
+	case "worker", "analysis-worker", "analysis_worker":
+		return rt.setAnalysisReasoningEffort("worker", effort)
+	case "analysis-reviewer", "analysis_reviewer":
+		return rt.setAnalysisReasoningEffort("reviewer", effort)
+	default:
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(target)), "specialist:") {
+			name := strings.TrimSpace(target[len("specialist:"):])
+			return rt.setSpecialistReasoningEffort(name, effort)
+		}
+		return fmt.Errorf("unknown reasoning effort target: %s", target)
+	}
+}
+
+func (rt *runtimeState) setAnalysisReasoningEffort(role string, effort string) error {
+	profile := rt.cfg.ProjectAnalysis.WorkerProfile
+	if strings.EqualFold(role, "reviewer") {
+		profile = rt.cfg.ProjectAnalysis.ReviewerProfile
+	}
+	if profile == nil {
+		return fmt.Errorf("analysis %s has no dedicated model; it inherits another target", role)
+	}
+	normalized, err := validateReasoningEffortTarget(profile.Provider, effort, "analysis "+role)
+	if err != nil {
+		return err
+	}
+	profile.ReasoningEffort = normalized
+	rt.rememberCurrentProfile()
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("analysis "+role+" reasoning_effort set to "+reasoningEffortDisplay(normalized)))
+	return nil
+}
+
+func (rt *runtimeState) setSpecialistReasoningEffort(name string, effort string) error {
+	target := normalizeSpecialistProfileName(name)
+	if target == "" {
+		return fmt.Errorf("usage: /effort specialist <name> [undefined|minimal|low|medium|high|xhigh]")
+	}
+	profiles := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
+	for i := range profiles {
+		if normalizeSpecialistProfileName(profiles[i].Name) != target {
+			continue
+		}
+		if strings.TrimSpace(profiles[i].Provider) == "" || strings.TrimSpace(profiles[i].Model) == "" {
+			return fmt.Errorf("specialist %s has no dedicated model; it inherits main", name)
+		}
+		normalized, err := validateReasoningEffortTarget(profiles[i].Provider, effort, "specialist "+strings.TrimSpace(profiles[i].Name))
+		if err != nil {
+			return err
+		}
+		profiles[i].ReasoningEffort = normalized
+		rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(profiles)
+		rt.rememberCurrentProfile()
+		if err := rt.persistSpecialistOverrides(); err != nil {
+			return err
+		}
+		fmt.Fprintln(rt.writer, rt.ui.successLine("specialist "+strings.TrimSpace(profiles[i].Name)+" reasoning_effort set to "+reasoningEffortDisplay(normalized)))
+		return nil
+	}
+	return fmt.Errorf("unknown specialist profile: %s", name)
 }
 
 func (rt *runtimeState) handleOpenCommand(pathArg string) error {
@@ -3868,7 +4355,7 @@ func (rt *runtimeState) showProviderStatus() error {
 func (rt *runtimeState) showModelRoutingStatus() error {
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
 	fmt.Fprintln(rt.writer, rt.ui.section("Model Routing"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelLabel(mainProvider, mainModel)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", rt.describePlanReviewModel()))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
@@ -3900,12 +4387,28 @@ func formatProviderModelLabel(provider string, model string) string {
 	return valueOrUnset(strings.TrimSpace(provider)) + " / " + valueOrUnset(strings.TrimSpace(model))
 }
 
-func inheritedMainModelLabel(provider string, model string) string {
-	return "not configured; follows main model -> " + formatProviderModelLabel(provider, model)
+func formatProviderModelEffortLabel(provider string, model string, effort string) string {
+	label := formatProviderModelLabel(provider, model)
+	if providerSupportsReasoningEffort(provider) {
+		label += " / effort=" + reasoningEffortDisplay(effort)
+	}
+	return label
 }
 
-func inheritedWorkerModelLabel(provider string, model string) string {
-	return "not configured; follows analysis_worker model -> " + formatProviderModelLabel(provider, model)
+func inheritedMainModelLabel(provider string, model string, effort ...string) string {
+	currentEffort := ""
+	if len(effort) > 0 {
+		currentEffort = effort[0]
+	}
+	return "not configured; follows main model -> " + formatProviderModelEffortLabel(provider, model, currentEffort)
+}
+
+func inheritedWorkerModelLabel(provider string, model string, effort ...string) string {
+	currentEffort := ""
+	if len(effort) > 0 {
+		currentEffort = effort[0]
+	}
+	return "not configured; follows analysis_worker model -> " + formatProviderModelEffortLabel(provider, model, currentEffort)
 }
 
 func (rt *runtimeState) hasInheritedRoleModels() bool {
@@ -3928,29 +4431,29 @@ func (rt *runtimeState) hasInheritedRoleModels() bool {
 
 func (rt *runtimeState) describePlanReviewModel() string {
 	if rt != nil && rt.cfg.PlanReview != nil {
-		return formatProviderModelLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model)
+		return formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)
 	}
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
-	return inheritedMainModelLabel(mainProvider, mainModel)
+	return inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
 }
 
 func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
-	mainLabel := formatProviderModelLabel(mainProvider, mainModel)
+	mainLabel := formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
 	switch strings.ToLower(strings.TrimSpace(role)) {
 	case "worker":
 		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)
+			return formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
 		}
-		return inheritedMainModelLabel(mainProvider, mainModel)
+		return inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
 	case "reviewer":
 		if rt != nil && rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
-			return formatProviderModelLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model)
+			return formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model, rt.cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)
 		}
 		if rt != nil && rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			return inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)
+			return inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
 		}
-		return inheritedMainModelLabel(mainProvider, mainModel)
+		return inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)
 	default:
 		return mainLabel
 	}
@@ -4036,6 +4539,8 @@ func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey stri
 	case "openai-compatible":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Depends on the upstream provider; no generic standard endpoint is assumed."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use the upstream provider's documented billing and usage endpoints."))
+	case "deepseek":
+		rt.printDeepSeekBudgetStatus(baseURL, apiKey)
 	case "lmstudio", "vllm", "llama.cpp":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_balance", "Not applicable for local OpenAI-compatible providers."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("models_api", openAIAPIURL(baseURL, "/v1/models")))
@@ -4133,6 +4638,46 @@ func (rt *runtimeState) printOpenRouterBudgetStatus(baseURL, apiKey string) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("account_usage", formatOptionalDecimal(credits.TotalUsage)))
 	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("account_balance", formatOpenRouterAccountBalance(credits)))
+}
+
+func (rt *runtimeState) printDeepSeekBudgetStatus(baseURL, apiKey string) {
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("balance_api", "GET /user/balance exposes user balance and availability."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("balance_docs", deepSeekBalanceDocsURL))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("rate_limits", "DeepSeek dynamically limits concurrency based on server load and returns HTTP 429 when the limit is reached."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("rate_limit_docs", deepSeekRateLimitDocsURL))
+
+	if strings.TrimSpace(apiKey) == "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Skipped: no API key configured."))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	balance, _, err := fetchDeepSeekBalance(ctx, baseURL, apiKey)
+	if err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Failed."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup_error", err.Error()))
+		return
+	}
+
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("lookup", "Live balance loaded."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("available", fmt.Sprintf("%t", balance.IsAvailable)))
+	for _, item := range balance.BalanceInfos {
+		currency := strings.TrimSpace(item.Currency)
+		if currency == "" {
+			currency = "balance"
+		}
+		prefix := strings.ToLower(currency)
+		if strings.TrimSpace(item.TotalBalance) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(prefix+"_total_balance", strings.TrimSpace(item.TotalBalance)))
+		}
+		if strings.TrimSpace(item.GrantedBalance) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(prefix+"_granted_balance", strings.TrimSpace(item.GrantedBalance)))
+		}
+		if strings.TrimSpace(item.ToppedUpBalance) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV(prefix+"_topped_up_balance", strings.TrimSpace(item.ToppedUpBalance)))
+		}
+	}
 }
 
 func (rt *runtimeState) connectOllama(initialURL string) error {
@@ -4361,6 +4906,33 @@ func (rt *runtimeState) chooseOpenAICompatibleModel(provider string, models []Op
 		}
 	}
 	return "", fmt.Errorf("%s model %s was not returned by the configured server; choose one of: %s", providerDisplayName(provider), choice, strings.Join(limitOpenAICompatibleModelLabels(models, 8), ", "))
+}
+
+func prepareDeepSeekModels(models []OpenAICompatibleModelInfo) []OpenAICompatibleModelInfo {
+	models = dedupeOpenAICompatibleModels(models)
+	if len(models) == 0 {
+		return models
+	}
+	rank := map[string]int{
+		"deepseek-v4-pro":   0,
+		"deepseek-v4-flash": 1,
+		"deepseek-reasoner": 2,
+		"deepseek-chat":     3,
+	}
+	sort.SliceStable(models, func(i, j int) bool {
+		li := strings.ToLower(strings.TrimSpace(models[i].ID))
+		lj := strings.ToLower(strings.TrimSpace(models[j].ID))
+		ri, iok := rank[li]
+		rj, jok := rank[lj]
+		if iok != jok {
+			return iok
+		}
+		if iok && jok && ri != rj {
+			return ri < rj
+		}
+		return li < lj
+	})
+	return models
 }
 
 func limitOpenAICompatibleModelLabels(models []OpenAICompatibleModelInfo, limit int) []string {
@@ -5123,6 +5695,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+formatMaxToolIterations(val)))
+	case "progress-display":
+		if err := rt.handleProgressDisplayCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "verify":
 		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
 			return false, err
@@ -5687,7 +6263,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.printKVGroup("Model",
 			kv("provider", valueOrUnset(rt.cfg.Provider)),
 			kv("model", valueOrUnset(rt.cfg.Model)),
-			kv("reasoning_effort", reasoningEffortDisplay(rt.cfg.ReasoningEffort)),
+			kv("main_reasoning_effort", reasoningEffortDisplay(rt.cfg.ReasoningEffort)),
 			kv("max_tokens", fmt.Sprintf("%d", rt.cfg.MaxTokens)),
 			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
 		)
@@ -5704,6 +6280,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("shell", valueOrUnset(rt.cfg.Shell)),
 			kv("permission_mode", string(rt.perms.Mode())),
 			kv("session_dir", rt.cfg.SessionDir),
+			kv("progress_display", configProgressDisplay(rt.cfg)),
 			kv("max_tool_iterations", formatMaxToolIterations(configMaxToolIterations(rt.cfg))),
 			kv("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)),
 		)
@@ -5833,6 +6410,23 @@ func (rt *runtimeState) handleSetAutoVerifyCommand(args string) error {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Automatic verification set to %t", val)))
+	return nil
+}
+
+func (rt *runtimeState) handleProgressDisplayCommand(args string) error {
+	if strings.TrimSpace(args) == "" {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("progress_display: "+configProgressDisplay(rt.cfg)))
+		return nil
+	}
+	normalized, ok := parseProgressDisplayInput(args)
+	if !ok || strings.TrimSpace(args) == "" {
+		return fmt.Errorf("usage: /progress-display [auto|compact|stream]")
+	}
+	rt.cfg.ProgressDisplay = normalized
+	if err := rt.saveUserConfig(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("progress_display set to "+normalized))
 	return nil
 }
 
@@ -6530,18 +7124,18 @@ func (rt *runtimeState) seedSessionPlanFromText(plan string) error {
 func (rt *runtimeState) showProjectAnalysisModelStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Project Analysis Models"))
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model, rt.cfg.ReasoningEffort)))
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", rt.cfg.ProjectAnalysis.WorkerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.WorkerProfile.Model))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("worker", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
 	}
 	if rt.cfg.ProjectAnalysis.ReviewerProfile == nil {
 		if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedWorkerModelLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
 		} else {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model)))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", inheritedMainModelLabel(rt.cfg.Provider, rt.cfg.Model, rt.cfg.ReasoningEffort)))
 		}
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.ProjectAnalysis.ReviewerProfile.Provider+" / "+rt.cfg.ProjectAnalysis.ReviewerProfile.Model))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.ReviewerProfile.Provider, rt.cfg.ProjectAnalysis.ReviewerProfile.Model, rt.cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)))
 	}
 	incrementalEnabled := rt.cfg.ProjectAnalysis.Incremental == nil || *rt.cfg.ProjectAnalysis.Incremental
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("incremental", fmt.Sprintf("%t", incrementalEnabled)))
@@ -6584,9 +7178,13 @@ func (rt *runtimeState) describeSpecialistModel(profile SpecialistSubagentProfil
 	if provider == "" || model == "" {
 		return "interactive reviewer fallback"
 	}
-	value := provider + " / " + model
+	effort := profile.ReasoningEffort
 	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
-		value = inheritedMainModelLabel(provider, model)
+		effort = cfg.ReasoningEffort
+	}
+	value := formatProviderModelEffortLabel(provider, model, effort)
+	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
+		value = inheritedMainModelLabel(provider, model, effort)
 	}
 	return value
 }
@@ -6673,6 +7271,21 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			}
 			nextModel = selected.ID
 			nextBaseURL = normalized
+		case "deepseek":
+			nextBaseURL = normalizeDeepSeekBaseURL(nextBaseURL)
+			if strings.TrimSpace(nextAPIKey) == "" {
+				apiKey, err := rt.promptRequiredValue(providerDisplayName(provider)+" API key (for specialist "+profile.Name+")", "")
+				if err != nil {
+					return err
+				}
+				nextAPIKey = apiKey
+			}
+			model, normalized, err := rt.fetchAndChooseDeepSeekModel(nextBaseURL, nextAPIKey, currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
+			nextBaseURL = normalized
 		case "anthropic":
 			model, err := rt.chooseAnthropicModel(currentModel)
 			if err != nil {
@@ -6736,6 +7349,8 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalizeOpenRouterBaseURL(nextBaseURL)
 		case "opencode", "opencode-go":
 			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
+		case "deepseek":
+			nextBaseURL = normalizeDeepSeekBaseURL(nextBaseURL)
 		case "anthropic", "openai", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp":
 			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
 		default:
@@ -6822,7 +7437,7 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		nextModel = model
 		nextBaseURL = normalized
 		nextAPIKey = apiKey
-	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
+	case "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go":
 		if strings.TrimSpace(nextAPIKey) == "" {
 			keyPrompt := providerDisplayName(provider) + " API key (for analysis " + role + ")"
 			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
@@ -6842,6 +7457,14 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 				return err
 			}
 			nextModel = selected.ID
+			nextBaseURL = normalized
+		} else if provider == "deepseek" {
+			nextBaseURL = normalizeDeepSeekBaseURL(nextBaseURL)
+			model, normalized, err := rt.fetchAndChooseDeepSeekModel(nextBaseURL, nextAPIKey, nextModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
 			nextBaseURL = normalized
 		} else if isOpenCodeProvider(provider) {
 			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
@@ -6892,6 +7515,10 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 
 func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string, model string, baseURL string, apiKey string) error {
 	provider = normalizeProviderName(provider)
+	current := rt.cfg.ProjectAnalysis.WorkerProfile
+	if role == "reviewer" {
+		current = rt.cfg.ProjectAnalysis.ReviewerProfile
+	}
 	if strings.TrimSpace(apiKey) == "" {
 		apiKey = rt.providerAPIKey(provider)
 	}
@@ -6910,6 +7537,8 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 		BaseURL:  normalizeProfileBaseURL(provider, baseURL),
 		APIKey:   apiKey,
 	}
+	nextEffort, defaultedEffort := rt.profileReasoningEffortForActivation(current, provider, model, baseURL)
+	profile.ReasoningEffort = nextEffort
 	if role == "worker" {
 		rt.cfg.ProjectAnalysis.WorkerProfile = profile
 	} else if role == "reviewer" {
@@ -6922,6 +7551,7 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	if err := SaveUserConfig(rt.cfg); err != nil {
 		return err
 	}
+	rt.printReasoningEffortDefaultNotice("analysis "+role+" model", defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s / %s", role, provider, model)))
 	return nil
 }
@@ -6939,6 +7569,7 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 		model = resolvedModel
 		baseURL = resolvedBaseURL
 	}
+	nextEffort, defaultedEffort := rt.specialistReasoningEffortForActivation(name, provider, model, baseURL)
 	updated := false
 	profiles := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
 	for i := range profiles {
@@ -6949,16 +7580,18 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 		profiles[i].Model = strings.TrimSpace(model)
 		profiles[i].BaseURL = normalizeProfileBaseURL(provider, baseURL)
 		profiles[i].APIKey = strings.TrimSpace(apiKey)
+		profiles[i].ReasoningEffort = nextEffort
 		updated = true
 		break
 	}
 	if !updated {
 		profiles = append(profiles, SpecialistSubagentProfile{
-			Name:     strings.TrimSpace(name),
-			Provider: strings.TrimSpace(provider),
-			Model:    strings.TrimSpace(model),
-			BaseURL:  normalizeProfileBaseURL(provider, baseURL),
-			APIKey:   strings.TrimSpace(apiKey),
+			Name:            strings.TrimSpace(name),
+			Provider:        strings.TrimSpace(provider),
+			Model:           strings.TrimSpace(model),
+			BaseURL:         normalizeProfileBaseURL(provider, baseURL),
+			APIKey:          strings.TrimSpace(apiKey),
+			ReasoningEffort: nextEffort,
 		})
 	}
 	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(profiles)
@@ -6967,6 +7600,7 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 	if err := rt.persistSpecialistOverrides(); err != nil {
 		return err
 	}
+	rt.printReasoningEffortDefaultNotice("specialist "+strings.TrimSpace(name)+" model", defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s / %s", name, provider, model)))
 	return nil
 }
@@ -6990,6 +7624,7 @@ func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 		profile.Model = ""
 		profile.BaseURL = ""
 		profile.APIKey = ""
+		profile.ReasoningEffort = ""
 		if specialistProfileHasNonModelOverrides(profile) {
 			next = append(next, normalizeSpecialistProfile(profile))
 		}
@@ -7075,6 +7710,9 @@ func (rt *runtimeState) showPlanReviewStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Plan Review Reviewer"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.cfg.PlanReview.Provider))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.cfg.PlanReview.Model))
+	if providerSupportsReasoningEffort(rt.cfg.PlanReview.Provider) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("reasoning_effort", reasoningEffortDisplay(rt.cfg.PlanReview.ReasoningEffort)))
+	}
 	if rt.cfg.PlanReview.BaseURL != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", rt.cfg.PlanReview.BaseURL))
 	}
@@ -7129,10 +7767,12 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 		nextModel = model
 		nextBaseURL = normalized
 		nextAPIKey = apiKey
-	case "anthropic", "openai", "openrouter", "opencode", "opencode-go":
+	case "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go":
 		baseURL := ""
 		if provider == "openrouter" {
 			baseURL = normalizeOpenRouterBaseURL("")
+		} else if provider == "deepseek" {
+			baseURL = normalizeDeepSeekBaseURL(nextBaseURL)
 		} else if isOpenCodeProvider(provider) {
 			baseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
 		}
@@ -7163,6 +7803,13 @@ func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
 				return err
 			}
 			nextModel = selected.ID
+			nextBaseURL = normalized
+		case "deepseek":
+			model, normalized, err := rt.fetchAndChooseDeepSeekModel(baseURL, nextAPIKey, nextModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
 			nextBaseURL = normalized
 		case "opencode", "opencode-go":
 			models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, baseURL, nextAPIKey)
@@ -7218,11 +7865,13 @@ func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey stri
 		model = resolvedModel
 		baseURL = resolvedBaseURL
 	}
+	nextEffort, defaultedEffort := rt.planReviewReasoningEffortForActivation(provider, model, baseURL)
 	rt.cfg.PlanReview = &PlanReviewConfig{
-		Provider: provider,
-		Model:    model,
-		BaseURL:  baseURL,
-		APIKey:   apiKey,
+		Provider:        provider,
+		Model:           model,
+		BaseURL:         baseURL,
+		APIKey:          apiKey,
+		ReasoningEffort: nextEffort,
 	}
 	rt.rememberReviewProfile()
 	rt.storeProviderKey(provider, apiKey)
@@ -7231,6 +7880,7 @@ func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey stri
 		return err
 	}
 	rt.syncAgentReviewerClientFromConfig()
+	rt.printReasoningEffortDefaultNotice("plan-review reviewer model", defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Plan review reviewer set: %s / %s", provider, model)))
 	return nil
 }
@@ -7244,11 +7894,12 @@ func (rt *runtimeState) rememberReviewProfile() {
 		return
 	}
 	profile := Profile{
-		Name:     profileName(pr.Provider, pr.Model),
-		Provider: pr.Provider,
-		Model:    pr.Model,
-		BaseURL:  pr.BaseURL,
-		APIKey:   pr.APIKey,
+		Name:            profileName(pr.Provider, pr.Model),
+		Provider:        pr.Provider,
+		Model:           pr.Model,
+		BaseURL:         pr.BaseURL,
+		APIKey:          pr.APIKey,
+		ReasoningEffort: normalizeReasoningEffort(pr.ReasoningEffort),
 	}
 
 	rt.cfg.ReviewProfiles = upsertProfile(rt.cfg.ReviewProfiles, profile, 5)
@@ -7338,11 +7989,12 @@ func (rt *runtimeState) activeReviewProfile(name string) (Profile, bool) {
 		name = profileName(provider, model)
 	}
 	return Profile{
-		Name:     strings.TrimSpace(name),
-		Provider: provider,
-		Model:    model,
-		BaseURL:  normalizeProfileBaseURL(provider, rt.cfg.PlanReview.BaseURL),
-		APIKey:   rt.providerAPIKey(provider),
+		Name:            strings.TrimSpace(name),
+		Provider:        provider,
+		Model:           model,
+		BaseURL:         normalizeProfileBaseURL(provider, rt.cfg.PlanReview.BaseURL),
+		APIKey:          rt.providerAPIKey(provider),
+		ReasoningEffort: normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort),
 	}, true
 }
 

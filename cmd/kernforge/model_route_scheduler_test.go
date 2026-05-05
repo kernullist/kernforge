@@ -217,6 +217,28 @@ func TestModelRoutePolicyUsesLocalOpenAICompatibleLimit(t *testing.T) {
 	}
 }
 
+func TestModelRoutePolicyUsesOpenRouterConservativeDefaultLimit(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openrouter"
+	cfg.Model = "deepseek/deepseek-v4-pro"
+	policy := modelRoutePolicyFromConfig(cfg)
+	route := ModelRoute{Provider: "openrouter", Model: cfg.Model}
+	if got := policy.LimitFor(route); got != 2 {
+		t.Fatalf("openrouter default route limit = %d, want 2", got)
+	}
+}
+
+func TestModelRoutePolicyUsesDeepSeekConservativeDefaultLimit(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-v4-pro"
+	policy := modelRoutePolicyFromConfig(cfg)
+	route := ModelRoute{Provider: "deepseek", Model: cfg.Model}
+	if got := policy.LimitFor(route); got != 2 {
+		t.Fatalf("deepseek default route limit = %d, want 2", got)
+	}
+}
+
 func TestModelRoutePolicyHonorsProviderOverride(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.ModelRoutes.ProviderLimits = map[string]int{"ollama": 3}

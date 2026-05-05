@@ -137,15 +137,16 @@ func TestBuildOpenAICodexRequestBodyRejectsInvalidReasoningEffort(t *testing.T) 
 	}
 }
 
-func TestSyncClientFromConfigRefreshesOpenAICodexReviewerEffort(t *testing.T) {
+func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.T) {
 	rt := &runtimeState{
 		cfg: Config{
 			Provider:        "openai-codex",
 			Model:           "gpt-5.5",
 			ReasoningEffort: "low",
 			PlanReview: &PlanReviewConfig{
-				Provider: "openai-codex",
-				Model:    "gpt-5.5",
+				Provider:        "openai-codex",
+				Model:           "gpt-5.5",
+				ReasoningEffort: "medium",
 			},
 		},
 		agent: &Agent{
@@ -169,14 +170,25 @@ func TestSyncClientFromConfigRefreshesOpenAICodexReviewerEffort(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected OpenAI Codex reviewer client, got %T", rt.agent.ReviewerClient)
 	}
-	if reviewerClient.reasoningEffort != "low" {
-		t.Fatalf("reviewer reasoning effort = %q, want low", reviewerClient.reasoningEffort)
+	if reviewerClient.reasoningEffort != "medium" {
+		t.Fatalf("reviewer reasoning effort = %q, want medium", reviewerClient.reasoningEffort)
 	}
 	if rt.agent.AuxReviewerClient != nil || rt.agent.AuxReviewerModel != "" {
 		t.Fatalf("expected auxiliary reviewer cache to be cleared")
 	}
 
 	rt.cfg.ReasoningEffort = "x-high"
+	rt.syncClientFromConfig()
+
+	reviewerClient, ok = rt.agent.ReviewerClient.(*OpenAICodexClient)
+	if !ok {
+		t.Fatalf("expected refreshed OpenAI Codex reviewer client, got %T", rt.agent.ReviewerClient)
+	}
+	if reviewerClient.reasoningEffort != "medium" {
+		t.Fatalf("reviewer reasoning effort after main change = %q, want medium", reviewerClient.reasoningEffort)
+	}
+
+	rt.cfg.PlanReview.ReasoningEffort = "x-high"
 	rt.syncClientFromConfig()
 
 	reviewerClient, ok = rt.agent.ReviewerClient.(*OpenAICodexClient)
@@ -264,6 +276,52 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 	if resp.Message.Text != "done text" {
 		t.Fatalf("expected done message text, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamEmitsToolProgressEvents(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
+		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\""}`,
+		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"main.go\"}"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	var events []ProgressEvent
+	resp, err := readOpenAICodexStream(context.Background(), stream, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].Name != "read_file" {
+		t.Fatalf("expected read_file tool call, got %#v", resp.Message.ToolCalls)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolCall, "read_file") {
+		t.Fatalf("expected tool-call progress event, got %#v", events)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolReady, "read_file") {
+		t.Fatalf("expected tool-ready progress event, got %#v", events)
+	}
+}
+
+func TestReadOpenAICodexStreamEmitsToolReadyFromCompletedResponse(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"read_file","arguments":"{\"path\":\"main.go\"}"}]}}`,
+		"",
+	}, "\n\n"))
+	var events []ProgressEvent
+	resp, err := readOpenAICodexStream(context.Background(), stream, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_9" {
+		t.Fatalf("expected completed response tool call, got %#v", resp.Message.ToolCalls)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolReady, "read_file") {
+		t.Fatalf("expected completed-response tool-ready progress event, got %#v", events)
 	}
 }
 

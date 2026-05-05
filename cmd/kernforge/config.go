@@ -22,25 +22,27 @@ const (
 )
 
 type PlanReviewConfig struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	BaseURL  string `json:"base_url,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	BaseURL         string `json:"base_url,omitempty"`
+	APIKey          string `json:"api_key,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type SpecialistSubagentProfile struct {
-	Name           string   `json:"name"`
-	Description    string   `json:"description,omitempty"`
-	Prompt         string   `json:"prompt,omitempty"`
-	Provider       string   `json:"provider,omitempty"`
-	Model          string   `json:"model,omitempty"`
-	BaseURL        string   `json:"base_url,omitempty"`
-	APIKey         string   `json:"api_key,omitempty"`
-	NodeKinds      []string `json:"node_kinds,omitempty"`
-	Keywords       []string `json:"keywords,omitempty"`
-	ReadOnly       *bool    `json:"read_only,omitempty"`
-	Editable       *bool    `json:"editable,omitempty"`
-	OwnershipPaths []string `json:"ownership_paths,omitempty"`
+	Name            string   `json:"name"`
+	Description     string   `json:"description,omitempty"`
+	Prompt          string   `json:"prompt,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	BaseURL         string   `json:"base_url,omitempty"`
+	APIKey          string   `json:"api_key,omitempty"`
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	NodeKinds       []string `json:"node_kinds,omitempty"`
+	Keywords        []string `json:"keywords,omitempty"`
+	ReadOnly        *bool    `json:"read_only,omitempty"`
+	Editable        *bool    `json:"editable,omitempty"`
+	OwnershipPaths  []string `json:"ownership_paths,omitempty"`
 }
 
 type SpecialistSubagentsConfig struct {
@@ -70,6 +72,7 @@ type Config struct {
 	MaxRequestRetries      int                       `json:"max_request_retries,omitempty"`
 	RequestRetryDelayMs    int                       `json:"request_retry_delay_ms,omitempty"`
 	RequestTimeoutSecs     int                       `json:"request_timeout_seconds,omitempty"`
+	ProgressDisplay        string                    `json:"progress_display,omitempty"`
 	ModelRoutes            ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
 	ShellTimeoutSecs       int                       `json:"shell_timeout_seconds,omitempty"`
 	ReadHintSpans          int                       `json:"read_hint_spans,omitempty"`
@@ -104,13 +107,14 @@ type Config struct {
 }
 
 type Profile struct {
-	Name       string             `json:"name"`
-	Provider   string             `json:"provider"`
-	Model      string             `json:"model"`
-	BaseURL    string             `json:"base_url,omitempty"`
-	APIKey     string             `json:"api_key,omitempty"`
-	Pinned     bool               `json:"pinned,omitempty"`
-	RoleModels *ProfileRoleModels `json:"role_models,omitempty"`
+	Name            string             `json:"name"`
+	Provider        string             `json:"provider"`
+	Model           string             `json:"model"`
+	BaseURL         string             `json:"base_url,omitempty"`
+	APIKey          string             `json:"api_key,omitempty"`
+	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+	Pinned          bool               `json:"pinned,omitempty"`
+	RoleModels      *ProfileRoleModels `json:"role_models,omitempty"`
 }
 
 type ProfileRoleModels struct {
@@ -130,6 +134,7 @@ func DefaultConfig(cwd string) Config {
 		MaxRequestRetries:      2,
 		RequestRetryDelayMs:    1500,
 		RequestTimeoutSecs:     1200,
+		ProgressDisplay:        "auto",
 		ShellTimeoutSecs:       300,
 		ReadHintSpans:          defaultReadHintSpans,
 		ReadCacheEntries:       defaultReadCacheEntries,
@@ -399,6 +404,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.RequestTimeoutSecs != 0 {
 		dst.RequestTimeoutSecs = src.RequestTimeoutSecs
 	}
+	if strings.TrimSpace(src.ProgressDisplay) != "" {
+		dst.ProgressDisplay = normalizeProgressDisplay(src.ProgressDisplay)
+	}
 	if src.ModelRoutes.Enabled != nil {
 		value := *src.ModelRoutes.Enabled
 		dst.ModelRoutes.Enabled = &value
@@ -600,6 +608,7 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
 	envString("KERNFORGE_REASONING_EFFORT", &cfg.ReasoningEffort)
+	envString("KERNFORGE_PROGRESS_DISPLAY", &cfg.ProgressDisplay)
 	envInt("KERNFORGE_MAX_REQUEST_RETRIES", &cfg.MaxRequestRetries)
 	envInt("KERNFORGE_REQUEST_RETRY_DELAY_MS", &cfg.RequestRetryDelayMs)
 	envInt("KERNFORGE_REQUEST_TIMEOUT_SECONDS", &cfg.RequestTimeoutSecs)
@@ -621,6 +630,13 @@ func applyEnv(cfg *Config) {
 	case "anthropic":
 		if cfg.APIKey == "" {
 			envString("ANTHROPIC_API_KEY", &cfg.APIKey)
+		}
+	case "deepseek":
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = normalizeDeepSeekBaseURL("")
+		}
+		if cfg.APIKey == "" {
+			envString("DEEPSEEK_API_KEY", &cfg.APIKey)
 		}
 	case "openrouter":
 		if cfg.BaseURL == "" {
@@ -676,6 +692,7 @@ func applyEnv(cfg *Config) {
 
 func normalizeConfigPaths(cfg *Config) {
 	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
+	cfg.ProgressDisplay = normalizeProgressDisplay(cfg.ProgressDisplay)
 	if cfg.SessionDir != "" {
 		cfg.SessionDir = expandHome(cfg.SessionDir)
 	}
@@ -711,24 +728,30 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.ProjectAnalysis.WorkerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.Model)
 		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
 		cfg.ProjectAnalysis.WorkerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.APIKey)
+		cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort = normalizeReasoningEffort(cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
 	}
 	if cfg.ProjectAnalysis.ReviewerProfile != nil {
 		cfg.ProjectAnalysis.ReviewerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.ReviewerProfile.Provider)
 		cfg.ProjectAnalysis.ReviewerProfile.Model = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.Model)
 		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
 		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
+		cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort = normalizeReasoningEffort(cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)
 	}
 	if cfg.PlanReview != nil {
 		cfg.PlanReview.Provider = normalizeProviderName(cfg.PlanReview.Provider)
 		cfg.PlanReview.Model = strings.TrimSpace(cfg.PlanReview.Model)
 		cfg.PlanReview.BaseURL = normalizeOptionalProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
 		cfg.PlanReview.APIKey = strings.TrimSpace(cfg.PlanReview.APIKey)
+		cfg.PlanReview.ReasoningEffort = normalizeReasoningEffort(cfg.PlanReview.ReasoningEffort)
 	}
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}
 	if strings.EqualFold(cfg.Provider, "openrouter") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	}
+	if strings.EqualFold(cfg.Provider, "deepseek") && strings.TrimSpace(cfg.BaseURL) == "" {
+		cfg.BaseURL = normalizeDeepSeekBaseURL("")
 	}
 	if strings.EqualFold(normalizeProviderName(cfg.Provider), "openai-codex") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOpenAICodexBaseURL("")
@@ -953,6 +976,11 @@ func normalizeProfileBaseURL(provider, baseURL string) string {
 			return normalizeOpenRouterBaseURL("")
 		}
 		return normalizeOpenRouterBaseURL(baseURL)
+	case "deepseek":
+		if strings.TrimSpace(baseURL) == "" {
+			return normalizeDeepSeekBaseURL("")
+		}
+		return normalizeDeepSeekBaseURL(baseURL)
 	case "opencode":
 		if strings.TrimSpace(baseURL) == "" {
 			return normalizeOpenCodeBaseURL("")
@@ -984,6 +1012,30 @@ func normalizeOptionalProfileBaseURL(provider, baseURL string) string {
 		return ""
 	}
 	return normalizeProfileBaseURL(provider, baseURL)
+}
+
+func normalizeProgressDisplay(value string) string {
+	if normalized, ok := parseProgressDisplayInput(value); ok {
+		return normalized
+	}
+	return "auto"
+}
+
+func parseProgressDisplayInput(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto", "default":
+		return "auto", true
+	case "compact", "footer", "quiet":
+		return "compact", true
+	case "stream", "ledger", "verbose", "persistent":
+		return "stream", true
+	default:
+		return "", false
+	}
+}
+
+func configProgressDisplay(cfg Config) string {
+	return normalizeProgressDisplay(cfg.ProgressDisplay)
 }
 
 func normalizeReasoningEffort(effort string) string {
@@ -1055,6 +1107,7 @@ func normalizeConfigProfile(profile Profile) Profile {
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
+	profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
 	if profile.Name == "" && profile.Provider != "" && profile.Model != "" {
 		profile.Name = profileName(profile.Provider, profile.Model)
 	}
@@ -1083,13 +1136,17 @@ func applyActiveProfileRoleModels(cfg *Config) {
 	if cfg == nil || len(cfg.Profiles) == 0 {
 		return
 	}
-	profile, ok := findActiveConfigProfile(*cfg)
-	if !ok || profile.RoleModels == nil {
+	profile, ok, selectedByActiveKey := findActiveConfigProfile(*cfg)
+	if !ok {
+		return
+	}
+	if !selectedByActiveKey && profile.RoleModels == nil {
 		return
 	}
 	cfg.Provider = strings.TrimSpace(profile.Provider)
 	cfg.Model = strings.TrimSpace(profile.Model)
 	cfg.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
+	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
 	if strings.TrimSpace(profile.APIKey) != "" {
 		cfg.APIKey = strings.TrimSpace(profile.APIKey)
 	}
@@ -1099,41 +1156,46 @@ func applyActiveProfileRoleModels(cfg *Config) {
 	applyConfigProfileRoleModels(cfg, profile)
 }
 
-func findActiveConfigProfile(cfg Config) (Profile, bool) {
+func findActiveConfigProfile(cfg Config) (Profile, bool, bool) {
 	activeKey := strings.TrimSpace(cfg.ActiveProfileKey)
 	if activeKey != "" {
 		for _, profile := range cfg.Profiles {
 			profile = normalizeConfigProfile(profile)
 			if configProfileKey(profile) == activeKey {
-				return profile, true
+				return profile, true, true
 			}
 		}
 	}
 	currentKey := activeConfigProfileKey(cfg)
 	if currentKey == "" {
-		return Profile{}, false
+		return Profile{}, false, false
 	}
 	for _, profile := range cfg.Profiles {
 		profile = normalizeConfigProfile(profile)
 		if configProfileKey(profile) == currentKey {
-			return profile, true
+			return profile, true, false
 		}
 	}
-	return Profile{}, false
+	return Profile{}, false, false
 }
 
 func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
-	if cfg == nil || profile.RoleModels == nil {
+	if cfg == nil {
 		return
 	}
 	roles := profile.RoleModels
+	if roles == nil {
+		roles = &ProfileRoleModels{}
+	}
 	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
 		provider := normalizeProviderName(roles.PlanReviewer.Provider)
+		effort, _ := reasoningEffortOrDefaultForProvider(provider, roles.PlanReviewer.ReasoningEffort)
 		cfg.PlanReview = &PlanReviewConfig{
-			Provider: provider,
-			Model:    strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:  normalizeOptionalProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
-			APIKey:   strings.TrimSpace(roles.PlanReviewer.APIKey),
+			Provider:        provider,
+			Model:           strings.TrimSpace(roles.PlanReviewer.Model),
+			BaseURL:         normalizeOptionalProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
+			APIKey:          strings.TrimSpace(roles.PlanReviewer.APIKey),
+			ReasoningEffort: effort,
 		}
 	} else {
 		cfg.PlanReview = nil
@@ -1153,6 +1215,7 @@ func cloneConfigProfile(profile *Profile) *Profile {
 	cloned.Model = strings.TrimSpace(cloned.Model)
 	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
 	cloned.APIKey = strings.TrimSpace(cloned.APIKey)
+	cloned.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(cloned.Provider, cloned.ReasoningEffort)
 	if cloned.Name == "" && cloned.Provider != "" && cloned.Model != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
@@ -1171,6 +1234,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 		profile.Model = strings.TrimSpace(profile.Model)
 		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.APIKey = strings.TrimSpace(profile.APIKey)
+		profile.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
 		modelsByName[name] = profile
 	}
 	next := make([]SpecialistSubagentProfile, 0, len(cfg.Specialists.Profiles)+len(modelsByName))
@@ -1185,17 +1249,28 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 			existing.Model = model.Model
 			existing.BaseURL = model.BaseURL
 			existing.APIKey = model.APIKey
+			existing.ReasoningEffort = model.ReasoningEffort
 			seen[name] = true
+			next = append(next, normalizeSpecialistProfile(existing))
+			continue
 		}
-		next = append(next, existing)
+		existing.Provider = ""
+		existing.Model = ""
+		existing.BaseURL = ""
+		existing.APIKey = ""
+		existing.ReasoningEffort = ""
+		if specialistProfileHasNonModelOverrides(existing) {
+			next = append(next, normalizeSpecialistProfile(existing))
+		}
+		seen[name] = true
 	}
 	for name, model := range modelsByName {
 		if seen[name] {
 			continue
 		}
-		next = append(next, model)
+		next = append(next, normalizeSpecialistProfile(model))
 	}
-	cfg.Specialists.Profiles = next
+	cfg.Specialists.Profiles = normalizeSpecialistProfiles(next)
 }
 
 func profileName(provider, model string) string {
@@ -1583,6 +1658,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
 		RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
 		RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
+		ProgressDisplay     string                    `json:"progress_display,omitempty"`
 		ModelRoutes         ModelRouteSchedulerConfig `json:"model_routes,omitempty"`
 		ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
 		ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
@@ -1604,16 +1680,21 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		MaxRequestRetries:   2,
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
+		ProgressDisplay:     "auto",
 		ModelRoutes: ModelRouteSchedulerConfig{
 			Enabled:              boolPtr(true),
 			DefaultMaxConcurrent: 4,
 			ProviderLimits: map[string]int{
-				"codex-cli":   1,
-				"lmstudio":    1,
-				"ollama":      1,
-				"opencode":    1,
-				"opencode-go": 1,
-				"vllm":        1,
+				"codex-cli":    1,
+				"deepseek":     2,
+				"lmstudio":     1,
+				"ollama":       1,
+				"opencode":     1,
+				"opencode-go":  1,
+				"openrouter":   2,
+				"openai-codex": 2,
+				"llama.cpp":    1,
+				"vllm":         1,
 			},
 		},
 		ShellTimeoutSecs: 300,
@@ -2013,10 +2094,11 @@ Provider And Models:
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
 /set-specialist-model  Configure the provider/model used by a specialist subagent
 /model                 Show all model routing and interactively reconfigure one target
-/effort [value]        Show or set reasoning effort: undefined, minimal, low, medium, high, xhigh
+/effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
 /permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
-/set-max-tool-iterations <n> Set the maximum tool iteration count per request
+/set-max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
+/progress-display [auto|compact|stream] Show or set in-flight progress visibility
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
 /profile-review [list|<number>|rN|dN|pN] Show saved review profiles or activate/manage one explicitly
 /provider              Choose and configure a provider
@@ -2028,7 +2110,7 @@ Provider And Models:
 - Shell approval is tracked separately for the current session. Once a shell command is approved, later run_shell calls can proceed without another shell prompt in the same session.
 - Kernforge does not allow run_shell to modify workspace files. File edits must go through apply_patch, write_file, or replace_in_file so diff preview and write approval rules can still apply.
 - Use /status to inspect the current session approval state for writes, diff previews, shell access, and git actions.
-- Use /config to inspect effective settings such as provider, token limits, hooks, and verification defaults.
+- Use /config to inspect effective settings such as provider, token limits, progress display, hooks, and verification defaults.
 
 Verification And Checkpoints:
 /checkpoint [note]     Create a workspace checkpoint snapshot and suggest diff/list follow-up
@@ -2420,7 +2502,7 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
+	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
@@ -2430,13 +2512,20 @@ Provider and model commands control which model is active and how planning/revie
 - Changing the main model does not overwrite explicit role model profiles. Targets marked "not configured" follow the main model until configured.
 - Main profiles now store their own role model set. When you change plan-review, analysis, or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 
-/effort [undefined|minimal|low|medium|high|xhigh]
-- Show the current reasoning effort when no value is provided. Empty config is displayed as undefined.
-- Set the default reasoning effort sent with openai-codex Responses requests across main, plan-review, analysis, and specialist roles.
-- /model does not read or write reasoning effort; use /effort for that setting.
+/effort [target] [undefined|minimal|low|medium|high|xhigh]
+- Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
+- /effort high sets the active main model effort. Use /effort plan-review high, /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for role-specific models.
+- Main profiles, review profiles, analysis role profiles, and specialist profiles each store their own reasoning_effort.
+- When the active main provider supports reasoning effort, the main input prompt includes effort=<current>.
+- When model selection through /model, /provider, or role-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
+
+/progress-display [auto|compact|stream]
+- Show or change in-flight progress visibility.
+- auto keeps durable tool/model/route ledger lines in the transcript while noisy shell tail output stays transient.
+- compact keeps progress updates in the footer, and stream writes every progress update persistently.
 
 /profile
 - Show saved main provider/model profiles and each profile's stored role model set.
@@ -2452,12 +2541,13 @@ Provider and model commands control which model is active and how planning/revie
 
 /provider
 - Choose and configure a provider interactively.
-- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider opencode, /provider opencode-go, /provider ollama, /provider codex-cli, /provider openai-codex, /provider lmstudio, /provider vllm, or /provider llama.cpp.
+- You can also jump directly with /provider anthropic, /provider openai, /provider openrouter, /provider deepseek, /provider opencode, /provider opencode-go, /provider ollama, /provider codex-cli, /provider openai-codex, /provider lmstudio, /provider vllm, or /provider llama.cpp.
 - LM Studio, vLLM, and llama.cpp use provider-specific local defaults unless you pass or save a base URL; custom base URLs are preserved when reconfiguring the same provider.
 
 /provider status
 - Show the active provider, normalized base URL, API key presence, and provider-specific budget visibility.
 - OpenRouter performs a live key lookup and, for management keys, also shows account credits.
+- DeepSeek performs a live balance lookup when an API key is configured.
 - OpenAI and Anthropic show officially documented billing and usage visibility limits instead of guessing a live balance endpoint.
 
 /codex-auth [status|login|logout|path]

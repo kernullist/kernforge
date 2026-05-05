@@ -41,6 +41,7 @@ type Agent struct {
 	EmitAssistant                  func(string)
 	EmitAssistantDelta             func(string)
 	EmitProgress                   func(string)
+	EmitProgressEvent              func(ProgressEvent)
 	lastEmittedText                string
 }
 
@@ -668,10 +669,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if isEditTool(call.Name) {
 				attemptedEditTool = true
 			}
-			if a.EmitProgress != nil {
-				if summary := summarizeToolInvocation(a.Config, call); summary != "" {
-					a.EmitProgress(summary)
-				}
+			if summary := summarizeToolInvocation(a.Config, call); summary != "" {
+				a.emitProgressEvent(ProgressEvent{
+					Kind:             progressKindToolStarted,
+					Message:          summary,
+					ToolName:         call.Name,
+					ToolCallID:       call.ID,
+					ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+				})
 			}
 			a.noteToolConversationStart(call)
 			a.noteToolExecutionStart(call)
@@ -741,10 +746,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
-				if a.EmitProgress != nil {
-					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
-						a.EmitProgress(summary)
-					}
+				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolFailed,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						Status:           firstNonEmptyLine(err.Error()),
+					})
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if toolShouldBeDisabledAfterInvalidJSON(call.Name) {
@@ -769,10 +779,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
 				}
-				if a.EmitProgress != nil {
-					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
-						a.EmitProgress(summary)
-					}
+				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolFailed,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						Status:           firstNonEmptyLine(err.Error()),
+					})
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				a.Session.AddMessage(Message{
@@ -802,10 +817,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if currentError != "" {
 					iterationToolError = currentError
 				}
-				if a.EmitProgress != nil {
-					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
-						a.EmitProgress(summary)
-					}
+				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolFailed,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						Status:           firstNonEmptyLine(err.Error()),
+					})
 				}
 				if call.Name == "apply_patch" && errors.Is(err, ErrInvalidPatchFormat) && patchFormatRetries < 1 {
 					patchFormatRetries++
@@ -825,15 +845,23 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				iterationHadToolSuccess = true
 				if isEditTool(call.Name) {
 					edited = true
-					if a.EmitProgress != nil {
-						if summary := summarizeEditToolResult(call.Name, result.DisplayText); summary != "" {
-							a.EmitProgress(summary)
-						}
+					if summary := summarizeEditToolResult(call.Name, result.DisplayText); summary != "" {
+						a.emitProgressEvent(ProgressEvent{
+							Kind:             progressKindToolCompleted,
+							Message:          summary,
+							ToolName:         call.Name,
+							ToolCallID:       call.ID,
+							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+						})
 					}
-				} else if a.EmitProgress != nil {
-					if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
-						a.EmitProgress(summary)
-					}
+				} else if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
+					a.emitProgressEvent(ProgressEvent{
+						Kind:             progressKindToolCompleted,
+						Message:          summary,
+						ToolName:         call.Name,
+						ToolCallID:       call.ID,
+						ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+					})
 				}
 				_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
 				_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "tool:"+strings.TrimSpace(call.Name))
@@ -1021,6 +1049,34 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		return "", fmt.Errorf("stopped after repeated tool failure: %s", lastToolError)
 	}
 	return "", fmt.Errorf("tool loop limit exceeded%s", formatToolLoopDiagnostic(lastToolCallSummary, lastStopReason, lastIteration, maxToolIterations, lastRecentToolTurns))
+}
+
+func (a *Agent) emitProgressEvent(event ProgressEvent) {
+	if a == nil {
+		return
+	}
+	if a.EmitProgressEvent != nil {
+		emitProgressEvent(a.EmitProgressEvent, event)
+		return
+	}
+	if a.EmitProgress != nil {
+		if message := formatProgressEventMessage(a.Config, event); strings.TrimSpace(message) != "" {
+			a.EmitProgress(message)
+		}
+	}
+}
+
+func (a *Agent) attachProgressEventHandler(req ChatRequest) ChatRequest {
+	if req.OnProgressEvent != nil {
+		return req
+	}
+	if a == nil || a.EmitProgressEvent == nil {
+		return req
+	}
+	req.OnProgressEvent = func(event ProgressEvent) {
+		a.emitProgressEvent(event)
+	}
+	return req
 }
 
 func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bool {
@@ -1261,6 +1317,7 @@ func isAssistantNarrationPreamble(text string) bool {
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	req = a.attachProgressEventHandler(req)
 	maxRetries := configMaxRequestRetries(a.Config)
 	totalAttempts := maxRetries + 1
 	baseDelay := configRequestRetryDelay(a.Config)
@@ -1284,9 +1341,12 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 		}
 		a.noteProviderConversationError(err, req, false)
 		delay := providerRetryDelay(baseDelay, attempt)
-		if a.EmitProgress != nil {
-			a.EmitProgress(modelRetryProgressMessage(err, attempt, totalAttempts, delay))
-		}
+		a.emitProgressEvent(ProgressEvent{
+			Kind:    progressKindProviderRetry,
+			Message: modelRetryProgressMessage(err, attempt, totalAttempts, delay),
+			Model:   req.Model,
+			Status:  firstNonEmptyLine(err.Error()),
+		})
 		if delay > 0 {
 			timer := time.NewTimer(delay)
 			select {

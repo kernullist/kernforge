@@ -109,8 +109,8 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 	return strings.Join(lines, "\n")
 }
 
-func (ui UI) prompt(provider, model string) string {
-	target := ui.promptTarget(provider, model)
+func (ui UI) prompt(provider, model string, effort string) string {
+	target := ui.promptTarget(provider, model, effort)
 	return ui.bold(ui.accent("you")) + " " + ui.dim("["+target+"]") + ui.accent(" > ")
 }
 
@@ -344,13 +344,16 @@ func (ui UI) bannerHero(left []string, right []string, gap int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (ui UI) promptTarget(provider, model string) string {
+func (ui UI) promptTarget(provider, model string, effort string) string {
 	var parts []string
 	if trimmed := strings.TrimSpace(provider); trimmed != "" {
 		parts = append(parts, trimmed)
 	}
 	if trimmed := strings.TrimSpace(model); trimmed != "" {
 		parts = append(parts, trimmed)
+	}
+	if trimmed := strings.TrimSpace(effort); trimmed != "" {
+		parts = append(parts, "effort="+trimmed)
 	}
 	if len(parts) == 0 {
 		return "unconfigured"

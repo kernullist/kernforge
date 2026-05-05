@@ -171,12 +171,197 @@ func TestProviderErrorSuggestsJSONModeUnsupportedFromStructuredParam(t *testing.
 	}
 }
 
+func TestDeepSeekClientUsesRootChatCompletionsEndpoint(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("authorization"); got != "Bearer deepseek-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewProviderClient(Config{
+		Provider:        "deepseek-api",
+		Model:           "deepseek-v4-pro",
+		BaseURL:         server.URL,
+		APIKey:          "deepseek-key",
+		ReasoningEffort: "xhigh",
+	})
+	if err != nil {
+		t.Fatalf("NewProviderClient: %v", err)
+	}
+	if got := client.Name(); got != "deepseek" {
+		t.Fatalf("expected deepseek client, got %q", got)
+	}
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "ok" {
+		t.Fatalf("expected ok response, got %#v", resp)
+	}
+	if body["reasoning_effort"] != "max" {
+		t.Fatalf("expected DeepSeek reasoning_effort=max, got %#v", body["reasoning_effort"])
+	}
+	if thinking, ok := body["thinking"].(map[string]any); !ok || thinking["type"] != "enabled" {
+		t.Fatalf("expected DeepSeek thinking enabled, got %#v", body["thinking"])
+	}
+}
+
+func TestDeepSeekClientPreservesVersionedBaseURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewProviderClient(Config{
+		Provider: "deepseek",
+		Model:    "deepseek-v4-flash",
+		BaseURL:  server.URL + "/v1",
+		APIKey:   "deepseek-key",
+	})
+	if err != nil {
+		t.Fatalf("NewProviderClient: %v", err)
+	}
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-flash",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+}
+
+func TestDeepSeekClientPreservesReasoningContentForToolLoop(t *testing.T) {
+	requests := 0
+	var secondBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_content":"need the file first","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"main.go\"}"}}]},"finish_reason":"tool_calls"}]}`))
+			return
+		}
+		secondBody = body
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	first, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		Tools: []ToolDefinition{{Name: "read_file"}},
+	})
+	if err != nil {
+		t.Fatalf("first Complete: %v", err)
+	}
+	if first.Message.ReasoningContent != "need the file first" {
+		t.Fatalf("expected reasoning_content to be preserved, got %q", first.Message.ReasoningContent)
+	}
+	_, err = client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			first.Message,
+			{Role: "tool", ToolCallID: "call_1", ToolName: "read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{Name: "read_file"}},
+	})
+	if err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+	messages, ok := secondBody["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		t.Fatalf("expected second request messages, got %#v", secondBody["messages"])
+	}
+	assistant, ok := messages[1].(map[string]any)
+	if !ok {
+		t.Fatalf("expected assistant message map, got %#v", messages[1])
+	}
+	if assistant["reasoning_content"] != "need the file first" {
+		t.Fatalf("expected reasoning_content in follow-up assistant message, got %#v", assistant)
+	}
+	if content, ok := assistant["content"].(string); !ok || content != "" {
+		t.Fatalf("expected DeepSeek assistant tool-call content to be explicit empty string, got %#v", assistant["content"])
+	}
+}
+
+func TestDeepSeekClientPreservesStreamedReasoningContentForToolLoop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"need \"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"context\"},\"finish_reason\":\"\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"main.go\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		flusher.Flush()
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		Tools:           []ToolDefinition{{Name: "read_file"}},
+		OnProgressEvent: func(ProgressEvent) {},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one tool call, got %#v", resp.Message.ToolCalls)
+	}
+	if resp.Message.ReasoningContent != "need context" {
+		t.Fatalf("expected streamed reasoning_content, got %q", resp.Message.ReasoningContent)
+	}
+}
+
 func TestOpenAICompatibleClientsReportProviderName(t *testing.T) {
 	cases := []struct {
 		provider string
 		want     string
 	}{
 		{provider: "openrouter", want: "openrouter"},
+		{provider: "deepseek", want: "deepseek"},
 		{provider: "openai-compatible", want: "openai-compatible"},
 	}
 	for _, tc := range cases {
@@ -508,6 +693,7 @@ func TestOpenAIClientStreamsToolCallArguments(t *testing.T) {
 	defer server.Close()
 
 	client := NewOpenAIClient(server.URL, "test-key")
+	var events []ProgressEvent
 	resp, err := client.Complete(context.Background(), ChatRequest{
 		Model: "openai/gpt-4.1",
 		Messages: []Message{{
@@ -515,6 +701,9 @@ func TestOpenAIClientStreamsToolCallArguments(t *testing.T) {
 			Text: "inspect",
 		}},
 		OnTextDelta: func(text string) {},
+		OnProgressEvent: func(event ProgressEvent) {
+			events = append(events, event)
+		},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -529,9 +718,24 @@ func TestOpenAIClientStreamsToolCallArguments(t *testing.T) {
 	if call.Arguments != "{\"path\":\"main.go\"}" {
 		t.Fatalf("unexpected tool call arguments: %q", call.Arguments)
 	}
+	if !progressEventsContain(events, progressKindModelStreamToolCall, "read_file") {
+		t.Fatalf("expected streamed tool-call progress event, got %#v", events)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolReady, "read_file") {
+		t.Fatalf("expected streamed tool-ready progress event, got %#v", events)
+	}
 	if resp.StopReason != "tool_calls" {
 		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
 	}
+}
+
+func progressEventsContain(events []ProgressEvent, kind string, toolName string) bool {
+	for _, event := range events {
+		if strings.TrimSpace(event.Kind) == kind && strings.TrimSpace(event.ToolName) == toolName {
+			return true
+		}
+	}
+	return false
 }
 
 func TestOpenAIClientSuppressesBufferedToolPreambleTextWhenToolCallsAppear(t *testing.T) {
@@ -782,6 +986,55 @@ func TestOpenAIClientFallsBackToNonStreamWhenStreamReturnsEmpty(t *testing.T) {
 	}
 	if resp.StopReason != "stop_after_stream_retry" {
 		t.Fatalf("unexpected fallback stop reason: %q", resp.StopReason)
+	}
+}
+
+func TestOpenAIClientProgressOnlyFallbackUsesNonStreamRetry(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		defer r.Body.Close()
+
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+
+		if requests == 1 {
+			if body["stream"] != true {
+				t.Fatalf("expected progress-only request to stream, got %#v", body["stream"])
+			}
+			w.Header().Set("content-type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+
+		if _, ok := body["stream"]; ok {
+			t.Fatalf("expected progress-only fallback request to omit stream flag, got %#v", body["stream"])
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"fallback after progress stream"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "test-key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "openai/gpt-4.1",
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+		}},
+		OnProgressEvent: func(ProgressEvent) {},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("expected stream + non-stream fallback requests, got %d", requests)
+	}
+	if resp.Message.Text != "fallback after progress stream" {
+		t.Fatalf("unexpected fallback text: %q", resp.Message.Text)
 	}
 }
 

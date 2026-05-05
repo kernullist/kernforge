@@ -282,18 +282,19 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 		BaseURL:  normalizeOpenRouterBaseURL(""),
 		RoleModels: &ProfileRoleModels{
 			AnalysisWorker: &Profile{
-				Name:     "deepseek-worker",
-				Provider: "openrouter",
-				Model:    "deepseek/deepseek-v4-flash",
-				BaseURL:  normalizeOpenRouterBaseURL(""),
+				Name:            "deepseek-worker",
+				Provider:        "deepseek",
+				Model:           "deepseek-reasoner",
+				ReasoningEffort: "medium",
 			},
 			PlanReviewer: &Profile{
-				Name:     "reviewer",
-				Provider: "openai",
-				Model:    "gpt-review",
+				Name:            "reviewer",
+				Provider:        "openai-codex",
+				Model:           "gpt-review",
+				ReasoningEffort: "high",
 			},
 			Specialists: []SpecialistSubagentProfile{
-				{Name: "planner", Provider: "anthropic", Model: "claude-planner"},
+				{Name: "planner", Provider: "openai-codex", Model: "gpt-specialist", ReasoningEffort: "xhigh"},
 			},
 		},
 	}
@@ -305,6 +306,13 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 		active,
 		{Name: "zai-main", Provider: "openrouter", Model: "z-ai/glm-5.1", BaseURL: normalizeOpenRouterBaseURL("")},
 	}
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:            "planner",
+		Description:     "existing custom planner metadata",
+		Provider:        "openai-codex",
+		Model:           "stale-specialist",
+		ReasoningEffort: "low",
+	}}
 	cfg.ActiveProfileKey = configProfileKey(active)
 	if err := SaveUserConfig(cfg); err != nil {
 		t.Fatalf("SaveUserConfig: %v", err)
@@ -317,14 +325,106 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
 		t.Fatalf("expected active profile main model, got %s / %s", loaded.Provider, loaded.Model)
 	}
-	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "deepseek/deepseek-v4-flash" {
+	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "deepseek-reasoner" || loaded.ProjectAnalysis.WorkerProfile.ReasoningEffort != "medium" {
 		t.Fatalf("expected active profile analysis worker, got %#v", loaded.ProjectAnalysis.WorkerProfile)
 	}
-	if loaded.PlanReview == nil || loaded.PlanReview.Model != "gpt-review" {
+	if loaded.PlanReview == nil || loaded.PlanReview.Model != "gpt-review" || loaded.PlanReview.ReasoningEffort != "high" {
 		t.Fatalf("expected active profile plan reviewer, got %#v", loaded.PlanReview)
 	}
-	if len(loaded.Specialists.Profiles) != 1 || loaded.Specialists.Profiles[0].Model != "claude-planner" {
+	if len(loaded.Specialists.Profiles) != 1 || loaded.Specialists.Profiles[0].Model != "gpt-specialist" || loaded.Specialists.Profiles[0].ReasoningEffort != "xhigh" {
 		t.Fatalf("expected active profile specialist model, got %#v", loaded.Specialists.Profiles)
+	}
+	if loaded.Specialists.Profiles[0].Description != "existing custom planner metadata" {
+		t.Fatalf("expected existing specialist metadata to be preserved, got %#v", loaded.Specialists.Profiles[0])
+	}
+}
+
+func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	active := Profile{
+		Name:     "single-main",
+		Provider: "openrouter",
+		Model:    "deepseek/deepseek-v4-pro",
+		BaseURL:  normalizeOpenRouterBaseURL(""),
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-stale"
+	cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-stale-review"}
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "stale-worker", Provider: "openai", Model: "gpt-stale-worker"}
+	cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "stale-reviewer", Provider: "openai", Model: "gpt-stale-reviewer"}
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:            "planner",
+		Description:     "custom planner metadata",
+		Provider:        "openai-codex",
+		Model:           "stale-specialist",
+		ReasoningEffort: "high",
+	}}
+	cfg.Profiles = []Profile{active}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected active single-model profile, got %s / %s", loaded.Provider, loaded.Model)
+	}
+	if loaded.PlanReview != nil {
+		t.Fatalf("expected single-model profile to clear plan reviewer, got %#v", loaded.PlanReview)
+	}
+	if loaded.ProjectAnalysis.WorkerProfile != nil || loaded.ProjectAnalysis.ReviewerProfile != nil {
+		t.Fatalf("expected single-model profile to clear analysis roles, got worker=%#v reviewer=%#v", loaded.ProjectAnalysis.WorkerProfile, loaded.ProjectAnalysis.ReviewerProfile)
+	}
+	if len(loaded.Specialists.Profiles) != 1 ||
+		loaded.Specialists.Profiles[0].Provider != "" ||
+		loaded.Specialists.Profiles[0].Model != "" ||
+		loaded.Specialists.Profiles[0].ReasoningEffort != "" {
+		t.Fatalf("expected single-model profile to clear specialist model while preserving metadata, got %#v", loaded.Specialists.Profiles)
+	}
+}
+
+func TestLoadConfigPreservesExplicitAnalysisRolesForUnselectedSingleModelProfile(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "openrouter"
+	cfg.Model = "deepseek/deepseek-v4-pro"
+	cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "worker", Provider: "openai", Model: "gpt-worker"}
+	cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "reviewer", Provider: "openai", Model: "gpt-reviewer"}
+	cfg.Profiles = []Profile{{
+		Name:     "single-main",
+		Provider: "openrouter",
+		Model:    "deepseek/deepseek-v4-pro",
+		BaseURL:  normalizeOpenRouterBaseURL(""),
+	}}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "gpt-worker" {
+		t.Fatalf("expected explicit worker role to be preserved, got %#v", loaded.ProjectAnalysis.WorkerProfile)
+	}
+	if loaded.ProjectAnalysis.ReviewerProfile == nil || loaded.ProjectAnalysis.ReviewerProfile.Model != "gpt-reviewer" {
+		t.Fatalf("expected explicit reviewer role to be preserved, got %#v", loaded.ProjectAnalysis.ReviewerProfile)
+	}
+	if loaded.ActiveProfileKey != "" {
+		t.Fatalf("expected unselected single-model profile not to become active, got %q", loaded.ActiveProfileKey)
 	}
 }
 
@@ -1001,7 +1101,9 @@ func TestHelpDetailIncludesProviderStatusCommand(t *testing.T) {
 	for _, needle := range []string{
 		"/provider status",
 		"/provider anthropic",
+		"/provider deepseek",
 		"OpenRouter performs a live key lookup",
+		"DeepSeek performs a live balance lookup",
 		"OpenAI and Anthropic show officially documented billing and usage visibility limits",
 	} {
 		if !strings.Contains(detail, needle) {
@@ -1146,6 +1248,30 @@ func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
 	if !configAutoVerify(cfg) {
 		t.Fatalf("expected auto_verify to default to true")
+	}
+}
+
+func TestDefaultConfigUsesAutoProgressDisplay(t *testing.T) {
+	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
+	if got := configProgressDisplay(cfg); got != "auto" {
+		t.Fatalf("expected progress display auto, got %q", got)
+	}
+}
+
+func TestNormalizeProgressDisplayAliases(t *testing.T) {
+	cases := map[string]string{
+		"":           "auto",
+		"default":    "auto",
+		"footer":     "compact",
+		"quiet":      "compact",
+		"ledger":     "stream",
+		"persistent": "stream",
+		"bad":        "auto",
+	}
+	for input, want := range cases {
+		if got := normalizeProgressDisplay(input); got != want {
+			t.Fatalf("normalizeProgressDisplay(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
