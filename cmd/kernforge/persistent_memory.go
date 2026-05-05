@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	defaultPersistentMemoryMaxEntries  = 1200
-	defaultPersistentMemoryContextMax  = 1800
-	defaultPersistentMemorySearchLimit = 6
+	defaultPersistentMemoryMaxEntries      = 1200
+	defaultPersistentMemoryContextMax      = 1800
+	defaultPersistentMemorySearchLimit     = 6
+	defaultPersistentMemoryContinuityLimit = 4
 )
 
 var memoryTokenPattern = regexp.MustCompile(`[A-Za-z0-9_./:-]{3,}`)
@@ -83,6 +84,12 @@ type PersistentMemoryHit struct {
 	Citation string
 }
 
+type PersistentMemoryPromptContext struct {
+	Text         string
+	Continuity   []PersistentMemoryHit
+	QueryMatches []PersistentMemoryHit
+}
+
 type PersistentMemoryQuery struct {
 	Text       string
 	Importance string
@@ -135,7 +142,8 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 	request := compactPersistentMemoryText(rawUserText, 320)
 	reply := compactPersistentMemoryText(finalReply, 520)
 	tools := uniqueStrings(extractPersistentMemoryTools(turnMessages))
-	files := uniqueStrings(extractPersistentMemoryReferences(rawUserText))
+	files := uniqueStrings(append(extractPersistentMemoryReferences(rawUserText), extractPersistentMemoryMessageReferences(turnMessages)...))
+	taskNotes := extractPersistentMemoryTaskNotes(sess)
 	verificationSummary := ""
 	verificationCategories := []string{}
 	verificationTags := []string{}
@@ -164,7 +172,7 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 	}
 	keywords := uniqueStrings(append(
 		append(extractPersistentMemoryTokens(request), extractPersistentMemoryTokens(reply)...),
-		append(append(append(append(append(tools, files...), verificationCategories...), verificationTags...), append(verificationSeverities, verificationSignals...)...), extractPersistentMemoryTokens(verificationSummary)...)...,
+		append(append(append(append(append(append(tools, files...), taskNotes...), verificationCategories...), verificationTags...), append(verificationSeverities, verificationSignals...)...), extractPersistentMemoryTokens(verificationSummary)...)...,
 	))
 	if request == "" && reply == "" && len(tools) == 0 {
 		return PersistentMemoryRecord{}, false
@@ -187,7 +195,7 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 		CreatedAt:              now,
 		Request:                request,
 		Reply:                  reply,
-		Summary:                buildPersistentMemorySummary(request, reply, tools, files, verificationSummary, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals, verificationMaxRisk),
+		Summary:                buildPersistentMemorySummary(request, reply, tools, files, taskNotes, verificationSummary, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals, verificationMaxRisk),
 		Importance:             importance,
 		Trust:                  derivePersistentMemoryTrust(verificationSummary),
 		VerificationSummary:    verificationSummary,
@@ -204,7 +212,7 @@ func buildPersistentMemoryRecord(ws Workspace, sess *Session, rawUserText, final
 	}, true
 }
 
-func buildPersistentMemorySummary(request, reply string, tools, files []string, verification string, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals []string, verificationMaxRisk int) string {
+func buildPersistentMemorySummary(request, reply string, tools, files, taskNotes []string, verification string, verificationCategories, verificationTags, verificationArtifacts, verificationFailures, verificationSeverities, verificationSignals []string, verificationMaxRisk int) string {
 	var parts []string
 	if request != "" {
 		parts = append(parts, "Request: "+request)
@@ -214,6 +222,9 @@ func buildPersistentMemorySummary(request, reply string, tools, files []string, 
 	}
 	if len(tools) > 0 {
 		parts = append(parts, "Tools: "+strings.Join(tools, ", "))
+	}
+	if len(taskNotes) > 0 {
+		parts = append(parts, "Task notes: "+strings.Join(taskNotes, " | "))
 	}
 	if reply != "" {
 		parts = append(parts, "Outcome: "+reply)
@@ -317,6 +328,104 @@ func extractPersistentMemoryTools(messages []Message) []string {
 	return out
 }
 
+func extractPersistentMemoryMessageReferences(messages []Message) []string {
+	var out []string
+	for _, msg := range messages {
+		out = append(out, extractPersistentMemoryToolMetaReferences(msg.ToolMeta)...)
+		for _, call := range msg.ToolCalls {
+			out = append(out, extractPersistentMemoryToolCallReferences(call)...)
+		}
+	}
+	return normalizeTaskStateList(out, 48)
+}
+
+func extractPersistentMemoryToolMetaReferences(meta map[string]any) []string {
+	if len(meta) == 0 {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{
+		"path",
+		"requested_path",
+		"target_path",
+		"artifact_path",
+		"report_path",
+		"plan_path",
+		"harness_path",
+		"output_path",
+		"log_path",
+		"status_path",
+		"file",
+	} {
+		out = appendPersistentMemoryReference(out, toolMetaString(meta, key))
+	}
+	for _, key := range []string{
+		"paths",
+		"changed_paths",
+		"matched_paths",
+		"write_paths",
+		"artifact_paths",
+		"files",
+	} {
+		for _, item := range toolMetaStringSlice(meta, key) {
+			out = appendPersistentMemoryReference(out, item)
+		}
+	}
+	return out
+}
+
+func extractPersistentMemoryToolCallReferences(call ToolCall) []string {
+	payload := toolCallArgumentsMap(call)
+	if len(payload) == 0 {
+		return nil
+	}
+	var out []string
+	for _, key := range []string{
+		"path",
+		"target_path",
+		"output_path",
+		"file",
+	} {
+		out = appendPersistentMemoryReference(out, stringValue(payload, key))
+	}
+	for _, key := range []string{
+		"paths",
+		"write_paths",
+		"files",
+	} {
+		for _, item := range stringSliceValue(payload, key) {
+			out = appendPersistentMemoryReference(out, item)
+		}
+	}
+	return out
+}
+
+func appendPersistentMemoryReference(out []string, raw string) []string {
+	ref := normalizePersistentMemoryReference(raw)
+	if ref == "" {
+		return out
+	}
+	return append(out, ref)
+}
+
+func normalizePersistentMemoryReference(raw string) string {
+	ref := strings.TrimSpace(raw)
+	if ref == "" {
+		return ""
+	}
+	ref = strings.Trim(ref, ".,:;()[]{}<>\"'")
+	if ref == "" || ref == "." || ref == "./" || ref == ".\\" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "http://") || strings.HasPrefix(strings.ToLower(ref), "https://") {
+		return ""
+	}
+	if mention := mentionRangePattern.FindStringSubmatch(ref); len(mention) == 4 {
+		ref = mention[1]
+	}
+	return compactPersistentMemoryText(ref, 220)
+}
+
 func extractPersistentMemoryReferences(text string) []string {
 	matches := mentionPattern.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
@@ -336,6 +445,53 @@ func extractPersistentMemoryReferences(text string) []string {
 			raw = mention[1]
 		}
 		out = append(out, raw)
+	}
+	return out
+}
+
+func extractPersistentMemoryTaskNotes(sess *Session) []string {
+	if sess == nil || sess.TaskState == nil {
+		return nil
+	}
+	state := sess.TaskState
+	var out []string
+	if strings.TrimSpace(state.Goal) != "" {
+		out = append(out, "goal="+compactPersistentMemoryText(state.Goal, 120))
+	}
+	if strings.TrimSpace(state.CurrentHypothesis) != "" {
+		out = append(out, "hypothesis="+compactPersistentMemoryText(state.CurrentHypothesis, 120))
+	}
+	if notes := lastPersistentMemoryItems(state.ConfirmedFacts, 3, 100); len(notes) > 0 {
+		out = append(out, "confirmed="+strings.Join(notes, "; "))
+	}
+	if notes := lastPersistentMemoryItems(state.CompletedSteps, 3, 100); len(notes) > 0 {
+		out = append(out, "completed="+strings.Join(notes, "; "))
+	}
+	if notes := lastPersistentMemoryItems(state.FailedAttempts, 3, 100); len(notes) > 0 {
+		out = append(out, "failed="+strings.Join(notes, "; "))
+	}
+	if notes := lastPersistentMemoryItems(state.PendingChecks, 2, 100); len(notes) > 0 {
+		out = append(out, "pending="+strings.Join(notes, "; "))
+	}
+	if strings.TrimSpace(state.ReviewerGuidance) != "" {
+		out = append(out, "reviewer="+compactPersistentMemoryText(state.ReviewerGuidance, 120))
+	}
+	return normalizeTaskStateList(out, 8)
+}
+
+func lastPersistentMemoryItems(items []string, limit int, itemLimit int) []string {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	start := len(items) - limit
+	if start < 0 {
+		start = 0
+	}
+	out := make([]string, 0, len(items)-start)
+	for _, item := range items[start:] {
+		if trimmed := compactPersistentMemoryText(item, itemLimit); trimmed != "" {
+			out = append(out, trimmed)
+		}
 	}
 	return out
 }
@@ -405,6 +561,8 @@ func normalizePersistentMemoryRecord(record PersistentMemoryRecord) PersistentMe
 	record.VerificationFailures = uniqueStrings(record.VerificationFailures)
 	record.VerificationSeverities = uniqueStrings(record.VerificationSeverities)
 	record.VerificationSignals = uniqueStrings(record.VerificationSignals)
+	record.ToolNames = uniqueStrings(record.ToolNames)
+	record.Files = normalizeTaskStateList(record.Files, 64)
 	record.Keywords = uniqueStrings(append(record.Keywords,
 		append(append(append(record.VerificationCategories, record.VerificationTags...), append(record.VerificationArtifacts, record.VerificationFailures...)...), append(record.VerificationSeverities, record.VerificationSignals...)...)...,
 	))
@@ -569,6 +727,98 @@ func (s *PersistentMemoryStore) SearchHits(query, workspace, excludeSession stri
 	return out, nil
 }
 
+func (s *PersistentMemoryStore) ContinuityHits(workspace, excludeSession string, limit int) ([]PersistentMemoryHit, error) {
+	if s == nil {
+		return nil, nil
+	}
+	records, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = defaultPersistentMemoryContinuityLimit
+	}
+	currentWorkspace := normalizePersistentMemoryWorkspace(workspace)
+	if currentWorkspace == "" {
+		return nil, nil
+	}
+	var scored []scoredMemory
+	for _, record := range records {
+		if strings.TrimSpace(excludeSession) != "" && strings.EqualFold(record.SessionID, excludeSession) {
+			continue
+		}
+		if workspaceAffinityScore(currentWorkspace, record.Workspace) <= 0 {
+			continue
+		}
+		score := scorePersistentMemoryContinuityRecord(record, currentWorkspace)
+		if score <= 0 {
+			continue
+		}
+		scored = append(scored, scoredMemory{record: record, score: score})
+	}
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].record.CreatedAt.After(scored[j].record.CreatedAt)
+	})
+	if len(scored) > limit {
+		scored = scored[:limit]
+	}
+	out := make([]PersistentMemoryHit, 0, len(scored))
+	for _, item := range scored {
+		out = append(out, PersistentMemoryHit{
+			Record:   item.record,
+			Score:    item.score,
+			Citation: item.record.Citation(),
+		})
+	}
+	return out, nil
+}
+
+func scorePersistentMemoryContinuityRecord(record PersistentMemoryRecord, currentWorkspace string) int {
+	if !persistentMemoryContinuityEligible(record) {
+		return 0
+	}
+	score := workspaceAffinityScore(currentWorkspace, record.Workspace)
+	score += persistentMemoryImportanceBoost(record.Importance)
+	score += persistentMemoryTrustBoost(record.Trust)
+	score += persistentMemoryRecencyBoost(record.CreatedAt) * 3
+	if len(record.Files) > 0 {
+		score += 12
+	}
+	if len(record.ToolNames) > 0 {
+		score += 8
+	}
+	if strings.TrimSpace(record.VerificationSummary) != "" {
+		score += 10
+	}
+	if len(record.VerificationFailures) > 0 {
+		score += 12
+	}
+	if len(record.VerificationArtifacts) > 0 {
+		score += 8
+	}
+	if record.VerificationMaxRisk >= 80 {
+		score += 10
+	}
+	return score
+}
+
+func persistentMemoryContinuityEligible(record PersistentMemoryRecord) bool {
+	if record.Importance == PersistentMemoryHigh || record.Trust == PersistentMemoryConfirmed {
+		return true
+	}
+	if record.Importance == PersistentMemoryMedium {
+		return len(record.Files) > 0 ||
+			len(record.ToolNames) > 1 ||
+			len(record.VerificationArtifacts) > 0 ||
+			len(record.VerificationFailures) > 0 ||
+			strings.TrimSpace(record.VerificationSummary) != ""
+	}
+	return false
+}
+
 func parsePersistentMemoryQuery(raw string) PersistentMemoryQuery {
 	var textParts []string
 	query := PersistentMemoryQuery{}
@@ -654,7 +904,10 @@ func persistentMemorySliceContainsPathLike(items []string, needle string) bool {
 func scorePersistentMemoryRecord(record PersistentMemoryRecord, currentWorkspace, loweredQuery string, queryTokens, queryRefs []string) int {
 	workspaceScore := workspaceAffinityScore(currentWorkspace, record.Workspace)
 	if len(queryTokens) == 0 && len(queryRefs) == 0 {
-		return workspaceScore + persistentMemoryRecencyBoost(record.CreatedAt)
+		if workspaceScore <= 0 {
+			return 0
+		}
+		return workspaceScore + persistentMemoryImportanceBoost(record.Importance) + persistentMemoryTrustBoost(record.Trust) + persistentMemoryRecencyBoost(record.CreatedAt)
 	}
 	score := 0
 	lowerSummary := strings.ToLower(record.Summary)
@@ -858,6 +1111,101 @@ func sliceContainsFold(items []string, needle string) bool {
 	return false
 }
 
+func (s *PersistentMemoryStore) PromptContext(workspace, query, excludeSession string) string {
+	return s.PromptContextDetails(workspace, query, excludeSession).Text
+}
+
+func (s *PersistentMemoryStore) PromptContextDetails(workspace, query, excludeSession string) PersistentMemoryPromptContext {
+	out := PersistentMemoryPromptContext{}
+	if s == nil {
+		return out
+	}
+	var sections []string
+	seen := map[string]bool{}
+	remaining := defaultPersistentMemoryContextMax
+	if hits, err := s.ContinuityHits(workspace, excludeSession, defaultPersistentMemoryContinuityLimit); err == nil && len(hits) > 0 {
+		if text, used, included := formatPersistentMemoryHitsForPrompt(hits, seen, remaining); text != "" {
+			sections = append(sections, "Workspace continuity:\n"+text)
+			out.Continuity = included
+			remaining -= used
+		}
+	}
+	if remaining > 120 && persistentMemoryQueryHasRetrievalSignal(query) {
+		if hits, err := s.SearchHits(query, workspace, excludeSession, 3); err == nil && len(hits) > 0 {
+			if text, used, included := formatPersistentMemoryHitsForPrompt(hits, seen, remaining); text != "" {
+				sections = append(sections, "Query matches:\n"+text)
+				out.QueryMatches = included
+				remaining -= used
+			}
+		}
+	}
+	if len(sections) == 0 {
+		return out
+	}
+	out.Text = strings.Join(sections, "\n")
+	return out
+}
+
+func persistentMemoryQueryHasRetrievalSignal(query string) bool {
+	parsed := parsePersistentMemoryQuery(query)
+	if len(extractPersistentMemoryTokens(parsed.Text)) > 0 || len(extractPersistentMemoryReferences(parsed.Text)) > 0 {
+		return true
+	}
+	return strings.TrimSpace(parsed.Importance) != "" ||
+		strings.TrimSpace(parsed.Trust) != "" ||
+		strings.TrimSpace(parsed.Category) != "" ||
+		strings.TrimSpace(parsed.Tag) != "" ||
+		strings.TrimSpace(parsed.Artifact) != "" ||
+		strings.TrimSpace(parsed.Failure) != "" ||
+		strings.TrimSpace(parsed.Severity) != "" ||
+		strings.TrimSpace(parsed.Signal) != "" ||
+		parsed.MinRisk > 0
+}
+
+func formatPersistentMemoryProgressMessage(cfg Config, context PersistentMemoryPromptContext) string {
+	if len(context.Continuity) == 0 {
+		return ""
+	}
+	snippets := make([]string, 0, 3)
+	for _, hit := range context.Continuity {
+		record := hit.Record
+		label := strings.TrimSpace(record.ID)
+		if label == "" {
+			label = record.Citation()
+		}
+		summary := compactPersistentMemoryText(record.Summary, 120)
+		if summary == "" {
+			summary = compactPersistentMemoryText(record.Request, 120)
+		}
+		if summary == "" {
+			continue
+		}
+		snippets = append(snippets, fmt.Sprintf("%s (%s/%s): %s", label, record.ImportanceLabel(), record.TrustLabel(), summary))
+		if len(snippets) >= 3 {
+			break
+		}
+	}
+	if len(snippets) == 0 {
+		return ""
+	}
+	if extra := len(context.Continuity) - len(snippets); extra > 0 {
+		snippets = append(snippets, fmt.Sprintf("+%d", extra))
+	}
+	if len(context.QueryMatches) > 0 {
+		return fmt.Sprintf(
+			localizedText(cfg, "Loaded workspace memory: %d high-value item(s), plus %d query match(es): %s", "워크스페이스 메모리 참고: high-value %d개, query match %d개: %s"),
+			len(context.Continuity),
+			len(context.QueryMatches),
+			strings.Join(snippets, " | "),
+		)
+	}
+	return fmt.Sprintf(
+		localizedText(cfg, "Loaded workspace memory: %d high-value item(s): %s", "워크스페이스 메모리 참고: high-value %d개: %s"),
+		len(context.Continuity),
+		strings.Join(snippets, " | "),
+	)
+}
+
 func (s *PersistentMemoryStore) RelevantContext(workspace, query, excludeSession string) string {
 	if s == nil {
 		return ""
@@ -866,21 +1214,34 @@ func (s *PersistentMemoryStore) RelevantContext(workspace, query, excludeSession
 	if err != nil || len(hits) == 0 {
 		return ""
 	}
+	text, _, _ := formatPersistentMemoryHitsForPrompt(hits, nil, defaultPersistentMemoryContextMax)
+	return text
+}
+
+func formatPersistentMemoryHitsForPrompt(hits []PersistentMemoryHit, seen map[string]bool, maxChars int) (string, int, []PersistentMemoryHit) {
 	var lines []string
+	included := make([]PersistentMemoryHit, 0, len(hits))
 	total := 0
 	for _, hit := range hits {
 		record := hit.Record
+		if seen != nil && seen[record.ID] {
+			continue
+		}
 		line := fmt.Sprintf("- [%s | %s | %s] %s", record.Citation(), record.ImportanceLabel(), record.TrustLabel(), compactPersistentMemoryText(record.Summary, 420))
-		if total+len(line) > defaultPersistentMemoryContextMax && len(lines) > 0 {
+		if maxChars > 0 && total+len(line) > maxChars && len(lines) > 0 {
 			break
 		}
 		total += len(line)
 		lines = append(lines, line)
+		included = append(included, hit)
+		if seen != nil {
+			seen[record.ID] = true
+		}
 	}
 	if len(lines) == 0 {
-		return ""
+		return "", 0, nil
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), total, included
 }
 
 func (r PersistentMemoryRecord) Citation() string {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -212,6 +213,96 @@ func TestKernforgeMCPServerUsesInitializeWorkspaceFolders(t *testing.T) {
 	}
 }
 
+func TestKernforgeMCPServerUsesToolCallWorkspaceArgument(t *testing.T) {
+	fallbackRoot := t.TempDir()
+	clientRoot := t.TempDir()
+	cfg := DefaultConfig(fallbackRoot)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.PermissionMode = string(ModeBypass)
+	cfg.SessionDir = filepath.Join(fallbackRoot, ".kernforge", "sessions")
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(fallbackRoot, ".kernforge", "analysis")
+	cfg.HooksEnabled = boolPtr(false)
+
+	input := mcpTestJSONLines(t,
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+		map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name": "kernforge_status",
+				"arguments": map[string]any{
+					"workspace": clientRoot,
+				},
+			},
+		},
+	)
+	var output bytes.Buffer
+	if err := runKernforgeMCPServer(fallbackRoot, cfg, "", strings.NewReader(input), &output); err != nil {
+		t.Fatalf("run mcp server: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected two json-line responses, got %d: %q", len(lines), output.String())
+	}
+	text := requireMCPJSONLineText(t, lines[1])
+	if !mcpStatusTextContainsPath(text, clientRoot) {
+		t.Fatalf("status did not use tool workspace root %q: %s", clientRoot, text)
+	}
+	if mcpStatusTextContainsPath(text, fallbackRoot) {
+		t.Fatalf("status unexpectedly used fallback root %q: %s", fallbackRoot, text)
+	}
+	if !strings.Contains(text, "tools/call.params.arguments.workspace") {
+		t.Fatalf("status did not report tool workspace source: %s", text)
+	}
+}
+
+func TestKernforgeMCPServerUsesToolCallMetaCwd(t *testing.T) {
+	fallbackRoot := t.TempDir()
+	clientRoot := t.TempDir()
+	cfg := DefaultConfig(fallbackRoot)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.PermissionMode = string(ModeBypass)
+	cfg.SessionDir = filepath.Join(fallbackRoot, ".kernforge", "sessions")
+	cfg.ProjectAnalysis.OutputDir = filepath.Join(fallbackRoot, ".kernforge", "analysis")
+	cfg.HooksEnabled = boolPtr(false)
+
+	input := mcpTestJSONLines(t,
+		map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+		map[string]any{
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "tools/call",
+			"params": map[string]any{
+				"name":      "kernforge_status",
+				"_meta":     map[string]any{"cwd": clientRoot},
+				"arguments": map[string]any{},
+			},
+		},
+	)
+	var output bytes.Buffer
+	if err := runKernforgeMCPServer(fallbackRoot, cfg, "", strings.NewReader(input), &output); err != nil {
+		t.Fatalf("run mcp server: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected two json-line responses, got %d: %q", len(lines), output.String())
+	}
+	text := requireMCPJSONLineText(t, lines[1])
+	if !mcpStatusTextContainsPath(text, clientRoot) {
+		t.Fatalf("status did not use meta cwd root %q: %s", clientRoot, text)
+	}
+	if !strings.Contains(text, "tools/call.params._meta.cwd") {
+		t.Fatalf("status did not report meta cwd source: %s", text)
+	}
+}
+
 func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 	server, cleanup := newTestKernforgeMCPServer(t)
 	defer cleanup()
@@ -252,6 +343,7 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 		"kernforge_fuzz",
 		"kernforge_guide",
 		"kernforge_look",
+		"kernforge_review_code",
 		"kernforge_status",
 		"kernforge_verify",
 		"kernforge_analyze_project",
@@ -299,6 +391,373 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 		if !mcpListContainsName(templatesResult["resourceTemplates"], name) {
 			t.Fatalf("resources/templates/list did not include %s", name)
 		}
+	}
+	reviewTool := mcpListItemByName(toolsResult["tools"], "kernforge_review_code")
+	schema, _ := reviewTool["inputSchema"].(map[string]any)
+	properties, _ := schema["properties"].(map[string]any)
+	if _, ok := properties["workspace"]; !ok {
+		t.Fatalf("kernforge_review_code schema missing workspace hint: %#v", schema)
+	}
+}
+
+func TestKernforgeMCPReviewCodeUsesMainModelAndProvidedDiff(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "No blocking findings. Add a regression test for the new branch."},
+		}},
+	}
+	server.rt.cfg.Provider = "openai"
+	server.rt.cfg.Model = "gpt-main-review"
+	server.rt.cfg.ReasoningEffort = "low"
+	server.rt.cfg.MaxTokens = 1234
+	server.rt.agent.Config = server.rt.cfg
+	server.rt.agent.Client = client
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_review_code",
+			"arguments": map[string]any{
+				"request": "KernForge로 방금 수정한 코드를 리뷰해줘",
+				"diff": strings.Join([]string{
+					"diff --git a/driver.cpp b/driver.cpp",
+					"@@ -1,3 +1,4 @@",
+					"+if (Size > MaxSize) { return false; }",
+				}, "\n"),
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("review tool produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	for _, want := range []string{
+		"KernForge main-model code review",
+		"gpt-main-review",
+		"provided_diff",
+		"No blocking findings",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected review output to contain %q: %s", want, text)
+		}
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one main model request, got %d", len(client.requests))
+	}
+	req := client.requests[0]
+	if req.Model != "gpt-main-review" {
+		t.Fatalf("review used model %q, want main model", req.Model)
+	}
+	if len(req.Tools) != 0 {
+		t.Fatalf("review request should be read-only without tools, got %#v", req.Tools)
+	}
+	if req.MaxTokens != 1234 || req.ReasoningEffort != "low" {
+		t.Fatalf("review request did not preserve main route settings: max=%d effort=%q", req.MaxTokens, req.ReasoningEffort)
+	}
+	if !strings.Contains(req.System, "read-only code review") {
+		t.Fatalf("review system prompt missing read-only framing: %s", req.System)
+	}
+	if len(req.Messages) != 1 || !strings.Contains(req.Messages[0].Text, "diff --git a/driver.cpp b/driver.cpp") {
+		t.Fatalf("review prompt missing provided diff: %#v", req.Messages)
+	}
+}
+
+func TestKernforgeMCPRouterRoutesReviewRequestsToMainModelReview(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "Finding: keep the bounds check before the copy."},
+		}},
+	}
+	server.rt.cfg.Provider = "openai"
+	server.rt.cfg.Model = "gpt-main-review"
+	server.rt.agent.Config = server.rt.cfg
+	server.rt.agent.Client = client
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge",
+			"arguments": map[string]any{
+				"request": "KernForge로 코드 리뷰해줘",
+				"diff":    "diff --git a/a.cpp b/a.cpp\n+memcpy(dst, src, len);",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("router produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "KernForge main-model code review") || !strings.Contains(text, "bounds check") {
+		t.Fatalf("expected router to run code review, got: %s", text)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected router to call main model once, got %d", len(client.requests))
+	}
+}
+
+func TestKernforgeMCPReviewCodeWithoutContextDoesNotCallModel(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "should not be used"},
+		}},
+	}
+	server.rt.cfg.Provider = "openai"
+	server.rt.cfg.Model = "gpt-main-review"
+	server.rt.agent.Config = server.rt.cfg
+	server.rt.agent.Client = client
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_review_code",
+			"arguments": map[string]any{
+				"request": "review current changes",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("review tool produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "No reviewable code context was found") {
+		t.Fatalf("expected missing context response, got: %s", text)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no model call without reviewable context, got %d", len(client.requests))
+	}
+}
+
+func TestKernforgeMCPReviewCodeWithoutContextDoesNotRequireProvider(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_review_code",
+			"arguments": map[string]any{
+				"request": "review current changes",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("review tool produced no response")
+	}
+	result := requireMCPResult(t, resp)
+	if isError, _ := result["isError"].(bool); isError {
+		t.Fatalf("missing context should not require provider setup: %#v", result)
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "No reviewable code context was found") {
+		t.Fatalf("expected missing context response, got: %s", text)
+	}
+}
+
+func TestKernforgeMCPReviewCodeCollectsWorkspaceGitDiff(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	root := server.rt.workspace.Root
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("bool Check()\n{\n    return false;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	runTestGit(t, root, "add", "driver.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("bool Check()\n{\n    return true;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write modified file: %v", err)
+	}
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "Finding: changed return value needs a test."},
+		}},
+	}
+	server.rt.cfg.Provider = "openai"
+	server.rt.cfg.Model = "gpt-main-review"
+	server.rt.agent.Config = server.rt.cfg
+	server.rt.agent.Client = client
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_review_code",
+			"arguments": map[string]any{
+				"request": "review current changes",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("review tool produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "git_diff") || !strings.Contains(text, "changed return value") {
+		t.Fatalf("expected git diff-backed review output, got: %s", text)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one model call, got %d", len(client.requests))
+	}
+	prompt := client.requests[0].Messages[0].Text
+	if !strings.Contains(prompt, "Unstaged git diff") || !strings.Contains(prompt, "+    return true;") {
+		t.Fatalf("review prompt did not include workspace git diff: %s", prompt)
+	}
+}
+
+func TestKernforgeMCPReviewCodeCollectsGitDiffForAbsolutePath(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	root := server.rt.workspace.Root
+	runTestGit(t, root, "init")
+	filePath := filepath.Join(root, "driver.cpp")
+	if err := os.WriteFile(filePath, []byte("bool Check()\n{\n    return false;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	runTestGit(t, root, "add", "driver.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filePath, []byte("bool Check()\n{\n    return true;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write modified file: %v", err)
+	}
+
+	client := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "Finding: absolute path diff was reviewed."},
+		}},
+	}
+	server.rt.cfg.Provider = "openai"
+	server.rt.cfg.Model = "gpt-main-review"
+	server.rt.agent.Config = server.rt.cfg
+	server.rt.agent.Client = client
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_review_code",
+			"arguments": map[string]any{
+				"request": "review current changes",
+				"paths":   []string{filePath},
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("review tool produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	if !strings.Contains(text, "git_diff") || !strings.Contains(text, "absolute path diff was reviewed") {
+		t.Fatalf("expected absolute path git diff-backed review output, got: %s", text)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one model call, got %d", len(client.requests))
+	}
+	prompt := client.requests[0].Messages[0].Text
+	if !strings.Contains(prompt, "Unstaged git diff") || !strings.Contains(prompt, "+    return true;") {
+		t.Fatalf("review prompt did not include workspace git diff for absolute path: %s", prompt)
+	}
+	if strings.Contains(prompt, filePath) {
+		t.Fatalf("review prompt should normalize absolute path to workspace-relative path: %s", prompt)
+	}
+}
+
+func TestParseMCPReviewGitStatusPathsPreservesUnstagedPathFirstCharacter(t *testing.T) {
+	status := strings.Join([]string{
+		"## main",
+		" M driver.cpp",
+		"A  staged.cpp",
+		"?? new.cpp",
+	}, "\n")
+	paths := parseMCPReviewGitStatusPaths(status)
+	for _, want := range []string{"driver.cpp", "staged.cpp", "new.cpp"} {
+		if !containsString(paths, want) {
+			t.Fatalf("expected parsed status paths to contain %s, got %#v", want, paths)
+		}
+	}
+	for _, bad := range []string{"river.cpp", "taged.cpp", "ew.cpp"} {
+		if containsString(paths, bad) {
+			t.Fatalf("status parser lost first path character: %#v", paths)
+		}
+	}
+}
+
+func TestKernforgeMCPGuideRecommendsMainModelReviewForCodeReview(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_guide",
+			"arguments": map[string]any{
+				"request": "KernForge로 방금 작성한 코드를 검토해줘",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("guide produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	for _, want := range []string{
+		`"intent": "review"`,
+		`"name": "kernforge_review_code"`,
+		"main_model_read_only_review",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected guide output to contain %q: %s", want, text)
+		}
+	}
+}
+
+func TestKernforgeMCPGuideDoesNotTreatEveryKoreanReviewWordAsCodeReview(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_guide",
+			"arguments": map[string]any{
+				"request": "KernForge로 프로젝트 구조를 검토해줘",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("guide produced no response")
+	}
+	text := requireMCPTextResult(t, resp)
+	for _, want := range []string{
+		`"intent": "analyze"`,
+		`"name": "kernforge_analyze_project"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected guide output to contain %q: %s", want, text)
+		}
+	}
+	if strings.Contains(text, "kernforge_review_code") {
+		t.Fatalf("non-code review request should not route to code review: %s", text)
 	}
 }
 
@@ -1682,6 +2141,16 @@ func newTestKernforgeMCPServer(t *testing.T) (*kernforgeMCPServer, func()) {
 	}
 }
 
+func runTestGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+}
+
 func requireMCPResult(t *testing.T, resp map[string]any) map[string]any {
 	t.Helper()
 	if errObj, ok := resp["error"]; ok {
@@ -1753,6 +2222,20 @@ func testMCPFileURI(path string) string {
 		return "file://" + slashed
 	}
 	return "file:///" + slashed
+}
+
+func mcpTestJSONLines(t *testing.T, messages ...map[string]any) string {
+	t.Helper()
+	var b strings.Builder
+	for _, msg := range messages {
+		data, err := json.Marshal(msg)
+		if err != nil {
+			t.Fatalf("marshal mcp test message: %v", err)
+		}
+		b.Write(data)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func mcpStatusTextContainsPath(text string, path string) bool {

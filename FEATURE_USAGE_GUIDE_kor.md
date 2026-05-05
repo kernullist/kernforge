@@ -65,7 +65,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 8. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
 9. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
 10. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
-11. `progress_display`가 진행 표시 방식을 제어하며 `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있다. `auto`는 tool/model/route ledger를 transcript에 남기고 고빈도 shell tail 출력은 transient로 유지하며, `compact`는 footer 중심, `stream`은 모든 update 지속 기록 방식이다.
+11. `progress_display`가 진행 표시 방식을 제어하며 `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있다. `auto`는 tool/model/route와 project analysis ledger를 transcript에 남기고 고빈도 shell tail 출력은 transient로 유지하며, `compact`는 footer 중심, `stream`은 모든 update 지속 기록 방식이다.
 12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
 13. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
 
@@ -364,6 +364,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 7. 실행 마지막에 눈에 띄는 `Analysis artifacts:` 블록과 `Analysis handoff`를 출력해 사용자가 순서를 외우지 않아도 dashboard, fuzz campaign automation, target drilldown, verification으로 이어갈 수 있게 한다.
 8. local provider 또는 명시적으로 route-limited인 환경에서는 같은 모델 route의 worker/reviewer 요청을 전역 scheduler로 제한해 provider 포화와 저신뢰 placeholder 연쇄를 줄인다.
 9. shard 제한을 직접 설정하지 않은 local model 환경에서는 Kernforge가 shard 크기를 자동 조절하고, 최종 timeout 또는 5xx/overload 계열 provider error로 run이 멈추면 더 작은 shard로 한 번 자동 재실행한다.
+10. worker slot 수, shard wave, 완료/실패 shard 합계, cache/review 상태, analysis stage와 shard 이름이 붙은 model wait event를 실행 중 progress로 보여준다.
 
 대표 명령:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -379,6 +380,7 @@ LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_fil
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
 reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, plan-review reviewer, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있고, effort 지원 target을 새로 선택했는데 undefined이면 해당 target만 기본 `low`로 저장된다.
 analysis worker/reviewer, plan reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
+main provider/model만 바꾸면 명시적인 analysis worker/reviewer profile은 유지된다. 이전에 따로 둔 route가 아니라 현재 main model을 다시 상속시키고 싶으면 `/set-analysis-models clear`를 사용한다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 
 역할 분리:
@@ -805,6 +807,7 @@ diff workflow 메모:
 6. 기본 `max_tokens`는 `8192`이며, 예전 기본값 `4096`이 config에 남아 있으면 시작 또는 `/reload` 때 자동 마이그레이션된다.
 7. 기본 `max_tool_iterations`는 `0`(unlimited)이다. 파일 검색/대형 문서화처럼 tool call이 많이 필요한 턴은 더 이상 기본 16회 제한으로 중단되지 않으며, 필요하면 `/set-max-tool-iterations 24`처럼 양수 제한을 다시 걸 수 있다.
 8. project analysis worker/reviewer가 main 모델과 같은 OpenRouter 또는 DeepSeek route를 공유하면 기본 model-route limit은 2다. upstream rate-limit 또는 dynamic-concurrency cascade를 줄이기 위한 값이며, key/provider pool이 충분할 때만 `model_routes.provider_limits.openrouter`나 `model_routes.provider_limits.deepseek`를 더 높인다.
+9. `/analyze-project`는 tool/model streaming과 같은 progress ledger를 사용한다. `auto`는 오래 남겨야 할 shard/wave와 model-wait update를 기록하고, `compact`는 footer 중심으로 보여주며, `stream`은 긴 실행 디버깅을 위해 모든 update를 기록한다.
 
 ## 3. 가장 추천하는 실전 흐름
 
@@ -1070,6 +1073,8 @@ Kernforge가 도와주는 부분:
 3. override가 활성화되어 있는지 같이 보고 싶을 때
 
 ### 4.8 `/mem-search`
+
+persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 모델로 전달되기 전에 자동으로 주입됩니다. Kernforge는 같은 workspace의 최근 high-value record를 `Workspace continuity` section으로 먼저 넣고, 현재 prompt에 파일 멘션, ASCII 검색어, 구조화 필터가 있으면 `Query matches`도 추가합니다. continuity memory가 주입되면 재사용한 memory id와 짧은 요약을 `memory` activity line으로 사용자에게도 보여줍니다. 그래서 새 세션에서도 최근 수정 파일, verification 결과, 완료 단계, 실패 시도를 다시 문서 전체를 읽기 전에 먼저 참고할 수 있습니다.
 
 자주 쓰는 쿼리 예:
 

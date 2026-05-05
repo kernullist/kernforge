@@ -102,6 +102,65 @@ func TestPersistentMemoryRelevantContextFormatsResults(t *testing.T) {
 	}
 }
 
+func TestPersistentMemoryPromptContextIncludesWorkspaceContinuityWithoutQueryMatch(t *testing.T) {
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),
+	}
+	repo := filepath.Join("F:", "repo")
+	if err := store.Append(PersistentMemoryRecord{
+		ID:          "mem-important",
+		SessionID:   "old-session",
+		SessionName: "Provider Routing",
+		Workspace:   repo,
+		Summary:     "DeepSeek provider routing fix touched config.go and provider.go. Keep profile role overrides separate from main model activation.",
+		Importance:  PersistentMemoryHigh,
+		Files:       []string{"cmd/kernforge/config.go", "cmd/kernforge/provider.go"},
+		Keywords:    []string{"deepseek", "provider"},
+	}); err != nil {
+		t.Fatalf("Append important: %v", err)
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-noise",
+		SessionID:  "old-session",
+		Workspace:  repo,
+		Summary:    "Tiny chat note",
+		Importance: PersistentMemoryLow,
+	}); err != nil {
+		t.Fatalf("Append noise: %v", err)
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-other-workspace",
+		SessionID:  "old-session",
+		Workspace:  filepath.Join("F:", "other"),
+		Summary:    "Important but from another workspace",
+		Importance: PersistentMemoryHigh,
+	}); err != nil {
+		t.Fatalf("Append other workspace: %v", err)
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-current-session",
+		SessionID:  "current-session",
+		Workspace:  repo,
+		Summary:    "Current session should not be reinjected.",
+		Importance: PersistentMemoryHigh,
+	}); err != nil {
+		t.Fatalf("Append current session: %v", err)
+	}
+
+	contextText := store.PromptContext(repo, "계속 진행해줘", "current-session")
+	if !strings.Contains(contextText, "Workspace continuity:") {
+		t.Fatalf("expected workspace continuity section, got %q", contextText)
+	}
+	if !strings.Contains(contextText, "mem-important") || !strings.Contains(contextText, "DeepSeek provider routing fix") {
+		t.Fatalf("expected important memory in continuity context, got %q", contextText)
+	}
+	for _, unwanted := range []string{"mem-noise", "mem-other-workspace", "mem-current-session"} {
+		if strings.Contains(contextText, unwanted) {
+			t.Fatalf("did not expect %s in continuity context: %q", unwanted, contextText)
+		}
+	}
+}
+
 func TestAgentReplyInjectsAndCapturesPersistentMemory(t *testing.T) {
 	dir := t.TempDir()
 	store := &PersistentMemoryStore{
@@ -118,6 +177,7 @@ func TestAgentReplyInjectsAndCapturesPersistentMemory(t *testing.T) {
 	}
 
 	session := NewSession(dir, "fake", "fake-model", "", "default")
+	var progressEvents []ProgressEvent
 	agent := &Agent{
 		Config: Config{AutoCompactChars: 45000},
 		Client: &fakeProviderClient{
@@ -136,6 +196,9 @@ func TestAgentReplyInjectsAndCapturesPersistentMemory(t *testing.T) {
 		Session: session,
 		Store:   NewSessionStore(filepath.Join(dir, "sessions")),
 		LongMem: store,
+		EmitProgressEvent: func(event ProgressEvent) {
+			progressEvents = append(progressEvents, event)
+		},
 	}
 
 	reply, err := agent.Reply(context.Background(), "update login auth flow")
@@ -157,6 +220,73 @@ func TestAgentReplyInjectsAndCapturesPersistentMemory(t *testing.T) {
 	}
 	if stats.Count != 2 {
 		t.Fatalf("expected captured memory record, got count=%d", stats.Count)
+	}
+}
+
+func TestAgentReplyInjectsWorkspaceContinuityMemoryWithoutQueryMatch(t *testing.T) {
+	dir := t.TempDir()
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(dir, "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-continuity",
+		SessionID:  "old-session",
+		Workspace:  dir,
+		Summary:    "Analyze-project cancellation fix: suppress late provider progress after cancellation and keep worker callbacks cancel-aware.",
+		Importance: PersistentMemoryHigh,
+		Files:      []string{"cmd/kernforge/analysis_project.go", "cmd/kernforge/parallel_edit_workers.go"},
+		Keywords:   []string{"cancel", "analyze-project"},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	session := NewSession(dir, "fake", "fake-model", "", "default")
+	var progressEvents []ProgressEvent
+	agent := &Agent{
+		Config: Config{AutoCompactChars: 45000},
+		Client: &fakeProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{
+					Role: "assistant",
+					Text: "Continuing from the previous work.",
+				},
+			}},
+		},
+		Tools: NewToolRegistry(),
+		Workspace: Workspace{
+			BaseRoot: dir,
+			Root:     dir,
+		},
+		Session: session,
+		Store:   NewSessionStore(filepath.Join(dir, "sessions")),
+		LongMem: store,
+		EmitProgressEvent: func(event ProgressEvent) {
+			progressEvents = append(progressEvents, event)
+		},
+	}
+
+	if _, err := agent.Reply(context.Background(), "계속 진행해줘"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(agent.Session.Messages) == 0 {
+		t.Fatalf("expected injected user message")
+	}
+	first := agent.Session.Messages[0].Text
+	if !strings.Contains(first, "Workspace continuity:") || !strings.Contains(first, "mem-continuity") {
+		t.Fatalf("expected continuity memory injection, got %q", first)
+	}
+	if len(progressEvents) == 0 {
+		t.Fatalf("expected visible memory progress event")
+	}
+	foundMemoryEvent := false
+	for _, event := range progressEvents {
+		if event.Kind == progressKindMemoryContext && strings.Contains(event.Message, "mem-continuity") {
+			foundMemoryEvent = true
+			break
+		}
+	}
+	if !foundMemoryEvent {
+		t.Fatalf("expected memory progress event with cited memory, got %#v", progressEvents)
 	}
 }
 
@@ -286,6 +416,59 @@ func TestBuildPersistentMemoryRecordCapturesStructuredVerificationMetadata(t *te
 	}
 	if record.VerificationMaxRisk == 0 {
 		t.Fatalf("expected verification max risk, got %#v", record)
+	}
+}
+
+func TestBuildPersistentMemoryRecordCapturesToolReferencesAndTaskNotes(t *testing.T) {
+	dir := t.TempDir()
+	sess := NewSession(dir, "fake", "fake-model", "", "default")
+	sess.TaskState = &TaskState{
+		Goal:           "Fix project analysis cancellation",
+		CompletedSteps: []string{"suppressed late provider progress"},
+		FailedAttempts: []string{"context cancel without callback guard still emitted worker errors"},
+	}
+	turnMessages := []Message{
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				Name:      "read_file",
+				Arguments: `{"path":"cmd/kernforge/analysis_project.go"}`,
+			}},
+		},
+		{
+			Role:     "tool",
+			ToolName: "grep",
+			ToolMeta: map[string]any{
+				"matched_paths": []string{"cmd/kernforge/main.go", "cmd/kernforge/parallel_edit_workers.go"},
+			},
+		},
+		{
+			Role:     "tool",
+			ToolName: "apply_patch",
+			ToolMeta: map[string]any{
+				"changed_paths": []string{"cmd/kernforge/persistent_memory.go"},
+			},
+		},
+	}
+	record, ok := buildPersistentMemoryRecord(Workspace{BaseRoot: dir, Root: dir}, sess, "continue", "done", turnMessages)
+	if !ok {
+		t.Fatal("expected persistent memory record")
+	}
+	for _, want := range []string{
+		"cmd/kernforge/analysis_project.go",
+		"cmd/kernforge/main.go",
+		"cmd/kernforge/parallel_edit_workers.go",
+		"cmd/kernforge/persistent_memory.go",
+	} {
+		if !sliceContainsFold(record.Files, want) {
+			t.Fatalf("expected record files to include %s, got %#v", want, record.Files)
+		}
+	}
+	if !strings.Contains(record.Summary, "Task notes:") || !strings.Contains(record.Summary, "suppressed late provider progress") {
+		t.Fatalf("expected task notes in summary, got %q", record.Summary)
+	}
+	if !sliceContainsFold(record.ToolNames, "read_file") || !sliceContainsFold(record.ToolNames, "apply_patch") {
+		t.Fatalf("expected tool names to be captured, got %#v", record.ToolNames)
 	}
 }
 

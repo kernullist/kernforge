@@ -67,7 +67,7 @@ Current behavior:
 8. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
 9. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
 10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
-11. `progress_display` controls progress visibility and `/progress-display auto|compact|stream` changes it from the REPL: `auto` keeps tool/model/route ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
+11. `progress_display` controls progress visibility and `/progress-display auto|compact|stream` changes it from the REPL: `auto` keeps tool/model/route and project-analysis ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
 12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
 13. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
 
@@ -366,6 +366,7 @@ Purpose:
 7. End the run with a highlighted `Analysis artifacts:` block and an `Analysis handoff` so the user can continue into the dashboard, fuzz campaign automation, target drilldown, or verification without memorizing the sequence.
 8. In local-provider or explicitly route-limited setups, cap shared worker/reviewer model routes through the global scheduler to reduce provider saturation and low-confidence placeholder cascades.
 9. Let Kernforge adapt shard size for local models when shard limits are not configured, then automatically retry once with smaller shards when a final timeout or 5xx/overload-style provider error still stops the run.
+10. Show live execution progress with worker slot count, shard waves, completed/failed shard totals, cache/review state, and model wait events labeled by analysis stage and shard.
 
 Useful commands:
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]`
@@ -381,6 +382,7 @@ For local-model providers such as LM Studio, vLLM, llama.cpp, and Ollama, unset 
 When worker and reviewer use the same provider/model/base_url/reasoning_effort route, shard execution is capped by the model route limit. Local providers default to serial execution with a route limit of 1; cloud/API routes are not forced to serial execution unless `model_routes` says so.
 Reasoning effort is stored per configured model target, not as one global override. The main profile, plan-review reviewer, analysis worker/reviewer, and specialist profiles can each carry a different `reasoning_effort`; selecting a new effort-capable target defaults that target to `low` when it was still undefined.
 Role-specific `base_url` values for analysis worker/reviewer, plan reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
+Changing the main provider/model preserves explicit analysis worker and reviewer profiles. Use `/set-analysis-models clear` when you want project analysis to inherit the current main model again instead of a previously dedicated route.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
 
 Role split:
@@ -808,6 +810,7 @@ Prompt budget behavior that now matters:
 6. The default `max_tokens` is `8192`; config files that still hold the old default `4096` are migrated at startup or `/reload`.
 7. The default `max_tool_iterations` is `0` (unlimited). File search and large documentation turns no longer stop at the old default 16-tool cap unless you explicitly re-pin a positive limit, for example `/set-max-tool-iterations 24`.
 8. When project analysis worker and reviewer roles share the same OpenRouter or DeepSeek route as the main model, the default model-route limit is 2 to reduce upstream rate-limit or dynamic-concurrency cascades. Override `model_routes.provider_limits.openrouter` or `model_routes.provider_limits.deepseek` only when your key/provider pool can sustain more concurrency.
+9. `/analyze-project` now uses the same progress ledger as tool/model streaming: `auto` records durable shard/wave and model-wait updates, `compact` keeps them in the footer, and `stream` records every update for long-run debugging.
 
 ## 3. Recommended Real-World Flows
 
@@ -1066,6 +1069,8 @@ Good use cases:
 3. When you want to see active overrides and recent high-risk state together.
 
 ### 4.8 `/mem-search`
+
+Persistent memory is also injected automatically before the model sees a new turn. Kernforge now includes a small `Workspace continuity` section with recent high-value records from the same workspace, then adds `Query matches` when the current prompt has file mentions, ASCII search terms, or structured filters. When continuity memory is injected, a visible `memory` activity line lists the reused memory ids and compact summaries. This helps a fresh session remember recently touched files, verification outcomes, completed steps, and failed attempts without rereading the same project docs first.
 
 Useful queries:
 

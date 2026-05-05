@@ -1153,6 +1153,9 @@ func applyActiveProfileRoleModels(cfg *Config) {
 	if strings.TrimSpace(cfg.ActiveProfileKey) == "" {
 		cfg.ActiveProfileKey = configProfileKey(profile)
 	}
+	if profile.RoleModels == nil {
+		return
+	}
 	applyConfigProfileRoleModels(cfg, profile)
 }
 

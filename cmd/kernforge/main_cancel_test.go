@@ -2008,6 +2008,72 @@ func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
 	}
 }
 
+func TestActivateProviderStoresMainOnlyProfileWithoutCapturingRoleOverrides(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	rt := &runtimeState{
+		cfg:    DefaultConfig(workspace),
+		ui:     NewUI(),
+		writer: &bytes.Buffer{},
+		store:  NewSessionStore(filepath.Join(home, "sessions")),
+		session: &Session{
+			ID:       "session-main-only-profile",
+			Provider: "openrouter",
+			Model:    "deepseek/deepseek-v4-pro",
+			BaseURL:  normalizeOpenRouterBaseURL(""),
+		},
+		interactive: false,
+	}
+	rt.cfg.Provider = "openrouter"
+	rt.cfg.Model = "deepseek/deepseek-v4-pro"
+	rt.cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	rt.cfg.ProviderKeys = map[string]string{
+		"deepseek":   "deepseek-key",
+		"openrouter": "openrouter-key",
+	}
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{
+		Name:     "worker",
+		Provider: "openrouter",
+		Model:    "deepseek/deepseek-v4-flash",
+		BaseURL:  normalizeOpenRouterBaseURL(""),
+		APIKey:   "openrouter-key",
+	}
+
+	if err := rt.activateProvider("deepseek", "deepseek-v4-pro", normalizeDeepSeekBaseURL("")); err != nil {
+		t.Fatalf("activateProvider: %v", err)
+	}
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.Provider != "openrouter" {
+		t.Fatalf("expected explicit analysis worker override to remain active, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	}
+	if len(rt.cfg.Profiles) == 0 {
+		t.Fatalf("expected activated profile to be saved")
+	}
+	profile := rt.cfg.Profiles[0]
+	if profile.Provider != "deepseek" || profile.Model != "deepseek-v4-pro" {
+		t.Fatalf("expected DeepSeek main profile, got %#v", profile)
+	}
+	if profile.RoleModels != nil {
+		t.Fatalf("main provider activation should not capture stale role overrides, got %#v", profile.RoleModels)
+	}
+
+	saved, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(saved.Profiles) == 0 || saved.Profiles[0].Provider != "deepseek" {
+		t.Fatalf("expected saved DeepSeek profile, got %#v", saved.Profiles)
+	}
+	if saved.Profiles[0].RoleModels != nil {
+		t.Fatalf("expected saved DeepSeek profile to stay main-only, got %#v", saved.Profiles[0].RoleModels)
+	}
+	if saved.ProjectAnalysis.WorkerProfile == nil || saved.ProjectAnalysis.WorkerProfile.Provider != "openrouter" {
+		t.Fatalf("expected explicit saved worker override to remain global, got %#v", saved.ProjectAnalysis.WorkerProfile)
+	}
+}
+
 func TestCurrentProfileCapturesRoleModelSet(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
