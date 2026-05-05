@@ -67,8 +67,16 @@ func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
 
 func TestPromptUsesUserScopedTargetLabel(t *testing.T) {
 	ui := UI{color: false}
-	prompt := ui.prompt("openai", "gpt-5.4")
+	prompt := ui.prompt("openai", "gpt-5.4", "")
 	if prompt != "you [openai / gpt-5.4] > " {
+		t.Fatalf("unexpected prompt rendering: %q", prompt)
+	}
+}
+
+func TestPromptIncludesReasoningEffortWhenProvided(t *testing.T) {
+	ui := UI{color: false}
+	prompt := ui.prompt("openai-codex", "gpt-5.5", "high")
+	if prompt != "you [openai-codex / gpt-5.5 / effort=high] > " {
 		t.Fatalf("unexpected prompt rendering: %q", prompt)
 	}
 }

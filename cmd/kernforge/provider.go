@@ -27,14 +27,15 @@ type ToolCall struct {
 }
 
 type Message struct {
-	Role       string         `json:"role"`
-	Text       string         `json:"text,omitempty"`
-	Images     []MessageImage `json:"images,omitempty"`
-	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
-	ToolName   string         `json:"tool_name,omitempty"`
-	ToolMeta   map[string]any `json:"tool_meta,omitempty"`
-	IsError    bool           `json:"is_error,omitempty"`
+	Role             string         `json:"role"`
+	Text             string         `json:"text,omitempty"`
+	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	Images           []MessageImage `json:"images,omitempty"`
+	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
+	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	ToolName         string         `json:"tool_name,omitempty"`
+	ToolMeta         map[string]any `json:"tool_meta,omitempty"`
+	IsError          bool           `json:"is_error,omitempty"`
 }
 
 type ChatRequest struct {
@@ -48,11 +49,27 @@ type ChatRequest struct {
 	WorkingDir      string
 	JSONMode        bool
 	OnTextDelta     func(string)
+	OnProgressEvent func(ProgressEvent)
 }
 
 type ChatResponse struct {
 	Message    Message
 	StopReason string
+}
+
+type ProgressEvent struct {
+	Kind             string
+	Message          string
+	Provider         string
+	Model            string
+	ToolName         string
+	ToolCallID       string
+	ArgumentsPreview string
+	RouteLabel       string
+	Stage            string
+	Shard            string
+	Status           string
+	Elapsed          time.Duration
 }
 
 type providerErrorBody struct {
@@ -238,6 +255,11 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 			return nil, fmt.Errorf("Anthropic provider selected but no API key was found")
 		}
 		return NewAnthropicClient(cfg.BaseURL, cfg.APIKey), nil
+	case "deepseek":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("DeepSeek provider selected but no API key was found")
+		}
+		return NewDeepSeekClient(cfg.BaseURL, cfg.APIKey, cfg.ReasoningEffort), nil
 	case "openrouter":
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("OpenRouter provider selected but no API key was found")
@@ -282,6 +304,8 @@ func normalizeProviderName(provider string) string {
 		return "codex-cli"
 	case "openai-codex", "openai_codex":
 		return "openai-codex"
+	case "deepseek", "deepseek-api", "deepseek_api", "deepseek api":
+		return "deepseek"
 	case "opencode", "open-code", "open_code", "opencode-zen", "opencode_zen", "opencode zen", "open-code-zen", "open_code_zen", "open code zen":
 		return "opencode"
 	case "opencode-go", "opencode_go", "opencode go", "open-code-go", "open_code_go", "open code go", "opencodego":
@@ -506,6 +530,7 @@ type OpenAIClient struct {
 	apiKey     string
 	baseURL    string
 	name       string
+	reasoning  string
 	httpClient *http.Client
 }
 
@@ -531,6 +556,16 @@ func NewOpenAICompatibleClient(provider, baseURL, apiKey string) *OpenAIClient {
 	}
 }
 
+func NewDeepSeekClient(baseURL, apiKey string, reasoningEffort string) *OpenAIClient {
+	return &OpenAIClient{
+		apiKey:     strings.TrimSpace(apiKey),
+		baseURL:    normalizeDeepSeekBaseURL(baseURL),
+		name:       "deepseek",
+		reasoning:  normalizeReasoningEffort(reasoningEffort),
+		httpClient: &http.Client{},
+	}
+}
+
 func (c *OpenAIClient) Name() string {
 	if c != nil && strings.TrimSpace(c.name) != "" {
 		return strings.TrimSpace(c.name)
@@ -542,7 +577,11 @@ func (c *OpenAIClient) ModelRouteMetadata() ModelRouteMetadata {
 	if c == nil {
 		return ModelRouteMetadata{Provider: "openai"}
 	}
-	return ModelRouteMetadata{Provider: c.Name(), BaseURL: c.baseURL}
+	meta := ModelRouteMetadata{Provider: c.Name(), BaseURL: c.baseURL}
+	if strings.EqualFold(meta.Provider, "deepseek") {
+		meta.ReasoningEffort = c.reasoning
+	}
+	return meta
 }
 
 func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
@@ -556,19 +595,22 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		} `json:"function"`
 	}
 	type openAIMessage struct {
-		Role       string           `json:"role"`
-		Content    any              `json:"content,omitempty"`
-		Name       string           `json:"name,omitempty"`
-		ToolCallID string           `json:"tool_call_id,omitempty"`
-		ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+		Role             string           `json:"role"`
+		Content          any              `json:"content,omitempty"`
+		ReasoningContent string           `json:"reasoning_content,omitempty"`
+		Name             string           `json:"name,omitempty"`
+		ToolCallID       string           `json:"tool_call_id,omitempty"`
+		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 	}
 	type openAIRequest struct {
-		Model          string          `json:"model"`
-		Messages       []openAIMessage `json:"messages"`
-		Temperature    float64         `json:"temperature,omitempty"`
-		MaxTokens      int             `json:"max_tokens,omitempty"`
-		ResponseFormat any             `json:"response_format,omitempty"`
-		Tools          []struct {
+		Model           string          `json:"model"`
+		Messages        []openAIMessage `json:"messages"`
+		Temperature     float64         `json:"temperature,omitempty"`
+		MaxTokens       int             `json:"max_tokens,omitempty"`
+		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+		Thinking        any             `json:"thinking,omitempty"`
+		ResponseFormat  any             `json:"response_format,omitempty"`
+		Tools           []struct {
 			Type     string `json:"type"`
 			Function struct {
 				Name        string         `json:"name"`
@@ -582,8 +624,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	type openAIResponse struct {
 		Choices []struct {
 			Message struct {
-				Content   json.RawMessage  `json:"content"`
-				ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
+				Content          json.RawMessage  `json:"content"`
+				ReasoningContent string           `json:"reasoning_content,omitempty"`
+				ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -603,6 +646,16 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 	if req.JSONMode {
 		payload.ResponseFormat = map[string]string{"type": "json_object"}
+	}
+	if strings.EqualFold(providerName, "deepseek") {
+		effort, err := normalizeDeepSeekReasoningEffort(firstNonBlankString(req.ReasoningEffort, c.reasoning))
+		if err != nil {
+			return ChatResponse{}, err
+		}
+		if effort != "" {
+			payload.ReasoningEffort = effort
+			payload.Thinking = map[string]string{"type": "enabled"}
+		}
 	}
 
 	if strings.TrimSpace(req.System) != "" {
@@ -642,7 +695,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			}
 			payload.Messages = append(payload.Messages, openAIMessage{Role: "user", Content: content})
 		case "assistant":
-			item := openAIMessage{Role: "assistant", Content: assistantMessageContent(msg.Text, len(msg.ToolCalls) > 0)}
+			assistantContent := assistantMessageContent(msg.Text, len(msg.ToolCalls) > 0)
+			if strings.EqualFold(providerName, "deepseek") && assistantContent == nil {
+				assistantContent = ""
+			}
+			item := openAIMessage{Role: "assistant", Content: assistantContent}
+			if strings.EqualFold(providerName, "deepseek") && strings.TrimSpace(msg.ReasoningContent) != "" {
+				item.ReasoningContent = strings.TrimSpace(msg.ReasoningContent)
+			}
 			for _, tc := range msg.ToolCalls {
 				call := openAIToolCall{ID: tc.ID, Type: "function"}
 				call.Function.Name = tc.Name
@@ -677,7 +737,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	if len(payload.Tools) > 0 {
 		payload.ToolChoice = "auto"
 	}
-	if req.OnTextDelta != nil {
+	if req.OnTextDelta != nil || req.OnProgressEvent != nil {
 		payload.Stream = true
 	}
 
@@ -686,7 +746,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		return ChatResponse{}, err
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAIAPIURL(c.baseURL, "/v1/chat/completions"), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICompatibleAPIURL(providerName, c.baseURL, "/v1/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -716,13 +776,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 
 	if payload.Stream {
-		streamResp, err := readOpenAIStream(ctx, providerName, resp.Body, req.OnTextDelta, len(req.Tools) > 0)
+		streamResp, err := readOpenAIStream(ctx, providerName, resp.Body, req.OnTextDelta, req.OnProgressEvent, len(req.Tools) > 0)
 		if err != nil {
 			return ChatResponse{}, err
 		}
 		if shouldFallbackAfterOpenAIStream(streamResp) {
 			fallbackReq := req
 			fallbackReq.OnTextDelta = nil
+			fallbackReq.OnProgressEvent = nil
 			fallbackResp, err := c.Complete(ctx, fallbackReq)
 			if err != nil {
 				return ChatResponse{}, err
@@ -764,6 +825,9 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			Arguments: tc.Function.Arguments,
 		})
 	}
+	if strings.EqualFold(providerName, "deepseek") && len(out.ToolCalls) > 0 {
+		out.ReasoningContent = strings.TrimSpace(choice.Message.ReasoningContent)
+	}
 
 	return ChatResponse{
 		Message:    out,
@@ -771,7 +835,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}, nil
 }
 
-func readOpenAIStream(ctx context.Context, providerName string, body io.ReadCloser, onTextDelta func(string), bufferLeadingText bool) (ChatResponse, error) {
+func readOpenAIStream(ctx context.Context, providerName string, body io.ReadCloser, onTextDelta func(string), onProgressEvent func(ProgressEvent), bufferLeadingText bool) (ChatResponse, error) {
 	providerName = normalizeProviderName(providerName)
 	if providerName == "" {
 		providerName = "openai"
@@ -788,8 +852,9 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 	type streamChunk struct {
 		Choices []struct {
 			Delta struct {
-				Content   json.RawMessage       `json:"content,omitempty"`
-				ToolCalls []streamToolCallDelta `json:"tool_calls,omitempty"`
+				Content          json.RawMessage       `json:"content,omitempty"`
+				ReasoningContent json.RawMessage       `json:"reasoning_content,omitempty"`
+				ToolCalls        []streamToolCallDelta `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
@@ -805,6 +870,8 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 		Name         string
 		Arguments    strings.Builder
 		SeenArgument bool
+		Started      bool
+		ArgsStarted  bool
 	}
 
 	done := make(chan struct{})
@@ -821,6 +888,7 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	var textBuilder strings.Builder
+	var reasoningBuilder strings.Builder
 	var pendingText strings.Builder
 	toolCalls := map[int]*toolCallAccumulator{}
 	stopReason := ""
@@ -871,6 +939,11 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 					}
 				}
 			}
+			if strings.EqualFold(providerName, "deepseek") {
+				if deltaReasoning := extractOpenAIMessageText(choice.Delta.ReasoningContent); deltaReasoning != "" {
+					reasoningBuilder.WriteString(deltaReasoning)
+				}
+			}
 			for _, tc := range choice.Delta.ToolCalls {
 				sawToolCalls = true
 				entry := toolCalls[tc.Index]
@@ -883,8 +956,26 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 				}
 				if tc.Function.Name != "" {
 					entry.Name = tc.Function.Name
+					if !entry.Started {
+						entry.Started = true
+						emitProgressEvent(onProgressEvent, ProgressEvent{
+							Kind:       progressKindModelStreamToolCall,
+							Provider:   providerName,
+							ToolName:   entry.Name,
+							ToolCallID: entry.ID,
+						})
+					}
 				}
 				if tc.Function.Arguments != "" {
+					if !entry.ArgsStarted {
+						entry.ArgsStarted = true
+						emitProgressEvent(onProgressEvent, ProgressEvent{
+							Kind:       progressKindModelStreamToolArgs,
+							Provider:   providerName,
+							ToolName:   entry.Name,
+							ToolCallID: entry.ID,
+						})
+					}
 					entry.Arguments.WriteString(tc.Function.Arguments)
 					entry.SeenArgument = true
 				}
@@ -932,6 +1023,16 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 			Name:      entry.Name,
 			Arguments: arguments,
 		})
+		emitProgressEvent(onProgressEvent, ProgressEvent{
+			Kind:             progressKindModelStreamToolReady,
+			Provider:         providerName,
+			ToolName:         entry.Name,
+			ToolCallID:       entry.ID,
+			ArgumentsPreview: summarizeToolArgumentsPreview(arguments),
+		})
+	}
+	if strings.EqualFold(providerName, "deepseek") && len(out.ToolCalls) > 0 {
+		out.ReasoningContent = strings.TrimSpace(reasoningBuilder.String())
 	}
 
 	result := ChatResponse{
@@ -1455,6 +1556,17 @@ func normalizeOpenRouterBaseURL(baseURL string) string {
 	return strings.TrimRight(base, "/")
 }
 
+func normalizeDeepSeekBaseURL(baseURL string) string {
+	base := strings.TrimSpace(baseURL)
+	if base == "" {
+		base = "https://api.deepseek.com"
+	}
+	if !strings.Contains(base, "://") {
+		base = "https://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
+
 func normalizeOpenAIBaseURL(baseURL string) string {
 	base := strings.TrimSpace(baseURL)
 	if base == "" {
@@ -1505,6 +1617,8 @@ func normalizeProviderBaseURL(provider, baseURL string) string {
 		return normalizeAnthropicBaseURL(baseURL)
 	case "openai", "openai-compatible":
 		return normalizeOpenAIBaseURL(baseURL)
+	case "deepseek":
+		return normalizeDeepSeekBaseURL(baseURL)
 	case "openrouter":
 		return normalizeOpenRouterBaseURL(baseURL)
 	case "opencode":
@@ -1586,6 +1700,60 @@ func openAIAPIURL(baseURL, path string) string {
 		return base + normalizedPath[len("/v1"):]
 	}
 	return base + normalizedPath
+}
+
+func openAICompatibleAPIURL(provider, baseURL, path string) string {
+	if normalizeProviderName(provider) == "deepseek" {
+		return deepSeekAPIURL(baseURL, path)
+	}
+	return openAIAPIURL(baseURL, path)
+}
+
+func deepSeekAPIURL(baseURL, path string) string {
+	base := normalizeDeepSeekBaseURL(baseURL)
+	normalizedPath := "/" + strings.TrimLeft(path, "/")
+	lowerBase := strings.ToLower(base)
+	lowerPath := strings.ToLower(normalizedPath)
+	if strings.HasSuffix(lowerBase, lowerPath) {
+		return base
+	}
+	if strings.HasSuffix(lowerBase, "/v1") && strings.HasPrefix(lowerPath, "/v1/") {
+		return base + normalizedPath[len("/v1"):]
+	}
+	if strings.HasPrefix(lowerPath, "/v1/") {
+		withoutVersion := normalizedPath[len("/v1"):]
+		if strings.HasSuffix(lowerBase, strings.ToLower(withoutVersion)) {
+			return base
+		}
+		normalizedPath = normalizedPath[len("/v1"):]
+	}
+	return base + normalizedPath
+}
+
+func deepSeekAccountAPIURL(baseURL, path string) string {
+	base := normalizeDeepSeekBaseURL(baseURL)
+	lower := strings.ToLower(base)
+	for _, suffix := range []string{"/v1", "/beta"} {
+		if strings.HasSuffix(lower, suffix) {
+			base = base[:len(base)-len(suffix)]
+			break
+		}
+	}
+	return deepSeekAPIURL(base, path)
+}
+
+func normalizeDeepSeekReasoningEffort(effort string) (string, error) {
+	normalized := normalizeReasoningEffort(effort)
+	switch normalized {
+	case "":
+		return "", nil
+	case "minimal", "low", "medium", "high":
+		return "high", nil
+	case "xhigh":
+		return "max", nil
+	default:
+		return "", fmt.Errorf("invalid reasoning effort %q; use undefined, minimal, low, medium, high, or xhigh", strings.TrimSpace(effort))
+	}
 }
 
 type OpenRouterKeyStatus struct {
@@ -1699,6 +1867,51 @@ func FetchOpenRouterCredits(ctx context.Context, baseURL, apiKey string) (OpenRo
 	return decoded.Data, normalized, nil
 }
 
+type DeepSeekBalance struct {
+	IsAvailable  bool                  `json:"is_available"`
+	BalanceInfos []DeepSeekBalanceInfo `json:"balance_infos,omitempty"`
+}
+
+type DeepSeekBalanceInfo struct {
+	Currency        string `json:"currency,omitempty"`
+	TotalBalance    string `json:"total_balance,omitempty"`
+	GrantedBalance  string `json:"granted_balance,omitempty"`
+	ToppedUpBalance string `json:"topped_up_balance,omitempty"`
+}
+
+func FetchDeepSeekBalance(ctx context.Context, baseURL, apiKey string) (DeepSeekBalance, string, error) {
+	normalized := normalizeDeepSeekBaseURL(baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, deepSeekAccountAPIURL(normalized, "/user/balance"), nil)
+	if err != nil {
+		return DeepSeekBalance{}, normalized, err
+	}
+	req.Header.Set("content-type", "application/json")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("authorization", "Bearer "+strings.TrimSpace(apiKey))
+	}
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return DeepSeekBalance{}, normalized, err
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return DeepSeekBalance{}, normalized, err
+	}
+	if resp.StatusCode >= 300 {
+		return DeepSeekBalance{}, normalized, newProviderHTTPError("deepseek", resp.StatusCode, resp.Status, data, "")
+	}
+
+	var decoded DeepSeekBalance
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return DeepSeekBalance{}, normalized, err
+	}
+	return decoded, normalized, nil
+}
+
 func FetchOpenRouterModels(ctx context.Context, baseURL, apiKey string) ([]OpenRouterModelInfo, string, error) {
 	type openRouterModelsResponse struct {
 		Data  []OpenRouterModelInfo `json:"data"`
@@ -1759,7 +1972,7 @@ func FetchOpenAICompatibleModels(ctx context.Context, provider, baseURL, apiKey 
 		provider = "openai-compatible"
 	}
 	normalized := normalizeProviderBaseURL(provider, baseURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAIAPIURL(normalized, "/v1/models"), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, openAICompatibleAPIURL(provider, normalized, "/v1/models"), nil)
 	if err != nil {
 		return nil, normalized, err
 	}

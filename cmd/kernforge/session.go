@@ -185,7 +185,7 @@ func (s *Session) ApproxChars() int {
 		}
 	}
 	for _, msg := range s.Messages {
-		total += len(msg.Text)
+		total += len(msg.Text) + len(msg.ReasoningContent)
 		for _, image := range msg.Images {
 			total += len(image.Path) + len(image.MediaType)
 		}

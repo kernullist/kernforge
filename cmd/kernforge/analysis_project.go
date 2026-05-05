@@ -10063,6 +10063,27 @@ func hasPathPrefix(paths []string, prefix string) bool {
 }
 
 func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, client ProviderClient, stage string, shardName string, model string, req ChatRequest) (ChatResponse, error) {
+	if req.OnProgressEvent == nil {
+		req.OnProgressEvent = func(event ProgressEvent) {
+			message := strings.TrimSpace(formatProgressEventMessage(a.cfg, event))
+			if message == "" {
+				return
+			}
+			prefixParts := []string{}
+			if trimmedStage := strings.TrimSpace(stage); trimmedStage != "" {
+				prefixParts = append(prefixParts, trimmedStage)
+			}
+			if strings.TrimSpace(shardName) != "" {
+				prefixParts = append(prefixParts, strings.TrimSpace(shardName))
+			}
+			prefix := strings.Join(prefixParts, " ")
+			if prefix != "" {
+				a.status(prefix + ": " + message)
+				return
+			}
+			a.status(message)
+		}
+	}
 	maxRetries := a.analysisCfg.MaxProviderRetries
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -10934,6 +10955,7 @@ func createProviderClientFromProfile(profile Profile, mainCfg Config) (ProviderC
 	cfg.Model = model
 	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
+	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, profile.ReasoningEffort)
 	return NewProviderClient(cfg)
 }
 

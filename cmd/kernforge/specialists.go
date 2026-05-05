@@ -164,6 +164,7 @@ func normalizeSpecialistProfile(profile SpecialistSubagentProfile) SpecialistSub
 	profile.Model = strings.TrimSpace(profile.Model)
 	profile.BaseURL = strings.TrimSpace(profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
+	profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
 	profile.NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 	profile.Keywords = normalizeTaskStateList(profile.Keywords, 32)
 	profile.OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)
@@ -193,6 +194,9 @@ func mergeSpecialistProfile(base SpecialistSubagentProfile, overlay SpecialistSu
 	}
 	if overlay.APIKey != "" {
 		merged.APIKey = overlay.APIKey
+	}
+	if overlay.ReasoningEffort != "" {
+		merged.ReasoningEffort = overlay.ReasoningEffort
 	}
 	if len(overlay.NodeKinds) > 0 {
 		merged.NodeKinds = append([]string(nil), overlay.NodeKinds...)
@@ -664,6 +668,11 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 		}
 	}
 	cfg.APIKey = apiKey
+	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
+		cfg.ReasoningEffort = normalizeReasoningEffort(a.Config.ReasoningEffort)
+	} else {
+		cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, profile.ReasoningEffort)
+	}
 	client, err := NewProviderClient(cfg)
 	if err != nil {
 		return a.ensureInteractiveReviewerClient()

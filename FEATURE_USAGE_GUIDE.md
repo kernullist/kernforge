@@ -63,10 +63,13 @@ Current behavior:
 4. After request cancel, Kernforge waits briefly for `Esc` release and clears pending console input before opening the next prompt.
 5. Assistant streaming now suppresses empty leading chunks, flushes cleanly before progress lines, and breaks repeated follow-on preambles onto separate lines for readability.
 6. Generic waiting text is collapsed so the thinking indicator does not repeat the same status twice.
-7. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
-8. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
-9. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
-10. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
+7. The thinking elapsed timer is rebased at phase boundaries, and abnormal stale values are clamped at the 2-hour display mark.
+8. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
+9. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
+10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
+11. `progress_display` controls progress visibility and `/progress-display auto|compact|stream` changes it from the REPL: `auto` keeps tool/model/route ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
+12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
+13. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
 
 ### Runtime Inspection And Approval State
 
@@ -85,10 +88,11 @@ Current behavior:
 2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
 3. `/provider status` shows the active provider, normalized endpoint, API key presence, and provider-specific budget visibility.
 4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.
-5. For OpenAI and Anthropic, `/provider status` intentionally shows officially documented billing and usage visibility limits instead of inventing a live balance endpoint.
-6. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
-7. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
-8. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
+5. For DeepSeek, `/provider status` performs a live `/user/balance` lookup when an API key is configured and shows the provider's dynamic concurrency guidance.
+6. For OpenAI and Anthropic, `/provider status` intentionally shows officially documented billing and usage visibility limits instead of inventing a live balance endpoint.
+7. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
+8. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
+9. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
 
 ### Prompt Intent Routing
 
@@ -323,6 +327,7 @@ Current behavior:
 8. `/completion-audit` externalizes the final readiness gate as `.kernforge/completion_audit/latest.md/json`, so a human or scheduler can see the same blockers and warnings outside the model turn.
 9. The failure-repair harness keeps the first meaningful failure line, repeated count, narrow rerun command, and next repair steps in active context after verification fails.
 10. User-change isolation blocks overwrites when a target file changed outside the agent after the turn began, forcing a fresh read and merge-aware edit.
+11. The final-answer reviewer now runs only for unresolved verification, coding-harness blockers, or actual patch transaction changes. Plan state or task-graph presence alone no longer creates an extra reviewer/revision round-trip.
 
 Practical interpretation:
 1. Before saying "done", Kernforge rechecks actual artifacts and verification evidence.
@@ -374,6 +379,7 @@ Before confirmation, the analysis plan prints the selected `baseline_map` so the
 Large runs are provider-failure tolerant: worker/reviewer rate limits are recorded as low-confidence shard failures, and synthesis falls back to a local document when the final model request fails.
 For local-model providers such as LM Studio, vLLM, llama.cpp, and Ollama, unset `max_files_per_shard` / `max_lines_per_shard` values are adjusted from provider, model size, max tokens, and request timeout before the plan is confirmed. If the run still ends in a timeout, 5xx, overload, empty response, connection reset, or similar provider-pressure error after normal request retries are exhausted, Kernforge prints an `adaptive_retry_shards` line and reruns once with smaller shard limits. Rate limits are not retried this way because smaller shards usually create more requests.
 When worker and reviewer use the same provider/model/base_url/reasoning_effort route, shard execution is capped by the model route limit. Local providers default to serial execution with a route limit of 1; cloud/API routes are not forced to serial execution unless `model_routes` says so.
+Reasoning effort is stored per configured model target, not as one global override. The main profile, plan-review reviewer, analysis worker/reviewer, and specialist profiles can each carry a different `reasoning_effort`; selecting a new effort-capable target defaults that target to `low` when it was still undefined.
 Role-specific `base_url` values for analysis worker/reviewer, plan reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
 
@@ -752,6 +758,7 @@ Best used when:
 Current integration:
 1. Recent simulation findings that match the task are injected into the planning prompt.
 2. The same perspective is injected again into the final execution prompt.
+3. Unless an explicit timeout policy overrides it, planner and reviewer requests use a 2-minute per-attempt timeout so long preflight waits fail quickly and hand control back to the recovery path.
 
 ### 2.9 Tracked Feature Workflow
 
@@ -788,7 +795,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
@@ -798,6 +805,9 @@ Prompt budget behavior that now matters:
 3. Deep project-structure answers are evaluated against deterministic facts, source anchors, closed directory sets, and flow invariants; contradictions trigger tool use instead of a confident cached answer.
 4. Skill and MCP catalogs are now included in full only when the request is actually asking about them.
 5. Auto-scout contributes fewer candidates and less text, and it now focuses on locate/definition/reference-style requests.
+6. The default `max_tokens` is `8192`; config files that still hold the old default `4096` are migrated at startup or `/reload`.
+7. The default `max_tool_iterations` is `0` (unlimited). File search and large documentation turns no longer stop at the old default 16-tool cap unless you explicitly re-pin a positive limit, for example `/set-max-tool-iterations 24`.
+8. When project analysis worker and reviewer roles share the same OpenRouter or DeepSeek route as the main model, the default model-route limit is 2 to reduce upstream rate-limit or dynamic-concurrency cascades. Override `model_routes.provider_limits.openrouter` or `model_routes.provider_limits.deepseek` only when your key/provider pool can sustain more concurrency.
 
 ## 3. Recommended Real-World Flows
 

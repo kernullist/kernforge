@@ -126,6 +126,7 @@ var slashCommands = []string{
 	"analyze-performance",
 	"profile-review",
 	"set-max-tool-iterations",
+	"progress-display",
 	"exit",
 }
 
@@ -136,7 +137,7 @@ var slashCommandDescriptions = map[string]string{
 	"profile":                    "Show saved main profiles plus each profile's role model set.",
 	"version":                    "Print the current Kernforge version.",
 	"model":                      "Show explicit or inherited model routing and interactively reconfigure one target.",
-	"effort":                     "Show or set the OpenAI Codex reasoning effort.",
+	"effort":                     "Show or set reasoning effort for a configured model target.",
 	"codex-auth":                 "Manage Kernforge-owned OpenAI Codex OAuth login state.",
 	"codex-login":                "Start Kernforge-owned OpenAI Codex OAuth login.",
 	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
@@ -248,6 +249,7 @@ var slashCommandDescriptions = map[string]string{
 	"analyze-performance":        "Run a performance-focused analysis pass and suggest the next hotspot follow-up.",
 	"profile-review":             "Review saved model profiles and compare their fit.",
 	"set-max-tool-iterations":    "Adjust the max tool loop count for the session.",
+	"progress-display":           "Show or set how in-flight progress updates are displayed.",
 	"exit":                       "Exit the interactive Kernforge session.",
 }
 
@@ -270,6 +272,11 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"on":  "Run verification automatically after edits.",
 		"off": "Disable automatic post-edit verification.",
 	},
+	"progress-display": {
+		"auto":    "Persist durable tool/model events and keep noisy updates transient.",
+		"compact": "Keep progress updates in the transient footer.",
+		"stream":  "Write every progress update to the transcript.",
+	},
 	"verify": {
 		"--full": "Verify the full workspace instead of changed paths only.",
 	},
@@ -287,6 +294,7 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"anthropic":    "Switch to Anthropic provider setup.",
 		"openai":       "Switch to OpenAI provider setup.",
 		"openrouter":   "Switch to OpenRouter provider setup.",
+		"deepseek":     "Switch to DeepSeek provider setup.",
 		"opencode":     "Switch to OpenCode Zen API provider setup.",
 		"opencode-go":  "Switch to OpenCode Go subscription provider setup.",
 		"ollama":       "Switch to Ollama provider setup.",
@@ -297,12 +305,17 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"llama.cpp":    "Switch to local llama.cpp OpenAI-compatible provider setup.",
 	},
 	"effort": {
-		"undefined": "Do not send a reasoning effort override.",
-		"minimal":   "Use minimal reasoning where the selected model supports it.",
-		"low":       "Favor speed and lower reasoning token use.",
-		"medium":    "Use balanced reasoning effort.",
-		"high":      "Favor deeper reasoning.",
-		"xhigh":     "Request extra-high reasoning for providers that support it.",
+		"main":              "Set reasoning effort for the active main model.",
+		"plan-review":       "Set reasoning effort for the plan-review reviewer model.",
+		"analysis-worker":   "Set reasoning effort for the project-analysis worker model.",
+		"analysis-reviewer": "Set reasoning effort for the project-analysis reviewer model.",
+		"specialist":        "Set reasoning effort for a specialist model.",
+		"undefined":         "Do not send a reasoning effort override.",
+		"minimal":           "Use minimal reasoning where the selected model supports it.",
+		"low":               "Favor speed and lower reasoning token use.",
+		"medium":            "Use balanced reasoning effort.",
+		"high":              "Favor deeper reasoning.",
+		"xhigh":             "Request extra-high reasoning for providers that support it.",
 	},
 	"codex-auth": {
 		"status": "Show Kernforge-owned OpenAI Codex OAuth state.",
@@ -333,6 +346,7 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"anthropic":    "Use Anthropic for plan review passes.",
 		"openai":       "Use OpenAI for plan review passes.",
 		"openrouter":   "Use OpenRouter for plan review passes.",
+		"deepseek":     "Use DeepSeek for plan review passes.",
 		"opencode":     "Use OpenCode Zen API for plan review passes.",
 		"opencode-go":  "Use OpenCode Go for plan review passes.",
 		"ollama":       "Use Ollama for plan review passes.",
@@ -719,10 +733,11 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},
+		"progress-display":      {"auto", "compact", "stream"},
 		"worktree":              {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
 		"jobs":                  {"status", "check", "bundle", "cancel", "cancel-bundle"},
 		"specialists":           {"status", "assign", "cleanup"},
-		"provider":              {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
+		"provider":              {"status", "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"effort":                {"undefined", "minimal", "low", "medium", "high", "xhigh"},
 		"codex-auth":            {"status", "login", "logout", "path"},
 		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
@@ -735,7 +750,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"review-pr":             {"--github", "--draft-comments", "--post-comments", "--resolve-thread", "--draft-issue", "--create-issue", "--label", "--assignee", "--milestone"},
 		"handoff":               {"import"},
 		"mem-prune":             {"all"},
-		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
+		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
 		"set-specialist-model":  {"status", "clear"},
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
@@ -767,6 +782,26 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 	case "effort":
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
+		}
+		target := strings.ToLower(strings.TrimSpace(fields[0]))
+		if target == "specialist" {
+			if len(fields) == 2 {
+				return rt.allSpecialistNames(), 0, true
+			}
+			if len(fields) == 3 {
+				return []string{"undefined", "minimal", "low", "medium", "high", "xhigh"}, 0, true
+			}
+			return nil, 0, false
+		}
+		switch target {
+		case "main", "plan-review", "plan_reviewer", "plan-reviewer", "reviewer", "analysis-worker", "analysis_worker", "worker", "analysis-reviewer", "analysis_reviewer":
+			if len(fields) == 2 {
+				return []string{"undefined", "minimal", "low", "medium", "high", "xhigh"}, 0, true
+			}
+		default:
+			if strings.HasPrefix(target, "specialist:") && len(fields) == 2 {
+				return []string{"undefined", "minimal", "low", "medium", "high", "xhigh"}, 0, true
+			}
 		}
 		return nil, 0, false
 	case "codex-auth":
@@ -834,7 +869,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return firstLevel[commandName], 0, true
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
-			return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
+			return []string{"anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
 		}
 		return nil, 0, false
 	case "set-specialist-model":
@@ -852,7 +887,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return normalizeTaskStateList(options, 32), 1, true
 			}
 			if rt.hasSpecialistName(fields[0]) {
-				return []string{"anthropic", "openai", "openrouter", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
+				return []string{"anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
 			}
 		}
 		return nil, 0, false

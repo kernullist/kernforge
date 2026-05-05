@@ -800,6 +800,7 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
+	req = a.attachProgressEventHandler(req)
 	maxRetries := configMaxRequestRetries(a.Config)
 	totalAttempts := maxRetries + 1
 	baseDelay := configRequestRetryDelay(a.Config)
@@ -821,6 +822,12 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 			return ChatResponse{}, err
 		}
 		delay := providerRetryDelay(baseDelay, attempt)
+		a.emitProgressEvent(ProgressEvent{
+			Kind:    progressKindProviderRetry,
+			Message: modelRetryProgressMessage(err, attempt, totalAttempts, delay),
+			Model:   req.Model,
+			Status:  firstNonEmptyLine(err.Error()),
+		})
 		if delay > 0 {
 			timer := time.NewTimer(delay)
 			select {
@@ -842,9 +849,36 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
-	release, _, err := acquireModelRoute(ctx, scheduler, policy, cfg, client, req)
+	if scheduler == nil {
+		scheduler = defaultModelRouteScheduler()
+	}
+	policy = policy.normalized()
+	route := modelRouteForRequest(cfg, client, req)
+	limit := policy.LimitFor(route)
+	if limit > 0 {
+		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+			Kind:       progressKindModelRouteWait,
+			Provider:   route.Provider,
+			Model:      route.Model,
+			RouteLabel: route.Label,
+		})
+	}
+	routeWaitStarted := time.Now()
+	release, err := scheduler.Acquire(ctx, route, limit)
 	if err != nil {
-		return ChatResponse{}, err
+		return ChatResponse{}, fmt.Errorf("model route queue wait failed for %s: %w", route.Label, err)
+	}
+	if limit > 0 {
+		waited := time.Since(routeWaitStarted)
+		if waited >= 200*time.Millisecond {
+			emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+				Kind:       progressKindModelRouteAcquired,
+				Provider:   route.Provider,
+				Model:      route.Model,
+				RouteLabel: route.Label,
+				Elapsed:    waited,
+			})
+		}
 	}
 
 	type result struct {
@@ -855,9 +889,70 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	done := make(chan result, 1)
 	go func() {
 		defer release()
+		startedAt := time.Now()
+		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+			Kind:       progressKindModelRequestStart,
+			Provider:   route.Provider,
+			Model:      firstNonBlankString(req.Model, route.Model),
+			RouteLabel: route.Label,
+		})
 		resp, err := client.Complete(ctx, req)
+		status := "completed"
+		if err != nil {
+			status = "failed"
+		}
+		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+			Kind:       progressKindModelRequestDone,
+			Provider:   route.Provider,
+			Model:      firstNonBlankString(req.Model, route.Model),
+			RouteLabel: route.Label,
+			Status:     status,
+			Elapsed:    time.Since(startedAt),
+		})
 		done <- result{resp: resp, err: err}
 	}()
+
+	waitDone := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		for {
+			select {
+			case <-waitDone:
+				return
+			case <-ctx.Done():
+				return
+			case <-timer.C:
+				emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+					Kind:       progressKindModelRequestWait,
+					Provider:   route.Provider,
+					Model:      firstNonBlankString(req.Model, route.Model),
+					RouteLabel: route.Label,
+					Elapsed:    5 * time.Second,
+				})
+				ticker := time.NewTicker(15 * time.Second)
+				defer ticker.Stop()
+				startedAt := time.Now().Add(-5 * time.Second)
+				for {
+					select {
+					case <-waitDone:
+						return
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+							Kind:       progressKindModelRequestWait,
+							Provider:   route.Provider,
+							Model:      firstNonBlankString(req.Model, route.Model),
+							RouteLabel: route.Label,
+							Elapsed:    time.Since(startedAt),
+						})
+					}
+				}
+			}
+		}
+	}()
+	defer close(waitDone)
 
 	select {
 	case <-ctx.Done():
