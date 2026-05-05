@@ -644,31 +644,23 @@ func (a *Agent) shouldReviewInteractiveFinalAnswer(reply string, attemptedEditTo
 	if state.FinalReviewCount >= 2 {
 		return false
 	}
-	if unresolvedVerification || attemptedEditTool {
-		return true
-	}
-	if a.Session.AcceptanceContract != nil &&
-		(a.Session.AcceptanceContract.VerificationRequired || len(a.Session.AcceptanceContract.RequiredArtifacts) > 0) {
-		return true
-	}
-	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+	// Trigger reviewer only on signals that something concrete happened or
+	// went wrong:
+	//   - verification surfaced a real failure,
+	//   - the static coding harness flagged a blocker, or
+	//   - actual files were changed in a patch transaction.
+	// Broader heuristics (attemptedEditTool / CompletedSteps existence /
+	// task-graph or plan presence) used to fire reviewer on nearly every
+	// answer, turning each turn into an extra LLM round-trip without
+	// measurable gain.
+	_ = attemptedEditTool
+	if unresolvedVerification {
 		return true
 	}
 	if a.Session.LastCodingHarnessReport != nil && !a.Session.LastCodingHarnessReport.Approved {
 		return true
 	}
-	if len(state.CompletedSteps) > 0 || len(state.FailedAttempts) > 0 || len(state.PendingChecks) > 0 {
-		return true
-	}
-	if a.Session.TaskGraph != nil {
-		for _, node := range a.Session.TaskGraph.Nodes {
-			status := canonicalTaskNodeStatus(node.Status)
-			if status == "blocked" || status == "in_progress" || status == "ready" {
-				return true
-			}
-		}
-	}
-	if len(a.Session.Plan) > 0 || len(a.Session.BackgroundJobs) > 0 {
+	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
 		return true
 	}
 	return false

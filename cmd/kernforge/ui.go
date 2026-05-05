@@ -253,7 +253,23 @@ func (ui UI) errorLine(text string) string {
 	return ui.error("ERROR  " + text)
 }
 
+// maxThinkingElapsedDisplay caps how long the thinking spinner is allowed to
+// show. The underlying timer can drift (e.g. machine sleep, a stale goroutine
+// that survived a turn boundary), and runaway values like "[81389s | Esc]"
+// only confuse the user. 2 hours is well past any reasonable single request
+// — anything larger is almost certainly a clock or lifecycle bug, so we clamp
+// the display rather than leaking the raw value.
+const maxThinkingElapsedDisplay = 2 * time.Hour
+
 func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) string {
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	clampedDisplay := false
+	if elapsed > maxThinkingElapsedDisplay {
+		elapsed = maxThinkingElapsedDisplay
+		clampedDisplay = true
+	}
 	seconds := int(elapsed.Seconds())
 	if strings.TrimSpace(status) == "" {
 		status = "Sending prompt to model..."
@@ -265,7 +281,11 @@ func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) st
 	if !isRedundantThinkingStatus(status) {
 		line += " " + ui.info(status)
 	}
-	line += " " + ui.dim(fmt.Sprintf("[%ds | Esc]", seconds))
+	if clampedDisplay {
+		line += " " + ui.dim(fmt.Sprintf("[%ds+ | Esc]", seconds))
+	} else {
+		line += " " + ui.dim(fmt.Sprintf("[%ds | Esc]", seconds))
+	}
 	return line
 }
 

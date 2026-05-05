@@ -3320,6 +3320,7 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 				},
 				StopReason: "stop",
 			},
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n\nfunc main() {}\n"}),
 			{
 				Message: Message{
 					Role: "assistant",
@@ -3330,7 +3331,7 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 			{
 				Message: Message{
 					Role: "assistant",
-					Text: "I updated the fix, verified the result, and there are no remaining blockers.",
+					Text: "I updated the fix, verified the result via go test ./..., and there are no remaining blockers.",
 				},
 				StopReason: "stop",
 			},
@@ -3363,6 +3364,7 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
 	agent := &Agent{
 		Config: Config{
 			Model: "model",
@@ -3370,10 +3372,21 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 		Client:         mainProvider,
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",
-		Tools:          NewToolRegistry(),
-		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Tools:          NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:      ws,
 		Session:        session,
 		Store:          store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Status: VerificationPassed,
+					Output: "ok",
+				}},
+			}, true
+		},
 	}
 
 	reply, err := agent.Reply(context.Background(), "fix the bug and summarize the result")

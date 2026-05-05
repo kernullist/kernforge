@@ -125,8 +125,8 @@ func DefaultConfig(cwd string) Config {
 		Provider:               "",
 		Model:                  "",
 		Temperature:            0.2,
-		MaxTokens:              4096,
-		MaxToolIterations:      16,
+		MaxTokens:              8192,
+		MaxToolIterations:      0,
 		MaxRequestRetries:      2,
 		RequestRetryDelayMs:    1500,
 		RequestTimeoutSecs:     1200,
@@ -169,6 +169,115 @@ func LoadConfig(cwd string) (Config, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// LegacyDefaultMigration captures one config field whose stored value matched
+// a previous KernForge hard-coded default and was rewritten to the current
+// default. Surfaced to the caller so it can print a one-time INFO notice.
+type LegacyDefaultMigration struct {
+	Field    string // human-readable field name (e.g. "max_tool_iterations")
+	OldValue string // value previously stored on disk
+	NewValue string // value written back after migration
+	Reason   string // why the migration happened
+}
+
+// MigrateLegacyConfigDefaults rewrites config values that exactly match the
+// previous hard-coded defaults of KernForge (max_tool_iterations: 16,
+// max_tokens: 4096) to the new defaults. Both the in-memory cfg and any
+// on-disk config file in the search path are patched so the migration is
+// sticky — the user only sees the notice once.
+//
+// We migrate only when the value matches the old default exactly: a user who
+// happened to pick those numbers intentionally is statistically rare, and
+// even if it happens they will see the INFO message and can re-pin them.
+func MigrateLegacyConfigDefaults(cwd string, cfg *Config) []LegacyDefaultMigration {
+	if cfg == nil {
+		return nil
+	}
+	var notices []LegacyDefaultMigration
+
+	if cfg.MaxToolIterations == legacyDefaultMaxToolIterations {
+		notices = append(notices, LegacyDefaultMigration{
+			Field:    "max_tool_iterations",
+			OldValue: fmt.Sprintf("%d", cfg.MaxToolIterations),
+			NewValue: "unlimited",
+			Reason:   "matched the previous KernForge default; tool-loop is now uncapped to support multi-file analysis and reasoning models.",
+		})
+		cfg.MaxToolIterations = 0
+	}
+	if cfg.MaxTokens == legacyDefaultMaxTokens {
+		notices = append(notices, LegacyDefaultMigration{
+			Field:    "max_tokens",
+			OldValue: fmt.Sprintf("%d", cfg.MaxTokens),
+			NewValue: fmt.Sprintf("%d", currentDefaultMaxTokens),
+			Reason:   "matched the previous KernForge default; raised so longer outputs (e.g. documentation, large patches) fit in one response.",
+		})
+		cfg.MaxTokens = currentDefaultMaxTokens
+	}
+
+	if len(notices) == 0 {
+		return nil
+	}
+	// Persist the migration to every config file in the search path that
+	// still carries the legacy literal — otherwise the next merge would
+	// overwrite our in-memory fix and we'd repeat the notice forever.
+	for _, path := range configSearchPaths(cwd) {
+		_ = patchLegacyDefaultsInFile(path)
+	}
+	return notices
+}
+
+const (
+	// Previous hard-coded defaults that we now treat as migration sentinels.
+	legacyDefaultMaxToolIterations = 16
+	legacyDefaultMaxTokens         = 4096
+
+	// New defaults the migration writes back. Keep in sync with DefaultConfig.
+	currentDefaultMaxTokens = 8192
+)
+
+// patchLegacyDefaultsInFile reads a config file, replaces legacy default
+// values in-place, and writes it back. Missing files and parse errors are
+// ignored — migration is best-effort and never blocks startup.
+func patchLegacyDefaultsInFile(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err // includes os.IsNotExist; caller ignores
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil
+	}
+	// Use a generic map so we only touch the two fields and preserve
+	// everything else exactly (key order, comments are already gone after
+	// any prior write but unknown fields stay intact).
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	changed := false
+	if v, ok := raw["max_tool_iterations"]; ok {
+		if asFloat, isNum := v.(float64); isNum && int(asFloat) == legacyDefaultMaxToolIterations {
+			raw["max_tool_iterations"] = 0
+			changed = true
+		}
+	}
+	if v, ok := raw["max_tokens"]; ok {
+		if asFloat, isNum := v.(float64); isNum && int(asFloat) == legacyDefaultMaxTokens {
+			raw["max_tokens"] = currentDefaultMaxTokens
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	out, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644)
 }
 
 func configSearchPaths(cwd string) []string {
@@ -1174,11 +1283,22 @@ func configAutoVerify(cfg Config) bool {
 	return *cfg.AutoVerify
 }
 
+// configMaxToolIterations returns the configured tool-loop budget.
+// A return value of 0 (or any non-positive cfg.MaxToolIterations) means
+// "no cap" — the loop runs until the model produces a final answer or
+// the context is cancelled.
 func configMaxToolIterations(cfg Config) int {
 	if cfg.MaxToolIterations <= 0 {
-		return 16
+		return 0
 	}
 	return cfg.MaxToolIterations
+}
+
+func formatMaxToolIterations(value int) string {
+	if value <= 0 {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d", value)
 }
 
 func configMaxRequestRetries(cfg Config) int {

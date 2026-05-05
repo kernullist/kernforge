@@ -254,7 +254,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if turnCount >= toolBudgetLimit {
+		if toolBudgetLimit > 0 && turnCount >= toolBudgetLimit {
 			if shouldExtendToolBudget(a.Session.Messages, lastToolErrorCount, lastToolCallSignatureCount, lastReadFilePathTurns, toolBudgetExtensions) {
 				extraTurns := nextToolBudgetExtension(maxToolIterations, toolBudgetExtensions)
 				if extraTurns > 0 {

@@ -1291,3 +1291,146 @@ func TestPermissionManagerGitPromptAdvertisesAlways(t *testing.T) {
 		t.Fatalf("git prompt should advertise always, got %q", prompted)
 	}
 }
+
+func TestMigrateLegacyConfigDefaultsRewritesUserConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	userPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	original := `{
+  "provider": "openai",
+  "max_tool_iterations": 16,
+  "max_tokens": 4096
+}`
+	if err := os.WriteFile(userPath, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// Sanity: at this point the in-memory cfg still reflects the legacy
+	// values because LoadConfig itself does not migrate.
+	if cfg.MaxToolIterations != 16 {
+		t.Fatalf("pre-migration MaxToolIterations: want 16, got %d", cfg.MaxToolIterations)
+	}
+	if cfg.MaxTokens != 4096 {
+		t.Fatalf("pre-migration MaxTokens: want 4096, got %d", cfg.MaxTokens)
+	}
+
+	notices := MigrateLegacyConfigDefaults(t.TempDir(), &cfg)
+	if len(notices) != 2 {
+		t.Fatalf("expected 2 migration notices, got %d: %#v", len(notices), notices)
+	}
+	if cfg.MaxToolIterations != 0 {
+		t.Fatalf("post-migration MaxToolIterations: want 0 (unlimited), got %d", cfg.MaxToolIterations)
+	}
+	if cfg.MaxTokens != currentDefaultMaxTokens {
+		t.Fatalf("post-migration MaxTokens: want %d, got %d", currentDefaultMaxTokens, cfg.MaxTokens)
+	}
+
+	// File on disk must also be rewritten so the next LoadConfig does not
+	// re-introduce the legacy values.
+	rewritten, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rewritten, &raw); err != nil {
+		t.Fatalf("Unmarshal rewritten file: %v\n%s", err, rewritten)
+	}
+	if v, ok := raw["max_tool_iterations"].(float64); !ok || int(v) != 0 {
+		t.Fatalf("expected max_tool_iterations=0 on disk, got %v", raw["max_tool_iterations"])
+	}
+	if v, ok := raw["max_tokens"].(float64); !ok || int(v) != currentDefaultMaxTokens {
+		t.Fatalf("expected max_tokens=%d on disk, got %v", currentDefaultMaxTokens, raw["max_tokens"])
+	}
+	// Unrelated fields must be preserved.
+	if raw["provider"] != "openai" {
+		t.Fatalf("provider field was lost: %v", raw["provider"])
+	}
+
+	// Idempotency: running migration again on the already-fixed file
+	// produces no notices and does not touch the cfg further.
+	if again := MigrateLegacyConfigDefaults(t.TempDir(), &cfg); len(again) != 0 {
+		t.Fatalf("second migration should be a no-op, got %#v", again)
+	}
+}
+
+func TestMigrateLegacyConfigDefaultsRewritesWorkspaceConfigFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+
+	wsPath := filepath.Join(workspace, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(wsPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(wsPath, []byte(`{"max_tool_iterations": 16}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	notices := MigrateLegacyConfigDefaults(workspace, &cfg)
+	if len(notices) != 1 || notices[0].Field != "max_tool_iterations" {
+		t.Fatalf("expected 1 max_tool_iterations notice, got %#v", notices)
+	}
+
+	rewritten, err := os.ReadFile(wsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rewritten, &raw); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if v, ok := raw["max_tool_iterations"].(float64); !ok || int(v) != 0 {
+		t.Fatalf("workspace file should hold migrated value, got %v", raw["max_tool_iterations"])
+	}
+}
+
+func TestMigrateLegacyConfigDefaultsLeavesExplicitNonLegacyValuesAlone(t *testing.T) {
+	cfg := Config{
+		MaxToolIterations: 50,    // user-chosen, not legacy
+		MaxTokens:         12000, // user-chosen, not legacy
+	}
+	notices := MigrateLegacyConfigDefaults(t.TempDir(), &cfg)
+	if len(notices) != 0 {
+		t.Fatalf("expected no notices for non-legacy values, got %#v", notices)
+	}
+	if cfg.MaxToolIterations != 50 {
+		t.Fatalf("MaxToolIterations was clobbered: %d", cfg.MaxToolIterations)
+	}
+	if cfg.MaxTokens != 12000 {
+		t.Fatalf("MaxTokens was clobbered: %d", cfg.MaxTokens)
+	}
+}
+
+func TestMigrateLegacyConfigDefaultsHandlesMissingConfigFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// In-memory cfg still gets migrated even if no on-disk files exist
+	// (e.g. CLI-only invocation). Filesystem patch is best-effort.
+	cfg := Config{
+		MaxToolIterations: legacyDefaultMaxToolIterations,
+		MaxTokens:         legacyDefaultMaxTokens,
+	}
+	notices := MigrateLegacyConfigDefaults(t.TempDir(), &cfg)
+	if len(notices) != 2 {
+		t.Fatalf("expected 2 notices, got %d", len(notices))
+	}
+	if cfg.MaxToolIterations != 0 || cfg.MaxTokens != currentDefaultMaxTokens {
+		t.Fatalf("in-memory migration failed: %#v", cfg)
+	}
+}

@@ -226,7 +226,10 @@ func completePlanReviewRequest(ctx context.Context, client ProviderClient, req C
 	}
 	timeout := policy.Timeout
 	if timeout <= 0 {
-		timeout = 20 * time.Minute
+		// Plan-review is the "structure-first" prelude; if a model cannot
+		// produce a plan within ~2 minutes, retrying with the same prompt
+		// rarely helps. Fail fast instead of blocking the whole turn.
+		timeout = 2 * time.Minute
 	}
 	baseDelay := policy.RetryDelay
 	if baseDelay <= 0 {

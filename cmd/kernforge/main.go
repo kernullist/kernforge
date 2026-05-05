@@ -72,6 +72,7 @@ type runtimeState struct {
 	footerText                 string
 	thinkingMu                 sync.Mutex
 	thinkingStop               func()
+	thinkingStartedAt          time.Time
 	streamMu                   sync.Mutex
 	streamingAssistant         bool
 	streamedAssistantText      strings.Builder
@@ -193,6 +194,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Detect and rewrite values that match the previous KernForge hard-coded
+	// defaults (max_tool_iterations: 16, max_tokens: 4096). The notices are
+	// printed once rt.writer is available below.
+	legacyMigrations := MigrateLegacyConfigDefaults(cwd, &cfg)
 	loadedProvider := normalizeProviderName(cfg.Provider)
 	if providerFlag != "" {
 		cfg.Provider = providerFlag
@@ -304,6 +309,7 @@ func run(args []string) error {
 	if rt.interactive {
 		rt.showBanner()
 	}
+	rt.printLegacyConfigMigrationNotices(legacyMigrations)
 
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
 	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
@@ -367,6 +373,12 @@ func run(args []string) error {
 			rt.appendAssistantStream(text)
 		},
 		EmitProgress: func(text string) {
+			// EmitProgress fires at meaningful phase transitions (plan-review
+			// start, tool-budget extension, autoVerify start, etc.). Reset
+			// the thinking timer so the spinner reports the *current* phase's
+			// duration rather than carrying time over from a previous phase
+			// or a goroutine that survived an earlier turn boundary.
+			rt.resetThinkingTimer()
 			rt.setThinkingStatus(compactThinkingStatus(rt.cfg, text))
 			rt.printProgressMessage(text)
 		},
@@ -861,6 +873,7 @@ func (rt *runtimeState) startThinkingIndicator() {
 
 	rt.thinkingMu.Lock()
 	rt.thinkingStop = stopFn
+	rt.thinkingStartedAt = time.Now()
 	rt.thinkingMu.Unlock()
 
 	go func() {
@@ -868,8 +881,10 @@ func (rt *runtimeState) startThinkingIndicator() {
 		defer ticker.Stop()
 
 		lastRendered := ""
-		startedAt := time.Now()
 		render := func(frame string) {
+			rt.thinkingMu.Lock()
+			startedAt := rt.thinkingStartedAt
+			rt.thinkingMu.Unlock()
 			elapsed := time.Since(startedAt)
 			status := rt.currentThinkingStatus(elapsed)
 			renderFrame := frame
@@ -1200,6 +1215,35 @@ func (rt *runtimeState) setThinkingStatus(text string) {
 	rt.thinkingStatusMu.Lock()
 	rt.thinkingStatusOverride = strings.TrimSpace(text)
 	rt.thinkingStatusMu.Unlock()
+}
+
+// printLegacyConfigMigrationNotices surfaces config values that were silently
+// rewritten because they exactly matched a previous KernForge hard-coded
+// default. Shown once per run only when migrations actually happened.
+func (rt *runtimeState) printLegacyConfigMigrationNotices(notices []LegacyDefaultMigration) {
+	if rt == nil || len(notices) == 0 {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Migrated legacy KernForge config defaults to current values:"))
+	for _, n := range notices {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("  %s: %s -> %s (%s)", n.Field, n.OldValue, n.NewValue, n.Reason)))
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("To pin a different value, set it explicitly in your .kernforge/config.json."))
+}
+
+// resetThinkingTimer rebases the thinking spinner's elapsed clock to "now",
+// so a phase boundary (e.g. plan-review starting/ending, recovery beginning)
+// reports its own duration rather than carrying over time from a previous
+// phase or a stale goroutine that survived a turn boundary.
+func (rt *runtimeState) resetThinkingTimer() {
+	if rt == nil {
+		return
+	}
+	rt.thinkingMu.Lock()
+	if rt.thinkingStop != nil {
+		rt.thinkingStartedAt = time.Now()
+	}
+	rt.thinkingMu.Unlock()
 }
 
 func (rt *runtimeState) clearThinkingStatus() {
@@ -5060,18 +5104,25 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+string(mode)))
 	case "set-max-tool-iterations":
 		if cmd.Args == "" {
-			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))))
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+formatMaxToolIterations(configMaxToolIterations(rt.cfg))))
 			return false, nil
 		}
-		val, err := strconv.Atoi(strings.TrimSpace(cmd.Args))
-		if err != nil || val < 1 {
-			return false, fmt.Errorf("invalid value: must be a positive integer")
+		argText := strings.TrimSpace(cmd.Args)
+		var val int
+		if strings.EqualFold(argText, "unlimited") || strings.EqualFold(argText, "none") || strings.EqualFold(argText, "off") {
+			val = 0
+		} else {
+			parsed, err := strconv.Atoi(argText)
+			if err != nil || parsed < 0 {
+				return false, fmt.Errorf("invalid value: must be a non-negative integer (0 or \"unlimited\" disables the cap)")
+			}
+			val = parsed
 		}
 		rt.cfg.MaxToolIterations = val
 		if err := rt.saveUserConfig(); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+fmt.Sprintf("%d", val)))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("max_tool_iterations set to "+formatMaxToolIterations(val)))
 	case "verify":
 		if err := rt.handleVerifyCommand(cmd.Args); err != nil {
 			return false, err
@@ -5653,7 +5704,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("shell", valueOrUnset(rt.cfg.Shell)),
 			kv("permission_mode", string(rt.perms.Mode())),
 			kv("session_dir", rt.cfg.SessionDir),
-			kv("max_tool_iterations", fmt.Sprintf("%d", configMaxToolIterations(rt.cfg))),
+			kv("max_tool_iterations", formatMaxToolIterations(configMaxToolIterations(rt.cfg))),
 			kv("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)),
 		)
 		fmt.Fprintln(rt.writer)
@@ -8313,6 +8364,12 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	loaded, err := LoadConfig(rt.workspace.BaseRoot)
 	if err != nil {
 		return err
+	}
+	// Run the same legacy-defaults migration as startup. /reload after a
+	// fresh KernForge upgrade is one of the few times we get a second chance
+	// to catch lingering legacy values without the user manually editing.
+	if notices := MigrateLegacyConfigDefaults(rt.workspace.BaseRoot, &loaded); len(notices) > 0 {
+		rt.printLegacyConfigMigrationNotices(notices)
 	}
 
 	activeProvider := rt.session.Provider
