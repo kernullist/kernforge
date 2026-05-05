@@ -44,6 +44,7 @@ If Kernforge has one feature to understand first, it is `multi-agent project ana
 
 - `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds a reusable architecture map instead of a disposable summary, and infers a mode-specific goal when you omit one
 - The output becomes a durable knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard
+- Long analysis runs show their work as they proceed: shard count, worker slots, wave progress, per-shard completion, and worker/reviewer model wait or failure events are surfaced through the normal progress display controls
 - That analysis is then reused in review, editing, verification, and policy workflows
 - `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
 - `/find-root-cause [--pattern-pack <path-or-dir>] <problem>` clarity-checks the symptom prompt, then uses 1-8 route-limited worker shards, reviewer causality validation, deep verification, and deterministic quality gates to narrow plausible root causes
@@ -116,7 +117,7 @@ Its current differentiators are:
 - Local file mentions, image mentions, and MCP resource mentions
 - Session persistence, resume, rename, clear, compact, and Markdown export
 - Natural failure recovery with `/continuity`, `/recover`, `/recover execute-safe`, `/completion-audit`, `/jobs`, local event export, and session dashboards
-- Project memory files plus cross-session persistent memory with trust/importance metadata
+- Project memory files plus cross-session persistent memory with trust/importance metadata and automatic workspace continuity injection
 - Evidence store, evidence search, and evidence dashboards
 - Local `SKILL.md` skills with discovery and per-request activation
 - Stdio MCP servers with tools, resources, and prompts
@@ -139,6 +140,7 @@ Its current differentiators are:
 - Provider rate-limit or transient worker/reviewer failures degrade the affected shard instead of aborting the whole analysis run; the final document marks those sections as low confidence
 - Local-model runs adapt shard sizing from provider, model size, max tokens, and request timeout when shard limits are not explicitly configured. If a final provider timeout or 5xx/overload-style error still stops the run, Kernforge tells the user it is retrying and reruns once with smaller `max_lines_per_shard` / `max_files_per_shard` plus a higher shard cap. Rate limits are not retried this way because smaller shards would usually increase request pressure.
 - When worker and reviewer share a provider/model route, shard concurrency follows the model route limit to avoid retry storms and low-confidence placeholder cascades. Local providers default to a route limit of 1, while cloud/API routes keep their configured concurrency instead of being forced to serial execution.
+- During execution, the transcript shows shard waves, completed/failed shard counts, cache/review state, and model progress lines labeled with the active analysis stage and shard, for example `worker runtime: ...` or `reviewer security_rpc: ...`.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
 - Incremental shard reuse avoids re-analyzing unchanged areas when possible
@@ -295,7 +297,7 @@ Its current differentiators are:
 - Generic waiting text is collapsed so the thinking indicator does not repeat the same message twice
 - Thinking elapsed time is rebased at phase boundaries and stale runaway timer displays are clamped at the 2-hour mark
 - Repeated blank streamed chunks are replaced with a compact working status instead of emitting empty lines
-- `progress_display` controls in-flight visibility and can be changed from the REPL with `/progress-display auto|compact|stream`: `auto` preserves important tool/model/route events as transcript ledger lines, `compact` keeps them in the footer, and `stream` writes every progress update persistently
+- `progress_display` controls in-flight visibility and can be changed from the REPL with `/progress-display auto|compact|stream`: `auto` preserves important tool/model/route and project-analysis progress as transcript ledger lines, `compact` keeps them in the footer, and `stream` writes every progress update persistently
 - OpenAI-compatible and OpenAI Codex streaming providers surface tool-call construction events, so the REPL can show when the model is preparing a tool and when the arguments are ready
 - Progress-only model streams keep the same incomplete-stream fallback behavior as normal assistant streams; if a streamed OpenAI-compatible response is empty or incomplete, the retry is forced back through the non-stream path instead of re-entering streaming only because progress events are enabled
 - High-frequency shell output and heartbeat updates stay transient in `auto` mode, while durable tool start/result/retry events remain visible in the main transcript
@@ -608,15 +610,22 @@ Isolated implementation:
 | `-base-url <url>` | Override the provider base URL |
 | `-prompt "<text>"` | Run a single prompt and exit |
 | `-command "<slash-command>"` | Run a single slash command or `!shell` command and exit |
+| `-goal "<objective>"` / `-goal-file <path>` | Run an autonomous goal loop from inline text or a markdown file |
 | `-image <paths>` / `-i` | Attach one or more images in one-shot mode, comma-separated |
 | `-resume <session-id>` | Resume a saved session |
-| `-permission-mode <mode>` | Set the permission mode |
+| `-permission-mode <mode>` | Set the permission mode: `default`, `acceptEdits`, `plan`, or `bypassPermissions` |
 | `-y` | Auto-approve all permissions (`bypassPermissions`) |
+| `-mcp-server` | Run Kernforge as a stdio MCP server |
+| `-mcp-daemon-proxy` | Proxy stdio MCP requests through the local Kernforge daemon |
+| `-h`, `--help`, `help` | Show standalone, one-shot, MCP server, and daemon usage |
 
 Notes:
 
+- Run `kernforge --help`, `kernforge help mcp`, or `kernforge help daemon` to see launch examples before config is loaded.
 - `-image` requires `-prompt`.
 - `-command` is intended for automation and external schedulers, for example `-command "/automation monitor --notify"`.
+- Most MCP users should configure only `kernforge -mcp-server -cwd <workspace>`. That starts Kernforge as the MCP stdio server for the selected workspace.
+- `-mcp-daemon-proxy` is an advanced shared-daemon mode for setups where multiple MCP clients should reuse one local Kernforge daemon. In that mode, `kernforge -mcp-server -mcp-daemon-proxy -cwd <workspace>` is still the MCP client's stdio command, but the short-lived proxy forwards requests to the already-running daemon.
 - `-preview-file`, `-preview-result-file`, `-viewer-file`, and `-viewer-result-file` are internal window helper flags.
 
 ## Workspace And Configuration
@@ -710,7 +719,7 @@ Later sources override earlier ones:
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
 | `request_timeout_seconds` | Per-request model timeout in seconds |
-| `progress_display` | Runtime progress style: `auto` keeps durable tool/model ledger lines while high-frequency shell output stays in the footer; `compact` keeps progress transient; `stream` writes every progress update into the transcript |
+| `progress_display` | Runtime progress style: `auto` keeps durable tool/model/project-analysis ledger lines while high-frequency shell output stays in the footer; `compact` keeps progress transient; `stream` writes every progress update into the transcript |
 | `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
 | `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
 | `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
@@ -921,6 +930,13 @@ Starter commands:
 
 Kernforge stores cross-session compressed memories and can re-inject relevant context in future sessions.
 
+Each completed turn records a compact request/outcome summary, tool names, referenced or changed files from tool metadata, verification metadata, and selected `TaskState` notes such as completed steps or failed attempts. At the start of later turns, Kernforge injects two lightweight prompt sections when available:
+
+- `Workspace continuity`: recent high-value memories from the same workspace, even when the new prompt is vague.
+- `Query matches`: older memories that match the current request, file mentions, or structured filters.
+
+When workspace continuity is injected, Kernforge also prints a short `memory` activity line with the memory ids and compact summaries so the user can see which prior records are being reused.
+
 Memory metadata includes:
 
 - Citation id
@@ -985,6 +1001,10 @@ Mention syntax:
 ```text
 @mcp:docs:getting-started summarize this resource
 ```
+
+When Kernforge is running as the MCP server and Codex is the MCP client, code-review requests should use `kernforge_review_code`. That tool calls Kernforge's configured main provider/model to review the supplied diff/code or the current workspace `git diff`, so "review this with KernForge" does not accidentally turn into project analysis, verification, or a worker/reviewer route.
+
+For MCP clients that reuse one Kernforge server entry across multiple repositories, `-cwd` is only the fallback workspace. Kernforge also honors client workspace hints from `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, and the per-tool `workspace` or `cwd` argument. In Codex CLI, if the MCP server reports the wrong workspace in `kernforge_status`, pass the current repo as `workspace` on the Kernforge tool call or configure the MCP entry so its `-cwd` matches that repo.
 
 For live web research, Kernforge deploys the bundled MCP script to `~/.kernforge/mcp/web-research-mcp.js` on startup and auto-adds a matching `web-research` MCP entry to `~/.kernforge/config.json` when no equivalent web-search MCP is configured yet. You can provide `TAVILY_API_KEY`, `BRAVE_SEARCH_API_KEY`, or `SERPAPI_API_KEY` either through your shell environment or through `mcp_servers[].env` in config, then run `/reload` if you changed config or environment after startup. The bundled script lives with the app source under `cmd/kernforge/.kernforge/mcp/web-research-mcp.js`; runtime workspaces normally use the deployed copy under the user config directory. Once connected, Kernforge will prefer that MCP for latest/current research requests before local file inspection. `/init config` also enables the bundled web-research MCP by default when the script is available.
 
@@ -1100,7 +1120,7 @@ Explain the structure of this repository
 - `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort plan-review high` or `/effort specialist <name> low` changes a role-specific model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
 - If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
-- Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role.
+- Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/set-analysis-models clear`.
 - `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main and review profiles instead of dropping them when a save payload omits profile arrays.
 - `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
@@ -1340,6 +1360,7 @@ What it does:
 - Splits the codebase into analysis shards
 - Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
 - Uses a conductor plus multiple worker/reviewer passes
+- Prints live shard progress, including worker slot count, wave start/completion, shard completion/failure state, and stage/shard-prefixed model wait events
 - Builds a structural index and an Unreal semantic graph
 - Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed

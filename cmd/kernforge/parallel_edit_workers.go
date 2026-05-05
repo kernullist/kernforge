@@ -855,8 +855,24 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	policy = policy.normalized()
 	route := modelRouteForRequest(cfg, client, req)
 	limit := policy.LimitFor(route)
+	progress := req.OnProgressEvent
+	emit := func(event ProgressEvent) {
+		if ctx.Err() != nil {
+			return
+		}
+		emitProgressEvent(progress, event)
+	}
+	if progress != nil {
+		originalProgress := progress
+		req.OnProgressEvent = func(event ProgressEvent) {
+			if ctx.Err() != nil {
+				return
+			}
+			emitProgressEvent(originalProgress, event)
+		}
+	}
 	if limit > 0 {
-		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+		emit(ProgressEvent{
 			Kind:       progressKindModelRouteWait,
 			Provider:   route.Provider,
 			Model:      route.Model,
@@ -871,7 +887,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	if limit > 0 {
 		waited := time.Since(routeWaitStarted)
 		if waited >= 200*time.Millisecond {
-			emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+			emit(ProgressEvent{
 				Kind:       progressKindModelRouteAcquired,
 				Provider:   route.Provider,
 				Model:      route.Model,
@@ -890,7 +906,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	go func() {
 		defer release()
 		startedAt := time.Now()
-		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+		emit(ProgressEvent{
 			Kind:       progressKindModelRequestStart,
 			Provider:   route.Provider,
 			Model:      firstNonBlankString(req.Model, route.Model),
@@ -901,14 +917,16 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 		if err != nil {
 			status = "failed"
 		}
-		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
-			Kind:       progressKindModelRequestDone,
-			Provider:   route.Provider,
-			Model:      firstNonBlankString(req.Model, route.Model),
-			RouteLabel: route.Label,
-			Status:     status,
-			Elapsed:    time.Since(startedAt),
-		})
+		if ctx.Err() == nil {
+			emit(ProgressEvent{
+				Kind:       progressKindModelRequestDone,
+				Provider:   route.Provider,
+				Model:      firstNonBlankString(req.Model, route.Model),
+				RouteLabel: route.Label,
+				Status:     status,
+				Elapsed:    time.Since(startedAt),
+			})
+		}
 		done <- result{resp: resp, err: err}
 	}()
 
@@ -923,7 +941,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 			case <-ctx.Done():
 				return
 			case <-timer.C:
-				emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+				emit(ProgressEvent{
 					Kind:       progressKindModelRequestWait,
 					Provider:   route.Provider,
 					Model:      firstNonBlankString(req.Model, route.Model),
@@ -940,7 +958,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 					case <-ctx.Done():
 						return
 					case <-ticker.C:
-						emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+						emit(ProgressEvent{
 							Kind:       progressKindModelRequestWait,
 							Provider:   route.Provider,
 							Model:      firstNonBlankString(req.Model, route.Model),

@@ -29,6 +29,13 @@ type contextIgnoringProviderClient struct {
 	releaseOnce sync.Once
 }
 
+type lateProgressProviderClient struct {
+	name        string
+	started     chan struct{}
+	release     chan struct{}
+	releaseOnce sync.Once
+}
+
 func (c *contextIgnoringProviderClient) Name() string {
 	if c.name != "" {
 		return c.name
@@ -64,6 +71,31 @@ func (c *contextIgnoringProviderClient) stats() (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.starts, c.maxSeen
+}
+
+func (c *lateProgressProviderClient) Name() string {
+	if c.name != "" {
+		return c.name
+	}
+	return "ollama"
+}
+
+func (c *lateProgressProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.started <- struct{}{}
+	<-c.release
+	if req.OnProgressEvent != nil {
+		req.OnProgressEvent(ProgressEvent{
+			Kind:   progressKindModelStreamToolReady,
+			Status: "late",
+		})
+	}
+	return ChatResponse{Message: Message{Role: "assistant", Text: "ok"}}, nil
+}
+
+func (c *lateProgressProviderClient) closeRelease() {
+	c.releaseOnce.Do(func() {
+		close(c.release)
+	})
 }
 
 func (c *concurrentGuardProviderClient) Name() string {
@@ -203,6 +235,67 @@ func TestModelRoutePermitHeldUntilProviderReturnsAfterCallerTimeout(t *testing.T
 		t.Fatalf("second request reached provider before first returned: starts=%d maxSeen=%d", starts, maxSeen)
 	}
 	client.closeRelease()
+}
+
+func TestModelRouteProgressStopsAfterCallerContextCancel(t *testing.T) {
+	scheduler := NewModelRouteScheduler()
+	client := &lateProgressProviderClient{
+		name:    "ollama",
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "ollama"
+	cfg.Model = "llama-test"
+	policy := modelRoutePolicyFromConfig(cfg)
+
+	var mu sync.Mutex
+	var events []ProgressEvent
+	req := ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "cancel",
+		}},
+		OnProgressEvent: func(event ProgressEvent) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, event)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := completeModelTurnOnceWithModelRoutes(ctx, scheduler, policy, cfg, client, req)
+		errCh <- err
+	}()
+
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("provider call did not start")
+	}
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("request error = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request did not return after timeout")
+	}
+
+	client.closeRelease()
+	time.Sleep(30 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, event := range events {
+		if event.Kind == progressKindModelRequestDone || event.Kind == progressKindModelStreamToolReady {
+			t.Fatalf("progress event leaked after context cancel: %#v in %#v", event, events)
+		}
+	}
 }
 
 func TestModelRoutePolicyUsesLocalOpenAICompatibleLimit(t *testing.T) {

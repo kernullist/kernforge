@@ -1416,6 +1416,7 @@ type projectAnalyzer struct {
 	cachedSemanticIndexV2 SemanticIndexV2
 	onStatus              func(string)
 	onDebug               func(string)
+	onProgress            func(ProgressEvent)
 	debugMu               sync.Mutex
 	debugEvents           []string
 }
@@ -1955,6 +1956,16 @@ func (a *projectAnalyzer) debug(text string) {
 	a.debugMu.Unlock()
 	if a.onDebug != nil {
 		a.onDebug(trimmed)
+	}
+}
+
+func (a *projectAnalyzer) progress(event ProgressEvent) {
+	if a.onProgress != nil {
+		a.onProgress(event)
+		return
+	}
+	if message := strings.TrimSpace(formatProgressEventMessage(a.cfg, event)); message != "" {
+		a.status(message)
 	}
 }
 
@@ -3017,7 +3028,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		}
 	}
 
-	a.status(fmt.Sprintf("Running %d sub-agent(s)...", len(shards)))
+	a.status(fmt.Sprintf("Running %d shard(s) with %d worker slot(s)...", len(shards), agentCount))
 	reuseState := a.buildReuseState(previousRun, shards)
 	reports, reviews, err := a.executeShards(ctx, snapshot, shards, goal, previousRun, reuseState, agentCount)
 	if err != nil {
@@ -6245,9 +6256,12 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 		concurrency = 1
 	}
 	totalWaves := ceilDiv(len(shards), concurrency)
+	completed := 0
+	var progressMu sync.Mutex
 	for wave := 0; wave < totalWaves; wave++ {
 		start := wave * concurrency
 		end := analysisMinInt(len(shards), start+concurrency)
+		a.status(fmt.Sprintf("Shard wave %d/%d started: running %d shard(s), progress %d/%d.", wave+1, totalWaves, end-start, completed, len(shards)))
 		a.debug(fmt.Sprintf("starting shard wave %d/%d: shards=%d", wave+1, totalWaves, end-start))
 		errCh := make(chan error, end-start)
 		var wg sync.WaitGroup
@@ -6257,12 +6271,22 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 				defer wg.Done()
 				report, review, shard, err := a.executeShard(ctx, snapshot, shards[i], goal, previousRun, reuseState)
 				if err != nil {
+					progressMu.Lock()
+					completed++
+					done := completed
+					progressMu.Unlock()
+					a.status(fmt.Sprintf("Shard %d/%d failed: %s (%s).", done, len(shards), analysisShardProgressName(shards[i]), summarizeAnalysisProviderFailure(err.Error())))
 					errCh <- err
 					return
 				}
 				shards[i] = shard
 				reports[i] = report
 				reviews[i] = review
+				progressMu.Lock()
+				completed++
+				done := completed
+				progressMu.Unlock()
+				a.status(fmt.Sprintf("Shard %d/%d completed: %s (%s).", done, len(shards), analysisShardProgressName(shard), analysisShardProgressState(shard, review)))
 			}(index)
 		}
 		wg.Wait()
@@ -6272,8 +6296,38 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 				return nil, nil, err
 			}
 		}
+		a.status(fmt.Sprintf("Shard wave %d/%d completed: progress %d/%d.", wave+1, totalWaves, completed, len(shards)))
 	}
 	return reports, reviews, nil
+}
+
+func analysisShardProgressName(shard AnalysisShard) string {
+	name := firstNonBlankAnalysisString(shard.Name, shard.ID)
+	if strings.TrimSpace(name) == "" {
+		name = "analysis shard"
+	}
+	return truncateStatusSnippet(name, 96)
+}
+
+func analysisShardProgressState(shard AnalysisShard, review ReviewDecision) string {
+	parts := []string{}
+	cacheStatus := strings.TrimSpace(shard.CacheStatus)
+	if cacheStatus != "" {
+		if reason := strings.TrimSpace(shard.InvalidationReason); reason != "" {
+			cacheStatus += ":" + reason
+		}
+		parts = append(parts, "cache="+cacheStatus)
+	}
+	if status := strings.TrimSpace(review.Status); status != "" {
+		parts = append(parts, "review="+status)
+	}
+	if kind := strings.TrimSpace(review.FailureKind); kind != "" {
+		parts = append(parts, "issue="+kind)
+	}
+	if len(parts) == 0 {
+		return "done"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnapshot, shard AnalysisShard, goal string, previousRun *ProjectAnalysisRun, reuseState analysisReuseState) (WorkerReport, ReviewDecision, AnalysisShard, error) {
@@ -10065,23 +10119,13 @@ func hasPathPrefix(paths []string, prefix string) bool {
 func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, client ProviderClient, stage string, shardName string, model string, req ChatRequest) (ChatResponse, error) {
 	if req.OnProgressEvent == nil {
 		req.OnProgressEvent = func(event ProgressEvent) {
-			message := strings.TrimSpace(formatProgressEventMessage(a.cfg, event))
-			if message == "" {
-				return
-			}
-			prefixParts := []string{}
 			if trimmedStage := strings.TrimSpace(stage); trimmedStage != "" {
-				prefixParts = append(prefixParts, trimmedStage)
+				event.Stage = trimmedStage
 			}
 			if strings.TrimSpace(shardName) != "" {
-				prefixParts = append(prefixParts, strings.TrimSpace(shardName))
+				event.Shard = strings.TrimSpace(shardName)
 			}
-			prefix := strings.Join(prefixParts, " ")
-			if prefix != "" {
-				a.status(prefix + ": " + message)
-				return
-			}
-			a.status(message)
+			a.progress(event)
 		}
 	}
 	maxRetries := a.analysisCfg.MaxProviderRetries

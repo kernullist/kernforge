@@ -92,8 +92,14 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		enriched += "\n\nGit intent:\n- The user explicitly asked for a git action such as staging, committing, pushing, or opening a PR.\n- If you perform a git-mutating action, summarize exactly what you are about to do.\n"
 	}
 	enriched = a.Skills.InjectPromptContext(enriched)
-	if memoryContext := strings.TrimSpace(a.LongMem.RelevantContext(a.Workspace.BaseRoot, userText, a.Session.ID)); memoryContext != "" {
-		enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext
+	if memoryContext := a.LongMem.PromptContextDetails(a.Workspace.BaseRoot, userText, a.Session.ID); strings.TrimSpace(memoryContext.Text) != "" {
+		enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
+		if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
+			a.emitProgressEvent(ProgressEvent{
+				Kind:    progressKindMemoryContext,
+				Message: message,
+			})
+		}
 	}
 	analysisContext := ""
 	if !shouldSuppressProjectAnalysisFastPathForIntent(intent) {

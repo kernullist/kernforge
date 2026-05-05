@@ -116,6 +116,11 @@ const openAIPrepaidBillingHelpURL = "https://help.openai.com/en/articles/8264644
 const openAIUsageDashboardHelpURL = "https://help.openai.com/en/articles/10478918-api-usage-dashboard"
 
 func run(args []string) error {
+	if ok, topic := kernforgeCLIHelpRequest(args); ok {
+		fmt.Fprint(os.Stdout, renderKernforgeCLIHelp(topic))
+		return nil
+	}
+
 	fs := flag.NewFlagSet("kernforge", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
@@ -1138,6 +1143,8 @@ func (rt *runtimeState) printProgressEvent(event ProgressEvent) {
 
 func progressEventActivityKind(event ProgressEvent, text string) string {
 	switch strings.TrimSpace(event.Kind) {
+	case progressKindMemoryContext:
+		return "memory"
 	case progressKindModelRequestStart, progressKindModelRequestWait, progressKindModelRequestDone,
 		progressKindModelRouteWait, progressKindModelRouteAcquired,
 		progressKindModelStreamToolCall, progressKindModelStreamToolArgs, progressKindModelStreamToolReady,
@@ -1173,7 +1180,8 @@ func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text str
 	switch strings.TrimSpace(event.Kind) {
 	case progressKindToolStarted, progressKindToolCompleted, progressKindToolFailed,
 		progressKindModelStreamToolCall, progressKindModelStreamToolReady,
-		progressKindProviderRetry:
+		progressKindProviderRetry,
+		progressKindMemoryContext:
 		return true
 	case progressKindModelRouteAcquired:
 		return event.Elapsed >= time.Second
@@ -1494,6 +1502,9 @@ func classifyProgressKind(text string) string {
 		return "edit"
 	case strings.Contains(lower, "analysis"):
 		return "analysis"
+	case strings.Contains(lower, "memory"),
+		strings.Contains(lower, "메모리"):
+		return "memory"
 	case strings.Contains(lower, "model"),
 		strings.Contains(lower, "retrying"),
 		strings.Contains(lower, "timeout"):
@@ -2902,7 +2913,7 @@ func (rt *runtimeState) applyProfileAction(action string, index int, newName str
 		rt.storeProviderKey(selected.Provider, rt.cfg.APIKey)
 		roleDefaultEffortProvider := rt.applyProfileRoleModels(selected)
 
-		if err := rt.activateProvider(selected.Provider, selected.Model, selected.BaseURL); err != nil {
+		if err := rt.activateProviderWithRoleModels(selected.Provider, selected.Model, selected.BaseURL, true); err != nil {
 			return err
 		}
 		if roleDefaultEffortProvider != "" {
@@ -3697,6 +3708,10 @@ func limitProfiles(profiles []Profile, max int) []Profile {
 }
 
 func upsertProfile(profiles []Profile, profile Profile, max int) []Profile {
+	return upsertProfileWithOptions(profiles, profile, max, true)
+}
+
+func upsertProfileWithOptions(profiles []Profile, profile Profile, max int, preserveExistingRoleModels bool) []Profile {
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Provider = strings.TrimSpace(profile.Provider)
 	profile.Model = strings.TrimSpace(profile.Model)
@@ -3719,7 +3734,7 @@ func upsertProfile(profiles []Profile, profile Profile, max int) []Profile {
 			if strings.TrimSpace(profile.ReasoningEffort) == "" {
 				profile.ReasoningEffort = existing.ReasoningEffort
 			}
-			if profile.RoleModels == nil {
+			if preserveExistingRoleModels && profile.RoleModels == nil {
 				profile.RoleModels = existing.RoleModels
 			}
 			profile.Pinned = existing.Pinned
@@ -3782,11 +3797,23 @@ func (rt *runtimeState) saveUserConfig() error {
 }
 
 func (rt *runtimeState) rememberCurrentProfile() {
+	rt.rememberCurrentProfileWithRoleModels(true)
+}
+
+func (rt *runtimeState) rememberCurrentMainOnlyProfile() {
+	rt.rememberCurrentProfileWithRoleModels(false)
+}
+
+func (rt *runtimeState) rememberCurrentProfileWithRoleModels(includeRoleModels bool) {
 	if rt == nil || rt.session == nil {
 		return
 	}
 	if strings.TrimSpace(rt.session.Provider) == "" || strings.TrimSpace(rt.session.Model) == "" {
 		return
+	}
+	var roleModels *ProfileRoleModels
+	if includeRoleModels {
+		roleModels = rt.currentProfileRoleModels()
 	}
 	profile := Profile{
 		Name:            profileName(rt.session.Provider, rt.session.Model),
@@ -3795,10 +3822,10 @@ func (rt *runtimeState) rememberCurrentProfile() {
 		BaseURL:         rt.session.BaseURL,
 		APIKey:          rt.providerAPIKey(rt.session.Provider),
 		ReasoningEffort: normalizeReasoningEffort(rt.cfg.ReasoningEffort),
-		RoleModels:      rt.currentProfileRoleModels(),
+		RoleModels:      roleModels,
 	}
 
-	rt.cfg.Profiles = upsertProfile(rt.cfg.Profiles, profile, 5)
+	rt.cfg.Profiles = upsertProfileWithOptions(rt.cfg.Profiles, profile, 5, includeRoleModels)
 	rt.cfg.ActiveProfileKey = configProfileKey(profile)
 }
 
@@ -3894,6 +3921,10 @@ func sameProfileRoute(leftProvider, leftModel, leftBaseURL, rightProvider, right
 }
 
 func (rt *runtimeState) activateProvider(providerName, model, baseURL string) error {
+	return rt.activateProviderWithRoleModels(providerName, model, baseURL, false)
+}
+
+func (rt *runtimeState) activateProviderWithRoleModels(providerName, model, baseURL string, includeRoleModels bool) error {
 	providerName = normalizeProviderName(providerName)
 	if isOpenCodeProvider(providerName) {
 		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(providerName, model, baseURL, rt.providerAPIKey(providerName), "main provider")
@@ -3916,7 +3947,11 @@ func (rt *runtimeState) activateProvider(providerName, model, baseURL string) er
 	rt.session.Model = model
 	rt.session.BaseURL = baseURL
 	rt.syncClientFromConfig()
-	rt.rememberCurrentProfile()
+	if includeRoleModels {
+		rt.rememberCurrentProfile()
+	} else {
+		rt.rememberCurrentMainOnlyProfile()
+	}
 	if err := rt.store.Save(rt.session); err != nil {
 		return err
 	}
@@ -8356,18 +8391,43 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
+	analysisStatus := func(status string) {
+		if requestCtx.Err() != nil {
+			return
+		}
+		line := rt.ui.activityLine("analysis", status)
+		if configProgressDisplay(rt.cfg) == "compact" {
+			if !rt.showTransientWhileThinking(line) {
+				rt.printPersistentWhileThinking(line)
+			}
+			return
+		}
+		rt.printPersistentWhileThinking(line)
+	}
+	analysisDebug := func(debug string) {
+		if requestCtx.Err() != nil {
+			return
+		}
+		line := rt.ui.activityLine("analysis", debug)
+		if configProgressDisplay(rt.cfg) == "stream" {
+			rt.printPersistentWhileThinking(line)
+			return
+		}
+		if !rt.showTransientWhileThinking(line) {
+			rt.printPersistentWhileThinking(line)
+		}
+	}
+	analysisProgress := func(event ProgressEvent) {
+		if requestCtx.Err() != nil {
+			return
+		}
+		rt.printProgressEvent(event)
+	}
 
-	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, func(status string) {
-		if !rt.showTransientWhileThinking(rt.ui.hintLine(status)) {
-			rt.printPersistentWhileThinking(rt.ui.hintLine(status))
-		}
-	}, func(debug string) {
-		if !rt.showTransientWhileThinking(rt.ui.infoLine("analysis: " + debug)) {
-			rt.printPersistentWhileThinking(rt.ui.infoLine("analysis: " + debug))
-		}
-	})
+	analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, analysisStatus, analysisDebug)
 	analyzer.analysisCfg = analysisCfg
 	analyzer.explicitScope = explicitScope
+	analyzer.onProgress = analysisProgress
 	run, err := analyzer.Run(requestCtx, goal, mode)
 	if err != nil {
 		if requestCtx.Err() == context.Canceled {
@@ -8380,17 +8440,10 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			if ok {
 				rt.printPersistentWhileThinking(rt.ui.warnLine("Project analysis hit a model/provider timeout or transient error; retrying once with smaller shards."))
 				rt.printPersistentWhileThinking(rt.ui.statusKV("adaptive_retry_shards", recoveryNote))
-				analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, func(status string) {
-					if !rt.showTransientWhileThinking(rt.ui.hintLine(status)) {
-						rt.printPersistentWhileThinking(rt.ui.hintLine(status))
-					}
-				}, func(debug string) {
-					if !rt.showTransientWhileThinking(rt.ui.infoLine("analysis: " + debug)) {
-						rt.printPersistentWhileThinking(rt.ui.infoLine("analysis: " + debug))
-					}
-				})
+				analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, analysisStatus, analysisDebug)
 				analyzer.analysisCfg = recoveryCfg
 				analyzer.explicitScope = explicitScope
+				analyzer.onProgress = analysisProgress
 				run, err = analyzer.Run(requestCtx, goal, mode)
 				if err == nil {
 					analysisCfg = recoveryCfg

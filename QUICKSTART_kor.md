@@ -11,6 +11,10 @@
 6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
 7. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
 
+실행 전에 `kernforge --help`를 입력하면 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
+Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review_code`로 처리합니다. Codex가 넘긴 diff/code 또는 workspace git diff를 Kernforge의 main model로 리뷰합니다.
+같은 MCP entry를 여러 repository에서 재사용한다면 현재 repo를 tool의 `workspace` argument로 넘기거나 repo별로 `-cwd`를 지정하세요. 그렇지 않으면 Kernforge는 server launch directory를 fallback workspace로 사용합니다.
+
 ## 1. 5분 안에 익히는 핵심 루프
 
 추천 순서:
@@ -48,6 +52,8 @@
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - `--mode`를 생략하면 기본 모드는 `map`
+- 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event를 보여준다. 모든 update를 디버깅용으로 남기고 싶으면 `/progress-display stream`을 사용한다.
+- project analysis가 이전에 설정한 worker/reviewer route가 아니라 현재 main model을 따르길 원하면 `/set-analysis-models clear`를 사용한다.
 
 조사:
 - `/investigate`
@@ -94,6 +100,7 @@
 - `/evidence-dashboard`
 - `/evidence-search <query>`
 - `/mem-search <query>`
+- 같은 workspace의 최근 high-value record는 `Workspace continuity`로 자동 주입되며, 재사용 시 `memory` activity line으로 표시됩니다.
 
 정책:
 - `/hooks`

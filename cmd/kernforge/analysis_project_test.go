@@ -568,6 +568,101 @@ func TestExecuteShardSoftFailsWorkerProviderErrorWithShardAndModel(t *testing.T)
 	}
 }
 
+func TestExecuteShardsReportsUserVisibleProgress(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	pkgDir := filepath.Join(root, "pkg")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatalf("mkdir pkg: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(pkgDir, "feature.go"), []byte("package pkg\n\nfunc Feature() {}\n"), 0o644); err != nil {
+		t.Fatalf("write feature.go: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	var mu sync.Mutex
+	statuses := []string{}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, func(status string) {
+		mu.Lock()
+		defer mu.Unlock()
+		statuses = append(statuses, status)
+	}, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shards := []AnalysisShard{
+		{
+			ID:           "shard-01",
+			Name:         "runtime",
+			PrimaryFiles: []string{"main.go"},
+		},
+		{
+			ID:           "shard-02",
+			Name:         "pkg_feature",
+			PrimaryFiles: []string{"pkg/feature.go"},
+		},
+	}
+
+	_, _, err = analyzer.executeShards(context.Background(), snapshot, shards, "analyze", nil, analysisReuseState{}, 1)
+	if err != nil {
+		t.Fatalf("executeShards returned error: %v", err)
+	}
+
+	mu.Lock()
+	joined := strings.Join(statuses, "\n")
+	mu.Unlock()
+	for _, expected := range []string{
+		"Shard wave 1/2 started",
+		"Shard 1/2 completed: runtime",
+		"Shard wave 1/2 completed",
+		"Shard 2/2 completed: pkg_feature",
+		"Shard wave 2/2 completed",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected progress status to contain %q\n%s", expected, joined)
+		}
+	}
+}
+
+func TestFormatProgressEventMessageIncludesAnalysisStageAndShard(t *testing.T) {
+	message := formatProgressEventMessage(Config{}, ProgressEvent{
+		Kind:     progressKindModelRequestWait,
+		Provider: "deepseek",
+		Model:    "deepseek-chat",
+		Stage:    "worker",
+		Shard:    "runtime",
+		Elapsed:  5 * time.Second,
+	})
+	if !strings.HasPrefix(message, "worker runtime:") {
+		t.Fatalf("expected stage and shard prefix, got %q", message)
+	}
+	if !strings.Contains(message, "deepseek / deepseek-chat") {
+		t.Fatalf("expected provider/model target, got %q", message)
+	}
+}
+
+func TestFormatProgressEventMessageDoesNotPrefixToolMessageWithStage(t *testing.T) {
+	message := formatProgressEventMessage(Config{}, ProgressEvent{
+		Kind:     progressKindToolStarted,
+		ToolName: "run_shell",
+		Stage:    "workspace",
+		Shard:    "runtime",
+	})
+	if strings.HasPrefix(message, "workspace runtime:") {
+		t.Fatalf("expected non-model tool progress to avoid stage/shard prefix, got %q", message)
+	}
+	if !strings.Contains(message, "run_shell") {
+		t.Fatalf("expected tool progress message, got %q", message)
+	}
+}
+
 func TestProjectAnalyzerSerializesDefaultLocalModelRoute(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {

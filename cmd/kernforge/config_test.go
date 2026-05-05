@@ -346,10 +346,11 @@ func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *tes
 	t.Setenv("USERPROFILE", home)
 
 	active := Profile{
-		Name:     "single-main",
-		Provider: "openrouter",
-		Model:    "deepseek/deepseek-v4-pro",
-		BaseURL:  normalizeOpenRouterBaseURL(""),
+		Name:       "single-main",
+		Provider:   "openrouter",
+		Model:      "deepseek/deepseek-v4-pro",
+		BaseURL:    normalizeOpenRouterBaseURL(""),
+		RoleModels: &ProfileRoleModels{},
 	}
 	cfg := DefaultConfig(workspace)
 	cfg.Provider = "openai"

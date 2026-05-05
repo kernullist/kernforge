@@ -11,6 +11,10 @@ The key loop to remember:
 6. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
 7. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
+Before launching, `kernforge --help` shows standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge help mcp` when wiring Kernforge into an MCP client.
+When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review_code`; it reviews Codex's supplied diff/code or the workspace git diff with Kernforge's main model.
+If the same MCP entry is reused across repositories, pass the current repo as the tool `workspace` argument or configure `-cwd` per repo; otherwise Kernforge falls back to the server launch directory.
+
 ## 1. The Core Loop In Five Minutes
 
 Recommended sequence:
@@ -48,6 +52,8 @@ Project analysis:
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - If you omit `--mode`, the default mode is `map`
+- Long `/analyze-project` runs show shard waves, completed/failed shard counts, and worker/reviewer model wait events; use `/progress-display stream` when you want every update persisted for debugging
+- Use `/set-analysis-models clear` when project analysis should follow the current main model instead of a previously configured worker/reviewer route
 
 Investigation:
 - `/investigate`
@@ -94,6 +100,7 @@ Evidence and memory:
 - `/evidence-dashboard`
 - `/evidence-search <query>`
 - `/mem-search <query>`
+- Persistent memory is also injected automatically as `Workspace continuity` for recent high-value records from the same workspace; Kernforge shows a `memory` activity line when it reuses those records.
 
 Policy:
 - `/hooks`
