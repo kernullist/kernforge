@@ -158,7 +158,9 @@ Its current differentiators are:
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
 - In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
 - The pipeline also emits `architecture_facts.json`, a deterministic fact pack with top-level directory facts, domain hints, source anchors, registration/dispatch flow facts, boundary facts, and invariants used by cached architecture Q&A
-- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a static document portal with search, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report and generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- The dashboard includes an inline Markdown viewer and full-window reader mode so long outputs such as `FINAL_REPORT.md` can be read without leaving the dashboard
+- Explicit language requests such as "write the report in English" override the detected conversation language for analysis worker and synthesis prompts, and live progress truncation is UTF-8 safe
 - Before the final handoff, Kernforge prints a highlighted `Analysis artifacts:` block with the report, JSON, dashboard, docs, and manifest paths so users do not need to scroll back through a long run
 - After analysis, Kernforge prints an `Analysis handoff` that points to `/analyze-dashboard`, `/fuzz-campaign run`, a top `/fuzz-func ...` drilldown, or `/verify` when the generated docs support that next step
 - The source-anchor parser now handles modern C++ patterns such as template out-of-line methods, operators, `requires` and `decltype(auto)` headers, API-macro-wrapped scopes, and friend functions
@@ -1370,9 +1372,11 @@ What it does:
 - Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
 - Writes Markdown and JSON analysis artifacts
-- Generates an operational documentation set with `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
+- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
 - Writes a schema-versioned `docs_manifest.json`; readers treat missing `schema_version` as legacy and ignore unknown fields for additive compatibility
-- Writes `dashboard.html` so run summary, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
+- Writes `dashboard.html` so run summary, module/function structure, the assistant-facing final report, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
+- Provides an inline Markdown viewer with a full-window reader mode for long generated documents, while keeping generated-doc links inside the dashboard instead of opening separate tabs
+- Honors explicit English/Korean output requests in project-analysis prompts and keeps terminal progress/status text UTF-8 safe when provider or model names are truncated
 - Adds generated-doc graph sections for project edges, trust boundaries, data-flow paths, and attack/data-flow follow-up commands, with graph-specific stale markers reflected in section metadata
 - Recollects generated docs into `vector_corpus.*` as whole-document and section-level records with source anchors, confidence, stale markers, and reuse metadata
 - README describes product scope and flagship commands, the feature guide describes practical operating loops, and generated docs serve as the per-run project knowledge base with source anchors, confidence, and stale markers

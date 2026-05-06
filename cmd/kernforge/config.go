@@ -2593,8 +2593,8 @@ Provider and model commands control which model is active and how planning/revie
 - Analyze the workspace using a conductor and multiple sub-agents, then write project analysis artifacts.
 - The goal is optional: when omitted, Kernforge infers a mode-specific goal from --mode and --path.
 - Non-map modes automatically reuse the most relevant previous map run as baseline architecture context when available.
-- Always writes .kernforge/analysis/latest/run.json, deterministic docs, schema-versioned docs_manifest.json, docs_index.md, and dashboard.html.
-- Generated docs include architecture, security surface, trust/data-flow graph sections with section-level stale markers, fuzz targets, verification matrix, and operations runbook.
+- Always writes .kernforge/analysis/latest/run.json, the assistant-facing final report, deterministic docs, schema-versioned docs_manifest.json, docs_index.md, and dashboard.html.
+- Generated docs include FINAL_REPORT.md, architecture, security surface, trust/data-flow graph sections with section-level stale markers, fuzz targets, verification matrix, and operations runbook.
 - Generated docs are recorded as evidence and persistent memory so verification planning and fuzz target discovery can reuse them.
 - After analysis, Kernforge prints an Analysis handoff with the next dashboard, fuzz campaign, target drilldown, or verification command when the generated docs support it.
 - --path limits shard execution to a matching workspace directory or file prefix. Natural-language prompts such as "src/driver only" still auto-detect scope; if the prompt looks scoped but no directory matches, Kernforge shows that before confirmation.
@@ -2608,7 +2608,7 @@ Provider and model commands control which model is active and how planning/revie
 - When omitted, mode is inferred from the goal text.
 
 /docs-refresh
-- Rebuild .kernforge/analysis/latest/docs, graph sections, graph stale markers, schema-versioned docs_manifest.json, docs_index.md, dashboard.html, and vector corpus exports from the latest saved run.json.
+- Rebuild .kernforge/analysis/latest/docs, FINAL_REPORT.md, graph sections, graph stale markers, schema-versioned docs_manifest.json, docs_index.md, dashboard.html, and vector corpus exports from the latest saved run.json.
 - Manifest readers treat missing schema_version as legacy and ignore unknown fields for additive compatibility.
 - Use this after code or doc-writer changes when you do not need a full model-backed project analysis rerun.
 - Refresh also re-records the generated docs as reusable evidence and memory artifacts, and rewrites run.json with the refreshed docs-backed corpus.
@@ -2616,7 +2616,7 @@ Provider and model commands control which model is active and how planning/revie
 /analyze-dashboard [latest|path]
 - Open .kernforge/analysis/latest/dashboard.html by default.
 - Pass latest, a dashboard HTML file, or a directory containing dashboard.html.
-- The dashboard now acts as a static document portal with cross-document search, source-anchor drilldown, graph-linked stale section diff, trust/data-flow graph context, attack-flow view, and evidence/memory follow-up commands.
+- The dashboard now opens with a human-readable module/function structure map, then acts as a static document portal with cross-document search, source-anchor drilldown, graph-linked stale section diff, trust/data-flow graph context, attack-flow view, and evidence/memory follow-up commands.
 
 /analyze-performance [focus]
 - Load the latest architecture knowledge pack and performance lens, then analyze likely bottlenecks and hot paths.

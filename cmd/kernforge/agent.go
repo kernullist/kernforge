@@ -1943,13 +1943,7 @@ func firstNonEmptyLine(text string) string {
 
 func truncateStatusSnippet(text string, limit int) string {
 	trimmed := strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-	if limit <= 0 || len(trimmed) <= limit {
-		return trimmed
-	}
-	if limit <= 3 {
-		return trimmed[:limit]
-	}
-	return trimmed[:limit-3] + "..."
+	return truncateDisplayText(trimmed, limit)
 }
 
 func normalizeStopReason(reason string) string {

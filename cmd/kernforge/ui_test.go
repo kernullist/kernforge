@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestBannerUsesCurrentKernforgeBranding(t *testing.T) {
@@ -62,6 +63,42 @@ func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "memory-inspection-reviewer:") {
 		t.Fatalf("expected aligned helper to keep colon layout, got %q", rendered)
+	}
+}
+
+func TestCompactThinkingStatusDoesNotSplitKoreanUTF8(t *testing.T) {
+	status := "worker root: deepseek / deepseek-v4-pro 모델 응답 대기 중 (1m20s)"
+	got := compactThinkingStatus(Config{AutoLocale: boolPtr(false)}, status)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 status, got %q", got)
+	}
+	if strings.Contains(got, "\uFFFD") {
+		t.Fatalf("expected status truncation to avoid replacement characters, got %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected long status to be truncated with ellipsis, got %q", got)
+	}
+	if visibleLen(got) > 48 {
+		t.Fatalf("expected compact status to fit display width, width=%d status=%q", visibleLen(got), got)
+	}
+}
+
+func TestTruncateStatusSnippetDoesNotSplitKoreanUTF8(t *testing.T) {
+	status := "provider retry: 모델 응답 대기 중이며 다음 route permit을 기다리는 중입니다"
+	got := truncateStatusSnippet(status, 32)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8 snippet, got %q", got)
+	}
+	if strings.Contains(got, "\uFFFD") {
+		t.Fatalf("expected snippet truncation to avoid replacement characters, got %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected long snippet to be truncated with ellipsis, got %q", got)
+	}
+	if visibleLen(got) > 32 {
+		t.Fatalf("expected compact snippet to fit display width, width=%d snippet=%q", visibleLen(got), got)
 	}
 }
 

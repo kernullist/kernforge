@@ -12617,8 +12617,8 @@ Requirements:
 - Use collaboration to explain subsystem interaction points.
 - Consolidate duplicates across shards and call out uncertain areas explicitly.
 - Write a detailed document, not a compressed summary.
-- Match the user's request language. If the goal is written in Korean, write the final Markdown in Korean while preserving code identifiers, paths, API names, and command names in their original spelling.
-- Avoid informal "snippet" wording in final prose. Use source-state language such as "indexed source에서 확인됨", "구현이 이번 분석 산출물에 포함되지 않음", or "추론" when appropriate.
+- Match the user's requested output language. Explicit language directives such as "Answer in English", "write docs in English", "영어로 답변", or "영어로 문서" override the script used by the rest of the goal. If no explicit directive exists and the goal is Korean, write the final Markdown in Korean while preserving code identifiers, paths, API names, and command names in their original spelling.
+- Avoid informal "snippet" wording in final prose. Use source-state language such as "confirmed in indexed source", "not included in this analysis artifact", or "inferred" when appropriate; use Korean equivalents only when writing in Korean.
 - For execution flows, include only calls or transitions explicitly reported as observed runtime/internal_flow edges. Declared public methods, available manager operations, lifecycle helper methods, and likely next steps must be listed as available operations, not as executed startup-chain steps.
 - For Windows driver or kernel projects, keep initialization/state setup separate from runtime callback/filter registration. Do not say an Initialize function registers callbacks unless the provided flow explicitly says so. If both Initialize and Start/Register symbols are present, describe Initialize as state setup and Start/Register as the activation or registration path.
 - For driver IOCTL/control flows, separate the user-mode control/client wrapper from the kernel IRP router, kernel device-control branch, command payload validation, and runtime enforcement callbacks. Do not place request-origin/open validation inside the DeviceIoControl command handler unless the provided report explicitly proves that call. Prefer this split when evidence is available: IRP_MJ_CREATE/open validates request origin and establishes controller state; IRP_MJ_DEVICE_CONTROL branches to the device-control handler; the command handler performs decrypt/unpack, size/shape checks, command validation, controller-state lookup, and command-specific dispatch.
@@ -12634,11 +12634,77 @@ Requirements:
 `)
 }
 
+func projectAnalysisOutputLanguageForGoal(goal string) string {
+	trimmed := strings.TrimSpace(goal)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case containsAny(lower,
+		"english only",
+		"in english",
+		"respond in english",
+		"answer in english",
+		"write in english",
+		"write the document in english",
+		"write docs in english",
+		"write documentation in english",
+		"english document",
+		"english documentation",
+		"english markdown",
+		"영어로 답",
+		"영어로 설명",
+		"영어로 문서",
+		"영어 문서",
+		"영문으로",
+		"영문 문서",
+		"문서를 영어",
+		"문서는 영어",
+	):
+		return "en"
+	case containsAny(lower,
+		"korean only",
+		"in korean",
+		"respond in korean",
+		"answer in korean",
+		"write in korean",
+		"write the document in korean",
+		"write docs in korean",
+		"write documentation in korean",
+		"korean document",
+		"korean documentation",
+		"korean markdown",
+		"한국어로 답",
+		"한국어로 설명",
+		"한국어로 문서",
+		"한글로 답",
+		"한글로 설명",
+		"한글로 문서",
+		"한국어 문서",
+		"한글 문서",
+		"국문으로",
+		"국문 문서",
+		"문서를 한국어",
+		"문서를 한글",
+		"문서는 한국어",
+		"문서는 한글",
+	):
+		return "ko"
+	case textContainsHangul(trimmed):
+		return "ko"
+	case textLooksMostlyEnglish(trimmed):
+		return "en"
+	default:
+		return "en"
+	}
+}
+
 func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal string, revisionPrompt string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
-	if textContainsHangul(goal) {
+	switch projectAnalysisOutputLanguageForGoal(goal) {
+	case "ko":
 		b.WriteString("Response language: Korean. Write narrative fields in Korean; keep code identifiers, API names, paths, and commands unchanged.\n")
+	case "en":
+		b.WriteString("Response language: English. Write narrative fields in English; keep code identifiers, API names, paths, and commands unchanged.\n")
 	}
 	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
 		fmt.Fprintf(&b, "Analysis mode: %s", mode)
@@ -13406,8 +13472,11 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	b.WriteString("Approved shard reports:\n")
 	b.Write(data)
 	b.WriteString("\n\nSynthesis requirements:\n")
-	if textContainsHangul(goal) {
+	switch projectAnalysisOutputLanguageForGoal(goal) {
+	case "ko":
 		b.WriteString("- Write the final Markdown document in Korean because the user's goal is Korean. Keep code identifiers, APIs, filenames, paths, commands, and build configuration names unchanged.\n")
+	case "en":
+		b.WriteString("- Write the final Markdown document in English because the user's request asks for English or does not request another output language. Keep code identifiers, APIs, filenames, paths, commands, and build configuration names unchanged.\n")
 	}
 	b.WriteString("- Turn internal_flow bullets into a coherent execution-flow section.\n")
 	b.WriteString("- Turn collaboration bullets into explicit subsystem integration descriptions.\n")

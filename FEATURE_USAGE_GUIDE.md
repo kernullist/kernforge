@@ -384,6 +384,9 @@ Reasoning effort is stored per configured model target, not as one global overri
 Role-specific `base_url` values for analysis worker/reviewer, plan reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
 Changing the main provider/model preserves explicit analysis worker and reviewer profiles. Use `/set-analysis-models clear` when you want project analysis to inherit the current main model again instead of a previously dedicated route.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
+The generated documentation set includes `FINAL_REPORT.md`, which preserves the assistant-facing final synthesis that was printed at the end of the run, plus the operational docs used for architecture, security, entrypoints, build artifacts, verification, fuzz targets, and operations.
+The dashboard opens those documents in an inline Markdown viewer. Use the `Reader` button for a full-window reading mode when the final report or another generated document is too long for the default panel.
+If the goal explicitly asks for English or Korean output, that request is passed through to the worker and synthesis prompts instead of relying only on the detected conversation language. Live model-wait/progress text is truncated on UTF-8 rune boundaries so localized status text does not become mojibake.
 
 Role split:
 1. `README.md` is the quick product-scope, flagship-command, and artifact-location document.

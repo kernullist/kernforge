@@ -46,6 +46,7 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 	trustBoundaryRows := analysisDashboardTrustBoundaryRows(run)
 	attackFlowRows := analysisDashboardAttackFlowRows(run)
 	runtimeLens := analysisDashboardRuntimeLensPanel(run, labels)
+	structureOverview := analysisDashboardStructureOverview(run, docsHref, labels)
 	riskFiles := analysisDashboardList(run.KnowledgePack.HighRiskFiles, 12)
 	importantFiles := analysisDashboardList(run.KnowledgePack.TopImportantFiles, 12)
 	if importantFiles == "" {
@@ -70,29 +71,29 @@ func buildAnalysisDashboardHTML(run ProjectAnalysisRun, docsHref string) string 
 <style>
 :root {
 	color-scheme: dark;
-	--bg: #070b12;
-	--bg-2: #0a1220;
-	--panel: rgba(14, 21, 33, .94);
-	--panel-2: #101826;
-	--panel-3: #0c1421;
-	--panel-head: rgba(17, 28, 44, .96);
-	--ink: #e8eef8;
-	--ink-strong: #f8fbff;
-	--muted: #93a3b9;
-	--muted-2: #64748b;
-	--line: #223047;
-	--line-strong: #334762;
-	--accent: #35d6b7;
-	--accent-2: #74a7ff;
-	--accent-soft: rgba(53, 214, 183, .13);
+	--bg: #030407;
+	--bg-2: #090a0f;
+	--panel: rgba(15, 16, 22, .96);
+	--panel-2: #11131a;
+	--panel-3: #0b0d12;
+	--panel-head: rgba(18, 20, 28, .98);
+	--ink: #e8ecf4;
+	--ink-strong: #f7f9fc;
+	--muted: #98a2b3;
+	--muted-2: #667085;
+	--line: #242833;
+	--line-strong: #3a4150;
+	--accent: #7aa2ff;
+	--accent-2: #a8b7ff;
+	--accent-soft: rgba(122, 162, 255, .13);
 	--warn: #f4b760;
 	--warn-soft: rgba(244, 183, 96, .14);
 	--danger: #ff6f91;
-	--link: #8fc7ff;
-	--code: #dbeafe;
-	--code-bg: #08111f;
-	--table-head: rgba(10, 18, 32, .96);
-	--shadow: 0 22px 70px rgba(0, 0, 0, .34);
+	--link: #a4bdff;
+	--code: #dfe7f5;
+	--code-bg: #08090d;
+	--table-head: rgba(14, 15, 21, .98);
+	--shadow: 0 24px 80px rgba(0, 0, 0, .52);
 }
 * { box-sizing: border-box; }
 html { background: var(--bg); }
@@ -101,14 +102,14 @@ body {
 	min-height: 100vh;
 	overflow-x: hidden;
 	background:
-		linear-gradient(120deg, rgba(53, 214, 183, .09), transparent 30%%),
-		linear-gradient(245deg, rgba(116, 167, 255, .10), transparent 34%%),
+		linear-gradient(180deg, rgba(122, 162, 255, .045), transparent 26%%),
+		linear-gradient(145deg, rgba(255, 255, 255, .035), transparent 38%%),
 		linear-gradient(180deg, var(--bg) 0, var(--bg-2) 45%%, var(--bg) 100%%);
 	color: var(--ink);
 	font-family: Segoe UI, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 	line-height: 1.45;
 }
-::selection { background: rgba(53, 214, 183, .28); color: var(--ink-strong); }
+::selection { background: rgba(122, 162, 255, .28); color: var(--ink-strong); }
 a { color: var(--link); text-decoration: none; transition: color .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease; }
 a:hover { color: var(--accent); text-decoration: none; }
 a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -125,7 +126,7 @@ a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid 
 	padding: 20px 22px;
 	border: 1px solid var(--line);
 	border-radius: 10px;
-	background: linear-gradient(180deg, rgba(18, 30, 47, .94), rgba(11, 18, 30, .94));
+	background: linear-gradient(180deg, rgba(21, 23, 31, .96), rgba(8, 9, 13, .96));
 	box-shadow: var(--shadow);
 	backdrop-filter: blur(18px);
 }
@@ -146,7 +147,7 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	font-size: 12px;
 	font-weight: 800;
 	letter-spacing: .02em;
-	background: rgba(8, 17, 31, .78);
+	background: rgba(8, 9, 13, .82);
 	white-space: nowrap;
 	box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
 }
@@ -158,7 +159,7 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	background: currentColor;
 	box-shadow: 0 0 18px currentColor;
 }
-.status-ok { color: var(--accent); border-color: rgba(53, 214, 183, .38); background: var(--accent-soft); }
+.status-ok { color: #9bb8ff; border-color: rgba(122, 162, 255, .38); background: var(--accent-soft); }
 .status-warn { color: var(--warn); border-color: rgba(244, 183, 96, .36); background: var(--warn-soft); }
 .meta-grid {
 	display: grid;
@@ -173,17 +174,59 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	box-shadow: 0 14px 38px rgba(0, 0, 0, .18);
 	backdrop-filter: blur(10px);
 }
-.meta { padding: 13px 14px; min-width: 0; background: linear-gradient(180deg, rgba(18, 29, 45, .95), rgba(12, 20, 33, .94)); }
+.meta { padding: 13px 14px; min-width: 0; background: linear-gradient(180deg, rgba(20, 22, 30, .96), rgba(11, 12, 18, .96)); }
 .meta span, .metric span { display: block; color: var(--muted-2); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .meta strong, .metric strong { display: block; margin-top: 5px; color: var(--ink-strong); overflow-wrap: anywhere; }
 .metric-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
-.metric { position: relative; min-height: 84px; padding: 14px 15px; overflow: hidden; background: linear-gradient(180deg, rgba(16, 26, 41, .98), rgba(11, 18, 30, .98)); }
+.metric { position: relative; min-height: 84px; padding: 14px 15px; overflow: hidden; background: linear-gradient(180deg, rgba(18, 20, 28, .98), rgba(10, 11, 16, .98)); }
 .metric::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: linear-gradient(90deg, var(--accent), transparent 76%%); opacity: .7; }
 .metric strong { font-size: 27px; line-height: 1.12; font-weight: 800; }
 .lens-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
-.lens { min-width: 0; padding: 13px 14px; background: linear-gradient(180deg, rgba(16, 26, 41, .96), rgba(10, 18, 30, .94)); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .16); }
+.lens { min-width: 0; padding: 13px 14px; background: linear-gradient(180deg, rgba(18, 20, 28, .96), rgba(9, 10, 15, .94)); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .22); }
 .lens span { display: block; color: var(--muted-2); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .lens strong { display: block; margin-top: 5px; color: var(--ink-strong); overflow-wrap: anywhere; }
+.structure-map { display: grid; gap: 14px; margin-bottom: 18px; }
+.structure-summary {
+	display: grid;
+	grid-template-columns: minmax(0, 1.15fr) minmax(280px, .85fr);
+	gap: 14px;
+	align-items: start;
+}
+.structure-lead {
+	margin: 0;
+	color: #dfe5ef;
+	font-size: 15px;
+	line-height: 1.55;
+	overflow-wrap: anywhere;
+}
+.structure-facts {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+}
+.structure-fact {
+	min-height: 84px;
+	padding: 12px;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+	background: linear-gradient(180deg, rgba(17, 19, 27, .96), rgba(9, 10, 15, .96));
+}
+.structure-fact span { display: block; color: var(--muted-2); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: .08em; }
+.structure-fact strong { display: block; margin-top: 5px; color: var(--ink-strong); overflow-wrap: anywhere; }
+.structure-fact em { display: block; margin-top: 6px; color: var(--muted); font-style: normal; font-size: 12px; overflow-wrap: anywhere; }
+.structure-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.module-card, .function-card {
+	padding: 13px;
+	border-top: 1px solid var(--line);
+}
+.module-card:first-of-type, .function-card:first-of-type { border-top: 0; padding-top: 0; }
+.module-card h3, .function-card h3 { margin-bottom: 5px; }
+.module-card p, .function-card p { margin: 7px 0; color: #d7dde8; overflow-wrap: anywhere; }
+.card-gridline { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 8px; margin-top: 7px; font-size: 12px; }
+.card-gridline span { color: var(--muted-2); font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.card-gridline div { color: var(--muted); overflow-wrap: anywhere; }
+.reading-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.reading-links a { display: inline-flex; align-items: center; min-height: 30px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: rgba(122, 162, 255, .08); color: var(--link); font-size: 12px; font-weight: 750; }
 .layout { display: grid; grid-template-columns: minmax(0, 1.78fr) minmax(340px, .72fr); gap: 18px; align-items: start; min-width: 0; }
 .layout > *, .stack > *, .document-workspace > * { min-width: 0; }
 .stack { display: grid; gap: 18px; }
@@ -212,16 +255,16 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	font-size: 13px;
 	box-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
 }
-.portal-search input::placeholder { color: #5f718a; }
-.portal-search input:focus { border-color: rgba(53, 214, 183, .7); }
+.portal-search input::placeholder { color: #697386; }
+.portal-search input:focus { border-color: rgba(122, 162, 255, .72); }
 .portal-search input::-webkit-search-cancel-button { filter: invert(1); opacity: .75; }
 .portal-search input::-webkit-search-decoration { filter: invert(1); }
 .portal-search input::-ms-clear { display: none; }
 .portal-search input::-ms-reveal { display: none; }
-.portal-search input::-webkit-input-placeholder { color: #5f718a; }
-.portal-search input:-ms-input-placeholder { color: #5f718a; }
-.portal-search input::-ms-input-placeholder { color: #5f718a; }
-.portal-search input::placeholder { color: #5f718a; }
+.portal-search input::-webkit-input-placeholder { color: #697386; }
+.portal-search input:-ms-input-placeholder { color: #697386; }
+.portal-search input::-ms-input-placeholder { color: #697386; }
+.portal-search input::placeholder { color: #697386; }
 .portal-search input[type="search"] { appearance: none; }
 .portal-search input[type="search"]::-webkit-search-cancel-button { appearance: none; }
 .portal-search input[type="search"]::-webkit-search-decoration { appearance: none; }
@@ -256,7 +299,7 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	min-height: 32px;
 	border: 1px solid var(--line);
 	border-radius: 999px;
-	background: rgba(10, 18, 30, .78);
+	background: rgba(10, 11, 16, .86);
 	color: var(--muted);
 	padding: 5px 11px;
 	font: inherit;
@@ -273,8 +316,8 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 .portal-filter.active {
 	background: var(--accent-soft);
 	color: var(--accent);
-	border-color: rgba(53, 214, 183, .5);
-	box-shadow: inset 0 0 0 1px rgba(53, 214, 183, .08);
+	border-color: rgba(122, 162, 255, .5);
+	box-shadow: inset 0 0 0 1px rgba(122, 162, 255, .08);
 }
 .doc-link {
 	display: block;
@@ -282,7 +325,7 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	padding: 12px;
 	border: 1px solid var(--line);
 	border-radius: 8px;
-	background: linear-gradient(180deg, rgba(16, 27, 43, .96), rgba(11, 18, 30, .96));
+	background: linear-gradient(180deg, rgba(17, 19, 27, .96), rgba(9, 10, 15, .96));
 	color: var(--ink);
 	overflow-wrap: anywhere;
 	transition: transform .15s ease, border-color .15s ease, background .15s ease, box-shadow .15s ease;
@@ -295,11 +338,11 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 .doc-link:hover {
 	transform: translateY(-1px);
 	border-color: var(--line-strong);
-	background: linear-gradient(180deg, rgba(20, 35, 55, .96), rgba(12, 22, 36, .96));
+	background: linear-gradient(180deg, rgba(22, 25, 35, .96), rgba(11, 12, 18, .96));
 	box-shadow: 0 12px 28px rgba(0, 0, 0, .22);
 }
 .doc-link.active-doc {
-	border-color: rgba(53, 214, 183, .58);
+	border-color: rgba(122, 162, 255, .58);
 	background: var(--accent-soft);
 	box-shadow: inset 3px 0 0 var(--accent), 0 16px 34px rgba(0, 0, 0, .22);
 }
@@ -307,8 +350,8 @@ h3 { margin: 0 0 8px; color: var(--ink-strong); font-size: 14px; font-weight: 74
 	color: var(--accent);
 }
 a.active-doc code {
-	border-color: rgba(53, 214, 183, .5);
-	background: rgba(53, 214, 183, .12);
+	border-color: rgba(122, 162, 255, .5);
+	background: rgba(122, 162, 255, .12);
 	color: var(--accent);
 }
 .markdown-viewer-panel { padding: 0; overflow: hidden; }
@@ -319,14 +362,63 @@ a.active-doc code {
 	align-items: start;
 	padding: 17px 18px;
 	border-bottom: 1px solid var(--line);
-	background: linear-gradient(180deg, rgba(18, 30, 47, .98), rgba(11, 19, 31, .98));
+	background: linear-gradient(180deg, rgba(20, 22, 30, .98), rgba(10, 11, 16, .98));
+}
+.viewer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.reader-toggle {
+	min-height: 32px;
+	border: 1px solid var(--line-strong);
+	border-radius: 999px;
+	background: rgba(122, 162, 255, .1);
+	color: var(--link);
+	padding: 5px 12px;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 800;
+	cursor: pointer;
+	transition: background .15s ease, color .15s ease, border-color .15s ease, transform .15s ease;
+}
+.reader-toggle:hover {
+	transform: translateY(-1px);
+	border-color: rgba(122, 162, 255, .62);
+	background: rgba(122, 162, 255, .16);
+	color: var(--ink-strong);
 }
 .markdown-viewer {
-	max-height: 680px;
+	min-height: 520px;
+	max-height: calc(100vh - 190px);
 	overflow: auto;
 	padding: 24px 26px;
-	background: linear-gradient(180deg, #0b1422, #08111f);
+	background: linear-gradient(180deg, #0d0f15, #07080c);
 	color: var(--ink);
+}
+body.reader-mode { overflow: hidden; }
+body.reader-mode::before {
+	content: "";
+	position: fixed;
+	inset: 0;
+	z-index: 80;
+	background: rgba(3, 4, 7, .78);
+	backdrop-filter: blur(6px);
+}
+body.reader-mode .markdown-viewer-panel {
+	position: fixed;
+	inset: 14px;
+	z-index: 90;
+	display: grid;
+	grid-template-rows: auto minmax(0, 1fr);
+	border-color: var(--line-strong);
+	box-shadow: 0 30px 110px rgba(0, 0, 0, .72);
+}
+body.reader-mode .viewer-head {
+	position: relative;
+	z-index: 1;
+}
+body.reader-mode .markdown-viewer {
+	min-height: 0;
+	max-height: none;
+	height: 100%%;
+	padding: 32px 44px;
 }
 .markdown-viewer.empty { color: var(--muted); }
 .markdown-viewer h1 {
@@ -353,7 +445,7 @@ a.active-doc code {
 	border-radius: 0 8px 8px 0;
 	border-left: 4px solid var(--accent);
 	background: var(--accent-soft);
-	color: #c9fff2;
+	color: #dbe6ff;
 }
 .markdown-viewer pre {
 	margin: 12px 0;
@@ -361,7 +453,7 @@ a.active-doc code {
 	overflow: auto;
 	border: 1px solid var(--line);
 	border-radius: 8px;
-	background: #050b14;
+	background: #050609;
 	color: #e5edf7;
 }
 .markdown-viewer pre code {
@@ -386,24 +478,25 @@ a.active-doc code {
 table { width: 100%%; border-collapse: collapse; table-layout: fixed; }
 th, td { padding: 11px 10px; border-top: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 th { color: var(--muted-2); background: var(--table-head); font-size: 11px; font-weight: 850; text-transform: uppercase; letter-spacing: .07em; }
-td { color: #d8e2f0; font-size: 13px; }
+td { color: #d7dde8; font-size: 13px; }
 tbody tr { transition: background .15s ease; }
-tbody tr:hover td { background: rgba(116, 167, 255, .055); }
-code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(116, 167, 255, .14); border-radius: 6px; padding: 2px 6px; font-family: Consolas, ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
-.command-chip { display: inline-block; margin: 2px 4px 2px 0; color: #c8fff3; border-color: rgba(53, 214, 183, .24); background: rgba(53, 214, 183, .08); }
-.tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border: 1px solid rgba(116, 167, 255, .14); border-radius: 999px; background: rgba(116, 167, 255, .08); color: #aebed4; font-size: 11px; font-weight: 700; }
+tbody tr:hover td { background: rgba(122, 162, 255, .055); }
+code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(122, 162, 255, .14); border-radius: 6px; padding: 2px 6px; font-family: Consolas, ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+.command-chip { display: inline-block; margin: 2px 4px 2px 0; color: #dbe6ff; border-color: rgba(122, 162, 255, .28); background: rgba(122, 162, 255, .09); }
+.tag { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border: 1px solid rgba(122, 162, 255, .14); border-radius: 999px; background: rgba(122, 162, 255, .08); color: #aebed4; font-size: 11px; font-weight: 700; }
 .subsystem { border-top: 1px solid var(--line); padding-top: 12px; margin-top: 12px; }
 .subsystem:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
 .subtle { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .footer { margin-top: 18px; padding: 12px 2px; color: var(--muted-2); font-size: 12px; }
 ::-webkit-scrollbar { width: 11px; height: 11px; }
-::-webkit-scrollbar-track { background: rgba(8, 17, 31, .8); }
-::-webkit-scrollbar-thumb { background: #253650; border: 3px solid rgba(8, 17, 31, .8); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: #38506f; }
+::-webkit-scrollbar-track { background: rgba(7, 8, 12, .88); }
+::-webkit-scrollbar-thumb { background: #2e3442; border: 3px solid rgba(7, 8, 12, .88); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #424a5b; }
 @media (max-width: 980px) {
 	.shell { padding: 18px; }
 	.topbar { position: static; }
 	.topbar, .layout { grid-template-columns: 1fr; }
+	.structure-summary, .structure-columns { grid-template-columns: 1fr; }
 	.document-workspace { grid-template-columns: 1fr; }
 	.document-list-panel { max-height: none; }
 	.meta-grid, .metric-grid, .lens-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -419,7 +512,12 @@ code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(11
 	th, td { padding: 8px 6px; font-size: 13px; }
 	.portal-search { grid-template-columns: 1fr; }
 	.status-pill { justify-self: start; max-width: 100%%; }
+	.structure-facts { grid-template-columns: 1fr; }
+	.card-gridline { grid-template-columns: 1fr; gap: 2px; }
 	.markdown-viewer { padding: 18px; }
+	body.reader-mode .markdown-viewer-panel { inset: 8px; }
+	body.reader-mode .viewer-head { grid-template-columns: 1fr; }
+	body.reader-mode .markdown-viewer { padding: 20px; }
 }
 </style>
 </head>
@@ -452,6 +550,7 @@ code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(11
 		<div class="metric"><span>%s</span><strong>%d</strong></div>
 	</section>
 	%s
+	%s
 	<section class="layout">
 		<div class="stack">
 			<section class="document-workspace">
@@ -465,8 +564,11 @@ code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(11
 							<h2 id="markdown-viewer-title">%s</h2>
 							<div id="markdown-viewer-path" class="subtle">%s</div>
 						</div>
+						<div class="viewer-actions">
+							<button id="reader-toggle" class="reader-toggle" type="button" aria-pressed="false" data-open-label="%s" data-close-label="%s">%s</button>
+						</div>
 					</div>
-					<article id="markdown-viewer" class="markdown-viewer empty">%s</article>
+					<article id="markdown-viewer" class="markdown-viewer empty" tabindex="0">%s</article>
 				</section>
 			</section>
 			<section class="table-panel">
@@ -558,6 +660,7 @@ const markdownViewerPanel = document.getElementById('markdown-viewer-panel');
 const markdownViewer = document.getElementById('markdown-viewer');
 const markdownViewerTitle = document.getElementById('markdown-viewer-title');
 const markdownViewerPath = document.getElementById('markdown-viewer-path');
+const readerToggle = document.getElementById('reader-toggle');
 let portalFilterQuery = '';
 function escapeHTML(value) {
 	return String(value || '').replace(/[&<>"']/g, function(ch) {
@@ -731,6 +834,17 @@ function scrollMarkdownAnchor(anchor) {
 		markdownViewer.scrollTop = 0;
 	}
 }
+function setReaderMode(enabled) {
+	if (!readerToggle || !markdownViewerPanel) {
+		return;
+	}
+	document.body.classList.toggle('reader-mode', enabled);
+	readerToggle.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+	readerToggle.textContent = enabled ? (readerToggle.getAttribute('data-close-label') || 'Exit Reader') : (readerToggle.getAttribute('data-open-label') || 'Reader');
+	if (enabled && markdownViewer) {
+		markdownViewer.focus();
+	}
+}
 function openMarkdownDoc(href, options) {
 	const parsed = parseDocHref(href);
 	const doc = markdownByName[parsed.name];
@@ -747,6 +861,25 @@ function openMarkdownDoc(href, options) {
 		markdownViewerPanel.scrollIntoView({behavior: 'smooth', block: 'start'});
 	}
 	return true;
+}
+if (readerToggle) {
+	readerToggle.addEventListener('click', function() {
+		setReaderMode(!document.body.classList.contains('reader-mode'));
+	});
+}
+document.addEventListener('keydown', function(event) {
+	if (event.key === 'Escape' && document.body.classList.contains('reader-mode')) {
+		setReaderMode(false);
+	}
+});
+function portalItemSearchText(item) {
+	let search = String((item && item.search) || '');
+	const parsed = parseDocHref((item && item.href) || '');
+	const doc = markdownByName[parsed.name];
+	if (doc && doc.markdown) {
+		search += ' ' + String(doc.markdown).toLowerCase();
+	}
+	return search;
 }
 function renderPortal(items) {
 	const visible = Math.min(items.length, portalDisplayLimit);
@@ -767,7 +900,7 @@ function renderPortal(items) {
 function filterPortal() {
 	const query = portalSearch.value.trim().toLowerCase();
 	renderPortal(portalItems.filter(function(item) {
-		const search = item.search || '';
+		const search = portalItemSearchText(item);
 		const matchesText = !query || search.indexOf(query) >= 0;
 		const matchesFilter = !portalFilterQuery || search.indexOf(portalFilterQuery) >= 0;
 		return matchesText && matchesFilter;
@@ -834,10 +967,14 @@ if (markdownDocs && markdownDocs.length > 0) {
 		htmlEscape(labels.CacheMiss),
 		missed,
 		runtimeLens,
+		structureOverview,
 		htmlEscape(labels.GeneratedDocuments),
 		docLinks,
 		htmlEscape(labels.MarkdownViewer),
 		htmlEscape(labels.ViewerEmpty),
+		htmlEscape(labels.ReaderMode),
+		htmlEscape(labels.ExitReaderMode),
+		htmlEscape(labels.ReaderMode),
 		htmlEscape(labels.ViewerEmpty),
 		htmlEscape(labels.DocumentPortal),
 		htmlEscape(labels.PortalPlaceholder),
@@ -904,6 +1041,8 @@ type analysisDashboardLabels struct {
 	GeneratedDocuments string
 	MarkdownViewer     string
 	ViewerEmpty        string
+	ReaderMode         string
+	ExitReaderMode     string
 	DocumentPortal     string
 	PortalPlaceholder  string
 	Kind               string
@@ -915,6 +1054,22 @@ type analysisDashboardLabels struct {
 	Document           string
 	Confidence         string
 	State              string
+	StructureSummary   string
+	ProjectSummary     string
+	ModuleMap          string
+	FunctionalAreas    string
+	RuntimeChain       string
+	ReadingPath        string
+	Startup            string
+	EntryFiles         string
+	Responsibilities   string
+	KeyFiles           string
+	Dependencies       string
+	Risk               string
+	RelatedDocs        string
+	Relationship       string
+	Target             string
+	Evidence           string
 	StartupCandidate   string
 	DriverRuntimeEntry string
 	IOCTLDeviceControl string
@@ -924,7 +1079,7 @@ type analysisDashboardLabels struct {
 }
 
 func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabels {
-	if textContainsHangul(run.Summary.Goal) || textContainsHangul(run.KnowledgePack.Goal) {
+	if projectAnalysisOutputLanguageForGoal(strings.TrimSpace(run.Summary.Goal+"\n"+run.KnowledgePack.Goal)) == "ko" {
 		return analysisDashboardLabels{
 			Lang:               "ko",
 			Title:              "프로젝트 분석 대시보드",
@@ -945,6 +1100,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 			GeneratedDocuments: "생성 문서",
 			MarkdownViewer:     "마크다운 뷰어",
 			ViewerEmpty:        "생성 문서를 선택하면 여기에서 열립니다.",
+			ReaderMode:         "크게 보기",
+			ExitReaderMode:     "닫기",
 			DocumentPortal:     "문서 포털",
 			PortalPlaceholder:  "문서, anchor, fuzz target, 검증, evidence 검색",
 			Kind:               "종류",
@@ -956,6 +1113,22 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 			Document:           "문서",
 			Confidence:         "신뢰도",
 			State:              "상태",
+			StructureSummary:   "구조 한눈에",
+			ProjectSummary:     "프로젝트 요약",
+			ModuleMap:          "모듈 맵",
+			FunctionalAreas:    "기능 영역",
+			RuntimeChain:       "실행 흐름",
+			ReadingPath:        "관련 문서",
+			Startup:            "Startup",
+			EntryFiles:         "엔트리",
+			Responsibilities:   "역할",
+			KeyFiles:           "핵심 파일",
+			Dependencies:       "의존성",
+			Risk:               "위험/주의",
+			RelatedDocs:        "관련 문서",
+			Relationship:       "관계",
+			Target:             "대상",
+			Evidence:           "근거",
 			StartupCandidate:   "Startup 후보",
 			DriverRuntimeEntry: "Driver/runtime entry",
 			IOCTLDeviceControl: "IOCTL/device control",
@@ -984,6 +1157,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 		GeneratedDocuments: "Generated Documents",
 		MarkdownViewer:     "Markdown Viewer",
 		ViewerEmpty:        "Select a generated document to preview it here.",
+		ReaderMode:         "Reader",
+		ExitReaderMode:     "Exit Reader",
 		DocumentPortal:     "Document Portal",
 		PortalPlaceholder:  "Search docs, anchors, fuzz targets, verification, evidence",
 		Kind:               "Kind",
@@ -995,6 +1170,22 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 		Document:           "Document",
 		Confidence:         "Confidence",
 		State:              "State",
+		StructureSummary:   "Structure At A Glance",
+		ProjectSummary:     "Project Summary",
+		ModuleMap:          "Module Map",
+		FunctionalAreas:    "Functional Areas",
+		RuntimeChain:       "Runtime Chain",
+		ReadingPath:        "Related Docs",
+		Startup:            "Startup",
+		EntryFiles:         "Entries",
+		Responsibilities:   "Role",
+		KeyFiles:           "Key Files",
+		Dependencies:       "Dependencies",
+		Risk:               "Risk",
+		RelatedDocs:        "Related Docs",
+		Relationship:       "Relationship",
+		Target:             "Target",
+		Evidence:           "Evidence",
 		StartupCandidate:   "Startup candidate",
 		DriverRuntimeEntry: "Driver/runtime entry",
 		IOCTLDeviceControl: "IOCTL/device control",
@@ -1710,6 +1901,189 @@ func analysisDashboardIsDeveloperDoc(name string) bool {
 	default:
 		return false
 	}
+}
+
+func analysisDashboardStructureOverview(run ProjectAnalysisRun, docsHref string, labels analysisDashboardLabels) string {
+	docsHref = analysisDashboardNormalizeDocsHref(docsHref)
+	summary := analysisDashboardStructureSummaryPanel(run, docsHref, labels)
+	modules := analysisDashboardModuleMapCards(run, docsHref, labels)
+	functions := analysisDashboardFunctionalAreaCards(run, docsHref, labels)
+	runtimeRows := analysisDashboardRuntimeChainRows(run)
+	return `<section class="structure-map">` +
+		summary +
+		`<section class="structure-columns">` +
+		`<section class="panel"><h2>` + htmlEscape(labels.ModuleMap) + `</h2>` + analysisDashboardFallbackPanel(modules, labels.NotInferred) + `</section>` +
+		`<section class="panel"><h2>` + htmlEscape(labels.FunctionalAreas) + `</h2>` + analysisDashboardFallbackPanel(functions, labels.NotInferred) + `</section>` +
+		`</section>` +
+		`<section class="table-panel"><div class="panel" style="border:0; border-radius:8px 8px 0 0;"><h2>` + htmlEscape(labels.RuntimeChain) + `</h2></div>` +
+		`<table><thead><tr><th>` + htmlEscape(labels.Source) + `</th><th>` + htmlEscape(labels.Relationship) + `</th><th>` + htmlEscape(labels.Target) + `</th><th>` + htmlEscape(labels.Evidence) + `</th></tr></thead><tbody>` + analysisDashboardFallbackRows(runtimeRows, 4, labels.NotInferred) + `</tbody></table></section>` +
+		`</section>`
+}
+
+func analysisDashboardStructureSummaryPanel(run ProjectAnalysisRun, docsHref string, labels analysisDashboardLabels) string {
+	summary := firstNonBlankDeveloperString(
+		strings.TrimSpace(run.KnowledgePack.ProjectSummary),
+		strings.TrimSpace(firstParagraph(run.FinalDocument)),
+		analysisDashboardBriefText(developerProjectShapeSummary(run, buildDeveloperFolderRecords(run)), 260),
+	)
+	if strings.TrimSpace(summary) == "" {
+		summary = labels.NotInferred
+	}
+	facts := []string{
+		analysisDashboardStructureFact(labels, labels.Startup, firstNonBlankDeveloperString(run.Snapshot.PrimaryStartup, run.KnowledgePack.PrimaryStartup, labels.NotInferred), strings.Join(limitStrings(analysisUniqueStrings(append(run.KnowledgePack.StartupEntryFiles, startupProjectEntryFiles(run.Snapshot)...)), 3), ", ")),
+		analysisDashboardStructureFact(labels, labels.DriverRuntimeEntry, strings.Join(limitStrings(driverEntrypointFiles(run), 3), ", "), strings.Join(limitStrings(analysisDashboardDriverRuntimeSymbols(run), 3), ", ")),
+		analysisDashboardStructureFact(labels, labels.SecuritySurfaces, fmt.Sprintf("%d", len(analysisSecuritySurfaceSymbols(run))), strings.Join(limitStrings(run.KnowledgePack.HighRiskFiles, 3), ", ")),
+		analysisDashboardStructureFact(labels, labels.BuildSigning, analysisDashboardBuildArtifactSummary(run), strings.Join(limitStrings(run.Snapshot.ManifestFiles, 3), ", ")),
+	}
+	return `<section class="panel structure-summary">` +
+		`<div><h2>` + htmlEscape(labels.StructureSummary) + `</h2>` +
+		`<h3>` + htmlEscape(labels.ProjectSummary) + `</h3>` +
+		`<p class="structure-lead">` + htmlEscape(analysisDashboardBriefText(summary, 520)) + `</p>` +
+		analysisDashboardReadingLinks(docsHref, labels) + `</div>` +
+		`<div class="structure-facts">` + strings.Join(facts, "") + `</div>` +
+		`</section>`
+}
+
+func analysisDashboardStructureFact(labels analysisDashboardLabels, label string, value string, detail string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		value = labels.None
+	}
+	detail = strings.TrimSpace(detail)
+	if detail == "" {
+		detail = labels.NotInferred
+	}
+	return `<div class="structure-fact"><span>` + htmlEscape(label) + `</span><strong>` + htmlEscape(value) + `</strong><em>` + htmlEscape(detail) + `</em></div>`
+}
+
+func analysisDashboardDriverRuntimeSymbols(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, symbol := range run.SemanticIndexV2.Symbols {
+		name := firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name)
+		if containsAny(strings.ToLower(strings.Join(append([]string{name, symbol.Kind, symbol.File}, symbol.Tags...), " ")), "driverentry", "driver", "kernel") {
+			items = append(items, firstNonBlankAnalysisString(name, symbol.File))
+		}
+	}
+	return analysisUniqueStrings(items)
+}
+
+func analysisDashboardModuleMapCards(run ProjectAnalysisRun, docsHref string, labels analysisDashboardLabels) string {
+	modules := limitDeveloperModuleRecords(buildDeveloperModuleRecords(run), 10)
+	cards := []string{}
+	for _, module := range modules {
+		title := firstNonBlankAnalysisString(module.Name, module.ID)
+		href := analysisDashboardNormalizeDocsHref(docsHref) + "/MODULES.md"
+		body := firstNonBlankDeveloperString(module.Responsibility, inferModuleResponsibility(module), module.Kind)
+		files := analysisUniqueStrings(append(append([]string{}, module.PublicFiles...), module.InternalFiles...))
+		cards = append(cards, `<article class="module-card">`+
+			`<h3><a `+analysisDashboardDocLinkAttrs(href)+`>`+htmlEscape(title)+`</a></h3>`+
+			`<div>`+analysisDashboardTags([]string{firstNonBlankAnalysisString(module.Kind, "module"), firstNonBlankAnalysisString(module.Confidence, "medium")})+`</div>`+
+			`<p>`+htmlEscape(analysisDashboardBriefText(body, 220))+`</p>`+
+			analysisDashboardCardLine(labels.EntryFiles, analysisDashboardCodeItems(module.Entrypoints, 4), labels.None)+
+			analysisDashboardCardLine(labels.KeyFiles, analysisDashboardCodeItems(files, 4), labels.None)+
+			analysisDashboardCardLine(labels.Dependencies, analysisDashboardPlainItems(module.Dependencies, 5), labels.None)+
+			`</article>`)
+	}
+	return strings.Join(cards, "")
+}
+
+func analysisDashboardFunctionalAreaCards(run ProjectAnalysisRun, docsHref string, labels analysisDashboardLabels) string {
+	cards := []string{}
+	for _, subsystem := range limitKnowledgeSubsystems(run.KnowledgePack.Subsystems, 10) {
+		title := canonicalKnowledgeTitle(subsystem)
+		doc := analysisDashboardDocForSubsystem(subsystem)
+		href := analysisDashboardNormalizeDocsHref(docsHref) + "/" + firstNonBlankAnalysisString(doc, "ARCHITECTURE.md")
+		body := firstSliceValue(subsystem.Responsibilities)
+		if strings.TrimSpace(body) == "" {
+			body = firstNonBlankDeveloperString(firstSliceValue(subsystem.Facts), firstSliceValue(subsystem.Inferences), subsystem.Group)
+		}
+		cards = append(cards, `<article class="function-card">`+
+			`<h3><a `+analysisDashboardDocLinkAttrs(href)+`>`+htmlEscape(title)+`</a></h3>`+
+			`<div>`+analysisDashboardTags([]string{firstNonBlankAnalysisString(subsystem.Group, "area"), analysisDashboardStateLabel(subsystem.InvalidationReasons)})+`</div>`+
+			`<p>`+htmlEscape(analysisDashboardBriefText(body, 220))+`</p>`+
+			analysisDashboardCardLine(labels.EntryFiles, analysisDashboardCodeItems(subsystem.EntryPoints, 4), labels.None)+
+			analysisDashboardCardLine(labels.KeyFiles, analysisDashboardCodeItems(analysisUniqueStrings(append(subsystem.KeyFiles, subsystem.EvidenceFiles...)), 4), labels.None)+
+			analysisDashboardCardLine(labels.Risk, analysisDashboardPlainItems(subsystem.Risks, 3), labels.None)+
+			`</article>`)
+	}
+	return strings.Join(cards, "")
+}
+
+func analysisDashboardRuntimeChainRows(run ProjectAnalysisRun) string {
+	rows := []string{}
+	for _, edge := range limitRuntimeEdges(runtimeEdgesForStartup(run.Snapshot.RuntimeEdges, run.Snapshot.PrimaryStartup), 12) {
+		rows = append(rows, fmt.Sprintf(`<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td></tr>`,
+			htmlEscape(edge.Source),
+			htmlEscape(firstNonBlankDeveloperString(edge.Kind, edge.Confidence, "runtime")),
+			htmlEscape(edge.Target),
+			htmlEscape(firstNonBlankDeveloperString(strings.Join(limitStrings(edge.Evidence, 3), ", "), edge.Confidence, "inferred")),
+		))
+	}
+	if len(rows) > 0 {
+		return strings.Join(rows, "")
+	}
+	for _, edge := range limitProjectEdges(analysisDashboardTrustBoundaryEdges(run), 12) {
+		rows = append(rows, fmt.Sprintf(`<tr><td><code>%s</code></td><td>%s</td><td><code>%s</code></td><td>%s</td></tr>`,
+			htmlEscape(edge.Source),
+			htmlEscape(firstNonBlankDeveloperString(edge.Type, edge.Attributes["kind"], "project edge")),
+			htmlEscape(edge.Target),
+			htmlEscape(firstNonBlankDeveloperString(strings.Join(limitStrings(edge.Evidence, 3), ", "), edge.Confidence, "inferred")),
+		))
+	}
+	return strings.Join(rows, "")
+}
+
+func analysisDashboardReadingLinks(docsHref string, labels analysisDashboardLabels) string {
+	docsHref = analysisDashboardNormalizeDocsHref(docsHref)
+	docs := []string{"FINAL_REPORT.md", "DEVELOPER_OVERVIEW.md", "MODULES.md", "FOLDER_MAP.md", "STRUCTURE_DIAGRAMS.md"}
+	links := []string{}
+	for _, doc := range docs {
+		links = append(links, `<a `+analysisDashboardDocLinkAttrs(docsHref+"/"+doc)+`>`+htmlEscape(analysisDocTitle(doc))+`</a>`)
+	}
+	return `<div class="reading-links" aria-label="` + htmlEscape(labels.ReadingPath) + `">` + strings.Join(links, "") + `</div>`
+}
+
+func analysisDashboardCardLine(label string, value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		value = `<span class="subtle">` + htmlEscape(firstNonBlankAnalysisString(fallback, "none")) + `</span>`
+	}
+	return `<div class="card-gridline"><span>` + htmlEscape(label) + `</span><div>` + value + `</div></div>`
+}
+
+func analysisDashboardCodeItems(items []string, limit int) string {
+	items = limitStrings(analysisUniqueStrings(items), limit)
+	if len(items) == 0 {
+		return ""
+	}
+	out := []string{}
+	for _, item := range items {
+		out = append(out, `<code>`+htmlEscape(item)+`</code>`)
+	}
+	return strings.Join(out, " ")
+}
+
+func analysisDashboardPlainItems(items []string, limit int) string {
+	items = limitStrings(analysisUniqueStrings(items), limit)
+	if len(items) == 0 {
+		return ""
+	}
+	out := []string{}
+	for _, item := range items {
+		out = append(out, htmlEscape(item))
+	}
+	return strings.Join(out, ", ")
+}
+
+func analysisDashboardBriefText(value string, limit int) string {
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	if limit < 4 {
+		return string(runes[:limit])
+	}
+	return strings.TrimSpace(string(runes[:limit-3])) + "..."
 }
 
 func analysisDashboardSubsystems(subsystems []KnowledgeSubsystem) string {

@@ -382,6 +382,9 @@ reasoning effort는 하나의 전역 override가 아니라 configured model targ
 analysis worker/reviewer, plan reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 main provider/model만 바꾸면 명시적인 analysis worker/reviewer profile은 유지된다. 이전에 따로 둔 route가 아니라 현재 main model을 다시 상속시키고 싶으면 `/set-analysis-models clear`를 사용한다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
+생성 문서 세트에는 run 마지막에 출력된 assistant-facing final synthesis를 그대로 보존하는 `FINAL_REPORT.md`와 architecture, security, entrypoint, build artifact, verification, fuzz target, operation 운영 문서가 함께 들어간다.
+dashboard는 이 문서들을 inline Markdown viewer로 열며, 최종 리포트나 다른 generated document가 기본 패널에서 읽기 길면 `Reader` 버튼으로 full-window reading mode를 사용할 수 있다.
+goal이 영어 또는 한국어 출력을 명시하면 감지된 대화 언어만 따르지 않고 worker와 synthesis prompt에 그 요청을 전달한다. 실행 중 model-wait/progress 문구는 UTF-8 rune boundary에서 잘라 localized status text가 mojibake로 깨지지 않게 한다.
 
 역할 분리:
 1. `README_kor.md`는 제품 범위, 대표 명령, 산출물 위치를 빠르게 확인하는 문서다.

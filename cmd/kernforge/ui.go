@@ -662,6 +662,40 @@ func padDisplayRight(text string, width int) string {
 	return text + strings.Repeat(" ", padding)
 }
 
+func truncateDisplayText(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if visibleLen(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return truncateDisplayTextWithoutSuffix(text, limit)
+	}
+	prefix := strings.TrimSpace(truncateDisplayTextWithoutSuffix(text, limit-3))
+	if prefix == "" {
+		return "..."
+	}
+	return prefix + "..."
+}
+
+func truncateDisplayTextWithoutSuffix(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	width := 0
+	for _, r := range text {
+		next := runeWidth(r)
+		if width+next > limit {
+			break
+		}
+		b.WriteRune(r)
+		width += next
+	}
+	return b.String()
+}
+
 func countBlockLines(text string) int {
 	trimmed := strings.TrimRight(text, "\r\n")
 	if trimmed == "" {

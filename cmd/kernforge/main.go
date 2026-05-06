@@ -1468,10 +1468,7 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Finalizing reply...", "답변 정리 중 ...")
 	}
 
-	if len(trimmed) > 48 {
-		return trimmed[:45] + "..."
-	}
-	return trimmed
+	return truncateDisplayText(trimmed, 48)
 }
 
 func classifyProgressKind(text string) string {

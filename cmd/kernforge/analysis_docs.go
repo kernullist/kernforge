@@ -96,6 +96,7 @@ type AnalysisDocsManifest struct {
 
 func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 	docs := map[string]string{
+		"FINAL_REPORT.md":             buildAnalysisFinalReportDoc(run),
 		"ARCHITECTURE.md":             buildAnalysisArchitectureDoc(run),
 		"SECURITY_SURFACE.md":         buildAnalysisSecuritySurfaceDoc(run),
 		"API_AND_ENTRYPOINTS.md":      buildAnalysisAPIEntrypointsDoc(run),
@@ -116,6 +117,7 @@ func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 func analysisGeneratedDocNames() []string {
 	return []string{
 		"INDEX.md",
+		"FINAL_REPORT.md",
 		"ARCHITECTURE.md",
 		"DEVELOPER_OVERVIEW.md",
 		"FOLDER_MAP.md",
@@ -272,6 +274,18 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 		fmt.Fprintf(&b, "- Reused shards: %d\n", run.KnowledgePack.AnalysisExecution.ReusedShards)
 		fmt.Fprintf(&b, "- Recomputed shards: %d\n", run.KnowledgePack.AnalysisExecution.MissedShards)
 	}
+	return b.String()
+}
+
+func buildAnalysisFinalReportDoc(run ProjectAnalysisRun) string {
+	report := strings.TrimSpace(run.FinalDocument)
+	if report != "" {
+		return report + "\n"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Final Synthesis Report\n\n")
+	analysisDocsWriteHeader(&b, run)
+	fmt.Fprintf(&b, "\nNo final synthesis document was captured for this run. Regenerate `/analyze-project` to refresh the assistant-facing final report.\n")
 	return b.String()
 }
 
@@ -1057,6 +1071,8 @@ func analysisRunStaleMarkers(run ProjectAnalysisRun) []string {
 
 func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 	switch name {
+	case "FINAL_REPORT.md":
+		return analysisUniqueStrings(append(run.KnowledgePack.TopImportantFiles, run.Snapshot.EntrypointFiles...))
 	case "ARCHITECTURE.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.TopImportantFiles, subsystemFiles(run.KnowledgePack.Subsystems)...))
 	case "DEVELOPER_OVERVIEW.md":
@@ -1099,7 +1115,7 @@ func analysisDocConfidence(run ProjectAnalysisRun, name string) string {
 
 func analysisDocStaleMarkers(run ProjectAnalysisRun, name string) []string {
 	switch name {
-	case "ARCHITECTURE.md", "DEVELOPER_OVERVIEW.md", "FOLDER_MAP.md", "MODULES.md", "OPERATIONS_RUNBOOK.md":
+	case "FINAL_REPORT.md", "ARCHITECTURE.md", "DEVELOPER_OVERVIEW.md", "FOLDER_MAP.md", "MODULES.md", "OPERATIONS_RUNBOOK.md":
 		return analysisRunStaleMarkers(run)
 	case "STRUCTURE_DIAGRAMS.md":
 		return analysisUniqueStrings(append(analysisRunStaleMarkers(run), analysisGraphStaleMarkers(run)...))
@@ -1182,6 +1198,8 @@ func analysisDocsReuseTargets() []string {
 
 func analysisDocReuseTargets(name string) []string {
 	switch name {
+	case "FINAL_REPORT.md":
+		return []string{"analysis_context", "memory", "final_report"}
 	case "DEVELOPER_OVERVIEW.md", "FOLDER_MAP.md", "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
 		return []string{"analysis_context", "memory", "developer_docs"}
 	case "SECURITY_SURFACE.md":
@@ -1197,6 +1215,8 @@ func analysisDocReuseTargets(name string) []string {
 
 func analysisDocQueryIntents(name string) []string {
 	switch name {
+	case "FINAL_REPORT.md":
+		return []string{"deep_map", "flow_trace", "security_surface", "verification"}
 	case "DEVELOPER_OVERVIEW.md":
 		return []string{"deep_map", "module_drilldown"}
 	case "FOLDER_MAP.md":
@@ -1228,6 +1248,8 @@ func analysisDocQueryIntents(name string) []string {
 
 func analysisDocPriority(name string) int {
 	switch name {
+	case "FINAL_REPORT.md":
+		return 10
 	case "DEVELOPER_OVERVIEW.md":
 		return 9
 	case "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
@@ -1332,6 +1354,9 @@ func analysisDocSectionGraphRefs(run ProjectAnalysisRun, docName string, section
 
 func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSection {
 	sectionTitles := map[string][][2]string{
+		"FINAL_REPORT.md": {
+			{"final_report.synthesis", "Final Synthesis Report"},
+		},
 		"ARCHITECTURE.md": {
 			{"architecture.executive_summary", "Executive Summary"},
 			{"architecture.subsystems", "Subsystems"},
@@ -1513,6 +1538,8 @@ func analysisDocTitle(name string) string {
 	switch name {
 	case "INDEX.md":
 		return "Project Documentation Index"
+	case "FINAL_REPORT.md":
+		return "Final Synthesis Report"
 	case "ARCHITECTURE.md":
 		return "Architecture"
 	case "DEVELOPER_OVERVIEW.md":
@@ -1548,6 +1575,8 @@ func analysisDocKind(name string) string {
 
 func analysisDocPurpose(name string) string {
 	switch name {
+	case "FINAL_REPORT.md":
+		return "the exact assistant-facing final report printed after analyze-project"
 	case "ARCHITECTURE.md":
 		return "subsystem ownership, runtime flow, and project edges"
 	case "DEVELOPER_OVERVIEW.md":

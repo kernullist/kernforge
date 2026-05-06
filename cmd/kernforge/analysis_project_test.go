@@ -3378,6 +3378,7 @@ func TestBuildAnalysisDocsCreatesOperationalDocumentSet(t *testing.T) {
 			TotalShards:    2,
 			ApprovedShards: 2,
 		},
+		FinalDocument: "# Driver Security Report\n\nSolution startup candidate:\n- `launcher.exe`\n\nDriver dispatch owns the user/kernel boundary.\n",
 		Snapshot: ProjectSnapshot{
 			Root:            "C:\\repo",
 			AnalysisMode:    "security",
@@ -3462,6 +3463,12 @@ func TestBuildAnalysisDocsCreatesOperationalDocumentSet(t *testing.T) {
 	}
 	if !strings.Contains(docs["MODULES.md"], "Module Inventory") {
 		t.Fatalf("expected modules inventory\n%s", docs["MODULES.md"])
+	}
+	if !strings.Contains(docs["FINAL_REPORT.md"], "Solution startup candidate:") || !strings.Contains(docs["FINAL_REPORT.md"], "Driver Security Report") {
+		t.Fatalf("expected final report doc to preserve assistant-facing report\n%s", docs["FINAL_REPORT.md"])
+	}
+	if !strings.Contains(docs["INDEX.md"], "FINAL_REPORT.md") {
+		t.Fatalf("expected docs index to link final report\n%s", docs["INDEX.md"])
 	}
 	if !strings.Contains(docs["FUZZ_TARGETS.md"], `/fuzz-func DispatchIoctl --file "driver/dispatch.cpp"`) {
 		t.Fatalf("expected fuzz target suggestion\n%s", docs["FUZZ_TARGETS.md"])
@@ -3762,7 +3769,7 @@ func TestBuildAnalysisDashboardHTMLIncludesCoreSections(t *testing.T) {
 	}
 
 	html := buildAnalysisDashboardHTML(run, "docs")
-	for _, want := range []string{"Project Analysis Dashboard", "SECURITY_SURFACE.md", "Document Portal", "Developer Docs", "developer_docs", "developer document", `data-query="developer_docs"`, "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
+	for _, want := range []string{"Project Analysis Dashboard", "Structure At A Glance", "Project Summary", "Module Map", "Functional Areas", "Runtime Chain", "Driver Dispatch", "Validate IOCTL buffers", "SECURITY_SURFACE.md", "Document Portal", "Developer Docs", "developer_docs", "developer document", `data-query="developer_docs"`, "Source Anchors", "Evidence And Memory Drilldown", "Stale Section Diff", "Trust Boundary Graph", "Attack Flow View", "user_to_kernel", "launcher.exe", "security_signal_added", "DispatchIoctl", `docs/SECURITY_SURFACE.md#trust-boundary-graph`, `/fuzz-func DispatchIoctl --file &quot;driver/dispatch.cpp&quot;`, "/evidence-search kind:analysis_docs", "Verification Matrix", "Stale And Invalidation Markers"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("expected dashboard HTML to contain %q\n%s", want, html)
 		}
@@ -3807,6 +3814,10 @@ func TestAnalysisDashboardUsesQuestionLanguageAndConsistentDocsHref(t *testing.T
 	for _, want := range []string{
 		`<html lang="ko">`,
 		"프로젝트 분석 대시보드",
+		"구조 한눈에",
+		"모듈 맵",
+		"기능 영역",
+		"실행 흐름",
 		"생성 문서",
 		"문서 포털",
 		"Startup 후보",
@@ -3825,6 +3836,50 @@ func TestAnalysisDashboardUsesQuestionLanguageAndConsistentDocsHref(t *testing.T
 	}
 	if strings.Contains(html, `href="docs/`) {
 		t.Fatalf("expected all dashboard doc links to use supplied docsHref\n%s", html)
+	}
+}
+
+func TestAnalysisDashboardHonorsExplicitEnglishLanguageRequest(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RunID:  "run-dashboard-explicit-en",
+			Goal:   "영어로 답변하고 문서를 생성해. 프로젝트 구조를 분석해.",
+			Mode:   "map",
+			Status: "completed",
+		},
+		Snapshot: ProjectSnapshot{
+			Root:           "C:\\repo",
+			PrimaryStartup: "Tavern",
+			TotalFiles:     2,
+			TotalLines:     100,
+		},
+		KnowledgePack: KnowledgePack{
+			Goal:           "영어로 답변하고 문서를 생성해. 프로젝트 구조를 분석해.",
+			ProjectSummary: "Tavern is the startup application.",
+		},
+	}
+
+	html := buildAnalysisDashboardHTML(run, "docs")
+	for _, want := range []string{
+		`<html lang="en">`,
+		"Project Analysis Dashboard",
+		"Structure At A Glance",
+		"Module Map",
+		"Functional Areas",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("expected explicit English dashboard HTML to contain %q\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{
+		`<html lang="ko">`,
+		"프로젝트 분석 대시보드",
+		"구조 한눈에",
+		"모듈 맵",
+	} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("expected explicit English dashboard HTML to avoid %q\n%s", unwanted, html)
+		}
 	}
 }
 
@@ -3859,6 +3914,7 @@ func TestAnalysisDashboardUsesInlineMarkdownViewerForDocLinks(t *testing.T) {
 			Mode:   "map",
 			Status: "completed",
 		},
+		FinalDocument: "# Tavern Client Project Map\n\nSolution startup candidate:\n- `Tavern`\n\nAuxiliary executable projects:\n- `TavernControl`\n",
 		Snapshot: ProjectSnapshot{
 			Root:       "C:\\repo",
 			TotalFiles: 2,
@@ -3877,10 +3933,16 @@ func TestAnalysisDashboardUsesInlineMarkdownViewerForDocLinks(t *testing.T) {
 		`id="markdown-viewer"`,
 		`const markdownDocs = `,
 		`data-doc-href="docs/INDEX.md"`,
+		`data-doc-href="docs/FINAL_REPORT.md"`,
 		`data-doc-href="docs/VERIFICATION_MATRIX.md"`,
 		`document.addEventListener('click'`,
 		`openMarkdownDoc(href)`,
+		`portalItemSearchText`,
 		`sanitizeMarkdownHref`,
+		`id="reader-toggle"`,
+		`setReaderMode`,
+		`body.reader-mode`,
+		`TavernControl`,
 		`# Project Documentation Index`,
 	} {
 		if !strings.Contains(html, want) {
@@ -3915,14 +3977,16 @@ func TestAnalysisDashboardUsesDarkThemeUXTokens(t *testing.T) {
 	html := buildAnalysisDashboardHTML(run, "docs")
 	for _, want := range []string{
 		`color-scheme: dark;`,
-		`--bg: #070b12;`,
-		`--accent: #35d6b7;`,
+		`--bg: #030407;`,
+		`--accent: #7aa2ff;`,
 		`position: sticky;`,
 		`backdrop-filter: blur(18px);`,
 		`document-workspace`,
 		`.doc-link.active-doc`,
 		`.portal-filter.active`,
-		`background: linear-gradient(180deg, #0b1422, #08111f);`,
+		`.reader-toggle`,
+		`body.reader-mode .markdown-viewer-panel`,
+		`background: linear-gradient(180deg, #0d0f15, #07080c);`,
 		`::-webkit-scrollbar-thumb`,
 	} {
 		if !strings.Contains(html, want) {
@@ -3933,10 +3997,33 @@ func TestAnalysisDashboardUsesDarkThemeUXTokens(t *testing.T) {
 		`--bg: #f5f7fb;`,
 		`--panel: #ffffff;`,
 		`background: #fbfcfe;`,
+		`--accent: #35d6b7;`,
+		`rgba(53, 214, 183`,
+		`#c9fff2`,
+		`#c8fff3`,
 	} {
 		if strings.Contains(html, oldLightTheme) {
-			t.Fatalf("expected old light dashboard token %q to be removed\n%s", oldLightTheme, html)
+			t.Fatalf("expected old or green dashboard token %q to be removed\n%s", oldLightTheme, html)
 		}
+	}
+}
+
+func TestAnalysisDashboardStructureHelpersPreserveUTF8AndLocalizedFallbacks(t *testing.T) {
+	input := strings.Repeat("프로젝트구조", 12)
+	got := analysisDashboardBriefText(input, 11)
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected UTF-8-safe dashboard summary, got %q", got)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected truncated text to keep ellipsis, got %q", got)
+	}
+
+	card := analysisDashboardCardLine("의존성", "", "없음")
+	if !strings.Contains(card, ">없음<") {
+		t.Fatalf("expected localized fallback in card line\n%s", card)
+	}
+	if strings.Contains(card, ">none<") {
+		t.Fatalf("expected Korean card fallback not to render English none\n%s", card)
 	}
 }
 
@@ -3949,6 +4036,7 @@ func TestAnalysisDashboardMarkdownDocsJSONIsScriptSafe(t *testing.T) {
 			Mode:   "map",
 			Status: "completed",
 		},
+		FinalDocument: "# Final Report\n\n" + payload + "\n",
 		Snapshot: ProjectSnapshot{
 			Root:       "C:\\repo",
 			TotalFiles: 1,
@@ -4811,6 +4899,33 @@ func TestBuildWorkerAndSynthesisPromptsFollowKoreanGoalLanguage(t *testing.T) {
 	synthesis := buildSynthesisPrompt(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, "프로젝트 구조를 분석해서 문서로 작성해")
 	if !strings.Contains(synthesis, "final Markdown document in Korean") {
 		t.Fatalf("expected Korean synthesis language guidance\n%s", synthesis)
+	}
+}
+
+func TestBuildWorkerAndSynthesisPromptsHonorExplicitEnglishInKoreanGoal(t *testing.T) {
+	snapshot := ProjectSnapshot{Root: "C:\\repo"}
+	shard := AnalysisShard{ID: "shard-01", Name: "core", PrimaryFiles: []string{"core.cpp"}}
+	goal := "영어로 답변하고 문서를 생성해. 프로젝트 구조를 분석해."
+	worker := buildWorkerPrompt(snapshot, shard, goal, "")
+	if !strings.Contains(worker, "Response language: English") {
+		t.Fatalf("expected explicit English worker language guidance\n%s", worker)
+	}
+	if strings.Contains(worker, "Response language: Korean") {
+		t.Fatalf("expected explicit English to override Korean goal text\n%s", worker)
+	}
+	report := WorkerReport{
+		ShardID:          "shard-01",
+		Title:            "Core",
+		ScopeSummary:     "summary",
+		Responsibilities: []string{"owns core"},
+		EvidenceFiles:    []string{"core.cpp"},
+	}
+	synthesis := buildSynthesisPrompt(snapshot, []AnalysisShard{shard}, []WorkerReport{report}, goal)
+	if !strings.Contains(synthesis, "final Markdown document in English") {
+		t.Fatalf("expected explicit English synthesis language guidance\n%s", synthesis)
+	}
+	if strings.Contains(synthesis, "final Markdown document in Korean") {
+		t.Fatalf("expected explicit English synthesis guidance to avoid Korean output\n%s", synthesis)
 	}
 }
 
