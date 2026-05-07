@@ -137,6 +137,9 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	}
 
 	testerSource := readCreateDriverPOCTestFile(t, projectRoot, "AcmePoc-tester/main.cpp")
+	if strings.Contains(testerSource, "{{") {
+		t.Fatalf("tester source contains an unreplaced template token")
+	}
 	if strings.Contains(testerSource, "static ") {
 		t.Fatalf("tester source should use namespace/constexpr style instead of static linkage")
 	}
@@ -221,6 +224,119 @@ func TestCreateDriverPOCRejectsInvalidNames(t *testing.T) {
 	for _, tc := range cases {
 		if _, err := parseCreateDriverPOCSpec(tc); err == nil {
 			t.Fatalf("expected invalid driver name %q to fail", tc)
+		}
+	}
+}
+
+func TestCreateDriverPOCParsesTypeOption(t *testing.T) {
+	cases := map[string]string{
+		"ObjPoc --type objectfilter":   "objectfilter",
+		"MiniPoc --type=minifiter":     "minifilter",
+		"MiniPoc --type minifilter":    "minifilter",
+		"RegPoc --type registryfilter": "registryfilter",
+		"WfpPoc --type wfpcallout":     "wfpcallout",
+		"DefaultPoc":                   "default",
+	}
+
+	for args, want := range cases {
+		spec, err := parseCreateDriverPOCSpec(args)
+		if err != nil {
+			t.Fatalf("parseCreateDriverPOCSpec(%q): %v", args, err)
+		}
+		if spec.POCType != want {
+			t.Fatalf("parseCreateDriverPOCSpec(%q) type=%q want %q", args, spec.POCType, want)
+		}
+	}
+}
+
+func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
+	cases := []struct {
+		name        string
+		args        string
+		driverNeed  []string
+		headerNeed  []string
+		projectNeed []string
+		testerNeed  []string
+	}{
+		{
+			name:       "ObjPoc",
+			args:       "ObjPoc --type objectfilter",
+			driverNeed: []string{"ObRegisterCallbacks", "PROCESS_VM_WRITE", "THREAD_SUSPEND_RESUME", "ObUnRegisterCallbacks", "OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE", "OB_OPERATION_HANDLE_DUPLICATE"},
+			headerNeed: []string{"IoctlSetProtectedIds", "ProtectedIds"},
+			testerNeed: []string{"RegisterProtectedIds", "IoctlSetProtectedIds", "GetCurrentProcessId", "GetCurrentThreadId"},
+		},
+		{
+			name:        "MiniPoc",
+			args:        "MiniPoc --type minifiter",
+			driverNeed:  []string{"FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink"},
+			headerNeed:  []string{"IoctlRegisterPath", "AccessQuestion", "AccessDecision"},
+			projectNeed: []string{"<DriverType>File System</DriverType>", "FltMgr.lib"},
+			testerNeed:  []string{"SERVICE_FILE_SYSTEM_DRIVER", "ConfigureMinifilterInstance", "DefaultInstance", "Altitude", "REG_DWORD", "FilterConnectCommunicationPort", "CreateIoCompletionPort", "FilterGetMessage", "FilterReplyMessage", "FltLib.lib"},
+		},
+		{
+			name:       "RegPoc",
+			args:       "RegPoc --type registryfilter",
+			driverNeed: []string{"CmRegisterCallbackEx", "RegistryCallback", "STATUS_ACCESS_DENIED", "CmUnRegisterCallback"},
+			headerNeed: []string{"IoctlRegisterRegistryPath", "RegistryRule"},
+			testerNeed: []string{"RegisterRegistryPath", "IoctlRegisterRegistryPath"},
+		},
+		{
+			name:        "WfpPoc",
+			args:        "WfpPoc --type wfpcallout",
+			driverNeed:  []string{"FwpsCalloutRegister0", "FwpmEngineOpen0", "FWPM_SESSION_FLAG_DYNAMIC", "ClassifyOutbound", "FWP_ACTION_BLOCK"},
+			headerNeed:  []string{"IoctlRegisterNetworkRule", "NetworkRule"},
+			projectNeed: []string{"Fwpkclnt.lib"},
+			testerNeed:  []string{"RegisterNetworkRule", "IoctlRegisterNetworkRule"},
+		},
+	}
+
+	for _, tc := range cases {
+		root := t.TempDir()
+		rt := &runtimeState{
+			cfg:       DefaultConfig(root),
+			workspace: Workspace{Root: root, BaseRoot: root},
+			writer:    &bytes.Buffer{},
+			ui:        UI{},
+		}
+		if err := rt.handleCreateDriverPOCCommand(tc.args); err != nil {
+			t.Fatalf("%s: handleCreateDriverPOCCommand: %v", tc.name, err)
+		}
+		projectRoot := filepath.Join(root, tc.name)
+		driverSource := readCreateDriverPOCTestFile(t, projectRoot, tc.name+"/Driver.cpp")
+		header := readCreateDriverPOCTestFile(t, projectRoot, "shared/Ioctl.h")
+		tester := readCreateDriverPOCTestFile(t, projectRoot, tc.name+"-tester/main.cpp")
+		project := readCreateDriverPOCTestFile(t, projectRoot, tc.name+"/"+tc.name+".vcxproj")
+		testerProject := readCreateDriverPOCTestFile(t, projectRoot, tc.name+"-tester/"+tc.name+"-tester.vcxproj")
+		for rel, content := range map[string]string{
+			"Driver.cpp":      driverSource,
+			"shared/Ioctl.h":  header,
+			"tester/main.cpp": tester,
+			"driver.vcxproj":  project,
+			"tester.vcxproj":  testerProject,
+		} {
+			if strings.Contains(content, "{{") {
+				t.Fatalf("%s %s contains an unreplaced template token", tc.name, rel)
+			}
+		}
+		for _, needle := range tc.driverNeed {
+			if !strings.Contains(driverSource, needle) {
+				t.Fatalf("%s driver source missing %q", tc.name, needle)
+			}
+		}
+		for _, needle := range tc.headerNeed {
+			if !strings.Contains(header, needle) {
+				t.Fatalf("%s header missing %q", tc.name, needle)
+			}
+		}
+		for _, needle := range tc.projectNeed {
+			if !strings.Contains(project, needle) && !strings.Contains(testerProject, needle) {
+				t.Fatalf("%s projects missing %q", tc.name, needle)
+			}
+		}
+		for _, needle := range tc.testerNeed {
+			if !strings.Contains(tester, needle) && !strings.Contains(testerProject, needle) {
+				t.Fatalf("%s tester missing %q", tc.name, needle)
+			}
 		}
 	}
 }

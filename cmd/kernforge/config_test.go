@@ -1149,6 +1149,7 @@ func TestHelpTextIncludesSourceScanCommand(t *testing.T) {
 	for _, needle := range []string{
 		"/source-scan [status|run|list|show|revalidate]",
 		"/create-driver-poc <driver-name>",
+		"--type objectfilter|minifiter|registryfilter|wfpcallout",
 		"/fuzz-func --from-candidate <candidate-id>",
 		"built-in bug-pattern matchers",
 	} {
@@ -1195,6 +1196,8 @@ func TestHelpDetailIncludesCreateDriverPOCWorkflow(t *testing.T) {
 		"MT runtime",
 		"SCM kernel-driver service",
 		"shared DeviceType",
+		"filesystem minifilter",
+		"WFP outbound callout",
 		"already-running service",
 		"growing path buffer",
 		"IoctlPing",

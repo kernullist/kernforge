@@ -175,7 +175,7 @@ var slashCommandDescriptions = map[string]string{
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
 	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
-	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution with a same-directory SCM/IOCTL tester executable.",
+	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifiter, registryfilter, or wfpcallout.",
 	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
@@ -1221,7 +1221,7 @@ func commandCompletionDescription(item string) string {
 	case "/source-scan":
 		return "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func."
 	case "/create-driver-poc":
-		return "Generate a buildable x64 C++20 MSVC driver POC with a shared communication header and SCM/IOCTL tester."
+		return "Generate a buildable x64 C++20 MSVC driver POC; add --type objectfilter|minifiter|registryfilter|wfpcallout for specialized templates."
 	case "/create-driver-poc <driver-name>":
 		return "Create <driver-name>.sln, Driver.cpp-based <driver-name>.sys, and <driver-name>-tester.exe projects under a new workspace folder."
 	}

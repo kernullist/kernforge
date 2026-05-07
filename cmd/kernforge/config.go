@@ -2141,7 +2141,7 @@ Verification And Checkpoints:
 /fuzz-func language [system|english] Choose whether /fuzz-func output follows the PC language or stays in English
 /fuzz-campaign [status|run|new|list|show] Inspect or advance the campaign planner through seed promotion, deduplicated finding lifecycle updates, parsed coverage report feedback, sanitizer/verifier artifact capture, native result reports, and evidence capture
 /source-scan [status|run|list|show|revalidate] Scan source with built-in bug-pattern matchers, persist candidates, and guide /fuzz-func --from-candidate
-/create-driver-poc <driver-name> Generate an x64 C++20 MSVC kernel-driver POC solution plus <driver-name>-tester.exe for SCM load, stale-service restart, IOCTL ping, unload, and delete
+/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout] Generate an x64 C++20 MSVC kernel-driver POC solution plus <driver-name>-tester.exe; omitting --type keeps the original SCM/IOCTL ping POC
 /find-root-cause <problem> Analyze a reported symptom with 1-8 route-limited worker shards, reviewer validation, fuzz-like input/state assumption checks, and root-cause synthesis
 /simulate-dashboard    Show a simulation dashboard for this workspace
 /simulate-dashboard-html Generate and open an HTML simulation dashboard
@@ -2709,11 +2709,12 @@ Verification and checkpoint commands help you validate changes and recover safel
 - After run/list/show output, Kernforge guides the next focused command as /fuzz-func --from-candidate <candidate-id>.
 - revalidate attaches source-only or native verifier verdicts and can promote a candidate to needs-native or native-confirmed.
 
-/create-driver-poc <driver-name>
+/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]
 - Generate a new <driver-name>/ folder containing an x64-only Visual Studio solution.
 - The solution has a C++20 WDM kernel driver project that builds <driver-name>.sys from Driver.cpp and a C++20 console tester project that builds <driver-name>-tester.exe.
 - Both projects share shared/Ioctl.h for service names, NT device names, Win32 device paths, and the same IOCTL definition used by the driver dispatch and tester DeviceIoControl call.
 - The driver uses the shared DeviceType constant when creating its device object, keeping IOCTL and device metadata under the same contract.
+- Omitting --type keeps the original WDM ping POC. Specialized types generate object manager process/thread handle filtering, filesystem minifilter user-mode decision messaging, registry callback filtering, or WFP outbound callout blocking contracts.
 - No INF package is generated; the tester creates or updates the demand-start SCM kernel-driver service directly.
 - The tester Release build links the MT runtime.
 - The generated tester resolves the .sys next to itself with a growing path buffer, creates or updates a demand-start SCM kernel-driver service, restarts an already-running service before testing to avoid stale images, opens \\.\<driver-name>, sends the shared IoctlPing value, closes the handle, then stops and deletes the service.

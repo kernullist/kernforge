@@ -392,7 +392,7 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 		"/fuzz-func continue":                              "Approve a pending recovered build configuration and start autonomous fuzzing.",
 		"/fuzz-campaign":                                   "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback.",
 		"/source-scan":                                     "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func.",
-		"/create-driver-poc":                               "Generate a buildable x64 C++20 MSVC driver POC with a shared communication header and SCM/IOCTL tester.",
+		"/create-driver-poc":                               "Generate a buildable x64 C++20 MSVC driver POC; add --type objectfilter|minifiter|registryfilter|wfpcallout for specialized templates.",
 		"/create-driver-poc <driver-name>":                 "Create <driver-name>.sln, Driver.cpp-based <driver-name>.sys, and <driver-name>-tester.exe projects under a new workspace folder.",
 		"/source-scan run":                                 "Run all enabled source matchers and persist ranked candidate records.",
 		"/source-scan run --limit 50":                      "Cap the scan to the top ranked candidates before writing source-scan artifacts.",

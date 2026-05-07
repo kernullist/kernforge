@@ -510,7 +510,7 @@ Pattern pack 운영:
 - `/source-scan run --files driver/nsi.c,api/registry.c`
 - `/source-scan list`
 - `/source-scan show [id|latest]`
-- `/create-driver-poc <driver-name>`
+- `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]`
 
 특히 좋은 상황:
 1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 경로를 빨리 triage하고 싶을 때
@@ -526,7 +526,7 @@ Pattern pack 운영:
 6. 기본적으로 `/fuzz-func`는 매칭되는 `/source-scan` 후보를 재사용하고, 없으면 target과 reachable file만 focused source-scan으로 훑은 뒤 plan에 연결한다. 필요하면 `--source-scan off`, `--source-scan focused`, `--source-scan full`, `--no-source-scan`으로 제어한다.
 7. `/source-scan run`은 function-window source candidate를 점수순으로 저장하고, 명시 handoff가 필요하면 `/fuzz-func --from-candidate <candidate-id>`를 다음 명령으로 안내한다. 각 candidate는 evidence span, 파일/심볼 fingerprint, confidence breakdown, dataflow/control-flow fact, stale-source 상태, native feedback calibration을 저장한다.
 8. built-in source matcher에는 기존 probe/copy, dispatch, IRQL, callback, minifilter, Unreal RPC, telemetry parser 신호에 더해 Windows kernel double-fetch, IOCTL output infoleak, WDF request buffer size drift, integer allocation overflow, pool/refcount lifetime surface가 포함된다.
-9. `/create-driver-poc <driver-name>`은 x64 전용 C++20 MSVC/WDK POC driver template을 생성한다. 산출물에는 `Driver.cpp` 기반 WDM `.sys`, namespace/constexpr service/device/IOCTL/`DeviceType` 공통 header, INF 없는 SCM load 경로, stale service 재시작, device open, IOCTL ping, unload/delete를 수행하는 `<driver-name>-tester.exe`, tester Release MT runtime 설정, 고정 `MAX_PATH`에 기대지 않는 긴 실행 경로 처리가 포함된다.
+9. `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]`은 x64 전용 C++20 MSVC/WDK POC driver template을 생성한다. `--type` 생략 시 기존 WDM SCM/IOCTL ping POC를 유지하고, typed template은 object manager 프로세스/쓰레드 access filtering, filesystem minifilter 유저 모드 판단 메시징, registry callback 차단, WFP outbound callout 차단 계약을 생성한다.
 10. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
 11. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
 12. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.

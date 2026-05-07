@@ -17,6 +17,12 @@ type createDriverPOCSpec struct {
 	DriverName       string
 	FunctionPrefix   string
 	UpperName        string
+	POCType          string
+	POCTypeLabel     string
+	DriverType       string
+	DriverLibraries  string
+	TesterLibraries  string
+	ServiceType      string
 	SolutionGUID     string
 	DriverGUID       string
 	TesterGUID       string
@@ -70,6 +76,7 @@ func (rt *runtimeState) handleCreateDriverPOCCommand(args string) error {
 	ui := rt.ui
 	fmt.Fprintln(writer, ui.section("Driver POC"))
 	fmt.Fprintln(writer, ui.successLine("Generated x64 C++20 MSVC driver POC solution."))
+	fmt.Fprintln(writer, ui.statusKV("type", spec.POCTypeLabel))
 	fmt.Fprintln(writer, ui.statusKV("solution", filepath.Join(targetRoot, spec.DriverName+".sln")))
 	fmt.Fprintln(writer, ui.statusKV("driver_project", filepath.Join(targetRoot, spec.DriverName, spec.DriverName+".vcxproj")))
 	fmt.Fprintln(writer, ui.statusKV("tester_project", filepath.Join(targetRoot, spec.DriverName+"-tester", spec.DriverName+"-tester.vcxproj")))
@@ -83,10 +90,40 @@ func (rt *runtimeState) handleCreateDriverPOCCommand(args string) error {
 
 func parseCreateDriverPOCSpec(args string) (createDriverPOCSpec, error) {
 	fields := strings.Fields(strings.TrimSpace(args))
-	if len(fields) != 1 {
-		return createDriverPOCSpec{}, fmt.Errorf("usage: /create-driver-poc <driver-name>")
+	if len(fields) < 1 {
+		return createDriverPOCSpec{}, fmt.Errorf("usage: /create-driver-poc <driver-name> [--type default|objectfilter|minifiter|minifilter|registryfilter|wfpcallout]")
 	}
-	name := strings.TrimSpace(fields[0])
+	name := ""
+	pocType := "default"
+	for index := 0; index < len(fields); index++ {
+		field := strings.TrimSpace(fields[index])
+		if field == "--type" {
+			index++
+			if index >= len(fields) {
+				return createDriverPOCSpec{}, fmt.Errorf("--type requires a value")
+			}
+			pocType = strings.ToLower(strings.TrimSpace(fields[index]))
+			continue
+		}
+		if strings.HasPrefix(field, "--type=") {
+			pocType = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(field, "--type=")))
+			continue
+		}
+		if strings.HasPrefix(field, "--") {
+			return createDriverPOCSpec{}, fmt.Errorf("unknown option %q", field)
+		}
+		if name != "" {
+			return createDriverPOCSpec{}, fmt.Errorf("usage: /create-driver-poc <driver-name> [--type default|objectfilter|minifiter|minifilter|registryfilter|wfpcallout]")
+		}
+		name = field
+	}
+	if name == "" {
+		return createDriverPOCSpec{}, fmt.Errorf("usage: /create-driver-poc <driver-name> [--type default|objectfilter|minifiter|minifilter|registryfilter|wfpcallout]")
+	}
+	pocType = normalizeCreateDriverPOCType(pocType)
+	if pocType == "" {
+		return createDriverPOCSpec{}, fmt.Errorf("invalid --type: use default, objectfilter, minifiter, minifilter, registryfilter, or wfpcallout")
+	}
 	if !createDriverPOCNamePattern.MatchString(name) {
 		return createDriverPOCSpec{}, fmt.Errorf("invalid driver name %q: use 1-64 ASCII letters, digits, or underscores, starting with a letter", name)
 	}
@@ -94,16 +131,67 @@ func parseCreateDriverPOCSpec(args string) (createDriverPOCSpec, error) {
 	driverGUIDBytes := createDriverPOCGUIDBytes("driver-project", name)
 	testerGUIDBytes := createDriverPOCGUIDBytes("tester-project", name)
 	deviceClassGUIDBytes := createDriverPOCGUIDBytes("device-class", name)
+	driverType := "WDM"
+	driverLibraries := "Wdmsec.lib;%(AdditionalDependencies)"
+	testerLibraries := "%(AdditionalDependencies)"
+	serviceType := "SERVICE_KERNEL_DRIVER"
+	if pocType == "minifilter" {
+		driverType = "File System"
+		driverLibraries = "FltMgr.lib;Wdmsec.lib;%(AdditionalDependencies)"
+		testerLibraries = "FltLib.lib;%(AdditionalDependencies)"
+		serviceType = "SERVICE_FILE_SYSTEM_DRIVER"
+	}
+	if pocType == "wfpcallout" {
+		driverLibraries = "Fwpkclnt.lib;Wdmsec.lib;%(AdditionalDependencies)"
+	}
 	return createDriverPOCSpec{
 		DriverName:       name,
 		FunctionPrefix:   createDriverPOCFunctionPrefix(name),
 		UpperName:        strings.ToUpper(name),
+		POCType:          pocType,
+		POCTypeLabel:     createDriverPOCTypeLabel(pocType),
+		DriverType:       driverType,
+		DriverLibraries:  driverLibraries,
+		TesterLibraries:  testerLibraries,
+		ServiceType:      serviceType,
 		SolutionGUID:     formatCreateDriverPOCSolutionGUID(createDriverPOCGUIDBytes("solution", name)),
 		DriverGUID:       formatCreateDriverPOCSolutionGUID(driverGUIDBytes),
 		TesterGUID:       formatCreateDriverPOCSolutionGUID(testerGUIDBytes),
 		DeviceClassGUID:  formatCreateDriverPOCSolutionGUID(deviceClassGUIDBytes),
 		DeviceClassCGUID: formatCreateDriverPOCCGUIDInitializer(deviceClassGUIDBytes),
 	}, nil
+}
+
+func normalizeCreateDriverPOCType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "default", "basic", "wdm":
+		return "default"
+	case "objectfilter", "object-filter", "obcallback", "obcallbacks":
+		return "objectfilter"
+	case "minifiter", "minifilter", "mini-filter", "filesystem", "filesystemfilter":
+		return "minifilter"
+	case "registryfilter", "registry-filter", "cmcallback":
+		return "registryfilter"
+	case "wfpcallout", "wfp", "wfp-callout":
+		return "wfpcallout"
+	default:
+		return ""
+	}
+}
+
+func createDriverPOCTypeLabel(value string) string {
+	switch value {
+	case "objectfilter":
+		return "objectfilter"
+	case "minifilter":
+		return "minifiter"
+	case "registryfilter":
+		return "registryfilter"
+	case "wfpcallout":
+		return "wfpcallout"
+	default:
+		return "default"
+	}
 }
 
 func createDriverPOCFunctionPrefix(name string) string {
@@ -161,18 +249,571 @@ func formatCreateDriverPOCCGUIDInitializer(guid [16]byte) string {
 }
 
 func renderCreateDriverPOCFiles(spec createDriverPOCSpec) []createDriverPOCFile {
+	ioctlTemplate := createDriverPOCIoctlHeaderTemplate
+	driverSourceTemplate := createDriverPOCDriverSourceTemplate
+	testerSourceTemplate := createDriverPOCTesterSourceTemplate
+	readmeTemplate := createDriverPOCReadmeTemplate
+	switch spec.POCType {
+	case "objectfilter":
+		ioctlTemplate = createDriverPOCObjectFilterIoctlHeaderTemplate
+		driverSourceTemplate = createDriverPOCObjectFilterDriverSourceTemplate
+		testerSourceTemplate = createDriverPOCObjectFilterTesterSourceTemplate
+		readmeTemplate = createDriverPOCObjectFilterReadmeTemplate
+	case "minifilter":
+		ioctlTemplate = createDriverPOCMinifilterIoctlHeaderTemplate
+		driverSourceTemplate = createDriverPOCMinifilterDriverSourceTemplate
+		testerSourceTemplate = createDriverPOCMinifilterTesterSourceTemplate
+		readmeTemplate = createDriverPOCMinifilterReadmeTemplate
+	case "registryfilter":
+		ioctlTemplate = createDriverPOCRegistryFilterIoctlHeaderTemplate
+		driverSourceTemplate = createDriverPOCRegistryFilterDriverSourceTemplate
+		testerSourceTemplate = createDriverPOCRegistryFilterTesterSourceTemplate
+		readmeTemplate = createDriverPOCRegistryFilterReadmeTemplate
+	case "wfpcallout":
+		ioctlTemplate = createDriverPOCWfpCalloutIoctlHeaderTemplate
+		driverSourceTemplate = createDriverPOCWfpCalloutDriverSourceTemplate
+		testerSourceTemplate = createDriverPOCWfpCalloutTesterSourceTemplate
+		readmeTemplate = createDriverPOCWfpCalloutReadmeTemplate
+	}
+	testerContent := renderCreateDriverPOCTemplate(testerSourceTemplate, spec)
+	testerContent = customizeCreateDriverPOCTesterContent(testerContent, spec)
+	testerContent = renderCreateDriverPOCTemplate(testerContent, spec)
 	return []createDriverPOCFile{
 		{RelativePath: spec.DriverName + ".sln", Content: renderCreateDriverPOCTemplate(createDriverPOCSolutionTemplate, spec)},
-		{RelativePath: "shared/Ioctl.h", Content: renderCreateDriverPOCTemplate(createDriverPOCIoctlHeaderTemplate, spec)},
+		{RelativePath: "shared/Ioctl.h", Content: renderCreateDriverPOCTemplate(ioctlTemplate, spec)},
 		{RelativePath: spec.DriverName + "/Driver.h", Content: renderCreateDriverPOCTemplate(createDriverPOCDriverHeaderTemplate, spec)},
-		{RelativePath: spec.DriverName + "/Driver.cpp", Content: renderCreateDriverPOCTemplate(createDriverPOCDriverSourceTemplate, spec)},
+		{RelativePath: spec.DriverName + "/Driver.cpp", Content: renderCreateDriverPOCTemplate(driverSourceTemplate, spec)},
 		{RelativePath: spec.DriverName + "/" + spec.DriverName + ".vcxproj", Content: renderCreateDriverPOCTemplate(createDriverPOCDriverProjectTemplate, spec)},
 		{RelativePath: spec.DriverName + "/" + spec.DriverName + ".vcxproj.filters", Content: renderCreateDriverPOCTemplate(createDriverPOCDriverFiltersTemplate, spec)},
-		{RelativePath: spec.DriverName + "-tester/main.cpp", Content: renderCreateDriverPOCTemplate(createDriverPOCTesterSourceTemplate, spec)},
+		{RelativePath: spec.DriverName + "-tester/main.cpp", Content: testerContent},
 		{RelativePath: spec.DriverName + "-tester/" + spec.DriverName + "-tester.vcxproj", Content: renderCreateDriverPOCTemplate(createDriverPOCTesterProjectTemplate, spec)},
 		{RelativePath: spec.DriverName + "-tester/" + spec.DriverName + "-tester.vcxproj.filters", Content: renderCreateDriverPOCTemplate(createDriverPOCTesterFiltersTemplate, spec)},
-		{RelativePath: "README.md", Content: renderCreateDriverPOCTemplate(createDriverPOCReadmeTemplate, spec)},
+		{RelativePath: "README.md", Content: renderCreateDriverPOCTemplate(readmeTemplate, spec)},
 	}
+}
+
+func customizeCreateDriverPOCTesterContent(content string, spec createDriverPOCSpec) string {
+	if spec.POCType == "minifilter" {
+		content = strings.Replace(content, "#include <winioctl.h>", "#include <winioctl.h>\n#include <fltuser.h>\n#include <strsafe.h>", 1)
+	}
+	if spec.POCType == "registryfilter" || spec.POCType == "wfpcallout" {
+		content = strings.Replace(content, "#include <winioctl.h>", "#include <winioctl.h>\n#include <strsafe.h>", 1)
+	}
+	helperMarker := "\n}\n\nint\nwmain()"
+	helper := ""
+	marker := `        if (!SendPingIoctl())
+        {
+            break;
+        }`
+	replacement := marker
+	switch spec.POCType {
+	case "objectfilter":
+		helper = `
+
+bool
+RegisterProtectedIds()
+{
+    bool result = false;
+    HANDLE device = INVALID_HANDLE_VALUE;
+
+    do
+    {
+        device = CreateFileW(
+            {{FUNCTION_PREFIX}}Contract::Win32DeviceName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (device == INVALID_HANDLE_VALUE)
+        {
+            PrintLastError(L"CreateFileW", GetLastError());
+            break;
+        }
+
+        {{FUNCTION_PREFIX}}Contract::ProtectedIds request = {};
+        request.ProcessId = GetCurrentProcessId();
+        request.ThreadId = GetCurrentThreadId();
+        DWORD bytesReturned = 0;
+
+        if (!DeviceIoControl(
+                device,
+                {{FUNCTION_PREFIX}}Contract::IoctlSetProtectedIds,
+                &request,
+                sizeof(request),
+                nullptr,
+                0,
+                &bytesReturned,
+                nullptr))
+        {
+            PrintLastError(L"IoctlSetProtectedIds", GetLastError());
+            break;
+        }
+
+        std::wcout << L"Protected current PID " << request.ProcessId << L" and TID " << request.ThreadId << std::endl;
+        result = true;
+    }
+    while (false);
+
+    if (device != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(device);
+        device = INVALID_HANDLE_VALUE;
+    }
+
+    return result;
+}
+`
+		replacement = `        if (!SendPingIoctl())
+        {
+            break;
+        }
+
+        if (!RegisterProtectedIds())
+        {
+            break;
+        }`
+	case "minifilter":
+		helper = `
+
+bool
+SetRegistryStringValue(
+    _In_ HKEY key,
+    _In_opt_ const wchar_t* valueName,
+    _In_ const wchar_t* value
+    )
+{
+    DWORD byteCount = static_cast<DWORD>((wcslen(value) + 1) * sizeof(wchar_t));
+    LSTATUS status = RegSetValueExW(
+        key,
+        valueName,
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(value),
+        byteCount);
+    if (status != ERROR_SUCCESS)
+    {
+        PrintLastError(L"RegSetValueExW", status);
+        return false;
+    }
+
+    return true;
+}
+
+bool
+SetRegistryDwordValue(
+    _In_ HKEY key,
+    _In_ const wchar_t* valueName,
+    _In_ DWORD value
+    )
+{
+    LSTATUS status = RegSetValueExW(
+        key,
+        valueName,
+        0,
+        REG_DWORD,
+        reinterpret_cast<const BYTE*>(&value),
+        sizeof(value));
+    if (status != ERROR_SUCCESS)
+    {
+        PrintLastError(L"RegSetValueExW", status);
+        return false;
+    }
+
+    return true;
+}
+
+bool
+ConfigureMinifilterInstance()
+{
+    bool result = false;
+    HKEY serviceKey = nullptr;
+    HKEY instancesKey = nullptr;
+    HKEY instanceKey = nullptr;
+
+    do
+    {
+        std::wstring servicePath = L"SYSTEM\\CurrentControlSet\\Services\\";
+        servicePath += {{FUNCTION_PREFIX}}Contract::ServiceName;
+        LSTATUS status = RegCreateKeyExW(
+            HKEY_LOCAL_MACHINE,
+            servicePath.c_str(),
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE | KEY_CREATE_SUB_KEY,
+            nullptr,
+            &serviceKey,
+            nullptr);
+        if (status != ERROR_SUCCESS)
+        {
+            PrintLastError(L"RegCreateKeyExW Services", status);
+            break;
+        }
+
+        status = RegCreateKeyExW(
+            serviceKey,
+            L"Instances",
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE | KEY_CREATE_SUB_KEY,
+            nullptr,
+            &instancesKey,
+            nullptr);
+        if (status != ERROR_SUCCESS)
+        {
+            PrintLastError(L"RegCreateKeyExW Instances", status);
+            break;
+        }
+
+        if (!SetRegistryStringValue(instancesKey, L"DefaultInstance", L"{{DRIVER_NAME}} Instance"))
+        {
+            break;
+        }
+
+        status = RegCreateKeyExW(
+            instancesKey,
+            L"{{DRIVER_NAME}} Instance",
+            0,
+            nullptr,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            nullptr,
+            &instanceKey,
+            nullptr);
+        if (status != ERROR_SUCCESS)
+        {
+            PrintLastError(L"RegCreateKeyExW Instance", status);
+            break;
+        }
+
+        if (!SetRegistryStringValue(instanceKey, L"Altitude", L"370050"))
+        {
+            break;
+        }
+
+        if (!SetRegistryDwordValue(instanceKey, L"Flags", 0))
+        {
+            break;
+        }
+
+        result = true;
+    }
+    while (false);
+
+    if (instanceKey != nullptr)
+    {
+        RegCloseKey(instanceKey);
+        instanceKey = nullptr;
+    }
+    if (instancesKey != nullptr)
+    {
+        RegCloseKey(instancesKey);
+        instancesKey = nullptr;
+    }
+    if (serviceKey != nullptr)
+    {
+        RegCloseKey(serviceKey);
+        serviceKey = nullptr;
+    }
+
+    return result;
+}
+
+struct PortMessage
+{
+    FILTER_MESSAGE_HEADER Header;
+    {{FUNCTION_PREFIX}}Contract::AccessQuestion Question;
+};
+
+bool
+RegisterBlockedPath()
+{
+    bool result = false;
+    HANDLE device = INVALID_HANDLE_VALUE;
+
+    do
+    {
+        device = CreateFileW(
+            {{FUNCTION_PREFIX}}Contract::Win32DeviceName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (device == INVALID_HANDLE_VALUE)
+        {
+            PrintLastError(L"CreateFileW", GetLastError());
+            break;
+        }
+
+        {{FUNCTION_PREFIX}}Contract::PathRule rule = {};
+        StringCchCopyW(rule.Path, ARRAYSIZE(rule.Path), L"\\blocked-by-{{DRIVER_NAME}}");
+        DWORD bytesReturned = 0;
+
+        if (!DeviceIoControl(
+                device,
+                {{FUNCTION_PREFIX}}Contract::IoctlRegisterPath,
+                &rule,
+                sizeof(rule),
+                nullptr,
+                0,
+                &bytesReturned,
+                nullptr))
+        {
+            PrintLastError(L"IoctlRegisterPath", GetLastError());
+            break;
+        }
+
+        std::wcout << L"Registered blocked file path substring: " << rule.Path << std::endl;
+        result = true;
+    }
+    while (false);
+
+    if (device != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(device);
+        device = INVALID_HANDLE_VALUE;
+    }
+
+    return result;
+}
+
+bool
+RunMinifilterDecisionPort()
+{
+    bool result = false;
+    HANDLE port = INVALID_HANDLE_VALUE;
+    HANDLE iocp = nullptr;
+    OVERLAPPED overlapped = {};
+    PortMessage message = {};
+
+    do
+    {
+        HRESULT hr = FilterConnectCommunicationPort(
+            {{FUNCTION_PREFIX}}Contract::PortName,
+            0,
+            nullptr,
+            0,
+            nullptr,
+            &port);
+        if (FAILED(hr))
+        {
+            std::wcerr << L"FilterConnectCommunicationPort failed: 0x" << std::hex << hr << std::dec << std::endl;
+            break;
+        }
+
+        iocp = CreateIoCompletionPort(port, nullptr, 0, 1);
+        if (iocp == nullptr)
+        {
+            PrintLastError(L"CreateIoCompletionPort", GetLastError());
+            break;
+        }
+
+        overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (overlapped.hEvent == nullptr)
+        {
+            PrintLastError(L"CreateEventW", GetLastError());
+            break;
+        }
+
+        hr = FilterGetMessage(port, &message.Header, sizeof(message), &overlapped);
+        if (hr != HRESULT_FROM_WIN32(ERROR_IO_PENDING) && FAILED(hr))
+        {
+            std::wcerr << L"FilterGetMessage failed: 0x" << std::hex << hr << std::dec << std::endl;
+            break;
+        }
+
+        std::wcout << L"Minifilter IOCP decision worker is armed. Try opening a path containing \\blocked-by-{{DRIVER_NAME}}." << std::endl;
+
+        DWORD bytesTransferred = 0;
+        ULONG_PTR completionKey = 0;
+        LPOVERLAPPED completed = nullptr;
+        if (GetQueuedCompletionStatus(iocp, &bytesTransferred, &completionKey, &completed, 15000) && completed == &overlapped)
+        {
+            struct Reply
+            {
+                FILTER_REPLY_HEADER Header;
+                {{FUNCTION_PREFIX}}Contract::AccessDecision Decision;
+            };
+
+            Reply reply = {};
+            reply.Header.Status = 0;
+            reply.Header.MessageId = message.Header.MessageId;
+            reply.Decision.Allow = message.Question.ProcessId == GetCurrentProcessId() ? 1u : 0u;
+
+            hr = FilterReplyMessage(port, &reply.Header, sizeof(reply));
+            if (FAILED(hr))
+            {
+                std::wcerr << L"FilterReplyMessage failed: 0x" << std::hex << hr << std::dec << std::endl;
+                break;
+            }
+
+            std::wcout << L"Decision sent for PID " << message.Question.ProcessId << L": " << (reply.Decision.Allow ? L"allow" : L"block") << std::endl;
+        }
+        result = true;
+    }
+    while (false);
+
+    if (overlapped.hEvent != nullptr)
+    {
+        CloseHandle(overlapped.hEvent);
+        overlapped.hEvent = nullptr;
+    }
+    if (iocp != nullptr)
+    {
+        CloseHandle(iocp);
+        iocp = nullptr;
+    }
+    if (port != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(port);
+        port = INVALID_HANDLE_VALUE;
+    }
+
+    return result;
+}
+`
+		replacement = `        if (!SendPingIoctl())
+        {
+            break;
+        }
+
+        if (!RegisterBlockedPath())
+        {
+            break;
+        }
+
+        if (!RunMinifilterDecisionPort())
+        {
+            break;
+        }`
+	case "registryfilter":
+		helper = `
+
+bool
+RegisterRegistryPath()
+{
+    bool result = false;
+    HANDLE device = INVALID_HANDLE_VALUE;
+
+    do
+    {
+        device = CreateFileW(
+            {{FUNCTION_PREFIX}}Contract::Win32DeviceName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (device == INVALID_HANDLE_VALUE)
+        {
+            PrintLastError(L"CreateFileW", GetLastError());
+            break;
+        }
+
+        {{FUNCTION_PREFIX}}Contract::RegistryRule rule = {};
+        StringCchCopyW(rule.Path, ARRAYSIZE(rule.Path), L"\\Registry\\Machine\\Software\\{{DRIVER_NAME}}Blocked");
+        DWORD bytesReturned = 0;
+
+        if (!DeviceIoControl(device, {{FUNCTION_PREFIX}}Contract::IoctlRegisterRegistryPath, &rule, sizeof(rule), nullptr, 0, &bytesReturned, nullptr))
+        {
+            PrintLastError(L"IoctlRegisterRegistryPath", GetLastError());
+            break;
+        }
+
+        std::wcout << L"Registered blocked registry path: " << rule.Path << std::endl;
+        result = true;
+    }
+    while (false);
+
+    if (device != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(device);
+        device = INVALID_HANDLE_VALUE;
+    }
+
+    return result;
+}
+`
+		replacement = `        if (!SendPingIoctl())
+        {
+            break;
+        }
+
+        if (!RegisterRegistryPath())
+        {
+            break;
+        }`
+	case "wfpcallout":
+		helper = `
+
+bool
+RegisterNetworkRule()
+{
+    bool result = false;
+    HANDLE device = INVALID_HANDLE_VALUE;
+
+    do
+    {
+        device = CreateFileW(
+            {{FUNCTION_PREFIX}}Contract::Win32DeviceName,
+            GENERIC_READ | GENERIC_WRITE,
+            0,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (device == INVALID_HANDLE_VALUE)
+        {
+            PrintLastError(L"CreateFileW", GetLastError());
+            break;
+        }
+
+        {{FUNCTION_PREFIX}}Contract::NetworkRule rule = {};
+        rule.Ipv4AddressNetworkOrder = 0x7F000001;
+        rule.PortNetworkOrder = 0;
+        StringCchCopyW(rule.Target, ARRAYSIZE(rule.Target), L"127.0.0.1");
+        DWORD bytesReturned = 0;
+
+        if (!DeviceIoControl(device, {{FUNCTION_PREFIX}}Contract::IoctlRegisterNetworkRule, &rule, sizeof(rule), nullptr, 0, &bytesReturned, nullptr))
+        {
+            PrintLastError(L"IoctlRegisterNetworkRule", GetLastError());
+            break;
+        }
+
+        std::wcout << L"Registered outbound block target: " << rule.Target << std::endl;
+        result = true;
+    }
+    while (false);
+
+    if (device != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(device);
+        device = INVALID_HANDLE_VALUE;
+    }
+
+    return result;
+}
+`
+		replacement = `        if (!SendPingIoctl())
+        {
+            break;
+        }
+
+        if (!RegisterNetworkRule())
+        {
+            break;
+        }`
+	}
+	if helper != "" {
+		content = strings.Replace(content, helperMarker, helper+helperMarker, 1)
+	}
+	return strings.Replace(content, marker, replacement, 1)
 }
 
 func renderCreateDriverPOCTemplate(template string, spec createDriverPOCSpec) string {
@@ -180,6 +821,12 @@ func renderCreateDriverPOCTemplate(template string, spec createDriverPOCSpec) st
 		"{{DRIVER_NAME}}", spec.DriverName,
 		"{{FUNCTION_PREFIX}}", spec.FunctionPrefix,
 		"{{UPPER_NAME}}", spec.UpperName,
+		"{{POC_TYPE}}", spec.POCTypeLabel,
+		"{{DRIVER_TYPE}}", spec.DriverType,
+		"{{DRIVER_LIBRARIES}}", spec.DriverLibraries,
+		"{{TESTER_LIBRARIES}}", spec.TesterLibraries,
+		"{{SERVICE_TYPE}}", spec.ServiceType,
+		"{{MINIFILTER_INSTANCE_CONFIG_CALL}}", createDriverPOCMinifilterConfigCall(spec),
 		"{{SOLUTION_GUID}}", spec.SolutionGUID,
 		"{{DRIVER_GUID}}", spec.DriverGUID,
 		"{{TESTER_GUID}}", spec.TesterGUID,
@@ -187,6 +834,16 @@ func renderCreateDriverPOCTemplate(template string, spec createDriverPOCSpec) st
 		"{{DEVICE_CLASS_C_GUID}}", spec.DeviceClassCGUID,
 	)
 	return replacer.Replace(template)
+}
+
+func createDriverPOCMinifilterConfigCall(spec createDriverPOCSpec) string {
+	if spec.POCType != "minifilter" {
+		return ""
+	}
+	return `        if (!ConfigureMinifilterInstance())
+        {
+            break;
+        }`
 }
 
 func normalizeGeneratedText(text string) string {
@@ -444,7 +1101,7 @@ const createDriverPOCDriverProjectTemplate = `
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
     <ConfigurationType>Driver</ConfigurationType>
-    <DriverType>WDM</DriverType>
+    <DriverType>{{DRIVER_TYPE}}</DriverType>
     <DriverTargetPlatform>Desktop</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <UseDebugLibraries>true</UseDebugLibraries>
@@ -453,7 +1110,7 @@ const createDriverPOCDriverProjectTemplate = `
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
     <ConfigurationType>Driver</ConfigurationType>
-    <DriverType>WDM</DriverType>
+    <DriverType>{{DRIVER_TYPE}}</DriverType>
     <DriverTargetPlatform>Desktop</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
     <UseDebugLibraries>false</UseDebugLibraries>
@@ -488,7 +1145,7 @@ const createDriverPOCDriverProjectTemplate = `
       <PreprocessorDefinitions>DBG=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>{{DRIVER_LIBRARIES}}</AdditionalDependencies>
     </Link>
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
@@ -504,7 +1161,7 @@ const createDriverPOCDriverProjectTemplate = `
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
     <Link>
-      <AdditionalDependencies>Wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>{{DRIVER_LIBRARIES}}</AdditionalDependencies>
     </Link>
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
@@ -709,7 +1366,7 @@ OpenOrCreateDriverService(
             {{FUNCTION_PREFIX}}Contract::ServiceName,
             {{FUNCTION_PREFIX}}Contract::DisplayName,
             SERVICE_START | SERVICE_STOP | SERVICE_QUERY_STATUS | DELETE | SERVICE_CHANGE_CONFIG,
-            SERVICE_KERNEL_DRIVER,
+            {{SERVICE_TYPE}},
             SERVICE_DEMAND_START,
             SERVICE_ERROR_NORMAL,
             driverPath.c_str(),
@@ -742,7 +1399,7 @@ OpenOrCreateDriverService(
 
         if (!ChangeServiceConfigW(
                 service,
-                SERVICE_KERNEL_DRIVER,
+                {{SERVICE_TYPE}},
                 SERVICE_DEMAND_START,
                 SERVICE_ERROR_NORMAL,
                 driverPath.c_str(),
@@ -976,6 +1633,8 @@ wmain()
             break;
         }
 
+{{MINIFILTER_INSTANCE_CONFIG_CALL}}
+
         if (!StartDriverService(service))
         {
             break;
@@ -1067,6 +1726,9 @@ const createDriverPOCTesterProjectTemplate = `
       <AdditionalIncludeDirectories>$(SolutionDir)shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>{{TESTER_LIBRARIES}}</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -1077,6 +1739,9 @@ const createDriverPOCTesterProjectTemplate = `
       <AdditionalIncludeDirectories>$(SolutionDir)shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>{{TESTER_LIBRARIES}}</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -1157,4 +1822,1202 @@ Run bin\Debug\x64\{{DRIVER_NAME}}-tester.exe as Administrator. The tester:
 7. Stops and deletes the service.
 
 Unsigned x64 kernel drivers require test-signing or an equivalent lab policy before Windows will load them.
+`
+
+const createDriverPOCObjectFilterIoctlHeaderTemplate = `
+#pragma once
+
+#ifndef CTL_CODE
+#error Include ntddk.h or winioctl.h before including Ioctl.h.
+#endif
+
+namespace {{FUNCTION_PREFIX}}Contract
+{
+inline constexpr wchar_t ServiceName[] = L"{{DRIVER_NAME}}";
+inline constexpr wchar_t DisplayName[] = L"{{DRIVER_NAME}} Object Filter POC Driver";
+inline constexpr wchar_t DriverFileName[] = L"{{DRIVER_NAME}}.sys";
+inline constexpr wchar_t NtDeviceName[] = L"\\Device\\{{DRIVER_NAME}}";
+inline constexpr wchar_t DosDeviceName[] = L"\\DosDevices\\{{DRIVER_NAME}}";
+inline constexpr wchar_t Win32DeviceName[] = L"\\\\.\\{{DRIVER_NAME}}";
+inline constexpr ULONG DeviceType = 0x8000;
+inline constexpr ULONG IoctlPing = CTL_CODE(DeviceType, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+inline constexpr ULONG IoctlSetProtectedIds = CTL_CODE(DeviceType, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA);
+
+struct ProtectedIds
+{
+    ULONG ProcessId;
+    ULONG ThreadId;
+};
+}
+`
+
+const createDriverPOCObjectFilterDriverSourceTemplate = `
+#include "Driver.h"
+
+namespace
+{
+constexpr wchar_t DriverSddl[] = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
+constexpr GUID DeviceClassGuid = {{DEVICE_CLASS_C_GUID}};
+constexpr CHAR PingReply[] = "objectfilter pong from {{DRIVER_NAME}}";
+PVOID RegistrationHandle = nullptr;
+volatile ULONG ProtectedProcessId = 0;
+volatile ULONG ProtectedThreadId = 0;
+
+ACCESS_MASK
+StripProcessAccess(
+    _In_ ACCESS_MASK desiredAccess
+    )
+{
+    constexpr ACCESS_MASK DangerousProcessAccess =
+        PROCESS_CREATE_THREAD |
+        PROCESS_DUP_HANDLE |
+        PROCESS_SET_INFORMATION |
+        PROCESS_SET_QUOTA |
+        PROCESS_SUSPEND_RESUME |
+        PROCESS_TERMINATE |
+        PROCESS_VM_OPERATION |
+        PROCESS_VM_WRITE;
+
+    return desiredAccess & ~DangerousProcessAccess;
+}
+
+ACCESS_MASK
+StripThreadAccess(
+    _In_ ACCESS_MASK desiredAccess
+    )
+{
+    constexpr ACCESS_MASK DangerousThreadAccess =
+        THREAD_DIRECT_IMPERSONATION |
+        THREAD_IMPERSONATE |
+        THREAD_SET_CONTEXT |
+        THREAD_SET_INFORMATION |
+        THREAD_SET_LIMITED_INFORMATION |
+        THREAD_SUSPEND_RESUME |
+        THREAD_TERMINATE;
+
+    return desiredAccess & ~DangerousThreadAccess;
+}
+
+OB_PREOP_CALLBACK_STATUS
+ObjectPreOperationCallback(
+    _In_ PVOID RegistrationContext,
+    _Inout_ POB_PRE_OPERATION_INFORMATION OperationInformation
+    )
+{
+    UNREFERENCED_PARAMETER(RegistrationContext);
+
+    if (OperationInformation->KernelHandle)
+    {
+        return OB_PREOP_SUCCESS;
+    }
+
+    if (OperationInformation->ObjectType == *PsProcessType)
+    {
+        HANDLE processId = PsGetProcessId(reinterpret_cast<PEPROCESS>(OperationInformation->Object));
+        if (HandleToULong(processId) == ProtectedProcessId)
+        {
+            if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE)
+            {
+                OperationInformation->Parameters->CreateHandleInformation.DesiredAccess =
+                    StripProcessAccess(OperationInformation->Parameters->CreateHandleInformation.DesiredAccess);
+            }
+            else
+            {
+                if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE)
+                {
+                    OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess =
+                        StripProcessAccess(OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess);
+                }
+            }
+        }
+    }
+    else
+    {
+        if (OperationInformation->ObjectType == *PsThreadType)
+        {
+            HANDLE threadId = PsGetThreadId(reinterpret_cast<PETHREAD>(OperationInformation->Object));
+            if (HandleToULong(threadId) == ProtectedThreadId)
+            {
+                if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE)
+                {
+                    OperationInformation->Parameters->CreateHandleInformation.DesiredAccess =
+                        StripThreadAccess(OperationInformation->Parameters->CreateHandleInformation.DesiredAccess);
+                }
+                else
+                {
+                    if (OperationInformation->Operation == OB_OPERATION_HANDLE_DUPLICATE)
+                    {
+                        OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess =
+                            StripThreadAccess(OperationInformation->Parameters->DuplicateHandleInformation.DesiredAccess);
+                    }
+                }
+            }
+        }
+    }
+
+    return OB_PREOP_SUCCESS;
+}
+}
+
+VOID
+{{FUNCTION_PREFIX}}Unload(
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    UNICODE_STRING symbolicLinkName = {};
+
+    if (RegistrationHandle != nullptr)
+    {
+        ObUnRegisterCallbacks(RegistrationHandle);
+        RegistrationHandle = nullptr;
+    }
+
+    RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+    IoDeleteSymbolicLink(&symbolicLinkName);
+
+    if (DriverObject->DeviceObject != nullptr)
+    {
+        IoDeleteDevice(DriverObject->DeviceObject);
+    }
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}CreateClose(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}DeviceControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
+    ULONG_PTR information = 0;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    switch (stack->Parameters.DeviceIoControl.IoControlCode)
+    {
+    case {{FUNCTION_PREFIX}}Contract::IoctlPing:
+    {
+        if (Irp->AssociatedIrp.SystemBuffer == NULL || stack->Parameters.DeviceIoControl.OutputBufferLength < sizeof(PingReply))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            information = sizeof(PingReply);
+            break;
+        }
+
+        RtlCopyMemory(Irp->AssociatedIrp.SystemBuffer, PingReply, sizeof(PingReply));
+        information = sizeof(PingReply);
+        status = STATUS_SUCCESS;
+        break;
+    }
+    case {{FUNCTION_PREFIX}}Contract::IoctlSetProtectedIds:
+    {
+        if (Irp->AssociatedIrp.SystemBuffer == NULL || stack->Parameters.DeviceIoControl.InputBufferLength < sizeof({{FUNCTION_PREFIX}}Contract::ProtectedIds))
+        {
+            status = STATUS_INVALID_PARAMETER;
+            break;
+        }
+
+        auto request = static_cast<{{FUNCTION_PREFIX}}Contract::ProtectedIds*>(Irp->AssociatedIrp.SystemBuffer);
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&ProtectedProcessId), static_cast<LONG>(request->ProcessId));
+        InterlockedExchange(reinterpret_cast<volatile LONG*>(&ProtectedThreadId), static_cast<LONG>(request->ThreadId));
+        status = STATUS_SUCCESS;
+        break;
+    }
+    default:
+    {
+        status = STATUS_INVALID_DEVICE_REQUEST;
+        break;
+    }
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = information;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
+}
+
+extern "C"
+NTSTATUS
+DriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath
+    )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    PDEVICE_OBJECT deviceObject = nullptr;
+    UNICODE_STRING deviceName = {};
+    UNICODE_STRING symbolicLinkName = {};
+    UNICODE_STRING sddl = {};
+
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    do
+    {
+        OB_OPERATION_REGISTRATION operations[2] = {};
+        OB_CALLBACK_REGISTRATION registration = {};
+        UNICODE_STRING altitude = {};
+
+        RtlInitUnicodeString(&deviceName, {{FUNCTION_PREFIX}}Contract::NtDeviceName);
+        RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+        RtlInitUnicodeString(&sddl, DriverSddl);
+
+        status = IoCreateDeviceSecure(DriverObject, 0, &deviceName, {{FUNCTION_PREFIX}}Contract::DeviceType, FILE_DEVICE_SECURE_OPEN, FALSE, &sddl, &DeviceClassGuid, &deviceObject);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = IoCreateSymbolicLink(&symbolicLinkName, &deviceName);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        RtlInitUnicodeString(&altitude, L"370030");
+        operations[0].ObjectType = PsProcessType;
+        operations[0].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
+        operations[0].PreOperation = ObjectPreOperationCallback;
+        operations[1].ObjectType = PsThreadType;
+        operations[1].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
+        operations[1].PreOperation = ObjectPreOperationCallback;
+        registration.Version = OB_FLT_REGISTRATION_VERSION;
+        registration.OperationRegistrationCount = RTL_NUMBER_OF(operations);
+        registration.Altitude = altitude;
+        registration.OperationRegistration = operations;
+
+        status = ObRegisterCallbacks(&registration, &RegistrationHandle);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        DriverObject->MajorFunction[IRP_MJ_CREATE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_CLOSE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
+        DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
+        deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+    }
+    while (FALSE);
+
+    if (!NT_SUCCESS(status))
+    {
+        {{FUNCTION_PREFIX}}Unload(DriverObject);
+    }
+
+    return status;
+}
+`
+
+const createDriverPOCObjectFilterTesterSourceTemplate = createDriverPOCTesterSourceTemplate + `
+`
+
+const createDriverPOCObjectFilterReadmeTemplate = `
+# {{DRIVER_NAME}} Object Filter Driver POC
+
+Generated by Kernforge /create-driver-poc {{DRIVER_NAME}} --type objectfilter.
+
+This POC registers ObRegisterCallbacks for process and thread handle create/duplicate operations. The tester loads the driver through SCM and sends {{FUNCTION_PREFIX}}Contract::IoctlSetProtectedIds for its own process id and thread id. The driver strips dangerous requested access such as PROCESS_VM_WRITE, PROCESS_TERMINATE, PROCESS_SUSPEND_RESUME, THREAD_SUSPEND_RESUME, THREAD_SET_CONTEXT, and THREAD_TERMINATE for the protected objects.
+
+Build with:
+
+    msbuild "{{DRIVER_NAME}}.sln" /p:Configuration=Debug /p:Platform=x64
+
+Run the tester as Administrator from bin\Debug\x64. Unsigned x64 drivers require test-signing or an equivalent lab policy.
+`
+
+const createDriverPOCMinifilterIoctlHeaderTemplate = `
+#pragma once
+
+#ifndef CTL_CODE
+#error Include ntddk.h or winioctl.h before including Ioctl.h.
+#endif
+
+namespace {{FUNCTION_PREFIX}}Contract
+{
+inline constexpr wchar_t ServiceName[] = L"{{DRIVER_NAME}}";
+inline constexpr wchar_t DisplayName[] = L"{{DRIVER_NAME}} Minifilter POC Driver";
+inline constexpr wchar_t DriverFileName[] = L"{{DRIVER_NAME}}.sys";
+inline constexpr wchar_t NtDeviceName[] = L"\\Device\\{{DRIVER_NAME}}";
+inline constexpr wchar_t DosDeviceName[] = L"\\DosDevices\\{{DRIVER_NAME}}";
+inline constexpr wchar_t Win32DeviceName[] = L"\\\\.\\{{DRIVER_NAME}}";
+inline constexpr wchar_t PortName[] = L"\\{{DRIVER_NAME}}Port";
+inline constexpr ULONG DeviceType = 0x8000;
+inline constexpr ULONG IoctlPing = CTL_CODE(DeviceType, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+inline constexpr ULONG IoctlRegisterPath = CTL_CODE(DeviceType, 0x810, METHOD_BUFFERED, FILE_WRITE_DATA);
+inline constexpr ULONG MaxPathChars = 512;
+
+struct PathRule
+{
+    wchar_t Path[MaxPathChars];
+};
+
+struct AccessQuestion
+{
+    ULONG ProcessId;
+    wchar_t Path[MaxPathChars];
+};
+
+struct AccessDecision
+{
+    ULONG Allow;
+};
+}
+`
+
+const createDriverPOCMinifilterDriverSourceTemplate = `
+#include <fltKernel.h>
+#include <ntstrsafe.h>
+#include "Driver.h"
+
+namespace
+{
+constexpr wchar_t DriverSddl[] = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
+constexpr GUID DeviceClassGuid = {{DEVICE_CLASS_C_GUID}};
+PFLT_FILTER FilterHandle = nullptr;
+PFLT_PORT ServerPort = nullptr;
+PFLT_PORT ClientPort = nullptr;
+wchar_t BlockedPath[{{FUNCTION_PREFIX}}Contract::MaxPathChars] = {};
+
+FLT_PREOP_CALLBACK_STATUS
+PreCreate(
+    _Inout_ PFLT_CALLBACK_DATA Data,
+    _In_ PCFLT_RELATED_OBJECTS FltObjects,
+    _Outptr_result_maybenull_ PVOID* CompletionContext
+    )
+{
+    UNREFERENCED_PARAMETER(CompletionContext);
+    UNREFERENCED_PARAMETER(FltObjects);
+
+    if (BlockedPath[0] != L'\0' && ClientPort != nullptr)
+    {
+        {{FUNCTION_PREFIX}}Contract::AccessQuestion question = {};
+        {{FUNCTION_PREFIX}}Contract::AccessDecision decision = {};
+        ULONG replyLength = sizeof(decision);
+        NTSTATUS status = STATUS_SUCCESS;
+        PFLT_FILE_NAME_INFORMATION nameInfo = nullptr;
+
+        status = FltGetFileNameInformation(Data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT, &nameInfo);
+        if (NT_SUCCESS(status))
+        {
+            status = FltParseFileNameInformation(nameInfo);
+        }
+
+        if (NT_SUCCESS(status) && nameInfo->Name.Buffer != nullptr)
+        {
+            size_t chars = min(nameInfo->Name.Length / sizeof(wchar_t), {{FUNCTION_PREFIX}}Contract::MaxPathChars - 1);
+            RtlCopyMemory(question.Path, nameInfo->Name.Buffer, chars * sizeof(wchar_t));
+            question.Path[chars] = L'\0';
+            question.ProcessId = HandleToULong(PsGetCurrentProcessId());
+
+            if (wcsstr(question.Path, BlockedPath) != nullptr)
+            {
+                LARGE_INTEGER timeout = {};
+                timeout.QuadPart = -10 * 1000 * 1000;
+                status = FltSendMessage(FilterHandle, &ClientPort, &question, sizeof(question), &decision, &replyLength, &timeout);
+                if (NT_SUCCESS(status) && decision.Allow == 0)
+                {
+                    Data->IoStatus.Status = STATUS_ACCESS_DENIED;
+                    Data->IoStatus.Information = 0;
+                    FltReleaseFileNameInformation(nameInfo);
+                    return FLT_PREOP_COMPLETE;
+                }
+            }
+        }
+
+        if (nameInfo != nullptr)
+        {
+            FltReleaseFileNameInformation(nameInfo);
+        }
+    }
+
+    return FLT_PREOP_SUCCESS_NO_CALLBACK;
+}
+
+NTSTATUS
+PortConnect(
+    _In_ PFLT_PORT ClientPortHandle,
+    _In_opt_ PVOID ServerPortCookie,
+    _In_reads_bytes_opt_(SizeOfContext) PVOID ConnectionContext,
+    _In_ ULONG SizeOfContext,
+    _Outptr_result_maybenull_ PVOID* ConnectionCookie
+    )
+{
+    UNREFERENCED_PARAMETER(ServerPortCookie);
+    UNREFERENCED_PARAMETER(ConnectionContext);
+    UNREFERENCED_PARAMETER(SizeOfContext);
+    UNREFERENCED_PARAMETER(ConnectionCookie);
+    ClientPort = ClientPortHandle;
+    return STATUS_SUCCESS;
+}
+
+VOID
+PortDisconnect(
+    _In_opt_ PVOID ConnectionCookie
+    )
+{
+    UNREFERENCED_PARAMETER(ConnectionCookie);
+    FltCloseClientPort(FilterHandle, &ClientPort);
+}
+
+NTSTATUS
+FilterUnload(
+    _In_ FLT_FILTER_UNLOAD_FLAGS Flags
+    )
+{
+    UNREFERENCED_PARAMETER(Flags);
+    if (ServerPort != nullptr)
+    {
+        FltCloseCommunicationPort(ServerPort);
+        ServerPort = nullptr;
+    }
+    if (FilterHandle != nullptr)
+    {
+        FltUnregisterFilter(FilterHandle);
+        FilterHandle = nullptr;
+    }
+    return STATUS_SUCCESS;
+}
+
+CONST FLT_OPERATION_REGISTRATION Operations[] =
+{
+    { IRP_MJ_CREATE, 0, PreCreate, nullptr },
+    { IRP_MJ_OPERATION_END }
+};
+
+CONST FLT_REGISTRATION Registration =
+{
+    sizeof(FLT_REGISTRATION),
+    FLT_REGISTRATION_VERSION,
+    0,
+    nullptr,
+    Operations,
+    FilterUnload,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr
+};
+}
+
+VOID
+{{FUNCTION_PREFIX}}Unload(
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    UNICODE_STRING symbolicLinkName = {};
+
+    (void)FilterUnload(0);
+
+    RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+    IoDeleteSymbolicLink(&symbolicLinkName);
+
+    if (DriverObject->DeviceObject != nullptr)
+    {
+        IoDeleteDevice(DriverObject->DeviceObject);
+    }
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}CreateClose(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}DeviceControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (stack->Parameters.DeviceIoControl.IoControlCode == {{FUNCTION_PREFIX}}Contract::IoctlRegisterPath &&
+        Irp->AssociatedIrp.SystemBuffer != NULL &&
+        stack->Parameters.DeviceIoControl.InputBufferLength >= sizeof({{FUNCTION_PREFIX}}Contract::PathRule))
+    {
+        auto rule = static_cast<{{FUNCTION_PREFIX}}Contract::PathRule*>(Irp->AssociatedIrp.SystemBuffer);
+        RtlStringCchCopyW(BlockedPath, RTL_NUMBER_OF(BlockedPath), rule->Path);
+        status = STATUS_SUCCESS;
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
+}
+
+extern "C"
+NTSTATUS
+DriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PDEVICE_OBJECT deviceObject = nullptr;
+    UNICODE_STRING deviceName = {};
+    UNICODE_STRING symbolicLinkName = {};
+    UNICODE_STRING portName = {};
+    UNICODE_STRING sddl = {};
+    PSECURITY_DESCRIPTOR securityDescriptor = nullptr;
+    OBJECT_ATTRIBUTES objectAttributes = {};
+
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    do
+    {
+        RtlInitUnicodeString(&deviceName, {{FUNCTION_PREFIX}}Contract::NtDeviceName);
+        RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+        RtlInitUnicodeString(&sddl, DriverSddl);
+
+        status = IoCreateDeviceSecure(DriverObject, 0, &deviceName, {{FUNCTION_PREFIX}}Contract::DeviceType, FILE_DEVICE_SECURE_OPEN, FALSE, &sddl, &DeviceClassGuid, &deviceObject);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = IoCreateSymbolicLink(&symbolicLinkName, &deviceName);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = FltRegisterFilter(DriverObject, &Registration, &FilterHandle);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = FltBuildDefaultSecurityDescriptor(&securityDescriptor, FLT_PORT_ALL_ACCESS);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        RtlInitUnicodeString(&portName, {{FUNCTION_PREFIX}}Contract::PortName);
+        InitializeObjectAttributes(&objectAttributes, &portName, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, nullptr, securityDescriptor);
+        status = FltCreateCommunicationPort(FilterHandle, &ServerPort, &objectAttributes, nullptr, PortConnect, PortDisconnect, nullptr, 1);
+        FltFreeSecurityDescriptor(securityDescriptor);
+        securityDescriptor = nullptr;
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = FltStartFiltering(FilterHandle);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        DriverObject->MajorFunction[IRP_MJ_CREATE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_CLOSE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
+        DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
+        deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+    }
+    while (FALSE);
+
+    if (!NT_SUCCESS(status))
+    {
+        (void)FilterUnload(0);
+    }
+
+    return status;
+}
+`
+
+const createDriverPOCMinifilterTesterSourceTemplate = createDriverPOCTesterSourceTemplate + `
+`
+
+const createDriverPOCMinifilterReadmeTemplate = `
+# {{DRIVER_NAME}} Minifilter Driver POC
+
+Generated by Kernforge /create-driver-poc {{DRIVER_NAME}} --type minifiter.
+
+This POC creates a filesystem minifilter skeleton with IRP_MJ_CREATE inspection, a Filter Manager communication port, FltSendMessage user-mode decision flow, and {{FUNCTION_PREFIX}}Contract::IoctlRegisterPath for a protected file path rule. The tester links FltLib.lib, connects with FilterConnectCommunicationPort, arms FilterGetMessage on an IOCP, and replies with FilterReplyMessage so its own process can be allowed while other opens are denied.
+
+Build with:
+
+    msbuild "{{DRIVER_NAME}}.sln" /p:Configuration=Debug /p:Platform=x64
+`
+
+const createDriverPOCRegistryFilterIoctlHeaderTemplate = `
+#pragma once
+
+#ifndef CTL_CODE
+#error Include ntddk.h or winioctl.h before including Ioctl.h.
+#endif
+
+namespace {{FUNCTION_PREFIX}}Contract
+{
+inline constexpr wchar_t ServiceName[] = L"{{DRIVER_NAME}}";
+inline constexpr wchar_t DisplayName[] = L"{{DRIVER_NAME}} Registry Filter POC Driver";
+inline constexpr wchar_t DriverFileName[] = L"{{DRIVER_NAME}}.sys";
+inline constexpr wchar_t NtDeviceName[] = L"\\Device\\{{DRIVER_NAME}}";
+inline constexpr wchar_t DosDeviceName[] = L"\\DosDevices\\{{DRIVER_NAME}}";
+inline constexpr wchar_t Win32DeviceName[] = L"\\\\.\\{{DRIVER_NAME}}";
+inline constexpr ULONG DeviceType = 0x8000;
+inline constexpr ULONG IoctlPing = CTL_CODE(DeviceType, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+inline constexpr ULONG IoctlRegisterRegistryPath = CTL_CODE(DeviceType, 0x820, METHOD_BUFFERED, FILE_WRITE_DATA);
+inline constexpr ULONG MaxRegistryPathChars = 512;
+
+struct RegistryRule
+{
+    wchar_t Path[MaxRegistryPathChars];
+};
+}
+`
+
+const createDriverPOCRegistryFilterDriverSourceTemplate = `
+#include <ntstrsafe.h>
+#include "Driver.h"
+
+namespace
+{
+constexpr wchar_t DriverSddl[] = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
+constexpr GUID DeviceClassGuid = {{DEVICE_CLASS_C_GUID}};
+LARGE_INTEGER CallbackCookie = {};
+wchar_t ProtectedRegistryPath[{{FUNCTION_PREFIX}}Contract::MaxRegistryPathChars] = {};
+
+bool
+ShouldBlockRegistryObject(
+    _In_opt_ PVOID Object
+    )
+{
+    bool block = false;
+    PUNICODE_STRING objectName = nullptr;
+
+    do
+    {
+        if (ProtectedRegistryPath[0] == L'\0' || Object == nullptr)
+        {
+            break;
+        }
+
+        NTSTATUS status = CmCallbackGetKeyObjectIDEx(&CallbackCookie, Object, nullptr, &objectName, 0);
+        if (!NT_SUCCESS(status) || objectName == nullptr || objectName->Buffer == nullptr)
+        {
+            break;
+        }
+
+        if (wcsstr(objectName->Buffer, ProtectedRegistryPath) != nullptr)
+        {
+            block = true;
+        }
+    }
+    while (FALSE);
+
+    if (objectName != nullptr)
+    {
+        CmCallbackReleaseKeyObjectIDEx(objectName);
+        objectName = nullptr;
+    }
+
+    return block;
+}
+
+NTSTATUS
+RegistryCallback(
+    _In_ PVOID CallbackContext,
+    _In_opt_ PVOID Argument1,
+    _In_opt_ PVOID Argument2
+    )
+{
+    UNREFERENCED_PARAMETER(CallbackContext);
+
+    REG_NOTIFY_CLASS notifyClass = static_cast<REG_NOTIFY_CLASS>(reinterpret_cast<ULONG_PTR>(Argument1));
+
+    switch (notifyClass)
+    {
+    case RegNtPreOpenKeyEx:
+    {
+        auto info = static_cast<PREG_OPEN_KEY_INFORMATION>(Argument2);
+        if (info != nullptr && info->CompleteName != nullptr && info->CompleteName->Buffer != nullptr && wcsstr(info->CompleteName->Buffer, ProtectedRegistryPath) != nullptr)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        break;
+    }
+    case RegNtPreCreateKeyEx:
+    {
+        auto info = static_cast<PREG_CREATE_KEY_INFORMATION>(Argument2);
+        if (info != nullptr && info->CompleteName != nullptr && info->CompleteName->Buffer != nullptr && wcsstr(info->CompleteName->Buffer, ProtectedRegistryPath) != nullptr)
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        break;
+    }
+    case RegNtPreSetValueKey:
+    {
+        auto info = static_cast<PREG_SET_VALUE_KEY_INFORMATION>(Argument2);
+        if (info != nullptr && ShouldBlockRegistryObject(info->Object))
+        {
+            return STATUS_ACCESS_DENIED;
+        }
+        break;
+    }
+    default:
+    {
+        break;
+    }
+    }
+
+    return STATUS_SUCCESS;
+}
+}
+
+VOID
+{{FUNCTION_PREFIX}}Unload(
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    UNICODE_STRING symbolicLinkName = {};
+
+    if (CallbackCookie.QuadPart != 0)
+    {
+        CmUnRegisterCallback(CallbackCookie);
+        CallbackCookie.QuadPart = 0;
+    }
+
+    RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+    IoDeleteSymbolicLink(&symbolicLinkName);
+
+    if (DriverObject->DeviceObject != nullptr)
+    {
+        IoDeleteDevice(DriverObject->DeviceObject);
+    }
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}CreateClose(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}DeviceControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (stack->Parameters.DeviceIoControl.IoControlCode == {{FUNCTION_PREFIX}}Contract::IoctlRegisterRegistryPath &&
+        Irp->AssociatedIrp.SystemBuffer != NULL &&
+        stack->Parameters.DeviceIoControl.InputBufferLength >= sizeof({{FUNCTION_PREFIX}}Contract::RegistryRule))
+    {
+        auto rule = static_cast<{{FUNCTION_PREFIX}}Contract::RegistryRule*>(Irp->AssociatedIrp.SystemBuffer);
+        RtlStringCchCopyW(ProtectedRegistryPath, RTL_NUMBER_OF(ProtectedRegistryPath), rule->Path);
+        status = STATUS_SUCCESS;
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
+}
+
+extern "C"
+NTSTATUS
+DriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath
+    )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    PDEVICE_OBJECT deviceObject = nullptr;
+    UNICODE_STRING deviceName = {};
+    UNICODE_STRING symbolicLinkName = {};
+    UNICODE_STRING sddl = {};
+    UNICODE_STRING altitude = {};
+
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    do
+    {
+        RtlInitUnicodeString(&deviceName, {{FUNCTION_PREFIX}}Contract::NtDeviceName);
+        RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+        RtlInitUnicodeString(&sddl, DriverSddl);
+        RtlInitUnicodeString(&altitude, L"370040");
+
+        status = IoCreateDeviceSecure(DriverObject, 0, &deviceName, {{FUNCTION_PREFIX}}Contract::DeviceType, FILE_DEVICE_SECURE_OPEN, FALSE, &sddl, &DeviceClassGuid, &deviceObject);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = IoCreateSymbolicLink(&symbolicLinkName, &deviceName);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = CmRegisterCallbackEx(RegistryCallback, &altitude, DriverObject, nullptr, &CallbackCookie, nullptr);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        DriverObject->MajorFunction[IRP_MJ_CREATE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_CLOSE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
+        DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
+        deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+    }
+    while (FALSE);
+
+    if (!NT_SUCCESS(status))
+    {
+        {{FUNCTION_PREFIX}}Unload(DriverObject);
+    }
+
+    return status;
+}
+`
+
+const createDriverPOCRegistryFilterTesterSourceTemplate = createDriverPOCTesterSourceTemplate
+
+const createDriverPOCRegistryFilterReadmeTemplate = `
+# {{DRIVER_NAME}} Registry Filter Driver POC
+
+Generated by Kernforge /create-driver-poc {{DRIVER_NAME}} --type registryfilter.
+
+This variant implements a CmRegisterCallbackEx-based registry filter POC. The tester sends {{FUNCTION_PREFIX}}Contract::IoctlRegisterRegistryPath with a RegistryRule, and Driver.cpp compares pre-create, pre-open, and pre-set-value callback names against the registered path before returning STATUS_ACCESS_DENIED for protected keys.
+`
+
+const createDriverPOCWfpCalloutIoctlHeaderTemplate = `
+#pragma once
+
+#ifndef CTL_CODE
+#error Include ntddk.h or winioctl.h before including Ioctl.h.
+#endif
+
+namespace {{FUNCTION_PREFIX}}Contract
+{
+inline constexpr wchar_t ServiceName[] = L"{{DRIVER_NAME}}";
+inline constexpr wchar_t DisplayName[] = L"{{DRIVER_NAME}} WFP Callout POC Driver";
+inline constexpr wchar_t DriverFileName[] = L"{{DRIVER_NAME}}.sys";
+inline constexpr wchar_t NtDeviceName[] = L"\\Device\\{{DRIVER_NAME}}";
+inline constexpr wchar_t DosDeviceName[] = L"\\DosDevices\\{{DRIVER_NAME}}";
+inline constexpr wchar_t Win32DeviceName[] = L"\\\\.\\{{DRIVER_NAME}}";
+inline constexpr ULONG DeviceType = 0x8000;
+inline constexpr ULONG IoctlPing = CTL_CODE(DeviceType, 0x800, METHOD_BUFFERED, FILE_ANY_ACCESS);
+inline constexpr ULONG IoctlRegisterNetworkRule = CTL_CODE(DeviceType, 0x830, METHOD_BUFFERED, FILE_WRITE_DATA);
+inline constexpr ULONG MaxTargetChars = 256;
+
+struct NetworkRule
+{
+    wchar_t Target[MaxTargetChars];
+    ULONG Ipv4AddressNetworkOrder;
+    USHORT PortNetworkOrder;
+};
+}
+`
+
+const createDriverPOCWfpCalloutDriverSourceTemplate = `
+#include <fwpsk.h>
+#include <fwpmk.h>
+#include "Driver.h"
+
+namespace
+{
+constexpr wchar_t DriverSddl[] = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)";
+constexpr GUID DeviceClassGuid = {{DEVICE_CLASS_C_GUID}};
+constexpr GUID CalloutKey = {{DEVICE_CLASS_C_GUID}};
+HANDLE EngineHandle = nullptr;
+UINT32 CalloutId = 0;
+ULONG BlockedIpv4Address = 0;
+USHORT BlockedPort = 0;
+
+void NTAPI
+ClassifyOutbound(
+    _In_ const FWPS_INCOMING_VALUES0* FixedValues,
+    _In_ const FWPS_INCOMING_METADATA_VALUES0* MetaValues,
+    _Inout_opt_ void* LayerData,
+    _In_opt_ const void* ClassifyContext,
+    _In_ const FWPS_FILTER0* Filter,
+    _In_ UINT64 FlowContext,
+    _Inout_ FWPS_CLASSIFY_OUT0* ClassifyOut
+    )
+{
+    UNREFERENCED_PARAMETER(MetaValues);
+    UNREFERENCED_PARAMETER(LayerData);
+    UNREFERENCED_PARAMETER(ClassifyContext);
+    UNREFERENCED_PARAMETER(Filter);
+    UNREFERENCED_PARAMETER(FlowContext);
+
+    UINT32 remoteAddress = FixedValues->incomingValue[FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_ADDRESS].value.uint32;
+    UINT16 remotePort = FixedValues->incomingValue[FWPS_FIELD_ALE_AUTH_CONNECT_V4_IP_REMOTE_PORT].value.uint16;
+
+    if (BlockedIpv4Address != 0 && remoteAddress == BlockedIpv4Address && (BlockedPort == 0 || remotePort == BlockedPort))
+    {
+        ClassifyOut->actionType = FWP_ACTION_BLOCK;
+        ClassifyOut->rights &= ~FWPS_RIGHT_ACTION_WRITE;
+    }
+    else
+    {
+        ClassifyOut->actionType = FWP_ACTION_PERMIT;
+    }
+}
+
+NTSTATUS NTAPI
+NotifyCallout(
+    _In_ FWPS_CALLOUT_NOTIFY_TYPE NotifyType,
+    _In_ const GUID* FilterKey,
+    _Inout_ FWPS_FILTER0* Filter
+    )
+{
+    UNREFERENCED_PARAMETER(NotifyType);
+    UNREFERENCED_PARAMETER(FilterKey);
+    UNREFERENCED_PARAMETER(Filter);
+    return STATUS_SUCCESS;
+}
+
+VOID NTAPI
+FlowDelete(
+    _In_ UINT16 LayerId,
+    _In_ UINT32 CalloutIdValue,
+    _In_ UINT64 FlowContext
+    )
+{
+    UNREFERENCED_PARAMETER(LayerId);
+    UNREFERENCED_PARAMETER(CalloutIdValue);
+    UNREFERENCED_PARAMETER(FlowContext);
+}
+
+NTSTATUS
+RegisterWfpObjects(
+    _In_ PDEVICE_OBJECT DeviceObject
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    FWPS_CALLOUT0 callout = {};
+    FWPM_CALLOUT0 managementCallout = {};
+    FWPM_FILTER0 filter = {};
+    FWPM_FILTER_CONDITION0 condition = {};
+    FWPM_SESSION0 session = {};
+
+    do
+    {
+        session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+        status = FwpmEngineOpen0(nullptr, RPC_C_AUTHN_WINNT, nullptr, &session, &EngineHandle);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        callout.calloutKey = CalloutKey;
+        callout.classifyFn = ClassifyOutbound;
+        callout.notifyFn = NotifyCallout;
+        callout.flowDeleteFn = FlowDelete;
+        status = FwpsCalloutRegister0(DeviceObject, &callout, &CalloutId);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        managementCallout.calloutKey = CalloutKey;
+        managementCallout.displayData.name = const_cast<wchar_t*>(L"{{DRIVER_NAME}} outbound block callout");
+        managementCallout.applicableLayer = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+        status = FwpmCalloutAdd0(EngineHandle, &managementCallout, nullptr, nullptr);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        condition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+        condition.matchType = FWP_MATCH_GREATER_OR_EQUAL;
+        condition.conditionValue.type = FWP_UINT32;
+        condition.conditionValue.uint32 = 0;
+
+        filter.displayData.name = const_cast<wchar_t*>(L"{{DRIVER_NAME}} outbound block filter");
+        filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+        filter.action.type = FWP_ACTION_CALLOUT_TERMINATING;
+        filter.action.calloutKey = CalloutKey;
+        filter.subLayerKey = FWPM_SUBLAYER_UNIVERSAL;
+        filter.weight.type = FWP_EMPTY;
+        filter.numFilterConditions = 1;
+        filter.filterCondition = &condition;
+        status = FwpmFilterAdd0(EngineHandle, &filter, nullptr, nullptr);
+    }
+    while (FALSE);
+
+    return status;
+}
+
+VOID
+UnregisterWfpObjects()
+{
+    if (CalloutId != 0)
+    {
+        FwpsCalloutUnregisterById0(CalloutId);
+        CalloutId = 0;
+    }
+    if (EngineHandle != nullptr)
+    {
+        FwpmEngineClose0(EngineHandle);
+        EngineHandle = nullptr;
+    }
+}
+}
+
+VOID
+{{FUNCTION_PREFIX}}Unload(
+    _In_ PDRIVER_OBJECT DriverObject
+    )
+{
+    UNICODE_STRING symbolicLinkName = {};
+
+    UnregisterWfpObjects();
+    RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+    IoDeleteSymbolicLink(&symbolicLinkName);
+
+    if (DriverObject->DeviceObject != nullptr)
+    {
+        IoDeleteDevice(DriverObject->DeviceObject);
+    }
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}CreateClose(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+{{FUNCTION_PREFIX}}DeviceControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp
+    )
+{
+    PIO_STACK_LOCATION stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS status = STATUS_INVALID_DEVICE_REQUEST;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (stack->Parameters.DeviceIoControl.IoControlCode == {{FUNCTION_PREFIX}}Contract::IoctlRegisterNetworkRule &&
+        Irp->AssociatedIrp.SystemBuffer != NULL &&
+        stack->Parameters.DeviceIoControl.InputBufferLength >= sizeof({{FUNCTION_PREFIX}}Contract::NetworkRule))
+    {
+        auto rule = static_cast<{{FUNCTION_PREFIX}}Contract::NetworkRule*>(Irp->AssociatedIrp.SystemBuffer);
+        BlockedIpv4Address = rule->Ipv4AddressNetworkOrder;
+        BlockedPort = rule->PortNetworkOrder;
+        status = STATUS_SUCCESS;
+    }
+
+    Irp->IoStatus.Status = status;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return status;
+}
+
+extern "C"
+NTSTATUS
+DriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath
+    )
+{
+    NTSTATUS status = STATUS_UNSUCCESSFUL;
+    PDEVICE_OBJECT deviceObject = nullptr;
+    UNICODE_STRING deviceName = {};
+    UNICODE_STRING symbolicLinkName = {};
+    UNICODE_STRING sddl = {};
+
+    UNREFERENCED_PARAMETER(RegistryPath);
+
+    do
+    {
+        RtlInitUnicodeString(&deviceName, {{FUNCTION_PREFIX}}Contract::NtDeviceName);
+        RtlInitUnicodeString(&symbolicLinkName, {{FUNCTION_PREFIX}}Contract::DosDeviceName);
+        RtlInitUnicodeString(&sddl, DriverSddl);
+
+        status = IoCreateDeviceSecure(DriverObject, 0, &deviceName, {{FUNCTION_PREFIX}}Contract::DeviceType, FILE_DEVICE_SECURE_OPEN, FALSE, &sddl, &DeviceClassGuid, &deviceObject);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = IoCreateSymbolicLink(&symbolicLinkName, &deviceName);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        status = RegisterWfpObjects(deviceObject);
+        if (!NT_SUCCESS(status))
+        {
+            break;
+        }
+
+        DriverObject->MajorFunction[IRP_MJ_CREATE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_CLOSE] = {{FUNCTION_PREFIX}}CreateClose;
+        DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
+        DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
+        deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+    }
+    while (FALSE);
+
+    if (!NT_SUCCESS(status))
+    {
+        {{FUNCTION_PREFIX}}Unload(DriverObject);
+    }
+
+    return status;
+}
+`
+
+const createDriverPOCWfpCalloutTesterSourceTemplate = createDriverPOCTesterSourceTemplate
+
+const createDriverPOCWfpCalloutReadmeTemplate = `
+# {{DRIVER_NAME}} WFP Callout Driver POC
+
+Generated by Kernforge /create-driver-poc {{DRIVER_NAME}} --type wfpcallout.
+
+This variant implements a WFP outbound callout POC and links Fwpkclnt.lib. The tester sends {{FUNCTION_PREFIX}}Contract::IoctlRegisterNetworkRule with a NetworkRule, and Driver.cpp registers FwpsCalloutRegister/FwpmEngineOpen/FwpmFilterAdd plumbing with a classifyFn that blocks outbound IPv4 traffic matching the registered target.
 `

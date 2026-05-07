@@ -512,7 +512,7 @@ Useful commands:
 - `/source-scan run --files driver/nsi.c,api/registry.c`
 - `/source-scan list`
 - `/source-scan show [id|latest]`
-- `/create-driver-poc <driver-name>`
+- `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]`
 
 Best used when:
 1. You need fast triage on IOCTL handlers, parsers, validators, or buffer-processing code.
@@ -528,7 +528,7 @@ Current behavior:
 6. By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan. Use `--source-scan off`, `--source-scan focused`, `--source-scan full`, or `--no-source-scan` to control this.
 7. `/source-scan run` persists ranked function-window candidates and prints the natural next command, `/fuzz-func --from-candidate <candidate-id>`, for explicit candidate handoff. Each candidate records evidence spans, file/symbol fingerprints, confidence breakdown, dataflow/control-flow facts, stale-source state, and native feedback calibration.
 8. Built-in source matchers include Windows kernel double-fetch, IOCTL output infoleak, WDF request buffer size drift, integer allocation overflow, and pool/refcount lifetime surfaces in addition to the existing probe/copy, dispatch, IRQL, callback, minifilter, Unreal RPC, and telemetry parser signals.
-9. `/create-driver-poc <driver-name>` generates an x64-only C++20 MSVC/WDK POC driver template with a `Driver.cpp` WDM `.sys`, namespace/constexpr shared service/device/IOCTL/`DeviceType` header, no INF package, and `<driver-name>-tester.exe` that performs SCM install/load, stale-service restart, device open, IOCTL ping, unload, and delete. The tester Release build links the MT runtime and resolves long executable paths without a fixed `MAX_PATH` buffer.
+9. `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]` generates an x64-only C++20 MSVC/WDK POC driver template. Omitting `--type` keeps the original WDM SCM/IOCTL ping POC; typed templates generate object manager process/thread access filtering, filesystem minifilter user-mode decision messaging, registry callback blocking, or WFP outbound callout blocking contracts.
 10. Native execution is an optional follow-up. If build context such as `compile_commands.json` is missing, Kernforge explains the gap before asking whether to continue.
 11. Artifacts are written under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`.
 12. `/fuzz-func` automatically prints a campaign handoff when source-only scenarios are ready, so the user can continue with `/fuzz-campaign run` instead of learning campaign internals.
