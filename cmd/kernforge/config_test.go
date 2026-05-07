@@ -1148,6 +1148,7 @@ func TestHelpTextIncludesSourceScanCommand(t *testing.T) {
 	help := HelpText()
 	for _, needle := range []string{
 		"/source-scan [status|run|list|show|revalidate]",
+		"/create-driver-poc <driver-name>",
 		"/fuzz-func --from-candidate <candidate-id>",
 		"built-in bug-pattern matchers",
 	} {
@@ -1173,6 +1174,34 @@ func TestHelpDetailIncludesSourceScanWorkflow(t *testing.T) {
 	} {
 		if !strings.Contains(detail, needle) {
 			t.Fatalf("expected source-scan detail to include %q", needle)
+		}
+	}
+}
+
+func TestHelpDetailIncludesCreateDriverPOCWorkflow(t *testing.T) {
+	detail, ok := HelpDetail("create-driver-poc")
+	if !ok {
+		t.Fatalf("expected create-driver-poc help detail to resolve")
+	}
+	for _, needle := range []string{
+		"/create-driver-poc <driver-name>",
+		"x64-only Visual Studio solution",
+		"C++20 WDM kernel driver",
+		"Driver.cpp",
+		"<driver-name>.sys",
+		"<driver-name>-tester.exe",
+		"shared/Ioctl.h",
+		"No INF package",
+		"MT runtime",
+		"SCM kernel-driver service",
+		"shared DeviceType",
+		"already-running service",
+		"growing path buffer",
+		"IoctlPing",
+		"test-signing",
+	} {
+		if !strings.Contains(detail, needle) {
+			t.Fatalf("expected create-driver-poc detail to include %q", needle)
 		}
 	}
 }

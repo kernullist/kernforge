@@ -50,6 +50,7 @@ var slashCommands = []string{
 	"fuzz-func",
 	"fuzz-campaign",
 	"source-scan",
+	"create-driver-poc",
 	"find-root-cause",
 	"root-cause-patterns",
 	"simulate-dashboard",
@@ -174,6 +175,7 @@ var slashCommandDescriptions = map[string]string{
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
 	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
+	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution with a same-directory SCM/IOCTL tester executable.",
 	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
@@ -592,6 +594,9 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 
 	prefixFields := append([]string(nil), argFields[:replaceIndex]...)
 	if len(matches) == 1 {
+		if replaceValue == "" && strings.HasPrefix(matches[0], "<") {
+			return "", matches, true
+		}
 		finalFields := append(prefixFields, matches[0])
 		return strings.Join(finalFields, " ") + " ", nil, true
 	}
@@ -768,6 +773,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
 		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
+		"create-driver-poc":     {"<driver-name>"},
 		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
@@ -1214,6 +1220,10 @@ func commandCompletionDescription(item string) string {
 		return "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback."
 	case "/source-scan":
 		return "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func."
+	case "/create-driver-poc":
+		return "Generate a buildable x64 C++20 MSVC driver POC with a shared communication header and SCM/IOCTL tester."
+	case "/create-driver-poc <driver-name>":
+		return "Create <driver-name>.sln, Driver.cpp-based <driver-name>.sys, and <driver-name>-tester.exe projects under a new workspace folder."
 	}
 
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))

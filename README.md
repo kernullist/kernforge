@@ -227,6 +227,7 @@ Its current differentiators are:
 - The default mode is AI source-only fuzzing rather than native execution, so Kernforge derives attacker input states, concrete sample values, branch predicates, minimal counterexamples, branch deltas, and downstream call chains directly from source
 - By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan; candidates now carry function-window evidence spans, file/symbol fingerprints, confidence breakdown, dataflow/control-flow facts, and stale-source state
 - Use `/source-scan run` to persist ranked source candidates first, then continue with `/fuzz-func --from-candidate <candidate-id>` when you want an explicit candidate handoff; built-ins include Windows kernel double-fetch, IOCTL output infoleak, WDF buffer size drift, integer allocation overflow, and pool/refcount lifetime matchers
+- Use `/create-driver-poc <driver-name>` to generate an x64-only C++20 MSVC/WDK POC driver solution with `Driver.cpp`, a namespace/constexpr shared communication header for service/device/IOCTL names and `DeviceType`, no INF package, and a same-directory `<driver-name>-tester.exe` that installs, restarts stale already-running services, opens, pings, unloads, and deletes the driver through SCM; the tester Release build links the MT runtime and resolves its own path with a growing buffer instead of a fixed `MAX_PATH` assumption
 - High-risk findings now show a scored risk table, the first source location to inspect, the file-expansion path from the selected starting file, and the representative call path from the chosen root
 - If `compile_commands.json` or other build context exists, Kernforge can prepare a stronger native follow-up; if it does not, Kernforge explains the missing setup before asking whether to continue
 - Artifacts are stored under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`
@@ -294,7 +295,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -1337,6 +1338,7 @@ Source-level fuzzing commands:
 /source-scan list
 /source-scan show [id|latest]
 /source-scan revalidate [id|latest]
+/create-driver-poc <driver-name>
 ```
 
 Hook and override commands:
@@ -1470,6 +1472,7 @@ Core commands:
 /source-scan list
 /source-scan show [id|latest]
 /source-scan revalidate [id|latest]
+/create-driver-poc <driver-name>
 ```
 
 What it does:
@@ -1479,6 +1482,7 @@ What it does:
 - Rebuilds snapshot and semantic-index context on demand, so `/analyze-project` is optional rather than required.
 - Reuses a matching saved source candidate when one exists, otherwise runs a focused source scan across the target, file scope, and reachable files before saving the `/fuzz-func` plan.
 - Stores source-scan linkage in the function fuzz run as `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, and `source_scan_summary`; candidate evidence is injected into source-only scenarios so `/fuzz-campaign run` can promote more targeted seeds.
+- Generates x64-only C++20 MSVC/WDK driver POC templates with `/create-driver-poc <driver-name>`, including a `Driver.cpp` WDM `.sys`, namespace/constexpr shared service/device/IOCTL/`DeviceType` header, no INF package, and `<driver-name>-tester.exe` that uses SCM, `CreateFile`, and `DeviceIoControl` for a complete load/ping/unload loop. The tester Release build links the MT runtime, restarts already-running services before testing to avoid stale driver images, and resolves long executable paths without relying on a fixed `MAX_PATH` buffer.
 - Source candidates preserve function-window evidence spans, confidence breakdown, dataflow/control-flow facts, file and symbol fingerprints, stale-source state, and native feedback calibration.
 - Synthesizes attacker input states, concrete sample values, source-derived branch predicates, minimal counterexamples, pass/fail branch outcomes, and downstream call chains for higher-risk paths.
 - Shows the first source lines to inspect, the path from the selected starting file into the target file, and the representative call path from the chosen root into that implementation.

@@ -5884,6 +5884,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSourceScanCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "create-driver-poc":
+		if err := rt.handleCreateDriverPOCCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "find-root-cause":
 		if err := rt.handleFindRootCauseCommand(cmd.Args); err != nil {
 			return false, err

@@ -510,6 +510,7 @@ Pattern pack 운영:
 - `/source-scan run --files driver/nsi.c,api/registry.c`
 - `/source-scan list`
 - `/source-scan show [id|latest]`
+- `/create-driver-poc <driver-name>`
 
 특히 좋은 상황:
 1. IOCTL handler, parser, validator, buffer-processing 함수처럼 공격자 입력이 직접 들어가는 경로를 빨리 triage하고 싶을 때
@@ -525,14 +526,15 @@ Pattern pack 운영:
 6. 기본적으로 `/fuzz-func`는 매칭되는 `/source-scan` 후보를 재사용하고, 없으면 target과 reachable file만 focused source-scan으로 훑은 뒤 plan에 연결한다. 필요하면 `--source-scan off`, `--source-scan focused`, `--source-scan full`, `--no-source-scan`으로 제어한다.
 7. `/source-scan run`은 function-window source candidate를 점수순으로 저장하고, 명시 handoff가 필요하면 `/fuzz-func --from-candidate <candidate-id>`를 다음 명령으로 안내한다. 각 candidate는 evidence span, 파일/심볼 fingerprint, confidence breakdown, dataflow/control-flow fact, stale-source 상태, native feedback calibration을 저장한다.
 8. built-in source matcher에는 기존 probe/copy, dispatch, IRQL, callback, minifilter, Unreal RPC, telemetry parser 신호에 더해 Windows kernel double-fetch, IOCTL output infoleak, WDF request buffer size drift, integer allocation overflow, pool/refcount lifetime surface가 포함된다.
-9. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
-10. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
-11. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.
-12. `/fuzz-campaign`은 다음 권장 campaign 단계를 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 run attach, source-only scenario의 `corpus/<run-id>/` 승격, dedup된 finding lifecycle과 coverage gap 갱신, libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact 수집, native run 결과의 report/evidence 기록 같은 안전한 자동 단계를 수행한다.
-13. campaign manifest에는 target, seed, native result, coverage report, sanitizer/verifier artifact, evidence id, source anchor, verification gate, tracked-feature gate를 연결하는 finding 목록, dedup key, duplicate count, 병합된 native/evidence link, parsed coverage report, run artifact, coverage gap, artifact graph가 포함된다.
-14. native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합되어 반복 실행이 하나의 tracked issue를 강화한다.
-15. coverage gap은 다음 생성 `FUZZ_TARGETS.md` refresh에 반영되어 아직 충분히 실행되지 않은 seed target이 ranking feedback을 받는다.
-16. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
+9. `/create-driver-poc <driver-name>`은 x64 전용 C++20 MSVC/WDK POC driver template을 생성한다. 산출물에는 `Driver.cpp` 기반 WDM `.sys`, namespace/constexpr service/device/IOCTL/`DeviceType` 공통 header, INF 없는 SCM load 경로, stale service 재시작, device open, IOCTL ping, unload/delete를 수행하는 `<driver-name>-tester.exe`, tester Release MT runtime 설정, 고정 `MAX_PATH`에 기대지 않는 긴 실행 경로 처리가 포함된다.
+10. `compile_commands.json`이나 build context가 충분하면 후속 네이티브 fuzzing으로 이어갈 수 있고, 부족하면 왜 막히는지 먼저 설명한 뒤 확인을 받는다.
+11. 결과 산출물은 `.kernforge/fuzz/<run-id>/` 아래에 `report.md`, `harness.cpp`, `plan.json` 등으로 저장된다.
+12. `/fuzz-func`는 source-only scenario가 준비되면 campaign handoff를 자동 출력하므로, 사용자는 campaign 내부 단계를 배우지 않고 `/fuzz-campaign run`으로 이어갈 수 있다.
+13. `/fuzz-campaign`은 다음 권장 campaign 단계를 보여주고, `/fuzz-campaign run`은 campaign 생성, 최신 run attach, source-only scenario의 `corpus/<run-id>/` 승격, dedup된 finding lifecycle과 coverage gap 갱신, libFuzzer log, llvm-cov text, LCOV, JSON coverage summary 수집, sanitizer report, Windows crash dump, Application Verifier, Driver Verifier artifact 수집, native run 결과의 report/evidence 기록 같은 안전한 자동 단계를 수행한다.
+14. campaign manifest에는 target, seed, native result, coverage report, sanitizer/verifier artifact, evidence id, source anchor, verification gate, tracked-feature gate를 연결하는 finding 목록, dedup key, duplicate count, 병합된 native/evidence link, parsed coverage report, run artifact, coverage gap, artifact graph가 포함된다.
+15. native crash finding은 crash fingerprint, source anchor, suspected invariant 기준으로 병합되어 반복 실행이 하나의 tracked issue를 강화한다.
+16. coverage gap은 다음 생성 `FUZZ_TARGETS.md` refresh에 반영되어 아직 충분히 실행되지 않은 seed target이 ranking feedback을 받는다.
+17. `/fuzz-func ` 자동완성은 함수명/파일 사용 힌트를 먼저 보여주고, `@` 이후에는 실제 파일 후보 목록으로 바뀐다.
 
 실무 해석:
 1. `가장 유용한 분기 차이 요약`은 사용자가 가장 먼저 볼 한 줄 결론이다.
@@ -1149,6 +1151,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /fuzz-func language system
 /fuzz-campaign
 /fuzz-campaign run
+/create-driver-poc AcmePoc
 ```
 
 현재 planner가 보는 것:

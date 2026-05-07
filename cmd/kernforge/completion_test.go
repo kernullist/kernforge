@@ -68,6 +68,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/fuzz-campaign ", wantSuggest: []string{"/fuzz-campaign status", "/fuzz-campaign run", "/fuzz-campaign new", "/fuzz-campaign list", "/fuzz-campaign show"}},
 		{input: "/fuzz-campaign sh", wantBuffer: "/fuzz-campaign show "},
 		{input: "/source-scan ", wantSuggest: []string{"/source-scan status", "/source-scan run", "/source-scan run --limit 50", "/source-scan run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "/source-scan run --files driver/nsi.c,api/registry.c", "/source-scan list", "/source-scan show", "/source-scan revalidate"}},
+		{input: "/create-driver-poc ", wantSuggest: []string{"/create-driver-poc <driver-name>"}},
 		{input: "/init ", wantSuggest: []string{"/init config", "/init hooks", "/init memory-policy", "/init skill", "/init verify"}},
 		{input: "/init m", wantBuffer: "/init memory-policy "},
 	}
@@ -129,6 +130,7 @@ func TestCompleteSlashCommandIncludesRecentlyAddedCommands(t *testing.T) {
 		{input: "/simu", wantBuffer: "/simulate"},
 		{input: "/fuzz-f", wantBuffer: "/fuzz-func "},
 		{input: "/fuzz-c", wantBuffer: "/fuzz-campaign "},
+		{input: "/create-d", wantBuffer: "/create-driver-poc "},
 		{input: "/find-r", wantBuffer: "/find-root-cause "},
 		{input: "/spec", wantBuffer: "/specialists "},
 		{input: "/workt", wantBuffer: "/worktree "},
@@ -390,6 +392,8 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 		"/fuzz-func continue":                              "Approve a pending recovered build configuration and start autonomous fuzzing.",
 		"/fuzz-campaign":                                   "Show the fuzz campaign planner and the one command Kernforge recommends next, including deduplicated finding gates plus parsed coverage and sanitizer/verifier artifact feedback.",
 		"/source-scan":                                     "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func.",
+		"/create-driver-poc":                               "Generate a buildable x64 C++20 MSVC driver POC with a shared communication header and SCM/IOCTL tester.",
+		"/create-driver-poc <driver-name>":                 "Create <driver-name>.sln, Driver.cpp-based <driver-name>.sys, and <driver-name>-tester.exe projects under a new workspace folder.",
 		"/source-scan run":                                 "Run all enabled source matchers and persist ranked candidate records.",
 		"/source-scan run --limit 50":                      "Cap the scan to the top ranked candidates before writing source-scan artifacts.",
 		"/source-scan run --only-slugs probe-copy-size-drift,ioctl-dispatch-selector": "Run only the listed matcher slugs for a focused scan of specific bug-pattern families.",
@@ -460,6 +464,7 @@ func TestCompletionSuggestionsHaveSpecificDescriptions(t *testing.T) {
 		"/fuzz-func language ",
 		"/fuzz-campaign ",
 		"/source-scan ",
+		"/create-driver-poc ",
 		"/init ",
 	}
 
