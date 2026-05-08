@@ -508,7 +508,7 @@ func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, b
 		return buffer, nil, false
 	}
 	leading := buffer[:len(buffer)-len(trimmedLeft)]
-	partial := strings.ToLower(commandText)
+	partial := normalizeSlashCommandName(commandText)
 	var matches []string
 	for _, cmd := range slashCommands {
 		if strings.HasPrefix(cmd, partial) {
@@ -537,7 +537,7 @@ func (rt *runtimeState) completeSlashSubcommand(buffer string, trimmedLeft strin
 	if len(parts) != 2 {
 		return buffer, nil, false
 	}
-	commandName := strings.ToLower(strings.TrimSpace(parts[0]))
+	commandName := normalizeSlashCommandName(parts[0])
 	argText := parts[1]
 
 	completedArg, suggestions, ok := rt.completeSlashArgumentText(commandName, argText)

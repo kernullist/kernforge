@@ -5526,6 +5526,7 @@ func webResearchMCPStatusSummary(server MCPServerConfig, getenv func(string) str
 }
 
 func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
+	cmd.Name = normalizeSlashCommandName(cmd.Name)
 	switch cmd.Name {
 	case "help":
 		fmt.Fprintln(rt.writer, rt.ui.section("Help"))
@@ -5548,6 +5549,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("model", valueOrUnset(rt.session.Model)),
 			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
 			kv("permission_mode", valueOrUnset(rt.session.PermissionMode)),
+			kv("progress_display", configProgressDisplay(rt.cfg)),
 		)
 		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Workspace",
@@ -8473,6 +8475,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	}
 	rt.clearThinkingDetails()
 
+	rt.printPersistentWhileThinking(rt.ui.activityLine("analysis", "Saving analysis session metadata..."))
 	rt.session.LastAnalysis = &run.Summary
 	rt.session.Summary = mergeSessionSummaryWithAnalysis(rt.session.Summary, run)
 	rt.session.LastAnalysisContextQuery = ""
@@ -8519,6 +8522,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	rt.printPersistentWhileThinking(rt.ui.statusKV("output", run.Summary.OutputPath))
 	rt.printPersistentWhileThinking(rt.ui.statusKV("dashboard", filepath.Join(analysisCfg.OutputDir, "latest", "dashboard.html")))
 	docsManifest, docsManifestOK := loadLatestAnalysisDocsManifest(rt.workspace.BaseRoot)
+	rt.printPersistentWhileThinking(rt.ui.activityLine("analysis", "Recording analysis docs reuse artifacts..."))
 	if docsManifestOK {
 		if recordErr := rt.recordLatestAnalysisDocsArtifacts(run, docsManifest, analysisCfg.OutputDir); recordErr != nil {
 			rt.printPersistentWhileThinking(rt.ui.warnLine("Could not record analysis docs reuse artifacts: " + recordErr.Error()))
@@ -8526,6 +8530,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 	} else {
 		rt.printPersistentWhileThinking(rt.ui.warnLine("Could not read latest analysis docs manifest for reuse records."))
 	}
+	rt.printPersistentWhileThinking(rt.ui.activityLine("analysis", "Printing final analysis document..."))
 	rt.printAssistant(run.FinalDocument)
 	if artifacts := renderAnalysisProjectArtifactPathsStyled(run, analysisCfg.OutputDir, rt.ui); strings.TrimSpace(artifacts) != "" {
 		fmt.Fprintln(rt.writer)

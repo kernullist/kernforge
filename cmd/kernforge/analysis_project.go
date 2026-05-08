@@ -3210,6 +3210,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		run.Summary.Status = "completed"
 	}
 	run.Summary.CompletedAt = time.Now()
+	a.status("Persisting analysis artifacts...")
 	outputPath, err := a.persistRun(run)
 	if err != nil {
 		return run, err
@@ -10355,11 +10356,13 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	vectorQdrantJSONLPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_qdrant.jsonl")
 	docsDir := filepath.Join(a.analysisCfg.OutputDir, base+"_docs")
 	dashboardPath := filepath.Join(a.analysisCfg.OutputDir, base+"_dashboard.html")
+	a.status("Writing primary analysis report...")
 	if err := os.WriteFile(mdPath, []byte(run.FinalDocument), 0o644); err != nil {
 		return "", err
 	}
 	shardDir := filepath.Join(a.analysisCfg.OutputDir, base+"_shards")
 	if len(run.ShardDocuments) > 0 {
+		a.status(fmt.Sprintf("Writing %d shard document(s)...", len(run.ShardDocuments)))
 		if err := os.MkdirAll(shardDir, 0o755); err != nil {
 			return "", err
 		}
@@ -10374,6 +10377,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			}
 		}
 	}
+	a.status("Writing structured analysis JSON artifacts...")
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
 		return "", err
@@ -10437,6 +10441,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(vectorCorpusJSONPath, corpusData, 0o644); err != nil {
 			return "", err
 		}
+		a.status(fmt.Sprintf("Writing vector corpus artifacts: documents=%d.", len(run.VectorCorpus.Documents)))
 		if err := os.WriteFile(vectorCorpusJSONLPath, []byte(buildVectorCorpusJSONL(run.VectorCorpus)), 0o644); err != nil {
 			return "", err
 		}
@@ -10482,6 +10487,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(architectureFactsJSONPath, factsData, 0o644); err != nil {
 			return "", err
 		}
+		a.status("Writing analysis docs and dashboard...")
 		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
 			auditData, err := json.MarshalIndent(run.RootCause.AuditTrail, "", "  ")
 			if err != nil {
@@ -10502,6 +10508,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		latestDir := filepath.Join(a.analysisCfg.OutputDir, "latest")
+		a.status("Refreshing latest analysis artifact set...")
 		if err := os.RemoveAll(latestDir); err != nil {
 			return "", err
 		}
@@ -10615,6 +10622,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			}
 		}
 		if len(run.VectorCorpus.Documents) > 0 {
+			a.status(fmt.Sprintf("Refreshing latest vector corpus artifacts: documents=%d.", len(run.VectorCorpus.Documents)))
 			corpusData, err := json.MarshalIndent(run.VectorCorpus, "", "  ")
 			if err != nil {
 				return "", err

@@ -52,7 +52,7 @@ Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_re
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - `--mode`를 생략하면 기본 모드는 `map`
-- 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event를 보여준다. 모든 update를 디버깅용으로 남기고 싶으면 `/progress-display stream`을 사용한다.
+- 긴 `/analyze-project` 실행은 shard wave, 완료/실패 shard 수, worker/reviewer 모델 대기 event, 마지막 artifact 저장 단계를 보여준다. 이제 `progress_display` 기본값은 `stream`이므로 모든 update가 기본적으로 남고, 조용한 모드가 필요할 때만 `/progress-display auto` 또는 `/progress-display compact`로 낮춘다.
 - project analysis가 이전에 설정한 worker/reviewer route가 아니라 현재 main model을 따르길 원하면 `/set-analysis-models clear`를 사용한다.
 
 조사:

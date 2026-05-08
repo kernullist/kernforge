@@ -134,7 +134,7 @@ func DefaultConfig(cwd string) Config {
 		MaxRequestRetries:      2,
 		RequestRetryDelayMs:    1500,
 		RequestTimeoutSecs:     1200,
-		ProgressDisplay:        "auto",
+		ProgressDisplay:        "stream",
 		ShellTimeoutSecs:       300,
 		ReadHintSpans:          defaultReadHintSpans,
 		ReadCacheEntries:       defaultReadCacheEntries,
@@ -1683,7 +1683,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		MaxRequestRetries:   2,
 		RequestRetryDelayMs: 1500,
 		RequestTimeoutSecs:  1200,
-		ProgressDisplay:     "auto",
+		ProgressDisplay:     "stream",
 		ModelRoutes: ModelRouteSchedulerConfig{
 			Enabled:              boolPtr(true),
 			DefaultMaxConcurrent: 4,
@@ -2031,6 +2031,10 @@ type Command struct {
 	Args string
 }
 
+func normalizeSlashCommandName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "_", "-")
+}
+
 func ParseCommand(input string) (Command, bool) {
 	line := strings.TrimSpace(input)
 	if !strings.HasPrefix(line, "/") {
@@ -2041,7 +2045,7 @@ func ParseCommand(input string) (Command, bool) {
 		return Command{Name: "help"}, true
 	}
 	parts := strings.SplitN(line, " ", 2)
-	cmd := Command{Name: strings.ToLower(strings.TrimSpace(parts[0]))}
+	cmd := Command{Name: normalizeSlashCommandName(parts[0])}
 	if len(parts) == 2 {
 		cmd.Args = strings.TrimSpace(parts[1])
 	}

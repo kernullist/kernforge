@@ -4461,7 +4461,13 @@ func TestRefineSemanticInvalidationClassifiesSecurityContract(t *testing.T) {
 
 func TestPersistRunWritesPreflightAndModeScorecard(t *testing.T) {
 	root := t.TempDir()
-	analyzer := &projectAnalyzer{analysisCfg: defaultProjectAnalysisConfig(root)}
+	statuses := []string{}
+	analyzer := &projectAnalyzer{
+		analysisCfg: defaultProjectAnalysisConfig(root),
+		onStatus: func(status string) {
+			statuses = append(statuses, status)
+		},
+	}
 	analyzer.analysisCfg.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	run := ProjectAnalysisRun{
 		Summary: ProjectAnalysisSummary{
@@ -4508,6 +4514,17 @@ func TestPersistRunWritesPreflightAndModeScorecard(t *testing.T) {
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected artifact %s: %v", path, err)
+		}
+	}
+	joinedStatuses := strings.Join(statuses, "\n")
+	for _, expected := range []string{
+		"Writing primary analysis report",
+		"Writing structured analysis JSON artifacts",
+		"Writing analysis docs and dashboard",
+		"Refreshing latest analysis artifact set",
+	} {
+		if !strings.Contains(joinedStatuses, expected) {
+			t.Fatalf("expected persist status %q\n%s", expected, joinedStatuses)
 		}
 	}
 }

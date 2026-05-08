@@ -3275,12 +3275,12 @@ func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
 	if _, err := rt.handleCommand(Command{Name: "progress-display"}); err != nil {
 		t.Fatalf("handleCommand(progress-display): %v", err)
 	}
-	if !strings.Contains(out.String(), "progress_display: auto") {
+	if !strings.Contains(out.String(), "progress_display: stream") {
 		t.Fatalf("expected current progress display, got %q", out.String())
 	}
 
 	out.Reset()
-	if _, err := rt.handleCommand(Command{Name: "progress-display", Args: "stream"}); err != nil {
+	if _, err := rt.handleCommand(Command{Name: "progress_display", Args: "stream"}); err != nil {
 		t.Fatalf("handleCommand(progress-display stream): %v", err)
 	}
 	if got := configProgressDisplay(rt.cfg); got != "stream" {

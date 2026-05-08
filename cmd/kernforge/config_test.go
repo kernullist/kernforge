@@ -1322,10 +1322,20 @@ func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigUsesAutoProgressDisplay(t *testing.T) {
+func TestDefaultConfigUsesStreamProgressDisplay(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
-	if got := configProgressDisplay(cfg); got != "auto" {
-		t.Fatalf("expected progress display auto, got %q", got)
+	if got := configProgressDisplay(cfg); got != "stream" {
+		t.Fatalf("expected progress display stream, got %q", got)
+	}
+}
+
+func TestParseCommandNormalizesUnderscoreCommandNames(t *testing.T) {
+	cmd, ok := ParseCommand("/progress_display stream")
+	if !ok {
+		t.Fatalf("expected command to parse")
+	}
+	if cmd.Name != "progress-display" || cmd.Args != "stream" {
+		t.Fatalf("unexpected command: %#v", cmd)
 	}
 }
 

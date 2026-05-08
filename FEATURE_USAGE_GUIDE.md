@@ -67,7 +67,7 @@ Current behavior:
 8. Repeated blank streamed chunks are converted into a compact working status instead of printing empty lines.
 9. If a final streamed answer appears to stop mid-sentence, Kernforge asks the model to continue once and merges the continuation before returning to the prompt.
 10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
-11. `progress_display` controls progress visibility and `/progress-display auto|compact|stream` changes it from the REPL: `auto` keeps tool/model/route and project-analysis ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
+11. `progress_display` controls progress visibility and defaults to `stream`, so long-running operations leave a complete progress transcript. `/progress-display auto|compact|stream` changes it from the REPL, and `/progress_display ...` works as the same command when you copy the config key: `auto` keeps tool/model/route and project-analysis ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
 12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
 13. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
 
@@ -815,7 +815,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
