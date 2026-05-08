@@ -302,6 +302,71 @@ func toolCallResponse(name string, args map[string]any) ChatResponse {
 	}
 }
 
+func multiToolCallResponse(calls ...ToolCall) ChatResponse {
+	return ChatResponse{
+		Message: Message{
+			Role:      "assistant",
+			ToolCalls: calls,
+		},
+	}
+}
+
+func TestAgentAddsAllToolPlaceholdersBeforeNextModelTurn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.txt"), []byte("alpha\n"), 0o644); err != nil {
+		t.Fatalf("write sample: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{ID: "call-list", Name: "list_files", Arguments: `{"path":"."}`},
+				ToolCall{ID: "call-read", Name: "read_file", Arguments: `{"path":"sample.txt"}`},
+			),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "deepseek", "deepseek-v4-pro", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws), NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected a second model request after tool execution, got %d", len(provider.requests))
+	}
+	messages := provider.requests[1].Messages
+	assistantIndex := -1
+	for i, msg := range messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) == 2 {
+			assistantIndex = i
+			break
+		}
+	}
+	if assistantIndex < 0 {
+		t.Fatalf("second request missing assistant multi-tool turn: %#v", messages)
+	}
+	if assistantIndex+2 >= len(messages) {
+		t.Fatalf("assistant tool calls not followed by two tool messages: %#v", messages[assistantIndex:])
+	}
+	firstTool := messages[assistantIndex+1]
+	secondTool := messages[assistantIndex+2]
+	if firstTool.Role != "tool" || firstTool.ToolCallID != "call-list" {
+		t.Fatalf("first tool response mismatch: %#v", firstTool)
+	}
+	if secondTool.Role != "tool" || secondTool.ToolCallID != "call-read" {
+		t.Fatalf("second tool response mismatch: %#v", secondTool)
+	}
+}
+
 func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{

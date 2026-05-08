@@ -110,7 +110,7 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"FILE_DEVICE_UNKNOWN",
-		"} while (FALSE);",
+		"}\n    while (FALSE);",
 	} {
 		if strings.Contains(driverSource, forbidden) {
 			t.Fatalf("driver source should not include %q", forbidden)
@@ -139,6 +139,9 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	testerSource := readCreateDriverPOCTestFile(t, projectRoot, "AcmePoc-tester/main.cpp")
 	if strings.Contains(testerSource, "{{") {
 		t.Fatalf("tester source contains an unreplaced template token")
+	}
+	if strings.Contains(testerSource, "service == nullptr)\n        {\n            break;\n        }\n\n\n\n        if (!StartDriverService") {
+		t.Fatalf("tester source contains excessive blank lines before StartDriverService")
 	}
 	if strings.Contains(testerSource, "static ") {
 		t.Fatalf("tester source should use namespace/constexpr style instead of static linkage")
@@ -175,7 +178,7 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"std::array<wchar_t, MAX_PATH>",
-		"} while (false);",
+		"}\n    while (false);",
 	} {
 		if strings.Contains(testerSource, forbidden) {
 			t.Fatalf("tester source should not include %q", forbidden)
@@ -211,6 +214,56 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	}
 }
 
+func TestCreateDriverPOCGeneratedDriverNullsDeletedDeviceObject(t *testing.T) {
+	for _, args := range []string{
+		"BasePoc",
+		"ObjPoc --type objectfilter",
+		"MiniPoc --type minifilter",
+		"RegPoc --type registryfilter",
+		"WfpPoc --type wfpcallout",
+	} {
+		spec, err := parseCreateDriverPOCSpec(args)
+		if err != nil {
+			t.Fatalf("parseCreateDriverPOCSpec(%q): %v", args, err)
+		}
+		files := renderCreateDriverPOCFiles(spec)
+		driverSource := ""
+		testerSource := ""
+		for _, file := range files {
+			if file.RelativePath == spec.DriverName+"/Driver.cpp" {
+				driverSource = normalizeGeneratedText(file.Content)
+			}
+			if file.RelativePath == spec.DriverName+"-tester/main.cpp" {
+				testerSource = normalizeGeneratedText(file.Content)
+			}
+		}
+		if driverSource == "" {
+			t.Fatalf("%q missing generated Driver.cpp", args)
+		}
+		deleteCount := strings.Count(driverSource, "IoDeleteDevice(DriverObject->DeviceObject);")
+		nullCount := strings.Count(driverSource, "DriverObject->DeviceObject = nullptr;")
+		if deleteCount == 0 {
+			t.Fatalf("%q expected generated driver to delete DeviceObject", args)
+		}
+		if nullCount < deleteCount {
+			t.Fatalf("%q expected deleted DeviceObject to be nulled, delete=%d null=%d", args, deleteCount, nullCount)
+		}
+		if strings.Contains(testerSource, "service == nullptr)\n        {\n            break;\n        }\n\n\n\n        if (!StartDriverService") {
+			t.Fatalf("%q tester source contains excessive blank lines before StartDriverService", args)
+		}
+		if strings.Contains(driverSource, "}\n    while (FALSE);") {
+			t.Fatalf("%q driver source contains split do-while close", args)
+		}
+		if strings.Contains(testerSource, "}\n    while (false);") {
+			t.Fatalf("%q tester source contains split do-while close", args)
+		}
+		if strings.Contains(driverSource, "FltReleaseFileNameInformation(nameInfo);\n                    return") ||
+			strings.Contains(driverSource, "FltReleaseFileNameInformation(nameInfo);\n        }") {
+			t.Fatalf("%q releases minifilter nameInfo without nulling the pointer", args)
+		}
+	}
+}
+
 func TestCreateDriverPOCRejectsInvalidNames(t *testing.T) {
 	cases := []string{
 		"",
@@ -231,7 +284,7 @@ func TestCreateDriverPOCRejectsInvalidNames(t *testing.T) {
 func TestCreateDriverPOCParsesTypeOption(t *testing.T) {
 	cases := map[string]string{
 		"ObjPoc --type objectfilter":   "objectfilter",
-		"MiniPoc --type=minifiter":     "minifilter",
+		"MiniPoc --type=minifilter":    "minifilter",
 		"MiniPoc --type minifilter":    "minifilter",
 		"RegPoc --type registryfilter": "registryfilter",
 		"WfpPoc --type wfpcallout":     "wfpcallout",
@@ -246,6 +299,12 @@ func TestCreateDriverPOCParsesTypeOption(t *testing.T) {
 		if spec.POCType != want {
 			t.Fatalf("parseCreateDriverPOCSpec(%q) type=%q want %q", args, spec.POCType, want)
 		}
+	}
+}
+
+func TestCreateDriverPOCRejectsMinifiterTypo(t *testing.T) {
+	if _, err := parseCreateDriverPOCSpec("MiniPoc --type minifiter"); err == nil {
+		t.Fatalf("expected minifiter typo to be rejected")
 	}
 }
 
@@ -267,8 +326,8 @@ func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
 		},
 		{
 			name:        "MiniPoc",
-			args:        "MiniPoc --type minifiter",
-			driverNeed:  []string{"FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink"},
+			args:        "MiniPoc --type minifilter",
+			driverNeed:  []string{"ShouldInspectPreCreate", "ShouldInspectSetInformation", "IoGetTopLevelIrp", "FILE_OPEN_REPARSE_POINT", "FILE_OPEN_BY_FILE_ID", "SL_OPEN_TARGET_DIRECTORY", "FO_VOLUME_OPEN", "FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IRP_MJ_SET_INFORMATION", "PreSetInformation", "Parameters.SetFileInformation", "FileRenameInformation", "InstanceSetup", "STATUS_FLT_DO_NOT_ATTACH", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case MiniPocContract::IoctlRegisterPath", "nameInfo = nullptr;"},
 			headerNeed:  []string{"IoctlRegisterPath", "AccessQuestion", "AccessDecision"},
 			projectNeed: []string{"<DriverType>File System</DriverType>", "FltMgr.lib"},
 			testerNeed:  []string{"SERVICE_FILE_SYSTEM_DRIVER", "ConfigureMinifilterInstance", "DefaultInstance", "Altitude", "REG_DWORD", "FilterConnectCommunicationPort", "CreateIoCompletionPort", "FilterGetMessage", "FilterReplyMessage", "FltLib.lib"},
@@ -276,14 +335,14 @@ func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
 		{
 			name:       "RegPoc",
 			args:       "RegPoc --type registryfilter",
-			driverNeed: []string{"CmRegisterCallbackEx", "RegistryCallback", "STATUS_ACCESS_DENIED", "CmUnRegisterCallback"},
+			driverNeed: []string{"CmRegisterCallbackEx", "RegistryCallback", "STATUS_ACCESS_DENIED", "CmUnRegisterCallback", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case RegPocContract::IoctlRegisterRegistryPath"},
 			headerNeed: []string{"IoctlRegisterRegistryPath", "RegistryRule"},
 			testerNeed: []string{"RegisterRegistryPath", "IoctlRegisterRegistryPath"},
 		},
 		{
 			name:        "WfpPoc",
 			args:        "WfpPoc --type wfpcallout",
-			driverNeed:  []string{"FwpsCalloutRegister0", "FwpmEngineOpen0", "FWPM_SESSION_FLAG_DYNAMIC", "ClassifyOutbound", "FWP_ACTION_BLOCK"},
+			driverNeed:  []string{"FwpsCalloutRegister0", "FwpmEngineOpen0", "FWPM_SESSION_FLAG_DYNAMIC", "ClassifyOutbound", "FWP_ACTION_BLOCK", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case WfpPocContract::IoctlRegisterNetworkRule"},
 			headerNeed:  []string{"IoctlRegisterNetworkRule", "NetworkRule"},
 			projectNeed: []string{"Fwpkclnt.lib"},
 			testerNeed:  []string{"RegisterNetworkRule", "IoctlRegisterNetworkRule"},

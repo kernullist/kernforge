@@ -668,7 +668,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		edited := false
 		iterationToolError := ""
 		iterationHadToolSuccess := false
-		for _, call := range resp.Message.ToolCalls {
+		toolMsgIndexes, saveErr := a.beginToolExecutions(resp.Message.ToolCalls)
+		if saveErr != nil {
+			return "", saveErr
+		}
+		for callIndex, call := range resp.Message.ToolCalls {
 			if err := ctx.Err(); err != nil {
 				return "", err
 			}
@@ -686,9 +690,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			a.noteToolConversationStart(call)
 			a.noteToolExecutionStart(call)
-			toolMsgIndex, saveErr := a.beginToolExecution(call)
-			if saveErr != nil {
-				return "", saveErr
+			toolMsgIndex := -1
+			if callIndex >= 0 && callIndex < len(toolMsgIndexes) {
+				toolMsgIndex = toolMsgIndexes[callIndex]
 			}
 			var result ToolExecutionResult
 			var err error
@@ -1721,6 +1725,26 @@ func (a *Agent) beginToolExecution(call ToolCall) (int, error) {
 		return -1, err
 	}
 	return len(a.Session.Messages) - 1, nil
+}
+
+func (a *Agent) beginToolExecutions(calls []ToolCall) ([]int, error) {
+	if len(calls) == 0 {
+		return nil, nil
+	}
+	indexes := make([]int, 0, len(calls))
+	for _, call := range calls {
+		a.Session.AddMessage(Message{
+			Role:       "tool",
+			ToolCallID: call.ID,
+			ToolName:   call.Name,
+			Text:       "IN_PROGRESS: " + summarizeToolDiagnosticCall(call),
+		})
+		indexes = append(indexes, len(a.Session.Messages)-1)
+	}
+	if err := a.Store.Save(a.Session); err != nil {
+		return nil, err
+	}
+	return indexes, nil
 }
 
 func (a *Agent) setToolExecutionResult(index int, msg Message) {

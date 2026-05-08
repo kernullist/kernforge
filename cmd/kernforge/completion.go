@@ -175,7 +175,7 @@ var slashCommandDescriptions = map[string]string{
 	"fuzz-func":                  "Auto-plan directed function fuzzing and suggest the campaign handoff when source-only scenarios are ready.",
 	"fuzz-campaign":              "Inspect the fuzz campaign planner or let Kernforge advance seeds, deduplicated findings, parsed coverage reports, sanitizer/verifier artifacts, native results, evidence, and verification gates.",
 	"source-scan":                "Scan source with built-in kernel, C++, Unreal, and telemetry matchers, then hand candidates to /fuzz-func.",
-	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifiter, registryfilter, or wfpcallout.",
+	"create-driver-poc":          "Generate an x64 C++20 MSVC kernel-driver POC solution, optionally selecting objectfilter, minifilter, registryfilter, or wfpcallout.",
 	"find-root-cause":            "Analyze a reported problem with 1-8 route-limited worker shards, reviewer validation, fuzz-like value assumption checks, and root-cause synthesis.",
 	"root-cause-patterns":        "Inspect built-in root-cause bug pattern packs, match the current workspace, and collect/normalize GitHub issue priors.",
 	"simulate-dashboard":         "Summarize simulation history in the terminal.",
@@ -593,6 +593,14 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 	}
 
 	prefixFields := append([]string(nil), argFields[:replaceIndex]...)
+	if replaceValue == "" && allCompletionMatchesArePlaceholders(matches) {
+		rendered := make([]string, 0, len(matches))
+		for _, match := range matches {
+			finalFields := append(prefixFields, match)
+			rendered = append(rendered, strings.Join(finalFields, " "))
+		}
+		return "", rendered, true
+	}
 	if len(matches) == 1 {
 		if replaceValue == "" && strings.HasPrefix(matches[0], "<") {
 			return "", matches, true
@@ -613,6 +621,18 @@ func (rt *runtimeState) completeSlashArgumentText(commandName string, argText st
 		rendered = append(rendered, strings.Join(finalFields, " "))
 	}
 	return "", rendered, true
+}
+
+func allCompletionMatchesArePlaceholders(matches []string) bool {
+	if len(matches) == 0 {
+		return false
+	}
+	for _, match := range matches {
+		if !strings.HasPrefix(strings.TrimSpace(match), "<") {
+			return false
+		}
+	}
+	return true
 }
 
 func (rt *runtimeState) completeFuzzFuncAtPathArgument(commandName string, fields []string, endsWithSpace bool) (string, []string, bool) {
@@ -773,7 +793,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"fuzz-func":             {"<function-name>", "<function-name> --file <path>", "<function-name> @<path>", "<function-name> --source-scan focused", "<function-name> --source-scan full", "<function-name> --no-source-scan", "--from-candidate <id>", "--file <path>", "@<path>", "status", "show", "list", "continue", "language"},
 		"fuzz-campaign":         {"status", "run", "new", "list", "show"},
 		"source-scan":           {"status", "run", "run --limit 50", "run --only-slugs probe-copy-size-drift,double-fetch-user-buffer", "run --files driver/nsi.c,api/registry.c", "list", "show", "revalidate"},
-		"create-driver-poc":     {"<driver-name>"},
+		"create-driver-poc":     {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
 		"automation":            {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":                  {"config", "hooks", "memory-policy", "skill", "verify"},
 	}
@@ -909,6 +929,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		return nil, 0, false
 	case "analyze-project":
 		return analyzeProjectSlashArgumentSuggestions(fields, firstLevel[commandName])
+	case "create-driver-poc":
+		return createDriverPOCSlashArgumentSuggestions(fields, firstLevel[commandName])
 	case "new-feature":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
@@ -1221,9 +1243,17 @@ func commandCompletionDescription(item string) string {
 	case "/source-scan":
 		return "Run source matchers for kernel, C++, Unreal, and telemetry surfaces, then hand a candidate to /fuzz-func."
 	case "/create-driver-poc":
-		return "Generate a buildable x64 C++20 MSVC driver POC; add --type objectfilter|minifiter|registryfilter|wfpcallout for specialized templates."
+		return "Generate a buildable x64 C++20 MSVC driver POC; add --type objectfilter|minifilter|registryfilter|wfpcallout for specialized templates."
 	case "/create-driver-poc <driver-name>":
 		return "Create <driver-name>.sln, Driver.cpp-based <driver-name>.sys, and <driver-name>-tester.exe projects under a new workspace folder."
+	case "/create-driver-poc <driver-name> --type objectfilter":
+		return "Generate an object manager process/thread handle filter POC that strips dangerous requested access."
+	case "/create-driver-poc <driver-name> --type minifilter":
+		return "Generate a filesystem minifilter POC with user-mode decision messaging over a Filter Manager port."
+	case "/create-driver-poc <driver-name> --type registryfilter":
+		return "Generate a registry callback POC that blocks access to a registered registry path."
+	case "/create-driver-poc <driver-name> --type wfpcallout":
+		return "Generate a WFP outbound callout POC that blocks traffic to a registered IPv4 target."
 	}
 
 	fields := strings.Fields(strings.TrimPrefix(trimmed, "/"))
@@ -1263,6 +1293,45 @@ func commandCompletionDescription(item string) string {
 		}
 	}
 	return strings.TrimSpace(slashCommandDescriptions[commandName])
+}
+
+func createDriverPOCSlashArgumentSuggestions(fields []string, firstLevel []string) ([]string, int, bool) {
+	types := []string{"objectfilter", "minifilter", "registryfilter", "wfpcallout"}
+	if len(fields) == 1 {
+		if strings.EqualFold(strings.TrimSpace(fields[0]), "--type") {
+			return types, 0, true
+		}
+		return firstLevel, 0, true
+	}
+	for index := 0; index < len(fields); index++ {
+		field := strings.TrimSpace(fields[index])
+		if strings.EqualFold(field, "--type") {
+			if index == len(fields)-2 || index == len(fields)-1 {
+				return types, index + 1, true
+			}
+			return nil, 0, false
+		}
+		if strings.HasPrefix(strings.ToLower(field), "--type=") {
+			return prefixedCreateDriverPOCTypeSuggestions(strings.TrimPrefix(field, "--type=")), index, true
+		}
+	}
+	if len(fields) >= 1 {
+		last := strings.TrimSpace(fields[len(fields)-1])
+		if strings.HasPrefix(last, "--") {
+			return []string{"--type"}, len(fields) - 1, true
+		}
+	}
+	return nil, 0, false
+}
+
+func prefixedCreateDriverPOCTypeSuggestions(prefix string) []string {
+	_ = prefix
+	types := []string{"objectfilter", "minifilter", "registryfilter", "wfpcallout"}
+	out := make([]string, 0, len(types))
+	for _, value := range types {
+		out = append(out, "--type="+value)
+	}
+	return out
 }
 
 func sourceScanCompletionDescription(args []string) string {

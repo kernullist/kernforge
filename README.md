@@ -227,7 +227,7 @@ Its current differentiators are:
 - The default mode is AI source-only fuzzing rather than native execution, so Kernforge derives attacker input states, concrete sample values, branch predicates, minimal counterexamples, branch deltas, and downstream call chains directly from source
 - By default, `/fuzz-func` reuses a matching `/source-scan` candidate or runs a focused source scan over the target and reachable files before saving the plan; candidates now carry function-window evidence spans, file/symbol fingerprints, confidence breakdown, dataflow/control-flow facts, and stale-source state
 - Use `/source-scan run` to persist ranked source candidates first, then continue with `/fuzz-func --from-candidate <candidate-id>` when you want an explicit candidate handoff; built-ins include Windows kernel double-fetch, IOCTL output infoleak, WDF buffer size drift, integer allocation overflow, and pool/refcount lifetime matchers
-- Use `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]` to generate an x64-only C++20 MSVC/WDK POC driver solution with `Driver.cpp`, a namespace/constexpr shared communication header for service/device/IOCTL names and `DeviceType`, no INF package, and a same-directory `<driver-name>-tester.exe`. Omitting `--type` keeps the original SCM load/open/IOCTL ping/unload loop; typed templates add object manager process/thread handle filtering, a filesystem minifilter user-mode decision path, registry callback filtering, or WFP outbound callout blocking contracts.
+- Use `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]` to generate an x64-only C++20 MSVC/WDK POC driver solution with `Driver.cpp`, a namespace/constexpr shared communication header for service/device/IOCTL names and `DeviceType`, no INF package, and a same-directory `<driver-name>-tester.exe`. Omitting `--type` keeps the original SCM load/open/IOCTL ping/unload loop; typed templates add object manager process/thread handle filtering, a filesystem minifilter open/rename user-mode decision path, registry callback filtering, or WFP outbound callout blocking contracts.
 - High-risk findings now show a scored risk table, the first source location to inspect, the file-expansion path from the selected starting file, and the representative call path from the chosen root
 - If `compile_commands.json` or other build context exists, Kernforge can prepare a stronger native follow-up; if it does not, Kernforge explains the missing setup before asking whether to continue
 - Artifacts are stored under `.kernforge/fuzz/<run-id>/` with files such as `report.md`, `harness.cpp`, and `plan.json`
@@ -1338,7 +1338,7 @@ Source-level fuzzing commands:
 /source-scan list
 /source-scan show [id|latest]
 /source-scan revalidate [id|latest]
-/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]
+/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]
 ```
 
 Hook and override commands:
@@ -1472,7 +1472,7 @@ Core commands:
 /source-scan list
 /source-scan show [id|latest]
 /source-scan revalidate [id|latest]
-/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]
+/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]
 ```
 
 What it does:
@@ -1482,7 +1482,7 @@ What it does:
 - Rebuilds snapshot and semantic-index context on demand, so `/analyze-project` is optional rather than required.
 - Reuses a matching saved source candidate when one exists, otherwise runs a focused source scan across the target, file scope, and reachable files before saving the `/fuzz-func` plan.
 - Stores source-scan linkage in the function fuzz run as `source_candidate_id`, `source_matcher_slug`, `source_scan_mode`, `source_scan_run_id`, and `source_scan_summary`; candidate evidence is injected into source-only scenarios so `/fuzz-campaign run` can promote more targeted seeds.
-- Generates x64-only C++20 MSVC/WDK driver POC templates with `/create-driver-poc <driver-name> [--type objectfilter|minifiter|registryfilter|wfpcallout]`, including a `Driver.cpp` WDM `.sys`, namespace/constexpr shared service/device/IOCTL/`DeviceType` header, no INF package, and `<driver-name>-tester.exe` that uses SCM, `CreateFile`, and `DeviceIoControl` for a complete load/ping/unload loop. Omitting `--type` preserves the original ping POC; typed templates cover object manager process/thread access stripping, filesystem minifilter messaging, registry callback blocking, and WFP outbound callout blocking.
+- Generates x64-only C++20 MSVC/WDK driver POC templates with `/create-driver-poc <driver-name> [--type objectfilter|minifilter|registryfilter|wfpcallout]`, including a `Driver.cpp` WDM `.sys`, namespace/constexpr shared service/device/IOCTL/`DeviceType` header, no INF package, and `<driver-name>-tester.exe` that uses SCM, `CreateFile`, and `DeviceIoControl` for a complete load/ping/unload loop. Omitting `--type` preserves the original ping POC; typed templates cover object manager process/thread access stripping, filesystem minifilter open/rename messaging, registry callback blocking, and WFP outbound callout blocking.
 - Source candidates preserve function-window evidence spans, confidence breakdown, dataflow/control-flow facts, file and symbol fingerprints, stale-source state, and native feedback calibration.
 - Synthesizes attacker input states, concrete sample values, source-derived branch predicates, minimal counterexamples, pass/fail branch outcomes, and downstream call chains for higher-risk paths.
 - Shows the first source lines to inspect, the path from the selected starting file into the target file, and the representative call path from the chosen root into that implementation.

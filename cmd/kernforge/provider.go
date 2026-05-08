@@ -665,7 +665,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		})
 	}
 
-	for _, msg := range req.Messages {
+	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
 		switch msg.Role {
 		case "system":
 			continue
@@ -1217,6 +1217,56 @@ func assistantMessageContent(text string, hasToolCalls bool) any {
 		return nil
 	}
 	return text
+}
+
+func ensureOpenAIToolCallResponses(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]Message, 0, len(messages))
+	for index := 0; index < len(messages); index++ {
+		msg := messages[index]
+		out = append(out, msg)
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+
+		expected := make([]ToolCall, 0, len(msg.ToolCalls))
+		for _, call := range msg.ToolCalls {
+			if strings.TrimSpace(call.ID) != "" {
+				expected = append(expected, call)
+			}
+		}
+		if len(expected) == 0 {
+			continue
+		}
+
+		seen := map[string]bool{}
+		next := index + 1
+		for next < len(messages) && messages[next].Role == "tool" {
+			toolMsg := messages[next]
+			toolCallID := strings.TrimSpace(toolMsg.ToolCallID)
+			if toolCallID != "" {
+				seen[toolCallID] = true
+			}
+			out = append(out, toolMsg)
+			next++
+		}
+		for _, call := range expected {
+			if seen[strings.TrimSpace(call.ID)] {
+				continue
+			}
+			out = append(out, Message{
+				Role:       "tool",
+				ToolCallID: call.ID,
+				ToolName:   call.Name,
+				Text:       "ERROR: tool result was missing from the saved transcript; recover by re-running the tool if the result is still needed.",
+				IsError:    true,
+			})
+		}
+		index = next - 1
+	}
+	return out
 }
 
 func normalizeOpenAIToolCallArguments(raw string) string {

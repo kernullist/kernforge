@@ -316,6 +316,58 @@ func TestDeepSeekClientPreservesReasoningContentForToolLoop(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleClientSynthesizesMissingToolResponses(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_list", Name: "list_files", Arguments: `{"path":"."}`},
+				{ID: "call_read", Name: "read_file", Arguments: `{"path":"goal.json"}`},
+			}},
+			{Role: "tool", ToolCallID: "call_list", ToolName: "list_files", Text: "goal.json"},
+			{Role: "user", Text: "continue"},
+		},
+		Tools: []ToolDefinition{{Name: "list_files"}, {Name: "read_file"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", captured["messages"])
+	}
+	if len(messages) < 5 {
+		t.Fatalf("expected synthesized tool message before follow-up user, got %#v", messages)
+	}
+	tool, ok := messages[3].(map[string]any)
+	if !ok {
+		t.Fatalf("expected synthesized tool message, got %#v", messages[3])
+	}
+	if tool["role"] != "tool" || tool["tool_call_id"] != "call_read" {
+		t.Fatalf("unexpected synthesized tool message: %#v", tool)
+	}
+	if !strings.Contains(fmt.Sprint(tool["content"]), "tool result was missing") {
+		t.Fatalf("expected synthetic missing-result content, got %#v", tool["content"])
+	}
+	user, ok := messages[4].(map[string]any)
+	if !ok || user["role"] != "user" {
+		t.Fatalf("expected follow-up user after synthesized tool message, got %#v", messages[4])
+	}
+}
+
 func TestDeepSeekClientPreservesStreamedReasoningContentForToolLoop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")
