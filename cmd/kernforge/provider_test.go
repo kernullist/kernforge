@@ -368,6 +368,97 @@ func TestOpenAICompatibleClientSynthesizesMissingToolResponses(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleClientConvertsOrphanToolMessagesToUserContext(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "tool", ToolCallID: "call_orphan", ToolName: "write_file", Text: "wrote TavernKernel/ANTICHEAT_GAP_ANALYSIS.md"},
+			{Role: "user", Text: "continue"},
+		},
+		Tools: []ToolDefinition{{Name: "write_file"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", captured["messages"])
+	}
+	for _, item := range messages {
+		message, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("expected message map, got %#v", item)
+		}
+		if message["role"] == "tool" {
+			t.Fatalf("expected orphan tool message to be converted, got %#v", messages)
+		}
+	}
+	recovered, ok := messages[1].(map[string]any)
+	if !ok || recovered["role"] != "user" {
+		t.Fatalf("expected recovered orphan tool context as user message, got %#v", messages[1])
+	}
+	if !strings.Contains(fmt.Sprint(recovered["content"]), "saved tool result appeared without a matching preceding assistant tool_call") {
+		t.Fatalf("expected recovered transcript note, got %#v", recovered["content"])
+	}
+}
+
+func TestOpenAICompatibleClientConvertsUnexpectedToolResponseAfterAssistant(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewDeepSeekClient(server.URL, "deepseek-key", "high")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "deepseek-v4-pro",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "call_expected", Name: "read_file", Arguments: `{"path":"main.go"}`},
+			}},
+			{Role: "tool", ToolCallID: "call_other", ToolName: "write_file", Text: "wrote other.md"},
+		},
+		Tools: []ToolDefinition{{Name: "read_file"}, {Name: "write_file"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", captured["messages"])
+	}
+	if len(messages) < 4 {
+		t.Fatalf("expected assistant, recovered unexpected tool, and synthesized missing tool, got %#v", messages)
+	}
+	synthetic, ok := messages[2].(map[string]any)
+	if !ok || synthetic["role"] != "tool" || synthetic["tool_call_id"] != "call_expected" {
+		t.Fatalf("expected missing expected tool response to be synthesized before other messages, got %#v", messages[2])
+	}
+	recovered, ok := messages[3].(map[string]any)
+	if !ok || recovered["role"] != "user" {
+		t.Fatalf("expected unexpected tool response to be converted to user context after required tool responses, got %#v", messages[3])
+	}
+}
+
 func TestDeepSeekClientPreservesStreamedReasoningContentForToolLoop(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/event-stream")

@@ -11,7 +11,7 @@ The key loop to remember:
 6. Use `/open` plus `/review-selection` or `/edit-selection` to stay focused.
 7. Use `/verify`, then inspect the result with `/evidence-dashboard` and `/mem-search`.
 
-Before launching, `kernforge --help` shows standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge help mcp` when wiring Kernforge into an MCP client.
+Before launching, `kernforge --help` shows the executable version plus standalone, one-shot, MCP server, and daemon proxy examples. Use `kernforge --version` for the same version-only check, and `kernforge help mcp` when wiring Kernforge into an MCP client.
 When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review_code`; it reviews Codex's supplied diff/code or the workspace git diff with Kernforge's main model.
 If the same MCP entry is reused across repositories, pass the current repo as the tool `workspace` argument or configure `-cwd` per repo; otherwise Kernforge falls back to the server launch directory.
 

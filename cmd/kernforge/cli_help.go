@@ -26,6 +26,30 @@ func kernforgeCLIHelpRequest(args []string) (bool, string) {
 	return false, ""
 }
 
+func kernforgeCLIVersionRequest(args []string) bool {
+	positionals := kernforgeHelpPositionals(args)
+	if len(positionals) > 0 && strings.EqualFold(strings.TrimSpace(positionals[0]), "version") {
+		return true
+	}
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		if arg == "" {
+			continue
+		}
+		if kernforgeFlagConsumesHelpValue(arg) {
+			if !strings.Contains(arg, "=") {
+				i++
+			}
+			continue
+		}
+		switch strings.TrimSpace(strings.ToLower(arg)) {
+		case "--version", "-version":
+			return true
+		}
+	}
+	return false
+}
+
 func isKernforgeHelpToken(value string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(value))
 	return trimmed == "help" || isKernforgeHelpFlag(trimmed)
@@ -148,6 +172,7 @@ func renderKernforgeCLIHelp(topic string) string {
 func kernforgeGeneralHelpText() string {
 	return strings.TrimSpace(`
 Kernforge
+Version: `+currentVersion()+`
 
 Usage:
   kernforge [options]
@@ -177,6 +202,7 @@ Common options:
   -permission-mode <mode>     default | acceptEdits | plan | bypassPermissions.
   -resume <session-id>        Resume an existing session.
   -y                          Use bypass permission mode.
+  --version                   Show the Kernforge PE file version and exit.
   -h, --help, help            Show this help.
 
 Standalone examples:

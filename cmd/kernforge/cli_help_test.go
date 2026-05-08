@@ -29,15 +29,37 @@ func TestKernforgeCLIHelpRequestRecognizesCommonForms(t *testing.T) {
 	}
 }
 
+func TestKernforgeCLIVersionRequestRecognizesSafeForms(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{args: []string{"--version"}, want: true},
+		{args: []string{"-version"}, want: true},
+		{args: []string{"version"}, want: true},
+		{args: []string{"-cwd", `C:\repo\driver`, "version"}, want: true},
+		{args: []string{"help", "version"}, want: false},
+		{args: []string{"-model", "--version"}, want: false},
+		{args: []string{"-prompt", "version"}, want: false},
+	}
+	for _, tc := range cases {
+		if got := kernforgeCLIVersionRequest(tc.args); got != tc.want {
+			t.Fatalf("kernforgeCLIVersionRequest(%v) = %v, want %v", tc.args, got, tc.want)
+		}
+	}
+}
+
 func TestKernforgeGeneralHelpIncludesStandaloneAndMCPUsage(t *testing.T) {
 	text := renderKernforgeCLIHelp("")
 	for _, needle := range []string{
+		"Version: ",
 		"Start the standalone interactive REPL",
 		`kernforge -prompt "<task>"`,
 		`kernforge -command "/status"`,
 		"Run Kernforge as a stdio MCP server",
 		"kernforge -mcp-server -cwd",
 		"default | acceptEdits | plan | bypassPermissions",
+		"--version",
 		"You usually do not need daemon mode",
 		`"args": ["-mcp-server", "-cwd", "C:\\repo\\driver"]`,
 		"kernforge help mcp",

@@ -1226,36 +1226,47 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for index := 0; index < len(messages); index++ {
 		msg := messages[index]
+		if msg.Role == "tool" {
+			out = append(out, orphanOpenAIToolMessageAsUser(msg))
+			continue
+		}
 		out = append(out, msg)
 		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
 			continue
 		}
 
-		expected := make([]ToolCall, 0, len(msg.ToolCalls))
+		expected := map[string]ToolCall{}
+		expectedOrder := make([]string, 0, len(msg.ToolCalls))
 		for _, call := range msg.ToolCalls {
-			if strings.TrimSpace(call.ID) != "" {
-				expected = append(expected, call)
+			callID := strings.TrimSpace(call.ID)
+			if callID != "" {
+				expected[callID] = call
+				expectedOrder = append(expectedOrder, callID)
 			}
 		}
-		if len(expected) == 0 {
+		if len(expectedOrder) == 0 {
 			continue
 		}
 
 		seen := map[string]bool{}
+		orphanedToolMessages := make([]Message, 0)
 		next := index + 1
 		for next < len(messages) && messages[next].Role == "tool" {
 			toolMsg := messages[next]
 			toolCallID := strings.TrimSpace(toolMsg.ToolCallID)
-			if toolCallID != "" {
+			if _, ok := expected[toolCallID]; ok {
 				seen[toolCallID] = true
+				out = append(out, toolMsg)
+			} else {
+				orphanedToolMessages = append(orphanedToolMessages, toolMsg)
 			}
-			out = append(out, toolMsg)
 			next++
 		}
-		for _, call := range expected {
-			if seen[strings.TrimSpace(call.ID)] {
+		for _, callID := range expectedOrder {
+			if seen[callID] {
 				continue
 			}
+			call := expected[callID]
 			out = append(out, Message{
 				Role:       "tool",
 				ToolCallID: call.ID,
@@ -1264,9 +1275,32 @@ func ensureOpenAIToolCallResponses(messages []Message) []Message {
 				IsError:    true,
 			})
 		}
+		for _, toolMsg := range orphanedToolMessages {
+			out = append(out, orphanOpenAIToolMessageAsUser(toolMsg))
+		}
 		index = next - 1
 	}
 	return out
+}
+
+func orphanOpenAIToolMessageAsUser(msg Message) Message {
+	toolName := strings.TrimSpace(msg.ToolName)
+	toolCallID := strings.TrimSpace(msg.ToolCallID)
+	parts := []string{"Recovered transcript note: a saved tool result appeared without a matching preceding assistant tool_call, so it is provided as plain context instead of an API tool message."}
+	if toolName != "" {
+		parts = append(parts, "tool="+toolName)
+	}
+	if toolCallID != "" {
+		parts = append(parts, "tool_call_id="+toolCallID)
+	}
+	if strings.TrimSpace(msg.Text) != "" {
+		parts = append(parts, "result:\n"+msg.Text)
+	}
+	return Message{
+		Role:    "user",
+		Text:    strings.Join(parts, "\n"),
+		IsError: msg.IsError,
+	}
 }
 
 func normalizeOpenAIToolCallArguments(raw string) string {

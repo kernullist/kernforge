@@ -11,7 +11,7 @@
 6. 코드 범위를 좁혀 보고 싶으면 `/open` 후 `/review-selection` 또는 `/edit-selection`
 7. 마지막에는 `/verify`, 그리고 결과는 `/evidence-dashboard`와 `/mem-search`로 확인
 
-실행 전에 `kernforge --help`를 입력하면 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
+실행 전에 `kernforge --help`를 입력하면 실행 파일 version과 standalone, one-shot, MCP server, daemon proxy 예시를 볼 수 있습니다. version만 확인할 때는 `kernforge --version`을 쓰고, MCP client에 연결할 때는 `kernforge help mcp`를 먼저 보면 됩니다.
 Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review_code`로 처리합니다. Codex가 넘긴 diff/code 또는 workspace git diff를 Kernforge의 main model로 리뷰합니다.
 같은 MCP entry를 여러 repository에서 재사용한다면 현재 repo를 tool의 `workspace` argument로 넘기거나 repo별로 `-cwd`를 지정하세요. 그렇지 않으면 Kernforge는 server launch directory를 fallback workspace로 사용합니다.
 

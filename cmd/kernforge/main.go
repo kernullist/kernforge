@@ -117,6 +117,10 @@ const openAIPrepaidBillingHelpURL = "https://help.openai.com/en/articles/8264644
 const openAIUsageDashboardHelpURL = "https://help.openai.com/en/articles/10478918-api-usage-dashboard"
 
 func run(args []string) error {
+	if kernforgeCLIVersionRequest(args) {
+		fmt.Fprintln(os.Stdout, "Kernforge "+currentVersion())
+		return nil
+	}
 	if ok, topic := kernforgeCLIHelpRequest(args); ok {
 		fmt.Fprint(os.Stdout, renderKernforgeCLIHelp(topic))
 		return nil
@@ -1805,7 +1809,7 @@ func (rt *runtimeState) changeDirectory(pathArg string) error {
 		target = "."
 	}
 	target = strings.Trim(target, "\"'")
-	resolved, err := rt.workspace.Resolve(target)
+	resolved, err := rt.resolveInteractiveShellPath(target)
 	if err != nil {
 		return err
 	}
@@ -1834,7 +1838,7 @@ func (rt *runtimeState) listDirectory(pathArg string) error {
 		target = "."
 	}
 	target = strings.Trim(target, "\"'")
-	resolved, err := rt.workspace.Resolve(target)
+	resolved, err := rt.resolveInteractiveShellPath(target)
 	if err != nil {
 		return err
 	}
@@ -1895,6 +1899,80 @@ func (rt *runtimeState) listDirectory(pathArg string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.shell(strings.Join(lines, "\n")))
 	return nil
+}
+
+func (rt *runtimeState) resolveInteractiveShellPath(pathArg string) (string, error) {
+	return resolveInteractiveShellPath(rt.workspace, rt.session, pathArg)
+}
+
+func resolveInteractiveShellPath(workspace Workspace, session *Session, pathArg string) (string, error) {
+	target := strings.TrimSpace(pathArg)
+	if target == "" {
+		target = "."
+	}
+	currentRoot := firstNonBlankString(workspace.Root, workspace.BaseRoot)
+	abs, err := workspace.resolveAgainstRoot(currentRoot, target)
+	if err != nil {
+		return "", err
+	}
+	boundary := interactiveShellNavigationRoot(workspace, session, currentRoot)
+	return ensurePathWithinRoot(target, boundary, abs)
+}
+
+func interactiveShellNavigationRoot(workspace Workspace, session *Session, currentRoot string) string {
+	candidates := []string{}
+	if session != nil && session.Worktree != nil && session.Worktree.Active {
+		candidates = append(candidates, session.Worktree.Root)
+	}
+	candidates = append(candidates, workspace.BaseRoot, currentRoot)
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if pathIsWithinRoot(candidate, currentRoot) {
+			return candidate
+		}
+	}
+	return currentRoot
+}
+
+func ensurePathWithinRoot(originalPath string, root string, target string) (string, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	if pathIsWithinRoot(rootAbs, targetAbs) {
+		return targetAbs, nil
+	}
+	return "", fmt.Errorf("path is outside the active workspace root: %s", originalPath)
+}
+
+func pathIsWithinRoot(root string, target string) bool {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(rootAbs, targetAbs)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+	return !pathRelEscapesRoot(rel)
+}
+
+func pathRelEscapesRoot(rel string) bool {
+	cleanRel := filepath.Clean(rel)
+	return cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanRel)
 }
 
 func (rt *runtimeState) readInput(prompt string) (string, error) {

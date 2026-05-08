@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-05-02
+- Codebase snapshot: 2026-05-08
 
 Intended readers:
 - Windows security engineers
@@ -69,7 +69,9 @@ Current behavior:
 10. Pressing `Enter` on an empty main prompt is ignored so empty turns do not clutter the session transcript.
 11. `progress_display` controls progress visibility and defaults to `stream`, so long-running operations leave a complete progress transcript. `/progress-display auto|compact|stream` changes it from the REPL, and `/progress_display ...` works as the same command when you copy the config key: `auto` keeps tool/model/route and project-analysis ledger lines in the transcript while high-frequency shell tail output remains transient, `compact` keeps progress in the footer, and `stream` persists every update.
 12. OpenAI-compatible and OpenAI Codex streaming providers emit tool-call construction events so users can see when the model is preparing a tool call and when its arguments are ready.
-13. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
+13. DeepSeek and other OpenAI-compatible follow-up requests normalize saved tool transcripts before replay. Orphaned `tool` results become plain context, and missing tool-call responses are synthesized so provider-side message validation does not reject recovered sessions.
+14. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
+15. `!cd` and directory-listing shortcuts resolve from the REPL current directory while keeping the workspace boundary fixed. `!cd ..` can move upward inside the workspace or active worktree, but cannot cross above that boundary.
 
 ### Runtime Inspection And Approval State
 
@@ -90,9 +92,11 @@ Current behavior:
 4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.
 5. For DeepSeek, `/provider status` performs a live `/user/balance` lookup when an API key is configured and shows the provider's dynamic concurrency guidance.
 6. For OpenAI and Anthropic, `/provider status` intentionally shows officially documented billing and usage visibility limits instead of inventing a live balance endpoint.
-7. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
-8. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
-9. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
+7. `kernforge --version`, `kernforge -version`, and `kernforge version` print the executable version before config/session loading. On Windows release builds this is the PE `FileVersion`; unstamped developer builds fall back to the embedded app version.
+8. `kernforge --help` includes the same version at the top of the general help text.
+9. `Allow write?` and `Open diff preview?` can be auto-approved for the current session with `a`.
+10. Git-mutating tools such as `git_add`, `git_commit`, `git_push`, and `git_create_pr` use a separate `Allow git?` session approval.
+11. Git-mutating tools are intended for explicit user requests rather than normal review or edit turns.
 
 ### Prompt Intent Routing
 
@@ -621,6 +625,7 @@ Operational notes:
 4. Model request timeout is configurable through `request_timeout_seconds`, while `max_request_retries` and `request_retry_delay_ms` control retries for timed-out or transient provider failures.
 5. For long-running local validation, prefer `run_shell_background` plus `check_shell_job` so the agent can reuse one expensive build or test job across multiple turns.
 6. When a setup, formatter, or generator command is genuinely safer than a manual patch, the agent can use `run_shell` with scoped workspace writes by declaring `allow_workspace_writes=true` and a narrow `write_paths` list.
+7. In interactive shell mode, use `!cd ..` freely to move back up within the workspace after drilling into a subdirectory. Kernforge rejects only the step that would leave the workspace or active worktree boundary.
 
 ### 2.3 Evidence Store
 

@@ -622,11 +622,13 @@ Telemetry 회귀를 볼 때의 기본 흐름:
 | `-y` | 모든 권한 자동 승인 (`bypassPermissions`) |
 | `-mcp-server` | Kernforge를 stdio MCP server로 실행 |
 | `-mcp-daemon-proxy` | local Kernforge daemon을 통해 stdio MCP request proxy |
+| `--version`, `-version`, `version` | Kernforge 실행 파일 version 출력 후 종료 |
 | `-h`, `--help`, `help` | standalone, one-shot, MCP server, daemon 실행법 출력 |
 
 참고:
 
 - config를 로드하기 전에 실행 예시를 확인하려면 `kernforge --help`, `kernforge help mcp`, `kernforge help daemon`을 사용합니다.
+- Windows release build에서는 `--version`과 `--help` 상단의 version이 `kernforge.exe`에 stamp된 PE `FileVersion`을 읽습니다. PE version resource가 없는 개발 빌드는 embedded app version으로 fallback합니다.
 - `-image`는 `-prompt`와 함께 사용해야 합니다.
 - `-command`는 외부 scheduler/daemon 연동용입니다. 예: `-command "/automation monitor --notify"`.
 - 대부분의 MCP 사용자는 `kernforge -mcp-server -cwd <workspace>`만 등록하면 됩니다. 이 명령은 선택한 workspace용 MCP stdio server로 Kernforge를 실행합니다.
@@ -645,6 +647,7 @@ Kernforge는 두 가지 위치 개념을 따로 관리합니다.
 workspace root는 시작 시 `-cwd` 또는 현재 프로세스 디렉터리로 정해지며, 파일 도구는 이 범위를 벗어나지 않습니다.
 
 REPL 안에서 `!cd`를 사용하면 current directory만 바뀌고 workspace 경계는 유지됩니다.
+current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지 상위 directory를 이동할 수 있습니다. workspace root 밖으로 나가려는 이동은 거부됩니다. active managed worktree 안에서는 worktree root가 이동 경계입니다.
 상대 경로 기반의 읽기/탐색 도구는 먼저 current directory를 기준으로 찾고, 거기서 찾지 못하면 workspace root를 기준으로 한 번 더 찾습니다.
 
 ### 설정 파일 위치
@@ -857,6 +860,7 @@ provider별:
 - 모델 선택기는 `/models`를 조회하고 `deepseek-v4-pro`, `deepseek-v4-flash` 순서를 우선한다. legacy `deepseek-chat`, `deepseek-reasoner`는 인식하지만 DeepSeek 문서상 2026-07-24 deprecation 예정이다.
 - `/effort`는 DeepSeek thinking-mode 요청에도 적용된다. `minimal`/`low`/`medium`/`high`는 DeepSeek `high`, `xhigh`는 `max`로 전송된다.
 - DeepSeek thinking-mode tool loop에서는 assistant tool-call message의 `reasoning_content`를 보존하고 다음 tool-result 요청에 다시 전달한다. streamed tool call에서도 같은 값을 유지하므로 DeepSeek가 요구하는 multi-turn context 형태를 깨지 않는다.
+- 저장되거나 복구된 OpenAI-compatible transcript는 replay 전에 정규화된다. 고아 `tool` result는 일반 user context로 변환하고, 빠진 tool-call response는 synthetic tool result로 채워서 DeepSeek가 잘못된 `tool` message 순서로 후속 요청을 거부하지 않게 한다.
 - `/provider status`는 API key가 있으면 live `/user/balance`를 조회하고 DeepSeek의 dynamic concurrency/rate-limit 안내를 함께 보여준다.
 - 기본 shared model-route limit은 `2`다. DeepSeek는 서버 부하에 따라 사용자 동시성을 동적으로 제한하고 현재 한도에 도달하면 HTTP 429를 반환한다.
 
@@ -1215,12 +1219,15 @@ selection 관련 명령:
 
 ```text
 !cd src
+!cd ..
 !ls
 !dir
 !pwd
 !cls
 !clear
 ```
+
+`!cd`와 directory listing shortcut은 REPL current directory 기준으로 경로를 해석하되 workspace 경계를 유지합니다. workspace 또는 active worktree 내부의 parent navigation은 허용하지만, 그 경계 밖으로 나가는 이동은 차단합니다.
 
 git 관련 명령:
 

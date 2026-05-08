@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-05-02
+- 코드베이스 기준: 2026-05-08
 
 대상 사용자:
 - Windows security 엔지니어
@@ -67,7 +67,9 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 10. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
 11. `progress_display`가 진행 표시 방식을 제어하며 기본값은 긴 작업의 진행 이력을 남기기 위한 `stream`이다. `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있고, config key를 그대로 친 `/progress_display ...`도 같은 명령으로 처리된다. `auto`는 tool/model/route와 project analysis ledger를 transcript에 남기고 고빈도 shell tail 출력은 transient로 유지하며, `compact`는 footer 중심, `stream`은 모든 update 지속 기록 방식이다.
 12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
-13. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
+13. DeepSeek와 OpenAI-compatible follow-up request는 저장된 tool transcript를 replay 전에 정규화한다. 고아 `tool` result는 일반 context로 바꾸고 빠진 tool-call response는 synthetic result로 채워서 복구된 세션이 provider의 message validation에서 거부되지 않게 한다.
+14. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
+15. `!cd`와 directory listing shortcut은 REPL current directory 기준으로 경로를 해석하되 workspace 경계를 고정한다. `!cd ..`는 workspace 또는 active worktree 내부에서는 상위 이동을 허용하지만 그 경계 밖으로는 나갈 수 없다.
 
 ### 런타임 상태 확인과 승인 상태
 
@@ -88,9 +90,11 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.
 5. DeepSeek에서는 API key가 설정되어 있으면 `/provider status`가 live `/user/balance`를 조회하고 provider의 dynamic concurrency 안내를 함께 보여준다.
 6. OpenAI와 Anthropic에서는 `/provider status`가 임의의 live balance endpoint를 추정하지 않고 공식 문서 기준의 billing/usage visibility 제약을 보여준다.
-7. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
-8. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
-9. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
+7. `kernforge --version`, `kernforge -version`, `kernforge version`은 config/session 로드 전에 실행 파일 version을 출력한다. Windows release build에서는 PE `FileVersion`을 읽고, stamp가 없는 개발 빌드는 embedded app version으로 fallback한다.
+8. `kernforge --help`의 일반 help 상단도 같은 version을 보여준다.
+9. `Allow write?`와 `Open diff preview?`는 `a`로 현재 세션 동안 자동 승인할 수 있다.
+10. `git_add`, `git_commit`, `git_push`, `git_create_pr` 같은 git 변경 도구는 별도의 `Allow git?` 세션 승인을 사용한다.
+11. git 변경 도구는 일반 review/edit 턴이 아니라 사용자가 명시적으로 git 작업을 요청했을 때 사용하는 것이 기본이다.
 
 ### 프롬프트 의도 라우팅
 
@@ -617,6 +621,7 @@ Pattern pack 운영:
 3. 공백이 있는 경로는 따옴표로 감싸는 편이 안전하다.
 4. 예: `/set-msbuild-path "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe"`
 5. 모델 요청 timeout은 `request_timeout_seconds`로 조정할 수 있고, `max_request_retries`와 `request_retry_delay_ms`로 timeout 또는 transient provider error 재시도를 제어한다.
+6. interactive shell mode에서는 하위 directory로 깊게 들어간 뒤 `!cd ..`로 workspace 내부 상위 directory를 자유롭게 이동할 수 있다. Kernforge는 workspace 또는 active worktree 경계를 벗어나는 순간만 거부한다.
 
 ### 2.3 Evidence Store
 

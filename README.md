@@ -627,11 +627,13 @@ Isolated implementation:
 | `-y` | Auto-approve all permissions (`bypassPermissions`) |
 | `-mcp-server` | Run Kernforge as a stdio MCP server |
 | `-mcp-daemon-proxy` | Proxy stdio MCP requests through the local Kernforge daemon |
+| `--version`, `-version`, `version` | Print the Kernforge executable version and exit |
 | `-h`, `--help`, `help` | Show standalone, one-shot, MCP server, and daemon usage |
 
 Notes:
 
 - Run `kernforge --help`, `kernforge help mcp`, or `kernforge help daemon` to see launch examples before config is loaded.
+- On Windows release builds, `--version` and the first line of `--help` read the PE `FileVersion` stamped into `kernforge.exe`; non-stamped developer builds fall back to the embedded app version.
 - `-image` requires `-prompt`.
 - `-command` is intended for automation and external schedulers, for example `-command "/automation monitor --notify"`.
 - Most MCP users should configure only `kernforge -mcp-server -cwd <workspace>`. That starts Kernforge as the MCP stdio server for the selected workspace.
@@ -650,6 +652,7 @@ Kernforge tracks:
 The workspace root is set from `-cwd` or the process working directory at startup. File tools stay within that root.
 
 Inside the REPL, `!cd` changes the current working directory, but it does not expand the workspace boundary.
+If the current directory is already inside the workspace, `!cd ..` can move back up through parent directories until it reaches the workspace root. Attempts to move above the workspace root are rejected. In an active managed worktree, the worktree root is the navigation boundary.
 Relative-path read and search tools look in the current directory first, then fall back to the workspace root if the target is not found there.
 
 ### Config Locations
@@ -861,6 +864,7 @@ Provider-specific:
 - The model picker reads `/models` and prefers `deepseek-v4-pro`, then `deepseek-v4-flash`; legacy `deepseek-chat` and `deepseek-reasoner` are still recognized but are marked by DeepSeek for deprecation on 2026-07-24
 - `/effort` applies to DeepSeek thinking-mode requests: `minimal`/`low`/`medium`/`high` map to DeepSeek `high`, while `xhigh` maps to `max`
 - DeepSeek thinking-mode tool loops preserve and replay `reasoning_content` on assistant tool-call messages, including streamed tool calls, so follow-up tool-result requests remain compatible with DeepSeek's required multi-turn context shape
+- Saved or recovered OpenAI-compatible transcripts are normalized before replay: orphaned `tool` results are converted to plain user context, and missing tool-call responses are synthesized so DeepSeek does not reject follow-up requests with invalid `tool` message ordering.
 - `/provider status` performs a live `/user/balance` lookup when an API key is configured and shows DeepSeek's dynamic concurrency/rate-limit guidance
 - The default shared model-route limit is `2` because DeepSeek dynamically limits user concurrency and returns HTTP 429 when the current limit is reached
 
@@ -1212,12 +1216,15 @@ Built-in shell shortcuts:
 
 ```text
 !cd src
+!cd ..
 !ls
 !dir
 !pwd
 !cls
 !clear
 ```
+
+`!cd` and directory-listing shortcuts resolve paths from the REPL current directory while preserving the workspace boundary. Parent navigation is allowed inside the workspace or active worktree, but crossing above that boundary is blocked.
 
 Git command:
 
