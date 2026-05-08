@@ -72,6 +72,8 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 		"<DriverType>WDM</DriverType>",
 		"<TargetVersion>Windows10</TargetVersion>",
 		"<PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>",
+		"<SignMode>TestSign</SignMode>",
+		"<FileDigestAlgorithm>sha256</FileDigestAlgorithm>",
 		"<LanguageStandard>stdcpp20</LanguageStandard>",
 		"<TargetName>AcmePoc</TargetName>",
 		"<TargetExt>.sys</TargetExt>",
@@ -86,6 +88,9 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 		if strings.Contains(driverProject, forbidden) {
 			t.Fatalf("driver project should be x64-only, got %q in project", forbidden)
 		}
+	}
+	if strings.Contains(driverProject, "<SignMode>Off</SignMode>") {
+		t.Fatalf("driver project should use WDK TestSign, got SignMode Off")
 	}
 
 	driverSource := readCreateDriverPOCTestFile(t, projectRoot, "AcmePoc/Driver.cpp")
@@ -208,6 +213,8 @@ func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 		"DeviceType",
 		"fixed MAX_PATH",
 		"already running so the current driver image is tested",
+		"WDK TestSign mode",
+		"Test-signed x64 kernel drivers require OS test-signing",
 	} {
 		if !strings.Contains(readme, needle) {
 			t.Fatalf("generated README missing %q", needle)
@@ -345,7 +352,7 @@ func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
 			args:        "MiniPoc --type minifilter",
 			driverNeed:  []string{"ShouldInspectPreCreate", "ShouldInspectSetInformation", "IsDeleteDispositionRequest", "IoGetTopLevelIrp", "FILE_OPEN_REPARSE_POINT", "FILE_OPEN_BY_FILE_ID", "SL_OPEN_TARGET_DIRECTORY", "FO_VOLUME_OPEN", "FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IRP_MJ_SET_INFORMATION", "PreSetInformation", "Parameters.SetFileInformation", "FileRenameInformation", "FileDispositionInformation", "FileDispositionInformationEx", "FILE_DISPOSITION_DELETE", "InstanceSetup", "STATUS_FLT_DO_NOT_ATTACH", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case MiniPocContract::IoctlRegisterPath", "nameInfo = nullptr;"},
 			headerNeed:  []string{"IoctlRegisterPath", "AccessQuestion", "AccessDecision"},
-			projectNeed: []string{"<DriverType>File System</DriverType>", "FltMgr.lib"},
+			projectNeed: []string{"<DriverType>WDM</DriverType>", "FltMgr.lib"},
 			testerNeed:  []string{"SERVICE_FILE_SYSTEM_DRIVER", "ConfigureMinifilterInstance", "DefaultInstance", "Altitude", "REG_DWORD", "FilterConnectCommunicationPort", "CreateIoCompletionPort", "FilterGetMessage", "FilterReplyMessage", "FltLib.lib"},
 		},
 		{

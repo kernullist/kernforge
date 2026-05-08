@@ -84,7 +84,7 @@ func (rt *runtimeState) handleCreateDriverPOCCommand(args string) error {
 	fmt.Fprintln(writer, ui.statusKV("platforms", "Debug|x64, Release|x64"))
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, ui.hintLine("Build: msbuild \""+filepath.Join(targetRoot, spec.DriverName+".sln")+"\" /p:Configuration=Debug /p:Platform=x64"))
-	fmt.Fprintln(writer, ui.hintLine("Run the tester from the output directory as Administrator. Loading unsigned x64 drivers requires test-signing or an equivalent lab policy."))
+	fmt.Fprintln(writer, ui.hintLine("Run the tester from the output directory as Administrator. Driver builds use WDK TestSign; loading test-signed x64 drivers still requires OS test-signing or an equivalent lab policy."))
 	return nil
 }
 
@@ -136,7 +136,6 @@ func parseCreateDriverPOCSpec(args string) (createDriverPOCSpec, error) {
 	testerLibraries := "%(AdditionalDependencies)"
 	serviceType := "SERVICE_KERNEL_DRIVER"
 	if pocType == "minifilter" {
-		driverType = "File System"
 		driverLibraries = "FltMgr.lib;Wdmsec.lib;%(AdditionalDependencies)"
 		testerLibraries = "FltLib.lib;%(AdditionalDependencies)"
 		serviceType = "SERVICE_FILE_SYSTEM_DRIVER"
@@ -1103,15 +1102,17 @@ const createDriverPOCDriverProjectTemplate = `
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>{{DRIVER_NAME}}</RootNamespace>
     <ProjectName>{{DRIVER_NAME}}</ProjectName>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Driver_SpectreMitigation>false</Driver_SpectreMitigation>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <TargetVersion>Windows10</TargetVersion>
     <ConfigurationType>Driver</ConfigurationType>
     <DriverType>{{DRIVER_TYPE}}</DriverType>
     <DriverTargetPlatform>Desktop</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <SpectreMitigation>false</SpectreMitigation>
+    <SignMode>TestSign</SignMode>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -1121,10 +1122,13 @@ const createDriverPOCDriverProjectTemplate = `
     <DriverType>{{DRIVER_TYPE}}</DriverType>
     <DriverTargetPlatform>Desktop</DriverTargetPlatform>
     <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <SpectreMitigation>false</SpectreMitigation>
+    <SignMode>TestSign</SignMode>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -1157,7 +1161,6 @@ const createDriverPOCDriverProjectTemplate = `
     </Link>
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
-      <SignMode>Off</SignMode>
     </DriverSign>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -1173,7 +1176,6 @@ const createDriverPOCDriverProjectTemplate = `
     </Link>
     <DriverSign>
       <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
-      <SignMode>Off</SignMode>
     </DriverSign>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -1693,22 +1695,24 @@ const createDriverPOCTesterProjectTemplate = `
     <Keyword>Win32Proj</Keyword>
     <RootNamespace>{{DRIVER_NAME}}Tester</RootNamespace>
     <ProjectName>{{DRIVER_NAME}}-tester</ProjectName>
-    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
-  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
+    <SpectreMitigation>false</SpectreMitigation>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v143</PlatformToolset>
+    <SpectreMitigation>false</SpectreMitigation>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
@@ -1816,6 +1820,7 @@ The driver creates its device object with the shared DeviceType contract, and th
     msbuild "{{DRIVER_NAME}}.sln" /p:Configuration=Debug /p:Platform=x64
 
 The driver project requires Visual Studio with the Windows Driver Kit and the WindowsKernelModeDriver10.0 platform toolset.
+The driver project uses WDK TestSign mode for Debug and Release x64 builds with SHA256 file digest signing.
 
 ## Run
 
@@ -1829,7 +1834,7 @@ Run bin\Debug\x64\{{DRIVER_NAME}}-tester.exe as Administrator. The tester:
 6. Closes the device handle.
 7. Stops and deletes the service.
 
-Unsigned x64 kernel drivers require test-signing or an equivalent lab policy before Windows will load them.
+Test-signed x64 kernel drivers require OS test-signing or an equivalent lab policy before Windows will load them.
 `
 
 const createDriverPOCObjectFilterIoctlHeaderTemplate = `
@@ -1861,6 +1866,52 @@ struct ProtectedIds
 
 const createDriverPOCObjectFilterDriverSourceTemplate = `
 #include "Driver.h"
+
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE 0x0001
+#endif
+#ifndef PROCESS_CREATE_THREAD
+#define PROCESS_CREATE_THREAD 0x0002
+#endif
+#ifndef PROCESS_VM_OPERATION
+#define PROCESS_VM_OPERATION 0x0008
+#endif
+#ifndef PROCESS_VM_WRITE
+#define PROCESS_VM_WRITE 0x0020
+#endif
+#ifndef PROCESS_DUP_HANDLE
+#define PROCESS_DUP_HANDLE 0x0040
+#endif
+#ifndef PROCESS_SET_QUOTA
+#define PROCESS_SET_QUOTA 0x0100
+#endif
+#ifndef PROCESS_SET_INFORMATION
+#define PROCESS_SET_INFORMATION 0x0200
+#endif
+#ifndef PROCESS_SUSPEND_RESUME
+#define PROCESS_SUSPEND_RESUME 0x0800
+#endif
+#ifndef THREAD_TERMINATE
+#define THREAD_TERMINATE 0x0001
+#endif
+#ifndef THREAD_SUSPEND_RESUME
+#define THREAD_SUSPEND_RESUME 0x0002
+#endif
+#ifndef THREAD_SET_CONTEXT
+#define THREAD_SET_CONTEXT 0x0010
+#endif
+#ifndef THREAD_SET_INFORMATION
+#define THREAD_SET_INFORMATION 0x0020
+#endif
+#ifndef THREAD_IMPERSONATE
+#define THREAD_IMPERSONATE 0x0100
+#endif
+#ifndef THREAD_DIRECT_IMPERSONATION
+#define THREAD_DIRECT_IMPERSONATION 0x0200
+#endif
+#ifndef THREAD_SET_LIMITED_INFORMATION
+#define THREAD_SET_LIMITED_INFORMATION 0x0400
+#endif
 
 namespace
 {
@@ -2144,7 +2195,7 @@ Build with:
 
     msbuild "{{DRIVER_NAME}}.sln" /p:Configuration=Debug /p:Platform=x64
 
-Run the tester as Administrator from bin\Debug\x64. Unsigned x64 drivers require test-signing or an equivalent lab policy.
+Run the tester as Administrator from bin\Debug\x64. Test-signed x64 drivers require OS test-signing or an equivalent lab policy.
 `
 
 const createDriverPOCMinifilterIoctlHeaderTemplate = `
@@ -2592,7 +2643,11 @@ InstanceSetup(
     case FLT_FSTYPE_REFS:
     case FLT_FSTYPE_FAT:
     case FLT_FSTYPE_EXFAT:
-    case FLT_FSTYPE_NETWORK:
+    case FLT_FSTYPE_LANMAN:
+    case FLT_FSTYPE_WEBDAV:
+    case FLT_FSTYPE_RDPDR:
+    case FLT_FSTYPE_NFS:
+    case FLT_FSTYPE_MUP:
         return STATUS_SUCCESS;
     default:
         return STATUS_FLT_DO_NOT_ATTACH;
@@ -2840,8 +2895,8 @@ struct RegistryRule
 `
 
 const createDriverPOCRegistryFilterDriverSourceTemplate = `
-#include <ntstrsafe.h>
 #include "Driver.h"
+#include <ntstrsafe.h>
 
 namespace
 {
@@ -2881,7 +2936,7 @@ ShouldBlockRegistryObject(
     )
 {
     bool block = false;
-    PUNICODE_STRING objectName = nullptr;
+    PCUNICODE_STRING objectName = nullptr;
 
     do
     {
@@ -3162,9 +3217,12 @@ struct NetworkRule
 `
 
 const createDriverPOCWfpCalloutDriverSourceTemplate = `
+#include "Driver.h"
+#define NDIS630 1
+#include <ndis.h>
+#include <initguid.h>
 #include <fwpsk.h>
 #include <fwpmk.h>
-#include "Driver.h"
 
 namespace
 {
@@ -3181,7 +3239,6 @@ ClassifyOutbound(
     _In_ const FWPS_INCOMING_VALUES0* FixedValues,
     _In_ const FWPS_INCOMING_METADATA_VALUES0* MetaValues,
     _Inout_opt_ void* LayerData,
-    _In_opt_ const void* ClassifyContext,
     _In_ const FWPS_FILTER0* Filter,
     _In_ UINT64 FlowContext,
     _Inout_ FWPS_CLASSIFY_OUT0* ClassifyOut
@@ -3189,7 +3246,6 @@ ClassifyOutbound(
 {
     UNREFERENCED_PARAMETER(MetaValues);
     UNREFERENCED_PARAMETER(LayerData);
-    UNREFERENCED_PARAMETER(ClassifyContext);
     UNREFERENCED_PARAMETER(Filter);
     UNREFERENCED_PARAMETER(FlowContext);
 
