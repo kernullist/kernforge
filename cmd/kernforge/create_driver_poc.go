@@ -353,6 +353,7 @@ RegisterProtectedIds()
 
         std::wcout << L"Protected current PID " << request.ProcessId << L" and TID " << request.ThreadId << std::endl;
         result = true;
+
     } while (false);
 
     if (device != INVALID_HANDLE_VALUE)
@@ -499,6 +500,7 @@ ConfigureMinifilterInstance()
         }
 
         result = true;
+
     } while (false);
 
     if (instanceKey != nullptr)
@@ -506,11 +508,13 @@ ConfigureMinifilterInstance()
         RegCloseKey(instanceKey);
         instanceKey = nullptr;
     }
+
     if (instancesKey != nullptr)
     {
         RegCloseKey(instancesKey);
         instancesKey = nullptr;
     }
+
     if (serviceKey != nullptr)
     {
         RegCloseKey(serviceKey);
@@ -568,6 +572,7 @@ RegisterBlockedPath()
 
         std::wcout << L"Registered blocked file path substring: " << rule.Path << std::endl;
         result = true;
+
     } while (false);
 
     if (device != INVALID_HANDLE_VALUE)
@@ -652,6 +657,7 @@ RunMinifilterDecisionPort()
             std::wcout << L"Decision sent for PID " << message.Question.ProcessId << L": " << (reply.Decision.Allow ? L"allow" : L"block") << std::endl;
         }
         result = true;
+
     } while (false);
 
     if (overlapped.hEvent != nullptr)
@@ -659,11 +665,13 @@ RunMinifilterDecisionPort()
         CloseHandle(overlapped.hEvent);
         overlapped.hEvent = nullptr;
     }
+
     if (iocp != nullptr)
     {
         CloseHandle(iocp);
         iocp = nullptr;
     }
+
     if (port != INVALID_HANDLE_VALUE)
     {
         CloseHandle(port);
@@ -724,6 +732,7 @@ RegisterRegistryPath()
 
         std::wcout << L"Registered blocked registry path: " << rule.Path << std::endl;
         result = true;
+
     } while (false);
 
     if (device != INVALID_HANDLE_VALUE)
@@ -783,6 +792,7 @@ RegisterNetworkRule()
 
         std::wcout << L"Registered outbound block target: " << rule.Target << std::endl;
         result = true;
+
     } while (false);
 
     if (device != INVALID_HANDLE_VALUE)
@@ -1068,6 +1078,7 @@ DriverEntry(
         DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
 
         deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+
     } while (false);
 
     return status;
@@ -1253,6 +1264,7 @@ GetLastErrorText(
         {
             result.pop_back();
         }
+
     } while (false);
 
     if (buffer != nullptr)
@@ -1324,6 +1336,7 @@ GetExecutableDirectory(
 
         directory.resize(slash);
         result = true;
+
     } while (false);
 
     return result;
@@ -1410,6 +1423,7 @@ OpenOrCreateDriverService(
             service = nullptr;
             break;
         }
+
     } while (false);
 
     return service;
@@ -1474,6 +1488,7 @@ StopDriverService(
         }
 
         PrintLastError(L"ControlService", error);
+
     } while (false);
 
     return result;
@@ -1513,6 +1528,7 @@ StartDriverService(
         }
 
         PrintLastError(L"StartServiceW", error);
+
     } while (false);
 
     return result;
@@ -1576,6 +1592,7 @@ SendPingIoctl()
 
         std::cout << "IOCTL reply: " << output.data() << " (" << bytesReturned << " bytes)" << std::endl;
         result = true;
+
     } while (false);
 
     if (device != INVALID_HANDLE_VALUE)
@@ -1637,6 +1654,7 @@ wmain()
         }
 
         exitCode = 0;
+
     } while (false);
 
     if (service != nullptr)
@@ -2100,6 +2118,7 @@ DriverEntry(
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
         DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
         deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+
     } while (false);
 
     if (!NT_SUCCESS(status))
@@ -2216,6 +2235,7 @@ PathMatchesBlockedRule(
 
         CopyPathToQuestion(localPath, Path, PathChars);
         matched = (wcsstr(localPath, BlockedPath) != nullptr);
+
     } while (false);
 
     return matched;
@@ -2249,6 +2269,7 @@ AskUserModeToAllow(
         {
             allow = false;
         }
+
     } while (false);
 
     return allow;
@@ -2305,6 +2326,7 @@ ShouldInspectPreCreate(
         }
 
         inspect = true;
+
     } while (false);
 
     return inspect;
@@ -2354,6 +2376,7 @@ ShouldInspectSetInformation(
         default:
             break;
         }
+
     } while (false);
 
     return inspect;
@@ -2544,6 +2567,7 @@ FilterUnload(
         FltCloseCommunicationPort(ServerPort);
         ServerPort = nullptr;
     }
+
     if (FilterHandle != nullptr)
     {
         FltUnregisterFilter(FilterHandle);
@@ -2718,6 +2742,7 @@ DriverEntry(
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
         DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
         deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+
     } while (false);
 
     if (!NT_SUCCESS(status))
@@ -2807,6 +2832,7 @@ ShouldBlockRegistryObject(
         {
             block = true;
         }
+
     } while (false);
 
     if (objectName != nullptr)
@@ -2989,6 +3015,7 @@ DriverEntry(
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
         DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
         deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+
     } while (false);
 
     if (!NT_SUCCESS(status))
@@ -3164,6 +3191,7 @@ RegisterWfpObjects(
         filter.numFilterConditions = 1;
         filter.filterCondition = &condition;
         status = FwpmFilterAdd0(EngineHandle, &filter, nullptr, nullptr);
+
     } while (false);
 
     return status;
@@ -3177,6 +3205,7 @@ UnregisterWfpObjects()
         FwpsCalloutUnregisterById0(CalloutId);
         CalloutId = 0;
     }
+
     if (EngineHandle != nullptr)
     {
         FwpmEngineClose0(EngineHandle);
@@ -3301,6 +3330,7 @@ DriverEntry(
         DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = {{FUNCTION_PREFIX}}DeviceControl;
         DriverObject->DriverUnload = {{FUNCTION_PREFIX}}Unload;
         deviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
+
     } while (false);
 
     if (!NT_SUCCESS(status))

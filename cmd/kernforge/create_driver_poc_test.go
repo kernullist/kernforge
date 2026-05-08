@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+var generatedDoWhileCloseWithoutSpacerPattern = regexp.MustCompile(`[^\n]\n    \} while \(false\);`)
+var generatedAdjacentIfWithoutSpacerPattern = regexp.MustCompile(`\n    \}\n    if \(`)
 
 func TestCreateDriverPOCGeneratesDriverAndTesterSolution(t *testing.T) {
 	root := t.TempDir()
@@ -256,6 +260,18 @@ func TestCreateDriverPOCGeneratedDriverNullsDeletedDeviceObject(t *testing.T) {
 		}
 		if strings.Contains(testerSource, "}\n    while (false);") {
 			t.Fatalf("%q tester source contains split do-while close", args)
+		}
+		if generatedDoWhileCloseWithoutSpacerPattern.MatchString(driverSource) {
+			t.Fatalf("%q driver source should keep one blank line before do-while close", args)
+		}
+		if generatedDoWhileCloseWithoutSpacerPattern.MatchString(testerSource) {
+			t.Fatalf("%q tester source should keep one blank line before do-while close", args)
+		}
+		if generatedAdjacentIfWithoutSpacerPattern.MatchString(driverSource) {
+			t.Fatalf("%q driver source should keep one blank line between adjacent if blocks", args)
+		}
+		if generatedAdjacentIfWithoutSpacerPattern.MatchString(testerSource) {
+			t.Fatalf("%q tester source should keep one blank line between adjacent if blocks", args)
 		}
 		if strings.Contains(driverSource, "FltReleaseFileNameInformation(nameInfo);\n                    return") ||
 			strings.Contains(driverSource, "FltReleaseFileNameInformation(nameInfo);\n        }") {
