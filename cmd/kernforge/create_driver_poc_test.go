@@ -343,7 +343,7 @@ func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
 		{
 			name:        "MiniPoc",
 			args:        "MiniPoc --type minifilter",
-			driverNeed:  []string{"ShouldInspectPreCreate", "ShouldInspectSetInformation", "IoGetTopLevelIrp", "FILE_OPEN_REPARSE_POINT", "FILE_OPEN_BY_FILE_ID", "SL_OPEN_TARGET_DIRECTORY", "FO_VOLUME_OPEN", "FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IRP_MJ_SET_INFORMATION", "PreSetInformation", "Parameters.SetFileInformation", "FileRenameInformation", "InstanceSetup", "STATUS_FLT_DO_NOT_ATTACH", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case MiniPocContract::IoctlRegisterPath", "nameInfo = nullptr;"},
+			driverNeed:  []string{"ShouldInspectPreCreate", "ShouldInspectSetInformation", "IsDeleteDispositionRequest", "IoGetTopLevelIrp", "FILE_OPEN_REPARSE_POINT", "FILE_OPEN_BY_FILE_ID", "SL_OPEN_TARGET_DIRECTORY", "FO_VOLUME_OPEN", "FltRegisterFilter", "FltCreateCommunicationPort", "FltSendMessage", "timeout.QuadPart", "IRP_MJ_CREATE", "IRP_MJ_SET_INFORMATION", "PreSetInformation", "Parameters.SetFileInformation", "FileRenameInformation", "FileDispositionInformation", "FileDispositionInformationEx", "FILE_DISPOSITION_DELETE", "InstanceSetup", "STATUS_FLT_DO_NOT_ATTACH", "IoCreateDeviceSecure", "IoCreateSymbolicLink", "IoDeleteSymbolicLink", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case MiniPocContract::IoctlRegisterPath", "nameInfo = nullptr;"},
 			headerNeed:  []string{"IoctlRegisterPath", "AccessQuestion", "AccessDecision"},
 			projectNeed: []string{"<DriverType>File System</DriverType>", "FltMgr.lib"},
 			testerNeed:  []string{"SERVICE_FILE_SYSTEM_DRIVER", "ConfigureMinifilterInstance", "DefaultInstance", "Altitude", "REG_DWORD", "FilterConnectCommunicationPort", "CreateIoCompletionPort", "FilterGetMessage", "FilterReplyMessage", "FltLib.lib"},
@@ -351,7 +351,7 @@ func TestCreateDriverPOCGeneratesTypedTemplates(t *testing.T) {
 		{
 			name:       "RegPoc",
 			args:       "RegPoc --type registryfilter",
-			driverNeed: []string{"CmRegisterCallbackEx", "RegistryCallback", "STATUS_ACCESS_DENIED", "CmUnRegisterCallback", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case RegPocContract::IoctlRegisterRegistryPath"},
+			driverNeed: []string{"CmRegisterCallbackEx", "RegistryCallback", "RegistryPathMatchesRule", "RegNtPreCreateKeyEx", "RegNtPreOpenKeyEx", "RegNtPreSetValueKey", "RegNtPreDeleteValueKey", "RegNtPreDeleteKey", "RegNtPreRenameKey", "PREG_RENAME_KEY_INFORMATION", "STATUS_ACCESS_DENIED", "CmUnRegisterCallback", "switch (stack->Parameters.DeviceIoControl.IoControlCode)", "case RegPocContract::IoctlRegisterRegistryPath"},
 			headerNeed: []string{"IoctlRegisterRegistryPath", "RegistryRule"},
 			testerNeed: []string{"RegisterRegistryPath", "IoctlRegisterRegistryPath"},
 		},
