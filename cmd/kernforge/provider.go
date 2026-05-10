@@ -283,6 +283,8 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 		return NewOpenAICodexClientWithReasoningEffort(cfg.BaseURL, cfg.ReasoningEffort), nil
 	case "codex-cli":
 		return NewCodexCLIClient(cfg.CodexCLIPath, cfg.CodexCLIArgs), nil
+	case "anthropic-claude-cli":
+		return NewClaudeCLIClient(cfg.ClaudeCLIPath, cfg.ClaudeCLIArgs), nil
 	case "openai":
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, fmt.Errorf("OpenAI-compatible provider selected but no API key was found")
@@ -300,10 +302,16 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 
 func normalizeProviderName(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "codex", "codex-cli", "codex_cli":
+	case "codex", "codex-cli", "codex_cli", "openai-codex-cli", "openai_codex_cli", "openai codex cli":
 		return "codex-cli"
-	case "openai-codex", "openai_codex":
+	case "openai-codex", "openai_codex", "openai-codex-subscription", "openai_codex_subscription", "openai codex subscription", "codex-subscription", "codex_subscription":
 		return "openai-codex"
+	case "openai-api", "openai_api", "openai api":
+		return "openai"
+	case "anthropic-api", "anthropic_api", "anthropic api":
+		return "anthropic"
+	case "anthropic-claude-cli", "anthropic_claude_cli", "anthropic claude cli", "claude-cli", "claude_cli", "claude cli", "claude-code-cli", "claude_code_cli", "claude code cli":
+		return "anthropic-claude-cli"
 	case "deepseek", "deepseek-api", "deepseek_api", "deepseek api":
 		return "deepseek"
 	case "opencode", "open-code", "open_code", "opencode-zen", "opencode_zen", "opencode zen", "open-code-zen", "open_code_zen", "open code zen":
@@ -1715,7 +1723,7 @@ func normalizeProviderBaseURL(provider, baseURL string) string {
 		return normalizeLocalOpenAICompatibleBaseURL(provider, baseURL)
 	case "openai-codex":
 		return normalizeOpenAICodexBaseURL(baseURL)
-	case "codex-cli":
+	case "codex-cli", "anthropic-claude-cli":
 		return strings.TrimSpace(baseURL)
 	default:
 		return strings.TrimRight(strings.TrimSpace(baseURL), "/")

@@ -224,6 +224,7 @@ type Workspace struct {
 	Perms                 *PermissionManager
 	PrepareEdit           func(string) error
 	PrepareEditAtRoot     func(string, string) error
+	ReviewEdit            func(context.Context, EditPreview) error
 	ReportProgress        func(string)
 	CurrentSelection      func() *ViewerSelection
 	PreviewEdit           func(EditPreview) (bool, error)
@@ -236,8 +237,10 @@ type Workspace struct {
 }
 
 type EditPreview struct {
-	Title   string
-	Preview string
+	Title     string
+	Preview   string
+	Paths     []string
+	Operation string
 }
 
 type ToolHints struct {
@@ -664,6 +667,13 @@ func (w Workspace) ConfirmEdit(preview EditPreview) error {
 		return ErrEditCanceled
 	}
 	return nil
+}
+
+func (w Workspace) ReviewProposedEdit(ctx context.Context, preview EditPreview) error {
+	if w.ReviewEdit == nil {
+		return nil
+	}
+	return w.ReviewEdit(ctx, preview)
 }
 
 func (w Workspace) BeforeEdit(reason string) error {
@@ -1632,10 +1642,16 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		}); err != nil {
 			return "", err
 		}
-		if err := t.ws.ConfirmEdit(EditPreview{
-			Title:   "Append to " + displayPath,
-			Preview: buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
-		}); err != nil {
+		preview := EditPreview{
+			Title:     "Append to " + displayPath,
+			Preview:   buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
+			Paths:     []string{displayPath},
+			Operation: "write_file",
+		}
+		if err := t.ws.ReviewProposedEdit(ctx, preview); err != nil {
+			return "", err
+		}
+		if err := t.ws.ConfirmEdit(preview); err != nil {
 			return "", err
 		}
 		if err := t.ws.EnsureWrite(path); err != nil {
@@ -1667,10 +1683,16 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		}); err != nil {
 			return "", err
 		}
-		if err := t.ws.ConfirmEdit(EditPreview{
-			Title:   "Write " + displayPath,
-			Preview: buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
-		}); err != nil {
+		preview := EditPreview{
+			Title:     "Write " + displayPath,
+			Preview:   buildSelectionAwareEditPreview(t.ws, displayPath, before, after),
+			Paths:     []string{displayPath},
+			Operation: "write_file",
+		}
+		if err := t.ws.ReviewProposedEdit(ctx, preview); err != nil {
+			return "", err
+		}
+		if err := t.ws.ConfirmEdit(preview); err != nil {
 			return "", err
 		}
 		if err := t.ws.EnsureWrite(path); err != nil {
@@ -1855,10 +1877,16 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	}); err != nil {
 		return "", err
 	}
-	if err := t.ws.ConfirmEdit(EditPreview{
-		Title:   "Update " + displayPath,
-		Preview: buildSelectionAwareEditPreview(t.ws, displayPath, content, updated),
-	}); err != nil {
+	preview := EditPreview{
+		Title:     "Update " + displayPath,
+		Preview:   buildSelectionAwareEditPreview(t.ws, displayPath, content, updated),
+		Paths:     []string{displayPath},
+		Operation: "replace_in_file",
+	}
+	if err := t.ws.ReviewProposedEdit(ctx, preview); err != nil {
+		return "", err
+	}
+	if err := t.ws.ConfirmEdit(preview); err != nil {
 		return "", err
 	}
 	if err := t.ws.EnsureWrite(path); err != nil {

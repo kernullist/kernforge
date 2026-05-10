@@ -21,7 +21,7 @@ const (
 	maxProviderRetryDelay   = 30 * time.Second
 )
 
-type PlanReviewConfig struct {
+type ReviewModelConfig struct {
 	Provider        string `json:"provider"`
 	Model           string `json:"model"`
 	BaseURL         string `json:"base_url,omitempty"`
@@ -65,6 +65,8 @@ type Config struct {
 	ProviderKeys           map[string]string         `json:"provider_keys,omitempty"`
 	CodexCLIPath           string                    `json:"codex_cli_path,omitempty"`
 	CodexCLIArgs           []string                  `json:"codex_cli_args,omitempty"`
+	ClaudeCLIPath          string                    `json:"claude_cli_path,omitempty"`
+	ClaudeCLIArgs          []string                  `json:"claude_cli_args,omitempty"`
 	Temperature            float64                   `json:"temperature"`
 	ReasoningEffort        string                    `json:"reasoning_effort,omitempty"`
 	MaxTokens              int                       `json:"max_tokens"`
@@ -100,8 +102,7 @@ type Config struct {
 	Profiles               []Profile                 `json:"profiles,omitempty"`
 	ActiveProfileKey       string                    `json:"active_profile_key,omitempty"`
 	ProjectAnalysis        ProjectAnalysisConfig     `json:"project_analysis,omitempty"`
-	PlanReview             *PlanReviewConfig         `json:"plan_review,omitempty"`
-	ReviewProfiles         []Profile                 `json:"review_profiles,omitempty"`
+	Review                 ReviewHarnessConfig       `json:"review,omitempty"`
 	Specialists            SpecialistSubagentsConfig `json:"specialists,omitempty"`
 	WorktreeIsolation      WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
 }
@@ -118,7 +119,6 @@ type Profile struct {
 }
 
 type ProfileRoleModels struct {
-	PlanReviewer     *Profile                    `json:"plan_reviewer,omitempty"`
 	AnalysisWorker   *Profile                    `json:"analysis_worker,omitempty"`
 	AnalysisReviewer *Profile                    `json:"analysis_reviewer,omitempty"`
 	Specialists      []SpecialistSubagentProfile `json:"specialists,omitempty"`
@@ -148,6 +148,14 @@ func DefaultConfig(cwd string) Config {
 		FuzzFuncOutputLanguage: "english",
 		HooksEnabled:           boolPtr(true),
 		HooksFailClosed:        boolPtr(false),
+		Review: ReviewHarnessConfig{
+			AutoAfterChange:               boolPtr(true),
+			AutoAfterGoalIteration:        boolPtr(true),
+			AutoBeforeGitWrite:            boolPtr(true),
+			AutoFollowUp:                  "safe",
+			AutoRepairMaxRounds:           2,
+			RepeatedFindingBlockThreshold: 2,
+		},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled: boolPtr(true),
 		},
@@ -353,6 +361,84 @@ func configParseRepairHint(data []byte) string {
 	return ""
 }
 
+func mergeReviewHarnessConfig(dst *ReviewHarnessConfig, src ReviewHarnessConfig) {
+	if dst == nil {
+		return
+	}
+	if src.AutoAfterChange != nil {
+		value := *src.AutoAfterChange
+		dst.AutoAfterChange = &value
+	}
+	if src.AutoAfterGoalIteration != nil {
+		value := *src.AutoAfterGoalIteration
+		dst.AutoAfterGoalIteration = &value
+	}
+	if src.AutoBeforeGitWrite != nil {
+		value := *src.AutoBeforeGitWrite
+		dst.AutoBeforeGitWrite = &value
+	}
+	if strings.TrimSpace(src.AutoFollowUp) != "" {
+		dst.AutoFollowUp = strings.TrimSpace(src.AutoFollowUp)
+	}
+	if src.AutoRepairMaxRounds > 0 {
+		dst.AutoRepairMaxRounds = src.AutoRepairMaxRounds
+	}
+	if src.RepeatedFindingBlockThreshold > 0 {
+		dst.RepeatedFindingBlockThreshold = src.RepeatedFindingBlockThreshold
+	}
+	if len(src.RoleModels) > 0 {
+		if dst.RoleModels == nil {
+			dst.RoleModels = map[string]ReviewModelConfig{}
+		}
+		for role, model := range src.RoleModels {
+			role = normalizeReviewRole(role)
+			if role == "" {
+				continue
+			}
+			dst.RoleModels[role] = model
+		}
+	}
+}
+
+func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.AutoAfterChange == nil {
+		cfg.AutoAfterChange = boolPtr(true)
+	}
+	if cfg.AutoAfterGoalIteration == nil {
+		cfg.AutoAfterGoalIteration = boolPtr(true)
+	}
+	if cfg.AutoBeforeGitWrite == nil {
+		cfg.AutoBeforeGitWrite = boolPtr(true)
+	}
+	if strings.TrimSpace(cfg.AutoFollowUp) == "" {
+		cfg.AutoFollowUp = "safe"
+	}
+	if cfg.AutoRepairMaxRounds <= 0 {
+		cfg.AutoRepairMaxRounds = 2
+	}
+	if cfg.RepeatedFindingBlockThreshold <= 0 {
+		cfg.RepeatedFindingBlockThreshold = 2
+	}
+	if len(cfg.RoleModels) > 0 {
+		normalized := map[string]ReviewModelConfig{}
+		for role, model := range cfg.RoleModels {
+			role = normalizeReviewRole(role)
+			model.Provider = normalizeProviderName(model.Provider)
+			model.Model = strings.TrimSpace(model.Model)
+			model.BaseURL = normalizeOptionalProfileBaseURL(model.Provider, model.BaseURL)
+			model.APIKey = strings.TrimSpace(model.APIKey)
+			model.ReasoningEffort = normalizeReasoningEffort(model.ReasoningEffort)
+			if role != "" && model.Provider != "" && model.Model != "" {
+				normalized[role] = model
+			}
+		}
+		cfg.RoleModels = normalized
+	}
+}
+
 func mergeConfig(dst *Config, src Config) {
 	if src.Provider != "" {
 		dst.Provider = src.Provider
@@ -382,6 +468,12 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if len(src.CodexCLIArgs) > 0 {
 		dst.CodexCLIArgs = append([]string(nil), src.CodexCLIArgs...)
+	}
+	if strings.TrimSpace(src.ClaudeCLIPath) != "" {
+		dst.ClaudeCLIPath = strings.TrimSpace(src.ClaudeCLIPath)
+	}
+	if len(src.ClaudeCLIArgs) > 0 {
+		dst.ClaudeCLIArgs = append([]string(nil), src.ClaudeCLIArgs...)
 	}
 	if src.Temperature != 0 {
 		dst.Temperature = src.Temperature
@@ -565,13 +657,7 @@ func mergeConfig(dst *Config, src Config) {
 		value := *src.ProjectAnalysis.Incremental
 		dst.ProjectAnalysis.Incremental = &value
 	}
-	if src.PlanReview != nil {
-		copy := *src.PlanReview
-		dst.PlanReview = &copy
-	}
-	if len(src.ReviewProfiles) > 0 {
-		dst.ReviewProfiles = mergeConfigProfiles(dst.ReviewProfiles, src.ReviewProfiles)
-	}
+	mergeReviewHarnessConfig(&dst.Review, src.Review)
 	if src.Specialists.Enabled != nil {
 		value := *src.Specialists.Enabled
 		dst.Specialists.Enabled = &value
@@ -603,6 +689,10 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_CODEX_CLI_PATH", &cfg.CodexCLIPath)
 	if rawArgs := strings.TrimSpace(os.Getenv("KERNFORGE_CODEX_CLI_ARGS")); rawArgs != "" {
 		cfg.CodexCLIArgs = splitAnalysisCommandLine(rawArgs)
+	}
+	envString("KERNFORGE_CLAUDE_CLI_PATH", &cfg.ClaudeCLIPath)
+	if rawArgs := strings.TrimSpace(os.Getenv("KERNFORGE_CLAUDE_CLI_ARGS")); rawArgs != "" {
+		cfg.ClaudeCLIArgs = splitAnalysisCommandLine(rawArgs)
 	}
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
@@ -708,6 +798,9 @@ func normalizeConfigPaths(cfg *Config) {
 	if strings.TrimSpace(cfg.CodexCLIPath) != "" {
 		cfg.CodexCLIPath = expandHome(cfg.CodexCLIPath)
 	}
+	if strings.TrimSpace(cfg.ClaudeCLIPath) != "" {
+		cfg.ClaudeCLIPath = expandHome(cfg.ClaudeCLIPath)
+	}
 	if strings.TrimSpace(cfg.ProjectAnalysis.OutputDir) != "" {
 		cfg.ProjectAnalysis.OutputDir = expandHome(cfg.ProjectAnalysis.OutputDir)
 	}
@@ -737,13 +830,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
 		cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort = normalizeReasoningEffort(cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)
 	}
-	if cfg.PlanReview != nil {
-		cfg.PlanReview.Provider = normalizeProviderName(cfg.PlanReview.Provider)
-		cfg.PlanReview.Model = strings.TrimSpace(cfg.PlanReview.Model)
-		cfg.PlanReview.BaseURL = normalizeOptionalProfileBaseURL(cfg.PlanReview.Provider, cfg.PlanReview.BaseURL)
-		cfg.PlanReview.APIKey = strings.TrimSpace(cfg.PlanReview.APIKey)
-		cfg.PlanReview.ReasoningEffort = normalizeReasoningEffort(cfg.PlanReview.ReasoningEffort)
-	}
+	normalizeReviewHarnessConfig(&cfg.Review)
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}
@@ -864,9 +951,21 @@ func normalizeConfigPaths(cfg *Config) {
 	}
 }
 
+type saveUserConfigOptions struct {
+	PreserveReviewRoleModels bool
+}
+
 func SaveUserConfig(cfg Config) error {
+	return saveUserConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: true})
+}
+
+func SaveUserConfigReplacingReviewRoleModels(cfg Config) error {
+	return saveUserConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: false})
+}
+
+func saveUserConfigWithOptions(cfg Config, opts saveUserConfigOptions) error {
 	normalizeConfigPaths(&cfg)
-	preserveExistingUserSecrets(&cfg)
+	preserveExistingUserConfig(&cfg, opts)
 	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
 		return err
 	}
@@ -877,7 +976,7 @@ func SaveUserConfig(cfg Config) error {
 	return os.WriteFile(userConfigPath(), data, 0o644)
 }
 
-func preserveExistingUserSecrets(cfg *Config) {
+func preserveExistingUserConfig(cfg *Config, opts saveUserConfigOptions) {
 	if cfg == nil {
 		return
 	}
@@ -917,6 +1016,18 @@ func preserveExistingUserSecrets(cfg *Config) {
 	if len(cfg.ProviderKeys) == 0 {
 		cfg.ProviderKeys = nil
 	}
+	if strings.TrimSpace(cfg.CodexCLIPath) == "" && strings.TrimSpace(existing.CodexCLIPath) != "" {
+		cfg.CodexCLIPath = strings.TrimSpace(existing.CodexCLIPath)
+	}
+	if len(cfg.CodexCLIArgs) == 0 && len(existing.CodexCLIArgs) > 0 {
+		cfg.CodexCLIArgs = append([]string(nil), existing.CodexCLIArgs...)
+	}
+	if strings.TrimSpace(cfg.ClaudeCLIPath) == "" && strings.TrimSpace(existing.ClaudeCLIPath) != "" {
+		cfg.ClaudeCLIPath = strings.TrimSpace(existing.ClaudeCLIPath)
+	}
+	if len(cfg.ClaudeCLIArgs) == 0 && len(existing.ClaudeCLIArgs) > 0 {
+		cfg.ClaudeCLIArgs = append([]string(nil), existing.ClaudeCLIArgs...)
+	}
 	if len(cfg.Profiles) == 0 && len(existing.Profiles) > 0 {
 		cfg.Profiles = append([]Profile(nil), existing.Profiles...)
 	} else if len(cfg.Profiles) > 0 && len(existing.Profiles) > 0 {
@@ -925,10 +1036,34 @@ func preserveExistingUserSecrets(cfg *Config) {
 	if strings.TrimSpace(cfg.ActiveProfileKey) == "" && strings.TrimSpace(existing.ActiveProfileKey) != "" {
 		cfg.ActiveProfileKey = strings.TrimSpace(existing.ActiveProfileKey)
 	}
-	if len(cfg.ReviewProfiles) == 0 && len(existing.ReviewProfiles) > 0 {
-		cfg.ReviewProfiles = append([]Profile(nil), existing.ReviewProfiles...)
-	} else if len(cfg.ReviewProfiles) > 0 && len(existing.ReviewProfiles) > 0 {
-		cfg.ReviewProfiles = mergeConfigProfiles(existing.ReviewProfiles, cfg.ReviewProfiles)
+	if opts.PreserveReviewRoleModels {
+		preserveExistingReviewRoleModels(cfg, existing)
+	}
+}
+
+func preserveExistingReviewRoleModels(cfg *Config, existing Config) {
+	if cfg == nil || len(existing.Review.RoleModels) == 0 {
+		return
+	}
+	if cfg.Review.RoleModels == nil {
+		cfg.Review.RoleModels = map[string]ReviewModelConfig{}
+	}
+	for role, existingModel := range existing.Review.RoleModels {
+		role = normalizeReviewRole(role)
+		if role == "" || strings.TrimSpace(existingModel.Provider) == "" || strings.TrimSpace(existingModel.Model) == "" {
+			continue
+		}
+		current, ok := cfg.Review.RoleModels[role]
+		if !ok {
+			cfg.Review.RoleModels[role] = existingModel
+			continue
+		}
+		if strings.TrimSpace(current.APIKey) == "" &&
+			strings.TrimSpace(existingModel.APIKey) != "" &&
+			sameProfileRoute(current.Provider, current.Model, current.BaseURL, existingModel.Provider, existingModel.Model, existingModel.BaseURL) {
+			current.APIKey = strings.TrimSpace(existingModel.APIKey)
+			cfg.Review.RoleModels[role] = current
+		}
 	}
 }
 
@@ -1190,19 +1325,6 @@ func applyConfigProfileRoleModels(cfg *Config, profile Profile) {
 	if roles == nil {
 		roles = &ProfileRoleModels{}
 	}
-	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
-		provider := normalizeProviderName(roles.PlanReviewer.Provider)
-		effort, _ := reasoningEffortOrDefaultForProvider(provider, roles.PlanReviewer.ReasoningEffort)
-		cfg.PlanReview = &PlanReviewConfig{
-			Provider:        provider,
-			Model:           strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:         normalizeOptionalProfileBaseURL(provider, roles.PlanReviewer.BaseURL),
-			APIKey:          strings.TrimSpace(roles.PlanReviewer.APIKey),
-			ReasoningEffort: effort,
-		}
-	} else {
-		cfg.PlanReview = nil
-	}
 	cfg.ProjectAnalysis.WorkerProfile = cloneConfigProfile(roles.AnalysisWorker)
 	cfg.ProjectAnalysis.ReviewerProfile = cloneConfigProfile(roles.AnalysisReviewer)
 	applyConfigProfileSpecialistRoleModels(cfg, roles.Specialists)
@@ -1277,7 +1399,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 }
 
 func profileName(provider, model string) string {
-	return strings.TrimSpace(provider) + " / " + strings.TrimSpace(model)
+	return providerUserLabel(provider) + " / " + strings.TrimSpace(model)
 }
 
 func EnsureUserConfig(cfg Config) error {
@@ -2086,12 +2208,13 @@ Conversation And Sessions:
 /recover [note]        Generate a focused recovery brief from recent errors, verification failure, jobs, and next commands
 /jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
-/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Generate a local PR review automation report, optionally with gh PR metadata or explicit GitHub writes
+/review [change|plan|selection|pr|final|goal|analysis] Run the common review harness and write .kernforge/reviews/latest.*
+/review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
 /goal [start|run|status|audit|complete|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
 /tasks                 Show the current task list
 
 Provider And Models:
-/do-plan-review <task> Generate and iteratively review an implementation plan, then execute
+/review plan <task>   Review an implementation plan through the common review harness
 /new-feature <task>    Create tracked feature artifacts and guide implement, verify, close, or cleanup follow-up
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal] Analyze the workspace or a scoped path, infer a mode-specific goal when omitted, generate a project knowledge base, docs, manifest, dashboard, and next-step handoff
 /docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
@@ -2107,10 +2230,8 @@ Provider And Models:
 /set-max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
 /progress-display [auto|compact|stream] Show or set in-flight progress visibility
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
-/profile-review [list|<number>|rN|dN|pN] Show saved review profiles or activate/manage one explicitly
 /provider              Choose and configure a provider
 /provider status       Show provider connectivity, key state, and budget visibility
-/set-plan-review [provider] Configure the reviewer model for plan review (interactive)
 - Write approval prompts accept y/N/a. Using a on "Allow write?" enables write auto-approval for the current session only.
 - Diff preview prompts accept y/N/a. Using a on "Open diff preview?" auto-accepts the current and future diff previews for the current session only.
 - Git approval prompts accept y/N/a. Using a on "Allow git?" enables git auto-approval for the current session only.
@@ -2185,8 +2306,7 @@ Selection And Review:
 /edit-selection <task> Run an edit-focused prompt on the current selection
 /note-selection <text> Set or replace the note on the active selection
 /open <path>           Open a workspace file in a separate viewer window
-/review-selection [...] Run a review-focused prompt on the current selection
-/review-selections [...] Run a review-focused prompt across saved selections
+/review selection [...] Run the common review harness on the active selection
 /selection             Show the current selected code range
 /selections            List saved selections and show the active one
 /tag-selection <tags>  Set comma-separated tags on the active selection
@@ -2266,7 +2386,7 @@ func HelpDetail(topic string) (string, bool) {
 /automation add recurring-verification [--every 30m|--hourly|--daily|--manual] [/verify args]
 - Register a reusable verification automation. Interval schedules can be checked with /automation due and executed with /automation run-due.
 
-/automation add pr-review [--every 1d|--manual] [/review-pr]
+/automation add pr-review [--every 1d|--manual] [/review pr]
 - Register a reusable PR review automation report generator.
 
 /automation run <id>
@@ -2299,12 +2419,12 @@ func HelpDetail(topic string) (string, bool) {
 /automation run-due
 - Run all due active scheduled automations through the safe command dispatcher.
 
-/review-pr [--github] [--draft-comments|--post-comments|--resolve-thread <id>|--draft-issue|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>]
-- Generate .kernforge/pr_review/latest.md from git status, diff stat, changed files, and a review checklist.
+/review pr [--draft-comments|--post-comments|--resolve-thread <id>|--draft-issue|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>]
+- Generate a common .kernforge/reviews/latest.* PR review gate. Explicit draft/write flags also generate the existing PR comment or issue draft artifacts.
 - With --github, collect current PR metadata through gh pr view --json when the gh CLI is installed and authenticated. If gh is unavailable or the branch has no PR, the report keeps the local review sections and records the GitHub reason.
 - With --draft-comments, generate .kernforge/pr_review/comments.md as a safe file-level review comment draft. It does not post to GitHub.
-- With --post-comments, also run gh pr review --comment --body-file .kernforge/pr_review/comments.md. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
-- With --resolve-thread <id>, run the GitHub GraphQL resolveReviewThread mutation through gh api graphql. This is only allowed from the explicit /review-pr command, not suggestion acceptance or scheduled automation.
+- With --post-comments, also run gh pr review --comment --body-file .kernforge/pr_review/comments.md. This is only allowed from the explicit /review pr command, not suggestion acceptance or scheduled automation.
+- With --resolve-thread <id>, run the GitHub GraphQL resolveReviewThread mutation through gh api graphql. This is only allowed from the explicit /review pr command, not suggestion acceptance or scheduled automation.
 - With --draft-issue, generate .kernforge/pr_review/issue.md. With --create-issue, also run gh issue create --title ... --body-file .kernforge/pr_review/issue.md. Issue creation is explicit-only.
 - Issue drafts and create calls accept repeated --label, --assignee, and --milestone values. Comma-separated labels or assignees are split and passed as repeated gh flags.
 `), true
@@ -2516,20 +2636,21 @@ Conversation and session commands manage chat history and saved sessions.
 /tasks
 - Show the current shared task list / plan items.
 `), true
-	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "profile-review", "plan-review", "do-plan-review", "new-feature", "set-plan-review", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
+	case "provider", "provider status", "providers", "models", "model", "effort", "codex-auth", "codex-login", "permissions", "progress-display", "profile", "plan-review", "new-feature", "set-analysis-models", "set-specialist-model", "analyze-project", "docs-refresh", "analyze-dashboard", "analyze-performance", "specialists":
 		return strings.TrimSpace(`
 Provider and model commands control which model is active and how planning/review flows work.
 
 /model
-- Show all current model routing at once, including the main model, plan-review reviewer, analysis models, and specialist subagent models.
+- Show all current model routing at once, including the main model, project-analysis models, and specialist subagent models.
+- Common /review role models are separate. Use /review models for primary, design, security, false-positive, regression, test, and final-gate reviewers.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
 - Changing the main model does not overwrite explicit role model profiles. Targets marked "not configured" follow the main model until configured.
-- Main profiles now store their own role model set. When you change plan-review, analysis, or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
+- Main profiles store their own analysis and specialist role model set. When you change analysis or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
-- /effort high sets the active main model effort. Use /effort plan-review high, /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for role-specific models.
-- Main profiles, review profiles, analysis role profiles, and specialist profiles each store their own reasoning_effort.
+- /effort high sets the active main model effort. Use /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for role-specific models.
+- Main profiles, analysis role profiles, and specialist profiles each store their own reasoning_effort.
 - When the active main provider supports reasoning effort, the main input prompt includes effort=<current>.
 - When model selection through /model, /provider, or role-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
@@ -2546,12 +2667,8 @@ Provider and model commands control which model is active and how planning/revie
 - If no main profile exists but a main provider/model is already selected, Kernforge saves that selection as the first profile automatically.
 - In interactive mode, enter a number to activate, rN to rename, dN to delete, or pN to pin/unpin.
 - In one-shot or scripted mode, /profile only lists profiles; use /profile <number>, /profile rename <number> <name>, /profile delete <number>, /profile pin <number>, or /profile unpin <number> for explicit changes.
-- Use /model as the main entry point for changing main, plan-review, analysis, and specialist models.
-
-/profile-review
-- Show and manage saved reviewer profiles for plan review.
-- Like /profile, it lists without side effects unless you provide an explicit action or answer the interactive prompt.
-- Use /model or /set-plan-review to change the reviewer model; Kernforge saves selected reviewer profiles automatically.
+- Use /model as the main entry point for changing main, analysis, and specialist models.
+- Use /review models for common review harness role models.
 
 /provider
 - Choose and configure a provider interactively.
@@ -2569,11 +2686,14 @@ Provider and model commands control which model is active and how planning/revie
 - The default auth file is under Kernforge config, not the Codex CLI auth file. Set KERNFORGE_CODEX_AUTH_FILE to override it.
 - /codex-login is a shortcut for /codex-auth login.
 
-/set-plan-review [provider]
-- Configure the reviewer model used by /do-plan-review.
+/review plan <task>
+- Review an implementation plan through the common ReviewRun schema and gate.
 
-/do-plan-review <task>
-- Ask one model to produce a plan, have a reviewer model critique it, iterate, then optionally execute the final plan.
+/review models
+- Show role-specific common review harness models and, in interactive mode, choose a reviewer role/provider/model by number.
+- /review models <primary|security|false-positive|design|regression|test|final> [provider] [model] [reasoning_effort] configures one role directly.
+- /review models clear <role> clears one role override.
+- This is separate from /model's project-analysis and specialist subagent routes.
 
 /new-feature <task>
 - Create a tracked feature workspace under .kernforge/features/<id>, generate spec.md, plan.md, and tasks.md, then mark it as the active feature.
@@ -2931,7 +3051,7 @@ Memory commands inspect and manage loaded memory files, persistent memory record
 /mem-stats
 - Show persistent memory storage stats.
 `), true
-	case "selection", "selections", "review", "review-selection", "review-selections", "edit-selection", "open":
+	case "selection", "selections", "review", "edit-selection", "open":
 		return strings.TrimSpace(`
 Selection and review commands let you work on a focused code region instead of the whole workspace.
 
@@ -2963,9 +3083,8 @@ Selection and review commands let you work on a focused code region instead of t
 /diff-selection
 - Show git diff limited to the selected range. On Windows this prefers the internal read-only diff viewer.
 
-/review-selection [...]
-/review-selections [...]
-- Run review-focused prompts on the active selection or multiple saved selections.
+/review selection [...]
+- Run the common review harness on the active selection.
 
 /edit-selection <task>
 - Run an edit-focused prompt scoped to the active selection.

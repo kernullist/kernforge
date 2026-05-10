@@ -104,6 +104,58 @@ func TestSystemPromptUsesLatestUserQuestionLanguage(t *testing.T) {
 	}
 }
 
+func TestSystemPromptUsesKoreanLocaleForEnglishLeadingAmbiguousPrompt(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Tavern review"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Respond in Korean because the configured/system locale prefers Korean") {
+		t.Fatalf("expected Korean response language policy from locale, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "A leading English code identifier") {
+		t.Fatalf("expected leading-English safeguard in language policy, got %q", prompt)
+	}
+}
+
+func TestSystemPromptKeepsKoreanForEnglishLeadingMixedRequest(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Tavern review 시스템을 테스트해보자"})
+	agent := &Agent{
+		Config:  Config{AutoLocale: boolPtr(false)},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Respond in Korean because the latest user request is written in Korean") {
+		t.Fatalf("expected Korean response language policy from mixed Korean request, got %q", prompt)
+	}
+}
+
+func TestSystemPromptStillUsesEnglishForNaturalEnglishRequest(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Please review this patch and explain the risk."})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Respond in English because the latest user request is written in English") {
+		t.Fatalf("expected English response language policy from natural English request, got %q", prompt)
+	}
+}
+
 func TestSystemPromptExplicitLanguageOverridesQuestionLanguage(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
@@ -251,6 +303,9 @@ func TestSystemPromptExplainsDocumentReadConfirmationGuidance(t *testing.T) {
 	if !strings.Contains(prompt, "prefer edit tools. Do not use run_shell for repo bootstrap") {
 		t.Fatalf("expected document edit guidance, got %q", prompt)
 	}
+	if !strings.Contains(prompt, "Do not use run_shell with Set-Content") {
+		t.Fatalf("expected source-edit shell safety guidance, got %q", prompt)
+	}
 	if !strings.Contains(prompt, "Use list_files on the parent directory before read_file") {
 		t.Fatalf("expected document read confirmation guidance, got %q", prompt)
 	}
@@ -352,6 +407,21 @@ func TestSummarizeToolCompletionForListFiles(t *testing.T) {
 
 	if summary != "list_files returned 1 item(s) from ./anti-cheat-research/analysis." {
 		t.Fatalf("unexpected list_files summary: %q", summary)
+	}
+}
+
+func TestSummarizeToolCompletionForGrepKeepsKoreanArgumentOrder(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	summary := summarizeToolCompletion(Config{}, ToolCall{
+		Name:      "grep",
+		Arguments: `{"pattern":"StringToLower"}`,
+	}, "one\ntwo\nthree\n")
+
+	if strings.Contains(summary, "%!") {
+		t.Fatalf("grep summary should not contain fmt placeholder errors, got %q", summary)
+	}
+	if !strings.Contains(summary, "StringToLower") || !strings.Contains(summary, "3") {
+		t.Fatalf("grep summary should include pattern and count, got %q", summary)
 	}
 }
 

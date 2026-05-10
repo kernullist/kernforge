@@ -12,7 +12,7 @@ import (
 
 const backgroundShellJobPendingCheck = "Poll the active background shell job(s) before concluding."
 const verificationPendingCheck = "Run verification or a focused build/test after the latest edits."
-const interactivePlanReviewBudget = 2 * time.Minute
+const interactivePlanReviewBudget = 45 * time.Second
 
 func (a *Agent) initializeTaskState(userText string) {
 	state := a.Session.StartTaskState(userText)
@@ -23,7 +23,7 @@ func (a *Agent) plannerProfileLabel() string {
 	if a == nil || a.Session == nil {
 		return ""
 	}
-	return strings.TrimSpace(a.Session.Provider) + " / " + strings.TrimSpace(a.Session.Model)
+	return providerUserLabel(a.Session.Provider) + " / " + strings.TrimSpace(a.Session.Model)
 }
 
 func (a *Agent) reviewerProfileLabel() string {
@@ -31,10 +31,10 @@ func (a *Agent) reviewerProfileLabel() string {
 		return ""
 	}
 	if strings.TrimSpace(a.ReviewerModel) != "" && a.ReviewerClient != nil {
-		return strings.TrimSpace(a.ReviewerClient.Name()) + " / " + strings.TrimSpace(a.ReviewerModel)
+		return providerUserLabel(a.ReviewerClient.Name()) + " / " + strings.TrimSpace(a.ReviewerModel)
 	}
 	if strings.TrimSpace(a.AuxReviewerModel) != "" && a.AuxReviewerClient != nil {
-		return strings.TrimSpace(a.AuxReviewerClient.Name()) + " / " + strings.TrimSpace(a.AuxReviewerModel)
+		return providerUserLabel(a.AuxReviewerClient.Name()) + " / " + strings.TrimSpace(a.AuxReviewerModel)
 	}
 	return a.plannerProfileLabel()
 }
@@ -171,6 +171,12 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 		return true
 	}
 	lowerGoal := strings.ToLower(strings.TrimSpace(goal))
+	if explicitEditRequest && looksLikeFocusedRepairRequest(lowerGoal) {
+		return true
+	}
+	if explicitEditRequest && looksLikeBugSearchAndFixIntent(lowerGoal) {
+		return true
+	}
 	if shouldPrioritizeWebResearchInSystemPrompt(lowerGoal) {
 		return true
 	}

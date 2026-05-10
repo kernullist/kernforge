@@ -139,6 +139,15 @@ func TestFunctionFuzzCommandConfigCanFollowKoreanQueryLanguage(t *testing.T) {
 	}
 }
 
+func TestFunctionFuzzCommandConfigPreservesLanguageForIdentifierOnlyQuery(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+
+	cfg := configWithResponseLanguageForUserText(Config{FuzzFuncOutputLanguage: "english"}, "ValidateRequest")
+	if got := configFuzzFuncOutputLanguage(cfg); got != "english" {
+		t.Fatalf("expected identifier-only query to preserve configured output language, got %q", got)
+	}
+}
+
 func TestParseFunctionFuzzTargetSpecAllowsFileOnly(t *testing.T) {
 	spec, err := parseFunctionFuzzTargetSpec(`--file "src/driver.cpp"`)
 	if err != nil {

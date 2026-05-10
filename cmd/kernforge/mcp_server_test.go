@@ -343,7 +343,7 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 		"kernforge_fuzz",
 		"kernforge_guide",
 		"kernforge_look",
-		"kernforge_review_code",
+		"kernforge_review",
 		"kernforge_status",
 		"kernforge_verify",
 		"kernforge_analyze_project",
@@ -396,11 +396,11 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 			t.Fatalf("resources/templates/list did not include %s", name)
 		}
 	}
-	reviewTool := mcpListItemByName(toolsResult["tools"], "kernforge_review_code")
+	reviewTool := mcpListItemByName(toolsResult["tools"], "kernforge_review")
 	schema, _ := reviewTool["inputSchema"].(map[string]any)
 	properties, _ := schema["properties"].(map[string]any)
 	if _, ok := properties["workspace"]; !ok {
-		t.Fatalf("kernforge_review_code schema missing workspace hint: %#v", schema)
+		t.Fatalf("kernforge_review schema missing workspace hint: %#v", schema)
 	}
 }
 
@@ -425,7 +425,7 @@ func TestKernforgeMCPReviewCodeUsesMainModelAndProvidedDiff(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "kernforge_review_code",
+			"name": "kernforge_review",
 			"arguments": map[string]any{
 				"request": "KernForge로 방금 수정한 코드를 리뷰해줘",
 				"diff": strings.Join([]string{
@@ -441,7 +441,7 @@ func TestKernforgeMCPReviewCodeUsesMainModelAndProvidedDiff(t *testing.T) {
 	}
 	text := requireMCPTextResult(t, resp)
 	for _, want := range []string{
-		"KernForge main-model code review",
+		"KernForge review",
 		"gpt-main-review",
 		"provided_diff",
 		"No blocking findings",
@@ -463,7 +463,7 @@ func TestKernforgeMCPReviewCodeUsesMainModelAndProvidedDiff(t *testing.T) {
 	if req.MaxTokens != 1234 || req.ReasoningEffort != "low" {
 		t.Fatalf("review request did not preserve main route settings: max=%d effort=%q", req.MaxTokens, req.ReasoningEffort)
 	}
-	if !strings.Contains(req.System, "read-only code review") {
+	if !strings.Contains(req.System, "structured review model") {
 		t.Fatalf("review system prompt missing read-only framing: %s", req.System)
 	}
 	if len(req.Messages) != 1 || !strings.Contains(req.Messages[0].Text, "diff --git a/driver.cpp b/driver.cpp") {
@@ -501,7 +501,7 @@ func TestKernforgeMCPRouterRoutesReviewRequestsToMainModelReview(t *testing.T) {
 		t.Fatalf("router produced no response")
 	}
 	text := requireMCPTextResult(t, resp)
-	if !strings.Contains(text, "KernForge main-model code review") || !strings.Contains(text, "bounds check") {
+	if !strings.Contains(text, "KernForge review") || !strings.Contains(text, "bounds check") {
 		t.Fatalf("expected router to run code review, got: %s", text)
 	}
 	if len(client.requests) != 1 {
@@ -528,7 +528,7 @@ func TestKernforgeMCPReviewCodeWithoutContextDoesNotCallModel(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "kernforge_review_code",
+			"name": "kernforge_review",
 			"arguments": map[string]any{
 				"request": "review current changes",
 			},
@@ -538,7 +538,7 @@ func TestKernforgeMCPReviewCodeWithoutContextDoesNotCallModel(t *testing.T) {
 		t.Fatalf("review tool produced no response")
 	}
 	text := requireMCPTextResult(t, resp)
-	if !strings.Contains(text, "No reviewable code context was found") {
+	if !strings.Contains(text, "No reviewable evidence was collected") || !strings.Contains(text, "insufficient_evidence") {
 		t.Fatalf("expected missing context response, got: %s", text)
 	}
 	if len(client.requests) != 0 {
@@ -555,7 +555,7 @@ func TestKernforgeMCPReviewCodeWithoutContextDoesNotRequireProvider(t *testing.T
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "kernforge_review_code",
+			"name": "kernforge_review",
 			"arguments": map[string]any{
 				"request": "review current changes",
 			},
@@ -569,7 +569,7 @@ func TestKernforgeMCPReviewCodeWithoutContextDoesNotRequireProvider(t *testing.T
 		t.Fatalf("missing context should not require provider setup: %#v", result)
 	}
 	text := requireMCPTextResult(t, resp)
-	if !strings.Contains(text, "No reviewable code context was found") {
+	if !strings.Contains(text, "No reviewable evidence was collected") || !strings.Contains(text, "insufficient_evidence") {
 		t.Fatalf("expected missing context response, got: %s", text)
 	}
 }
@@ -604,7 +604,7 @@ func TestKernforgeMCPReviewCodeCollectsWorkspaceGitDiff(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "kernforge_review_code",
+			"name": "kernforge_review",
 			"arguments": map[string]any{
 				"request": "review current changes",
 			},
@@ -621,7 +621,7 @@ func TestKernforgeMCPReviewCodeCollectsWorkspaceGitDiff(t *testing.T) {
 		t.Fatalf("expected one model call, got %d", len(client.requests))
 	}
 	prompt := client.requests[0].Messages[0].Text
-	if !strings.Contains(prompt, "Unstaged git diff") || !strings.Contains(prompt, "+    return true;") {
+	if !strings.Contains(prompt, "Git diff excerpt") || !strings.Contains(prompt, "+    return true;") {
 		t.Fatalf("review prompt did not include workspace git diff: %s", prompt)
 	}
 }
@@ -657,7 +657,7 @@ func TestKernforgeMCPReviewCodeCollectsGitDiffForAbsolutePath(t *testing.T) {
 		"id":      1,
 		"method":  "tools/call",
 		"params": map[string]any{
-			"name": "kernforge_review_code",
+			"name": "kernforge_review",
 			"arguments": map[string]any{
 				"request": "review current changes",
 				"paths":   []string{filePath},
@@ -675,7 +675,7 @@ func TestKernforgeMCPReviewCodeCollectsGitDiffForAbsolutePath(t *testing.T) {
 		t.Fatalf("expected one model call, got %d", len(client.requests))
 	}
 	prompt := client.requests[0].Messages[0].Text
-	if !strings.Contains(prompt, "Unstaged git diff") || !strings.Contains(prompt, "+    return true;") {
+	if !strings.Contains(prompt, "Git diff excerpt") || !strings.Contains(prompt, "+    return true;") {
 		t.Fatalf("review prompt did not include workspace git diff for absolute path: %s", prompt)
 	}
 	if strings.Contains(prompt, filePath) {
@@ -724,8 +724,8 @@ func TestKernforgeMCPGuideRecommendsMainModelReviewForCodeReview(t *testing.T) {
 	text := requireMCPTextResult(t, resp)
 	for _, want := range []string{
 		`"intent": "review"`,
-		`"name": "kernforge_review_code"`,
-		"main_model_read_only_review",
+		`"name": "kernforge_review"`,
+		"common_review_harness_read_only",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected guide output to contain %q: %s", want, text)
@@ -760,7 +760,7 @@ func TestKernforgeMCPGuideDoesNotTreatEveryKoreanReviewWordAsCodeReview(t *testi
 			t.Fatalf("expected guide output to contain %q: %s", want, text)
 		}
 	}
-	if strings.Contains(text, "kernforge_review_code") {
+	if strings.Contains(text, "kernforge_review") {
 		t.Fatalf("non-code review request should not route to code review: %s", text)
 	}
 }

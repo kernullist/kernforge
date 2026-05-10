@@ -364,7 +364,7 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 			Title:                "PR review automation report 준비",
 			Reason:               "현재 변경 파일을 기준으로 status/diff/stat/checklist를 남겨 PR 직전 검토 루프를 이어갈 수 있게 합니다.",
 			EvidenceRefs:         append([]string{}, snapshot.ChangedPaths...),
-			Command:              "/automation add pr-review /review-pr",
+			Command:              "/automation add pr-review /review pr",
 			EstimatedCost:        "low",
 			Risk:                 "low",
 			RequiresConfirmation: false,

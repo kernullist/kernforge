@@ -229,6 +229,7 @@ func completionAuditPopulateChecklist(root string, session *Session, artifact *C
 	completionAuditFailureRepair(session, artifact)
 	completionAuditBackground(session, artifact)
 	completionAuditChangedFiles(session, artifact)
+	completionAuditReviewGate(root, session, artifact)
 	completionAuditRecentErrors(artifact)
 }
 
@@ -697,6 +698,135 @@ func completionAuditChangedFiles(session *Session, artifact *CompletionAuditArti
 		Status:      status,
 		Source:      "git",
 	})
+}
+
+func completionAuditReviewGate(root string, session *Session, artifact *CompletionAuditArtifact) {
+	if artifact == nil {
+		return
+	}
+	var review *ReviewRun
+	if session != nil && session.LastReviewRun != nil {
+		copyRun := *session.LastReviewRun
+		review = &copyRun
+	}
+	if review == nil {
+		if latest, _, ok, err := loadLatestReviewRun(root); err == nil && ok {
+			review = &latest
+		}
+	}
+	if review == nil {
+		status := completionAuditStatusWarning
+		evidence := "No common review harness run is recorded."
+		if len(artifact.ChangedFiles) == 0 {
+			status = completionAuditStatusPassed
+			evidence = "No changed files detected and no review run is required."
+		} else if session != nil && session.LastVerification != nil && completionAuditVerificationStatus(*session.LastVerification) == completionAuditStatusPassed {
+			status = completionAuditStatusPassed
+			evidence = "No common review run is recorded, but latest verification passed; run /review for an explicit typed gate before git writes."
+		}
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    evidence,
+			Status:      status,
+			Source:      "review",
+		})
+		return
+	}
+	if strings.TrimSpace(review.SchemaVersion) != reviewSchemaVersion {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    "Latest review artifact has unsupported schema: " + valueOrUnset(review.SchemaVersion),
+			Status:      completionAuditStatusBlocked,
+			Source:      "review",
+		})
+		return
+	}
+	if review.Freshness.Stale {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    "Latest review is stale: " + valueOrDefault(review.Freshness.StaleReason, "fingerprint changed"),
+			Status:      completionAuditStatusBlocked,
+			Source:      "review",
+		})
+		return
+	}
+	if staleReason := completionAuditReviewFreshnessIssue(root, *review, artifact); staleReason != "" {
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    "Latest review is stale: " + staleReason,
+			Status:      completionAuditStatusBlocked,
+			Source:      "review",
+		})
+		return
+	}
+	switch review.Gate.Verdict {
+	case reviewVerdictApproved:
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    fmt.Sprintf("%s target=%s mode=%s", review.ID, review.Target, review.Mode),
+			Status:      completionAuditStatusPassed,
+			Source:      "review",
+		})
+	case reviewVerdictApprovedWithWarnings:
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    fmt.Sprintf("%s approved with warnings: %s", review.ID, strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", ")),
+			Status:      completionAuditStatusWarning,
+			Source:      "review",
+		})
+	default:
+		completionAuditAddItem(artifact, CompletionAuditItem{
+			Requirement: "Latest common review gate has no blockers",
+			Evidence:    fmt.Sprintf("%s verdict=%s blockers=%s", review.ID, review.Gate.Verdict, strings.Join(limitStrings(review.Gate.BlockingFindings, 6), ", ")),
+			Status:      completionAuditStatusBlocked,
+			Source:      "review",
+		})
+	}
+}
+
+func completionAuditReviewFreshnessIssue(root string, review ReviewRun, artifact *CompletionAuditArtifact) string {
+	if artifact == nil {
+		return ""
+	}
+	if branch := delegationGitBranch(root); strings.TrimSpace(branch) != "" && strings.TrimSpace(review.Branch) != "" && !strings.EqualFold(branch, review.Branch) {
+		return fmt.Sprintf("branch changed from %s to %s", review.Branch, branch)
+	}
+	currentChanged := normalizeCompletionAuditReviewPaths(artifact.ChangedFiles)
+	if len(currentChanged) == 0 {
+		return ""
+	}
+	reviewed := normalizeCompletionAuditReviewPaths(review.ChangeSet.ChangedPaths)
+	if len(reviewed) == 0 {
+		return "current changed files were not covered by the latest review"
+	}
+	reviewedSet := map[string]bool{}
+	for _, path := range reviewed {
+		reviewedSet[path] = true
+	}
+	var missing []string
+	for _, path := range currentChanged {
+		if !reviewedSet[path] {
+			missing = append(missing, path)
+		}
+	}
+	if len(missing) > 0 {
+		return "unreviewed changed files: " + strings.Join(limitStrings(missing, 6), ", ")
+	}
+	return ""
+}
+
+func normalizeCompletionAuditReviewPaths(paths []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, path := range paths {
+		path = strings.TrimSpace(filepath.ToSlash(path))
+		if path == "" || shouldSkipMCPReviewFile(path) || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	return out
 }
 
 func completionAuditRecentErrors(artifact *CompletionAuditArtifact) {

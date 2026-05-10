@@ -2,11 +2,14 @@ package main
 
 import (
 	"os"
+	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
 	"unsafe"
 )
+
+var englishWordPattern = regexp.MustCompile(`[A-Za-z][A-Za-z']*`)
 
 func getSystemLocale() string {
 	if lang := os.Getenv("LANG"); lang != "" {
@@ -54,7 +57,7 @@ func responseLanguageInstructionForUserText(text string, cfg Config) string {
 		if reason == "question" {
 			return "Respond in Korean because the latest user request is written in Korean. Keep code identifiers, paths, API names, and commands unchanged."
 		}
-		return "Respond in Korean because the configured/system locale prefers Korean. Keep code identifiers, paths, API names, and commands unchanged."
+		return "Respond in Korean because the configured/system locale prefers Korean. A leading English code identifier, product name, file path, command, or model name does not override this. Keep code identifiers, paths, API names, and commands unchanged."
 	case "en":
 		if reason == "explicit" {
 			return "Always respond in English because the latest user request explicitly asks for English."
@@ -91,7 +94,10 @@ func inferResponseLanguageForUserText(text string, cfg Config) (string, string) 
 }
 
 func configWithResponseLanguageForUserText(cfg Config, text string) Config {
-	language, _ := inferResponseLanguageForUserText(text, cfg)
+	language, reason := inferResponseLanguageForUserText(text, cfg)
+	if reason != "explicit" && reason != "question" {
+		return cfg
+	}
 	switch language {
 	case "ko":
 		cfg.FuzzFuncOutputLanguage = "korean"
@@ -119,6 +125,7 @@ func textContainsHangul(text string) bool {
 func textLooksMostlyEnglish(text string) bool {
 	letters := 0
 	latin := 0
+	naturalWords := 0
 	for _, r := range text {
 		switch {
 		case r >= 'A' && r <= 'Z':
@@ -130,11 +137,34 @@ func textLooksMostlyEnglish(text string) bool {
 		case r >= 0x00C0 && r <= 0x024F:
 			letters++
 			latin++
+		case (r >= 0x1100 && r <= 0x11FF) || (r >= 0x3130 && r <= 0x318F) || (r >= 0xAC00 && r <= 0xD7AF):
+			letters++
 		case (r >= 0x0400 && r <= 0x04FF) || (r >= 0x3040 && r <= 0x30FF) || (r >= 0x4E00 && r <= 0x9FFF):
 			letters++
 		}
 	}
-	return latin >= 3 && letters > 0 && latin*100/letters >= 70
+	if latin < 3 || letters == 0 || latin*100/letters < 70 {
+		return false
+	}
+	for _, word := range englishWordPattern.FindAllString(text, -1) {
+		if englishNaturalLanguageWord(word) {
+			naturalWords++
+		}
+	}
+	return naturalWords >= 2
+}
+
+func englishNaturalLanguageWord(word string) bool {
+	word = strings.ToLower(strings.Trim(word, "'"))
+	if len(word) < 2 {
+		return false
+	}
+	switch word {
+	case "a", "an", "and", "are", "as", "at", "available", "be", "because", "bug", "build", "but", "by", "can", "change", "changes", "check", "code", "command", "commands", "create", "debug", "does", "explain", "file", "files", "find", "fix", "for", "from", "help", "how", "implement", "in", "is", "issue", "list", "look", "make", "message", "messages", "model", "need", "of", "on", "or", "patch", "please", "resource", "resources", "review", "risk", "risks", "run", "should", "show", "skill", "skills", "system", "test", "the", "this", "to", "tool", "tools", "update", "use", "verify", "what", "why", "with":
+		return true
+	default:
+		return false
+	}
 }
 
 func resolvedFunctionFuzzLocale(cfg Config) string {

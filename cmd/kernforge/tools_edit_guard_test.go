@@ -128,6 +128,92 @@ func TestApplyPatchRequiresPreviewApprovalBeforeWriting(t *testing.T) {
 	}
 }
 
+func TestApplyPatchAcceptsBareBlankContextLinesInHunk(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	original := "int value()\n{\n\n    return 0;\n}\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{BaseRoot: root, Root: root})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.cpp\n@@\n int value()\n {\n\n-    return 0;\n+    return 1;\n }\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("expected bare blank hunk line to be treated as blank context, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := string(data); got != "int value()\n{\n\n    return 1;\n}\n" {
+		t.Fatalf("unexpected patched content: %q", got)
+	}
+}
+
+func TestServiceInstallReviewInfersSecurityMode(t *testing.T) {
+	mode := inferReviewMode(
+		"TavernWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
+		[]string{"Tavern/Tavern/TavernWorkerManager.cpp", "Tavern/TavernWorker/TavernUpdManager.cpp"},
+		reviewTargetChange,
+		nil,
+	)
+	if mode != reviewModeSecurityHardening {
+		t.Fatalf("expected service install/start review to use security hardening mode, got %q", mode)
+	}
+}
+
+func TestWriteFileReviewBlocksBeforePreviewAndWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	original := "package main\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	reviewCalls := 0
+	previewCalls := 0
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		ReviewEdit: func(ctx context.Context, preview EditPreview) error {
+			_ = ctx
+			reviewCalls++
+			if !strings.Contains(preview.Preview, "func main") {
+				t.Fatalf("expected proposed diff in review preview, got %q", preview.Preview)
+			}
+			return errors.New("review blocked")
+		},
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			_ = preview
+			previewCalls++
+			return true, nil
+		},
+	}
+	tool := NewWriteFileTool(ws)
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path":    "main.go",
+		"content": "package main\n\nfunc main() {}\n",
+	})
+	if err == nil || !strings.Contains(err.Error(), "review blocked") {
+		t.Fatalf("expected review block, got %v", err)
+	}
+	if reviewCalls != 1 {
+		t.Fatalf("expected one review call, got %d", reviewCalls)
+	}
+	if previewCalls != 0 {
+		t.Fatalf("expected preview to be skipped after review block, got %d", previewCalls)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != original {
+		t.Fatalf("expected file to remain unchanged, got %q", string(data))
+	}
+}
+
 func TestToolRegistryExecuteWrapsMalformedJSONAsInvalidToolArguments(t *testing.T) {
 	ws := Workspace{}
 	registry := NewToolRegistry(NewWriteFileTool(ws))
@@ -705,10 +791,15 @@ func TestRunShellBundleBackgroundReusesExistingRunningBundle(t *testing.T) {
 		BackgroundJobs: jobs,
 	}
 	runTool := NewRunShellBundleBackgroundTool(ws)
+	defer func() {
+		for _, bundle := range jobs.SnapshotBundles() {
+			_, _, _ = jobs.CancelBundle(bundle.ID, "canceled", "test cleanup", "")
+		}
+	}()
 
-	commands := []string{"sleep 1; echo alpha", "sleep 1; echo beta"}
+	commands := []string{"sleep 5; echo alpha", "sleep 5; echo beta"}
 	if runtime.GOOS == "windows" {
-		commands = []string{"Start-Sleep -Seconds 1; Write-Output alpha", "Start-Sleep -Seconds 1; Write-Output beta"}
+		commands = []string{"Start-Sleep -Seconds 5; Write-Output alpha", "Start-Sleep -Seconds 5; Write-Output beta"}
 	}
 
 	first, err := runTool.Execute(context.Background(), map[string]any{

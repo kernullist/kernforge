@@ -127,6 +127,87 @@ func TestCollectSessionChangedPathsParsesEditToolOutputs(t *testing.T) {
 	}
 }
 
+func TestAutomaticVerificationPrefersSessionEditPathsOverDirtyGitWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	driverPath := filepath.Join(root, "drivers", "KernelDriver.cpp")
+	if err := os.MkdirAll(filepath.Dir(driverPath), 0o755); err != nil {
+		t.Fatalf("mkdir driver: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_before;\n"), 0o644); err != nil {
+		t.Fatalf("write driver: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "drivers/KernelDriver.cpp"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_after;\n"), 0o644); err != nil {
+		t.Fatalf("dirty driver: %v", err)
+	}
+
+	sess := &Session{
+		Messages: []Message{{
+			Role:     "tool",
+			ToolName: "apply_patch",
+			Text:     "updated Tavern/TavernWorker/UnmountedProcessScanner.cpp",
+		}},
+	}
+	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
+	if !containsString(changed, "Tavern/TavernWorker/UnmountedProcessScanner.cpp") {
+		t.Fatalf("expected session edit path, got %#v", changed)
+	}
+	if containsString(changed, "drivers/KernelDriver.cpp") {
+		t.Fatalf("automatic verification should not mix unrelated dirty git driver path, got %#v", changed)
+	}
+}
+
+func TestSecurityVerificationDoesNotTreatUserModeProcessScannerAsDriverOrMemoryScan(t *testing.T) {
+	changed := []string{"Tavern/TavernWorker/UnmountedProcessScanner.cpp"}
+	categories := classifySecurityVerificationCategories(changed)
+	if len(categories) != 0 {
+		t.Fatalf("expected no security verification categories for user-mode process scanner, got %#v", categories)
+	}
+	steps, note := buildSecurityVerificationSteps(t.TempDir(), changed, VerificationAdaptive)
+	if len(steps) != 0 || note != "" {
+		t.Fatalf("expected no driver/memory scan steps, got steps=%#v note=%q", steps, note)
+	}
+}
+
+func TestSecurityVerificationStillRecognizesMemoryScanSurfaces(t *testing.T) {
+	changed := []string{
+		"Tavern/MemoryInspection/VadScanner.cpp",
+		"Tavern/Detection/patternscan.cpp",
+	}
+	categories := classifySecurityVerificationCategories(changed)
+	if !containsSecurityVerificationCategory(categories, SecurityCategoryMemoryScan) {
+		t.Fatalf("expected memory-scan category, got %#v", categories)
+	}
+}
+
+func containsSecurityVerificationCategory(items []SecurityVerificationCategory, target SecurityVerificationCategory) bool {
+	for _, item := range items {
+		if item == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseGitStatusShortPathPreservesFirstPathCharacter(t *testing.T) {
 	tests := map[string]string{
 		" M MCP-SKILLS.md":              "MCP-SKILLS.md",

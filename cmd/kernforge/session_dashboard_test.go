@@ -50,7 +50,7 @@ func TestRenderSessionDashboardHTMLEscapesAndSummarizesState(t *testing.T) {
 			{
 				ID:         "auto-1",
 				Type:       AutomationTypePRReview,
-				Command:    "/review-pr --github",
+				Command:    "/review pr --github",
 				Status:     AutomationStatusActive,
 				Schedule:   "every 1h",
 				LastRunAt:  now.Add(-2 * time.Hour),
@@ -115,7 +115,7 @@ func TestSessionDashboardHTMLCommandWritesArtifactAndEvent(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-test",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),

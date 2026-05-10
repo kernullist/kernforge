@@ -494,11 +494,7 @@ func (rt *runtimeState) handleNewFeatureStartCommand(request string) error {
 	}
 	store := rt.featureStore()
 	plannerLabel := rt.session.Provider + " / " + rt.session.Model
-	reviewerLabel := ""
-	if rt.cfg.PlanReview != nil {
-		reviewerLabel = rt.cfg.PlanReview.Provider + " / " + rt.cfg.PlanReview.Model
-	}
-	feature, err := store.Create(rt.workspace.BaseRoot, request, plannerLabel, reviewerLabel)
+	feature, err := store.Create(rt.workspace.BaseRoot, request, plannerLabel, "")
 	if err != nil {
 		return err
 	}
@@ -538,11 +534,7 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 		return fmt.Errorf("feature workflow is not available")
 	}
 	feature.Planner = strings.TrimSpace(rt.session.Provider + " / " + rt.session.Model)
-	if rt.cfg.PlanReview != nil {
-		feature.Reviewer = strings.TrimSpace(rt.cfg.PlanReview.Provider + " / " + rt.cfg.PlanReview.Model)
-	} else {
-		feature.Reviewer = ""
-	}
+	feature.Reviewer = ""
 
 	requestCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -584,63 +576,22 @@ func (rt *runtimeState) generateNewFeatureArtifacts(store *FeatureStore, feature
 	planText := ""
 	planReviewed := false
 	planRounds := 1
-	if rt.cfg.PlanReview != nil {
-		reviewerClient, reviewErr := createReviewerClient(rt.cfg.PlanReview, rt.cfg)
-		if reviewErr != nil {
-			return fmt.Errorf("failed to create reviewer client: %w", reviewErr)
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Generating implementation plan with the active model..."))
+	planResp, planErr := rt.agent.completeModelTurn(requestCtx, ChatRequest{
+		Model:       rt.session.Model,
+		System:      planReviewSystemPromptPlanner(rt.session.WorkingDir, memoryContext),
+		Messages:    []Message{{Role: "user", Text: planPrompt}},
+		MaxTokens:   rt.cfg.MaxTokens,
+		Temperature: rt.cfg.Temperature,
+	})
+	if planErr != nil {
+		if requestCtx.Err() == context.Canceled {
+			rt.noteRecentRequestCancel()
+			return fmt.Errorf("new-feature planning canceled by user")
 		}
-		result, runErr := RunPlanReviewWithPolicy(
-			requestCtx,
-			rt.agent.Client,
-			rt.session.Model,
-			reviewerClient,
-			rt.cfg.PlanReview.Model,
-			planPrompt,
-			rt.session.WorkingDir,
-			memoryContext,
-			rt.cfg.MaxTokens,
-			rt.cfg.Temperature,
-			func(status string) {
-				fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
-			},
-			modelRequestPolicyFromConfigWithScheduler(rt.cfg, rt.modelRoutes),
-		)
-		if runErr != nil {
-			if requestCtx.Err() == context.Canceled {
-				rt.noteRecentRequestCancel()
-				return fmt.Errorf("new-feature planning canceled by user")
-			}
-			return runErr
-		}
-		for i, round := range result.ReviewLog {
-			fmt.Fprintln(rt.writer, rt.ui.section(fmt.Sprintf("Round %d - Plan", i+1)))
-			fmt.Fprintln(rt.writer, round.Plan)
-			fmt.Fprintln(rt.writer)
-			fmt.Fprintln(rt.writer, rt.ui.section(fmt.Sprintf("Round %d - Review", i+1)))
-			fmt.Fprintln(rt.writer, round.Review)
-			fmt.Fprintln(rt.writer)
-		}
-		planText = strings.TrimSpace(result.FinalPlan)
-		planReviewed = true
-		planRounds = result.Rounds
-	} else {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Generating implementation plan with the active model..."))
-		planResp, planErr := rt.agent.completeModelTurn(requestCtx, ChatRequest{
-			Model:       rt.session.Model,
-			System:      planReviewSystemPromptPlanner(rt.session.WorkingDir, memoryContext),
-			Messages:    []Message{{Role: "user", Text: planPrompt}},
-			MaxTokens:   rt.cfg.MaxTokens,
-			Temperature: rt.cfg.Temperature,
-		})
-		if planErr != nil {
-			if requestCtx.Err() == context.Canceled {
-				rt.noteRecentRequestCancel()
-				return fmt.Errorf("new-feature planning canceled by user")
-			}
-			return fmt.Errorf("failed to generate feature plan: %w", planErr)
-		}
-		planText = strings.TrimSpace(planResp.Message.Text)
+		return fmt.Errorf("failed to generate feature plan: %w", planErr)
 	}
+	planText = strings.TrimSpace(planResp.Message.Text)
 	if planText == "" {
 		return fmt.Errorf("feature plan was empty")
 	}

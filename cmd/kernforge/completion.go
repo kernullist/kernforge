@@ -24,10 +24,10 @@ var slashCommands = []string{
 	"events",
 	"continuity",
 	"completion-audit",
+	"review",
 	"recover",
 	"jobs",
 	"automation",
-	"review-pr",
 	"goal",
 	"permissions",
 	"verify",
@@ -105,8 +105,6 @@ var slashCommands = []string{
 	"clear-selection",
 	"clear-selections",
 	"diff-selection",
-	"review-selection",
-	"review-selections",
 	"edit-selection",
 	"resume",
 	"rename",
@@ -119,14 +117,11 @@ var slashCommands = []string{
 	"config",
 	"set-analysis-models",
 	"set-specialist-model",
-	"set-plan-review",
-	"do-plan-review",
 	"new-feature",
 	"analyze-project",
 	"analyze-dashboard",
 	"docs-refresh",
 	"analyze-performance",
-	"profile-review",
 	"set-max-tool-iterations",
 	"progress-display",
 	"exit",
@@ -149,10 +144,10 @@ var slashCommandDescriptions = map[string]string{
 	"events":                     "Tail or export session events as JSONL for local dashboards, schedulers, and app-server style clients.",
 	"continuity":                 "Write a long-task continuity packet with recovery actions, worktrees, jobs, changed files, and next commands.",
 	"completion-audit":           "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
+	"review":                     "Run the common review harness for changes, plans, selections, PRs, goals, final answers, or analysis reports.",
 	"recover":                    "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
 	"jobs":                       "Inspect or cancel persistent background shell jobs and bundles from the terminal.",
 	"automation":                 "Manage reusable scheduled verification and PR review automation slots.",
-	"review-pr":                  "Generate a PR review automation report, draft comments, and optionally post them through gh when explicit.",
 	"goal":                       "Run an autonomous Codex-style goal loop from a prompt or markdown file until audit-ready or blocked.",
 	"permissions":                "Inspect or change the session permission mode.",
 	"verify":                     "Run verification and suggest the next repair, dashboard, checkpoint, or feature workflow step.",
@@ -230,8 +225,6 @@ var slashCommandDescriptions = map[string]string{
 	"clear-selection":            "Clear the active selection only.",
 	"clear-selections":           "Clear the full saved selection stack.",
 	"diff-selection":             "Diff the active selection against current changes.",
-	"review-selection":           "Review only the active selection.",
-	"review-selections":          "Review the saved selection set together.",
 	"edit-selection":             "Apply an edit task scoped to the active selection.",
 	"resume":                     "Resume a previous session by id.",
 	"rename":                     "Rename the current session.",
@@ -244,14 +237,11 @@ var slashCommandDescriptions = map[string]string{
 	"config":                     "Show effective configuration values.",
 	"set-analysis-models":        "Configure worker and reviewer providers for analysis.",
 	"set-specialist-model":       "Configure the provider and model used by one specialist subagent.",
-	"set-plan-review":            "Configure plan review provider behavior.",
-	"do-plan-review":             "Run a focused plan review for a task description.",
 	"new-feature":                "Create or manage tracked feature workspaces with implement, verify, close, and cleanup handoffs.",
 	"analyze-project":            "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
 	"analyze-dashboard":          "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
 	"docs-refresh":               "Regenerate latest project analysis docs, graph section stale markers, schema manifest, dashboard, and vector corpus from saved artifacts.",
 	"analyze-performance":        "Run a performance-focused analysis pass and suggest the next hotspot follow-up.",
-	"profile-review":             "Review saved model profiles and compare their fit.",
 	"set-max-tool-iterations":    "Adjust the max tool loop count for the session.",
 	"progress-display":           "Show or set how in-flight progress updates are displayed.",
 	"exit":                       "Exit the interactive Kernforge session.",
@@ -290,27 +280,64 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 	"verify-dashboard-html": {
 		"all": "Render dashboard entries across all workspaces in HTML.",
 	},
+	"review": {
+		"change":                      "Review the current workspace diff, patch transaction, or supplied diff/code.",
+		"plan":                        "Review an implementation plan or architecture proposal as a typed ReviewRun.",
+		"selection":                   "Review the active viewer selection or selected paths with bounded evidence.",
+		"pr":                          "Review pull-request context, changed files, checks, and reusable findings.",
+		"final":                       "Review the final answer against the actual workspace state before completion.",
+		"goal":                        "Review the active goal iteration and its latest implementation evidence.",
+		"analysis":                    "Review an analysis, root-cause, fuzz, or project report for evidence gaps.",
+		"models":                      "Show or change role-specific reviewer model configuration.",
+		"models status":               "Show effective reviewer models and automatic review settings.",
+		"models primary":              "Configure the primary general-purpose reviewer role.",
+		"models security":             "Configure the security-boundary and abuse-risk reviewer role.",
+		"models false-positive":       "Configure the anti-cheat false-positive and telemetry-quality reviewer role.",
+		"models design":               "Configure the architecture and core-build reviewer role.",
+		"models regression":           "Configure the compatibility and behavior-preservation reviewer role.",
+		"models test":                 "Configure the verification and coverage-gap reviewer role.",
+		"models final":                "Configure the final gate reviewer role.",
+		"models clear":                "Clear a reviewer role override.",
+		"--no-model":                  "Run deterministic reviewers only and still write review artifacts.",
+		"--mode":                      "Force review mode such as security-hardening, core-build, live-fix, refactor, research, or ui-polish.",
+		"--follow-up":                 "Enable safe follow-up recommendations for this review run.",
+		"--no-follow-up":              "Disable automatic safe follow-up recommendations for this review run.",
+		"models clear primary":        "Clear the primary reviewer role override.",
+		"models clear security":       "Clear the security reviewer role override.",
+		"models clear false-positive": "Clear the false-positive reviewer role override.",
+		"models clear design":         "Clear the design reviewer role override.",
+		"models clear regression":     "Clear the regression reviewer role override.",
+		"models clear test":           "Clear the test reviewer role override.",
+		"models clear final":          "Clear the final gate reviewer role override.",
+		"--mode general-change":       "Use the default code-change review policy.",
+		"--mode security-hardening":   "Use security, kernel, bypass, and false-positive review policy.",
+		"--mode core-build":           "Use architecture-heavy review for new core functionality.",
+		"--mode live-fix":             "Use bug-fix, repro, and regression review policy.",
+		"--mode refactor":             "Use dependency impact and behavior-preservation review policy.",
+		"--mode research":             "Use evidence and decision-review policy for research or PoC work.",
+		"--mode ui-polish":            "Use UI, visual, interaction, and accessibility review policy.",
+	},
 	"mem-prune": {
 		"all": "Prune memory entries without limiting to the current workspace.",
 	},
 	"provider": {
-		"status":       "Show the current provider, base URL, key state, and billing visibility.",
-		"anthropic":    "Switch to Anthropic provider setup.",
-		"openai":       "Switch to OpenAI provider setup.",
-		"openrouter":   "Switch to OpenRouter provider setup.",
-		"deepseek":     "Switch to DeepSeek provider setup.",
-		"opencode":     "Switch to OpenCode Zen API provider setup.",
-		"opencode-go":  "Switch to OpenCode Go subscription provider setup.",
-		"ollama":       "Switch to Ollama provider setup.",
-		"codex-cli":    "Switch to Codex CLI provider setup.",
-		"openai-codex": "Switch to direct OpenAI Codex OAuth provider setup.",
-		"lmstudio":     "Switch to local LM Studio OpenAI-compatible provider setup.",
-		"vllm":         "Switch to local vLLM OpenAI-compatible provider setup.",
-		"llama.cpp":    "Switch to local llama.cpp OpenAI-compatible provider setup.",
+		"status":                    "Show the current provider, base URL, key state, and billing visibility.",
+		"openai-codex-subscription": "Switch to direct OpenAI Codex subscription/OAuth provider setup.",
+		"openai-codex-cli":          "Switch to Codex CLI provider setup.",
+		"openai-api":                "Switch to OpenAI API provider setup.",
+		"anthropic-claude-cli":      "Switch to Claude Code CLI provider setup.",
+		"anthropic-api":             "Switch to Anthropic API provider setup.",
+		"deepseek":                  "Switch to DeepSeek provider setup.",
+		"openrouter":                "Switch to OpenRouter provider setup.",
+		"opencode":                  "Switch to OpenCode Zen API provider setup.",
+		"opencode-go":               "Switch to OpenCode Go subscription provider setup.",
+		"ollama":                    "Switch to Ollama provider setup.",
+		"lmstudio":                  "Switch to local LM Studio OpenAI-compatible provider setup.",
+		"vllm":                      "Switch to local vLLM OpenAI-compatible provider setup.",
+		"llama.cpp":                 "Switch to local llama.cpp OpenAI-compatible provider setup.",
 	},
 	"effort": {
 		"main":              "Set reasoning effort for the active main model.",
-		"plan-review":       "Set reasoning effort for the plan-review reviewer model.",
 		"analysis-worker":   "Set reasoning effort for the project-analysis worker model.",
 		"analysis-reviewer": "Set reasoning effort for the project-analysis reviewer model.",
 		"specialist":        "Set reasoning effort for a specialist model.",
@@ -335,30 +362,6 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"unpin":  "Unpin one saved profile by number.",
 		"rename": "Rename one saved profile by number.",
 		"delete": "Delete one saved profile by number.",
-	},
-	"profile-review": {
-		"list":   "Show saved plan-review profiles without activating one.",
-		"show":   "Show saved plan-review profiles without activating one.",
-		"status": "Show saved plan-review profiles without activating one.",
-		"pin":    "Pin one saved review profile by number.",
-		"unpin":  "Unpin one saved review profile by number.",
-		"rename": "Rename one saved review profile by number.",
-		"delete": "Delete one saved review profile by number.",
-	},
-	"set-plan-review": {
-		"status":       "Show the current plan review provider setting.",
-		"anthropic":    "Use Anthropic for plan review passes.",
-		"openai":       "Use OpenAI for plan review passes.",
-		"openrouter":   "Use OpenRouter for plan review passes.",
-		"deepseek":     "Use DeepSeek for plan review passes.",
-		"opencode":     "Use OpenCode Zen API for plan review passes.",
-		"opencode-go":  "Use OpenCode Go for plan review passes.",
-		"ollama":       "Use Ollama for plan review passes.",
-		"codex-cli":    "Use Codex CLI for plan review passes.",
-		"openai-codex": "Use direct OpenAI Codex OAuth for plan review passes.",
-		"lmstudio":     "Use local LM Studio for plan review passes.",
-		"vllm":         "Use local vLLM for plan review passes.",
-		"llama.cpp":    "Use local llama.cpp for plan review passes.",
 	},
 	"set-analysis-models": {
 		"status":   "Show current worker and reviewer analysis providers.",
@@ -771,20 +774,18 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"worktree":              {"status", "list", "create", "enter", "attach", "leave", "cleanup"},
 		"jobs":                  {"status", "check", "bundle", "cancel", "cancel-bundle"},
 		"specialists":           {"status", "assign", "cleanup"},
-		"provider":              {"status", "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
+		"provider":              append([]string{"status"}, providerChoiceCompletionTokens()...),
 		"effort":                {"undefined", "minimal", "low", "medium", "high", "xhigh"},
 		"codex-auth":            {"status", "login", "logout", "path"},
 		"profile":               {"list", "show", "status", "pin", "unpin", "rename", "delete"},
-		"profile-review":        {"list", "show", "status", "pin", "unpin", "rename", "delete"},
 		"analyze-project":       {"--mode", "--path"},
 		"analyze-dashboard":     {"latest"},
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
-		"review-pr":             {"--github", "--draft-comments", "--post-comments", "--resolve-thread", "--draft-issue", "--create-issue", "--label", "--assignee", "--milestone"},
+		"review":                {"change", "plan", "selection", "pr", "final", "goal", "analysis", "models", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
 		"handoff":               {"import"},
 		"mem-prune":             {"all"},
-		"set-plan-review":       {"status", "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
 		"set-specialist-model":  {"status", "clear"},
 		"new-feature":           {"start", "status", "list", "plan", "implement", "close"},
@@ -830,7 +831,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return nil, 0, false
 		}
 		switch target {
-		case "main", "plan-review", "plan_reviewer", "plan-reviewer", "reviewer", "analysis-worker", "analysis_worker", "worker", "analysis-reviewer", "analysis_reviewer":
+		case "main", "analysis-worker", "analysis_worker", "worker", "analysis-reviewer", "analysis_reviewer":
 			if len(fields) == 2 {
 				return []string{"undefined", "minimal", "low", "medium", "high", "xhigh"}, 0, true
 			}
@@ -896,16 +897,12 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			return rt.recentPersistentMemoryIDs(), 0, true
 		}
 		return nil, 0, false
-	case "set-plan-review":
-		if len(fields) <= 1 {
-			return firstLevel[commandName], 0, true
-		}
 	case "set-analysis-models":
 		if len(fields) == 1 {
 			return firstLevel[commandName], 0, true
 		}
 		if len(fields) == 2 && (strings.EqualFold(fields[0], "worker") || strings.EqualFold(fields[0], "reviewer")) {
-			return []string{"anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
+			return providerChoiceCompletionTokens(), 1, true
 		}
 		return nil, 0, false
 	case "set-specialist-model":
@@ -923,7 +920,40 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return normalizeTaskStateList(options, 32), 1, true
 			}
 			if rt.hasSpecialistName(fields[0]) {
-				return []string{"anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go", "ollama", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp"}, 1, true
+				return providerChoiceCompletionTokens(), 1, true
+			}
+		}
+		return nil, 0, false
+	case "review":
+		reviewRoles := reviewModelRoleTokens()
+		reviewModes := []string{"general-change", "security-hardening", "core-build", "live-fix", "refactor", "research", "ui-polish"}
+		reviewProviders := providerChoiceCompletionTokens()
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "--mode") {
+			if len(fields) == 2 {
+				return reviewModes, 1, true
+			}
+			return nil, 0, false
+		}
+		if strings.EqualFold(fields[0], "models") {
+			if len(fields) == 2 {
+				options := append([]string{}, reviewRoles...)
+				options = append(options, "status", "clear")
+				return options, 1, true
+			}
+			if _, ok := resolveReviewModelRoleChoice(fields[1]); ok {
+				if len(fields) == 3 {
+					return reviewProviders, 2, true
+				}
+				return nil, 0, false
+			}
+			if strings.EqualFold(fields[1], "clear") {
+				if len(fields) == 3 {
+					return reviewRoles, 2, true
+				}
+				return nil, 0, false
 			}
 		}
 		return nil, 0, false
@@ -1281,6 +1311,10 @@ func commandCompletionDescription(item string) string {
 		rawSubcommand := strings.TrimSpace(fields[1])
 		subcommand := strings.ToLower(rawSubcommand)
 		if descriptions, ok := slashSubcommandDescriptions[commandName]; ok {
+			fullSubcommand := strings.ToLower(strings.Join(fields[1:], " "))
+			if description := strings.TrimSpace(descriptions[fullSubcommand]); description != "" {
+				return description
+			}
 			if description := strings.TrimSpace(descriptions[rawSubcommand]); description != "" {
 				return description
 			}

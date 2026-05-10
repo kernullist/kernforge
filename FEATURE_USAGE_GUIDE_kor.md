@@ -27,7 +27,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 4. risk lens가 중요하면 `/simulate`로 tamper, visibility, forensic blind spot을 본다.
 5. 이미 사용자에게 보이는 증상이 있고 원인 후보를 좁히고 싶으면 `/find-root-cause`를 실행한다.
 6. 입력 파라미터를 공격자 관점으로 바로 흔들어 보고 싶으면 `/fuzz-func`로 source-level fuzzing을 실행한다. seed handoff가 유용하면 Kernforge가 다음 단계로 `/fuzz-campaign run`을 보여준다.
-7. `/review-selection`, `/edit-selection`, `/do-plan-review`, `/new-feature`로 실제 작업을 진행한다.
+7. `/review selection`, `/edit-selection`, `/review plan`, `/new-feature`로 실제 작업을 진행한다.
 8. `/verify`로 verification plan을 돌린다.
 9. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
 10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, specialist action 뒤에 출력되는 handoff block과 `/continuity` packet을 따라가면 명령 순서를 외우지 않아도 된다.
@@ -117,7 +117,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 현재 동작:
 1. "구현하자", "수정해줘", "남은 항목들을 처리해줘", "테스트까지 돌려서 끝내줘" 같은 요청은 self-driving loop 후보가 된다.
-2. reviewer/planner preflight를 사용할 수 있으면 기존 plan-review가 우선이고, 없으면 deterministic 기본 plan을 사용한다.
+2. 공통 review role model이 설정되어 있으면 reviewer/planner preflight에 사용할 수 있고, 없으면 deterministic 기본 plan을 사용한다.
 3. "방금 에러는 왜 난거야?", "현재 상태 알려줘", "분석해줘" 같은 read-only 요청은 자동 편집 루프를 켜지 않는다.
 
 ### Proactive Suggestion Dashboard
@@ -139,7 +139,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. suggestion card에는 관련 명령, evidence ref, `/verify-dashboard-html`, `/evidence-dashboard-html`, `/analyze-dashboard` 같은 dashboard link chip이 포함된다.
 3. 각 card에는 `/suggest accept <id>`와 `/suggest dismiss <id>` chip이 있어 같은 제안을 반복 노출하지 않도록 상태를 관리할 수 있다.
 4. `/suggest` 후보는 `TaskGraph`의 `suggest:<id>` node로 동기화되어 ready/in_progress/completed/canceled 상태를 가진다.
-5. `/suggest mode confirm` 상태에서 `/suggest accept <id>`를 실행하면 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review-pr` 같은 허용된 safe command만 자동 실행된다.
+5. `/suggest mode confirm` 상태에서 `/suggest accept <id>`를 실행하면 `/verify`, dashboard, `/docs-refresh`, `/automation add`, `/review pr` 같은 허용된 safe command만 자동 실행된다.
 6. accepted/dismissed suggestion은 persistent memory에도 preference record로 남아 session을 넘는 반복 제안 억제와 선호 학습의 기반이 된다.
 
 ### Session Dashboard
@@ -248,7 +248,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/automation`
 - `/automation add recurring-verification /verify`
 - `/automation add recurring-verification --every 2h /verify`
-- `/automation add pr-review /review-pr`
+- `/automation add pr-review /review pr`
 - `/automation due`
 - `/automation digest`
 - `/automation monitor`
@@ -265,14 +265,14 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/automation pause <id>`
 - `/automation resume <id>`
 - `/automation remove <id>`
-- `/review-pr`
-- `/review-pr --github`
-- `/review-pr --github --draft-comments`
-- `/review-pr --github --post-comments`
-- `/review-pr --resolve-thread <thread-id>`
-- `/review-pr --draft-issue`
-- `/review-pr --create-issue`
-- `/review-pr --create-issue --label bug,security --assignee <login> --milestone "May 2026"`
+- `/review pr`
+- `/review pr --github`
+- `/review pr --github --draft-comments`
+- `/review pr --github --post-comments`
+- `/review pr --resolve-thread <thread-id>`
+- `/review pr --draft-issue`
+- `/review pr --create-issue`
+- `/review pr --create-issue --label bug,security --assignee <login> --milestone "May 2026"`
 
 현재 동작:
 1. automation slot은 session JSON의 `automations`에 저장된다.
@@ -284,12 +284,12 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 7. `/automation watch [--interval 5m] [--cycles N|--once] [--notify] [--webhook-url <url>]`는 foreground standing monitor loop를 실행한다. 각 cycle은 due safe automation을 실행하고 digest를 출력하며, 필요하면 digest artifact를 갱신하거나 webhook을 전송한다.
 8. `/automation daemon-start|daemon-status|daemon-stop`은 process-detached local automation watcher를 관리하고 `.kernforge/automation/daemon.json` 및 `daemon.log`에 state/log를 남긴다.
 9. `-command "/automation monitor --notify"`는 Windows Task Scheduler, service wrapper, CI가 REPL 없이 slash command를 실행할 수 있게 한다.
-10. `/review-pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
-11. `/review-pr --github`는 `gh pr view --json ...`으로 현재 branch PR metadata, review decision, comments, checks 요약을 같은 report에 붙인다. `gh`가 없거나 인증/PR이 없으면 로컬 section은 유지하고 GitHub unavailable reason을 기록한다.
-12. `/review-pr --draft-comments`는 `.kernforge/pr_review/comments.md`에 file-level review comment draft를 만들며 GitHub에는 게시하지 않는다.
-13. `/review-pr --post-comments`는 draft 생성 후 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`를 실행한다. 이 write-side 작업은 명시적 명령에서만 허용되고 suggestion accept나 scheduled automation에서는 차단된다.
-14. `/review-pr --resolve-thread <thread-id>`는 `gh api graphql`로 GitHub `resolveReviewThread` mutation을 실행한다. 이 write-side 작업도 명시적 명령에서만 허용된다.
-15. `/review-pr --draft-issue`는 `.kernforge/pr_review/issue.md`를 쓰고, `/review-pr --create-issue`는 `gh issue create --title ... --body-file ...`로 해당 draft를 게시한다. issue 생성도 명시적 명령에서만 허용된다.
+10. `/review pr`는 git status, diff stat, changed files, review checklist를 `.kernforge/pr_review/latest.md`에 기록하고 conversation event에 artifact ref를 남긴다.
+11. `/review pr --github`는 `gh pr view --json ...`으로 현재 branch PR metadata, review decision, comments, checks 요약을 같은 report에 붙인다. `gh`가 없거나 인증/PR이 없으면 로컬 section은 유지하고 GitHub unavailable reason을 기록한다.
+12. `/review pr --draft-comments`는 `.kernforge/pr_review/comments.md`에 file-level review comment draft를 만들며 GitHub에는 게시하지 않는다.
+13. `/review pr --post-comments`는 draft 생성 후 `gh pr review --comment --body-file .kernforge/pr_review/comments.md`를 실행한다. 이 write-side 작업은 명시적 명령에서만 허용되고 suggestion accept나 scheduled automation에서는 차단된다.
+14. `/review pr --resolve-thread <thread-id>`는 `gh api graphql`로 GitHub `resolveReviewThread` mutation을 실행한다. 이 write-side 작업도 명시적 명령에서만 허용된다.
+15. `/review pr --draft-issue`는 `.kernforge/pr_review/issue.md`를 쓰고, `/review pr --create-issue`는 `gh issue create --title ... --body-file ...`로 해당 draft를 게시한다. issue 생성도 명시적 명령에서만 허용된다.
 16. issue draft와 create 호출은 반복/쉼표 구분 `--label`, 반복/쉼표 구분 `--assignee`, quoted `--milestone` 값을 받는다. create mode에서는 해당 값들을 `gh issue create` flag로 그대로 넘긴다.
 17. verification gap이나 dirty diff가 있으면 `/suggest`가 recurring verification/PR review automation 등록을 다음 행동으로 제안할 수 있다.
 
@@ -382,8 +382,8 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
 LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_files_per_shard` / `max_lines_per_shard`가 비어 있으면 confirmation 전에 provider, 모델 크기, max token, request timeout을 보고 값을 조정한다. 일반 request retry를 모두 소진한 뒤에도 timeout, 5xx, overload, empty response, connection reset 같은 provider-pressure error로 run이 끝나면 Kernforge는 `adaptive_retry_shards` 줄을 출력하고 더 작은 shard 제한으로 한 번 다시 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 방식으로 재시도하지 않는다.
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
-reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, plan-review reviewer, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있고, effort 지원 target을 새로 선택했는데 undefined이면 해당 target만 기본 `low`로 저장된다.
-analysis worker/reviewer, plan reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
+reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, common review role model, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있고, effort 지원 target을 새로 선택했는데 undefined이면 해당 target만 기본 `low`로 저장된다.
+common review role, analysis worker/reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 main provider/model만 바꾸면 명시적인 analysis worker/reviewer profile은 유지된다. 이전에 따로 둔 route가 아니라 현재 main model을 다시 상속시키고 싶으면 `/set-analysis-models clear`를 사용한다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 생성 문서 세트에는 run 마지막에 출력된 assistant-facing final synthesis를 그대로 보존하는 `FINAL_REPORT.md`와 architecture, security, entrypoint, build artifact, verification, fuzz target, operation 운영 문서가 함께 들어간다.
@@ -736,8 +736,9 @@ Pattern pack 운영:
 
 목적:
 1. 전체 파일이 아니라 선택한 코드 범위만 집중 리뷰하거나 수정한다.
-2. recent simulation finding이 선택 영역과 맞닿으면 자동으로 review/edit prompt에 주입한다.
-3. 더 넓은 리뷰나 수정 전에 workspace/selection diff를 richer Windows diff surface로 확인할 수 있다.
+2. selection review도 one-off prompt가 아니라 공통 `ReviewRun` harness와 gate를 통과하게 한다.
+3. recent simulation finding이 선택 영역과 맞닿으면 자동으로 review/edit prompt에 주입한다.
+4. 더 넓은 리뷰나 수정 전에 workspace/selection diff를 richer Windows diff surface로 확인할 수 있다.
 
 대표 명령:
 - `/open <path>`
@@ -745,8 +746,8 @@ Pattern pack 운영:
 - `/selections`
 - `/diff`
 - `/diff-selection`
-- `/review-selection [extra]`
-- `/review-selections [extra]`
+- `/review selection [extra]`
+- `/review selection --all [extra]`
 - `/edit-selection <task>`
 - `/note-selection <text>`
 - `/tag-selection <tag[,tag2]>`
@@ -761,16 +762,24 @@ diff workflow 메모:
 1. 특정 IOCTL handler, provider registration block, integrity check 함수만 집중 분석하고 싶을 때
 2. 방금 simulation에서 지적된 surface와 실제 코드 영역을 빠르게 연결하고 싶을 때
 
+review artifact:
+1. `/review selection`은 `.kernforge/reviews/latest.json`과 `.kernforge/reviews/latest.md`를 쓴다.
+2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, repair step, 추천 next command가 포함된다.
+3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다.
+
 ### 2.8 Plan Review Workflow
 
 목적:
-1. planner 모델이 계획을 만들고
-2. reviewer 모델이 계획을 검토하고
-3. 승인된 계획을 다시 실행하게 한다.
+1. 구현 계획도 code, selection, PR, goal, final, analysis review와 같은 공통 review harness로 검토한다.
+2. role별 reviewer 모델은 `/review models`에서만 설정하며, 별도 legacy plan-review reviewer fallback은 두지 않는다.
+3. gate와 사용자 흐름이 허용할 때만 실행으로 이어진다.
 
 대표 명령:
-- `/set-plan-review`
-- `/do-plan-review <task>`
+- `/review plan <task>`
+- `/review models status`
+- `/review models`
+- `/review models <role> <provider> [model]`
+- `/review waive <finding-id> --reason <text>`
 
 좋은 상황:
 1. 구현이 여러 단계로 얽힌 driver/telemetry 보안 변경
@@ -778,9 +787,14 @@ diff workflow 메모:
 3. 실수 비용이 커서 바로 편집 루프로 들어가기 전에 계획 검토가 필요한 작업
 
 현재 연동:
-1. recent simulation finding이 task와 겹치면 planning prompt에 자동 주입된다.
-2. 최종 plan 실행 prompt에도 같은 관점이 자동 주입된다.
-3. 명시 timeout policy가 없으면 plan-review의 planner/reviewer 요청은 attempt당 2분 timeout을 사용한다. 긴 preflight 대기로 전체 턴을 붙잡기보다 빠르게 실패하고 다음 recovery path로 넘어가는 쪽을 우선한다.
+1. recent simulation finding이 task와 겹치면 review evidence pack에 자동 주입된다.
+2. gate는 objective fit, architecture risk, testability, security boundary, maintainability, evidence gap을 structured finding으로 남긴다.
+3. review role별 모델을 따로 설정할 수 있고, 추가 모델이 유리한 review인데 설정이 빠져 있으면 조용히 넘어가지 않고 UX 안내를 남긴다.
+4. 명시 timeout policy가 없으면 model reviewer 요청은 bounded timeout을 사용한다. 긴 preflight 대기로 전체 턴을 붙잡기보다 빠르게 실패하고 다음 recovery path로 넘어가는 쪽을 우선한다.
+5. `@file:line-line 리뷰해줘` 같은 자연어 리뷰 요청은 `/review selection`으로 라우팅하고, focused review-and-fix 요청은 먼저 리뷰를 실행한 뒤 최신 finding을 기준으로 repair 흐름을 이어간다.
+6. 자동 쓰기 전 리뷰는 문법적으로 유효한 edit preview가 나온 뒤 실제 파일 쓰기 전에 실행하고, 자동 변경 후 리뷰는 changed path가 생긴 뒤 실행한다.
+7. service, SCM, driver, 민감 경로 신호는 `security` reviewer role을 선택한다. `false-positive` role은 detection, telemetry, scan, spoofing, evasion-quality surface에만 붙인다.
+8. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 role과 provider route를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다.
 
 ### 2.9 Tracked Feature Workflow
 
@@ -817,7 +831,7 @@ diff workflow 메모:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models primary|security|false-positive|design|regression|test|final|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
@@ -848,7 +862,7 @@ diff workflow 메모:
 4. `/simulate tamper-surface guard.sys`
 5. `/open driver/guard.cpp`
 6. viewer에서 보호 로직 부분을 선택한다.
-7. `/review-selection integrity risk paths and verifier interactions`
+7. `/review selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
 10. `/evidence-dashboard category:driver`
@@ -864,7 +878,7 @@ diff workflow 메모:
 
 어떤 명령이 특히 중요하나:
 - `/simulate tamper-surface guard.sys`
-- `/review-selection ...`
+- `/review selection ...`
 - `/verify`
 - `/evidence-dashboard category:driver`
 
@@ -881,7 +895,7 @@ diff workflow 메모:
 3. `/simulate stealth-surface MyProvider`
 4. `/open telemetry/provider.man`
 5. manifest range를 선택한다.
-6. `/review-selection provider visibility and schema drift`
+6. `/review selection provider visibility and schema drift`
 7. `/open telemetry/register_provider.cpp`
 8. `/edit-selection align provider registration and fallback visibility`
 9. `/verify`
@@ -905,7 +919,7 @@ Kernforge가 도와주는 부분:
 추천 흐름:
 1. `/simulate stealth-surface scanner-core`
 2. `/open scanner/patternscan.cpp`
-3. `/review-selection false positives, stealth coverage, and perf ceilings`
+3. `/review selection false positives, stealth coverage, and perf ceilings`
 4. `/edit-selection reduce false positives without weakening evasion coverage`
 5. `/verify`
 6. `/evidence-dashboard category:memory-scan`
@@ -925,7 +939,7 @@ Kernforge가 도와주는 부분:
 추천 흐름:
 1. `/simulate tamper-surface guard.sys`
 2. `/simulate forensic-blind-spot guard.sys`
-3. `/do-plan-review harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
+3. `/review plan harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
 4. reviewer가 계획을 비판하도록 둔다.
 5. 승인된 뒤 plan 실행
 6. `/verify`
@@ -998,13 +1012,13 @@ Kernforge가 도와주는 부분:
 1. simulation은 "지금 당장 exploit 가능"을 증명하는 도구가 아니다.
 2. evidence와 investigation 결과를 바탕으로 risk signal을 구조화하는 도구다.
 
-### 4.3 `/review-selection`과 `/edit-selection`
+### 4.3 `/review selection`과 `/edit-selection`
 
 기본 사용:
 
 ```text
 /open driver/guard.cpp
-/review-selection check risk surfaces and cleanup paths
+/review selection check risk surfaces and cleanup paths
 /edit-selection harden the selected registration path
 ```
 
@@ -1016,12 +1030,12 @@ Kernforge가 도와주는 부분:
 1. 선택한 파일 경로와 맞닿는 recent simulation finding이 있으면
 2. review/edit prompt에 `Additional simulation risk focus`가 자동 주입된다.
 
-### 4.4 `/do-plan-review`
+### 4.4 `/review plan`
 
 기본 사용:
 
 ```text
-/do-plan-review harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
+/review plan harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
 ```
 
 좋은 사용 예:
@@ -1271,7 +1285,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity risk paths
+/review selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
 /evidence-dashboard category:driver
@@ -1284,7 +1298,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
-/review-selection schema and visibility drift
+/review selection schema and visibility drift
 /verify
 /evidence-search category:telemetry outcome:failed
 ```
@@ -1294,7 +1308,7 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 ```text
 /simulate tamper-surface guard.sys
 /simulate forensic-blind-spot guard.sys
-/do-plan-review harden driver registration and preserve telemetry audit artifacts
+/review plan harden driver registration and preserve telemetry audit artifacts
 /verify
 /simulate-dashboard
 ```
@@ -1337,8 +1351,8 @@ persistent memory는 `/mem-search`를 직접 실행하지 않아도 새 turn이 
 1. `/investigate`
 2. `/simulate`
 3. `/fuzz-func`
-4. `/review-selection` 또는 `/edit-selection`
-5. `/do-plan-review`
+4. `/review selection` 또는 `/edit-selection`
+5. `/review plan`
 6. `/new-feature`
 7. `/verify`
 8. `/evidence-dashboard`

@@ -40,6 +40,53 @@ func TestUserChangeIsolationBlocksExternalTargetChange(t *testing.T) {
 	}
 }
 
+func TestUserChangeIsolationRebaselineAfterConflictedRead(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	agent.startUserChangeIsolation()
+	if err := os.WriteFile(path, []byte("package main\n\n// user edit\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile user edit: %v", err)
+	}
+
+	err := agent.checkUserChangeIsolationBeforeTool(ToolCall{
+		Name:      "write_file",
+		Arguments: `{"path":"main.go","content":"package main\n\n// agent edit\n"}`,
+	})
+	if err == nil {
+		t.Fatalf("expected initial user-change conflict")
+	}
+	if session.LastUserChangeIsolationReport == nil || len(session.LastUserChangeIsolationReport.ConflictedPaths) != 1 {
+		t.Fatalf("expected persisted isolation report, got %#v", session.LastUserChangeIsolationReport)
+	}
+
+	agent.rebaselineUserChangeIsolationFromRead(ToolCall{
+		Name:      "read_file",
+		Arguments: `{"path":"main.go"}`,
+	}, nil)
+	if session.LastUserChangeIsolationReport == nil {
+		t.Fatalf("expected isolation report to remain available")
+	}
+	if len(session.LastUserChangeIsolationReport.ConflictedPaths) != 0 {
+		t.Fatalf("expected conflicted path to be cleared after successful read, got %#v", session.LastUserChangeIsolationReport)
+	}
+
+	err = agent.checkUserChangeIsolationBeforeTool(ToolCall{
+		Name:      "write_file",
+		Arguments: `{"path":"main.go","content":"package main\n\n// user edit\n// agent edit\n"}`,
+	})
+	if err != nil {
+		t.Fatalf("expected merge-aware retry after rebaseline to be allowed, got %v", err)
+	}
+}
+
 func TestUserChangeIsolationAllowsAgentTouchedTarget(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")

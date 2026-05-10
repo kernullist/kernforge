@@ -114,7 +114,7 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 }
 
 func formatProgressEventTarget(event ProgressEvent) string {
-	provider := strings.TrimSpace(event.Provider)
+	provider := strings.TrimSpace(providerUserLabel(event.Provider))
 	model := strings.TrimSpace(event.Model)
 	switch {
 	case provider != "" && model != "":

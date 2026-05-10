@@ -10,7 +10,7 @@
 | Proactive judgment | Rule/data-driven `SituationSnapshot` suggests verification, stale docs, fuzz gaps, provider failures, checkpoint/worktree, PR review, and automation follow-up | Strong at deciding the next practical step during implementation | Strong when workflows are encoded through hooks, subagents, and project conventions |
 | Verification and evidence | First-class: adaptive verification, verification history, evidence store, dashboards, memory promotion, fuzz result gates | Strong test/command loop, but domain evidence modeling is generic | Strong tool loop, but evidence modeling depends on user/project setup |
 | Windows/security specialization | Deeply tuned for IOCTL, ETW, drivers, memory scanning, Unreal, telemetry, signing, fuzzing, and anti-cheat surfaces | Broad coding agent, not domain-specific by default | Broad coding agent, not domain-specific by default |
-| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review-pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
+| Automation maturity | Local MVP: `/automation`, interval due checks, automation digest/monitor/watch, process-detached daemon, notify artifact and webhook transport, recurring verification slots, `/jobs`, `/recover`, `/continuity`, `/completion-audit`, `/review pr --github --draft-comments|--post-comments|--resolve-thread|--create-issue` with issue labels/assignees/milestones, `/handoff`, `/session-dashboard-html`, suggestion-to-task graph; cloud jobs still pending | Mature automation and PR/task workflow direction | Automation often comes through hooks and external workflow integration |
 | Tradeoff | More specialized and evidence-heavy, with a smaller general ecosystem and less polished desktop/cloud experience | More polished general agent experience, less specialized security/fuzzing knowledge out of the box | More configurable ecosystem, less built-in Windows security/fuzz workbench depth |
 
 `Kernforge` is a project intelligence and fuzzing workbench for Windows security, anti-cheat engineering, and evidence-backed verification. It is written in Go, runs as a terminal-first local agent, and is tuned for telemetry, driver-oriented workflows, memory inspection, Unreal security, and large project analysis.
@@ -75,6 +75,7 @@ Specs And Roadmap:
 - [Korean Roadmap](./ROADMAP_kor.md)
 - [Korean Fuzzing And Security Tools Gap Analysis](./FUZZING_SECURITY_TOOLS_GAP_ANALYSIS_kor.md)
 - [Korean Hook Engine Spec](./HOOK_ENGINE_SPEC_kor.md)
+- [Korean Common Review Harness Spec](./REVIEW_HARNESS_SPEC_kor.md)
 - [Korean Live Investigation Mode Spec](./LIVE_INVESTIGATION_SPEC_kor.md)
 - [Korean Adversarial Simulation Spec](./ADVERSARIAL_SIMULATION_SPEC_kor.md)
 - [Korean Next-Gen Project Analysis Spec](./PROJECT_ANALYSIS_NEXT_SPEC_kor.md)
@@ -110,7 +111,7 @@ Its current differentiators are:
 - Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
 - Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
-- Providers: `ollama`, `anthropic`, `openai`, `openrouter`, `deepseek`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex`
+- Providers: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `opencode`, `opencode-go`, `ollama`, `lmstudio`, `vllm`, `llama.cpp`, plus explicit OpenAI-compatible routes
 - A model route scheduler keyed by provider/model/base_url/reasoning_effort to coordinate single local models and shared worker/reviewer routes safely
 - File, patch, shell, and git-oriented tool use
 - Git staging, commit, push, and GitHub pull request creation through dedicated tools
@@ -124,7 +125,7 @@ Its current differentiators are:
 - Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
-- Plan-review workflow with a separate reviewer model
+- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 - Automatic secondary editable workers for disjoint edit leases plus specialist-aware background verification bundle chaining
 
@@ -261,7 +262,7 @@ Its current differentiators are:
 - Automatic checkpoint creation before the first edit in a request
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
-- In ordinary product development, `implementation-owner` is the default editable specialist, while narrower domain specialists such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-reviewer`, and `memory-inspection-reviewer` take ownership only when the task or paths match strongly.
+- In ordinary product development, `implementation-owner` is the default editable specialist, while narrower domain specialists such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-analyst`, and `memory-inspection-analyst` take ownership only when the task or paths match strongly.
 - `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned specialist worktree.
 - `/specialists assign <node-id> <specialist> [glob,glob2]` lets you pin an editable specialist and override ownership globs when auto-routing picked a broader default.
 - `/set-specialist-model <specialist> <provider> [model]` pins the LLM used by one specialist in this workspace, and `/set-specialist-model clear <specialist|all>` removes that override.
@@ -273,7 +274,7 @@ Its current differentiators are:
 - `/new-feature <task>` creates a tracked feature workspace and writes `spec.md`, `plan.md`, and `tasks.md`
 - Tracked feature artifacts live under `.kernforge/features/<id>` so large work can survive across sessions
 - `/new-feature status|plan|implement|close [id]` lets you inspect, regenerate, execute, and finish the active feature; status also surfaces recent fuzz campaign gates when native results exist
-- `/do-plan-review <task>` remains the better fit for one-shot reviewed planning and immediate execution
+- `/review plan <task>` remains the better fit for one-shot reviewed planning and immediate execution
 
 ### Input And Prompting
 
@@ -295,7 +296,7 @@ Its current differentiators are:
 
 ### Interactive Ergonomics
 
-- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
+- `Tab` completion for commands, paths, mentions, MCP targets, fixed command arguments, provider subcommands such as `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, analyze-project modes, compact fuzz campaign actions, `/create-driver-poc <driver-name>`, `/find-root-cause`, `/root-cause-patterns list|match|github-search|normalize|validate`, and saved ids or subcommands such as `/resume`, `/mem-show`, `/evidence-show`, `/investigate show`, `/simulate show`, `/fuzz-campaign run|show`, `/new-feature status|plan|implement|close`, `/jobs status|check|bundle|cancel|cancel-bundle`, `/specialists status|assign|cleanup`, and `/worktree status|list|create|enter|attach|leave|cleanup`
 - Completion menus now show inline descriptions for commands and common subcommands instead of listing names only
 - `Esc` to cancel current input
 - `Esc` to cancel an in-flight request
@@ -402,11 +403,19 @@ With multiple images:
 
 ### Run With A Specific Provider
 
+Interactive provider pickers and `/review models` use this user-facing order: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `OpenCode Zen`, `OpenCode Go`, `ollama`, `LM Studio`, `vLLM`, `llama.cpp`.
+
 Anthropic:
 
 ```powershell
 $env:ANTHROPIC_API_KEY = "your_key"
 .\kernforge.exe -provider anthropic -model claude-sonnet-4
+```
+
+Anthropic Claude CLI:
+
+```powershell
+.\kernforge.exe -provider anthropic-claude-cli -model claude-sonnet-4
 ```
 
 OpenAI:
@@ -457,7 +466,7 @@ $env:OPENCODE_GO_API_KEY = "your_key"
 .\kernforge.exe -provider opencode-go -model opencode-go/deepseek-v4-pro
 ```
 
-Codex CLI:
+OpenAI Codex CLI:
 
 ```powershell
 .\kernforge.exe -provider codex-cli -model gpt-5.5-pro
@@ -499,7 +508,7 @@ Recommended flow with live state and simulation risk context:
 2. `/investigate snapshot`
 3. `/simulate tamper-surface guard.sys`
 4. `/open driver/guard.cpp`
-5. `/review-selection integrity risk paths`
+5. `/review selection integrity risk paths`
 6. `/edit-selection harden the selected integrity checks`
 7. `/verify`
 8. `/evidence-dashboard category:driver`
@@ -722,7 +731,7 @@ Later sources override earlier ones:
 
 | Field | Description |
 | --- | --- |
-| `provider` | `ollama`, `anthropic`, `openai`, `openrouter`, `deepseek`, `openai-compatible`, `lmstudio`, `vllm`, `llama.cpp`, `opencode`, `opencode-go`, `codex-cli`, `openai-codex` |
+| `provider` | `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `opencode`, `opencode-go`, `ollama`, `lmstudio`, `vllm`, `llama.cpp`, plus `openai-compatible` |
 | `model` | Model name sent to the provider |
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
@@ -758,19 +767,18 @@ Later sources override earlier ones:
 | `hook_presets` | Hook preset names loaded for the workspace |
 | `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default |
 | `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
-| `plan_review` | Reviewer model config used by `/do-plan-review` |
-| `review_profiles` | Saved reviewer profiles |
+| `review` | Common review harness automation settings and role-specific reviewer models |
 | `specialists` | Enable specialist subagents and overlay built-in specialist profiles |
 | `worktree_isolation` | Configure isolated git worktree roots, branch prefixes, and tracked-feature auto-isolation |
 
-Role-specific reviewer, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
+Role-specific common review, analysis worker/reviewer, and specialist `base_url` values are optional. When a role uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the role sets its own `base_url`.
 On startup and `/reload`, Kernforge migrates config files that still hold the old literal defaults `max_tool_iterations: 16` or `max_tokens: 4096` to `0` (unlimited) and `8192`, then prints a one-time `INFO` notice. Other explicitly chosen values are preserved; if you intentionally want the old numbers, set them again after the notice.
 `project_analysis.max_files_per_shard`, `project_analysis.max_lines_per_shard`, and `project_analysis.max_total_shards` can be set explicitly for deterministic sizing. Leaving them unset lets Kernforge apply local-model adaptive sizing and the smaller-shard recovery retry described above. `project_analysis.max_provider_retries` may be set to `-1` to disable per-request provider retries.
 
 ### Interactive Loop Durability Notes
 
-- The interactive loop now attempts planner/reviewer preflight by default for each new request. If no dedicated review profile is configured, Kernforge falls back to an auxiliary client created from the active main provider/model.
-- Plan-review requests default to a 2-minute per-attempt timeout unless a policy overrides it, favoring fast failure and recovery over long blocked preflight waits.
+- The interactive loop can use explicitly configured common review role models for review, pre-fix, pre-write, and post-change gates. It no longer creates a separate legacy plan-review reviewer fallback.
+- Common review model requests use bounded per-attempt timeouts unless a policy overrides them, favoring fast failure and recovery over long blocked preflight waits.
 - The final-answer reviewer now runs only when there is unresolved verification, a coding-harness blocker, or actual patch transaction changed paths. Read-only replies, plan state, or task-graph presence alone no longer create an extra LLM round-trip.
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
 - The interactive runtime also persists an edit-loop ledger for apply/verify/retry/final-review state. It records changed paths, worker evidence, patch transaction ids, verification bundle/job/log evidence, retry decisions, reviewer verdict, and remaining risk, then exposes that ledger to the system prompt, final reviewer, `/status`, session export, and pre-final coding harness.
@@ -821,8 +829,16 @@ Provider-specific:
 - `OPENCODE_GO_API_KEY`
 - `OLLAMA_HOST`
 - `OLLAMA_API_KEY`
+- `KERNFORGE_CODEX_CLI_PATH`
+- `KERNFORGE_CODEX_CLI_ARGS`
+- `KERNFORGE_CLAUDE_CLI_PATH`
+- `KERNFORGE_CLAUDE_CLI_ARGS`
+- `KERNFORGE_CODEX_AUTH_FILE`
+- `KERNFORGE_CODEX_ACCESS_TOKEN`
 
 ## Providers
+
+Provider setup and model-role setup intentionally display stable user-facing labels even when the stored provider id is kept for compatibility. For example, `openai-codex-subscription` maps to the direct ChatGPT/Codex OAuth provider, `openai-codex-cli` maps to the installed `codex` command bridge, `openai-api` maps to the OpenAI API provider, and `anthropic-api` maps to the Anthropic API provider.
 
 ### Ollama
 
@@ -836,6 +852,13 @@ Provider-specific:
 - Default base URL: `https://api.anthropic.com`
 - Reads `ANTHROPIC_API_KEY`
 - `/provider status` shows Billing-page visibility plus the documented Usage & Cost Admin API limits instead of guessing a live standard-key balance endpoint
+
+### Anthropic Claude CLI
+
+- User-facing provider label: `anthropic-claude-cli`
+- Uses the installed `claude` command as a local provider bridge instead of sending an Anthropic API key through Kernforge
+- The provider setup flow asks for the command path, optional extra arguments, and supported model name
+- Reads `KERNFORGE_CLAUDE_CLI_PATH` and `KERNFORGE_CLAUDE_CLI_ARGS` for non-interactive setup
 
 ### OpenAI
 
@@ -902,20 +925,23 @@ Provider-specific:
 - Fetches models using the OpenCode Go key and keeps Go subscription routing separate from OpenCode Zen pay-as-you-go routing
 - Routes known message-endpoint models through messages and other supported models through chat completions
 
-### Codex CLI
+### OpenAI Codex CLI
 
+- User-facing provider label: `openai-codex-cli`; stored provider id: `codex-cli`
 - Uses the installed `codex` command as a local provider bridge instead of sending an API key through Kernforge
 - The provider setup flow asks for the command path and supported model name, including higher-tier Codex CLI models exposed by the installed account
+- Reads `KERNFORGE_CODEX_CLI_PATH` and `KERNFORGE_CODEX_CLI_ARGS` for non-interactive setup
 - `api_key` and provider-key storage are intentionally ignored for `codex-cli`
 
-### OpenAI Codex OAuth
+### OpenAI Codex Subscription
 
+- User-facing provider label: `openai-codex-subscription`; stored provider id: `openai-codex`
 - The `openai-codex` provider calls the Codex Responses backend directly with ChatGPT OAuth tokens
 - Default base URL: `https://chatgpt.com/backend-api/codex`
 - Authentication uses a Kernforge-owned OAuth file at the Kernforge config path, `codex_auth.json`, and refreshes it when needed. Run `/codex-auth login` to create it, `/codex-auth status` to inspect it, or `/codex-auth logout` to remove it
 - Kernforge no longer defaults to the Codex CLI `~/.codex/auth.json` file for the direct provider. Set `KERNFORGE_CODEX_AUTH_FILE` for a different auth file or `KERNFORGE_CODEX_ACCESS_TOKEN` for a temporary access token override
-- Use `/effort` to show per-target reasoning effort, `/effort high` to set the active main model, or `/effort plan-review high`, `/effort analysis-worker low`, `/effort analysis-reviewer medium`, and `/effort specialist <name> high` for role-specific models. Unset effort is displayed as `undefined`
-- Reasoning effort is stored per configured model target. Main profiles, review profiles, analysis worker/reviewer profiles, and specialist profiles can use different values even when they share the same provider family
+- Use `/effort` to show per-target reasoning effort, `/effort high` to set the active main model, or `/effort analysis-worker low`, `/effort analysis-reviewer medium`, and `/effort specialist <name> high` for analysis/specialist models. Common review role effort is set through `/review models <role> <provider> <model> [reasoning_effort]`, while `/review models` provides a numbered interactive setup flow. Unset effort is displayed as `undefined`
+- Reasoning effort is stored per configured model target. Main profiles, common review role models, analysis worker/reviewer profiles, and specialist profiles can use different values even when they share the same provider family
 - When model selection through `/model`, `/provider`, or role-specific model commands selects an effort-capable model while that target's effort is `undefined`, Kernforge defaults that target to `low`. Use `/effort` to change or clear it afterward
 - Unlike the `codex-cli` bridge, this provider is wired into Kernforge's main LLM tool loop, so conversation context, tool calls, and tool results stay in the Kernforge session
 - Only models exposed to the current ChatGPT/Codex account are usable. Example: `.\kernforge.exe -provider openai-codex -model gpt-5.5`
@@ -1016,7 +1042,7 @@ Mention syntax:
 @mcp:docs:getting-started summarize this resource
 ```
 
-When Kernforge is running as the MCP server and Codex is the MCP client, code-review requests should use `kernforge_review_code`. That tool calls Kernforge's configured main provider/model to review the supplied diff/code or the current workspace `git diff`, so "review this with KernForge" does not accidentally turn into project analysis, verification, or a worker/reviewer route.
+When Kernforge is running as the MCP server and Codex is the MCP client, review requests should use `kernforge_review`. That tool runs the same common review harness as `/review`, collects supplied diff/code, file paths, plans, PR context, or the current workspace `git diff`, then returns structured findings, gate status, model-role status, and action-oriented `next_commands` with reason, timing, safety, and artifact paths under `.kernforge/reviews`. This keeps "review this with KernForge" on the typed review path instead of accidentally turning it into project analysis, verification, or a worker/reviewer route.
 
 For MCP clients that reuse one Kernforge server entry across multiple repositories, `-cwd` is only the fallback workspace. Kernforge also honors client workspace hints from `initialize.rootUri`, `initialize.workspaceFolders`, `tools/call.params._meta.cwd`, and the per-tool `workspace` or `cwd` argument. In Codex CLI, if the MCP server reports the wrong workspace in `kernforge_status`, pass the current repo as `workspace` on the Kernforge tool call or configure the MCP entry so its `-cwd` matches that repo.
 
@@ -1073,7 +1099,7 @@ Explain the structure of this repository
 - `/status` shows current session and runtime state such as approvals, active session, memory, verification, and MCP counts.
 - `/config` shows effective settings such as provider defaults, token limits, hooks, locale, and verification toggles.
 - `/provider status` shows the active provider, normalized `base_url`, API key presence, and provider-specific budget visibility. OpenRouter and DeepSeek perform live lookups, while OpenAI and Anthropic expose officially documented limits and billing guidance.
-- `/model` is the unified model-routing hub. It shows the main model, the plan-review reviewer, the analysis worker and reviewer, and any specialist-subagent overrides, then lets you pick one target to reconfigure.
+- `/model` is the model-routing hub for the main model, the analysis worker/reviewer, and specialist-subagent overrides. Common review harness reviewers are configured through `/review models`.
 - `/effort` shows or sets the `openai-codex` and DeepSeek reasoning effort per configured model target.
 
 ### Conversation And Session Commands
@@ -1111,15 +1137,14 @@ Explain the structure of this repository
 /model
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
-/profile-review [list|<number>|rN|dN|pN]
-/set-plan-review [provider]
 /set-analysis-models
 /set-specialist-model [status|clear <specialist|all>|<specialist> <provider> [model]]
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 /analyze-dashboard [latest|path]
 /docs-refresh
 /analyze-performance [focus]
-/do-plan-review <task>
+/review plan <task>
+/review models [role|status|clear]
 /new-feature <task>
 /specialists
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
@@ -1130,14 +1155,14 @@ Explain the structure of this repository
 ```
 
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
-- `/model` is the main entry point for changing the main model, plan-review reviewer, analysis worker/reviewer, and specialist subagent models.
-- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort plan-review high` or `/effort specialist <name> low` changes a role-specific model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
+- `/model` is the main entry point for changing the main model, analysis worker/reviewer, and specialist subagent models. Use `/review models` for common review harness reviewer roles.
+- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort analysis-worker high` or `/effort specialist <name> low` changes an analysis/specialist model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
 - If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
 - Changing only the main model preserves explicit role model profiles. Any target shown as `not configured; follows main model` is intentionally inherited and will display the new main model until you configure that role. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/set-analysis-models clear`.
-- `/profile` and `/profile-review` list saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own role model set for plan-review, analysis worker/reviewer, and specialist subagents. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
-- User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main and review profiles instead of dropping them when a save payload omits profile arrays.
-- `/set-plan-review [provider]` changes only the reviewer model used by plan review. The planner side still uses the main model.
+- `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and specialist subagent model set. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
+- User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
+- `/review models` is the single supported path for common review harness reviewer roles such as `primary`, `design`, `security`, `false-positive`, `regression`, `test`, and `final`.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
@@ -1158,7 +1183,7 @@ Explain the structure of this repository
 
 - Slash commands
 - Command and subcommand descriptions in completion menus
-- `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli|openai-codex|lmstudio|vllm|llama.cpp`
+- `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`
 - `/analyze-project --path ...`, `/analyze-project --mode ...`, and built-in mode values
 - `/fuzz-campaign status|run|new|list|show`
 - `@file` mentions
@@ -1198,8 +1223,8 @@ Selection commands:
 /note-selection <text>
 /tag-selection <tag[,tag2,...]>
 /diff-selection
-/review-selection [...]
-/review-selections [...]
+/review selection [...]
+/review selection --all [...]
 /edit-selection <task>
 ```
 
@@ -1444,7 +1469,7 @@ Recommended flow:
 1. Run `/analyze-project anti-cheat startup and integrity architecture`.
 2. Open the latest dashboard with `/analyze-dashboard`, then review the generated knowledge pack, docs, and shard outputs.
 3. Run `/analyze-performance startup` or another focus area such as `scanner`, `compression`, `upload`, `ETW`, or `memory`.
-4. Use the resulting knowledge in `/review-selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
+4. Use the resulting knowledge in `/review selection`, `/edit-selection`, `/verify`, and evidence-guided hook policy.
 
 ## Source-Level Function Fuzzing
 

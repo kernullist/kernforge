@@ -58,6 +58,44 @@ func TestConfiguredSpecialistProfilesMergeBuiltinsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestDefaultSpecialistProfilesAvoidReviewerNames(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	names := map[string]bool{}
+	for _, profile := range configuredSpecialistProfiles(cfg) {
+		names[normalizeSpecialistProfileName(profile.Name)] = true
+	}
+	for _, want := range []string{"attack-surface-analyst", "unreal-integrity-analyst", "memory-inspection-analyst"} {
+		if !names[want] {
+			t.Fatalf("expected renamed domain specialist %q in catalog, got %#v", want, names)
+		}
+	}
+	for _, old := range []string{"reviewer", "attack-surface-reviewer", "unreal-integrity-reviewer", "memory-inspection-reviewer"} {
+		if names[old] {
+			t.Fatalf("default specialist catalog should not expose %q: %#v", old, names)
+		}
+	}
+}
+
+func TestSpecialistProfileCanonicalizesDomainReviewerAliases(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
+		Name:     "memory-inspection-reviewer",
+		Provider: "openai",
+		Model:    "gpt-memory",
+	}}
+
+	profile, ok := configuredSpecialistProfileByName(cfg, "memory-inspection-analyst")
+	if !ok {
+		t.Fatalf("expected legacy memory-inspection-reviewer override to map to memory-inspection-analyst")
+	}
+	if profile.Name != "memory-inspection-analyst" || profile.Model != "gpt-memory" {
+		t.Fatalf("unexpected canonicalized profile: %#v", profile)
+	}
+	if _, ok := configuredSpecialistProfileByName(cfg, "memory-inspection-reviewer"); !ok {
+		t.Fatalf("expected old domain specialist name to resolve as an alias")
+	}
+}
+
 func TestSelectSpecialistForTaskNodePrefersKernelInvestigator(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	node := TaskNode{
@@ -128,7 +166,7 @@ func TestSpecialistClientSkipsImplicitMainModelRoute(t *testing.T) {
 	agent := &Agent{Config: cfg}
 
 	client, model := agent.specialistClient(SpecialistSubagentProfile{
-		Name: "reviewer",
+		Name: "kernel-investigator",
 	})
 	if client != nil || model != "" {
 		t.Fatalf("expected unconfigured specialist to skip implicit main route, got %T %q", client, model)
@@ -287,7 +325,7 @@ func TestFormatSpecialistCatalogAlignsDescriptionsAndSeparatesHints(t *testing.T
 		if strings.Contains(line, "planner") && !strings.Contains(line, "implementation-owner") {
 			plannerIndex = i
 		}
-		if strings.Contains(line, "attack-surface-reviewer") {
+		if strings.Contains(line, "attack-surface-analyst") {
 			attackIndex = i
 		}
 		if strings.Contains(line, "implementation-owner") {
@@ -318,7 +356,7 @@ func TestFormatSpecialistCatalogAlignsDescriptionsAndSeparatesHints(t *testing.T
 	}
 
 	if attackIndex+1 >= len(lines) {
-		t.Fatalf("expected hint line after attack-surface-reviewer entry")
+		t.Fatalf("expected hint line after attack-surface-analyst entry")
 	}
 	hintLine := lines[attackIndex+1]
 	if !strings.HasPrefix(strings.TrimSpace(hintLine), "[kinds=inspection,summary,verification") {
@@ -344,28 +382,28 @@ func TestFormatSpecialistCatalogWithUIHighlightsNames(t *testing.T) {
 	clean := ansiPattern.ReplaceAllString(text, "")
 	lines := strings.Split(clean, "\n")
 	implementationIndex := -1
-	reviewerIndex := -1
+	plannerIndex := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "implementation-owner") {
 			implementationIndex = i
 		}
-		if strings.HasPrefix(trimmed, "reviewer ") || trimmed == "reviewer" {
-			reviewerIndex = i
+		if strings.HasPrefix(trimmed, "planner ") || trimmed == "planner" {
+			plannerIndex = i
 		}
 	}
-	if implementationIndex < 0 || reviewerIndex < 0 {
+	if implementationIndex < 0 || plannerIndex < 0 {
 		t.Fatalf("expected general-purpose specialists in output, got %q", clean)
 	}
 
 	implementationLine := lines[implementationIndex]
-	reviewerLine := lines[reviewerIndex]
+	plannerLine := lines[plannerIndex]
 	implementationDescCol := strings.Index(implementationLine, "Owns ordinary product code edits")
-	reviewerDescCol := strings.Index(reviewerLine, "General-purpose review specialist")
-	if implementationDescCol <= 0 || reviewerDescCol <= 0 {
+	plannerDescCol := strings.Index(plannerLine, "General-purpose planning specialist")
+	if implementationDescCol <= 0 || plannerDescCol <= 0 {
 		t.Fatalf("expected descriptions to be present after stripping ANSI, got %q", clean)
 	}
-	if implementationDescCol != reviewerDescCol {
-		t.Fatalf("expected aligned description columns after stripping ANSI, got implementation=%d reviewer=%d in %q", implementationDescCol, reviewerDescCol, clean)
+	if implementationDescCol != plannerDescCol {
+		t.Fatalf("expected aligned description columns after stripping ANSI, got implementation=%d planner=%d in %q", implementationDescCol, plannerDescCol, clean)
 	}
 }

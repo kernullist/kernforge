@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewProviderClientSupportsCodexCLIAliases(t *testing.T) {
-	for _, provider := range []string{"codex", "codex-cli", "codex_cli"} {
+	for _, provider := range []string{"codex", "codex-cli", "codex_cli", "openai-codex-cli", "openai_codex_cli"} {
 		client, err := NewProviderClient(Config{Provider: provider, Model: codexCLIDefaultModel})
 		if err != nil {
 			t.Fatalf("NewProviderClient(%q): %v", provider, err)

@@ -678,8 +678,19 @@ func TestFormatProgressEventMessageIncludesAnalysisStageAndShard(t *testing.T) {
 	if !strings.HasPrefix(message, "worker runtime:") {
 		t.Fatalf("expected stage and shard prefix, got %q", message)
 	}
-	if !strings.Contains(message, "deepseek / deepseek-chat") {
+	if !strings.Contains(message, "DeepSeek / deepseek-chat") {
 		t.Fatalf("expected provider/model target, got %q", message)
+	}
+}
+
+func TestFormatProgressEventMessageUsesProviderDisplayLabel(t *testing.T) {
+	message := formatProgressEventMessage(Config{}, ProgressEvent{
+		Kind:     progressKindModelRequestStart,
+		Provider: "openai-codex",
+		Model:    "gpt-5.5",
+	})
+	if !strings.Contains(message, "openai-codex-subscription / gpt-5.5") {
+		t.Fatalf("expected display provider label, got %q", message)
 	}
 }
 
@@ -2818,6 +2829,62 @@ func TestAnalysisPromptExcerptTruncatesByRune(t *testing.T) {
 	excerpt := analysisPromptExcerpt("가나다라마", 3)
 	if !strings.HasPrefix(excerpt, "가나다") || !strings.Contains(excerpt, "truncated") {
 		t.Fatalf("unexpected excerpt: %q", excerpt)
+	}
+}
+
+func TestBuildSynthesisPromptCompactsLargeReportCorpus(t *testing.T) {
+	longText := strings.Repeat("source-backed subsystem detail with runtime flow and verification anchors. ", 120)
+	snapshot := ProjectSnapshot{
+		Root:       "F:/large",
+		TotalFiles: 3000,
+		TotalLines: 900000,
+		Files: []ScannedFile{
+			{Path: "src/main.cpp", ImportanceScore: 100, ImportanceReasons: []string{"entrypoint"}},
+		},
+		FilesByPath: map[string]ScannedFile{},
+	}
+	shards := make([]AnalysisShard, 0, 96)
+	reports := make([]WorkerReport, 0, 96)
+	for i := 0; i < 96; i++ {
+		file := fmt.Sprintf("src/subsystem_%02d.cpp", i)
+		shards = append(shards, AnalysisShard{
+			ID:               fmt.Sprintf("shard-%02d", i),
+			Name:             fmt.Sprintf("subsystem_%02d", i),
+			PrimaryFiles:     []string{file},
+			ReferenceFiles:   []string{fmt.Sprintf("include/subsystem_%02d.h", i)},
+			InvalidationDiff: []string{longText},
+		})
+		reports = append(reports, WorkerReport{
+			ShardID:          fmt.Sprintf("shard-%02d", i),
+			Title:            fmt.Sprintf("Subsystem %02d", i),
+			ScopeSummary:     longText,
+			Responsibilities: []string{longText, longText},
+			Facts:            []string{longText, longText, longText},
+			Inferences:       []string{longText, longText},
+			Claims: []AnalysisClaim{
+				{Claim: longText, SourceAnchors: []string{file}, Confidence: "medium", DisprovesWhen: longText, VerificationHint: longText},
+			},
+			KeyFiles:      []string{file},
+			EntryPoints:   []string{fmt.Sprintf("Subsystem%02d::Start", i), longText},
+			InternalFlow:  []string{longText, longText},
+			Dependencies:  []string{longText},
+			Collaboration: []string{longText},
+			Risks:         []string{longText},
+			Unknowns:      []string{longText},
+			EvidenceFiles: []string{file},
+			Narrative:     longText,
+		})
+	}
+
+	prompt := buildSynthesisPrompt(snapshot, shards, reports, "프로젝트 구조를 분석해서 문서로 작성해")
+	if got := len([]rune(prompt)); got > analysisSynthesisPromptMaxRunes {
+		t.Fatalf("expected synthesis prompt to stay within budget, got %d > %d", got, analysisSynthesisPromptMaxRunes)
+	}
+	if !strings.Contains(prompt, "Prompt budget note") {
+		t.Fatalf("expected compact prompt to disclose prompt-budget compaction\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Full shard reports, structured JSON, docs, and vector artifacts are still written locally") {
+		t.Fatalf("expected omitted-section summary to preserve artifact guidance\n%s", prompt)
 	}
 }
 

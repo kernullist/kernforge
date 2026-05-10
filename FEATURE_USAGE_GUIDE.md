@@ -29,7 +29,7 @@ The best current loop looks like this:
 4. If an extra risk lens matters, use `/simulate` to evaluate tamper, visibility, or forensic blind spots.
 5. If you already have a user-visible symptom and need to narrow likely causes, run `/find-root-cause`.
 6. If attacker-controlled parameter behavior matters, run `/fuzz-func` for source-level fuzz reasoning; when a seed handoff is useful, Kernforge prints `/fuzz-campaign run` as the next step.
-7. Use `/review-selection`, `/edit-selection`, `/do-plan-review`, or `/new-feature` to drive the work.
+7. Use `/review selection`, `/edit-selection`, `/review plan`, or `/new-feature` to drive the work.
 8. Run `/verify` to execute the verification plan.
 9. Use `/evidence-*` and `/mem-*` to inspect both recent signals and longer-lived context.
 10. Follow the printed handoff blocks and `/continuity` packet after analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, and specialist actions instead of memorizing the command order.
@@ -119,7 +119,7 @@ Purpose:
 
 Current behavior:
 1. Requests such as "implement this", "fix this", "handle the remaining items", or "run the tests and finish" become self-driving candidates.
-2. If reviewer/planner preflight is available, Kernforge prefers the existing plan-review flow; otherwise it uses a deterministic default plan.
+2. If a common review role model is configured, Kernforge can use it for reviewer/planner preflight; otherwise it uses a deterministic default plan.
 3. Read-only prompts such as "why did that error happen?", "what is the current state?", or "analyze this" do not start an automatic edit loop.
 
 ### Proactive Suggestion Dashboard
@@ -141,7 +141,7 @@ Current behavior:
 2. Suggestion cards include related command chips, evidence refs, and dashboard links such as `/verify-dashboard-html`, `/evidence-dashboard-html`, and `/analyze-dashboard`.
 3. Cards include `/suggest accept <id>` and `/suggest dismiss <id>` chips so repeated suggestions can be managed.
 4. `/suggest` candidates are synchronized into `TaskGraph` as `suggest:<id>` nodes with ready/in_progress/completed/canceled states.
-5. In `/suggest mode confirm`, accepting a suggestion only runs safe commands such as `/verify`, dashboards, `/docs-refresh`, `/automation add`, and `/review-pr`.
+5. In `/suggest mode confirm`, accepting a suggestion only runs safe commands such as `/verify`, dashboards, `/docs-refresh`, `/automation add`, and `/review pr`.
 6. Accepted or dismissed suggestions are also promoted into persistent memory as preference records.
 
 ### Session Dashboard
@@ -250,7 +250,7 @@ Useful commands:
 - `/automation`
 - `/automation add recurring-verification /verify`
 - `/automation add recurring-verification --every 2h /verify`
-- `/automation add pr-review /review-pr`
+- `/automation add pr-review /review pr`
 - `/automation due`
 - `/automation digest`
 - `/automation monitor`
@@ -267,14 +267,14 @@ Useful commands:
 - `/automation pause <id>`
 - `/automation resume <id>`
 - `/automation remove <id>`
-- `/review-pr`
-- `/review-pr --github`
-- `/review-pr --github --draft-comments`
-- `/review-pr --github --post-comments`
-- `/review-pr --resolve-thread <thread-id>`
-- `/review-pr --draft-issue`
-- `/review-pr --create-issue`
-- `/review-pr --create-issue --label bug,security --assignee <login> --milestone "May 2026"`
+- `/review pr`
+- `/review pr --github`
+- `/review pr --github --draft-comments`
+- `/review pr --github --post-comments`
+- `/review pr --resolve-thread <thread-id>`
+- `/review pr --draft-issue`
+- `/review pr --create-issue`
+- `/review pr --create-issue --label bug,security --assignee <login> --milestone "May 2026"`
 
 Current behavior:
 1. Automation slots are stored in the session JSON under `automations`.
@@ -286,12 +286,12 @@ Current behavior:
 7. `/automation watch [--interval 5m] [--cycles N|--once] [--notify] [--webhook-url <url>]` runs a foreground standing monitor loop. Each cycle runs due safe automations, prints the digest, and optionally refreshes the digest artifact or sends a webhook.
 8. `/automation daemon-start|daemon-status|daemon-stop` manages a process-detached local automation watcher with state and logs in `.kernforge/automation/daemon.json` and `daemon.log`.
 9. `-command "/automation monitor --notify"` lets Windows Task Scheduler, service wrappers, or CI run a slash command without entering the REPL.
-10. `/review-pr` writes git status, diff stat, changed files, and a review checklist to `.kernforge/pr_review/latest.md`, then records an artifact ref in the conversation event log.
-11. `/review-pr --github` adds current PR metadata, review decision, comments, and checks from `gh pr view --json ...` when available.
-12. `/review-pr --draft-comments` writes `.kernforge/pr_review/comments.md` as a file-level review comment draft without posting to GitHub.
-13. `/review-pr --post-comments` runs `gh pr review --comment --body-file .kernforge/pr_review/comments.md` after generating the draft. This write-side action is only allowed from the explicit command, not suggestion acceptance or scheduled automation.
-14. `/review-pr --resolve-thread <thread-id>` runs GitHub's `resolveReviewThread` GraphQL mutation through `gh api graphql`. This write-side action is also explicit-only.
-15. `/review-pr --draft-issue` writes `.kernforge/pr_review/issue.md`, and `/review-pr --create-issue` posts that draft with `gh issue create --title ... --body-file ...`. Issue creation is explicit-only.
+10. `/review pr` writes git status, diff stat, changed files, and a review checklist to `.kernforge/pr_review/latest.md`, then records an artifact ref in the conversation event log.
+11. `/review pr --github` adds current PR metadata, review decision, comments, and checks from `gh pr view --json ...` when available.
+12. `/review pr --draft-comments` writes `.kernforge/pr_review/comments.md` as a file-level review comment draft without posting to GitHub.
+13. `/review pr --post-comments` runs `gh pr review --comment --body-file .kernforge/pr_review/comments.md` after generating the draft. This write-side action is only allowed from the explicit command, not suggestion acceptance or scheduled automation.
+14. `/review pr --resolve-thread <thread-id>` runs GitHub's `resolveReviewThread` GraphQL mutation through `gh api graphql`. This write-side action is also explicit-only.
+15. `/review pr --draft-issue` writes `.kernforge/pr_review/issue.md`, and `/review pr --create-issue` posts that draft with `gh issue create --title ... --body-file ...`. Issue creation is explicit-only.
 16. Issue drafts and create calls accept repeated or comma-separated `--label`, repeated or comma-separated `--assignee`, and quoted `--milestone` values. Create mode passes them through to `gh issue create`.
 17. When verification gaps or dirty diffs exist, `/suggest` can recommend recurring verification or PR review automation registration.
 
@@ -384,8 +384,8 @@ Before confirmation, the analysis plan prints the selected `baseline_map` so the
 Large runs are provider-failure tolerant: worker/reviewer rate limits are recorded as low-confidence shard failures, and synthesis falls back to a local document when the final model request fails.
 For local-model providers such as LM Studio, vLLM, llama.cpp, and Ollama, unset `max_files_per_shard` / `max_lines_per_shard` values are adjusted from provider, model size, max tokens, and request timeout before the plan is confirmed. If the run still ends in a timeout, 5xx, overload, empty response, connection reset, or similar provider-pressure error after normal request retries are exhausted, Kernforge prints an `adaptive_retry_shards` line and reruns once with smaller shard limits. Rate limits are not retried this way because smaller shards usually create more requests.
 When worker and reviewer use the same provider/model/base_url/reasoning_effort route, shard execution is capped by the model route limit. Local providers default to serial execution with a route limit of 1; cloud/API routes are not forced to serial execution unless `model_routes` says so.
-Reasoning effort is stored per configured model target, not as one global override. The main profile, plan-review reviewer, analysis worker/reviewer, and specialist profiles can each carry a different `reasoning_effort`; selecting a new effort-capable target defaults that target to `low` when it was still undefined.
-Role-specific `base_url` values for analysis worker/reviewer, plan reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
+Reasoning effort is stored per configured model target, not as one global override. The main profile, common review role models, analysis worker/reviewer, and specialist profiles can each carry a different `reasoning_effort`; selecting a new effort-capable target defaults that target to `low` when it was still undefined.
+Role-specific `base_url` values for common review roles, analysis worker/reviewer, and specialists can be omitted safely. Same-provider roles inherit the main endpoint; different-provider roles use their own configured or default endpoint so proxy/local routes do not drift silently.
 Changing the main provider/model preserves explicit analysis worker and reviewer profiles. Use `/set-analysis-models clear` when you want project analysis to inherit the current main model again instead of a previously dedicated route.
 `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is accepted only as quiet backward compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to rebuild docs from the latest saved run.
 The generated documentation set includes `FINAL_REPORT.md`, which preserves the assistant-facing final synthesis that was printed at the end of the run, plus the operational docs used for architecture, security, entrypoints, build artifacts, verification, fuzz targets, and operations.
@@ -739,8 +739,9 @@ Important scope limit:
 
 Purpose:
 1. Review or edit only the selected code range instead of the whole file.
-2. Automatically inject recent simulation findings when they match the selected area.
-3. Inspect workspace and selection diffs in a richer Windows diff surface before wider review or editing.
+2. Route selection review through the common `ReviewRun` harness and gate instead of a one-off prompt.
+3. Automatically inject recent simulation findings when they match the selected area.
+4. Inspect workspace and selection diffs in a richer Windows diff surface before wider review or editing.
 
 Useful commands:
 - `/open <path>`
@@ -748,8 +749,8 @@ Useful commands:
 - `/selections`
 - `/diff`
 - `/diff-selection`
-- `/review-selection [extra]`
-- `/review-selections [extra]`
+- `/review selection [extra]`
+- `/review selection --all [extra]`
 - `/edit-selection <task>`
 - `/note-selection <text>`
 - `/tag-selection <tag[,tag2]>`
@@ -764,16 +765,24 @@ Best used when:
 1. You want to focus on a single IOCTL handler, integrity check, or provider registration block.
 2. You want to connect a recent simulation finding directly to the relevant code.
 
+Review artifacts:
+1. `/review selection` writes `.kernforge/reviews/latest.json` and `.kernforge/reviews/latest.md`.
+2. The result includes typed findings, freshness/redaction state, gate status, repair steps, and recommended next commands.
+3. MCP clients get the same structure through `kernforge_review`.
+
 ### 2.8 Plan Review Workflow
 
 Purpose:
-1. Have one model produce a plan.
-2. Have another model review that plan.
-3. Execute the approved plan through the normal agent flow.
+1. Review implementation plans through the same common review harness used for code, selection, PR, goal, final, and analysis reviews.
+2. Use role-specific reviewer models through `/review models`, with no separate legacy plan-review reviewer fallback.
+3. Execute only when the gate and user flow allow it.
 
 Useful commands:
-- `/set-plan-review`
-- `/do-plan-review <task>`
+- `/review plan <task>`
+- `/review models status`
+- `/review models`
+- `/review models <role> <provider> [model]`
+- `/review waive <finding-id> --reason <text>`
 
 Best used when:
 1. A change spans multiple components.
@@ -781,9 +790,14 @@ Best used when:
 3. You want simulation findings to shape the implementation plan before edits begin.
 
 Current integration:
-1. Recent simulation findings that match the task are injected into the planning prompt.
-2. The same perspective is injected again into the final execution prompt.
-3. Unless an explicit timeout policy overrides it, planner and reviewer requests use a 2-minute per-attempt timeout so long preflight waits fail quickly and hand control back to the recovery path.
+1. Recent simulation findings that match the task are injected into the review evidence pack.
+2. The gate records objective fit, architecture risk, testability, security boundary, maintainability, and evidence gaps as structured findings.
+3. Multi-model roles can be configured per review role; missing recommended role models are reported as UX guidance instead of silently lowering the bar.
+4. Unless an explicit timeout policy overrides it, model reviewer requests use bounded per-attempt timeouts so long preflight waits fail quickly and hand control back to the recovery path.
+5. Natural-language review requests such as `@file:line-line review this` route to `/review selection`; focused review-and-fix requests first run review, then continue the repair flow from the latest findings.
+6. Automatic pre-write review runs on valid edit previews before an edit is applied, and automatic post-change review runs after changed paths exist.
+7. Service, SCM, driver, and sensitive-path signals select the `security` reviewer role. The `false-positive` role is reserved for detection, telemetry, scan, spoofing, and evasion-quality surfaces.
+8. Review progress explicitly names the reviewer role and provider route when it differs from the main model, then prints the gate result and finding counts.
 
 ### 2.9 Tracked Feature Workflow
 
@@ -820,7 +834,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|anthropic|openai|openrouter|deepseek|opencode|opencode-go|ollama|codex-cli`, `/profile list|pin|unpin|rename|delete`, `/profile-review list|pin|unpin|rename|delete`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models primary|security|false-positive|design|regression|test|final|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 
@@ -851,7 +865,7 @@ Recommended flow:
 4. `/simulate tamper-surface guard.sys`
 5. `/open driver/guard.cpp`
 6. Select the relevant protection logic in the viewer.
-7. `/review-selection integrity risk paths and verifier interactions`
+7. `/review selection integrity risk paths and verifier interactions`
 8. `/edit-selection harden registration and signing assumptions`
 9. `/verify`
 10. `/evidence-dashboard category:driver`
@@ -878,7 +892,7 @@ Recommended flow:
 3. `/simulate stealth-surface MyProvider`
 4. `/open telemetry/provider.man`
 5. Select the manifest region.
-6. `/review-selection provider visibility and schema drift`
+6. `/review selection provider visibility and schema drift`
 7. `/open telemetry/register_provider.cpp`
 8. `/edit-selection align provider registration and fallback visibility`
 9. `/verify`
@@ -902,7 +916,7 @@ Situation:
 Recommended flow:
 1. `/simulate stealth-surface scanner-core`
 2. `/open scanner/patternscan.cpp`
-3. `/review-selection false positives, stealth coverage, and performance ceilings`
+3. `/review selection false positives, stealth coverage, and performance ceilings`
 4. `/edit-selection reduce false positives without weakening evasion coverage`
 5. `/verify`
 6. `/evidence-dashboard category:memory-scan`
@@ -922,7 +936,7 @@ Situation:
 Recommended flow:
 1. `/simulate tamper-surface guard.sys`
 2. `/simulate forensic-blind-spot guard.sys`
-3. `/do-plan-review harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
+3. `/review plan harden driver registration, improve telemetry visibility, and preserve post-incident artifacts`
 4. Let the reviewer critique the plan.
 5. Execute the approved plan.
 6. `/verify`
@@ -995,13 +1009,13 @@ Key interpretation:
 1. Simulation is not proof of exploitation.
 2. It is a structured way to highlight heuristic risk signals that deserve review.
 
-### 4.3 `/review-selection` And `/edit-selection`
+### 4.3 `/review selection` And `/edit-selection`
 
 Basic usage:
 
 ```text
 /open driver/guard.cpp
-/review-selection check risk surfaces and cleanup paths
+/review selection check risk surfaces and cleanup paths
 /edit-selection harden the selected registration path
 ```
 
@@ -1012,12 +1026,12 @@ Good use cases:
 Current automatic behavior:
 1. If recent simulation findings match the selected path, Kernforge injects `Additional simulation risk focus` into review and edit prompts.
 
-### 4.4 `/do-plan-review`
+### 4.4 `/review plan`
 
 Basic usage:
 
 ```text
-/do-plan-review harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
+/review plan harden driver load validation, improve telemetry provider visibility, and preserve audit artifacts
 ```
 
 Good use cases:
@@ -1268,7 +1282,7 @@ Recommended progression:
 /investigate snapshot
 /simulate tamper-surface guard.sys
 /open driver/guard.cpp
-/review-selection integrity risk paths
+/review selection integrity risk paths
 /edit-selection harden the selected integrity checks
 /verify
 /evidence-dashboard category:driver
@@ -1281,7 +1295,7 @@ Recommended progression:
 /investigate snapshot MyProvider
 /simulate stealth-surface MyProvider
 /open telemetry/provider.man
-/review-selection schema and visibility drift
+/review selection schema and visibility drift
 /verify
 /evidence-search category:telemetry outcome:failed
 ```
@@ -1291,7 +1305,7 @@ Recommended progression:
 ```text
 /simulate tamper-surface guard.sys
 /simulate forensic-blind-spot guard.sys
-/do-plan-review harden driver registration and preserve telemetry audit artifacts
+/review plan harden driver registration and preserve telemetry audit artifacts
 /verify
 /simulate-dashboard
 ```
@@ -1334,8 +1348,8 @@ That means the strongest current loop is:
 1. `/investigate`
 2. `/simulate`
 3. `/fuzz-func`
-4. `/review-selection` or `/edit-selection`
-5. `/do-plan-review`
+4. `/review selection` or `/edit-selection`
+5. `/review plan`
 6. `/new-feature`
 7. `/verify`
 8. `/evidence-dashboard`

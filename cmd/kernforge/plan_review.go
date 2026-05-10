@@ -282,19 +282,19 @@ func completePlanReviewRequest(ctx context.Context, client ProviderClient, req C
 	return ChatResponse{}, fmt.Errorf("%s plan-review request failed after retry", strings.TrimSpace(stage))
 }
 
-// createReviewerClient builds a ProviderClient from PlanReviewConfig, inheriting
-// same-provider API key and base URL settings when the reviewer leaves them empty.
-func createReviewerClient(reviewCfg *PlanReviewConfig, mainCfg Config) (ProviderClient, error) {
+// createReviewerClient builds a ProviderClient from ReviewModelConfig, inheriting
+// same-provider API key and base URL settings when the review role leaves them empty.
+func createReviewerClient(reviewCfg *ReviewModelConfig, mainCfg Config) (ProviderClient, error) {
 	if reviewCfg == nil {
-		return nil, fmt.Errorf("no plan-review reviewer configured")
+		return nil, fmt.Errorf("no review model configured")
 	}
 	provider := normalizeProviderName(reviewCfg.Provider)
 	if provider == "" {
-		return nil, fmt.Errorf("plan-review provider is empty")
+		return nil, fmt.Errorf("review model provider is empty")
 	}
 	model := strings.TrimSpace(reviewCfg.Model)
 	if model == "" {
-		return nil, fmt.Errorf("plan-review model is empty")
+		return nil, fmt.Errorf("review model is empty")
 	}
 	mainProvider := normalizeProviderName(mainCfg.Provider)
 	apiKey := strings.TrimSpace(reviewCfg.APIKey)

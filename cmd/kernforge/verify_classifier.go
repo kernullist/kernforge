@@ -433,8 +433,19 @@ func isUnrealRelatedPath(path, base string) bool {
 }
 
 func isMemoryScanRelatedPath(path, base string) bool {
-	keywords := []string{"memoryscan", "memory_scan", "memscan", "patternscan", "signature", "aob", "scanner", "inspection"}
-	return containsAnyKeyword(path, base, keywords)
+	strongKeywords := []string{
+		"memoryscan", "memory_scan", "memscan",
+		"patternscan", "pattern_scan", "aob",
+		"vad", "valloc", "virtualalloc",
+		"pagetable", "page_table", "pte",
+		"memoryinspection", "memory_inspection",
+	}
+	if containsAnyKeyword(path, base, strongKeywords) {
+		return true
+	}
+	genericScanKeywords := []string{"scanner", "scan", "signature", "inspection"}
+	memoryQualifiers := []string{"memory", "mem", "virtual", "vad", "page", "pte", "valloc", "alloc", "aob", "pattern"}
+	return containsAnyKeyword(path, base, genericScanKeywords) && containsAnyKeyword(path, base, memoryQualifiers)
 }
 
 func containsAnyKeyword(path, base string, keywords []string) bool {

@@ -932,6 +932,86 @@ func TestFormatAssistantErrorAddsGuidanceForToolUseUnsupportedModel(t *testing.T
 	}
 }
 
+func TestRuntimeStatePromptCanceledCommandPrintsInfoNotError(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai", "gpt-test", "", "default")
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	rt.printCommandExecutionError("/review models", ErrPromptCanceled)
+
+	rendered := out.String()
+	if !strings.Contains(rendered, "INFO  Canceled.") {
+		t.Fatalf("expected cancellation to render as info, got %q", rendered)
+	}
+	for _, banned := range []string{"ERROR", "error", "prompt canceled", "command error"} {
+		if strings.Contains(rendered, banned) {
+			t.Fatalf("cancellation output should not contain %q, got %q", banned, rendered)
+		}
+	}
+	if len(session.ConversationEvents) != 0 {
+		t.Fatalf("prompt cancellation should not be recorded as a command event, got %#v", session.ConversationEvents)
+	}
+}
+
+func TestFormatAssistantErrorTreatsRequestCancelAsInfoNotError(t *testing.T) {
+	rt := &runtimeState{
+		ui: UI{},
+	}
+
+	lines := rt.formatAssistantError(ErrRequestCanceled)
+	rendered := strings.Join(lines, "\n")
+	if !strings.Contains(rendered, "INFO  Request canceled.") {
+		t.Fatalf("expected request cancellation to render as info, got %q", rendered)
+	}
+	for _, banned := range []string{"ERROR", "error", "assistant error", "request canceled by user"} {
+		if strings.Contains(rendered, banned) {
+			t.Fatalf("request cancellation output should not contain %q, got %q", banned, rendered)
+		}
+	}
+}
+
+func TestEnsureOpenAICodexAuthInteractiveImportsCodexCLIAuth(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	if err := saveCodexOAuthAuthFile(codexCLIOAuthAuthFilePath(), codexOAuthTokens{
+		AccessToken:  testCodexOAuthJWT(time.Now().Add(time.Hour)),
+		RefreshToken: "refresh-1",
+		AccountID:    "account-1",
+	}); err != nil {
+		t.Fatalf("save Codex CLI auth: %v", err)
+	}
+
+	var out bytes.Buffer
+	rt := &runtimeState{
+		cfg:         DefaultConfig(workspace),
+		reader:      bufio.NewReader(strings.NewReader("y\n")),
+		writer:      &out,
+		ui:          UI{},
+		interactive: true,
+	}
+
+	if err := rt.ensureOpenAICodexAuthInteractive(); err != nil {
+		t.Fatalf("ensureOpenAICodexAuthInteractive: %v", err)
+	}
+	if !codexOAuthAuthFileUsable(codexOAuthAuthFilePath()) {
+		t.Fatalf("expected Kernforge auth file to be usable after Codex CLI import")
+	}
+	rendered := out.String()
+	if !strings.Contains(rendered, "Existing Codex CLI OAuth login detected") ||
+		!strings.Contains(rendered, "OpenAI Codex OAuth imported from Codex CLI login") {
+		t.Fatalf("expected import UX, got %q", rendered)
+	}
+}
+
 func TestFormatAssistantErrorAddsGuidanceForEmptyResponseAfterTool(t *testing.T) {
 	rt := &runtimeState{
 		ui: UI{},
@@ -1486,10 +1566,6 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai"
 	cfg.Model = "gpt-main"
-	cfg.PlanReview = &PlanReviewConfig{
-		Provider: "openai",
-		Model:    "gpt-review",
-	}
 	cfg.ProjectAnalysis.WorkerProfile = &Profile{
 		Provider: "anthropic",
 		Model:    "claude-worker",
@@ -1503,9 +1579,9 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 		Provider: "openai",
 		Model:    "gpt-5.4-mini",
 	}, {
-		Name: "unreal-integrity-reviewer",
+		Name: "unreal-integrity-analyst",
 	}, {
-		Name: "memory-inspection-reviewer",
+		Name: "memory-inspection-analyst",
 	}}
 	rt := &runtimeState{
 		writer:  &out,
@@ -1522,23 +1598,25 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 	for _, needle := range []string{
 		"Model Routing",
 		"main",
-		"plan_reviewer",
 		"analysis_worker",
 		"analysis_reviewer",
+		"Common /review role models are separate",
+		"use /review models",
 		"Specialist Subagents",
+		"not /review roles",
 		"planner",
 		"gpt-5.4-mini",
-		"unreal-integrity-reviewer:",
-		"memory-inspection-reviewer:",
-		"not configured; follows main model -> openai / gpt-main",
+		"unreal-integrity-analyst:",
+		"memory-inspection-analyst:",
+		"not configured; follows main model -> openai-api / gpt-main",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected model routing output to contain %q, got %q", needle, rendered)
 		}
 	}
 	for _, bad := range []string{
-		"unreal-integrity-reviewer ->",
-		"memory-inspection-reviewer ->",
+		"unreal-integrity-analyst ->",
+		"memory-inspection-analyst ->",
 	} {
 		if strings.Contains(rendered, bad) {
 			t.Fatalf("expected long specialist names to stay aligned, got %q", rendered)
@@ -1558,7 +1636,7 @@ func TestRuntimeStateHandleModelCommandInteractiveRoutesToAnalysisReviewer(t *te
 	cfg.Model = "gpt-main"
 	cfg.APIKey = "test-key"
 	rt := &runtimeState{
-		reader:      bufio.NewReader(strings.NewReader("4\n2\n1\n")),
+		reader:      bufio.NewReader(strings.NewReader("3\n3\n1\n")),
 		writer:      &out,
 		ui:          UI{},
 		interactive: true,
@@ -1613,7 +1691,7 @@ func TestRuntimeStateHandleSetSpecialistModelCommandPersistsWorkspaceOverride(t 
 	if err := rt.handleSetSpecialistModelCommand("planner openai gpt-5.4-mini"); err != nil {
 		t.Fatalf("handleSetSpecialistModelCommand: %v", err)
 	}
-	if !strings.Contains(output.String(), "Specialist planner set: openai / gpt-5.4-mini") {
+	if !strings.Contains(output.String(), "Specialist planner set: openai-api / gpt-5.4-mini") {
 		t.Fatalf("expected success output, got %q", output.String())
 	}
 	profile, ok := configuredSpecialistProfileByName(rt.cfg, "planner")
@@ -1809,10 +1887,10 @@ func TestHandleProfileCommandAutoSavesCurrentWhenListIsEmpty(t *testing.T) {
 	if len(rt.cfg.Profiles) != 1 {
 		t.Fatalf("expected one auto-saved profile, got %#v", rt.cfg.Profiles)
 	}
-	if rt.cfg.Profiles[0].Name != "openai / gpt-current" {
+	if rt.cfg.Profiles[0].Name != "openai-api / gpt-current" {
 		t.Fatalf("unexpected auto-saved profile: %#v", rt.cfg.Profiles[0])
 	}
-	if !strings.Contains(output.String(), "Saved current provider/model as profile openai / gpt-current") {
+	if !strings.Contains(output.String(), "Saved current provider/model as profile openai-api / gpt-current") {
 		t.Fatalf("expected auto-save output, got %q", output.String())
 	}
 	if !strings.Contains(output.String(), "Profiles") {
@@ -1965,7 +2043,6 @@ func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
 		"anthropic":  "anthropic-key",
 		"openrouter": "openrouter-key",
 	}
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "anthropic", Model: "claude-review", APIKey: "anthropic-key"}
 	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "worker", Provider: "openrouter", Model: "worker-model", APIKey: "openrouter-key"}
 	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer", APIKey: "openai-key"}
 	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
@@ -1974,9 +2051,6 @@ func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
 
 	if err := rt.activateProvider("openai", "gpt-main-new", ""); err != nil {
 		t.Fatalf("activateProvider: %v", err)
-	}
-	if rt.cfg.PlanReview.Model != "claude-review" {
-		t.Fatalf("expected plan review model to stay unchanged, got %#v", rt.cfg.PlanReview)
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.Model != "worker-model" {
 		t.Fatalf("expected analysis worker to stay unchanged, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
@@ -1992,9 +2066,6 @@ func TestActivateProviderDoesNotChangeExplicitRoleModels(t *testing.T) {
 	saved, err := LoadConfig(workspace)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
-	}
-	if saved.PlanReview == nil || saved.PlanReview.Model != "claude-review" {
-		t.Fatalf("expected saved plan review model to stay unchanged, got %#v", saved.PlanReview)
 	}
 	if saved.ProjectAnalysis.WorkerProfile == nil || saved.ProjectAnalysis.WorkerProfile.Model != "worker-model" {
 		t.Fatalf("expected saved analysis worker to stay unchanged, got %#v", saved.ProjectAnalysis.WorkerProfile)
@@ -2094,7 +2165,6 @@ func TestCurrentProfileCapturesRoleModelSet(t *testing.T) {
 	}
 	rt.cfg.Provider = "openai"
 	rt.cfg.Model = "gpt-main"
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "anthropic", Model: "claude-review"}
 	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "worker", Provider: "openrouter", Model: "worker-model"}
 	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer"}
 	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
@@ -2108,9 +2178,6 @@ func TestCurrentProfileCapturesRoleModelSet(t *testing.T) {
 	profile := rt.cfg.Profiles[0]
 	if profile.RoleModels == nil {
 		t.Fatalf("expected role models to be captured")
-	}
-	if profile.RoleModels.PlanReviewer == nil || profile.RoleModels.PlanReviewer.Model != "claude-review" {
-		t.Fatalf("expected plan reviewer role model, got %#v", profile.RoleModels.PlanReviewer)
 	}
 	if profile.RoleModels.AnalysisWorker == nil || profile.RoleModels.AnalysisWorker.Model != "worker-model" {
 		t.Fatalf("expected analysis worker role model, got %#v", profile.RoleModels.AnalysisWorker)
@@ -2144,7 +2211,6 @@ func TestProfileActivationAppliesRoleModelSet(t *testing.T) {
 	}
 	rt.cfg.Provider = "openai"
 	rt.cfg.Model = "gpt-old"
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "old-review"}
 	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "old-worker", Provider: "openai", Model: "old-worker"}
 	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "old-reviewer", Provider: "openai", Model: "old-analysis-reviewer"}
 	rt.cfg.Specialists.Profiles = []SpecialistSubagentProfile{
@@ -2155,7 +2221,6 @@ func TestProfileActivationAppliesRoleModelSet(t *testing.T) {
 		Provider: "openrouter",
 		Model:    "main-new",
 		RoleModels: &ProfileRoleModels{
-			PlanReviewer:     &Profile{Name: "plan", Provider: "anthropic", Model: "claude-review"},
 			AnalysisWorker:   &Profile{Name: "worker", Provider: "openrouter", Model: "worker-new"},
 			AnalysisReviewer: &Profile{Name: "reviewer", Provider: "openai", Model: "analysis-reviewer-new"},
 			Specialists: []SpecialistSubagentProfile{
@@ -2174,9 +2239,6 @@ func TestProfileActivationAppliesRoleModelSet(t *testing.T) {
 	}
 	if rt.cfg.Provider != "openrouter" || rt.cfg.Model != "main-new" {
 		t.Fatalf("expected main profile activation, got %s/%s", rt.cfg.Provider, rt.cfg.Model)
-	}
-	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.Provider != "anthropic" || rt.cfg.PlanReview.Model != "claude-review" {
-		t.Fatalf("expected plan reviewer profile to activate, got %#v", rt.cfg.PlanReview)
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.Model != "worker-new" {
 		t.Fatalf("expected analysis worker profile to activate, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
@@ -2210,7 +2272,6 @@ func TestSingleModelProfileActivationClearsStaleAnalysisRoles(t *testing.T) {
 	}
 	rt.cfg.Provider = "openai"
 	rt.cfg.Model = "gpt-old"
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "old-review"}
 	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "old-worker", Provider: "openai", Model: "old-worker"}
 	rt.cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "old-reviewer", Provider: "openai", Model: "old-reviewer"}
 	rt.cfg.Profiles = []Profile{{
@@ -2224,9 +2285,6 @@ func TestSingleModelProfileActivationClearsStaleAnalysisRoles(t *testing.T) {
 	}
 	if rt.cfg.Provider != "ollama" || rt.cfg.Model != "qwen3.5:14b" {
 		t.Fatalf("expected main profile activation, got %s/%s", rt.cfg.Provider, rt.cfg.Model)
-	}
-	if rt.cfg.PlanReview != nil {
-		t.Fatalf("expected plan reviewer to clear, got %#v", rt.cfg.PlanReview)
 	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile != nil || rt.cfg.ProjectAnalysis.ReviewerProfile != nil {
 		t.Fatalf("expected stale analysis roles to clear, got worker=%#v reviewer=%#v", rt.cfg.ProjectAnalysis.WorkerProfile, rt.cfg.ProjectAnalysis.ReviewerProfile)
@@ -2267,47 +2325,6 @@ func TestMainPromptReasoningEffortOnlyForEffortCapableProvider(t *testing.T) {
 	}
 }
 
-func TestActivateRoleModelDefaultsUndefinedReasoningEffortForEffortProvider(t *testing.T) {
-	home := t.TempDir()
-	workspace := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-
-	var output bytes.Buffer
-	rt := &runtimeState{
-		cfg:    DefaultConfig(workspace),
-		ui:     UI{},
-		writer: &output,
-		session: &Session{
-			ID:       "session-effort-default-role",
-			Provider: "openai",
-			Model:    "gpt-main",
-		},
-	}
-	rt.cfg.Provider = "openai"
-	rt.cfg.Model = "gpt-main"
-
-	if err := rt.activatePlanReview("openai-codex", "gpt-5.5", "", ""); err != nil {
-		t.Fatalf("activatePlanReview: %v", err)
-	}
-	if rt.cfg.ReasoningEffort != "" {
-		t.Fatalf("expected main reasoning effort to stay unchanged, got %q", rt.cfg.ReasoningEffort)
-	}
-	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.ReasoningEffort != "low" {
-		t.Fatalf("expected plan-review reasoning effort to default to low, got %#v", rt.cfg.PlanReview)
-	}
-	if !strings.Contains(output.String(), "defaulted to low") {
-		t.Fatalf("expected default effort notice, got %q", output.String())
-	}
-	saved, err := LoadConfig(workspace)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if saved.PlanReview == nil || saved.PlanReview.ReasoningEffort != "low" {
-		t.Fatalf("expected saved plan-review reasoning effort low, got %#v", saved.PlanReview)
-	}
-}
-
 func TestProfileActivationDefaultsUndefinedReasoningEffortForRoleModel(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
@@ -2336,7 +2353,7 @@ func TestProfileActivationDefaultsUndefinedReasoningEffortForRoleModel(t *testin
 		Provider: "openai",
 		Model:    "gpt-5.4",
 		RoleModels: &ProfileRoleModels{
-			PlanReviewer: &Profile{
+			AnalysisWorker: &Profile{
 				Provider: "openai-codex",
 				Model:    "gpt-5.5",
 			},
@@ -2349,8 +2366,8 @@ func TestProfileActivationDefaultsUndefinedReasoningEffortForRoleModel(t *testin
 	if rt.cfg.ReasoningEffort != "" {
 		t.Fatalf("expected main reasoning effort to stay unchanged, got %q", rt.cfg.ReasoningEffort)
 	}
-	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.ReasoningEffort != "low" {
-		t.Fatalf("expected profile role reasoning effort to default to low, got %#v", rt.cfg.PlanReview)
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "low" {
+		t.Fatalf("expected profile role reasoning effort to default to low, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
 	}
 	if !strings.Contains(output.String(), "defaulted to low") {
 		t.Fatalf("expected default effort notice, got %q", output.String())
@@ -2376,20 +2393,20 @@ func TestEffortCommandSetsMainAndRoleEffortIndependently(t *testing.T) {
 	rt.cfg.Provider = "openai-codex"
 	rt.cfg.Model = "gpt-5.5"
 	rt.cfg.ReasoningEffort = "low"
-	rt.cfg.PlanReview = &PlanReviewConfig{
+	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{
 		Provider:        "openai-codex",
 		Model:           "gpt-5.5",
 		ReasoningEffort: "medium",
 	}
 
-	if err := rt.handleEffortCommand("plan-review high"); err != nil {
-		t.Fatalf("handleEffortCommand plan-review: %v", err)
+	if err := rt.handleEffortCommand("analysis-worker high"); err != nil {
+		t.Fatalf("handleEffortCommand analysis-worker: %v", err)
 	}
 	if rt.cfg.ReasoningEffort != "low" {
 		t.Fatalf("expected main effort to remain low, got %q", rt.cfg.ReasoningEffort)
 	}
-	if rt.cfg.PlanReview.ReasoningEffort != "high" {
-		t.Fatalf("expected plan-review effort high, got %q", rt.cfg.PlanReview.ReasoningEffort)
+	if rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "high" {
+		t.Fatalf("expected analysis-worker effort high, got %q", rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
 	}
 
 	if err := rt.handleEffortCommand("xhigh"); err != nil {
@@ -2398,8 +2415,8 @@ func TestEffortCommandSetsMainAndRoleEffortIndependently(t *testing.T) {
 	if rt.cfg.ReasoningEffort != "xhigh" {
 		t.Fatalf("expected main effort xhigh, got %q", rt.cfg.ReasoningEffort)
 	}
-	if rt.cfg.PlanReview.ReasoningEffort != "high" {
-		t.Fatalf("expected plan-review effort to remain high, got %q", rt.cfg.PlanReview.ReasoningEffort)
+	if rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "high" {
+		t.Fatalf("expected analysis-worker effort to remain high, got %q", rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
 	}
 }
 
@@ -2413,28 +2430,19 @@ func TestRoleModelStatusDisplaysReasoningEffort(t *testing.T) {
 	rt.cfg.Provider = "openai-codex"
 	rt.cfg.Model = "gpt-5.5"
 	rt.cfg.ReasoningEffort = "low"
-	rt.cfg.PlanReview = &PlanReviewConfig{
-		Provider:        "openai-codex",
-		Model:           "gpt-5.5",
-		ReasoningEffort: "high",
-	}
 	rt.cfg.ProjectAnalysis.WorkerProfile = &Profile{
 		Provider:        "deepseek",
 		Model:           "deepseek-v4-pro",
 		ReasoningEffort: "medium",
 	}
 
-	if err := rt.showPlanReviewStatus(); err != nil {
-		t.Fatalf("showPlanReviewStatus: %v", err)
-	}
 	if err := rt.showProjectAnalysisModelStatus(); err != nil {
 		t.Fatalf("showProjectAnalysisModelStatus: %v", err)
 	}
 	text := strings.Join(strings.Fields(output.String()), " ")
 	for _, want := range []string{
-		"reasoning_effort: high",
-		"worker: deepseek / deepseek-v4-pro / effort=medium",
-		"reviewer: not configured; follows analysis_worker model -> deepseek / deepseek-v4-pro / effort=medium",
+		"worker: DeepSeek / deepseek-v4-pro / effort=medium",
+		"reviewer: not configured; follows analysis_worker model -> DeepSeek / deepseek-v4-pro / effort=medium",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected status output to contain %q, got %q", want, text)
@@ -2455,7 +2463,6 @@ func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
 		Provider: "openai",
 		Model:    "gpt-main",
 		RoleModels: &ProfileRoleModels{
-			PlanReviewer:     &Profile{Name: "plan", Provider: "anthropic", Model: "claude-review"},
 			AnalysisWorker:   &Profile{Name: "worker", Provider: "ollama", Model: "llama3", BaseURL: "http://localhost:11434"},
 			AnalysisReviewer: &Profile{Name: "analysis-reviewer", Provider: "openai", Model: "gpt-analysis-review"},
 			Specialists: []SpecialistSubagentProfile{
@@ -2480,12 +2487,10 @@ func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
 	}
 	text := output.String()
 	for _, want := range []string{
-		"plan_reviewer",
-		"anthropic / claude-review",
 		"analysis_worker",
 		"ollama / llama3",
 		"analysis_reviewer",
-		"openai / gpt-analysis-review",
+		"openai-api / gpt-analysis-review",
 		"specialist:kernel-investigator",
 		"openrouter / meta-llama/llama-3.1-70b",
 	} {
@@ -2515,13 +2520,6 @@ func TestRoleModelActivationReusesStoredProviderKeys(t *testing.T) {
 		ui:      NewUI(),
 		writer:  &bytes.Buffer{},
 		session: &Session{ID: "session-role-provider-keys"},
-	}
-
-	if err := rt.activatePlanReview("openai", "gpt-review", "", ""); err != nil {
-		t.Fatalf("activatePlanReview: %v", err)
-	}
-	if rt.cfg.PlanReview == nil || rt.cfg.PlanReview.APIKey != "openai-key" {
-		t.Fatalf("expected plan review to reuse provider key, got %#v", rt.cfg.PlanReview)
 	}
 
 	if err := rt.activateProjectAnalysisRole("worker", "anthropic", "claude-worker", "", ""); err != nil {
@@ -2572,69 +2570,6 @@ func TestClearSpecialistModelOverrideClearsStoredReasoningEffort(t *testing.T) {
 	}
 	if profile.Prompt != "Keep this non-model override." {
 		t.Fatalf("expected prompt override to remain, got %#v", profile)
-	}
-}
-
-func TestHandleProfileReviewCommandListsWithoutImplicitActivation(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-
-	var output bytes.Buffer
-	rt := &runtimeState{
-		cfg:         DefaultConfig(t.TempDir()),
-		ui:          NewUI(),
-		writer:      &output,
-		session:     &Session{ID: "session-review-profile-list"},
-		interactive: false,
-	}
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-review"}
-	rt.cfg.ReviewProfiles = []Profile{
-		{Name: "other-reviewer", Provider: "ollama", Model: "llama3"},
-		{Name: "current-reviewer", Provider: "openai", Model: "gpt-review"},
-	}
-
-	if err := rt.handleProfileReviewCommand(""); err != nil {
-		t.Fatalf("handleProfileReviewCommand: %v", err)
-	}
-	if rt.cfg.PlanReview.Provider != "openai" || rt.cfg.PlanReview.Model != "gpt-review" {
-		t.Fatalf("expected review profile list to avoid implicit activation, got %#v", rt.cfg.PlanReview)
-	}
-	if strings.Contains(output.String(), "Activated review profile") {
-		t.Fatalf("expected review list-only output, got %q", output.String())
-	}
-}
-
-func TestHandleProfileReviewCommandAutoSavesCurrentWhenListIsEmpty(t *testing.T) {
-	home := t.TempDir()
-	workspace := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
-
-	var output bytes.Buffer
-	rt := &runtimeState{
-		cfg:         DefaultConfig(workspace),
-		ui:          NewUI(),
-		writer:      &output,
-		session:     &Session{ID: "session-review-profile-auto-save-current"},
-		interactive: false,
-	}
-	rt.cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-review"}
-
-	if err := rt.handleProfileReviewCommand(""); err != nil {
-		t.Fatalf("handleProfileReviewCommand: %v", err)
-	}
-	if len(rt.cfg.ReviewProfiles) != 1 {
-		t.Fatalf("expected one auto-saved review profile, got %#v", rt.cfg.ReviewProfiles)
-	}
-	if rt.cfg.ReviewProfiles[0].Name != "openai / gpt-review" {
-		t.Fatalf("unexpected auto-saved review profile: %#v", rt.cfg.ReviewProfiles[0])
-	}
-	if !strings.Contains(output.String(), "Saved current review provider/model as profile openai / gpt-review") {
-		t.Fatalf("expected auto-save output, got %q", output.String())
-	}
-	if !strings.Contains(output.String(), "Review Profiles") {
-		t.Fatalf("expected review profile list output, got %q", output.String())
 	}
 }
 

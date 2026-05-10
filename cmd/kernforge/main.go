@@ -233,7 +233,7 @@ func run(args []string) error {
 			cfg.BaseURL = normalizeOpenAICodexBaseURL("")
 		case "lmstudio", "vllm", "llama.cpp":
 			cfg.BaseURL = normalizeLocalOpenAICompatibleBaseURL(providerFlag, "")
-		case "codex-cli":
+		case "codex-cli", "anthropic-claude-cli":
 			cfg.BaseURL = ""
 		}
 	}
@@ -344,6 +344,7 @@ func run(args []string) error {
 		Perms:                 rt.perms,
 		PrepareEdit:           rt.prepareEdit,
 		PrepareEditAtRoot:     rt.prepareEditAtRoot,
+		ReviewEdit:            rt.reviewProposedEdit,
 		ReportProgress: func(message string) {
 			rt.setThinkingStatus(message)
 			rt.printProgressMessage(message)
@@ -512,6 +513,9 @@ func (rt *runtimeState) runSingleCommand(command string) error {
 	}
 	_, err := rt.handleCommand(cmd)
 	if err != nil {
+		if errors.Is(err, ErrPromptCanceled) {
+			return nil
+		}
 		rt.noteCommandError(line, err)
 	}
 	return err
@@ -594,6 +598,15 @@ func (rt *runtimeState) openEditPreview(preview EditPreview) (bool, error) {
 	return true, nil
 }
 
+func (rt *runtimeState) reviewProposedEdit(ctx context.Context, preview EditPreview) error {
+	if rt == nil || rt.agent == nil {
+		return nil
+	}
+	rt.agent.Config = rt.cfg
+	rt.agent.Workspace = rt.workspace
+	return rt.agent.reviewProposedEdit(ctx, preview)
+}
+
 func (rt *runtimeState) showBanner() {
 	if rt.bannerShown {
 		return
@@ -642,8 +655,7 @@ func (rt *runtimeState) runREPL() error {
 		if cmd, ok := ParseCommand(line); ok {
 			exit, err := rt.handleCommand(cmd)
 			if err != nil {
-				rt.noteCommandError(line, err)
-				fmt.Fprintln(rt.writer, rt.ui.errorLine("command error: "+err.Error()))
+				rt.printCommandExecutionError(line, err)
 			}
 			if exit {
 				return nil
@@ -699,7 +711,22 @@ func (rt *runtimeState) printTurnSeparator(turn int) {
 	fmt.Fprintln(rt.writer, rt.ui.turnSeparator(turn, rt.session.Provider, rt.session.Model))
 }
 
+func (rt *runtimeState) printCommandExecutionError(line string, err error) {
+	if err == nil {
+		return
+	}
+	if errors.Is(err, ErrPromptCanceled) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Canceled."))
+		return
+	}
+	rt.noteCommandError(line, err)
+	fmt.Fprintln(rt.writer, rt.ui.errorLine("command error: "+err.Error()))
+}
+
 func (rt *runtimeState) formatAssistantError(err error) []string {
+	if isUserRequestCancelError(err) {
+		return []string{rt.ui.infoLine("Request canceled.")}
+	}
 	text := strings.TrimSpace(err.Error())
 	lines := []string{rt.ui.errorLine("assistant error: " + text)}
 	switch {
@@ -765,6 +792,16 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 		lines = append(lines, rt.ui.hintLine("The model request timed out before a usable response arrived. Retry the request, reduce prompt/tool churn, or increase the request timeout if your provider is slow."))
 	}
 	return lines
+}
+
+func isUserRequestCancelError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrRequestCanceled) {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(err.Error()), ErrRequestCanceled.Error())
 }
 
 func (rt *runtimeState) appendIrrecoverableModelAlternatives(lines []string) []string {
@@ -861,6 +898,14 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 		defer stopEscapeWatcher()
 	}
 
+	if handled, err := rt.maybeHandleNaturalLanguageReview(requestCtx, input, images); handled {
+		if err != nil && installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
+			rt.noteRecentRequestCancel()
+			return "", ErrRequestCanceled
+		}
+		return "", err
+	}
+
 	rt.startThinkingIndicator()
 	defer rt.stopThinkingIndicator()
 	defer rt.finishAssistantStream()
@@ -869,7 +914,7 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 	if err != nil {
 		if installCancelWatcher && requestCtx.Err() == context.Canceled && ctx.Err() == nil {
 			rt.noteRecentRequestCancel()
-			return "", fmt.Errorf("request canceled by user")
+			return "", ErrRequestCanceled
 		}
 		return "", err
 	}
@@ -1466,6 +1511,22 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Replacement applied.", "치환 적용 완료.")
 	case strings.Contains(lower, "checking follow-up"):
 		return localizedText(cfg, "Checking follow-up steps...", "후속 단계 확인 중 ...")
+	case strings.Contains(lower, "running automatic pre-write review"):
+		return localizedText(cfg, "Reviewing proposed edit...", "제안된 수정 리뷰 중 ...")
+	case strings.Contains(lower, "automatic pre-write review found blockers"):
+		return localizedText(cfg, "Review blocked proposed edit.", "리뷰가 제안 수정을 차단했습니다.")
+	case strings.Contains(lower, "automatic pre-write review completed"):
+		return localizedText(cfg, "Proposed edit reviewed.", "제안 수정 리뷰 완료.")
+	case strings.Contains(lower, "automatic pre-write review failed"):
+		return localizedText(cfg, "Pre-write review failed.", "쓰기 전 리뷰 실패.")
+	case strings.Contains(lower, "running automatic post-change review"):
+		return localizedText(cfg, "Running review...", "자동 리뷰 실행 중 ...")
+	case strings.Contains(lower, "automatic post-change review found blockers"):
+		return localizedText(cfg, "Review found blockers.", "리뷰 차단 항목 발견.")
+	case strings.Contains(lower, "automatic post-change review completed"):
+		return localizedText(cfg, "Review completed.", "리뷰 완료.")
+	case strings.Contains(lower, "automatic post-change review failed"):
+		return localizedText(cfg, "Review failed.", "리뷰 실패.")
 	case strings.Contains(lower, "automatic verification failed"):
 		return localizedText(cfg, "Verification failed.", "검증 실패.")
 	case strings.Contains(lower, "automatic verification finished"):
@@ -1694,6 +1755,10 @@ func (rt *runtimeState) confirmRequestCancel() bool {
 		allowed, err = rt.confirm("Cancel current request?")
 	})
 	if err != nil {
+		if errors.Is(err, ErrPromptCanceled) {
+			rt.printPersistentWhileThinking(rt.ui.infoLine("Request cancel dismissed."))
+			return false
+		}
 		rt.printPersistentWhileThinking(rt.ui.warnLine("request cancel confirmation failed: " + err.Error()))
 		return false
 	}
@@ -2356,19 +2421,48 @@ type providerChoiceOption struct {
 
 func providerChoiceOptions() []providerChoiceOption {
 	return []providerChoiceOption{
-		{Number: "1", ID: "anthropic", Label: "anthropic"},
-		{Number: "2", ID: "openai", Label: "openai"},
-		{Number: "3", ID: "openrouter", Label: "openrouter"},
-		{Number: "4", ID: "ollama", Label: "ollama"},
-		{Number: "5", ID: "opencode", Label: "OpenCode Zen"},
-		{Number: "6", ID: "opencode-go", Label: "OpenCode Go"},
-		{Number: "7", ID: "codex-cli", Label: "codex-cli"},
-		{Number: "8", ID: "openai-codex", Label: "openai-codex"},
-		{Number: "9", ID: "lmstudio", Label: "LM Studio"},
-		{Number: "10", ID: "vllm", Label: "vLLM"},
-		{Number: "11", ID: "llama.cpp", Label: "llama.cpp"},
-		{Number: "12", ID: "deepseek", Label: "DeepSeek"},
+		{Number: "1", ID: "openai-codex", Label: "openai-codex-subscription"},
+		{Number: "2", ID: "codex-cli", Label: "openai-codex-cli"},
+		{Number: "3", ID: "openai", Label: "openai-api"},
+		{Number: "4", ID: "anthropic-claude-cli", Label: "anthropic-claude-cli"},
+		{Number: "5", ID: "anthropic", Label: "anthropic-api"},
+		{Number: "6", ID: "deepseek", Label: "DeepSeek"},
+		{Number: "7", ID: "openrouter", Label: "openrouter"},
+		{Number: "8", ID: "opencode", Label: "OpenCode Zen"},
+		{Number: "9", ID: "opencode-go", Label: "OpenCode Go"},
+		{Number: "10", ID: "ollama", Label: "ollama"},
+		{Number: "11", ID: "lmstudio", Label: "LM Studio"},
+		{Number: "12", ID: "vllm", Label: "vLLM"},
+		{Number: "13", ID: "llama.cpp", Label: "llama.cpp"},
 	}
+}
+
+func providerChoiceCompletionTokens() []string {
+	return []string{
+		"openai-codex-subscription",
+		"openai-codex-cli",
+		"openai-api",
+		"anthropic-claude-cli",
+		"anthropic-api",
+		"deepseek",
+		"openrouter",
+		"opencode",
+		"opencode-go",
+		"ollama",
+		"lmstudio",
+		"vllm",
+		"llama.cpp",
+	}
+}
+
+func providerUserLabel(provider string) string {
+	normalized := normalizeProviderName(provider)
+	for _, option := range providerChoiceOptions() {
+		if option.ID == normalized {
+			return option.Label
+		}
+	}
+	return strings.TrimSpace(provider)
 }
 
 func (rt *runtimeState) printProviderChoiceOptions() {
@@ -2384,7 +2478,7 @@ func defaultProviderChoice(provider string) string {
 			return option.Number
 		}
 	}
-	return "4"
+	return "1"
 }
 
 func resolveProviderChoice(choice string) (string, bool) {
@@ -2406,6 +2500,22 @@ func providerChoiceHelpText() string {
 		labels = append(labels, option.Label)
 	}
 	return "Choose " + strings.Join(labels, ", ") + "."
+}
+
+func (rt *runtimeState) configureClaudeCLICommandInteractive() error {
+	if rt == nil || !rt.interactive {
+		return nil
+	}
+	commandDefault := strings.TrimSpace(rt.cfg.ClaudeCLIPath)
+	if commandDefault == "" {
+		commandDefault = claudeCLIDefaultExecutable
+	}
+	commandPath, err := rt.promptValue("Claude Code CLI command", commandDefault)
+	if err != nil {
+		return err
+	}
+	rt.cfg.ClaudeCLIPath = strings.TrimSpace(commandPath)
+	return nil
 }
 
 func (rt *runtimeState) promptProviderChoice() (string, error) {
@@ -2470,6 +2580,17 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 		}
 		rt.cfg.CodexCLIPath = strings.TrimSpace(commandPath)
 		model, err := rt.chooseCodexCLIModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = ""
+		nextAPIKey = ""
+	case "anthropic-claude-cli":
+		if err := rt.configureClaudeCLICommandInteractive(); err != nil {
+			return err
+		}
+		model, err := rt.chooseClaudeCLIModel(nextModel)
 		if err != nil {
 			return err
 		}
@@ -2582,9 +2703,9 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 	if err := rt.activateProvider(nextProvider, nextModel, nextBaseURL); err != nil {
 		return err
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", rt.cfg.Provider, rt.cfg.Model)))
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", providerUserLabel(rt.cfg.Provider), rt.cfg.Model)))
 	if rt.hasInheritedRoleModels() {
-		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer and plan-review stay disabled until explicitly configured."))
+		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer stays disabled until explicitly configured. Use /review models for common review roles."))
 	}
 	return nil
 }
@@ -2601,7 +2722,7 @@ func (rt *runtimeState) providerAPIKey(provider string) string {
 	if provider == "" {
 		return ""
 	}
-	if provider == "codex-cli" || provider == "openai-codex" {
+	if provider == "codex-cli" || provider == "openai-codex" || provider == "anthropic-claude-cli" {
 		return ""
 	}
 	if key := strings.TrimSpace(rt.storedProviderKey(provider)); key != "" {
@@ -2710,7 +2831,12 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "not configured"))
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Run /codex-auth login to create a Kernforge-owned OAuth file."))
+		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("codex_cli_auth", "available at "+cliPath))
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Selecting openai-codex can import the existing Codex CLI login, or run /codex-auth login to create a new Kernforge-owned OAuth file."))
+		} else {
+			fmt.Fprintln(rt.writer, rt.ui.hintLine("Run /codex-auth login to create a Kernforge-owned OAuth file."))
+		}
 		return nil
 	}
 	_, auth, err := readCodexOAuthAuthFile(path)
@@ -2764,6 +2890,20 @@ func (rt *runtimeState) ensureOpenAICodexAuthInteractive() error {
 	if !rt.interactive {
 		return fmt.Errorf("OpenAI Codex OAuth is not configured; run /codex-auth login")
 	}
+	if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Existing Codex CLI OAuth login detected."))
+		ok, err := rt.confirm("Use existing Codex CLI OAuth login for Kernforge?")
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := importCodexCLIOAuthAuthFile(codexOAuthAuthFilePath()); err != nil {
+				return err
+			}
+			fmt.Fprintln(rt.writer, rt.ui.successLine("OpenAI Codex OAuth imported from Codex CLI login."))
+			return nil
+		}
+	}
 	fmt.Fprintln(rt.writer, rt.ui.warnLine("OpenAI Codex OAuth is not configured for Kernforge."))
 	ok, err := rt.confirm("Run OpenAI Codex OAuth login now?")
 	if err != nil {
@@ -2781,6 +2921,9 @@ func openAICodexAuthStatusSummary() string {
 	}
 	_, auth, err := readCodexOAuthAuthFile(codexOAuthAuthFilePath())
 	if err != nil {
+		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+			return "Codex CLI login available"
+		}
 		return "not configured"
 	}
 	if tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) {
@@ -2805,6 +2948,8 @@ func providerDisplayName(provider string) string {
 		return "Anthropic"
 	case "openai", "openai-compatible":
 		return "OpenAI"
+	case "anthropic-claude-cli":
+		return "Claude Code CLI"
 	case "deepseek":
 		return "DeepSeek"
 	case "openrouter":
@@ -2934,7 +3079,6 @@ func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent st
 	if roles == nil {
 		roles = &ProfileRoleModels{}
 	}
-	rt.renderStoredProfileRoleLine(indent, "plan_reviewer", roles.PlanReviewer, "not configured; automatic reviewer disabled")
 	rt.renderStoredProfileRoleLine(indent, "analysis_worker", roles.AnalysisWorker, "not configured; follows profile main model")
 	if roles.AnalysisReviewer != nil {
 		rt.renderStoredProfileRoleLine(indent, "analysis_reviewer", roles.AnalysisReviewer, "")
@@ -3115,16 +3259,6 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 		return &ProfileRoleModels{}
 	}
 	roles := &ProfileRoleModels{}
-	if rt.cfg.PlanReview != nil {
-		roles.PlanReviewer = &Profile{
-			Name:            profileName(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model),
-			Provider:        rt.cfg.PlanReview.Provider,
-			Model:           rt.cfg.PlanReview.Model,
-			BaseURL:         normalizeOptionalProfileBaseURL(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.BaseURL),
-			APIKey:          rt.cfg.PlanReview.APIKey,
-			ReasoningEffort: normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort),
-		}
-	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
 		roles.AnalysisWorker = cloneProfile(rt.cfg.ProjectAnalysis.WorkerProfile)
 	}
@@ -3199,19 +3333,6 @@ func (rt *runtimeState) applyProfileRoleModels(profile Profile) string {
 			return
 		}
 		profile.ReasoningEffort = profileRoleEffort(label, profile)
-	}
-	if roles.PlanReviewer != nil && strings.TrimSpace(roles.PlanReviewer.Provider) != "" && strings.TrimSpace(roles.PlanReviewer.Model) != "" {
-		planEffort := profileRoleEffort("plan-review reviewer", roles.PlanReviewer)
-		rt.cfg.PlanReview = &PlanReviewConfig{
-			Provider:        strings.TrimSpace(roles.PlanReviewer.Provider),
-			Model:           strings.TrimSpace(roles.PlanReviewer.Model),
-			BaseURL:         normalizeOptionalProfileBaseURL(roles.PlanReviewer.Provider, roles.PlanReviewer.BaseURL),
-			APIKey:          firstNonBlankString(roles.PlanReviewer.APIKey, rt.providerAPIKey(roles.PlanReviewer.Provider)),
-			ReasoningEffort: planEffort,
-		}
-		rt.storeProviderKey(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.APIKey)
-	} else {
-		rt.cfg.PlanReview = nil
 	}
 	if roles.AnalysisWorker != nil && strings.TrimSpace(roles.AnalysisWorker.Provider) != "" && strings.TrimSpace(roles.AnalysisWorker.Model) != "" {
 		defaultProfileEffort(roles.AnalysisWorker, "analysis worker")
@@ -3853,19 +3974,38 @@ func (rt *runtimeState) syncAgentReviewerClientFromConfig() {
 	}
 	rt.agent.AuxReviewerClient = nil
 	rt.agent.AuxReviewerModel = ""
-	if rt.cfg.PlanReview == nil || strings.TrimSpace(rt.cfg.PlanReview.Provider) == "" || strings.TrimSpace(rt.cfg.PlanReview.Model) == "" {
+	reviewCfg, ok := rt.configuredInteractiveReviewModel()
+	if !ok {
 		rt.agent.ReviewerClient = nil
 		rt.agent.ReviewerModel = ""
 		return
 	}
-	reviewerClient, err := createReviewerClient(rt.cfg.PlanReview, rt.cfg)
+	reviewerClient, err := createReviewerClient(&reviewCfg, rt.cfg)
 	if err != nil {
 		rt.agent.ReviewerClient = nil
 		rt.agent.ReviewerModel = ""
 		return
 	}
 	rt.agent.ReviewerClient = reviewerClient
-	rt.agent.ReviewerModel = rt.cfg.PlanReview.Model
+	rt.agent.ReviewerModel = reviewCfg.Model
+}
+
+func (rt *runtimeState) configuredInteractiveReviewModel() (ReviewModelConfig, bool) {
+	if rt == nil {
+		return ReviewModelConfig{}, false
+	}
+	reviewCfg := configReviewHarness(rt.cfg)
+	for _, role := range []string{"primary_reviewer", "design_reviewer", "final_gate_reviewer"} {
+		roleCfg, ok := reviewCfg.RoleModels[role]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(roleCfg.Provider) == "" || strings.TrimSpace(roleCfg.Model) == "" {
+			continue
+		}
+		return roleCfg, true
+	}
+	return ReviewModelConfig{}, false
 }
 
 func (rt *runtimeState) saveUserConfig() error {
@@ -3875,6 +4015,15 @@ func (rt *runtimeState) saveUserConfig() error {
 		}
 	}
 	return SaveUserConfig(rt.cfg)
+}
+
+func (rt *runtimeState) saveUserConfigReplacingReviewRoleModels() error {
+	if rt != nil && rt.session != nil {
+		if strings.TrimSpace(rt.session.PermissionMode) != "" {
+			rt.cfg.PermissionMode = rt.session.PermissionMode
+		}
+	}
+	return SaveUserConfigReplacingReviewRoleModels(rt.cfg)
 }
 
 func (rt *runtimeState) rememberCurrentProfile() {
@@ -3926,30 +4075,6 @@ func (rt *runtimeState) mainReasoningEffortForActivation(providerName, model, ba
 	if sameProfileRoute(rt.cfg.Provider, rt.cfg.Model, rt.cfg.BaseURL, providerName, model, baseURL) {
 		if effort := normalizeReasoningEffort(rt.cfg.ReasoningEffort); effort != "" {
 			return effort, false
-		}
-	}
-	return reasoningEffortOrDefaultForProvider(providerName, "")
-}
-
-func (rt *runtimeState) planReviewReasoningEffortForActivation(providerName, model, baseURL string) (string, bool) {
-	providerName = normalizeProviderName(providerName)
-	model = strings.TrimSpace(model)
-	baseURL = normalizeProfileBaseURL(providerName, baseURL)
-	if rt != nil && rt.cfg.PlanReview != nil &&
-		sameProfileRoute(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.BaseURL, providerName, model, baseURL) {
-		if effort := normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort); effort != "" {
-			return effort, false
-		}
-	}
-	if rt != nil {
-		for _, profile := range rt.cfg.ReviewProfiles {
-			profile = normalizeConfigProfile(profile)
-			if !sameProfileRoute(profile.Provider, profile.Model, profile.BaseURL, providerName, model, baseURL) {
-				continue
-			}
-			if effort := normalizeReasoningEffort(profile.ReasoningEffort); effort != "" {
-				return effort, false
-			}
 		}
 	}
 	return reasoningEffortOrDefaultForProvider(providerName, "")
@@ -4130,10 +4255,10 @@ func (rt *runtimeState) handleModelCommand(args string) error {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.section("Change Model"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  1. main session model"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  2. plan-review reviewer"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis worker"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  4. analysis reviewer"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  5. specialist subagent"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  2. analysis worker"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis reviewer (project analysis only)"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  4. specialist subagent"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Common /review role models are configured with /review models."))
 
 	choice, err := rt.promptValue("Select model target", "1")
 	if errors.Is(err, ErrPromptCanceled) {
@@ -4151,14 +4276,14 @@ func (rt *runtimeState) applyModelHubChoice(choice string) error {
 	switch selection {
 	case "", "1", "main", "main session", "main session model":
 		err = rt.handleProviderCommand("")
-	case "2", "plan", "plan-review", "plan reviewer", "plan-review reviewer":
-		err = rt.handleSetPlanReviewCommand("")
-	case "3", "analysis worker", "worker":
+	case "2", "analysis worker", "worker":
 		err = rt.configureProjectAnalysisRoleInteractive("worker", "")
-	case "4", "analysis reviewer", "reviewer":
+	case "3", "analysis reviewer", "reviewer":
 		err = rt.configureProjectAnalysisRoleInteractive("reviewer", "")
-	case "5", "specialist", "specialist subagent", "subagent":
+	case "4", "specialist", "specialist subagent", "subagent":
 		err = rt.handleSetSpecialistModelCommand("")
+	case "plan", "plan-review", "plan reviewer", "plan-review reviewer":
+		return fmt.Errorf("plan-review reviewer routing was removed; use /review models design")
 	default:
 		return fmt.Errorf("unknown model target: %s", choice)
 	}
@@ -4186,18 +4311,13 @@ func (rt *runtimeState) handleEffortCommand(args string) error {
 	if len(parts) == 3 && strings.EqualFold(parts[0], "specialist") {
 		return rt.setSpecialistReasoningEffort(parts[1], parts[2])
 	}
-	return fmt.Errorf("usage: /effort [main|plan-review|analysis-worker|analysis-reviewer|specialist <name>] [undefined|minimal|low|medium|high|xhigh]")
+	return fmt.Errorf("usage: /effort [main|analysis-worker|analysis-reviewer|specialist <name>] [undefined|minimal|low|medium|high|xhigh]")
 }
 
 func (rt *runtimeState) showReasoningEffortStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Reasoning Effort"))
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
-	if rt.cfg.PlanReview != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)))
-	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", unconfiguredPlanReviewLabel()))
-	}
 	if rt.cfg.ProjectAnalysis.WorkerProfile != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", formatProviderModelEffortLabel(rt.cfg.ProjectAnalysis.WorkerProfile.Provider, rt.cfg.ProjectAnalysis.WorkerProfile.Model, rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)))
 	} else {
@@ -4315,23 +4435,8 @@ func (rt *runtimeState) setReasoningEffortTarget(target string, effort string) e
 	switch strings.ToLower(strings.TrimSpace(target)) {
 	case "main", "session", "main-model", "main_model":
 		return rt.setMainReasoningEffort(effort)
-	case "plan", "plan-review", "plan_reviewer", "plan-reviewer", "reviewer":
-		if rt.cfg.PlanReview == nil {
-			return fmt.Errorf("no plan-review reviewer configured")
-		}
-		normalized, err := validateReasoningEffortTarget(rt.cfg.PlanReview.Provider, effort, "plan-review reviewer")
-		if err != nil {
-			return err
-		}
-		rt.cfg.PlanReview.ReasoningEffort = normalized
-		rt.rememberReviewProfile()
-		rt.rememberCurrentProfile()
-		rt.syncAgentReviewerClientFromConfig()
-		if err := rt.saveUserConfig(); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("plan-review reasoning_effort set to "+reasoningEffortDisplay(normalized)))
-		return nil
+	case "plan", "plan-review", "plan-reviewer", "reviewer":
+		return fmt.Errorf("plan-review reviewer routing was removed; configure review role effort with /review models <role> <provider> <model> [reasoning_effort]")
 	case "worker", "analysis-worker", "analysis_worker":
 		return rt.setAnalysisReasoningEffort("worker", effort)
 	case "analysis-reviewer", "analysis_reviewer":
@@ -4452,6 +4557,13 @@ func (rt *runtimeState) showProviderStatus() error {
 		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cli", commandPath))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "ChatGPT OAuth via Codex CLI"))
+	} else if strings.EqualFold(provider, "anthropic-claude-cli") {
+		commandPath := strings.TrimSpace(rt.cfg.ClaudeCLIPath)
+		if commandPath == "" {
+			commandPath = claudeCLIDefaultExecutable
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cli", commandPath))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "Claude Code CLI login"))
 	} else if strings.EqualFold(provider, "openai-codex") {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "ChatGPT OAuth direct Codex Responses"))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", codexOAuthAuthFilePath()))
@@ -4472,15 +4584,15 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	mainProvider, mainModel, _, _ := rt.currentProviderStatus()
 	fmt.Fprintln(rt.writer, rt.ui.section("Model Routing"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("plan_reviewer", rt.describePlanReviewModel()))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Common /review role models are separate; use /review models."))
 	profiles := configuredSpecialistProfiles(rt.cfg)
 	if len(profiles) == 0 {
 		return nil
 	}
 	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.subsection("Specialist Subagents"))
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Specialist Subagents (not /review roles)"))
 	columnWidth := specialistStatusColumnWidth(profiles)
 	for _, profile := range profiles {
 		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(profile.Name, rt.describeSpecialistModel(profile), columnWidth))
@@ -4500,7 +4612,7 @@ func specialistStatusColumnWidth(profiles []SpecialistSubagentProfile) int {
 }
 
 func formatProviderModelLabel(provider string, model string) string {
-	return valueOrUnset(strings.TrimSpace(provider)) + " / " + valueOrUnset(strings.TrimSpace(model))
+	return valueOrUnset(providerUserLabel(provider)) + " / " + valueOrUnset(strings.TrimSpace(model))
 }
 
 func formatProviderModelEffortLabel(provider string, model string, effort string) string {
@@ -4517,10 +4629,6 @@ func inheritedMainModelLabel(provider string, model string, effort ...string) st
 		currentEffort = effort[0]
 	}
 	return "not configured; follows main model -> " + formatProviderModelEffortLabel(provider, model, currentEffort)
-}
-
-func unconfiguredPlanReviewLabel() string {
-	return "not configured; automatic reviewer disabled"
 }
 
 func inheritedWorkerModelLabel(provider string, model string, effort ...string) string {
@@ -4544,13 +4652,6 @@ func (rt *runtimeState) hasInheritedRoleModels() bool {
 		}
 	}
 	return false
-}
-
-func (rt *runtimeState) describePlanReviewModel() string {
-	if rt != nil && rt.cfg.PlanReview != nil {
-		return formatProviderModelEffortLabel(rt.cfg.PlanReview.Provider, rt.cfg.PlanReview.Model, rt.cfg.PlanReview.ReasoningEffort)
-	}
-	return unconfiguredPlanReviewLabel()
 }
 
 func (rt *runtimeState) describeProjectAnalysisRoleModel(role string) string {
@@ -4675,6 +4776,10 @@ func (rt *runtimeState) printProviderBudgetStatus(provider, baseURL, apiKey stri
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "Managed by the installed Codex CLI ChatGPT account or API configuration."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("models", "Use codex debug models to see models exposed by the current ChatGPT OAuth account."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use Codex CLI/OpenAI account tooling for usage visibility."))
+	case "anthropic-claude-cli":
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "Managed by the installed Claude Code CLI account or API configuration."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("models", "Use Claude Code CLI model settings or type a Claude-supported model id directly."))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("usage_cost_api", "Use Anthropic/Claude account tooling for usage visibility."))
 	case "openai-codex":
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("subscription", "Uses ChatGPT OAuth tokens for the Codex backend; no OpenAI API key is required."))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("models", "Uses the models exposed by the current ChatGPT/Codex OAuth account."))
@@ -5134,6 +5239,56 @@ func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error)
 	return choice, nil
 }
 
+var claudeCLIModels = []codexCLIModelOption{
+	{ID: claudeCLIDefaultModel, Name: "Claude Code CLI default"},
+	{ID: "sonnet", Name: "Claude Sonnet"},
+	{ID: "opus", Name: "Claude Opus"},
+	{ID: "haiku", Name: "Claude Haiku"},
+}
+
+func (rt *runtimeState) chooseClaudeCLIModel(currentModel string) (string, error) {
+	if !rt.interactive {
+		if strings.TrimSpace(currentModel) != "" {
+			return currentModel, nil
+		}
+		return claudeCLIDefaultModel, nil
+	}
+
+	models := claudeCLIModelChoices(currentModel)
+	fmt.Fprintln(rt.writer, rt.ui.section("Claude Code CLI Models"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Claude Code CLI choose its configured model. You can also type any Claude-supported model id directly."))
+	defaultChoice := "1"
+	for i, m := range models {
+		marker := ""
+		if strings.EqualFold(m.ID, strings.TrimSpace(currentModel)) {
+			marker = " " + rt.ui.success("[current]")
+			defaultChoice = fmt.Sprintf("%d", i+1)
+		}
+		fmt.Fprintf(rt.writer, "  %d. %s  %s%s\n", i+1, m.Name, rt.ui.dim(m.ID), marker)
+	}
+
+	choice, err := rt.promptValue("Select model", defaultChoice)
+	if err != nil {
+		return "", err
+	}
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		choice = defaultChoice
+	}
+	if idx, err := strconv.Atoi(choice); err == nil {
+		if idx >= 1 && idx <= len(models) {
+			return models[idx-1].ID, nil
+		}
+		return "", fmt.Errorf("invalid selection: %s", choice)
+	}
+	for _, m := range models {
+		if strings.EqualFold(m.ID, choice) {
+			return m.ID, nil
+		}
+	}
+	return choice, nil
+}
+
 func (rt *runtimeState) chooseOpenAICodexModel(currentModel string) (string, error) {
 	if !rt.interactive {
 		if strings.TrimSpace(currentModel) != "" {
@@ -5179,6 +5334,20 @@ func (rt *runtimeState) chooseOpenAICodexModel(currentModel string) (string, err
 		}
 	}
 	return choice, nil
+}
+
+func claudeCLIModelChoices(currentModel string) []codexCLIModelOption {
+	choices := append([]codexCLIModelOption(nil), claudeCLIModels...)
+	currentModel = strings.TrimSpace(currentModel)
+	if currentModel == "" {
+		return choices
+	}
+	for _, model := range choices {
+		if strings.EqualFold(model.ID, currentModel) {
+			return choices
+		}
+	}
+	return append(choices, codexCLIModelOption{ID: currentModel, Name: "Current configured model"})
 }
 
 func (rt *runtimeState) codexCLIModelChoices(currentModel string) []codexCLIModelOption {
@@ -5847,6 +6016,10 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleCompletionAuditCommand(cmd.Args); err != nil {
 			return false, err
 		}
+	case "review":
+		if err := rt.handleReviewCommand(cmd.Args); err != nil {
+			return false, err
+		}
 	case "recover":
 		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
 			return false, err
@@ -5857,10 +6030,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "automation":
 		if err := rt.handleAutomationCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "review-pr":
-		if err := rt.handlePRReviewAutomationCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "goal", "goals":
@@ -6260,14 +6429,6 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleSelectionDiffCommand(); err != nil {
 			return false, err
 		}
-	case "review-selection":
-		if err := rt.handleSelectionReviewCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "review-selections":
-		if err := rt.handleSelectionsReviewCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "edit-selection":
 		if err := rt.handleSelectionEditCommand(cmd.Args); err != nil {
 			return false, err
@@ -6456,20 +6617,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if rt.checkpoints != nil {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("checkpoint_root", rt.checkpoints.Root))
 		}
-	case "set-plan-review":
-		if err := rt.handleSetPlanReviewCommand(cmd.Args); err != nil {
-			return false, err
-		}
 	case "set-analysis-models":
 		if err := rt.handleSetAnalysisModelsCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "set-specialist-model":
 		if err := rt.handleSetSpecialistModelCommand(cmd.Args); err != nil {
-			return false, err
-		}
-	case "do-plan-review":
-		if err := rt.handleDoPlanReviewCommand(cmd.Args); err != nil {
 			return false, err
 		}
 	case "new-feature":
@@ -6492,14 +6645,34 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.handleAnalyzePerformanceCommand(cmd.Args); err != nil {
 			return false, err
 		}
-	case "profile-review":
-		return false, rt.handleProfileReviewCommand(cmd.Args)
 	case "exit", "quit":
 		return true, nil
 	default:
+		if suggestion := removedReviewCommandSuggestion(cmd.Name); suggestion != "" {
+			return false, fmt.Errorf("unknown command: /%s. %s", cmd.Name, suggestion)
+		}
 		return false, fmt.Errorf("unknown command: /%s", cmd.Name)
 	}
 	return false, nil
+}
+
+func removedReviewCommandSuggestion(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "review-pr":
+		return "Use /review pr instead."
+	case "review-selection":
+		return "Use /review selection instead."
+	case "review-selections":
+		return "Use /review selection --all instead."
+	case "do-plan-review":
+		return "Use /review plan instead."
+	case "set-plan-review":
+		return "Use /review models design instead."
+	case "profile-review":
+		return "Use /review models or /review models <role> instead."
+	default:
+		return ""
+	}
 }
 
 func (rt *runtimeState) handleLocaleAutoCommand(args string) error {
@@ -7020,61 +7193,6 @@ func (rt *runtimeState) promptResolveAutoVerifyFailure(report VerificationReport
 	}
 }
 
-func (rt *runtimeState) handleSetPlanReviewCommand(args string) error {
-	parts := strings.Fields(args)
-
-	// Show current config if no args and no interactive selection
-	if len(parts) > 0 {
-		var err error
-		switch strings.ToLower(parts[0]) {
-		case "status":
-			return rt.showPlanReviewStatus()
-		default:
-			provider, ok := resolveProviderChoice(parts[0])
-			if !ok {
-				return fmt.Errorf("unknown provider: %s", parts[0])
-			}
-			err = rt.configurePlanReviewInteractive(provider)
-		}
-		if errors.Is(err, ErrPromptCanceled) {
-			return nil
-		}
-		return err
-	}
-
-	fmt.Fprintln(rt.writer, rt.ui.section("Set Plan Review Reviewer"))
-	if rt.cfg.PlanReview != nil {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Current reviewer: "+rt.cfg.PlanReview.Provider+" / "+rt.cfg.PlanReview.Model))
-	} else {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("No reviewer configured yet."))
-	}
-	rt.printProviderChoiceOptions()
-
-	defaultChoice := defaultProviderChoice("")
-	if rt.cfg.PlanReview != nil {
-		defaultChoice = defaultProviderChoice(rt.cfg.PlanReview.Provider)
-	}
-	choice, err := rt.promptValue("Select provider", defaultChoice)
-	if err != nil {
-		if errors.Is(err, ErrPromptCanceled) {
-			return nil
-		}
-		return err
-	}
-	if strings.TrimSpace(choice) == "" {
-		choice = defaultChoice
-	}
-	provider, ok := resolveProviderChoice(choice)
-	if !ok {
-		return fmt.Errorf("unknown provider: %s", choice)
-	}
-	err = rt.configurePlanReviewInteractive(provider)
-	if errors.Is(err, ErrPromptCanceled) {
-		return nil
-	}
-	return err
-}
-
 func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 	parts := strings.Fields(args)
 	if len(parts) > 0 {
@@ -7446,6 +7564,15 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 				return err
 			}
 			nextModel = model
+		case "anthropic-claude-cli":
+			if err := rt.configureClaudeCLICommandInteractive(); err != nil {
+				return err
+			}
+			model, err := rt.chooseClaudeCLIModel(currentModel)
+			if err != nil {
+				return err
+			}
+			nextModel = model
 		case "openai-codex":
 			model, err := rt.chooseOpenAICodexModel(currentModel)
 			if err != nil {
@@ -7475,7 +7602,7 @@ func (rt *runtimeState) configureSpecialistModelInteractive(name string, provide
 			nextBaseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
 		case "deepseek":
 			nextBaseURL = normalizeDeepSeekBaseURL(nextBaseURL)
-		case "anthropic", "openai", "codex-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp":
+		case "anthropic", "openai", "codex-cli", "anthropic-claude-cli", "openai-codex", "lmstudio", "vllm", "llama.cpp":
 			nextBaseURL = normalizeProfileBaseURL(provider, nextBaseURL)
 		default:
 			return fmt.Errorf("unsupported provider: %s", provider)
@@ -7630,6 +7757,17 @@ func (rt *runtimeState) configureProjectAnalysisRoleInteractive(role string, pro
 		nextModel = model
 		nextBaseURL = ""
 		nextAPIKey = ""
+	case "anthropic-claude-cli":
+		if err := rt.configureClaudeCLICommandInteractive(); err != nil {
+			return err
+		}
+		model, err := rt.chooseClaudeCLIModel(nextModel)
+		if err != nil {
+			return err
+		}
+		nextModel = model
+		nextBaseURL = ""
+		nextAPIKey = ""
 	default:
 		return fmt.Errorf("unsupported provider: %s", provider)
 	}
@@ -7676,7 +7814,7 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 		return err
 	}
 	rt.printReasoningEffortDefaultNotice("analysis "+role+" model", defaultedEffort)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s / %s", role, provider, model)))
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s", role, formatProviderModelLabel(provider, model))))
 	return nil
 }
 
@@ -7725,7 +7863,7 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 		return err
 	}
 	rt.printReasoningEffortDefaultNotice("specialist "+strings.TrimSpace(name)+" model", defaultedEffort)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s / %s", name, provider, model)))
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s", name, formatProviderModelLabel(provider, model))))
 	return nil
 }
 
@@ -7824,520 +7962,6 @@ func (rt *runtimeState) resolveSpecialistChoice(choice string, names []string) (
 		}
 	}
 	return "", fmt.Errorf("unknown specialist profile: %s", choice)
-}
-
-func (rt *runtimeState) showPlanReviewStatus() error {
-	if rt.cfg.PlanReview == nil {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No plan-review reviewer configured."))
-		return nil
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section("Plan Review Reviewer"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("provider", rt.cfg.PlanReview.Provider))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("model", rt.cfg.PlanReview.Model))
-	if providerSupportsReasoningEffort(rt.cfg.PlanReview.Provider) {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("reasoning_effort", reasoningEffortDisplay(rt.cfg.PlanReview.ReasoningEffort)))
-	}
-	if rt.cfg.PlanReview.BaseURL != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("base_url", rt.cfg.PlanReview.BaseURL))
-	}
-	return nil
-}
-
-func (rt *runtimeState) configurePlanReviewInteractive(provider string) error {
-	provider = normalizeProviderName(provider)
-	nextModel := ""
-	nextBaseURL := ""
-	nextAPIKey := ""
-
-	if rt.cfg.PlanReview != nil && strings.EqualFold(rt.cfg.PlanReview.Provider, provider) {
-		nextModel = rt.cfg.PlanReview.Model
-		nextBaseURL = rt.cfg.PlanReview.BaseURL
-		nextAPIKey = rt.cfg.PlanReview.APIKey
-	}
-	if strings.TrimSpace(nextAPIKey) == "" {
-		nextAPIKey = rt.providerAPIKey(provider)
-	}
-
-	switch provider {
-	case "ollama":
-		defaultURL := nextBaseURL
-		if strings.TrimSpace(defaultURL) == "" {
-			defaultURL = normalizeOllamaBaseURL("")
-		}
-		url, err := rt.promptValue("Ollama URL", defaultURL)
-		if err != nil {
-			return err
-		}
-		url = normalizeOllamaBaseURL(url)
-		models, normalized, fetchErr := rt.fetchAndShowOllamaModels(url)
-		if fetchErr != nil {
-			return fmt.Errorf("could not connect to Ollama server: %w", fetchErr)
-		}
-		if len(models) == 0 {
-			return fmt.Errorf("no Ollama models were returned by %s", normalized)
-		}
-		rt.ollamaModels = models
-		selected, err := rt.chooseOllamaModel(models)
-		if err != nil {
-			return err
-		}
-		nextModel = selected.Name
-		nextBaseURL = normalized
-	case "lmstudio", "vllm", "llama.cpp":
-		model, normalized, apiKey, err := rt.configureLocalOpenAICompatibleModel(provider, nextModel, nextBaseURL, nextAPIKey, "plan review")
-		if err != nil {
-			return err
-		}
-		nextModel = model
-		nextBaseURL = normalized
-		nextAPIKey = apiKey
-	case "anthropic", "openai", "openrouter", "deepseek", "opencode", "opencode-go":
-		baseURL := ""
-		if provider == "openrouter" {
-			baseURL = normalizeOpenRouterBaseURL("")
-		} else if provider == "deepseek" {
-			baseURL = normalizeDeepSeekBaseURL(nextBaseURL)
-		} else if isOpenCodeProvider(provider) {
-			baseURL = normalizeOpenCodeProviderBaseURL(provider, nextBaseURL)
-		}
-		nextBaseURL = baseURL
-
-		if strings.TrimSpace(nextAPIKey) == "" {
-			keyPrompt := providerDisplayName(provider) + " API key (for reviewer)"
-			apiKey, err := rt.promptRequiredValue(keyPrompt, "")
-			if err != nil {
-				return err
-			}
-			nextAPIKey = apiKey
-		}
-		switch provider {
-		case "anthropic":
-			model, err := rt.chooseAnthropicModel(nextModel)
-			if err != nil {
-				return err
-			}
-			nextModel = model
-		case "openrouter":
-			models, normalized, err := rt.fetchAndShowOpenRouterModels(baseURL, nextAPIKey)
-			if err != nil {
-				return err
-			}
-			selected, err := rt.chooseOpenRouterModel(models)
-			if err != nil {
-				return err
-			}
-			nextModel = selected.ID
-			nextBaseURL = normalized
-		case "deepseek":
-			model, normalized, err := rt.fetchAndChooseDeepSeekModel(baseURL, nextAPIKey, nextModel)
-			if err != nil {
-				return err
-			}
-			nextModel = model
-			nextBaseURL = normalized
-		case "opencode", "opencode-go":
-			models, normalized, err := rt.fetchAndShowOpenCodeModelsForProvider(provider, baseURL, nextAPIKey)
-			if err != nil {
-				return err
-			}
-			nextModel, err = rt.chooseOpenCodeModelForProvider(provider, models, nextModel)
-			if err != nil {
-				return err
-			}
-			nextBaseURL = normalized
-		default:
-			model, err := rt.chooseOpenAIModel(nextModel)
-			if err != nil {
-				return err
-			}
-			nextModel = model
-		}
-	case "openai-codex":
-		model, err := rt.chooseOpenAICodexModel(nextModel)
-		if err != nil {
-			return err
-		}
-		nextModel = model
-		nextBaseURL = normalizeOpenAICodexBaseURL(nextBaseURL)
-		nextAPIKey = ""
-	case "codex-cli":
-		model, err := rt.chooseCodexCLIModel(nextModel)
-		if err != nil {
-			return err
-		}
-		nextModel = model
-		nextBaseURL = ""
-		nextAPIKey = ""
-	default:
-		return fmt.Errorf("unsupported provider: %s", provider)
-	}
-
-	return rt.activatePlanReview(provider, nextModel, nextBaseURL, nextAPIKey)
-}
-
-func (rt *runtimeState) activatePlanReview(provider, model, baseURL, apiKey string) error {
-	provider = normalizeProviderName(provider)
-	baseURL = normalizeProfileBaseURL(provider, baseURL)
-	if strings.TrimSpace(apiKey) == "" {
-		apiKey = rt.providerAPIKey(provider)
-	}
-	if isOpenCodeProvider(provider) {
-		resolvedModel, resolvedBaseURL, err := rt.resolveOpenCodeModelForProviderAPIKey(provider, model, baseURL, apiKey, "plan review")
-		if err != nil {
-			return err
-		}
-		model = resolvedModel
-		baseURL = resolvedBaseURL
-	}
-	nextEffort, defaultedEffort := rt.planReviewReasoningEffortForActivation(provider, model, baseURL)
-	rt.cfg.PlanReview = &PlanReviewConfig{
-		Provider:        provider,
-		Model:           model,
-		BaseURL:         baseURL,
-		APIKey:          apiKey,
-		ReasoningEffort: nextEffort,
-	}
-	rt.rememberReviewProfile()
-	rt.storeProviderKey(provider, apiKey)
-	rt.rememberCurrentProfile()
-	if err := SaveUserConfig(rt.cfg); err != nil {
-		return err
-	}
-	rt.syncAgentReviewerClientFromConfig()
-	rt.printReasoningEffortDefaultNotice("plan-review reviewer model", defaultedEffort)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Plan review reviewer set: %s / %s", provider, model)))
-	return nil
-}
-
-func (rt *runtimeState) rememberReviewProfile() {
-	if rt.cfg.PlanReview == nil {
-		return
-	}
-	pr := rt.cfg.PlanReview
-	if strings.TrimSpace(pr.Provider) == "" || strings.TrimSpace(pr.Model) == "" {
-		return
-	}
-	profile := Profile{
-		Name:            profileName(pr.Provider, pr.Model),
-		Provider:        pr.Provider,
-		Model:           pr.Model,
-		BaseURL:         pr.BaseURL,
-		APIKey:          pr.APIKey,
-		ReasoningEffort: normalizeReasoningEffort(pr.ReasoningEffort),
-	}
-
-	rt.cfg.ReviewProfiles = upsertProfile(rt.cfg.ReviewProfiles, profile, 5)
-}
-
-func (rt *runtimeState) currentReviewProfile() (Profile, bool) {
-	if rt.cfg.PlanReview == nil {
-		return Profile{}, false
-	}
-	for _, profile := range rt.cfg.ReviewProfiles {
-		if strings.EqualFold(profile.Provider, rt.cfg.PlanReview.Provider) &&
-			strings.EqualFold(profile.Model, rt.cfg.PlanReview.Model) &&
-			strings.EqualFold(strings.TrimSpace(profile.BaseURL), strings.TrimSpace(rt.cfg.PlanReview.BaseURL)) {
-			return profile, true
-		}
-	}
-	return Profile{}, false
-}
-
-func (rt *runtimeState) handleProfileReviewCommand(args string) error {
-	args = strings.TrimSpace(args)
-	if len(rt.cfg.ReviewProfiles) == 0 {
-		if err := rt.rememberCurrentReviewProfileWhenEmpty(); err != nil {
-			return err
-		}
-	}
-
-	rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
-	if len(rt.cfg.ReviewProfiles) == 0 {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved review profiles yet."))
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model or /set-plan-review to configure the reviewer; Kernforge saves it automatically."))
-		return nil
-	}
-	rt.renderReviewProfileList()
-	if args == "" {
-		if !rt.interactive {
-			return nil
-		}
-		choice, err := rt.promptValueAllowEmpty("Profile action", "")
-		if err != nil {
-			if errors.Is(err, ErrPromptCanceled) {
-				return nil
-			}
-			return err
-		}
-		args = strings.TrimSpace(choice)
-		if args == "" {
-			return nil
-		}
-	}
-	action, index, newName, err := parseProfileCommandArgs(args, len(rt.cfg.ReviewProfiles))
-	if err != nil {
-		return err
-	}
-	if action == "show" {
-		return nil
-	}
-	return rt.applyReviewProfileAction(action, index, newName)
-}
-
-func (rt *runtimeState) rememberCurrentReviewProfileWhenEmpty() error {
-	if len(rt.cfg.ReviewProfiles) != 0 {
-		return nil
-	}
-	profile, ok := rt.activeReviewProfile("")
-	if !ok {
-		return nil
-	}
-	rt.cfg.ReviewProfiles = upsertProfile(rt.cfg.ReviewProfiles, profile, 5)
-	if err := SaveUserConfig(rt.cfg); err != nil {
-		return err
-	}
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Saved current review provider/model as profile "+profile.Name))
-	return nil
-}
-
-func (rt *runtimeState) activeReviewProfile(name string) (Profile, bool) {
-	if rt.cfg.PlanReview == nil {
-		return Profile{}, false
-	}
-	provider := strings.TrimSpace(rt.cfg.PlanReview.Provider)
-	model := strings.TrimSpace(rt.cfg.PlanReview.Model)
-	if provider == "" || model == "" {
-		return Profile{}, false
-	}
-	if strings.TrimSpace(name) == "" {
-		name = profileName(provider, model)
-	}
-	return Profile{
-		Name:            strings.TrimSpace(name),
-		Provider:        provider,
-		Model:           model,
-		BaseURL:         normalizeProfileBaseURL(provider, rt.cfg.PlanReview.BaseURL),
-		APIKey:          rt.providerAPIKey(provider),
-		ReasoningEffort: normalizeReasoningEffort(rt.cfg.PlanReview.ReasoningEffort),
-	}, true
-}
-
-func (rt *runtimeState) renderReviewProfileList() {
-	fmt.Fprintln(rt.writer, rt.ui.section("Review Profiles"))
-	if current, ok := rt.currentReviewProfile(); ok {
-		fmt.Fprintln(rt.writer, rt.ui.infoLine("Current reviewer: "+current.Name))
-		meta := []string{current.Provider, current.Model}
-		if current.BaseURL != "" {
-			meta = append(meta, current.BaseURL)
-		}
-		if current.Pinned {
-			meta = append(meta, "pinned")
-		}
-		fmt.Fprintln(rt.writer, rt.ui.dim(strings.Join(meta, " | ")))
-		fmt.Fprintln(rt.writer)
-	}
-	for i, profile := range rt.cfg.ReviewProfiles {
-		label := fmt.Sprintf("%2d. %s", i+1, profile.Name)
-		meta := []string{}
-		if profile.Pinned {
-			meta = append(meta, "pinned")
-		}
-		if profile.BaseURL != "" {
-			meta = append(meta, profile.BaseURL)
-		}
-		if rt.cfg.PlanReview != nil &&
-			strings.EqualFold(profile.Provider, rt.cfg.PlanReview.Provider) &&
-			strings.EqualFold(profile.Model, rt.cfg.PlanReview.Model) &&
-			strings.EqualFold(strings.TrimSpace(profile.BaseURL), strings.TrimSpace(rt.cfg.PlanReview.BaseURL)) {
-			label += " " + rt.ui.success("[current]")
-		}
-		if len(meta) > 0 {
-			label += "  " + rt.ui.dim(strings.Join(meta, " | "))
-		}
-		fmt.Fprintln(rt.writer, label)
-	}
-	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a number to activate a review profile."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /profile-review <number>, /profile-review r<number>, /profile-review d<number>, or /profile-review p<number>."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure review, analysis, or specialist models."))
-}
-
-func (rt *runtimeState) applyReviewProfileAction(action string, index int, newName string) error {
-	selected := rt.cfg.ReviewProfiles[index-1]
-
-	switch action {
-	case "activate":
-		apiKey := selected.APIKey
-		if strings.TrimSpace(apiKey) == "" {
-			apiKey = rt.providerAPIKey(selected.Provider)
-		}
-		if strings.TrimSpace(apiKey) == "" && requiresAPIKey(selected.Provider) {
-			keyPrompt := providerDisplayName(selected.Provider) + " API key (for reviewer)"
-			key, err := rt.promptRequiredValue(keyPrompt, "")
-			if err != nil {
-				if errors.Is(err, ErrPromptCanceled) {
-					return nil
-				}
-				return err
-			}
-			apiKey = key
-		}
-		if err := rt.activatePlanReview(selected.Provider, selected.Model, selected.BaseURL, apiKey); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Activated review profile "+selected.Name))
-		return nil
-	case "rename":
-		newName = strings.TrimSpace(newName)
-		if newName == "" {
-			var err error
-			newName, err = rt.promptRequiredValue("New profile name", selected.Name)
-			if err != nil {
-				if errors.Is(err, ErrPromptCanceled) {
-					return nil
-				}
-				return err
-			}
-		}
-		rt.cfg.ReviewProfiles[index-1].Name = newName
-		if err := SaveUserConfig(rt.cfg); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Renamed review profile to "+newName))
-		return nil
-	case "delete":
-		rt.cfg.ReviewProfiles = append(rt.cfg.ReviewProfiles[:index-1], rt.cfg.ReviewProfiles[index:]...)
-		if err := SaveUserConfig(rt.cfg); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Deleted review profile "+selected.Name))
-		return nil
-	case "pin":
-		rt.cfg.ReviewProfiles[index-1].Pinned = true
-		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
-		if err := SaveUserConfig(rt.cfg); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("pinned review profile "+selected.Name))
-		return nil
-	case "unpin":
-		rt.cfg.ReviewProfiles[index-1].Pinned = false
-		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
-		if err := SaveUserConfig(rt.cfg); err != nil {
-			return err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("unpinned review profile "+selected.Name))
-		return nil
-	case "toggle-pin":
-		newPinned := !rt.cfg.ReviewProfiles[index-1].Pinned
-		rt.cfg.ReviewProfiles[index-1].Pinned = newPinned
-		rt.cfg.ReviewProfiles = normalizedProfileOrder(rt.cfg.ReviewProfiles)
-		if err := SaveUserConfig(rt.cfg); err != nil {
-			return err
-		}
-		state := "unpinned"
-		if newPinned {
-			state = "pinned"
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine(state+" review profile "+selected.Name))
-		return nil
-	default:
-		return fmt.Errorf("unsupported profile action: %s", action)
-	}
-}
-
-func (rt *runtimeState) handleDoPlanReviewCommand(args string) error {
-	if strings.TrimSpace(args) == "" {
-		return fmt.Errorf("usage: /do-plan-review <task description>")
-	}
-	if rt.agent == nil || rt.agent.Client == nil {
-		return fmt.Errorf("no model provider is configured")
-	}
-	if rt.cfg.PlanReview == nil {
-		return fmt.Errorf("no plan-review reviewer configured. Use /set-plan-review <provider> <model> first")
-	}
-
-	reviewerClient, err := createReviewerClient(rt.cfg.PlanReview, rt.cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create reviewer client: %w", err)
-	}
-
-	memoryContext := strings.TrimSpace(rt.memory.Combined())
-
-	fmt.Fprintln(rt.writer, rt.ui.section("Plan Review"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("planner", rt.session.Provider+" / "+rt.session.Model))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("reviewer", rt.cfg.PlanReview.Provider+" / "+rt.cfg.PlanReview.Model))
-	fmt.Fprintln(rt.writer)
-
-	requestCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	stopEscapeWatcher := startEscapeWatcher(cancel, rt.shouldHonorRequestCancel, rt.confirmRequestCancel)
-	defer stopEscapeWatcher()
-
-	result, err := RunPlanReviewWithPolicy(
-		requestCtx,
-		rt.agent.Client,
-		rt.session.Model,
-		reviewerClient,
-		rt.cfg.PlanReview.Model,
-		rt.appendSimulationPlanningContext(args, args),
-		rt.session.WorkingDir,
-		memoryContext,
-		rt.cfg.MaxTokens,
-		rt.cfg.Temperature,
-		func(status string) {
-			fmt.Fprintln(rt.writer, rt.ui.hintLine(status))
-		},
-		modelRequestPolicyFromConfigWithScheduler(rt.cfg, rt.modelRoutes),
-	)
-	if err != nil {
-		if requestCtx.Err() == context.Canceled {
-			rt.noteRecentRequestCancel()
-			return fmt.Errorf("plan review canceled by user")
-		}
-		return err
-	}
-
-	// Show review log
-	for i, round := range result.ReviewLog {
-		fmt.Fprintln(rt.writer, rt.ui.section(fmt.Sprintf("Round %d - Plan", i+1)))
-		fmt.Fprintln(rt.writer, round.Plan)
-		fmt.Fprintln(rt.writer)
-		fmt.Fprintln(rt.writer, rt.ui.section(fmt.Sprintf("Round %d - Review", i+1)))
-		fmt.Fprintln(rt.writer, round.Review)
-		fmt.Fprintln(rt.writer)
-	}
-
-	// Show final plan
-	approvedLabel := "not approved (max rounds reached)"
-	if result.Approved {
-		approvedLabel = "approved"
-	}
-	fmt.Fprintln(rt.writer, rt.ui.section(fmt.Sprintf("Final Plan (%s, %d rounds)", approvedLabel, result.Rounds)))
-	fmt.Fprintln(rt.writer, result.FinalPlan)
-	fmt.Fprintln(rt.writer)
-
-	// Ask user whether to proceed
-	proceed, err := rt.confirm("Proceed with this plan?")
-	if err != nil {
-		return err
-	}
-	if !proceed {
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Plan review aborted by user."))
-		return nil
-	}
-
-	// Execute the plan via the planner model through the normal agent flow
-	executionPrompt := fmt.Sprintf("Execute the following implementation plan. Follow it step by step.\n\n%s", result.FinalPlan)
-	executionPrompt = rt.appendSimulationPlanningContext(executionPrompt, args+"\n"+result.FinalPlan)
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Executing plan..."))
-	reply, err := rt.runAgentReply(requestCtx, executionPrompt)
-	if err != nil {
-		return err
-	}
-	rt.printAssistant(reply)
-	return nil
 }
 
 func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
@@ -8485,6 +8109,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		if requestCtx.Err() != nil {
 			return
 		}
+		rt.setThinkingStatus(compactThinkingStatus(rt.cfg, status))
 		line := rt.ui.activityLine("analysis", status)
 		if configProgressDisplay(rt.cfg) == "compact" {
 			if !rt.showTransientWhileThinking(line) {
@@ -8498,6 +8123,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 		if requestCtx.Err() != nil {
 			return
 		}
+		rt.setThinkingStatus(compactThinkingStatus(rt.cfg, debug))
 		line := rt.ui.activityLine("analysis", debug)
 		if configProgressDisplay(rt.cfg) == "stream" {
 			rt.printPersistentWhileThinking(line)
@@ -8551,6 +8177,7 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			return err
 		}
 	}
+	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
 
 	rt.printPersistentWhileThinking(rt.ui.activityLine("analysis", "Saving analysis session metadata..."))

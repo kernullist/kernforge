@@ -426,6 +426,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		Perms:                 rt.perms,
 		PrepareEdit:           rt.prepareEdit,
 		PrepareEditAtRoot:     rt.prepareEditAtRoot,
+		ReviewEdit:            rt.reviewProposedEdit,
 		ReportProgress:        func(string) {},
 		CurrentSelection: func() *ViewerSelection {
 			return rt.session.CurrentSelection()
@@ -506,28 +507,34 @@ func newKernforgeMCPServer(rt *runtimeState) *kernforgeMCPServer {
 }
 
 func (s *kernforgeMCPServer) registerTools() {
-	s.addTool("kernforge", "DO NOT run shell, rg, git status, or Get-Content before this tool for any user request that starts with 'KernForge' or asks to use KernForge. Default KernForge router. Use this immediately. For code-review requests, it routes to kernforge_review_code so KernForge's configured main model reviews the current diff or provided code. It never executes native commands; for vague requests it asks the user to choose and the assistant must stop.", mcpObjectSchema(map[string]any{
+	s.addTool("kernforge", "DO NOT run shell, rg, git status, or Get-Content before this tool for any user request that starts with 'KernForge' or asks to use KernForge. Default KernForge router. Use this immediately. For review requests, it routes to kernforge_review so KernForge's common review harness reviews the current diff, provided code, plan, selection, PR, or analysis target. It never executes native commands; for vague requests it asks the user to choose and the assistant must stop.", mcpObjectSchema(map[string]any{
 		"request":               map[string]any{"type": "string", "description": "The user's plain-language KernForge request, e.g. KernForge로 IsValidCommand 봐줘."},
 		"target":                map[string]any{"type": "string", "description": "Optional function, symbol, file, subsystem, or target."},
 		"file":                  map[string]any{"type": "string", "description": "Optional source file related to the request."},
 		"choice":                map[string]any{"type": "string", "enum": []string{"", "preview", "plan", "build_only", "verify"}, "description": "Optional user-selected choice returned by a previous kernforge/kernforge_look response."},
-		"diff":                  map[string]any{"type": "string", "description": "Optional unified diff for code-review requests. Prefer kernforge_review_code directly when possible."},
-		"code":                  map[string]any{"type": "string", "description": "Optional code excerpt for code-review requests. Prefer kernforge_review_code directly when possible."},
+		"diff":                  map[string]any{"type": "string", "description": "Optional unified diff for review requests. Prefer kernforge_review directly when possible."},
+		"code":                  map[string]any{"type": "string", "description": "Optional code excerpt for review requests. Prefer kernforge_review directly when possible."},
 		"include_git_diff":      map[string]any{"type": "boolean", "description": "For code-review requests, whether to collect workspace git diff."},
 		"include_file_contents": map[string]any{"type": "boolean", "description": "For code-review requests, whether to include file excerpts for paths."},
 		"max_context_chars":     map[string]any{"type": "integer", "description": "For code-review requests, maximum context characters sent to the main model."},
 		"max_chars":             map[string]any{"type": "integer", "description": "Maximum response text characters. Source fuzz results enforce a larger minimum so code, trigger values, and artifact paths stay visible."},
 	}), s.toolKernforge)
-	s.addTool("kernforge_review_code", "Use this when the user asks Codex or another MCP client to have KernForge review code that was just written or modified. This calls KernForge's configured main provider/model, not a worker/reviewer role, and performs a read-only code review of provided diff/code or the current workspace git diff. Do not run shell or local file reads before this tool when the user explicitly says to review with KernForge.", mcpObjectSchema(map[string]any{
+	s.addTool("kernforge_review", "Use this when the user asks Codex or another MCP client to have KernForge review code, a plan, a selection, a PR, or an analysis report. This calls KernForge's common review harness, returns structured gate/findings/status, and is read-only. Do not run shell or local file reads before this tool when the user explicitly says to review with KernForge.", mcpObjectSchema(map[string]any{
 		"request":               map[string]any{"type": "string", "description": "The user's review request or acceptance criteria."},
+		"target":                map[string]any{"type": "string", "enum": []string{"", "auto", "change", "plan", "selection", "pr", "analysis"}, "description": "Optional review target. Default auto lets KernForge infer the flow."},
+		"mode":                  map[string]any{"type": "string", "description": "Optional review mode such as security-hardening, core-build, live-fix, refactor, research, or general-change."},
 		"paths":                 map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional changed files or directories to focus on. Pass this when the MCP client knows which files it edited."},
 		"diff":                  map[string]any{"type": "string", "description": "Optional unified diff supplied by the MCP client. If omitted, KernForge collects git diff from the workspace."},
 		"code":                  map[string]any{"type": "string", "description": "Optional code excerpt supplied by the MCP client."},
+		"auto_review":           map[string]any{"type": "string", "enum": []string{"", "inherit", "on", "off"}, "description": "Whether this MCP review should run. Default inherit follows server config."},
 		"include_git_diff":      map[string]any{"type": "boolean", "description": "Whether to collect workspace git diff. Default true only when diff/code is not provided."},
 		"include_file_contents": map[string]any{"type": "boolean", "description": "Include file excerpts for paths. Default false unless no diff context is found."},
+		"no_model":              map[string]any{"type": "boolean", "description": "Use deterministic reviewers only."},
+		"auto_follow_up":        map[string]any{"type": "string", "enum": []string{"", "inherit", "off", "safe"}, "description": "Return safe next commands. MCP does not execute external writes."},
+		"response_format":       map[string]any{"type": "string", "enum": []string{"", "summary", "json", "both"}, "description": "Preferred response format. Default both."},
 		"max_context_chars":     map[string]any{"type": "integer", "description": "Maximum characters of diff/code context sent to the main model."},
 		"max_chars":             map[string]any{"type": "integer", "description": "Maximum response text characters."},
-	}), s.toolReviewCode)
+	}), s.toolReview)
 	s.addTool("kernforge_fuzz", "PRE-CALL NARRATION: say exactly one short sentence such as 'KernForge source-level fuzzing을 실행하겠습니다.' Do NOT say 'KernForge 도구를 확인', '코드에서 실제 위치를 찾겠다', '정의와 호출부를 찾겠다', '테스트 구조를 보겠다', or '퍼징 대상만 좁게 건드리겠다'. DO NOT run shell, rg, git status, Get-Content, local file reads, status, analysis, or verify tools before this tool for fuzz/fuzzing/퍼징/퍼즈/하네스 requests. Direct source-level fuzzing entrypoint. Default mode is source: no compile, no native build, no native fuzz execution. Source responses always include artifact_paths with artifact_dir, report_path, plan_path, and harness_path. If fuzz_result.meaningful_result is true, show problem_code_location, problem_code, and trigger_values from the response. After a source response, summarize fuzz_result and naturally recommend the optional native path: native_preview, build_only, then runtime fuzzing. Do not call those follow-up tools unless the user explicitly asks.", mcpObjectSchema(map[string]any{
 		"request":                 map[string]any{"type": "string", "description": "Plain-language fuzz request, e.g. KernForge로 IsValidCommand 퍼징해줘."},
 		"target":                  map[string]any{"type": "string", "description": "Optional function, symbol, file, subsystem, or target."},
@@ -1269,12 +1276,12 @@ func (s *kernforgeMCPServer) toolGuide(ctx context.Context, args map[string]any)
 			questions = append(questions, mcpGuideQuestion("execution_mode", "Should KernForge only plan verification, or may it run build/test commands?", "Default is plan only. Use execution_mode=execute when command execution is allowed."))
 		}
 	case "review":
-		recommended = mcpGuideToolCall("kernforge_review_code", map[string]any{
+		recommended = mcpGuideToolCall("kernforge_review", map[string]any{
 			"request": request,
 			"paths":   mcpGuideVerificationPaths(file, request),
 		})
-		payload["safe_default"] = "main_model_read_only_review"
-		payload["codex_instruction"] = "Call kernforge_review_code when the user asks KernForge to review code written or modified by the MCP client. Do not substitute analyze-project, verify, shell git diff, or local source reads before this review tool."
+		payload["safe_default"] = "common_review_harness_read_only"
+		payload["codex_instruction"] = "Call kernforge_review when the user asks KernForge to review code, a plan, a PR, a selection, or an analysis target. Do not substitute analyze-project, verify, shell git diff, or local source reads before this review tool."
 	case "analyze":
 		analysisGoal := firstNonBlankString(goal, request)
 		if strings.TrimSpace(analysisGoal) == "" {
@@ -1328,12 +1335,12 @@ func (s *kernforgeMCPServer) toolKernforge(ctx context.Context, args map[string]
 				"request": request,
 				"paths":   mcpGuideVerificationPaths(file, request),
 			}
-			for _, key := range []string{"diff", "code", "include_git_diff", "include_file_contents", "max_context_chars", "max_chars"} {
+			for _, key := range []string{"diff", "code", "target", "mode", "include_git_diff", "include_file_contents", "no_model", "auto_follow_up", "max_context_chars", "max_chars"} {
 				if value, ok := args[key]; ok {
 					reviewArgs[key] = value
 				}
 			}
-			return s.toolReviewCode(ctx, reviewArgs)
+			return s.toolReview(ctx, reviewArgs)
 		}
 		if intent == "fuzz" {
 			fuzzArgs := map[string]any{

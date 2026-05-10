@@ -94,7 +94,7 @@ func normalizeSessionAutomation(item SessionAutomation) SessionAutomation {
 	}
 	if item.Command == "" {
 		if item.Type == AutomationTypePRReview {
-			item.Command = "/review-pr"
+			item.Command = "/review pr"
 		} else {
 			item.Command = "/verify"
 		}
@@ -214,7 +214,7 @@ func (rt *runtimeState) handleAutomationAdd(fields []string) error {
 	case "pr", "pr-review", AutomationTypePRReview:
 		typ = AutomationTypePRReview
 		if command == "" {
-			command = "/review-pr"
+			command = "/review pr"
 		}
 	default:
 		return fmt.Errorf("unknown automation type: %s", fields[0])
@@ -469,14 +469,14 @@ func validateAutomationCommand(typ string, command string) error {
 			return fmt.Errorf("recurring verification automation only allows /verify and verification dashboard commands")
 		}
 	case AutomationTypePRReview:
-		if cmd.Name == "review-pr" {
-			options := parsePRReviewAutomationOptions(cmd.Args)
+		if cmd.Name == "review" && strings.HasPrefix(strings.TrimSpace(strings.ToLower(cmd.Args)), "pr") {
+			options := parsePRReviewAutomationOptions(reviewPRArgsFromReviewArgs(cmd.Args))
 			if options.HasGitHubWrite() {
-				return fmt.Errorf("PR review automation cannot perform GitHub write-side actions; use /review-pr write flags manually")
+				return fmt.Errorf("PR review automation cannot perform GitHub write-side actions; use /review pr write flags manually")
 			}
 			return nil
 		}
-		return fmt.Errorf("PR review automation only allows /review-pr")
+		return fmt.Errorf("PR review automation only allows /review pr")
 	default:
 		return fmt.Errorf("unknown automation type: %s", typ)
 	}
@@ -1301,15 +1301,18 @@ func (rt *runtimeState) executeSafeSuggestionCommandContext(ctx context.Context,
 			return "", err
 		}
 		return "executed /analyze-dashboard", nil
-	case "review-pr":
-		options := parsePRReviewAutomationOptions(cmd.Args)
-		if options.HasGitHubWrite() {
-			return "", fmt.Errorf("/review-pr GitHub write-side flags are not allowed from automatic suggestion execution")
+	case "review":
+		if !strings.HasPrefix(strings.TrimSpace(strings.ToLower(cmd.Args)), "pr") {
+			return "", fmt.Errorf("only /review pr is allowed from automatic suggestion execution")
 		}
-		if err := rt.handlePRReviewAutomationCommand(cmd.Args); err != nil {
+		options := parsePRReviewAutomationOptions(reviewPRArgsFromReviewArgs(cmd.Args))
+		if options.HasGitHubWrite() {
+			return "", fmt.Errorf("/review pr GitHub write-side flags are not allowed from automatic suggestion execution")
+		}
+		if err := rt.handleReviewCommand(cmd.Args); err != nil {
 			return "", err
 		}
-		return "executed /review-pr", nil
+		return "executed /review pr", nil
 	case "automation":
 		automationFields := strings.Fields(strings.TrimSpace(cmd.Args))
 		if len(automationFields) == 0 || !strings.EqualFold(automationFields[0], "add") {

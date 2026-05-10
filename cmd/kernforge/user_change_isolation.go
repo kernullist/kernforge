@@ -110,6 +110,79 @@ func userChangeIsolationToolResult(call ToolCall, err error) ToolExecutionResult
 	}
 }
 
+func (a *Agent) rebaselineUserChangeIsolationFromRead(call ToolCall, execErr error) {
+	if a == nil || a.Session == nil || execErr != nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(call.Name), "read_file") {
+		return
+	}
+	state := a.UserChangeIsolation
+	report := a.Session.LastUserChangeIsolationReport
+	if state == nil || report == nil || len(report.ConflictedPaths) == 0 || len(state.Baseline) == 0 {
+		return
+	}
+	root := strings.TrimSpace(state.Root)
+	if root == "" {
+		return
+	}
+	readPath := strings.TrimSpace(stringValue(toolCallArgumentsMap(call), "path"))
+	if readPath == "" {
+		return
+	}
+	readRel := userChangeIsolationRelativePath(root, readPath)
+	if readRel == "" {
+		return
+	}
+	readKey := normalizeUserChangeIsolationPath(readRel)
+	conflicted := map[string]bool{}
+	for _, path := range report.ConflictedPaths {
+		conflicted[normalizeUserChangeIsolationPath(path)] = true
+	}
+	if !conflicted[readKey] {
+		return
+	}
+	current, err := snapshotWorkspaceFiles(root)
+	if err != nil {
+		report.Warnings = appendTaskStateItem(report.Warnings, "Could not refresh user-change isolation baseline after re-reading "+readRel+": "+err.Error(), 8)
+		report.Normalize()
+		return
+	}
+	clean := filepath.Clean(filepath.FromSlash(readRel))
+	if signature, ok := current[clean]; ok {
+		state.Baseline[clean] = signature
+	} else {
+		delete(state.Baseline, clean)
+	}
+	nextConflicts := make([]string, 0, len(report.ConflictedPaths))
+	for _, path := range report.ConflictedPaths {
+		if normalizeUserChangeIsolationPath(path) == readKey {
+			continue
+		}
+		nextConflicts = append(nextConflicts, path)
+	}
+	report.ConflictedPaths = nextConflicts
+	report.Warnings = appendTaskStateItem(report.Warnings, "Re-read "+filepath.ToSlash(readRel)+" and refreshed the user-change isolation baseline for merge-aware retry.", 8)
+	if len(report.ConflictedPaths) == 0 {
+		report.Findings = nil
+	}
+	report.Normalize()
+}
+
+func userChangeIsolationRelativePath(root string, rawPath string) string {
+	path := strings.TrimSpace(rawPath)
+	if path == "" {
+		return ""
+	}
+	path = filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(path) {
+		if rel, err := filepath.Rel(root, path); err == nil {
+			path = rel
+		}
+	}
+	return filepath.ToSlash(filepath.Clean(path))
+}
+
 func detectUserChangeConflicts(root string, baseline map[string]workspaceFileSignature, current map[string]workspaceFileSignature, scopes []string, agentTouched map[string]bool) []string {
 	if len(baseline) == 0 || len(scopes) == 0 {
 		return nil

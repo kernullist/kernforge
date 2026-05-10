@@ -22,7 +22,7 @@ func TestSuggestAcceptConfirmExecutesAutomationAndPersistsPreference(t *testing.
 		Type:      AutomationTypePRReview,
 		Title:     "PR review automation report 준비",
 		Reason:    "dirty diff needs review automation",
-		Command:   "/automation add pr-review /review-pr",
+		Command:   "/automation add pr-review /review pr",
 		DedupKey:  "automation:pr-review:test",
 		CreatedAt: time.Now(),
 	})
@@ -502,22 +502,22 @@ func TestPRReviewPostCommentsIsRejectedFromAutomaticExecution(t *testing.T) {
 		},
 	}
 
-	if _, err := rt.executeSafeSuggestionCommand("/review-pr --post-comments"); err == nil {
+	if _, err := rt.executeSafeSuggestionCommand("/review pr --post-comments"); err == nil {
 		t.Fatalf("expected automatic post-comments execution to be rejected")
 	}
-	if err := validateAutomationCommand(AutomationTypePRReview, "/review-pr --post-comments"); err == nil {
+	if err := validateAutomationCommand(AutomationTypePRReview, "/review pr --post-comments"); err == nil {
 		t.Fatalf("expected automation post-comments command to be rejected")
 	}
-	if _, err := rt.executeSafeSuggestionCommand("/review-pr --resolve-thread PRRT_123"); err == nil {
+	if _, err := rt.executeSafeSuggestionCommand("/review pr --resolve-thread PRRT_123"); err == nil {
 		t.Fatalf("expected automatic resolve-thread execution to be rejected")
 	}
-	if err := validateAutomationCommand(AutomationTypePRReview, "/review-pr --resolve-thread PRRT_123"); err == nil {
+	if err := validateAutomationCommand(AutomationTypePRReview, "/review pr --resolve-thread PRRT_123"); err == nil {
 		t.Fatalf("expected automation resolve-thread command to be rejected")
 	}
-	if _, err := rt.executeSafeSuggestionCommand("/review-pr --create-issue"); err == nil {
+	if _, err := rt.executeSafeSuggestionCommand("/review pr --create-issue"); err == nil {
 		t.Fatalf("expected automatic create-issue execution to be rejected")
 	}
-	if err := validateAutomationCommand(AutomationTypePRReview, "/review-pr --create-issue"); err == nil {
+	if err := validateAutomationCommand(AutomationTypePRReview, "/review pr --create-issue"); err == nil {
 		t.Fatalf("expected automation create-issue command to be rejected")
 	}
 }
@@ -605,7 +605,7 @@ func TestAutomationAddRejectsUnsafeCommand(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleAutomationCommand("add recurring-verification /review-pr"); err == nil {
+	if err := rt.handleAutomationCommand("add recurring-verification /review pr"); err == nil {
 		t.Fatalf("expected unsafe automation command to be rejected")
 	}
 	if len(session.Automations) != 0 {
@@ -628,7 +628,7 @@ func TestAutomationAddSupportsIntervalSchedule(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleAutomationCommand("add pr-review --every 2h /review-pr"); err != nil {
+	if err := rt.handleAutomationCommand("add pr-review --every 2h /review pr"); err != nil {
 		t.Fatalf("handleAutomationCommand: %v", err)
 	}
 	if len(session.Automations) != 1 {
@@ -654,7 +654,7 @@ func TestAutomationRunDueExecutesOnlyDueScheduledItems(t *testing.T) {
 	due := normalizeSessionAutomation(SessionAutomation{
 		ID:        "auto-due",
 		Type:      AutomationTypePRReview,
-		Command:   "/review-pr",
+		Command:   "/review pr",
 		Status:    AutomationStatusActive,
 		Schedule:  "every 1h",
 		CreatedAt: now.Add(-3 * time.Hour),
@@ -665,7 +665,7 @@ func TestAutomationRunDueExecutesOnlyDueScheduledItems(t *testing.T) {
 	later := normalizeSessionAutomation(SessionAutomation{
 		ID:        "auto-later",
 		Type:      AutomationTypePRReview,
-		Command:   "/review-pr",
+		Command:   "/review pr",
 		Status:    AutomationStatusActive,
 		Schedule:  "every 1h",
 		CreatedAt: now,
@@ -714,7 +714,7 @@ func TestAutomationDigestSurfacesDueAndFailedItems(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-due",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),
@@ -761,7 +761,7 @@ func TestAutomationStartupNoticeSurfacesAttentionOnly(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-due",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),
@@ -800,7 +800,7 @@ func TestAutomationMonitorRunsDueAndPrintsPostDigest(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-due",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),
@@ -842,7 +842,7 @@ func TestAutomationNotifyWritesDigestArtifact(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-due",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),
@@ -969,7 +969,7 @@ func TestAutomationWatchRunsDueAndWritesDigestArtifact(t *testing.T) {
 		normalizeSessionAutomation(SessionAutomation{
 			ID:        "auto-due",
 			Type:      AutomationTypePRReview,
-			Command:   "/review-pr",
+			Command:   "/review pr",
 			Status:    AutomationStatusActive,
 			Schedule:  "every 1h",
 			CreatedAt: now.Add(-3 * time.Hour),

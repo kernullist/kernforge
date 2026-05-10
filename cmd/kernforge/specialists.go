@@ -37,15 +37,6 @@ func defaultSpecialistProfiles() []SpecialistSubagentProfile {
 			Editable:    boolPtr(false),
 		},
 		{
-			Name:        "reviewer",
-			Description: "General-purpose review specialist for correctness, regression risk, and verification coverage.",
-			Prompt:      "Prioritize correctness, regression risk, and missing validation before polish.",
-			NodeKinds:   []string{"verification", "edit", "summary"},
-			Keywords:    []string{"verify", "verification", "correctness", "regression", "test", "failure"},
-			ReadOnly:    boolPtr(true),
-			Editable:    boolPtr(false),
-		},
-		{
 			Name:        "kernel-investigator",
 			Description: "Specializes in Windows kernel, driver, service, and verifier evidence.",
 			Prompt:      "Think like a Windows kernel investigator. Watch for driver state, symbols, verifier, packaging, and service lifecycle blind spots.",
@@ -75,7 +66,7 @@ func defaultSpecialistProfiles() []SpecialistSubagentProfile {
 			OwnershipPaths: []string{"telemetry/**", "etw/**", "trace/**", "providers/**", "*.man", "*.xml"},
 		},
 		{
-			Name:           "unreal-integrity-reviewer",
+			Name:           "unreal-integrity-analyst",
 			Description:    "Focuses on Unreal integrity, replication, gameplay, startup, and asset coupling.",
 			Prompt:         "Reason about Unreal module boundaries, UBT and UHT behavior, replication surfaces, startup config, and cooked asset integrity.",
 			NodeKinds:      []string{"inspection", "verification", "edit"},
@@ -85,7 +76,7 @@ func defaultSpecialistProfiles() []SpecialistSubagentProfile {
 			OwnershipPaths: []string{"Source/**", "Plugins/**", "Config/**", "Content/**", "*.uproject", "*.uplugin"},
 		},
 		{
-			Name:           "memory-inspection-reviewer",
+			Name:           "memory-inspection-analyst",
 			Description:    "Focuses on memory inspection, scanner quality, false positives, and evidence coverage.",
 			Prompt:         "Watch for false positives, stale assumptions, address-space blind spots, and scanner regression coverage gaps.",
 			NodeKinds:      []string{"inspection", "verification", "edit"},
@@ -95,7 +86,7 @@ func defaultSpecialistProfiles() []SpecialistSubagentProfile {
 			OwnershipPaths: []string{"memory/**", "scanner/**", "signatures/**", "patterns/**", "*.sig", "*.pat"},
 		},
 		{
-			Name:        "attack-surface-reviewer",
+			Name:        "attack-surface-analyst",
 			Description: "Focuses on attack surface, tamper paths, trust boundaries, and bypass risk.",
 			Prompt:      "Look for tamper surface, privilege boundaries, bypass paths, and forensic blind spots before implementation convenience.",
 			NodeKinds:   []string{"inspection", "summary", "verification"},
@@ -157,7 +148,7 @@ func normalizeSpecialistProfiles(items []SpecialistSubagentProfile) []Specialist
 }
 
 func normalizeSpecialistProfile(profile SpecialistSubagentProfile) SpecialistSubagentProfile {
-	profile.Name = strings.TrimSpace(profile.Name)
+	profile.Name = canonicalSpecialistProfileName(profile.Name)
 	profile.Description = strings.TrimSpace(profile.Description)
 	profile.Prompt = strings.TrimSpace(profile.Prompt)
 	profile.Provider = strings.TrimSpace(profile.Provider)
@@ -219,7 +210,21 @@ func mergeSpecialistProfile(base SpecialistSubagentProfile, overlay SpecialistSu
 }
 
 func normalizeSpecialistProfileName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
+	return canonicalSpecialistProfileName(name)
+}
+
+func canonicalSpecialistProfileName(name string) string {
+	normalized := strings.ToLower(strings.TrimSpace(name))
+	switch normalized {
+	case "unreal-integrity-reviewer":
+		return "unreal-integrity-analyst"
+	case "memory-inspection-reviewer":
+		return "memory-inspection-analyst"
+	case "attack-surface-reviewer":
+		return "attack-surface-analyst"
+	default:
+		return normalized
+	}
 }
 
 func specialistProfileReadOnly(profile SpecialistSubagentProfile) bool {
@@ -424,7 +429,7 @@ func formatSpecialistCatalogWithUI(ui UI, cfg Config) string {
 
 func specialistCatalogGroup(profile SpecialistSubagentProfile) string {
 	switch normalizeSpecialistProfileName(profile.Name) {
-	case "implementation-owner", "planner", "reviewer":
+	case "implementation-owner", "planner":
 		return "General-purpose"
 	}
 	if defaultSpecialistProfileKnown(profile.Name) {
@@ -510,10 +515,6 @@ func selectSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskState, tr
 			reasons = append(reasons, fmt.Sprintf("keywords=%d", keywordHits))
 		}
 		switch normalizeSpecialistProfileName(profile.Name) {
-		case "reviewer":
-			if strings.EqualFold(node.Kind, "verification") || strings.Contains(text, "retry") || strings.Contains(text, "failure") {
-				score += 12
-			}
 		case "planner":
 			if strings.Contains(text, "plan") || strings.Contains(text, "next") || strings.Contains(text, "dependency") {
 				score += 10
@@ -538,9 +539,6 @@ func selectSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskState, tr
 		return best, true
 	}
 	fallbackName := "planner"
-	if strings.EqualFold(strings.TrimSpace(node.Kind), "verification") {
-		fallbackName = "reviewer"
-	}
 	for _, profile := range configuredSpecialistProfiles(cfg) {
 		if normalizeSpecialistProfileName(profile.Name) != fallbackName {
 			continue
@@ -602,11 +600,11 @@ func selectEditableSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskS
 			if strings.Contains(text, "etw") || strings.Contains(text, "telemetry") {
 				score += 12
 			}
-		case "unreal-integrity-reviewer":
+		case "unreal-integrity-analyst":
 			if strings.Contains(text, "unreal") || strings.Contains(text, "uproject") {
 				score += 12
 			}
-		case "memory-inspection-reviewer":
+		case "memory-inspection-analyst":
 			if strings.Contains(text, "memory") || strings.Contains(text, "scanner") {
 				score += 12
 			}
@@ -786,7 +784,7 @@ func buildSpecialistMicroWorkerPrompt(profile SpecialistSubagentProfile, state *
 func (rt *runtimeState) handleSpecialistsStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.section("Specialists"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled", fmt.Sprintf("%t", configSpecialistsEnabled(rt.cfg))))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Most normal app, backend, frontend, and tooling work routes through implementation-owner, planner, or reviewer first. Domain specialists engage when task text or file paths strongly match."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Most normal app, backend, frontend, and tooling work routes through implementation-owner or planner first. Review gates use /review models; domain specialists engage when task text or file paths strongly match."))
 	if catalog := strings.TrimSpace(formatSpecialistCatalogWithUI(rt.ui, rt.cfg)); catalog != "" {
 		fmt.Fprintln(rt.writer, catalog)
 	}

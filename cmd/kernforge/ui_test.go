@@ -57,11 +57,11 @@ func TestStatusKVAlignsShortKeysAndFallsBackForPaths(t *testing.T) {
 func TestStatusKVAlignedKeepsLongKeysInColumnLayout(t *testing.T) {
 	ui := UI{color: false}
 
-	rendered := ui.statusKVAligned("memory-inspection-reviewer", "openrouter / z-ai/glm-5.1", 30)
+	rendered := ui.statusKVAligned("memory-inspection-analyst", "openrouter / z-ai/glm-5.1", 30)
 	if strings.Contains(rendered, "->") {
 		t.Fatalf("expected aligned helper to avoid arrow fallback, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "memory-inspection-reviewer:") {
+	if !strings.Contains(rendered, "memory-inspection-analyst:") {
 		t.Fatalf("expected aligned helper to keep colon layout, got %q", rendered)
 	}
 }
@@ -105,7 +105,7 @@ func TestTruncateStatusSnippetDoesNotSplitKoreanUTF8(t *testing.T) {
 func TestPromptUsesUserScopedTargetLabel(t *testing.T) {
 	ui := UI{color: false}
 	prompt := ui.prompt("openai", "gpt-5.4", "")
-	if prompt != "you [openai / gpt-5.4] > " {
+	if prompt != "you [openai-api / gpt-5.4] > " {
 		t.Fatalf("unexpected prompt rendering: %q", prompt)
 	}
 }
@@ -113,7 +113,7 @@ func TestPromptUsesUserScopedTargetLabel(t *testing.T) {
 func TestPromptIncludesReasoningEffortWhenProvided(t *testing.T) {
 	ui := UI{color: false}
 	prompt := ui.prompt("openai-codex", "gpt-5.5", "high")
-	if prompt != "you [openai-codex / gpt-5.5 / effort=high] > " {
+	if prompt != "you [openai-codex-subscription / gpt-5.5 / effort=high] > " {
 		t.Fatalf("unexpected prompt rendering: %q", prompt)
 	}
 }
@@ -267,6 +267,29 @@ func TestFormatCompletionSuggestionsShowsSubcommandDescriptions(t *testing.T) {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected subcommand completion rendering to contain %q, got %q", needle, rendered)
 		}
+	}
+}
+
+func TestFormatCompletionSuggestionsShowsReviewSubcommandDescriptions(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.formatCompletionSuggestions([]string{"/review change", "/review plan", "/review models", "/review --mode"}, "/review ")
+
+	for _, needle := range []string{
+		"/review change",
+		"Review the current workspace diff",
+		"/review plan",
+		"Review an implementation plan",
+		"/review models",
+		"role-specific reviewer model",
+		"/review --mode",
+		"Force review mode",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected review completion rendering to contain %q, got %q", needle, rendered)
+		}
+	}
+	if strings.Count(rendered, "Run the common review harness") > 1 {
+		t.Fatalf("expected review subcommands to avoid repeated parent descriptions, got %q", rendered)
 	}
 }
 

@@ -237,16 +237,17 @@ func modelRoutePolicyFromConfig(cfg Config) ModelRoutePolicy {
 
 func defaultModelRouteProviderLimits() map[string]int {
 	return map[string]int{
-		"codex-cli":    1,
-		"deepseek":     2,
-		"llama.cpp":    1,
-		"lmstudio":     1,
-		"ollama":       1,
-		"opencode":     1,
-		"opencode-go":  1,
-		"openrouter":   2,
-		"openai-codex": 2,
-		"vllm":         1,
+		"anthropic-claude-cli": 1,
+		"codex-cli":            1,
+		"deepseek":             2,
+		"llama.cpp":            1,
+		"lmstudio":             1,
+		"ollama":               1,
+		"opencode":             1,
+		"opencode-go":          1,
+		"openrouter":           2,
+		"openai-codex":         2,
+		"vllm":                 1,
 	}
 }
 
@@ -368,7 +369,7 @@ func modelRouteLabel(provider string, model string, baseURL string, reasoningEff
 	model = strings.TrimSpace(model)
 	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
 	reasoningEffort = normalizeReasoningEffort(reasoningEffort)
-	label := provider
+	label := providerUserLabel(provider)
 	if model != "" {
 		if label != "" {
 			label += "/"

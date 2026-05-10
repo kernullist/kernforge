@@ -48,6 +48,26 @@ func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 	}
 }
 
+func TestShouldPrimeInteractivePlanSkipsFocusedBugFixSelection(t *testing.T) {
+	state := &TaskState{
+		Goal: "@Tavern/TavernWorker/TavernUpdManager.cpp:250-322 버그를 찾아서 수정해",
+	}
+
+	if shouldPrimeInteractivePlan(state, false, true, false) {
+		t.Fatalf("expected focused bug-fix selection to skip slow interactive preflight planning")
+	}
+}
+
+func TestShouldPrimeInteractivePlanSkipsBroadBugFindAndFix(t *testing.T) {
+	state := &TaskState{
+		Goal: "TavernWorker 서비스 설치/시작 과정에 버그를 찾고 수정해",
+	}
+
+	if shouldPrimeInteractivePlan(state, false, true, false) {
+		t.Fatalf("expected broad bug-find-and-fix request to skip slow interactive preflight planning")
+	}
+}
+
 func TestInteractivePlanReviewPolicyCapsHiddenPreflight(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.RequestTimeoutSecs = 1200
@@ -96,10 +116,6 @@ func TestEnsureInteractiveReviewerClientKeepsExplicitReviewer(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "deepseek"
 	cfg.Model = "deepseek-chat"
-	cfg.PlanReview = &PlanReviewConfig{
-		Provider: "deepseek",
-		Model:    "deepseek-chat",
-	}
 	agent := &Agent{
 		Config:         cfg,
 		ReviewerClient: interactiveReviewerStubClient{name: "deepseek"},
@@ -120,10 +136,6 @@ func TestEnsureInteractiveReviewerClientKeepsDistinctReviewer(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "deepseek"
 	cfg.Model = "deepseek-chat"
-	cfg.PlanReview = &PlanReviewConfig{
-		Provider: "openai-codex",
-		Model:    "gpt-5.5",
-	}
 	agent := &Agent{
 		Config:         cfg,
 		ReviewerClient: interactiveReviewerStubClient{name: "openai-codex"},

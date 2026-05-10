@@ -495,11 +495,44 @@ func (rt *runtimeState) runGoalReviewerReply(ctx context.Context, prompt string)
 	return strings.TrimSpace(resp.Message.Text), nil
 }
 
+func (rt *runtimeState) runGoalReviewHarnessReply(ctx context.Context, goal GoalState, iteration GoalIteration, root string) (string, error) {
+	if rt != nil && rt.goalReply != nil {
+		return rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, root, rt.checkpoints))
+	}
+	reviewCfg := configReviewHarness(rt.cfg)
+	if reviewCfg.AutoAfterGoalIteration == nil || !*reviewCfg.AutoAfterGoalIteration {
+		return rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, root, rt.checkpoints))
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:         "goal_iteration",
+		Target:          reviewTargetGoal,
+		Mode:            reviewModeGeneralChange,
+		Request:         goal.Objective,
+		IncludeGitDiff:  true,
+		AutoTriggered:   true,
+		MaxContextChars: 60000,
+	}
+	run, err := runReviewHarness(ctx, rt, opts)
+	if err != nil {
+		return rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, root, rt.checkpoints))
+	}
+	switch run.Gate.Verdict {
+	case reviewVerdictApproved, reviewVerdictApprovedWithWarnings:
+		return "APPROVED: common review harness gate " + run.Gate.Verdict + ". " + run.Result.Summary, nil
+	default:
+		feedback := run.Result.Summary
+		if run.RepairPlan.Required && strings.TrimSpace(run.RepairPlan.Prompt) != "" {
+			feedback += "\n\n" + run.RepairPlan.Prompt
+		}
+		return "NEEDS_REVISION: common review harness gate " + run.Gate.Verdict + ". " + feedback, nil
+	}
+}
+
 func skippedGoalReviewerReply(prompt string) string {
 	if strings.Contains(prompt, "Final semantic goal review") {
-		return "APPROVED: independent semantic reviewer skipped because no plan-review reviewer is configured; relying on completion audit and verification evidence."
+		return "APPROVED: independent semantic reviewer skipped because no common review role model is configured; relying on completion audit and verification evidence."
 	}
-	return "APPROVED: independent reviewer skipped because no plan-review reviewer is configured; relying on the main implementation pass and subsequent verification."
+	return "APPROVED: independent reviewer skipped because no common review role model is configured; relying on the main implementation pass and subsequent verification."
 }
 
 func buildGoalImplementationPrompt(goal GoalState, iteration int) string {

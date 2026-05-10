@@ -8,7 +8,7 @@ func TestCreateReviewerClientInheritsMainBaseURLForSameProvider(t *testing.T) {
 	cfg.Model = "main-local"
 	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
 
-	client, err := createReviewerClient(&PlanReviewConfig{
+	client, err := createReviewerClient(&ReviewModelConfig{
 		Provider: "lmstudio",
 		Model:    "review-local",
 	}, cfg)
@@ -26,25 +26,25 @@ func TestCreateReviewerClientInheritsMainBaseURLForSameProvider(t *testing.T) {
 	}
 }
 
-func TestNormalizeConfigPathsPreservesPlanReviewEmptyBaseURLForInheritance(t *testing.T) {
+func TestNormalizeConfigPathsPreservesReviewRoleEmptyBaseURLForInheritance(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "lmstudio"
 	cfg.Model = "main-local"
 	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
-	cfg.PlanReview = &PlanReviewConfig{
-		Provider: "lmstudio",
-		Model:    "review-local",
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider: "lmstudio",
+			Model:    "review-local",
+		},
 	}
 
 	normalizeConfigPaths(&cfg)
-	if cfg.PlanReview == nil {
-		t.Fatalf("expected plan-review config")
-	}
-	if cfg.PlanReview.BaseURL != "" {
-		t.Fatalf("expected empty plan-review base URL to remain inheritable, got %q", cfg.PlanReview.BaseURL)
+	roleCfg := cfg.Review.RoleModels["primary_reviewer"]
+	if roleCfg.BaseURL != "" {
+		t.Fatalf("expected empty review role base URL to remain inheritable, got %q", roleCfg.BaseURL)
 	}
 
-	client, err := createReviewerClient(cfg.PlanReview, cfg)
+	client, err := createReviewerClient(&roleCfg, cfg)
 	if err != nil {
 		t.Fatalf("createReviewerClient: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestCreateReviewerClientUsesReviewerBaseURLOverride(t *testing.T) {
 	cfg.BaseURL = "http://127.0.0.1:8765/v1/"
 	override := "http://127.0.0.1:8766/v1/"
 
-	client, err := createReviewerClient(&PlanReviewConfig{
+	client, err := createReviewerClient(&ReviewModelConfig{
 		Provider: "lmstudio",
 		Model:    "review-local",
 		BaseURL:  override,
@@ -91,7 +91,7 @@ func TestCreateReviewerClientUsesReviewerReasoningEffort(t *testing.T) {
 	cfg.Model = "gpt-5.5"
 	cfg.ReasoningEffort = "low"
 
-	client, err := createReviewerClient(&PlanReviewConfig{
+	client, err := createReviewerClient(&ReviewModelConfig{
 		Provider:        "openai-codex",
 		Model:           "gpt-5.5",
 		ReasoningEffort: "high",

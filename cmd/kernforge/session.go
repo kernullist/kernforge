@@ -45,6 +45,7 @@ type Session struct {
 	LastUserChangeIsolationReport *UserChangeIsolationReport `json:"last_user_change_isolation_report,omitempty"`
 	LastTestImpactReport          *TestImpactReport          `json:"last_test_impact_report,omitempty"`
 	LastJobSupervisorReport       *JobSupervisorReport       `json:"last_job_supervisor_report,omitempty"`
+	LastReviewRun                 *ReviewRun                 `json:"last_review_run,omitempty"`
 	ActiveFailureRepair           *FailureRepairAttempt      `json:"active_failure_repair,omitempty"`
 	FailureRepairAttempts         []FailureRepairAttempt     `json:"failure_repair_attempts,omitempty"`
 	LastSelection                 *ViewerSelection           `json:"last_selection,omitempty"`

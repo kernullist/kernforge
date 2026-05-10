@@ -346,7 +346,7 @@ func (ui UI) bannerHero(left []string, right []string, gap int) string {
 
 func (ui UI) promptTarget(provider, model string, effort string) string {
 	var parts []string
-	if trimmed := strings.TrimSpace(provider); trimmed != "" {
+	if trimmed := strings.TrimSpace(providerUserLabel(provider)); trimmed != "" {
 		parts = append(parts, trimmed)
 	}
 	if trimmed := strings.TrimSpace(model); trimmed != "" {

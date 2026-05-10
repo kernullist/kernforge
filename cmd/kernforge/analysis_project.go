@@ -3211,7 +3211,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	}
 	run.Summary.CompletedAt = time.Now()
 	a.status("Persisting analysis artifacts...")
-	outputPath, err := a.persistRun(run)
+	outputPath, err := a.persistRun(run, ctx)
 	if err != nil {
 		return run, err
 	}
@@ -9043,11 +9043,19 @@ func normalizeRootCauseConfidence(raw string, score int) string {
 	return "low"
 }
 
+const (
+	analysisSynthesisPromptMaxRunes       = 90000
+	analysisSynthesisPromptMaxSections    = 48
+	analysisSynthesisPromptMaxStringRunes = 520
+)
+
 func (a *projectAnalyzer) synthesizeFinalDocument(ctx context.Context, snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) (string, error) {
+	prompt := buildSynthesisPrompt(snapshot, shards, reports, goal)
+	a.debug(fmt.Sprintf("synthesis prompt prepared: chars=%d shards=%d", len([]rune(prompt)), len(shards)))
 	resp, err := a.completeAnalysisRequestWithRetry(ctx, a.client, "synthesis", "", a.cfg.Model, ChatRequest{
 		Model:       a.cfg.Model,
 		System:      synthesisSystemPrompt(),
-		Messages:    []Message{{Role: "user", Text: buildSynthesisPrompt(snapshot, shards, reports, goal)}},
+		Messages:    []Message{{Role: "user", Text: prompt}},
 		MaxTokens:   a.cfg.MaxTokens,
 		Temperature: a.cfg.Temperature,
 		WorkingDir:  a.workspace.Root,
@@ -10326,7 +10334,22 @@ func shouldRetryProviderError(err error) bool {
 	return false
 }
 
-func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
+func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Context) (string, error) {
+	ctx := context.Background()
+	if len(ctxs) > 0 && ctxs[0] != nil {
+		ctx = ctxs[0]
+	}
+	checkCanceled := func() error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+	if err := checkCanceled(); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(a.analysisCfg.OutputDir, 0o755); err != nil {
 		return "", err
 	}
@@ -10357,16 +10380,25 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 	docsDir := filepath.Join(a.analysisCfg.OutputDir, base+"_docs")
 	dashboardPath := filepath.Join(a.analysisCfg.OutputDir, base+"_dashboard.html")
 	a.status("Writing primary analysis report...")
+	if err := checkCanceled(); err != nil {
+		return "", err
+	}
 	if err := os.WriteFile(mdPath, []byte(run.FinalDocument), 0o644); err != nil {
 		return "", err
 	}
 	shardDir := filepath.Join(a.analysisCfg.OutputDir, base+"_shards")
 	if len(run.ShardDocuments) > 0 {
 		a.status(fmt.Sprintf("Writing %d shard document(s)...", len(run.ShardDocuments)))
+		if err := checkCanceled(); err != nil {
+			return "", err
+		}
 		if err := os.MkdirAll(shardDir, 0o755); err != nil {
 			return "", err
 		}
 		for shardID, doc := range run.ShardDocuments {
+			if err := checkCanceled(); err != nil {
+				return "", err
+			}
 			filename := sanitizeFileName(shardID)
 			if filename == "" {
 				filename = "shard"
@@ -10378,6 +10410,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 	}
 	a.status("Writing structured analysis JSON artifacts...")
+	if err := checkCanceled(); err != nil {
+		return "", err
+	}
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
 		return "", err
@@ -10434,6 +10469,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 	}
 	if len(run.VectorCorpus.Documents) > 0 {
+		if err := checkCanceled(); err != nil {
+			return "", err
+		}
 		corpusData, err := json.MarshalIndent(run.VectorCorpus, "", "  ")
 		if err != nil {
 			return "", err
@@ -10442,6 +10480,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		a.status(fmt.Sprintf("Writing vector corpus artifacts: documents=%d.", len(run.VectorCorpus.Documents)))
+		if err := checkCanceled(); err != nil {
+			return "", err
+		}
 		if err := os.WriteFile(vectorCorpusJSONLPath, []byte(buildVectorCorpusJSONL(run.VectorCorpus)), 0o644); err != nil {
 			return "", err
 		}
@@ -10488,6 +10529,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		a.status("Writing analysis docs and dashboard...")
+		if err := checkCanceled(); err != nil {
+			return "", err
+		}
 		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
 			auditData, err := json.MarshalIndent(run.RootCause.AuditTrail, "", "  ")
 			if err != nil {
@@ -10509,6 +10553,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 		latestDir := filepath.Join(a.analysisCfg.OutputDir, "latest")
 		a.status("Refreshing latest analysis artifact set...")
+		if err := checkCanceled(); err != nil {
+			return "", err
+		}
 		if err := os.RemoveAll(latestDir); err != nil {
 			return "", err
 		}
@@ -10516,6 +10563,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 			return "", err
 		}
 		latestDocsDir := filepath.Join(latestDir, "docs")
+		a.status("Writing latest analysis docs and dashboard...")
 		latestDocsManifest, err := writeAnalysisDocs(run, latestDocsDir)
 		if err != nil {
 			return "", err
@@ -10537,7 +10585,11 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		if err := os.WriteFile(filepath.Join(latestDir, "docs_manifest.json"), latestDocsManifestData, 0o644); err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(filepath.Join(latestDir, "docs_index.md"), []byte(buildAnalysisDocs(run)["INDEX.md"]), 0o644); err != nil {
+		latestIndexData, err := os.ReadFile(filepath.Join(latestDocsDir, "INDEX.md"))
+		if err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "docs_index.md"), latestIndexData, 0o644); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "run.json"), data, 0o644); err != nil {
@@ -10623,6 +10675,9 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun) (string, error) {
 		}
 		if len(run.VectorCorpus.Documents) > 0 {
 			a.status(fmt.Sprintf("Refreshing latest vector corpus artifacts: documents=%d.", len(run.VectorCorpus.Documents)))
+			if err := checkCanceled(); err != nil {
+				return "", err
+			}
 			corpusData, err := json.MarshalIndent(run.VectorCorpus, "", "  ")
 			if err != nil {
 				return "", err
@@ -13205,7 +13260,12 @@ func workerReportForReview(report WorkerReport) WorkerReport {
 }
 
 func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, reports []WorkerReport, goal string) string {
-	items := groupedReportsForSynthesis(shards, reports)
+	items := compactSynthesisSectionsForPrompt(groupedReportsForSynthesis(shards, reports))
+	originalSectionCount := len(items)
+	if len(items) > analysisSynthesisPromptMaxSections {
+		items = append([]synthesisSection(nil), items[:analysisSynthesisPromptMaxSections]...)
+		items = append(items, omittedSynthesisSectionsSummary(originalSectionCount-len(items), groupedReportsForSynthesis(shards, reports)[analysisSynthesisPromptMaxSections:]))
+	}
 	data, _ := json.MarshalIndent(items, "", "  ")
 	var b strings.Builder
 	fmt.Fprintf(&b, "Goal: %s\n", goal)
@@ -13233,6 +13293,9 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 		}
 	}
 	fmt.Fprintf(&b, "Workspace: %s\n", snapshot.Root)
+	if originalSectionCount > len(items) {
+		fmt.Fprintf(&b, "Prompt budget note: model synthesis received %d compacted section(s) out of %d; omitted sections remain in local artifacts and deterministic appendices.\n", len(items), originalSectionCount)
+	}
 	if len(snapshot.AnalysisLenses) > 0 {
 		lensNames := []string{}
 		for _, lens := range snapshot.AnalysisLenses {
@@ -13511,7 +13574,268 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	}
 	b.WriteString("- Include a short Evidence Files list for each subsystem using the most representative files.\n")
 	b.WriteString("- Mention key files for each shard.\n")
+	prompt := strings.TrimSpace(b.String())
+	if len([]rune(prompt)) > analysisSynthesisPromptMaxRunes {
+		return buildCompactSynthesisPrompt(snapshot, items, goal, originalSectionCount, analysisSynthesisPromptMaxRunes)
+	}
+	return prompt
+}
+
+func compactSynthesisSectionsForPrompt(items []synthesisSection) []synthesisSection {
+	out := make([]synthesisSection, 0, len(items))
+	for _, item := range items {
+		compact := synthesisSection{
+			Title:               trimPromptString(item.Title, 180),
+			Group:               trimPromptString(item.Group, 120),
+			ShardIDs:            limitTrimmedStrings(item.ShardIDs, 12, 120),
+			ShardNames:          limitTrimmedStrings(item.ShardNames, 12, 160),
+			CacheStatuses:       limitTrimmedStrings(item.CacheStatuses, 4, 80),
+			InvalidationReasons: limitTrimmedStrings(item.InvalidationReasons, 6, 180),
+			InvalidationDiff:    limitTrimmedStrings(item.InvalidationDiff, 4, analysisSynthesisPromptMaxStringRunes),
+			InvalidationChanges: limitInvalidationChangesForPrompt(item.InvalidationChanges, 6),
+			Responsibilities:    limitTrimmedStrings(item.Responsibilities, 5, analysisSynthesisPromptMaxStringRunes),
+			Facts:               limitTrimmedStrings(item.Facts, 7, analysisSynthesisPromptMaxStringRunes),
+			Inferences:          limitTrimmedStrings(item.Inferences, 5, analysisSynthesisPromptMaxStringRunes),
+			Claims:              limitAnalysisClaimsForPrompt(item.Claims, 5),
+			KeyFiles:            limitTrimmedStrings(item.KeyFiles, 8, 240),
+			EvidenceFiles:       limitTrimmedStrings(item.EvidenceFiles, 8, 240),
+			EntryPoints:         limitTrimmedStrings(item.EntryPoints, 6, 320),
+			InternalFlow:        limitTrimmedStrings(item.InternalFlow, 6, analysisSynthesisPromptMaxStringRunes),
+			Dependencies:        limitTrimmedStrings(item.Dependencies, 5, 360),
+			Collaboration:       limitTrimmedStrings(item.Collaboration, 5, 420),
+			Risks:               limitTrimmedStrings(item.Risks, 5, analysisSynthesisPromptMaxStringRunes),
+			Unknowns:            limitTrimmedStrings(item.Unknowns, 5, analysisSynthesisPromptMaxStringRunes),
+			RootCauseCandidates: limitRootCauseCandidatesForPrompt(item.RootCauseCandidates, 3),
+		}
+		out = append(out, compact)
+	}
+	return out
+}
+
+func omittedSynthesisSectionsSummary(omitted int, items []synthesisSection) synthesisSection {
+	if omitted <= 0 {
+		return synthesisSection{}
+	}
+	names := []string{}
+	keyFiles := []string{}
+	risks := []string{}
+	unknowns := []string{}
+	for _, item := range items {
+		names = append(names, firstNonBlankAnalysisString(item.Title, strings.Join(limitStrings(item.ShardNames, 2), ", ")))
+		keyFiles = append(keyFiles, limitStrings(firstNonEmpty(item.KeyFiles, item.EvidenceFiles), 2)...)
+		risks = append(risks, limitStrings(item.Risks, 1)...)
+		unknowns = append(unknowns, limitStrings(item.Unknowns, 1)...)
+	}
+	return synthesisSection{
+		Title: "Additional Sections Omitted From Model Prompt",
+		Group: "Prompt Budget",
+		Responsibilities: []string{
+			fmt.Sprintf("%d lower-priority section(s) were omitted from the model synthesis prompt to stay below the context budget.", omitted),
+			"Full shard reports, structured JSON, docs, and vector artifacts are still written locally.",
+		},
+		Facts:    limitTrimmedStrings(names, 12, 180),
+		KeyFiles: limitTrimmedStrings(keyFiles, 12, 240),
+		Risks:    limitTrimmedStrings(risks, 6, 360),
+		Unknowns: limitTrimmedStrings(unknowns, 6, 360),
+	}
+}
+
+func buildCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSection, goal string, originalSectionCount int, maxRunes int) string {
+	if maxRunes <= 0 {
+		maxRunes = analysisSynthesisPromptMaxRunes
+	}
+	sectionLimit := len(items)
+	if sectionLimit > analysisSynthesisPromptMaxSections/2 {
+		sectionLimit = analysisSynthesisPromptMaxSections / 2
+	}
+	if sectionLimit <= 0 {
+		sectionLimit = len(items)
+	}
+	for {
+		candidates := items
+		if sectionLimit > 0 && sectionLimit < len(items) {
+			candidates = append([]synthesisSection(nil), items[:sectionLimit]...)
+			candidates = append(candidates, omittedSynthesisSectionsSummary(originalSectionCount-sectionLimit, items[sectionLimit:]))
+		}
+		prompt := renderCompactSynthesisPrompt(snapshot, candidates, goal, originalSectionCount)
+		if len([]rune(prompt)) <= maxRunes || sectionLimit <= 8 {
+			return trimPromptString(prompt, maxRunes)
+		}
+		sectionLimit = sectionLimit * 3 / 4
+		if sectionLimit < 8 {
+			sectionLimit = 8
+		}
+	}
+}
+
+func renderCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSection, goal string, originalSectionCount int) string {
+	data, _ := json.MarshalIndent(items, "", "  ")
+	var b strings.Builder
+	fmt.Fprintf(&b, "Goal: %s\n", goal)
+	if mode := strings.TrimSpace(snapshot.AnalysisMode); mode != "" {
+		fmt.Fprintf(&b, "Analysis mode: %s\n", mode)
+	}
+	fmt.Fprintf(&b, "Workspace: %s\n", snapshot.Root)
+	fmt.Fprintf(&b, "Files: %d\nLines: %d\n", snapshot.TotalFiles, snapshot.TotalLines)
+	if originalSectionCount > len(items) {
+		fmt.Fprintf(&b, "Prompt budget note: model synthesis received %d compacted section(s) out of %d; omitted sections remain in local artifacts and deterministic appendices.\n", len(items), originalSectionCount)
+	}
+	if len(snapshot.Files) > 0 {
+		b.WriteString("\nTop important files:\n")
+		for _, file := range topImportantFiles(snapshot, 8) {
+			fmt.Fprintf(&b, "- %s (score=%d)\n", file.Path, file.ImportanceScore)
+		}
+	}
+	if dirs := synthesisTopLevelDirectories(snapshot); len(dirs) > 0 {
+		b.WriteString("\nTop-level directory facts:\n")
+		b.WriteString("- Closed set for top-level directory maps: " + strings.Join(limitStrings(dirs, 24), ", ") + "\n")
+	}
+	if facts := synthesisDriverArchitectureFacts(snapshot); len(facts) > 0 {
+		b.WriteString("\nDriver architecture facts:\n")
+		for _, fact := range limitStrings(facts, 6) {
+			fmt.Fprintf(&b, "- %s\n", fact)
+		}
+	}
+	b.WriteString("\nCompacted approved shard reports:\n")
+	b.Write(data)
+	b.WriteString("\n\nSynthesis requirements:\n")
+	switch projectAnalysisOutputLanguageForGoal(goal) {
+	case "ko":
+		b.WriteString("- Write the final Markdown document in Korean; keep code identifiers, APIs, filenames, paths, commands, and build configuration names unchanged.\n")
+	case "en":
+		b.WriteString("- Write the final Markdown document in English; keep code identifiers, APIs, filenames, paths, commands, and build configuration names unchanged.\n")
+	}
+	b.WriteString("- Prioritize high-confidence responsibilities, facts, execution flow, integration points, risks, and unknowns.\n")
+	b.WriteString("- Mention that the synthesis input was compacted when important detail may live in local shard artifacts.\n")
+	b.WriteString("- Do not invent evidence for omitted or compacted sections.\n")
 	return strings.TrimSpace(b.String())
+}
+
+func limitTrimmedStrings(items []string, limit int, maxRunes int) []string {
+	limited := limitStrings(analysisUniqueStrings(items), limit)
+	out := make([]string, 0, len(limited))
+	for _, item := range limited {
+		if trimmed := trimPromptString(item, maxRunes); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func trimPromptString(text string, maxRunes int) string {
+	trimmed := strings.TrimSpace(text)
+	if maxRunes <= 0 {
+		return trimmed
+	}
+	runes := []rune(trimmed)
+	if len(runes) <= maxRunes {
+		return trimmed
+	}
+	if maxRunes <= 16 {
+		return strings.TrimSpace(string(runes[:maxRunes]))
+	}
+	return strings.TrimSpace(string(runes[:maxRunes-16])) + "... (truncated)"
+}
+
+func limitInvalidationChangesForPrompt(items []InvalidationChange, limit int) []InvalidationChange {
+	limited := limitStringsInvalidationChanges(items, limit)
+	for i := range limited {
+		limited[i].Kind = trimPromptString(limited[i].Kind, 80)
+		limited[i].Scope = trimPromptString(limited[i].Scope, 120)
+		limited[i].Owner = trimPromptString(limited[i].Owner, 160)
+		limited[i].Subject = trimPromptString(limited[i].Subject, 220)
+		limited[i].Before = trimPromptString(limited[i].Before, 220)
+		limited[i].After = trimPromptString(limited[i].After, 220)
+		limited[i].Source = trimPromptString(limited[i].Source, 180)
+	}
+	return limited
+}
+
+func limitStringsInvalidationChanges(items []InvalidationChange, limit int) []InvalidationChange {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) <= limit {
+		return append([]InvalidationChange(nil), items...)
+	}
+	return append([]InvalidationChange(nil), items[:limit]...)
+}
+
+func limitAnalysisClaimsForPrompt(items []AnalysisClaim, limit int) []AnalysisClaim {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]AnalysisClaim, 0, len(items))
+	for _, item := range items {
+		out = append(out, AnalysisClaim{
+			ID:               trimPromptString(item.ID, 80),
+			Kind:             trimPromptString(item.Kind, 80),
+			Claim:            trimPromptString(item.Claim, analysisSynthesisPromptMaxStringRunes),
+			SourceAnchors:    limitTrimmedStrings(item.SourceAnchors, 4, 240),
+			Confidence:       trimPromptString(item.Confidence, 80),
+			DependsOn:        limitTrimmedStrings(item.DependsOn, 3, 160),
+			DisprovesWhen:    trimPromptString(item.DisprovesWhen, 260),
+			VerificationHint: trimPromptString(item.VerificationHint, 260),
+		})
+	}
+	return out
+}
+
+func limitRootCauseCandidatesForPrompt(items []RootCauseCandidate, limit int) []RootCauseCandidate {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]RootCauseCandidate, 0, len(items))
+	for _, item := range items {
+		item.Title = trimPromptString(item.Title, 220)
+		item.CandidateChain = limitTrimmedStrings(item.CandidateChain, 4, 320)
+		item.TriggerValues = limitTrimmedStrings(item.TriggerValues, 3, 220)
+		item.ExpectedRange = limitTrimmedStrings(item.ExpectedRange, 3, 220)
+		item.OutOfRangeCases = limitTrimmedStrings(item.OutOfRangeCases, 3, 220)
+		item.ObservedFailurePath = limitTrimmedStrings(item.ObservedFailurePath, 4, 360)
+		item.EvidenceFiles = limitTrimmedStrings(item.EvidenceFiles, 4, 240)
+		item.DisconfirmingEvidence = limitTrimmedStrings(item.DisconfirmingEvidence, 3, 320)
+		item.CannotBeRootCauseIf = limitTrimmedStrings(item.CannotBeRootCauseIf, 3, 320)
+		item.RequiredRuntimeObservation = limitTrimmedStrings(item.RequiredRuntimeObservation, 3, 320)
+		item.VerificationSteps = limitTrimmedStrings(item.VerificationSteps, 4, 320)
+		item.Probes = limitRootCauseProbesForPrompt(item.Probes, 3)
+		item.NeedsCrossShardEvidence = limitTrimmedStrings(item.NeedsCrossShardEvidence, 3, 320)
+		item.PatternIDs = limitTrimmedStrings(item.PatternIDs, 4, 120)
+		item.CausalChain.Trigger = trimPromptString(item.CausalChain.Trigger, 240)
+		item.CausalChain.InvalidState = trimPromptString(item.CausalChain.InvalidState, 240)
+		item.CausalChain.StateTransition = trimPromptString(item.CausalChain.StateTransition, 240)
+		item.CausalChain.MissingGuard = trimPromptString(item.CausalChain.MissingGuard, 240)
+		item.CausalChain.UserVisibleSymptom = trimPromptString(item.CausalChain.UserVisibleSymptom, 240)
+		item.ConfidenceBreakdown.Reasons = limitTrimmedStrings(item.ConfidenceBreakdown.Reasons, 3, 240)
+		out = append(out, item)
+	}
+	return out
+}
+
+func limitRootCauseProbesForPrompt(items []RootCauseProbe, limit int) []RootCauseProbe {
+	if limit <= 0 || len(items) == 0 {
+		return nil
+	}
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]RootCauseProbe, 0, len(items))
+	for _, item := range items {
+		item.Title = trimPromptString(item.Title, 180)
+		item.Kind = trimPromptString(item.Kind, 80)
+		item.Target = trimPromptString(item.Target, 220)
+		item.Command = trimPromptString(item.Command, 260)
+		item.ExpectedSignal = trimPromptString(item.ExpectedSignal, 260)
+		item.DisprovesWhen = trimPromptString(item.DisprovesWhen, 260)
+		out = append(out, item)
+	}
+	return out
 }
 
 func synthesisTopLevelDirectories(snapshot ProjectSnapshot) []string {

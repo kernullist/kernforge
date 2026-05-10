@@ -851,6 +851,18 @@ func runCodexOAuthDeviceLogin(ctx context.Context, writer io.Writer, authPath st
 	return tokens, nil
 }
 
+func importCodexCLIOAuthAuthFile(destPath string) error {
+	sourcePath := codexCLIOAuthAuthFilePath()
+	if strings.TrimSpace(sourcePath) == "" {
+		return fmt.Errorf("Codex CLI OAuth auth file path is unavailable")
+	}
+	_, auth, err := readCodexOAuthAuthFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	return saveCodexOAuthAuthFile(destPath, auth.Tokens)
+}
+
 func requestCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client) (codexOAuthDeviceCode, error) {
 	var data []byte
 	var raw map[string]any
@@ -907,6 +919,7 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
+	unknownAttempts := 0
 	for {
 		data, status, err := postCodexOAuthJSON(ctx, httpClient, openAICodexDeviceTokenEndpoint, map[string]string{
 			"device_auth_id": device.DeviceAuthID,
@@ -928,7 +941,7 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 					CodeVerifier:      strings.TrimSpace(codexOAuthStringField(raw, "code_verifier")),
 				}, nil
 			}
-			errCode := strings.ToLower(strings.TrimSpace(codexOAuthStringField(raw, "error", "error_code")))
+			errCode := codexOAuthDeviceErrorCode(raw, data, "error", "error_code")
 			switch errCode {
 			case "":
 			case "authorization_pending", "pending":
@@ -942,6 +955,15 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 					return codexOAuthDeviceToken{}, err
 				}
 				continue
+			case "deviceauth_authorization_unknown", "device_authorization_unknown", "authorization_unknown":
+				unknownAttempts++
+				if unknownAttempts <= 3 {
+					if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
+						return codexOAuthDeviceToken{}, err
+					}
+					continue
+				}
+				return codexOAuthDeviceToken{}, fmt.Errorf("OpenAI Codex OAuth device authorization was not recognized; start /codex-auth login again")
 			case "expired_token", "access_denied":
 				message := strings.TrimSpace(codexOAuthStringField(raw, "error_description", "message", "detail"))
 				if message == "" {
@@ -960,7 +982,7 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 			}
 			return codexOAuthDeviceToken{}, newProviderMessageError("openai-codex", "OpenAI Codex OAuth device login did not return an authorization code", state, "", nil, data)
 		}
-		errCode := strings.ToLower(strings.TrimSpace(codexOAuthStringField(raw, "error", "error_code", "code", "status", "state", "detail", "message")))
+		errCode := codexOAuthDeviceErrorCode(raw, data, "error", "error_code", "code", "status", "state", "detail", "message")
 		switch errCode {
 		case "authorization_pending", "pending":
 			if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
@@ -979,6 +1001,15 @@ func pollCodexOAuthDeviceCode(ctx context.Context, httpClient *http.Client, devi
 			if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
 				return codexOAuthDeviceToken{}, err
 			}
+		case "deviceauth_authorization_unknown", "device_authorization_unknown", "authorization_unknown":
+			unknownAttempts++
+			if unknownAttempts <= 3 {
+				if err := sleepCodexOAuthPoll(ctx, interval); err != nil {
+					return codexOAuthDeviceToken{}, err
+				}
+				continue
+			}
+			return codexOAuthDeviceToken{}, fmt.Errorf("OpenAI Codex OAuth device authorization was not recognized; start /codex-auth login again")
 		case "expired_token", "access_denied":
 			message := strings.TrimSpace(codexOAuthStringField(raw, "error_description", "message", "detail"))
 			if message == "" {
@@ -1228,6 +1259,14 @@ func codexOAuthAuthFilePath() string {
 	return filepath.Join(userConfigDir(), openAICodexDefaultAuthFile)
 }
 
+func codexCLIOAuthAuthFilePath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex", "auth.json")
+}
+
 func codexOAuthAuthFileUsable(path string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
@@ -1261,6 +1300,28 @@ func codexOAuthStringField(raw map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func codexOAuthDeviceErrorCode(raw map[string]any, data []byte, keys ...string) string {
+	code := strings.ToLower(strings.TrimSpace(codexOAuthStringField(raw, keys...)))
+	if code == "" {
+		if nested, ok := raw["error"].(map[string]any); ok {
+			code = strings.ToLower(strings.TrimSpace(codexOAuthStringField(nested, "code", "error_code", "error", "status", "state", "type", "message", "detail")))
+		}
+	}
+	text := strings.ToLower(strings.TrimSpace(strings.Join([]string{
+		code,
+		codexOAuthStringField(raw, "detail"),
+		codexOAuthStringField(raw, "message"),
+		codexOAuthStringField(raw, "error_description"),
+		string(data),
+	}, " ")))
+	if strings.Contains(text, "deviceauth_authorization_unknown") ||
+		strings.Contains(text, "device authorization is unknown") ||
+		strings.Contains(text, "authorization is unknown") {
+		return "deviceauth_authorization_unknown"
+	}
+	return code
 }
 
 func codexOAuthIntField(raw map[string]any, keys ...string) int {

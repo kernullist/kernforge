@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type Agent struct {
@@ -144,6 +145,23 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if a.Client == nil {
 		return "", fmt.Errorf("no model provider is configured")
 	}
+	ranReviewBeforeFix, err := a.maybeRunReviewBeforeFix(ctx, userText, images, readOnlyAnalysis, explicitEditRequest)
+	if err != nil {
+		return "", err
+	}
+	if ranReviewBeforeFix && a.shouldConcludeAfterNonBlockingPreFixReview(userText) {
+		reply := a.formatNonBlockingPreFixReviewReply()
+		a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+		return reply, nil
+	}
+	if !ranReviewBeforeFix && a.maybePrimeRepairFromLastReview(userText, images, readOnlyAnalysis, explicitEditRequest) {
+		if err := a.Store.Save(a.Session); err != nil {
+			return "", err
+		}
+	}
 	reply, err := a.completeLoop(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
 	if err != nil {
 		return "", err
@@ -240,8 +258,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	abruptReplyRetries := 0
 	finalAnswerReviewRevisions := 0
 	finalHarnessRevisions := 0
+	postChangeReviewRevisions := 0
+	postChangeReviewExhaustedNudge := false
+	lastPostChangeReviewFingerprint := ""
 	lastReviewedFinalAnswer := ""
 	attemptedEditTool := false
+	successfulEditTool := false
 	sawToolResultThisTurn := false
 	repeatedToolFailureRecoveryTurns := 0
 	continuedReplyPrefix := ""
@@ -604,6 +626,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
+				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
+					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
+					if err != nil {
+						return "", err
+					}
+					if needsModelTurn {
+						continue
+					}
+				}
 				if a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
 					finalAnswerReviewRevisions < 2 &&
 					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
@@ -678,6 +709,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if isEditTool(call.Name) {
 				attemptedEditTool = true
+				lastPostChangeReviewFingerprint = ""
+				postChangeReviewExhaustedNudge = false
 			}
 			if summary := summarizeToolInvocation(a.Config, call); summary != "" {
 				a.emitProgressEvent(ProgressEvent{
@@ -704,6 +737,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				result, err = a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
 			}
+			a.rebaselineUserChangeIsolationFromRead(call, err)
 			sawToolResultThisTurn = true
 			if err == nil {
 				a.noteToolConversationResult(call, result)
@@ -842,7 +876,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					a.Session.AddMessage(Message{
 						Role: "user",
-						Text: "Your last apply_patch call used the wrong patch format. Retry using the tool again and make the patch string start exactly with:\n*** Begin Patch\nThen use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\nDo not send prose, JSON, or code fences inside the patch string.",
+						Text: "Your last apply_patch call used the wrong patch format. Retry using the tool again and make the patch string start exactly with:\n*** Begin Patch\nThen use one or more file sections like *** Update File:, *** Add File:, or *** Delete File:, and end with:\n*** End Patch\nFor every *** Update File: section, include at least one @@ hunk with context and +/- lines. Do not send an update section with no hunks, and do not send prose, JSON, or code fences inside the patch string.",
 					})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
@@ -853,8 +887,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			} else {
 				iterationHadToolSuccess = true
-				if isEditTool(call.Name) {
+				editLike := isEditTool(call.Name) ||
+					toolMetaBool(result.Meta, "changed_workspace") ||
+					strings.EqualFold(strings.TrimSpace(toolMetaString(result.Meta, "effect")), "edit")
+				if editLike {
 					edited = true
+					attemptedEditTool = true
+					successfulEditTool = true
+					lastPostChangeReviewFingerprint = ""
+					postChangeReviewExhaustedNudge = false
+				}
+				if isEditTool(call.Name) {
 					if summary := summarizeEditToolResult(call.Name, result.DisplayText); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
 							Kind:             progressKindToolCompleted,
@@ -1882,7 +1925,7 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 		if pattern == "" {
 			return fmt.Sprintf(localizedText(cfg, "grep returned %d line(s).", "grep 완료 (%d줄)."), matchCount)
 		}
-		return fmt.Sprintf(localizedText(cfg, "grep returned %d line(s) for %q.", "grep 완료 %q (%d줄)."), matchCount, pattern)
+		return fmt.Sprintf(localizedText(cfg, "grep returned %[1]d line(s) for %[2]q.", "grep 완료 %[2]q (%[1]d줄)."), matchCount, pattern)
 	case "list_files":
 		path := strings.TrimSpace(stringValue(args, "path"))
 		if path == "" {
@@ -2678,6 +2721,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- If read_file returns a NOTE about cached content, treat that as evidence you already have the relevant lines. Do not reread the same range unless the file likely changed or a missing adjacent range is still required.\n")
 	b.WriteString("- If grep results include [cached-nearby:inside] or [cached-nearby:N], prefer a narrowly targeted next read around the unmatched nearby lines instead of rereading a large surrounding range.\n")
 	b.WriteString("- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.\n")
+	b.WriteString("- Every *** Update File: section in apply_patch must contain at least one @@ hunk with context and +/- lines. Never send an update file section with no hunks.\n")
 	b.WriteString("- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.\n")
 	b.WriteString("- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.\n")
 	b.WriteString("- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.\n")
@@ -2687,6 +2731,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
 	b.WriteString("- Use update_plan for multi-step tasks.\n")
 	b.WriteString("- Use run_shell for build, test, or local inspection commands.\n")
+	b.WriteString("- Do not use run_shell with Set-Content, Out-File, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
 	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
 	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")
 	b.WriteString("- Use check_shell_job to poll a background shell job instead of rerunning the same long command.\n")
@@ -2716,9 +2761,35 @@ func compactPromptSection(text string, limit int) string {
 		return text
 	}
 	if limit <= 3 {
-		return text[:limit]
+		var b strings.Builder
+		for _, r := range text {
+			size := utf8.RuneLen(r)
+			if size < 0 {
+				size = 1
+			}
+			if b.Len()+size > limit {
+				break
+			}
+			b.WriteRune(r)
+		}
+		return b.String()
 	}
-	return strings.TrimSpace(text[:limit-3]) + "..."
+	budget := limit - 3
+	end := 0
+	for idx, r := range text {
+		size := utf8.RuneLen(r)
+		if size < 0 {
+			size = 1
+		}
+		if idx+size > budget {
+			break
+		}
+		end = idx + size
+	}
+	if end == 0 {
+		return "..."
+	}
+	return strings.TrimSpace(text[:end]) + "..."
 }
 
 func renderEnabledSkillSummary(c SkillCatalog) string {

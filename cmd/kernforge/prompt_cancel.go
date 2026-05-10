@@ -3,6 +3,7 @@ package main
 import "errors"
 
 var ErrPromptCanceled = errors.New("prompt canceled")
+var ErrRequestCanceled = errors.New("request canceled by user")
 var ErrEditCanceled = errors.New("edit canceled")
 var ErrEditTargetMismatch = errors.New("edit target mismatch")
 var ErrInvalidEditPayload = errors.New("invalid edit payload")

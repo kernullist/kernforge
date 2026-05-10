@@ -189,7 +189,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 	rt.session.SetPlanNodeLifecycle("plan-02", "completed", "Implementation pass completed or confirmed no code change was needed.")
 
 	reviewRoot := rt.goalWorkspaceRoot()
-	reviewReply, err := rt.runGoalReviewerReply(ctx, buildGoalReviewPrompt(goal, iteration, reviewRoot, rt.checkpoints))
+	reviewReply, err := rt.runGoalReviewHarnessReply(ctx, goal, iteration, reviewRoot)
 	iteration.ReviewReply = compactPromptSection(reviewReply, 900)
 	if err != nil {
 		return rt.finishGoalIterationError(goal, iteration, err)

@@ -167,9 +167,6 @@ func TestEnsureUserConfigDoesNotOverwriteExistingProfiles(t *testing.T) {
 	existing.Profiles = []Profile{
 		{Name: "old-main", Provider: "openai", Model: "gpt-old"},
 	}
-	existing.ReviewProfiles = []Profile{
-		{Name: "old-review", Provider: "anthropic", Model: "claude-old"},
-	}
 	if err := SaveUserConfig(existing); err != nil {
 		t.Fatalf("SaveUserConfig: %v", err)
 	}
@@ -177,9 +174,6 @@ func TestEnsureUserConfigDoesNotOverwriteExistingProfiles(t *testing.T) {
 	replacement := DefaultConfig(t.TempDir())
 	replacement.Profiles = []Profile{
 		{Name: "new-main", Provider: "ollama", Model: "llama3"},
-	}
-	replacement.ReviewProfiles = []Profile{
-		{Name: "new-review", Provider: "openai", Model: "gpt-new"},
 	}
 	if err := EnsureUserConfig(replacement); err != nil {
 		t.Fatalf("EnsureUserConfig: %v", err)
@@ -191,9 +185,6 @@ func TestEnsureUserConfigDoesNotOverwriteExistingProfiles(t *testing.T) {
 	}
 	if len(loaded.Profiles) != 1 || loaded.Profiles[0].Name != "old-main" {
 		t.Fatalf("expected existing main profile to remain, got %#v", loaded.Profiles)
-	}
-	if len(loaded.ReviewProfiles) != 1 || loaded.ReviewProfiles[0].Name != "old-review" {
-		t.Fatalf("expected existing review profile to remain, got %#v", loaded.ReviewProfiles)
 	}
 }
 
@@ -230,18 +221,12 @@ func TestLoadConfigMergesUserAndWorkspaceProfiles(t *testing.T) {
 		{Name: "user-main-a", Provider: "openai", Model: "gpt-a"},
 		{Name: "user-main-b", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
 	}
-	userCfg.ReviewProfiles = []Profile{
-		{Name: "user-review", Provider: "openai", Model: "gpt-review"},
-	}
 	if err := SaveUserConfig(userCfg); err != nil {
 		t.Fatalf("SaveUserConfig: %v", err)
 	}
 	if err := SaveWorkspaceConfigOverrides(workspace, map[string]any{
 		"profiles": []Profile{
 			{Name: "workspace-main", Provider: "ollama", Model: "llama3"},
-		},
-		"review_profiles": []Profile{
-			{Name: "workspace-review", Provider: "anthropic", Model: "claude-review"},
 		},
 	}); err != nil {
 		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
@@ -257,14 +242,6 @@ func TestLoadConfigMergesUserAndWorkspaceProfiles(t *testing.T) {
 	for _, want := range []string{"workspace-main", "user-main-a", "user-main-b"} {
 		if !profileListContainsName(loaded.Profiles, want) {
 			t.Fatalf("expected merged profiles to contain %q, got %#v", want, loaded.Profiles)
-		}
-	}
-	if len(loaded.ReviewProfiles) != 2 {
-		t.Fatalf("expected user and workspace review profiles to merge, got %#v", loaded.ReviewProfiles)
-	}
-	for _, want := range []string{"workspace-review", "user-review"} {
-		if !profileListContainsName(loaded.ReviewProfiles, want) {
-			t.Fatalf("expected merged review profiles to contain %q, got %#v", want, loaded.ReviewProfiles)
 		}
 	}
 }
@@ -286,12 +263,6 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 				Provider:        "deepseek",
 				Model:           "deepseek-reasoner",
 				ReasoningEffort: "medium",
-			},
-			PlanReviewer: &Profile{
-				Name:            "reviewer",
-				Provider:        "openai-codex",
-				Model:           "gpt-review",
-				ReasoningEffort: "high",
 			},
 			Specialists: []SpecialistSubagentProfile{
 				{Name: "planner", Provider: "openai-codex", Model: "gpt-specialist", ReasoningEffort: "xhigh"},
@@ -328,9 +299,6 @@ func TestLoadConfigRestoresActiveProfileRoleModels(t *testing.T) {
 	if loaded.ProjectAnalysis.WorkerProfile == nil || loaded.ProjectAnalysis.WorkerProfile.Model != "deepseek-reasoner" || loaded.ProjectAnalysis.WorkerProfile.ReasoningEffort != "medium" {
 		t.Fatalf("expected active profile analysis worker, got %#v", loaded.ProjectAnalysis.WorkerProfile)
 	}
-	if loaded.PlanReview == nil || loaded.PlanReview.Model != "gpt-review" || loaded.PlanReview.ReasoningEffort != "high" {
-		t.Fatalf("expected active profile plan reviewer, got %#v", loaded.PlanReview)
-	}
 	if len(loaded.Specialists.Profiles) != 1 || loaded.Specialists.Profiles[0].Model != "gpt-specialist" || loaded.Specialists.Profiles[0].ReasoningEffort != "xhigh" {
 		t.Fatalf("expected active profile specialist model, got %#v", loaded.Specialists.Profiles)
 	}
@@ -355,7 +323,6 @@ func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *tes
 	cfg := DefaultConfig(workspace)
 	cfg.Provider = "openai"
 	cfg.Model = "gpt-stale"
-	cfg.PlanReview = &PlanReviewConfig{Provider: "openai", Model: "gpt-stale-review"}
 	cfg.ProjectAnalysis.WorkerProfile = &Profile{Name: "stale-worker", Provider: "openai", Model: "gpt-stale-worker"}
 	cfg.ProjectAnalysis.ReviewerProfile = &Profile{Name: "stale-reviewer", Provider: "openai", Model: "gpt-stale-reviewer"}
 	cfg.Specialists.Profiles = []SpecialistSubagentProfile{{
@@ -377,9 +344,6 @@ func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *tes
 	}
 	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
 		t.Fatalf("expected active single-model profile, got %s / %s", loaded.Provider, loaded.Model)
-	}
-	if loaded.PlanReview != nil {
-		t.Fatalf("expected single-model profile to clear plan reviewer, got %#v", loaded.PlanReview)
 	}
 	if loaded.ProjectAnalysis.WorkerProfile != nil || loaded.ProjectAnalysis.ReviewerProfile != nil {
 		t.Fatalf("expected single-model profile to clear analysis roles, got worker=%#v reviewer=%#v", loaded.ProjectAnalysis.WorkerProfile, loaded.ProjectAnalysis.ReviewerProfile)
@@ -470,6 +434,72 @@ func TestLoadConfigRestoresRoleModelsFromMatchingTopLevelProfile(t *testing.T) {
 	}
 }
 
+func TestSaveUserConfigPreservesExistingReviewRoleModels(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-v4-pro"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "codex-cli",
+			Model:           "gpt-5.5",
+			ReasoningEffort: "low",
+		},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig initial: %v", err)
+	}
+
+	stale := DefaultConfig(workspace)
+	stale.Provider = "deepseek"
+	stale.Model = "deepseek-v4-pro"
+	if err := SaveUserConfig(stale); err != nil {
+		t.Fatalf("SaveUserConfig stale: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	roleCfg := loaded.Review.RoleModels["primary_reviewer"]
+	if roleCfg.Provider != "codex-cli" || roleCfg.Model != "gpt-5.5" || roleCfg.ReasoningEffort != "low" {
+		t.Fatalf("expected review role model to survive stale config save, got %#v", loaded.Review.RoleModels)
+	}
+}
+
+func TestSaveUserConfigReplacingReviewRoleModelsAllowsExplicitClear(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-v4-pro"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {Provider: "codex-cli", Model: "gpt-5.5"},
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig initial: %v", err)
+	}
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{}
+	if err := SaveUserConfigReplacingReviewRoleModels(cfg); err != nil {
+		t.Fatalf("SaveUserConfigReplacingReviewRoleModels: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if len(loaded.Review.RoleModels) != 0 {
+		t.Fatalf("expected explicit replacement save to clear review role models, got %#v", loaded.Review.RoleModels)
+	}
+}
+
 func profileListContainsName(profiles []Profile, name string) bool {
 	for _, profile := range profiles {
 		if profile.Name == name {
@@ -523,9 +553,6 @@ func TestSaveUserConfigPreservesExistingProfilesWhenNextHasNone(t *testing.T) {
 		{Name: "main-a", Provider: "openai", Model: "gpt-a"},
 		{Name: "main-b", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
 	}
-	existing.ReviewProfiles = []Profile{
-		{Name: "review-a", Provider: "anthropic", Model: "claude-a"},
-	}
 	if err := SaveUserConfig(existing); err != nil {
 		t.Fatalf("SaveUserConfig existing: %v", err)
 	}
@@ -549,9 +576,6 @@ func TestSaveUserConfigPreservesExistingProfilesWhenNextHasNone(t *testing.T) {
 			t.Fatalf("expected main profiles to contain %q, got %#v", want, loaded.Profiles)
 		}
 	}
-	if len(loaded.ReviewProfiles) != 1 || loaded.ReviewProfiles[0].Name != "review-a" {
-		t.Fatalf("expected existing review profiles to remain, got %#v", loaded.ReviewProfiles)
-	}
 }
 
 func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
@@ -563,9 +587,6 @@ func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
 	existing.Profiles = []Profile{
 		{Name: "old-main", Provider: "openai", Model: "gpt-old"},
 	}
-	existing.ReviewProfiles = []Profile{
-		{Name: "old-review", Provider: "anthropic", Model: "claude-old"},
-	}
 	if err := SaveUserConfig(existing); err != nil {
 		t.Fatalf("SaveUserConfig existing: %v", err)
 	}
@@ -573,9 +594,6 @@ func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
 	next := DefaultConfig(t.TempDir())
 	next.Profiles = []Profile{
 		{Name: "new-main", Provider: "openrouter", Model: "deepseek/deepseek-v4-pro"},
-	}
-	next.ReviewProfiles = []Profile{
-		{Name: "new-review", Provider: "openai", Model: "gpt-new"},
 	}
 	if err := SaveUserConfig(next); err != nil {
 		t.Fatalf("SaveUserConfig next: %v", err)
@@ -591,14 +609,6 @@ func TestSaveUserConfigMergesNewProfilesWithExistingProfiles(t *testing.T) {
 	for _, want := range []string{"new-main", "old-main"} {
 		if !profileListContainsName(loaded.Profiles, want) {
 			t.Fatalf("expected main profiles to contain %q, got %#v", want, loaded.Profiles)
-		}
-	}
-	if len(loaded.ReviewProfiles) != 2 {
-		t.Fatalf("expected old and new review profiles to merge, got %#v", loaded.ReviewProfiles)
-	}
-	for _, want := range []string{"new-review", "old-review"} {
-		if !profileListContainsName(loaded.ReviewProfiles, want) {
-			t.Fatalf("expected review profiles to contain %q, got %#v", want, loaded.ReviewProfiles)
 		}
 	}
 }
@@ -999,7 +1009,7 @@ func TestHelpTextIncludesReloadAndInitExtensions(t *testing.T) {
 		"/drop-selection <n>",
 		"/clear-selection",
 		"/clear-selections",
-		"/review-selection [...]",
+		"/review selection [...]",
 		"/edit-selection <task>",
 		"/verify [path,...|--full]",
 		"/verify-dashboard [all]",

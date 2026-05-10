@@ -215,6 +215,7 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 	rt.workspace.ReadCacheEntries = configReadCacheEntries(rt.cfg)
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.workspace.PrepareEditAtRoot = rt.prepareEditAtRoot
+	rt.workspace.ReviewEdit = rt.reviewProposedEdit
 	rt.workspace.ResolveEditTarget = rt.resolveEditTarget
 	rt.workspace.ResolveShellRoot = rt.resolveShellRoot
 	if rt.backgroundJobs != nil {

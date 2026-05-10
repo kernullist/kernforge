@@ -495,6 +495,54 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 	}
 }
 
+func TestAgentDoesNotTreatGitStatusChangedPathsAsAnEdit(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("int old_value = 0;\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "driver.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("int old_value = 1;\n"), 0o644); err != nil {
+		t.Fatalf("dirty file: %v", err)
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("git_status", map[string]any{}),
+			{Message: Message{Role: "assistant", Text: "상태만 확인했고 수정은 하지 않았습니다."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	verifyCount := 0
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewGitStatusTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "수정해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "수정은 하지 않았습니다") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("git_status changed_paths must not trigger automatic verification, got %d runs", verifyCount)
+	}
+}
+
 func TestAgentAnalysisOnlyRequestHidesEditTools(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{

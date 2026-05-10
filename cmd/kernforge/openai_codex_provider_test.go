@@ -31,12 +31,14 @@ func TestNewProviderClientSupportsOpenAICodexWithoutAPIKey(t *testing.T) {
 		t.Fatalf("expected openai-codex client, got %q", client.Name())
 	}
 
-	client, err = NewProviderClient(Config{Provider: "openai_codex", Model: "gpt-5.5"})
-	if err != nil {
-		t.Fatalf("NewProviderClient alias: %v", err)
-	}
-	if client.Name() != "openai-codex" {
-		t.Fatalf("expected openai-codex client for alias, got %q", client.Name())
+	for _, provider := range []string{"openai_codex", "openai-codex-subscription", "openai_codex_subscription"} {
+		client, err = NewProviderClient(Config{Provider: provider, Model: "gpt-5.5"})
+		if err != nil {
+			t.Fatalf("NewProviderClient alias %q: %v", provider, err)
+		}
+		if client.Name() != "openai-codex" {
+			t.Fatalf("expected openai-codex client for alias %q, got %q", provider, client.Name())
+		}
 	}
 }
 
@@ -143,10 +145,14 @@ func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.
 			Provider:        "openai-codex",
 			Model:           "gpt-5.5",
 			ReasoningEffort: "low",
-			PlanReview: &PlanReviewConfig{
-				Provider:        "openai-codex",
-				Model:           "gpt-5.5",
-				ReasoningEffort: "medium",
+			Review: ReviewHarnessConfig{
+				RoleModels: map[string]ReviewModelConfig{
+					"primary_reviewer": {
+						Provider:        "openai-codex",
+						Model:           "gpt-5.5",
+						ReasoningEffort: "medium",
+					},
+				},
 			},
 		},
 		agent: &Agent{
@@ -188,7 +194,11 @@ func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.
 		t.Fatalf("reviewer reasoning effort after main change = %q, want medium", reviewerClient.reasoningEffort)
 	}
 
-	rt.cfg.PlanReview.ReasoningEffort = "x-high"
+	rt.cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "openai-codex",
+		Model:           "gpt-5.5",
+		ReasoningEffort: "x-high",
+	}
 	rt.syncClientFromConfig()
 
 	reviewerClient, ok = rt.agent.ReviewerClient.(*OpenAICodexClient)
@@ -572,6 +582,72 @@ func TestPollCodexOAuthDeviceCodeRetriesRequestTimeout(t *testing.T) {
 	}
 	if token.AuthorizationCode != "auth-code-1" || token.CodeVerifier != "verifier-1" {
 		t.Fatalf("unexpected device token: %#v", token)
+	}
+}
+
+func TestPollCodexOAuthDeviceCodeRetriesDeviceAuthorizationUnknown(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("content-type", "application/json")
+		if attempts == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"message":"Device authorization is unknown. Please try again.","type":"invalid_request_error","code":"deviceauth_authorization_unknown"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"authorization_code":"auth-code-1","code_verifier":"verifier-1"}`))
+	}))
+	defer server.Close()
+
+	oldEndpoint := openAICodexDeviceTokenEndpoint
+	openAICodexDeviceTokenEndpoint = server.URL
+	defer func() {
+		openAICodexDeviceTokenEndpoint = oldEndpoint
+	}()
+
+	token, err := pollCodexOAuthDeviceCode(context.Background(), server.Client(), codexOAuthDeviceCode{
+		DeviceAuthID: "device-1",
+		UserCode:     "ABCD",
+		Interval:     time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("pollCodexOAuthDeviceCode: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected retry after device authorization unknown, got %d attempts", attempts)
+	}
+	if token.AuthorizationCode != "auth-code-1" || token.CodeVerifier != "verifier-1" {
+		t.Fatalf("unexpected device token: %#v", token)
+	}
+}
+
+func TestImportCodexCLIOAuthAuthFileCopiesUsableTokens(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	source := codexCLIOAuthAuthFilePath()
+	dest := filepath.Join(home, "kernforge", "codex_auth.json")
+	if err := saveCodexOAuthAuthFile(source, codexOAuthTokens{
+		AccessToken:  testCodexOAuthJWT(time.Now().Add(time.Hour)),
+		RefreshToken: "refresh-1",
+		AccountID:    "account-1",
+	}); err != nil {
+		t.Fatalf("save source auth: %v", err)
+	}
+
+	if err := importCodexCLIOAuthAuthFile(dest); err != nil {
+		t.Fatalf("importCodexCLIOAuthAuthFile: %v", err)
+	}
+	if !codexOAuthAuthFileUsable(dest) {
+		t.Fatalf("expected imported auth file to be usable")
+	}
+	_, auth, err := readCodexOAuthAuthFile(dest)
+	if err != nil {
+		t.Fatalf("read imported auth file: %v", err)
+	}
+	if auth.Tokens.RefreshToken != "refresh-1" || auth.Tokens.AccountID != "account-1" {
+		t.Fatalf("expected imported tokens to preserve refresh/account metadata, got %#v", auth.Tokens)
 	}
 }
 

@@ -4,3 +4,5 @@ versioninfo_windows_*.syso
 /kernforge.exe
 /kernforge.exe~
 /kernforge.zip
+/cmd/kernforge/kernforge.exe
+/release/

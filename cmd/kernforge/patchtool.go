@@ -14,7 +14,7 @@ func NewApplyPatchTool(ws Workspace) ApplyPatchTool { return ApplyPatchTool{ws: 
 func (t ApplyPatchTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "apply_patch",
-		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. This is the default edit tool for most code changes after reading the current file contents.",
+		Description: "Apply a precise patch to one or more existing files using a Begin/End Patch format. This is the default edit tool for most code changes after reading the current file contents. Every update file section must contain at least one @@ hunk.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -235,7 +235,9 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 				continue
 			}
 			if current == "" {
-				return patchOperation{}, fmt.Errorf("patch lines inside hunks must start with space, +, or -")
+				hunk.lines = append(hunk.lines, patchLine{kind: ' ', text: ""})
+				*index++
+				continue
 			}
 			prefix := current[0]
 			if prefix != ' ' && prefix != '+' && prefix != '-' {
@@ -261,17 +263,25 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 		return "No patch operations to apply.", nil
 	}
 	var previewBlocks []string
+	var previewPaths []string
 	for _, change := range planned {
 		target := relOrAbs(change.displayRoot, change.destPath)
 		if change.kind == "delete" {
 			target = relOrAbs(change.displayRoot, change.srcPath)
 		}
+		previewPaths = append(previewPaths, target)
 		previewBlocks = append(previewBlocks, buildSelectionAwareEditPreview(ws, target, change.before, change.after))
 	}
-	if err := ws.ConfirmEdit(EditPreview{
-		Title:   fmt.Sprintf("Apply patch to %d file(s)", len(planned)),
-		Preview: strings.Join(previewBlocks, "\n\n"),
-	}); err != nil {
+	preview := EditPreview{
+		Title:     fmt.Sprintf("Apply patch to %d file(s)", len(planned)),
+		Preview:   strings.Join(previewBlocks, "\n\n"),
+		Paths:     normalizeTaskStateList(previewPaths, 64),
+		Operation: "apply_patch",
+	}
+	if err := ws.ReviewProposedEdit(ctx, preview); err != nil {
+		return "", err
+	}
+	if err := ws.ConfirmEdit(preview); err != nil {
 		return "", err
 	}
 	if err := ensurePlannedPatchWrites(ws, planned); err != nil {

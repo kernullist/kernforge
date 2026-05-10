@@ -813,8 +813,11 @@ func collectVerificationChangedPaths(root string, sess *Session) []string {
 }
 
 func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Session) []string {
-	changed := collectVerificationChangedPaths(root, sess)
-	return filterCodeLikePaths(changed)
+	sessionChanged := filterCodeLikePaths(collectRecentSessionChangedPaths(sess))
+	if len(sessionChanged) > 0 {
+		return sessionChanged
+	}
+	return filterCodeLikePaths(collectGitChangedPaths(root))
 }
 
 func filterCodeLikePaths(paths []string) []string {
@@ -849,12 +852,39 @@ func isCodeLikePath(path string) bool {
 }
 
 func collectSessionChangedPaths(sess *Session) []string {
+	return collectSessionChangedPathsInRange(sess, 0)
+}
+
+func collectRecentSessionChangedPaths(sess *Session) []string {
 	if sess == nil {
 		return nil
 	}
+	start := 0
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		if sess.Messages[i].Role == "user" {
+			start = i + 1
+			break
+		}
+	}
+	return collectSessionChangedPathsInRange(sess, start)
+}
+
+func collectSessionChangedPathsInRange(sess *Session, start int) []string {
+	if sess == nil {
+		return nil
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > len(sess.Messages) {
+		return nil
+	}
 	var out []string
-	for _, msg := range sess.Messages {
+	for _, msg := range sess.Messages[start:] {
 		if msg.Role != "tool" {
+			continue
+		}
+		if !messageRepresentsWorkspaceEdit(msg) {
 			continue
 		}
 		if metaPaths := toolMetaStringSlice(msg.ToolMeta, "changed_paths"); len(metaPaths) > 0 {
@@ -871,6 +901,16 @@ func collectSessionChangedPaths(sess *Session) []string {
 		}
 	}
 	return uniqueStrings(out)
+}
+
+func messageRepresentsWorkspaceEdit(msg Message) bool {
+	if isEditTool(msg.ToolName) {
+		return true
+	}
+	if toolMetaBool(msg.ToolMeta, "changed_workspace") {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(toolMetaString(msg.ToolMeta, "effect")), "edit")
 }
 
 func collectVerificationPathsFromToolText(text, marker string) []string {
