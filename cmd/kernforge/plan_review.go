@@ -315,6 +315,6 @@ func createReviewerClient(reviewCfg *ReviewModelConfig, mainCfg Config) (Provide
 	cfg.Model = model
 	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
-	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, reviewCfg.ReasoningEffort)
+	cfg.ReasoningEffort, _ = reviewReasoningEffortOrDefaultForProvider(provider, reviewCfg.ReasoningEffort)
 	return NewProviderClient(cfg)
 }

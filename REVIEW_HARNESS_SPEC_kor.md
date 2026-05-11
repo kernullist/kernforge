@@ -394,9 +394,15 @@ Gate rule:
 
 1. blocker finding이 하나라도 있으면 `needs_revision` 또는 `blocked`.
 2. verification이 명시적으로 required인데 evidence가 없으면 `insufficient_evidence`.
-3. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
-4. docs-only change는 test gap을 warning으로 낮출 수 있다.
-5. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
+3. 사용자가 명시적으로 "검토하고 버그를 수정" 같은 repair intent를 준 흐름에서는 complete high finding뿐 아니라 actionable medium correctness/stability/performance finding도 `needs_revision`으로 올린다.
+4. 수정 전 리뷰의 style/formatting/maintainability finding은 코드 수리를 막는 blocker로 승격하지 않고 warning으로 남긴다.
+5. pre-write review에서는 low severity라도 Allman brace, indentation, formatting처럼 지금 쓰려는 patch 자체의 스타일 위반이면 rewrite가 가능한 actionable warning으로 보고 차단한다.
+6. pre-write review의 "build/test verification was not run" 류 순수 검증 gap은 edit preview를 막지 않고 post-edit verification obligation으로 남긴다.
+7. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, 별도 review role이 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 확인한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
+8. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
+9. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
+10. docs-only change는 test gap을 warning으로 낮출 수 있다.
+11. user가 명시적으로 waiver를 요청하지 않으면 blocker waiver는 불가.
 
 ### 5.6 Review Artifact Versioning
 
@@ -2328,8 +2334,77 @@ Phase 3: 장기 runtime protocol화
    - 영향: 리뷰 하네스가 어떤 버그를 근거로 수리하는지 사용자가 대화 로그에서 확인할 수 없다. progress line에는 finding 요약이 있어도 assistant 본문이 검토 결과를 생략하면 "모델이 코드를 검토하지 않은 것처럼" 보인다.
    - 수정: pre-fix review feedback의 implementation rules에 파일 쓰기/패치 도구 호출 전 `검토 결과:` 또는 `Review findings:` 섹션으로 RF 항목과 조치 방향을 먼저 출력하라는 규칙을 추가했다.
    - 추가 수정: 직전 review run이 `pre_fix`이고 수리 의무 finding이 남아 있는 상태에서 assistant가 RF 요약 없이 edit tool을 호출하면, tool 실행 전에 재시도 지침을 주입한다. 한국어 요청에서는 RF 항목 목록과 함께 한국어 가이드를 제공한다.
+   - 추가 수정: 모델이 plan/read_file 같은 inspect tool을 먼저 호출하느라 자체 요약을 생략해도 사용자가 검토 결과를 볼 수 있도록, pre-fix review 완료 직후 runtime이 deterministic `검토 결과:` / `Review findings:` assistant 메시지를 직접 emit하고 세션에 저장한다.
    - 회귀 테스트: `TestAgentRetriesEditToolWithoutPreFixReviewSummary`, `TestPreFixVisibleReviewSummaryRequiresStructuredFindingID`.
    - 검증: `go test ./cmd/kernforge -run "TestAgentRetriesEditToolWithoutPreFixReviewSummary|TestPreFixVisibleReviewSummaryRequiresStructuredFindingID|TestReviewScopeDiscoveryRejectsSyntheticToolPaths|TestReviewScopeDiscoveryNormalizesBeforeAfterDiffPaths|TestReviewScopeDiscoveryKeepsRealWebDirectoryPaths|TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog|TestAgentRetriesEnglishToolNarrationForKoreanLocalCodeRepair" -count=1 -timeout 2m` 통과.
+36. 사용자 smoke - high finding이 warning으로 남고 pre-write verification warning이 편집을 반복 차단하는 문제 수정
+   - 발견: 한국어 로컬 코드 수리 smoke에서 `std::mismatch` 범위 초과 같은 high/stability finding이 `approved_with_warnings`로만 표시됐다. 이후 pre-write review는 `빌드 검증이 생략되었습니다` 같은 edit 이후 검증성 warning도 actionable warning처럼 취급해 같은 edit proposal을 반복 수정하게 만들었다.
+   - 영향: 명시적 "검토하고 버그를 수정해" 흐름에서는 high-severity correctness/stability finding이 repair gate를 막아야 하는데 warning처럼 보였다. 반대로 pre-write 단계에서는 아직 적용되지 않은 patch의 빌드 검증을 요구하며 edit loop가 불필요하게 늘어났다.
+   - 수정: 명시적 fix/pre-fix/pre-write/live-fix 흐름에서는 complete high model finding이 evidence/test gap이 아닌 한 gate blocker가 되도록 했다. read-only source/performance analysis에서는 기존처럼 high finding을 warning으로 유지한다.
+   - 추가 수정: pre-write warning block 분류가 category에 상관없이 순수 build/test verification gap 문구를 먼저 감지해 non-blocking warning으로 둔다. 구현 증거, accessor, declaration, requested API 누락처럼 실제 patch 내용 보완이 필요한 warning은 계속 차단한다.
+   - 회귀 테스트: `TestHighModelFindingBlocksWhenUserAskedToFix`, `TestHighModelFindingDoesNotBlockReadOnlyAnalysis`, `TestPreWriteReviewDoesNotBlockBuildVerificationWarningWithWrongCategory`, 기존 pure verification/implementation evidence gap tests.
+   - 검증: `go test ./cmd/kernforge -run "TestPreWriteReviewDoesNotBlockPureVerificationWarning|TestPreWriteReviewDoesNotBlockBuildVerificationWarningWithWrongCategory|TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned|TestHighModelFindingBlocksWhenUserAskedToFix|TestHighModelFindingDoesNotBlockReadOnlyAnalysis" -count=1` 통과.
+37. 사용자 smoke - openai-codex Responses provider에서 orphan tool output 400 오류 수정
+   - 발견: 메인 모델을 `openai-codex-subscription / gpt-5.5`로, 리뷰 모델을 `anthropic-claude-cli / opus`로 바꾼 smoke에서 `update_plan` tool result가 다음 OpenAI Codex Responses 요청의 첫 `function_call_output`으로 들어갔다. 대응하는 `function_call` item이 같은 input에 없어 API가 `No tool call found for function call output` 400 오류를 반환했다.
+   - 영향: 세션 압축, provider 전환, tool-turn 복구 과정에서 assistant tool call 원본이 누락되면 openai-codex Responses 경로가 대화를 이어가지 못한다. 일반 OpenAI chat-completions 경로에는 orphan tool result 보호가 있었지만 Codex Responses payload builder에는 같은 보호가 없었다.
+   - 수정: `buildOpenAICodexInput`이 메시지를 직렬화하기 전에 `ensureOpenAIToolCallResponses`를 통과하도록 했다. 매칭 assistant tool call이 없는 saved tool result는 plain user context로 변환하고, assistant tool call 뒤 tool result가 빠진 경우에는 runtime guidance에 맞는 synthetic tool output을 추가한다.
+   - 회귀 테스트: `TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext`, `TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput`, 기존 `TestBuildOpenAICodexRequestBodyPreservesToolContext`.
+   - 검증: `go test ./cmd/kernforge -run "TestBuildOpenAICodexRequestBodyPreservesToolContext|TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext|TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput" -count=1` 통과.
+38. 사용자 smoke - Claude Code CLI review model 선택지에 버전 모델 표시
+   - 발견: `/review models primary`에서 `anthropic-claude-cli`를 선택하면 모델 목록이 `sonnet`, `opus`, `haiku` family alias만 보여 실제 버전 세대를 알 수 없었다.
+   - 영향: 사용자가 review model을 고를 때 현재 선택이 Sonnet/Opus의 어떤 버전인지 판단하기 어렵고, main/review 모델 조합을 실험할 때 재현성이 떨어진다.
+   - 수정: Claude Code CLI 모델 목록은 `Claude Sonnet 4.7 (CLI alias)`, `Claude Opus 4.7 (CLI alias)`처럼 현재 세대 표시를 유지하되, 실제 선택 ID와 CLI `--model` 값은 `sonnet`, `opus`, `haiku` alias를 사용한다. 기존 설정에 `claude-sonnet-4-7`처럼 versioned ID가 남아 있어도 실행 전 alias로 매핑한다.
+   - 회귀 테스트: `TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases`, `TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases`.
+   - 검증: `go test ./cmd/kernforge -run "TestClaudeCLIModelChoicesIncludeCurrentCustomModel|TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases|TestBuildClaudeCLIArgsUsesModelConfigOverride|TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases" -count=1` 통과.
+39. 사용자 smoke - medium repair finding과 pre-write style warning gate 조정
+   - 발견: `검토하고 버그를 수정해` 흐름에서 `wcslen` 언더플로우, 개별 볼륨 실패로 전체 열거 중단 같은 medium correctness/stability finding이 `approved_with_warnings`로 남아 repair loop가 optional처럼 보였다. 반대로 pre-write 단계의 Allman/들여쓰기 warning은 실제 패치가 쓰이기 전에 고쳐야 하는데 diff preview까지 진행됐다.
+   - 영향: 사용자가 명시적으로 수리를 요청한 경우 medium급 실제 버그를 놓치고, pre-write가 낮은 severity style 문제를 edit 이후로 미루는 UX가 생겼다.
+   - 수정: 명시적 repair intent에서는 actionable medium correctness/stability/performance finding도 gate blocker로 올린다. 수정 전 리뷰의 low style/formatting/maintainability finding은 warning으로 유지하지만, pre-write review에서 patch-local Allman brace, indentation, formatting 문제가 나오면 severity가 low여도 write 전에 차단한다.
+   - 회귀 테스트: `TestMediumModelFindingBlocksWhenUserAskedToFix`, `TestLowStyleFindingDoesNotBlockPreFixGate`, `TestHighStyleFindingDoesNotBlockPreFixGateUnlessExplicitBlocker`, `TestPreWriteReviewBlocksLowStyleWarning`.
+   - 검증: `go test ./cmd/kernforge -run "TestMediumModelFindingBlocksWhenUserAskedToFix|TestLowStyleFindingDoesNotBlockPreFixGate|TestHighStyleFindingDoesNotBlockPreFixGateUnlessExplicitBlocker|TestPreWriteReviewBlocksLowStyleWarning|TestPreWriteReviewDoesNotBlockPureVerificationWarning|TestPreWriteReviewDoesNotBlockBuildVerificationWarningWithWrongCategory|TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned|TestHighModelFindingBlocksWhenUserAskedToFix|TestHighModelFindingDoesNotBlockReadOnlyAnalysis" -count=1` 통과.
+40. 사용자 smoke - Claude Code CLI reviewer 실패가 승인처럼 보이는 문제 수정
+   - 발견: review role을 `anthropic-claude-cli / claude-sonnet-4-7`로 설정하면 Claude CLI가 exit status 1로 실패했지만, pre-fix review는 `RF-PREFIX-001` warning만 남기고 `approved_with_warnings`로 진행했다. pre-write review도 같은 reviewer 실패 뒤 diff preview까지 열렸다.
+   - 영향: 별도 reviewer가 실제로 코드를 검토하지 못했는데도 pre-write edit 흐름이 승인된 것처럼 보이며, 잘못된 모델 ID나 broken route가 조용히 묻힌다. 반대로 pre-fix에서 별도 reviewer 실패를 hard stop으로 처리하면 main model이 이미 만든 usable finding까지 버려 repair가 불필요하게 멈춘다.
+   - 수정: main-first review 구조로 바꿨다. pre-fix와 일반 `/review`는 active main model의 1차 리뷰를 기준으로 finding을 보고하고, 별도 reviewer 실패는 degraded cross-reviewer 상태로 남긴다. pre-write에서는 reviewer 실패를 deterministic `RF-REVIEWER-001` blocker로 유지해 write 전에 멈춘다.
+   - 회귀 테스트: `TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate`, `TestPreWriteReviewModelFailureBlocksEditGate`.
+   - 검증: `go test ./cmd/kernforge -run "TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate|TestPreWriteReviewModelFailureBlocksEditGate|TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases|TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases" -count=1` 통과.
+41. 사용자 smoke - pre-fix review 결과가 plan/read_file 이후에도 보이지 않는 문제 수정
+   - 발견: `openai-codex-subscription / gpt-5.5` main model과 `anthropic-claude-cli / sonnet` review model 조합에서 pre-fix review는 RF-002/RF-003 blocker를 찾았지만, implementation loop는 `update_plan`, `read_file`, `apply_patch`로 진행했고 사용자 가시 assistant 본문에는 검토 결과 요약이 안정적으로 나타나지 않았다.
+   - 영향: pre-fix progress에는 finding이 보이지만 assistant 본문이 비어 있거나 tool-only 흐름이면 사용자는 모델이 어떤 리뷰 결과를 근거로 수리하는지 확인하기 어렵다. 모델별 tool-call 성향에 UX 계약이 흔들린다.
+   - 수정: `maybeRunReviewBeforeFix`가 review 완료 직후 `formatPreFixVisibleReviewSummary`로 RF 항목과 조치 방향을 deterministic assistant 메시지로 emit/store한다. 이후 edit guard는 현재 assistant 응답뿐 아니라 세션에 저장된 visible summary도 인정해, 이미 보인 요약 때문에 불필요한 retry 루프가 생기지 않게 했다.
+   - 회귀 테스트: `TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation`, `TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary`, 기존 `TestAgentRetriesEditToolWithoutPreFixReviewSummary`, `TestPreFixVisibleReviewSummaryRequiresStructuredFindingID`.
+   - 검증: `go test ./cmd/kernforge -run "TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation|TestAgentRetriesEditToolWithoutPreFixReviewSummary|TestPreFixVisibleReviewSummaryRequiresStructuredFindingID|TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary" -count=1` 통과.
+42. 사용자 smoke - low effort DeepSeek reviewer가 weak/no-actionable 결과로 repair를 통과시키는 문제 수정
+   - 발견: review role을 `DeepSeek / deepseek-v4-pro / effort=low`로 바꾼 뒤 focused Tavern pre-fix review가 2회 모델 호출 후에도 `품질=weak`, `RF-PREFIX-001: Pre-fix review returned no actionable bug findings`만 반환했다. 그럼에도 gate가 `approved_with_warnings`로 끝나 구현 모델이 긴 독자 탐색과 patch 흐름을 이어갔다.
+   - 영향: "검토하고 버그를 수정해" 흐름에서 별도 reviewer가 실질적인 검토를 못 하면 승인 비슷하게 보이거나, 반대로 hard stop이 걸려 main model의 1차 finding 기반 repair도 시작하지 못한다. pre-write review가 weak reviewer output을 `경고=0` 완료로 보여 diff preview까지 열릴 수 있는 문제는 여전히 막아야 한다.
+   - 수정: focused pre-fix bug-hunt review는 role 설정이 `low` 또는 `medium`이어도 최소 `high` effort로 올린다. 이미 `xhigh`이면 그대로 유지한다. pre-fix의 weak cross reviewer는 degraded 상태로 남기고 main-first finding을 기준으로 repair를 이어가며, pre-write의 weak reviewer만 failed reviewer와 동일한 `RF-REVIEWER-001` blocker로 write를 막는다.
+   - 회귀 테스트: `TestFocusedPreFixBugHuntRaisesRoleEffortToHigh`, `TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair`, `TestPreWriteWeakReviewModelQualityBlocksEditGate`, 기존 reviewer failure tests.
+   - 검증: `go test ./cmd/kernforge -run "TestFocusedPreFixBugHuntRaisesRoleEffortToHigh|TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate|TestPreWriteReviewModelFailureBlocksEditGate" -count=1` 통과.
+43. 사용자 smoke - reviewer role을 처음부터 high 이상으로 실행
+   - 발견: focused pre-fix bug-hunt에서는 low/medium reviewer를 high로 올리지만, 일반 review role 설정과 reviewer client 생성 경로는 여전히 provider 기본 `low` 또는 main `low` effort를 상속할 수 있었다.
+   - 영향: 사용자가 review model을 새로 선택하거나 기존 low/medium 설정을 재사용하면 첫 reviewer 요청부터 약한 reasoning budget으로 시작해 weak/no-actionable 결과가 반복될 수 있다.
+   - 수정: common review role의 기본 reasoning effort를 최소 `high`로 바꾸고, `/review models` 저장, review role 실행, reviewer client 생성, status label 계산에서 저장된 `low`/`medium`도 runtime 최소 `high`로 승격한다. `xhigh`는 그대로 보존한다. main/analysis/specialist target의 기존 `low` 기본값은 유지한다.
+   - 회귀 테스트: `TestReviewRoleReasoningEffortDefaultsToAtLeastHigh`, `TestReviewModelsCommandDefaultsRoleEffortToHigh`, 기존 focused pre-fix/weak reviewer tests.
+   - 검증: `go test ./cmd/kernforge -run "TestReviewRoleReasoningEffortDefaultsToAtLeastHigh|TestFocusedPreFixBugHuntRaisesRoleEffortToHigh|TestPreFixSecurityReviewUsesSingleFallbackRole|TestReviewModelsCommandDefaultsRoleEffortToHigh|TestReviewModelsCommandShortFormPersistsRole|TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget|TestCreateReviewerClientUsesReviewerReasoningEffort" -count=1` 및 `go test ./cmd/kernforge -run "TestPreFixWeakReviewModelQualityBlocksRepairGate|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestPreFixReviewModelFailureBlocksRepairGate|TestPreWriteReviewModelFailureBlocksEditGate" -count=1` 통과.
+44. 사용자 smoke - usable finding인데 summary의 omission 문구 때문에 엄격 리뷰가 반복되는 문제 수정
+   - 발견: Sonnet reviewer가 완성된 structured finding을 반환했는데도 summary/prose에 `omitted`류 문구가 포함되면 runtime이 "생략/잘림 징후"로 판단해 strict review를 다시 실행했다.
+   - 영향: pre-fix 또는 pre-write review가 이미 usable finding을 확보했는데도 reviewer 호출이 2배 이상 늘고, Sonnet/DeepSeek 조합에서는 긴 대기와 반복 edit/review 루프로 보였다.
+   - 수정: omission retry 조건을 raw 전체 문자열이 아니라 structured finding 기준으로 좁혔다. finding 자체가 omitted placeholder이거나, partial finding 필드에 생략 표식이 있거나, weak output에 raw omission marker가 있을 때만 재시도한다. usable structured finding이 있으면 prose summary의 omission marker는 재시도 사유가 아니다.
+   - 회귀 테스트: `TestReviewModelDoesNotRetryUsableFindingsForRawOmissionMarker`, 기존 omission/cut-off retry tests.
+   - 검증: `go test ./cmd/kernforge -run "TestReviewModelDoesNotRetryUsableFindingsForRawOmissionMarker|TestReviewModelRetriesOmittedFindingOutput|TestReviewModelRetriesCutOffFindingOutput|TestReviewModelOmissionRetryFailureMarksRunDegraded|TestReviewProviderBehaviorControlsOmissionRetryBudget" -count=1` 통과.
+45. 사용자 smoke - DeepSeek reviewer가 빈 응답을 반환했는데 weak review처럼 보이는 문제 수정
+   - 발견: DeepSeek review role이 약 4분 대기 후 empty response를 반환했고, artifact의 `raw_primary_reviewer.md`도 `(empty review response)`뿐이었다. 하지만 progress와 report는 `status=completed quality=weak`로 표시해 reviewer route 장애인지 구조화 finding 부족인지 구분하기 어려웠다.
+   - 영향: 실제 코드를 검토하지 않은 빈 응답이 "약한 리뷰 결과"처럼 보이고, 사용자는 모델 선택 문제와 review parser 문제를 혼동할 수 있다.
+   - 수정: reviewer response body가 비어 있으면 raw artifact를 남긴 뒤 해당 reviewer run을 `failed`, `quality=failed`, `error=review model returned empty response`로 분류한다. pre-fix에서는 main-first review result를 유지하면서 cross reviewer 실패로 degraded 표시만 남기고, pre-write에서는 `RF-REVIEWER-001` insufficient_evidence blocker로 중단한다.
+   - 회귀 테스트: `TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair`, `TestPreWriteEmptyReviewModelResponseBlocksAsReviewerFailure`.
+   - 검증: `go test ./cmd/kernforge -run "TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair|TestPreWriteEmptyReviewModelResponseBlocksAsReviewerFailure|TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate|TestPreWriteReviewModelFailureBlocksEditGate" -count=1` 통과.
+
+46. 사용자 smoke - `/review`와 수정 전 리뷰를 main-first + cross-reviewer second 구조로 전환
+   - 발견: 사용자가 명시적으로 `/review` 또는 "검토하고 버그를 수정해"를 요청했을 때 별도 reviewer를 먼저 실행하면, DeepSeek처럼 느리거나 weak/empty output을 내는 route가 전체 review를 막거나 구현 모델이 긴 독자 탐색으로 빠질 수 있었다. 반대로 reviewer가 없거나 실패해도 active main model은 이미 로컬 evidence를 보고 1차 판단을 만들 수 있다.
+   - 영향: review model 선택 하나가 review-first repair UX 전체의 신뢰성과 속도를 좌우하고, `/review` 결과가 "메인 모델의 검토 + 독립 검증"이 아니라 "외부 reviewer 단독 판단"처럼 동작했다.
+   - 수정: `executeReviewModelRuns`를 main-first로 바꿨다. active main model이 `primary_reviewer`로 1차 structured review를 만들고, 별도 role reviewer가 있으면 `cross_reviewer`로 같은 evidence와 primary draft를 받아 독립 재검토한다. pre-fix와 일반 review에서 cross reviewer 실패/weak/empty는 degraded warning으로 남기고, pre-write에서는 hard gate로 유지한다.
+   - 회귀 테스트: `TestDistinctReviewModelProgressIsExplicit`, `TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate`, `TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair`, `TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair`, `TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch`, 기존 pre-write reviewer failure tests.
+   - 검증: `go test ./cmd/kernforge -run "TestDistinctReviewModelProgressIsExplicit|TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate|TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair|TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair|TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch|TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry|TestPreWriteReviewModelFailureBlocksEditGate|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestPreWriteEmptyReviewModelResponseBlocksAsReviewerFailure" -count=1` 통과.
 
 남은 항목:
 

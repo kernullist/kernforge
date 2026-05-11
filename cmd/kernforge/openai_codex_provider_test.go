@@ -95,6 +95,83 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyConvertsOrphanToolOutputToUserContext(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "continue"},
+			{Role: "tool", ToolCallID: "call_orphan", ToolName: "update_plan", Text: "[in_progress] inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_read", Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{Role: "tool", ToolCallID: "call_read", ToolName: "read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(payload.Input) == 0 {
+		t.Fatalf("expected input items, got %s", body)
+	}
+	for _, item := range payload.Input {
+		if item["type"] == "function_call_output" && item["call_id"] == "call_orphan" {
+			t.Fatalf("orphan tool result must not be sent as function_call_output: %s", body)
+		}
+	}
+	encoded := string(body)
+	for _, want := range []string{
+		"Recovered transcript note",
+		"tool_call_id=call_orphan",
+		`"type":"function_call"`,
+		`"call_id":"call_read"`,
+		`"type":"function_call_output"`,
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("expected %q in request body %s", want, encoded)
+		}
+	}
+}
+
+func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_expected", Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{Role: "user", Text: "Do not repeat the same tool call; continue from local context."},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	encoded := string(body)
+	for _, want := range []string{
+		`"type":"function_call"`,
+		`"call_id":"call_expected"`,
+		`"type":"function_call_output"`,
+		"NOTICE: tool call was superseded before execution",
+	} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("expected %q in request body %s", want, encoded)
+		}
+	}
+}
+
 func TestOpenAICodexClientAppliesConfiguredReasoningEffort(t *testing.T) {
 	var payload map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,8 +253,8 @@ func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.
 	if !ok {
 		t.Fatalf("expected OpenAI Codex reviewer client, got %T", rt.agent.ReviewerClient)
 	}
-	if reviewerClient.reasoningEffort != "medium" {
-		t.Fatalf("reviewer reasoning effort = %q, want medium", reviewerClient.reasoningEffort)
+	if reviewerClient.reasoningEffort != "high" {
+		t.Fatalf("reviewer reasoning effort = %q, want high", reviewerClient.reasoningEffort)
 	}
 	if rt.agent.AuxReviewerClient != nil || rt.agent.AuxReviewerModel != "" {
 		t.Fatalf("expected auxiliary reviewer cache to be cleared")
@@ -190,8 +267,8 @@ func TestSyncClientFromConfigKeepsOpenAICodexReviewerEffortPerTarget(t *testing.
 	if !ok {
 		t.Fatalf("expected refreshed OpenAI Codex reviewer client, got %T", rt.agent.ReviewerClient)
 	}
-	if reviewerClient.reasoningEffort != "medium" {
-		t.Fatalf("reviewer reasoning effort after main change = %q, want medium", reviewerClient.reasoningEffort)
+	if reviewerClient.reasoningEffort != "high" {
+		t.Fatalf("reviewer reasoning effort after main change = %q, want high", reviewerClient.reasoningEffort)
 	}
 
 	rt.cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{

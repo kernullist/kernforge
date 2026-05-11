@@ -43,6 +43,24 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		}
 		return true, fmt.Errorf("review before fix failed: %w", err)
 	}
+	if summary := formatPreFixVisibleReviewSummary(a.Config, run); summary != "" {
+		a.emitPersistentAssistantSummary(summary)
+		a.Session.AddMessage(Message{
+			Role: "assistant",
+			Text: summary,
+		})
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		if a.Store != nil {
+			if err := a.Store.Save(a.Session); err != nil {
+				return true, err
+			}
+		}
+		if a.EmitProgress != nil {
+			a.EmitProgress(formatReviewBeforeFixProgress(a.Config, run))
+		}
+		return true, nil
+	}
 	a.Session.AddMessage(Message{
 		Role: "user",
 		Text: formatReviewBeforeFixFeedback(run),
@@ -57,6 +75,30 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		a.EmitProgress(formatReviewBeforeFixProgress(a.Config, run))
 	}
 	return true, nil
+}
+
+func (a *Agent) emitPersistentAssistantSummary(summary string) {
+	summary = strings.TrimSpace(summary)
+	if a == nil || summary == "" || summary == a.lastEmittedText {
+		return
+	}
+	if a.EmitAssistantPersistent != nil {
+		a.EmitAssistantPersistent(summary)
+	} else if a.EmitAssistant != nil {
+		a.EmitAssistant(summary)
+	}
+	a.lastEmittedText = summary
+}
+
+func (a *Agent) maybeStopAfterReviewerGateUnavailable() (string, bool) {
+	if a == nil || a.Session == nil || a.Session.LastReviewRun == nil {
+		return "", false
+	}
+	run := *a.Session.LastReviewRun
+	if !reviewRunHasRequiredReviewerFailure(run) {
+		return "", false
+	}
+	return formatReviewerGateUnavailableReply(a.Config, run), true
 }
 
 func (rt *runtimeState) reviewBeforeFixOptions(input string, images []MessageImage) (ReviewHarnessOptions, *ViewerSelection, bool) {
@@ -511,6 +553,47 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	}
 	b.WriteString("- When using apply_patch, send only valid KernForge patch syntax. The first line after *** Begin Patch must be *** Update File:, *** Add File:, or *** Delete File:. Never start the patch body with @@.\n")
 	b.WriteString("- The normal pre-write review gate will run again before any file write.\n")
+	return strings.TrimSpace(b.String())
+}
+
+func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	failed := reviewFailedRequiredReviewerRuns(run)
+	var b strings.Builder
+	if korean {
+		b.WriteString("쓰기 전 리뷰어 게이트가 충분한 근거를 만들지 못해서 편집을 중단했습니다.")
+		b.WriteString("\n\n- 원인: 필수 리뷰어 모델이 실패했거나 `weak` 품질로 판정되었습니다.")
+		b.WriteString("\n- 결과: 이 상태의 리뷰 결과는 쓰기 승인으로 신뢰할 수 없어 편집을 적용하지 않습니다.")
+		b.WriteString("\n- 다음 조치: 리뷰 모델 라우팅을 정상 동작하는 모델로 바꾸거나 같은 요청을 다시 실행하세요.")
+		b.WriteString("\n\n코드 수정은 적용하지 않았습니다.")
+	} else {
+		b.WriteString("The pre-write reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
+		b.WriteString("\n\n- Cause: the required reviewer model failed or was classified as `weak` quality.")
+		b.WriteString("\n- Result: this review cannot be trusted as write approval, so the edit was not applied.")
+		b.WriteString("\n- Next step: switch the reviewer route to a working model or rerun the same request.")
+		b.WriteString("\n\nNo code changes were applied.")
+	}
+	if len(failed) > 0 {
+		if korean {
+			b.WriteString("\n\n실패한 리뷰어:")
+		} else {
+			b.WriteString("\n\nFailed reviewer:")
+		}
+		for _, reviewerRun := range failed {
+			role := firstNonBlankString(reviewRoleProgressName(reviewerRun.Role), "reviewer")
+			status := valueOrDefault(strings.TrimSpace(reviewerRun.Status), "unknown")
+			quality := valueOrDefault(strings.TrimSpace(reviewerRun.ModelQuality), "unknown")
+			detail := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output was too weak")
+			fmt.Fprintf(&b, "\n- %s status=%s quality=%s: %s", role, status, quality, detail)
+		}
+	}
+	if len(run.ArtifactRefs) > 0 {
+		if korean {
+			fmt.Fprintf(&b, "\n\n리뷰 보고서: %s", run.ArtifactRefs[0])
+		} else {
+			fmt.Fprintf(&b, "\n\nReview report: %s", run.ArtifactRefs[0])
+		}
+	}
 	return strings.TrimSpace(b.String())
 }
 

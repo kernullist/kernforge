@@ -40,6 +40,7 @@ type Agent struct {
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	UserChangeIsolation            *UserChangeIsolationState
 	EmitAssistant                  func(string)
+	EmitAssistantPersistent        func(string)
 	EmitAssistantDelta             func(string)
 	EmitProgress                   func(string)
 	EmitProgressEvent              func(ProgressEvent)
@@ -148,6 +149,15 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	ranReviewBeforeFix, err := a.maybeRunReviewBeforeFix(ctx, userText, images, readOnlyAnalysis, explicitEditRequest)
 	if err != nil {
 		return "", err
+	}
+	if ranReviewBeforeFix {
+		if reply, ok := a.maybeStopAfterReviewerGateUnavailable(); ok {
+			a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
+			return reply, nil
+		}
 	}
 	if ranReviewBeforeFix && a.shouldConcludeAfterNonBlockingPreFixReview(userText) {
 		reply := a.formatNonBlockingPreFixReviewReply()
@@ -942,6 +952,31 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					toolMsg.Text = err.Error()
 				} else {
 					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
+				}
+				if errors.Is(err, ErrReviewerGateUnavailable) {
+					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+						a.emitProgressEvent(ProgressEvent{
+							Kind:             progressKindToolFailed,
+							Message:          summary,
+							ToolName:         call.Name,
+							ToolCallID:       call.ID,
+							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+							Status:           firstNonEmptyLine(err.Error()),
+						})
+					}
+					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					reply := localizedText(a.Config,
+						"The pre-write reviewer gate did not produce reliable evidence, so I stopped the edit. No code changes were applied.",
+						"쓰기 전 리뷰어 게이트가 신뢰 가능한 근거를 만들지 못해서 편집을 중단했습니다. 코드 수정은 적용하지 않았습니다.",
+					)
+					if a.Session != nil && a.Session.LastReviewRun != nil {
+						reply = formatReviewerGateUnavailableReply(a.Config, *a.Session.LastReviewRun)
+					}
+					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
 				}
 				currentError := strings.TrimSpace(err.Error())
 				if call.Name == "run_shell" {
@@ -2582,7 +2617,10 @@ func shouldRetryPreFixEditWithoutVisibleReviewSummary(message Message, session *
 	if len(preFixVisibleReviewSummaryObligations(run, 3)) == 0 {
 		return false
 	}
-	return !assistantTextIncludesPreFixReviewSummary(message.Text, run)
+	if assistantTextIncludesPreFixReviewSummary(message.Text, run) {
+		return false
+	}
+	return !sessionHasVisiblePreFixReviewSummary(session, run)
 }
 
 func toolCallsIncludeEditTool(calls []ToolCall) bool {
@@ -2626,6 +2664,22 @@ func assistantTextIncludesPreFixReviewSummary(text string, run ReviewRun) bool {
 	return false
 }
 
+func sessionHasVisiblePreFixReviewSummary(session *Session, run ReviewRun) bool {
+	if session == nil {
+		return false
+	}
+	for idx := len(session.Messages) - 1; idx >= 0; idx-- {
+		message := session.Messages[idx]
+		if message.Role != "assistant" {
+			continue
+		}
+		if assistantTextIncludesPreFixReviewSummary(message.Text, run) {
+			return true
+		}
+	}
+	return false
+}
+
 func preFixVisibleReviewSummaryObligations(run ReviewRun, limit int) []ReviewFinding {
 	findings := preFixRepairObligationFindings(run)
 	if limit > 0 && len(findings) > limit {
@@ -2636,13 +2690,64 @@ func preFixVisibleReviewSummaryObligations(run ReviewRun, limit int) []ReviewFin
 
 func preFixVisibleReviewSummaryFindings(run ReviewRun, limit int) []ReviewFinding {
 	findings := preFixRepairObligationFindings(run)
-	if len(findings) == 0 {
-		findings = preFixReplyWarningFindings(run, limit)
+	warnings := preFixReplyWarningFindings(run, 0)
+	if len(findings) > 0 && len(warnings) > 0 {
+		seen := make(map[string]bool, len(findings))
+		for _, finding := range findings {
+			if id := strings.TrimSpace(finding.ID); id != "" {
+				seen[id] = true
+			}
+		}
+		for _, warning := range warnings {
+			if id := strings.TrimSpace(warning.ID); id != "" && seen[id] {
+				continue
+			}
+			findings = append(findings, warning)
+			if id := strings.TrimSpace(warning.ID); id != "" {
+				seen[id] = true
+			}
+		}
+	} else if len(findings) == 0 {
+		findings = warnings
 	}
 	if limit > 0 && len(findings) > limit {
 		return findings[:limit]
 	}
 	return findings
+}
+
+func formatPreFixVisibleReviewSummary(cfg Config, run ReviewRun) string {
+	findings := preFixVisibleReviewSummaryFindings(run, 8)
+	if len(findings) == 0 {
+		return ""
+	}
+	korean := reviewRunPrefersKorean(cfg, run)
+	var b strings.Builder
+	if korean {
+		b.WriteString("검토 결과:")
+	} else {
+		b.WriteString("Review findings:")
+	}
+	for _, finding := range findings {
+		finding.Normalize()
+		id := valueOrDefault(finding.ID, "RF")
+		severity := valueOrDefault(finding.Severity, "unknown")
+		category := valueOrDefault(finding.Category, "general")
+		title := compactPromptSection(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"), 180)
+		requiredFix := compactPromptSection(strings.TrimSpace(finding.RequiredFix), 220)
+		if korean {
+			fmt.Fprintf(&b, "\n- %s [%s/%s]: %s", id, severity, category, title)
+			if requiredFix != "" {
+				fmt.Fprintf(&b, " -> 조치: %s", requiredFix)
+			}
+		} else {
+			fmt.Fprintf(&b, "\n- %s [%s/%s]: %s", id, severity, category, title)
+			if requiredFix != "" {
+				fmt.Fprintf(&b, " -> Fix: %s", requiredFix)
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func preFixVisibleReviewSummaryGuidance(run ReviewRun) string {

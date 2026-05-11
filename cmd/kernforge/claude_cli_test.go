@@ -33,6 +33,27 @@ func TestBuildClaudeCLIArgsUsesModelConfigOverride(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{name: "sonnet 4.7", model: "claude-sonnet-4-7", want: "sonnet"},
+		{name: "opus 4.7", model: "claude-opus-4-7", want: "opus"},
+		{name: "haiku 3.5", model: "claude-haiku-3-5", want: "haiku"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildClaudeCLIArgs(tt.model, nil, "hello")
+			want := []string{"--model", tt.want, "-p", "hello"}
+			if !reflect.DeepEqual(args, want) {
+				t.Fatalf("args = %#v, want %#v", args, want)
+			}
+		})
+	}
+}
+
 func TestClaudeCLIClientCompleteInvokesRunner(t *testing.T) {
 	root := t.TempDir()
 	client := NewClaudeCLIClient("claude-test", []string{"--permission-mode", "plan"})
@@ -98,5 +119,39 @@ func TestClaudeCLIModelChoicesIncludeCurrentCustomModel(t *testing.T) {
 	choices := claudeCLIModelChoices("claude-custom")
 	if choices[len(choices)-1].ID != "claude-custom" {
 		t.Fatalf("expected custom current model to be appended, got %#v", choices)
+	}
+}
+
+func TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases(t *testing.T) {
+	choices := claudeCLIModelChoices("claude-sonnet-4-7")
+	wantPrefix := []string{
+		claudeCLIDefaultModel,
+		"sonnet",
+		"opus",
+		"haiku",
+	}
+	for i, want := range wantPrefix {
+		if choices[i].ID != want {
+			t.Fatalf("choice %d = %q, want %q; choices=%#v", i, choices[i].ID, want, choices)
+		}
+	}
+	if len(choices) != len(wantPrefix) {
+		t.Fatalf("versioned current model should be represented by built-in alias choices, got %#v", choices)
+	}
+	sonnetSeen := false
+	legacyIDSeen := false
+	for _, choice := range choices {
+		if choice.ID == "sonnet" && strings.Contains(choice.Name, "4.7") && strings.Contains(choice.Name, "CLI alias") {
+			sonnetSeen = true
+		}
+		if strings.Contains(choice.ID, "4-6") || strings.Contains(choice.ID, "4-7") {
+			legacyIDSeen = true
+		}
+	}
+	if !sonnetSeen {
+		t.Fatalf("expected sonnet alias to display the current family version, got %#v", choices)
+	}
+	if legacyIDSeen {
+		t.Fatalf("built-in Claude CLI choices must not pass versioned IDs directly, got %#v", choices)
 	}
 }

@@ -108,6 +108,12 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	needsRevision := run.Gate.Verdict == reviewVerdictNeedsRevision ||
 		run.Gate.Verdict == reviewVerdictBlocked ||
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
+	if needsRevision && reviewRunHasRequiredReviewerFailure(run) {
+		if a.EmitProgress != nil {
+			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review could not use the required reviewer. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰어 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
+		}
+		return fmt.Errorf("%w: %s", ErrReviewerGateUnavailable, formatReviewerGateUnavailableToolError(run))
+	}
 	if needsRevision {
 		if a.EmitProgress != nil {
 			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review found blockers. Asking the model to revise...", "자동 쓰기 전 리뷰에서 차단 finding을 발견했습니다. 모델에게 수정을 요청합니다..."))
@@ -279,6 +285,12 @@ func postChangeReviewHasDedicatedModel(a *Agent) bool {
 	if a == nil {
 		return false
 	}
+	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
+		return true
+	}
+	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		return true
+	}
 	reviewCfg := configReviewHarness(a.Config)
 	for _, role := range []string{"primary_reviewer", "design_reviewer", "security_reviewer", "false_positive_reviewer", "regression_reviewer", "test_reviewer", "final_gate_reviewer"} {
 		if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
@@ -336,6 +348,22 @@ func formatPostChangeReviewFeedback(run ReviewRun, needsRevision bool) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func formatReviewerGateUnavailableToolError(run ReviewRun) string {
+	failed := reviewFailedRequiredReviewerRuns(run)
+	if len(failed) == 0 {
+		return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue"
+	}
+	var details []string
+	for _, reviewerRun := range failed {
+		role := firstNonBlankString(reviewRoleProgressName(reviewerRun.Role), "reviewer")
+		status := valueOrDefault(strings.TrimSpace(reviewerRun.Status), "unknown")
+		quality := valueOrDefault(strings.TrimSpace(reviewerRun.ModelQuality), "unknown")
+		detail := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output was too weak")
+		details = append(details, fmt.Sprintf("%s status=%s quality=%s: %s", role, status, quality, detail))
+	}
+	return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue: " + strings.Join(details, " | ")
 }
 
 func formatPreWriteReviewFeedback(run ReviewRun) string {
@@ -406,16 +434,49 @@ func preWriteReviewWarningShouldBlock(finding ReviewFinding) bool {
 	if !strings.EqualFold(strings.TrimSpace(finding.Source), "model") {
 		return false
 	}
+	if reviewPreWriteWarningLooksLikeStyleGap(finding) {
+		return true
+	}
 	if reviewSeverityRank(finding.Severity) > reviewSeverityRank(reviewSeverityMedium) {
+		return false
+	}
+	if reviewPreWriteWarningLooksLikePureVerificationGap(finding) {
 		return false
 	}
 	if strings.EqualFold(finding.Category, "test_gap") {
 		return false
 	}
 	if strings.EqualFold(finding.Category, "evidence_gap") {
-		return !reviewPreWriteWarningLooksLikePureVerificationGap(finding)
+		return true
 	}
 	return true
+}
+
+func reviewPreWriteWarningLooksLikeStyleGap(finding ReviewFinding) bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	if text == "" {
+		return false
+	}
+	return containsAny(text,
+		"allman",
+		"brace style",
+		"braces style",
+		"formatting",
+		"indentation",
+		"opening brace",
+		"style violation",
+		"여는 중괄호",
+		"중괄호",
+		"들여쓰기",
+		"스타일",
+		"포매팅",
+	)
 }
 
 func reviewPreWriteWarningLooksLikePureVerificationGap(finding ReviewFinding) bool {
@@ -451,11 +512,27 @@ func reviewPreWriteWarningLooksLikePureVerificationGap(finding ReviewFinding) bo
 	}
 	return containsAny(text,
 		"verification was not run",
+		"verification skipped",
+		"verification was skipped",
+		"verification omitted",
+		"build verification",
+		"build was not run",
+		"build was skipped",
 		"no latest verification",
+		"no build verification",
+		"no verification evidence",
+		"no test was run",
+		"not verified",
 		"run verification",
+		"tests were not run",
 		"/verify",
+		"빌드 검증",
 		"검증",
+		"검증 생략",
+		"검증이 생략",
+		"검증을 생략",
 		"테스트 실행",
+		"테스트가 생략",
 	)
 }
 

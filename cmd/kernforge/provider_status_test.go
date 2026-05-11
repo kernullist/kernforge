@@ -379,12 +379,12 @@ func TestRuntimeStateShowProviderStatusDescribesAnthropicBudgetLimits(t *testing
 		ui:     UI{color: false},
 		cfg: Config{
 			Provider: "anthropic",
-			Model:    "claude-sonnet-4-6",
+			Model:    "claude-sonnet-4-7",
 			APIKey:   "test-key",
 		},
 		session: &Session{
 			Provider: "anthropic",
-			Model:    "claude-sonnet-4-6",
+			Model:    "claude-sonnet-4-7",
 		},
 	}
 

@@ -782,7 +782,7 @@ On startup and `/reload`, Kernforge migrates config files that still hold the ol
 
 ### Interactive Loop Durability Notes
 
-- The interactive loop can use explicitly configured common review role models for review, pre-fix, pre-write, and post-change gates. It no longer creates a separate legacy plan-review reviewer fallback.
+- The interactive loop uses the active main model as the first-pass reviewer for `/review`, natural-language review, and pre-fix repair checks. Explicitly configured common review role models act as second-pass cross reviewers for those flows, while pre-write review keeps the stricter required-reviewer edit gate.
 - Common review model requests use bounded per-attempt timeouts unless a policy overrides them, favoring fast failure and recovery over long blocked preflight waits.
 - The final-answer reviewer now runs only when there is unresolved verification, a coding-harness blocker, or actual patch transaction changed paths. Read-only replies, plan state, or task-graph presence alone no longer create an extra LLM round-trip.
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.

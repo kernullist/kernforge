@@ -388,11 +388,26 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if finding.BlocksGate || strings.EqualFold(finding.Severity, reviewSeverityBlocker) {
 		return true
 	}
+	if reviewRunLooksReadOnlyAnalysis(run) {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "evidence_gap") ||
+		strings.EqualFold(finding.Category, "test_gap") {
+		return false
+	}
+	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	if reviewRunLooksExplicitRepairIntent(run) &&
+		reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium) &&
+		reviewFindingLooksActionableForRepairGate(finding) {
+		return true
+	}
 	if !strings.EqualFold(finding.Severity, reviewSeverityHigh) {
 		return false
 	}
-	if reviewRunLooksReadOnlyAnalysis(run) {
-		return false
+	if reviewRunLooksExplicitRepairIntent(run) {
+		return true
 	}
 	if strings.EqualFold(finding.Category, "security") ||
 		strings.EqualFold(finding.Category, "bypass_surface") ||
@@ -538,6 +553,38 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 
 func reviewRunLooksReadOnlyAnalysis(run ReviewRun) bool {
 	return prefersReadOnlyAnalysisIntent(run.Objective) && !looksLikeExplicitEditIntent(run.Objective)
+}
+
+func reviewRunLooksExplicitRepairIntent(run ReviewRun) bool {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) ||
+		strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Mode), reviewModeLiveFix) {
+		return true
+	}
+	return looksLikeExplicitEditIntent(run.Objective)
+}
+
+func reviewFindingLooksActionableForRepairGate(finding ReviewFinding) bool {
+	finding.Normalize()
+	if reviewFindingLooksAdvisoryStyleCategory(finding) {
+		return false
+	}
+	if strings.TrimSpace(finding.RequiredFix) != "" {
+		return true
+	}
+	if strings.TrimSpace(finding.Path) != "" || strings.TrimSpace(finding.Symbol) != "" {
+		return true
+	}
+	return false
+}
+
+func reviewFindingLooksAdvisoryStyleCategory(finding ReviewFinding) bool {
+	finding.Normalize()
+	return strings.EqualFold(finding.Category, "style") ||
+		strings.EqualFold(finding.Category, "formatting") ||
+		strings.EqualFold(finding.Category, "maintainability")
 }
 
 func reviewHasActionableWarningFindings(run ReviewRun, warningIDs []string) bool {

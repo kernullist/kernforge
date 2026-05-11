@@ -2,6 +2,8 @@ package main
 
 import "strings"
 
+const minimumReviewRoleReasoningEffort = "high"
+
 type ReviewProviderBehavior struct {
 	Provider                   string   `json:"provider,omitempty"`
 	DisplayLabel               string   `json:"display_label,omitempty"`
@@ -32,7 +34,7 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 	}
 	switch normalized {
 	case "openai-codex":
-		behavior.DefaultReviewEffort = "low"
+		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 12000
 		behavior.RetryReviewTokens = 6000
 		behavior.OmissionRetryBudget = 2
@@ -41,7 +43,7 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.PatchFormatRisk = "low"
 		behavior.RecommendedRoles = []string{"primary_reviewer", "security_reviewer", "final_gate_reviewer"}
 	case "codex-cli":
-		behavior.DefaultReviewEffort = "low"
+		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 6000
 		behavior.RetryReviewTokens = 3000
 		behavior.OmissionRetryBudget = 1
@@ -49,13 +51,14 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.ToolCallRecoveryPolicy = "cli_retry"
 		behavior.PatchFormatRisk = "medium"
 	case "anthropic-claude-cli":
-		behavior.DefaultReviewEffort = "low"
+		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 5000
 		behavior.RetryReviewTokens = 3000
 		behavior.SchemaStrictness = "strict"
 		behavior.ToolCallRecoveryPolicy = "compact_json_recovery"
 		behavior.PatchFormatRisk = "medium"
 	case "deepseek":
+		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 4096
 		behavior.RetryReviewTokens = 2500
 		behavior.OmissionRetryBudget = 2
@@ -81,6 +84,32 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.DisplayLabel = strings.TrimSpace(provider)
 	}
 	return behavior
+}
+
+func defaultReviewReasoningEffortForProvider(provider string) string {
+	effort := normalizeReasoningEffort(reviewProviderBehavior(provider).DefaultReviewEffort)
+	if effort != "" {
+		return reasoningEffortAtLeast(effort, minimumReviewRoleReasoningEffort)
+	}
+	if providerSupportsReasoningEffort(provider) {
+		return minimumReviewRoleReasoningEffort
+	}
+	return ""
+}
+
+func reviewReasoningEffortOrDefaultForProvider(provider string, effort string) (string, bool) {
+	normalized := normalizeReasoningEffort(effort)
+	if normalized != "" {
+		if defaultReviewReasoningEffortForProvider(provider) != "" {
+			return reasoningEffortAtLeast(normalized, minimumReviewRoleReasoningEffort), false
+		}
+		return normalized, false
+	}
+	defaultEffort := defaultReviewReasoningEffortForProvider(provider)
+	if defaultEffort == "" {
+		return "", false
+	}
+	return defaultEffort, true
 }
 
 func reviewProviderDisplayLabel(provider string) string {

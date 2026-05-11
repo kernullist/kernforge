@@ -157,6 +157,14 @@ func claudeCLIModelFlagValue(model string) string {
 	if model == "" || strings.EqualFold(model, claudeCLIDefaultModel) {
 		return ""
 	}
+	switch strings.ToLower(model) {
+	case "claude-sonnet-4-7", "claude-sonnet-4.7", "sonnet-4-7", "sonnet-4.7":
+		return "sonnet"
+	case "claude-opus-4-7", "claude-opus-4.7", "opus-4-7", "opus-4.7":
+		return "opus"
+	case "claude-haiku-3-5", "claude-haiku-3.5", "claude-3-5-haiku-latest", "haiku-3-5", "haiku-3.5":
+		return "haiku"
+	}
 	return model
 }
 

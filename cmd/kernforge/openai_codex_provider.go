@@ -251,8 +251,9 @@ func openAICodexToolParameters(schema map[string]any) map[string]any {
 }
 
 func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
-	items := make([]any, 0, len(req.Messages))
-	for _, msg := range req.Messages {
+	messages := ensureOpenAIToolCallResponses(req.Messages)
+	items := make([]any, 0, len(messages))
+	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
 			continue

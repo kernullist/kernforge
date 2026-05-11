@@ -390,6 +390,9 @@ func run(args []string) error {
 		EmitAssistant: func(text string) {
 			rt.printAssistantWhileThinking(text)
 		},
+		EmitAssistantPersistent: func(text string) {
+			rt.printAssistant(text)
+		},
 		EmitAssistantDelta: func(text string) {
 			rt.appendAssistantStream(text)
 		},
@@ -4948,6 +4951,8 @@ var anthropicModels = []struct {
 	ID   string
 	Name string
 }{
+	{"claude-sonnet-4-7", "Claude Sonnet 4.7"},
+	{"claude-opus-4-7", "Claude Opus 4.7"},
 	{"claude-sonnet-4-6", "Claude Sonnet 4.6"},
 	{"claude-opus-4-6", "Claude Opus 4.6"},
 }
@@ -5245,9 +5250,9 @@ func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error)
 
 var claudeCLIModels = []codexCLIModelOption{
 	{ID: claudeCLIDefaultModel, Name: "Claude Code CLI default"},
-	{ID: "sonnet", Name: "Claude Sonnet"},
-	{ID: "opus", Name: "Claude Opus"},
-	{ID: "haiku", Name: "Claude Haiku"},
+	{ID: "sonnet", Name: "Claude Sonnet 4.7 (CLI alias)"},
+	{ID: "opus", Name: "Claude Opus 4.7 (CLI alias)"},
+	{ID: "haiku", Name: "Claude Haiku (CLI alias)"},
 }
 
 func (rt *runtimeState) chooseClaudeCLIModel(currentModel string) (string, error) {
@@ -5260,11 +5265,12 @@ func (rt *runtimeState) chooseClaudeCLIModel(currentModel string) (string, error
 
 	models := claudeCLIModelChoices(currentModel)
 	fmt.Fprintln(rt.writer, rt.ui.section("Claude Code CLI Models"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Claude Code CLI choose its configured model. You can also type any Claude-supported model id directly."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use default to let the installed Claude Code CLI choose its configured model. Built-in choices show the current Claude family version but use CLI-safe aliases."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("You can also type any Claude-supported model id directly."))
 	defaultChoice := "1"
 	for i, m := range models {
 		marker := ""
-		if strings.EqualFold(m.ID, strings.TrimSpace(currentModel)) {
+		if claudeCLIModelChoiceMatchesCurrent(m.ID, currentModel) {
 			marker = " " + rt.ui.success("[current]")
 			defaultChoice = fmt.Sprintf("%d", i+1)
 		}
@@ -5347,11 +5353,22 @@ func claudeCLIModelChoices(currentModel string) []codexCLIModelOption {
 		return choices
 	}
 	for _, model := range choices {
-		if strings.EqualFold(model.ID, currentModel) {
+		if claudeCLIModelChoiceMatchesCurrent(model.ID, currentModel) {
 			return choices
 		}
 	}
 	return append(choices, codexCLIModelOption{ID: currentModel, Name: "Current configured model"})
+}
+
+func claudeCLIModelChoiceMatchesCurrent(choiceID string, currentModel string) bool {
+	choiceID = strings.TrimSpace(choiceID)
+	currentModel = strings.TrimSpace(currentModel)
+	if strings.EqualFold(choiceID, currentModel) {
+		return true
+	}
+	choiceFlag := claudeCLIModelFlagValue(choiceID)
+	currentFlag := claudeCLIModelFlagValue(currentModel)
+	return choiceFlag != "" && currentFlag != "" && strings.EqualFold(choiceFlag, currentFlag)
 }
 
 func (rt *runtimeState) codexCLIModelChoices(currentModel string) []codexCLIModelOption {
@@ -5448,7 +5465,8 @@ var openCodeFallbackModels = []OpenCodeModelInfo{
 	{ID: "gpt-5.4-pro"},
 	{ID: "gpt-5.3-codex"},
 	{ID: "gpt-5.3-codex-spark"},
-	{ID: "claude-sonnet-4-6"},
+	{ID: "claude-sonnet-4-7"},
+	{ID: "claude-opus-4-7"},
 	{ID: "glm-5.1"},
 	{ID: "glm-5"},
 	{ID: "minimax-m2.7"},

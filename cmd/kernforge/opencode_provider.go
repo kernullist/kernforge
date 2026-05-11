@@ -598,6 +598,8 @@ func preferredOpenCodeModelIDs(provider string) []string {
 		"gpt-5.2",
 		"gpt-5.1-codex",
 		"gpt-5.1-codex-max",
+		"claude-sonnet-4-7",
+		"claude-opus-4-7",
 		"claude-sonnet-4-6",
 		"claude-sonnet-4-5",
 		"glm-5.1",

@@ -777,7 +777,7 @@ current directory가 workspace 안에 있으면 `!cd ..`로 workspace root까지
 
 ### 인터랙티브 루프 내구성 메모
 
-- 인터랙티브 루프는 명시적으로 설정된 공통 review role model을 review, 수정 전, 쓰기 전, 변경 후 gate에 사용할 수 있다. 별도 legacy plan-review reviewer fallback은 더 이상 만들지 않는다.
+- 인터랙티브 루프는 `/review`, 자연어 리뷰, 수정 전 repair check에서 active main model을 1차 reviewer로 사용한다. 명시적으로 설정된 공통 review role model은 이 흐름에서 2차 cross reviewer로 동작하고, pre-write review에서는 더 엄격한 필수 reviewer edit gate를 유지한다.
 - 공통 review model 요청은 명시 timeout policy가 없으면 bounded per-attempt timeout을 사용한다. 긴 대기보다 빠른 실패와 다음 recovery path를 우선한다.
 - final answer reviewer는 unresolved verification, coding harness blocker, 또는 실제 patch transaction 변경 path가 있을 때만 `APPROVED / NEEDS_REVISION` 판단을 수행한다. 단순 read-only 답변, 계획 상태, task graph 존재만으로 추가 LLM 왕복을 만들지 않는다.
 - 인터랙티브 런타임은 이제 transcript 외에 구조화된 `TaskState`와 지속되는 `TaskGraph`를 함께 유지한다. 그래서 goal, plan progress, pending check, background ownership, 고가치 event가 compact 이후에도 더 안정적으로 남는다.

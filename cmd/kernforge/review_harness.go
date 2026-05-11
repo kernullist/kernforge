@@ -208,6 +208,7 @@ type ReviewModelPlan struct {
 
 type ReviewReviewerRun struct {
 	Role          string    `json:"role,omitempty"`
+	Kind          string    `json:"kind,omitempty"`
 	Model         string    `json:"model,omitempty"`
 	StartedAt     time.Time `json:"started_at,omitempty"`
 	FinishedAt    time.Time `json:"finished_at,omitempty"`
@@ -398,6 +399,8 @@ func normalizeReviewRole(role string) string {
 	switch role {
 	case "primary", "primary_reviewer", "reviewer":
 		return "primary_reviewer"
+	case "cross", "cross_reviewer", "second_pass", "second_pass_reviewer":
+		return "cross_reviewer"
 	case "design", "architect", "architecture", "design_reviewer":
 		return "design_reviewer"
 	case "security", "security_reviewer":
@@ -695,6 +698,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
+		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
 	} else if opts.NoModel {
 		run.Result.Degraded = true
 		run.Result.DegradedReason = "model review disabled by --no-model"

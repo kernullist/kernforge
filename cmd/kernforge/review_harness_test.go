@@ -21,6 +21,15 @@ func indexStringContaining(items []string, needle string) int {
 	return -1
 }
 
+func reviewRunHasFindingTitle(run ReviewRun, title string) bool {
+	for _, finding := range run.Findings {
+		if finding.Title == title {
+			return true
+		}
+	}
+	return false
+}
+
 type reviewRetryFailureProviderClient struct {
 	first    ChatResponse
 	err      error
@@ -41,6 +50,24 @@ func (r *reviewRetryFailureProviderClient) Complete(ctx context.Context, req Cha
 	}
 	r.index++
 	return ChatResponse{}, r.err
+}
+
+type failingReviewProviderClient struct {
+	err      error
+	requests []ChatRequest
+}
+
+func (f *failingReviewProviderClient) Name() string {
+	return "failing-reviewer"
+}
+
+func (f *failingReviewProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	f.requests = append(f.requests, req)
+	if f.err != nil {
+		return ChatResponse{}, f.err
+	}
+	return ChatResponse{}, fmt.Errorf("synthetic reviewer route failure")
 }
 
 func TestReviewHarnessNoModelWritesTypedArtifact(t *testing.T) {
@@ -365,6 +392,16 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
+	mainReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: approved",
+				"summary: main first pass completed",
+				"findings:",
+			}, "\n")},
+		}},
+	}
 	reviewer := &scriptedProviderClient{
 		replies: []ChatResponse{{
 			Message: Message{Role: "assistant", Text: strings.Join([]string{
@@ -388,7 +425,7 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 	var progress []string
 	agent := &Agent{
 		Config:         cfg,
-		Client:         &scriptedProviderClient{},
+		Client:         mainReviewer,
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",
 		Workspace:      Workspace{BaseRoot: root, Root: root},
@@ -413,14 +450,314 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 	if run.Result.WarningCount == 0 {
 		t.Fatalf("expected warning finding from reviewer, got %#v", run.Result)
 	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("expected one cross reviewer request, got %d", len(reviewer.requests))
+	}
+	crossPrompt := reviewer.requests[0].Messages[0].Text
+	if !strings.Contains(crossPrompt, "Primary model raw draft") || !strings.Contains(crossPrompt, "main first pass completed") {
+		t.Fatalf("expected cross reviewer prompt to include primary draft, got %q", crossPrompt)
+	}
 	for _, needle := range []string{
-		"Review model request: primary -> scripted / reviewer-model (main: scripted / main-model).",
+		"Review model request: primary -> scripted / main-model (main: scripted / main-model).",
 		"Review model result: primary completed",
+		"Review model request: cross -> scripted / reviewer-model (main: scripted / main-model).",
+		"Review model result: cross completed",
 		"Review gate result:",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
 			t.Fatalf("expected progress to contain %q, got %#v", needle, progress)
 		}
+	}
+}
+
+func TestPreFixReviewModelFailureDegradesButKeepsMainFirstRepairGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("Claude Code CLI command failed: exit status 1")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: needs_revision",
+					"summary: main model found a concrete pre-fix bug",
+					"findings:",
+					"- severity: high",
+					"  title: Missing guard",
+					"  category: correctness",
+					"  path: PathConverter.cpp",
+					"  evidence: Fix returns true without checking input",
+					"  impact: invalid inputs can be accepted",
+					"  required_fix: validate the input before returning success",
+					"  test_recommendation: add an invalid input test",
+				}, "\n")}},
+			},
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "claude-sonnet-4-7",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request")
+	}
+	if run.Gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("pre-fix reviewer failure should not hide main review findings, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if !run.Result.Degraded {
+		t.Fatalf("expected degraded result after reviewer failure")
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("pre-fix cross reviewer failure should not be a required reviewer failure, got %#v", run.Findings)
+	}
+	if !reviewRunHasFindingTitle(run, "Missing guard") {
+		t.Fatalf("expected main review finding to drive repair, got %#v", run.Findings)
+	}
+}
+
+func TestPreFixWeakReviewModelQualityDegradesWithoutBlockingMainFirstRepair(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "I cannot produce a structured review from the supplied context."},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: approved",
+					"summary: main model found no concrete blocker",
+					"findings:",
+				}, "\n")}},
+			},
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request")
+	}
+	if run.Result.ModelQuality != reviewModelQualityWeak {
+		t.Fatalf("expected weak reviewer quality, got %q", run.Result.ModelQuality)
+	}
+	if run.Gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("weak cross reviewer should not block pre-fix as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("weak cross reviewer should not be a required reviewer failure for pre-fix, got %#v", run.Findings)
+	}
+}
+
+func TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "   "},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: approved",
+					"summary: main model completed the first-pass review",
+					"findings:",
+				}, "\n")}},
+			},
+		},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 검토하고 버그를 수정해",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.ReviewerRuns) != 2 {
+		t.Fatalf("expected main and cross reviewer runs, got %#v", run.ReviewerRuns)
+	}
+	reviewerRun := run.ReviewerRuns[1]
+	if reviewerRun.Status != "failed" || reviewerRun.ModelQuality != reviewModelQualityFailed {
+		t.Fatalf("empty reviewer response should be a failed run, got %#v", reviewerRun)
+	}
+	if !strings.Contains(reviewerRun.Error, "empty response") {
+		t.Fatalf("expected empty response error, got %#v", reviewerRun)
+	}
+	if run.Gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("empty cross reviewer should not block pre-fix as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("empty cross reviewer should not be a required reviewer failure for pre-fix, got %#v", run.Findings)
+	}
+}
+
+func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("Claude Code CLI command failed: exit status 1")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "claude-sonnet-4-7",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Mode:         reviewModeLiveFix,
+		Request:      "automatic pre-write review",
+		Paths:        []string{path},
+		ProvidedDiff: "- break;\n+ continue;\n",
+		EditProposals: []EditProposal{{
+			File:            "PathConverter.cpp",
+			Operation:       "apply_patch",
+			ExpectedPreview: "- break;\n+ continue;\n",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request")
+	}
+	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
+		t.Fatalf("pre-write reviewer failure should block as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if !reviewRunHasFindingTitle(run, "Required reviewer model failed or returned weak output") {
+		t.Fatalf("expected required reviewer failure finding, got %#v", run.Findings)
+	}
+}
+
+func TestPreWriteWeakReviewModelQualityBlocksEditGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "Unable to provide structured findings."},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Mode:         reviewModeLiveFix,
+		Request:      "automatic pre-write review",
+		Paths:        []string{path},
+		ProvidedDiff: "- break;\n+ continue;\n",
+		EditProposals: []EditProposal{{
+			File:            "PathConverter.cpp",
+			Operation:       "apply_patch",
+			ExpectedPreview: "- break;\n+ continue;\n",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request")
+	}
+	if run.Result.ModelQuality != reviewModelQualityWeak {
+		t.Fatalf("expected weak reviewer quality, got %q", run.Result.ModelQuality)
+	}
+	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
+		t.Fatalf("weak pre-write reviewer should block as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if !reviewRunHasFindingTitle(run, "Required reviewer model failed or returned weak output") {
+		t.Fatalf("expected required reviewer quality finding, got %#v", run.Findings)
 	}
 }
 
@@ -526,7 +863,7 @@ func TestReviewModelRetriesOmittedFindingOutput(t *testing.T) {
 	var progress []string
 	agent := &Agent{
 		Config:         cfg,
-		Client:         &scriptedProviderClient{},
+		Client:         &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("main first-pass review found no actionable issues")}},
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",
 		Workspace:      Workspace{BaseRoot: root, Root: root},
@@ -553,7 +890,7 @@ func TestReviewModelRetriesOmittedFindingOutput(t *testing.T) {
 	}
 	var modelFindings []ReviewFinding
 	for _, finding := range run.Findings {
-		if finding.Source == "model" {
+		if finding.Source == "model" && finding.ReviewerRole == "cross_reviewer" {
 			modelFindings = append(modelFindings, finding)
 		}
 	}
@@ -571,6 +908,90 @@ func TestReviewModelRetriesOmittedFindingOutput(t *testing.T) {
 	}
 	if indexStringContaining(progress, "엄격 리뷰로 재시도합니다") < 0 {
 		t.Fatalf("expected retry progress message, got %#v", progress)
+	}
+}
+
+func TestReviewModelDoesNotRetryUsableFindingsForRawOmissionMarker(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() { println(\"ok\") }\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: details omitted from the prose summary, but the structured finding is complete",
+				"findings:",
+				"- severity: high",
+				"  category: correctness",
+				"  title: Input validation is missing",
+				"  path: main.go",
+				"  symbol: main",
+				"  evidence: main accepts an unchecked value before using it.",
+				"  impact: Invalid input can trigger incorrect behavior.",
+				"  required_fix: Validate the value before use.",
+				"  test_recommendation: Add a focused invalid-input test.",
+			}, "\n")},
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	var progress []string
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("main first-pass review found no actionable issues")}},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetChange,
+		Mode:                reviewModeLiveFix,
+		Request:             "@main.go 검토하고 버그를 수정해",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("usable structured findings should not strict-retry for prose omission markers, got %d requests result=%#v findings=%#v progress=%#v", len(reviewer.requests), run.Result, run.Findings, progress)
+	}
+	for _, req := range reviewer.requests {
+		for _, msg := range req.Messages {
+			if strings.Contains(msg.Text, "previous review output was rejected") ||
+				strings.Contains(msg.Text, "이전 리뷰 출력은 구조화된 필드") {
+				t.Fatalf("did not expect omission retry prompt, got %q", msg.Text)
+			}
+		}
+	}
+	if run.Result.ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected usable quality, got %#v", run.Result)
+	}
+	if indexStringContaining(progress, "strict review") >= 0 || indexStringContaining(progress, "엄격 리뷰") >= 0 {
+		t.Fatalf("did not expect strict retry progress, got %#v", progress)
+	}
+	var modelFindings []ReviewFinding
+	for _, finding := range run.Findings {
+		if finding.Source == "model" && finding.ReviewerRole == "cross_reviewer" {
+			modelFindings = append(modelFindings, finding)
+		}
+	}
+	if len(modelFindings) != 1 || modelFindings[0].Title != "Input validation is missing" {
+		t.Fatalf("expected one complete model finding, got %#v", modelFindings)
 	}
 }
 
@@ -622,7 +1043,7 @@ func TestReviewModelRetriesCutOffFindingOutput(t *testing.T) {
 	var progress []string
 	agent := &Agent{
 		Config:         cfg,
-		Client:         &scriptedProviderClient{},
+		Client:         &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("main first-pass review found no actionable issues")}},
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",
 		Workspace:      Workspace{BaseRoot: root, Root: root},
@@ -650,8 +1071,14 @@ func TestReviewModelRetriesCutOffFindingOutput(t *testing.T) {
 	if run.Result.ModelQuality != reviewModelQualityUsable {
 		t.Fatalf("expected usable retry quality, got %#v", run.Result)
 	}
-	if !strings.Contains(run.Findings[0].TestRecommendation, "preserve final logs") {
-		t.Fatalf("expected retry finding to replace cut-off test recommendation, got %#v", run.Findings)
+	var crossFindings []ReviewFinding
+	for _, finding := range run.Findings {
+		if finding.Source == "model" && finding.ReviewerRole == "cross_reviewer" {
+			crossFindings = append(crossFindings, finding)
+		}
+	}
+	if len(crossFindings) != 1 || !strings.Contains(crossFindings[0].TestRecommendation, "preserve final logs") {
+		t.Fatalf("expected retry cross-reviewer finding to replace cut-off test recommendation, got %#v", run.Findings)
 	}
 	if indexStringContaining(progress, "생략/잘림 징후") < 0 {
 		t.Fatalf("expected cut-off retry progress message, got %#v", progress)
@@ -931,6 +1358,28 @@ func TestPreWriteReviewDoesNotBlockPureVerificationWarning(t *testing.T) {
 	}
 }
 
+func TestPreWriteReviewDoesNotBlockBuildVerificationWarningWithWrongCategory(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Source:             "model",
+			Severity:           reviewSeverityLow,
+			Category:           "correctness",
+			Title:              "빌드 검증이 생략되었습니다",
+			Evidence:           "No build verification was supplied for the proposed patch.",
+			RequiredFix:        "Run a focused build after the edit is applied.",
+			TestRecommendation: "/verify --full",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 0 {
+		t.Fatalf("build-verification-only warning should not block pre-write, got %#v", got)
+	}
+}
+
 func TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentioned(t *testing.T) {
 	run := ReviewRun{
 		Gate: GateDecision{
@@ -951,6 +1400,137 @@ func TestPreWriteReviewBlocksImplementationEvidenceGapEvenWhenVerificationMentio
 	}
 	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 {
 		t.Fatalf("implementation evidence gap should block even when verification is mentioned, got %#v", got)
+	}
+}
+
+func TestPreWriteReviewBlocksLowStyleWarning(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "style",
+			Title:       "drivePath block opening brace violates Allman style",
+			Evidence:    "The opening brace for the drivePath block is indented as part of the previous statement.",
+			RequiredFix: "Move the opening brace to its own line and align indentation.",
+		}},
+	}
+	if got := preWriteReviewBlockingWarningFindings(run); len(got) != 1 || got[0].ID != "RF-001" {
+		t.Fatalf("style warning should block pre-write so the patch can be corrected, got %#v", got)
+	}
+}
+
+func TestHighModelFindingBlocksWhenUserAskedToFix(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "stability",
+			Title:       "std::mismatch can read past a short input",
+			Evidence:    "The comparison advances through the longer prefix without checking input length.",
+			RequiredFix: "Check input length before std::mismatch.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected high complete finding to block explicit fix flow, got %#v", gate)
+	}
+}
+
+func TestMediumModelFindingBlocksWhenUserAskedToFix(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityMedium,
+			Category:    "stability",
+			Title:       "wcslen underflows on empty input",
+			Evidence:    "The code subtracts one from wcslen(volumeName) before validating the length.",
+			Impact:      "A malformed or empty volume name can wrap size_t and index outside the buffer.",
+			RequiredFix: "Validate the volumeName length before computing lastIndex.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected medium actionable finding to block explicit fix flow, got %#v", gate)
+	}
+}
+
+func TestLowStyleFindingDoesNotBlockPreFixGate(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityLow,
+			Category:    "style",
+			Title:       "Opening brace should use Allman style",
+			Evidence:    "The existing function uses Allman style elsewhere.",
+			RequiredFix: "Move the opening brace to its own line.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictApprovedWithWarnings {
+		t.Fatalf("expected pre-fix low style finding to remain a warning, got %#v", gate)
+	}
+}
+
+func TestHighStyleFindingDoesNotBlockPreFixGateUnlessExplicitBlocker(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Sample/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "style",
+			Title:       "Opening brace should use Allman style",
+			Evidence:    "The patch does not follow the local brace style.",
+			RequiredFix: "Move the opening brace to its own line.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictApprovedWithWarnings {
+		t.Fatalf("expected pre-fix high style finding to remain a warning without BlocksGate, got %#v", gate)
+	}
+}
+
+func TestHighModelFindingDoesNotBlockReadOnlyAnalysis(t *testing.T) {
+	run := ReviewRun{
+		Mode:      reviewModeGeneralChange,
+		Objective: "SampleServer 코드를 분석해서 성능 문제를 검토해줘",
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "performance",
+			Title:       "Single lock can serialize hot-path reads",
+			Evidence:    "All player lookups use one lock.",
+			RequiredFix: "Consider sharding the lock.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	gate := evaluateReviewGate(run)
+	if gate.Verdict != reviewVerdictApprovedWithWarnings {
+		t.Fatalf("expected read-only analysis to report high finding without repair gate, got %#v", gate)
 	}
 }
 
@@ -2621,8 +3201,41 @@ func TestReviewModelsCommandShortFormPersistsRole(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	roleCfg := loaded.Review.RoleModels["primary_reviewer"]
-	if roleCfg.Provider != "deepseek" || roleCfg.Model != "deepseek-v4-pro" || roleCfg.ReasoningEffort != "low" {
+	if roleCfg.Provider != "deepseek" || roleCfg.Model != "deepseek-v4-pro" || roleCfg.ReasoningEffort != "high" {
 		t.Fatalf("expected review primary model to persist, got %#v", loaded.Review.RoleModels)
+	}
+}
+
+func TestReviewModelsCommandDefaultsRoleEffortToHigh(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	var out bytes.Buffer
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = "deepseek"
+	cfg.Model = "deepseek-v4-pro"
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      UI{},
+		cfg:     cfg,
+		session: &Session{Provider: "deepseek", Model: "deepseek-v4-pro", PermissionMode: "default"},
+	}
+
+	if err := rt.handleReviewModelsCommand("primary deepseek deepseek-v4-pro"); err != nil {
+		t.Fatalf("handleReviewModelsCommand: %v", err)
+	}
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	roleCfg := loaded.Review.RoleModels["primary_reviewer"]
+	if roleCfg.Provider != "deepseek" || roleCfg.Model != "deepseek-v4-pro" || roleCfg.ReasoningEffort != "high" {
+		t.Fatalf("expected review primary model to default to high, got %#v", loaded.Review.RoleModels)
+	}
+	if !strings.Contains(out.String(), "defaulted to high") {
+		t.Fatalf("expected high default notice, got %q", out.String())
 	}
 }
 

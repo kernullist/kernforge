@@ -229,12 +229,21 @@ func TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation(t *testing.T) {
 				"  impact: callers observe the wrong result",
 				"  required_fix: return 1 instead",
 				"  test_recommendation: add a focused value test",
+				"- severity: low",
+				"  title: Build verification was not run",
+				"  category: test_gap",
+				"  path: main.cpp",
+				"  evidence: no latest build output was supplied",
+				"  impact: compile risk remains unknown",
+				"  required_fix: run focused build verification before final approval",
 			}, "\n")}},
 		},
 	}
 	cfg := DefaultConfig(root)
 	cfg.Provider = "scripted"
 	cfg.Model = "model"
+	var emittedAssistant []string
+	var emittedPersistentAssistant []string
 	agent := &Agent{
 		Config:    cfg,
 		Client:    provider,
@@ -242,6 +251,12 @@ func TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation(t *testing.T) {
 		Workspace: Workspace{BaseRoot: root, Root: root},
 		Session:   session,
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+		EmitAssistant: func(text string) {
+			emittedAssistant = append(emittedAssistant, text)
+		},
+		EmitAssistantPersistent: func(text string) {
+			emittedPersistentAssistant = append(emittedPersistentAssistant, text)
+		},
 	}
 	ran, err := agent.maybeRunReviewBeforeFix(context.Background(), request, nil, false, true)
 	if err != nil {
@@ -265,6 +280,22 @@ func TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation(t *testing.T) {
 	if !strings.Contains(provider.requests[0].Messages[0].Text, "Review the supplied source line by line") {
 		t.Fatalf("expected focused pre-fix bug hunt prompt, got %q", provider.requests[0].Messages[0].Text)
 	}
+	if session.LastReviewRun == nil || session.LastReviewRun.Trigger != reviewBeforeFixTrigger {
+		t.Fatalf("expected pre-fix review to be recorded, got %#v", session.LastReviewRun)
+	}
+	if len(emittedAssistant) != 0 {
+		t.Fatalf("expected pre-fix summary to use the persistent assistant emitter, got fallback emissions %#v", emittedAssistant)
+	}
+	combinedAssistant := strings.Join(emittedPersistentAssistant, "\n")
+	if !strings.Contains(combinedAssistant, "검토 결과:") || !strings.Contains(combinedAssistant, "Wrong return value") {
+		t.Fatalf("expected deterministic visible pre-fix summary before implementation, got %#v", emittedPersistentAssistant)
+	}
+	if !strings.Contains(combinedAssistant, "Build verification was not run") {
+		t.Fatalf("expected visible pre-fix summary to include non-blocking warnings, got %#v", emittedPersistentAssistant)
+	}
+	if !sessionHasVisiblePreFixReviewSummary(session, *session.LastReviewRun) {
+		t.Fatalf("expected visible pre-fix review summary to be stored in the session, got %#v", session.Messages)
+	}
 	latest := latestUserMessageText(session.Messages)
 	if !strings.Contains(latest, "수정 전에 리뷰를 완료") && !strings.Contains(latest, "Review-first pass completed") {
 		t.Fatalf("expected review feedback as latest user guidance, got %q", latest)
@@ -281,9 +312,6 @@ func TestReviewBeforeFixAddsReviewFeedbackBeforeImplementation(t *testing.T) {
 	}
 	if strings.Contains(latest, "Fixed by") {
 		t.Fatalf("pre-fix feedback should not describe required fixes as already applied: %q", latest)
-	}
-	if session.LastReviewRun == nil || session.LastReviewRun.Trigger != reviewBeforeFixTrigger {
-		t.Fatalf("expected pre-fix review to be recorded, got %#v", session.LastReviewRun)
 	}
 	if session.TaskState == nil || !strings.Contains(session.TaskState.PlanSummary, "pre-fix review findings") {
 		t.Fatalf("expected pre-fix review to prime task state, got %#v", session.TaskState)
@@ -315,8 +343,11 @@ func TestReviewBeforeFixDoesNotAlsoInjectLatestReviewFollowUp(t *testing.T) {
 		},
 	}
 	var progress []string
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
 	agent := &Agent{
-		Config:         DefaultConfig(root),
+		Config:         cfg,
 		Client:         &scriptedProviderClient{replies: []ChatResponse{{Message: Message{Role: "assistant", Text: "수정 지침을 확인했습니다."}}}},
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",
@@ -354,9 +385,6 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	mainProvider := &scriptedProviderClient{
-		replies: []ChatResponse{{Message: Message{Role: "assistant", Text: "should not be called"}}},
-	}
-	reviewer := &scriptedProviderClient{
 		replies: []ChatResponse{{
 			Message: Message{Role: "assistant", Text: strings.Join([]string{
 				"REVIEW_RESULT",
@@ -374,15 +402,16 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 		},
 	}
 	var progress []string
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
 	agent := &Agent{
-		Config:         DefaultConfig(root),
-		Client:         mainProvider,
-		ReviewerClient: reviewer,
-		ReviewerModel:  "reviewer-model",
-		Tools:          NewToolRegistry(),
-		Workspace:      Workspace{BaseRoot: root, Root: root},
-		Session:        session,
-		Store:          store,
+		Config:    cfg,
+		Client:    mainProvider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
 		EmitProgress: func(message string) {
 			progress = append(progress, message)
 		},
@@ -406,8 +435,11 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 			t.Fatalf("expected non-blocking reply to include %q, got %q", needle, reply)
 		}
 	}
-	if len(mainProvider.requests) != 0 {
-		t.Fatalf("implementation model should not run after non-blocking pre-fix review, got %d requests", len(mainProvider.requests))
+	if len(mainProvider.requests) != 1 {
+		t.Fatalf("only the main first-pass review should run after non-blocking pre-fix review, got %d requests", len(mainProvider.requests))
+	}
+	if !strings.Contains(mainProvider.requests[0].System, "structured review model") {
+		t.Fatalf("expected the single model call to be the main first-pass review, got %q", mainProvider.requests[0].System)
 	}
 	progressText := strings.Join(progress, "\n")
 	for _, want := range []string{
@@ -652,10 +684,75 @@ func TestPreFixSecurityReviewUsesSingleFallbackRole(t *testing.T) {
 	if plan.Strategy != "single" {
 		t.Fatalf("expected single strategy, got %#v", plan)
 	}
-	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "low" {
-		t.Fatalf("expected pre-fix fallback effort low, got %q", got)
+	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "xhigh" {
+		t.Fatalf("expected pre-fix fallback effort to preserve xhigh main effort, got %q", got)
 	}
 	if got := reviewRoleMaxTokensForRun(cfg, run); got != 2048 {
 		t.Fatalf("expected pre-fix max tokens cap, got %d", got)
+	}
+}
+
+func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "low"
+
+	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "high" {
+		t.Fatalf("review role should not inherit low main effort, got %q", got)
+	}
+
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "medium",
+		},
+	}
+	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "high" {
+		t.Fatalf("review role should raise medium configured effort to high, got %q", got)
+	}
+	if label, _ := reviewRoleModelLabelAndSource(cfg, configReviewHarness(cfg), "primary_reviewer"); !strings.Contains(label, "effort=high") {
+		t.Fatalf("review role label should show effective high effort, got %q", label)
+	}
+
+	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "deepseek",
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "xhigh",
+	}
+	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "xhigh" {
+		t.Fatalf("review role should preserve xhigh configured effort, got %q", got)
+	}
+}
+
+func TestFocusedPreFixBugHuntRaisesRoleEffortToHigh(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "deepseek",
+			Model:           "deepseek-v4-pro",
+			ReasoningEffort: "low",
+		},
+	}
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+	}
+
+	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "high" {
+		t.Fatalf("focused pre-fix bug hunt should raise low reviewer effort to high, got %q", got)
+	}
+	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
+		Provider:        "deepseek",
+		Model:           "deepseek-v4-pro",
+		ReasoningEffort: "xhigh",
+	}
+	if got := reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run); got != "xhigh" {
+		t.Fatalf("focused pre-fix bug hunt should preserve xhigh reviewer effort, got %q", got)
 	}
 }

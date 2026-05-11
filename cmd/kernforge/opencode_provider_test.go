@@ -144,7 +144,7 @@ func TestOpenCodeClientUsesMessagesForClaudeModels(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
-		if got := body["model"]; got != "claude-sonnet-4-6" {
+		if got := body["model"]; got != "claude-sonnet-4-7" {
 			t.Fatalf("model = %#v", got)
 		}
 		w.Header().Set("content-type", "application/json")
@@ -154,7 +154,7 @@ func TestOpenCodeClientUsesMessagesForClaudeModels(t *testing.T) {
 
 	client := NewOpenCodeClient(server.URL, "test-key")
 	resp, err := client.Complete(context.Background(), ChatRequest{
-		Model: "opencode/claude-sonnet-4-6",
+		Model: "opencode/claude-sonnet-4-7",
 		Messages: []Message{{
 			Role: "user",
 			Text: "hello",

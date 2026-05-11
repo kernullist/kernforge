@@ -557,12 +557,12 @@ func (rt *runtimeState) activateReviewModelRole(role string, provider string, mo
 		if err != nil {
 			return err
 		}
-		nextEffort = normalized
+		nextEffort, _ = reviewReasoningEffortOrDefaultForProvider(provider, normalized)
 	} else if sameProfileRoute(current.Provider, current.Model, current.BaseURL, provider, model, baseURL) {
-		nextEffort = normalizeReasoningEffort(current.ReasoningEffort)
+		nextEffort, _ = reviewReasoningEffortOrDefaultForProvider(provider, current.ReasoningEffort)
 	}
 	if nextEffort == "" {
-		nextEffort, defaultedEffort = reasoningEffortOrDefaultForProvider(provider, "")
+		nextEffort, defaultedEffort = reviewReasoningEffortOrDefaultForProvider(provider, "")
 	}
 	if reviewCfg.RoleModels == nil {
 		reviewCfg.RoleModels = map[string]ReviewModelConfig{}
@@ -580,9 +580,16 @@ func (rt *runtimeState) activateReviewModelRole(role string, provider string, mo
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
-	rt.printReasoningEffortDefaultNotice("review "+roleChoice.Label+" model", defaultedEffort)
+	rt.printReviewReasoningEffortDefaultNotice("review "+roleChoice.Label+" model", defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Review %s set: %s", roleChoice.Label, formatProviderModelEffortLabel(provider, model, nextEffort))))
 	return nil
+}
+
+func (rt *runtimeState) printReviewReasoningEffortDefaultNotice(target string, defaulted bool) {
+	if !defaulted || rt == nil || rt.writer == nil {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("review reasoning_effort was undefined; defaulted to high for "+target+"."))
 }
 
 func (rt *runtimeState) clearReviewModelInteractive() error {

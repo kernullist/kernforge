@@ -302,6 +302,20 @@ func toolCallResponse(name string, args map[string]any) ChatResponse {
 	}
 }
 
+func approvedReviewResponse(summary string) ChatResponse {
+	if strings.TrimSpace(summary) == "" {
+		summary = "no actionable findings"
+	}
+	return ChatResponse{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: approved",
+			"summary: " + summary,
+			"findings:",
+		}, "\n")},
+	}
+}
+
 func multiToolCallResponse(calls ...ToolCall) ChatResponse {
 	return ChatResponse{
 		Message: Message{
@@ -1967,6 +1981,106 @@ func TestPreFixVisibleReviewSummaryRequiresStructuredFindingID(t *testing.T) {
 	}
 }
 
+func TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary(t *testing.T) {
+	root := t.TempDir()
+	updatePlanTool := &staticTool{name: "update_plan", output: "planned"}
+	readFileTool := &staticTool{name: "read_file", output: "source excerpt"}
+	patchTool := &staticTool{name: "apply_patch", output: "patched"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-plan",
+						Name:      "update_plan",
+						Arguments: `{"items":[{"status":"in_progress","step":"코드 확인"}]}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-read",
+						Name:      "read_file",
+						Arguments: `{"path":"Source/Sample.cpp","start_line":1,"end_line":80}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					ToolCalls: []ToolCall{{
+						ID:        "call-patch",
+						Name:      "apply_patch",
+						Arguments: `{"patch":"*** Begin Patch\n*** Update File: Source/Sample.cpp\n@@\n-old\n+new\n*** End Patch"}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "수정했습니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해"})
+	session.LastReviewRun = &ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Source/Sample.cpp:10-40 검토하고 버그를 수정해",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Source:      "model",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Title:       "단일 처리 실패가 전체 열거를 중단합니다",
+			RequiredFix: "현재 항목만 건너뛰고 다음 항목을 계속 처리하세요.",
+		}},
+	}
+	summary := formatPreFixVisibleReviewSummary(Config{}, *session.LastReviewRun)
+	if !strings.Contains(summary, "검토 결과:") || !strings.Contains(summary, "RF-001") {
+		t.Fatalf("bad test summary: %q", summary)
+	}
+	session.AddMessage(Message{Role: "assistant", Text: summary})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(updatePlanTool, readFileTool, patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "수정했습니다." && reply != "done" {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if updatePlanTool.calls != 1 || readFileTool.calls != 1 || patchTool.calls != 1 {
+		t.Fatalf("expected plan/read/patch to execute once, got plan=%d read=%d patch=%d", updatePlanTool.calls, readFileTool.calls, patchTool.calls)
+	}
+	for _, req := range provider.requests {
+		if len(req.Messages) == 0 {
+			continue
+		}
+		last := req.Messages[len(req.Messages)-1]
+		if last.Role == "user" && strings.Contains(last.Text, "파일 쓰기/패치 도구를 호출하기 전에") {
+			t.Fatalf("stored visible pre-fix summary should avoid another summary retry, got %q", last.Text)
+		}
+	}
+}
+
 func TestAgentReportsTokenLimitWhenModelStopsWithEmptyResponse(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -3142,13 +3256,18 @@ func TestAgentBlocksWebResearchForLocalCodeRepair(t *testing.T) {
 			{Message: Message{Role: "assistant", Text: "로컬 소스 기준으로 검토를 계속했습니다."}},
 		},
 	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{approvedReviewResponse("no blocking code findings")},
+	}
 	agent := &Agent{
-		Config:    Config{},
-		Client:    provider,
-		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
-		Workspace: ws,
-		Session:   session,
-		Store:     store,
+		Config:         Config{},
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
 		MCP: &MCPManager{
 			servers: []*MCPClient{
 				{
@@ -3207,13 +3326,18 @@ func TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog(t *
 			{Message: Message{Role: "assistant", Text: "로컬 소스 근거로만 계속했습니다."}},
 		},
 	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{approvedReviewResponse("no blocking code findings")},
+	}
 	agent := &Agent{
-		Config:    Config{},
-		Client:    provider,
-		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
-		Workspace: ws,
-		Session:   session,
-		Store:     store,
+		Config:         Config{},
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
 	}
 
 	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
@@ -3258,13 +3382,18 @@ func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
 			{Message: Message{Role: "assistant", Text: "pre-write review 경고를 로컬 소스 기준으로 다시 수정했습니다."}},
 		},
 	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{approvedReviewResponse("no blocking code findings")},
+	}
 	agent := &Agent{
-		Config:    Config{},
-		Client:    provider,
-		Tools:     NewToolRegistry(webTool, NewReadFileTool(ws)),
-		Workspace: ws,
-		Session:   session,
-		Store:     store,
+		Config:         Config{},
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
 		MCP: &MCPManager{
 			servers: []*MCPClient{
 				{
@@ -3295,6 +3424,175 @@ func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
 		(!strings.Contains(lastMessage.Text, "local code review or repair request") &&
 			!strings.Contains(lastMessage.Text, "로컬 코드 리뷰/수정 작업")) {
 		t.Fatalf("expected local-code web block guidance after pre-write feedback, got %#v", lastMessage)
+	}
+}
+
+func TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cfg := Config{}
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: main model found a local correctness issue",
+				"findings:",
+				"- severity: high",
+				"  title: Missing path guard",
+				"  category: correctness",
+				"  path: SampleApp/SampleWorker/PathConverter.cpp",
+				"  evidence: ConvertPath returns 0 without validating the input path",
+				"  impact: invalid paths can be accepted",
+				"  required_fix: validate the path before returning success",
+				"  test_recommendation: add an invalid path test",
+			}, "\n")}},
+			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "Microsoft Learn FindFirstVolume"}),
+			{Message: Message{Role: "assistant", Text: "로컬 소스 기준으로 다시 진행했습니다."}},
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: "I cannot produce a structured review from the supplied context."},
+		}},
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "weak-reviewer",
+		Tools:          NewToolRegistry(webTool, NewReadFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "리뷰어 게이트") || strings.Contains(reply, "코드 수정은 적용하지 않았습니다") {
+		t.Fatalf("expected implementation loop to continue after weak cross reviewer, got %q", reply)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("main model should run first-pass review and implementation, got %d requests", len(provider.requests))
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("web research should still be blocked in local repair, got %d calls", webTool.calls)
+	}
+	if session.LastReviewRun == nil || session.LastReviewRun.Gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected main first-pass review findings to drive repair, got %#v", session.LastReviewRun)
+	}
+	if reviewRunHasRequiredReviewerFailure(*session.LastReviewRun) {
+		t.Fatalf("weak pre-fix cross reviewer should not be a required reviewer failure, got %#v", session.LastReviewRun.Findings)
+	}
+}
+
+func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	path := filepath.Join(root, "main.cpp")
+	before := "int main()\n{\n    return 0;\n}\n"
+	after := "int main()\n{\n    return 1;\n}\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	cfg := Config{}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	webTool := &staticTool{
+		name:   "mcp__web_research__search_web",
+		output: "external source",
+	}
+	planResponse := toolCallResponse("update_plan", map[string]any{"items": []any{
+		map[string]any{"step": "Inspect main.cpp", "status": "completed"},
+		map[string]any{"step": "Edit main.cpp", "status": "in_progress"},
+	}})
+	planResponse.StopReason = "tool_calls"
+	writeResponse := toolCallResponse("write_file", map[string]any{"path": "main.cpp", "content": after})
+	writeResponse.Message.Text = "I will update main.cpp."
+	writeResponse.StopReason = "tool_calls"
+	webResponse := toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "Microsoft Learn GetVolumePathNamesForVolumeName"})
+	webResponse.StopReason = "tool_calls"
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "1. Inspect main.cpp\n2. Update main.cpp\n3. Report the blocked or completed result"}},
+			planResponse,
+			writeResponse,
+			webResponse,
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "APPROVED\nThe execution plan is sound."}},
+			{Message: Message{Role: "assistant", Text: "I cannot produce a structured review from the supplied edit proposal."}},
+		},
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "weak-reviewer",
+		Session:        session,
+		Store:          store,
+	}
+	reviewCalls := 0
+	ws.UpdatePlan = func(items []PlanItem) {
+		_ = items
+	}
+	ws.ReviewEdit = func(ctx context.Context, preview EditPreview) error {
+		reviewCalls++
+		return agent.reviewProposedEdit(ctx, preview)
+	}
+	agent.Workspace = ws
+	agent.Tools = NewToolRegistry(NewUpdatePlanTool(ws), NewWriteFileTool(ws), webTool)
+
+	reply, err := agent.Reply(context.Background(), "update main.cpp")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reviewCalls == 0 {
+		t.Fatalf("expected pre-write review hook to run")
+	}
+	if !strings.Contains(reply, "reviewer gate") || !strings.Contains(reply, "No code changes were applied") {
+		t.Fatalf("expected reviewer-gate stop reply, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("implementation model should not get a retry turn after pre-write reviewer failure, got %d requests", len(provider.requests))
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("web research should not run after pre-write reviewer failure, got %d calls", webTool.calls)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != before {
+		t.Fatalf("write should be blocked before touching disk, got %q", string(data))
+	}
+	if session.LastReviewRun == nil || session.LastReviewRun.Trigger != "pre_write" {
+		t.Fatalf("expected pre-write review run, got %#v", session.LastReviewRun)
+	}
+	if !reviewRunHasRequiredReviewerFailure(*session.LastReviewRun) {
+		t.Fatalf("expected required reviewer failure marker, got %#v", session.LastReviewRun.Findings)
 	}
 }
 
