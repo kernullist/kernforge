@@ -61,7 +61,7 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 4096
 		behavior.RetryReviewTokens = 2500
-		behavior.OmissionRetryBudget = 2
+		behavior.OmissionRetryBudget = 1
 		behavior.SchemaStrictness = "strict"
 		behavior.ToolCallRecoveryPolicy = "bounded_retry"
 		behavior.PatchFormatRisk = "high"

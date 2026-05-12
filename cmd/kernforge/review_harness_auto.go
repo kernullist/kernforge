@@ -47,7 +47,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		NoModel:         !postChangeReviewHasDedicatedModel(a),
 		AutoTriggered:   true,
 		AutoFollowUp:    reviewCfg.AutoFollowUp,
-		MaxContextChars: 60000,
+		MaxContextChars: reviewFocusedMaxContextChars,
 	})
 	if err != nil {
 		return true, false, "", "", err
@@ -99,6 +99,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	}
 	if a.EmitProgress != nil {
 		a.EmitProgress(localizedText(a.Config, "Running automatic pre-write review...", "자동 쓰기 전 리뷰를 실행합니다..."))
+		a.EmitProgress(localizedText(a.Config, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
 	}
 	rt := a.reviewHarnessRuntime(root)
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
@@ -113,7 +114,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		AutoFollowUp:    "none",
 		EditProposals:   editProposalsForPreview(preview),
 		RepairFindings:  preWriteRepairObligationsFromLastReview(a.Session),
-		MaxContextChars: 60000,
+		MaxContextChars: reviewPreWriteMaxContextChars,
 	})
 	if err != nil {
 		if a.EmitProgress != nil {
@@ -126,30 +127,44 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
 	if needsRevision && reviewRunHasRequiredReviewerFailure(run) {
 		if a.EmitProgress != nil {
+			a.emitPreWriteFinalVisibleReviewSummary(run, false)
+			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
 			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review could not use the required reviewer. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰어 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
 		}
 		return fmt.Errorf("%w: %s", ErrReviewerGateUnavailable, formatReviewerGateUnavailableToolError(run))
 	}
 	if needsRevision {
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review found blockers. Asking the model to revise...", "자동 쓰기 전 리뷰에서 차단 finding을 발견했습니다. 모델에게 수정을 요청합니다..."))
+			a.emitPreWriteFinalVisibleReviewSummary(run, false)
+			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
+			a.EmitProgress(localizedText(a.Config, "Review model returned required changes. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정 필수 항목을 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
 		}
 		return fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\n%s", formatPreWriteReviewFeedback(run))
 	}
 	if warningBlockers := preWriteReviewBlockingWarningFindings(run); len(warningBlockers) > 0 {
 		if a.EmitProgress != nil {
-			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review found actionable warnings. Asking the model to revise...", "자동 쓰기 전 리뷰에서 수정이 필요한 경고를 발견했습니다. 모델에게 수정을 요청합니다..."))
+			a.emitPreWriteFinalVisibleReviewSummary(run, false)
+			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
+			a.EmitProgress(localizedText(a.Config, "Review model returned actionable warnings. Sending the result back to the main model for a revised patch.", "리뷰 모델이 수정이 필요한 경고를 반환했습니다. 메인 모델에 결과를 전달해 패치를 다시 작성하게 합니다."))
 		}
 		return fmt.Errorf("automatic pre-write review blocked this edit on actionable warnings before writing:\n\n%s", formatPreWriteReviewWarningBlockFeedback(run, warningBlockers))
 	}
 	if a.EmitProgress != nil {
-		if len(run.Gate.WarningFindings) > 0 {
-			a.EmitProgress(formatPreWriteReviewWarningProgress(a.Config, run))
-		} else {
-			a.EmitProgress(localizedText(a.Config, "Automatic pre-write review completed.", "자동 쓰기 전 리뷰가 완료되었습니다."))
-		}
+		a.emitPreWriteFinalVisibleReviewSummary(run, true)
+		a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, true))
 	}
 	return nil
+}
+
+func (a *Agent) emitPreWriteFinalVisibleReviewSummary(run ReviewRun, proceedToPreview bool) {
+	if a == nil {
+		return
+	}
+	summary := formatPreWriteFinalVisibleReviewSummary(a.Config, run, proceedToPreview)
+	if strings.TrimSpace(summary) == "" {
+		return
+	}
+	a.emitPersistentAssistantSummary(summary)
 }
 
 func preWriteRepairObligationsFromLastReview(session *Session) []ReviewFinding {
@@ -174,6 +189,18 @@ func preFixRepairObligationFindings(run ReviewRun) []ReviewFinding {
 			continue
 		}
 		if !preWritePreFixWarningShouldBeRepairObligation(finding) {
+			continue
+		}
+		out = append(out, finding)
+	}
+	return out
+}
+
+func normalizeReviewFindingCopies(findings []ReviewFinding) []ReviewFinding {
+	out := make([]ReviewFinding, 0, len(findings))
+	for _, finding := range findings {
+		finding.Normalize()
+		if strings.TrimSpace(firstNonBlankString(finding.ID, finding.Title, finding.Evidence, finding.Impact, finding.RequiredFix, finding.TestRecommendation)) == "" {
 			continue
 		}
 		out = append(out, finding)
@@ -596,6 +623,257 @@ func formatPreWriteReviewWarningProgress(cfg Config, run ReviewRun) string {
 		return strings.TrimSpace(fmt.Sprintf("자동 쓰기 전 리뷰가 경고와 함께 완료되었습니다. 경고 %d개. %s", len(run.Gate.WarningFindings), suffix))
 	}
 	return strings.TrimSpace(fmt.Sprintf("Automatic pre-write review completed with warnings. warnings=%d. %s", len(run.Gate.WarningFindings), suffix))
+}
+
+func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPreview bool) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	blockerCount := len(run.Gate.BlockingFindings)
+	warningCount := len(run.Gate.WarningFindings)
+	content := preWriteReviewFinalContentProgress(cfg, run)
+	report := preWriteReviewReportProgressSuffix(cfg, run)
+	if korean {
+		action := "diff preview로 진행하지 않습니다."
+		if proceedToPreview {
+			action = "diff preview로 진행합니다."
+		}
+		return strings.TrimSpace(fmt.Sprintf("자동 쓰기 전 리뷰가 완료되었습니다. 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
+	}
+	action := "Not proceeding to diff preview."
+	if proceedToPreview {
+		action = "Proceeding to diff preview."
+	}
+	return strings.TrimSpace(fmt.Sprintf("Automatic pre-write review completed. Final review result: %s (blockers=%d, warnings=%d). %s %s%s", verdict, blockerCount, warningCount, content, action, report))
+}
+
+func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	var parts []string
+	summary := strings.TrimSpace(run.Result.Summary)
+	if summary != "" {
+		if korean {
+			parts = append(parts, "요약: "+compactPromptSection(summary, 180))
+		} else {
+			parts = append(parts, "summary: "+compactPromptSection(summary, 180))
+		}
+	}
+	findings := preWriteReviewProgressFindings(run)
+	titles := reviewProgressFindingTitles(findings, 3)
+	if len(titles) > 0 {
+		if korean {
+			parts = append(parts, "주요 finding: "+strings.Join(titles, " | "))
+		} else {
+			parts = append(parts, "key findings: "+strings.Join(titles, " | "))
+		}
+	} else if summary == "" {
+		if korean {
+			parts = append(parts, "주요 finding: 없음")
+		} else {
+			parts = append(parts, "key findings: none")
+		}
+	}
+	if len(parts) == 0 {
+		if korean {
+			return "검토 내용: 주요 finding 없음."
+		}
+		return "Review content: no key findings."
+	}
+	if korean {
+		return "검토 내용: " + strings.Join(parts, " | ") + "."
+	}
+	return "Review content: " + strings.Join(parts, " | ") + "."
+}
+
+func preWriteReviewProgressFindings(run ReviewRun) []ReviewFinding {
+	ids := append(append([]string(nil), run.Gate.BlockingFindings...), run.Gate.WarningFindings...)
+	if len(ids) > 0 {
+		return reviewProgressFindingsByID(run, ids, 3)
+	}
+	if info := reviewCLIInfoFindings(run); len(info) > 0 {
+		return limitReviewFindings(info, 3)
+	}
+	return limitReviewFindings(run.Findings, 3)
+}
+
+func preWriteReviewReportProgressSuffix(cfg Config, run ReviewRun) string {
+	if len(run.ArtifactRefs) == 0 {
+		return ""
+	}
+	if reviewRunPrefersKorean(cfg, run) {
+		return " 보고서: " + run.ArtifactRefs[0]
+	}
+	return " report: " + run.ArtifactRefs[0]
+}
+
+func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedToPreview bool) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	var b strings.Builder
+	if korean {
+		b.WriteString("최종 검토 결과:")
+		fmt.Fprintf(&b, "\n- 판정: %s", verdict)
+		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
+		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
+		if proceedToPreview {
+			b.WriteString("\n- 진행: diff preview로 진행합니다.")
+		} else {
+			b.WriteString("\n- 진행: diff preview로 진행하지 않습니다.")
+		}
+		if strings.TrimSpace(run.Result.Summary) != "" {
+			fmt.Fprintf(&b, "\n- 요약: %s", compactPromptSection(run.Result.Summary, 260))
+		}
+	} else {
+		b.WriteString("Final review result:")
+		fmt.Fprintf(&b, "\n- Verdict: %s", verdict)
+		fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
+		fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
+		if proceedToPreview {
+			b.WriteString("\n- Next: proceed to diff preview.")
+		} else {
+			b.WriteString("\n- Next: do not proceed to diff preview.")
+		}
+		if strings.TrimSpace(run.Result.Summary) != "" {
+			fmt.Fprintf(&b, "\n- Summary: %s", compactPromptSection(run.Result.Summary, 260))
+		}
+	}
+	if len(run.RepairFindings) > 0 {
+		if korean {
+			b.WriteString("\n\n수정 확인 대상:")
+		} else {
+			b.WriteString("\n\nRepair targets checked:")
+		}
+		for _, finding := range limitReviewFindings(run.RepairFindings, 8) {
+			writePreWriteVisibleRepairTarget(&b, finding, korean)
+		}
+	}
+	if korean {
+		if len(run.RepairFindings) > 0 {
+			b.WriteString("\n\n남은 검토 항목:")
+		} else {
+			b.WriteString("\n\n검토 항목:")
+		}
+	} else {
+		if len(run.RepairFindings) > 0 {
+			b.WriteString("\n\nRemaining review items:")
+		} else {
+			b.WriteString("\n\nReview items:")
+		}
+	}
+	findings := preWriteReviewProgressFindings(run)
+	if len(findings) == 0 {
+		if korean {
+			b.WriteString("\n- 주요 finding 없음.")
+		} else {
+			b.WriteString("\n- No key findings.")
+		}
+	} else {
+		for _, finding := range limitReviewFindings(findings, 6) {
+			writePreWriteVisibleFinding(&b, finding, korean)
+		}
+	}
+	if len(run.ArtifactRefs) > 0 {
+		if korean {
+			fmt.Fprintf(&b, "\n\n리뷰 보고서: %s", run.ArtifactRefs[0])
+		} else {
+			fmt.Fprintf(&b, "\n\nReview report: %s", run.ArtifactRefs[0])
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding, korean bool) {
+	finding.Normalize()
+	id := valueOrDefault(finding.ID, "RF")
+	severity := valueOrDefault(finding.Severity, "unknown")
+	category := valueOrDefault(finding.Category, "general")
+	title := compactPromptSection(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"), 220)
+	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
+	if strings.TrimSpace(finding.Path) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 코드 위치: %s", compactPromptSection(finding.Path, 220))
+		} else {
+			fmt.Fprintf(b, "\n  - Code location: %s", compactPromptSection(finding.Path, 220))
+		}
+	}
+	if strings.TrimSpace(finding.Symbol) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 심볼: %s", compactPromptSection(finding.Symbol, 180))
+		} else {
+			fmt.Fprintf(b, "\n  - Symbol: %s", compactPromptSection(finding.Symbol, 180))
+		}
+	}
+	if strings.TrimSpace(finding.Evidence) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 문제: %s", compactPromptSection(finding.Evidence, 300))
+		} else {
+			fmt.Fprintf(b, "\n  - Problem: %s", compactPromptSection(finding.Evidence, 300))
+		}
+	}
+	if strings.TrimSpace(finding.Impact) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 영향: %s", compactPromptSection(finding.Impact, 240))
+		} else {
+			fmt.Fprintf(b, "\n  - Impact: %s", compactPromptSection(finding.Impact, 240))
+		}
+	}
+	if strings.TrimSpace(finding.RequiredFix) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 수정 기준: %s", compactPromptSection(finding.RequiredFix, 300))
+		} else {
+			fmt.Fprintf(b, "\n  - Required fix: %s", compactPromptSection(finding.RequiredFix, 300))
+		}
+	}
+	if strings.TrimSpace(finding.TestRecommendation) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 확인 방법: %s", compactPromptSection(finding.TestRecommendation, 240))
+		} else {
+			fmt.Fprintf(b, "\n  - Verification: %s", compactPromptSection(finding.TestRecommendation, 240))
+		}
+	}
+}
+
+func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
+	finding.Normalize()
+	id := valueOrDefault(finding.ID, "RF")
+	severity := valueOrDefault(finding.Severity, "unknown")
+	category := valueOrDefault(finding.Category, "general")
+	title := compactPromptSection(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"), 220)
+	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
+	if strings.TrimSpace(finding.Path) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 경로: %s", compactPromptSection(finding.Path, 220))
+		} else {
+			fmt.Fprintf(b, "\n  - Path: %s", compactPromptSection(finding.Path, 220))
+		}
+	}
+	if strings.TrimSpace(finding.Evidence) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 근거: %s", compactPromptSection(finding.Evidence, 260))
+		} else {
+			fmt.Fprintf(b, "\n  - Evidence: %s", compactPromptSection(finding.Evidence, 260))
+		}
+	}
+	if strings.TrimSpace(finding.Impact) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 영향: %s", compactPromptSection(finding.Impact, 220))
+		} else {
+			fmt.Fprintf(b, "\n  - Impact: %s", compactPromptSection(finding.Impact, 220))
+		}
+	}
+	if strings.TrimSpace(finding.RequiredFix) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 조치: %s", compactPromptSection(finding.RequiredFix, 260))
+		} else {
+			fmt.Fprintf(b, "\n  - Fix: %s", compactPromptSection(finding.RequiredFix, 260))
+		}
+	}
+	if strings.TrimSpace(finding.TestRecommendation) != "" {
+		if korean {
+			fmt.Fprintf(b, "\n  - 테스트: %s", compactPromptSection(finding.TestRecommendation, 220))
+		} else {
+			fmt.Fprintf(b, "\n  - Test: %s", compactPromptSection(finding.TestRecommendation, 220))
+		}
+	}
 }
 
 func limitReviewFindings(findings []ReviewFinding, limit int) []ReviewFinding {

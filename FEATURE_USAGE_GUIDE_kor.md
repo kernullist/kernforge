@@ -794,19 +794,20 @@ review artifact:
 3. review role별 모델을 따로 설정할 수 있고, 추가 모델이 유리한 review인데 설정이 빠져 있으면 조용히 넘어가지 않고 UX 안내를 남긴다.
 4. 명시 timeout policy가 없으면 model reviewer 요청은 bounded timeout을 사용한다. 긴 preflight 대기로 전체 턴을 붙잡기보다 빠르게 실패하고 다음 recovery path로 넘어가는 쪽을 우선한다.
 5. `@file:line-line 리뷰해줘` 같은 자연어 리뷰 요청은 `/review selection`으로 라우팅하고, focused review-and-fix 요청은 먼저 리뷰를 실행한 뒤 최신 finding을 기준으로 repair 흐름을 이어간다.
-6. 자동 쓰기 전 리뷰는 문법적으로 유효한 edit preview가 나온 뒤 실제 파일 쓰기 전에 실행하고, 자동 변경 후 리뷰는 changed path가 생긴 뒤 실행한다.
-7. service, SCM, driver, 민감 경로 신호는 `security` reviewer role을 선택한다. `false-positive` role은 detection, telemetry, scan, spoofing, evasion-quality surface에만 붙인다.
-8. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 role과 provider route를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다.
-9. 단순 exact edit은 `apply_edit_proposal`을 사용할 수 있다. 이 경로는 file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 기록한 뒤 write한다. `apply_patch`는 복잡한 hunk-level fallback으로 남긴다.
-10. runtime gate freshness는 review, patch transaction, verification, completion audit, final-answer review를 연결한다. stale review coverage나 waiver 없는 blocker는 `/review`, verification, 표시된 `next_command`가 장부를 회복할 때까지 final answer, 명시적 git write, MCP write-side response, completion audit readiness를 막거나 경고한다.
-11. invalid patch recovery는 흔한 wrapper 문제를 정규화하고 반복 patch signature를 기록해, 같은 malformed patch를 재제출하는 대신 target-file context를 다시 읽게 한다.
-12. provider behavior는 review token cap, omission retry budget, schema strictness, recovery prompt를 결정한다. weak 또는 불완전한 high-severity model finding은 구체적인 path 또는 symbol, evidence, impact, required fix를 모두 갖추지 못하면 evidence-gap warning으로 낮춘다.
-13. 수정 전 리뷰 finding은 edit tool 실행 전에 사용자에게 먼저 노출된다. repair turn에 구조화된 RF 항목이 있으면 Kernforge가 implementation model 시작 전에 해당 ID와 조치 방향을 담은 deterministic `검토 결과:` 요약을 먼저 출력하고 세션에 저장한다. 이후에도 visible summary가 없으면 edit tool 실행 전 가드가 다시 막는다.
-14. 로컬 코드 리뷰/수리 턴은 로컬 소스 근거에 머문다. 사용자가 외부 리서치를 명시적으로 요청하지 않는 한 web/search/browser MCP tool은 차단된다.
-15. 명시적 수정 흐름에서는 complete high-severity finding과 actionable medium correctness, stability, performance finding이 security finding이 아니어도 repair gate를 막는다. low-severity style, formatting, maintainability finding은 reviewer가 명시적으로 blocker라고 표시하지 않는 한 수정 전 리뷰에서는 warning으로 유지한다.
-16. pre-write review는 build/test verification gap을 edit preview 차단 사유가 아니라 edit 이후 검증 의무로 취급한다. "검증이 생략됨"만 말하는 warning은 계속 보이지만 같은 patch를 다시 쓰게 만들지는 않는다. 다만 Allman brace, indentation 같은 patch-local style 문제는 실제 쓰기 전에 고칠 수 있으므로 pre-write에서 차단한다.
-17. Claude Code CLI 기본 선택지는 현재 Claude family version을 표시하지만, 실제 CLI 실행에는 `sonnet`, `opus`, `haiku` 같은 안전한 alias를 넘긴다. `/review`, 자연어 리뷰, 수정 전 repair check는 main-first로 동작한다. active main model이 로컬 evidence로 첫 구조화 리뷰를 만들고, 별도 review role이 설정돼 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 다시 본다. cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질로 끝나도 run은 degraded 상태로 표시될 뿐, main review finding 보고나 repair loop 시작 자체를 막지는 않는다.
-18. common review role은 기본적으로 최소 `effort=high`를 사용하고, 저장된 `low`/`medium` 값도 reviewer 요청을 만들 때 `high`로 올린다. focused pre-fix bug-hunt review도 이 최소값을 유지한다. pre-write review는 여전히 hard edit gate다. 실제 edit preview가 생긴 뒤에는 필수 main/cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고, Kernforge는 파일을 건드리기 전에 reviewer route 문제를 보고한다. 이때도 implementation model에게 재시도나 웹 근거 수집을 시키지 않는다.
+6. focused review 요청은 더 작은 evidence/prompt budget을 쓴다. 자동 pre-write review는 diff-first로 동작해서 proposed diff, edit proposal, 필수 repair finding을 넓은 파일 재수집보다 먼저 싣는다.
+7. 자동 쓰기 전 리뷰는 문법적으로 유효한 edit preview가 나온 뒤 실제 파일 쓰기 전에 실행하고, 자동 변경 후 리뷰는 changed path가 생긴 뒤 실행한다.
+8. service, SCM, driver, 민감 경로 신호는 `security` reviewer role을 선택한다. `false-positive` role은 detection, telemetry, scan, spoofing, evasion-quality surface에만 붙인다.
+9. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 role과 provider route를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다. 또한 각 모델 호출 전에 main/cross 단계, context mode, retry budget, soft timeout을 출력한다.
+10. 단순 exact edit은 `apply_edit_proposal`을 사용할 수 있다. 이 경로는 file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 기록한 뒤 write한다. `apply_patch`는 복잡한 hunk-level fallback으로 남긴다.
+11. runtime gate freshness는 review, patch transaction, verification, completion audit, final-answer review를 연결한다. stale review coverage나 waiver 없는 blocker는 `/review`, verification, 표시된 `next_command`가 장부를 회복할 때까지 final answer, 명시적 git write, MCP write-side response, completion audit readiness를 막거나 경고한다.
+12. invalid patch recovery는 흔한 wrapper 문제를 정규화하고 반복 patch signature를 기록해, 같은 malformed patch를 재제출하는 대신 target-file context를 다시 읽게 한다.
+13. provider behavior는 review token cap, omission retry budget, schema strictness, recovery prompt를 결정한다. weak 또는 불완전한 high-severity model finding은 구체적인 path 또는 symbol, evidence, impact, required fix를 모두 갖추지 못하면 evidence-gap warning으로 낮춘다. DeepSeek review omission retry는 여러 분짜리 strict-review 반복을 막기 위해 의도적으로 작게 제한한다.
+14. 수정 전 리뷰 finding은 edit tool 실행 전에 사용자에게 먼저 노출된다. repair turn에 구조화된 RF 항목이 있으면 Kernforge가 implementation model 시작 전에 해당 ID와 조치 방향을 담은 deterministic `검토 결과:` 요약을 먼저 출력하고 세션에 저장한다. 이후에도 visible summary가 없으면 edit tool 실행 전 가드가 다시 막는다.
+15. 로컬 코드 리뷰/수리 턴은 로컬 소스 근거에 머문다. 사용자가 외부 리서치를 명시적으로 요청하지 않는 한 web/search/browser MCP tool은 차단된다.
+16. 명시적 수정 흐름에서는 complete high-severity finding과 actionable medium correctness, stability, performance finding이 security finding이 아니어도 repair gate를 막는다. low-severity style, formatting, maintainability finding은 reviewer가 명시적으로 blocker라고 표시하지 않는 한 수정 전 리뷰에서는 warning으로 유지한다.
+17. pre-write review는 build/test verification gap을 edit preview 차단 사유가 아니라 edit 이후 검증 의무로 취급한다. "검증이 생략됨"만 말하는 warning은 계속 보이지만 같은 patch를 다시 쓰게 만들지는 않는다. 다만 Allman brace, indentation 같은 patch-local style 문제는 실제 쓰기 전에 고칠 수 있으므로 pre-write에서 차단한다.
+18. Claude Code CLI 기본 선택지는 현재 Claude family version을 표시하지만, 실제 CLI 실행에는 `sonnet`, `opus`, `haiku` 같은 안전한 alias를 넘긴다. `/review`, 자연어 리뷰, 수정 전 repair check는 main-first로 동작한다. active main model이 로컬 evidence로 첫 구조화 리뷰를 만들고, 별도 review role이 설정돼 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 다시 본다. cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질로 끝나도 run은 degraded 상태로 표시될 뿐, main review finding 보고나 repair loop 시작 자체를 막지는 않는다.
+19. common review role은 기본적으로 최소 `effort=high`를 사용하고, 저장된 `low`/`medium` 값도 reviewer 요청을 만들 때 `high`로 올린다. focused pre-fix bug-hunt review도 이 최소값을 유지한다. pre-write review는 여전히 hard edit gate다. 실제 edit preview가 생긴 뒤에는 필수 main/cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고, Kernforge는 파일을 건드리기 전에 reviewer route 문제를 보고한다. 이때도 implementation model에게 재시도나 웹 근거 수집을 시키지 않는다.
 
 ### 2.9 Tracked Feature Workflow
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,18 +177,31 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
 	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, "primary_reviewer", *run))
+	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles)
+	phaseTotal := 1
+	if hasCrossReviewer {
+		phaseTotal = 2
+	}
 	prepareMainFirstReviewModelPlan(run, mainLabel)
 	mainPrompt := buildReviewModelPrompt(rt.cfg, *run, "primary_reviewer")
+	emitReviewModelPhaseBudgetProgress(rt, *run, "main", 1, phaseTotal, "primary_reviewer", mainLabel)
+	emitReviewModelMainFirstPassProgress(rt)
 	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, "primary_reviewer", "main", mainPrompt, mainErr)
 	reviewerRuns = append(reviewerRuns, mainRun)
 	findings = append(findings, mainFindings...)
 
-	if crossClient, crossModel, crossLabel, crossRole, _, ok := reviewCrossReviewerClient(rt, *run, originalRequiredRoles); ok {
+	if hasCrossReviewer {
+		emitReviewModelCrossHandoffProgress(rt)
 		registerCrossReviewerInModelPlan(run, crossRole, crossLabel)
 		crossPrompt := buildReviewModelCrossCheckPrompt(rt.cfg, *run, crossRole, mainRaw, findings)
+		emitReviewModelPhaseBudgetProgress(rt, *run, "cross", 2, phaseTotal, crossRole, crossLabel)
+		emitReviewModelCrossCheckProgress(rt)
 		crossFindings, crossRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, crossClient, crossModel, crossLabel, crossRole, "cross", crossPrompt, nil)
 		reviewerRuns = append(reviewerRuns, crossRun)
 		findings = append(findings, crossFindings...)
+		emitReviewModelCrossResultHandoffProgress(rt, crossRun)
+	} else {
+		emitReviewModelNoCrossReviewerProgress(rt)
 	}
 	assignReviewFindingIDs(findings)
 	return findings, reviewerRuns
@@ -223,23 +237,29 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	promptPath, rawPath := reviewRoleArtifactPaths(root, run.ID, role)
 	_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
 	reviewerRun.PromptPath = promptPath
-	emitReviewModelRequestProgress(rt, role, label)
-	resp, err := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
-		Model:           model,
-		System:          reviewModelSystemPrompt(rt.cfg, *run, role),
-		Messages:        []Message{{Role: "user", Text: prompt}},
-		MaxTokens:       reviewRoleMaxTokensForRoleRun(rt.cfg, role, *run),
-		Temperature:     0.1,
-		ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
-		WorkingDir:      root,
+	emitReviewModelRequestProgress(rt, role, label, reviewerRun.Kind)
+	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, *run, reviewerRun)
+	emitReviewModelCallBudgetProgress(rt, *run, reviewerRun, softTimeout)
+	callCtx, cancelCall := reviewModelCallContext(ctx, softTimeout)
+	resp, err := completeReviewModelTurnWithProgress(callCtx, rt, reviewerRun, func(callCtx context.Context) (ChatResponse, error) {
+		return rt.agent.completeModelTurnWithClient(callCtx, client, ChatRequest{
+			Model:           model,
+			System:          reviewModelSystemPrompt(rt.cfg, *run, role),
+			Messages:        []Message{{Role: "user", Text: prompt}},
+			MaxTokens:       reviewRoleMaxTokensForRoleRun(rt.cfg, role, *run),
+			Temperature:     0.1,
+			ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
+			WorkingDir:      root,
+		})
 	})
+	cancelCall()
 	reviewerRun.FinishedAt = time.Now()
 	if err != nil {
 		reviewerRun.Status = "failed"
 		reviewerRun.ModelQuality = reviewModelQualityFailed
-		reviewerRun.Error = err.Error()
+		reviewerRun.Error = reviewModelCallErrorText(err, softTimeout)
 		run.Result.Degraded = true
-		run.Result.DegradedReason = "review model failed: " + err.Error()
+		run.Result.DegradedReason = "review model failed: " + reviewerRun.Error
 		emitReviewModelResultProgress(rt, reviewerRun, 0)
 		return nil, reviewerRun, ""
 	}
@@ -274,25 +294,31 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		roleFindings[i].Source = "model"
 	}
 	run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
-	omissionRetryBudget := reviewRoleOmissionRetryBudgetForRun(rt.cfg, role)
+	omissionRetryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, role, *run, reviewerRun.Kind)
 	omissionRetryFailed := false
 	for attempt := 1; attempt <= omissionRetryBudget && reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality); attempt++ {
-		emitReviewModelRetryProgress(rt, role, label)
+		emitReviewModelRetryProgress(rt, role, label, attempt, omissionRetryBudget)
 		retryPrompt := buildReviewModelOmissionRetryPrompt(rt.cfg, *run, role)
 		retryPromptPath, retryRawPath := reviewRoleAttemptArtifactPaths(root, run.ID, role, attempt)
 		_ = os.WriteFile(retryPromptPath, []byte(retryPrompt), 0o644)
-		retryResp, retryErr := rt.agent.completeModelTurnWithClient(ctx, client, ChatRequest{
-			Model:           model,
-			System:          reviewModelSystemPrompt(rt.cfg, *run, role),
-			Messages:        []Message{{Role: "user", Text: retryPrompt}},
-			MaxTokens:       reviewRoleRetryMaxTokensForRoleRun(rt.cfg, role, *run),
-			Temperature:     0.05,
-			ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
-			WorkingDir:      root,
+		retryRun := reviewerRun
+		retryRun.PromptPath = retryPromptPath
+		retryCtx, cancelRetry := reviewModelCallContext(ctx, softTimeout)
+		retryResp, retryErr := completeReviewModelTurnWithProgress(retryCtx, rt, retryRun, func(callCtx context.Context) (ChatResponse, error) {
+			return rt.agent.completeModelTurnWithClient(callCtx, client, ChatRequest{
+				Model:           model,
+				System:          reviewModelSystemPrompt(rt.cfg, *run, role),
+				Messages:        []Message{{Role: "user", Text: retryPrompt}},
+				MaxTokens:       reviewRoleRetryMaxTokensForRoleRun(rt.cfg, role, *run),
+				Temperature:     0.05,
+				ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
+				WorkingDir:      root,
+			})
 		})
+		cancelRetry()
 		reviewerRun.FinishedAt = time.Now()
 		if retryErr != nil {
-			reviewerRun.Error = "omission retry failed: " + retryErr.Error()
+			reviewerRun.Error = "omission retry failed: " + reviewModelCallErrorText(retryErr, softTimeout)
 			omissionRetryFailed = true
 			break
 		}
@@ -784,12 +810,30 @@ func reviewProgressPathPreview(paths []string, limit int) string {
 	return strings.Join(out, ", ")
 }
 
-func emitReviewModelRequestProgress(rt *runtimeState, role string, label string) {
+func emitReviewModelRequestProgress(rt *runtimeState, role string, label string, kind string) {
 	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
 		return
 	}
 	mainLabel := reviewMainModelLabel(rt.cfg)
 	roleName := reviewRoleProgressName(role)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "main":
+		message := fmt.Sprintf(
+			localizedText(rt.cfg, "Main model first-pass review request: %s.", "메인 모델 1차 리뷰 요청: %s."),
+			label,
+		)
+		rt.agent.EmitProgress(message)
+		return
+	case "cross":
+		message := fmt.Sprintf(
+			localizedText(rt.cfg, "Review model cross-check request: %s -> %s (main: %s).", "리뷰 모델 교차 검토 요청: %s -> %s (메인: %s)."),
+			roleName,
+			label,
+			mainLabel,
+		)
+		rt.agent.EmitProgress(message)
+		return
+	}
 	message := fmt.Sprintf(
 		localizedText(rt.cfg, "Review model request: %s -> %s (main: %s).", "리뷰 모델 요청: %s -> %s (메인: %s)."),
 		roleName,
@@ -799,16 +843,107 @@ func emitReviewModelRequestProgress(rt *runtimeState, role string, label string)
 	rt.agent.EmitProgress(message)
 }
 
+func emitReviewModelPhaseBudgetProgress(rt *runtimeState, run ReviewRun, kind string, phase int, total int, role string, label string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	reviewerRun := ReviewReviewerRun{
+		Role: role,
+		Kind: strings.TrimSpace(kind),
+	}
+	softTimeout := reviewModelSoftTimeoutForRun(rt.cfg, run, reviewerRun)
+	retryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, role, run, kind)
+	contextMode := "standard"
+	if reviewRunUsesFocusedFastPath(run) {
+		contextMode = "focused"
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		contextMode = "diff-first"
+	}
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review phase %d/%d: %s. model=%s context=%s evidence_chars=%d prompt_limit=%d retry_budget=%d soft_timeout=%s.", "리뷰 단계 %d/%d: %s. 모델=%s context=%s evidence_chars=%d prompt_limit=%d retry_budget=%d soft_timeout=%s."),
+		phase,
+		total,
+		reviewModelPhaseName(rt.cfg, kind),
+		label,
+		contextMode,
+		len(run.Evidence.Text),
+		reviewModelPhasePromptLimit(run, kind),
+		retryBudget,
+		reviewSoftTimeoutProgressText(softTimeout),
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func emitReviewModelCallBudgetProgress(rt *runtimeState, run ReviewRun, reviewerRun ReviewReviewerRun, softTimeout time.Duration) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	retryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, reviewerRun.Role, run, reviewerRun.Kind)
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Model-call budget: %s retry_budget=%d soft_timeout=%s.", "모델 호출 예산: %s retry_budget=%d soft_timeout=%s."),
+		reviewModelPhaseName(rt.cfg, reviewerRun.Kind),
+		retryBudget,
+		reviewSoftTimeoutProgressText(softTimeout),
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func reviewModelPhaseName(cfg Config, kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "main":
+		return localizedText(cfg, "main first-pass review", "메인 모델 1차 리뷰")
+	case "cross":
+		return localizedText(cfg, "review model cross-check", "리뷰 모델 교차 검토")
+	default:
+		return localizedText(cfg, "review model pass", "리뷰 모델 패스")
+	}
+}
+
+func reviewSoftTimeoutProgressText(timeout time.Duration) string {
+	if timeout <= 0 {
+		return "default"
+	}
+	return formatProgressElapsed(timeout)
+}
+
+func reviewModelPhasePromptLimit(run ReviewRun, kind string) int {
+	if strings.EqualFold(strings.TrimSpace(kind), "cross") {
+		return reviewModelCrossEvidenceLimit(run)
+	}
+	return reviewModelPromptEvidenceLimit(run)
+}
+
 func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, findingCount int) {
 	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
 		return
 	}
 	roleName := reviewRoleProgressName(run.Role)
+	kind := strings.ToLower(strings.TrimSpace(run.Kind))
 	status := strings.TrimSpace(run.Status)
 	if status == "" {
 		status = "completed"
 	}
 	if strings.TrimSpace(run.Error) != "" {
+		if kind == "main" {
+			message := fmt.Sprintf(
+				localizedText(rt.cfg, "Main model first-pass review result: %s (%s).", "메인 모델 1차 리뷰 결과: %s (%s)."),
+				status,
+				firstNonEmptyLine(run.Error),
+			)
+			rt.agent.EmitProgress(message)
+			return
+		}
+		if kind == "cross" {
+			message := fmt.Sprintf(
+				localizedText(rt.cfg, "Review model cross-check result: %s %s (%s).", "리뷰 모델 교차 검토 결과: %s %s (%s)."),
+				roleName,
+				status,
+				firstNonEmptyLine(run.Error),
+			)
+			rt.agent.EmitProgress(message)
+			return
+		}
 		message := fmt.Sprintf(
 			localizedText(rt.cfg, "Review model result: %s %s (%s).", "리뷰 모델 결과: %s %s (%s)."),
 			roleName,
@@ -819,6 +954,27 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 		return
 	}
 	quality := firstNonBlankString(run.ModelQuality, "unknown")
+	if kind == "main" {
+		message := fmt.Sprintf(
+			localizedText(rt.cfg, "Main model first-pass review result: %s (quality=%s, findings=%d).", "메인 모델 1차 리뷰 결과: %s (품질=%s, 발견=%d)."),
+			status,
+			quality,
+			findingCount,
+		)
+		rt.agent.EmitProgress(message)
+		return
+	}
+	if kind == "cross" {
+		message := fmt.Sprintf(
+			localizedText(rt.cfg, "Review model cross-check result: %s %s (quality=%s, findings=%d).", "리뷰 모델 교차 검토 결과: %s %s (품질=%s, 발견=%d)."),
+			roleName,
+			status,
+			quality,
+			findingCount,
+		)
+		rt.agent.EmitProgress(message)
+		return
+	}
 	message := fmt.Sprintf(
 		localizedText(rt.cfg, "Review model result: %s %s (quality=%s, findings=%d).", "리뷰 모델 결과: %s %s (품질=%s, 발견=%d)."),
 		roleName,
@@ -829,13 +985,191 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 	rt.agent.EmitProgress(message)
 }
 
-func emitReviewModelRetryProgress(rt *runtimeState, role string, label string) {
+func emitReviewModelMainFirstPassProgress(rt *runtimeState) {
+	emitReviewModelFlowProgress(
+		rt,
+		"Main model is preparing the first-pass review from the collected local evidence.",
+		"메인 모델이 수집된 로컬 증거로 1차 리뷰를 작성합니다.",
+	)
+}
+
+func emitReviewModelCrossHandoffProgress(rt *runtimeState) {
+	emitReviewModelFlowProgress(
+		rt,
+		"Main model first-pass review completed. Sending its draft and the same evidence to the review model.",
+		"메인 모델의 1차 리뷰가 완료되었습니다. 리뷰 모델에 초안과 동일 증거를 전달합니다.",
+	)
+}
+
+func emitReviewModelCrossCheckProgress(rt *runtimeState) {
+	emitReviewModelFlowProgress(
+		rt,
+		"Review model is cross-checking the main model draft before the final gate is decided.",
+		"리뷰 모델이 최종 게이트 판정 전에 메인 모델 초안을 교차 검토합니다.",
+	)
+}
+
+func emitReviewModelCrossResultHandoffProgress(rt *runtimeState, run ReviewReviewerRun) {
+	if !strings.EqualFold(strings.TrimSpace(run.Status), "completed") ||
+		strings.EqualFold(strings.TrimSpace(run.ModelQuality), reviewModelQualityWeak) ||
+		strings.EqualFold(strings.TrimSpace(run.ModelQuality), reviewModelQualityFailed) ||
+		strings.TrimSpace(run.Error) != "" {
+		reason := firstNonBlankString(firstNonEmptyLine(run.Error), run.ModelQuality, run.Status, "unusable")
+		emitReviewModelFlowProgress(
+			rt,
+			fmt.Sprintf("Review model cross-check did not produce a usable result (%s). Kernforge is merging the main review and reviewer failure state for the final gate.", reason),
+			fmt.Sprintf("리뷰 모델 교차 검토가 신뢰 가능한 결과를 만들지 못했습니다(%s). Kernforge가 메인 모델 리뷰와 리뷰어 실패 상태를 병합해 최종 게이트를 계산합니다.", reason),
+		)
+		return
+	}
+	emitReviewModelFlowProgress(
+		rt,
+		"Review model returned its cross-check. Kernforge is merging both reviews for the final gate.",
+		"리뷰 모델이 교차 검토 결과를 반환했습니다. Kernforge가 두 리뷰 결과를 병합해 최종 게이트를 계산합니다.",
+	)
+}
+
+func emitReviewModelNoCrossReviewerProgress(rt *runtimeState) {
+	emitReviewModelFlowProgress(
+		rt,
+		"No distinct review model is configured, so the main model review will be used for the final gate.",
+		"별도 리뷰 모델이 없거나 메인 모델과 동일하여 메인 모델 리뷰 결과로 최종 게이트를 계산합니다.",
+	)
+}
+
+func emitReviewModelFlowProgress(rt *runtimeState, english string, korean string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	rt.agent.EmitProgress(localizedText(rt.cfg, english, korean))
+}
+
+func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun) time.Duration {
+	if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {
+		return 0
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return reviewPreWriteCrossSoftTimeout
+	}
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedCrossSoftTimeout
+	}
+	if strings.EqualFold(normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role)), "deepseek") {
+		return reviewDeepSeekBroadCrossSoftTimeout
+	}
+	return 0
+}
+
+func reviewModelCallContext(ctx context.Context, softTimeout time.Duration) (context.Context, context.CancelFunc) {
+	if softTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, softTimeout)
+}
+
+func reviewModelCallErrorText(err error, softTimeout time.Duration) string {
+	if err == nil {
+		return ""
+	}
+	if softTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("review model soft timeout after %s", formatProgressElapsed(softTimeout))
+	}
+	return err.Error()
+}
+
+func completeReviewModelTurnWithProgress(ctx context.Context, rt *runtimeState, reviewerRun ReviewReviewerRun, call func(context.Context) (ChatResponse, error)) (ChatResponse, error) {
+	if call == nil {
+		return ChatResponse{}, fmt.Errorf("review model call is not configured")
+	}
+	done := make(chan struct{})
+	go emitReviewModelLongWaitProgress(ctx, rt, reviewerRun, done)
+	resp, err := call(ctx)
+	close(done)
+	return resp, err
+}
+
+func emitReviewModelLongWaitProgress(ctx context.Context, rt *runtimeState, reviewerRun ReviewReviewerRun, done <-chan struct{}) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	delay := reviewModelLongWaitInitialDelay(reviewerRun.Kind)
+	if delay <= 0 {
+		return
+	}
+	startedAt := reviewerRun.StartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-timer.C:
+			select {
+			case <-done:
+				return
+			default:
+			}
+			rt.agent.EmitProgress(formatReviewModelLongWaitProgress(rt.cfg, reviewerRun, time.Since(startedAt)))
+			timer.Reset(reviewModelLongWaitInterval(reviewerRun.Kind))
+		}
+	}
+}
+
+func reviewModelLongWaitInitialDelay(kind string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "cross":
+		return 2 * time.Minute
+	default:
+		return 2 * time.Minute
+	}
+}
+
+func reviewModelLongWaitInterval(kind string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "cross":
+		return 2 * time.Minute
+	default:
+		return 2 * time.Minute
+	}
+}
+
+func formatReviewModelLongWaitProgress(cfg Config, reviewerRun ReviewReviewerRun, elapsed time.Duration) string {
+	elapsedText := formatProgressElapsed(elapsed)
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	switch strings.ToLower(strings.TrimSpace(reviewerRun.Kind)) {
+	case "main":
+		return fmt.Sprintf(
+			localizedText(cfg, "Main model first-pass review is still running (%s elapsed). When it returns, Kernforge will pass the draft to the review model or compute the gate if no separate reviewer is configured.", "메인 모델 1차 리뷰가 아직 진행 중입니다(경과 %s). 결과가 오면 리뷰 모델에 초안을 전달하거나, 별도 리뷰 모델이 없으면 바로 게이트를 계산합니다."),
+			elapsedText,
+		)
+	case "cross":
+		return fmt.Sprintf(
+			localizedText(cfg, "Review model cross-check is still running (%s elapsed). When it returns, Kernforge will merge it with the main model review; timeout, cancellation, or an empty response will be recorded in the final gate.", "리뷰 모델 교차 검토가 아직 진행 중입니다(경과 %s). 결과가 오면 메인 모델 리뷰와 병합하고, timeout/취소/빈 응답은 최종 게이트에 실패 상태로 기록합니다."),
+			elapsedText,
+		)
+	default:
+		return fmt.Sprintf(
+			localizedText(cfg, "Review model %s is still running (%s elapsed). Kernforge will use the result in the final gate when it returns.", "리뷰 모델 %s가 아직 실행 중입니다(경과 %s). 결과가 오면 최종 게이트에 반영합니다."),
+			roleName,
+			elapsedText,
+		)
+	}
+}
+
+func emitReviewModelRetryProgress(rt *runtimeState, role string, label string, attempt int, budget int) {
 	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
 		return
 	}
 	roleName := reviewRoleProgressName(role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model output looked omitted or cut off; retrying strict review: %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있어 엄격 리뷰로 재시도합니다: %s -> %s."),
+		localizedText(rt.cfg, "Review model output looked omitted or cut off; retrying strict review (%d/%d): %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있어 엄격 리뷰로 재시도합니다(%d/%d): %s -> %s."),
+		attempt,
+		budget,
 		roleName,
 		label,
 	)
@@ -1022,6 +1356,21 @@ func reviewRoleOmissionRetryBudgetForRun(cfg Config, role string) int {
 	return budget
 }
 
+func reviewRoleOmissionRetryBudgetForReviewRun(cfg Config, role string, run ReviewRun, kind string) int {
+	budget := reviewRoleOmissionRetryBudgetForRun(cfg, role)
+	if budget <= 0 {
+		return 0
+	}
+	provider := normalizeProviderName(reviewRoleProviderForRun(cfg, role))
+	if strings.EqualFold(provider, "deepseek") && budget > 1 {
+		budget = 1
+	}
+	if strings.EqualFold(strings.TrimSpace(kind), "cross") && reviewRunUsesFocusedFastPath(run) && budget > 1 {
+		budget = 1
+	}
+	return budget
+}
+
 func reviewRoleProviderForRun(cfg Config, role string) string {
 	role = normalizeReviewRole(role)
 	reviewCfg := configReviewHarness(cfg)
@@ -1137,13 +1486,7 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	if run.Redaction.Redacted {
 		fmt.Fprintf(&b, "\nRedaction:\nSensitive evidence was redacted: %s\n", strings.Join(run.Redaction.Patterns, ", "))
 	}
-	evidenceLimit := 60000
-	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
-		evidenceLimit = 12000
-		if reviewBeforeFixNeedsDeepBugHunt(run) {
-			evidenceLimit = 30000
-		}
-	}
+	evidenceLimit := reviewModelPromptEvidenceLimit(run)
 	b.WriteString("\nReview evidence:\n")
 	b.WriteString(compactReviewPromptSection(run.Evidence.Text, evidenceLimit))
 	b.WriteString("\n\nRequired review rules:\n")
@@ -1204,12 +1547,12 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 	}
 	if len(primaryFindings) > 0 {
 		b.WriteString("\nPrimary model structured findings:\n")
-		b.WriteString(compactReviewPromptSection(renderReviewFindingsForCrossPrompt(primaryFindings), 8000))
+		b.WriteString(compactReviewPromptSection(renderReviewFindingsForCrossPrompt(primaryFindings), reviewPrimaryFindingsCrossPromptLimit(run)))
 		b.WriteString("\n")
 	}
 	if strings.TrimSpace(primaryRaw) != "" {
 		b.WriteString("\nPrimary model raw draft:\n")
-		b.WriteString(compactReviewPromptSection(primaryRaw, 12000))
+		b.WriteString(compactReviewPromptSection(primaryRaw, reviewPrimaryRawCrossPromptLimit(run)))
 		b.WriteString("\n")
 	}
 	b.WriteString("\nRequired second-pass rules:\n")
@@ -1235,13 +1578,53 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
 	b.WriteString("  test_recommendation: <specific validation>\n")
-	evidenceLimit := 24000
-	if run.Target == reviewTargetSourceAnalysis {
-		evidenceLimit = 40000
-	}
+	evidenceLimit := reviewModelCrossEvidenceLimit(run)
 	b.WriteString("\nReview evidence:\n")
 	b.WriteString(compactReviewPromptSection(run.Evidence.Text, evidenceLimit))
 	return b.String()
+}
+
+func reviewModelPromptEvidenceLimit(run ReviewRun) int {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return reviewPreWritePromptEvidenceLimit
+	}
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedPromptEvidenceLimit
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		if reviewBeforeFixNeedsDeepBugHunt(run) {
+			return 30000
+		}
+		return 12000
+	}
+	return reviewDefaultMaxContextChars
+}
+
+func reviewModelCrossEvidenceLimit(run ReviewRun) int {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return reviewPreWriteCrossEvidenceLimit
+	}
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedCrossEvidenceLimit
+	}
+	if run.Target == reviewTargetSourceAnalysis {
+		return 40000
+	}
+	return 24000
+}
+
+func reviewPrimaryFindingsCrossPromptLimit(run ReviewRun) int {
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedPrimaryFindingCrossLimit
+	}
+	return 8000
+}
+
+func reviewPrimaryRawCrossPromptLimit(run ReviewRun) int {
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedPrimaryRawCrossLimit
+	}
+	return 12000
 }
 
 func renderReviewFindingsForCrossPrompt(findings []ReviewFinding) string {

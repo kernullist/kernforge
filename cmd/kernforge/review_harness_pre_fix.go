@@ -73,6 +73,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 	}
 	if a.EmitProgress != nil {
 		a.EmitProgress(formatReviewBeforeFixProgress(a.Config, run))
+		a.EmitProgress(formatReviewBeforeFixHandoffProgress(a.Config, run))
 	}
 	return true, nil
 }
@@ -331,6 +332,20 @@ func formatReviewBeforeFixProgress(cfg Config, run ReviewRun) string {
 		return strings.TrimSpace("Review before fix completed with warnings. " + strings.Join(parts, " | "))
 	}
 	return strings.TrimSpace("Review before fix completed. " + strings.Join(parts, " | "))
+}
+
+func formatReviewBeforeFixHandoffProgress(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
+	if reviewRunNeedsRepair(run) {
+		if korean {
+			return "리뷰 결과가 메인 모델에 전달되었습니다. 메인 모델이 RF 항목을 반영해 수정 계획과 패치를 작성합니다."
+		}
+		return "Review findings were handed back to the main model. The main model will incorporate the RF items into its repair plan and patch."
+	}
+	if korean {
+		return "리뷰 결과가 메인 모델에 전달되었습니다. 메인 모델이 수정 필요 여부를 판단해 답변을 정리합니다."
+	}
+	return "Review findings were handed back to the main model. The main model will decide whether any edit is needed and summarize the result."
 }
 
 func reviewProgressFindingsByID(run ReviewRun, ids []string, limit int) []ReviewFinding {

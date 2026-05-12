@@ -259,6 +259,120 @@ func reviewMaxContextCharsForAnalysis(current int, analysis ReviewRequestAnalysi
 	return reviewSourceAnalysisMaxContextChars
 }
 
+func reviewMaxContextCharsForFastPath(current int, opts ReviewHarnessOptions, analysis ReviewRequestAnalysis, defaulted bool) int {
+	if current <= 0 {
+		return current
+	}
+	if strings.EqualFold(strings.TrimSpace(opts.Trigger), "pre_write") {
+		return reviewMinPositiveContextChars(current, reviewPreWriteMaxContextChars)
+	}
+	if !defaulted && current != reviewDefaultMaxContextChars {
+		return current
+	}
+	if reviewOptionsUseFocusedFastPath(opts, analysis) {
+		return reviewMinPositiveContextChars(current, reviewFocusedMaxContextChars)
+	}
+	return current
+}
+
+func reviewRunUsesFocusedFastPath(run ReviewRun) bool {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return true
+	}
+	return reviewAnalysisUsesFocusedFastPath(
+		run.Trigger,
+		run.Target,
+		run.Mode,
+		run.Objective,
+		run.RequestAnalysis,
+		run.ChangeSet.ChangedPaths,
+	)
+}
+
+func reviewOptionsUseFocusedFastPath(opts ReviewHarnessOptions, analysis ReviewRequestAnalysis) bool {
+	paths := append([]string(nil), opts.Paths...)
+	paths = append(paths, reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
+	return reviewAnalysisUsesFocusedFastPath(
+		opts.Trigger,
+		analysis.InferredTarget,
+		analysis.InferredMode,
+		opts.Request,
+		analysis,
+		paths,
+	)
+}
+
+func reviewAnalysisUsesFocusedFastPath(trigger string, target string, mode string, request string, analysis ReviewRequestAnalysis, paths []string) bool {
+	if strings.EqualFold(strings.TrimSpace(trigger), "pre_write") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(target), reviewTargetPR) ||
+		strings.EqualFold(strings.TrimSpace(target), reviewTargetGoal) ||
+		strings.EqualFold(strings.TrimSpace(target), reviewTargetAnalysis) {
+		return false
+	}
+	hasLineRange := reviewRequestHasLineRange(request)
+	if strings.EqualFold(strings.TrimSpace(target), reviewTargetSourceAnalysis) &&
+		!hasLineRange &&
+		!strings.EqualFold(strings.TrimSpace(mode), reviewModeLiveFix) {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(target), reviewTargetSelection) || hasLineRange {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(analysis.ScopeDiscovery.ScopeWidth), "focused") &&
+		len(analysis.ScopeDiscovery.CandidateFiles) <= 3 {
+		return true
+	}
+	cleanPaths := mcpReviewCleanPaths(paths)
+	return len(cleanPaths) > 0 && len(cleanPaths) <= 2
+}
+
+func reviewRequestHasLineRange(request string) bool {
+	for _, token := range strings.Fields(request) {
+		token = strings.Trim(token, "\"'`,;()[]{}<>")
+		index := strings.LastIndex(token, ":")
+		if index < 0 || index == len(token)-1 {
+			continue
+		}
+		if reviewLineRangeSpecLooksValid(token[index+1:]) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewLineRangeSpecLooksValid(spec string) bool {
+	if spec == "" {
+		return false
+	}
+	parts := strings.Split(spec, "-")
+	if len(parts) > 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func reviewMinPositiveContextChars(current int, cap int) int {
+	if current <= 0 || cap <= 0 {
+		return current
+	}
+	if current > cap {
+		return cap
+	}
+	return current
+}
+
 func reviewRemainingContextChars(maxChars int, currentText string) int {
 	if maxChars <= 0 {
 		return 0

@@ -17,7 +17,19 @@ const (
 	reviewSchemaVersion = "review_run.v1"
 
 	reviewDefaultMaxContextChars        = 60000
+	reviewFocusedMaxContextChars        = 20000
+	reviewPreWriteMaxContextChars       = 20000
 	reviewSourceAnalysisMaxContextChars = 180000
+
+	reviewFocusedPromptEvidenceLimit      = 18000
+	reviewPreWritePromptEvidenceLimit     = 16000
+	reviewFocusedCrossEvidenceLimit       = 12000
+	reviewPreWriteCrossEvidenceLimit      = 12000
+	reviewFocusedCrossSoftTimeout         = 3 * time.Minute
+	reviewPreWriteCrossSoftTimeout        = 3 * time.Minute
+	reviewDeepSeekBroadCrossSoftTimeout   = 4 * time.Minute
+	reviewFocusedPrimaryRawCrossLimit     = 6000
+	reviewFocusedPrimaryFindingCrossLimit = 6000
 
 	reviewTargetAuto           = "auto"
 	reviewTargetPlan           = "plan"
@@ -110,6 +122,7 @@ type ReviewRun struct {
 	Freshness          ReviewFreshness        `json:"freshness,omitempty"`
 	Redaction          ReviewRedactionReport  `json:"redaction,omitempty"`
 	EditProposals      []EditProposal         `json:"edit_proposals,omitempty"`
+	RepairFindings     []ReviewFinding        `json:"repair_findings,omitempty"`
 	PolicyPacks        []string               `json:"policy_packs,omitempty"`
 	ReviewerRuns       []ReviewReviewerRun    `json:"reviewer_runs,omitempty"`
 	MergeResult        ReviewMergeResult      `json:"merge_result,omitempty"`
@@ -673,17 +686,20 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	if strings.TrimSpace(root) == "" {
 		return ReviewRun{}, fmt.Errorf("workspace root is not configured")
 	}
-	if opts.MaxContextChars <= 0 {
+	maxContextWasDefaulted := opts.MaxContextChars <= 0
+	if maxContextWasDefaulted {
 		opts.MaxContextChars = reviewDefaultMaxContextChars
 	}
 	run := newReviewRunSkeleton(rt, root, opts)
 	analysis := analyzeReviewRequest(rt, root, opts)
 	opts.MaxContextChars = reviewMaxContextCharsForAnalysis(opts.MaxContextChars, analysis)
+	opts.MaxContextChars = reviewMaxContextCharsForFastPath(opts.MaxContextChars, opts, analysis, maxContextWasDefaulted)
 	run.Target = analysis.InferredTarget
 	run.Mode = analysis.InferredMode
 	run.Flow = analysis.SelectedFlow
 	run.RequestAnalysis = analysis
 	run.EditProposals = normalizeEditProposals(opts.EditProposals)
+	run.RepairFindings = normalizeReviewFindingCopies(opts.RepairFindings)
 	run.PolicyPacks = analysis.PolicyPacks
 	run.PolicyPackVersions = reviewPolicyPackVersions(run.PolicyPacks)
 	emitReviewScopeDiscoveryProgress(rt, run)

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -458,14 +459,169 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 		t.Fatalf("expected cross reviewer prompt to include primary draft, got %q", crossPrompt)
 	}
 	for _, needle := range []string{
-		"Review model request: primary -> scripted / main-model (main: scripted / main-model).",
-		"Review model result: primary completed",
-		"Review model request: cross -> scripted / reviewer-model (main: scripted / main-model).",
-		"Review model result: cross completed",
+		"Review phase 1/2: main first-pass review",
+		"Main model is preparing the first-pass review from the collected local evidence.",
+		"Main model first-pass review request: scripted / main-model.",
+		"Model-call budget: main first-pass review",
+		"Main model first-pass review result: completed",
+		"Main model first-pass review completed. Sending its draft and the same evidence to the review model.",
+		"Review phase 2/2: review model cross-check",
+		"Review model is cross-checking the main model draft before the final gate is decided.",
+		"Review model cross-check request: cross -> scripted / reviewer-model (main: scripted / main-model).",
+		"Model-call budget: review model cross-check",
+		"Review model cross-check result: cross completed",
+		"Review model returned its cross-check. Kernforge is merging both reviews for the final gate.",
 		"Review gate result:",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
 			t.Fatalf("expected progress to contain %q, got %#v", needle, progress)
+		}
+	}
+}
+
+func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	var source strings.Builder
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&source, "int line_%04d = %d; // UNIQUE_REVIEW_CONTEXT_%04d\n", i, i, i)
+	}
+	if err := os.WriteFile(path, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false)
+	var progress []string
+	rt := &runtimeState{
+		cfg:       cfg,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+		agent: &Agent{
+			Config: cfg,
+			EmitProgress: func(message string) {
+				progress = append(progress, message)
+			},
+		},
+	}
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetAuto,
+		Request:             "@PathConverter.cpp:132-221 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+		NoModel:             true,
+		MaxContextChars:     reviewDefaultMaxContextChars,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.Evidence.Text) > reviewFocusedMaxContextChars {
+		t.Fatalf("focused evidence should be capped, got %d > %d", len(run.Evidence.Text), reviewFocusedMaxContextChars)
+	}
+	if indexStringContaining(progress, "max_context=20000") < 0 {
+		t.Fatalf("expected focused max_context progress, got %#v", progress)
+	}
+}
+
+func TestPreWriteReviewUsesDiffFirstContextBudget(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	rt := &runtimeState{
+		cfg:       cfg,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+		agent:     &Agent{Config: cfg},
+	}
+	diff := "diff --git a/driver.cpp b/driver.cpp\n--- a/driver.cpp\n+++ b/driver.cpp\n"
+	diff += strings.Repeat("+int very_long_changed_line = 42; // DIFF_FIRST_CONTEXT\n", 2000)
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:         "pre_write",
+		Target:          reviewTargetChange,
+		Request:         "review proposed edit",
+		Paths:           []string{"driver.cpp"},
+		ProvidedDiff:    diff,
+		IncludeGitDiff:  false,
+		NoModel:         true,
+		MaxContextChars: reviewDefaultMaxContextChars,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.Evidence.Text) > reviewPreWriteMaxContextChars {
+		t.Fatalf("pre-write evidence should be capped, got %d > %d", len(run.Evidence.Text), reviewPreWriteMaxContextChars)
+	}
+	if len(run.Evidence.Sources) == 0 || run.Evidence.Sources[0] != "provided_diff" {
+		t.Fatalf("pre-write evidence should remain diff-first, sources=%#v", run.Evidence.Sources)
+	}
+}
+
+func TestFocusedCrossReviewerUsesSoftTimeoutBudget(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider: "deepseek",
+			Model:    "deepseek-v4-pro",
+		},
+	}
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetChange,
+		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		RequestAnalysis: ReviewRequestAnalysis{
+			ScopeDiscovery: ReviewScopeDiscovery{
+				ScopeWidth:     "focused",
+				CandidateFiles: []string{"PathConverter.cpp"},
+			},
+		},
+	}
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewFocusedCrossSoftTimeout {
+		t.Fatalf("expected focused cross soft timeout, got %s", got)
+	}
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}); got != 0 {
+		t.Fatalf("main review should not use a soft timeout, got %s", got)
+	}
+}
+
+func TestReviewModelLongWaitProgressExplainsCrossHandoff(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	message := formatReviewModelLongWaitProgress(cfg, ReviewReviewerRun{
+		Role: "cross_reviewer",
+		Kind: "cross",
+	}, 2*time.Minute+5*time.Second)
+
+	for _, want := range []string{
+		"Review model cross-check is still running",
+		"merge it with the main model review",
+		"final gate",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected %q in long-wait progress, got %q", want, message)
+		}
+	}
+}
+
+func TestReviewModelRetryProgressIncludesAttemptBudget(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	var progress []string
+	rt := &runtimeState{
+		cfg: cfg,
+		agent: &Agent{
+			Config: cfg,
+			EmitProgress: func(message string) {
+				progress = append(progress, message)
+			},
+		},
+	}
+
+	emitReviewModelRetryProgress(rt, "cross_reviewer", "DeepSeek / deepseek-v4-pro", 2, 3)
+
+	if len(progress) != 1 {
+		t.Fatalf("expected one progress line, got %#v", progress)
+	}
+	for _, want := range []string{"strict review (2/3)", "cross", "DeepSeek / deepseek-v4-pro"} {
+		if !strings.Contains(progress[0], want) {
+			t.Fatalf("expected %q in retry progress, got %q", want, progress[0])
 		}
 	}
 }
@@ -968,8 +1124,8 @@ func TestSameModelReviewProgressShowsScopeEvidenceAndRequest(t *testing.T) {
 		"Review scope discovery:",
 		"Review evidence prepared:",
 		"max_context=180000",
-		"Review model request: primary -> scripted / main-model (main: scripted / main-model).",
-		"Review model result: primary completed",
+		"Main model first-pass review request: scripted / main-model.",
+		"Main model first-pass review result: completed",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
 			t.Fatalf("expected progress to contain %q, got %#v", needle, progress)
@@ -1332,6 +1488,7 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
 	var progress []string
+	var finalReviewSummaries []string
 	agent := &Agent{
 		Config:  DefaultConfig(root),
 		Client:  provider,
@@ -1339,6 +1496,9 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 		Store:   store,
 		EmitProgress: func(message string) {
 			progress = append(progress, message)
+		},
+		EmitAssistantPersistent: func(message string) {
+			finalReviewSummaries = append(finalReviewSummaries, message)
 		},
 	}
 	var events []string
@@ -1368,6 +1528,13 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 		if !strings.Contains(session.LastReviewRun.Evidence.Text, "Edit proposal") {
 			t.Fatalf("pre-write review evidence should include edit proposal, got %q", session.LastReviewRun.Evidence.Text)
 		}
+		if len(finalReviewSummaries) == 0 {
+			t.Fatalf("expected detailed final review summary before diff preview")
+		}
+		if !strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "Final review result:") &&
+			!strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "최종 검토 결과:") {
+			t.Fatalf("expected final review summary content before diff preview, got %#v", finalReviewSummaries)
+		}
 		return true, nil
 	}
 	agent.Workspace = ws
@@ -1390,15 +1557,151 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 		t.Fatalf("expected write after pre-write review, got %q", string(data))
 	}
 	reviewProgress := indexStringContaining(progress, "자동 쓰기 전 리뷰가 완료")
+	if reviewProgress < 0 {
+		reviewProgress = indexStringContaining(progress, "Automatic pre-write review completed")
+	}
+	finalReviewProgress := indexStringContaining(progress, "최종 검토 결과")
+	if finalReviewProgress < 0 {
+		finalReviewProgress = indexStringContaining(progress, "Final review result")
+	}
 	previewProgress := indexStringContaining(progress, "Edit applied. Checking follow-up steps")
 	if reviewProgress < 0 {
 		t.Fatalf("expected user-visible pre-write review progress, got %#v", progress)
+	}
+	if finalReviewProgress < 0 {
+		t.Fatalf("expected final pre-write review result before diff preview, got %#v", progress)
 	}
 	if previewProgress < 0 {
 		t.Fatalf("expected post-review follow-up progress, got %#v", progress)
 	}
 	if reviewProgress > previewProgress {
 		t.Fatalf("expected review progress before follow-up checks, got %#v", progress)
+	}
+	if finalReviewProgress > previewProgress {
+		t.Fatalf("expected final review result before follow-up checks, got %#v", progress)
+	}
+}
+
+func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict:         reviewVerdictApprovedWithWarnings,
+			WarningFindings: []string{"RF-001"},
+		},
+		Result: ReviewResult{
+			Summary: "final patch has only a verification warning",
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:                 "RF-101",
+			Severity:           reviewSeverityHigh,
+			Category:           "correctness",
+			Path:               "Tavern/TavernWorker/PathConverter.cpp",
+			Symbol:             "_InitiateVolumePath",
+			Title:              "QueryDosDevice failure stops volume enumeration",
+			Evidence:           "The old code used break inside the per-volume processing block.",
+			Impact:             "One bad volume can stop later valid volumes from being mapped.",
+			RequiredFix:        "Skip only the failed volume and continue enumerating.",
+			TestRecommendation: "Exercise a failing volume followed by a valid volume.",
+		}},
+		Findings: []ReviewFinding{{
+			ID:                 "RF-001",
+			Severity:           reviewSeverityLow,
+			Category:           "test_gap",
+			Title:              "Build verification was not run",
+			Evidence:           "No focused build output was supplied for the proposed patch.",
+			RequiredFix:        "Run a focused build before merging.",
+			TestRecommendation: "Run the touched package tests.",
+		}},
+		ArtifactRefs: []string{"C:/tmp/review.md"},
+	}
+	rendered := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"Automatic pre-write review completed.",
+		"Final review result: approved_with_warnings",
+		"Review content:",
+		"summary: final patch has only a verification warning",
+		"key findings:",
+		"Proceeding to diff preview.",
+		"RF-001 low: Build verification was not run",
+		"report: C:/tmp/review.md",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected final review progress to contain %q, got %q", want, rendered)
+		}
+	}
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
+	for _, want := range []string{
+		"Final review result:",
+		"- Verdict: approved_with_warnings",
+		"- Next: proceed to diff preview.",
+		"Repair targets checked:",
+		"- RF-101 [high/correctness]: QueryDosDevice failure stops volume enumeration",
+		"Code location: Tavern/TavernWorker/PathConverter.cpp",
+		"Symbol: _InitiateVolumePath",
+		"Problem: The old code used break inside the per-volume processing block.",
+		"Required fix: Skip only the failed volume and continue enumerating.",
+		"Verification: Exercise a failing volume followed by a valid volume.",
+		"Remaining review items:",
+		"- RF-001 [low/test_gap]: Build verification was not run",
+		"Evidence: No focused build output was supplied",
+		"Fix: Run a focused build before merging.",
+		"Test: Run the touched package tests.",
+		"Review report: C:/tmp/review.md",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected visible final review summary to contain %q, got %q", want, visible)
+		}
+	}
+}
+
+func TestPreWriteRunStoresRepairFindingsForFinalSummary(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.cpp")
+	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{replies: []ChatResponse{{
+			Message: approvedReviewResponse("patch fixes the repair target").Message,
+		}}},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "scripted", "main-model", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Request:      "fix main.cpp",
+		Paths:        []string{path},
+		ProvidedDiff: "- break;\n+ continue;\n",
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-200",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "main.cpp",
+			Title:       "break stops enumeration",
+			RequiredFix: "continue after the failed item",
+		}},
+		MaxContextChars: 20000,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.RepairFindings) != 1 || run.RepairFindings[0].ID != "RF-200" {
+		t.Fatalf("expected repair finding to be stored on review run, got %#v", run.RepairFindings)
+	}
+	visible := formatPreWriteFinalVisibleReviewSummary(cfg, run, true)
+	if !strings.Contains(visible, "Repair targets checked:") ||
+		!strings.Contains(visible, "Remaining review items:") ||
+		!strings.Contains(visible, "RF-200") ||
+		!strings.Contains(visible, "continue after the failed item") {
+		t.Fatalf("expected final visible summary to include stored repair finding, got %q", visible)
 	}
 }
 
@@ -3750,7 +4053,7 @@ func TestReviewProviderBehaviorCapsReviewTokens(t *testing.T) {
 func TestReviewProviderBehaviorControlsOmissionRetryBudget(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "deepseek"
-	if got := reviewRoleOmissionRetryBudgetForRun(cfg, "primary"); got != 2 {
+	if got := reviewRoleOmissionRetryBudgetForRun(cfg, "primary"); got != 1 {
 		t.Fatalf("expected DeepSeek omission retry budget, got %d", got)
 	}
 
