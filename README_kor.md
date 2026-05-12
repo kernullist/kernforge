@@ -119,7 +119,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - Windows용 별도 텍스트 viewer와 WebView2 기반 diff review/diff viewer
 - adaptive verification, 검증 이력 대시보드, checkpoint, rollback
 - hook engine, workspace hook rules, evidence-aware push/PR policy
-- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스
+- plan, code, selection, PR, goal, final, analysis, 수정 전, 쓰기 전, 변경 후, MCP review를 같은 기반에서 처리하는 공통 `/review` 하네스. main-first 리뷰, 선택적 cross reviewer, bounded DeepSeek retry, 로컬 코드 수리 중 웹 검색 차단, diff preview 전 최종 리뷰 본문 출력을 포함한다.
 - `.kernforge/features` 아래에 spec/plan/tasks/implementation artifact를 남기는 tracked feature 워크플로우
 - disjoint edit lease에 대한 automatic secondary editable worker와 specialist-aware background verification bundle chaining
 

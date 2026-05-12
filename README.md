@@ -122,7 +122,7 @@ Its current differentiators are:
 - Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
-- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows
+- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, bounded DeepSeek retries, local-code web-research blocking, and final review details before diff preview
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 - Automatic secondary editable workers for disjoint edit leases plus specialist-aware background verification bundle chaining
 

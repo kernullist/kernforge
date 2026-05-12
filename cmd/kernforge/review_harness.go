@@ -21,7 +21,7 @@ const (
 	reviewPreWriteMaxContextChars       = 20000
 	reviewSourceAnalysisMaxContextChars = 180000
 
-	reviewFocusedPromptEvidenceLimit      = 18000
+	reviewFocusedPromptEvidenceLimit      = 12000
 	reviewPreWritePromptEvidenceLimit     = 16000
 	reviewFocusedCrossEvidenceLimit       = 12000
 	reviewPreWriteCrossEvidenceLimit      = 12000

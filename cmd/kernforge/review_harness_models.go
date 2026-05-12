@@ -186,7 +186,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	mainPrompt := buildReviewModelPrompt(rt.cfg, *run, "primary_reviewer")
 	emitReviewModelPhaseBudgetProgress(rt, *run, "main", 1, phaseTotal, "primary_reviewer", mainLabel)
 	emitReviewModelMainFirstPassProgress(rt)
-	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, "primary_reviewer", "main", mainPrompt, mainErr)
+	mainFindings, mainRun, mainRaw := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, "primary_reviewer", "main", mainPrompt, mainErr, reviewModelRunPeerContext{})
 	reviewerRuns = append(reviewerRuns, mainRun)
 	findings = append(findings, mainFindings...)
 
@@ -196,7 +196,10 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		crossPrompt := buildReviewModelCrossCheckPrompt(rt.cfg, *run, crossRole, mainRaw, findings)
 		emitReviewModelPhaseBudgetProgress(rt, *run, "cross", 2, phaseTotal, crossRole, crossLabel)
 		emitReviewModelCrossCheckProgress(rt)
-		crossFindings, crossRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, crossClient, crossModel, crossLabel, crossRole, "cross", crossPrompt, nil)
+		crossFindings, crossRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, crossClient, crossModel, crossLabel, crossRole, "cross", crossPrompt, nil, reviewModelRunPeerContext{
+			PriorFindings:     append([]ReviewFinding(nil), findings...),
+			PriorReviewerRuns: append([]ReviewReviewerRun(nil), reviewerRuns...),
+		})
 		reviewerRuns = append(reviewerRuns, crossRun)
 		findings = append(findings, crossFindings...)
 		emitReviewModelCrossResultHandoffProgress(rt, crossRun)
@@ -207,7 +210,12 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	return findings, reviewerRuns
 }
 
-func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root string, run *ReviewRun, client ProviderClient, model string, label string, role string, kind string, prompt string, setupErr error) ([]ReviewFinding, ReviewReviewerRun, string) {
+type reviewModelRunPeerContext struct {
+	PriorFindings     []ReviewFinding
+	PriorReviewerRuns []ReviewReviewerRun
+}
+
+func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root string, run *ReviewRun, client ProviderClient, model string, label string, role string, kind string, prompt string, setupErr error, peer reviewModelRunPeerContext) ([]ReviewFinding, ReviewReviewerRun, string) {
 	role = normalizeReviewRole(role)
 	if strings.TrimSpace(role) == "" {
 		role = "primary_reviewer"
@@ -295,6 +303,12 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	}
 	run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
 	omissionRetryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, role, *run, reviewerRun.Kind)
+	if omissionRetryBudget > 0 &&
+		reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality) &&
+		reviewShouldSkipOptionalCrossOmissionRetry(rt.cfg, *run, reviewerRun, resp.StopReason, roleFindings, peer) {
+		emitReviewModelRetrySkippedProgress(rt, reviewerRun, label)
+		omissionRetryBudget = 0
+	}
 	omissionRetryFailed := false
 	for attempt := 1; attempt <= omissionRetryBudget && reviewShouldRetryOmittedReviewOutput(raw, roleFindings, quality); attempt++ {
 		emitReviewModelRetryProgress(rt, role, label, attempt, omissionRetryBudget)
@@ -1176,12 +1190,86 @@ func emitReviewModelRetryProgress(rt *runtimeState, role string, label string, a
 	rt.agent.EmitProgress(message)
 }
 
+func emitReviewModelRetrySkippedProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, label string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review model output looked omitted or cut off, but strict retry is skipped for optional cross-check: the main first-pass review already has actionable findings and the reviewer did not report an explicit token-limit stop. %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있지만 선택적 교차 검토 strict retry를 생략합니다. 메인 모델 1차 리뷰가 이미 실행 가능한 finding을 제공했고, 리뷰어가 명시적인 token-limit stop을 보고하지 않았습니다. %s -> %s."),
+		roleName,
+		label,
+	)
+	rt.agent.EmitProgress(message)
+}
+
 func reviewStopReasonLooksTruncated(stopReason string) bool {
 	lower := strings.ToLower(strings.TrimSpace(stopReason))
 	if lower == "" {
 		return false
 	}
 	return containsAny(lower, "length", "max_token", "max token", "token_limit", "incomplete", "partial", "truncated")
+}
+
+func reviewShouldSkipOptionalCrossOmissionRetry(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun, stopReason string, findings []ReviewFinding, peer reviewModelRunPeerContext) bool {
+	if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {
+		return false
+	}
+	if reviewRunRequiresSuccessfulCrossReviewer(run) {
+		return false
+	}
+	if !strings.EqualFold(normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role)), "deepseek") {
+		return false
+	}
+	if reviewStopReasonLooksTruncated(stopReason) {
+		return false
+	}
+	if len(findings) == 0 {
+		return false
+	}
+	if !reviewFindingsContainUsableModelFinding(findings) {
+		return false
+	}
+	return reviewPeerContextHasUsableMainActionableFindings(run, peer)
+}
+
+func reviewPeerContextHasUsableMainActionableFindings(run ReviewRun, peer reviewModelRunPeerContext) bool {
+	mainUsable := false
+	for _, reviewerRun := range peer.PriorReviewerRuns {
+		if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "main") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(reviewerRun.Status), "completed") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityUsable) {
+			mainUsable = true
+			break
+		}
+	}
+	if !mainUsable {
+		return false
+	}
+	for _, finding := range peer.PriorFindings {
+		finding.Normalize()
+		if !strings.EqualFold(strings.TrimSpace(finding.Source), "model") {
+			continue
+		}
+		if normalizeReviewRole(finding.ReviewerRole) != "primary_reviewer" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(finding.Category), "evidence_gap") ||
+			strings.EqualFold(strings.TrimSpace(finding.Category), "test_gap") {
+			continue
+		}
+		if !reviewFindingsContainUsableModelFinding([]ReviewFinding{finding}) {
+			continue
+		}
+		if finding.BlocksGate || reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium) || reviewFindingBlocksGate(run, finding) {
+			return true
+		}
+	}
+	return false
 }
 
 func emitDistinctReviewGateResultProgress(rt *runtimeState, run ReviewRun) {

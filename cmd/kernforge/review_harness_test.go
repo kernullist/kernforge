@@ -1310,6 +1310,194 @@ func TestReviewModelDoesNotRetryUsableFindingsForRawOmissionMarker(t *testing.T)
 	}
 }
 
+func TestDeepSeekOptionalCrossSkipsOmissionRetryWhenMainReviewIsActionable(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() { println(\"ok\") }\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	mainReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: main review found an actionable issue",
+				"findings:",
+				"- severity: medium",
+				"  category: correctness",
+				"  title: Input validation is missing",
+				"  path: main.go",
+				"  symbol: main",
+				"  evidence: main accepts an unchecked value before using it.",
+				"  impact: Invalid input can trigger incorrect behavior.",
+				"  required_fix: Validate the value before use.",
+				"  test_recommendation: Add a focused invalid-input test.",
+			}, "\n")},
+		}},
+	}
+	crossReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: cross-check output is abbreviated",
+				"findings:",
+				"- severity: medium",
+				"  category: correctness",
+				"  title: incomplete cross-check finding...",
+				"  evidence: details omitted...",
+				"  impact: omitted",
+				"  required_fix: rerun with full context",
+			}, "\n")},
+			StopReason: "stop",
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "deepseek"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "deepseek", "main-model", "", "default")
+	var progress []string
+	agent := &Agent{
+		Config:         cfg,
+		Client:         mainReviewer,
+		ReviewerClient: crossReviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             naturalReviewTrigger,
+		Target:              reviewTargetChange,
+		Request:             "@main.go review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(crossReviewer.requests) != 1 {
+		t.Fatalf("optional DeepSeek cross-check should not strict-retry when main review is actionable, got %d requests result=%#v progress=%#v", len(crossReviewer.requests), run.Result, progress)
+	}
+	if indexStringContaining(progress, "strict retry is skipped") < 0 {
+		t.Fatalf("expected skipped strict retry progress, got %#v", progress)
+	}
+	if indexStringContaining(progress, "retrying strict review") >= 0 {
+		t.Fatalf("did not expect strict retry progress, got %#v", progress)
+	}
+}
+
+func TestDeepSeekOptionalCrossRetriesExplicitTokenLimitStop(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() { println(\"ok\") }\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	mainReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: main review found an actionable issue",
+				"findings:",
+				"- severity: medium",
+				"  category: correctness",
+				"  title: Input validation is missing",
+				"  path: main.go",
+				"  symbol: main",
+				"  evidence: main accepts an unchecked value before using it.",
+				"  impact: Invalid input can trigger incorrect behavior.",
+				"  required_fix: Validate the value before use.",
+				"  test_recommendation: Add a focused invalid-input test.",
+			}, "\n")},
+		}},
+	}
+	crossReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: needs_revision",
+					"summary: cross-check was cut off",
+					"findings:",
+					"- severity: medium",
+					"  category: correctness",
+					"  title: cut-off cross-check finding",
+					"  path: main.go",
+					"  symbol: main",
+					"  evidence: truncated evidence",
+					"  impact: incomplete",
+					"  required_fix: rerun with full context",
+				}, "\n")},
+				StopReason: "length",
+			},
+			{
+				Message: Message{Role: "assistant", Text: strings.Join([]string{
+					"REVIEW_RESULT",
+					"verdict: needs_revision",
+					"summary: complete retry finding",
+					"findings:",
+					"- severity: medium",
+					"  category: correctness",
+					"  title: Cross-check confirms the validation bug",
+					"  path: main.go",
+					"  symbol: main",
+					"  evidence: main accepts an unchecked value before using it.",
+					"  impact: Invalid input can trigger incorrect behavior.",
+					"  required_fix: Validate the value before use.",
+					"  test_recommendation: Add a focused invalid-input test.",
+				}, "\n")},
+				StopReason: "stop",
+			},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "deepseek"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "deepseek", "main-model", "", "default")
+	var progress []string
+	agent := &Agent{
+		Config:         cfg,
+		Client:         mainReviewer,
+		ReviewerClient: crossReviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             naturalReviewTrigger,
+		Target:              reviewTargetChange,
+		Request:             "@main.go review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(crossReviewer.requests) != 2 {
+		t.Fatalf("explicit token-limit stop should still strict-retry, got %d requests result=%#v progress=%#v", len(crossReviewer.requests), run.Result, progress)
+	}
+	if indexStringContaining(progress, "retrying strict review") < 0 {
+		t.Fatalf("expected strict retry progress, got %#v", progress)
+	}
+	if indexStringContaining(progress, "strict retry is skipped") >= 0 {
+		t.Fatalf("did not expect skipped retry progress, got %#v", progress)
+	}
+}
+
 func TestReviewModelRetriesCutOffFindingOutput(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
@@ -1651,6 +1839,60 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("expected visible final review summary to contain %q, got %q", want, visible)
 		}
+	}
+}
+
+func TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails(t *testing.T) {
+	longEvidence := strings.Repeat("The old conversion loop used prefix-only matching without checking a path boundary. ", 8) +
+		"Evidence tail marker: HarddiskVolume10 must not match HarddiskVolume1."
+	longImpact := strings.Repeat("A wrong prefix match can produce a trusted drive path for an unrelated NT device path. ", 6) +
+		"Impact tail marker: the converted path can point at the wrong volume."
+	longFix := strings.Repeat("Sort candidate NT device prefixes by length descending and require an exact match or a following slash. ", 6) +
+		"Fix tail marker: reject sibling prefixes that only share the same text prefix."
+	longTest := strings.Repeat("Create two volume mappings whose names share the same prefix and convert a child path under the longer mapping. ", 5) +
+		"Test tail marker: the longer mapping must win."
+	run := ReviewRun{
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+		Result: ReviewResult{
+			Summary: strings.Repeat("The proposed diff was reviewed against all repair targets. ", 6) +
+				"Summary tail marker: no actionable blocker remains.",
+		},
+		RepairFindings: []ReviewFinding{{
+			ID:                 "RF-777",
+			Severity:           reviewSeverityHigh,
+			Category:           "correctness",
+			Path:               "Tavern/TavernWorker/PathConverter.cpp",
+			Symbol:             "PathConverter::GetDosPathFromNtPath",
+			Title:              "NT device path prefix matching can choose the wrong volume",
+			Evidence:           longEvidence,
+			Impact:             longImpact,
+			RequiredFix:        longFix,
+			TestRecommendation: longTest,
+		}},
+		ArtifactRefs: []string{"C:/tmp/review.md"},
+	}
+
+	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
+	if strings.Contains(visible, "...") {
+		t.Fatalf("expected visible final review summary to avoid ellipsis truncation, got %q", visible)
+	}
+	for _, want := range []string{
+		"Evidence tail marker: HarddiskVolume10 must not match HarddiskVolume1.",
+		"Impact tail marker: the converted path can point at the wrong volume.",
+		"Fix tail marker: reject sibling prefixes that only share the same text prefix.",
+		"Test tail marker: the longer mapping must win.",
+		"Summary tail marker: no actionable blocker remains.",
+	} {
+		if !strings.Contains(visible, want) {
+			t.Fatalf("expected visible final review summary to contain %q, got %q", want, visible)
+		}
+	}
+
+	progress := formatPreWriteFinalReviewProgress(Config{AutoLocale: boolPtr(false)}, run, true)
+	if strings.Contains(progress, "...") {
+		t.Fatalf("expected final review progress to avoid ellipsis truncation, got %q", progress)
 	}
 }
 

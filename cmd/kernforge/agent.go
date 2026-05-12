@@ -355,11 +355,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		_ = a.maybeRunInteractiveParallelEditableWorkers(ctx, "executor")
 		_ = a.maybeRunInteractiveParallelReadOnlyWorkers(ctx, "executor")
 		_ = a.maybeRunInteractiveMicroWorkers(ctx, "executor")
+		turnDisabledTools := cloneDisabledTools(disabledTools)
+		if shouldUseLocalCodeToolPolicy(a.Session) {
+			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
+		}
 		turnReq := ChatRequest{
 			Model:       a.Session.Model,
 			System:      a.systemPrompt(),
 			Messages:    a.Session.Messages,
-			Tools:       a.Tools.DefinitionsExcluding(disabledTools),
+			Tools:       a.Tools.DefinitionsExcluding(turnDisabledTools),
 			MaxTokens:   a.Config.MaxTokens,
 			Temperature: a.Config.Temperature,
 			WorkingDir:  a.Session.WorkingDir,
@@ -450,6 +454,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if shouldBlockWebResearchForLocalCodeWork(resp.Message.ToolCalls, a.Session, a.MCP) {
+				if a.EmitProgress != nil {
+					a.EmitProgress(formatBlockedLocalCodeWebResearchProgress(a.Config, resp.Message.ToolCalls))
+				}
 				a.Session.AddMessage(Message{
 					Role: "user",
 					Text: localCodeWebResearchBlockGuidance(a.Config, a.Session),
@@ -935,7 +942,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				a.Session.AddMessage(Message{
 					Role: "user",
-					Text: "Your last edit targeted stale or mismatched file contents. Do not repeat the same edit immediately. First read the exact file again from the same path, confirm the current contents, and then build a new edit against that fresh text. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
+					Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat the same edit immediately. First read the exact file again from the same path, confirm the current contents, and then build a new edit against that fresh text. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
 				})
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -2095,6 +2102,13 @@ func summarizeToolInvocation(cfg Config, call ToolCall) string {
 	case "apply_patch", "write_file", "replace_in_file":
 		return ""
 	default:
+		if toolCallNameLooksLikeWebResearch(name) {
+			intent := webResearchCallIntent(call)
+			if intent != "" {
+				return fmt.Sprintf(localizedText(cfg, "Web research requested: %s", "웹 리서치 요청: %s"), intent)
+			}
+			return localizedText(cfg, "Web research requested.", "웹 리서치 요청.")
+		}
 		return fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), name)
 	}
 }
@@ -2494,10 +2508,154 @@ func shouldBlockWebResearchForLocalCodeWork(calls []ToolCall, session *Session, 
 		return false
 	}
 	latestUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages))))
-	if !requestLooksLikeLocalCodeWork(latestUser) || requestExplicitlyAsksForWebResearch(latestUser) {
+	if requestExplicitlyAsksForWebResearch(latestUser) || !shouldUseLocalCodeToolPolicy(session) {
 		return false
 	}
 	return toolCallsIncludeWebResearch(calls, mcp)
+}
+
+func formatBlockedLocalCodeWebResearchProgress(cfg Config, calls []ToolCall) string {
+	intents := webResearchCallIntents(calls, 4)
+	if len(intents) == 0 {
+		return localizedText(cfg,
+			"Blocked web research tool call during local code review/repair. The model must continue with local source evidence.",
+			"로컬 코드 리뷰/수정 중 외부 웹 리서치 도구 호출을 차단했습니다. 모델은 로컬 소스 근거로 계속 진행해야 합니다.",
+		)
+	}
+	return fmt.Sprintf(localizedText(cfg,
+		"Blocked web research tool call during local code review/repair. Model wanted to check: %s.",
+		"로컬 코드 리뷰/수정 중 외부 웹 리서치 도구 호출을 차단했습니다. 모델이 확인하려던 항목: %s.",
+	), strings.Join(intents, " | "))
+}
+
+func webResearchCallIntents(calls []ToolCall, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	intents := make([]string, 0, minInt(len(calls), limit))
+	for _, call := range calls {
+		if !toolCallNameLooksLikeWebResearch(call.Name) {
+			continue
+		}
+		intent := webResearchCallIntent(call)
+		if intent == "" {
+			intent = strings.TrimSpace(call.Name)
+		}
+		if intent == "" {
+			continue
+		}
+		intents = append(intents, intent)
+		if len(intents) >= limit {
+			break
+		}
+	}
+	return intents
+}
+
+func webResearchCallIntent(call ToolCall) string {
+	args := map[string]any{}
+	if strings.TrimSpace(call.Arguments) != "" {
+		_ = json.Unmarshal([]byte(call.Arguments), &args)
+	}
+	query := strings.TrimSpace(firstNonBlankString(
+		stringValue(args, "query"),
+		stringValue(args, "q"),
+		stringValue(args, "search_query"),
+		stringValue(args, "question"),
+	))
+	if query != "" {
+		return "query=" + compactReviewVisibleInlineText(query, 220)
+	}
+	url := strings.TrimSpace(firstNonBlankString(
+		stringValue(args, "url"),
+		stringValue(args, "uri"),
+		stringValue(args, "href"),
+	))
+	if url != "" {
+		return "url=" + compactReviewVisibleInlineText(url, 220)
+	}
+	return strings.TrimSpace(call.Name)
+}
+
+func shouldUseLocalCodeToolPolicy(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	latestUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages))))
+	if requestExplicitlyAsksForWebResearch(latestUser) {
+		return false
+	}
+	if requestLooksLikeLocalCodeWork(latestUser) {
+		return true
+	}
+	if reviewRunLooksLikeLocalCodeWork(session.LastReviewRun) {
+		return true
+	}
+	const recentUserScanLimit = 12
+	scanned := 0
+	for i := len(session.Messages) - 1; i >= 0 && scanned < recentUserScanLimit; i-- {
+		msg := session.Messages[i]
+		if msg.Role != "user" {
+			continue
+		}
+		scanned++
+		text := strings.ToLower(strings.TrimSpace(baseUserQueryText(msg.Text)))
+		if text == "" || requestExplicitlyAsksForWebResearch(text) {
+			continue
+		}
+		if requestLooksLikeLocalCodeWork(text) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewRunLooksLikeLocalCodeWork(run *ReviewRun) bool {
+	if run == nil {
+		return false
+	}
+	if requestLooksLikeLocalCodeWork(strings.ToLower(strings.TrimSpace(run.Objective))) {
+		return true
+	}
+	if requestLooksLikeLocalCodeWork(strings.ToLower(strings.TrimSpace(run.RequestAnalysis.OriginalRequest))) {
+		return true
+	}
+	if len(run.ChangeSet.ChangedPaths) > 0 ||
+		len(run.ChangeSet.ModifiedPaths) > 0 ||
+		len(run.ChangeSet.AddedPaths) > 0 ||
+		len(run.ChangeSet.DeletedPaths) > 0 ||
+		len(run.Evidence.ChangedPaths) > 0 ||
+		len(run.RequestAnalysis.ScopeDiscovery.CandidateFiles) > 0 {
+		return true
+	}
+	if containsAny(strings.ToLower(strings.TrimSpace(run.Trigger)), "pre_write", "post_change", "before_fix") {
+		return true
+	}
+	return false
+}
+
+func cloneDisabledTools(disabled map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for name, value := range disabled {
+		if strings.TrimSpace(name) == "" || !value {
+			continue
+		}
+		out[name] = true
+	}
+	return out
+}
+
+func disableWebResearchToolsForLocalCodeWork(disabled map[string]bool, registry *ToolRegistry) {
+	if disabled == nil || registry == nil {
+		return
+	}
+	for _, def := range registry.Definitions() {
+		name := strings.TrimSpace(def.Name)
+		if name == "" || !toolCallNameLooksLikeWebResearch(name) {
+			continue
+		}
+		disabled[name] = true
+	}
 }
 
 func sessionHasWebResearchToolResult(session *Session, mcp *MCPManager) bool {
@@ -3357,7 +3515,15 @@ func requestExplicitlyAsksForWebResearch(lowerLatestUser string) bool {
 		return false
 	}
 	if strings.Contains(lowerLatestUser, "this is a local code review or repair request") ||
-		strings.Contains(lowerLatestUser, "continue with local source evidence") {
+		strings.Contains(lowerLatestUser, "this is still local code review/repair work") ||
+		strings.Contains(lowerLatestUser, "continue with local source evidence") ||
+		strings.Contains(lowerLatestUser, "do not use mcp web") ||
+		strings.Contains(lowerLatestUser, "do not use mcp web/search/browser") ||
+		strings.Contains(lowerLatestUser, "do not use web/search/browser") ||
+		strings.Contains(lowerLatestUser, "do not use external web research") ||
+		strings.Contains(lowerLatestUser, "외부 웹 리서치를 명시적으로 요청하지 않는 한") ||
+		strings.Contains(lowerLatestUser, "mcp web/search/browser 도구를 사용하지") ||
+		strings.Contains(lowerLatestUser, "외부 웹 리서치를 사용하지") {
 		return false
 	}
 	return containsAny(lowerLatestUser,

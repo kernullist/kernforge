@@ -380,7 +380,7 @@ func reviewProgressFindingTitles(findings []ReviewFinding, limit int) []string {
 		if title == "" {
 			continue
 		}
-		titles = append(titles, fmt.Sprintf("%s %s: %s", valueOrDefault(finding.ID, "RF"), finding.Severity, compactPromptSection(title, 140)))
+		titles = append(titles, fmt.Sprintf("%s %s: %s", valueOrDefault(finding.ID, "RF"), finding.Severity, compactReviewVisibleInlineText(title, 140)))
 	}
 	return titles
 }

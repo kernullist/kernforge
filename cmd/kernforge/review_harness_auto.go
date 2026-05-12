@@ -652,9 +652,9 @@ func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {
 	summary := strings.TrimSpace(run.Result.Summary)
 	if summary != "" {
 		if korean {
-			parts = append(parts, "요약: "+compactPromptSection(summary, 180))
+			parts = append(parts, "요약: "+compactReviewVisibleInlineText(summary, 180))
 		} else {
-			parts = append(parts, "summary: "+compactPromptSection(summary, 180))
+			parts = append(parts, "summary: "+compactReviewVisibleInlineText(summary, 180))
 		}
 	}
 	findings := preWriteReviewProgressFindings(run)
@@ -720,7 +720,7 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			b.WriteString("\n- 진행: diff preview로 진행하지 않습니다.")
 		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
-			fmt.Fprintf(&b, "\n- 요약: %s", compactPromptSection(run.Result.Summary, 260))
+			fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
 	} else {
 		b.WriteString("Final review result:")
@@ -733,7 +733,7 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			b.WriteString("\n- Next: do not proceed to diff preview.")
 		}
 		if strings.TrimSpace(run.Result.Summary) != "" {
-			fmt.Fprintf(&b, "\n- Summary: %s", compactPromptSection(run.Result.Summary, 260))
+			fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
 		}
 	}
 	if len(run.RepairFindings) > 0 {
@@ -786,48 +786,48 @@ func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding,
 	id := valueOrDefault(finding.ID, "RF")
 	severity := valueOrDefault(finding.Severity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
-	title := compactPromptSection(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"), 220)
+	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
 	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
 	if strings.TrimSpace(finding.Path) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 코드 위치: %s", compactPromptSection(finding.Path, 220))
+			fmt.Fprintf(b, "\n  - 코드 위치: %s", reviewVisibleInlineText(finding.Path))
 		} else {
-			fmt.Fprintf(b, "\n  - Code location: %s", compactPromptSection(finding.Path, 220))
+			fmt.Fprintf(b, "\n  - Code location: %s", reviewVisibleInlineText(finding.Path))
 		}
 	}
 	if strings.TrimSpace(finding.Symbol) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 심볼: %s", compactPromptSection(finding.Symbol, 180))
+			fmt.Fprintf(b, "\n  - 심볼: %s", reviewVisibleInlineText(finding.Symbol))
 		} else {
-			fmt.Fprintf(b, "\n  - Symbol: %s", compactPromptSection(finding.Symbol, 180))
+			fmt.Fprintf(b, "\n  - Symbol: %s", reviewVisibleInlineText(finding.Symbol))
 		}
 	}
 	if strings.TrimSpace(finding.Evidence) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 문제: %s", compactPromptSection(finding.Evidence, 300))
+			fmt.Fprintf(b, "\n  - 문제: %s", reviewVisibleInlineText(finding.Evidence))
 		} else {
-			fmt.Fprintf(b, "\n  - Problem: %s", compactPromptSection(finding.Evidence, 300))
+			fmt.Fprintf(b, "\n  - Problem: %s", reviewVisibleInlineText(finding.Evidence))
 		}
 	}
 	if strings.TrimSpace(finding.Impact) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 영향: %s", compactPromptSection(finding.Impact, 240))
+			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
 		} else {
-			fmt.Fprintf(b, "\n  - Impact: %s", compactPromptSection(finding.Impact, 240))
+			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
 		}
 	}
 	if strings.TrimSpace(finding.RequiredFix) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 수정 기준: %s", compactPromptSection(finding.RequiredFix, 300))
+			fmt.Fprintf(b, "\n  - 수정 기준: %s", reviewVisibleInlineText(finding.RequiredFix))
 		} else {
-			fmt.Fprintf(b, "\n  - Required fix: %s", compactPromptSection(finding.RequiredFix, 300))
+			fmt.Fprintf(b, "\n  - Required fix: %s", reviewVisibleInlineText(finding.RequiredFix))
 		}
 	}
 	if strings.TrimSpace(finding.TestRecommendation) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 확인 방법: %s", compactPromptSection(finding.TestRecommendation, 240))
+			fmt.Fprintf(b, "\n  - 확인 방법: %s", reviewVisibleInlineText(finding.TestRecommendation))
 		} else {
-			fmt.Fprintf(b, "\n  - Verification: %s", compactPromptSection(finding.TestRecommendation, 240))
+			fmt.Fprintf(b, "\n  - Verification: %s", reviewVisibleInlineText(finding.TestRecommendation))
 		}
 	}
 }
@@ -837,43 +837,66 @@ func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, kore
 	id := valueOrDefault(finding.ID, "RF")
 	severity := valueOrDefault(finding.Severity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
-	title := compactPromptSection(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"), 220)
+	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
 	fmt.Fprintf(b, "\n- %s [%s/%s]: %s", id, severity, category, title)
 	if strings.TrimSpace(finding.Path) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 경로: %s", compactPromptSection(finding.Path, 220))
+			fmt.Fprintf(b, "\n  - 경로: %s", reviewVisibleInlineText(finding.Path))
 		} else {
-			fmt.Fprintf(b, "\n  - Path: %s", compactPromptSection(finding.Path, 220))
+			fmt.Fprintf(b, "\n  - Path: %s", reviewVisibleInlineText(finding.Path))
 		}
 	}
 	if strings.TrimSpace(finding.Evidence) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 근거: %s", compactPromptSection(finding.Evidence, 260))
+			fmt.Fprintf(b, "\n  - 근거: %s", reviewVisibleInlineText(finding.Evidence))
 		} else {
-			fmt.Fprintf(b, "\n  - Evidence: %s", compactPromptSection(finding.Evidence, 260))
+			fmt.Fprintf(b, "\n  - Evidence: %s", reviewVisibleInlineText(finding.Evidence))
 		}
 	}
 	if strings.TrimSpace(finding.Impact) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 영향: %s", compactPromptSection(finding.Impact, 220))
+			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
 		} else {
-			fmt.Fprintf(b, "\n  - Impact: %s", compactPromptSection(finding.Impact, 220))
+			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
 		}
 	}
 	if strings.TrimSpace(finding.RequiredFix) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 조치: %s", compactPromptSection(finding.RequiredFix, 260))
+			fmt.Fprintf(b, "\n  - 조치: %s", reviewVisibleInlineText(finding.RequiredFix))
 		} else {
-			fmt.Fprintf(b, "\n  - Fix: %s", compactPromptSection(finding.RequiredFix, 260))
+			fmt.Fprintf(b, "\n  - Fix: %s", reviewVisibleInlineText(finding.RequiredFix))
 		}
 	}
 	if strings.TrimSpace(finding.TestRecommendation) != "" {
 		if korean {
-			fmt.Fprintf(b, "\n  - 테스트: %s", compactPromptSection(finding.TestRecommendation, 220))
+			fmt.Fprintf(b, "\n  - 테스트: %s", reviewVisibleInlineText(finding.TestRecommendation))
 		} else {
-			fmt.Fprintf(b, "\n  - Test: %s", compactPromptSection(finding.TestRecommendation, 220))
+			fmt.Fprintf(b, "\n  - Test: %s", reviewVisibleInlineText(finding.TestRecommendation))
 		}
 	}
+}
+
+func reviewVisibleInlineText(text string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+}
+
+func compactReviewVisibleInlineText(text string, limit int) string {
+	text = reviewVisibleInlineText(text)
+	if limit <= 0 || len(text) <= limit {
+		return text
+	}
+	end := 0
+	for idx, r := range text {
+		size := len(string(r))
+		if idx+size > limit {
+			break
+		}
+		end = idx + size
+	}
+	if end == 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[:end])
 }
 
 func limitReviewFindings(findings []ReviewFinding, limit int) []ReviewFinding {

@@ -37,6 +37,15 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	return resp, nil
 }
 
+func chatRequestHasTool(req ChatRequest, name string) bool {
+	for _, tool := range req.Tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 type streamingScriptedProviderClient struct {
 	mu       sync.Mutex
 	replies  []ChatResponse
@@ -706,6 +715,28 @@ func TestSummarizeToolInvocationRunShellIncludesCommand(t *testing.T) {
 	got := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, call)
 	if !strings.Contains(got, "Running shell: rg -n") {
 		t.Fatalf("unexpected shell summary: %q", got)
+	}
+}
+
+func TestSummarizeToolInvocationWebResearchIncludesIntent(t *testing.T) {
+	searchCall := ToolCall{
+		Name:      "mcp__web_research__search_web",
+		Arguments: `{"query":"Microsoft Learn GetVolumePathNamesForVolumeName ERROR_MORE_DATA returnCch"}`,
+	}
+	searchSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, searchCall)
+	if !strings.Contains(searchSummary, "Web research requested:") ||
+		!strings.Contains(searchSummary, "GetVolumePathNamesForVolumeName") {
+		t.Fatalf("expected web search intent in summary, got %q", searchSummary)
+	}
+
+	fetchCall := ToolCall{
+		Name:      "mcp__web_research__fetch_url",
+		Arguments: `{"url":"https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamesforvolumenamew"}`,
+	}
+	fetchSummary := summarizeToolInvocation(Config{AutoLocale: boolPtr(false)}, fetchCall)
+	if !strings.Contains(fetchSummary, "Web research requested:") ||
+		!strings.Contains(fetchSummary, "learn.microsoft.com") {
+		t.Fatalf("expected web fetch intent in summary, got %q", fetchSummary)
 	}
 }
 
@@ -3290,6 +3321,9 @@ func TestAgentBlocksWebResearchForLocalCodeRepair(t *testing.T) {
 	if webTool.calls != 0 {
 		t.Fatalf("local code repair should block web research tool execution, got %d calls", webTool.calls)
 	}
+	if chatRequestHasTool(provider.requests[0], "mcp__web__search_web") {
+		t.Fatalf("local code repair should not expose web research tools in the first model request")
+	}
 	if len(provider.requests) != 4 {
 		t.Fatalf("expected web tool call to be blocked and retried, got %d requests", len(provider.requests))
 	}
@@ -3349,6 +3383,9 @@ func TestAgentBlocksNamespacedWebResearchForLocalCodeRepairWithoutMCPCatalog(t *
 	}
 	if webTool.calls != 0 {
 		t.Fatalf("namespaced web research should be blocked even without MCP catalog, got %d calls", webTool.calls)
+	}
+	if chatRequestHasTool(provider.requests[0], "mcp__web_research__search_web") {
+		t.Fatalf("local code repair should hide namespaced web research tools even without MCP catalog")
 	}
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected blocked web call to be retried, got %d requests", len(provider.requests))
@@ -3416,6 +3453,9 @@ func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
 	if webTool.calls != 0 {
 		t.Fatalf("pre-write review repair should block web research tool execution, got %d calls", webTool.calls)
 	}
+	if chatRequestHasTool(provider.requests[0], "mcp__web_research__search_web") {
+		t.Fatalf("pre-write local repair feedback should not expose web research tools")
+	}
 	if len(provider.requests) != 3 {
 		t.Fatalf("expected web tool call to be blocked and retried, got %d requests", len(provider.requests))
 	}
@@ -3424,6 +3464,76 @@ func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
 		(!strings.Contains(lastMessage.Text, "local code review or repair request") &&
 			!strings.Contains(lastMessage.Text, "로컬 코드 리뷰/수정 작업")) {
 		t.Fatalf("expected local-code web block guidance after pre-write feedback, got %#v", lastMessage)
+	}
+}
+
+func TestAgentKeepsWebResearchHiddenAfterEditTargetMismatch(t *testing.T) {
+	root := t.TempDir()
+	targetPath := filepath.Join(root, "SampleApp", "SampleWorker", "PathConverter.cpp")
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(targetPath, []byte("int ConvertPath()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("%w: exact_search text not found in SampleApp/SampleWorker/PathConverter.cpp", ErrEditTargetMismatch),
+	}
+	webTool := &staticTool{
+		name:   "mcp__web_research__fetch_url",
+		output: "external source",
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			toolCallResponse("mcp__web_research__fetch_url", map[string]any{"url": "https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-getvolumepathnamesforvolumenamew"}),
+			{Message: Message{Role: "assistant", Text: "로컬 파일을 다시 기준으로 삼아 진행했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, webTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+	var progress []string
+	agent.EmitProgress = func(message string) {
+		progress = append(progress, message)
+	}
+
+	reply, err := agent.Reply(context.Background(), "@SampleApp/SampleWorker/PathConverter.cpp:1-3 검토하고 버그를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "로컬 파일") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected one failed patch attempt, got %d", patchTool.calls)
+	}
+	if webTool.calls != 0 {
+		t.Fatalf("web research should stay blocked after edit target mismatch, got %d calls", webTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected patch failure, web block guidance, then final reply; got %d requests", len(provider.requests))
+	}
+	if chatRequestHasTool(provider.requests[1], "mcp__web_research__fetch_url") {
+		t.Fatalf("web research tool should stay hidden after edit target mismatch guidance")
+	}
+	if indexStringContaining(progress, "getvolumepathnamesforvolumenamew") < 0 {
+		t.Fatalf("expected blocked web research progress to include requested lookup intent, got %#v", progress)
+	}
+	guidance := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if guidance.Role != "user" ||
+		(!strings.Contains(guidance.Text, "local code review or repair request") &&
+			!strings.Contains(guidance.Text, "로컬 코드 리뷰/수정 작업")) {
+		t.Fatalf("expected local-code web block guidance after stale patch retry, got %#v", guidance)
 	}
 }
 
