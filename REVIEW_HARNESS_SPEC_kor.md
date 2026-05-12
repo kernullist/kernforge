@@ -2428,6 +2428,703 @@ Phase 3: 장기 runtime protocol화
    - 회귀 테스트: `TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate`, `TestReviewerGateUnavailableReplyOffersMainModelFallback`, `TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview`, 기존 pre-write reviewer failure/web-research stop tests.
    - 검증: `go test ./cmd/kernforge -run "TestPreWriteReviewModelFailureBlocksEditGate|TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate|TestReviewerGateUnavailableReplyOffersMainModelFallback|TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview|TestPreWriteWeakReviewModelQualityBlocksEditGate|TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry" -count=1 -timeout 10m` 통과.
 
+### 16.10 Review Harness 85점 이상 목표 설계
+
+아래 설계는 Codex App을 100점으로 둔 상대 평가에서 Kernforge review harness의 모든 주요 항목을 85점 이상으로 올리기 위한 목표 상태다. 현재 점수는 주관적 운영 평가이며, 구현 후에는 regression test, synthetic transcript replay, 실제 Tavern smoke run을 함께 통과해야 85점 달성으로 본다.
+
+| 항목 | 현재 추정 | 85점 이상 기준 |
+| --- | ---: | --- |
+| 리뷰 구조 설계 | 84 | 모든 review surface가 하나의 typed state machine과 artifact schema를 공유하고, 예외 분기가 schema 밖으로 새지 않는다. |
+| pre-fix / pre-write gate 안전성 | 82 | 쓰기 전 gate는 실패를 안전하게 멈추되, usable main review 기반 fallback은 사용자 승인과 diff preview가 있을 때만 작동한다. |
+| finding 출력 품질 / 로그 | 80 | 사용자가 모델 간 handoff, verdict, remaining risk, next action을 transcript만 보고 판단할 수 있다. |
+| 로컬 코드 evidence 중심성 | 78 | `@path`, diff, pre-write feedback, edit mismatch 이후에도 외부 web/search로 빠지지 않고 local evidence만으로 복구한다. |
+| 회귀 테스트 커버리지 | 76 | 주요 failure mode가 table-driven replay로 고정되고, smoke log에서 나온 회귀가 unit/integration test로 환원된다. |
+| 모델 라우팅 안정성 | 68 | provider/model/effort별 latency, schema reliability, blocker detection quality를 분리해 route policy가 결정된다. |
+| 단일 모델 리뷰 품질 | 72 | 별도 리뷰 모델이 없어도 role-separated structured self-review와 deterministic gate로 Codex App 수준의 review UX를 제공한다. |
+| 속도 / 반복 루프 억제 | 64 | 작은 focused repair가 정상 provider에서 8분 안에 diff preview까지 도달하고, bad reviewer route도 bounded failure로 끝난다. |
+| 제품급 견고함 | 68 | interrupted run, stale artifact, failed tool, partial patch, reviewer outage가 모두 deterministic recovery path를 가진다. |
+
+#### 16.10.0 Codex App 기준 재검토
+
+이 절의 목표는 Codex App 내부 구현을 복제하는 것이 아니다. 사용자가 관측하는 Codex App의 제품 행동을 100점 기준으로 삼아 KernForge 리뷰 하네스가 따라야 할 불변식을 정의하는 것이다.
+
+Codex App 기준에서 좋은 리뷰 하네스는 다음 성질을 가진다.
+
+1. 작업 경계가 명확하다.
+   - 분석, 수정 계획, 패치 작성, 쓰기 전 리뷰, diff preview, 파일 쓰기, 검증, 최종 응답이 섞이지 않는다.
+   - 각 단계는 현재 무엇을 하는지 사용자에게 보이는 로그를 남긴다.
+2. 승인 경계가 명확하다.
+   - 리뷰 승인과 파일 쓰기 승인은 다르다.
+   - 파일 쓰기 승인과 commit/push 승인은 다르다.
+   - 사용자가 commit/push를 명시하지 않으면 리뷰 하네스는 commit/push를 유도하거나 실행하지 않는다.
+3. 메인 모델이 최종 책임을 진다.
+   - 별도 리뷰 모델은 교차 검토자다.
+   - 최종 정리, 반영 여부 판단, 사용자에게 보여줄 설명은 메인 모델 흐름으로 돌아와야 한다.
+   - 리뷰 모델 실패가 있더라도 메인 모델의 1차 리뷰 결과는 숨기지 않는다.
+4. 로컬 증거가 기본이다.
+   - 코드 리뷰와 수정은 로컬 파일, diff, 테스트 결과, 이전 검증 이력으로 우선 판단한다.
+   - 웹 검색은 명시 요청, 최신 외부 사실, API 문서 확인처럼 필요한 경우에만 수행한다.
+   - 웹 검색을 수행할 때는 검색 목적과 기대하는 근거를 먼저 로그로 출력한다.
+5. 실패가 사용자 선택으로 이어진다.
+   - 필수 리뷰어가 timeout, empty, weak로 실패하면 단순 중단만 하지 않는다.
+   - 메인 모델 리뷰가 usable이면 그 내용을 사용자에게 보여주고, 정책에 따라 계속 진행할지, 모델을 바꿀지, 재시도할지 선택 가능한 fallback을 제공한다.
+   - 자동 모드에서는 위험도가 낮은 문서 변경과 코드 쓰기 변경을 다르게 취급한다.
+6. 장시간 작업은 진행 상황이 설명된다.
+   - 단순 "모델 응답 대기 중"만 반복하지 않고, 현재 단계, 경과 시간, soft timeout, retry budget, 다음 전이를 같이 출력한다.
+   - 2분 이상 대기하는 모델 호출은 왜 기다리는지, 언제 실패로 전환되는지 드러나야 한다.
+7. 산출물과 화면 출력이 모두 완전해야 한다.
+   - markdown 보고서 경로만 남기지 않는다.
+   - diff preview 전 최종 검토 결과는 보고서의 핵심 내용을 생략 없이, 다만 터미널에 맞게 구조화해서 출력한다.
+   - 화면 출력에서 `...` 생략이 발생하면 그것 자체를 품질 저하로 간주하고 더 짧은 항목 단위 출력으로 재구성한다.
+8. 재개와 복구가 가능해야 한다.
+   - 긴 리뷰 중 compaction, 재시작, tool failure가 발생해도 현재 review session id, evidence hash, proposal id, gate result를 기준으로 이어갈 수 있어야 한다.
+   - apply_patch 실패 후에는 같은 오래된 patch를 반복하지 않고, 실제 현재 파일 스냅샷 기준으로 patch를 재생성해야 한다.
+
+이 기준으로 보면 기존 16.10 설계는 모델 라우팅과 출력 개선에는 강하지만, 다음 축을 더 보강해야 한다.
+
+| 보강 항목 | Codex App 기준 차이 | KernForge 설계 반영 |
+| --- | --- | --- |
+| Action envelope | 모델 응답과 tool action의 경계가 명확함 | 모든 review/write/git 작업을 `ReviewActionEnvelope`로 기록한다. |
+| Approval ledger | diff preview, write, commit/push가 별도 승인임 | `ApprovalLedger`를 두고 승인 종류를 분리한다. |
+| Capability manifest | 사용 가능한 tool/connector가 명시적임 | web, model, patch, test, git capability를 session 시작 시 검증한다. |
+| Fallback UX | 실패 원인이 사용자 선택으로 연결됨 | reviewer 실패 시 main review 기반 fallback prompt를 출력한다. |
+| Resume metadata | 긴 작업 재개가 이전 상태를 확인함 | review session artifact에 stage, evidence hash, proposal hash를 저장한다. |
+| Output completeness | 핵심 결과가 화면에 직접 출력됨 | report path와 별도로 final review body를 chunk 단위로 출력한다. |
+
+##### 16.10.0.1 ReviewActionEnvelope
+
+모든 리뷰 하네스 액션은 다음 envelope를 통과해야 한다.
+
+```text
+ReviewActionEnvelope
+- session_id
+- action_id
+- action_type
+  - collect_evidence
+  - main_review
+  - cross_review
+  - merge_gate
+  - propose_patch
+  - pre_write_review
+  - diff_preview
+  - apply_write
+  - verify
+  - summarize
+- actor
+  - main_model
+  - reviewer_model
+  - harness
+  - user
+- input_refs
+- output_refs
+- approval_required
+- approval_granted
+- elapsed_ms
+- status
+- failure_class
+```
+
+이 envelope는 로그, markdown report, JSON artifact에 동일하게 남긴다. 이렇게 해야 "누가 무엇을 했는지"와 "어떤 결과가 다음 단계로 넘어갔는지"가 항상 추적된다.
+
+##### 16.10.0.2 ApprovalLedger
+
+리뷰 하네스는 승인 상태를 하나의 boolean으로 보지 않는다.
+
+```text
+ApprovalLedger
+- review_gate_approved
+- diff_preview_shown
+- user_write_approved
+- write_applied
+- verification_passed
+- user_commit_requested
+- commit_done
+- user_push_requested
+- push_done
+```
+
+정책:
+
+1. `review_gate_approved=true`는 `user_write_approved=true`를 의미하지 않는다.
+2. `write_applied=true`는 `user_commit_requested=true`를 의미하지 않는다.
+3. commit/push는 사용자가 명시한 경우에만 가능하다.
+4. review harness 문서와 로그에는 어떤 승인이 없어서 멈췄는지 구체적으로 출력한다.
+
+##### 16.10.0.3 CapabilityManifest
+
+세션 시작 시 다음 capability를 감지하고 review artifact에 남긴다.
+
+```text
+CapabilityManifest
+- local_file_read
+- patch_apply
+- diff_preview
+- test_runner
+- git_status
+- git_commit
+- git_push
+- web_search
+- web_fetch
+- primary_model
+- cross_review_model
+- single_model_review_mode
+- mcp_review_server
+```
+
+정책:
+
+1. web search API key가 없으면 `web_search=unavailable`로 기록하고 모델 prompt에 "웹 검색 tool을 호출하지 말라"는 제약을 넣는다.
+2. web fetch가 가능해도 모델이 임의로 외부 문서를 열기 전에 `external_lookup_intent` 로그를 출력한다.
+3. patch apply가 실패하면 이전 patch를 재시도하지 않고 현재 파일 digest와 실패 hunk를 기반으로 새 proposal을 만든다.
+4. cross review model이 main model보다 느리거나 낮은 등급이면 soft timeout을 자동으로 늘리되, 전체 session budget은 넘지 않는다.
+
+##### 16.10.0.4 Single-Model Review Mode
+
+Codex App은 별도 reviewer가 없어도 단일 모델이 코드 검토, 수정, 쓰기 전 검토를 수행할 수 있다. KernForge도 별도 리뷰 모델이 없거나 사용자가 main-only 진행을 명시한 경우를 약식 fallback이 아니라 정식 review mode로 취급해야 한다.
+
+원칙:
+
+1. 단일 모델 리뷰는 "리뷰 없음"이 아니다.
+   - `no_cross_review`는 cross reviewer가 없다는 뜻이지, gate가 비활성화됐다는 뜻이 아니다.
+   - main model은 동일 모델이라도 phase와 prompt를 분리해 review actor와 repair actor를 구분한다.
+2. 독립성 수준을 숨기지 않는다.
+   - report와 visible summary에 `independence_level=single_model`을 기록한다.
+   - 별도 reviewer가 없어서 남는 residual risk를 verification obligation으로 표현한다.
+3. evidence를 고정한다.
+   - single-model pre-write review는 이미 만들어진 `patch_proposal.diff`, pre-fix findings, local evidence manifest만 입력으로 받는다.
+   - review 중에는 patch를 수정하지 않는다. 수정이 필요하면 `needs_revision`으로 돌려 repair phase를 다시 연다.
+4. checklist를 강제한다.
+   - correctness
+   - regression risk
+   - security/bypass surface
+   - verification gap
+   - scope creep
+   - stale evidence
+5. 자동 승인은 deterministic guard와 함께만 가능하다.
+   - structured findings가 없거나 근거가 비어 있으면 `insufficient_evidence`.
+   - patch가 pre-fix RF obligation을 해결했는지 확인하지 못하면 `needs_revision`.
+   - code write는 여전히 diff preview 또는 explicit write approval 뒤에만 가능하다.
+
+단일 모델 review flow:
+
+```text
+collect_evidence
+  -> main_review
+  -> no_cross_review(reason=single_model_mode)
+  -> main_synthesis
+  -> gate_decision
+  -> action_boundary
+```
+
+검토+수정 요청에서는 다음처럼 분리한다.
+
+```text
+pre_fix_main_review
+  -> repair_plan
+  -> patch_proposal
+  -> single_model_pre_write_review
+  -> gate_decision
+  -> diff_preview | repair_feedback | user_decision_required
+```
+
+`single_model_pre_write_review` prompt 제약:
+
+1. "당신이 방금 작성한 패치"라고 표현하지 않는다. proposal artifact를 별도 작성자가 만든 diff처럼 검토한다.
+2. 새 패치를 만들지 않는다.
+3. approve하려면 pre-fix RF별로 "수정됨", "부분 수정", "미해결", "검증 필요" 중 하나를 선택한다.
+4. `approved_with_warnings`는 code blocker가 없고 verification/test gap만 남은 경우에만 사용한다.
+5. reviewer model 부재는 blocker가 아니라 `independence_note`와 `verification_obligation`으로 남긴다.
+
+Acceptance criteria:
+
+1. 별도 reviewer route가 없어도 `/review`, 검토 요청, 검토+수정 요청이 structured findings를 출력한다.
+2. single-model pre-write review는 diff preview 전에 RF별 수정 확인 결과를 보여준다.
+3. 단일 모델 모드에서 reviewer unavailable blocker가 발생하지 않는다.
+4. 단일 모델 모드임을 사용자에게 숨기지 않고 residual risk와 검증 의무를 표시한다.
+5. 단일 모델 모드는 commit/push 권한을 갖지 않는다.
+
+테스트:
+
+1. `TestSingleModelReviewModeDoesNotRequireCrossReviewer`
+2. `TestSingleModelPreWriteReviewUsesFrozenDiff`
+3. `TestSingleModelReviewRecordsIndependenceLevel`
+4. `TestSingleModelReviewDoesNotTreatMissingCrossReviewerAsBlocker`
+5. `TestSingleModelPreWriteReviewRequiresRFObligationStatus`
+
+#### 16.10.1 공통 Review State Machine
+
+목표:
+
+1. review harness를 "기능 모음"이 아니라 하나의 상태 기계로 만든다.
+2. pre-fix, pre-write, post-change, `/review`, MCP review, final review가 같은 상태 이름과 전이 규칙을 쓴다.
+3. gate 실패, reviewer 실패, user fallback, diff preview approval, verification gap이 모두 typed transition으로 남는다.
+
+상태:
+
+```text
+collect_evidence
+  -> main_review
+  -> optional_cross_review | required_cross_review | no_cross_review
+  -> merge_reviews
+  -> gate_decision
+  -> action_boundary
+  -> repair_feedback | user_fallback_offer | diff_preview | verification_required | final_summary | resume_recovery
+```
+
+설계:
+
+1. `ReviewRun`에 `StateTransitions []ReviewStateTransition`을 추가한다.
+2. transition은 `from`, `to`, `reason`, `actor`, `blocking`, `visible_to_user`, `created_at`을 가진다.
+3. 현재 progress line은 이 transition에서 파생한다. 즉, 로그 문구가 상태의 원천이 아니라 상태가 로그의 원천이어야 한다.
+4. `reviewRunRequiresSuccessfulReviewer`, `reviewRunRequiresSuccessfulCrossReviewer`, `ReviewerGatePolicy`는 transition guard로 이동한다.
+5. hard-coded verdict 분기는 `gate_decision` 단계에만 남기고, agent edit loop는 `ReviewRun.Gate.Action`을 읽는다.
+6. `action_boundary`는 gate 결과를 실제 행동으로 변환한다.
+   - `approved` 또는 `approved_with_warnings`라도 바로 쓰지 않고 diff preview 또는 explicit write approval로 이동한다.
+   - `needs_revision`은 메인 모델 repair loop로 이동한다.
+   - `insufficient_evidence` 중 main review가 usable이면 사용자 fallback 선택지로 이동한다.
+   - `reviewer_unavailable`은 모델 라우팅 변경, timeout 확장, main-only 진행 중 하나를 명시적으로 요구한다.
+7. `resume_recovery`는 중간 중단 후 재개 전용 상태다.
+   - 현재 파일 digest가 proposal 생성 당시와 다르면 기존 patch를 폐기한다.
+   - report만 있고 proposal이 없으면 review-only 결과로 복구한다.
+   - proposal은 있지만 pre-write review가 없으면 pre-write review부터 다시 시작한다.
+8. `no_cross_review`는 다음 두 경우를 구분한다.
+   - `reason=single_model_mode`: 별도 reviewer가 없고 main model structured review가 gate 역할을 한다.
+   - `reason=policy_skipped`: optional cross review를 정책상 생략했지만 별도 reviewer route는 존재한다.
+   두 경우 모두 사용자 visible summary에 표시한다.
+
+Acceptance criteria:
+
+1. 같은 pre-write reviewer timeout이 발생해도 응답, artifact, progress, tool error가 모두 같은 transition id를 참조한다.
+2. 사용자 fallback 승인 후 다음 run에는 `user_fallback_offer -> diff_preview` 전이가 남는다.
+3. final answer는 마지막 review transition을 근거로 "왜 멈췄는지" 또는 "왜 진행했는지"를 설명할 수 있다.
+4. commit/push는 이 상태 기계의 기본 종착지가 아니다. 별도 git action 요청이 있을 때만 실행한다.
+5. single-model mode는 `reviewer_unavailable`이 아니라 `no_cross_review(reason=single_model_mode)`로 기록된다.
+
+테스트:
+
+1. `TestReviewRunRecordsStateTransitionsForPreWriteReviewerFailure`
+2. `TestMainOnlyFallbackRequiresPriorUserFallbackOfferTransition`
+3. `TestReviewProgressLinesDeriveFromStateTransitions`
+
+#### 16.10.2 Gate Safety 85+ 설계
+
+목표:
+
+1. pre-fix는 repair discovery를 막지 않고, pre-write는 write safety를 막는다.
+2. failed reviewer route와 unsafe patch를 같은 "수정 필요"로 섞지 않는다.
+3. 사용자가 수동 fallback을 택해도 자동 파일 쓰기는 발생하지 않는다.
+
+설계:
+
+1. Gate action을 verdict와 분리한다.
+   - `repair_required`: 모델이 패치를 다시 작성해야 한다.
+   - `reviewer_unavailable`: reviewer route 문제라 implementation retry를 금지한다.
+   - `user_decision_required`: usable main review가 있으므로 사용자에게 fallback을 물을 수 있다.
+   - `diff_preview_allowed`: diff preview로 이동할 수 있다.
+   - `verification_required`: write 이후 검증 의무가 남는다.
+2. `RF-REVIEWER-001`은 코드 finding이 아니라 `reviewer_unavailable` action으로 분류한다.
+3. `main_only_fallback`은 다음 조건을 모두 만족해야 한다.
+   - 직전 run이 pre-write.
+   - main reviewer가 `usable` 이상.
+   - cross reviewer failure가 artifact에 기록됨.
+   - 사용자가 명시 승인 문구를 입력함.
+   - interactive diff preview callback이 존재함.
+4. fallback run은 cross failure를 숨기지 않고 `degraded=true`, `degraded_reason`에 남긴다.
+5. 비대화형 MCP/automation에서는 fallback을 허용하지 않고 `next_commands`로만 안내한다.
+6. commit/push는 review gate와 분리한다.
+   - review gate가 approved여도 commit/push는 실행하지 않는다.
+   - 사용자가 "커밋", "푸시"를 명시한 경우에만 Git action gate를 연다.
+   - Git action gate는 현재 staged/unstaged 범위, branch, remote, verification 결과를 별도 로그로 보여준다.
+
+Acceptance criteria:
+
+1. reviewer outage는 edit retry나 web research를 유발하지 않는다.
+2. fallback 승인 없이는 pre-write reviewer failure가 절대 diff preview로 가지 않는다.
+3. fallback 승인 후에도 diff preview prompt 전까지 파일은 변경되지 않는다.
+4. commit/push가 사용자 명시 없이 발생하지 않는다.
+
+테스트:
+
+1. `TestReviewerUnavailableGateActionDoesNotPrimeRepairLoop`
+2. `TestMainOnlyFallbackUnavailableWithoutInteractiveDiffPreview`
+3. `TestMCPPreWriteReviewerFailureReturnsNextCommandNotFallbackWrite`
+
+#### 16.10.3 Finding 출력과 로그 85+ 설계
+
+목표:
+
+1. 사용자는 transcript만 보고 현재 누가 무엇을 검토 중인지 이해해야 한다.
+2. 최종 review output은 markdown artifact 경로가 아니라 핵심 finding 내용을 직접 보여줘야 한다.
+3. 긴 evidence, impact, required fix, test recommendation은 `...`로 숨기지 않는다.
+
+설계:
+
+1. 모든 review phase progress는 다음 format을 공유한다.
+
+```text
+리뷰 단계 1/2: 메인 모델 1차 리뷰. 모델=... context=... evidence_chars=... prompt_limit=... retry_budget=... soft_timeout=...
+리뷰 단계 2/2: 리뷰 모델 교차 검토. 모델=... context=... evidence_chars=... prompt_limit=... retry_budget=... soft_timeout=...
+```
+
+2. 60초 이상 대기하면 long-wait progress에 현재 actor와 다음 전이를 출력한다.
+3. pre-fix와 pre-write final visible summary는 같은 renderer를 사용한다.
+4. visible summary는 다음 섹션을 가진다.
+   - 판정
+   - 차단/경고 수
+   - 수정 확인 대상
+   - 남은 검토 항목
+   - reviewer route 상태
+   - 다음 행동
+5. finding renderer는 terminal 폭에 맞춰 줄바꿈만 하고 semantic truncation은 하지 않는다.
+6. progress line은 compact summary를 유지하되, assistant-visible final review body는 full detail을 출력한다.
+
+Acceptance criteria:
+
+1. diff preview 직전에 사용자가 report 파일을 열지 않아도 승인 판단을 할 수 있다.
+2. reviewer timeout이 발생하면 어떤 모델이, 어떤 역할로, 몇 분 동안 기다렸는지 보인다.
+3. 같은 finding이 progress, assistant summary, markdown report에서 같은 id/title/severity를 유지한다.
+
+테스트:
+
+1. `TestVisibleReviewSummaryIncludesReviewerRouteStatus`
+2. `TestLongWaitProgressNamesCurrentReviewActor`
+3. `TestReviewFindingRendererDoesNotSemanticEllipsize`
+
+#### 16.10.4 Local Evidence 중심성 85+ 설계
+
+목표:
+
+1. 로컬 코드 리뷰/수리 요청은 외부 웹 검색 없이 로컬 evidence로 끝난다.
+2. 모델이 "API semantics가 필요하다"고 판단해도 먼저 repo-local wrapper, headers, docs, tests를 검색한다.
+3. 웹 검색이 정말 필요하면 사용자에게 무엇을 확인하려는지 명시하고 승인된 경우에만 사용한다.
+
+설계:
+
+1. `LocalCodeWorkContext`를 추가한다.
+   - original user request에 `@path`, file mention, diff, local symbol이 있으면 true.
+   - pre-write repair feedback, patch mismatch recovery, review finding follow-up은 original context를 상속한다.
+2. local code context에서는 MCP web/search/browser tool을 prompt와 tool registry 양쪽에서 숨긴다.
+3. model이 web tool call을 생성하면 실행 전 차단하고 다음 정보를 progress에 남긴다.
+   - tool name
+   - query 또는 URL
+   - 차단 이유
+   - local fallback command 후보
+4. Windows API 의미가 필요한 경우에도 `docs/`, `third_party/`, local comments, existing usage search를 먼저 evidence source로 넣는다.
+5. 사용자가 명시적으로 "웹 검색해"라고 하면 `ExternalEvidenceRequest` transition을 만들고 검색 목적을 progress에 출력한다.
+6. external lookup은 review session artifact에 다음 필드로 남긴다.
+   - `external_lookup_intent`
+   - `expected_source`
+   - `query_or_url`
+   - `result_status`
+   - `used_in_finding_ids`
+7. external lookup 결과가 finding에 실제로 쓰이지 않았으면 report에는 "참고하지 않음"으로 남기고 gate 판단에는 반영하지 않는다.
+
+Acceptance criteria:
+
+1. local repair에서 edit target mismatch 후에도 web search로 빠지지 않는다.
+2. blocked web attempt는 사용자가 "모델이 무엇을 검색하려 했는지" 알 수 있게 남는다.
+3. 명시적 web 승인 없이는 external URL fetch가 실행되지 않는다.
+4. 같은 missing API key 오류가 반복되지 않는다.
+
+테스트:
+
+1. `TestLocalCodeContextPersistsAcrossPatchMismatchRecovery`
+2. `TestBlockedWebToolLogsSearchIntent`
+3. `TestExplicitWebResearchCreatesExternalEvidenceTransition`
+
+#### 16.10.5 회귀 테스트 커버리지 85+ 설계
+
+목표:
+
+1. 사용자 smoke log에서 발견한 모든 회귀는 최소 하나의 deterministic replay test로 고정한다.
+2. model/provider 실제 호출 없이도 timeout, empty, weak, omitted, malformed patch, web attempt를 재현한다.
+3. broad full test만 믿지 않고 failure class별 targeted suite를 둔다.
+
+설계:
+
+1. `testdata/review_replay/`에 anonymized transcript fixture를 둔다.
+2. fixture schema:
+
+```json
+{
+  "name": "prewrite_cross_timeout_after_main_usable",
+  "user_request": "...",
+  "reviewer_runs": [...],
+  "tool_calls": [...],
+  "expected_gate": "...",
+  "expected_progress_contains": [...],
+  "expected_reply_contains": [...]
+}
+```
+
+3. replay runner는 실제 provider 대신 scripted client와 fake clock을 사용한다.
+4. category별 suite:
+   - reviewer route failure
+   - omission/truncation
+   - patch mismatch
+   - local web block
+   - pre-fix repair obligations
+   - final visible summary
+   - MCP response contract
+5. `go test ./cmd/kernforge -run TestReviewReplayFixtures`가 모든 fixture를 순회한다.
+
+Acceptance criteria:
+
+1. 새 사용자 smoke bug를 수정할 때 fixture가 먼저 추가된다.
+2. replay fixture는 1초대 실행을 목표로 한다.
+3. full `go test ./cmd/kernforge` 실패 전 targeted replay가 더 명확한 원인을 보여준다.
+
+테스트:
+
+1. `TestReviewReplayFixtures`
+2. `TestReviewReplayFixtureRejectsMissingExpectedGate`
+3. `TestReviewReplayFixtureCanModelSoftTimeoutWithoutSleeping`
+
+#### 16.10.6 모델 라우팅 안정성 85+ 설계
+
+목표:
+
+1. 모델 선택은 이름 문자열이 아니라 capability profile에 의해 결정한다.
+2. "강한 모델", "느린 모델", "schema를 잘 지키는 모델", "blocker를 잘 찾는 모델"을 분리해 평가한다.
+3. reviewer route 실패가 계속되면 자동으로 같은 실패를 반복하지 않는다.
+4. 별도 reviewer가 없는 환경에서도 단일 모델 리뷰 품질이 일정 기준 아래로 떨어지지 않는다.
+
+설계:
+
+1. `ReviewModelCapability`를 도입한다.
+   - `provider`
+   - `model_pattern`
+   - `capability_rank`
+   - `schema_reliability`
+   - `blocker_detection_prior`
+   - `latency_class`
+   - `supports_reasoning_effort`
+   - `recommended_timeout`
+   - `retry_budget`
+2. 현재 hard-coded rank는 이 profile table로 이동한다.
+3. runtime은 최근 N회 reviewer run을 `ReviewRouteHealth`로 집계한다.
+   - timeout rate
+   - empty response rate
+   - weak rate
+   - usable finding rate
+   - median latency
+4. focused/pre-write route는 다음 순서로 timeout을 정한다.
+   - explicit policy override
+   - capability recommended timeout
+   - main보다 낮은 rank면 최소 5분
+   - route health가 timeout-heavy면 retry를 줄이고 fallback 안내를 강화
+5. `/review models status`에서 role별 route health와 권장 변경을 보여준다.
+6. reviewer route가 없으면 `SingleModelReviewPolicy`를 적용한다.
+   - `enabled=true`
+   - `independence_level=single_model`
+   - `requires_structured_findings=true`
+   - `requires_pre_write_self_review=true` for code write
+   - `requires_rf_obligation_status=true` when pre-fix findings exist
+   - `records_verification_obligations=true`
+7. reviewer route가 있지만 route health가 repeated timeout/empty/weak 상태이면 자동으로 단일 모델 모드로 몰래 전환하지 않는다.
+   - pre-fix에서는 degraded cross reviewer 상태를 표시하고 main review 기준 repair를 허용할 수 있다.
+   - pre-write에서는 사용자에게 route 변경, timeout 확장, main-only fallback 중 하나를 선택하게 한다.
+
+Acceptance criteria:
+
+1. DeepSeek 같은 느린 reviewer는 3분 hard failure 대신 capability 기반 timeout을 받는다.
+2. Sonnet처럼 compact but usable output을 내는 route는 불필요한 strict retry를 하지 않는다.
+3. 같은 route가 연속 실패하면 다음 pre-fix에서는 degraded warning으로 빠르게 진행하고 pre-write에서는 명확한 fallback/route-change 안내를 낸다.
+4. reviewer route가 없는 설정은 실패가 아니라 single-model mode로 시작한다.
+5. single-model mode의 pre-write review는 frozen diff와 RF obligation status 없이는 approved를 만들 수 없다.
+
+테스트:
+
+1. `TestReviewModelCapabilityProfileControlsTimeout`
+2. `TestReviewRouteHealthSuppressesRepeatedStrictRetry`
+3. `TestReviewModelsStatusReportsRouteHealth`
+4. `TestMissingReviewerRouteStartsSingleModelReviewMode`
+5. `TestSingleModelPreWriteCannotApproveWithoutRFObligationStatus`
+
+#### 16.10.7 속도와 반복 루프 억제 85+ 설계
+
+목표:
+
+1. focused local repair는 작은 범위일수록 작게 끝난다.
+2. 같은 finding, 같은 patch, 같은 reviewer failure를 반복하지 않는다.
+3. 사용자는 긴 대기를 끊을지 계속 기다릴지 판단할 수 있다.
+
+설계:
+
+1. Review budget은 `scope_width`와 `target`을 기준으로 산정한다.
+   - focused selection: evidence 12k-20k
+   - pre-write: diff/proposal/repair obligation 우선 20k
+   - broad source analysis: explicit broad request일 때만 확대
+2. edit loop에 `LoopSignature`를 둔다.
+   - finding ids
+   - patch fingerprint
+   - reviewer error class
+   - tool error class
+3. 같은 signature가 2회 반복되면 loop action을 바꾼다.
+   - patch mismatch 반복: fresh file read와 smaller patch 강제
+   - reviewer timeout 반복: fallback offer 또는 route change 안내
+   - verification gap 반복: post-edit verification obligation으로만 유지
+4. long-wait progress는 2분 단위로 누적 elapsed와 soft timeout을 보여준다.
+5. optional cross reviewer는 main review가 usable/actionable이면 token-limit 신호가 없을 때 retry하지 않는다.
+6. patch generation은 selection-first 전략을 사용한다.
+   - 사용자가 `file:132-221`처럼 범위를 지정하면 첫 patch proposal은 해당 범위와 직접 dependency만 읽는다.
+   - 전체 파일 재독해는 hunk mismatch, symbol dependency, build failure가 있을 때만 확장한다.
+7. 모델이 같은 단계에서 같은 파일을 반복해서 읽으면 loop breaker가 개입한다.
+   - 동일 path/range를 2회 이상 읽고 새 tool action이 없으면 다음 model prompt에 "이미 확보한 excerpt로 결정하라"는 제약을 넣는다.
+   - 추가 evidence가 필요한 경우 모델은 필요한 줄 범위와 이유를 먼저 출력해야 한다.
+
+Acceptance criteria:
+
+1. 100줄 이하 focused repair는 정상 route에서 pre-fix + implementation + pre-write가 8분 안에 diff preview까지 간다.
+2. broken reviewer route는 한 번의 bounded failure 뒤 같은 edit loop에서 반복 호출되지 않는다.
+3. patch mismatch가 두 번 이상 같은 anchor로 반복되지 않는다.
+4. 같은 read/search/apply 실패가 2회 반복되면 사용자에게 현재 loop signature와 다음 선택지를 출력한다.
+
+테스트:
+
+1. `TestFocusedRepairLoopBudgetStaysUnderExpectedModelCalls`
+2. `TestRepeatedPatchSignatureForcesFreshContext`
+3. `TestRepeatedReviewerTimeoutDoesNotReinvokeSameRouteInSameLoop`
+
+#### 16.10.8 제품급 견고함 85+ 설계
+
+목표:
+
+1. 중단, compaction, provider failure, partial artifact, stale review가 있어도 다음 행동이 결정적이어야 한다.
+2. review harness가 사용자에게 "불확실하지만 승인"처럼 보이는 상태를 만들지 않는다.
+3. artifact는 사람이 읽을 수 있고, 동시에 MCP/automation이 기계적으로 소비할 수 있어야 한다.
+
+설계:
+
+1. `ReviewRun` 저장은 atomic write로 바꾼다.
+   - temp JSON
+   - fsync 가능한 환경에서는 fsync
+   - rename
+   - latest pointer update
+2. `latest.json`이 깨졌으면 가장 최근 valid run으로 복구하고 progress에 알린다.
+3. session compaction 이후에도 `LastReviewRun`, `TaskState`, `PatchTransaction`이 서로 같은 run id를 참조하는지 검증한다.
+4. final answer 전에 `ReviewLedgerConsistencyCheck`를 실행한다.
+   - changed paths와 review paths mismatch
+   - stale review
+   - unresolved blocker
+   - missing verification obligation
+   - fallback approval without diff preview
+5. artifact에는 "human summary"와 "machine contract"를 분리해 넣는다.
+6. review session artifact에는 다음 파일을 추가한다.
+   - `action_envelope.jsonl`
+   - `approval_ledger.json`
+   - `capability_manifest.json`
+7. resume sanity check:
+   - 재개 직후 최신 사용자 요청이 이전 작업과 충돌하는지 확인한다.
+   - 충돌하면 이전 proposal을 적용하지 않고 새 요청 기준으로 상태를 재분류한다.
+   - 충돌하지 않으면 마지막 stable action부터 이어간다.
+8. artifact integrity:
+   - evidence hash, proposal hash, current file hash를 분리한다.
+   - file hash가 바뀌었는데 proposal hash만 남아 있으면 write gate를 열지 않는다.
+   - report path가 유효하지 않으면 화면 출력만으로도 사용자가 판단 가능하도록 final review body를 재출력한다.
+
+Acceptance criteria:
+
+1. review artifact write 중 실패해도 latest pointer가 깨진 run을 가리키지 않는다.
+2. compaction 뒤에도 pre-write blocker가 사라지지 않는다.
+3. MCP 응답은 UI summary 없이도 gate action과 next command를 정확히 알 수 있다.
+4. report path가 없어도 사용자가 최종 검토 결과를 transcript만으로 판단할 수 있다.
+
+테스트:
+
+1. `TestReviewArtifactAtomicWriteDoesNotCorruptLatest`
+2. `TestCompactionPreservesReviewGateLedger`
+3. `TestReviewLedgerConsistencyBlocksStaleFinalAnswer`
+
+#### 16.10.9 구현 우선순위
+
+1. P0 - State machine과 gate action 분리
+   - 이유: 현재 반복 문제의 상당수는 verdict, reviewer failure, repair guidance, user fallback이 같은 문자열/분기로 섞이는 데서 나온다.
+   - 완료 기준: pre-write reviewer failure, fallback, diff preview가 transition과 gate action으로 표현된다.
+
+2. P0 - Replay fixture 기반 회귀 테스트
+   - 이유: Tavern smoke log 기반 회귀가 많으므로 사람이 붙여넣은 로그를 deterministic fixture로 환원해야 한다.
+   - 완료 기준: 최근 PathConverter smoke 계열 5개 이상이 fixture로 재현된다.
+
+3. P1 - Model capability profile과 route health
+   - 이유: 모델 이름 문자열과 임시 timeout 규칙만으로는 Sonnet/DeepSeek/OpenAI Codex 조합을 안정적으로 다루기 어렵다.
+   - 완료 기준: timeout, retry, fallback 안내가 profile + 최근 health로 결정된다.
+
+4. P1 - Finding/log renderer 통합
+   - 이유: 사용자가 보고 판단하는 출력과 markdown artifact, MCP response가 어긋나면 review harness 신뢰도가 떨어진다.
+   - 완료 기준: 같은 finding id가 progress, final visible summary, markdown, JSON에서 일관된다.
+
+5. P2 - Atomic artifact와 ledger consistency
+   - 이유: 제품급 견고함은 정상 실행보다 실패/중단 복구에서 갈린다.
+   - 완료 기준: corrupted latest, stale review, compaction 후 상태 불일치를 deterministic하게 감지한다.
+
+#### 16.10.10 85점 달성 판정
+
+각 항목은 다음 조건을 만족해야 85점 이상으로 본다.
+
+1. 설계 항목별 acceptance criteria가 모두 테스트 또는 smoke evidence로 확인된다.
+2. `go test ./cmd/kernforge -count=1 -timeout 20m`가 통과한다.
+3. `TestReviewReplayFixtures`가 최근 사용자 smoke fixture를 모두 통과한다.
+4. 실제 Tavern focused repair smoke에서 다음이 관측된다.
+   - main-first review result가 먼저 표시된다.
+   - cross reviewer 상태와 timeout이 명확하다.
+   - reviewer failure 시 main review fallback 선택지가 보인다.
+   - fallback 승인 전에는 파일이 쓰이지 않는다.
+   - diff preview 전에 final review body가 full detail로 표시된다.
+   - local code repair 중 외부 web/search tool이 실행되지 않는다.
+5. 실패한 경우에도 사용자가 다음 선택지를 알 수 있다.
+   - reviewer route 변경
+   - main review 기준 fallback
+   - no-model deterministic review
+   - scope 축소
+   - post-edit verification 실행
+
+#### 16.10.11 Codex App Parity Acceptance Matrix
+
+아래 항목을 만족하면 KernForge 리뷰 하네스를 Codex App 대비 85점 이상 수준으로 평가한다.
+
+| 영역 | 85점 기준 |
+| --- | --- |
+| 사용자 가시성 | 사용자가 "메인 모델이 검토 중", "리뷰 모델이 교차 검토 중", "메인 모델이 결과를 반영 중", "diff preview 대기 중"을 로그만 보고 구분할 수 있다. |
+| 최종 결과 출력 | diff preview 전 최종 검토 결과에 RF별 문제, 영향, 수정 기준, 확인 방법이 표시된다. `...` 생략이 없다. |
+| 실패 처리 | reviewer timeout/weak/empty가 발생해도 main review 결과와 fallback 선택지가 출력된다. |
+| 단일 모델 리뷰 | reviewer route가 없어도 `single_model_mode`로 structured review, frozen diff self-review, RF obligation status를 수행한다. |
+| 승인 경계 | review approval, write approval, commit request, push request가 독립적으로 기록된다. |
+| 속도 | focused code review+repair는 기본 경로에서 5-8분 내 diff preview에 도달한다. 외부 모델 timeout이 있어도 12분을 넘기지 않는다. |
+| tool 반복 억제 | 동일 read/apply/search 실패가 2회 반복되면 loop breaker가 단계 전환 또는 사용자 요약으로 전환한다. |
+| web discipline | 웹 조회 전 목적 로그가 출력되고, capability가 없으면 모델이 web tool을 호출하지 않는다. |
+| patch 안정성 | apply_patch mismatch 후에는 현재 파일 digest 기반으로 proposal을 재생성한다. 같은 patch 재시도는 금지된다. |
+| resume | 중단/재개 후 현재 요청과 마지막 stable state가 맞는지 확인한 뒤 이어간다. |
+| Git 안전성 | 사용자가 명시하지 않으면 commit/push를 하지 않는다. |
+
+#### 16.10.12 구현 Backlog 보강
+
+P0:
+
+1. `ReviewActionEnvelope`와 `ApprovalLedger`를 review session artifact에 추가한다.
+2. reviewer 실패 시 main review 기반 fallback 출력과 사용자 선택지를 구현한다.
+3. final review body 출력에서 생략 문자열을 금지하고, 항목 단위 chunk 출력으로 바꾼다.
+4. web search/fetch capability check와 `external_lookup_intent` 로그를 추가한다.
+5. apply_patch mismatch loop breaker를 구현한다.
+6. `SingleModelReviewPolicy`를 추가하고 reviewer route 부재를 실패가 아닌 정식 단일 모델 리뷰 모드로 처리한다.
+
+P1:
+
+1. `CapabilityManifest`를 session 시작 단계에서 생성한다.
+2. focused selection 요청의 evidence budget을 selection-first로 축소한다.
+3. main보다 낮은 등급 reviewer의 soft timeout을 5분으로 자동 확장한다.
+4. repeated read/search/apply action detector를 추가한다.
+5. resume sanity check와 file/proposal/evidence hash 검증을 추가한다.
+6. single-model pre-write review가 frozen diff와 RF obligation status를 요구하도록 renderer와 gate를 연결한다.
+
+P2:
+
+1. Codex App parity acceptance matrix를 회귀 테스트 fixture로 변환한다.
+2. review markdown report와 terminal output snapshot을 golden test로 관리한다.
+3. MCP review 서버도 동일 action envelope와 approval ledger를 반환하도록 확장한다.
+4. provider health score를 저장해 반복적으로 weak/timeout이 나는 reviewer를 자동 degrade한다.
+5. 단일 모델 모드와 별도 reviewer 모드의 결과 품질을 같은 Tavern fixture로 비교하는 benchmark를 추가한다.
+
 남은 항목:
 
 1. 수동 smoke 검증
