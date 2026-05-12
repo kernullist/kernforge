@@ -580,12 +580,18 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		b.WriteString("\n\n- 원인: 필수 리뷰어 모델이 실패했거나 `weak` 품질로 판정되었습니다.")
 		b.WriteString("\n- 결과: 이 상태의 리뷰 결과는 쓰기 승인으로 신뢰할 수 없어 편집을 적용하지 않습니다.")
 		b.WriteString("\n- 다음 조치: 리뷰 모델 라우팅을 정상 동작하는 모델로 바꾸거나 같은 요청을 다시 실행하세요.")
+		if reviewRunHasUsableMainReviewer(run) {
+			b.WriteString("\n- 선택: 그래도 위 메인 모델 리뷰 결과를 기준으로 사용자가 직접 diff preview에서 판단하려면 `메인 모델 리뷰 기준으로 진행`이라고 답하세요.")
+		}
 		b.WriteString("\n\n코드 수정은 적용하지 않았습니다.")
 	} else {
 		b.WriteString("The pre-write reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
 		b.WriteString("\n\n- Cause: the required reviewer model failed or was classified as `weak` quality.")
 		b.WriteString("\n- Result: this review cannot be trusted as write approval, so the edit was not applied.")
 		b.WriteString("\n- Next step: switch the reviewer route to a working model or rerun the same request.")
+		if reviewRunHasUsableMainReviewer(run) {
+			b.WriteString("\n- Option: if you still want to decide from the main model review shown above, reply with `proceed with the main model review` and I will retry the edit with diff-preview confirmation.")
+		}
 		b.WriteString("\n\nNo code changes were applied.")
 	}
 	if len(failed) > 0 {

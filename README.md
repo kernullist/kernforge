@@ -122,7 +122,7 @@ Its current differentiators are:
 - Windows text viewer plus WebView2-based diff review and diff viewing for selection-first workflows
 - Adaptive verification, verification history dashboards, checkpoints, and rollback
 - Hook engine, workspace hook rules, and evidence-aware push/PR policy
-- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, bounded DeepSeek retries, local-code web-research blocking, and final review details before diff preview
+- Common `/review` harness for plan, code, selection, PR, goal, final, analysis, automatic pre-fix, pre-write, post-change, and MCP review flows, including main-first review, optional cross reviewers, bounded DeepSeek retries, local-code web-research blocking, explicit main-review fallback after pre-write reviewer failure, and final review details before diff preview
 - Tracked feature workflow with persisted spec, plan, tasks, and implementation artifacts under `.kernforge/features`
 - Automatic secondary editable workers for disjoint edit leases plus specialist-aware background verification bundle chaining
 
@@ -782,9 +782,9 @@ On startup and `/reload`, Kernforge migrates config files that still hold the ol
 
 ### Interactive Loop Durability Notes
 
-- The interactive loop uses the active main model as the first-pass reviewer for `/review`, natural-language review, and pre-fix repair checks. Explicitly configured common review role models act as second-pass cross reviewers for those flows, while pre-write review keeps the stricter required-reviewer edit gate.
+- The interactive loop uses the active main model as the first-pass reviewer for `/review`, natural-language review, and pre-fix repair checks. Explicitly configured common review role models act as second-pass cross reviewers for those flows, while pre-write review keeps the stricter required-reviewer edit gate. If that gate stops because the cross reviewer failed but the main pre-write review was usable, Kernforge shows the main-review-based fallback phrase; only an explicit user approval plus the normal diff preview confirmation can continue.
 - Focused review requests such as `@file:line-line review and fix` use a smaller evidence budget and prompt budget, while pre-write review stays diff-first so the reviewer spends its context on the proposed patch and the required repair findings instead of re-reading the whole file.
-- Common review model requests use bounded per-attempt timeouts unless a policy overrides them. Focused and pre-write cross-reviewers have a short soft timeout, DeepSeek strict-review retries are capped tightly, and progress logs show the current review phase, retry budget, context mode, and timeout before each model call.
+- Common review model requests use bounded per-attempt timeouts unless a policy overrides them. Focused and pre-write cross-reviewers have a short soft timeout, automatically extended from 3 minutes to 5 minutes when the review model is ranked below the active main model; DeepSeek strict-review retries are capped tightly, and progress logs show the current review phase, retry budget, context mode, and timeout before each model call.
 - The final-answer reviewer now runs only when there is unresolved verification, a coding-harness blocker, or actual patch transaction changed paths. Read-only replies, plan state, or task-graph presence alone no longer create an extra LLM round-trip.
 - The interactive runtime now keeps both a structured `TaskState` and a persisted `TaskGraph`, so goals, plan progress, pending checks, background ownership, and high-value events survive compaction more reliably than transcript-only state.
 - The interactive runtime also persists an edit-loop ledger for apply/verify/retry/final-review state. It records changed paths, worker evidence, patch transaction ids, verification bundle/job/log evidence, retry decisions, reviewer verdict, and remaining risk, then exposes that ledger to the system prompt, final reviewer, `/status`, session export, and pre-final coding harness.

@@ -462,7 +462,19 @@ func reviewModelGuidanceMentionsRole(item string, role string) bool {
 }
 
 func reviewRunRequiresSuccessfulCrossReviewer(run ReviewRun) bool {
+	if strings.EqualFold(normalizeReviewReviewerGatePolicy(run.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback) {
+		return false
+	}
 	return strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write")
+}
+
+func normalizeReviewReviewerGatePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case reviewReviewerGatePolicyMainOnlyFallback:
+		return reviewReviewerGatePolicyMainOnlyFallback
+	default:
+		return ""
+	}
 }
 
 func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles []string) (ProviderClient, string, string, string, string, bool) {
@@ -660,6 +672,9 @@ func reviewerRunFailedBecauseNoReviewerConfigured(reviewerRun ReviewReviewerRun)
 }
 
 func reviewRunRequiresSuccessfulReviewer(run ReviewRun) bool {
+	if strings.EqualFold(normalizeReviewReviewerGatePolicy(run.ReviewerGatePolicy), reviewReviewerGatePolicyMainOnlyFallback) {
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		return true
 	}
@@ -1062,16 +1077,125 @@ func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewR
 	if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {
 		return 0
 	}
+	timeout := time.Duration(0)
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
-		return reviewPreWriteCrossSoftTimeout
+		timeout = reviewPreWriteCrossSoftTimeout
+	} else if reviewRunUsesFocusedFastPath(run) {
+		timeout = reviewFocusedCrossSoftTimeout
+	} else if strings.EqualFold(normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role)), "deepseek") {
+		timeout = reviewDeepSeekBroadCrossSoftTimeout
 	}
-	if reviewRunUsesFocusedFastPath(run) {
-		return reviewFocusedCrossSoftTimeout
+	if timeout > 0 && timeout < reviewLowerPerformanceCrossSoftTimeout && reviewCrossReviewerLooksLowerPerformanceThanMain(cfg, run, reviewerRun) {
+		return reviewLowerPerformanceCrossSoftTimeout
 	}
-	if strings.EqualFold(normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role)), "deepseek") {
-		return reviewDeepSeekBroadCrossSoftTimeout
+	return timeout
+}
+
+func reviewCrossReviewerLooksLowerPerformanceThanMain(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun) bool {
+	mainRank := reviewModelCapabilityRank(cfg.Provider, cfg.Model, cfg.ReasoningEffort)
+	if mainRank <= 0 {
+		return false
 	}
-	return 0
+	role := normalizeReviewRole(reviewerRun.Role)
+	reviewerProvider, reviewerModel := reviewRoleProviderModelForRun(cfg, role)
+	if labelProvider, labelModel := reviewProviderModelFromDisplayLabel(reviewerRun.Model); labelProvider != "" || labelModel != "" {
+		reviewerProvider = firstNonBlankString(labelProvider, reviewerProvider)
+		reviewerModel = firstNonBlankString(labelModel, reviewerModel)
+	}
+	reviewerEffort := reviewRoleReasoningEffortForRun(cfg, role, run)
+	reviewerRank := reviewModelCapabilityRank(reviewerProvider, reviewerModel, reviewerEffort)
+	if reviewerRank <= 0 {
+		return false
+	}
+	return reviewerRank < mainRank
+}
+
+func reviewRoleProviderModelForRun(cfg Config, role string) (string, string) {
+	role = normalizeReviewRole(role)
+	reviewCfg := configReviewHarness(cfg)
+	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+		return roleCfg.Provider, roleCfg.Model
+	}
+	if role != "primary_reviewer" {
+		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+			return roleCfg.Provider, roleCfg.Model
+		}
+	}
+	return cfg.Provider, cfg.Model
+}
+
+func reviewProviderModelFromDisplayLabel(label string) (string, string) {
+	parts := strings.Split(strings.TrimSpace(label), " / ")
+	if len(parts) < 2 {
+		return "", ""
+	}
+	provider := strings.TrimSpace(parts[0])
+	model := strings.TrimSpace(parts[1])
+	if strings.HasPrefix(strings.ToLower(model), "effort=") {
+		model = ""
+	}
+	return provider, model
+}
+
+func reviewModelCapabilityRank(provider string, model string, effort string) int {
+	provider = normalizeProviderName(provider)
+	modelLower := strings.ToLower(strings.TrimSpace(model))
+	rank := 0
+	switch {
+	case strings.Contains(modelLower, "gpt-5.5"):
+		rank = 1000
+	case strings.Contains(modelLower, "gpt-5.4"):
+		rank = 940
+	case strings.Contains(modelLower, "gpt-5.3"):
+		rank = 900
+	case strings.Contains(modelLower, "gpt-5.2"):
+		rank = 860
+	case strings.Contains(modelLower, "opus"):
+		rank = 900
+	case strings.Contains(modelLower, "sonnet"):
+		rank = 780
+	case strings.Contains(modelLower, "deepseek-v4-pro") || strings.Contains(modelLower, "deepseek v4 pro"):
+		rank = 760
+	case strings.Contains(modelLower, "deepseek"):
+		rank = 730
+	case strings.Contains(modelLower, "haiku"):
+		rank = 480
+	case strings.Contains(modelLower, "gpt-4.1"):
+		rank = 760
+	case strings.Contains(modelLower, "gpt-4"):
+		rank = 700
+	}
+	if rank == 0 {
+		switch provider {
+		case "openai-codex":
+			rank = 900
+		case "codex-cli":
+			rank = 840
+		case "anthropic", "anthropic-claude-cli":
+			rank = 760
+		case "deepseek":
+			rank = 730
+		case "openai":
+			rank = 720
+		case "openrouter", "opencode", "opencode-go":
+			rank = 650
+		case "ollama", "lmstudio", "vllm", "llama.cpp":
+			rank = 520
+		default:
+			return 0
+		}
+	}
+	switch normalizeReasoningEffort(effort) {
+	case "xhigh":
+		rank += 40
+	case "high":
+		rank += 20
+	case "low":
+		rank -= 20
+	case "minimal":
+		rank -= 40
+	}
+	return rank
 }
 
 func reviewModelCallContext(ctx context.Context, softTimeout time.Duration) (context.Context, context.CancelFunc) {

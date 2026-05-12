@@ -575,11 +575,59 @@ func TestFocusedCrossReviewerUsesSoftTimeoutBudget(t *testing.T) {
 			},
 		},
 	}
-	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewFocusedCrossSoftTimeout {
-		t.Fatalf("expected focused cross soft timeout, got %s", got)
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewLowerPerformanceCrossSoftTimeout {
+		t.Fatalf("expected lower-performance focused cross soft timeout, got %s", got)
 	}
 	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}); got != 0 {
 		t.Fatalf("main review should not use a soft timeout, got %s", got)
+	}
+}
+
+func TestFocusedCrossReviewerKeepsDefaultSoftTimeoutWhenNotLowerPerformance(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "high"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider:        "openai-codex-subscription",
+			Model:           "gpt-5.5",
+			ReasoningEffort: "high",
+		},
+	}
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetChange,
+		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		RequestAnalysis: ReviewRequestAnalysis{
+			ScopeDiscovery: ReviewScopeDiscovery{
+				ScopeWidth:     "focused",
+				CandidateFiles: []string{"PathConverter.cpp"},
+			},
+		},
+	}
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewFocusedCrossSoftTimeout {
+		t.Fatalf("expected focused cross soft timeout, got %s", got)
+	}
+}
+
+func TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLowerPerformanceModel(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "xhigh"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"primary_reviewer": {
+			Provider: "deepseek",
+			Model:    "deepseek-v4-pro",
+		},
+	}
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+	}
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewLowerPerformanceCrossSoftTimeout {
+		t.Fatalf("expected lower-performance pre-write cross soft timeout, got %s", got)
 	}
 }
 
@@ -1018,6 +1066,102 @@ func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 	}
 	if !reviewRunHasFindingTitle(run, "Required reviewer model failed or returned weak output") {
 		t.Fatalf("expected required reviewer failure finding, got %#v", run.Findings)
+	}
+}
+
+func TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("review model soft timeout after 3m0s")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	agent := &Agent{
+		Config: cfg,
+		Client: &scriptedProviderClient{replies: []ChatResponse{
+			approvedReviewResponse("main model approved the proposed edit"),
+		}},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:            "pre_write",
+		Target:             reviewTargetChange,
+		Mode:               reviewModeLiveFix,
+		Request:            "automatic pre-write review",
+		Paths:              []string{path},
+		ProvidedDiff:       "- break;\n+ continue;\n",
+		ReviewerGatePolicy: reviewReviewerGatePolicyMainOnlyFallback,
+		EditProposals: []EditProposal{{
+			File:            "PathConverter.cpp",
+			Operation:       "apply_patch",
+			ExpectedPreview: "- break;\n+ continue;\n",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(reviewer.requests) == 0 {
+		t.Fatalf("expected reviewer request")
+	}
+	if run.ReviewerGatePolicy != reviewReviewerGatePolicyMainOnlyFallback {
+		t.Fatalf("expected fallback gate policy to be recorded, got %q", run.ReviewerGatePolicy)
+	}
+	if run.Gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("main-only fallback should not block as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("main-only fallback should record cross failure as degraded but not required-blocking, got %#v", run.Findings)
+	}
+	if !run.Result.Degraded {
+		t.Fatalf("expected degraded result to preserve reviewer failure evidence")
+	}
+}
+
+func TestReviewerGateUnavailableReplyOffersMainModelFallback(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.AutoLocale = boolPtr(false)
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ReviewerRuns: []ReviewReviewerRun{
+			{Kind: "main", Role: "primary", Status: "completed", ModelQuality: reviewModelQualityUsable},
+			{Kind: "cross", Role: "primary", Status: "failed", ModelQuality: reviewModelQualityFailed, Error: "review model soft timeout after 3m0s"},
+		},
+	}
+	reply := formatReviewerGateUnavailableReply(cfg, run)
+	if !strings.Contains(reply, "proceed with the main model review") {
+		t.Fatalf("expected main-model fallback instruction, got %q", reply)
+	}
+}
+
+func TestPreWriteMainOnlyFallbackApprovalPhraseRequiresUsableMainReview(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ReviewerRuns: []ReviewReviewerRun{
+			{Kind: "main", Role: "primary", Status: "completed", ModelQuality: reviewModelQualityUsable},
+			{Kind: "cross", Role: "primary", Status: "failed", ModelQuality: reviewModelQualityFailed, Error: "review model soft timeout after 3m0s"},
+		},
+	}
+	session.LastReviewRun = &run
+	session.AddMessage(Message{Role: "user", Text: "메인 모델 리뷰 기준으로 진행"})
+	if !preWriteMainOnlyReviewerFallbackApproved(session) {
+		t.Fatalf("expected Korean approval phrase to enable main-only fallback")
+	}
+
+	run.ReviewerRuns[0].ModelQuality = reviewModelQualityWeak
+	session.LastReviewRun = &run
+	if preWriteMainOnlyReviewerFallbackApproved(session) {
+		t.Fatalf("weak main review must not enable main-only fallback")
 	}
 }
 

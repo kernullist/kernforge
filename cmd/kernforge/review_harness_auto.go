@@ -102,19 +102,31 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		a.EmitProgress(localizedText(a.Config, "Main model prepared an edit proposal. Sending the diff to the review model before writing files.", "메인 모델이 수정안을 만들었습니다. 파일 쓰기 전에 diff를 리뷰 모델에 전달합니다."))
 	}
 	rt := a.reviewHarnessRuntime(root)
+	reviewerGatePolicy := ""
+	if preWriteMainOnlyReviewerFallbackApproved(a.Session) {
+		if a.Workspace.PreviewEdit != nil {
+			reviewerGatePolicy = reviewReviewerGatePolicyMainOnlyFallback
+			if a.EmitProgress != nil {
+				a.EmitProgress(localizedText(a.Config, "User approved main-model-only pre-write fallback. Cross-reviewer failure will be recorded, but it will not block this edit before diff preview.", "사용자가 메인 모델 기준 쓰기 전 리뷰 fallback을 승인했습니다. cross reviewer 실패는 기록하지만 이번 편집의 diff preview 진입을 막지는 않습니다."))
+			}
+		} else if a.EmitProgress != nil {
+			a.EmitProgress(localizedText(a.Config, "Main-model-only fallback was requested, but no diff preview confirmation is available, so the reviewer gate remains a hard stop.", "메인 모델 기준 fallback이 요청되었지만 diff preview 확인을 사용할 수 없어 reviewer gate를 계속 hard stop으로 유지합니다."))
+		}
+	}
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
-		Trigger:         "pre_write",
-		Target:          reviewTargetChange,
-		Request:         latestUserMessageText(a.Session.Messages),
-		Paths:           append([]string(nil), preview.Paths...),
-		ProvidedDiff:    diff,
-		IncludeGitDiff:  false,
-		NoModel:         !postChangeReviewHasDedicatedModel(a),
-		AutoTriggered:   true,
-		AutoFollowUp:    "none",
-		EditProposals:   editProposalsForPreview(preview),
-		RepairFindings:  preWriteRepairObligationsFromLastReview(a.Session),
-		MaxContextChars: reviewPreWriteMaxContextChars,
+		Trigger:            "pre_write",
+		Target:             reviewTargetChange,
+		Request:            latestUserMessageText(a.Session.Messages),
+		Paths:              append([]string(nil), preview.Paths...),
+		ProvidedDiff:       diff,
+		IncludeGitDiff:     false,
+		NoModel:            !postChangeReviewHasDedicatedModel(a),
+		AutoTriggered:      true,
+		AutoFollowUp:       "none",
+		EditProposals:      editProposalsForPreview(preview),
+		RepairFindings:     preWriteRepairObligationsFromLastReview(a.Session),
+		MaxContextChars:    reviewPreWriteMaxContextChars,
+		ReviewerGatePolicy: reviewerGatePolicy,
 	})
 	if err != nil {
 		if a.EmitProgress != nil {
@@ -156,6 +168,34 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 	return nil
 }
 
+func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
+	if session == nil || session.LastReviewRun == nil {
+		return false
+	}
+	last := *session.LastReviewRun
+	if !strings.EqualFold(strings.TrimSpace(last.Trigger), "pre_write") {
+		return false
+	}
+	if !reviewRunHasRequiredReviewerFailure(last) {
+		return false
+	}
+	if !reviewRunHasUsableMainReviewer(last) {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(latestUserMessageText(session.Messages)))
+	if text == "" {
+		return false
+	}
+	koreanApproval := strings.Contains(text, "메인") &&
+		strings.Contains(text, "리뷰") &&
+		strings.Contains(text, "기준") &&
+		(strings.Contains(text, "진행") || strings.Contains(text, "수정") || strings.Contains(text, "적용"))
+	englishApproval := strings.Contains(text, "main") &&
+		strings.Contains(text, "review") &&
+		(strings.Contains(text, "proceed") || strings.Contains(text, "continue") || strings.Contains(text, "apply"))
+	return koreanApproval || englishApproval
+}
+
 func (a *Agent) emitPreWriteFinalVisibleReviewSummary(run ReviewRun, proceedToPreview bool) {
 	if a == nil {
 		return
@@ -172,6 +212,22 @@ func preWriteRepairObligationsFromLastReview(session *Session) []ReviewFinding {
 		return nil
 	}
 	return preFixRepairObligationFindings(*session.LastReviewRun)
+}
+
+func reviewRunHasUsableMainReviewer(run ReviewRun) bool {
+	for _, reviewerRun := range run.ReviewerRuns {
+		if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "main") {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(reviewerRun.Status), "completed") {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityUsable) ||
+			strings.EqualFold(strings.TrimSpace(reviewerRun.ModelQuality), reviewModelQualityStrong) {
+			return true
+		}
+	}
+	return false
 }
 
 func preFixRepairObligationFindings(run ReviewRun) []ReviewFinding {

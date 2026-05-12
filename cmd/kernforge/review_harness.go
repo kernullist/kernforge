@@ -21,15 +21,16 @@ const (
 	reviewPreWriteMaxContextChars       = 20000
 	reviewSourceAnalysisMaxContextChars = 180000
 
-	reviewFocusedPromptEvidenceLimit      = 12000
-	reviewPreWritePromptEvidenceLimit     = 16000
-	reviewFocusedCrossEvidenceLimit       = 12000
-	reviewPreWriteCrossEvidenceLimit      = 12000
-	reviewFocusedCrossSoftTimeout         = 3 * time.Minute
-	reviewPreWriteCrossSoftTimeout        = 3 * time.Minute
-	reviewDeepSeekBroadCrossSoftTimeout   = 4 * time.Minute
-	reviewFocusedPrimaryRawCrossLimit     = 6000
-	reviewFocusedPrimaryFindingCrossLimit = 6000
+	reviewFocusedPromptEvidenceLimit       = 12000
+	reviewPreWritePromptEvidenceLimit      = 16000
+	reviewFocusedCrossEvidenceLimit        = 12000
+	reviewPreWriteCrossEvidenceLimit       = 12000
+	reviewFocusedCrossSoftTimeout          = 3 * time.Minute
+	reviewPreWriteCrossSoftTimeout         = 3 * time.Minute
+	reviewLowerPerformanceCrossSoftTimeout = 5 * time.Minute
+	reviewDeepSeekBroadCrossSoftTimeout    = 4 * time.Minute
+	reviewFocusedPrimaryRawCrossLimit      = 6000
+	reviewFocusedPrimaryFindingCrossLimit  = 6000
 
 	reviewTargetAuto           = "auto"
 	reviewTargetPlan           = "plan"
@@ -84,6 +85,8 @@ const (
 	reviewSeverityInfo    = "info"
 
 	reviewArtifactDirName = "reviews"
+
+	reviewReviewerGatePolicyMainOnlyFallback = "main_only_fallback"
 )
 
 type ReviewHarnessConfig struct {
@@ -125,6 +128,7 @@ type ReviewRun struct {
 	RepairFindings     []ReviewFinding        `json:"repair_findings,omitempty"`
 	PolicyPacks        []string               `json:"policy_packs,omitempty"`
 	ReviewerRuns       []ReviewReviewerRun    `json:"reviewer_runs,omitempty"`
+	ReviewerGatePolicy string                 `json:"reviewer_gate_policy,omitempty"`
 	MergeResult        ReviewMergeResult      `json:"merge_result,omitempty"`
 	Result             ReviewResult           `json:"result,omitempty"`
 	Findings           []ReviewFinding        `json:"findings,omitempty"`
@@ -378,6 +382,7 @@ type ReviewHarnessOptions struct {
 	EditProposals       []EditProposal
 	RepairFindings      []ReviewFinding
 	MaxContextChars     int
+	ReviewerGatePolicy  string
 	RawArgs             string
 }
 
@@ -700,6 +705,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.RequestAnalysis = analysis
 	run.EditProposals = normalizeEditProposals(opts.EditProposals)
 	run.RepairFindings = normalizeReviewFindingCopies(opts.RepairFindings)
+	run.ReviewerGatePolicy = normalizeReviewReviewerGatePolicy(opts.ReviewerGatePolicy)
 	run.PolicyPacks = analysis.PolicyPacks
 	run.PolicyPackVersions = reviewPolicyPackVersions(run.PolicyPacks)
 	emitReviewScopeDiscoveryProgress(rt, run)
