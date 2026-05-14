@@ -2370,7 +2370,7 @@ func latestReviewDecisionFindings(run ReviewRun) []ReviewFinding {
 }
 
 func formatLatestEditProposalForUserDecision(cfg Config, session *Session) string {
-	toolName, proposal := latestEditToolProposal(session)
+	toolName, proposal, skippedIncludeOnlyDelta := latestEditToolProposalForUserDecision(session)
 	if proposal == "" {
 		return ""
 	}
@@ -2381,10 +2381,88 @@ func formatLatestEditProposalForUserDecision(cfg Config, session *Session) strin
 	} else {
 		fmt.Fprintf(&b, "Latest edit proposal (%s):\n", toolName)
 	}
+	if skippedIncludeOnlyDelta {
+		if korean {
+			b.WriteString("\n참고: 최신 edit tool 호출은 include-only delta였지만, 최신 차단 finding은 본문 코드 수정을 요구합니다. 사용자에게 보여줄 수정안은 그 이전의 의미 있는 코드 수정안으로 되돌렸습니다.\n")
+		} else {
+			b.WriteString("\nNote: the latest edit-tool call was an include-only delta, but the latest blocking findings require code-body changes. Showing the previous meaningful code proposal instead.\n")
+		}
+	}
 	b.WriteString("```text\n")
 	b.WriteString(compactPromptSection(proposal, 4000))
 	b.WriteString("\n```")
 	return strings.TrimSpace(b.String())
+}
+
+func latestEditToolProposalForUserDecision(session *Session) (string, string, bool) {
+	proposals := latestEditToolProposals(session)
+	if len(proposals) == 0 {
+		return "", "", false
+	}
+	latest := proposals[0]
+	if !proposalLooksIncludeOnly(latest.Proposal) || !lastReviewRequiresNonIncludeCodePatch(session) {
+		return latest.ToolName, latest.Proposal, false
+	}
+	for _, proposal := range proposals[1:] {
+		if strings.TrimSpace(proposal.Proposal) == "" || proposalLooksIncludeOnly(proposal.Proposal) {
+			continue
+		}
+		return proposal.ToolName, proposal.Proposal, true
+	}
+	return latest.ToolName, latest.Proposal, false
+}
+
+type editToolProposalRecord struct {
+	ToolName string
+	Proposal string
+}
+
+func latestEditToolProposals(session *Session) []editToolProposalRecord {
+	if session == nil {
+		return nil
+	}
+	var proposals []editToolProposalRecord
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		msg := session.Messages[i]
+		for j := len(msg.ToolCalls) - 1; j >= 0; j-- {
+			call := msg.ToolCalls[j]
+			if !isEditTool(call.Name) {
+				continue
+			}
+			proposal := editToolProposalText(call.Name, call.Arguments)
+			if strings.TrimSpace(proposal) == "" {
+				continue
+			}
+			proposals = append(proposals, editToolProposalRecord{
+				ToolName: call.Name,
+				Proposal: proposal,
+			})
+		}
+	}
+	return proposals
+}
+
+func lastReviewRequiresNonIncludeCodePatch(session *Session) bool {
+	if session == nil || session.LastReviewRun == nil {
+		return false
+	}
+	run := *session.LastReviewRun
+	for _, finding := range run.RepairFindings {
+		finding.Normalize()
+		if repairFindingNeedsProposalAlignment(finding) && !repairFindingAllowsIncludeOnlyProposal(finding) {
+			return true
+		}
+	}
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		if !reviewFindingBlocksGate(run, finding) {
+			continue
+		}
+		if repairFindingNeedsProposalAlignment(finding) && !repairFindingAllowsIncludeOnlyProposal(finding) {
+			return true
+		}
+	}
+	return false
 }
 
 func latestEditToolProposal(session *Session) (string, string) {
@@ -2437,17 +2515,19 @@ func formatPreWriteReviewRepairForceEditGuidance(cfg Config, recent string) stri
 		b.WriteString("다음 응답은 상태 확인 도구 호출이 아니라 반드시 edit tool 호출이어야 합니다.\n")
 		b.WriteString("규칙:\n")
 		b.WriteString("1. 최신 pre-write finding 중 unresolved 차단 항목만 고치세요.\n")
-		b.WriteString("2. 방금 확인한 현재 파일 내용에 고정된 좁은 apply_patch hunk를 작성하세요.\n")
-		b.WriteString("3. 같은 patch, replace_in_file 추측, review artifact 재읽기, run_shell 우회 쓰기는 금지합니다.\n")
-		b.WriteString("4. 필요한 문맥이 아직 부족하다고 판단되면, 먼저 한 문장으로 정확한 blocker를 말하고 수정 불가 사유를 보고하세요. 추가 탐색 루프를 시작하지 마세요.")
+		b.WriteString("2. 차단된 이전 patch는 적용되지 않았으므로, 누락분 delta가 아니라 현재 파일에 바로 적용 가능한 완전한 standalone patch를 작성하세요.\n")
+		b.WriteString("3. 방금 확인한 현재 파일 내용에 고정된 좁은 apply_patch hunk를 작성하세요.\n")
+		b.WriteString("4. 같은 patch, replace_in_file 추측, review artifact 재읽기, run_shell 우회 쓰기는 금지합니다.\n")
+		b.WriteString("5. 필요한 문맥이 아직 부족하다고 판단되면, 먼저 한 문장으로 정확한 blocker를 말하고 수정 불가 사유를 보고하세요. 추가 탐색 루프를 시작하지 마세요.")
 	} else {
 		b.WriteString("The pre-write review already blocked the edit, and enough local state inspection has been spent.\n")
 		b.WriteString("The next response must be an edit-tool call, not another inspection-tool call.\n")
 		b.WriteString("Rules:\n")
 		b.WriteString("1. Fix only the latest unresolved blocking pre-write finding.\n")
-		b.WriteString("2. Use a narrow apply_patch hunk anchored to the current file contents just inspected.\n")
-		b.WriteString("3. Do not repeat the same patch, guess with replace_in_file, reread review artifacts, or bypass review with run_shell writes.\n")
-		b.WriteString("4. If the context is still insufficient, state the exact blocker in one sentence and report why editing cannot proceed. Do not start another inspection loop.")
+		b.WriteString("2. The previously blocked patch was not applied, so produce a complete standalone patch for the current file instead of a missing-piece delta.\n")
+		b.WriteString("3. Use a narrow apply_patch hunk anchored to the current file contents just inspected.\n")
+		b.WriteString("4. Do not repeat the same patch, guess with replace_in_file, reread review artifacts, or bypass review with run_shell writes.\n")
+		b.WriteString("5. If the context is still insufficient, state the exact blocker in one sentence and report why editing cannot proceed. Do not start another inspection loop.")
 	}
 	recent = strings.TrimSpace(recent)
 	if recent != "" {

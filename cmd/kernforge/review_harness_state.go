@@ -375,7 +375,7 @@ func buildReviewActionEnvelopes(root string, rt *runtimeState, run ReviewRun) []
 				status = "failed"
 				failure = firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), reviewerRun.ModelQuality, "reviewer_failed")
 			}
-			add(action, actor, []string{reviewerRun.PromptPath}, []string{reviewerRun.RawOutputPath}, false, true, status, failure)
+			add(action, actor, []string{reviewerRun.PromptPath}, []string{reviewerRun.RawOutputPath, reviewerRun.RawProviderResponsePath}, false, true, status, failure)
 		}
 	} else {
 		add(reviewActionMainReview, "harness", run.Evidence.Sources, nil, false, false, "skipped", "model_review_disabled")

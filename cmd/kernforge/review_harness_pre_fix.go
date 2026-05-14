@@ -87,7 +87,8 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 			Text: summary,
 		})
 	}
-	if reviewRunHasRequiredReviewerFailure(run) {
+	allowIndependentInspection := preFixReviewCanContinueWithIndependentInspection(run)
+	if reviewRunHasRequiredReviewerFailure(run) && !allowIndependentInspection {
 		if a.Store != nil {
 			if err := a.Store.Save(a.Session); err != nil {
 				return true, err
@@ -98,7 +99,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		}
 		return true, nil
 	}
-	if preFixReviewHasUnreliableNoActionableFinding(run) {
+	if preFixReviewHasUnreliableNoActionableFinding(run) && !allowIndependentInspection {
 		if a.Store != nil {
 			if err := a.Store.Save(a.Session); err != nil {
 				return true, err
@@ -121,6 +122,11 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 	}
 	if a.EmitProgress != nil {
 		a.EmitProgress(formatReviewBeforeFixProgress(a.Config, run))
+		if allowIndependentInspection {
+			a.EmitProgress(reviewRunLocalizedText(a.Config, run,
+				"Pre-fix local review route was unreliable, so the main model will continue with independent source inspection instead of treating the review as approval.",
+				"수정 전 로컬 리뷰 route가 신뢰 가능한 finding을 만들지 못해, 리뷰 승인으로 보지 않고 메인 모델이 소스 코드를 독립 확인한 뒤 계속 수리합니다."))
+		}
 		a.EmitProgress(formatReviewBeforeFixHandoffProgress(a.Config, run))
 	}
 	return true, nil
@@ -144,6 +150,9 @@ func (a *Agent) maybeStopAfterReviewerGateUnavailable() (string, bool) {
 		return "", false
 	}
 	run := *a.Session.LastReviewRun
+	if preFixReviewCanContinueWithIndependentInspection(run) {
+		return "", false
+	}
 	if !reviewRunHasRequiredReviewerFailure(run) {
 		if preFixReviewHasUnreliableNoActionableFinding(run) {
 			return formatPreFixNoReliableActionableFindingsReply(a.Config, run), true
@@ -392,6 +401,34 @@ func preFixNonConclusiveBugHuntFindings(run ReviewRun) []ReviewFinding {
 	if len(run.Evidence.ChangedPaths) == 0 && len(run.ChangeSet.ChangedPaths) == 0 {
 		return nil
 	}
+	if preFixReviewHadLocalDegradedUnreliableReviewerRoute(run) {
+		if reviewRunPrefersKoreanFromRequest(run) {
+			return []ReviewFinding{{
+				ID:                 "RF-PREFIX-001",
+				Source:             "deterministic",
+				Severity:           reviewSeverityMedium,
+				Category:           "evidence_gap",
+				Title:              "수정 전 로컬 리뷰 route가 실행 가능한 버그 finding을 만들지 못했습니다",
+				Evidence:           "요청은 버그를 검토하고 수정하라는 내용이지만, 수정 전 리뷰의 로컬/호환 모델 route가 실패했거나 weak/empty 응답을 반환했고 실행 가능한 correctness, stability, security, performance finding도 없습니다.",
+				Impact:             "이 결과는 코드가 안전하다는 승인이 아닙니다. 다만 로컬 모델 route 특성상 review-only 형식화에 실패했을 수 있으므로, 구현 모델은 파일 내용을 직접 읽고 독립적으로 확인한 뒤 명확한 수리 대상이 있을 때만 수정해야 합니다.",
+				RequiredFix:        "참조된 소스를 독립적으로 확인한 뒤 명확히 필요한 수정만 적용하세요. 추측성 rewrite는 피하고, 파일 쓰기 전 pre-write review는 그대로 통과해야 합니다.",
+				TestRecommendation: "편집 후 touched code에 사용할 수 있는 focused verification을 실행하고 pre-write review가 승인하는지 확인하세요.",
+				Confidence:         "medium",
+			}}
+		}
+		return []ReviewFinding{{
+			ID:                 "RF-PREFIX-001",
+			Source:             "deterministic",
+			Severity:           reviewSeverityMedium,
+			Category:           "evidence_gap",
+			Title:              "Pre-fix local review route produced no actionable bug findings",
+			Evidence:           "The request asks to inspect and fix bugs, but a local or OpenAI-compatible pre-fix review-stage model route failed or returned weak/empty output and no actionable correctness, stability, security, or performance finding is available.",
+			Impact:             "This is not evidence that the code is safe. Local model routes can fail review-only formatting, so the implementation model must inspect the referenced source directly and edit only when it finds a concrete repair target.",
+			RequiredFix:        "Inspect the referenced source independently, apply only clearly necessary fixes, avoid speculative rewrites, and still pass the normal pre-write review before writing.",
+			TestRecommendation: "Run focused verification for touched code after editing and confirm the pre-write review approves the proposal.",
+			Confidence:         "medium",
+		}}
+	}
 	if preFixReviewHadUnreliableReviewerRoute(run) {
 		if reviewRunPrefersKoreanFromRequest(run) {
 			return []ReviewFinding{{
@@ -458,6 +495,13 @@ func preFixReviewHasUnreliableNoActionableFinding(run ReviewRun) bool {
 		!preFixReviewHasActionableBugHuntFinding(run)
 }
 
+func preFixReviewCanContinueWithIndependentInspection(run ReviewRun) bool {
+	return strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) &&
+		reviewBeforeFixNeedsDeepBugHunt(run) &&
+		preFixReviewHadLocalDegradedUnreliableReviewerRoute(run) &&
+		!preFixReviewHasActionableBugHuntFinding(run)
+}
+
 func preFixReviewHadUnreliableReviewerRoute(run ReviewRun) bool {
 	if reviewRunHasUsableMainReviewer(run) {
 		return false
@@ -467,6 +511,24 @@ func preFixReviewHadUnreliableReviewerRoute(run ReviewRun) bool {
 			continue
 		}
 		if preFixReviewerRunIsUnreliable(reviewerRun) {
+			return true
+		}
+	}
+	return false
+}
+
+func preFixReviewHadLocalDegradedUnreliableReviewerRoute(run ReviewRun) bool {
+	if reviewRunHasUsableMainReviewer(run) {
+		return false
+	}
+	for _, reviewerRun := range run.ReviewerRuns {
+		if !preFixReviewerRunIsMainRoute(reviewerRun) {
+			continue
+		}
+		if !preFixReviewerRunIsUnreliable(reviewerRun) {
+			continue
+		}
+		if reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(Config{}, reviewerRun)) {
 			return true
 		}
 	}
@@ -923,6 +985,11 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 	}
 	if korean {
 		b.WriteString("\n\n구현 규칙:\n")
+		if preFixReviewCanContinueWithIndependentInspection(run) {
+			b.WriteString("- 수정 전 리뷰 route 실패는 코드 승인도, 수정 금지도 아닙니다. 먼저 참조된 파일을 직접 읽고 실제 버그가 있는지 독립적으로 확인하세요.\n")
+			b.WriteString("- 실행 가능한 코드 finding이 없으면 추측성 패치를 만들지 말고, 명확한 버그를 찾은 경우에만 좁게 수정하세요.\n")
+			b.WriteString("- 파일 쓰기 전 pre-write review는 그대로 필수이며, 그 단계에서 실패하면 파일을 쓰면 안 됩니다.\n")
+		}
 		b.WriteString("- 필요한 범위에서만 추가로 확인하세요.\n")
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 			b.WriteString("- 필수 수정 계획의 patch 작성 원칙을 따르세요. pre-write gate가 필수 RF 전체 해결을 검사하므로, 큰 rewrite 대신 RF별 좁은 hunk로 전체 필수 항목을 해결하세요.\n")
@@ -943,6 +1010,11 @@ func formatReviewBeforeFixFeedback(run ReviewRun) string {
 		b.WriteString("- 파일 쓰기 전 일반 pre-write review gate가 다시 실행됩니다.\n")
 	} else {
 		b.WriteString("\n\nImplementation rules:\n")
+		if preFixReviewCanContinueWithIndependentInspection(run) {
+			b.WriteString("- The failed pre-fix review route is neither code approval nor an editing ban. First read the referenced files and independently verify whether a real bug exists.\n")
+			b.WriteString("- If there is no actionable code finding, do not invent a speculative patch; edit narrowly only when you find a concrete bug.\n")
+			b.WriteString("- The normal pre-write review remains mandatory, and files must not be written if that gate fails.\n")
+		}
 		b.WriteString("- Inspect further only where needed.\n")
 		if strings.TrimSpace(run.RepairPlan.Prompt) != "" {
 			b.WriteString("- Follow the repair plan's patch construction rules. The pre-write gate checks that every required RF is addressed, so satisfy the required set with separate narrow hunks instead of a large rewrite.\n")

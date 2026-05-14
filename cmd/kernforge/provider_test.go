@@ -101,6 +101,42 @@ func TestLocalOpenAICompatibleClientOmitsAuthorizationWithoutAPIKey(t *testing.T
 	}
 }
 
+func TestLocalOpenAICompatibleClientPreservesReasoningContentWhenContentEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"","reasoning_content":"REVIEW_RESULT\nverdict: approved\nsummary: ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewProviderClient(Config{
+		Provider: "lmstudio",
+		Model:    "qwen-local",
+		BaseURL:  server.URL + "/v1",
+	})
+	if err != nil {
+		t.Fatalf("NewProviderClient: %v", err)
+	}
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model: "qwen-local",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "" {
+		t.Fatalf("expected empty content to stay empty, got %#v", resp.Message)
+	}
+	if !strings.Contains(resp.Message.ReasoningContent, "REVIEW_RESULT") {
+		t.Fatalf("expected reasoning_content to be preserved for local empty content, got %#v", resp.Message)
+	}
+	if !strings.Contains(resp.RawBody, "reasoning_content") {
+		t.Fatalf("expected raw provider body to be retained, got %q", resp.RawBody)
+	}
+}
+
 func TestOpenAIClientRetriesJSONModeWithoutResponseFormatWhenUnsupported(t *testing.T) {
 	attempts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

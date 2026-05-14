@@ -375,10 +375,16 @@ func renderReviewCLIFinding(b *strings.Builder, cfg Config, run ReviewRun, findi
 
 func renderReviewCLIRouteStatus(cfg Config, run ReviewRun) string {
 	if run.SingleModelPolicy.Enabled {
+		var status string
 		if reviewRunPrefersKorean(cfg, run) {
-			return "single_model_mode - 별도 cross reviewer 없이 메인 모델 structured review와 deterministic gate를 사용합니다."
+			status = "single_model_mode - 별도 cross reviewer 없이 메인 모델 structured review와 deterministic gate를 사용합니다."
+		} else {
+			status = "single_model_mode - using main-model structured review plus deterministic gate without a separate cross reviewer."
 		}
-		return "single_model_mode - using main-model structured review plus deterministic gate without a separate cross reviewer."
+		if detail := renderReviewCLIReviewerRunDetails(run); detail != "" {
+			status += "; " + detail
+		}
+		return status
 	}
 	if len(run.ReviewerRuns) == 0 {
 		if reviewRunPrefersKorean(cfg, run) {
@@ -386,13 +392,21 @@ func renderReviewCLIRouteStatus(cfg Config, run ReviewRun) string {
 		}
 		return "deterministic_only - using local deterministic gate without model review."
 	}
+	return renderReviewCLIReviewerRunDetails(run)
+}
+
+func renderReviewCLIReviewerRunDetails(run ReviewRun) string {
 	var parts []string
 	for _, reviewerRun := range run.ReviewerRuns {
 		role := valueOrDefault(reviewRoleProgressName(reviewerRun.Role), reviewerRun.Role)
 		kind := valueOrDefault(reviewerRun.Kind, "review")
 		status := valueOrDefault(reviewerRun.Status, "unknown")
 		quality := valueOrDefault(reviewerRun.ModelQuality, "unknown")
-		parts = append(parts, fmt.Sprintf("%s/%s=%s quality=%s", kind, role, status, quality))
+		detail := fmt.Sprintf("%s/%s=%s quality=%s", kind, role, status, quality)
+		if strings.TrimSpace(reviewerRun.RawProviderResponsePath) != "" {
+			detail += " provider_raw=" + reviewerRun.RawProviderResponsePath
+		}
+		parts = append(parts, detail)
 	}
 	return strings.Join(parts, "; ")
 }
