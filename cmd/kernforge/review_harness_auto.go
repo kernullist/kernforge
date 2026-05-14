@@ -672,6 +672,8 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 		b.WriteString("- 리뷰 artifact 파일을 다시 읽지 마세요. 필요한 리뷰 지침은 여기 모두 포함되어 있습니다.\n")
 		b.WriteString("- 같은 patch를 반복하지 말고 수정된 edit proposal을 반환하세요.")
 		b.WriteString("\n")
+		b.WriteString(preWriteBlockedProposalStandaloneGuidance(true))
+		b.WriteString("\n")
 		b.WriteString(reviewPatchRelevanceGuidance(true))
 		b.WriteString("\n")
 		b.WriteString(reviewNarrowPatchGuidance(true))
@@ -700,6 +702,8 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 	b.WriteString("- Return a corrected edit proposal instead of retrying the same patch.")
 	b.WriteString("\n")
+	b.WriteString(preWriteBlockedProposalStandaloneGuidance(false))
+	b.WriteString("\n")
 	b.WriteString(reviewPatchRelevanceGuidance(false))
 	b.WriteString("\n")
 	b.WriteString(reviewNarrowPatchGuidance(false))
@@ -708,6 +712,19 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 	b.WriteString(reviewDedicatedInspectionToolGuidance(false))
 	b.WriteString("\n- This is local code review/repair work. Do not use MCP web/search/browser tools or external web research to satisfy this gate; use local source evidence and the inline findings above.")
 	return strings.TrimSpace(b.String())
+}
+
+func preWriteBlockedProposalStandaloneGuidance(korean bool) string {
+	if korean {
+		return strings.Join([]string{
+			"- 차단된 이전 patch는 파일에 적용되지 않았습니다. 다음 edit proposal은 이전 patch에 덧붙이는 delta가 아니라, 현재 파일에 바로 적용 가능한 완전한 standalone patch여야 합니다.",
+			"- 이전 patch가 대부분 맞고 include나 작은 보강만 빠졌더라도 include-only patch를 보내지 마세요. 이전 코드 hunk와 보강 hunk를 함께 다시 제출하세요.",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"- The previously blocked patch was not applied to disk. The next edit proposal must be a complete standalone patch for the current file, not a delta on top of the blocked patch.",
+		"- If the previous patch was mostly correct but only missed an include or a small reinforcement, do not send an include-only patch. Resubmit the previous code hunks together with the reinforcement hunk.",
+	}, "\n")
 }
 
 func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warnings []ReviewFinding) string {
@@ -728,6 +745,8 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 		b.WriteString("- 이 pre-write 경고를 필수 수정 지침으로 취급하세요.\n")
 		b.WriteString("- 요청된 API surface와 구현 근거가 모두 보이도록 수정안을 다시 작성하세요.\n")
 		b.WriteString("- 이전의 불완전한 patch를 쓰지 마세요.\n")
+		b.WriteString(preWriteBlockedProposalStandaloneGuidance(true))
+		b.WriteString("\n")
 		b.WriteString(reviewPatchRelevanceGuidance(true))
 		b.WriteString("\n")
 		b.WriteString(reviewNarrowPatchGuidance(true))
@@ -752,6 +771,8 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 	b.WriteString("- Treat these pre-write warnings as required repair guidance.\n")
 	b.WriteString("- Revise the proposed edit so the requested API surface and implementation evidence are both present.\n")
 	b.WriteString("- Do not write the previous incomplete patch.\n")
+	b.WriteString("\n")
+	b.WriteString(preWriteBlockedProposalStandaloneGuidance(false))
 	b.WriteString("\n")
 	b.WriteString(reviewPatchRelevanceGuidance(false))
 	b.WriteString("\n")

@@ -385,7 +385,7 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 	}
 	post := formatPostChangeReviewFeedback(run, true)
 	preWrite := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
-	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "must directly touch code tokens"} {
+	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "must directly touch code tokens", "complete standalone patch", "include-only patch"} {
 		if !strings.Contains(preWrite, want) {
 			t.Fatalf("expected pre-write feedback to contain narrow patch guidance %q, got %q", want, preWrite)
 		}
@@ -404,6 +404,63 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 				t.Fatalf("expected automatic review feedback to contain %q, got %q", required, feedback)
 			}
 		}
+	}
+}
+
+func TestLatestEditProposalForUserDecisionSkipsIncludeOnlyDeltaForCodeBlocker(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		Trigger: "pre_write",
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "QueryDosDevice failure still exits the volume loop",
+			Evidence:    "`QueryDosDevice` failure still uses `break` before `FindNextVolume` can run.",
+			RequiredFix: "Change the `QueryDosDevice` failure path so the current volume is skipped and `FindNextVolume` continues.",
+			BlocksGate:  true,
+		}},
+	}
+	codePatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: Tavern/TavernWorker/PathConverter.cpp",
+		"@@",
+		"-\t\t\tif (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		"-\t\t\t{",
+		"-\t\t\t\tbreak;",
+		"-\t\t\t}",
+		"+\t\t\tif (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		"+\t\t\t{",
+		"+\t\t\t\tcontinue;",
+		"+\t\t\t}",
+		" \t\t} while (FindNextVolume(findHandle, volumeName, MAX_PATH));",
+		"*** End Patch",
+	}, "\n")
+	includePatch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: Tavern/TavernWorker/PathConverter.cpp",
+		"@@",
+		"+#include <vector>",
+		"*** End Patch",
+	}, "\n")
+	session.Messages = append(session.Messages,
+		Message{Role: "assistant", ToolCalls: []ToolCall{{
+			Name:      "apply_patch",
+			Arguments: fmt.Sprintf(`{"patch":%q}`, codePatch),
+		}}},
+		Message{Role: "assistant", ToolCalls: []ToolCall{{
+			Name:      "apply_patch",
+			Arguments: fmt.Sprintf(`{"patch":%q}`, includePatch),
+		}}},
+	)
+	rendered := formatLatestEditProposalForUserDecision(Config{AutoLocale: boolPtr(false)}, session)
+	for _, want := range []string{"include-only delta", "QueryDosDevice", "FindNextVolume"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered proposal to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "#include <vector>") {
+		t.Fatalf("expected include-only delta to be skipped in favor of previous code proposal, got:\n%s", rendered)
 	}
 }
 
@@ -626,6 +683,80 @@ func TestPreFixDeepBugHuntPromptUsesExpandedEvidenceLimit(t *testing.T) {
 	prompt := buildReviewModelPrompt(cfg, run, "primary_reviewer")
 	if !strings.Contains(prompt, "TAIL_SENTINEL") {
 		t.Fatalf("pre-fix deep bug-hunt prompt should use expanded evidence limit, got prompt length=%d", len(prompt))
+	}
+}
+
+func TestPreFixLocalUnreliableReviewContinuesWithIndependentInspection(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"PathConverter.cpp"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Model:        "LM Studio / qwen/qwen3.6-27b",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty content while reasoning_content was present",
+		}},
+	}
+	if !preFixReviewHasUnreliableNoActionableFinding(run) {
+		t.Fatalf("expected local empty pre-fix review to be recognized as unreliable")
+	}
+	if !preFixReviewCanContinueWithIndependentInspection(run) {
+		t.Fatalf("expected local unreliable pre-fix review to continue with independent source inspection")
+	}
+	findings := preFixNonConclusiveBugHuntFindings(run)
+	if len(findings) != 1 {
+		t.Fatalf("expected one deterministic evidence-gap finding, got %#v", findings)
+	}
+	if findings[0].BlocksGate || strings.EqualFold(findings[0].Severity, reviewSeverityBlocker) {
+		t.Fatalf("local pre-fix review failure should warn without blocking independent inspection, got %#v", findings[0])
+	}
+	agent := &Agent{Session: &Session{LastReviewRun: &run}}
+	if reply, stop := agent.maybeStopAfterReviewerGateUnavailable(); stop {
+		t.Fatalf("local pre-fix review failure should not stop repair handoff, reply=%q", reply)
+	}
+	feedback := formatReviewBeforeFixFeedback(run)
+	for _, want := range []string{
+		"neither code approval nor an editing ban",
+		"independently verify",
+		"pre-write review remains mandatory",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected independent inspection guidance %q, got:\n%s", want, feedback)
+		}
+	}
+}
+
+func TestPreFixNonLocalUnreliableReviewStillStopsAsEvidenceGap(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"PathConverter.cpp"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Model:        "openai-codex-subscription / gpt-5.5",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+	}
+	if preFixReviewCanContinueWithIndependentInspection(run) {
+		t.Fatalf("non-local reviewer failures should not enter local independent-inspection fallback")
+	}
+	findings := preFixNonConclusiveBugHuntFindings(run)
+	if len(findings) != 1 || !findings[0].BlocksGate || !strings.EqualFold(findings[0].Severity, reviewSeverityBlocker) {
+		t.Fatalf("expected non-local unreliable review to remain a blocking evidence gap, got %#v", findings)
 	}
 }
 
@@ -1252,6 +1383,206 @@ func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
 	}
 	if indexStringContaining(progress, "compact recovery") < 0 {
 		t.Fatalf("expected compact recovery progress, got %#v", progress)
+	}
+}
+
+func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	source := "bool Fix(){\n"
+	for i := 0; i < 1800; i++ {
+		source += fmt.Sprintf("    // line %d keeps the focused evidence large enough for local compact mode\n", i)
+	}
+	source += "    return true;\n}\n"
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	localClient := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			approvedReviewResponse("compact initial prompt approved the local-model review"),
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen-local"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    localClient,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "lmstudio", "qwen-local", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	var progress []string
+	agent.EmitProgress = func(msg string) {
+		progress = append(progress, msg)
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-40 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(localClient.requests) != 1 {
+		t.Fatalf("expected one compact initial request, got %d", len(localClient.requests))
+	}
+	if !strings.Contains(localClient.requests[0].System, "local-model review recovery") {
+		t.Fatalf("expected local compact system prompt, got %q", localClient.requests[0].System)
+	}
+	if !strings.Contains(localClient.requests[0].Messages[0].Text, "compact format up front") {
+		t.Fatalf("expected compact initial prompt text, got %q", localClient.requests[0].Messages[0].Text)
+	}
+	if len(localClient.requests[0].Messages[0].Text) >= len(run.Evidence.Text) {
+		t.Fatalf("expected compact prompt to be smaller than full evidence")
+	}
+	if indexStringContaining(progress, "compact initial prompt") < 0 {
+		t.Fatalf("expected compact initial progress, got %#v", progress)
+	}
+}
+
+func TestHighQualityReviewKeepsFullInitialPrompt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	source := "bool Fix(){\n"
+	for i := 0; i < 1800; i++ {
+		source += fmt.Sprintf("    // line %d keeps the focused evidence large enough to prove strict routes stay full size\n", i)
+	}
+	source += "    return true;\n}\n"
+	if err := os.WriteFile(path, []byte(source), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	client := &namedScriptedProviderClient{
+		name: "openai",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			approvedReviewResponse("strict route approved the full review"),
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-strict"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "openai", "gpt-strict", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-40 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected one strict initial request, got %d", len(client.requests))
+	}
+	if strings.Contains(client.requests[0].System, "local-model review recovery") {
+		t.Fatalf("strict route should not use local compact system prompt, got %q", client.requests[0].System)
+	}
+	if strings.Contains(client.requests[0].Messages[0].Text, "compact format up front") {
+		t.Fatalf("strict route should not use compact initial prompt, got %q", client.requests[0].Messages[0].Text)
+	}
+	if len(client.requests[0].Messages[0].Text) < len(run.Evidence.Text) {
+		t.Fatalf("expected strict route prompt to keep full evidence context")
+	}
+}
+
+func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	localClient := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				ReasoningContent: strings.Join([]string{
+					"thinking about the code",
+					"REVIEW_RESULT",
+					"verdict: approved",
+					"summary: recovered structured local review",
+				}, "\n"),
+			},
+			RawBody: `{"choices":[{"message":{"content":"","reasoning_content":"REVIEW_RESULT\nverdict: approved\nsummary: recovered structured local review"},"finish_reason":"stop"}]}`,
+		}}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen-local"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    localClient,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "lmstudio", "qwen-local", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	var progress []string
+	agent.EmitProgress = func(msg string) {
+		progress = append(progress, msg)
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected reasoning_content recovery to complete the local review run, got %#v", run.ReviewerRuns)
+	}
+	if strings.TrimSpace(run.ReviewerRuns[0].RawProviderResponsePath) == "" {
+		t.Fatalf("expected raw provider response artifact path")
+	}
+	if _, err := os.Stat(run.ReviewerRuns[0].RawProviderResponsePath); err != nil {
+		t.Fatalf("expected raw provider response artifact: %v", err)
+	}
+	rendered := renderReviewCLIResult(cfg, run)
+	if !strings.Contains(rendered, "provider_raw=") {
+		t.Fatalf("expected CLI review output to expose provider raw artifact path, got %q", rendered)
+	}
+	if indexStringContaining(progress, "reasoning channel") < 0 {
+		t.Fatalf("expected reasoning-channel recovery progress, got %#v", progress)
+	}
+}
+
+func TestLocalReasoningRecoveryRequiresExplicitMarkerLine(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	run := ReviewReviewerRun{Role: "primary_reviewer"}
+
+	if got := reviewStructuredOutputFromReasoningContent(cfg, run, "thinking: no REVIEW_RESULT was emitted"); got != "" {
+		t.Fatalf("expected no recovery from a marker mention, got %q", got)
+	}
+
+	got := reviewStructuredOutputFromReasoningContent(cfg, run, "한글 reasoning before marker\n  REVIEW_RESULT\r\nverdict: approved\nsummary: ok")
+	if !strings.HasPrefix(got, "REVIEW_RESULT") {
+		t.Fatalf("expected recovery from explicit marker line, got %q", got)
 	}
 }
 

@@ -55,6 +55,7 @@ type ChatRequest struct {
 type ChatResponse struct {
 	Message    Message
 	StopReason string
+	RawBody    string
 }
 
 type ProgressEvent struct {
@@ -833,13 +834,14 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			Arguments: tc.Function.Arguments,
 		})
 	}
-	if strings.EqualFold(providerName, "deepseek") && len(out.ToolCalls) > 0 {
+	if shouldPreserveOpenAIReasoningContent(providerName, out.Text, out.ToolCalls) {
 		out.ReasoningContent = strings.TrimSpace(choice.Message.ReasoningContent)
 	}
 
 	return ChatResponse{
 		Message:    out,
 		StopReason: choice.FinishReason,
+		RawBody:    string(data),
 	}, nil
 }
 
@@ -947,7 +949,7 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 					}
 				}
 			}
-			if strings.EqualFold(providerName, "deepseek") {
+			if shouldCollectOpenAIReasoningContent(providerName) {
 				if deltaReasoning := extractOpenAIMessageText(choice.Delta.ReasoningContent); deltaReasoning != "" {
 					reasoningBuilder.WriteString(deltaReasoning)
 				}
@@ -1039,7 +1041,7 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 			ArgumentsPreview: summarizeToolArgumentsPreview(arguments),
 		})
 	}
-	if strings.EqualFold(providerName, "deepseek") && len(out.ToolCalls) > 0 {
+	if shouldPreserveOpenAIReasoningContent(providerName, out.Text, out.ToolCalls) {
 		out.ReasoningContent = strings.TrimSpace(reasoningBuilder.String())
 	}
 
@@ -1051,6 +1053,22 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 		result.StopReason = "stream_incomplete"
 	}
 	return result, nil
+}
+
+func shouldCollectOpenAIReasoningContent(providerName string) bool {
+	providerName = normalizeProviderName(providerName)
+	return strings.EqualFold(providerName, "deepseek") || isLocalOpenAICompatibleProvider(providerName)
+}
+
+func shouldPreserveOpenAIReasoningContent(providerName string, text string, toolCalls []ToolCall) bool {
+	providerName = normalizeProviderName(providerName)
+	if strings.EqualFold(providerName, "deepseek") {
+		return len(toolCalls) > 0
+	}
+	if isLocalOpenAICompatibleProvider(providerName) {
+		return strings.TrimSpace(text) == ""
+	}
+	return false
 }
 
 func shouldReleaseBufferedStreamText(text string) bool {

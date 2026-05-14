@@ -239,16 +239,17 @@ type ReviewModelPlan struct {
 }
 
 type ReviewReviewerRun struct {
-	Role          string    `json:"role,omitempty"`
-	Kind          string    `json:"kind,omitempty"`
-	Model         string    `json:"model,omitempty"`
-	StartedAt     time.Time `json:"started_at,omitempty"`
-	FinishedAt    time.Time `json:"finished_at,omitempty"`
-	Status        string    `json:"status,omitempty"`
-	ModelQuality  string    `json:"model_quality,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	RawOutputPath string    `json:"raw_output_path,omitempty"`
-	PromptPath    string    `json:"prompt_path,omitempty"`
+	Role                    string    `json:"role,omitempty"`
+	Kind                    string    `json:"kind,omitempty"`
+	Model                   string    `json:"model,omitempty"`
+	StartedAt               time.Time `json:"started_at,omitempty"`
+	FinishedAt              time.Time `json:"finished_at,omitempty"`
+	Status                  string    `json:"status,omitempty"`
+	ModelQuality            string    `json:"model_quality,omitempty"`
+	Error                   string    `json:"error,omitempty"`
+	RawOutputPath           string    `json:"raw_output_path,omitempty"`
+	RawProviderResponsePath string    `json:"raw_provider_response_path,omitempty"`
+	PromptPath              string    `json:"prompt_path,omitempty"`
 }
 
 type ReviewMergeResult struct {
