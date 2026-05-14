@@ -38,6 +38,7 @@ type Agent struct {
 	FuzzCampaigns                  *FuzzCampaignStore
 	VerifyChanges                  func(context.Context) (VerificationReport, bool)
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
+	PromptContinueReviewRepair     func(string) (bool, error)
 	UserChangeIsolation            *UserChangeIsolationState
 	EmitAssistant                  func(string)
 	EmitAssistantPersistent        func(string)
@@ -77,20 +78,36 @@ func (a *Agent) Reply(ctx context.Context, userText string) (string, error) {
 	return a.ReplyWithImages(ctx, userText, nil)
 }
 
+const (
+	reviewRepairConfirmationModeRepair                  = "repair"
+	reviewRepairConfirmationModeReviewerGateUnavailable = "reviewer_gate_unavailable"
+)
+
 func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
 	a.lastEmittedText = ""
 	startIndex := len(a.Session.Messages)
 	confirmedReviewRepair := false
+	confirmedReviewerGateRepair := false
 	if a.hasPendingReviewRepairConfirmation() {
+		pendingMode := a.pendingReviewRepairConfirmationMode()
 		switch parseReviewRepairConfirmationInput(userText) {
 		case reviewRepairConfirmationYes:
 			if a.Session.LastReviewRun == nil || !reviewRunNeedsRepair(*a.Session.LastReviewRun) {
 				reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, true, formatMissingPendingReviewRepairReply(a.Config))
 				return reply, err
 			}
+			if pendingMode == reviewRepairConfirmationModeReviewerGateUnavailable &&
+				!reviewRunHasActionableNonReviewerFindings(*a.Session.LastReviewRun) {
+				reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, true, formatNoActionableReviewerGateRepairReply(a.Config))
+				return reply, err
+			}
 			a.Session.PendingReviewRepairConfirm = nil
 			userText = "계속 수정해"
-			confirmedReviewRepair = true
+			if pendingMode == reviewRepairConfirmationModeReviewerGateUnavailable {
+				confirmedReviewerGateRepair = true
+			} else {
+				confirmedReviewRepair = true
+			}
 		case reviewRepairConfirmationNo:
 			reply, err := a.finishPendingReviewRepairConfirmation(userText, extraImages, true, formatCancelledPendingReviewRepairReply(a.Config))
 			return reply, err
@@ -115,6 +132,9 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if confirmedReviewRepair {
 		enriched += "\n\nPending review repair confirmation:\n- The user selected `y` for the pending pre-write review repair prompt.\n- Continue from the latest review findings and the last edit proposal already stored in this session.\n- Do not run a new review-before-fix pass for this confirmation turn.\n- Do not run package-wide tests unless the user explicitly requests them; use focused verification only.\n"
+	}
+	if confirmedReviewerGateRepair {
+		enriched += "\n\nPending reviewer-gate repair confirmation:\n- The user selected `y` after a pre-write reviewer gate failed or returned weak output.\n- This is not approval to write without review and not approval to bypass the reviewer gate.\n- Continue repairing only the actionable non-reviewer findings and the last edit proposal already stored in this session.\n- Use the normal edit tool path so the pre-write review gate runs again before any file write.\n- Do not run package-wide tests unless the user explicitly requests them; use focused verification only.\n"
 	}
 	if explicitGitRequest {
 		enriched += "\n\nGit intent:\n- The user explicitly asked for a git action such as staging, committing, pushing, or opening a PR.\n- If you perform a git-mutating action, summarize exactly what you are about to do.\n"
@@ -193,9 +213,17 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 		return reply, nil
 	}
-	if !ranReviewBeforeFix && a.maybePrimeRepairFromLastReview(userText, images, readOnlyAnalysis, explicitEditRequest) {
-		if err := a.Store.Save(a.Session); err != nil {
-			return "", err
+	if !ranReviewBeforeFix {
+		primedRepair := false
+		if confirmedReviewerGateRepair {
+			primedRepair = a.maybePrimeRepairFromReviewerGateUnavailable(userText, images, readOnlyAnalysis, explicitEditRequest)
+		} else {
+			primedRepair = a.maybePrimeRepairFromLastReview(userText, images, readOnlyAnalysis, explicitEditRequest)
+		}
+		if primedRepair {
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
 		}
 	}
 	reply, err := a.completeLoop(ctx, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
@@ -233,6 +261,17 @@ const (
 
 func (a *Agent) hasPendingReviewRepairConfirmation() bool {
 	return a != nil && a.Session != nil && a.Session.PendingReviewRepairConfirm != nil
+}
+
+func (a *Agent) pendingReviewRepairConfirmationMode() string {
+	if a == nil || a.Session == nil || a.Session.PendingReviewRepairConfirm == nil {
+		return ""
+	}
+	mode := strings.TrimSpace(a.Session.PendingReviewRepairConfirm.Mode)
+	if mode == "" {
+		return reviewRepairConfirmationModeRepair
+	}
+	return mode
 }
 
 func parseReviewRepairConfirmationInput(input string) reviewRepairConfirmationDecision {
@@ -290,6 +329,13 @@ func formatMissingPendingReviewRepairReply(cfg Config) string {
 		return "계속 수정할 최신 리뷰 결과가 더 이상 세션에 남아 있지 않습니다. 확인 상태를 닫고 여기서 멈춥니다."
 	}
 	return "There is no longer a repairable latest review result in the session. I cleared the confirmation state and stopped here."
+}
+
+func formatNoActionableReviewerGateRepairReply(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다. `primary`가 실패했다면 현재 메인 모델 또는 프로바이더 route 문제이므로 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요. `cross` 또는 전용 reviewer가 실패했다면 `/review models`로 해당 reviewer route를 정상 동작하는 모델로 바꾸세요. 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다. route를 복구한 뒤 같은 요청을 다시 실행해 주세요."
+	}
+	return "This stop was caused by a required review-stage model route failure or weak output, not by a code finding. If `primary` failed, the active main model/provider route is the problem; use `/model` to switch the main model or fix the LM Studio/Qwen response issue first. If `cross` or a dedicated reviewer failed, use `/review models` to switch that reviewer route to a working model. There is no code item to repair right now, so I will not continue editing. Restore the route, then rerun the same request."
 }
 
 func (a *Agent) Compact(instructions string) string {
@@ -1181,7 +1227,45 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						"쓰기 전 리뷰어 게이트가 신뢰 가능한 근거를 만들지 못해서 편집을 중단했습니다. 코드 수정은 적용하지 않았습니다.",
 					)
 					if a.Session != nil && a.Session.LastReviewRun != nil {
-						reply = formatReviewerGateUnavailableReply(a.Config, *a.Session.LastReviewRun)
+						reply = formatReviewerGateUnavailableUserDecisionReply(a.Config, a.Session)
+					}
+					if a.PromptContinueReviewRepair != nil && a.Session != nil && a.Session.LastReviewRun != nil {
+						if !reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) {
+							a.Session.PendingReviewRepairConfirm = nil
+							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							return reply, nil
+						}
+						promptText := formatReviewerGateUnavailableUserDecisionPrompt(a.Config, a.Session)
+						continueRepair, promptErr := a.PromptContinueReviewRepair(promptText)
+						if promptErr != nil {
+							return "", promptErr
+						}
+						a.Session.PendingReviewRepairConfirm = nil
+						if !continueRepair {
+							reply = formatCancelledPendingReviewRepairReply(a.Config)
+							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							return reply, nil
+						}
+						if !a.primeReviewerGateRepairFromLastReview(latestUser) {
+							reply = formatNoActionableReviewerGateRepairReply(a.Config)
+							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							return reply, nil
+						}
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						lastToolError = ""
+						lastToolErrorCount = 0
+						continue
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -2049,26 +2133,144 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 		b.WriteString(englishIntro)
 	}
 	if reviewText := formatLatestPreWriteReviewForUserDecision(cfg, session); reviewText != "" {
-		b.WriteString("\n\n")
+		if korean {
+			b.WriteString("\n\n[1] 최신 리뷰\n")
+		} else {
+			b.WriteString("\n\n[1] Latest review\n")
+		}
 		b.WriteString(reviewText)
 	}
 	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); proposalText != "" {
-		b.WriteString("\n\n")
+		if korean {
+			b.WriteString("\n\n[2] 마지막 수정안\n")
+		} else {
+			b.WriteString("\n\n[2] Latest edit proposal\n")
+		}
 		b.WriteString(proposalText)
 	}
 	if korean {
-		b.WriteString("\n\n이 검토 결과를 기준으로 계속 수정할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
+		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
 	} else {
-		b.WriteString("\n\nShould I keep repairing from this review result? [y/N]\nReply with exactly `y` or `n`.")
+		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y/N]\nReply with exactly `y` or `n`.")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func formatReviewerGateUnavailableUserDecisionReply(cfg Config, session *Session) string {
+	if reviewRunHasActionableNonReviewerFindingsFromSession(session) {
+		recordPendingReviewerGateRepairConfirmation(session)
+	}
+	return formatReviewerGateUnavailableUserDecisionContent(cfg, session, true)
+}
+
+func formatReviewerGateUnavailableUserDecisionPrompt(cfg Config, session *Session) string {
+	return formatReviewerGateUnavailableUserDecisionContent(cfg, session, false)
+}
+
+func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Session, includeInlinePrompt bool) string {
+	korean := localePrefersKorean(cfg)
+	if session != nil && session.LastReviewRun != nil {
+		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
+	}
+	var b strings.Builder
+	if korean {
+		b.WriteString("쓰기 전 리뷰어 게이트: 통과하지 못함")
+		b.WriteString("\n- 결과: 코드 수정은 적용하지 않았습니다.")
+		b.WriteString("\n- 원인: 필수 리뷰 단계의 모델 route가 실패했거나 `weak` 품질로 판정되었습니다. `primary` 실패는 현재 메인 모델 route 문제이고, `cross` 실패는 전용 reviewer route 문제입니다.")
+		b.WriteString("\n- 중요한 점: 이 상태는 쓰기 승인도, 리뷰 우회 승인도 아닙니다.")
+		b.WriteString("\n- 다음 조건: 최신 리뷰 finding과 마지막 수정안을 기준으로 다시 수리한 뒤, 일반 파일 쓰기 경로에서 pre-write review를 다시 통과해야 합니다.")
+	} else {
+		b.WriteString("Pre-write reviewer gate: not approved (did not pass)")
+		b.WriteString("\n- Result: no code changes were applied.")
+		b.WriteString("\n- Cause: a required review-stage model route failed or was classified as `weak` quality. A `primary` failure points at the active main model route; a `cross` failure points at a dedicated reviewer route.")
+		b.WriteString("\n- Important: this is not write approval and not approval to bypass review.")
+		b.WriteString("\n- Next condition: repair from the latest review findings and last edit proposal below, then pass the normal pre-write review through the edit tool path.")
+	}
+	if session != nil && session.LastReviewRun != nil {
+		failed := reviewFailedRequiredReviewerRuns(*session.LastReviewRun)
+		if len(failed) > 0 {
+			if korean {
+				b.WriteString("\n\n[0] 실패한 리뷰어")
+			} else {
+				b.WriteString("\n\n[0] Failed reviewer")
+			}
+			for _, reviewerRun := range failed {
+				role := firstNonBlankString(reviewRoleProgressName(reviewerRun.Role), "reviewer")
+				status := valueOrDefault(strings.TrimSpace(reviewerRun.Status), "unknown")
+				quality := valueOrDefault(strings.TrimSpace(reviewerRun.ModelQuality), "unknown")
+				detail := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output was too weak")
+				fmt.Fprintf(&b, "\n- %s status=%s quality=%s: %s", role, status, quality, detail)
+			}
+		}
+	}
+	if reviewText := formatLatestPreWriteReviewForUserDecision(cfg, session); reviewText != "" {
+		if korean {
+			b.WriteString("\n\n[1] 최신 리뷰")
+		} else {
+			b.WriteString("\n\n[1] Latest review")
+		}
+		b.WriteString("\n")
+		b.WriteString(reviewText)
+	}
+	if proposalText := formatLatestEditProposalForUserDecision(cfg, session); proposalText != "" {
+		if korean {
+			b.WriteString("\n\n[2] 마지막 수정안")
+		} else {
+			b.WriteString("\n\n[2] Latest edit proposal")
+		}
+		b.WriteString("\n")
+		b.WriteString(proposalText)
+	}
+	if reviewRunHasActionableNonReviewerFindingsFromSession(session) {
+		if korean {
+			b.WriteString("\n\n[3] 다음 선택\n위의 코드 finding을 기준으로 계속 수리할 수 있습니다.")
+			if includeInlinePrompt {
+				b.WriteString(" 계속 수리할까요? [y/N]\n`y` 또는 `n`만 입력해 주세요.")
+			}
+		} else {
+			b.WriteString("\n\n[3] Next decision\nI can keep repairing from the code findings above.")
+			if includeInlinePrompt {
+				b.WriteString(" Should I keep repairing? [y/N]\nReply with exactly `y` or `n`.")
+			}
+		}
+	} else if korean {
+		b.WriteString("\n\n[3] 다음 조치\n이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다.")
+		b.WriteString("\n- 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다.")
+		b.WriteString("\n- `[0] 실패한 리뷰어`에 `primary`가 보이면 현재 메인 모델 route가 문제입니다. `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요.")
+		b.WriteString("\n- `cross` 또는 전용 reviewer가 보이면 `/review models`로 해당 reviewer route를 정상 동작하는 모델로 바꾸세요.")
+		b.WriteString("\n- route를 복구한 뒤 같은 요청을 다시 실행하세요.")
+		if includeInlinePrompt {
+			b.WriteString("\n- 이 상태에서는 `y/N` 선택을 받지 않습니다.")
+		}
+	} else {
+		b.WriteString("\n\n[3] Next step\nThis stop was caused by a required review-stage model route failure or weak output, not by a code finding.")
+		b.WriteString("\n- There is no code item to repair right now, so I will not continue editing.")
+		b.WriteString("\n- If `[0] Failed reviewer` shows `primary`, the active main model route is the problem. Use `/model` to switch the main model or fix the LM Studio/Qwen response issue first.")
+		b.WriteString("\n- If it shows `cross` or a dedicated reviewer, use `/review models` to switch that reviewer route to a working model.")
+		b.WriteString("\n- Restore the route, then rerun the same request.")
+		if includeInlinePrompt {
+			b.WriteString("\n- No `y/N` continuation is offered in this state.")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
 
 func recordPendingReviewRepairConfirmation(session *Session) {
+	recordPendingReviewRepairConfirmationWithMode(session, reviewRepairConfirmationModeRepair)
+}
+
+func recordPendingReviewerGateRepairConfirmation(session *Session) {
+	recordPendingReviewRepairConfirmationWithMode(session, reviewRepairConfirmationModeReviewerGateUnavailable)
+}
+
+func recordPendingReviewRepairConfirmationWithMode(session *Session, mode string) {
 	if session == nil {
 		return
 	}
-	state := &ReviewRepairConfirmationState{CreatedAt: time.Now()}
+	state := &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		Mode:      strings.TrimSpace(mode),
+	}
 	if session.LastReviewRun != nil {
 		state.ReviewID = session.LastReviewRun.ID
 		state.Verdict = valueOrDefault(session.LastReviewRun.Gate.Verdict, session.LastReviewRun.Result.Verdict)

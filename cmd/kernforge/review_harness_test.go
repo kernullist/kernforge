@@ -71,6 +71,18 @@ func (f *failingReviewProviderClient) Complete(ctx context.Context, req ChatRequ
 	return ChatResponse{}, fmt.Errorf("synthetic reviewer route failure")
 }
 
+type namedScriptedProviderClient struct {
+	*scriptedProviderClient
+	name string
+}
+
+func (n *namedScriptedProviderClient) Name() string {
+	if strings.TrimSpace(n.name) == "" {
+		return n.scriptedProviderClient.Name()
+	}
+	return n.name
+}
+
 func TestReviewHarnessNoModelWritesTypedArtifact(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")
@@ -373,7 +385,7 @@ func TestAutomaticReviewFeedbackKeepsModelOnInlineFindings(t *testing.T) {
 	}
 	post := formatPostChangeReviewFeedback(run, true)
 	preWrite := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run)
-	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents"} {
+	for _, want := range []string{"Keep apply_patch payloads narrow", "first independent hunk", "current file contents", "must directly touch code tokens"} {
 		if !strings.Contains(preWrite, want) {
 			t.Fatalf("expected pre-write feedback to contain narrow patch guidance %q, got %q", want, preWrite)
 		}
@@ -518,7 +530,6 @@ func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 		Paths:               []string{path},
 		IncludeFileContents: true,
 		NoModel:             true,
-		MaxContextChars:     reviewDefaultMaxContextChars,
 	})
 	if err != nil {
 		t.Fatalf("runReviewHarness: %v", err)
@@ -528,6 +539,93 @@ func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 	}
 	if indexStringContaining(progress, "max_context=20000") < 0 {
 		t.Fatalf("expected focused max_context progress, got %#v", progress)
+	}
+}
+
+func TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	var source strings.Builder
+	for i := 1; i <= 1800; i++ {
+		switch i {
+		case 130:
+			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+		case 131:
+			source.WriteString("{\n")
+		case 132:
+			source.WriteString("\t// selected range starts here\n")
+		case 221:
+			source.WriteString("\t// selected range ends here\n")
+		case 520:
+			source.WriteString("\treturn success; // POST_SELECTION_SENTINEL\n")
+		case 521:
+			source.WriteString("}\n")
+		default:
+			fmt.Fprintf(&source, "int line_%04d = %d; // PRE_FIX_LARGE_CONTEXT_%04d %s\n", i, i, i, strings.Repeat("x", 32))
+		}
+	}
+	if err := os.WriteFile(path, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false)
+	var progress []string
+	rt := &runtimeState{
+		cfg:       cfg,
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+		agent: &Agent{
+			Config: cfg,
+			EmitProgress: func(message string) {
+				progress = append(progress, message)
+			},
+		},
+	}
+	opts, selection, ok := rt.reviewBeforeFixOptions("@PathConverter.cpp:132-221 review and fix bugs", nil)
+	if !ok || selection == nil {
+		t.Fatalf("expected pre-fix line-range options, opts=%#v selection=%#v", opts, selection)
+	}
+	rt.session.AddSelection(*selection)
+	opts.NoModel = true
+	run, err := runReviewHarness(context.Background(), rt, opts)
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(run.Evidence.Text) <= reviewFocusedMaxContextChars {
+		t.Fatalf("explicit pre-fix line-range evidence should not be capped to focused budget: chars=%d", len(run.Evidence.Text))
+	}
+	if indexStringContaining(progress, "max_context=60000") < 0 {
+		t.Fatalf("expected explicit pre-fix max_context=60000 progress, got %#v", progress)
+	}
+	for _, want := range []string{
+		"Pre-fix function body excerpt: PathConverter.cpp:130-521",
+		"Pre-fix current file context: PathConverter.cpp:132-521",
+		"POST_SELECTION_SENTINEL",
+	} {
+		if !strings.Contains(run.Evidence.Text, want) {
+			t.Fatalf("expected pre-fix selection evidence to contain %q, got:\n%s", want, run.Evidence.Text)
+		}
+	}
+}
+
+func TestPreFixDeepBugHuntPromptUsesExpandedEvidenceLimit(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	run := ReviewRun{
+		ID:        "review-prefix-deep",
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@PathConverter.cpp:132-221 review and fix bugs",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"PathConverter.cpp"},
+		},
+		Evidence: ReviewEvidencePack{
+			Text: "HEAD_SENTINEL\n" + strings.Repeat("x", 18000) + "\nTAIL_SENTINEL",
+		},
+	}
+	prompt := buildReviewModelPrompt(cfg, run, "primary_reviewer")
+	if !strings.Contains(prompt, "TAIL_SENTINEL") {
+		t.Fatalf("pre-fix deep bug-hunt prompt should use expanded evidence limit, got prompt length=%d", len(prompt))
 	}
 }
 
@@ -1029,6 +1127,134 @@ func TestPreFixEmptyReviewModelResponseDegradesWithoutBlockingMainFirstRepair(t 
 	}
 }
 
+func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	localClient := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "   "}},
+			approvedReviewResponse("compact retry approved the local-model review"),
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen-local"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    localClient,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "lmstudio", "qwen-local", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	var progress []string
+	agent.EmitProgress = func(msg string) {
+		progress = append(progress, msg)
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(localClient.requests) != 2 {
+		t.Fatalf("expected initial local review and compact empty-response retry, got %d requests", len(localClient.requests))
+	}
+	if !strings.Contains(localClient.requests[1].System, "local-model review recovery") {
+		t.Fatalf("expected compact local recovery system prompt, got %q", localClient.requests[1].System)
+	}
+	if !strings.Contains(localClient.requests[1].Messages[0].Text, "previous review response was empty") {
+		t.Fatalf("expected empty-response recovery prompt, got %q", localClient.requests[1].Messages[0].Text)
+	}
+	if got := localClient.requests[1].MaxTokens; got != reviewProviderBehavior("lmstudio").RetryReviewTokens {
+		t.Fatalf("expected local retry token budget, got %d", got)
+	}
+	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected compact retry to salvage the local review run, got %#v", run.ReviewerRuns)
+	}
+	if indexStringContaining(progress, "empty response") < 0 {
+		t.Fatalf("expected empty-response retry progress, got %#v", progress)
+	}
+}
+
+func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "PathConverter.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	localClient := &namedScriptedProviderClient{
+		name: "lmstudio",
+		scriptedProviderClient: &scriptedProviderClient{replies: []ChatResponse{
+			approvedReviewResponse("compact health recovery approved the local-model review"),
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "lmstudio"
+	cfg.Model = "qwen-local"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "lmstudio", "qwen-local", "", "default")
+	session.ReviewRouteHealth = []ReviewRouteHealth{{
+		Role:              "primary_reviewer",
+		Model:             formatProviderModelEffortLabel("lmstudio", "qwen-local", ""),
+		RecentRuns:        1,
+		EmptyResponseRate: 1,
+		LastStatus:        "failed",
+		LastQuality:       reviewModelQualityFailed,
+		Recommendation:    "route returned empty output recently; retry with a different reviewer",
+	}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    localClient,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	var progress []string
+	agent.EmitProgress = func(msg string) {
+		progress = append(progress, msg)
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:             reviewBeforeFixTrigger,
+		Target:              reviewTargetSelection,
+		Mode:                reviewModeLiveFix,
+		Request:             "@PathConverter.cpp:1-1 review and fix bugs",
+		Paths:               []string{path},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(localClient.requests) != 1 {
+		t.Fatalf("expected one compact recovery request instead of a health skip, got %d", len(localClient.requests))
+	}
+	if !strings.Contains(localClient.requests[0].System, "local-model review recovery") {
+		t.Fatalf("expected compact local recovery system prompt, got %q", localClient.requests[0].System)
+	}
+	if !strings.Contains(localClient.requests[0].Messages[0].Text, "recently returned empty or weak structured output") {
+		t.Fatalf("expected route-health recovery prompt, got %q", localClient.requests[0].Messages[0].Text)
+	}
+	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
+		t.Fatalf("expected compact health recovery to complete the local review run, got %#v", run.ReviewerRuns)
+	}
+	if indexStringContaining(progress, "compact recovery") < 0 {
+		t.Fatalf("expected compact recovery progress, got %#v", progress)
+	}
+}
+
 func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "PathConverter.cpp")
@@ -1072,8 +1298,100 @@ func TestPreWriteReviewModelFailureBlocksEditGate(t *testing.T) {
 	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
 		t.Fatalf("pre-write reviewer failure should block as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
 	}
-	if !reviewRunHasFindingTitle(run, "Required reviewer model failed or returned weak output") {
+	if !reviewRunHasFindingTitle(run, "Required review route failed or returned weak output") {
 		t.Fatalf("expected required reviewer failure finding, got %#v", run.Findings)
+	}
+}
+
+func TestPreWriteDeterministicBlocksUnrelatedRepairProposal(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			DiffExcerpt: strings.Join([]string{
+				"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
+				"--- a/Tavern/TavernWorker/PathConverter.cpp",
+				"+++ b/Tavern/TavernWorker/PathConverter.cpp",
+				"@@ -1,3 +1,4 @@",
+				" #include <memory>",
+				"+#include <vector>",
+				" #include <ShlObj.h>",
+			}, "\n"),
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "file_excerpt"},
+			Text:    "pre-write evidence",
+		},
+		EditProposals: []EditProposal{{
+			File:            "Tavern/TavernWorker/PathConverter.cpp",
+			Operation:       "apply_patch",
+			ExpectedPreview: "#include <memory>\n+#include <vector>\n#include <ShlObj.h>\n",
+		}},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "Tavern/TavernWorker/PathConverter.cpp",
+			Symbol:      "PathConverter::_InitiateVolumePath",
+			Title:       "QueryDosDevice failure stops volume enumeration",
+			Evidence:    "`QueryDosDevice(&volumeName[4], deviceName, MAX_PATH)` failure still executes `break`, so `FindNextVolume` is never reached.",
+			RequiredFix: "Restore `volumeName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `FindNextVolume` enumeration alive.",
+			BlocksGate:  true,
+		}},
+	}
+	findings := deterministicReviewFindings(nil, run)
+	if !reviewFindingsContainTitle(findings, "Proposed edit does not address a required repair finding") {
+		t.Fatalf("expected unrelated include-only proposal to be blocked, got %#v", findings)
+	}
+	run.Findings = findings
+	run.Gate = evaluateReviewGate(run)
+	if run.Gate.Verdict != reviewVerdictNeedsRevision {
+		t.Fatalf("expected unrelated proposal to block pre-write gate, got %#v findings=%#v", run.Gate, findings)
+	}
+}
+
+func TestPreWriteDeterministicAllowsAlignedRepairProposal(t *testing.T) {
+	alignedDiff := strings.Join([]string{
+		"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
+		"--- a/Tavern/TavernWorker/PathConverter.cpp",
+		"+++ b/Tavern/TavernWorker/PathConverter.cpp",
+		"@@ -160,8 +160,9 @@",
+		" if (!QueryDosDevice(&volumeName[4], deviceName, MAX_PATH))",
+		" {",
+		"+    volumeName[lastIndex] = L'\\\\';",
+		"     WRITELOG(...);",
+		"-    break;",
+		"+    continue;",
+		" }",
+	}, "\n")
+	run := ReviewRun{
+		Trigger: "pre_write",
+		ChangeSet: ReviewChangeSet{
+			DiffExcerpt: alignedDiff,
+		},
+		Evidence: ReviewEvidencePack{
+			Sources: []string{"provided_diff", "file_excerpt"},
+			Text:    "pre-write evidence",
+		},
+		EditProposals: []EditProposal{{
+			File:            "Tavern/TavernWorker/PathConverter.cpp",
+			Operation:       "apply_patch",
+			ExpectedPreview: alignedDiff,
+		}},
+		RepairFindings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityHigh,
+			Category:    "correctness",
+			Path:        "Tavern/TavernWorker/PathConverter.cpp",
+			Symbol:      "PathConverter::_InitiateVolumePath",
+			Title:       "QueryDosDevice failure stops volume enumeration",
+			Evidence:    "`QueryDosDevice(&volumeName[4], deviceName, MAX_PATH)` failure still executes `break`, so `FindNextVolume` is never reached.",
+			RequiredFix: "Restore `volumeName[lastIndex]`, replace the per-volume failure `break` with `continue`, and keep `FindNextVolume` enumeration alive.",
+			BlocksGate:  true,
+		}},
+	}
+	findings := deterministicReviewFindings(nil, run)
+	if reviewFindingsContainTitle(findings, "Proposed edit does not address a required repair finding") {
+		t.Fatalf("aligned proposal should not be blocked as unrelated, got %#v", findings)
 	}
 }
 
@@ -1223,7 +1541,7 @@ func TestPreWriteWeakReviewModelQualityBlocksEditGate(t *testing.T) {
 	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
 		t.Fatalf("weak pre-write reviewer should block as insufficient evidence, got %#v findings=%#v", run.Gate, run.Findings)
 	}
-	if !reviewRunHasFindingTitle(run, "Required reviewer model failed or returned weak output") {
+	if !reviewRunHasFindingTitle(run, "Required review route failed or returned weak output") {
 		t.Fatalf("expected required reviewer quality finding, got %#v", run.Findings)
 	}
 }
@@ -3154,6 +3472,78 @@ func TestHighModelFindingDoesNotBlockReadOnlyAnalysis(t *testing.T) {
 	}
 }
 
+func TestPreFixReviewerFailureWithoutActionableFindingBlocksRepairHandoff(t *testing.T) {
+	run := ReviewRun{
+		Trigger:   reviewBeforeFixTrigger,
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeLiveFix,
+		Objective: "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"Tavern/TavernWorker/PathConverter.cpp"},
+		},
+		Evidence: ReviewEvidencePack{
+			ChangedPaths: []string{"Tavern/TavernWorker/PathConverter.cpp"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{
+			{Kind: "main", Role: "primary_reviewer", Status: "failed", ModelQuality: reviewModelQualityFailed, Error: "review model returned empty response"},
+			{Kind: "cross", Role: "cross_reviewer", Status: "failed", ModelQuality: reviewModelQualityFailed, Error: "review model soft timeout after 3m0s"},
+		},
+	}
+	findings := preFixNonConclusiveBugHuntFindings(run)
+	if len(findings) != 1 {
+		t.Fatalf("expected one non-conclusive finding, got %#v", findings)
+	}
+	if findings[0].Severity != reviewSeverityBlocker || !findings[0].BlocksGate || findings[0].Category != "evidence_gap" {
+		t.Fatalf("unreliable pre-fix route with no actionable finding must block repair handoff, got %#v", findings[0])
+	}
+	run.Findings = findings
+	run.Gate = evaluateReviewGate(run)
+	if run.Gate.Verdict != reviewVerdictInsufficientEvidence {
+		t.Fatalf("expected insufficient evidence verdict, got %#v", run.Gate)
+	}
+	if !preFixReviewHasUnreliableNoActionableFinding(run) {
+		t.Fatalf("expected unreliable no-actionable pre-fix state")
+	}
+}
+
+func TestPreFixUnreliableNoActionableReplyDoesNotOfferRepairChoice(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.AutoLocale = boolPtr(false)
+	run := ReviewRun{
+		Trigger: reviewBeforeFixTrigger,
+		Result: ReviewResult{
+			Summary: "Review route did not produce actionable findings.",
+		},
+		Findings: []ReviewFinding{{
+			ID:         "RF-PREFIX-001",
+			Severity:   reviewSeverityBlocker,
+			Category:   "evidence_gap",
+			Title:      "Pre-fix review route produced no actionable bug findings",
+			BlocksGate: true,
+		}},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Kind:         "main",
+			Role:         "primary_reviewer",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+	}
+	reply := formatPreFixNoReliableActionableFindingsReply(cfg, run)
+	for _, want := range []string{
+		"did not produce reliable actionable bug findings",
+		"no code changes were applied",
+		"local model for independent repair can produce speculative patches",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected no-actionable reply to contain %q, got %q", want, reply)
+		}
+	}
+	if strings.Contains(reply, "[y/N]") || strings.Contains(reply, "Should I keep repairing") {
+		t.Fatalf("no-actionable unreliable pre-fix state must not offer repair choice, got %q", reply)
+	}
+}
+
 func TestPreWriteRepairObligationsIncludeBlockingAndActionableWarnings(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
@@ -3466,6 +3856,82 @@ func TestPreWriteEvidenceIncludesCurrentFileContextAroundRequestedRange(t *testi
 	}
 	if len(evidence.Text) > reviewPreWriteMaxContextChars {
 		t.Fatalf("pre-write evidence should be capped, got %d > %d", len(evidence.Text), reviewPreWriteMaxContextChars)
+	}
+}
+
+func TestPreWriteEvidenceIncludesHeaderContextForIncludeSensitiveProposal(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash("Tavern/TavernWorker/PathConverter.cpp")
+	resolved := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	var source strings.Builder
+	for line := 1; line <= 260; line++ {
+		switch line {
+		case 1:
+			source.WriteString("#include \"PathConverter.h\"\n")
+		case 2:
+			source.WriteString("#include <memory>\n")
+		case 3:
+			source.WriteString("#include <ShlObj.h>\n")
+		case 120:
+			source.WriteString("bool PathConverter::_InitiateVolumePath()\n")
+		case 121:
+			source.WriteString("{\n")
+		case 150:
+			source.WriteString("\tunique_ptr<WCHAR[]> dynamicMountPoints;\n")
+		case 221:
+			source.WriteString("\tauto drivePath = _getDrivePath(volumeName);\n")
+		case 260:
+			source.WriteString("}\n")
+		default:
+			fmt.Fprintf(&source, "\tint path_converter_line_%03d = %d;\n", line, line)
+		}
+	}
+	if err := os.WriteFile(resolved, []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "scripted", "model", "", "default"),
+	}
+	request := "@Tavern/TavernWorker/PathConverter.cpp:132-221 검토하고 버그를 수정해"
+	diff := strings.Join([]string{
+		"diff --git a/Tavern/TavernWorker/PathConverter.cpp b/Tavern/TavernWorker/PathConverter.cpp",
+		"@@ -150,6 +150,7 @@",
+		"+unique_ptr<WCHAR[]> dynamicMountPoints;",
+	}, "\n")
+	run := ReviewRun{
+		ID:      "review-prewrite-header-context",
+		Trigger: "pre_write",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeLiveFix,
+	}
+	_, evidence := collectReviewEvidence(context.Background(), rt, root, run, ReviewHarnessOptions{
+		Request:         request,
+		Paths:           []string{rel},
+		ProvidedDiff:    diff,
+		IncludeGitDiff:  false,
+		MaxContextChars: reviewPreWriteMaxContextChars,
+		EditProposals: []EditProposal{{
+			File:            rel,
+			Operation:       "apply_patch",
+			ExpectedPreview: diff,
+		}},
+	})
+	for _, want := range []string{
+		"Pre-write include/header context: Tavern/TavernWorker/PathConverter.cpp:1-3",
+		"#include <memory>",
+		"#include <ShlObj.h>",
+		"unique_ptr<WCHAR[]> dynamicMountPoints;",
+	} {
+		if !strings.Contains(evidence.Text, want) {
+			t.Fatalf("expected pre-write include-sensitive evidence to contain %q, got:\n%s", want, evidence.Text)
+		}
+	}
+	if !containsString(evidence.Sources, "header_excerpt") {
+		t.Fatalf("expected pre-write evidence sources to include header_excerpt, got %#v", evidence.Sources)
 	}
 }
 

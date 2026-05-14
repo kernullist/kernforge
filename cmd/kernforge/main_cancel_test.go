@@ -3054,6 +3054,35 @@ func TestRuntimeStateConfirmAlwaysApprovesFutureDiffPreviewPrompts(t *testing.T)
 	}
 }
 
+func TestRuntimeStatePromptContinueReviewRepairUsesPinnedYNPrompt(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("y\n")),
+		writer:      &out,
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+	}
+
+	allowed, err := rt.promptContinueReviewRepair("review summary")
+	if err != nil {
+		t.Fatalf("promptContinueReviewRepair returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected y to continue repair")
+	}
+	text := out.String()
+	if !strings.Contains(text, "review summary") {
+		t.Fatalf("expected prompt body to be printed, got %q", text)
+	}
+	if !strings.Contains(text, "Continue repairing?") || !strings.Contains(text, "[y/N, Esc=cancel]") {
+		t.Fatalf("expected y/N runtime prompt, got %q", text)
+	}
+	if strings.Contains(text, "a=auto-accept") {
+		t.Fatalf("review repair prompt must not offer auto-accept, got %q", text)
+	}
+}
+
 func TestRuntimeStateConfirmAlwaysApprovesFutureGitPrompts(t *testing.T) {
 	rt := &runtimeState{
 		reader:      bufio.NewReader(strings.NewReader("a\n")),

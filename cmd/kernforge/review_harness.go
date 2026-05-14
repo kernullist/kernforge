@@ -714,7 +714,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run := newReviewRunSkeleton(rt, root, opts)
 	run.CapabilityManifest = buildReviewCapabilityManifest(rt, root)
 	analysis := analyzeReviewRequest(rt, root, opts)
-	opts.MaxContextChars = reviewMaxContextCharsForAnalysis(opts.MaxContextChars, analysis)
+	opts.MaxContextChars = reviewMaxContextCharsForAnalysis(opts.MaxContextChars, analysis, maxContextWasDefaulted)
 	opts.MaxContextChars = reviewMaxContextCharsForFastPath(opts.MaxContextChars, opts, analysis, maxContextWasDefaulted)
 	run.Target = analysis.InferredTarget
 	run.Mode = analysis.InferredMode

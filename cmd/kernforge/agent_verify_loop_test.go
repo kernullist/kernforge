@@ -3726,7 +3726,10 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	if reviewCalls == 0 {
 		t.Fatalf("expected pre-write review hook to run")
 	}
-	if !strings.Contains(reply, "reviewer gate") || !strings.Contains(reply, "No code changes were applied") {
+	if !strings.Contains(reply, "Pre-write reviewer gate: not approved") ||
+		!strings.Contains(reply, "no code changes were applied") ||
+		!strings.Contains(reply, "[3] Next step") ||
+		!strings.Contains(reply, "/review models") {
 		t.Fatalf("expected reviewer-gate stop reply, got %q", reply)
 	}
 	if len(provider.requests) != 3 {
@@ -4019,6 +4022,662 @@ func TestAgentContinuesPendingReviewRepairOnlyOnY(t *testing.T) {
 		if !scriptedRequestsContainText(provider.requests, want) {
 			t.Fatalf("expected continued request to contain %q, got %#v", want, provider.requests)
 		}
+	}
+}
+
+func TestAgentReviewerGateUnavailableShowsReviewProposalAndYN(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-unavailable",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-001"},
+			WarningFindings:  []string{"RF-003"},
+		},
+		Result: ReviewResult{Summary: "Review has insufficient evidence for approval."},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityMedium,
+				Category:    "maintainability",
+				Title:       "Retry branch uses confusing continue in do-while(false)",
+				RequiredFix: "Replace the confusing continue with break.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-003",
+				Severity:    reviewSeverityLow,
+				Category:    "operational_risk",
+				Title:       "Retry failure is not logged",
+				RequiredFix: "Log the retry failure with the GLE.",
+			},
+		},
+		ArtifactRefs: []string{filepath.Join(root, ".kernforge", "reviews", "review.md")},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("%w: required review route failed", ErrReviewerGateUnavailable),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-continue;\n+break;\n*** End Patch\n",
+			}),
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	for _, want := range []string{
+		"did not pass",
+		"not write approval",
+		"[1] Latest review",
+		"Latest review result: insufficient_evidence",
+		"RF-001",
+		"Replace the confusing continue with break",
+		"[2] Latest edit proposal",
+		"Latest edit proposal",
+		"*** Begin Patch",
+		"[3] Next decision",
+		"[y/N]",
+		"exactly `y` or `n`",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected reviewer-gate reply to contain %q, got %q", want, reply)
+		}
+	}
+	if session.PendingReviewRepairConfirm == nil {
+		t.Fatalf("expected pending confirmation after reviewer gate unavailable")
+	}
+	if session.PendingReviewRepairConfirm.Mode != reviewRepairConfirmationModeReviewerGateUnavailable {
+		t.Fatalf("expected reviewer-gate pending mode, got %q", session.PendingReviewRepairConfirm.Mode)
+	}
+	if patchTool.calls != 1 {
+		t.Fatalf("expected one patch attempt, got %d", patchTool.calls)
+	}
+}
+
+func TestAgentReviewerGateUnavailableUsesPromptAndContinuesOnY(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-prompt-y",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-021"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-021",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Retry failure lacks a log",
+				RequiredFix: "Add a narrow retry failure log.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("%w: required review route failed", ErrReviewerGateUnavailable),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-old\n+new\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+		},
+	}
+	var promptText string
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+		PromptContinueReviewRepair: func(message string) (bool, error) {
+			promptText = message
+			return true, nil
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "repair continued" {
+		t.Fatalf("expected repair to continue in the same turn, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected prompt state to be cleared after y")
+	}
+	if !strings.Contains(promptText, "Pre-write reviewer gate: not approved") ||
+		!strings.Contains(promptText, "[2] Latest edit proposal") {
+		t.Fatalf("expected prompt text to include review and proposal, got %q", promptText)
+	}
+	if strings.Contains(promptText, "Reply with exactly") {
+		t.Fatalf("runtime prompt text should not ask for natural-language y/n reply, got %q", promptText)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected same-turn continuation request after y, got %d requests", len(provider.requests))
+	}
+	for _, want := range []string{
+		"The previous pre-write review was not approved",
+		"RF-021",
+		"Add a narrow retry failure log",
+		"Latest edit proposal",
+	} {
+		if !scriptedRequestsContainText(provider.requests, want) {
+			t.Fatalf("expected continued request to contain %q, got %#v", want, provider.requests)
+		}
+	}
+}
+
+func TestAgentReviewerGateUnavailableUsesPromptAndStopsOnN(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-prompt-n",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-021"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-021",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Retry failure lacks a log",
+				RequiredFix: "Add a narrow retry failure log.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("%w: required review route failed", ErrReviewerGateUnavailable),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-old\n+new\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "this should not run"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+		PromptContinueReviewRepair: func(message string) (bool, error) {
+			if !strings.Contains(message, "Pre-write reviewer gate") {
+				t.Fatalf("expected gate summary in prompt, got %q", message)
+			}
+			return false, nil
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "will not continue repairing") {
+		t.Fatalf("expected stop reply after n, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected prompt state to be cleared after n")
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("n should stop without another model request, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentReviewerGateUnavailableWithoutActionableFindingDoesNotPrompt(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-route-only",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+		Findings: []ReviewFinding{{
+			ID:          requiredReviewerFailureFindingID,
+			Severity:    reviewSeverityBlocker,
+			Category:    "evidence_gap",
+			Title:       "Required review route failed or returned weak output",
+			RequiredFix: "Fix the reviewer route before writing.",
+			BlocksGate:  true,
+		}},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	patchTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("%w: required review route failed", ErrReviewerGateUnavailable),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-old\n+new\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "this should not run"}},
+		},
+	}
+	promptCalls := 0
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+		PromptContinueReviewRepair: func(message string) (bool, error) {
+			promptCalls++
+			return true, nil
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if promptCalls != 0 {
+		t.Fatalf("route-only reviewer failure should not ask y/N, got %d prompt calls", promptCalls)
+	}
+	for _, want := range []string{
+		"not by a code finding",
+		"/review models",
+		"No `y/N` continuation is offered",
+	} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("expected route-repair instruction %q in reply, got %q", want, reply)
+		}
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected pending confirmation to be cleared when no y/N is offered")
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("route-only reviewer failure should stop without retry, got %d requests", len(provider.requests))
+	}
+}
+
+func TestReviewerGateUnavailableRouteOnlyReplyDoesNotRecordPendingConfirmation(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-route-only-format",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+		Findings: []ReviewFinding{{
+			ID:          requiredReviewerFailureFindingID,
+			Severity:    reviewSeverityBlocker,
+			Category:    "evidence_gap",
+			Title:       "Required review route failed or returned weak output",
+			RequiredFix: "Fix the reviewer route before writing.",
+			BlocksGate:  true,
+		}},
+	}
+
+	reply := formatReviewerGateUnavailableUserDecisionReply(Config{AutoLocale: boolPtr(false)}, session)
+	if !strings.Contains(reply, "No `y/N` continuation is offered") {
+		t.Fatalf("expected route-only reply to avoid y/N, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("route-only reviewer failure must not record pending y/N state")
+	}
+}
+
+func TestAgentContinuesReviewerGateRepairOnlyOnY(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-repair",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-021"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-021",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Retry failure lacks a log",
+				RequiredFix: "Add a narrow retry failure log.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "reviewer-gate-repair",
+		Verdict:   reviewVerdictInsufficientEvidence,
+		Mode:      reviewRepairConfirmationModeReviewerGateUnavailable,
+	}
+	proposalArgs, err := json.Marshal(map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-old\n+new\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("marshal proposal: %v", err)
+	}
+	session.Messages = append(session.Messages, Message{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			Name:      "apply_patch",
+			Arguments: string(proposalArgs),
+		}},
+	})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "y")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "repair continued" {
+		t.Fatalf("expected provider reply after y confirmation, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected pending confirmation to be cleared after y")
+	}
+	for _, want := range []string{
+		"Pending reviewer-gate repair confirmation",
+		"not approval to write without review",
+		"Actionable code findings",
+		"RF-021",
+		"Add a narrow retry failure log",
+		"Do not repair RF-REVIEWER-001",
+		"Latest edit proposal",
+		"*** Update File: main.go",
+	} {
+		if !scriptedRequestsContainText(provider.requests, want) {
+			t.Fatalf("expected continued request to contain %q, got %#v", want, provider.requests)
+		}
+	}
+}
+
+func TestAgentReviewerGateRepairYWithoutActionableFindingStops(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-only",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+			WarningFindings:  []string{"RF-TEST"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-TEST",
+				Severity:    reviewSeverityMedium,
+				Category:    "test_gap",
+				Title:       "No test evidence was provided",
+				RequiredFix: "Add a focused test if code changes are made.",
+			},
+		},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "reviewer-gate-only",
+		Verdict:   reviewVerdictInsufficientEvidence,
+		Mode:      reviewRepairConfirmationModeReviewerGateUnavailable,
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{Message: Message{Role: "assistant", Text: "this should not run"}}},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "y")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "/review models") ||
+		!strings.Contains(reply, "no code item to repair") {
+		t.Fatalf("expected no-actionable reply, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("expected pending confirmation to be cleared")
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("y without actionable findings should not call the model, got %d requests", len(provider.requests))
+	}
+}
+
+func TestAgentReviewerGateRepairUsesActionableFindingOutsideGateIDs(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:      "reviewer-gate-nongate-code-finding",
+		Trigger: "pre_write",
+		ModelPlan: ReviewModelPlan{
+			RequiredRoles: []string{"primary_reviewer"},
+		},
+		ReviewerRuns: []ReviewReviewerRun{{
+			Role:         "primary_reviewer",
+			Kind:         "main",
+			Status:       "failed",
+			ModelQuality: reviewModelQualityFailed,
+			Error:        "review model returned empty response",
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-088",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "Retry path drops the volume",
+				RequiredFix: "Keep the volume retry path observable.",
+			},
+		},
+	}
+	session.PendingReviewRepairConfirm = &ReviewRepairConfirmationState{
+		CreatedAt: time.Now(),
+		ReviewID:  "reviewer-gate-nongate-code-finding",
+		Verdict:   reviewVerdictInsufficientEvidence,
+		Mode:      reviewRepairConfirmationModeReviewerGateUnavailable,
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+			{Message: Message{Role: "assistant", Text: "repair continued"}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "y")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "repair continued" {
+		t.Fatalf("expected provider reply after y confirmation, got %q", reply)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected y to continue because a non-gate actionable code finding exists")
+	}
+	if !scriptedRequestsContainText(provider.requests, "RF-088") ||
+		!scriptedRequestsContainText(provider.requests, "Keep the volume retry path observable") {
+		t.Fatalf("expected non-gate actionable finding to be carried into repair prompt, got %#v", provider.requests)
 	}
 }
 

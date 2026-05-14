@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -43,6 +44,7 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 		})
 	}
 	if preWrite {
+		findings = append(findings, deterministicPreWriteRepairProposalFindings(run)...)
 		// Pre-write review gates the proposed diff before it is applied. Runtime
 		// verification is still expected after the edit, so missing verification
 		// evidence must not block the pre-write gate.
@@ -179,6 +181,198 @@ func deterministicReviewFindings(rt *runtimeState, run ReviewRun) []ReviewFindin
 	}
 	assignReviewFindingIDs(findings)
 	return findings
+}
+
+func deterministicPreWriteRepairProposalFindings(run ReviewRun) []ReviewFinding {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") || len(run.RepairFindings) == 0 {
+		return nil
+	}
+	proposalText := preWriteProposalAlignmentText(run)
+	if strings.TrimSpace(proposalText) == "" {
+		return nil
+	}
+	includeOnly := proposalLooksIncludeOnly(proposalText)
+	var findings []ReviewFinding
+	for _, repair := range run.RepairFindings {
+		repair.Normalize()
+		if !repairFindingNeedsProposalAlignment(repair) {
+			continue
+		}
+		if includeOnly && !repairFindingAllowsIncludeOnlyProposal(repair) {
+			findings = append(findings, preWriteUnalignedRepairFinding(repair, "The proposed edit appears to only modify #include lines."))
+			continue
+		}
+		if repairFindingProposalAligned(repair, proposalText) {
+			continue
+		}
+		findings = append(findings, preWriteUnalignedRepairFinding(repair, "The proposed edit does not contain enough code tokens from the required repair finding."))
+	}
+	return limitReviewFindings(findings, 4)
+}
+
+func preWriteProposalAlignmentText(run ReviewRun) string {
+	var parts []string
+	if strings.TrimSpace(run.ChangeSet.DiffExcerpt) != "" {
+		parts = append(parts, run.ChangeSet.DiffExcerpt)
+	}
+	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
+		parts = append(parts, proposalText)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func repairFindingNeedsProposalAlignment(finding ReviewFinding) bool {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(finding.ID)), "RF-REVIEWER") {
+		return false
+	}
+	if strings.EqualFold(finding.Category, "evidence_gap") ||
+		strings.EqualFold(finding.Category, "test_gap") {
+		return false
+	}
+	return finding.BlocksGate || reviewSeverityRank(finding.Severity) <= reviewSeverityRank(reviewSeverityMedium)
+}
+
+func repairFindingAllowsIncludeOnlyProposal(finding ReviewFinding) bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.Title,
+		finding.Evidence,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	if strings.Contains(text, "#include") || strings.Contains(text, "missing include") ||
+		strings.Contains(text, "include directive") || strings.Contains(text, "header include") {
+		return true
+	}
+	return false
+}
+
+func proposalLooksIncludeOnly(text string) bool {
+	changed := 0
+	includeChanges := 0
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) < 2 {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "+++") || strings.HasPrefix(trimmed, "---") {
+			continue
+		}
+		if trimmed[0] != '+' && trimmed[0] != '-' {
+			continue
+		}
+		body := strings.TrimSpace(trimmed[1:])
+		if body == "" {
+			continue
+		}
+		changed++
+		if strings.HasPrefix(body, "#include") {
+			includeChanges++
+		}
+	}
+	return changed > 0 && changed == includeChanges
+}
+
+func repairFindingProposalAligned(finding ReviewFinding, proposalText string) bool {
+	tokens := repairFindingAlignmentTokens(finding)
+	if len(tokens) == 0 {
+		return true
+	}
+	lowerProposal := strings.ToLower(proposalText)
+	matches := 0
+	for _, token := range tokens {
+		if strings.Contains(lowerProposal, strings.ToLower(token)) {
+			matches++
+			if matches >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func repairFindingAlignmentTokens(finding ReviewFinding) []string {
+	text := strings.Join([]string{
+		finding.Symbol,
+		finding.Title,
+		finding.Evidence,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " ")
+	tokenMap := map[string]string{}
+	backtickRe := regexp.MustCompile("`([^`]{1,160})`")
+	for _, match := range backtickRe.FindAllStringSubmatch(text, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		addRepairFindingAlignmentTokens(tokenMap, match[1])
+	}
+	addRepairFindingAlignmentTokens(tokenMap, text)
+	out := make([]string, 0, len(tokenMap))
+	for _, token := range tokenMap {
+		out = append(out, token)
+	}
+	sort.Strings(out)
+	if len(out) > 16 {
+		out = out[:16]
+	}
+	return out
+}
+
+func addRepairFindingAlignmentTokens(out map[string]string, text string) {
+	identifierRe := regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]{2,}`)
+	for _, token := range identifierRe.FindAllString(text, -1) {
+		if !repairAlignmentTokenUseful(token) {
+			continue
+		}
+		lower := strings.ToLower(token)
+		if _, exists := out[lower]; !exists {
+			out[lower] = token
+		}
+	}
+}
+
+func repairAlignmentTokenUseful(token string) bool {
+	lower := strings.ToLower(strings.TrimSpace(token))
+	if len(lower) < 4 && lower != "len" {
+		return false
+	}
+	switch lower {
+	case "the", "and", "for", "with", "from", "this", "that", "when", "then",
+		"code", "path", "file", "line", "lines", "current", "required",
+		"repair", "finding", "proposed", "preview", "after", "before",
+		"error", "failed", "failure", "success", "handle", "check", "fix",
+		"uses", "using", "should", "could", "would", "must", "only",
+		"each", "existing", "source", "target", "change", "changes":
+		return false
+	default:
+		return true
+	}
+}
+
+func preWriteUnalignedRepairFinding(repair ReviewFinding, reason string) ReviewFinding {
+	title := "Proposed edit does not address a required repair finding"
+	repairID := valueOrDefault(strings.TrimSpace(repair.ID), "required repair")
+	expected := strings.Join(limitStrings(repairFindingAlignmentTokens(repair), 8), ", ")
+	evidence := fmt.Sprintf("%s %s asks for: %s", reason, repairID, compactPromptSection(repair.Title, 240))
+	if expected != "" {
+		evidence += fmt.Sprintf(" Expected code evidence tokens include: %s.", expected)
+	}
+	return ReviewFinding{
+		Source:       "deterministic",
+		ReviewerRole: "proposal_alignment",
+		Severity:     reviewSeverityBlocker,
+		Category:     "correctness",
+		Confidence:   "high",
+		Quality:      reviewFindingQualityComplete,
+		Path:         repair.Path,
+		Symbol:       repair.Symbol,
+		Title:        title,
+		Evidence:     evidence,
+		Impact:       "The repair loop can continue with an unrelated patch while the original blocker remains unresolved.",
+		RequiredFix:  "Discard the unrelated proposal and create a narrow patch that touches the code path and identifiers cited by the required repair finding.",
+		BlocksGate:   true,
+		FixRefs:      []string{repairID},
+	}
 }
 
 func singleModelPreWritePolicyFindings(run ReviewRun) []ReviewFinding {
@@ -629,15 +823,15 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 		})
 	}
 	if reviewRunHasRequiredReviewerFailure(run) {
-		expected := "The reviewer route is changed or the user explicitly chooses main-model fallback before any write is attempted."
-		hint := "Fix the reviewer route with /review models, retry with a longer timeout, or explicitly approve main-review fallback in an interactive diff-preview flow."
+		expected := "The failed review route is changed or the user explicitly chooses main-model fallback before any write is attempted."
+		hint := "If primary failed, change the active main model with /model or fix that provider route. If cross/dedicated reviewer failed, fix that route with /review models. Retry with a longer timeout only after the route is healthy."
 		if reviewRunHasUsableMainReviewer(run) {
 			hint = "The main review is usable. In an interactive edit flow, explicitly say that the main model review may be used for this pre-write fallback before diff preview."
 		}
 		out = append(out, ReviewNextCommand{
 			ID:                   "reviewer-fallback",
 			Command:              "/review models status",
-			Reason:               "a required reviewer route failed or returned weak output",
+			Reason:               "a required review route failed or returned weak output",
 			Safety:               "read_only",
 			When:                 "before retrying the edit or approving a write",
 			AutoRun:              false,

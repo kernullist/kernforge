@@ -411,6 +411,11 @@ func run(args []string) error {
 			rt.printProgressEvent(event)
 		},
 	}
+	if rt.interactive {
+		rt.agent.PromptContinueReviewRepair = func(message string) (bool, error) {
+			return rt.promptContinueReviewRepair(message)
+		}
+	}
 	rt.syncAgentReviewerClientFromConfig()
 	rt.reloadExtensions()
 
@@ -589,6 +594,27 @@ func (rt *runtimeState) previewEdit(preview EditPreview) (bool, error) {
 		return false, ErrEditCanceled
 	}
 	return rt.openEditPreview(preview)
+}
+
+func (rt *runtimeState) promptContinueReviewRepair(message string) (bool, error) {
+	message = strings.TrimSpace(message)
+	if message != "" {
+		rt.printAssistant(message)
+	}
+	if !rt.interactive {
+		return false, nil
+	}
+	var (
+		confirmed bool
+		err       error
+	)
+	rt.withRequestCancelSuspended(func() {
+		confirmed, err = rt.confirm(reviewRepairContinuationQuestion(rt.cfg))
+	})
+	if err != nil {
+		return false, err
+	}
+	return confirmed, nil
 }
 
 func (rt *runtimeState) openEditPreview(preview EditPreview) (bool, error) {
@@ -2332,12 +2358,18 @@ func isDiffPreviewQuestion(question string) bool {
 }
 
 const (
-	diffPreviewQuestionEnglish = "Open diff preview?"
-	diffPreviewQuestionKorean  = "변경 미리보기를 열까요?"
+	diffPreviewQuestionEnglish  = "Open diff preview?"
+	diffPreviewQuestionKorean   = "변경 미리보기를 열까요?"
+	reviewRepairQuestionEnglish = "Continue repairing?"
+	reviewRepairQuestionKorean  = "계속 수정할까요?"
 )
 
 func diffPreviewQuestion(cfg Config) string {
 	return localizedText(cfg, diffPreviewQuestionEnglish, diffPreviewQuestionKorean)
+}
+
+func reviewRepairContinuationQuestion(cfg Config) string {
+	return localizedText(cfg, reviewRepairQuestionEnglish, reviewRepairQuestionKorean)
 }
 
 func isGitApprovalQuestion(question string) bool {

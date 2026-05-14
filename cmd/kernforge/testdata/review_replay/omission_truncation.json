@@ -25,10 +25,10 @@
   "expected_ledger_status": "blocked",
   "expected_progress_contains": [
     "Gate action: user_decision_required",
-    "Required reviewer model failed or returned weak output"
+    "Required review route failed or returned weak output"
   ],
   "expected_reply_contains": [
-    "required reviewer model failed",
+    "required review-stage model route failed",
     "No code changes were applied"
   ],
   "expected_markdown_contains": [

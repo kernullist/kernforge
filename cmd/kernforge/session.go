@@ -19,6 +19,7 @@ type ReviewRepairConfirmationState struct {
 	CreatedAt time.Time `json:"created_at"`
 	ReviewID  string    `json:"review_id,omitempty"`
 	Verdict   string    `json:"verdict,omitempty"`
+	Mode      string    `json:"mode,omitempty"`
 }
 
 type Session struct {

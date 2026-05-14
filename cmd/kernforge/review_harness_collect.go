@@ -266,8 +266,8 @@ func reviewEvidenceNeeds(target string, mode string) []string {
 	return needs
 }
 
-func reviewMaxContextCharsForAnalysis(current int, analysis ReviewRequestAnalysis) int {
-	if current != reviewDefaultMaxContextChars {
+func reviewMaxContextCharsForAnalysis(current int, analysis ReviewRequestAnalysis, defaulted bool) int {
+	if !defaulted {
 		return current
 	}
 	if !strings.EqualFold(analysis.InferredTarget, reviewTargetSourceAnalysis) {
@@ -286,7 +286,7 @@ func reviewMaxContextCharsForFastPath(current int, opts ReviewHarnessOptions, an
 	if strings.EqualFold(strings.TrimSpace(opts.Trigger), "pre_write") {
 		return reviewMinPositiveContextChars(current, reviewPreWriteMaxContextChars)
 	}
-	if !defaulted && current != reviewDefaultMaxContextChars {
+	if !defaulted {
 		return current
 	}
 	if reviewOptionsUseFocusedFastPath(opts, analysis) {
@@ -450,6 +450,12 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 		collectPreWriteCurrentFileContextEvidence(rt, root, run, opts, focusPaths, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 		collectedSourceFirst = true
 	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) &&
+		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetSelection) {
+		if collectPreFixSelectionCurrentFileContextEvidence(rt, root, run, opts, focusPaths, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text)) {
+			collectedSourceFirst = true
+		}
+	}
 	if proposalText := renderEditProposalsForEvidence(run.EditProposals); strings.TrimSpace(proposalText) != "" {
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Edit proposal", proposalText)
 		evidence.Sources = append(evidence.Sources, "edit_proposal")
@@ -576,11 +582,52 @@ func collectPreWriteCurrentFileContextEvidence(rt *runtimeState, root string, ru
 				continue
 			}
 			if appendPreWriteSelectionFileContext(root, selection, changeSet, evidence, maxChars) {
+				if reviewPreWriteNeedsHeaderContext(run, opts) {
+					appendPreWriteHeaderContext(root, selection.FilePath, changeSet, evidence, preWriteHeaderContextBudget(maxChars))
+				}
 				return
 			}
 		}
 	}
+	if reviewPreWriteNeedsHeaderContext(run, opts) {
+		for _, raw := range paths {
+			appendPreWriteHeaderContext(root, raw, changeSet, evidence, preWriteHeaderContextBudget(maxChars))
+		}
+	}
 	collectFileReviewEvidence(rt, root, paths, run.RequestAnalysis.ScopeDiscovery.CandidateSymbols, changeSet, evidence, maxChars)
+}
+
+func collectPreFixSelectionCurrentFileContextEvidence(rt *runtimeState, root string, run ReviewRun, opts ReviewHarnessOptions, focusPaths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) bool {
+	if maxChars <= 0 {
+		return false
+	}
+	selection, ok := reviewCurrentSelectionForEvidence(rt, root, strings.Join([]string{opts.Request, run.Objective, run.RequestAnalysis.OriginalRequest}, " "))
+	if !ok {
+		return false
+	}
+	paths := reviewPreWriteFileContextPaths(run, opts, focusPaths)
+	if len(paths) == 0 {
+		paths = []string{selection.FilePath}
+	}
+	for _, raw := range paths {
+		if !reviewSelectionMatchesPath(root, selection, raw) {
+			continue
+		}
+		return appendFocusedSelectionFileContext(root, selection, changeSet, evidence, maxChars, "Pre-fix current file context", "Pre-fix function body excerpt")
+	}
+	return false
+}
+
+func reviewCurrentSelectionForEvidence(rt *runtimeState, root string, requestText string) (ViewerSelection, bool) {
+	if selections := reviewMentionSelections(root, requestText); len(selections) > 0 {
+		return selections[0], true
+	}
+	if rt != nil && rt.session != nil {
+		if selection := rt.session.CurrentSelection(); selection != nil && selection.HasSelection() {
+			return *selection, true
+		}
+	}
+	return ViewerSelection{}, false
 }
 
 func reviewMentionSelections(root string, input string) []ViewerSelection {
@@ -629,6 +676,134 @@ func reviewAbsolutePath(root string, path string) (string, bool) {
 }
 
 func appendPreWriteSelectionFileContext(root string, selection ViewerSelection, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) bool {
+	return appendFocusedSelectionFileContext(root, selection, changeSet, evidence, maxChars, "Pre-write current file context", "Pre-write function body excerpt")
+}
+
+func reviewPreWriteNeedsHeaderContext(run ReviewRun, opts ReviewHarnessOptions) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		opts.ProvidedDiff,
+		renderEditProposalsForEvidence(run.EditProposals),
+		renderReviewRepairFindingsForEvidence(opts.RepairFindings),
+	}, "\n"))
+	return containsAny(text,
+		"unique_ptr",
+		"std::unique_ptr",
+		"shared_ptr",
+		"std::shared_ptr",
+		"vector<",
+		"std::vector",
+		"map<",
+		"std::map",
+		"unordered_map",
+		"std::unordered_map",
+		"set<",
+		"std::set",
+		"#include",
+		"missing include",
+		"header",
+	)
+}
+
+func preWriteHeaderContextBudget(maxChars int) int {
+	if maxChars <= 0 {
+		return 0
+	}
+	budget := maxChars / 5
+	if budget > 2500 {
+		return 2500
+	}
+	if budget < 800 && maxChars >= 1600 {
+		return 800
+	}
+	return budget
+}
+
+func appendPreWriteHeaderContext(root string, path string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) bool {
+	if maxChars <= 0 {
+		return false
+	}
+	resolved := path
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(root, resolved)
+	}
+	resolved, ok := reviewAbsolutePath(root, resolved)
+	if !ok {
+		return false
+	}
+	rel := filepath.ToSlash(relOrAbs(root, resolved))
+	if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
+		return false
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil || !isText(data) {
+		return false
+	}
+	content := string(data)
+	lines := reviewNormalizedLines(content)
+	end := reviewHeaderContextEndLine(lines)
+	if end <= 0 {
+		return false
+	}
+	body := compactPromptSection(sliceLines(content, 1, end), maxChars)
+	if strings.TrimSpace(body) == "" {
+		return false
+	}
+	changeSet.ChangedPaths = append(changeSet.ChangedPaths, rel)
+	evidence.ChangedPaths = append(evidence.ChangedPaths, rel)
+	if changeSet.Source == "" {
+		changeSet.Source = "workspace_files"
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("Pre-write include/header context: %s:1-%d", rel, end), body)
+	evidence.Sources = append(evidence.Sources, "header_excerpt")
+	return true
+}
+
+func reviewHeaderContextEndLine(lines []string) int {
+	if len(lines) == 0 {
+		return 0
+	}
+	limit := len(lines)
+	if limit > 80 {
+		limit = 80
+	}
+	lastInteresting := 0
+	seenInclude := false
+	for i := 0; i < limit; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		lower := strings.ToLower(trimmed)
+		if trimmed == "" || strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*") || strings.HasPrefix(trimmed, "*") {
+			if !seenInclude {
+				lastInteresting = i + 1
+			}
+			continue
+		}
+		if strings.HasPrefix(lower, "#include") || strings.HasPrefix(lower, "#pragma once") ||
+			strings.HasPrefix(lower, "#define") || strings.HasPrefix(lower, "#ifdef") ||
+			strings.HasPrefix(lower, "#ifndef") || strings.HasPrefix(lower, "#endif") {
+			lastInteresting = i + 1
+			if strings.HasPrefix(lower, "#include") {
+				seenInclude = true
+			}
+			continue
+		}
+		if seenInclude {
+			break
+		}
+		lastInteresting = i + 1
+	}
+	if lastInteresting <= 0 {
+		if limit < 40 {
+			return limit
+		}
+		return 40
+	}
+	return lastInteresting
+}
+
+func appendFocusedSelectionFileContext(root string, selection ViewerSelection, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int, contextTitle string, functionTitle string) bool {
 	resolved := selection.FilePath
 	if !filepath.IsAbs(resolved) {
 		resolved = filepath.Join(root, resolved)
@@ -657,7 +832,7 @@ func appendPreWriteSelectionFileContext(root string, selection ViewerSelection, 
 	}
 	contextEnd := selection.EndLine + reviewPreWriteLineContextAfter
 	if functionStart, functionEnd, ok := reviewFunctionSpanForSelection(content, selection); ok {
-		appendPreWriteFunctionBodyEvidence(rel, content, selection, functionStart, functionEnd, changeSet, evidence, maxChars)
+		appendPreWriteFunctionBodyEvidence(rel, content, selection, functionStart, functionEnd, changeSet, evidence, maxChars, functionTitle)
 		contextStart = selection.StartLine
 		contextEnd = functionEnd
 	}
@@ -673,12 +848,12 @@ func appendPreWriteSelectionFileContext(root string, selection ViewerSelection, 
 	if changeSet.Source == "" {
 		changeSet.Source = "workspace_files"
 	}
-	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("Pre-write current file context: %s:%d-%d", rel, contextStart, contextEnd), body)
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("%s: %s:%d-%d", contextTitle, rel, contextStart, contextEnd), body)
 	evidence.Sources = append(evidence.Sources, "file_excerpt")
 	return true
 }
 
-func appendPreWriteFunctionBodyEvidence(rel string, content string, selection ViewerSelection, start int, end int, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int) {
+func appendPreWriteFunctionBodyEvidence(rel string, content string, selection ViewerSelection, start int, end int, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, maxChars int, title string) {
 	budget := preWriteFunctionBodyContextBudget(maxChars)
 	if budget <= 0 {
 		return
@@ -692,7 +867,10 @@ func appendPreWriteFunctionBodyEvidence(rel string, content string, selection Vi
 	if changeSet.Source == "" {
 		changeSet.Source = "workspace_files"
 	}
-	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("Pre-write function body excerpt: %s:%d-%d", rel, start, end), body)
+	if strings.TrimSpace(title) == "" {
+		title = "Pre-write function body excerpt"
+	}
+	evidence.Text = appendReviewEvidenceSection(evidence.Text, fmt.Sprintf("%s: %s:%d-%d", title, rel, start, end), body)
 	evidence.Sources = append(evidence.Sources, "function_body_excerpt")
 }
 

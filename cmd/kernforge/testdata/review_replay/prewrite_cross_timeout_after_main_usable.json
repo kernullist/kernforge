@@ -23,7 +23,7 @@
   "expected_action": "user_decision_required",
   "expected_progress_contains": [
     "Gate action: user_decision_required",
-    "a required reviewer route failed or returned weak output"
+    "a required review route failed or returned weak output"
   ],
   "expected_reply_contains": [
     "proceed with the main model review",

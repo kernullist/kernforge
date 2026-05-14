@@ -142,7 +142,7 @@ func (a *Agent) reviewProposedEdit(ctx context.Context, preview EditPreview) err
 		if a.EmitProgress != nil {
 			a.emitPreWriteFinalVisibleReviewSummary(run, false)
 			a.EmitProgress(formatPreWriteFinalReviewProgress(a.Config, run, false))
-			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Automatic pre-write review could not use the required reviewer. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰어 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
+			a.EmitProgress(reviewRunLocalizedText(a.Config, run, "Automatic pre-write review could not use a required review route. Stopping the edit loop.", "자동 쓰기 전 리뷰에서 필수 리뷰 route 결과를 신뢰할 수 없어 편집 루프를 중단합니다."))
 		}
 		return fmt.Errorf("%w: %s", ErrReviewerGateUnavailable, formatReviewerGateUnavailableToolError(a.Config, run))
 	}
@@ -631,9 +631,9 @@ func formatReviewerGateUnavailableToolError(cfg Config, run ReviewRun) string {
 	failed := reviewFailedRequiredReviewerRuns(run)
 	if len(failed) == 0 {
 		if korean {
-			return "필수 리뷰어가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 리뷰어 경로 문제를 보고하세요"
+			return "필수 리뷰 단계의 모델 route가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 실패한 route 문제를 보고하세요"
 		}
-		return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue"
+		return "required review route failed or returned weak output; stop editing and report the failed route issue"
 	}
 	var details []string
 	for _, reviewerRun := range failed {
@@ -644,9 +644,9 @@ func formatReviewerGateUnavailableToolError(cfg Config, run ReviewRun) string {
 		details = append(details, fmt.Sprintf("%s status=%s quality=%s: %s", role, status, quality, detail))
 	}
 	if korean {
-		return "필수 리뷰어가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 리뷰어 경로 문제를 보고하세요: " + strings.Join(details, " | ")
+		return "필수 리뷰 단계의 모델 route가 실패했거나 약한 결과를 반환했습니다. 편집을 멈추고 실패한 route 문제를 보고하세요: " + strings.Join(details, " | ")
 	}
-	return "required reviewer failed or returned weak output; stop editing and report the reviewer route issue: " + strings.Join(details, " | ")
+	return "required review route failed or returned weak output; stop editing and report the failed route issue: " + strings.Join(details, " | ")
 }
 
 func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
@@ -671,6 +671,8 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 		b.WriteString("\n\n구현 규칙:\n")
 		b.WriteString("- 리뷰 artifact 파일을 다시 읽지 마세요. 필요한 리뷰 지침은 여기 모두 포함되어 있습니다.\n")
 		b.WriteString("- 같은 patch를 반복하지 말고 수정된 edit proposal을 반환하세요.")
+		b.WriteString("\n")
+		b.WriteString(reviewPatchRelevanceGuidance(true))
 		b.WriteString("\n")
 		b.WriteString(reviewNarrowPatchGuidance(true))
 		b.WriteString("\n- pre-write review를 우회하기 위해 run_shell, PowerShell 파일 API, redirection, 직접 파일 쓰기를 사용하지 마세요. 수정안이 다시 리뷰되도록 edit tool을 사용하세요.")
@@ -698,6 +700,8 @@ func formatPreWriteReviewFeedback(cfg Config, run ReviewRun) string {
 	b.WriteString("- Do not read review artifact files; all required review guidance is included here.\n")
 	b.WriteString("- Return a corrected edit proposal instead of retrying the same patch.")
 	b.WriteString("\n")
+	b.WriteString(reviewPatchRelevanceGuidance(false))
+	b.WriteString("\n")
 	b.WriteString(reviewNarrowPatchGuidance(false))
 	b.WriteString("\n- Do not use run_shell, PowerShell file APIs, redirection, or direct filesystem writes to bypass pre-write review; use edit tools so the corrected proposal is reviewed.")
 	b.WriteString("\n")
@@ -724,6 +728,8 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 		b.WriteString("- 이 pre-write 경고를 필수 수정 지침으로 취급하세요.\n")
 		b.WriteString("- 요청된 API surface와 구현 근거가 모두 보이도록 수정안을 다시 작성하세요.\n")
 		b.WriteString("- 이전의 불완전한 patch를 쓰지 마세요.\n")
+		b.WriteString(reviewPatchRelevanceGuidance(true))
+		b.WriteString("\n")
 		b.WriteString(reviewNarrowPatchGuidance(true))
 		b.WriteString("\n")
 		b.WriteString("- pre-write review를 우회하기 위해 run_shell, PowerShell 파일 API, redirection, 직접 파일 쓰기를 사용하지 말고 edit tool을 사용하세요.\n")
@@ -746,6 +752,8 @@ func formatPreWriteReviewWarningBlockFeedback(cfg Config, run ReviewRun, warning
 	b.WriteString("- Treat these pre-write warnings as required repair guidance.\n")
 	b.WriteString("- Revise the proposed edit so the requested API surface and implementation evidence are both present.\n")
 	b.WriteString("- Do not write the previous incomplete patch.\n")
+	b.WriteString("\n")
+	b.WriteString(reviewPatchRelevanceGuidance(false))
 	b.WriteString("\n")
 	b.WriteString(reviewNarrowPatchGuidance(false))
 	b.WriteString("\n")

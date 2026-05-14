@@ -641,6 +641,68 @@ func TestReviewRouteHealthSuppressesRepeatedStrictRetry(t *testing.T) {
 	}
 }
 
+func TestReviewRouteHealthSkipsRecentlyEmptyInitialReviewerCall(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("should not be called")}}
+	rt := reviewStateTestRuntime(root, provider)
+	rt.session.ReviewRouteHealth = []ReviewRouteHealth{{
+		Role:              "primary_reviewer",
+		Model:             "scripted / main-model",
+		RecentRuns:        1,
+		EmptyResponseRate: 1,
+		LastStatus:        "failed",
+		LastQuality:       reviewModelQualityFailed,
+		Recommendation:    "route returned empty output recently; retry with a different reviewer",
+	}}
+	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
+		Trigger:      "pre_write",
+		Target:       reviewTargetChange,
+		Request:      "review supplied diff",
+		ProvidedDiff: "diff --git a/main.cpp b/main.cpp\n+int main(){return 0;}\n",
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(provider.requests) != 0 {
+		t.Fatalf("expected unhealthy route to skip model call, got %d requests", len(provider.requests))
+	}
+	if len(run.ReviewerRuns) == 0 {
+		t.Fatalf("expected skipped reviewer run to be recorded")
+	}
+	if !strings.Contains(run.ReviewerRuns[0].Error, "route health skipped") {
+		t.Fatalf("expected route-health skip error, got %#v", run.ReviewerRuns[0])
+	}
+	if strings.Contains(run.ReviewerRuns[0].Error, "timeout") || strings.Contains(run.ReviewerRuns[0].Error, "empty response") {
+		t.Fatalf("skipped route should not masquerade as a fresh provider timeout/empty response, got %q", run.ReviewerRuns[0].Error)
+	}
+	if run.Result.ModelQuality != reviewModelQualityFailed {
+		t.Fatalf("expected skipped reviewer quality to stay failed, got %q", run.Result.ModelQuality)
+	}
+	if !reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("expected skipped required reviewer to block the gate")
+	}
+}
+
+func TestReviewRouteHealthDoesNotSkipAfterBadRateCoolsDown(t *testing.T) {
+	root := t.TempDir()
+	rt := reviewStateTestRuntime(root, nil)
+	rt.session.ReviewRouteHealth = []ReviewRouteHealth{{
+		Role:              "primary_reviewer",
+		Model:             "scripted / main-model",
+		RecentRuns:        3,
+		EmptyResponseRate: 0.33,
+		LastStatus:        "failed",
+		LastQuality:       reviewModelQualityFailed,
+	}}
+	if _, ok := reviewRouteHealthSkipsInitialModelCall(rt, ReviewReviewerRun{
+		Role:  "primary_reviewer",
+		Kind:  "main",
+		Model: "scripted / main-model",
+	}); ok {
+		t.Fatalf("expected cooled-down route health to allow a fresh reviewer attempt")
+	}
+}
+
 func TestLoopSignatureRendersRepeatedReadAndToolFailure(t *testing.T) {
 	readSig := renderLoopSignature(loopSignatureForRepeatedRead("cmd/kernforge/review_harness.go", 2))
 	if !strings.Contains(readSig, "kind=repeated_read_file") ||

@@ -245,9 +245,35 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		if run != nil {
 			run.Result.Degraded = true
 			run.Result.DegradedReason = strings.TrimSpace(reviewerRun.Error)
+			if run.Result.ModelQuality == "" || reviewModelQualityRank(reviewModelQualityFailed) > reviewModelQualityRank(run.Result.ModelQuality) {
+				run.Result.ModelQuality = reviewModelQualityFailed
+			}
 		}
 		emitReviewModelResultProgress(rt, reviewerRun, 0)
 		return nil, reviewerRun, ""
+	}
+	usedLocalCompactRecovery := false
+	systemPrompt := reviewModelSystemPrompt(rt.cfg, *run, role)
+	if health, ok := reviewRouteHealthSkipsInitialModelCall(rt, reviewerRun); ok {
+		if reviewLocalModelCompactRecoveryAllowed(rt.cfg, reviewerRun, health) {
+			prompt = buildReviewModelLocalCompactReviewPrompt(rt.cfg, *run, role, "route_health")
+			systemPrompt = reviewModelLocalCompactSystemPrompt(rt.cfg, *run, role)
+			usedLocalCompactRecovery = true
+			emitReviewModelLocalCompactRecoveryProgress(rt, reviewerRun, health)
+		} else {
+			reviewerRun.Status = "failed"
+			reviewerRun.ModelQuality = reviewModelQualityFailed
+			reviewerRun.Error = "review route health skipped repeated reviewer call after recent unhealthy reviewer output"
+			reviewerRun.FinishedAt = time.Now()
+			run.Result.Degraded = true
+			run.Result.DegradedReason = reviewerRun.Error
+			if run.Result.ModelQuality == "" || reviewModelQualityRank(reviewModelQualityFailed) > reviewModelQualityRank(run.Result.ModelQuality) {
+				run.Result.ModelQuality = reviewModelQualityFailed
+			}
+			emitReviewModelHealthCallSkippedProgress(rt, reviewerRun, health)
+			emitReviewModelResultProgress(rt, reviewerRun, 0)
+			return nil, reviewerRun, ""
+		}
 	}
 	promptPath, rawPath := reviewRoleArtifactPaths(root, run.ID, role)
 	_ = os.WriteFile(promptPath, []byte(prompt), 0o644)
@@ -259,7 +285,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 	resp, err := completeReviewModelTurnWithProgress(callCtx, rt, reviewerRun, func(callCtx context.Context) (ChatResponse, error) {
 		return rt.agent.completeModelTurnWithClient(callCtx, client, ChatRequest{
 			Model:           model,
-			System:          reviewModelSystemPrompt(rt.cfg, *run, role),
+			System:          systemPrompt,
 			Messages:        []Message{{Role: "user", Text: prompt}},
 			MaxTokens:       reviewRoleMaxTokensForRoleRun(rt.cfg, role, *run),
 			Temperature:     0.1,
@@ -279,28 +305,67 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		return nil, reviewerRun, ""
 	}
 	raw := strings.TrimSpace(resp.Message.Text)
+	rawStopReason := resp.StopReason
 	if raw == "" {
-		raw = "(empty review response)"
-		raw, rawRedaction := redactSensitiveText(raw)
-		_ = os.WriteFile(rawPath, []byte(raw), 0o644)
-		reviewerRun.RawOutputPath = rawPath
-		reviewerRun.Status = "failed"
-		reviewerRun.ModelQuality = reviewModelQualityFailed
-		reviewerRun.Error = "review model returned empty response"
-		run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
-		run.Result.Degraded = true
-		run.Result.DegradedReason = reviewerRun.Error
-		if run.Result.ModelQuality == "" || reviewModelQualityRank(reviewModelQualityFailed) > reviewModelQualityRank(run.Result.ModelQuality) {
-			run.Result.ModelQuality = reviewModelQualityFailed
+		if !usedLocalCompactRecovery && reviewLocalModelEmptyResponseRetryAllowed(rt.cfg, reviewerRun) {
+			emitReviewModelEmptyResponseRetryProgress(rt, reviewerRun, label)
+			retryPrompt := buildReviewModelLocalCompactReviewPrompt(rt.cfg, *run, role, "empty_response")
+			retryPromptPath, retryRawPath := reviewRoleNamedAttemptArtifactPaths(root, run.ID, role, "empty_retry")
+			_ = os.WriteFile(retryPromptPath, []byte(retryPrompt), 0o644)
+			retryRun := reviewerRun
+			retryRun.PromptPath = retryPromptPath
+			retryCtx, cancelRetry := reviewModelCallContext(ctx, softTimeout)
+			retryResp, retryErr := completeReviewModelTurnWithProgress(retryCtx, rt, retryRun, func(callCtx context.Context) (ChatResponse, error) {
+				return rt.agent.completeModelTurnWithClient(callCtx, client, ChatRequest{
+					Model:           model,
+					System:          reviewModelLocalCompactSystemPrompt(rt.cfg, *run, role),
+					Messages:        []Message{{Role: "user", Text: retryPrompt}},
+					MaxTokens:       reviewRoleRetryMaxTokensForRoleRun(rt.cfg, role, *run),
+					Temperature:     0.05,
+					ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
+					WorkingDir:      root,
+				})
+			})
+			cancelRetry()
+			reviewerRun.FinishedAt = time.Now()
+			if retryErr != nil {
+				reviewerRun.Error = "empty response retry failed: " + reviewModelCallErrorText(retryErr, softTimeout)
+			} else {
+				retryRaw := strings.TrimSpace(retryResp.Message.Text)
+				if retryRaw != "" {
+					raw = retryRaw
+					rawStopReason = retryResp.StopReason
+					promptPath = retryPromptPath
+					rawPath = retryRawPath
+				}
+			}
 		}
-		emitReviewModelResultProgress(rt, reviewerRun, 0)
-		return nil, reviewerRun, raw
+		if raw == "" {
+			raw = "(empty review response)"
+			raw, rawRedaction := redactSensitiveText(raw)
+			_ = os.WriteFile(rawPath, []byte(raw), 0o644)
+			reviewerRun.RawOutputPath = rawPath
+			reviewerRun.Status = "failed"
+			reviewerRun.ModelQuality = reviewModelQualityFailed
+			if strings.TrimSpace(reviewerRun.Error) == "" {
+				reviewerRun.Error = "review model returned empty response"
+			}
+			run.Redaction = mergeReviewRedactionReports(run.Redaction, rawRedaction)
+			run.Result.Degraded = true
+			run.Result.DegradedReason = reviewerRun.Error
+			if run.Result.ModelQuality == "" || reviewModelQualityRank(reviewModelQualityFailed) > reviewModelQualityRank(run.Result.ModelQuality) {
+				run.Result.ModelQuality = reviewModelQualityFailed
+			}
+			emitReviewModelResultProgress(rt, reviewerRun, 0)
+			return nil, reviewerRun, raw
+		}
 	}
 	raw, rawRedaction := redactSensitiveText(raw)
 	_ = os.WriteFile(rawPath, []byte(raw), 0o644)
+	reviewerRun.PromptPath = promptPath
 	reviewerRun.RawOutputPath = rawPath
 	roleFindings, quality := parseModelReviewFindingsForLanguage(raw, role, reviewRunPrefersKorean(rt.cfg, *run))
-	if reviewStopReasonLooksTruncated(resp.StopReason) {
+	if reviewStopReasonLooksTruncated(rawStopReason) {
 		roleFindings = append(roleFindings, reviewTruncatedTailFindingPlaceholder(role, reviewRunPrefersKorean(rt.cfg, *run)))
 		quality = reviewModelQualityWeak
 	}
@@ -679,11 +744,11 @@ func requiredReviewerFailureFindings(run ReviewRun) []ReviewFinding {
 		Category:           "evidence_gap",
 		Confidence:         "high",
 		Quality:            reviewFindingQualityComplete,
-		Title:              "Required reviewer model failed or returned weak output",
+		Title:              "Required review route failed or returned weak output",
 		Evidence:           strings.Join(details, " | "),
-		Impact:             "The review gate cannot treat a failed or weak required reviewer as approval for a write-gated change.",
-		RequiredFix:        "Fix the reviewer route, select a stronger working model, or rerun the review with an explicit no-model policy before writing.",
-		TestRecommendation: "Rerun the same review request and confirm the required reviewer completes with usable structured findings or approval.",
+		Impact:             "The review gate cannot treat a failed or weak required review-stage model route as approval for a write-gated change.",
+		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross or a dedicated reviewer failed, switch that reviewer route with /review models. Then rerun the review before writing.",
+		TestRecommendation: "Rerun the same review request and confirm every required review route completes with usable structured findings or approval.",
 		BlocksGate:         true,
 	}}
 }
@@ -925,6 +990,57 @@ func emitReviewModelRequestProgress(rt *runtimeState, role string, label string,
 		roleName,
 		label,
 		mainLabel,
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func emitReviewModelHealthCallSkippedProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, health ReviewRouteHealth) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	model := strings.TrimSpace(reviewerRun.Model)
+	if model == "" {
+		model = strings.TrimSpace(health.Model)
+	}
+	reason := firstNonBlankString(strings.TrimSpace(health.Recommendation), "recent reviewer route health is weak")
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Review route health skipped repeated reviewer call: %s -> %s (%s).", "리뷰 route health가 반복 리뷰 모델 호출을 건너뜁니다: %s -> %s (%s)."),
+		roleName,
+		valueOrUnset(model),
+		reason,
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func emitReviewModelLocalCompactRecoveryProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, health ReviewRouteHealth) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	model := strings.TrimSpace(reviewerRun.Model)
+	if model == "" {
+		model = strings.TrimSpace(health.Model)
+	}
+	reason := firstNonBlankString(strings.TrimSpace(health.Recommendation), "recent local reviewer output was weak")
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Local-model review route health is weak; using a compact recovery prompt instead of skipping: %s -> %s (%s).", "로컬 모델 리뷰 route 상태가 약해서 스킵하지 않고 compact recovery prompt로 재시도합니다: %s -> %s (%s)."),
+		roleName,
+		valueOrUnset(model),
+		reason,
+	)
+	rt.agent.EmitProgress(message)
+}
+
+func emitReviewModelEmptyResponseRetryProgress(rt *runtimeState, reviewerRun ReviewReviewerRun, label string) {
+	if rt == nil || rt.agent == nil || rt.agent.EmitProgress == nil {
+		return
+	}
+	roleName := reviewRoleProgressName(reviewerRun.Role)
+	message := fmt.Sprintf(
+		localizedText(rt.cfg, "Local-model review returned an empty response; retrying once with a compact structured prompt: %s -> %s.", "로컬 모델 리뷰 응답이 비어 있어 compact structured prompt로 한 번 재시도합니다: %s -> %s."),
+		roleName,
+		valueOrUnset(label),
 	)
 	rt.agent.EmitProgress(message)
 }
@@ -1400,6 +1516,57 @@ func reviewRouteHealthSuppressesStrictRetry(rt *runtimeState, reviewerRun Review
 	return health.TimeoutRate >= 0.50 || health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50
 }
 
+func reviewLocalModelEmptyResponseRetryAllowed(cfg Config, reviewerRun ReviewReviewerRun) bool {
+	return reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(cfg, reviewerRun))
+}
+
+func reviewLocalModelCompactRecoveryAllowed(cfg Config, reviewerRun ReviewReviewerRun, health ReviewRouteHealth) bool {
+	if !reviewProviderUsesLocalModelRecovery(reviewReviewerRunProvider(cfg, reviewerRun)) {
+		return false
+	}
+	if health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50 {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityWeak)
+}
+
+func reviewProviderUsesLocalModelRecovery(provider string) bool {
+	provider = normalizeProviderName(provider)
+	return provider == "ollama" || isLocalOpenAICompatibleProvider(provider)
+}
+
+func reviewReviewerRunProvider(cfg Config, reviewerRun ReviewReviewerRun) string {
+	if provider, _ := reviewProviderModelFromDisplayLabel(reviewerRun.Model); strings.TrimSpace(provider) != "" {
+		return normalizeProviderName(provider)
+	}
+	return normalizeProviderName(reviewRoleProviderForRun(cfg, reviewerRun.Role))
+}
+
+func reviewRouteHealthSkipsInitialModelCall(rt *runtimeState, reviewerRun ReviewReviewerRun) (ReviewRouteHealth, bool) {
+	if rt == nil || rt.session == nil {
+		return ReviewRouteHealth{}, false
+	}
+	health, ok := reviewRouteHealthForReviewerRun(rt.session.ReviewRouteHealth, reviewerRun)
+	if !ok {
+		return ReviewRouteHealth{}, false
+	}
+	if health.RecentRuns <= 0 {
+		return ReviewRouteHealth{}, false
+	}
+	if strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityWeak) {
+		return health, true
+	}
+	if strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityFailed) &&
+		(health.EmptyResponseRate >= 0.50 || health.TimeoutRate >= 0.50) {
+		return health, true
+	}
+	if health.RecentRuns >= 2 && health.UsableFindingRate < 0.50 &&
+		(health.TimeoutRate >= 0.50 || health.EmptyResponseRate >= 0.50 || health.WeakRate >= 0.50) {
+		return health, true
+	}
+	return ReviewRouteHealth{}, false
+}
+
 func reviewRouteHealthForReviewerRun(items []ReviewRouteHealth, reviewerRun ReviewReviewerRun) (ReviewRouteHealth, bool) {
 	role := normalizeReviewRole(reviewerRun.Role)
 	model := strings.ToLower(strings.TrimSpace(reviewerRun.Model))
@@ -1693,6 +1860,17 @@ func reviewRoleAttemptArtifactPaths(root string, id string, role string, attempt
 	return filepath.Join(dir, "prompt_"+safeRole+".md"), filepath.Join(dir, "raw_"+safeRole+".md")
 }
 
+func reviewRoleNamedAttemptArtifactPaths(root string, id string, role string, suffix string) (string, string) {
+	dir := reviewRunDir(root, id)
+	_ = os.MkdirAll(dir, 0o755)
+	safeRole := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(normalizeReviewRole(role))
+	safeSuffix := strings.NewReplacer("/", "_", "\\", "_", ":", "_", " ", "_").Replace(strings.TrimSpace(suffix))
+	if safeSuffix != "" {
+		safeRole = safeRole + "_" + safeSuffix
+	}
+	return filepath.Join(dir, "prompt_"+safeRole+".md"), filepath.Join(dir, "raw_"+safeRole+".md")
+}
+
 func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	var b strings.Builder
 	b.WriteString("You are a KernForge structured review model.\n")
@@ -1731,6 +1909,26 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
 	b.WriteString("  test_recommendation: <specific validation>\n")
+	return b.String()
+}
+
+func reviewModelLocalCompactSystemPrompt(cfg Config, run ReviewRun, role string) string {
+	var b strings.Builder
+	b.WriteString("You are a KernForge local-model review recovery pass.\n")
+	b.WriteString("Use only the supplied evidence. Return only the REVIEW_RESULT block.\n")
+	if reviewRunPrefersKorean(cfg, run) {
+		b.WriteString("Write narrative field values in Korean. Keep schema keys and code identifiers unchanged.\n")
+	} else {
+		b.WriteString("Write narrative field values in English unless the objective asks otherwise.\n")
+	}
+	switch normalizeReviewRole(role) {
+	case "cross_reviewer":
+		b.WriteString("Act as a compact second-pass reviewer.\n")
+	case "security_reviewer":
+		b.WriteString("Prioritize concrete security, stability, and bypass-relevant issues.\n")
+	default:
+		b.WriteString("Prioritize concrete correctness, stability, and maintainability issues.\n")
+	}
 	return b.String()
 }
 
@@ -1789,6 +1987,67 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 		b.WriteString("- If a required repair finding is still unresolved, emit needs_revision with a concrete finding that names the original repair id.\n")
 		b.WriteString("- If the proposed diff tries to satisfy multiple RFs with a whole-file rewrite, a large whole-function replacement, duplicated function endings/braces, or code outside the intended function, treat that as a patch correctness blocker even if the idea of the fix is sound.\n")
 	}
+	return b.String()
+}
+
+func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role string, reason string) string {
+	var b strings.Builder
+	if reviewRunPrefersKorean(cfg, run) {
+		switch strings.TrimSpace(reason) {
+		case "route_health":
+			b.WriteString("이 review route는 최근 빈 응답이나 약한 구조화 출력이 있었습니다. 긴 재시도 대신 더 작은 형식으로 한 번만 복구 리뷰를 수행하세요.\n")
+		case "empty_response":
+			b.WriteString("이전 리뷰 응답이 비어 있었습니다. 같은 증거를 더 작은 형식으로 한 번만 다시 검토하세요.\n")
+		default:
+			b.WriteString("로컬 모델용 compact review로 검토하세요.\n")
+		}
+		b.WriteString("출력은 REVIEW_RESULT 블록만 반환하세요. 설명 문단, markdown table, 코드 패치, 도구 호출 요청을 쓰지 마세요.\n")
+		b.WriteString("finding은 최대 3개만 작성하세요. 확실한 코드 근거가 없으면 추측하지 말고 approved 또는 insufficient_evidence를 사용하세요.\n")
+	} else {
+		switch strings.TrimSpace(reason) {
+		case "route_health":
+			b.WriteString("This review route recently returned empty or weak structured output. Run one compact recovery review instead of repeating the long prompt.\n")
+		case "empty_response":
+			b.WriteString("The previous review response was empty. Retry once with this smaller review format.\n")
+		default:
+			b.WriteString("Run a compact local-model review.\n")
+		}
+		b.WriteString("Return only the REVIEW_RESULT block. Do not write markdown tables, code patches, tool requests, or extra explanation.\n")
+		b.WriteString("Write at most 3 findings. If there is no concrete code-backed issue, use approved or insufficient_evidence instead of guessing.\n")
+	}
+	fmt.Fprintf(&b, "\nReview id: %s\n", run.ID)
+	fmt.Fprintf(&b, "Role: %s\n", role)
+	fmt.Fprintf(&b, "Target: %s\n", run.Target)
+	fmt.Fprintf(&b, "Mode: %s\n", run.Mode)
+	fmt.Fprintf(&b, "Flow: %s\n", run.Flow)
+	if strings.TrimSpace(run.Objective) != "" {
+		fmt.Fprintf(&b, "\nObjective:\n%s\n", run.Objective)
+	}
+	if len(run.ChangeSet.ChangedPaths) > 0 {
+		fmt.Fprintf(&b, "\nChanged paths:\n- %s\n", strings.Join(limitStrings(run.ChangeSet.ChangedPaths, 16), "\n- "))
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
+		b.WriteString("\nPre-fix rule: report only concrete bugs or boundary risks tied to the supplied code. Do not claim fixes are already applied.\n")
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		b.WriteString("\nPre-write rule: review the proposed diff only. If the patch is not clearly safe, return needs_revision.\n")
+	}
+	b.WriteString("\nRequired schema:\n")
+	b.WriteString("REVIEW_RESULT\n")
+	b.WriteString("verdict: approved|approved_with_warnings|needs_revision|blocked|insufficient_evidence\n")
+	b.WriteString("summary: <one complete short sentence>\n")
+	b.WriteString("findings:\n")
+	b.WriteString("- severity: blocker|high|medium|low|info\n")
+	b.WriteString("  category: correctness|security|stability|performance|test_gap|maintainability|false_positive|bypass_surface|operational_risk|evidence_gap\n")
+	b.WriteString("  path: <path or empty>\n")
+	b.WriteString("  symbol: <symbol or surface>\n")
+	b.WriteString("  title: <complete short title>\n")
+	b.WriteString("  evidence: <specific evidence>\n")
+	b.WriteString("  impact: <why it matters>\n")
+	b.WriteString("  required_fix: <concrete fix>\n")
+	b.WriteString("  test_recommendation: <specific validation>\n")
+	b.WriteString("\nReview evidence:\n")
+	b.WriteString(compactReviewPromptSection(run.Evidence.Text, reviewLocalCompactReviewEvidenceLimit(run)))
 	return b.String()
 }
 
@@ -1859,16 +2118,26 @@ func reviewModelPromptEvidenceLimit(run ReviewRun) int {
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		return reviewPreWritePromptEvidenceLimit
 	}
-	if reviewRunUsesFocusedFastPath(run) {
-		return reviewFocusedPromptEvidenceLimit
-	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		if reviewBeforeFixNeedsDeepBugHunt(run) {
 			return 30000
 		}
 		return 12000
 	}
+	if reviewRunUsesFocusedFastPath(run) {
+		return reviewFocusedPromptEvidenceLimit
+	}
 	return reviewDefaultMaxContextChars
+}
+
+func reviewLocalCompactReviewEvidenceLimit(run ReviewRun) int {
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return 10000
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) && reviewBeforeFixNeedsDeepBugHunt(run) {
+		return 14000
+	}
+	return 12000
 }
 
 func reviewModelCrossEvidenceLimit(run ReviewRun) int {
