@@ -95,6 +95,66 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesToolContentItems(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect image"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_img", Name: "view_image", Arguments: `{"path":"shot.png"}`}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_img",
+				ToolName:   "view_image",
+				Text:       `{"image_url":"data:image/png;base64,AAA","detail":"high"}`,
+				ToolContentItems: []ToolContentItem{{
+					Type:     "input_image",
+					ImageURL: "data:image/png;base64,AAA",
+					Detail:   imageDetailHigh,
+				}},
+			},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "view_image",
+			Description: "View image",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+			OutputSchema: map[string]any{
+				"type": "object",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	var output []any
+	for _, raw := range input {
+		item := raw.(map[string]any)
+		if item["type"] == "function_call_output" {
+			output = item["output"].([]any)
+			break
+		}
+	}
+	if len(output) != 1 {
+		t.Fatalf("expected one output content item, got %#v in %s", output, body)
+	}
+	image := output[0].(map[string]any)
+	if image["type"] != "input_image" || image["image_url"] != "data:image/png;base64,AAA" || image["detail"] != imageDetailHigh {
+		t.Fatalf("unexpected tool output image item: %#v", image)
+	}
+	tools := payload["tools"].([]any)
+	tool := tools[0].(map[string]any)
+	if _, ok := tool["output_schema"].(map[string]any); !ok {
+		t.Fatalf("expected output_schema to be preserved, got %#v", tool)
+	}
+}
+
 func assertCodexLocalImageContent(t *testing.T, content []any, openIndex int) map[string]any {
 	t.Helper()
 	if openIndex < 0 || openIndex+2 >= len(content) {

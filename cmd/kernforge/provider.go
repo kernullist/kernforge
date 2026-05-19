@@ -15,9 +15,17 @@ import (
 )
 
 type ToolDefinition struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description"`
+	InputSchema  map[string]any `json:"input_schema"`
+	OutputSchema map[string]any `json:"output_schema,omitempty"`
+}
+
+type ToolContentItem struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type ToolCall struct {
@@ -27,15 +35,16 @@ type ToolCall struct {
 }
 
 type Message struct {
-	Role             string         `json:"role"`
-	Text             string         `json:"text,omitempty"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"`
-	Images           []MessageImage `json:"images,omitempty"`
-	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
-	ToolName         string         `json:"tool_name,omitempty"`
-	ToolMeta         map[string]any `json:"tool_meta,omitempty"`
-	IsError          bool           `json:"is_error,omitempty"`
+	Role             string            `json:"role"`
+	Text             string            `json:"text,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	Images           []MessageImage    `json:"images,omitempty"`
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+	ToolName         string            `json:"tool_name,omitempty"`
+	ToolContentItems []ToolContentItem `json:"tool_content_items,omitempty"`
+	ToolMeta         map[string]any    `json:"tool_meta,omitempty"`
+	IsError          bool              `json:"is_error,omitempty"`
 }
 
 type ChatRequest struct {
@@ -230,6 +239,70 @@ func providerErrorSuggestsJSONModeUnsupported(err error) bool {
 		return providerErrorTextSuggestsJSONModeUnsupported(msg)
 	}
 	return providerErrorTextSuggestsJSONModeUnsupported(strings.ToLower(err.Error()))
+}
+
+func toolOutputForResponses(msg Message) any {
+	items := normalizeToolContentItems(msg.ToolContentItems)
+	if len(items) == 0 {
+		return msg.Text
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		switch strings.TrimSpace(item.Type) {
+		case "input_text":
+			out = append(out, map[string]any{
+				"type": "input_text",
+				"text": item.Text,
+			})
+		case "input_image":
+			image := map[string]any{
+				"type":      "input_image",
+				"image_url": item.ImageURL,
+			}
+			if strings.TrimSpace(item.Detail) != "" {
+				image["detail"] = strings.TrimSpace(item.Detail)
+			}
+			out = append(out, image)
+		}
+	}
+	if len(out) == 0 {
+		return msg.Text
+	}
+	return out
+}
+
+func normalizeToolContentItems(items []ToolContentItem) []ToolContentItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]ToolContentItem, 0, len(items))
+	for _, item := range items {
+		item.Type = strings.TrimSpace(item.Type)
+		switch item.Type {
+		case "input_text":
+			if strings.TrimSpace(item.Text) == "" {
+				continue
+			}
+			out = append(out, ToolContentItem{
+				Type: "input_text",
+				Text: item.Text,
+			})
+		case "input_image":
+			if strings.TrimSpace(item.ImageURL) == "" {
+				continue
+			}
+			detail, err := normalizeImageDetail(item.Detail)
+			if err != nil {
+				detail = ""
+			}
+			out = append(out, ToolContentItem{
+				Type:     "input_image",
+				ImageURL: strings.TrimSpace(item.ImageURL),
+				Detail:   detail,
+			})
+		}
+	}
+	return out
 }
 
 func providerErrorTextSuggestsJSONModeUnsupported(msg string) bool {

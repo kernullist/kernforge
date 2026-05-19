@@ -9053,6 +9053,40 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 	}
 }
 
+func TestAgentFinalizesGeneratedDocumentArtifactFromGitChangedPathFallback(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runTestGit(t, root, "add", "Tavern/README.md")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "seed")
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte("# Tavern Bug Report\n\n## BUG-001\n- File: Tavern/Tavern.cpp\n"), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.shouldFinalizeGeneratedDocumentArtifactReply(session.Messages[0].Text, "Tavern/BugReport.md 생성 완료", false) {
+		t.Fatalf("expected generated document finalization to use git changed-path fallback when patch transaction paths are unavailable")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+		t.Fatalf("expected generated document artifact final answer to skip reviewer from git changed-path fallback")
+	}
+}
+
 func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 	root := t.TempDir()
 	mainProvider := &scriptedProviderClient{

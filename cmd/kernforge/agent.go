@@ -1009,7 +1009,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, nil
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
-				if !harnessApproved && sessionChangesAreGeneratedDocumentArtifacts(a.Session, latestUser) && finalHarnessRevisions >= 2 {
+				if !harnessApproved && a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) && finalHarnessRevisions >= 2 {
 					reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
@@ -1388,11 +1388,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.noteToolConversationFailureResult(call, result, err, blockedToolResult)
 			}
 			toolMsg := Message{
-				Role:       "tool",
-				ToolCallID: call.ID,
-				ToolName:   call.Name,
-				Text:       result.DisplayText,
-				ToolMeta:   result.Meta,
+				Role:             "tool",
+				ToolCallID:       call.ID,
+				ToolName:         call.Name,
+				Text:             result.DisplayText,
+				ToolContentItems: result.ContentItems,
+				ToolMeta:         result.Meta,
 			}
 			if blockedToolResult {
 				toolMsg.IsError = true
@@ -2046,11 +2047,31 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	if unresolvedVerification || strings.TrimSpace(reply) == "" {
 		return false
 	}
-	if !sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
 		return false
 	}
 	report := a.Session.LastCodingHarnessReport
 	return report != nil && report.Approved
+}
+
+func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
+		return true
+	}
+	root := workspaceSnapshotRoot(a.Workspace)
+	if strings.TrimSpace(root) == "" {
+		root = a.Workspace.Root
+	}
+	if strings.TrimSpace(root) == "" {
+		root = a.Session.WorkingDir
+	}
+	if strings.TrimSpace(root) == "" {
+		return false
+	}
+	return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, autoReviewChangedPaths(a.Session, root))
 }
 
 func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bool {

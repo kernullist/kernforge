@@ -230,6 +230,9 @@ func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
 				"description": strings.TrimSpace(tool.Description),
 				"parameters":  openAICodexToolParameters(tool.InputSchema),
 			}
+			if len(tool.OutputSchema) > 0 {
+				item["output_schema"] = tool.OutputSchema
+			}
 			tools = append(tools, item)
 		}
 		if len(tools) > 0 {
@@ -299,7 +302,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 			items = append(items, map[string]any{
 				"type":    "function_call_output",
 				"call_id": callID,
-				"output":  msg.Text,
+				"output":  toolOutputForResponses(msg),
 			})
 		}
 	}

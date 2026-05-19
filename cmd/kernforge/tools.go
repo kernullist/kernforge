@@ -27,8 +27,9 @@ type Tool interface {
 }
 
 type ToolExecutionResult struct {
-	DisplayText string         `json:"display_text,omitempty"`
-	Meta        map[string]any `json:"meta,omitempty"`
+	DisplayText  string            `json:"display_text,omitempty"`
+	ContentItems []ToolContentItem `json:"content_items,omitempty"`
+	Meta         map[string]any    `json:"meta,omitempty"`
 }
 
 type detailedTool interface {

@@ -266,7 +266,7 @@ func buildOpenCodeResponsesPayload(req ChatRequest) (map[string]any, error) {
 			input = append(input, map[string]any{
 				"type":    "function_call_output",
 				"call_id": msg.ToolCallID,
-				"output":  msg.Text,
+				"output":  toolOutputForResponses(msg),
 			})
 		}
 	}
@@ -275,12 +275,16 @@ func buildOpenCodeResponsesPayload(req ChatRequest) (map[string]any, error) {
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, 0, len(req.Tools))
 		for _, tool := range req.Tools {
-			tools = append(tools, map[string]any{
+			item := map[string]any{
 				"type":        "function",
 				"name":        tool.Name,
 				"description": tool.Description,
 				"parameters":  tool.InputSchema,
-			})
+			}
+			if len(tool.OutputSchema) > 0 {
+				item["output_schema"] = tool.OutputSchema
+			}
+			tools = append(tools, item)
 		}
 		payload["tools"] = tools
 	}

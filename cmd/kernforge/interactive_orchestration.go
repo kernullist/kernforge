@@ -670,7 +670,7 @@ func (a *Agent) shouldReviewInteractiveFinalAnswer(reply string, attemptedEditTo
 	if strings.TrimSpace(reply) == "" {
 		return false
 	}
-	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, "") {
+	if a.changesAreGeneratedDocumentArtifactsForTurn("") {
 		return false
 	}
 	state := a.Session.TaskState

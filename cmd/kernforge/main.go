@@ -476,6 +476,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 	items := []Tool{
 		NewListFilesTool(ws),
 		NewReadFileTool(ws),
+		NewViewImageTool(ws),
 		NewGrepTool(ws),
 		NewApplyEditProposalTool(ws),
 		NewApplyPatchTool(ws),
