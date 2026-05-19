@@ -30,7 +30,7 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, req)
+	s.requests = append(s.requests, cloneChatRequestForTest(req))
 	if s.index >= len(s.replies) {
 		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
 	}
@@ -61,7 +61,7 @@ func (s *streamingScriptedProviderClient) Complete(ctx context.Context, req Chat
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, req)
+	s.requests = append(s.requests, cloneChatRequestForTest(req))
 	if s.index >= len(s.replies) {
 		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
 	}
@@ -71,6 +71,25 @@ func (s *streamingScriptedProviderClient) Complete(ctx context.Context, req Chat
 		req.OnTextDelta(resp.Message.Text)
 	}
 	return resp, nil
+}
+
+func cloneChatRequestForTest(req ChatRequest) ChatRequest {
+	out := req
+	out.Messages = append([]Message(nil), req.Messages...)
+	for i := range out.Messages {
+		out.Messages[i].Images = append([]MessageImage(nil), out.Messages[i].Images...)
+		out.Messages[i].ToolCalls = append([]ToolCall(nil), out.Messages[i].ToolCalls...)
+		out.Messages[i].ToolContentItems = append([]ToolContentItem(nil), out.Messages[i].ToolContentItems...)
+		if out.Messages[i].ToolMeta != nil {
+			meta := make(map[string]any, len(out.Messages[i].ToolMeta))
+			for key, value := range out.Messages[i].ToolMeta {
+				meta[key] = value
+			}
+			out.Messages[i].ToolMeta = meta
+		}
+	}
+	out.Tools = append([]ToolDefinition(nil), req.Tools...)
+	return out
 }
 
 type blockingProviderClient struct {
@@ -8622,6 +8641,160 @@ func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 	}
 	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
 		t.Fatalf("expected repaired document harness report to be approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
+func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T) {
+	root := t.TempDir()
+	badReportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 3 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+	}, "\n")
+	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
+	rejectedReply := "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다."
+	acceptedReply := "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": badReportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: rejectedReply,
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": goodReportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: acceptedReply,
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != acceptedReply {
+		t.Fatalf("expected accepted final reply, got %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected one rejected final answer, repair, then finalization, got %d requests", len(provider.requests))
+	}
+	for _, msg := range provider.requests[2].Messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, rejectedReply) {
+			t.Fatalf("rejected final answer leaked into the next model request: %#v", msg)
+		}
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && msg.Phase == messagePhaseFinalAnswerCandidate {
+			t.Fatalf("final-answer candidate remained in session: %#v", msg)
+		}
+		if msg.Role == "assistant" && strings.Contains(msg.Text, rejectedReply) {
+			t.Fatalf("rejected final answer remained in session: %#v", msg)
+		}
+	}
+	foundFinal := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && msg.Text == acceptedReply {
+			if msg.Phase != messagePhaseFinalAnswer {
+				t.Fatalf("accepted final answer was not promoted to final phase: %#v", msg)
+			}
+			foundFinal = true
+		}
+	}
+	if !foundFinal {
+		t.Fatalf("accepted final answer was not recorded in the session")
+	}
+}
+
+func TestAgentDropsStaleFinalAnswerCandidateBeforeNewUserTurn(t *testing.T) {
+	root := t.TempDir()
+	staleReply := "이 답변은 게이트를 통과하지 못한 이전 최종 답변 후보입니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "새 질문에 대한 답변입니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "이전 요청"})
+	session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: staleReply})
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "새 질문에 답해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "새 질문에 대한 답변입니다." {
+		t.Fatalf("expected fresh reply, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected a single model request, got %d", len(provider.requests))
+	}
+	for _, msg := range provider.requests[0].Messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, staleReply) {
+			t.Fatalf("stale final-answer candidate leaked into new model request: %#v", msg)
+		}
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && strings.Contains(msg.Text, staleReply) {
+			t.Fatalf("stale final-answer candidate remained in session: %#v", msg)
+		}
 	}
 }
 

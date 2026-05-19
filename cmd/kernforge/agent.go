@@ -93,6 +93,7 @@ const (
 
 func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
 	a.lastEmittedText = ""
+	a.discardStaleFinalAnswerCandidates()
 	startIndex := len(a.Session.Messages)
 	confirmedReviewRepair := false
 	confirmedReviewerGateRepair := false
@@ -196,7 +197,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
 			a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 		} else {
-			a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+			a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 			a.noteAssistantConversationEvent(reply)
 			a.Session.RefreshConversationState()
 		}
@@ -210,7 +211,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		return "", err
 	}
 	if ranReviewMode {
-		a.Session.AddMessage(Message{Role: "assistant", Text: reviewModeReply})
+		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reviewModeReply})
 		if a.LongMem != nil {
 			safeStart := startIndex
 			if safeStart > len(a.Session.Messages) {
@@ -237,7 +238,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if ranReviewBeforeFix {
 		if reply, ok := a.maybeStopAfterReviewerGateUnavailable(); ok {
-			a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+			a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -246,7 +247,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if ranReviewBeforeFix && a.shouldConcludeAfterNonBlockingPreFixReview(userText) {
 		reply := a.formatNonBlockingPreFixReviewReply()
-		a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
 		}
@@ -362,7 +363,7 @@ func (a *Agent) finishPendingReviewRepairConfirmation(userText string, images []
 		Text:   userText,
 		Images: images,
 	})
-	a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 	a.noteAssistantConversationEvent(reply)
 	a.Session.RefreshConversationState()
 	if a.Store != nil {
@@ -428,8 +429,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		return "", err
 	} else if ok {
 		a.Session.AddMessage(Message{
-			Role: "assistant",
-			Text: reply,
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  reply,
 		})
 		a.noteAssistantConversationEvent(reply)
 		if err := a.Store.Save(a.Session); err != nil {
@@ -614,6 +616,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
+		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
 		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
 			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
@@ -642,8 +645,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		lastStopReason = normalizeStopReason(resp.StopReason)
 		a.Session.AddMessage(resp.Message)
-		if err := a.Store.Save(a.Session); err != nil {
-			return "", err
+		if resp.Message.Phase != messagePhaseFinalAnswerCandidate {
+			if err := a.Store.Save(a.Session); err != nil {
+				return "", err
+			}
 		}
 		if len(resp.Message.ToolCalls) > 0 {
 			if !explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
@@ -903,6 +908,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if replyBlamesInternalToolTranscriptRecovery(reply) && internalToolTranscriptFailureReplyRetries < 1 {
 					internalToolTranscriptFailureReplyRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: internalToolTranscriptFailureGuidance(explicitEditRequest),
@@ -916,6 +922,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					replyBlamesToolAvailabilityAfterSkippedVerification(reply) &&
 					toolAvailabilityBlameReplyRetries < 1 {
 					toolAvailabilityBlameReplyRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: toolAvailabilityAfterSkippedVerificationGuidance(a.Config),
@@ -930,6 +937,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					replyBlamesLocalCodeToolAvailability(reply) &&
 					localCodeToolAvailabilityBlameRetries < 1 {
 					localCodeToolAvailabilityBlameRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: localCodeToolAvailabilityBlameGuidance(a.Config),
@@ -941,6 +949,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && manualEditHandoffRetries < 1 {
 					manualEditHandoffRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: "This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error.",
@@ -965,6 +974,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if rawReviewResultReplyRetries < 1 && replyLooksLikeRawReviewHarnessResult(reply) {
 					rawReviewResultReplyRetries++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: "Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer. Provide a normal user-facing final answer that summarizes what changed, verification status, and any remaining blockers or risks.",
@@ -976,6 +986,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if unresolvedVerification && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 					finalAnswerNudges++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed.",
@@ -992,6 +1003,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					} else if len(a.Session.Messages) > 0 {
 						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 					}
+					a.acceptRecentFinalAnswerCandidate(reply)
 					if a.Session.TaskState != nil {
 						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, false) && a.shouldCompleteSharedPlanOnReturn(false) {
 							a.Session.TaskState.SetPhase("done")
@@ -1010,7 +1022,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
 				if !harnessApproved && a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) && finalHarnessRevisions >= 2 {
+					a.discardRecentFinalAnswerCandidate(reply)
 					reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -1019,6 +1033,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if !harnessApproved && finalHarnessRevisions < 2 {
 					finalHarnessRevisions++
+					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
 						Role: "user",
 						Text: harnessFeedback,
@@ -1029,6 +1044,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					continue
 				}
 				if a.shouldFinalizeGeneratedDocumentArtifactReply(latestUser, reply, unresolvedVerification) {
+					a.acceptRecentFinalAnswerCandidate(reply)
 					if a.Session.TaskState != nil {
 						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
 							a.Session.TaskState.SetPhase("done")
@@ -1051,6 +1067,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return "", err
 					}
 					if needsModelTurn {
+						a.discardRecentFinalAnswerCandidate(reply)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
 						continue
 					}
 				}
@@ -1058,6 +1078,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if runtimeGateBlocksFinalAnswer(ledger, reply) {
 						runtimeGateFinalAnswerRevisions++
+						a.discardRecentFinalAnswerCandidate(reply)
 						a.Session.AddMessage(Message{
 							Role: "user",
 							Text: renderRuntimeGateBlockedFeedback(ledger, runtimeGateActionFinalAnswer),
@@ -1077,6 +1098,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastReviewedFinalAnswer = reply
 					if !approved {
 						finalAnswerReviewRevisions++
+						a.discardRecentFinalAnswerCandidate(reply)
 						nextText := "Reviewer feedback: the proposed final answer is not ready yet. Revise the work or the answer before concluding."
 						if strings.TrimSpace(reviewText) != "" {
 							nextText += "\n\n" + strings.TrimSpace(reviewText)
@@ -1091,6 +1113,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
+				a.acceptRecentFinalAnswerCandidate(reply)
 				if a.Session.TaskState != nil {
 					if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
 						a.Session.TaskState.SetPhase("done")
@@ -1306,7 +1329,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: pre-write repair inspection budget was exhausted; the repair loop is asking the user how to proceed.")
 					reply := formatPreWriteReviewRepairInspectionLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
@@ -1347,7 +1370,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if broadRecoveryPatchDeferrals > maxBroadRecoveryPatchDeferralsPerTurn {
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier recovery edit patch was too broad for stale-context repair and the recovery loop stopped.")
 					reply := formatBroadRecoveryPatchLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
@@ -1460,7 +1483,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					reply := formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
@@ -1510,7 +1533,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					reply := formatEditTargetMismatchLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
@@ -1612,7 +1635,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if a.PromptContinueReviewRepair != nil && a.Session != nil && a.Session.LastReviewRun != nil {
 						if !reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) {
 							a.Session.PendingReviewRepairConfirm = nil
-							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 							if saveErr := a.Store.Save(a.Session); saveErr != nil {
 								return "", saveErr
 							}
@@ -1626,7 +1649,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.Session.PendingReviewRepairConfirm = nil
 						if !continueRepair {
 							reply = formatCancelledPendingReviewRepairReply(a.Config)
-							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 							if saveErr := a.Store.Save(a.Session); saveErr != nil {
 								return "", saveErr
 							}
@@ -1634,7 +1657,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						if !a.primeReviewerGateRepairFromLastReview(latestUser) {
 							reply = formatNoActionableReviewerGateRepairReply(a.Config)
-							a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+							a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 							if saveErr := a.Store.Save(a.Session); saveErr != nil {
 								return "", saveErr
 							}
@@ -1647,7 +1670,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						lastToolErrorCount = 0
 						continue
 					}
-					a.Session.AddMessage(Message{Role: "assistant", Text: reply})
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
@@ -2010,6 +2033,91 @@ func (a *Agent) shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification bo
 		}
 	}
 	return false
+}
+
+func assistantMessagePhaseForModelResponse(msg Message) string {
+	if !strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+		return strings.TrimSpace(msg.Phase)
+	}
+	if len(msg.ToolCalls) > 0 {
+		return messagePhaseCommentary
+	}
+	if strings.TrimSpace(msg.Text) != "" {
+		return messagePhaseFinalAnswerCandidate
+	}
+	return strings.TrimSpace(msg.Phase)
+}
+
+func (a *Agent) acceptRecentFinalAnswerCandidate(reply string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	index := a.findRecentFinalAnswerCandidate(reply)
+	if index < 0 {
+		return false
+	}
+	a.Session.Messages[index].Phase = messagePhaseFinalAnswer
+	return true
+}
+
+func (a *Agent) discardRecentFinalAnswerCandidate(reply string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	index := a.findRecentFinalAnswerCandidate(reply)
+	if index < 0 {
+		return false
+	}
+	a.Session.Messages = append(a.Session.Messages[:index], a.Session.Messages[index+1:]...)
+	return true
+}
+
+func (a *Agent) discardStaleFinalAnswerCandidates() bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	messages := a.Session.Messages
+	if len(messages) == 0 {
+		return false
+	}
+	kept := messages[:0]
+	changed := false
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && strings.TrimSpace(msg.Phase) == messagePhaseFinalAnswerCandidate {
+			changed = true
+			continue
+		}
+		kept = append(kept, msg)
+	}
+	if changed {
+		a.Session.Messages = kept
+	}
+	return changed
+}
+
+func (a *Agent) findRecentFinalAnswerCandidate(reply string) int {
+	if a == nil || a.Session == nil {
+		return -1
+	}
+	target := strings.TrimSpace(reply)
+	if target == "" {
+		return -1
+	}
+	for i := len(a.Session.Messages) - 1; i >= 0; i-- {
+		msg := a.Session.Messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			continue
+		}
+		if strings.TrimSpace(msg.Text) != target {
+			continue
+		}
+		phase := strings.TrimSpace(msg.Phase)
+		if phase == messagePhaseFinalAnswerCandidate || (phase == "" && i == len(a.Session.Messages)-1) {
+			return i
+		}
+		return -1
+	}
+	return -1
 }
 
 func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, reply string, unresolvedVerification bool) bool {

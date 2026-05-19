@@ -34,8 +34,15 @@ type ToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
+const (
+	messagePhaseCommentary           = "commentary"
+	messagePhaseFinalAnswer          = "final_answer"
+	messagePhaseFinalAnswerCandidate = "final_answer_candidate"
+)
+
 type Message struct {
 	Role             string            `json:"role"`
+	Phase            string            `json:"phase,omitempty"`
 	Text             string            `json:"text,omitempty"`
 	ReasoningContent string            `json:"reasoning_content,omitempty"`
 	Images           []MessageImage    `json:"images,omitempty"`
