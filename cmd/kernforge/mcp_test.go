@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,6 +71,12 @@ func TestMCPHelperProcess(t *testing.T) {
 						"type": "text",
 						"text": fmt.Sprintf("echo: %s", message),
 					}},
+					"structuredContent": map[string]any{
+						"echoed": message,
+					},
+					"_meta": map[string]any{
+						"trace_id": "trace-" + message,
+					},
 				},
 			})
 		case "resources/list":
@@ -424,6 +431,104 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 	prompts := manager.Prompts()
 	if len(prompts) != 1 || prompts[0].Prompt.Name != "summarize" {
 		t.Fatalf("unexpected prompts: %#v", prompts)
+	}
+}
+
+func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	registry := NewToolRegistry(manager.Tools()...)
+	result, err := registry.ExecuteDetailed(context.Background(), "mcp__fake__echo", `{"message":"hello"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed echo: %v", err)
+	}
+	if result.DisplayText != "echo: hello" {
+		t.Fatalf("unexpected display text: %q", result.DisplayText)
+	}
+	if got := toolMetaString(result.Meta, "mcp_server"); got != "fake" {
+		t.Fatalf("expected MCP server metadata, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "mcp_tool"); got != "echo" {
+		t.Fatalf("expected MCP tool metadata, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "mcp_namespaced_tool"); got != "mcp__fake__echo" {
+		t.Fatalf("expected namespaced MCP tool metadata, got %#v", result.Meta)
+	}
+	if !toolMetaBool(result.Meta, "mcp_has_meta") {
+		t.Fatalf("expected MCP _meta presence marker, got %#v", result.Meta)
+	}
+	rawMeta, ok := result.Meta["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP _meta payload, got %#v", result.Meta["_meta"])
+	}
+	if got := rawMeta["trace_id"]; got != "trace-hello" {
+		t.Fatalf("unexpected MCP _meta trace: %#v", rawMeta)
+	}
+	structured, ok := result.Meta["mcp_result_structured_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structuredContent metadata, got %#v", result.Meta["mcp_result_structured_content"])
+	}
+	if got := structured["echoed"]; got != "hello" {
+		t.Fatalf("unexpected structuredContent payload: %#v", structured)
+	}
+
+	encoded, err := json.Marshal(result.Meta)
+	if err != nil {
+		t.Fatalf("marshal result metadata: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal result metadata: %v", err)
+	}
+	if _, ok := decoded["_meta"]; !ok {
+		t.Fatalf("expected serialized metadata to preserve _meta spelling: %s", string(encoded))
+	}
+	if _, ok := decoded["meta"]; ok {
+		t.Fatalf("MCP result metadata must not be serialized as meta: %s", string(encoded))
+	}
+
+	session := NewSession(dir, "provider", "model", "", "default")
+	agent := &Agent{Session: session}
+	call := ToolCall{
+		ID:        "call-1",
+		Name:      "mcp__fake__echo",
+		Arguments: `{"message":"hello"}`,
+	}
+	agent.noteToolConversationResult(call, result)
+	if len(session.ConversationEvents) == 0 {
+		t.Fatalf("expected conversation event")
+	}
+	jsonl, err := renderSessionEventsJSONL(session, session.ConversationEvents)
+	if err != nil {
+		t.Fatalf("render session events: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(jsonl), "\n")
+	record := SessionEventStreamRecord{}
+	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+		t.Fatalf("unmarshal session event: %v", err)
+	}
+	mcpResult, ok := record.Event.Metadata["mcp_result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP result metadata in event JSONL, got %#v", record.Event.Metadata)
+	}
+	if _, ok := mcpResult["_meta"]; !ok {
+		t.Fatalf("expected event JSONL to preserve MCP result _meta: %#v", mcpResult)
+	}
+	if _, ok := mcpResult["meta"]; ok {
+		t.Fatalf("event JSONL must not rename MCP result _meta to meta: %#v", mcpResult)
 	}
 }
 

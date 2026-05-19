@@ -54,6 +54,7 @@ type ConversationEvent struct {
 	Time          time.Time         `json:"time"`
 	CorrelationID string            `json:"correlation_id,omitempty"`
 	Entities      map[string]string `json:"entities,omitempty"`
+	Metadata      map[string]any    `json:"metadata,omitempty"`
 	ArtifactRefs  []string          `json:"artifact_refs,omitempty"`
 }
 
@@ -276,6 +277,7 @@ func (a *Agent) noteToolConversationResult(call ToolCall, result ToolExecutionRe
 		Raw:           compactPromptSection(result.DisplayText, 1200),
 		CorrelationID: strings.TrimSpace(call.ID),
 		Entities:      entities,
+		Metadata:      toolResultEventMetadata(result.Meta),
 	})
 	a.appendCodexStyleToolLifecycleEnd(call, result, nil, false)
 }
@@ -762,6 +764,9 @@ func toolMetaEntities(meta map[string]any) map[string]string {
 		"verification_status",
 		"command_execution_status",
 		"patch_apply_status",
+		"mcp_server",
+		"mcp_tool",
+		"mcp_namespaced_tool",
 	} {
 		if value, ok := meta[key]; ok {
 			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
@@ -777,12 +782,34 @@ func toolMetaEntities(meta map[string]any) map[string]string {
 			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
 		}
 	}
-	for _, key := range []string{"success", "clean", "changed_workspace", "requires_verification", "verification_like", "verification_evidence", "verification_approved", "verification_declined"} {
+	for _, key := range []string{"success", "clean", "changed_workspace", "requires_verification", "verification_like", "verification_evidence", "verification_approved", "verification_declined", "mcp_has_meta", "mcp_is_error"} {
 		if value, ok := meta[key]; ok {
 			add(key, strings.TrimSpace(fmt.Sprintf("%v", value)))
 		}
 	}
 	return entities
+}
+
+func toolResultEventMetadata(meta map[string]any) map[string]any {
+	if len(meta) == 0 {
+		return nil
+	}
+	mcpResult := map[string]any{}
+	if value, ok := meta["mcp_result_content"]; ok {
+		mcpResult["content"] = value
+	}
+	if value, ok := meta["mcp_result_structured_content"]; ok {
+		mcpResult["structured_content"] = value
+	}
+	if value, ok := meta["_meta"]; ok {
+		mcpResult["_meta"] = value
+	}
+	if len(mcpResult) == 0 {
+		return nil
+	}
+	return map[string]any{
+		"mcp_result": mcpResult,
+	}
 }
 
 func unifiedDiffFileCount(diff string) int {

@@ -803,24 +803,61 @@ func emptyObjectSchema() map[string]any {
 }
 
 func (c *MCPClient) callTool(ctx context.Context, name string, args any) (string, error) {
+	result, err := c.callToolDetailed(ctx, name, args)
+	return result.DisplayText, err
+}
+
+func (c *MCPClient) callToolDetailed(ctx context.Context, name string, args any) (ToolExecutionResult, error) {
 	result, err := c.request(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
 	})
 	if err != nil {
-		return "", err
+		return ToolExecutionResult{}, err
 	}
 	text := formatMCPToolResult(result)
+	meta := buildMCPToolResultMeta(c.config.Name, name, result)
 	if boolValue(result, "isError", false) {
 		if text == "" {
 			text = "remote tool reported an error"
 		}
-		return text, fmt.Errorf("mcp tool %s failed", name)
+		meta["mcp_is_error"] = true
+		return ToolExecutionResult{DisplayText: text, Meta: meta}, fmt.Errorf("mcp tool %s failed", name)
 	}
 	if text == "" {
 		text = "(no output)"
 	}
-	return text, nil
+	return ToolExecutionResult{DisplayText: text, Meta: meta}, nil
+}
+
+func buildMCPToolResultMeta(server string, tool string, result map[string]any) map[string]any {
+	meta := map[string]any{
+		"mcp_server": strings.TrimSpace(server),
+		"mcp_tool":   strings.TrimSpace(tool),
+	}
+	if value, ok := result["content"]; ok {
+		meta["mcp_result_content"] = value
+	}
+	if value, ok := firstPresentMCPResultField(result, "structuredContent", "structured_content"); ok {
+		meta["mcp_result_structured_content"] = value
+	}
+	if value, ok := firstPresentMCPResultField(result, "_meta", "meta"); ok {
+		meta["_meta"] = value
+		meta["mcp_has_meta"] = true
+	}
+	if isError, ok := result["isError"]; ok {
+		meta["mcp_is_error"] = isError
+	}
+	return meta
+}
+
+func firstPresentMCPResultField(result map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, ok := result[key]; ok {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func (c *MCPClient) readResource(ctx context.Context, query string) (string, string, error) {
@@ -1382,6 +1419,15 @@ func (t MCPTool) Definition() ToolDefinition {
 
 func (t MCPTool) Execute(ctx context.Context, input any) (string, error) {
 	return t.client.callTool(ctx, t.remote.Name, input)
+}
+
+func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
+	result, err := t.client.callToolDetailed(ctx, t.remote.Name, input)
+	if result.Meta == nil {
+		result.Meta = map[string]any{}
+	}
+	result.Meta["mcp_namespaced_tool"] = t.namespaced
+	return result, err
 }
 
 func (t MCPResourceTool) Definition() ToolDefinition {
