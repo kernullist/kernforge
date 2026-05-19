@@ -1231,7 +1231,7 @@ func TestApplyPatchAcceptsBareBlankContextLinesInHunk(t *testing.T) {
 	}
 }
 
-func TestApplyPatchRecoversFencedPatchWithProse(t *testing.T) {
+func TestApplyPatchRejectsFencedPatchWithProseLikeCodex(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
 	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
@@ -1242,15 +1242,18 @@ func TestApplyPatchRecoversFencedPatchWithProse(t *testing.T) {
 	_, err := tool.Execute(context.Background(), map[string]any{
 		"patch": "Here is the patch:\n```patch\n*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+func main() {}\n*** End Patch\n```\nDone.",
 	})
-	if err != nil {
-		t.Fatalf("expected fenced patch with prose to be recovered, got %v", err)
+	if err == nil {
+		t.Fatalf("expected fenced patch with prose to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected invalid patch format, got %v", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(data), "func main() {}") {
-		t.Fatalf("expected recovered patch to update file, got %q", string(data))
+	if string(data) != "package main\n" {
+		t.Fatalf("direct apply_patch payload with prose must not update file, got %q", string(data))
 	}
 }
 
@@ -1303,10 +1306,10 @@ func TestInvalidPatchFormatGuidanceChangesOnRepeatedSignature(t *testing.T) {
 		t.Fatalf("expected repeated guidance to force fresh read, got %q", repeated)
 	}
 
-	argsA := "{\"patch\":\"prefix\\n*** Begin Patch\\n*** End Patch\\n```\"}"
+	argsA := "{\"patch\":\"```patch\\n*** Begin Patch\\n*** End Patch\\n```\"}"
 	argsB := `{"patch":"*** Begin Patch\n*** End Patch"}`
-	if applyPatchFormatFailureSignature(argsA) != applyPatchFormatFailureSignature(argsB) {
-		t.Fatalf("expected equivalent failed patch signatures after normalization")
+	if applyPatchFormatFailureSignature(argsA) == applyPatchFormatFailureSignature(argsB) {
+		t.Fatalf("expected direct apply_patch wrappers/prose to remain distinct from raw patch text")
 	}
 }
 
@@ -2629,13 +2632,21 @@ func TestDeclinedBackgroundVerificationLeavesNoPollableLatestJob(t *testing.T) {
 	checkTool := NewCheckShellJobTool(ws)
 
 	start, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
-		"command": "go test ./...",
+		"command":       "go test ./...",
+		"owner_node_id": "plan-02",
+		"workdir":       ".",
 	})
 	if err != nil {
 		t.Fatalf("declined background verification should be a non-error skip, got %v", err)
 	}
 	if got := toolMetaString(start.Meta, "verification_status"); got != string(VerificationSkipped) {
 		t.Fatalf("expected skipped verification status, got %#v meta=%#v", got, start.Meta)
+	}
+	if got := toolMetaString(start.Meta, "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected skipped verification owner metadata, got %#v", start.Meta)
+	}
+	if got := toolMetaString(start.Meta, "work_dir"); !sameFilePath(got, root) {
+		t.Fatalf("expected skipped verification work_dir metadata, got %#v", start.Meta)
 	}
 	if latest := jobs.LatestJobID(); latest != "" {
 		t.Fatalf("declined verification must not create a pollable job, got %q", latest)
@@ -2655,6 +2666,54 @@ func TestDeclinedBackgroundVerificationLeavesNoPollableLatestJob(t *testing.T) {
 	}
 	if !strings.Contains(poll.DisplayText, "Do not poll again") {
 		t.Fatalf("expected repeated-poll prevention guidance, got %q", poll.DisplayText)
+	}
+}
+
+func TestDeclinedBackgroundBundleVerificationPreservesRoutingMeta(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+			return false, nil
+		},
+	}
+	runTool := NewRunShellBundleBackgroundTool(ws)
+
+	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+		"commands":      []string{"go test ./..."},
+		"owner_node_id": "plan-02",
+		"workdir":       "subdir",
+	})
+	if err != nil {
+		t.Fatalf("declined background bundle verification should be a non-error skip, got %v", err)
+	}
+	if got := toolMetaString(result.Meta, "verification_status"); got != string(VerificationSkipped) {
+		t.Fatalf("expected skipped verification status, got %#v meta=%#v", got, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected skipped bundle owner metadata, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, subdir) {
+		t.Fatalf("expected skipped bundle work_dir metadata, got %#v", result.Meta)
+	}
+	if commands := toolMetaStringSlice(result.Meta, "commands"); len(commands) != 1 || commands[0] != "go test ./..." {
+		t.Fatalf("expected skipped bundle command metadata, got %#v", result.Meta)
+	}
+	if latest := jobs.LatestBundleID(); latest != "" {
+		t.Fatalf("declined verification must not create a pollable bundle, got %q", latest)
 	}
 }
 

@@ -794,6 +794,9 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			DisplayText: strings.Join(lines, "\n"),
 			Meta: map[string]any{
 				"tool_name":                "run_shell_bundle_background",
+				"commands":                 commands,
+				"owner_node_id":            effectiveOwnerNodeID,
+				"work_dir":                 workDir,
 				"plan_effect":              "none",
 				"result_class":             "verification_skipped",
 				"verification_like":        true,
@@ -890,6 +893,9 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 				DisplayText: skippedVerificationCommandText(),
 				Meta: map[string]any{
 					"tool_name":                "run_shell_background",
+					"command":                  command,
+					"owner_node_id":            effectiveOwnerNodeID,
+					"work_dir":                 workDir,
 					"plan_effect":              "none",
 					"result_class":             "verification_skipped",
 					"verification_like":        true,

@@ -210,6 +210,11 @@ func parsePatchDocument(text string) (patchDocument, error) {
 		}
 		if line == "*** End Patch" {
 			advance()
+			for index < len(lines) {
+				if strings.TrimSpace(advance()) != "" {
+					return patchDocument{}, fmt.Errorf("patch_format_trailing_content: patch must end with *** End Patch")
+				}
+			}
 			return patchDocument{ops: ops}, nil
 		}
 		switch {
@@ -243,13 +248,6 @@ func normalizePatchDocumentText(text string) string {
 	text = strings.TrimPrefix(text, "\uFEFF")
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	text = strings.TrimSpace(text)
-	if begin := strings.Index(text, "*** Begin Patch"); begin >= 0 {
-		text = text[begin:]
-	}
-	if end := strings.Index(text, "*** End Patch"); end >= 0 {
-		text = text[:end+len("*** End Patch")]
-	}
 	return strings.TrimSpace(text)
 }
 

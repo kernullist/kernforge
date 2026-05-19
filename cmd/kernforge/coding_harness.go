@@ -629,6 +629,39 @@ func (r CodingHarnessReport) BlockingFeedback() string {
 	return "Pre-final coding harness found issues that must be resolved before concluding:\n" + strings.Join(blockers, "\n") + "\n\nRevise the work or the final answer so it matches the actual workspace state. Do not claim verification, created artifacts, or no remaining blockers unless the harness evidence supports that."
 }
 
+func generatedDocumentArtifactHarnessBlockedReply(report *CodingHarnessReport) string {
+	if report == nil {
+		return "Generated document artifact quality checks are still blocking completion. I stopped here instead of routing this documentation-only task into code review or shell validation."
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	lines := []string{
+		"Generated document artifact quality checks are still blocking completion.",
+		"I stopped here instead of routing this documentation-only task into code review or shell validation.",
+	}
+	blockers := make([]string, 0)
+	for _, finding := range copyReport.allFindings() {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		title := firstNonBlankString(finding.Title, "artifact quality blocker")
+		detail := strings.TrimSpace(finding.Detail)
+		if detail != "" {
+			blockers = append(blockers, "- "+title+": "+detail)
+		} else {
+			blockers = append(blockers, "- "+title)
+		}
+		if len(blockers) >= finalHarnessMaxFindings {
+			break
+		}
+	}
+	if len(blockers) > 0 {
+		lines = append(lines, "", "Remaining blockers:")
+		lines = append(lines, blockers...)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func (r CodingHarnessReport) allFindings() []CodingHarnessFinding {
 	out := make([]CodingHarnessFinding, 0)
 	out = append(out, r.Findings...)

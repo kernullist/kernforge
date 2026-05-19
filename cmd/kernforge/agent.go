@@ -1009,6 +1009,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, nil
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
+				if !harnessApproved && sessionChangesAreGeneratedDocumentArtifacts(a.Session, latestUser) && finalHarnessRevisions >= 2 {
+					reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
+				}
 				if !harnessApproved && finalHarnessRevisions < 2 {
 					finalHarnessRevisions++
 					a.Session.AddMessage(Message{

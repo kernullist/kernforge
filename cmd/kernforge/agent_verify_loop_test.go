@@ -8625,6 +8625,91 @@ func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
 	}
 }
 
+func TestAgentStopsGeneratedDocumentArtifactOnPersistentHarnessBlocker(t *testing.T) {
+	root := t.TempDir()
+	badReportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 3 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": badReportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 최종 확인했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewRunShellTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Generated document artifact quality checks are still blocking completion") {
+		t.Fatalf("expected deterministic artifact blocker reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "Artifact total does not match") {
+		t.Fatalf("expected artifact count blocker details, got %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected no post-exhaustion shell validation or reviewer turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected blocked harness report to remain recorded, got %#v", session.LastCodingHarnessReport)
+	}
+	if session.ActivePatchTransaction == nil {
+		t.Fatalf("expected blocked document patch transaction to remain active for a follow-up repair")
+	}
+}
+
 func TestAgentDoesNotBufferAssistantDeltaForArchivedPatchTransaction(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
