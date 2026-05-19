@@ -2366,6 +2366,8 @@ Special input:
 !<command>             Run a shell command in the current workspace
 @path/to/file          Mention a text file to inject its contents
 @path/to/image.png     Mention an image file to attach it as vision input
+@path.png?detail=original
+                       Preserve original image resolution; supported detail values are high and original
 @mcp:server:target     Mention an MCP resource by server and uri/name
 \ at end of line       Continue to the next line for multiline input
 `)

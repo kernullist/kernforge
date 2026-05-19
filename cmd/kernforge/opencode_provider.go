@@ -307,6 +307,7 @@ func openCodeResponsesUserContent(baseDir string, msg Message) ([]map[string]any
 		content = append(content, map[string]any{
 			"type":      "input_image",
 			"image_url": imageDataURI(image),
+			"detail":    encodedImageDetail(image),
 		})
 	}
 	return content, nil

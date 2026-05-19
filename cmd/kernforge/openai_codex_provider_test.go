@@ -95,6 +95,79 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesImageDetail(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      "gpt-5.5",
+		WorkingDir: dir,
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+			Images: []MessageImage{{
+				Path:      "shot.png",
+				MediaType: "image/png",
+				Detail:    imageDetailOriginal,
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	message := input[0].(map[string]any)
+	content := message["content"].([]any)
+	image := content[1].(map[string]any)
+	if image["type"] != "input_image" {
+		t.Fatalf("expected input_image, got %#v", image)
+	}
+	if image["detail"] != imageDetailOriginal {
+		t.Fatalf("expected original detail, got %#v in body %s", image["detail"], body)
+	}
+	if strings.Contains(string(body), `"detail":"auto"`) {
+		t.Fatalf("request body must not use removed auto detail: %s", body)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyDefaultsImageDetailHigh(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      "gpt-5.5",
+		WorkingDir: dir,
+		Messages: []Message{{
+			Role: "user",
+			Text: "inspect",
+			Images: []MessageImage{{
+				Path:      "shot.png",
+				MediaType: "image/png",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	message := input[0].(map[string]any)
+	content := message["content"].([]any)
+	image := content[1].(map[string]any)
+	if image["detail"] != imageDetailHigh {
+		t.Fatalf("expected high detail, got %#v in body %s", image["detail"], body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyDropsOrphanToolOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",

@@ -51,6 +51,56 @@ func TestParseImageInputListResolvesRelativePath(t *testing.T) {
 	}
 }
 
+func TestParseImageInputListPreservesDetail(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	images, err := parseImageInputList(dir, "shot.png?detail=original")
+	if err != nil {
+		t.Fatalf("parseImageInputList: %v", err)
+	}
+	if len(images) != 1 {
+		t.Fatalf("expected 1 image, got %d", len(images))
+	}
+	if images[0].Path != "shot.png" {
+		t.Fatalf("expected stored path shot.png, got %q", images[0].Path)
+	}
+	if images[0].Detail != imageDetailOriginal {
+		t.Fatalf("expected original detail, got %q", images[0].Detail)
+	}
+}
+
+func TestParseImageInputListRejectsUnsupportedDetail(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	_, err := parseImageInputList(dir, "shot.png?detail=low")
+	if err == nil {
+		t.Fatal("expected unsupported detail error")
+	}
+	if !strings.Contains(err.Error(), "only supports") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAppendUniqueImagesFillsMissingDetail(t *testing.T) {
+	images := appendUniqueImages([]MessageImage{{
+		Path:      "shot.png",
+		MediaType: "image/png",
+	}}, MessageImage{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailOriginal,
+	})
+
+	if len(images) != 1 {
+		t.Fatalf("expected deduplicated image, got %d", len(images))
+	}
+	if images[0].Detail != imageDetailOriginal {
+		t.Fatalf("expected duplicate to fill missing detail, got %q", images[0].Detail)
+	}
+}
+
 func TestExpandMentionsAttachesImageAndTextContext(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")

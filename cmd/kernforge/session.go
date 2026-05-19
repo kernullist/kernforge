@@ -202,7 +202,7 @@ func (s *Session) ApproxChars() int {
 	for _, msg := range s.Messages {
 		total += len(msg.Text) + len(msg.ReasoningContent)
 		for _, image := range msg.Images {
-			total += len(image.Path) + len(image.MediaType)
+			total += len(image.Path) + len(image.MediaType) + len(image.Detail)
 		}
 		total += len(msg.ToolCallID) + len(msg.ToolName)
 		for _, tc := range msg.ToolCalls {
@@ -418,7 +418,12 @@ func (s *Session) ExportText() string {
 		}
 		if len(msg.Images) > 0 {
 			for _, image := range msg.Images {
-				fmt.Fprintf(&b, "- image: %s (%s)\n", image.Path, image.MediaType)
+				detail := strings.TrimSpace(image.Detail)
+				if detail != "" {
+					fmt.Fprintf(&b, "- image: %s (%s, detail=%s)\n", image.Path, image.MediaType, detail)
+				} else {
+					fmt.Fprintf(&b, "- image: %s (%s)\n", image.Path, image.MediaType)
+				}
 			}
 			b.WriteString("\n")
 		}

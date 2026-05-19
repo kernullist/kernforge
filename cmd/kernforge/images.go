@@ -12,13 +12,20 @@ import (
 type MessageImage struct {
 	Path      string `json:"path"`
 	MediaType string `json:"media_type"`
+	Detail    string `json:"detail,omitempty"`
 }
 
 type EncodedImage struct {
 	Path      string
 	MediaType string
+	Detail    string
 	Data      string
 }
+
+const (
+	imageDetailHigh     = "high"
+	imageDetailOriginal = "original"
+)
 
 var supportedImageTypes = map[string]string{
 	".gif":  "image/gif",
@@ -57,6 +64,10 @@ func resolveExplicitImageInput(baseDir, raw string) (MessageImage, error) {
 	if path == "" {
 		return MessageImage{}, fmt.Errorf("image path is required")
 	}
+	path, detail, err := splitImageInputDetail(path)
+	if err != nil {
+		return MessageImage{}, err
+	}
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(baseDir, path)
 	}
@@ -78,7 +89,50 @@ func resolveExplicitImageInput(baseDir, raw string) (MessageImage, error) {
 	return MessageImage{
 		Path:      normalizeStoredPromptPath(baseDir, absPath),
 		MediaType: mediaType,
+		Detail:    detail,
 	}, nil
+}
+
+func splitImageInputDetail(raw string) (string, string, error) {
+	path := strings.TrimSpace(raw)
+	detail := ""
+	if idx := strings.LastIndex(path, "?detail="); idx >= 0 {
+		detail = path[idx+len("?detail="):]
+		path = path[:idx]
+	}
+	if idx := strings.LastIndex(path, "#detail="); idx >= 0 {
+		detail = path[idx+len("#detail="):]
+		path = path[:idx]
+	}
+	if strings.TrimSpace(path) == "" {
+		return "", "", fmt.Errorf("image path is required")
+	}
+	normalized, err := normalizeImageDetail(detail)
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(path), normalized, nil
+}
+
+func normalizeImageDetail(detail string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(detail)) {
+	case "":
+		return "", nil
+	case imageDetailHigh:
+		return imageDetailHigh, nil
+	case imageDetailOriginal:
+		return imageDetailOriginal, nil
+	default:
+		return "", fmt.Errorf("image detail only supports %q or %q: %s", imageDetailHigh, imageDetailOriginal, detail)
+	}
+}
+
+func encodedImageDetail(image EncodedImage) string {
+	detail := strings.ToLower(strings.TrimSpace(image.Detail))
+	if detail == imageDetailOriginal {
+		return imageDetailOriginal
+	}
+	return imageDetailHigh
 }
 
 func detectSupportedImageType(path string) (string, error) {
@@ -118,9 +172,14 @@ func encodeMessageImages(baseDir string, images []MessageImage) ([]EncodedImage,
 				return nil, err
 			}
 		}
+		detail, err := normalizeImageDetail(image.Detail)
+		if err != nil {
+			return nil, err
+		}
 		out = append(out, EncodedImage{
 			Path:      image.Path,
 			MediaType: mediaType,
+			Detail:    detail,
 			Data:      base64.StdEncoding.EncodeToString(data),
 		})
 	}
@@ -141,7 +200,16 @@ func appendUniqueImages(existing []MessageImage, extra ...MessageImage) []Messag
 	}
 	for _, item := range extra {
 		key := strings.ToLower(strings.TrimSpace(item.Path))
-		if key == "" || seen[key] {
+		if key == "" {
+			continue
+		}
+		if seen[key] {
+			for i := range existing {
+				existingKey := strings.ToLower(strings.TrimSpace(existing[i].Path))
+				if existingKey == key && strings.TrimSpace(existing[i].Detail) == "" && strings.TrimSpace(item.Detail) != "" {
+					existing[i].Detail = item.Detail
+				}
+			}
 			continue
 		}
 		seen[key] = true

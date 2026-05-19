@@ -44,6 +44,9 @@ func TestNewProviderClientRequiresOpenCodeAPIKey(t *testing.T) {
 }
 
 func TestOpenCodeClientUsesResponsesForGPTModels(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -61,6 +64,13 @@ func TestOpenCodeClientUsesResponsesForGPTModels(t *testing.T) {
 		if _, ok := body["tools"].([]any); !ok {
 			t.Fatalf("expected responses tools in request: %#v", body["tools"])
 		}
+		input := body["input"].([]any)
+		message := input[0].(map[string]any)
+		content := message["content"].([]any)
+		image := content[1].(map[string]any)
+		if image["detail"] != imageDetailOriginal {
+			t.Fatalf("expected original image detail, got %#v", image["detail"])
+		}
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"go.mod\"}"}]}`))
 	}))
@@ -68,11 +78,17 @@ func TestOpenCodeClientUsesResponsesForGPTModels(t *testing.T) {
 
 	client := NewOpenCodeClient(server.URL+"/v1/responses", "test-key")
 	resp, err := client.Complete(context.Background(), ChatRequest{
-		Model:  "opencode/gpt-5.3-codex",
-		System: "system",
+		Model:      "opencode/gpt-5.3-codex",
+		System:     "system",
+		WorkingDir: dir,
 		Messages: []Message{{
 			Role: "user",
 			Text: "inspect",
+			Images: []MessageImage{{
+				Path:      "shot.png",
+				MediaType: "image/png",
+				Detail:    imageDetailOriginal,
+			}},
 		}},
 		Tools: []ToolDefinition{{
 			Name:        "read_file",

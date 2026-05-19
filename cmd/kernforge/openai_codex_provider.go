@@ -325,7 +325,7 @@ func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, e
 		content = append(content, map[string]any{
 			"type":      "input_image",
 			"image_url": imageDataURI(image),
-			"detail":    "auto",
+			"detail":    encodedImageDetail(image),
 		})
 	}
 	return content, nil
