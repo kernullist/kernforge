@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMCPHelperProcess(t *testing.T) {
@@ -54,6 +55,12 @@ func TestMCPHelperProcess(t *testing.T) {
 							"type": "object",
 							"properties": map[string]any{
 								"message": map[string]any{"type": "string"},
+							},
+						},
+						"outputSchema": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"echoed": map[string]any{"type": "string"},
 							},
 						},
 					}},
@@ -388,11 +395,15 @@ func TestLoadMCPManagerStartsServerAndCallsTools(t *testing.T) {
 		switch tool.Definition().Name {
 		case "mcp__fake__echo":
 			foundEcho = true
+			def := tool.Definition()
+			if got := stringValue(def.OutputSchema, "type"); got != "object" {
+				t.Fatalf("expected MCP outputSchema to be exposed, got %#v", def.OutputSchema)
+			}
 			out, err := tool.Execute(context.Background(), map[string]any{"message": "hello"})
 			if err != nil {
 				t.Fatalf("Execute echo: %v", err)
 			}
-			if out != "echo: hello" {
+			if out != `{"echoed":"hello"}` {
 				t.Fatalf("unexpected echo output: %q", out)
 			}
 		case "mcp__resource__fake":
@@ -455,8 +466,11 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteDetailed echo: %v", err)
 	}
-	if result.DisplayText != "echo: hello" {
+	if result.DisplayText != `{"echoed":"hello"}` {
 		t.Fatalf("unexpected display text: %q", result.DisplayText)
+	}
+	if !strings.HasPrefix(result.ModelText, "Wall time: ") || !strings.HasSuffix(result.ModelText, "\nOutput:\n"+`{"echoed":"hello"}`) {
+		t.Fatalf("unexpected model text: %q", result.ModelText)
 	}
 	if got := toolMetaString(result.Meta, "mcp_server"); got != "fake" {
 		t.Fatalf("expected MCP server metadata, got %#v", result.Meta)
@@ -483,6 +497,12 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	}
 	if got := structured["echoed"]; got != "hello" {
 		t.Fatalf("unexpected structuredContent payload: %#v", structured)
+	}
+	if len(result.ContentItems) != 0 {
+		t.Fatalf("structuredContent MCP result should remain text-only for model replay, got %#v", result.ContentItems)
+	}
+	if len(result.ModelContentItems) != 0 {
+		t.Fatalf("structuredContent MCP model result should not include content items, got %#v", result.ModelContentItems)
 	}
 
 	encoded, err := json.Marshal(result.Meta)
@@ -535,6 +555,87 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	}
 	if _, ok := mcpResult["structured_content"]; ok {
 		t.Fatalf("event JSONL must not snake-case MCP structuredContent: %#v", mcpResult)
+	}
+}
+
+func TestMCPToolContentItemsPreserveImageContentForResponses(t *testing.T) {
+	result := map[string]any{
+		"content": []any{
+			map[string]any{
+				"type": "text",
+				"text": "screenshot follows",
+			},
+			map[string]any{
+				"type":     "image",
+				"data":     "AAA",
+				"mimeType": "image/png",
+				"_meta": map[string]any{
+					"codex/imageDetail": "original",
+				},
+			},
+		},
+	}
+
+	items := mcpToolContentItems(result)
+	if len(items) != 2 {
+		t.Fatalf("expected text and image content items, got %#v", items)
+	}
+	if items[0].Type != "input_text" || items[0].Text != "screenshot follows" {
+		t.Fatalf("unexpected text item: %#v", items[0])
+	}
+	if items[1].Type != "input_image" || items[1].ImageURL != "data:image/png;base64,AAA" || items[1].Detail != imageDetailOriginal {
+		t.Fatalf("unexpected image item: %#v", items[1])
+	}
+	modelText, modelItems := mcpToolModelOutput(result, 500*time.Millisecond)
+	if modelText != "Wall time: 0.5000 seconds\nOutput:" {
+		t.Fatalf("unexpected model text: %q", modelText)
+	}
+	if len(modelItems) != 3 || modelItems[0].Type != "input_text" || modelItems[0].Text != "Wall time: 0.5000 seconds\nOutput:" {
+		t.Fatalf("expected wall-time header as first model content item, got %#v", modelItems)
+	}
+	msg := Message{
+		Role:             "tool",
+		ToolCallID:       "call-mcp-image",
+		ToolName:         "mcp__fake__screenshot",
+		Text:             modelText,
+		ToolContentItems: modelItems,
+	}
+	output, ok := toolOutputForResponses(msg).([]map[string]any)
+	if !ok || len(output) != 3 {
+		t.Fatalf("expected Responses content-item output, got %#v", toolOutputForResponses(msg))
+	}
+	if output[0]["type"] != "input_text" || output[0]["text"] != "Wall time: 0.5000 seconds\nOutput:" {
+		t.Fatalf("unexpected Responses header output: %#v", output[0])
+	}
+	if output[2]["type"] != "input_image" || output[2]["image_url"] != "data:image/png;base64,AAA" || output[2]["detail"] != imageDetailOriginal {
+		t.Fatalf("unexpected Responses image output: %#v", output[2])
+	}
+}
+
+func TestMCPToolModelOutputSerializesTextContentLikeCodex(t *testing.T) {
+	result := map[string]any{
+		"content": []any{
+			map[string]any{
+				"type": "text",
+				"text": "done",
+			},
+		},
+	}
+
+	modelText, items := mcpToolModelOutput(result, 1250*time.Millisecond)
+	if len(items) != 0 {
+		t.Fatalf("text-only MCP result should remain model text, got %#v", items)
+	}
+	const prefix = "Wall time: 1.2500 seconds\nOutput:\n"
+	if !strings.HasPrefix(modelText, prefix) {
+		t.Fatalf("missing wall-time prefix: %q", modelText)
+	}
+	var payload []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(modelText, prefix)), &payload); err != nil {
+		t.Fatalf("model output should serialize raw MCP content JSON: %v text=%q", err, modelText)
+	}
+	if len(payload) != 1 || payload[0]["type"] != "text" || payload[0]["text"] != "done" {
+		t.Fatalf("unexpected serialized content payload: %#v", payload)
 	}
 }
 

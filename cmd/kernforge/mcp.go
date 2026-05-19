@@ -27,9 +27,10 @@ type MCPServerConfig struct {
 }
 
 type MCPToolDescriptor struct {
-	Name        string
-	Description string
-	InputSchema map[string]any
+	Name         string
+	Description  string
+	InputSchema  map[string]any
+	OutputSchema map[string]any
 }
 
 type MCPResourceDescriptor struct {
@@ -697,6 +698,11 @@ func (c *MCPClient) listTools(ctx context.Context) ([]MCPToolDescriptor, error) 
 			} else if schema, ok := item["input_schema"].(map[string]any); ok && len(schema) > 0 {
 				tool.InputSchema = schema
 			}
+			if schema, ok := item["outputSchema"].(map[string]any); ok && len(schema) > 0 {
+				tool.OutputSchema = schema
+			} else if schema, ok := item["output_schema"].(map[string]any); ok && len(schema) > 0 {
+				tool.OutputSchema = schema
+			}
 			if strings.TrimSpace(tool.Name) != "" {
 				out = append(out, tool)
 			}
@@ -808,26 +814,42 @@ func (c *MCPClient) callTool(ctx context.Context, name string, args any) (string
 }
 
 func (c *MCPClient) callToolDetailed(ctx context.Context, name string, args any) (ToolExecutionResult, error) {
+	started := time.Now()
 	result, err := c.request(ctx, "tools/call", map[string]any{
 		"name":      name,
 		"arguments": args,
 	})
+	wallTime := time.Since(started)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
 	text := formatMCPToolResult(result)
 	meta := buildMCPToolResultMeta(c.config.Name, name, result)
+	contentItems := mcpToolContentItems(result)
+	modelText, modelContentItems := mcpToolModelOutput(result, wallTime)
 	if boolValue(result, "isError", false) {
 		if text == "" {
 			text = "remote tool reported an error"
 		}
 		meta["mcp_is_error"] = true
-		return ToolExecutionResult{DisplayText: text, Meta: meta}, fmt.Errorf("mcp tool %s failed", name)
+		return ToolExecutionResult{
+			DisplayText:       text,
+			ContentItems:      contentItems,
+			ModelText:         modelText,
+			ModelContentItems: modelContentItems,
+			Meta:              meta,
+		}, fmt.Errorf("mcp tool %s failed", name)
 	}
 	if text == "" {
 		text = "(no output)"
 	}
-	return ToolExecutionResult{DisplayText: text, Meta: meta}, nil
+	return ToolExecutionResult{
+		DisplayText:       text,
+		ContentItems:      contentItems,
+		ModelText:         modelText,
+		ModelContentItems: modelContentItems,
+		Meta:              meta,
+	}, nil
 }
 
 func buildMCPToolResultMeta(server string, tool string, result map[string]any) map[string]any {
@@ -903,6 +925,14 @@ func (c *MCPClient) getPrompt(ctx context.Context, name string, args map[string]
 
 func formatMCPToolResult(result map[string]any) string {
 	var sections []string
+	if structured, ok := firstPresentMCPResultField(result, "structuredContent", "structured_content"); ok && structured != nil {
+		if data, err := json.Marshal(structured); err == nil {
+			return string(data)
+		}
+		if data, err := json.MarshalIndent(structured, "", "  "); err == nil {
+			return string(data)
+		}
+	}
 	if content, ok := result["content"].([]any); ok {
 		for _, raw := range content {
 			item, ok := raw.(map[string]any)
@@ -921,17 +951,111 @@ func formatMCPToolResult(result map[string]any) string {
 			}
 		}
 	}
-	if len(sections) == 0 {
-		if structured, ok := result["structuredContent"]; ok {
-			if data, err := json.MarshalIndent(structured, "", "  "); err == nil {
-				sections = append(sections, string(data))
-			}
-		}
-	}
 	if len(sections) == 0 && strings.TrimSpace(stringValue(result, "text")) != "" {
 		sections = append(sections, strings.TrimSpace(stringValue(result, "text")))
 	}
 	return strings.Join(sections, "\n\n")
+}
+
+func mcpToolContentItems(result map[string]any) []ToolContentItem {
+	if value, ok := firstPresentMCPResultField(result, "structuredContent", "structured_content"); ok && value != nil {
+		return nil
+	}
+	content, ok := result["content"].([]any)
+	if !ok {
+		return nil
+	}
+	items := make([]ToolContentItem, 0, len(content))
+	sawImage := false
+	for _, raw := range content {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch strings.TrimSpace(stringValue(item, "type")) {
+		case "text":
+			items = append(items, ToolContentItem{
+				Type: "input_text",
+				Text: stringValue(item, "text"),
+			})
+		case "image":
+			sawImage = true
+			data := strings.TrimSpace(stringValue(item, "data"))
+			mimeType := strings.TrimSpace(firstNonBlankString(stringValue(item, "mimeType"), stringValue(item, "mime_type")))
+			if mimeType == "" {
+				mimeType = "application/octet-stream"
+			}
+			imageURL := data
+			if !strings.HasPrefix(strings.ToLower(imageURL), "data:") {
+				imageURL = "data:" + mimeType + ";base64," + data
+			}
+			detail := imageDetailHigh
+			if meta, ok := item["_meta"].(map[string]any); ok {
+				if rawDetail, ok := meta["codex/imageDetail"].(string); ok {
+					if normalized, err := normalizeImageDetail(rawDetail); err == nil && normalized != "" {
+						detail = normalized
+					}
+				}
+			}
+			items = append(items, ToolContentItem{
+				Type:     "input_image",
+				ImageURL: imageURL,
+				Detail:   detail,
+			})
+		default:
+			if data, err := json.Marshal(item); err == nil {
+				items = append(items, ToolContentItem{
+					Type: "input_text",
+					Text: string(data),
+				})
+			}
+		}
+	}
+	if !sawImage {
+		return nil
+	}
+	return normalizeToolContentItems(items)
+}
+
+func mcpToolModelOutput(result map[string]any, wallTime time.Duration) (string, []ToolContentItem) {
+	header := mcpToolWallTimeHeader(wallTime)
+	contentItems := mcpToolContentItems(result)
+	if len(contentItems) > 0 {
+		items := make([]ToolContentItem, 0, len(contentItems)+1)
+		items = append(items, ToolContentItem{
+			Type: "input_text",
+			Text: header,
+		})
+		items = append(items, contentItems...)
+		return header, normalizeToolContentItems(items)
+	}
+	text := strings.TrimSpace(mcpToolSerializedModelText(result))
+	if text == "" {
+		return header, nil
+	}
+	return header + "\n" + text, nil
+}
+
+func mcpToolWallTimeHeader(wallTime time.Duration) string {
+	return fmt.Sprintf("Wall time: %.4f seconds\nOutput:", wallTime.Seconds())
+}
+
+func mcpToolSerializedModelText(result map[string]any) string {
+	if structured, ok := firstPresentMCPResultField(result, "structuredContent", "structured_content"); ok && structured != nil {
+		if data, err := json.Marshal(structured); err == nil {
+			return string(data)
+		} else {
+			return err.Error()
+		}
+	}
+	if content, ok := result["content"].([]any); ok {
+		if data, err := json.Marshal(content); err == nil {
+			return string(data)
+		} else {
+			return err.Error()
+		}
+	}
+	return strings.TrimSpace(stringValue(result, "text"))
 }
 
 func formatMCPResourceResult(result map[string]any) string {
@@ -1411,9 +1535,10 @@ func (t MCPTool) Definition() ToolDefinition {
 		description = fmt.Sprintf("[MCP:%s] %s", t.client.config.Name, t.remote.Name)
 	}
 	return ToolDefinition{
-		Name:        t.namespaced,
-		Description: description,
-		InputSchema: schema,
+		Name:         t.namespaced,
+		Description:  description,
+		InputSchema:  schema,
+		OutputSchema: t.remote.OutputSchema,
 	}
 }
 

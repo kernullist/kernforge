@@ -27,9 +27,11 @@ type Tool interface {
 }
 
 type ToolExecutionResult struct {
-	DisplayText  string            `json:"display_text,omitempty"`
-	ContentItems []ToolContentItem `json:"content_items,omitempty"`
-	Meta         map[string]any    `json:"meta,omitempty"`
+	DisplayText       string            `json:"display_text,omitempty"`
+	ContentItems      []ToolContentItem `json:"content_items,omitempty"`
+	ModelText         string            `json:"model_text,omitempty"`
+	ModelContentItems []ToolContentItem `json:"model_content_items,omitempty"`
+	Meta              map[string]any    `json:"meta,omitempty"`
 }
 
 type detailedTool interface {
@@ -126,6 +128,9 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 	if detailed, ok := tool.(detailedTool); ok {
 		result, err := detailed.ExecuteDetailed(ctx, payload)
 		result.DisplayText = strings.TrimSpace(result.DisplayText)
+		result.ModelText = strings.TrimSpace(result.ModelText)
+		result.ContentItems = normalizeToolContentItems(result.ContentItems)
+		result.ModelContentItems = normalizeToolContentItems(result.ModelContentItems)
 		result.Meta = mergeToolMetaMaps(defaultToolExecutionMeta(name, payload), result.Meta)
 		result.Meta["success"] = err == nil
 		if err != nil {
@@ -143,6 +148,31 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 		DisplayText: strings.TrimSpace(out),
 		Meta:        meta,
 	}, err
+}
+
+func toolExecutionModelText(result ToolExecutionResult) string {
+	if text := strings.TrimSpace(result.ModelText); text != "" {
+		return text
+	}
+	return strings.TrimSpace(result.DisplayText)
+}
+
+func toolExecutionModelContentItems(result ToolExecutionResult) []ToolContentItem {
+	if len(result.ModelContentItems) > 0 {
+		return normalizeToolContentItems(result.ModelContentItems)
+	}
+	return normalizeToolContentItems(result.ContentItems)
+}
+
+func toolExecutionModelTextWithError(result ToolExecutionResult, err error) string {
+	if err == nil {
+		return toolExecutionModelText(result)
+	}
+	text := toolExecutionModelText(result)
+	if text == "" {
+		return err.Error()
+	}
+	return text + "\n\nERROR: " + err.Error()
 }
 
 func mergeToolMetaMaps(base map[string]any, extra map[string]any) map[string]any {

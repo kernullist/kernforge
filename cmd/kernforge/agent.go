@@ -1391,8 +1391,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				Role:             "tool",
 				ToolCallID:       call.ID,
 				ToolName:         call.Name,
-				Text:             result.DisplayText,
-				ToolContentItems: result.ContentItems,
+				Text:             toolExecutionModelText(result),
+				ToolContentItems: toolExecutionModelContentItems(result),
 				ToolMeta:         result.Meta,
 			}
 			if blockedToolResult {
@@ -1428,11 +1428,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidEditPayload) {
 				toolMsg.IsError = true
-				if result.DisplayText == "" {
-					toolMsg.Text = err.Error()
-				} else {
-					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-				}
+				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1451,11 +1447,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				repeatedPreWriteBlock := blockFingerprint != "" && preWriteReviewRepairBlockFingerprints[blockFingerprint] > 1
 				if repeatedPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
 					toolMsg.IsError = true
-					if result.DisplayText == "" {
-						toolMsg.Text = err.Error()
-					} else {
-						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-					}
+					toolMsg.Text = toolExecutionModelTextWithError(result, err)
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
 							Kind:             progressKindToolFailed,
@@ -1475,11 +1467,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, nil
 				}
 				toolMsg.IsError = true
-				if result.DisplayText == "" {
-					toolMsg.Text = err.Error()
-				} else {
-					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-				}
+				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -1509,11 +1497,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				editTargetMismatchFailures++
 				if editTargetMismatchFailures > maxEditTargetMismatchFailuresPerTurn {
 					toolMsg.IsError = true
-					if result.DisplayText == "" {
-						toolMsg.Text = err.Error()
-					} else {
-						toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-					}
+					toolMsg.Text = toolExecutionModelTextWithError(result, err)
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
 							Kind:             progressKindToolFailed,
@@ -1535,11 +1519,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrInvalidToolArgumentsJSON) && invalidToolArgsRetries < 1 {
 				toolMsg.IsError = true
-				if result.DisplayText == "" {
-					toolMsg.Text = err.Error()
-				} else {
-					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-				}
+				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -1568,11 +1548,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
 				toolMsg.IsError = true
-				if result.DisplayText == "" {
-					toolMsg.Text = err.Error()
-				} else {
-					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-				}
+				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolFailed,
@@ -1608,13 +1584,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				break
 			}
 			if err != nil {
-				a.noteToolConversationError(call, err, toolMsg.Text)
+				a.noteToolConversationError(call, err, result.DisplayText)
 				toolMsg.IsError = true
-				if result.DisplayText == "" {
-					toolMsg.Text = err.Error()
-				} else {
-					toolMsg.Text = result.DisplayText + "\n\nERROR: " + err.Error()
-				}
+				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				if errors.Is(err, ErrReviewerGateUnavailable) {
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
 						a.emitProgressEvent(ProgressEvent{
