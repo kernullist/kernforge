@@ -582,6 +582,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
 			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
 		}
+		onTextDelta := a.EmitAssistantDelta
+		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification) {
+			onTextDelta = nil
+		}
 		turnReq := ChatRequest{
 			Model:       a.Session.Model,
 			System:      a.systemPrompt(),
@@ -590,7 +594,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			MaxTokens:   a.Config.MaxTokens,
 			Temperature: a.Config.Temperature,
 			WorkingDir:  a.Session.WorkingDir,
-			OnTextDelta: a.EmitAssistantDelta,
+			OnTextDelta: onTextDelta,
 		}
 		resp, err := a.completeModelTurn(ctx, turnReq)
 		if err != nil && readOnlyAnalysis && isToolUseUnsupportedError(err) && len(turnReq.Tools) > 0 {
@@ -610,6 +614,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
+		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
+			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
+		}
 		if shouldRetryKoreanLocalCodeToolNarration(resp.Message, a.Session, a.Config) {
 			a.Session.AddMessage(Message{
 				Role: "user",
@@ -671,6 +678,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: assistant text blamed internal transcript recovery; retry using the next guidance instead of executing this batch.",
 					internalToolTranscriptFailureGuidance(explicitEditRequest),
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if toolCallsIncludeImplicitShellApplyPatchBody(resp.Message.ToolCalls) {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: apply_patch verification failed: raw patch body was provided to run_shell without an explicit apply_patch invocation.",
+					"The previous shell command was a raw `*** Begin Patch` / `*** End Patch` body. Codex treats this as an implicit apply_patch invocation and does not run it as shell. Re-issue the edit with the `apply_patch` tool, or use a supported `apply_patch <<'PATCH'` heredoc command.",
 				); err != nil {
 					return "", err
 				}
@@ -991,19 +1008,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					return reply, nil
 				}
-				if finalHarnessRevisions < 2 {
-					approved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
-					if !approved {
-						finalHarnessRevisions++
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: harnessFeedback,
-						})
-						if err := a.Store.Save(a.Session); err != nil {
-							return "", err
-						}
-						continue
+				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
+				if !harnessApproved && finalHarnessRevisions < 2 {
+					finalHarnessRevisions++
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: harnessFeedback,
+					})
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
 					}
+					continue
 				}
 				if a.shouldFinalizeGeneratedDocumentArtifactReply(latestUser, reply, unresolvedVerification) {
 					if a.Session.TaskState != nil {
@@ -1698,6 +1713,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					edited = true
 					attemptedEditTool = true
 					successfulEditTool = true
+					finalHarnessRevisions = 0
+					runtimeGateFinalAnswerRevisions = 0
+					finalAnswerReviewRevisions = 0
+					lastReviewedFinalAnswer = ""
 					preWriteReviewRepairBlocks = 0
 					preWriteReviewRepairBlockFingerprints = map[string]int{}
 					preWriteReviewRepairInspectTools = 0
@@ -1986,6 +2005,28 @@ func (a *Agent) attachProgressEventHandler(req ChatRequest) ChatRequest {
 		a.emitProgressEvent(event)
 	}
 	return req
+}
+
+func (a *Agent) shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if unresolvedVerification {
+		return true
+	}
+	if a.Session.ActivePatchTransaction != nil {
+		if len(a.Session.ActivePatchTransaction.ChangedPaths()) > 0 {
+			return true
+		}
+	}
+	if a.Session.ActiveEditLoop != nil {
+		if len(a.Session.ActiveEditLoop.ChangedPaths) > 0 ||
+			len(a.Session.ActiveEditLoop.WorkerSummaries) > 0 ||
+			strings.TrimSpace(a.Session.ActiveEditLoop.VerificationSummary) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, reply string, unresolvedVerification bool) bool {
@@ -5506,6 +5547,196 @@ func toolCallPathArgument(call ToolCall) string {
 func toolCallRecursiveArgument(call ToolCall) bool {
 	args := toolCallArgumentsMap(call)
 	return boolValue(args, "recursive", false)
+}
+
+type shellApplyPatchPayload struct {
+	patch   string
+	workdir string
+}
+
+func rewriteShellApplyPatchToolCalls(calls []ToolCall) []ToolCall {
+	if len(calls) == 0 {
+		return calls
+	}
+	out := make([]ToolCall, 0, len(calls))
+	changed := false
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "run_shell" {
+			out = append(out, call)
+			continue
+		}
+		args := toolCallArgumentsMap(call)
+		payload, ok := extractShellApplyPatchPayload(stringValue(args, "command"))
+		if !ok {
+			out = append(out, call)
+			continue
+		}
+		nextArgs := map[string]any{"patch": payload.patch}
+		if ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id")); ownerNodeID != "" {
+			nextArgs["owner_node_id"] = ownerNodeID
+		}
+		if payload.workdir != "" {
+			nextArgs["workdir"] = payload.workdir
+		}
+		encoded, err := json.Marshal(nextArgs)
+		if err != nil {
+			out = append(out, call)
+			continue
+		}
+		call.Name = "apply_patch"
+		call.Arguments = string(encoded)
+		out = append(out, call)
+		changed = true
+	}
+	if !changed {
+		return calls
+	}
+	return out
+}
+
+func toolRegistryHasTool(registry *ToolRegistry, name string) bool {
+	if registry == nil {
+		return false
+	}
+	_, ok := registry.tools[strings.TrimSpace(name)]
+	return ok
+}
+
+func extractShellApplyPatchPayload(command string) (shellApplyPatchPayload, bool) {
+	normalized := strings.ReplaceAll(command, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = strings.TrimSpace(normalized)
+	firstLine, rest, ok := strings.Cut(normalized, "\n")
+	if !ok {
+		return shellApplyPatchPayload{}, false
+	}
+	marker, workdir, stripTabs, ok := parseShellApplyPatchStartLine(firstLine)
+	if !ok {
+		return shellApplyPatchPayload{}, false
+	}
+	patch, suffix, ok := extractShellHeredocBody(rest, marker, stripTabs)
+	if !ok || strings.TrimSpace(suffix) != "" {
+		return shellApplyPatchPayload{}, false
+	}
+	if !strings.Contains(patch, "*** Begin Patch") || !strings.Contains(patch, "*** End Patch") {
+		return shellApplyPatchPayload{}, false
+	}
+	return shellApplyPatchPayload{patch: patch, workdir: workdir}, true
+}
+
+func toolCallsIncludeImplicitShellApplyPatchBody(calls []ToolCall) bool {
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "run_shell" {
+			continue
+		}
+		args := toolCallArgumentsMap(call)
+		if shellCommandIsImplicitApplyPatchBody(stringValue(args, "command")) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandIsImplicitApplyPatchBody(command string) bool {
+	normalized := strings.ReplaceAll(command, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = strings.TrimSpace(strings.TrimPrefix(normalized, "\uFEFF"))
+	if !strings.HasPrefix(normalized, "*** Begin Patch") {
+		return false
+	}
+	if !strings.HasSuffix(normalized, "*** End Patch") {
+		return false
+	}
+	if normalizePatchDocumentText(normalized) != normalized {
+		return false
+	}
+	_, err := parsePatchDocument(normalized)
+	return err == nil
+}
+
+func parseShellApplyPatchStartLine(line string) (marker string, workdir string, stripTabs bool, ok bool) {
+	remaining := strings.TrimSpace(line)
+	command, rest, ok := consumeShellToken(remaining)
+	if !ok {
+		return "", "", false, false
+	}
+	if command == "cd" {
+		workdir, rest, ok = consumeShellToken(rest)
+		if !ok {
+			return "", "", false, false
+		}
+		rest = strings.TrimSpace(rest)
+		if !strings.HasPrefix(rest, "&&") {
+			return "", "", false, false
+		}
+		remaining = strings.TrimSpace(strings.TrimPrefix(rest, "&&"))
+		command, rest, ok = consumeShellToken(remaining)
+		if !ok {
+			return "", "", false, false
+		}
+	}
+	if command != "apply_patch" && command != "applypatch" {
+		return "", "", false, false
+	}
+	rest = strings.TrimSpace(rest)
+	if !strings.HasPrefix(rest, "<<") {
+		return "", "", false, false
+	}
+	rest = strings.TrimPrefix(rest, "<<")
+	if strings.HasPrefix(rest, "-") {
+		stripTabs = true
+		rest = strings.TrimPrefix(rest, "-")
+	}
+	marker, rest, ok = consumeShellToken(rest)
+	if !ok || marker == "" || strings.TrimSpace(rest) != "" {
+		return "", "", false, false
+	}
+	return marker, workdir, stripTabs, true
+}
+
+func consumeShellToken(text string) (string, string, bool) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", "", false
+	}
+	if text[0] == '\'' || text[0] == '"' {
+		quote := text[0]
+		for i := 1; i < len(text); i++ {
+			if text[i] == quote {
+				return text[1:i], text[i+1:], true
+			}
+		}
+		return "", "", false
+	}
+	for i, r := range text {
+		if unicode.IsSpace(r) || strings.ContainsRune("&|;<>", r) {
+			if i == 0 {
+				return "", "", false
+			}
+			return text[:i], text[i:], true
+		}
+	}
+	return text, "", true
+}
+
+func extractShellHeredocBody(text string, marker string, stripTabs bool) (string, string, bool) {
+	marker = strings.TrimSpace(marker)
+	if marker == "" {
+		return "", "", false
+	}
+	offset := 0
+	for _, line := range strings.SplitAfter(text, "\n") {
+		trimmedLine := strings.TrimRight(line, "\n")
+		markerCandidate := trimmedLine
+		if stripTabs {
+			markerCandidate = strings.TrimLeft(markerCandidate, "\t")
+		}
+		if markerCandidate == marker {
+			return text[:offset], text[offset+len(line):], true
+		}
+		offset += len(line)
+	}
+	return "", "", false
 }
 
 func toolCallArgumentsMap(call ToolCall) map[string]any {

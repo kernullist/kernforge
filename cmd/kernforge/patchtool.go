@@ -22,6 +22,7 @@ func (t ApplyPatchTool) Definition() ToolDefinition {
 			"properties": map[string]any{
 				"patch":         map[string]any{"type": "string"},
 				"owner_node_id": map[string]any{"type": "string"},
+				"workdir":       map[string]any{"type": "string"},
 			},
 			"required": []string{"patch"},
 		},
@@ -42,17 +43,24 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if strings.TrimSpace(patchText) == "" {
 		return ToolExecutionResult{}, fmt.Errorf("patch is required")
 	}
+	ws, err := t.workspaceForWorkdir(stringValue(args, "workdir"))
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
 	doc, err := parsePatchDocument(patchText)
 	if err != nil {
 		return ToolExecutionResult{}, fmt.Errorf("%w: %v", ErrInvalidPatchFormat, err)
 	}
-	text, changedWorkspace, changedPaths, err := applyPatchDocument(ctx, t.ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
+	if len(doc.ops) == 0 {
+		return ToolExecutionResult{}, fmt.Errorf("%w: No files were modified.", ErrInvalidPatchFormat)
+	}
+	text, changedWorkspace, changedPaths, err := applyPatchDocument(ctx, ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
 	meta := map[string]any{
 		"changed_workspace":     false,
 		"requires_verification": false,
 	}
 	if err == nil {
-		meta = buildApplyPatchMeta(t.ws.Root, doc)
+		meta = buildApplyPatchMeta(ws.Root, doc)
 		normalizedChangedPaths := normalizeTaskStateList(changedPaths, 64)
 		meta["changed_paths"] = normalizedChangedPaths
 		meta["changed_count"] = len(normalizedChangedPaths)
@@ -69,6 +77,25 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 		DisplayText: text,
 		Meta:        meta,
 	}, err
+}
+
+func (t ApplyPatchTool) workspaceForWorkdir(workdir string) (Workspace, error) {
+	workdir = strings.TrimSpace(workdir)
+	if workdir == "" {
+		return t.ws, nil
+	}
+	root := firstNonBlankString(t.ws.Root, t.ws.BaseRoot)
+	resolved, err := t.ws.resolveAgainstRoot(root, filepath.FromSlash(workdir))
+	if err != nil {
+		return Workspace{}, err
+	}
+	resolved, err = t.ws.ensureWithinBaseRoot(workdir, resolved)
+	if err != nil {
+		return Workspace{}, err
+	}
+	next := t.ws
+	next.Root = resolved
+	return next, nil
 }
 
 func buildApplyPatchMeta(root string, doc patchDocument) map[string]any {
@@ -451,8 +478,16 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 			if err := ws.CheckEditBoundary(path); err != nil {
 				return nil, err
 			}
-			if _, err := os.Lstat(path); err == nil {
-				return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
+			before := ""
+			if info, err := os.Lstat(path); err == nil {
+				if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+					return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
+				}
+				existing, err := os.ReadFile(path)
+				if err != nil {
+					return nil, err
+				}
+				before = string(existing)
 			} else if !os.IsNotExist(err) {
 				return nil, err
 			}
@@ -464,6 +499,7 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				kind:        "add",
 				destPath:    path,
 				displayRoot: firstNonBlankString(route.DisplayRoot, ws.Root),
+				before:      before,
 				after:       content,
 				summary:     "added " + route.DisplayPath(),
 			})
@@ -542,7 +578,6 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	lineEnding := detectPatchLineEnding(content)
 	content = normalizePatchLineEndings(content)
-	hasTrailingNewline := strings.HasSuffix(content, "\n")
 	content = strings.TrimSuffix(content, "\n")
 	oldLines := []string{}
 	if content != "" {
@@ -580,7 +615,7 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	}
 
 	result := strings.Join(oldLines, lineEnding)
-	if hasTrailingNewline && result != "" {
+	if result != "" {
 		result += lineEnding
 	}
 	return result, nil

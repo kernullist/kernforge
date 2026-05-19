@@ -849,6 +849,193 @@ func TestApplyPatchMoveMetadataIncludesSourceAndDestination(t *testing.T) {
 	}
 }
 
+func TestApplyPatchWorkdirResolvesMoveDestinationFromEffectiveRoot(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldPath := filepath.Join(subdir, "old.go")
+	if err := os.WriteFile(oldPath, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"workdir": "subdir",
+		"patch":   "*** Begin Patch\n*** Update File: old.go\n*** Move to: renamed.go\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	changedPaths, _ := result.Meta["changed_paths"].([]string)
+	if !slices.Contains(changedPaths, "old.go") || !slices.Contains(changedPaths, "renamed.go") {
+		t.Fatalf("expected workdir-relative changed paths, got %#v", changedPaths)
+	}
+	if _, err := os.Stat(filepath.Join(subdir, "renamed.go")); err != nil {
+		t.Fatalf("expected destination under workdir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "renamed.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination must not be resolved at workspace root, stat err=%v", err)
+	}
+	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source to be removed from workdir, stat err=%v", err)
+	}
+}
+
+func TestApplyPatchWorkdirCanCreateMissingDirectoryForAdd(t *testing.T) {
+	root := t.TempDir()
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"workdir": "created",
+		"patch":   "*** Begin Patch\n*** Add File: nested/main.go\n+package main\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if changedWorkspace, _ := result.Meta["changed_workspace"].(bool); !changedWorkspace {
+		t.Fatalf("expected missing workdir add to change workspace, meta=%#v", result.Meta)
+	}
+	target := filepath.Join(root, "created", "nested", "main.go")
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("expected add file under missing workdir: %v", err)
+	}
+	if string(content) != "package main\n" {
+		t.Fatalf("unexpected file content: %q", string(content))
+	}
+}
+
+func TestApplyPatchUpdateAppendsTrailingNewlineLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "no_newline.txt")
+	if err := os.WriteFile(target, []byte("no newline at end"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": strings.Join([]string{
+			"*** Begin Patch",
+			"*** Update File: no_newline.txt",
+			"@@",
+			"-no newline at end",
+			"+first line",
+			"+second line",
+			"*** End Patch",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(content) != "first line\nsecond line\n" {
+		t.Fatalf("expected Codex-style trailing newline, got %q", string(content))
+	}
+}
+
+func TestApplyPatchAddOverwritesExistingRegularFileLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "duplicate.txt")
+	if err := os.WriteFile(target, []byte("old content\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var preview EditPreview
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(next EditPreview) (bool, error) {
+			preview = next
+			return true, nil
+		},
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch\n",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(content) != "new content\n" {
+		t.Fatalf("expected Codex-style add overwrite, got %q", string(content))
+	}
+	if !strings.Contains(preview.Preview, "-   1 | old content") || !strings.Contains(preview.Preview, "+   1 | new content") {
+		t.Fatalf("expected overwrite preview to include old and new content, got %q", preview.Preview)
+	}
+}
+
+func TestApplyPatchRejectsEmptyPatchLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** End Patch\n",
+	})
+	if err == nil {
+		t.Fatalf("expected empty patch to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected ErrInvalidPatchFormat, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "No files were modified") {
+		t.Fatalf("expected Codex-style empty patch error, got %v", err)
+	}
+}
+
+func TestApplyPatchRejectsEmptyUpdateHunkLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "foo.txt")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: foo.txt\n*** End Patch\n",
+	})
+	if err == nil {
+		t.Fatalf("expected empty update hunk to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected ErrInvalidPatchFormat, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "patch_format_empty_update") {
+		t.Fatalf("expected empty update format error, got %v", err)
+	}
+}
+
 func TestApplyPatchErrorMetadataDoesNotClaimWorkspaceChanged(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")

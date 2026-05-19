@@ -8388,6 +8388,555 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 	}
 }
 
+func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emitted strings.Builder
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:             provider,
+		Tools:              NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected final document summary, got %q", reply)
+	}
+	if emitted.String() != "" {
+		t.Fatalf("expected generated document final candidate to be buffered until accepted, got streamed %q", emitted.String())
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected the shell-validation response to remain unrequested, got %d main requests", len(provider.requests))
+	}
+	if provider.requests[1].OnTextDelta != nil {
+		t.Fatalf("expected final document summary request to buffer text deltas while final gates can still reject it")
+	}
+}
+
+func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 go test ./... 검증도 통과했습니다.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+		t.Fatalf("expected corrected final answer, got %q with harness %#v", reply, session.LastCodingHarnessReport)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected corrected final answer to finish without an extra validation turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected final harness report to be refreshed and approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
+func TestAgentResetsFinalGateRetriesAfterGeneratedDocumentRepair(t *testing.T) {
+	root := t.TempDir()
+	badReportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 3 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+	}, "\n")
+	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": badReportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 검토했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": goodReportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "총 2개") {
+		t.Fatalf("expected repaired final answer, got %q with harness %#v", reply, session.LastCodingHarnessReport)
+	}
+	if len(provider.requests) != 5 {
+		t.Fatalf("expected repaired document to finalize without an extra review/validation turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected repaired document harness report to be approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
+func TestAgentDoesNotBufferAssistantDeltaForArchivedPatchTransaction(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-old",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-old-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{Session: session}
+
+	if agent.shouldBufferAssistantDeltaForGatedTurn(false) {
+		t.Fatalf("expected archived patch transactions from a previous turn not to suppress assistant streaming")
+	}
+}
+
+func TestAgentRewritesRunShellApplyPatchHeredocToApplyPatchTool(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	command := strings.Join([]string{
+		"apply_patch <<'PATCH'",
+		"*** Begin Patch",
+		"*** Update File: main.go",
+		"@@",
+		" package main",
+		"+",
+		"+func patched() {}",
+		"*** End Patch",
+		"PATCH",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell", map[string]any{"command": command}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "main.go patched.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "main.go patched." {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(content), "func patched() {}") {
+		t.Fatalf("expected apply_patch heredoc to be applied, got %q", string(content))
+	}
+	foundApplyPatch := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 {
+			if msg.ToolCalls[0].Name == "apply_patch" {
+				foundApplyPatch = true
+			}
+			break
+		}
+	}
+	if !foundApplyPatch {
+		t.Fatalf("expected run_shell heredoc tool call to be rewritten to apply_patch, messages=%#v", session.Messages)
+	}
+}
+
+func TestAgentRewritesRunShellApplyPatchHeredocWithCdWorkdir(t *testing.T) {
+	root := t.TempDir()
+	subdir := filepath.Join(root, "subdir")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	target := filepath.Join(subdir, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	command := strings.Join([]string{
+		"cd subdir && apply_patch <<'PATCH'",
+		"*** Begin Patch",
+		"*** Update File: main.go",
+		"@@",
+		" package main",
+		"+",
+		"+func patchedFromSubdir() {}",
+		"*** End Patch",
+		"PATCH",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell", map[string]any{"command": command}),
+			{Message: Message{Role: "assistant", Text: "subdir/main.go patched."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "subdir/main.go를 수정해"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(content), "func patchedFromSubdir() {}") {
+		t.Fatalf("expected cd workdir patch to update subdir target, got %q", string(content))
+	}
+	foundWorkdir := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && msg.ToolCalls[0].Name == "apply_patch" {
+			if got := stringValue(toolCallArgumentsMap(msg.ToolCalls[0]), "workdir"); got == "subdir" {
+				foundWorkdir = true
+			}
+			break
+		}
+	}
+	if !foundWorkdir {
+		t.Fatalf("expected rewritten apply_patch call to preserve cd workdir, messages=%#v", session.Messages)
+	}
+}
+
+func TestAgentRejectsImplicitRunShellPatchBodyLikeCodex(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "main.go")
+	if err := os.WriteFile(target, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: main.go",
+		"@@",
+		" package main",
+		"+",
+		"+func patchedAfterImplicitRetry() {}",
+		"*** End Patch",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("run_shell", map[string]any{"command": patch}),
+			toolCallResponse("apply_patch", map[string]any{"patch": patch}),
+			{Message: Message{Role: "assistant", Text: "main.go patched after implicit invocation retry."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewRunShellTool(ws), NewApplyPatchTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go를 수정해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "patched after implicit invocation retry") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if !strings.Contains(string(content), "func patchedAfterImplicitRetry() {}") {
+		t.Fatalf("expected retry through apply_patch to update file, got %q", string(content))
+	}
+	foundImplicitRejection := false
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && msg.ToolName == "run_shell" && strings.Contains(msg.Text, "raw patch body was provided to run_shell") {
+			foundImplicitRejection = true
+			if !msg.IsError {
+				t.Fatalf("expected implicit patch rejection to be an error tool result")
+			}
+			break
+		}
+	}
+	if !foundImplicitRejection {
+		t.Fatalf("expected raw run_shell patch body to be rejected before shell execution, messages=%#v", session.Messages)
+	}
+}
+
+func TestRewriteShellApplyPatchToolCallsExtractsHeredocPayload(t *testing.T) {
+	command := strings.Join([]string{
+		"apply_patch <<'PATCH'",
+		"*** Begin Patch",
+		"*** Add File: main.go",
+		"+package main",
+		"*** End Patch",
+		"PATCH",
+	}, "\n")
+	call := toolCallResponse("run_shell", map[string]any{
+		"command":       command,
+		"owner_node_id": "plan-02",
+	}).Message.ToolCalls[0]
+	rewritten := rewriteShellApplyPatchToolCalls([]ToolCall{call})
+	if len(rewritten) != 1 || rewritten[0].Name != "apply_patch" {
+		t.Fatalf("expected helper to recognize shell apply_patch when enabled, got %#v", rewritten)
+	}
+	args := toolCallArgumentsMap(rewritten[0])
+	if !strings.Contains(stringValue(args, "patch"), "*** Add File: main.go") {
+		t.Fatalf("expected patch payload to be preserved, args=%#v", args)
+	}
+	if got := stringValue(args, "owner_node_id"); got != "plan-02" {
+		t.Fatalf("expected owner_node_id to be preserved, got %q", got)
+	}
+}
+
+func TestShellCommandIsImplicitApplyPatchBodyMatchesCodexStrictness(t *testing.T) {
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Add File: main.go",
+		"+package main",
+		"*** End Patch",
+	}, "\n")
+	if !shellCommandIsImplicitApplyPatchBody(patch) {
+		t.Fatalf("expected exact raw patch body to be detected as implicit apply_patch invocation")
+	}
+	for _, command := range []string{
+		"echo before\n" + patch,
+		patch + "\necho after",
+		"```patch\n" + patch + "\n```",
+		"*** Begin Patch\n*** End Patch\n*** Begin Patch\n*** End Patch",
+		"*** Begin Patch\nnot a valid patch\n*** End Patch",
+	} {
+		if shellCommandIsImplicitApplyPatchBody(command) {
+			t.Fatalf("expected non-exact or invalid raw patch shell command not to be treated as implicit invocation: %q", command)
+		}
+	}
+}
+
+func TestRewriteShellApplyPatchToolCallsMatchesCodexStrictShellForms(t *testing.T) {
+	patchLines := []string{
+		"*** Begin Patch",
+		"*** Add File: main.go",
+		"+package main",
+		"*** End Patch",
+		"PATCH",
+	}
+	valid := toolCallResponse("run_shell", map[string]any{
+		"command": strings.Join(append([]string{"cd 'src dir' && applypatch <<'PATCH'"}, patchLines...), "\n"),
+	}).Message.ToolCalls[0]
+	rewritten := rewriteShellApplyPatchToolCalls([]ToolCall{valid})
+	if rewritten[0].Name != "apply_patch" {
+		t.Fatalf("expected cd/applypatch heredoc to rewrite, got %#v", rewritten[0])
+	}
+	if got := stringValue(toolCallArgumentsMap(rewritten[0]), "workdir"); got != "src dir" {
+		t.Fatalf("expected quoted cd workdir to be preserved, got %q", got)
+	}
+
+	stripTabs := toolCallResponse("run_shell", map[string]any{
+		"command": strings.Join(append([]string{"apply_patch <<-PATCH"}, patchLines[:len(patchLines)-1]...), "\n") + "\n\tPATCH",
+	}).Message.ToolCalls[0]
+	rewritten = rewriteShellApplyPatchToolCalls([]ToolCall{stripTabs})
+	if rewritten[0].Name != "apply_patch" {
+		t.Fatalf("expected tab-indented <<- heredoc marker to rewrite, got %#v", rewritten[0])
+	}
+
+	for _, command := range []string{
+		strings.Join(append([]string{"echo before && apply_patch <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cd src; apply_patch <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cat <<'PATCH' | apply_patch"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cd src && apply_patch <<'PATCH'"}, append(patchLines, "&& echo done")...), "\n"),
+		strings.Join(append([]string{"apply_patch foo <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cd foo && cd bar && apply_patch <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cd foo bar && apply_patch <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"cd bar || apply_patch <<'PATCH'"}, patchLines...), "\n"),
+		strings.Join(append([]string{"apply_patch <<'PATCH'"}, patchLines[:len(patchLines)-1]...), "\n") + "\n PATCH",
+		strings.Join(append([]string{"apply_patch <<-PATCH"}, patchLines[:len(patchLines)-1]...), "\n") + "\n PATCH",
+	} {
+		call := toolCallResponse("run_shell", map[string]any{"command": command}).Message.ToolCalls[0]
+		got := rewriteShellApplyPatchToolCalls([]ToolCall{call})
+		if got[0].Name != "run_shell" {
+			t.Fatalf("expected non-Codex shell form to remain run_shell, command=%q got=%#v", command, got[0])
+		}
+	}
+}
+
 func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
