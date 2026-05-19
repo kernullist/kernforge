@@ -24,6 +24,8 @@ const (
 	conversationEventKindExecCommandEnd   = "exec_command_end"
 	conversationEventKindPatchApplyBegin  = "patch_apply_begin"
 	conversationEventKindPatchApplyEnd    = "patch_apply_end"
+	conversationEventKindMCPToolCallBegin = "mcp_tool_call_begin"
+	conversationEventKindMCPToolCallEnd   = "mcp_tool_call_end"
 	conversationEventKindTurnDiff         = "turn_diff"
 	conversationEventKindVerification     = "verification"
 	conversationEventKindHandoff          = "handoff"
@@ -318,6 +320,16 @@ func (a *Agent) appendCodexStyleToolLifecycleBegin(call ToolCall) {
 			CorrelationID: strings.TrimSpace(call.ID),
 			Entities:      entities,
 		})
+	case toolCallIsMCPToolLike(name):
+		entities = mcpToolLifecycleEntities(call, nil)
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindMCPToolCallBegin,
+			Severity:      conversationSeverityInfo,
+			Summary:       "mcp_tool_call begin: " + compactPromptSection(mcpToolLifecycleLabel(entities, name), 220),
+			Raw:           compactPromptSection(call.Arguments, 1200),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+		})
 	default:
 	}
 }
@@ -356,6 +368,28 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 			Entities:      entities,
 		})
 		a.appendCodexStyleTurnDiffEvent(call, result, entities)
+	case toolCallIsMCPToolLike(name):
+		entities = mcpToolLifecycleEntities(call, result.Meta)
+		entities["status"] = status
+		if err != nil {
+			entities["error"] = compactPromptSection(err.Error(), 220)
+		}
+		if blocked {
+			entities["blocked"] = "true"
+		}
+		metadata := toolResultEventMetadata(result.Meta)
+		if metadata == nil && err != nil {
+			metadata = map[string]any{"error": err.Error()}
+		}
+		a.Session.AppendConversationEvent(ConversationEvent{
+			Kind:          conversationEventKindMCPToolCallEnd,
+			Severity:      lifecycleEventSeverity(status),
+			Summary:       "mcp_tool_call end: " + status + " | " + compactPromptSection(mcpToolLifecycleLabel(entities, name), 180),
+			Raw:           compactPromptSection(result.DisplayText, 1600),
+			CorrelationID: strings.TrimSpace(call.ID),
+			Entities:      entities,
+			Metadata:      metadata,
+		})
 	default:
 	}
 }
@@ -399,6 +433,51 @@ func toolCallIsExecCommandLike(name string) bool {
 
 func toolCallIsPatchApplyLike(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), "apply_patch")
+}
+
+func toolCallIsMCPToolLike(name string) bool {
+	_, _, ok := parseMCPInvocationToolName(name)
+	return ok
+}
+
+func parseMCPInvocationToolName(name string) (string, string, bool) {
+	name = strings.TrimSpace(name)
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(lower, "mcp__resource__"):
+		server := strings.TrimSpace(name[len("mcp__resource__"):])
+		return server, "resource", server != ""
+	case strings.HasPrefix(lower, "mcp__prompt__"):
+		server := strings.TrimSpace(name[len("mcp__prompt__"):])
+		return server, "prompt", server != ""
+	case strings.HasPrefix(lower, "mcp__"):
+		parts := strings.SplitN(name, "__", 3)
+		if len(parts) == 3 && strings.TrimSpace(parts[1]) != "" && strings.TrimSpace(parts[2]) != "" {
+			return strings.TrimSpace(parts[1]), strings.TrimSpace(parts[2]), true
+		}
+	}
+	return "", "", false
+}
+
+func mcpToolLifecycleEntities(call ToolCall, meta map[string]any) map[string]string {
+	entities := toolLifecycleEntities(call, meta)
+	name := strings.TrimSpace(call.Name)
+	server, tool, ok := parseMCPInvocationToolName(name)
+	if ok {
+		entities["mcp_server"] = server
+		entities["mcp_tool"] = tool
+		entities["mcp_namespaced_tool"] = name
+	}
+	return entities
+}
+
+func mcpToolLifecycleLabel(entities map[string]string, fallback string) string {
+	server := strings.TrimSpace(entities["mcp_server"])
+	tool := strings.TrimSpace(entities["mcp_tool"])
+	if server != "" && tool != "" {
+		return server + "/" + tool
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func toolLifecycleEntities(call ToolCall, meta map[string]any) map[string]string {
@@ -799,7 +878,10 @@ func toolResultEventMetadata(meta map[string]any) map[string]any {
 		mcpResult["content"] = value
 	}
 	if value, ok := meta["mcp_result_structured_content"]; ok {
-		mcpResult["structured_content"] = value
+		mcpResult["structuredContent"] = value
+	}
+	if value, ok := meta["mcp_is_error"]; ok {
+		mcpResult["isError"] = value
 	}
 	if value, ok := meta["_meta"]; ok {
 		mcpResult["_meta"] = value

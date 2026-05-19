@@ -89,14 +89,14 @@ func (s *Session) RefreshConversationState() {
 			if state.LastCommand == "" {
 				state.LastCommand = conversationCommandFromEvent(event)
 			}
-		case conversationEventKindExecCommandBegin, conversationEventKindPatchApplyBegin:
+		case conversationEventKindExecCommandBegin, conversationEventKindPatchApplyBegin, conversationEventKindMCPToolCallBegin:
 			if state.LastCommand == "" {
 				state.LastCommand = conversationCommandFromEvent(event)
 			}
 			if state.CurrentWorkflow == "" {
 				state.CurrentWorkflow = strings.TrimSpace(event.Entities["tool"])
 			}
-		case conversationEventKindExecCommandEnd, conversationEventKindPatchApplyEnd, conversationEventKindTurnDiff:
+		case conversationEventKindExecCommandEnd, conversationEventKindPatchApplyEnd, conversationEventKindMCPToolCallEnd, conversationEventKindTurnDiff:
 			if state.LastResult == "" {
 				state.LastResult = compactPromptSection(event.Summary, 260)
 			}

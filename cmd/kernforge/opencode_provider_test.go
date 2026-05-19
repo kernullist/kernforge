@@ -67,7 +67,10 @@ func TestOpenCodeClientUsesResponsesForGPTModels(t *testing.T) {
 		input := body["input"].([]any)
 		message := input[0].(map[string]any)
 		content := message["content"].([]any)
-		image := content[1].(map[string]any)
+		if len(content) != 4 {
+			t.Fatalf("expected text plus wrapped image content, got %#v", content)
+		}
+		image := assertCodexLocalImageContent(t, content, 1)
 		if image["detail"] != imageDetailOriginal {
 			t.Fatalf("expected original image detail, got %#v", image["detail"])
 		}

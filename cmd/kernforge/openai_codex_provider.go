@@ -321,14 +321,7 @@ func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, e
 	if err != nil {
 		return nil, err
 	}
-	for _, image := range encodedImages {
-		content = append(content, map[string]any{
-			"type":      "input_image",
-			"image_url": imageDataURI(image),
-			"detail":    encodedImageDetail(image),
-		})
-	}
-	return content, nil
+	return appendCodexResponsesImages(content, encodedImages), nil
 }
 
 func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {

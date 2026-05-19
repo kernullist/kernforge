@@ -25,6 +25,7 @@ type EncodedImage struct {
 const (
 	imageDetailHigh     = "high"
 	imageDetailOriginal = "original"
+	codexImageCloseTag  = "</image>"
 )
 
 var supportedImageTypes = map[string]string{
@@ -188,6 +189,34 @@ func encodeMessageImages(baseDir string, images []MessageImage) ([]EncodedImage,
 
 func imageDataURI(image EncodedImage) string {
 	return "data:" + image.MediaType + ";base64," + image.Data
+}
+
+func codexLocalImageOpenTag(index int) string {
+	if index < 1 {
+		return "<image>"
+	}
+	return fmt.Sprintf("<image name=[Image #%d]>", index)
+}
+
+func appendCodexResponsesImages(content []map[string]any, images []EncodedImage) []map[string]any {
+	for i, image := range images {
+		content = append(content,
+			map[string]any{
+				"type": "input_text",
+				"text": codexLocalImageOpenTag(i + 1),
+			},
+			map[string]any{
+				"type":      "input_image",
+				"image_url": imageDataURI(image),
+				"detail":    encodedImageDetail(image),
+			},
+			map[string]any{
+				"type": "input_text",
+				"text": codexImageCloseTag,
+			},
+		)
+	}
+	return content
 }
 
 func appendUniqueImages(existing []MessageImage, extra ...MessageImage) []MessageImage {

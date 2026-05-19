@@ -530,6 +530,12 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	if _, ok := mcpResult["meta"]; ok {
 		t.Fatalf("event JSONL must not rename MCP result _meta to meta: %#v", mcpResult)
 	}
+	if _, ok := mcpResult["structuredContent"]; !ok {
+		t.Fatalf("expected event JSONL to preserve MCP structuredContent spelling: %#v", mcpResult)
+	}
+	if _, ok := mcpResult["structured_content"]; ok {
+		t.Fatalf("event JSONL must not snake-case MCP structuredContent: %#v", mcpResult)
+	}
 }
 
 func TestAgentExpandMentionsInjectsMCPResource(t *testing.T) {

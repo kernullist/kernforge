@@ -290,6 +290,69 @@ func TestShellToolRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestMCPToolRecordsCodexStyleLifecycleEvents(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-mcp",
+		Name:      "mcp__fake__echo",
+		Arguments: `{"message":"hello"}`,
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationResult(call, ToolExecutionResult{
+		DisplayText: "echo: hello",
+		Meta: map[string]any{
+			"mcp_server": "fake",
+			"mcp_tool":   "echo",
+			"mcp_result_content": []map[string]any{{
+				"type": "text",
+				"text": "echo: hello",
+			}},
+			"mcp_result_structured_content": map[string]any{
+				"echoed": "hello",
+			},
+			"mcp_is_error": false,
+			"_meta": map[string]any{
+				"trace_id": "trace-hello",
+			},
+		},
+	})
+
+	begins := latestEventsByKind(session.ConversationEvents, conversationEventKindMCPToolCallBegin)
+	ends := latestEventsByKind(session.ConversationEvents, conversationEventKindMCPToolCallEnd)
+	if len(begins) != 1 || begins[0].CorrelationID != "call-mcp" {
+		t.Fatalf("expected one MCP begin event paired to call id, got %#v", begins)
+	}
+	if begins[0].Entities["mcp_server"] != "fake" || begins[0].Entities["mcp_tool"] != "echo" {
+		t.Fatalf("expected MCP begin invocation entities, got %#v", begins[0].Entities)
+	}
+	if len(ends) != 1 || ends[0].CorrelationID != "call-mcp" {
+		t.Fatalf("expected one MCP end event paired to call id, got %#v", ends)
+	}
+	if ends[0].Entities["status"] != "completed" || ends[0].Entities["mcp_namespaced_tool"] != "mcp__fake__echo" {
+		t.Fatalf("expected MCP end status/namespaced tool entities, got %#v", ends[0].Entities)
+	}
+	mcpResult, ok := ends[0].Metadata["mcp_result"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP result metadata on lifecycle end, got %#v", ends[0].Metadata)
+	}
+	if _, ok := mcpResult["structuredContent"]; !ok {
+		t.Fatalf("expected Codex-style structuredContent metadata, got %#v", mcpResult)
+	}
+	if mcpResult["isError"] != false {
+		t.Fatalf("expected Codex-style isError metadata, got %#v", mcpResult)
+	}
+	if session.ConversationState == nil || session.ConversationState.CurrentWorkflow != "mcp__fake__echo" {
+		t.Fatalf("expected MCP lifecycle event to refresh workflow state, got %#v", session.ConversationState)
+	}
+}
+
 func TestApplyPatchRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

@@ -95,6 +95,26 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	}
 }
 
+func assertCodexLocalImageContent(t *testing.T, content []any, openIndex int) map[string]any {
+	t.Helper()
+	if openIndex < 0 || openIndex+2 >= len(content) {
+		t.Fatalf("image wrapper indexes out of range: open=%d len=%d content=%#v", openIndex, len(content), content)
+	}
+	openTag, ok := content[openIndex].(map[string]any)
+	if !ok || openTag["type"] != "input_text" || openTag["text"] != "<image name=[Image #1]>" {
+		t.Fatalf("expected Codex local image open tag, got %#v", content[openIndex])
+	}
+	image, ok := content[openIndex+1].(map[string]any)
+	if !ok || image["type"] != "input_image" {
+		t.Fatalf("expected input_image, got %#v", content[openIndex+1])
+	}
+	closeTag, ok := content[openIndex+2].(map[string]any)
+	if !ok || closeTag["type"] != "input_text" || closeTag["text"] != codexImageCloseTag {
+		t.Fatalf("expected Codex image close tag, got %#v", content[openIndex+2])
+	}
+	return image
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesImageDetail(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")
@@ -123,10 +143,10 @@ func TestBuildOpenAICodexRequestBodyPreservesImageDetail(t *testing.T) {
 	input := payload["input"].([]any)
 	message := input[0].(map[string]any)
 	content := message["content"].([]any)
-	image := content[1].(map[string]any)
-	if image["type"] != "input_image" {
-		t.Fatalf("expected input_image, got %#v", image)
+	if len(content) != 4 {
+		t.Fatalf("expected text plus wrapped image content, got %#v", content)
 	}
+	image := assertCodexLocalImageContent(t, content, 1)
 	if image["detail"] != imageDetailOriginal {
 		t.Fatalf("expected original detail, got %#v in body %s", image["detail"], body)
 	}
@@ -162,10 +182,45 @@ func TestBuildOpenAICodexRequestBodyDefaultsImageDetailHigh(t *testing.T) {
 	input := payload["input"].([]any)
 	message := input[0].(map[string]any)
 	content := message["content"].([]any)
-	image := content[1].(map[string]any)
+	if len(content) != 4 {
+		t.Fatalf("expected text plus wrapped image content, got %#v", content)
+	}
+	image := assertCodexLocalImageContent(t, content, 1)
 	if image["detail"] != imageDetailHigh {
 		t.Fatalf("expected high detail, got %#v in body %s", image["detail"], body)
 	}
+}
+
+func TestBuildOpenAICodexRequestBodyWrapsImageOnlyMessageLikeCodex(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      "gpt-5.5",
+		WorkingDir: dir,
+		Messages: []Message{{
+			Role: "user",
+			Images: []MessageImage{{
+				Path:      "shot.png",
+				MediaType: "image/png",
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	message := input[0].(map[string]any)
+	content := message["content"].([]any)
+	if len(content) != 3 {
+		t.Fatalf("expected wrapped image-only content, got %#v", content)
+	}
+	assertCodexLocalImageContent(t, content, 0)
 }
 
 func TestBuildOpenAICodexRequestBodyDropsOrphanToolOutput(t *testing.T) {
