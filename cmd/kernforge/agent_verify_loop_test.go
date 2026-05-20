@@ -122,6 +122,7 @@ func cloneChatRequestForTest(req ChatRequest) ChatRequest {
 		}
 	}
 	out.Tools = append([]ToolDefinition(nil), req.Tools...)
+	out.TurnMetadata = cloneStringAnyMap(req.TurnMetadata)
 	return out
 }
 
@@ -2906,8 +2907,18 @@ func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	if provider.requests[0].SessionID != session.ID || provider.requests[0].ThreadID != session.ID {
 		t.Fatalf("expected agent to attach stable provider session metadata, got session=%q thread=%q want=%q", provider.requests[0].SessionID, provider.requests[0].ThreadID, session.ID)
 	}
+	if got := provider.requests[0].TurnMetadata["session_id"]; got != session.ID {
+		t.Fatalf("expected first request to carry provider turn metadata session_id %q, got %#v", session.ID, provider.requests[0].TurnMetadata)
+	}
+	firstTurnID, ok := provider.requests[0].TurnMetadata["turn_id"].(string)
+	if !ok || strings.TrimSpace(firstTurnID) == "" {
+		t.Fatalf("expected first request to carry turn_id, got %#v", provider.requests[0].TurnMetadata)
+	}
 	if provider.states[0] == nil || provider.states[1] == nil || provider.states[0] != provider.states[1] {
 		t.Fatalf("expected first turn requests to share provider turn state, got %#v", provider.states[:2])
+	}
+	if secondTurnID, _ := provider.requests[1].TurnMetadata["turn_id"].(string); secondTurnID != firstTurnID {
+		t.Fatalf("expected same external turn to reuse turn metadata, got %q then %q", firstTurnID, secondTurnID)
 	}
 	if provider.values[0] != "" || provider.values[1] != "sticky-turn" {
 		t.Fatalf("expected sticky state to be replayed within turn, got %#v", provider.values[:2])
@@ -2924,6 +2935,9 @@ func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	}
 	if provider.values[2] != "" {
 		t.Fatalf("expected sticky state not to leak into next turn, got %q", provider.values[2])
+	}
+	if thirdTurnID, _ := provider.requests[2].TurnMetadata["turn_id"].(string); thirdTurnID == "" || thirdTurnID == firstTurnID {
+		t.Fatalf("expected second external turn to get fresh turn metadata, first=%q second=%q", firstTurnID, thirdTurnID)
 	}
 }
 

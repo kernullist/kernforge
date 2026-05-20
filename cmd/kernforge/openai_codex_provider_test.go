@@ -608,11 +608,13 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 			if got := r.Header.Get("x-client-request-id"); got != "thread-456" {
 				t.Fatalf("unexpected x-client-request-id: %q", got)
 			}
+			assertTurnMetadataHeader(t, r, "turn-abc")
 			w.Header().Set(codexTurnStateHeader, "codex-sticky")
 		case 2:
 			if got := r.Header.Get(codexTurnStateHeader); got != "codex-sticky" {
 				t.Fatalf("second request should replay turn state, got %q", got)
 			}
+			assertTurnMetadataHeader(t, r, "turn-abc")
 		default:
 			t.Fatalf("unexpected request %d", requestCount)
 		}
@@ -629,6 +631,11 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 		_, err := client.Complete(context.Background(), ChatRequest{
 			Model:     "gpt-5.5",
 			TurnState: state,
+			TurnMetadata: map[string]any{
+				"session_id": "session-123",
+				"thread_id":  "thread-456",
+				"turn_id":    "turn-abc",
+			},
 			SessionID: "session-123",
 			ThreadID:  "thread-456",
 			Messages: []Message{{
@@ -642,6 +649,21 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 	}
 	if state.Value() != "codex-sticky" {
 		t.Fatalf("expected captured turn state, got %q", state.Value())
+	}
+}
+
+func assertTurnMetadataHeader(t *testing.T, r *http.Request, wantTurnID string) {
+	t.Helper()
+	raw := strings.TrimSpace(r.Header.Get(codexTurnMetadataHeader))
+	if raw == "" {
+		t.Fatalf("missing %s header", codexTurnMetadataHeader)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		t.Fatalf("%s is not valid JSON: %v; raw=%q", codexTurnMetadataHeader, err, raw)
+	}
+	if got := metadata["turn_id"]; got != wantTurnID {
+		t.Fatalf("unexpected turn_id in %s: got %#v want %q; metadata=%#v", codexTurnMetadataHeader, got, wantTurnID, metadata)
 	}
 }
 

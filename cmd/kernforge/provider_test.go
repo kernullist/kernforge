@@ -110,11 +110,13 @@ func TestOpenAIClientReplaysCodexTurnStateWithinRequestState(t *testing.T) {
 			if got := r.Header.Get(codexTurnStateHeader); got != "" {
 				t.Fatalf("first request should not send turn state, got %q", got)
 			}
+			assertOpenAICompatibleTurnMetadataHeader(t, r, "turn-123")
 			w.Header().Set(codexTurnStateHeader, "sticky-turn")
 		case 2:
 			if got := r.Header.Get(codexTurnStateHeader); got != "sticky-turn" {
 				t.Fatalf("second request should replay turn state, got %q", got)
 			}
+			assertOpenAICompatibleTurnMetadataHeader(t, r, "turn-123")
 		default:
 			t.Fatalf("unexpected request %d", requestCount)
 		}
@@ -129,6 +131,9 @@ func TestOpenAIClientReplaysCodexTurnStateWithinRequestState(t *testing.T) {
 		_, err := client.Complete(context.Background(), ChatRequest{
 			Model:     "openai/gpt-4.1",
 			TurnState: state,
+			TurnMetadata: map[string]any{
+				"turn_id": "turn-123",
+			},
 			Messages: []Message{{
 				Role: "user",
 				Text: "hello",
@@ -140,6 +145,43 @@ func TestOpenAIClientReplaysCodexTurnStateWithinRequestState(t *testing.T) {
 	}
 	if state.Value() != "sticky-turn" {
 		t.Fatalf("expected captured turn state, got %q", state.Value())
+	}
+}
+
+func assertOpenAICompatibleTurnMetadataHeader(t *testing.T, r *http.Request, wantTurnID string) {
+	t.Helper()
+	raw := strings.TrimSpace(r.Header.Get(codexTurnMetadataHeader))
+	if raw == "" {
+		t.Fatalf("missing %s header", codexTurnMetadataHeader)
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+		t.Fatalf("%s is not valid JSON: %v; raw=%q", codexTurnMetadataHeader, err, raw)
+	}
+	if got := metadata["turn_id"]; got != wantTurnID {
+		t.Fatalf("unexpected turn_id in %s: got %#v want %q; metadata=%#v", codexTurnMetadataHeader, got, wantTurnID, metadata)
+	}
+}
+
+func TestProviderTurnMetadataHeaderValueEscapesNonASCII(t *testing.T) {
+	value := providerTurnMetadataHeaderValue(map[string]any{
+		"cwd":     `F:\kernullist\꿀보`,
+		"turn_id": "turn-123",
+	})
+	if strings.TrimSpace(value) == "" {
+		t.Fatalf("expected metadata header value")
+	}
+	for _, r := range value {
+		if r > 0x7f {
+			t.Fatalf("metadata header should be ASCII-only, got %q", value)
+		}
+	}
+	var metadata map[string]any
+	if err := json.Unmarshal([]byte(value), &metadata); err != nil {
+		t.Fatalf("metadata header should remain valid JSON: %v", err)
+	}
+	if got := metadata["cwd"]; got != `F:\kernullist\꿀보` {
+		t.Fatalf("metadata did not round-trip non-ASCII path: %#v", metadata)
 	}
 }
 

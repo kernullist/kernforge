@@ -68,6 +68,7 @@ type ChatRequest struct {
 	OnTextDelta     func(string)
 	OnProgressEvent func(ProgressEvent)
 	TurnState       *ProviderTurnState
+	TurnMetadata    map[string]any
 	SessionID       string
 	ThreadID        string
 }
@@ -79,7 +80,10 @@ type ChatResponse struct {
 	RawBody    string
 }
 
-const codexTurnStateHeader = "x-codex-turn-state"
+const (
+	codexTurnStateHeader    = "x-codex-turn-state"
+	codexTurnMetadataHeader = "x-codex-turn-metadata"
+)
 
 type ProviderTurnState struct {
 	mu    sync.Mutex
@@ -117,6 +121,52 @@ func applyProviderTurnStateHeader(httpReq *http.Request, state *ProviderTurnStat
 	if value := state.Value(); value != "" {
 		httpReq.Header.Set(codexTurnStateHeader, value)
 	}
+}
+
+func applyProviderTurnMetadataHeader(httpReq *http.Request, metadata map[string]any) {
+	if httpReq == nil || len(metadata) == 0 {
+		return
+	}
+	if value := providerTurnMetadataHeaderValue(metadata); value != "" {
+		httpReq.Header.Set(codexTurnMetadataHeader, value)
+	}
+}
+
+func providerTurnMetadataHeaderValue(metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	body, err := json.Marshal(metadata)
+	if err != nil {
+		return ""
+	}
+	value := strings.TrimSpace(asciiJSONHeaderValue(body))
+	if value == "" || value == "{}" || strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
+	return value
+}
+
+func asciiJSONHeaderValue(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range string(body) {
+		if r <= 0x7f {
+			b.WriteRune(r)
+			continue
+		}
+		if r <= 0xffff {
+			fmt.Fprintf(&b, "\\u%04x", r)
+			continue
+		}
+		value := r - 0x10000
+		high := 0xd800 + (value >> 10)
+		low := 0xdc00 + (value & 0x3ff)
+		fmt.Fprintf(&b, "\\u%04x\\u%04x", high, low)
+	}
+	return b.String()
 }
 
 func captureProviderTurnStateHeader(resp *http.Response, state *ProviderTurnState) {
@@ -896,6 +946,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		httpReq.Header.Set("authorization", "Bearer "+strings.TrimSpace(c.apiKey))
 	}
 	applyProviderTurnStateHeader(httpReq, req.TurnState)
+	applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

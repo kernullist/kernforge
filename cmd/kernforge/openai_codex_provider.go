@@ -118,6 +118,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	httpReq.Header.Set("thread-id", threadID)
 	httpReq.Header.Set("x-client-request-id", threadID)
 	applyProviderTurnStateHeader(httpReq, req.TurnState)
+	applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
 
 	httpClient := c.httpClient
 	if httpClient == nil {

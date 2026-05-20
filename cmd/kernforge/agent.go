@@ -553,8 +553,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
 	turnStartedAt := time.Now()
-	var mcpTurnMetadata map[string]any
-	mcpTurnMetadataReady := false
+	mcpTurnMetadata := a.mcpTurnMetadataForToolCall(turnStartedAt)
+	providerTurnMetadata := providerTurnMetadataFromMCP(mcpTurnMetadata)
 	maxToolIterations := configMaxToolIterations(a.Config)
 	toolBudgetLimit := maxToolIterations
 	toolBudgetExtensions := 0
@@ -640,15 +640,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			onTextDelta = nil
 		}
 		turnReq := ChatRequest{
-			Model:       a.Session.Model,
-			System:      a.systemPrompt(),
-			Messages:    a.Session.Messages,
-			Tools:       adaptToolDefinitionsForImageDetailSupport(a.Tools.DefinitionsExcluding(turnDisabledTools), a.Session.Provider, a.Session.Model),
-			MaxTokens:   a.Config.MaxTokens,
-			Temperature: a.Config.Temperature,
-			WorkingDir:  a.Session.WorkingDir,
-			OnTextDelta: onTextDelta,
-			TurnState:   providerTurnState,
+			Model:        a.Session.Model,
+			System:       a.systemPrompt(),
+			Messages:     a.Session.Messages,
+			Tools:        adaptToolDefinitionsForImageDetailSupport(a.Tools.DefinitionsExcluding(turnDisabledTools), a.Session.Provider, a.Session.Model),
+			MaxTokens:    a.Config.MaxTokens,
+			Temperature:  a.Config.Temperature,
+			WorkingDir:   a.Session.WorkingDir,
+			OnTextDelta:  onTextDelta,
+			TurnState:    providerTurnState,
+			TurnMetadata: providerTurnMetadata,
 		}
 		resp, err := a.completeModelTurn(ctx, turnReq)
 		if err != nil && readOnlyAnalysis && isToolUseUnsupportedError(err) && len(turnReq.Tools) > 0 {
@@ -1519,10 +1520,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
-				if !mcpTurnMetadataReady {
-					mcpTurnMetadata = a.mcpTurnMetadataForToolCall(turnStartedAt)
-					mcpTurnMetadataReady = true
-				}
 				toolCtx = contextWithMCPTurnMetadata(toolCtx, mcpTurnMetadata)
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
@@ -3157,6 +3154,11 @@ func (a *Agent) attachProviderRequestMetadata(req ChatRequest) ChatRequest {
 	}
 	if strings.TrimSpace(req.ThreadID) == "" {
 		req.ThreadID = sessionID
+	}
+	if len(req.TurnMetadata) == 0 {
+		req.TurnMetadata = providerTurnMetadataFromMCP(a.mcpTurnMetadataForToolCall(time.Now()))
+	} else {
+		req.TurnMetadata = cloneStringAnyMap(req.TurnMetadata)
 	}
 	return req
 }
@@ -6427,6 +6429,20 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 		return nil
 	}
 	return metadata
+}
+
+func providerTurnMetadataFromMCP(metadata map[string]any) map[string]any {
+	out := cloneStringAnyMap(metadata)
+	if len(out) == 0 {
+		return nil
+	}
+	delete(out, "provider")
+	delete(out, "model")
+	delete(out, "reasoning_effort")
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mcpTurnMetadataTurnID(sessionID string, turnStartedAt time.Time) string {
