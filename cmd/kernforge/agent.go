@@ -6303,11 +6303,43 @@ func (a *Agent) mcpTurnMetadataForToolCall() map[string]any {
 		return nil
 	}
 	metadata := map[string]any{}
+	if provider := strings.TrimSpace(a.Session.Provider); provider != "" {
+		metadata["provider"] = provider
+	}
 	if model := strings.TrimSpace(a.Session.Model); model != "" {
 		metadata["model"] = model
 	}
 	if effort := normalizeReasoningEffort(a.Config.ReasoningEffort); effort != "" {
 		metadata["reasoning_effort"] = effort
+	}
+	if permissionMode := strings.TrimSpace(a.Session.PermissionMode); permissionMode != "" {
+		metadata["permission_mode"] = permissionMode
+	}
+	cwd := strings.TrimSpace(workspaceCheckpointRoot(a.Workspace))
+	if cwd == "" {
+		cwd = strings.TrimSpace(a.Session.WorkingDir)
+	}
+	if cwd != "" {
+		metadata["cwd"] = cwd
+	}
+	workspaceRoot := strings.TrimSpace(workspaceSnapshotRoot(a.Workspace))
+	if workspaceRoot == "" {
+		workspaceRoot = strings.TrimSpace(a.Session.BaseWorkingDir)
+	}
+	if workspaceRoot == "" {
+		workspaceRoot = strings.TrimSpace(a.Session.WorkingDir)
+	}
+	workspaceRoots := []string{}
+	if workspaceRoot != "" {
+		metadata["workspace_root"] = workspaceRoot
+		workspaceRoots = append(workspaceRoots, workspaceRoot)
+	}
+	if cwd != "" && workspaceRoot != "" && !samePath(cwd, workspaceRoot) {
+		metadata["active_workspace_root"] = cwd
+		workspaceRoots = append(workspaceRoots, cwd)
+	}
+	if len(workspaceRoots) > 0 {
+		metadata["workspace_roots"] = workspaceRoots
 	}
 	if len(metadata) == 0 {
 		return nil

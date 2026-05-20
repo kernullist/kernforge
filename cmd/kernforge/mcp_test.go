@@ -674,6 +674,52 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got := turnMeta["reasoning_effort"]; got != "high" {
 		t.Fatalf("expected reasoning effort metadata, got %#v in %#v", got, turnMeta)
 	}
+	if got := turnMeta["provider"]; got != "scripted" {
+		t.Fatalf("expected provider metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got := turnMeta["permission_mode"]; got != "default" {
+		t.Fatalf("expected permission mode metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got := turnMeta["cwd"]; got != dir {
+		t.Fatalf("expected cwd metadata %q, got %#v in %#v", dir, got, turnMeta)
+	}
+	if got := turnMeta["workspace_root"]; got != dir {
+		t.Fatalf("expected workspace root metadata %q, got %#v in %#v", dir, got, turnMeta)
+	}
+	roots, ok := turnMeta["workspace_roots"].([]any)
+	if !ok || len(roots) != 1 || roots[0] != dir {
+		t.Fatalf("expected workspace_roots metadata [%q], got %#v in %#v", dir, turnMeta["workspace_roots"], turnMeta)
+	}
+	if _, ok := turnMeta["active_workspace_root"]; ok {
+		t.Fatalf("did not expect active_workspace_root when cwd equals workspace root: %#v", turnMeta)
+	}
+}
+
+func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktrees", "feature")
+	agent := &Agent{
+		Config: Config{
+			ReasoningEffort: "medium",
+		},
+		Workspace: Workspace{BaseRoot: baseRoot, Root: activeRoot},
+		Session:   NewSession(baseRoot, "scripted", "model-a", "", "full-access"),
+	}
+
+	turnMeta := agent.mcpTurnMetadataForToolCall()
+	if got := turnMeta["cwd"]; got != activeRoot {
+		t.Fatalf("expected cwd to use active workspace root %q, got %#v in %#v", activeRoot, got, turnMeta)
+	}
+	if got := turnMeta["workspace_root"]; got != baseRoot {
+		t.Fatalf("expected workspace root metadata %q, got %#v in %#v", baseRoot, got, turnMeta)
+	}
+	if got := turnMeta["active_workspace_root"]; got != activeRoot {
+		t.Fatalf("expected active workspace root metadata %q, got %#v in %#v", activeRoot, got, turnMeta)
+	}
+	roots, ok := turnMeta["workspace_roots"].([]string)
+	if !ok || len(roots) != 2 || roots[0] != baseRoot || roots[1] != activeRoot {
+		t.Fatalf("expected workspace_roots to preserve base and active roots, got %#v in %#v", turnMeta["workspace_roots"], turnMeta)
+	}
 }
 
 func TestMCPToolContentItemsPreserveImageContentForResponses(t *testing.T) {
