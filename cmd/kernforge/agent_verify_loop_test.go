@@ -2683,6 +2683,32 @@ func TestSanitizeAssistantFinalTextDropsHiddenOnlyMarkup(t *testing.T) {
 	}
 }
 
+func TestImmediateFinalReplyPathsSanitizeHiddenMarkup(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Store:   store,
+	}
+	reply, err := agent.finishPendingReviewRepairConfirmation(
+		"n",
+		nil,
+		true,
+		"<oai-mem-citation>hidden only</oai-mem-citation>\nVisible final answer.",
+	)
+	if err != nil {
+		t.Fatalf("finishPendingReviewRepairConfirmation: %v", err)
+	}
+	if reply != "Visible final answer." {
+		t.Fatalf("expected sanitized immediate final reply, got %q", reply)
+	}
+	if len(session.Messages) != 2 || session.Messages[1].Text != "Visible final answer." {
+		t.Fatalf("expected session to store sanitized final reply, got %#v", session.Messages)
+	}
+}
+
 func TestReplyLooksAbruptlyTruncatedDetectsCutoffTail(t *testing.T) {
 	if !replyLooksAbruptlyTruncated("현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이") {
 		t.Fatalf("expected abrupt cutoff to be detected")
@@ -8704,6 +8730,111 @@ func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T
 	}
 	if provider.requests[1].OnTextDelta != nil {
 		t.Fatalf("expected final document summary request to buffer text deltas while final gates can still reject it")
+	}
+}
+
+func TestAgentFinalizesGeneratedDocumentApplyPatchWithoutPostFinalLoop(t *testing.T) {
+	root := t.TempDir()
+	reportDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportPath := filepath.Join(reportDir, "BugReport.md")
+	if err := os.WriteFile(reportPath, []byte("# Draft\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	patch := strings.Join([]string{
+		"*** Begin Patch",
+		"*** Update File: Tavern/BugReport.md",
+		"@@",
+		"-# Draft",
+		"+# Tavern Bug Report",
+		"+",
+		"+소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"+",
+		"+| Severity | Count |",
+		"+|----------|-------|",
+		"+| Critical | 1 |",
+		"+| Total | 1 |",
+		"+",
+		"+## BUG-001",
+		"+- File: Tavern/Tavern/RuntimeManager.cpp",
+		"+- Impact: crash risk.",
+		"*** End Patch",
+	}, "\n")
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": patch}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emittedDelta strings.Builder
+	var emittedAssistant []string
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:             provider,
+		Tools:              NewToolRegistry(NewApplyPatchTool(ws), NewRunShellTool(ws)),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emittedDelta.WriteString(text) },
+		EmitAssistant: func(text string) {
+			emittedAssistant = append(emittedAssistant, text)
+		},
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+		t.Fatalf("expected generated document final answer with verification disclosure, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected the post-final shell response to remain unrequested, got %d requests", len(provider.requests))
+	}
+	if provider.requests[1].OnTextDelta != nil {
+		t.Fatalf("expected final document summary request to buffer text deltas after apply_patch")
+	}
+	if emittedDelta.String() != "" {
+		t.Fatalf("expected final candidate delta to stay hidden until accepted, got %q", emittedDelta.String())
+	}
+	for _, text := range emittedAssistant {
+		if strings.Contains(text, "Tavern/BugReport.md 문서를 생성") {
+			t.Fatalf("final candidate was emitted before acceptance: %q", text)
+		}
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "automatic post-change review") || strings.Contains(line, "자동 변경 후 리뷰") {
+			t.Fatalf("generated document apply_patch finalization should not enter post-change review path, progress=%q", line)
+		}
+	}
+	if session.ActivePatchTransaction != nil {
+		t.Fatalf("expected apply_patch document transaction to finalize, got %#v", session.ActivePatchTransaction)
+	}
+	if len(session.PatchTransactions) == 0 || session.PatchTransactions[0].ChangedPaths()[0] != "Tavern/BugReport.md" {
+		t.Fatalf("expected archived document patch transaction, got %#v", session.PatchTransactions)
 	}
 }
 

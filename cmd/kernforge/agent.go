@@ -194,6 +194,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if reply, ok := a.maybeAnswerRecentErrorQuestion(userText); ok {
 		reply = a.maybeAppendProactiveSuggestion(reply, userText)
+		reply = sanitizeAssistantFinalText(reply)
 		if len(a.Session.Messages) > 0 && a.Session.Messages[len(a.Session.Messages)-1].Role == "assistant" {
 			a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 		} else {
@@ -211,6 +212,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		return "", err
 	}
 	if ranReviewMode {
+		reviewModeReply = sanitizeAssistantFinalText(reviewModeReply)
 		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reviewModeReply})
 		if a.LongMem != nil {
 			safeStart := startIndex
@@ -238,6 +240,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if ranReviewBeforeFix {
 		if reply, ok := a.maybeStopAfterReviewerGateUnavailable(); ok {
+			reply = sanitizeAssistantFinalText(reply)
 			a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
@@ -247,6 +250,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	if ranReviewBeforeFix && a.shouldConcludeAfterNonBlockingPreFixReview(userText) {
 		reply := a.formatNonBlockingPreFixReviewReply()
+		reply = sanitizeAssistantFinalText(reply)
 		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 		if err := a.Store.Save(a.Session); err != nil {
 			return "", err
@@ -351,9 +355,9 @@ func parseReviewRepairConfirmationInput(input string) reviewRepairConfirmationDe
 
 func (a *Agent) finishPendingReviewRepairConfirmation(userText string, images []MessageImage, clearPending bool, reply string) (string, error) {
 	if a == nil || a.Session == nil {
-		return strings.TrimSpace(reply), nil
+		return sanitizeAssistantFinalText(reply), nil
 	}
-	reply = strings.TrimSpace(reply)
+	reply = sanitizeAssistantFinalText(reply)
 	if clearPending {
 		a.Session.PendingReviewRepairConfirm = nil
 	}
