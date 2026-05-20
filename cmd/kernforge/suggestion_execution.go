@@ -1776,13 +1776,43 @@ func renderSortedCountSummary(counts map[string]int) string {
 }
 
 func runGitText(root string, args ...string) string {
-	cmd := exec.Command("git", args...)
+	if !pathHasGitMetadata(root) {
+		return "fatal: not a git repository"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = root
+	cmd.WaitDelay = time.Second
 	data, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return strings.TrimSpace(string(data) + "\n" + ctx.Err().Error())
+	}
 	if err != nil {
 		return strings.TrimSpace(string(data) + "\n" + err.Error())
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func pathHasGitMetadata(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	abs, err := filepath.Abs(root)
+	if err == nil {
+		root = abs
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, ".git")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(root)
+		if parent == root || parent == "." || parent == "" {
+			return false
+		}
+		root = parent
+	}
 }
 
 func renderPRReviewAutomationReport(branch string, status string, diffStat string, nameOnly string, github PRReviewGitHubContext) string {

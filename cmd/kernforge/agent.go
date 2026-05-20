@@ -623,7 +623,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
-		if chatResponseRequestsFollowUp(resp) && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
+		deferEndTurnFollowUpForGeneratedDocument := a.shouldDeferEndTurnFollowUpForGeneratedDocument(latestUser, resp)
+		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
 			resp.Message.Phase = messagePhaseCommentary
 		}
 		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
@@ -766,6 +767,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				continue
 			}
+			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: generated document artifact turns do not run shell or review validation after the document is written.",
+					generatedDocumentArtifactValidationToolGuidance(),
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
 			currentSignature := ""
 			if shouldTrackRepeatedToolCallSignature(resp.Message.ToolCalls) {
 				currentSignature = toolCallSignature(resp.Message.ToolCalls)
@@ -897,7 +908,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
-			if chatResponseRequestsFollowUp(resp) {
+			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument {
 				commentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -2199,12 +2210,69 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	return report != nil && report.Approved
 }
 
+func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, resp ChatResponse) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if !chatResponseRequestsFollowUp(resp) {
+		return false
+	}
+	if len(resp.Message.ToolCalls) > 0 || strings.TrimSpace(resp.Message.Text) == "" {
+		return false
+	}
+	if strings.TrimSpace(resp.Message.Phase) == messagePhaseCommentary {
+		return false
+	}
+	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
+}
+
+func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request string, calls []ToolCall) bool {
+	if a == nil || a.Session == nil || len(calls) == 0 {
+		return false
+	}
+	if requestLooksLikeLocalVerificationWork(strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))) {
+		return false
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	for _, call := range calls {
+		if generatedDocumentArtifactValidationToolCall(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
+	switch strings.ToLower(strings.TrimSpace(call.Name)) {
+	case "run_shell",
+		"run_shell_background",
+		"run_shell_bundle_background",
+		"check_shell_job",
+		"check_shell_bundle",
+		"review",
+		"run_review",
+		"post_change_review":
+		return true
+	default:
+		return false
+	}
+}
+
+func generatedDocumentArtifactValidationToolGuidance() string {
+	return "This is a generated document artifact turn. Do not run shell or review validation after the report is written. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise provide the final answer."
+}
+
 func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
 	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
 		return true
+	}
+	if generatedDocumentArtifactRequestContext(a.Session, request) == "" {
+		return false
 	}
 	root := workspaceSnapshotRoot(a.Workspace)
 	if strings.TrimSpace(root) == "" {
