@@ -842,6 +842,10 @@ func formatAssistantText(text string) string {
 func sanitizeAssistantFinalText(text string) string {
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
 	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	normalized = stripHiddenAssistantMarkup(normalized)
+	if strings.TrimSpace(normalized) == "" {
+		return ""
+	}
 	normalized = collapseRepeatedAssistantSentences(normalized)
 	normalized = normalizeAssistantSentenceSpacing(normalized)
 	return trimOuterBlankLines(normalized)

@@ -6673,11 +6673,7 @@ func messageShouldAppearInCompactSummary(msg Message) bool {
 	if len(msg.ToolCalls) > 0 {
 		return true
 	}
-	phase := strings.TrimSpace(msg.Phase)
-	if phase == messagePhaseCommentary || phase == messagePhaseFinalAnswerCandidate {
-		return false
-	}
-	return true
+	return false
 }
 
 func messageShouldPinForCompact(msg Message) bool {

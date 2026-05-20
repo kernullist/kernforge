@@ -2659,6 +2659,30 @@ func TestSanitizeAssistantMessageTextDropsHiddenOnlyMarkup(t *testing.T) {
 	}
 }
 
+func TestSanitizeAssistantFinalTextRemovesHiddenAssistantMarkup(t *testing.T) {
+	text := strings.Join([]string{
+		"완료했습니다.",
+		"<oai-mem-citation><citation_entries>MEMORY.md:1-2|note=[x]</citation_entries></oai-mem-citation>",
+		"<proposed_plan>",
+		"- hidden step",
+		"</proposed_plan>",
+	}, "\n")
+
+	got := sanitizeAssistantFinalText(text)
+	if got != "완료했습니다." {
+		t.Fatalf("expected hidden assistant markup to be stripped from final text, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantFinalTextDropsHiddenOnlyMarkup(t *testing.T) {
+	text := "<oai-mem-citation>hidden only</oai-mem-citation>\n<proposed_plan>\n- hidden\n</proposed_plan>"
+
+	got := sanitizeAssistantFinalText(text)
+	if got != "" {
+		t.Fatalf("expected hidden-only final text to be dropped, got %q", got)
+	}
+}
+
 func TestReplyLooksAbruptlyTruncatedDetectsCutoffTail(t *testing.T) {
 	if !replyLooksAbruptlyTruncated("현재 코드는 `items` 하위 키가 있는 경로만 처리하고 있어, `items` 하위 키가 없는 구조에서는 MRU 항목을 가져오지 못합니다.\n\n이") {
 		t.Fatalf("expected abrupt cutoff to be detected")
@@ -3514,7 +3538,7 @@ func TestSummarizeMessagesIncludesCompactToolErrorDetails(t *testing.T) {
 	}
 }
 
-func TestSummarizeMessagesSkipsAssistantCommentaryAndFinalCandidates(t *testing.T) {
+func TestSummarizeMessagesSkipsAssistantTextOnlyPhases(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Text: "original user request"},
 		{Role: "assistant", Phase: messagePhaseCommentary, Text: "progress update that should not be replayed"},
@@ -3538,11 +3562,11 @@ func TestSummarizeMessagesSkipsAssistantCommentaryAndFinalCandidates(t *testing.
 	if strings.Contains(summary, "unaccepted final answer candidate") {
 		t.Fatalf("final-answer candidate leaked into compact summary: %q", summary)
 	}
+	if strings.Contains(summary, "accepted final answer") {
+		t.Fatalf("accepted assistant final answer leaked into compact summary: %q", summary)
+	}
 	if !strings.Contains(summary, "original user request") {
 		t.Fatalf("expected user request to remain in compact summary, got %q", summary)
-	}
-	if !strings.Contains(summary, "accepted final answer") {
-		t.Fatalf("expected accepted final answer to remain in compact summary, got %q", summary)
 	}
 	if !strings.Contains(summary, "tool turn: read_file[a.cpp]:ok") {
 		t.Fatalf("expected assistant tool evidence to remain in compact summary, got %q", summary)
