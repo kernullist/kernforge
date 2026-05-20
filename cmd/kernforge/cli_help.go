@@ -210,7 +210,7 @@ Standalone examples:
   kernforge -cwd C:\repo\driver
   kernforge -prompt "Review the IOCTL path and suggest tests"
   kernforge -command "/analyze-project --mode security"
-  kernforge -goal-file .kernforge\goals\stabilize.md -goal-until-complete
+  kernforge -goal-file .kernforge\goals\stabilize.md
 
 MCP client setup, recommended:
   kernforge -mcp-server -cwd C:\repo\driver
@@ -258,7 +258,7 @@ One-shot slash command:
 
 Autonomous goal:
   kernforge -goal "Fix the failing verification and update docs"
-  kernforge -goal-file .kernforge\goals\release.md -goal-until-complete
+  kernforge -goal-file .kernforge\goals\release.md
 
 Useful options:
   -cwd <dir>

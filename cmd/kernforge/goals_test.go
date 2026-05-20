@@ -949,6 +949,38 @@ func TestRunSingleGoalPreservesCLIObjectiveText(t *testing.T) {
 	}
 }
 
+func TestRunSingleGoalDefaultsToUntilComplete(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:    &output,
+		ui:        NewUI(),
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		clientErr: errors.New("provider unavailable"),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	err := rt.runSingleGoal("finish without an implicit iteration cap", "")
+	if err == nil || !strings.Contains(err.Error(), "provider unavailable") {
+		t.Fatalf("expected provider error, got %v", err)
+	}
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.MaxIterations != 0 {
+		t.Fatalf("expected default goal loop to run until completion, got max_iterations=%d goal=%#v", goal.MaxIterations, goal)
+	}
+	if label := goalMaxIterationsLabel(goal.MaxIterations); label != "until-complete" {
+		t.Fatalf("expected until-complete label, got %q", label)
+	}
+}
+
 func TestGoalFieldsSupportQuotedFilePaths(t *testing.T) {
 	fields := splitGoalFields(`start --file "docs/My Goal.md" --max-iterations 2 finish it`)
 	want := []string{"start", "--file", "docs/My Goal.md", "--max-iterations", "2", "finish", "it"}

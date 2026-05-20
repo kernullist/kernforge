@@ -2473,7 +2473,7 @@ func HelpDetail(topic string) (string, bool) {
 /goal start --time-budget 10m <objective>
 /goal start --token-budget N <objective>
 /goal start --rollback-on-regression <objective>
-- Tune stop and recovery policy. The loop also stops on repeated no-progress or repeated failure signatures.
+- Goals run until completion by default. Use --max-iterations only when you want an explicit cap. The loop also stops on repeated no-progress or repeated failure signatures.
 
 /goal start --no-run <objective>
 - Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.

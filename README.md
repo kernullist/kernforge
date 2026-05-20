@@ -211,14 +211,14 @@ Its current differentiators are:
 
 - `/goal <objective>` or `/goal start <objective>` creates a persistent goal and immediately starts an autonomous loop
 - `/goal start @GOAL.md` and `kernforge -goal-file GOAL.md` load the objective from a markdown file
-- `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, and `-goal-rollback-on-regression` controls
+- `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression` controls
 - Each iteration asks the agent to inspect, develop, modify, review its own changes, run final semantic goal review, and fix bugs without asking the user for confirmation
 - The runtime now binds each goal to an acceptance contract, task graph, independent review verdict, progress ledger, command history, and per-iteration checkpoint when checkpoint storage is configured
 - Goal reviewers receive concrete workspace evidence, including implementation replies, checkpoint diffs when available, git status/diff context, and bounded untracked-file excerpts. If review says `NEEDS_REVISION`, the repair prompt preserves structured reviewer issues and the same implementation context so the worker can act on the actual findings instead of a vague summary.
 - Kernforge then runs `/verify --full`, `/completion-audit`, final semantic review, and if needed `/recover execute-safe` before the next iteration
-- The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
+- The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, explicit token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
-- Use `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
+- Goals run until completion by default. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
 - `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, and `/goal cancel` inspect, re-audit, explicitly complete, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing

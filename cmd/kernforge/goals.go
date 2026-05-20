@@ -19,7 +19,7 @@ const (
 	goalStatusBlocked  = "blocked"
 	goalStatusCanceled = "canceled"
 
-	defaultGoalMaxIterations = 8
+	defaultGoalMaxIterations = 0
 )
 
 type GoalState struct {
