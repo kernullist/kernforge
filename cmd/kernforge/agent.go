@@ -552,6 +552,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	continuedReplyPrefix := ""
 	continuedReplyMessageIndex := -1
 	turnStartedAt := time.Now()
+	var mcpTurnMetadata map[string]any
+	mcpTurnMetadataReady := false
 	maxToolIterations := configMaxToolIterations(a.Config)
 	toolBudgetLimit := maxToolIterations
 	toolBudgetExtensions := 0
@@ -1515,7 +1517,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
-				toolCtx = contextWithMCPTurnMetadata(toolCtx, a.mcpTurnMetadataForToolCall(turnStartedAt))
+				if !mcpTurnMetadataReady {
+					mcpTurnMetadata = a.mcpTurnMetadataForToolCall(turnStartedAt)
+					mcpTurnMetadataReady = true
+				}
+				toolCtx = contextWithMCPTurnMetadata(toolCtx, mcpTurnMetadata)
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
@@ -6347,6 +6353,11 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	metadata := map[string]any{}
 	if sessionID := strings.TrimSpace(a.Session.ID); sessionID != "" {
 		metadata["session_id"] = sessionID
+		metadata["thread_id"] = sessionID
+		if turnID := mcpTurnMetadataTurnID(sessionID, turnStartedAt); turnID != "" {
+			metadata["turn_id"] = turnID
+		}
+		metadata["thread_source"] = "user"
 	}
 	if provider := strings.TrimSpace(a.Session.Provider); provider != "" {
 		metadata["provider"] = provider
@@ -6362,6 +6373,9 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	}
 	if permissionMode := strings.TrimSpace(a.Session.PermissionMode); permissionMode != "" {
 		metadata["permission_mode"] = permissionMode
+		if sandbox := mcpTurnMetadataSandboxTag(permissionMode); sandbox != "" {
+			metadata["sandbox"] = sandbox
+		}
 	}
 	cwd := strings.TrimSpace(workspaceCheckpointRoot(a.Workspace))
 	if cwd == "" {
@@ -6389,10 +6403,91 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	if len(workspaceRoots) > 0 {
 		metadata["workspace_roots"] = workspaceRoots
 	}
+	if workspaces := mcpTurnMetadataWorkspaces(cwd); len(workspaces) > 0 {
+		metadata["workspaces"] = workspaces
+	}
 	if len(metadata) == 0 {
 		return nil
 	}
 	return metadata
+}
+
+func mcpTurnMetadataTurnID(sessionID string, turnStartedAt time.Time) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || turnStartedAt.IsZero() {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", sessionID, turnStartedAt.UnixNano())
+}
+
+func mcpTurnMetadataSandboxTag(permissionMode string) string {
+	switch strings.ToLower(strings.TrimSpace(permissionMode)) {
+	case "":
+		return ""
+	case "external", "external-sandbox":
+		return "external"
+	default:
+		return "none"
+	}
+}
+
+func mcpTurnMetadataWorkspaces(cwd string) map[string]any {
+	cwd = strings.TrimSpace(cwd)
+	if cwd == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 750*time.Millisecond)
+	defer cancel()
+	repoRoot, err := gitRepositoryRoot(ctx, cwd)
+	if err != nil {
+		return nil
+	}
+	workspace := map[string]any{}
+	if head, ok := mcpTurnMetadataGitText(ctx, repoRoot, "rev-parse", "HEAD"); ok && head != "" {
+		workspace["latest_git_commit_hash"] = head
+	}
+	if status, ok := mcpTurnMetadataGitText(ctx, repoRoot, "status", "--porcelain"); ok {
+		workspace["has_changes"] = strings.TrimSpace(status) != ""
+	}
+	if remotes := mcpTurnMetadataRemoteURLs(ctx, repoRoot); len(remotes) > 0 {
+		workspace["associated_remote_urls"] = remotes
+	}
+	if len(workspace) == 0 {
+		return nil
+	}
+	return map[string]any{repoRoot: workspace}
+}
+
+func mcpTurnMetadataGitText(ctx context.Context, dir string, args ...string) (string, bool) {
+	cmd := newGitHelperCommand(ctx, dir, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+func mcpTurnMetadataRemoteURLs(ctx context.Context, repoRoot string) map[string]string {
+	out, ok := mcpTurnMetadataGitText(ctx, repoRoot, "remote", "-v")
+	if !ok {
+		return nil
+	}
+	remotes := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 || fields[2] != "(fetch)" {
+			continue
+		}
+		name := strings.TrimSpace(fields[0])
+		url := strings.TrimSpace(fields[1])
+		if name != "" && url != "" {
+			remotes[name] = url
+		}
+	}
+	if len(remotes) == 0 {
+		return nil
+	}
+	return remotes
 }
 
 func (a *Agent) systemPrompt() string {

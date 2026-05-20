@@ -680,11 +680,23 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got := turnMeta["session_id"]; got != session.ID {
 		t.Fatalf("expected session id metadata %q, got %#v in %#v", session.ID, got, turnMeta)
 	}
+	if got := turnMeta["thread_id"]; got != session.ID {
+		t.Fatalf("expected thread id metadata %q, got %#v in %#v", session.ID, got, turnMeta)
+	}
+	if got := turnMeta["thread_source"]; got != "user" {
+		t.Fatalf("expected user thread source metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got, ok := turnMeta["turn_id"].(string); !ok || !strings.HasPrefix(got, session.ID+":") {
+		t.Fatalf("expected turn id to be scoped to session %q, got %#v in %#v", session.ID, turnMeta["turn_id"], turnMeta)
+	}
 	if got, ok := turnMeta["turn_started_at_unix_ms"].(float64); !ok || got <= 0 {
 		t.Fatalf("expected positive turn start metadata, got %#v in %#v", turnMeta["turn_started_at_unix_ms"], turnMeta)
 	}
 	if got := turnMeta["permission_mode"]; got != "default" {
 		t.Fatalf("expected permission mode metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got := turnMeta["sandbox"]; got != "none" {
+		t.Fatalf("expected sandbox metadata to mirror Codex no-platform-sandbox tag, got %#v in %#v", got, turnMeta)
 	}
 	if got := turnMeta["cwd"]; got != dir {
 		t.Fatalf("expected cwd metadata %q, got %#v in %#v", dir, got, turnMeta)
@@ -717,6 +729,9 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	if got := turnMeta["turn_started_at_unix_ms"]; got != int64(1_700_000_000_123) {
 		t.Fatalf("expected deterministic turn start metadata, got %#v in %#v", got, turnMeta)
 	}
+	if got := turnMeta["turn_id"]; got != agent.Session.ID+":1700000000123000000" {
+		t.Fatalf("expected deterministic turn id metadata, got %#v in %#v", got, turnMeta)
+	}
 	if got := turnMeta["cwd"]; got != activeRoot {
 		t.Fatalf("expected cwd to use active workspace root %q, got %#v in %#v", activeRoot, got, turnMeta)
 	}
@@ -730,6 +745,65 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	if !ok || len(roots) != 2 || roots[0] != baseRoot || roots[1] != activeRoot {
 		t.Fatalf("expected workspace_roots to preserve base and active roots, got %#v in %#v", turnMeta["workspace_roots"], turnMeta)
 	}
+}
+
+func TestAgentMCPTurnMetadataIncludesWorkspaceGitMetadata(t *testing.T) {
+	repo := t.TempDir()
+	mustRunGit(t, repo, "init")
+	mustRunGit(t, repo, "config", "user.email", "test@example.com")
+	mustRunGit(t, repo, "config", "user.name", "Test User")
+	mustRunGit(t, repo, "config", "core.autocrlf", "false")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	mustRunGit(t, repo, "add", "README.md")
+	mustRunGit(t, repo, "commit", "-m", "initial")
+	head := strings.TrimSpace(mustRunGit(t, repo, "rev-parse", "HEAD"))
+	repoRoot := strings.TrimSpace(mustRunGit(t, repo, "rev-parse", "--show-toplevel"))
+
+	agent := &Agent{
+		Config:    Config{ReasoningEffort: "medium"},
+		Workspace: Workspace{BaseRoot: repo, Root: repo},
+		Session:   NewSession(repo, "scripted", "model-a", "", "default"),
+	}
+
+	turnMeta := agent.mcpTurnMetadataForToolCall(time.UnixMilli(1_700_000_000_123))
+	workspace := metadataWorkspaceForPath(t, turnMeta, repoRoot)
+	if got := workspace["latest_git_commit_hash"]; got != head {
+		t.Fatalf("expected HEAD metadata %q, got %#v in %#v", head, got, workspace)
+	}
+	if got := workspace["has_changes"]; got != false {
+		t.Fatalf("expected clean repo has_changes=false, got %#v in %#v", got, workspace)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+	dirtyMeta := agent.mcpTurnMetadataForToolCall(time.UnixMilli(1_700_000_000_124))
+	dirtyWorkspace := metadataWorkspaceForPath(t, dirtyMeta, repoRoot)
+	if got := dirtyWorkspace["has_changes"]; got != true {
+		t.Fatalf("expected dirty repo has_changes=true, got %#v in %#v", got, dirtyWorkspace)
+	}
+}
+
+func metadataWorkspaceForPath(t *testing.T, turnMeta map[string]any, path string) map[string]any {
+	t.Helper()
+	workspaces, ok := turnMeta["workspaces"].(map[string]any)
+	if !ok || len(workspaces) == 0 {
+		t.Fatalf("expected workspaces metadata, got %#v in %#v", turnMeta["workspaces"], turnMeta)
+	}
+	for root, raw := range workspaces {
+		if !samePath(root, path) {
+			continue
+		}
+		workspace, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("expected workspace metadata map for %q, got %#v", root, raw)
+		}
+		return workspace
+	}
+	t.Fatalf("expected workspace metadata for %q, got %#v", path, workspaces)
+	return nil
 }
 
 func TestMCPToolContentItemsPreserveImageContentForResponses(t *testing.T) {
