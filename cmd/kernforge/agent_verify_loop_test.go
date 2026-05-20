@@ -3946,12 +3946,12 @@ func TestAgentPromptsRereadAfterEditTargetMismatch(t *testing.T) {
 	if !strings.Contains(lastMessage.Text, "Do not repeat or lightly reformat the previous patch text") {
 		t.Fatalf("expected previous patch reuse warning, got %#v", lastMessage)
 	}
-	if !strings.Contains(lastMessage.Text, "Do not broaden into a function rewrite or adjacent API redesign") {
-		t.Fatalf("expected narrow mismatch recovery guidance, got %#v", lastMessage)
+	if !strings.Contains(lastMessage.Text, "multiple related hunks or files") {
+		t.Fatalf("expected cohesive root-repair guidance, got %#v", lastMessage)
 	}
 }
 
-func TestAgentDefersBroadApplyPatchAfterEditTargetMismatch(t *testing.T) {
+func TestAgentAllowsCohesiveApplyPatchAfterEditTargetMismatchReanchor(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc existing() {}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -3965,10 +3965,7 @@ func TestAgentDefersBroadApplyPatchAfterEditTargetMismatch(t *testing.T) {
 			toolCallResponse("apply_patch", map[string]any{
 				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// first broad hunk\n@@\n func existing() {}\n+// second broad hunk\n*** End Patch\n",
 			}),
-			toolCallResponse("apply_patch", map[string]any{
-				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// narrow repair\n*** End Patch\n",
-			}),
-			{Message: Message{Role: "assistant", Text: "Applied the narrowed recovery patch."}},
+			{Message: Message{Role: "assistant", Text: "Applied the cohesive recovery patch."}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -3992,21 +3989,21 @@ func TestAgentDefersBroadApplyPatchAfterEditTargetMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "Applied the narrowed recovery patch." {
+	if reply != "Applied the cohesive recovery patch." {
 		t.Fatalf("unexpected final reply: %q", reply)
 	}
 	if patchTool.calls != 2 {
-		t.Fatalf("expected stale attempt and narrowed retry to execute, broad retry must be deferred; got %d calls", patchTool.calls)
+		t.Fatalf("expected stale attempt and cohesive retry to execute after reanchor; got %d calls", patchTool.calls)
 	}
-	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this recovery apply_patch was not executed") {
-		t.Fatalf("expected broad recovery patch to be returned as NOT_EXECUTED")
+	if sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this recovery apply_patch was not executed") {
+		t.Fatalf("cohesive recovery patch should not be deferred after reanchor")
 	}
-	if !scriptedRequestsContainText(provider.requests, "one file and one independent hunk") {
-		t.Fatalf("expected one-file one-hunk recovery guidance, got %#v", provider.requests)
+	if scriptedRequestsContainText(provider.requests, "one file and one independent hunk") {
+		t.Fatalf("recovery guidance should not force a one-file one-hunk repair, got %#v", provider.requests)
 	}
 }
 
-func TestAgentStopsAfterRepeatedBroadApplyPatchRecovery(t *testing.T) {
+func TestAgentBlocksImmediateApplyPatchAfterEditTargetMismatchUntilReanchor(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc existing() {}\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -4018,7 +4015,59 @@ func TestAgentStopsAfterRepeatedBroadApplyPatchRecovery(t *testing.T) {
 				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
 			}),
 			toolCallResponse("apply_patch", map[string]any{"patch": broadPatch}),
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
 			toolCallResponse("apply_patch", map[string]any{"patch": broadPatch}),
+			{Message: Message{Role: "assistant", Text: "Applied after reanchor."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{
+		name:    "apply_patch",
+		outputs: []string{"", "patched"},
+		errs:    []error{fmt.Errorf("%w: stale hunk", ErrEditTargetMismatch), nil},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "update main.go")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Applied after reanchor." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if patchTool.calls != 2 {
+		t.Fatalf("expected stale attempt and post-reanchor patch to execute; got %d calls", patchTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "previous edit targeted stale or mismatched file contents") {
+		t.Fatalf("expected immediate edit retry to be blocked until reanchor")
+	}
+	if !scriptedRequestsContainText(provider.requests, "re-anchor") {
+		t.Fatalf("expected reanchor guidance before retry, got %#v", provider.requests)
+	}
+}
+
+func TestAgentStopsRepeatedImmediateEditAfterMismatchWithoutReanchor(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc existing() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	patch := "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// retry\n*** End Patch\n"
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// stale attempt\n*** End Patch\n",
+			}),
+			toolCallResponse("apply_patch", map[string]any{"patch": patch}),
+			toolCallResponse("apply_patch", map[string]any{"patch": patch}),
 			{Message: Message{Role: "assistant", Text: "this should not be requested"}},
 		},
 	}
@@ -4038,18 +4087,21 @@ func TestAgentStopsAfterRepeatedBroadApplyPatchRecovery(t *testing.T) {
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "update main.go")
+	reply, err := agent.Reply(context.Background(), "fix it")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Broad apply_patch payloads repeated during recovery") {
-		t.Fatalf("expected repeated broad patch recovery stop reply, got %q", reply)
+	if !strings.Contains(reply, "without re-anchoring") {
+		t.Fatalf("expected reanchor loop stop reply, got %q", reply)
 	}
 	if patchTool.calls != 1 {
-		t.Fatalf("expected only stale attempt to execute, broad retries must be deferred; got %d calls", patchTool.calls)
+		t.Fatalf("expected only the stale patch attempt to execute; got %d calls", patchTool.calls)
 	}
 	if len(provider.requests) != 3 {
-		t.Fatalf("expected stop on the second broad recovery patch, got %d requests", len(provider.requests))
+		t.Fatalf("expected stop after repeated immediate edit retry, got %d requests", len(provider.requests))
+	}
+	if !sessionContainsToolResultText(session, "call-1", "previous edit targeted stale or mismatched file contents") {
+		t.Fatalf("expected repeated immediate edit retry to be recorded as NOT_EXECUTED")
 	}
 }
 

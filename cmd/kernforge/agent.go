@@ -72,7 +72,7 @@ const (
 	maxPreWriteReviewRepairInspectTools   = 6
 	maxPreWriteReviewRepairInspectNudges  = 1
 	maxEditTargetMismatchFailuresPerTurn  = 1
-	maxBroadRecoveryPatchDeferralsPerTurn = 1
+	maxEditTargetMismatchReanchorBlocks   = 1
 	maxToolBudgetExtensions               = 2
 	compactPinnedMessagesToKeep           = 6
 )
@@ -564,7 +564,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	invalidToolArgsRetries := 0
 	editTargetMismatchRetries := 0
 	editTargetMismatchFailures := 0
-	broadRecoveryPatchDeferrals := 0
+	editTargetMismatchRequiresReanchor := false
+	editTargetMismatchReanchorBlocks := 0
 	preWriteReviewRepairBlocks := 0
 	preWriteReviewRepairBlockFingerprints := map[string]int{}
 	preWriteReviewRepairInspectTools := 0
@@ -1484,6 +1485,42 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				preWriteBlockedRetryQueued = true
 				break
 			}
+			if editTargetMismatchRequiresReanchor && isEditTool(call.Name) {
+				editTargetMismatchReanchorBlocks++
+				result := editTargetMismatchReanchorRequiredResult(call)
+				toolMsg := Message{
+					Role:       "tool",
+					ToolCallID: call.ID,
+					ToolName:   call.Name,
+					Text:       result.DisplayText,
+					ToolMeta:   result.Meta,
+					IsError:    true,
+				}
+				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.noteToolExecutionResultDetailed(call, result, ErrEditTargetMismatch)
+				sawToolResultThisTurn = true
+				if editTargetMismatchReanchorBlocks > maxEditTargetMismatchReanchorBlocks {
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents and edit retries continued without re-anchoring.")
+					reply := formatEditTargetMismatchReanchorLoopLimitReply(a.Config, a.Session)
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: editTargetMismatchReanchorRequiredGuidance(a.Config),
+				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents; re-anchor on the current file or diff before issuing another edit.")
+				if saveErr := a.Store.Save(a.Session); saveErr != nil {
+					return "", saveErr
+				}
+				lastToolError = ""
+				lastToolErrorCount = 0
+				editMismatchRetryQueued = true
+				break
+			}
 			if preWriteReviewRepairBlocks > 0 && !isEditTool(call.Name) {
 				preWriteReviewRepairInspectTools++
 				if preWriteReviewRepairInspectTools > maxPreWriteReviewRepairInspectTools {
@@ -1538,42 +1575,6 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				lastPostChangeReviewFingerprint = ""
 				postChangeReviewExhaustedNudge = false
 			}
-			if shouldDeferBroadRecoveryPatch(call, preWriteReviewRepairBlocks, editTargetMismatchFailures) {
-				shape, _ := applyPatchPayloadShapeFromCall(call)
-				broadRecoveryPatchDeferrals++
-				result := broadRecoveryPatchDeferredResult(call, shape)
-				toolMsg := Message{
-					Role:       "tool",
-					ToolCallID: call.ID,
-					ToolName:   call.Name,
-					Text:       result.DisplayText,
-					ToolMeta:   result.Meta,
-					IsError:    true,
-				}
-				a.setToolExecutionResult(toolMsgIndex, toolMsg)
-				sawToolResultThisTurn = true
-				disabledTools["replace_in_file"] = true
-				if broadRecoveryPatchDeferrals > maxBroadRecoveryPatchDeferralsPerTurn {
-					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier recovery edit patch was too broad for stale-context repair and the recovery loop stopped.")
-					reply := formatBroadRecoveryPatchLoopLimitReply(a.Config, a.Session)
-					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
-					if saveErr := a.Store.Save(a.Session); saveErr != nil {
-						return "", saveErr
-					}
-					return reply, nil
-				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: broadRecoveryPatchDeferralGuidance(a.Config, a.Session, shape),
-				})
-				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier recovery edit patch was too broad for stale-context repair; retry from the next model turn.")
-				if saveErr := a.Store.Save(a.Session); saveErr != nil {
-					return "", saveErr
-				}
-				lastToolError = ""
-				lastToolErrorCount = 0
-				break
-			}
 			var result ToolExecutionResult
 			var err error
 			blockedToolResult := false
@@ -1618,6 +1619,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err == nil && preWriteReviewRequiresReanchor && preWriteReviewReanchorTool(call) {
 				preWriteReviewRequiresReanchor = false
 				preWriteReviewReanchorBlocks = 0
+			}
+			if err == nil && editTargetMismatchRequiresReanchor && editTargetMismatchReanchorTool(call) {
+				editTargetMismatchRequiresReanchor = false
+				editTargetMismatchReanchorBlocks = 0
 			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr
@@ -1782,7 +1787,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					disabledTools["replace_in_file"] = true
 					a.Session.AddMessage(Message{
 						Role: "user",
-						Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. Then build one narrow standalone apply_patch hunk anchored to exact current lines, including indentation and tabs. If the repair spans separate locations, submit only the first independent hunk and wait for the tool result before continuing. Do not broaden into a function rewrite or adjacent API redesign to recover from the mismatch. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
+						Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
 					})
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
 				}
@@ -1790,6 +1795,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return "", saveErr
 				}
 				editTargetMismatchRetries++
+				editTargetMismatchRequiresReanchor = true
 				lastToolError = ""
 				lastToolErrorCount = 0
 				editMismatchRetryQueued = true
@@ -4271,13 +4277,13 @@ func formatEditTargetMismatchLoopLimitReply(cfg Config, session *Session) string
 	} else if korean {
 		b.WriteString("파일 상태를 다시 확인한 뒤에도 edit target mismatch가 반복되어, 더 추측하며 진행하지 않고 중단했습니다.")
 		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
-		b.WriteString("\n- 원인: 마지막 patch가 현재 파일 내용에 고정되지 않았거나, 너무 넓은 rewrite 형태라 hunk를 안정적으로 맞출 수 없었습니다.")
-		b.WriteString("\n- 다음 조건: 현재 파일을 다시 읽은 뒤, 같은 수정 대상을 하나의 좁은 standalone hunk로 다시 작성해야 합니다.")
+		b.WriteString("\n- 원인: 마지막 patch가 현재 파일 내용 또는 실제 workspace/root 경로에 고정되지 않았습니다.")
+		b.WriteString("\n- 다음 조건: 현재 파일 또는 diff를 다시 확인해 경로와 내용을 고정한 뒤, 현재 상태에 바로 적용 가능한 완전한 standalone apply_patch를 작성해야 합니다. 여러 hunk/파일은 같은 근본 수정에 필요한 경우 허용됩니다.")
 	} else {
 		b.WriteString("Edit target mismatches repeated after a refresh attempt, so I stopped instead of continuing to guess at the file state.")
 		b.WriteString("\n\n- Result: no code changes were applied.")
-		b.WriteString("\n- Cause: the latest patch was not anchored to the current file contents, or it was too broad to match safely.")
-		b.WriteString("\n- Next condition: re-read the current file and produce one narrow standalone hunk for the same repair target.")
+		b.WriteString("\n- Cause: the latest patch was not anchored to the current file contents or the actual workspace/root path.")
+		b.WriteString("\n- Next condition: re-read the current file or diff, lock the path and contents, then produce a complete standalone apply_patch against the current state. Multiple hunks/files are allowed when they are required for the same root repair.")
 	}
 	if session != nil && session.LastReviewRun != nil {
 		reviewText := strings.TrimSpace(formatLatestPreWriteReviewForUserDecision(cfg, session))
@@ -4322,22 +4328,22 @@ func sessionLastEditTargetMismatchWasLookup(session *Session) bool {
 	return false
 }
 
-func formatBroadRecoveryPatchLoopLimitReply(cfg Config, session *Session) string {
+func formatEditTargetMismatchReanchorLoopLimitReply(cfg Config, session *Session) string {
 	korean := localePrefersKorean(cfg)
 	if session != nil && session.LastReviewRun != nil {
 		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
 	}
 	var b strings.Builder
 	if korean {
-		b.WriteString("복구 경로에서 넓은 apply_patch가 반복되어, 파일을 추측해서 쓰지 않고 중단했습니다.")
+		b.WriteString("edit target mismatch 이후 현재 파일/경로를 다시 고정하지 않은 edit 재시도가 반복되어 중단했습니다.")
 		b.WriteString("\n\n- 결과: 코드 수정은 적용하지 않았습니다.")
-		b.WriteString("\n- 원인: stale-context 복구 상태에서는 여러 파일 또는 여러 hunk를 한 번에 실행하면 같은 mismatch나 불완전 리뷰 증거로 회귀할 위험이 큽니다.")
-		b.WriteString("\n- 다음 조건: 현재 파일을 다시 확인한 뒤, 한 파일과 한 hunk만 포함한 standalone apply_patch로 첫 독립 수정만 제출해야 합니다.")
+		b.WriteString("\n- 원인: 이전 patch는 stale/mismatched 상태였고, 그 뒤 read_file, grep, list_files, git_status, git_diff 같은 재확인 없이 또 edit tool이 호출되었습니다.")
+		b.WriteString("\n- 다음 조건: 현재 파일 또는 diff를 먼저 다시 확인해 경로와 내용을 고정한 뒤, 근본 수정에 필요한 완전한 standalone apply_patch를 제출해야 합니다. 여러 hunk/파일은 같은 근본 수정에 필요한 경우 허용됩니다.")
 	} else {
-		b.WriteString("Broad apply_patch payloads repeated during recovery, so I stopped instead of guessing at the file state.")
+		b.WriteString("Edit retries continued after an edit target mismatch without re-anchoring the current file/path state, so I stopped instead of guessing.")
 		b.WriteString("\n\n- Result: no code changes were applied.")
-		b.WriteString("\n- Cause: after a stale-context recovery, executing multiple files or multiple hunks at once risks repeating the mismatch or producing incomplete review evidence.")
-		b.WriteString("\n- Next condition: re-read the current file and submit only the first independent repair as one file and one standalone hunk.")
+		b.WriteString("\n- Cause: the previous patch was stale or mismatched, and another edit tool was issued before read_file, grep, list_files, git_status, or git_diff re-anchored the current workspace state.")
+		b.WriteString("\n- Next condition: re-read the current file or diff, lock the path and contents, then submit a complete standalone apply_patch for the root repair. Multiple hunks/files are allowed when required for the same repair.")
 	}
 	if session != nil && session.LastReviewRun != nil {
 		reviewText := strings.TrimSpace(formatLatestPreWriteReviewForUserDecision(cfg, session))
@@ -5254,96 +5260,34 @@ func preWriteReviewReanchorRequiredGuidance(cfg Config) string {
 	)
 }
 
-type applyPatchPayloadShape struct {
-	FileSections int
-	UpdateHunks  int
-}
-
-func shouldDeferBroadRecoveryPatch(call ToolCall, preWriteReviewRepairBlocks int, editTargetMismatchFailures int) bool {
-	if strings.TrimSpace(call.Name) != "apply_patch" {
+func editTargetMismatchReanchorTool(call ToolCall) bool {
+	switch strings.TrimSpace(call.Name) {
+	case "read_file", "grep", "list_files", "git_status", "git_diff":
+		return true
+	default:
 		return false
 	}
-	shape, ok := applyPatchPayloadShapeFromCall(call)
-	if !ok {
-		return false
-	}
-	if editTargetMismatchFailures > 0 {
-		return shape.FileSections > 1 || shape.UpdateHunks > 1
-	}
-	if preWriteReviewRepairBlocks > 0 {
-		return shape.FileSections > 1
-	}
-	return false
 }
 
-func applyPatchPayloadShapeFromCall(call ToolCall) (applyPatchPayloadShape, bool) {
-	var decoded map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimSpace(call.Arguments)), &decoded); err != nil {
-		return applyPatchPayloadShape{}, false
-	}
-	patchText := strings.TrimSpace(stringValue(decoded, "patch"))
-	if patchText == "" {
-		return applyPatchPayloadShape{}, false
-	}
-	doc, err := parsePatchDocument(patchText)
-	if err != nil {
-		return applyPatchPayloadShape{}, false
-	}
-	shape := applyPatchPayloadShape{FileSections: len(doc.ops)}
-	for _, op := range doc.ops {
-		shape.UpdateHunks += len(op.hunks)
-	}
-	return shape, true
-}
-
-func broadRecoveryPatchDeferredResult(call ToolCall, shape applyPatchPayloadShape) ToolExecutionResult {
+func editTargetMismatchReanchorRequiredResult(call ToolCall) ToolExecutionResult {
 	args := toolCallArgumentsMap(call)
 	meta := defaultToolExecutionMeta(call.Name, args)
 	meta["success"] = false
 	meta["deferred"] = true
 	meta["requires_reissue"] = true
 	meta["changed_workspace"] = false
-	meta["reason"] = "recovery_patch_too_broad"
-	meta["file_sections"] = shape.FileSections
-	meta["update_hunks"] = shape.UpdateHunks
+	meta["reason"] = "edit_target_mismatch_requires_current_context_reanchor"
 	return ToolExecutionResult{
-		DisplayText: "NOT_EXECUTED: this recovery apply_patch was not executed because stale-context repair must be narrowed before another write attempt. Re-issue a patch against one file with one current, standalone hunk, then wait for that tool result before submitting additional hunks. Do not assume this skipped patch was applied.",
+		DisplayText: "NOT_EXECUTED: the previous edit targeted stale or mismatched file contents. Re-anchor with read_file, grep, list_files, git_status, or git_diff before another edit. After re-anchoring, submit a complete standalone patch for the root repair; do not assume the skipped edit was applied.",
 		Meta:        meta,
 	}
 }
 
-func broadRecoveryPatchDeferralGuidance(cfg Config, session *Session, shape applyPatchPayloadShape) string {
-	korean := localePrefersKorean(cfg)
-	if session != nil && session.LastReviewRun != nil {
-		korean = reviewRunPrefersKorean(cfg, *session.LastReviewRun)
-	}
-	var b strings.Builder
-	if korean {
-		b.WriteString("방금 apply_patch는 실행하지 않았습니다. 이전 edit target mismatch 또는 pre-write 차단 이후의 복구 경로에서는 stale context 위험을 줄이기 위해 넓은 patch payload를 바로 실행하지 않습니다.\n")
-		fmt.Fprintf(&b, "감지된 patch 형태: file sections=%d, update hunks=%d\n", shape.FileSections, shape.UpdateHunks)
-		b.WriteString("다음 응답 규칙:\n")
-		b.WriteString("1. 현재 파일에서 이미 확인한 정확한 줄을 기준으로 apply_patch 하나만 다시 제출하세요.\n")
-		b.WriteString("2. patch는 한 파일, 한 개의 독립 hunk만 포함해야 합니다.\n")
-		b.WriteString("3. 여러 수정 지점이 필요하면 첫 번째 독립 hunk를 적용한 뒤, 도구 결과와 갱신된 파일 상태를 보고 다음 hunk를 진행하세요.\n")
-		b.WriteString("4. 건너뛴 patch가 적용되었다고 요약하거나 검증하지 마세요.")
-	} else {
-		b.WriteString("The last apply_patch was not executed. After an edit target mismatch or pre-write block, broad patch payloads are deferred to reduce stale-context write risk.\n")
-		fmt.Fprintf(&b, "Detected patch shape: file sections=%d, update hunks=%d\n", shape.FileSections, shape.UpdateHunks)
-		b.WriteString("Next response rules:\n")
-		b.WriteString("1. Re-issue exactly one apply_patch anchored to the exact current lines already inspected.\n")
-		b.WriteString("2. The patch must contain one file and one independent hunk.\n")
-		b.WriteString("3. If multiple locations still need repair, apply the first independent hunk, wait for the tool result, then continue from the refreshed file state.\n")
-		b.WriteString("4. Do not summarize or verify the skipped patch as if it ran.")
-	}
-	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
-		if korean {
-			b.WriteString("\n\n계속 유효한 전체 수리 의무:\n")
-		} else {
-			b.WriteString("\n\nStill-active full repair obligations:\n")
-		}
-		b.WriteString(carried)
-	}
-	return strings.TrimSpace(b.String())
+func editTargetMismatchReanchorRequiredGuidance(cfg Config) string {
+	return localizedText(cfg,
+		"The previous edit targeted stale or mismatched file contents and was not written. Before another edit tool can run, re-anchor on the current workspace state with read_file, grep, list_files, git_status, or git_diff. After that, submit a complete standalone apply_patch for the root repair. Multiple related hunks or files are allowed when they are needed for one coherent fix; do not split solely because the previous edit mismatched.",
+		"이전 수정은 현재 파일 내용 또는 실제 workspace 경로와 맞지 않아 쓰이지 않았습니다. 다음 edit tool을 실행하기 전에는 read_file, grep, list_files, git_status, git_diff 중 하나로 현재 workspace 상태를 다시 고정해야 합니다. 그 뒤 근본 수리를 위한 완전한 standalone apply_patch를 제출하세요. 같은 수정에 필요한 여러 hunk나 파일은 허용되며, 이전 mismatch 때문에 억지로 잘게 쪼개지 마세요.",
+	)
 }
 
 func mixedToolDeferralResultText(name string) string {
