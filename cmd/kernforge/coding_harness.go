@@ -666,7 +666,7 @@ func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalReply(request stri
 	if a == nil || a.Session == nil || report == nil {
 		return false
 	}
-	if unresolvedVerification {
+	if unresolvedVerification && (a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped()) {
 		return false
 	}
 	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
@@ -709,6 +709,8 @@ func generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(findings []CodingH
 		}
 		switch strings.TrimSpace(finding.Title) {
 		case "Required verification has no outcome",
+			"Unresolved verification failure",
+			"Generated document artifact verification disclosure is missing",
 			"Final answer has inconsistent bug counts",
 			"Final answer contradicts the patch transaction",
 			"Verification claim has no recorded evidence":
@@ -744,7 +746,11 @@ func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarn
 	}
 	english := fmt.Sprintf("%s is complete. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run because this turn only produced a generated document artifact.", target)
 	korean := fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
-	return localizedText(cfg, english, korean)
+	language, _ := inferResponseLanguageForUserText(codingHarnessSourcePrompt(a.Session), cfg)
+	if language == "ko" {
+		return korean
+	}
+	return english
 }
 
 func generatedDocumentArtifactPathsFromHarnessReport(report *CodingHarnessReport) []string {
@@ -1069,6 +1075,13 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 			Severity: "blocker",
 			Title:    "Unresolved verification failure",
 			Detail:   "The latest verification still has failures, but the final answer does not clearly state the blocker.",
+		})
+	}
+	if a.changesAreGeneratedDocumentArtifactsForTurn(codingHarnessSourcePrompt(a.Session)) && !sessionHasSuccessfulVerificationEvidence(a.Session) && !replyMentionsVerificationNotRun(reply) && !replyMentionsVerificationBlocker(reply) {
+		report.Findings = append(report.Findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Generated document artifact verification disclosure is missing",
+			Detail:   "This turn only produced a generated document artifact, so code build/test verification is not expected, but the final answer must explicitly say it was not run.",
 		})
 	}
 	if hasPendingVerificationCheck(a.Session) && !sessionHasSuccessfulVerificationEvidence(a.Session) && !replyMentionsVerificationNotRun(reply) && !replyMentionsVerificationBlocker(reply) {

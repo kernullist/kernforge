@@ -8968,6 +8968,181 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclosureRepair(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastVerification = &VerificationReport{
+		Trigger:   "automatic",
+		Workspace: root,
+		ChangedPaths: []string{
+			"Tavern/BugReport.md",
+		},
+		Steps: []VerificationStep{{
+			Label:   "configured verification",
+			Command: "configured verification callback",
+			Status:  VerificationSkipped,
+		}},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Workspace: ws,
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	initialReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다."
+	report := agent.buildCodingHarnessReport(initialReply, false, true)
+	if report.Approved {
+		t.Fatalf("expected missing skipped-verification disclosure to block the initial report, got %#v", report)
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, true) {
+		t.Fatalf("expected skipped verification disclosure gap to be answer-only for generated document artifacts, got %#v", report)
+	}
+	synthesized := agent.synthesizeGeneratedDocumentArtifactFinalReply(&report)
+	if !strings.Contains(synthesized, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized skipped verification disclosure, got %q", synthesized)
+	}
+	repaired := agent.buildCodingHarnessReport(synthesized, false, true)
+	if !repaired.Approved {
+		t.Fatalf("expected synthesized disclosure to satisfy the final harness, got %#v", repaired)
+	}
+}
+
+func TestAgentGeneratedDocumentArtifactSynthesizesSkippedVerificationFinalWithoutReviewerLoop(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	reviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message: Message{
+				Role: "assistant",
+				Text: "NEEDS_REVISION\nThis final-answer reviewer should not run for a generated document artifact final.",
+			},
+			StopReason: "stop",
+		}},
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: request,
+	}}
+	session.TaskState = &TaskState{
+		Goal:        request,
+		Phase:       "execution",
+		PlanSummary: "1. Write the generated document artifact\n2. Summarize without extra validation",
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:         provider,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		Tools:          NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:      ws,
+		Session:        session,
+		Store:          store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				ChangedPaths: []string{"Tavern/BugReport.md"},
+				Steps: []VerificationStep{{
+					Label:   "configured verification",
+					Command: "configured verification callback",
+					Status:  VerificationSkipped,
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, true, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized generated document final reply with skipped verification disclosure, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected no extra model turn after synthesized document final, got %d requests", len(provider.requests))
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("expected generated document finalization to skip interactive final reviewer, got %d reviewer requests", len(reviewer.requests))
+	}
+}
+
 func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
@@ -9679,7 +9854,7 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 	if err != nil {
 		t.Fatalf("completeLoop: %v", err)
 	}
-	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "Build/test verification was not run") {
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
 	}
 	if readTool.calls != 0 {
@@ -9760,7 +9935,7 @@ func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *te
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Build/test verification was not run") {
+	if !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized safe final answer, got %q", reply)
 	}
 	if readTool.calls != 0 {
@@ -10302,7 +10477,7 @@ func TestAgentRefreshesGeneratedDocumentHarnessAfterExhaustedFinalRevisions(t *t
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Build/test verification was not run") {
+	if !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
 		t.Fatalf("expected synthesized safe final answer, got %q with harness %#v", reply, session.LastCodingHarnessReport)
 	}
 	if len(provider.requests) != 2 {

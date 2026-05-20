@@ -261,7 +261,7 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs.", false, false)
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs. Build/test verification was not run.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected bug ID list table to pass without count-column false positive: %s", report.BlockingFeedback())
 	}

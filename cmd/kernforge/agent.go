@@ -1172,7 +1172,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if unresolvedVerification && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+				if unresolvedVerification && !a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser) && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 					finalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(Message{
@@ -2338,6 +2338,16 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	}
 	report := a.Session.LastCodingHarnessReport
 	return report != nil && report.Approved
+}
+
+func (a *Agent) shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(request string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped() {
+		return false
+	}
+	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
 func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalAfterBlockedToolCalls(request string, unresolvedVerification bool) bool {
