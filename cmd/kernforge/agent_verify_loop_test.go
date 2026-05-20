@@ -9871,6 +9871,98 @@ func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T
 	}
 }
 
+func TestAgentHidesToolsForGeneratedDocumentFinalOnlyTurn(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: len(reportContent),
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "Tavern/BugReport.md"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	reply, err := agent.completeLoop(context.Background(), false, false, false)
+	if err != nil {
+		t.Fatalf("completeLoop: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") || !strings.Contains(reply, "빌드/테스트 검증은 실행하지 않았습니다") {
+		t.Fatalf("expected synthesized generated document final reply, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected final-only turn to finish without another model request, got %d request(s)", len(provider.requests))
+	}
+	if len(provider.requests[0].Tools) != 0 {
+		t.Fatalf("expected final-only generated document turn to hide tools, got %#v", provider.requests[0].Tools)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should not execute in generated document final-only mode, got %d call(s)", readTool.calls)
+	}
+}
+
 func TestAgentBlocksGeneratedDocumentInspectionAfterContentQualityAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{

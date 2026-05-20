@@ -612,6 +612,7 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 	b.WriteString("- Do not treat the first blocker as final; keep working through recoverable blockers.\n")
 	b.WriteString("- A blocked state is justified only after the same blocking condition repeats for at least three consecutive goal iterations and no meaningful progress is possible without user input or an external-state change.\n")
 	b.WriteString("- If a previously blocked goal was resumed, treat the resumed run as a fresh blocked audit.\n")
+	b.WriteString("- Once the blocked threshold is satisfied, do not keep reporting that the goal is still blocked while leaving it active; record the blocked state and stop the autonomous loop.\n")
 	b.WriteString("- Never stop merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\n\n")
 	b.WriteString("Return a concise engineering status only after you have made the concrete next change or verified with current evidence that no change is needed.")
 	return b.String()

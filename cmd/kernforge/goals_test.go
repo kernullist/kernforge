@@ -143,6 +143,7 @@ func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing
 		"Treat completion as unproven until current evidence covers every explicit requirement",
 		"The audit must prove completion, not merely fail to find obvious remaining work.",
 		"If a previously blocked goal was resumed, treat the resumed run as a fresh blocked audit.",
+		"Once the blocked threshold is satisfied",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected goal implementation prompt to contain %q, got:\n%s", want, prompt)

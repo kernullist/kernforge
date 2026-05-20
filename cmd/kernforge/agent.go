@@ -703,13 +703,21 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
 			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
 		}
+		generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(latestUser, unresolvedVerification)
+		if generatedDocumentFinalOnly {
+			disableAllTools(turnDisabledTools, a.Tools)
+		}
 		onTextDelta := a.EmitAssistantDelta
 		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification, attemptedEditTool, successfulEditTool) {
 			onTextDelta = nil
 		}
+		systemPrompt := a.systemPrompt()
+		if generatedDocumentFinalOnly {
+			systemPrompt += "\n\n" + generatedDocumentArtifactFinalOnlyPromptGuidance()
+		}
 		turnReq := ChatRequest{
 			Model:        a.Session.Model,
-			System:       a.systemPrompt(),
+			System:       systemPrompt,
 			Messages:     a.Session.Messages,
 			Tools:        adaptToolDefinitionsForImageDetailSupport(a.Tools.DefinitionsExcluding(turnDisabledTools), a.Session.Provider, a.Session.Model),
 			MaxTokens:    a.Config.MaxTokens,
@@ -2554,6 +2562,44 @@ func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
 
 func generatedDocumentArtifactValidationToolGuidance() string {
 	return "This is a generated document artifact turn. Do not run shell, review, or additional inspection tools after the report is written and artifact-quality content checks have accepted it. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise revise only the final answer and conclude."
+}
+
+func generatedDocumentArtifactFinalOnlyPromptGuidance() string {
+	return "Generated document artifact finalization is answer-only now. The artifact content has already passed deterministic content checks or has an approved artifact harness report. Do not request or mention additional tool use, shell validation, review passes, or source inspection. Provide the final answer only, including an explicit statement when build/test verification was not run."
+}
+
+func (a *Agent) shouldUseGeneratedDocumentArtifactFinalOnlyTools(request string, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if requestLooksLikeLocalVerificationWork(strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))) {
+		return false
+	}
+	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	if a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() && !a.Session.LastVerification.WasSkipped() {
+		return false
+	}
+	if unresolvedVerification && (a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped()) {
+		return false
+	}
+	report := a.Session.LastCodingHarnessReport
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if len(copyReport.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) {
+		return false
+	}
+	if copyReport.Approved {
+		return true
+	}
+	return a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, report, unresolvedVerification)
 }
 
 func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool {
