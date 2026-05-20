@@ -101,6 +101,44 @@ func TestAppendUniqueImagesFillsMissingDetail(t *testing.T) {
 	}
 }
 
+func TestAppendUniqueImagesUpgradesDuplicateDetail(t *testing.T) {
+	images := appendUniqueImages([]MessageImage{{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailHigh,
+	}}, MessageImage{
+		Path:      "SHOT.png",
+		MediaType: "image/png",
+		Detail:    imageDetailOriginal,
+	})
+
+	if len(images) != 1 {
+		t.Fatalf("expected deduplicated image, got %d", len(images))
+	}
+	if images[0].Detail != imageDetailOriginal {
+		t.Fatalf("expected duplicate to upgrade detail to original, got %q", images[0].Detail)
+	}
+}
+
+func TestAppendUniqueImagesKeepsOriginalDetail(t *testing.T) {
+	images := appendUniqueImages([]MessageImage{{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailOriginal,
+	}}, MessageImage{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailHigh,
+	})
+
+	if len(images) != 1 {
+		t.Fatalf("expected deduplicated image, got %d", len(images))
+	}
+	if images[0].Detail != imageDetailOriginal {
+		t.Fatalf("expected original detail to be preserved, got %q", images[0].Detail)
+	}
+}
+
 func TestExpandMentionsAttachesImageAndTextContext(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")

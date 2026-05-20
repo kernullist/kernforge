@@ -385,8 +385,8 @@ func appendUniqueImages(existing []MessageImage, extra ...MessageImage) []Messag
 		if seen[key] {
 			for i := range existing {
 				existingKey := strings.ToLower(strings.TrimSpace(existing[i].Path))
-				if existingKey == key && strings.TrimSpace(existing[i].Detail) == "" && strings.TrimSpace(item.Detail) != "" {
-					existing[i].Detail = item.Detail
+				if existingKey == key {
+					existing[i].Detail = strongestImageDetail(existing[i].Detail, item.Detail)
 				}
 			}
 			continue
@@ -395,6 +395,35 @@ func appendUniqueImages(existing []MessageImage, extra ...MessageImage) []Messag
 		existing = append(existing, item)
 	}
 	return existing
+}
+
+func strongestImageDetail(existing, candidate string) string {
+	if imageDetailRank(candidate) > imageDetailRank(existing) {
+		return normalizedKnownImageDetail(candidate)
+	}
+	return existing
+}
+
+func imageDetailRank(detail string) int {
+	switch strings.ToLower(strings.TrimSpace(detail)) {
+	case imageDetailOriginal:
+		return 2
+	case imageDetailHigh:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func normalizedKnownImageDetail(detail string) string {
+	switch strings.ToLower(strings.TrimSpace(detail)) {
+	case imageDetailOriginal:
+		return imageDetailOriginal
+	case imageDetailHigh:
+		return imageDetailHigh
+	default:
+		return ""
+	}
 }
 
 func normalizeStoredPromptPath(baseDir, path string) string {
