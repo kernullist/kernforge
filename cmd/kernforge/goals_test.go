@@ -655,9 +655,16 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("start --no-run --token-budget 1000000 finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
+	createdGoal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	createdGoal.CreatedAt = time.Now().Add(-75 * time.Second)
+	createdGoal.UpdatedAt = createdGoal.CreatedAt
+	session.UpsertGoal(createdGoal)
 	if err := rt.handleVerifyCommand("--full"); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -677,6 +684,43 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	}
 	if goal.LastSemanticReview == nil || !goal.LastSemanticReview.Approved {
 		t.Fatalf("expected approved semantic review, got %#v", goal.LastSemanticReview)
+	}
+	if goal.TokenBudget != 1000000 || goal.TokenUsedEstimate <= 0 {
+		t.Fatalf("expected token usage telemetry, got budget=%d used=%d", goal.TokenBudget, goal.TokenUsedEstimate)
+	}
+	if goal.TimeUsedSeconds <= 0 {
+		t.Fatalf("expected time usage telemetry, got %#v", goal)
+	}
+	remaining, ok := goalTokenRemainingEstimate(goal)
+	if !ok || remaining != goal.TokenBudget-goal.TokenUsedEstimate {
+		t.Fatalf("expected token remaining estimate, got remaining=%d ok=%t goal=%#v", remaining, ok, goal)
+	}
+	completionOutput := output.String()
+	for _, want := range []string{
+		"completion_budget_report",
+		"token_budget",
+		"token_used_estimate",
+		"token_remaining_estimate",
+		"time_used_seconds",
+		"time_used",
+	} {
+		if !strings.Contains(completionOutput, want) {
+			t.Fatalf("expected completion output to contain %q, got:\n%s", want, completionOutput)
+		}
+	}
+	artifact, err := os.ReadFile(filepath.Join(root, userConfigDirName, "goals", "latest.md"))
+	if err != nil {
+		t.Fatalf("read goal artifact: %v", err)
+	}
+	for _, want := range []string{
+		"Time used seconds:",
+		"Time used:",
+		"Token remaining estimate:",
+		"Completion budget report:",
+	} {
+		if !strings.Contains(string(artifact), want) {
+			t.Fatalf("expected goal artifact to contain %q, got:\n%s", want, string(artifact))
+		}
 	}
 }
 
@@ -826,6 +870,42 @@ func TestParseGoalTimeBudgetSeconds(t *testing.T) {
 	}
 	if _, err := parseGoalTimeBudgetSeconds("-1"); err == nil {
 		t.Fatalf("expected negative budget to fail")
+	}
+}
+
+func TestFormatGoalElapsedSecondsIsCompact(t *testing.T) {
+	cases := map[int]string{
+		0:                             "0s",
+		59:                            "59s",
+		60:                            "1m",
+		30 * 60:                       "30m",
+		90 * 60:                       "1h 30m",
+		2 * 60 * 60:                   "2h",
+		24*60*60 - 1:                  "23h 59m",
+		24 * 60 * 60:                  "1d 0h 0m",
+		2*24*60*60 + 23*60*60 + 42*60: "2d 23h 42m",
+	}
+	for seconds, want := range cases {
+		if got := formatGoalElapsedSeconds(seconds); got != want {
+			t.Fatalf("formatGoalElapsedSeconds(%d) = %q, want %q", seconds, got, want)
+		}
+	}
+}
+
+func TestGoalTimeUsedPreservesExistingValueOnClockSkew(t *testing.T) {
+	now := time.Now()
+	goal := GoalState{
+		ID:              "goal-skew",
+		Objective:       "finish",
+		Status:          goalStatusRunning,
+		CreatedAt:       now.Add(time.Minute),
+		TimeUsedSeconds: 42,
+	}
+
+	goal.updateTimeUsedSeconds(now)
+
+	if goal.TimeUsedSeconds != 42 {
+		t.Fatalf("expected clock skew to preserve time used, got %d", goal.TimeUsedSeconds)
 	}
 }
 

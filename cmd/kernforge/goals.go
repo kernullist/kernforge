@@ -32,6 +32,7 @@ type GoalState struct {
 	TimeBudgetSeconds       int                 `json:"time_budget_seconds,omitempty"`
 	TokenBudget             int                 `json:"token_budget,omitempty"`
 	TokenUsedEstimate       int                 `json:"token_used_estimate,omitempty"`
+	TimeUsedSeconds         int                 `json:"time_used_seconds,omitempty"`
 	AutoRollback            bool                `json:"auto_rollback,omitempty"`
 	CreatedAt               time.Time           `json:"created_at"`
 	UpdatedAt               time.Time           `json:"updated_at"`
@@ -219,7 +220,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	}
 	goal.Normalize()
 	rt.primeGoalRuntimeState(&goal, "created")
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	rt.session.UpsertGoal(goal)
 	rt.session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindGoal,
@@ -913,7 +914,7 @@ func (rt *runtimeState) auditGoalBySelector(selector string) error {
 		goal.Status = goalStatusBlocked
 		goal.LastError = completionAuditSummaryOrError(audit, nil)
 	}
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	goal.Touch()
 	rt.session.UpsertGoal(goal)
 	if err := rt.writeGoalArtifacts(goal); err != nil {
@@ -940,7 +941,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 	}
 	rt.primeGoalRuntimeState(&goal, "complete")
 	rt.session.UpsertGoal(goal)
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
 		goal.Status = goalStatusBlocked
 		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
@@ -1003,7 +1004,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 		}
 	}
 	goal.CommandHistory = append(goal.CommandHistory, commands...)
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	goal.Touch()
 	rt.session.UpsertGoal(goal)
 	if err := rt.writeGoalArtifacts(goal); err != nil {
@@ -1016,6 +1017,7 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 	}
 	if goal.Status == goalStatusComplete {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Goal complete: "+goal.ID))
+		rt.printGoalCompletionUsage(goal)
 		return nil
 	}
 	fmt.Fprintln(rt.writer, rt.ui.warnLine("Goal not complete: "+goal.LastError))
@@ -1068,6 +1070,7 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 		return fmt.Errorf("goal not found: %s", valueOrDefault(selector, "latest"))
 	}
 	goal := rt.session.Goals[index]
+	goal.updateTimeUsedSeconds(time.Now())
 	fmt.Fprintln(rt.writer, rt.ui.section("Goal"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("id", goal.ID))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("status", goal.Status))
@@ -1076,9 +1079,16 @@ func (rt *runtimeState) printGoalStatus(selector string) error {
 	if goal.TimeBudgetSeconds > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_budget", fmt.Sprintf("%ds", goal.TimeBudgetSeconds)))
 	}
+	if goal.TimeUsedSeconds > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used_seconds", fmt.Sprintf("%d", goal.TimeUsedSeconds)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used", formatGoalElapsedSeconds(goal.TimeUsedSeconds)))
+	}
 	if goal.TokenBudget > 0 || goal.TokenUsedEstimate > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_budget", goalTokenBudgetLabel(goal.TokenBudget)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_used_estimate", fmt.Sprintf("%d", goal.TokenUsedEstimate)))
+		if remaining, ok := goalTokenRemainingEstimate(goal); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("token_remaining_estimate", fmt.Sprintf("%d", remaining)))
+		}
 	}
 	if goal.LastProgress != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("progress_score", fmt.Sprintf("%d", goal.LastProgress.Score)))
@@ -1122,6 +1132,71 @@ func goalTokenBudgetLabel(max int) string {
 	return fmt.Sprintf("%d", max)
 }
 
+func goalTokenRemainingEstimate(goal GoalState) (int, bool) {
+	if goal.TokenBudget <= 0 {
+		return 0, false
+	}
+	remaining := goal.TokenBudget - goal.TokenUsedEstimate
+	if remaining < 0 {
+		remaining = 0
+	}
+	return remaining, true
+}
+
+func formatGoalElapsedSeconds(seconds int) string {
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	hours := minutes / 60
+	remainingMinutes := minutes % 60
+	if hours >= 24 {
+		days := hours / 24
+		remainingHours := hours % 24
+		return fmt.Sprintf("%dd %dh %dm", days, remainingHours, remainingMinutes)
+	}
+	if remainingMinutes == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh %dm", hours, remainingMinutes)
+}
+
+func goalCompletionBudgetReport(goal GoalState) string {
+	if goal.TokenBudget <= 0 && goal.TimeUsedSeconds <= 0 {
+		return ""
+	}
+	return "Goal achieved. Report final usage from the structured goal fields. If token_budget is present, include token_used_estimate and token_budget. If time_used_seconds is greater than 0, summarize elapsed time in a concise, human-friendly form."
+}
+
+func (rt *runtimeState) printGoalCompletionUsage(goal GoalState) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	goal.updateTimeUsedSeconds(time.Now())
+	report := goalCompletionBudgetReport(goal)
+	if report == "" {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("completion_budget_report", report))
+	if goal.TimeUsedSeconds > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used_seconds", fmt.Sprintf("%d", goal.TimeUsedSeconds)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("time_used", formatGoalElapsedSeconds(goal.TimeUsedSeconds)))
+	}
+	if goal.TokenBudget > 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_budget", fmt.Sprintf("%d", goal.TokenBudget)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("token_used_estimate", fmt.Sprintf("%d", goal.TokenUsedEstimate)))
+		if remaining, ok := goalTokenRemainingEstimate(goal); ok {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("token_remaining_estimate", fmt.Sprintf("%d", remaining)))
+		}
+	}
+}
+
 func (rt *runtimeState) writeGoalArtifacts(goal GoalState) error {
 	root := workspaceSnapshotRoot(rt.workspace)
 	if strings.TrimSpace(root) == "" && rt.session != nil {
@@ -1130,6 +1205,7 @@ func (rt *runtimeState) writeGoalArtifacts(goal GoalState) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("workspace root is not configured")
 	}
+	goal.updateTimeUsedSeconds(time.Now())
 	outDir := filepath.Join(root, userConfigDirName, "goals")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -1170,9 +1246,16 @@ func renderGoalMarkdown(goal GoalState) string {
 	if goal.TimeBudgetSeconds > 0 {
 		fmt.Fprintf(&b, "Time budget: %ds\n", goal.TimeBudgetSeconds)
 	}
+	if goal.TimeUsedSeconds > 0 {
+		fmt.Fprintf(&b, "Time used seconds: %d\n", goal.TimeUsedSeconds)
+		fmt.Fprintf(&b, "Time used: %s\n", formatGoalElapsedSeconds(goal.TimeUsedSeconds))
+	}
 	if goal.TokenBudget > 0 || goal.TokenUsedEstimate > 0 {
 		fmt.Fprintf(&b, "Token budget: %s\n", goalTokenBudgetLabel(goal.TokenBudget))
 		fmt.Fprintf(&b, "Token used estimate: %d\n", goal.TokenUsedEstimate)
+		if remaining, ok := goalTokenRemainingEstimate(goal); ok {
+			fmt.Fprintf(&b, "Token remaining estimate: %d\n", remaining)
+		}
 	}
 	if goal.AutoRollback {
 		fmt.Fprintf(&b, "Auto rollback: true\n")
@@ -1181,6 +1264,11 @@ func renderGoalMarkdown(goal GoalState) string {
 	fmt.Fprintf(&b, "Updated: %s\n", goal.UpdatedAt.Format(time.RFC3339))
 	if !goal.CompletedAt.IsZero() {
 		fmt.Fprintf(&b, "Completed: %s\n", goal.CompletedAt.Format(time.RFC3339))
+	}
+	if strings.EqualFold(goal.Status, goalStatusComplete) {
+		if report := goalCompletionBudgetReport(goal); report != "" {
+			fmt.Fprintf(&b, "Completion budget report: %s\n", report)
+		}
 	}
 	if goal.SourcePath != "" {
 		fmt.Fprintf(&b, "Source: %s\n", goal.SourcePath)
@@ -1411,6 +1499,9 @@ func (g *GoalState) Normalize() {
 	if g.TokenUsedEstimate < 0 {
 		g.TokenUsedEstimate = 0
 	}
+	if g.TimeUsedSeconds < 0 {
+		g.TimeUsedSeconds = 0
+	}
 	g.CompletionCriteria = normalizeTaskStateList(g.CompletionCriteria, 16)
 	for i := range g.CheckpointRefs {
 		g.CheckpointRefs[i].Normalize()
@@ -1451,7 +1542,9 @@ func (g *GoalState) Touch() {
 	if g == nil {
 		return
 	}
-	g.UpdatedAt = time.Now()
+	now := time.Now()
+	g.updateTimeUsedSeconds(now)
+	g.UpdatedAt = now
 }
 
 func (i *GoalIteration) Normalize() {

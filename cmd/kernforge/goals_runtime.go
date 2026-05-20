@@ -145,7 +145,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		fmt.Fprintln(rt.writer, rt.ui.warnLine(goal.LastError))
 		return goal, true, nil
 	}
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	if goal.TokenBudget > 0 && goal.TokenUsedEstimate > goal.TokenBudget {
 		goal.Status = goalStatusBlocked
 		goal.LastError = fmt.Sprintf("goal exceeded token budget estimate (%d > %d)", goal.TokenUsedEstimate, goal.TokenBudget)
@@ -314,7 +314,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 			}
 		}
 	}
-	goal.updateUsageEstimate(rt.session)
+	goal.updateUsageTelemetry(rt.session)
 	return rt.finishGoalIteration(goal, iteration), goalStatusTerminal(goal.Status), nil
 }
 
@@ -963,6 +963,37 @@ func (g *GoalState) updateUsageEstimate(session *Session) {
 		return
 	}
 	g.TokenUsedEstimate = (chars + 3) / 4
+}
+
+func (g *GoalState) updateUsageTelemetry(session *Session) {
+	if g == nil {
+		return
+	}
+	g.updateUsageEstimate(session)
+	g.updateTimeUsedSeconds(time.Now())
+}
+
+func (g *GoalState) updateTimeUsedSeconds(now time.Time) {
+	if g == nil || g.CreatedAt.IsZero() {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	end := now
+	if !g.CompletedAt.IsZero() {
+		end = g.CompletedAt
+	}
+	if end.Before(g.CreatedAt) {
+		return
+	}
+	seconds := int(end.Sub(g.CreatedAt).Seconds())
+	if seconds < 0 {
+		seconds = 0
+	}
+	if seconds > g.TimeUsedSeconds || strings.EqualFold(g.Status, goalStatusComplete) {
+		g.TimeUsedSeconds = seconds
+	}
 }
 
 func (p *GoalProgressState) Normalize() {
