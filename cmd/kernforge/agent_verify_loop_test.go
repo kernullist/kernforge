@@ -9131,13 +9131,20 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
+	var progress []string
 	agent := &Agent{
 		Config: Config{
 			Model:      "model",
 			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
 		},
-		Client:    provider,
-		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewRunShellTool(ws)),
+		Client: provider,
+		Tools:  NewToolRegistry(NewWriteFileTool(ws), NewRunShellTool(ws)),
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
@@ -9155,6 +9162,12 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 	}
 	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
 		t.Fatalf("expected generated document reply to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+	for _, line := range progress {
+		lowerLine := strings.ToLower(line)
+		if strings.Contains(lowerLine, "automatic post-change review") || strings.Contains(line, "자동 변경 후 리뷰") {
+			t.Fatalf("generated document end_turn=false finalization should not enter post-change review path, progress=%q", line)
+		}
 	}
 }
 
