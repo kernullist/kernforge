@@ -351,6 +351,82 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 	}
 }
 
+func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportLines := []string{
+		"# Tavern Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
+		"",
+		"총 5개 버그를 문서화했습니다.",
+		"",
+		"| Severity | Count | Bug IDs |",
+		"|----------|-------|---------|",
+		"| Critical | 5 | BUG-001, 002, 003, 020, 024 |",
+		"| Total | 5 |",
+		"",
+	}
+	for _, id := range []string{"001", "002", "003", "020", "024"} {
+		reportLines = append(reportLines,
+			"## BUG-"+id,
+			"- File: sample.cpp",
+			"- Impact: documented issue.",
+			"",
+		)
+	}
+	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	reply := strings.Join([]string{
+		"The report is complete in Tavern/BugReport.md.",
+		"",
+		"Critical: 4 (BUG-001, 002, 003, 020, 024)",
+		"Total: 5 bugs",
+		"",
+		"Build/test verification was not run because this is a documentation-only artifact.",
+	}, "\n")
+	report := agent.buildCodingHarnessReport(reply, false, false)
+	if report.Approved {
+		t.Fatalf("expected final answer severity list mismatch to block approval")
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		t.Fatalf("expected artifact content to remain accepted, got %#v", report.ArtifactQuality.Findings)
+	}
+	if !strings.Contains(report.BlockingFeedback(), "Final answer has inconsistent bug counts") {
+		t.Fatalf("expected final-answer severity-list blocker, got %q", report.BlockingFeedback())
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, false) {
+		t.Fatalf("expected document artifact final-answer mismatch to synthesize a safe final answer")
+	}
+}
+
 func TestScenarioReplayBlocksFixedClaimWithoutScenarioStatus(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
