@@ -1043,14 +1043,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							a.EmitAssistant(reply)
 							a.lastEmittedText = reply
 						}
-						if a.Session.TaskState != nil {
-							if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-								a.Session.TaskState.SetPhase("done")
-								a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-								a.Session.TaskState.ClearExecutorFocus()
-								a.Session.completeSharedPlan()
-							}
-						}
+						a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 						a.finalizePatchTransactionOnReturn()
 						a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
 						a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
@@ -1190,14 +1183,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 					}
 					a.acceptRecentFinalAnswerCandidate(reply)
-					if a.Session.TaskState != nil {
-						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, false) && a.shouldCompleteSharedPlanOnReturn(false) {
-							a.Session.TaskState.SetPhase("done")
-							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-							a.Session.TaskState.ClearExecutorFocus()
-							a.Session.completeSharedPlan()
-						}
-					}
+					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, false)
 					a.finalizePatchTransactionOnReturn()
 					a.finalizeEditLoopOnReturn(reply, false)
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
@@ -1218,14 +1204,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						reply = generatedDocumentArtifactHarnessBlockedReply(&synthesizedReport)
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
-					if a.Session.TaskState != nil {
-						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-							a.Session.TaskState.SetPhase("done")
-							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-							a.Session.TaskState.ClearExecutorFocus()
-							a.Session.completeSharedPlan()
-						}
-					}
+					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 					a.finalizePatchTransactionOnReturn()
 					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
@@ -1258,14 +1237,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if a.shouldFinalizeGeneratedDocumentArtifactReply(latestUser, reply, unresolvedVerification) {
 					a.acceptRecentFinalAnswerCandidate(reply)
-					if a.Session.TaskState != nil {
-						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-							a.Session.TaskState.SetPhase("done")
-							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-							a.Session.TaskState.ClearExecutorFocus()
-							a.Session.completeSharedPlan()
-						}
-					}
+					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 					a.finalizePatchTransactionOnReturn()
 					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
@@ -1327,14 +1299,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 				}
 				a.acceptRecentFinalAnswerCandidate(reply)
-				if a.Session.TaskState != nil {
-					if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-						a.Session.TaskState.SetPhase("done")
-						a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-						a.Session.TaskState.ClearExecutorFocus()
-						a.Session.completeSharedPlan()
-					}
-				}
+				a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 				a.finalizePatchTransactionOnReturn()
 				a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
 				a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
@@ -2536,6 +2501,55 @@ func (a *Agent) shouldCompleteSharedPlanOnReturn(unresolvedVerification bool) bo
 		return false
 	}
 	return !a.hasRunningBackgroundJobs()
+}
+
+func (a *Agent) finalizeTaskStateOnAcceptedFinalAnswer(reply string, unresolvedVerification bool) {
+	if a == nil || a.Session == nil || a.Session.TaskState == nil {
+		return
+	}
+	effectiveUnresolvedVerification := unresolvedVerification
+	if a.shouldTreatGeneratedDocumentVerificationAsComplete(reply) {
+		effectiveUnresolvedVerification = false
+		a.Session.TaskState.RemovePendingCheck(verificationPendingCheck)
+		a.Session.TaskState.RecordEvent(
+			"verification",
+			strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode),
+			"verify",
+			"Code verification not required for generated document artifact.",
+			compactPromptSection(reply, 500),
+			"skipped",
+			false,
+		)
+	}
+	if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, effectiveUnresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(effectiveUnresolvedVerification) {
+		a.Session.TaskState.SetPhase("done")
+		a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+		a.Session.TaskState.ClearExecutorFocus()
+		a.Session.completeSharedPlan()
+	}
+}
+
+func (a *Agent) shouldTreatGeneratedDocumentVerificationAsComplete(reply string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if a.Session.LastVerification != nil && a.Session.LastVerification.HasFailures() {
+		return false
+	}
+	if replyClaimsVerificationSuccess(reply) && !sessionHasSuccessfulVerificationEvidence(a.Session) {
+		return false
+	}
+	if a.Session.AcceptanceContract != nil && a.Session.AcceptanceContract.VerificationRequired && !sessionHasSuccessfulVerificationEvidence(a.Session) {
+		return false
+	}
+	if sessionHasApprovedDocumentArtifactOnlyHarness(a.Session) {
+		return true
+	}
+	if a.Session.LastCodingHarnessReport != nil && a.Session.LastCodingHarnessReport.Approved {
+		request := codingHarnessSourcePrompt(a.Session)
+		return a.changesAreGeneratedDocumentArtifactsForTurn(request)
+	}
+	return false
 }
 
 func replyBlamesInternalToolTranscriptRecovery(text string) bool {

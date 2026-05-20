@@ -9158,6 +9158,148 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 	}
 }
 
+func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message:    Message{Role: "assistant", Text: finalReply},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewRunShellTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				Steps: []VerificationStep{{
+					Label:   "document-only verification skipped",
+					Command: "document-only verification skipped",
+					Status:  VerificationSkipped,
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected generated document to finalize without post-final tool calls, got %d requests", len(provider.requests))
+	}
+	if session.TaskState == nil {
+		t.Fatalf("expected self-driving task state to exist")
+	}
+	if session.TaskState.Phase != "done" {
+		t.Fatalf("expected document-only skipped verification to complete task state, got %#v", session.TaskState)
+	}
+	if slices.Contains(session.TaskState.PendingChecks, verificationPendingCheck) {
+		t.Fatalf("expected generated document finalization to clear verification pending check, got %#v", session.TaskState.PendingChecks)
+	}
+	for _, item := range session.Plan {
+		if item.Status != "completed" {
+			t.Fatalf("expected generated document finalization to complete shared plan, got %#v", session.Plan)
+		}
+	}
+}
+
+func TestAgentGeneratedDocumentExplicitVerificationRequirementKeepsPendingState(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{
+		Goal:          "문서를 만들고 검증까지 실행해",
+		Phase:         "execution",
+		PendingChecks: []string{verificationPendingCheck},
+	}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:                   "accept-doc-verify",
+		SourcePrompt:         "문서를 만들고 검증까지 실행해",
+		VerificationRequired: true,
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:        "Tavern/BugReport.md",
+				Kind:        "document",
+				Substantive: true,
+			}},
+		},
+	}
+	skipped := VerificationReport{
+		Steps: []VerificationStep{{
+			Label:   "required verification skipped",
+			Command: "go test ./...",
+			Status:  VerificationSkipped,
+		}},
+	}
+	session.LastVerification = &skipped
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	agent.finalizeTaskStateOnAcceptedFinalAnswer("Tavern/BugReport.md 생성 완료. 검증은 실행하지 않았습니다.", true)
+	if session.TaskState.Phase != "recovery" {
+		t.Fatalf("expected explicit verification requirement to keep task in recovery, got %#v", session.TaskState)
+	}
+	if !slices.Contains(session.TaskState.PendingChecks, verificationPendingCheck) {
+		t.Fatalf("expected required verification pending check to remain, got %#v", session.TaskState.PendingChecks)
+	}
+}
+
 func TestAgentPreservesAcceptanceContextForInternalGoalPrompt(t *testing.T) {
 	root := t.TempDir()
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
