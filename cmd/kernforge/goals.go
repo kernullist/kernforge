@@ -406,7 +406,7 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 			return fmt.Errorf("goal disappeared: %s", goalID)
 		}
 		goal := rt.session.Goals[index]
-		if goalStatusTerminal(goal.Status) {
+		if goalStatusStopsAutonomousLoop(goal.Status) {
 			return nil
 		}
 		if ctx != nil && ctx.Err() != nil {
@@ -1627,6 +1627,15 @@ func (r *GoalSemanticReview) Normalize() {
 func goalStatusTerminal(status string) bool {
 	switch strings.TrimSpace(strings.ToLower(status)) {
 	case goalStatusComplete, goalStatusCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+func goalStatusStopsAutonomousLoop(status string) bool {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case goalStatusComplete, goalStatusCanceled, goalStatusBlocked:
 		return true
 	default:
 		return false

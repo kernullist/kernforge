@@ -315,7 +315,7 @@ func (rt *runtimeState) runGoalIteration(ctx context.Context, goal GoalState) (G
 		}
 	}
 	goal.updateUsageTelemetry(rt.session)
-	return rt.finishGoalIteration(goal, iteration), goalStatusTerminal(goal.Status), nil
+	return rt.finishGoalIteration(goal, iteration), goalStatusStopsAutonomousLoop(goal.Status), nil
 }
 
 func (rt *runtimeState) finishGoalIterationError(goal GoalState, iteration GoalIteration, err error) (GoalState, bool, error) {

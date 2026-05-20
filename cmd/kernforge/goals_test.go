@@ -450,6 +450,45 @@ func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
 	}
 }
 
+func TestGoalLoopStopsOnBlockedGoalUntilExplicitResume(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	goal := GoalState{
+		ID:        "goal-blocked",
+		Objective: "finish blocked objective",
+		Status:    goalStatusBlocked,
+		LastError: "waiting for stronger evidence",
+	}
+	goal.Normalize()
+	session.UpsertGoal(goal)
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			t.Fatalf("blocked goal should not continue automatically: %s", prompt)
+			return "", nil
+		},
+	}
+
+	if err := rt.runGoalLoop(context.Background(), goal.ID); err != nil {
+		t.Fatalf("runGoalLoop: %v", err)
+	}
+	current, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if current.Status != goalStatusBlocked || current.LastError != goal.LastError {
+		t.Fatalf("expected blocked goal to remain stopped, got %#v", current)
+	}
+}
+
 func TestGoalRunCancelsBeforeIteration(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
