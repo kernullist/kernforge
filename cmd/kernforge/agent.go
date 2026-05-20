@@ -623,6 +623,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
+		if chatResponseRequestsFollowUp(resp) && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
+			resp.Message.Phase = messagePhaseCommentary
+		}
 		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
 			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
@@ -894,6 +897,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
+			if chatResponseRequestsFollowUp(resp) {
+				commentaryOnlyReplies = 0
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
 			reply := strings.TrimSpace(resp.Message.Text)
 			if resp.Message.Phase == messagePhaseCommentary {
 				commentaryOnlyReplies++
@@ -4512,6 +4522,10 @@ func truncateStatusSnippet(text string, limit int) string {
 
 func normalizeStopReason(reason string) string {
 	return strings.ToLower(strings.TrimSpace(reason))
+}
+
+func chatResponseRequestsFollowUp(resp ChatResponse) bool {
+	return resp.EndTurn != nil && !*resp.EndTurn
 }
 
 func formatEmptyModelResponseError(session *Session, stopReason string, afterTool bool) error {

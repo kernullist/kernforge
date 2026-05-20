@@ -2683,6 +2683,59 @@ func TestSanitizeAssistantFinalTextDropsHiddenOnlyMarkup(t *testing.T) {
 	}
 }
 
+func TestAgentContinuesSameTurnWhenProviderEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	endTurnFalse := false
+	endTurnTrue := true
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant", Text: "Still checking the generated artifact."},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message:    Message{Role: "assistant", Text: "Final answer is ready."},
+				StopReason: "completed",
+				EndTurn:    &endTurnTrue,
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "do the work")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Final answer is ready." {
+		t.Fatalf("expected second response to become final reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected end_turn=false to request one follow-up model turn, got %d", len(provider.requests))
+	}
+	if len(session.Messages) < 3 {
+		t.Fatalf("expected user plus two assistant messages, got %#v", session.Messages)
+	}
+	if session.Messages[1].Role != "assistant" || session.Messages[1].Phase != messagePhaseCommentary {
+		t.Fatalf("expected first end_turn=false assistant message to be stored as commentary, got %#v", session.Messages[1])
+	}
+	if strings.Contains(provider.requests[1].Messages[len(provider.requests[1].Messages)-1].Text, "Your last assistant message was commentary") {
+		t.Fatalf("end_turn=false follow-up should continue without synthetic commentary warning")
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected second assistant message to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
 func TestImmediateFinalReplyPathsSanitizeHiddenMarkup(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

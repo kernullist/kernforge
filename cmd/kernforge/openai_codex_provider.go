@@ -348,6 +348,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	var decoded struct {
 		Status            string `json:"status"`
 		OutputText        string `json:"output_text,omitempty"`
+		EndTurn           *bool  `json:"end_turn,omitempty"`
 		IncompleteDetails *struct {
 			Reason string `json:"reason,omitempty"`
 		} `json:"incomplete_details,omitempty"`
@@ -440,6 +441,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	return ChatResponse{
 		Message:    out,
 		StopReason: stopReason,
+		EndTurn:    decoded.EndTurn,
 	}, nil
 }
 
@@ -461,6 +463,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	toolOrder := []int{}
 	stopReason := ""
 	messagePhase := ""
+	var endTurn *bool
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
 		progress = onProgressEvent[0]
@@ -507,6 +510,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			Text        string          `json:"text,omitempty"`
 			Arguments   string          `json:"arguments,omitempty"`
 			OutputIndex int             `json:"output_index,omitempty"`
+			EndTurn     *bool           `json:"end_turn,omitempty"`
 			Response    json.RawMessage `json:"response,omitempty"`
 			Item        struct {
 				ID        string `json:"id,omitempty"`
@@ -602,6 +606,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if len(event.Response) > 0 {
 				completedResponse = append(completedResponse[:0], event.Response...)
 			}
+			if event.EndTurn != nil {
+				endTurn = event.EndTurn
+			}
 			stopReason = "completed"
 		case "response.failed":
 			if len(event.Response) > 0 {
@@ -667,7 +674,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	if out.Text == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
-	return ChatResponse{Message: out, StopReason: stopReason}, nil
+	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn}, nil
 }
 
 func normalizeOpenAICodexMessagePhase(phase string) string {

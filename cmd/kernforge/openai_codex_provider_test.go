@@ -624,6 +624,24 @@ func TestParseOpenAICodexResponsePreservesMessagePhase(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesEndTurn(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"end_turn":false,
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"output_text","text":"continuing"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.EndTurn == nil || *resp.EndTurn {
+		t.Fatalf("expected end_turn=false to be preserved, got %#v", resp.EndTurn)
+	}
+}
+
 func TestParseOpenAICodexResponseUsesFinalTextOverCommentary(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -703,6 +721,23 @@ func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponse(t *t
 	}
 	if resp.Message.Phase != messagePhaseCommentary {
 		t.Fatalf("expected commentary phase, got %q", resp.Message.Phase)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesEndTurnFromCompletedResponse(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.completed","response":{"status":"completed","end_turn":false,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continuing"}]}]}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "continuing" {
+		t.Fatalf("expected completed response text, got %q", resp.Message.Text)
+	}
+	if resp.EndTurn == nil || *resp.EndTurn {
+		t.Fatalf("expected stream end_turn=false to be preserved, got %#v", resp.EndTurn)
 	}
 }
 
