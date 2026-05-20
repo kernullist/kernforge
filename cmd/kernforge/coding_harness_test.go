@@ -79,6 +79,19 @@ func TestCodingHarnessSourcePromptSkipsInternalReviewerFeedback(t *testing.T) {
 	}
 }
 
+func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	messages := []Message{
+		{Role: "user", Text: original},
+		{Role: "user", Text: "This is a generated document artifact turn. Do not run shell validation."},
+		{Role: "user", Text: "Reviewer feedback: revise the final answer before concluding."},
+	}
+
+	if got := latestExternalOrUserMessageText(messages); got != original {
+		t.Fatalf("expected latest external user message, got %q", got)
+	}
+}
+
 func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	root := t.TempDir()
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"

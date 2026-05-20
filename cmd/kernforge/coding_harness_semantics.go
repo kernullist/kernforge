@@ -35,6 +35,13 @@ func latestExternalUserMessageText(messages []Message) string {
 	return ""
 }
 
+func latestExternalOrUserMessageText(messages []Message) string {
+	if prompt := latestExternalUserMessageText(messages); prompt != "" {
+		return prompt
+	}
+	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(messages)))
+}
+
 func patchTransactionGoalFromSession(sess *Session) string {
 	if sess == nil {
 		return ""

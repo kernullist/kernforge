@@ -53,6 +53,22 @@ func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *te
 	}
 }
 
+func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "RuntimeManager.cpp 버그를 찾아서 수정해"})
+	session.AddMessage(Message{Role: "user", Text: "Reviewer feedback: revise the final answer before concluding."})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "explicitly asks for a fix") {
+		t.Fatalf("expected system prompt to preserve external edit intent, got %q", prompt)
+	}
+}
+
 func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

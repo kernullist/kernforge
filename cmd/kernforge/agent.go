@@ -444,7 +444,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		return reply, nil
 	}
-	latestUser := latestUserMessageText(a.Session.Messages)
+	latestUser := latestExternalOrUserMessageText(a.Session.Messages)
 	latestUserExplicitWebResearch := requestExplicitlyAsksForWebResearch(strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUser))))
 	intent := classifyTurnIntent(latestUser)
 	_ = a.primeSelfDrivingWorkLoop(latestUser, intent, readOnlyAnalysis, explicitEditRequest, explicitGitRequest)
@@ -5102,7 +5102,7 @@ func hasMutatingGitToolCalls(calls []ToolCall) bool {
 }
 
 func shouldBlockUnconfirmedDocumentReadToolCalls(calls []ToolCall, session *Session) (bool, string, string) {
-	if session == nil || !looksLikeDocumentAuthoringIntent(latestUserMessageText(session.Messages)) {
+	if session == nil || !looksLikeDocumentAuthoringIntent(latestExternalOrUserMessageText(session.Messages)) {
 		return false, "", ""
 	}
 	for _, call := range calls {
@@ -5129,7 +5129,7 @@ func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Sessi
 	if session == nil || mcp == nil || !mcp.HasWebResearchCapability() {
 		return false
 	}
-	latestUser := baseUserQueryText(latestUserMessageText(session.Messages))
+	latestUser := latestExternalOrUserMessageText(session.Messages)
 	if !shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(strings.TrimSpace(latestUser))) {
 		return false
 	}
@@ -5149,7 +5149,7 @@ func shouldBlockWebResearchForLocalCodeWork(calls []ToolCall, session *Session, 
 	if session == nil {
 		return false
 	}
-	latestUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages))))
+	latestUser := strings.ToLower(strings.TrimSpace(latestExternalOrUserMessageText(session.Messages)))
 	if requestExplicitlyAsksForWebResearch(latestUser) || !shouldUseLocalCodeToolPolicy(session) {
 		return false
 	}
@@ -5223,7 +5223,7 @@ func shouldUseLocalCodeToolPolicy(session *Session) bool {
 	if session == nil {
 		return false
 	}
-	latestUser := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages))))
+	latestUser := strings.ToLower(strings.TrimSpace(latestExternalOrUserMessageText(session.Messages)))
 	if requestExplicitlyAsksForWebResearch(latestUser) {
 		return false
 	}
@@ -5417,7 +5417,7 @@ func toolCallNameLooksLikeWebResearch(name string) bool {
 func localCodeWebResearchBlockGuidance(cfg Config, session *Session) string {
 	latestUser := ""
 	if session != nil {
-		latestUser = baseUserQueryText(latestUserMessageText(session.Messages))
+		latestUser = latestExternalOrUserMessageText(session.Messages)
 	}
 	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
 	if language == "ko" {
@@ -5431,7 +5431,7 @@ func shouldRetryKoreanLocalCodeToolNarration(message Message, session *Session, 
 	if text == "" || len(message.ToolCalls) == 0 || session == nil {
 		return false
 	}
-	latestUser := baseUserQueryText(latestUserMessageText(session.Messages))
+	latestUser := latestExternalOrUserMessageText(session.Messages)
 	language, _ := inferResponseLanguageForUserText(latestUser, cfg)
 	if language != "ko" {
 		return false
@@ -6317,7 +6317,7 @@ func (a *Agent) mcpTurnMetadataForToolCall() map[string]any {
 
 func (a *Agent) systemPrompt() string {
 	var b strings.Builder
-	latestUser := baseUserQueryText(latestUserMessageText(a.Session.Messages))
+	latestUser := latestExternalOrUserMessageText(a.Session.Messages)
 	lowerLatestUser := strings.ToLower(strings.TrimSpace(latestUser))
 	webResearchIntent := shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser)
 	b.WriteString("You are Kernforge, a terminal-based coding agent inspired by Claude Code.\n")
