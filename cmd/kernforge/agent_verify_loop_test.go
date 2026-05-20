@@ -9827,8 +9827,11 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}
 	session.TaskState = &TaskState{
-		Goal: "Reviewer feedback: revise the final answer before concluding.",
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
 	}
 	session.Messages = []Message{{
 		Role: "user",
@@ -9880,10 +9883,80 @@ func TestAgentTreatsContentAcceptedDocumentHarnessAsDocumentArtifactTurn(t *test
 	}
 }
 
+func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: "RuntimeManager.cpp 버그를 수정해",
+	}
+	session.TaskState = &TaskState{
+		Goal:  "RuntimeManager.cpp 버그를 수정해",
+		Phase: "planning",
+	}
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "Tavern/BugReport.md 생성 완료",
+		},
+		{
+			Role: "user",
+			Text: "RuntimeManager.cpp 버그를 수정해",
+		},
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.changesAreGeneratedDocumentArtifactsForTurn("RuntimeManager.cpp 버그를 수정해") {
+		t.Fatalf("stale document artifact history should not classify an unrelated new turn as document-only")
+	}
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("RuntimeManager.cpp 버그를 수정해", []ToolCall{{Name: "read_file", Arguments: `{"path":"RuntimeManager.cpp"}`}}) {
+		t.Fatalf("stale document artifact state should not block inspection tools for an unrelated new turn")
+	}
+	if !agent.shouldReviewInteractiveFinalAnswer("RuntimeManager.cpp 수정 완료", true, false) {
+		t.Fatalf("unrelated code turn with historical patch evidence should remain eligible for final-answer review")
+	}
+}
+
 func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
-	session.TaskState = &TaskState{Goal: "document report follow-up"}
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}
+	session.TaskState = &TaskState{
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}
 	session.Messages = []Message{{
 		Role: "user",
 		Text: "Reviewer feedback: revise the final answer before concluding.",

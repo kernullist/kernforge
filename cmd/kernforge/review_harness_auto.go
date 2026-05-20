@@ -381,7 +381,7 @@ func changedPathsAreGeneratedDocumentArtifacts(session *Session, request string,
 }
 
 func postChangeGeneratedDocumentArtifactRequest(session *Session, request string, changedPaths []string) string {
-	contextRequest := generatedDocumentArtifactRequestContext(session, request)
+	contextRequest := generatedDocumentArtifactRequestContextForTurn(session, request)
 	if contextRequest == "" {
 		return ""
 	}
@@ -395,6 +395,57 @@ func postChangeGeneratedDocumentArtifactRequest(session *Session, request string
 		}
 	}
 	return contextRequest
+}
+
+func generatedDocumentArtifactRequestContextForTurn(session *Session, request string) string {
+	if contextRequest := generatedDocumentArtifactCurrentRequestContext(session, request); contextRequest != "" {
+		return contextRequest
+	}
+	requestText := strings.TrimSpace(baseUserQueryText(request))
+	if looksLikeInternalReviewFeedbackUserMessage(requestText) {
+		return generatedDocumentArtifactRequestContext(session, request)
+	}
+	if classifyTurnIntent(requestText) == TurnIntentContinueLastTask &&
+		session != nil &&
+		session.TaskState != nil &&
+		!strings.EqualFold(strings.TrimSpace(session.TaskState.Phase), "done") {
+		return generatedDocumentArtifactRequestContext(session, request)
+	}
+	return ""
+}
+
+func generatedDocumentArtifactCurrentRequestContext(session *Session, request string) string {
+	for _, text := range generatedDocumentArtifactCurrentRequestCandidates(session, request) {
+		if preWriteRequestLooksLikeGeneratedDocumentArtifact(text) {
+			return text
+		}
+	}
+	return ""
+}
+
+func generatedDocumentArtifactCurrentRequestCandidates(session *Session, request string) []string {
+	var candidates []string
+	appendCandidate := func(text string) {
+		text = strings.TrimSpace(baseUserQueryText(text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			return
+		}
+		candidates = append(candidates, text)
+	}
+	appendCandidate(request)
+	if session == nil {
+		return uniqueStrings(candidates)
+	}
+	if session.AcceptanceContract != nil {
+		appendCandidate(session.AcceptanceContract.SourcePrompt)
+	}
+	if session.TaskState != nil {
+		appendCandidate(session.TaskState.Goal)
+	}
+	if session.ActivePatchTransaction != nil {
+		appendCandidate(session.ActivePatchTransaction.Goal)
+	}
+	return uniqueStrings(candidates)
 }
 
 func generatedDocumentArtifactRequestContext(session *Session, request string) string {
