@@ -487,6 +487,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	localCodeToolAvailabilityBlameRetries := 0
 	abruptReplyRetries := 0
 	rawReviewResultReplyRetries := 0
+	commentaryOnlyReplies := 0
 	finalAnswerReviewRevisions := 0
 	finalHarnessRevisions := 0
 	runtimeGateFinalAnswerRevisions := 0
@@ -585,7 +586,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
 		}
 		onTextDelta := a.EmitAssistantDelta
-		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification) {
+		if a.shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification, attemptedEditTool, successfulEditTool) {
 			onTextDelta = nil
 		}
 		turnReq := ChatRequest{
@@ -640,7 +641,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			continue
 		}
-		if a.EmitAssistantDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
+		if onTextDelta != nil && strings.TrimSpace(resp.Message.Text) != "" {
 			a.lastEmittedText = strings.TrimSpace(resp.Message.Text)
 		}
 		lastStopReason = normalizeStopReason(resp.StopReason)
@@ -651,6 +652,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 		}
 		if len(resp.Message.ToolCalls) > 0 {
+			commentaryOnlyReplies = 0
 			if !explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
 				if err := a.addToolCallRedirectGuidance(
 					resp.Message.ToolCalls,
@@ -888,7 +890,26 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
 			reply := strings.TrimSpace(resp.Message.Text)
+			if resp.Message.Phase == messagePhaseCommentary {
+				commentaryOnlyReplies++
+				if reply != "" && a.EmitAssistant != nil && reply != a.lastEmittedText {
+					a.EmitAssistant(reply)
+					a.lastEmittedText = reply
+				}
+				if commentaryOnlyReplies >= 3 {
+					return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
+				}
+				a.Session.AddMessage(Message{
+					Role: "user",
+					Text: "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message.",
+				})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if reply != "" {
+				commentaryOnlyReplies = 0
 				if continuedReplyPrefix != "" {
 					reply = mergeAssistantContinuation(continuedReplyPrefix, reply)
 					continuedReplyPrefix = ""
@@ -2013,11 +2034,14 @@ func (a *Agent) attachProgressEventHandler(req ChatRequest) ChatRequest {
 	return req
 }
 
-func (a *Agent) shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification bool) bool {
+func (a *Agent) shouldBufferAssistantDeltaForGatedTurn(unresolvedVerification bool, attemptedEditTool bool, successfulEditTool bool) bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
 	if unresolvedVerification {
+		return true
+	}
+	if attemptedEditTool || successfulEditTool {
 		return true
 	}
 	if a.Session.ActivePatchTransaction != nil {
@@ -2043,6 +2067,9 @@ func assistantMessagePhaseForModelResponse(msg Message) string {
 		return messagePhaseCommentary
 	}
 	if strings.TrimSpace(msg.Text) != "" {
+		if strings.TrimSpace(msg.Phase) == messagePhaseCommentary {
+			return messagePhaseCommentary
+		}
 		return messagePhaseFinalAnswerCandidate
 	}
 	return strings.TrimSpace(msg.Phase)
@@ -2124,8 +2151,13 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	if a == nil || a.Session == nil {
 		return false
 	}
-	if unresolvedVerification || strings.TrimSpace(reply) == "" {
+	if strings.TrimSpace(reply) == "" {
 		return false
+	}
+	if unresolvedVerification {
+		if a.Session.LastVerification == nil || !a.Session.LastVerification.WasSkipped() || !replyMentionsVerificationNotRun(reply) {
+			return false
+		}
 	}
 	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
 		return false

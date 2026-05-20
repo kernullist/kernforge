@@ -54,6 +54,9 @@ func TestRecentErrorQuestionAnswersFromConversationEventWithoutModelCall(t *test
 	if len(session.Messages) == 0 || session.Messages[len(session.Messages)-1].Role != "assistant" {
 		t.Fatalf("expected recent error resolver to persist assistant reply, got %#v", session.Messages)
 	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected recent error resolver reply to be final-answer phase, got %#v", session.Messages[len(session.Messages)-1])
+	}
 	if session.ConversationState == nil {
 		t.Fatalf("expected recent error resolver to refresh conversation state")
 	}

@@ -228,6 +228,13 @@ type staticTool struct {
 	calls  int
 }
 
+type metadataEditTool struct {
+	name   string
+	output string
+	meta   map[string]any
+	calls  int
+}
+
 type toolUnsupportedThenSuccessClient struct {
 	calls    int
 	requests []ChatRequest
@@ -353,6 +360,33 @@ func (t *staticTool) Execute(ctx context.Context, input any) (string, error) {
 	_ = input
 	t.calls++
 	return t.output, nil
+}
+
+func (t *metadataEditTool) Definition() ToolDefinition {
+	return ToolDefinition{
+		Name:        t.name,
+		Description: "Return a fixed edit-like result for agent loop tests.",
+		InputSchema: map[string]any{
+			"type": "object",
+		},
+	}
+}
+
+func (t *metadataEditTool) Execute(ctx context.Context, input any) (string, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	return t.output, nil
+}
+
+func (t *metadataEditTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
+	_ = ctx
+	_ = input
+	t.calls++
+	return ToolExecutionResult{
+		DisplayText: t.output,
+		Meta:        t.meta,
+	}, nil
 }
 
 func toolCallResponse(name string, args map[string]any) ChatResponse {
@@ -8407,6 +8441,87 @@ func TestAgentGeneratedDocumentArtifactFinalizesWithoutFinalReviewerOrShellValid
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}), // must remain unused
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				Steps: []VerificationStep{{
+					Label:   "configured verification",
+					Command: "configured verification callback",
+					Status:  VerificationSkipped,
+				}},
+			}, true
+		},
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "검증은 실행하지 않았습니다") {
+		t.Fatalf("expected skipped verification disclosure, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected generated document to finalize after skipped-verification disclosure, got %d requests", len(provider.requests))
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "automatic post-change review") || strings.Contains(line, "자동 변경 후 리뷰") {
+			t.Fatalf("generated document finalization should not enter post-change review path, progress=%q", line)
+		}
+	}
+}
+
 func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
@@ -8471,11 +8586,73 @@ func TestAgentBuffersGeneratedDocumentFinalAnswerDeltaUntilAccepted(t *testing.T
 	if emitted.String() != "" {
 		t.Fatalf("expected generated document final candidate to be buffered until accepted, got streamed %q", emitted.String())
 	}
+	if agent.lastEmittedText != "" {
+		t.Fatalf("buffered final candidate must not be recorded as emitted text, got %q", agent.lastEmittedText)
+	}
 	if len(provider.requests) != 2 {
 		t.Fatalf("expected the shell-validation response to remain unrequested, got %d main requests", len(provider.requests))
 	}
 	if provider.requests[1].OnTextDelta != nil {
 		t.Fatalf("expected final document summary request to buffer text deltas while final gates can still reject it")
+	}
+}
+
+func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
+	root := t.TempDir()
+	provider := &streamingScriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("external_edit", map[string]any{}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "변경을 적용했고 추가 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emitted strings.Builder
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client: provider,
+		Tools: NewToolRegistry(&metadataEditTool{
+			name:   "external_edit",
+			output: "metadata-only edit complete",
+			meta: map[string]any{
+				"changed_workspace": true,
+				"effect":            "edit",
+			},
+		}),
+		Workspace:          ws,
+		Session:            session,
+		Store:              store,
+		EmitAssistantDelta: func(text string) { emitted.WriteString(text) },
+	}
+
+	reply, err := agent.Reply(context.Background(), "도구가 보고한 변경을 반영하고 요약해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "변경을 적용") {
+		t.Fatalf("expected final answer, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one tool turn and one final turn, got %d requests", len(provider.requests))
+	}
+	if provider.requests[1].OnTextDelta != nil {
+		t.Fatalf("expected final answer deltas to be buffered after an edit-like tool result")
+	}
+	if emitted.String() != "" {
+		t.Fatalf("expected edit final candidate to stay hidden until accepted, got streamed %q", emitted.String())
+	}
+	if agent.lastEmittedText != "" {
+		t.Fatalf("buffered edit final candidate must not be recorded as emitted text, got %q", agent.lastEmittedText)
 	}
 }
 
@@ -8798,6 +8975,114 @@ func TestAgentDropsStaleFinalAnswerCandidateBeforeNewUserTurn(t *testing.T) {
 	}
 }
 
+func TestAgentContinuesAfterCommentaryOnlyAssistantMessage(t *testing.T) {
+	root := t.TempDir()
+	commentary := "검토 결과를 정리하는 중입니다."
+	finalReply := "검토 보고서를 생성했고 추가 작업은 없습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role:  "assistant",
+					Phase: messagePhaseCommentary,
+					Text:  commentary,
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "상태를 확인해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != finalReply {
+		t.Fatalf("expected final reply, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected commentary-only reply to trigger another model turn, got %d requests", len(provider.requests))
+	}
+	if !scriptedRequestsContainText(provider.requests[1:2], "commentary/progress") {
+		t.Fatalf("expected second request to include commentary-only guidance, got %#v", provider.requests[1].Messages)
+	}
+
+	foundCommentary := false
+	foundFinal := false
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && msg.Text == commentary {
+			foundCommentary = true
+			if msg.Phase != messagePhaseCommentary {
+				t.Fatalf("commentary message phase was not preserved: %#v", msg)
+			}
+		}
+		if msg.Role == "assistant" && msg.Text == finalReply {
+			foundFinal = true
+			if msg.Phase != messagePhaseFinalAnswer {
+				t.Fatalf("final reply was not promoted to final phase: %#v", msg)
+			}
+		}
+	}
+	if !foundCommentary {
+		t.Fatalf("commentary-only assistant message was not retained")
+	}
+	if !foundFinal {
+		t.Fatalf("final answer was not retained")
+	}
+}
+
+func TestAssistantMessagePhaseForModelResponsePreservesOnlyCommentary(t *testing.T) {
+	commentary := assistantMessagePhaseForModelResponse(Message{
+		Role:  "assistant",
+		Phase: messagePhaseCommentary,
+		Text:  "working",
+	})
+	if commentary != messagePhaseCommentary {
+		t.Fatalf("expected commentary phase to be preserved, got %q", commentary)
+	}
+
+	final := assistantMessagePhaseForModelResponse(Message{
+		Role:  "assistant",
+		Phase: messagePhaseFinalAnswer,
+		Text:  "done",
+	})
+	if final != messagePhaseFinalAnswerCandidate {
+		t.Fatalf("expected provider final_answer to become gated candidate, got %q", final)
+	}
+
+	toolPhase := assistantMessagePhaseForModelResponse(Message{
+		Role: "assistant",
+		Text: "I will inspect this.",
+		ToolCalls: []ToolCall{{
+			ID:   "call-1",
+			Name: "read_file",
+		}},
+	})
+	if toolPhase != messagePhaseCommentary {
+		t.Fatalf("expected tool-call message to be commentary, got %q", toolPhase)
+	}
+}
+
 func TestAgentStopsGeneratedDocumentArtifactOnPersistentHarnessBlocker(t *testing.T) {
 	root := t.TempDir()
 	badReportContent := strings.Join([]string{
@@ -8900,8 +9185,14 @@ func TestAgentDoesNotBufferAssistantDeltaForArchivedPatchTransaction(t *testing.
 	}}
 	agent := &Agent{Session: session}
 
-	if agent.shouldBufferAssistantDeltaForGatedTurn(false) {
+	if agent.shouldBufferAssistantDeltaForGatedTurn(false, false, false) {
 		t.Fatalf("expected archived patch transactions from a previous turn not to suppress assistant streaming")
+	}
+	if !agent.shouldBufferAssistantDeltaForGatedTurn(false, true, false) {
+		t.Fatalf("expected attempted edit tools to suppress assistant streaming until final gates accept the answer")
+	}
+	if !agent.shouldBufferAssistantDeltaForGatedTurn(false, false, true) {
+		t.Fatalf("expected successful edit-like tools to suppress assistant streaming until final gates accept the answer")
 	}
 }
 

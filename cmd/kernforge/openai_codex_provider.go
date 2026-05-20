@@ -274,13 +274,17 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 			})
 		case "assistant":
 			if strings.TrimSpace(msg.Text) != "" {
-				items = append(items, map[string]any{
+				item := map[string]any{
 					"role": "assistant",
 					"content": []map[string]any{{
 						"type": "output_text",
 						"text": msg.Text,
 					}},
-				})
+				}
+				if phase := openAICodexInputMessagePhase(msg); phase != "" {
+					item["phase"] = phase
+				}
+				items = append(items, item)
 			}
 			for _, tc := range msg.ToolCalls {
 				callID := firstNonEmptyTrimmed(tc.ID, tc.Name)
@@ -307,6 +311,19 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 		}
 	}
 	return items, nil
+}
+
+func openAICodexInputMessagePhase(msg Message) string {
+	switch strings.TrimSpace(msg.Phase) {
+	case messagePhaseCommentary:
+		return messagePhaseCommentary
+	case messagePhaseFinalAnswer:
+		return messagePhaseFinalAnswer
+	}
+	if len(msg.ToolCalls) > 0 && strings.TrimSpace(msg.Text) != "" {
+		return messagePhaseCommentary
+	}
+	return ""
 }
 
 func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, error) {
@@ -345,6 +362,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			Type      string `json:"type"`
 			Status    string `json:"status,omitempty"`
 			Role      string `json:"role,omitempty"`
+			Phase     string `json:"phase,omitempty"`
 			CallID    string `json:"call_id,omitempty"`
 			Name      string `json:"name,omitempty"`
 			Arguments string `json:"arguments,omitempty"`
@@ -362,17 +380,34 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	}
 
 	out := Message{Role: "assistant"}
-	texts := []string{}
+	fallbackTexts := []string{}
+	finalTexts := []string{}
+	textMessageCount := 0
+	commentaryTextMessageCount := 0
+	messagePhase := ""
 	if strings.TrimSpace(decoded.OutputText) != "" {
-		texts = append(texts, decoded.OutputText)
+		fallbackTexts = append(fallbackTexts, decoded.OutputText)
 	}
 	for _, item := range decoded.Output {
 		switch item.Type {
 		case "message":
+			itemTexts := []string{}
 			for _, content := range item.Content {
 				if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
-					texts = append(texts, content.Text)
+					itemTexts = append(itemTexts, content.Text)
 				}
+			}
+			if len(itemTexts) > 0 {
+				textMessageCount++
+				itemPhase := normalizeOpenAICodexMessagePhase(item.Phase)
+				if itemPhase == messagePhaseCommentary {
+					commentaryTextMessageCount++
+				}
+				if itemPhase == messagePhaseFinalAnswer {
+					finalTexts = append(finalTexts, itemTexts...)
+					messagePhase = messagePhaseFinalAnswer
+				}
+				fallbackTexts = append(fallbackTexts, itemTexts...)
 			}
 		case "function_call":
 			callID := firstNonEmptyTrimmed(item.CallID, item.ID)
@@ -385,7 +420,16 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			}
 		}
 	}
+	texts := fallbackTexts
+	if len(finalTexts) > 0 {
+		texts = finalTexts
+	} else if textMessageCount > 0 && textMessageCount == commentaryTextMessageCount {
+		messagePhase = messagePhaseCommentary
+	} else if messagePhase != messagePhaseFinalAnswer {
+		messagePhase = ""
+	}
 	out.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(texts), "\n"))
+	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
 		stopReason = strings.TrimSpace(decoded.IncompleteDetails.Reason)
@@ -416,6 +460,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
 	stopReason := ""
+	messagePhase := ""
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
 		progress = onProgressEvent[0]
@@ -466,6 +511,8 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			Item        struct {
 				ID        string `json:"id,omitempty"`
 				Type      string `json:"type,omitempty"`
+				Role      string `json:"role,omitempty"`
+				Phase     string `json:"phase,omitempty"`
 				CallID    string `json:"call_id,omitempty"`
 				Name      string `json:"name,omitempty"`
 				Arguments string `json:"arguments,omitempty"`
@@ -495,7 +542,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 				text.WriteString(event.Text)
 			}
 		case "response.output_item.added":
-			if event.Item.Type == "function_call" {
+			if event.Item.Type == "message" {
+				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
+			} else if event.Item.Type == "function_call" {
 				item := ensureToolCall(event.OutputIndex)
 				item.ID = firstNonEmptyTrimmed(event.Item.CallID, event.Item.ID, item.ID)
 				item.Name = firstNonEmptyTrimmed(event.Item.Name, item.Name)
@@ -530,6 +579,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 			emitToolReady(item)
 		case "response.output_item.done":
+			if event.Item.Type == "message" {
+				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
+			}
 			if event.Item.Type == "message" && text.Len() == 0 {
 				for _, content := range event.Item.Content {
 					if content.Type == "output_text" && strings.TrimSpace(content.Text) != "" {
@@ -600,7 +652,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 	}
 
-	out := Message{Role: "assistant", Text: strings.TrimSpace(text.String())}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(text.String())}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -616,6 +668,17 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
 	return ChatResponse{Message: out, StopReason: stopReason}, nil
+}
+
+func normalizeOpenAICodexMessagePhase(phase string) string {
+	switch strings.ToLower(strings.TrimSpace(phase)) {
+	case messagePhaseCommentary:
+		return messagePhaseCommentary
+	case messagePhaseFinalAnswer, "final-answer", "final":
+		return messagePhaseFinalAnswer
+	default:
+		return ""
+	}
 }
 
 func deduplicateOpenAICodexTexts(items []string) []string {

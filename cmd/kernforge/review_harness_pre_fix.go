@@ -86,8 +86,9 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 	if summary := formatPreFixVisibleReviewSummary(a.Config, run); summary != "" {
 		a.emitPersistentAssistantSummary(summary)
 		a.Session.AddMessage(Message{
-			Role: "assistant",
-			Text: summary,
+			Role:  "assistant",
+			Phase: messagePhaseCommentary,
+			Text:  summary,
 		})
 	}
 	allowIndependentInspection := preFixReviewCanContinueWithIndependentInspection(run)

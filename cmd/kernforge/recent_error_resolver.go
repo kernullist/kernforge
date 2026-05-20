@@ -22,8 +22,9 @@ func (a *Agent) maybeAnswerRecentErrorQuestion(userText string) (string, bool) {
 		return "", false
 	}
 	a.Session.AddMessage(Message{
-		Role: "assistant",
-		Text: reply,
+		Role:  "assistant",
+		Phase: messagePhaseFinalAnswer,
+		Text:  reply,
 	})
 	a.noteAssistantConversationEvent(reply)
 	a.Session.RefreshConversationState()

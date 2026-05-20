@@ -87,11 +87,48 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContext(t *testing.T) {
 	if !ok || len(input) != 4 {
 		t.Fatalf("expected four input items, got %#v", payload["input"])
 	}
+	assistant, ok := input[1].(map[string]any)
+	if !ok || assistant["phase"] != messagePhaseCommentary {
+		t.Fatalf("expected assistant tool preamble to carry commentary phase, got %#v", input[1])
+	}
 	encoded := string(body)
 	for _, needle := range []string{`"stream":true`, `"type":"function_call"`, `"call_id":"call_1"`, `"type":"function_call_output"`, `"type":"json_object"`} {
 		if !strings.Contains(encoded, needle) {
 			t.Fatalf("expected %q in request body %s", needle, encoded)
 		}
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyPreservesAssistantPhase(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "continue"},
+			{Role: "assistant", Phase: messagePhaseCommentary, Text: "checking"},
+			{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: "done"},
+			{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: "candidate"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 4 {
+		t.Fatalf("expected four input items, got %#v", payload["input"])
+	}
+	if got := input[1].(map[string]any)["phase"]; got != messagePhaseCommentary {
+		t.Fatalf("expected commentary phase, got %#v", got)
+	}
+	if got := input[2].(map[string]any)["phase"]; got != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-answer phase, got %#v", got)
+	}
+	if _, ok := input[3].(map[string]any)["phase"]; ok {
+		t.Fatalf("did not expect internal candidate phase to be sent, got %#v", input[3])
 	}
 }
 
@@ -550,6 +587,95 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesMessagePhase(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"phase":"commentary",
+			"content":[{"type":"output_text","text":"still working"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "still working" {
+		t.Fatalf("expected text, got %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseCommentary {
+		t.Fatalf("expected commentary phase, got %q", resp.Message.Phase)
+	}
+
+	resp, err = parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"phase":"final_answer",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse final: %v", err)
+	}
+	if resp.Message.Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-answer phase, got %q", resp.Message.Phase)
+	}
+}
+
+func TestParseOpenAICodexResponseUsesFinalTextOverCommentary(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output_text":"still working\ndone",
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"phase":"commentary",
+			"content":[{"type":"output_text","text":"still working"}]
+		},{
+			"type":"message",
+			"role":"assistant",
+			"phase":"final_answer",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "done" {
+		t.Fatalf("expected only final-answer text, got %q", resp.Message.Text)
+	}
+	if strings.Contains(resp.Message.Text, "still working") {
+		t.Fatalf("commentary text leaked into final text: %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-answer phase, got %q", resp.Message.Phase)
+	}
+}
+
+func TestParseOpenAICodexResponsePreservesCommentaryWithAggregateOutputText(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output_text":"still working",
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"phase":"commentary",
+			"content":[{"type":"output_text","text":"still working"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.Message.Text != "still working" {
+		t.Fatalf("expected commentary text, got %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseCommentary {
+		t.Fatalf("expected commentary phase, got %q", resp.Message.Phase)
+	}
+}
+
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	stream := strings.NewReader("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done text\"}]}}\n\n")
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -558,6 +684,25 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 	if resp.Message.Text != "done text" {
 		t.Fatalf("expected done message text, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponse(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
+		`data: {"type":"response.output_text.delta","delta":"checking"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "checking" {
+		t.Fatalf("expected stream text, got %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseCommentary {
+		t.Fatalf("expected commentary phase, got %q", resp.Message.Phase)
 	}
 }
 
