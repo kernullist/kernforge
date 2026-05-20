@@ -16,6 +16,7 @@ type SessionDashboardSnapshot struct {
 	SessionName         string
 	Workspace           string
 	BaseRoot            string
+	WorkspaceRoots      []string
 	Branch              string
 	Provider            string
 	Model               string
@@ -91,6 +92,7 @@ func (rt *runtimeState) buildSessionDashboardSnapshot(root string, now time.Time
 		SessionName:    sess.Name,
 		Workspace:      sess.WorkingDir,
 		BaseRoot:       root,
+		WorkspaceRoots: workspaceEffectiveRoots(rt.workspace, sess),
 		Branch:         delegationGitBranch(root),
 		Provider:       sess.Provider,
 		Model:          sess.Model,
@@ -515,6 +517,13 @@ func renderSessionDashboardWorkspaceSignals(snapshot SessionDashboardSnapshot) s
 	b.WriteString(`<article class="card">`)
 	b.WriteString(`<div class="row"><h3>Workspace</h3><span class="badge">` + htmlEscape(valueOrDefault(snapshot.Branch, "unknown")) + `</span></div>`)
 	b.WriteString(`<p class="subtle">` + htmlEscape(valueOrDefault(snapshot.Workspace, snapshot.BaseRoot)) + `</p>`)
+	if len(snapshot.WorkspaceRoots) > 0 {
+		escapedRoots := make([]string, 0, len(snapshot.WorkspaceRoots))
+		for _, root := range snapshot.WorkspaceRoots {
+			escapedRoots = append(escapedRoots, htmlEscape(root))
+		}
+		b.WriteString(`<p><strong>Workspace roots</strong><br>` + strings.Join(escapedRoots, `<br>`) + `</p>`)
+	}
 	if snapshot.LastVerification != "" {
 		b.WriteString(`<p><strong>Verification</strong><br>` + htmlEscape(snapshot.LastVerification) + `</p>`)
 	}

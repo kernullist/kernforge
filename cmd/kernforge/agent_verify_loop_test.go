@@ -9600,6 +9600,70 @@ func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *te
 	}
 }
 
+func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "document report follow-up"}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Reviewer feedback: revise the final answer before concluding.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !agent.changesAreGeneratedDocumentArtifactsForTurn("") {
+		t.Fatalf("expected approved doc-only patch transaction to be treated as generated document artifact")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("Tavern/BugReport.md 생성 완료", true, false) {
+		t.Fatalf("expected approved doc-only artifact to skip interactive final-answer reviewer")
+	}
+}
+
+func TestAgentDoesNotTreatGenericDocOnlyChangeAsGeneratedReportWithoutArtifactList(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "README.md",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.changesAreGeneratedDocumentArtifactsForTurn("") {
+		t.Fatalf("generic README doc-only changes should not be inferred as generated report artifacts without request context")
+	}
+}
+
 func TestAgentDoesNotTreatApprovedMixedArtifactHarnessAsGeneratedDocumentOnly(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

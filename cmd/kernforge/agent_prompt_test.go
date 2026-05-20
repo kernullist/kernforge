@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,29 @@ func TestSystemPromptUsesExternalUserRequestAfterGoalSteering(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Respond in Korean because the latest user request is written in Korean") {
 		t.Fatalf("goal steering should not become the latest external language request, got %q", prompt)
+	}
+}
+
+func TestSystemPromptIncludesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktrees", "feature")
+	session := NewSession(baseRoot, "provider", "model", "", "default")
+	session.WorkingDir = activeRoot
+	agent := &Agent{
+		Config:    Config{},
+		Session:   session,
+		Workspace: Workspace{BaseRoot: baseRoot, Root: activeRoot},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Workspace root: "+activeRoot) {
+		t.Fatalf("expected prompt to show active workspace root, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Workspace base root: "+baseRoot) {
+		t.Fatalf("expected prompt to show base workspace root, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Workspace roots: "+baseRoot+", "+activeRoot) {
+		t.Fatalf("expected prompt to show effective workspace roots, got %q", prompt)
 	}
 }
 

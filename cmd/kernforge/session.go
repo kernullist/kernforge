@@ -220,6 +220,9 @@ func (s *Session) ExportText() string {
 	if baseRoot := sessionBaseWorkingDir(s); baseRoot != "" && !strings.EqualFold(strings.TrimSpace(baseRoot), strings.TrimSpace(s.WorkingDir)) {
 		fmt.Fprintf(&b, "Base working dir: %s\n", baseRoot)
 	}
+	if roots := workspaceEffectiveRoots(Workspace{}, s); len(roots) > 0 {
+		fmt.Fprintf(&b, "Workspace roots: %s\n", strings.Join(roots, ", "))
+	}
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", s.Provider, s.Model)
 	if strings.TrimSpace(s.BaseURL) != "" {
 		fmt.Fprintf(&b, "Base URL: %s\n", s.BaseURL)

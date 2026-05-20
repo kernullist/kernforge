@@ -6011,6 +6011,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.printKVGroup("Workspace",
 			kv("cwd", rt.session.WorkingDir),
 			kv("base_root", sessionBaseWorkingDir(rt.session)),
+			kv("workspace_roots", strings.Join(workspaceEffectiveRoots(rt.workspace, rt.session), ", ")),
 			kv("session", rt.session.ID),
 			kv("sessions_dir", rt.store.Root()),
 			kv("runtime_error_log", runtimeErrorLogPath(sessionBaseWorkingDir(rt.session))),
@@ -9596,6 +9597,64 @@ func workspaceCheckpointRoot(ws Workspace) string {
 		return ws.Root
 	}
 	return workspaceSnapshotRoot(ws)
+}
+
+func workspaceEffectiveRoots(ws Workspace, sess *Session) []string {
+	baseRoot := strings.TrimSpace(ws.BaseRoot)
+	if baseRoot == "" && sess != nil {
+		baseRoot = sessionBaseWorkingDir(sess)
+	}
+	if baseRoot == "" {
+		baseRoot = strings.TrimSpace(ws.Root)
+	}
+
+	activeRoot := strings.TrimSpace(ws.Root)
+	if activeRoot == "" && sess != nil {
+		activeRoot = strings.TrimSpace(sess.WorkingDir)
+	}
+	if activeRoot == "" {
+		activeRoot = baseRoot
+	}
+
+	roots := make([]string, 0, 2)
+	appendRoot := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			return
+		}
+		for _, existing := range roots {
+			if samePath(existing, path) {
+				return
+			}
+		}
+		roots = append(roots, path)
+	}
+	appendRoot(baseRoot)
+	appendRoot(activeRoot)
+	return roots
+}
+
+func workspaceEffectiveBaseRoot(ws Workspace, sess *Session) string {
+	roots := workspaceEffectiveRoots(ws, sess)
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[0]
+}
+
+func workspaceEffectiveActiveRoot(ws Workspace, sess *Session) string {
+	activeRoot := strings.TrimSpace(ws.Root)
+	if activeRoot == "" && sess != nil {
+		activeRoot = strings.TrimSpace(sess.WorkingDir)
+	}
+	if activeRoot != "" {
+		return activeRoot
+	}
+	roots := workspaceEffectiveRoots(ws, sess)
+	if len(roots) == 0 {
+		return ""
+	}
+	return roots[len(roots)-1]
 }
 
 func (rt *runtimeState) handleInitCommand(args string) error {
