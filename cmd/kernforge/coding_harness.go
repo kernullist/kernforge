@@ -709,6 +709,7 @@ func generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(findings []CodingH
 		}
 		switch strings.TrimSpace(finding.Title) {
 		case "Required verification has no outcome",
+			"Final answer has inconsistent bug counts",
 			"Final answer contradicts the patch transaction",
 			"Verification claim has no recorded evidence":
 			continue
@@ -1048,6 +1049,7 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 	if a == nil || a.Session == nil {
 		return report
 	}
+	report.Findings = append(report.Findings, finalAnswerBugCountFindings(reply)...)
 	a.refreshBackgroundJobs()
 	if a.hasRunningBackgroundJobs() {
 		severity := "blocker"
@@ -1155,6 +1157,36 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 	report.Checks = normalizeTaskStateList(report.Checks, 16)
 	report.Findings = normalizeCodingHarnessFindings(report.Findings)
 	return report
+}
+
+func finalAnswerBugCountFindings(reply string) []CodingHarnessFinding {
+	profile := analyzeBugReportDocumentCounts(reply)
+	if !profile.HasBugReportSignals() {
+		return nil
+	}
+	findings := make([]CodingHarnessFinding, 0)
+	addFinding := func(detail string) {
+		detail = strings.TrimSpace(detail)
+		if detail == "" {
+			return
+		}
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Final answer has inconsistent bug counts",
+			Detail:   detail,
+		})
+	}
+	for _, conflict := range profile.Conflicts {
+		addFinding("The final answer has conflicting bug-count metadata: " + conflict + ".")
+	}
+	if profile.SeverityTotal > 0 {
+		for _, total := range profile.TotalClaims {
+			if total != profile.SeverityTotal {
+				addFinding(fmt.Sprintf("The final answer claims a total of %d bugs, but the severity rows add up to %d.", total, profile.SeverityTotal))
+			}
+		}
+	}
+	return normalizeCodingHarnessFindings(findings)
 }
 
 func patchTransactionCandidateScopes(ws Workspace, call ToolCall) []string {

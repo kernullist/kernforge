@@ -1209,7 +1209,7 @@ func goalCompletionBudgetReport(goal GoalState) string {
 	if goal.TokenBudget <= 0 && goal.TimeUsedSeconds <= 0 {
 		return ""
 	}
-	return "Goal achieved. Report final usage from the structured goal fields. If token_budget is present, include token_used_estimate and token_budget. If time_used_seconds is greater than 0, summarize elapsed time in a concise, human-friendly form."
+	return "Goal achieved. Report final usage from the structured goal fields. If token_budget is present, include token usage from token_used_estimate and token_budget. If time_used_seconds is greater than 0, summarize elapsed time in a concise, human-friendly form appropriate to the response language."
 }
 
 func (rt *runtimeState) printGoalCompletionUsage(goal GoalState) {

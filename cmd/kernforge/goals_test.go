@@ -841,6 +841,8 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	completionOutput := output.String()
 	for _, want := range []string{
 		"completion_budget_report",
+		"token usage from token_used_estimate and token_budget",
+		"appropriate to the response language",
 		"token_budget",
 		"token_used_estimate",
 		"token_remaining_estimate",
