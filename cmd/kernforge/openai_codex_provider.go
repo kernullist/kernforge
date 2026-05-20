@@ -463,6 +463,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	toolOrder := []int{}
 	stopReason := ""
 	messagePhase := ""
+	completedSeen := false
 	var endTurn *bool
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
@@ -584,6 +585,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 				}
 			}
 		case "response.completed":
+			completedSeen = true
 			if len(event.Response) > 0 {
 				completedResponse = append(completedResponse[:0], event.Response...)
 			}
@@ -612,6 +614,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	}
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ChatResponse{}, ctxErr
+	}
+	if !completedSeen {
+		return ChatResponse{}, newProviderMessageError("openai-codex", "stream closed before response.completed", "", "", nil, nil)
 	}
 	if len(completedResponse) > 0 {
 		resp, err := parseOpenAICodexResponse(completedResponse)

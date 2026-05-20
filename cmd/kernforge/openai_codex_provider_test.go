@@ -746,7 +746,11 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 }
 
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
-	stream := strings.NewReader("data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done text\"}]}}\n\n")
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done text"}]}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("readOpenAICodexStream: %v", err)
@@ -756,7 +760,18 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	}
 }
 
-func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponse(t *testing.T) {
+func TestReadOpenAICodexStreamRejectsMissingCompletedEvent(t *testing.T) {
+	stream := strings.NewReader(`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"partial text"}]}}` + "\n\n")
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err == nil {
+		t.Fatalf("expected missing response.completed to fail, got %#v", resp)
+	}
+	if !strings.Contains(err.Error(), "stream closed before response.completed") {
+		t.Fatalf("expected response.completed error, got %v", err)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponseBody(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
 		`data: {"type":"response.output_text.delta","delta":"checking"}`,
