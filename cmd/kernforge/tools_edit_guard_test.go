@@ -1531,6 +1531,34 @@ func TestRunShellRejectsPowerShellStopParsingForms(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsPowerShellEncodedCommandForms(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"encoded_long":  "powershell -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA",
+		"encoded_short": `pwsh -enc UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`,
+		"encoded_colon": `powershell /EncodedCommand:UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`,
+		"encoded_alias": `powershell -e UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected PowerShell EncodedCommand form to be rejected")
+			}
+			if !strings.Contains(err.Error(), "unsupported shell syntax") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "codex_poc.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected codex_poc.txt to remain absent, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
 func TestRunShellRejectsRipgrepExternalCommandOptions(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2492,8 +2520,11 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		`Get-Command tee`:                          shellMutationReadOnly,
 		`Get-Command copy`:                         shellMutationReadOnly,
 		`git log --% HEAD --output=codex_poc.txt`:  shellMutationUnsupported,
-		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`: shellMutationUnsupported,
-		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                  shellMutationUnsupported,
+		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
+		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                                                        shellMutationUnsupported,
+		`powershell -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`: shellMutationUnsupported,
+		`pwsh -enc UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`:                             shellMutationUnsupported,
+		`powershell /EncodedCommand:UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`:            shellMutationUnsupported,
 		`rg "--%" docs`: shellMutationReadOnly,
 		`powershell -NoProfile -Command "Write-Output '--%'"`:    shellMutationReadOnly,
 		`rg --pre ./hook pattern .`:                              shellMutationUnsafe,

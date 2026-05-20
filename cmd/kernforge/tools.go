@@ -2919,6 +2919,9 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	if shellCommandContainsPowerShellStopParsing(command) {
 		return shellCommandAssessment{Class: shellMutationUnsupported, Reason: "PowerShell stop-parsing token --% cannot be safely analyzed"}
 	}
+	if shellCommandContainsPowerShellEncodedCommand(command) {
+		return shellCommandAssessment{Class: shellMutationUnsupported, Reason: "PowerShell EncodedCommand payload cannot be safely analyzed"}
+	}
 	if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: reason}
 	}
@@ -3394,6 +3397,39 @@ func shellCommandContainsPowerShellStopParsing(command string) bool {
 	return false
 }
 
+func shellCommandContainsPowerShellEncodedCommand(command string) bool {
+	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	for i := 0; i < len(rawTokens); i++ {
+		if !shellCommandTokenCanBeginNestedCommand(rawTokens, i) {
+			continue
+		}
+		base := shellTokenBaseName(rawTokens[i])
+		if base != "powershell" && base != "pwsh" {
+			continue
+		}
+		for j := i + 1; j < len(rawTokens); j++ {
+			if shellCommandTokenIsSegmentDelimiter(rawTokens[j]) {
+				break
+			}
+			if shellCommandIsPowerShellEncodedCommandFlag(rawTokens[j]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func shellCommandIsPowerShellEncodedCommandFlag(token string) bool {
+	normalized := strings.TrimSpace(strings.Trim(token, `"'`))
+	if strings.HasPrefix(normalized, "/") {
+		normalized = "-" + strings.TrimPrefix(normalized, "/")
+	}
+	if idx := strings.IndexByte(normalized, ':'); idx >= 0 {
+		normalized = normalized[:idx]
+	}
+	return len(normalized) >= 2 && strings.HasPrefix("-encodedcommand", normalized)
+}
+
 func shellCommandContainsUnquotedStopParsingToken(command string) bool {
 	const marker = "--%"
 	quote := byte(0)
@@ -3493,7 +3529,7 @@ unwrap:
 			if base == "powershell" || base == "pwsh" {
 				for i := 1; i < len(tokens); i++ {
 					switch tokens[i] {
-					case "-command", "-c", "-encodedcommand", "-enc":
+					case "-command", "-c":
 						if i+1 < len(tokens) {
 							tokens = tokens[i+1:]
 						} else {
