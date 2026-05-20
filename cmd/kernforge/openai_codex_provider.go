@@ -344,6 +344,23 @@ func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, e
 	return appendCodexResponsesImages(content, encodedImages), nil
 }
 
+type openAICodexOutputItem struct {
+	ID        string          `json:"id,omitempty"`
+	Type      string          `json:"type"`
+	Status    string          `json:"status,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Phase     string          `json:"phase,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	Input     string          `json:"input,omitempty"`
+	Execution string          `json:"execution,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Content   []struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	} `json:"content,omitempty"`
+}
+
 func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	var decoded struct {
 		Status            string `json:"status"`
@@ -358,20 +375,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			Param   string `json:"param,omitempty"`
 			Code    any    `json:"code,omitempty"`
 		} `json:"error,omitempty"`
-		Output []struct {
-			ID        string `json:"id,omitempty"`
-			Type      string `json:"type"`
-			Status    string `json:"status,omitempty"`
-			Role      string `json:"role,omitempty"`
-			Phase     string `json:"phase,omitempty"`
-			CallID    string `json:"call_id,omitempty"`
-			Name      string `json:"name,omitempty"`
-			Arguments string `json:"arguments,omitempty"`
-			Content   []struct {
-				Type string `json:"type"`
-				Text string `json:"text,omitempty"`
-			} `json:"content,omitempty"`
-		} `json:"output,omitempty"`
+		Output []openAICodexOutputItem `json:"output,omitempty"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return ChatResponse{}, err
@@ -410,14 +414,9 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 				}
 				fallbackTexts = append(fallbackTexts, itemTexts...)
 			}
-		case "function_call":
-			callID := firstNonEmptyTrimmed(item.CallID, item.ID)
-			if callID != "" && strings.TrimSpace(item.Name) != "" {
-				out.ToolCalls = append(out.ToolCalls, ToolCall{
-					ID:        callID,
-					Name:      strings.TrimSpace(item.Name),
-					Arguments: normalizeOpenAIToolCallArguments(item.Arguments),
-				})
+		case "function_call", "custom_tool_call", "tool_search_call":
+			if call, ok := openAICodexToolCallFromOutputItem(item); ok {
+				out.ToolCalls = append(out.ToolCalls, call)
 			}
 		}
 	}
@@ -448,6 +447,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 type openAICodexStreamToolCall struct {
 	ID           string
 	Name         string
+	Type         string
 	Arguments    strings.Builder
 	ArgsStarted  bool
 	ReadyEmitted bool
@@ -505,27 +505,15 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			continue
 		}
 		var event struct {
-			Type        string          `json:"type"`
-			Delta       string          `json:"delta,omitempty"`
-			Text        string          `json:"text,omitempty"`
-			Arguments   string          `json:"arguments,omitempty"`
-			OutputIndex int             `json:"output_index,omitempty"`
-			EndTurn     *bool           `json:"end_turn,omitempty"`
-			Response    json.RawMessage `json:"response,omitempty"`
-			Item        struct {
-				ID        string `json:"id,omitempty"`
-				Type      string `json:"type,omitempty"`
-				Role      string `json:"role,omitempty"`
-				Phase     string `json:"phase,omitempty"`
-				CallID    string `json:"call_id,omitempty"`
-				Name      string `json:"name,omitempty"`
-				Arguments string `json:"arguments,omitempty"`
-				Content   []struct {
-					Type string `json:"type,omitempty"`
-					Text string `json:"text,omitempty"`
-				} `json:"content,omitempty"`
-			} `json:"item,omitempty"`
-			Error *struct {
+			Type        string                `json:"type"`
+			Delta       string                `json:"delta,omitempty"`
+			Text        string                `json:"text,omitempty"`
+			Arguments   string                `json:"arguments,omitempty"`
+			OutputIndex int                   `json:"output_index,omitempty"`
+			EndTurn     *bool                 `json:"end_turn,omitempty"`
+			Response    json.RawMessage       `json:"response,omitempty"`
+			Item        openAICodexOutputItem `json:"item,omitempty"`
+			Error       *struct {
 				Message string `json:"message"`
 				Type    string `json:"type,omitempty"`
 				Param   string `json:"param,omitempty"`
@@ -548,19 +536,16 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		case "response.output_item.added":
 			if event.Item.Type == "message" {
 				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
-			} else if event.Item.Type == "function_call" {
+			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				item := ensureToolCall(event.OutputIndex)
-				item.ID = firstNonEmptyTrimmed(event.Item.CallID, event.Item.ID, item.ID)
-				item.Name = firstNonEmptyTrimmed(event.Item.Name, item.Name)
-				if strings.TrimSpace(event.Item.Arguments) != "" && item.Arguments.Len() == 0 {
-					item.Arguments.WriteString(event.Item.Arguments)
+				if openAICodexPopulateStreamToolCall(item, event.Item, false) {
+					emitProgressEvent(progress, ProgressEvent{
+						Kind:       progressKindModelStreamToolCall,
+						Provider:   "openai-codex",
+						ToolName:   item.Name,
+						ToolCallID: item.ID,
+					})
 				}
-				emitProgressEvent(progress, ProgressEvent{
-					Kind:       progressKindModelStreamToolCall,
-					Provider:   "openai-codex",
-					ToolName:   item.Name,
-					ToolCallID: item.ID,
-				})
 			}
 		case "response.function_call_arguments.delta":
 			item := ensureToolCall(event.OutputIndex)
@@ -592,15 +577,11 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 						text.WriteString(content.Text)
 					}
 				}
-			} else if event.Item.Type == "function_call" {
+			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				item := ensureToolCall(event.OutputIndex)
-				item.ID = firstNonEmptyTrimmed(event.Item.CallID, event.Item.ID, item.ID)
-				item.Name = firstNonEmptyTrimmed(event.Item.Name, item.Name)
-				if strings.TrimSpace(event.Item.Arguments) != "" {
-					item.Arguments.Reset()
-					item.Arguments.WriteString(event.Item.Arguments)
+				if openAICodexPopulateStreamToolCall(item, event.Item, true) {
+					emitToolReady(item)
 				}
-				emitToolReady(item)
 			}
 		case "response.completed":
 			if len(event.Response) > 0 {
@@ -686,6 +667,121 @@ func normalizeOpenAICodexMessagePhase(phase string) string {
 	default:
 		return ""
 	}
+}
+
+func openAICodexOutputItemIsToolCall(item openAICodexOutputItem) bool {
+	switch strings.TrimSpace(item.Type) {
+	case "function_call", "custom_tool_call":
+		return true
+	case "tool_search_call":
+		return strings.TrimSpace(item.Execution) == "client"
+	default:
+		return false
+	}
+}
+
+func openAICodexToolCallFromOutputItem(item openAICodexOutputItem) (ToolCall, bool) {
+	if !openAICodexOutputItemIsToolCall(item) {
+		return ToolCall{}, false
+	}
+	callID := firstNonEmptyTrimmed(item.CallID, item.ID)
+	if callID == "" {
+		return ToolCall{}, false
+	}
+	name := strings.TrimSpace(item.Name)
+	if strings.TrimSpace(item.Type) == "tool_search_call" {
+		name = "tool_search"
+	}
+	if name == "" {
+		return ToolCall{}, false
+	}
+	return ToolCall{
+		ID:        callID,
+		Name:      name,
+		Arguments: normalizeOpenAICodexOutputItemArguments(item, name),
+	}, true
+}
+
+func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item openAICodexOutputItem, replaceArguments bool) bool {
+	if target == nil || !openAICodexOutputItemIsToolCall(item) {
+		return false
+	}
+	name := strings.TrimSpace(item.Name)
+	if strings.TrimSpace(item.Type) == "tool_search_call" {
+		name = "tool_search"
+	}
+	target.ID = firstNonEmptyTrimmed(item.CallID, item.ID, target.ID)
+	target.Name = firstNonEmptyTrimmed(name, target.Name)
+	target.Type = firstNonEmptyTrimmed(item.Type, target.Type)
+	if strings.TrimSpace(target.ID) == "" || strings.TrimSpace(target.Name) == "" {
+		return false
+	}
+	if openAICodexOutputItemHasArguments(item) {
+		arguments := normalizeOpenAICodexOutputItemArguments(item, target.Name)
+		if strings.TrimSpace(arguments) != "" && (replaceArguments || target.Arguments.Len() == 0) {
+			target.Arguments.Reset()
+			target.Arguments.WriteString(arguments)
+		}
+	}
+	return true
+}
+
+func openAICodexOutputItemHasArguments(item openAICodexOutputItem) bool {
+	switch strings.TrimSpace(item.Type) {
+	case "custom_tool_call":
+		return firstNonEmptyTrimmed(item.Input, openAICodexRawArgumentsText(item.Arguments)) != ""
+	default:
+		raw := strings.TrimSpace(string(item.Arguments))
+		return raw != "" && raw != "null"
+	}
+}
+
+func normalizeOpenAICodexOutputItemArguments(item openAICodexOutputItem, name string) string {
+	switch strings.TrimSpace(item.Type) {
+	case "custom_tool_call":
+		input := firstNonEmptyTrimmed(item.Input, openAICodexRawArgumentsText(item.Arguments))
+		return normalizeOpenAICodexToolCallArguments(item.Type, name, input)
+	case "tool_search_call":
+		return normalizeOpenAIToolCallArguments(openAICodexRawArgumentsJSON(item.Arguments))
+	default:
+		return normalizeOpenAIToolCallArguments(openAICodexRawArgumentsText(item.Arguments))
+	}
+}
+
+func normalizeOpenAICodexToolCallArguments(itemType string, name string, raw string) string {
+	if strings.TrimSpace(itemType) == "custom_tool_call" && strings.TrimSpace(name) == "apply_patch" {
+		encoded, err := json.Marshal(map[string]any{
+			"patch": strings.TrimSpace(raw),
+		})
+		if err == nil {
+			return string(encoded)
+		}
+	}
+	return normalizeOpenAIToolCallArguments(raw)
+}
+
+func openAICodexRawArgumentsText(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return ""
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+	return trimmed
+}
+
+func openAICodexRawArgumentsJSON(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "{}"
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err == nil {
+		return compact.String()
+	}
+	return trimmed
 }
 
 func deduplicateOpenAICodexTexts(items []string) []string {
