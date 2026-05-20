@@ -2230,6 +2230,7 @@ const (
 	shellMutationCacheOnly             shellMutationClass = "cache_only"
 	shellMutationExternalInstall       shellMutationClass = "external_install"
 	shellMutationGitMutation           shellMutationClass = "git_mutation"
+	shellMutationUnsupported           shellMutationClass = "unsupported"
 	shellMutationVerificationArtifacts shellMutationClass = "verification_artifacts"
 	shellMutationWorkspaceWrite        shellMutationClass = "workspace_write"
 )
@@ -2300,6 +2301,9 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
 	}
 	assessment := assessShellCommandMutation(command)
+	if assessment.Class == shellMutationUnsupported {
+		return "", shellCommandUnsupportedSyntaxError("run_shell", assessment)
+	}
 	if assessment.Class == shellMutationReadOnly || assessment.Class == shellMutationCacheOnly {
 		if guidance := runShellDedicatedToolGuidance(command); guidance != "" {
 			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
@@ -2908,6 +2912,9 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	if lower == "" {
 		return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "empty command"}
 	}
+	if shellCommandContainsPowerShellStopParsing(command) {
+		return shellCommandAssessment{Class: shellMutationUnsupported, Reason: "PowerShell stop-parsing token --% cannot be safely analyzed"}
+	}
 	if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 		return shellCommandAssessment{Class: shellMutationWorkspaceWrite, Reason: reason}
 	}
@@ -3032,6 +3039,10 @@ func assessShellCommandMutation(command string) shellCommandAssessment {
 	return shellCommandAssessment{Class: shellMutationReadOnly, Reason: "no workspace write markers detected"}
 }
 
+func shellCommandUnsupportedSyntaxError(toolName string, assessment shellCommandAssessment) error {
+	return fmt.Errorf("%s command uses unsupported shell syntax that cannot be safely analyzed (%s)", toolName, assessment.Reason)
+}
+
 func shellCommandManualWorkspaceWriteReason(command string) string {
 	unquotedLower := strings.ToLower(shellCommandWithoutQuotedLiterals(command))
 	if shellCommandHasWorkspaceWriteRedirection(unquotedLower) || strings.Contains(unquotedLower, "| tee ") || strings.HasPrefix(unquotedLower, "tee ") {
@@ -3118,6 +3129,98 @@ func shellCommandAssessmentTokens(command string) []string {
 		return rawTokens
 	}
 	return unwrappedTokens
+}
+
+func shellCommandContainsPowerShellStopParsing(command string) bool {
+	if shellCommandContainsUnquotedStopParsingToken(command) {
+		return true
+	}
+	rawTokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	for i := 0; i < len(rawTokens); i++ {
+		if !shellCommandTokenCanBeginNestedCommand(rawTokens, i) {
+			continue
+		}
+		base := shellTokenBaseName(rawTokens[i])
+		if base != "powershell" && base != "pwsh" {
+			continue
+		}
+		payloadTokens := unwrapShellCommandWrapperTokens(rawTokens[i:])
+		if len(payloadTokens) == len(rawTokens[i:]) {
+			continue
+		}
+		if len(payloadTokens) == 1 {
+			if shellCommandContainsUnquotedStopParsingToken(payloadTokens[0]) {
+				return true
+			}
+			continue
+		}
+		if shellCommandContainsToken(payloadTokens, "--%") {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandContainsUnquotedStopParsingToken(command string) bool {
+	const marker = "--%"
+	quote := byte(0)
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		if !strings.HasPrefix(command[i:], marker) {
+			continue
+		}
+		if shellCommandStopParsingBoundaryBefore(command, i) && shellCommandStopParsingBoundaryAfter(command, i+len(marker)) {
+			return true
+		}
+	}
+	return false
+}
+
+func shellCommandStopParsingBoundaryBefore(command string, idx int) bool {
+	if idx <= 0 {
+		return true
+	}
+	return shellCommandStopParsingBoundaryByte(command[idx-1])
+}
+
+func shellCommandStopParsingBoundaryAfter(command string, idx int) bool {
+	if idx >= len(command) {
+		return true
+	}
+	return shellCommandStopParsingBoundaryByte(command[idx])
+}
+
+func shellCommandStopParsingBoundaryByte(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n', ';', '|', '&', '(', ')', '{', '}':
+		return true
+	default:
+		return false
+	}
+}
+
+func shellCommandTokenCanBeginNestedCommand(tokens []string, idx int) bool {
+	if idx == 0 {
+		return true
+	}
+	prev := tokens[idx-1]
+	if shellCommandTokenIsSegmentDelimiter(prev) {
+		return true
+	}
+	if prev == "/c" || prev == "-command" || prev == "-c" {
+		return true
+	}
+	return false
 }
 
 func shellCommandShouldPreferRawTokens(tokens []string) bool {

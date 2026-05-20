@@ -714,6 +714,9 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	for _, command := range commands {
 		assessment := assessShellCommandMutation(command)
+		if assessment.Class == shellMutationUnsupported {
+			return ToolExecutionResult{}, shellCommandUnsupportedSyntaxError("run_shell_bundle_background", assessment)
+		}
 		if assessment.Class == shellMutationWorkspaceWrite {
 			return ToolExecutionResult{}, fmt.Errorf("run_shell_bundle_background only supports read-only, verification/build, cache-only, or external-install commands")
 		}
@@ -867,6 +870,9 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
 	assessment := assessShellCommandMutation(command)
+	if assessment.Class == shellMutationUnsupported {
+		return ToolExecutionResult{}, shellCommandUnsupportedSyntaxError("run_shell_background", assessment)
+	}
 	if assessment.Class == shellMutationWorkspaceWrite {
 		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
 	}

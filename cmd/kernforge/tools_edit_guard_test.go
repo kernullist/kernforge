@@ -1503,6 +1503,34 @@ func TestRunShellRejectsInlinePowerShellFileWrites(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsPowerShellStopParsingForms(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"direct":            "git log --% HEAD --output=codex_poc.txt",
+		"powershell_shell":  `powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`,
+		"pwsh_shell":        `pwsh -Command "git log --% HEAD --output=codex_poc.txt"`,
+		"cmd_native_bridge": `cmd /c echo --% > codex_poc.txt`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected PowerShell stop-parsing form to be rejected")
+			}
+			if !strings.Contains(err.Error(), "unsupported shell syntax") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, "codex_poc.txt")); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected codex_poc.txt to remain absent, stat err=%v", statErr)
+			}
+		})
+	}
+}
+
 func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2386,6 +2414,11 @@ func TestAssessShellCommandMutationClassifiesVerificationArtifactCommands(t *tes
 		`rg "[System.IO.File]::WriteAllText" docs`: shellMutationReadOnly,
 		`Get-Command tee`:                          shellMutationReadOnly,
 		`Get-Command copy`:                         shellMutationReadOnly,
+		`git log --% HEAD --output=codex_poc.txt`:  shellMutationUnsupported,
+		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`: shellMutationUnsupported,
+		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                  shellMutationUnsupported,
+		`rg "--%" docs`: shellMutationReadOnly,
+		`powershell -NoProfile -Command "Write-Output '--%'"`: shellMutationReadOnly,
 	}
 
 	for command, want := range cases {
