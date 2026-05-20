@@ -90,6 +90,41 @@ func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	}
 }
 
+func TestGoalStartDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			t.Fatalf("goal creation should not submit an autonomous prompt by default: %s", prompt)
+			return "", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("finish sample objective"); err != nil {
+		t.Fatalf("handleGoalCommand: %v", err)
+	}
+
+	goal, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected active goal")
+	}
+	if goal.Status != goalStatusPending || goal.Iteration != 0 {
+		t.Fatalf("expected pending unrun goal, got %#v", goal)
+	}
+	if !strings.Contains(output.String(), "Goal recorded without starting an autonomous loop") {
+		t.Fatalf("expected no-run hint, got %q", output.String())
+	}
+}
+
 func TestBuildGoalImplementationPromptUsesCodexContinuationDiscipline(t *testing.T) {
 	prompt := buildGoalImplementationPrompt(GoalState{
 		Objective: "Ship <done> & verify all artifacts",
@@ -142,7 +177,7 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("start --run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -211,7 +246,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("start --run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -318,7 +353,7 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --max-iterations 1 create generated review artifact"); err != nil {
+	if err := rt.handleGoalCommand("start --run --max-iterations 1 create generated review artifact"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	if len(prompts) != 3 {
@@ -432,7 +467,7 @@ func TestGoalTokenBudgetBlocksBeforeAgentPrompt(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --token-budget 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("start --run --token-budget 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 

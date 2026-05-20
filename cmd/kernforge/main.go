@@ -560,7 +560,7 @@ type singleGoalOptions struct {
 }
 
 func (rt *runtimeState) runSingleGoal(objective string, filePath string, options ...singleGoalOptions) error {
-	fields := []string{}
+	fields := []string{"--run"}
 	if len(options) > 0 {
 		option := options[0]
 		if option.UntilComplete {

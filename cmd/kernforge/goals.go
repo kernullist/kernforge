@@ -203,7 +203,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		return err
 	}
 	if strings.TrimSpace(options.Objective) == "" {
-		return fmt.Errorf("usage: /goal start [--file GOAL.md|@GOAL.md] [--no-run] [--max-iterations N] <objective>")
+		return fmt.Errorf("usage: /goal start [--file GOAL.md|@GOAL.md] [--run|--no-run] [--max-iterations N] <objective>")
 	}
 	now := time.Now()
 	goal := GoalState{
@@ -241,7 +241,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Created goal: "+goal.ID))
 	if !options.Run {
-		fmt.Fprintln(rt.writer, rt.ui.hintLine("Run it with /goal run "+goal.ID))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Run it with /goal run "+goal.ID+" when you explicitly want automation."))
 		return nil
 	}
 	return rt.runGoalBySelector(goal.ID, options.MaxIterations)
@@ -249,7 +249,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 
 func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions, error) {
 	options := goalStartOptions{
-		Run:           true,
+		Run:           false,
 		MaxIterations: defaultGoalMaxIterations,
 	}
 	objectiveParts := []string{}
@@ -268,6 +268,7 @@ func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions
 		case "--no-rollback":
 			options.AutoRollback = false
 		case "--until-complete":
+			options.Run = true
 			options.MaxIterations = 0
 		case "--file", "-f":
 			if i+1 >= len(fields) {
