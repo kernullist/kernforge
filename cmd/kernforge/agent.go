@@ -2236,12 +2236,23 @@ func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request 
 	if !a.changesAreGeneratedDocumentArtifactsForTurn(request) {
 		return false
 	}
+	artifactApproved := a.generatedDocumentArtifactQualityApproved()
 	for _, call := range calls {
 		if generatedDocumentArtifactValidationToolCall(call) {
 			return true
 		}
+		if artifactApproved && generatedDocumentArtifactPostCompletionToolCall(call) {
+			return true
+		}
 	}
 	return false
+}
+
+func (a *Agent) generatedDocumentArtifactQualityApproved() bool {
+	if a == nil || a.Session == nil || a.Session.LastCodingHarnessReport == nil {
+		return false
+	}
+	return a.Session.LastCodingHarnessReport.Approved
 }
 
 func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
@@ -2260,8 +2271,12 @@ func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
 	}
 }
 
+func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
+	return strings.TrimSpace(call.Name) != ""
+}
+
 func generatedDocumentArtifactValidationToolGuidance() string {
-	return "This is a generated document artifact turn. Do not run shell or review validation after the report is written. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise provide the final answer."
+	return "This is a generated document artifact turn. Do not run shell, review, or additional inspection tools after the report is written and artifact-quality checks have accepted it. Deterministic artifact-quality checks are the post-write gate here. If those checks reported blockers, inspect or edit the document artifact itself; otherwise provide the final answer."
 }
 
 func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool {

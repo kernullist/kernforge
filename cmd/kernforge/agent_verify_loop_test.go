@@ -9034,6 +9034,72 @@ func TestAgentBlocksGeneratedDocumentPostWriteShellValidationAfterHarnessFeedbac
 	}
 }
 
+func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	for _, call := range []ToolCall{
+		{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
+		{Name: "list_files", Arguments: `{"path":"Tavern"}`},
+		{Name: "grep", Arguments: `{"path":"Tavern/BugReport.md","pattern":"BUG-"}`},
+		{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md","content":"# report"}`},
+	} {
+		if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{call}) {
+			t.Fatalf("expected approved generated document artifact to block post-completion tool call %#v", call)
+		}
+	}
+}
+
+func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session.Messages = []Message{{Role: "user", Text: request}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: false}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+		t.Fatalf("expected document inspection to remain available before artifact quality approval")
+	}
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(request, []ToolCall{{Name: "run_shell", Arguments: `{"command":"echo validate"}`}}) {
+		t.Fatalf("expected shell validation to remain blocked for generated document artifact turns")
+	}
+}
+
 func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
 	root := t.TempDir()
 	provider := &streamingScriptedProviderClient{
