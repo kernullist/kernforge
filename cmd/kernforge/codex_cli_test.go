@@ -59,7 +59,7 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 	models, err := parseCodexCLIModelsJSON([]byte(strings.Join([]string{
 		"plugin warning before json",
 		`{"models":[` +
-			`{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list","priority":0},` +
+			`{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list","priority":0,"supports_image_detail_original":true},` +
 			`{"slug":"gpt-5.5","display_name":"duplicate","supported_in_api":true,"visibility":"list","priority":1},` +
 			`{"slug":"hidden-model","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},` +
 			`{"slug":"unsupported-model","display_name":"Unsupported","supported_in_api":false,"visibility":"list"},` +
@@ -71,7 +71,7 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 		t.Fatalf("parseCodexCLIModelsJSON: %v", err)
 	}
 	want := []CodexCLIModelInfo{
-		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0},
+		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0, SupportsImageDetailOriginal: true},
 		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0},
 	}
 	if !reflect.DeepEqual(models, want) {

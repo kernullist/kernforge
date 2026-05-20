@@ -598,7 +598,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			Model:       a.Session.Model,
 			System:      a.systemPrompt(),
 			Messages:    a.Session.Messages,
-			Tools:       a.Tools.DefinitionsExcluding(turnDisabledTools),
+			Tools:       adaptToolDefinitionsForImageDetailSupport(a.Tools.DefinitionsExcluding(turnDisabledTools), a.Session.Provider, a.Session.Model),
 			MaxTokens:   a.Config.MaxTokens,
 			Temperature: a.Config.Temperature,
 			WorkingDir:  a.Session.WorkingDir,
@@ -1472,7 +1472,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				result = userChangeIsolationToolResult(call, isolationErr)
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
-				result, err = a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
+				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
+				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
 			}
 			a.rebaselineUserChangeIsolationFromRead(call, err)

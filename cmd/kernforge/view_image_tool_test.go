@@ -79,6 +79,34 @@ func TestViewImageToolRejectsDirectory(t *testing.T) {
 	}
 }
 
+func TestViewImageToolDowngradesOriginalWhenContextDisallows(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+	tool := NewViewImageTool(Workspace{BaseRoot: dir, Root: dir})
+	ctx := contextWithOriginalImageDetailSupport(context.Background(), false)
+
+	result, err := tool.ExecuteDetailed(ctx, map[string]any{
+		"path":   "shot.png",
+		"detail": imageDetailOriginal,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if len(result.ContentItems) != 1 {
+		t.Fatalf("expected one content item, got %#v", result.ContentItems)
+	}
+	if result.ContentItems[0].Detail != imageDetailHigh {
+		t.Fatalf("expected high detail, got %#v", result.ContentItems[0])
+	}
+	payload := map[string]string{}
+	if err := json.Unmarshal([]byte(result.DisplayText), &payload); err != nil {
+		t.Fatalf("display JSON: %v", err)
+	}
+	if payload["detail"] != imageDetailHigh {
+		t.Fatalf("display detail = %q, want high", payload["detail"])
+	}
+}
+
 func TestLoadImageForPromptDownscalesLargePNG(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.png")

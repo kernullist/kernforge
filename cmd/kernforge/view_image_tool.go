@@ -81,6 +81,11 @@ func (t ViewImageTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	if detail == "" {
 		detail = imageDetailHigh
 	}
+	if detail == imageDetailOriginal {
+		if supported, ok := originalImageDetailSupportFromContext(ctx); ok && !supported {
+			detail = imageDetailHigh
+		}
+	}
 	absPath, err := t.ws.ResolveForLookup(filepath.FromSlash(rawPath))
 	if err != nil {
 		return ToolExecutionResult{}, err

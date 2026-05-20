@@ -517,6 +517,105 @@ func TestAgentAddsAllToolPlaceholdersBeforeNextModelTurn(t *testing.T) {
 	}
 }
 
+func TestAgentHidesOriginalViewImageDetailForUnsupportedCodexModel(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "openai-codex", "gpt-5.2", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewViewImageTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect image"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(provider.requests) < 1 {
+		t.Fatalf("expected at least one request, got %d", len(provider.requests))
+	}
+	tool := findToolDefinitionForTest(provider.requests[0].Tools, "view_image")
+	if tool == nil {
+		t.Fatalf("request missing view_image tool: %#v", provider.requests[0].Tools)
+	}
+	props := tool.InputSchema["properties"].(map[string]any)
+	if _, ok := props["detail"]; ok {
+		t.Fatalf("unsupported Codex model should not receive detail property: %#v", props["detail"])
+	}
+}
+
+func TestAgentDowngradesOriginalViewImageResultForUnsupportedCodexModel(t *testing.T) {
+	root := t.TempDir()
+	writeTestImage(t, root, "shot.png")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(ToolCall{
+				ID:        "call-image",
+				Name:      "view_image",
+				Arguments: `{"path":"shot.png","detail":"original"}`,
+			}),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "openai-codex", "gpt-5.2", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewViewImageTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect image"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected follow-up request after view_image, got %d", len(provider.requests))
+	}
+	toolMsg := findToolMessageForTest(provider.requests[1].Messages, "call-image")
+	if toolMsg == nil {
+		t.Fatalf("follow-up request missing tool message: %#v", provider.requests[1].Messages)
+	}
+	if len(toolMsg.ToolContentItems) != 1 {
+		t.Fatalf("expected one tool content item, got %#v", toolMsg.ToolContentItems)
+	}
+	if toolMsg.ToolContentItems[0].Detail != imageDetailHigh {
+		t.Fatalf("tool image detail = %q, want high", toolMsg.ToolContentItems[0].Detail)
+	}
+	if !strings.Contains(toolMsg.Text, `"detail":"high"`) {
+		t.Fatalf("tool text should report high detail, got %q", toolMsg.Text)
+	}
+}
+
+func findToolDefinitionForTest(tools []ToolDefinition, name string) *ToolDefinition {
+	for i := range tools {
+		if tools[i].Name == name {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+func findToolMessageForTest(messages []Message, callID string) *Message {
+	for i := range messages {
+		if messages[i].Role == "tool" && messages[i].ToolCallID == callID {
+			return &messages[i]
+		}
+	}
+	return nil
+}
+
 func TestAgentDefersEditToolWhenMixedWithReadOnlyTool(t *testing.T) {
 	root := t.TempDir()
 	readTool := &staticTool{name: "read_file", output: "fresh source"}

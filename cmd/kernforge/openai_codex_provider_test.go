@@ -531,7 +531,7 @@ func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
 		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list"},{"slug":"hidden","display_name":"Hidden","supported_in_api":true,"visibility":"hidden"}]}`))
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list","supports_image_detail_original":true},{"slug":"hidden","display_name":"Hidden","supported_in_api":true,"visibility":"hidden"}]}`))
 	}))
 	defer server.Close()
 
@@ -541,6 +541,9 @@ func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.5" || models[0].Name != "GPT-5.5" {
 		t.Fatalf("unexpected models: %#v", models)
+	}
+	if !models[0].SupportsImageDetailOriginal {
+		t.Fatalf("expected supports_image_detail_original to be preserved: %#v", models[0])
 	}
 }
 

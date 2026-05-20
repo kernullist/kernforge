@@ -5368,28 +5368,29 @@ func limitOpenAICompatibleModelLabels(models []OpenAICompatibleModelInfo, limit 
 }
 
 type codexCLIModelOption struct {
-	ID   string
-	Name string
+	ID                          string
+	Name                        string
+	SupportsImageDetailOriginal bool
 }
 
 var codexCLIModels = []codexCLIModelOption{
-	{codexCLIDefaultModel, "Codex CLI default"},
-	{"gpt-5.5", "GPT-5.5"},
-	{"gpt-5.5-pro", "GPT-5.5 Pro"},
-	{"gpt-5.4", "GPT-5.4"},
-	{"gpt-5.4-pro", "GPT-5.4 Pro"},
-	{"gpt-5.4-mini", "GPT-5.4 Mini"},
-	{"gpt-5.3-codex", "GPT-5.3 Codex"},
-	{"gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"},
-	{"gpt-5.2", "GPT-5.2"},
-	{"gpt-5.2-codex", "GPT-5.2 Codex"},
-	{"gpt-5.1", "GPT-5.1"},
-	{"gpt-5.1-codex", "GPT-5.1 Codex"},
-	{"gpt-5.1-codex-max", "GPT-5.1 Codex Max"},
-	{"gpt-5.1-codex-mini", "GPT-5.1 Codex Mini"},
-	{"gpt-5", "GPT-5"},
-	{"gpt-5-codex", "GPT-5 Codex"},
-	{"codex-mini-latest", "Codex Mini Latest"},
+	{ID: codexCLIDefaultModel, Name: "Codex CLI default", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.5", Name: "GPT-5.5", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.5-pro", Name: "GPT-5.5 Pro", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.4", Name: "GPT-5.4", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.3-codex-spark", Name: "GPT-5.3 Codex Spark", SupportsImageDetailOriginal: true},
+	{ID: "gpt-5.2", Name: "GPT-5.2"},
+	{ID: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
+	{ID: "gpt-5.1", Name: "GPT-5.1"},
+	{ID: "gpt-5.1-codex", Name: "GPT-5.1 Codex"},
+	{ID: "gpt-5.1-codex-max", Name: "GPT-5.1 Codex Max"},
+	{ID: "gpt-5.1-codex-mini", Name: "GPT-5.1 Codex Mini"},
+	{ID: "gpt-5", Name: "GPT-5"},
+	{ID: "gpt-5-codex", Name: "GPT-5 Codex"},
+	{ID: "codex-mini-latest", Name: "Codex Mini Latest"},
 }
 
 func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error) {
@@ -5585,7 +5586,11 @@ func (rt *runtimeState) codexCLIModelChoices(currentModel string) []codexCLIMode
 		if name == "" {
 			name = id
 		}
-		choices = append(choices, codexCLIModelOption{ID: id, Name: name})
+		choices = append(choices, codexCLIModelOption{
+			ID:                          id,
+			Name:                        name,
+			SupportsImageDetailOriginal: model.SupportsImageDetailOriginal,
+		})
 		seen[strings.ToLower(id)] = true
 	}
 	currentModel = strings.TrimSpace(currentModel)
@@ -5618,7 +5623,11 @@ func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIM
 			if name == "" {
 				name = id
 			}
-			choices = append(choices, codexCLIModelOption{ID: id, Name: name})
+			choices = append(choices, codexCLIModelOption{
+				ID:                          id,
+				Name:                        name,
+				SupportsImageDetailOriginal: model.SupportsImageDetailOriginal,
+			})
 			seen[strings.ToLower(id)] = true
 		}
 	}

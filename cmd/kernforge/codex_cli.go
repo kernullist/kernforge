@@ -21,11 +21,12 @@ const (
 type codexCLICommandRunner func(ctx context.Context, executable string, args []string, dir string, env []string) ([]byte, error)
 
 type CodexCLIModelInfo struct {
-	ID             string
-	Name           string
-	SupportedInAPI bool
-	Visibility     string
-	Priority       int
+	ID                          string
+	Name                        string
+	SupportedInAPI              bool
+	Visibility                  string
+	Priority                    int
+	SupportsImageDetailOriginal bool
 }
 
 type CodexCLIClient struct {
@@ -180,13 +181,14 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 	}
 	var decoded struct {
 		Models []struct {
-			Slug           string `json:"slug"`
-			ID             string `json:"id"`
-			Name           string `json:"name"`
-			DisplayName    string `json:"display_name"`
-			SupportedInAPI *bool  `json:"supported_in_api"`
-			Visibility     string `json:"visibility"`
-			Priority       int    `json:"priority"`
+			Slug                        string `json:"slug"`
+			ID                          string `json:"id"`
+			Name                        string `json:"name"`
+			DisplayName                 string `json:"display_name"`
+			SupportedInAPI              *bool  `json:"supported_in_api"`
+			Visibility                  string `json:"visibility"`
+			Priority                    int    `json:"priority"`
+			SupportsImageDetailOriginal bool   `json:"supports_image_detail_original"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -220,12 +222,14 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			name = id
 		}
 		models = append(models, CodexCLIModelInfo{
-			ID:             id,
-			Name:           name,
-			SupportedInAPI: item.SupportedInAPI == nil || *item.SupportedInAPI,
-			Visibility:     strings.TrimSpace(item.Visibility),
-			Priority:       item.Priority,
+			ID:                          id,
+			Name:                        name,
+			SupportedInAPI:              item.SupportedInAPI == nil || *item.SupportedInAPI,
+			Visibility:                  strings.TrimSpace(item.Visibility),
+			Priority:                    item.Priority,
+			SupportsImageDetailOriginal: item.SupportsImageDetailOriginal,
 		})
+		registerCodexModelImageDetailSupport(id, item.SupportsImageDetailOriginal)
 		seen[strings.ToLower(id)] = true
 	}
 	return models, nil
