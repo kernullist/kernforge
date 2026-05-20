@@ -65,6 +65,51 @@ func TestPatchTransactionRecordsWriteFileAndFinalizes(t *testing.T) {
 	}
 }
 
+func TestCodingHarnessSourcePromptSkipsInternalReviewerFeedback(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := &Session{
+		Messages: []Message{
+			{Role: "user", Text: original},
+			{Role: "user", Text: "Reviewer feedback: the proposed final answer is not ready yet. Revise before concluding."},
+		},
+	}
+
+	if got := codingHarnessSourcePrompt(session); got != original {
+		t.Fatalf("expected source prompt to preserve original user request, got %q", got)
+	}
+}
+
+func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
+	root := t.TempDir()
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "user", Text: "Reviewer feedback: the proposed final answer is not ready yet. Revise before concluding."},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	agent.recordPatchTransactionFromToolMetaIfNeeded(
+		ToolCall{Name: "write_file", Arguments: `{"path":"Tavern/BugReport.md"}`},
+		ToolExecutionResult{Meta: map[string]any{
+			"effect":            "edit",
+			"changed_workspace": true,
+			"changed_paths":     []string{"Tavern/BugReport.md"},
+		}},
+		nil,
+	)
+
+	if session.ActivePatchTransaction == nil {
+		t.Fatalf("expected patch transaction")
+	}
+	if got := session.ActivePatchTransaction.Goal; got != original {
+		t.Fatalf("expected patch transaction goal to preserve original user request, got %q", got)
+	}
+}
+
 func TestAcceptanceContractExtractsArtifactsAndVerificationIntent(t *testing.T) {
 	contract := buildAcceptanceContract(
 		"docs/result.md 파일을 생성하고 테스트까지 실행해줘",

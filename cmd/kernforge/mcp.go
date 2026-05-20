@@ -107,6 +107,52 @@ type MCPPromptTool struct {
 	client *MCPClient
 }
 
+type mcpTurnMetadataContextKey struct{}
+
+const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
+
+func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	metadata = cloneStringAnyMap(metadata)
+	if len(metadata) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, mcpTurnMetadataContextKey{}, metadata)
+}
+
+func mcpToolCallRequestMetaFromContext(ctx context.Context) map[string]any {
+	if ctx == nil {
+		return nil
+	}
+	metadata, ok := ctx.Value(mcpTurnMetadataContextKey{}).(map[string]any)
+	if !ok || len(metadata) == 0 {
+		return nil
+	}
+	return map[string]any{
+		mcpTurnMetadataMetaKey: cloneStringAnyMap(metadata),
+	}
+}
+
+func cloneStringAnyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []string) {
 	manager := &MCPManager{}
 	warnings := []string{}
@@ -815,10 +861,14 @@ func (c *MCPClient) callTool(ctx context.Context, name string, args any) (string
 
 func (c *MCPClient) callToolDetailed(ctx context.Context, name string, args any) (ToolExecutionResult, error) {
 	started := time.Now()
-	result, err := c.request(ctx, "tools/call", map[string]any{
+	params := map[string]any{
 		"name":      name,
 		"arguments": args,
-	})
+	}
+	if requestMeta := mcpToolCallRequestMetaFromContext(ctx); len(requestMeta) > 0 {
+		params["_meta"] = requestMeta
+	}
+	result, err := c.request(ctx, "tools/call", params)
 	wallTime := time.Since(started)
 	if err != nil {
 		return ToolExecutionResult{}, err

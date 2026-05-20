@@ -14,6 +14,44 @@ func codingHarnessSourcePrompt(sess *Session) string {
 			return prompt
 		}
 	}
+	if prompt := latestExternalUserMessageText(sess.Messages); prompt != "" {
+		return prompt
+	}
+	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
+}
+
+func latestExternalUserMessageText(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			continue
+		}
+		return text
+	}
+	return ""
+}
+
+func patchTransactionGoalFromSession(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
+	if goal := latestExternalUserMessageText(sess.Messages); goal != "" {
+		return goal
+	}
+	if sess.AcceptanceContract != nil {
+		if prompt := strings.TrimSpace(sess.AcceptanceContract.SourcePrompt); prompt != "" {
+			return prompt
+		}
+	}
+	if sess.TaskState != nil {
+		if goal := strings.TrimSpace(sess.TaskState.Goal); goal != "" && !looksLikeInternalReviewFeedbackUserMessage(goal) {
+			return strings.TrimSpace(baseUserQueryText(goal))
+		}
+	}
 	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
 }
 

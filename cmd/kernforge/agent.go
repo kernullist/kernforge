@@ -1473,6 +1473,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
+				toolCtx = contextWithMCPTurnMetadata(toolCtx, a.mcpTurnMetadataForToolCall())
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
@@ -6295,6 +6296,23 @@ func pathLooksLikeDocumentArtifact(path string) bool {
 	return containsAny(lower,
 		"/analysis/", "/document/", "/documents/", "/docs/", "/legal/", "/notes/", "/report/", "/reports/", "/research/",
 	)
+}
+
+func (a *Agent) mcpTurnMetadataForToolCall() map[string]any {
+	if a == nil || a.Session == nil {
+		return nil
+	}
+	metadata := map[string]any{}
+	if model := strings.TrimSpace(a.Session.Model); model != "" {
+		metadata["model"] = model
+	}
+	if effort := normalizeReasoningEffort(a.Config.ReasoningEffort); effort != "" {
+		metadata["reasoning_effort"] = effort
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
 }
 
 func (a *Agent) systemPrompt() string {

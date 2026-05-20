@@ -558,12 +558,14 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 	return strings.HasPrefix(lower, "automatic pre-write review ") ||
 		strings.HasPrefix(lower, "automatic post-change review ") ||
 		strings.HasPrefix(lower, "automatic verification ") ||
+		strings.HasPrefix(lower, "reviewer feedback:") ||
 		strings.HasPrefix(lower, "final review result:") ||
 		strings.HasPrefix(lower, "repair targets checked:") ||
 		strings.HasPrefix(lower, "remaining review items:") ||
 		strings.HasPrefix(lower, "자동 쓰기 전 리뷰") ||
 		strings.HasPrefix(lower, "자동 변경 후 리뷰") ||
 		strings.HasPrefix(lower, "자동 검증") ||
+		strings.HasPrefix(lower, "리뷰어 피드백:") ||
 		strings.HasPrefix(lower, "도구 경로 업데이트 후 자동 검증") ||
 		hasInternalReviewPrefix ||
 		hasToolFailurePrefix ||
@@ -588,6 +590,7 @@ func looksLikePreWriteInternalContextMessage(text string) bool {
 		strings.HasPrefix(lower, "the normal tool budget has been exhausted") ||
 		strings.HasPrefix(lower, "blocked web research tool call during local code review/repair") ||
 		strings.HasPrefix(lower, "this is a local code review or repair request") ||
+		strings.HasPrefix(lower, "this is a generated document artifact turn") ||
 		strings.HasPrefix(lower, "this is local code review/repair work") ||
 		strings.HasPrefix(lower, "this is still local code review/repair work") ||
 		strings.HasPrefix(lower, "recovered transcript note:") ||

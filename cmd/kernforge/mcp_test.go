@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -70,6 +71,14 @@ func TestMCPHelperProcess(t *testing.T) {
 			params, _ := msg["params"].(map[string]any)
 			args, _ := params["arguments"].(map[string]any)
 			message, _ := args["message"].(string)
+			structured := map[string]any{
+				"echoed": message,
+			}
+			if message == "meta" {
+				if requestMeta, ok := params["_meta"].(map[string]any); ok {
+					structured["request_meta"] = requestMeta
+				}
+			}
 			_ = writeRPCMessage(os.Stdout, map[string]any{
 				"jsonrpc": "2.0",
 				"id":      msg["id"],
@@ -78,9 +87,7 @@ func TestMCPHelperProcess(t *testing.T) {
 						"type": "text",
 						"text": fmt.Sprintf("echo: %s", message),
 					}},
-					"structuredContent": map[string]any{
-						"echoed": message,
-					},
+					"structuredContent": structured,
 					"_meta": map[string]any{
 						"trace_id": "trace-" + message,
 					},
@@ -555,6 +562,117 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	}
 	if _, ok := mcpResult["structured_content"]; ok {
 		t.Fatalf("event JSONL must not snake-case MCP structuredContent: %#v", mcpResult)
+	}
+}
+
+func TestMCPToolCallIncludesTurnMetadataRequestMeta(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	ctx := contextWithMCPTurnMetadata(context.Background(), map[string]any{
+		"user_input_requested_during_turn": true,
+	})
+	registry := NewToolRegistry(manager.Tools()...)
+	result, err := registry.ExecuteDetailed(ctx, "mcp__fake__echo", `{"message":"meta"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed echo: %v", err)
+	}
+	structured, ok := result.Meta["mcp_result_structured_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected structuredContent metadata, got %#v", result.Meta["mcp_result_structured_content"])
+	}
+	requestMeta, ok := structured["request_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected helper to receive MCP request _meta, got %#v", structured)
+	}
+	turnMeta, ok := requestMeta[mcpTurnMetadataMetaKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected %s metadata, got %#v", mcpTurnMetadataMetaKey, requestMeta)
+	}
+	if got := turnMeta["user_input_requested_during_turn"]; got != true {
+		t.Fatalf("expected user input turn marker to be true, got %#v in %#v", got, turnMeta)
+	}
+}
+
+func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("mcp__fake__echo", map[string]any{"message": "meta"}),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(dir, "scripted", "model-a", "high", "default")
+	agent := &Agent{
+		Config: Config{
+			Model:           "model-a",
+			ReasoningEffort: "high",
+			AutoLocale:      boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(manager.Tools()...),
+		Workspace: Workspace{BaseRoot: dir, Root: dir},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(dir, "sessions")),
+	}
+
+	if _, err := agent.Reply(context.Background(), "call the MCP echo tool"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+
+	var toolMsg *Message
+	for i := range session.Messages {
+		if session.Messages[i].Role == "tool" && session.Messages[i].ToolName == "mcp__fake__echo" {
+			toolMsg = &session.Messages[i]
+			break
+		}
+	}
+	if toolMsg == nil {
+		t.Fatalf("expected MCP tool result in session messages: %#v", session.Messages)
+	}
+	structured, ok := toolMsg.ToolMeta["mcp_result_structured_content"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP structuredContent metadata, got %#v", toolMsg.ToolMeta)
+	}
+	requestMeta, ok := structured["request_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected MCP request _meta, got %#v", structured)
+	}
+	turnMeta, ok := requestMeta[mcpTurnMetadataMetaKey].(map[string]any)
+	if !ok {
+		t.Fatalf("expected %s metadata, got %#v", mcpTurnMetadataMetaKey, requestMeta)
+	}
+	if got := turnMeta["model"]; got != "model-a" {
+		t.Fatalf("expected model metadata, got %#v in %#v", got, turnMeta)
+	}
+	if got := turnMeta["reasoning_effort"]; got != "high" {
+		t.Fatalf("expected reasoning effort metadata, got %#v in %#v", got, turnMeta)
 	}
 }
 

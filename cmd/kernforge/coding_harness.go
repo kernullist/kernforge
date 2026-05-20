@@ -684,7 +684,7 @@ func (a *Agent) beginPatchTransactionToolProbe(call ToolCall) *PatchTransactionP
 	if len(scopes) == 0 {
 		return nil
 	}
-	goal := latestUserMessageText(a.Session.Messages)
+	goal := patchTransactionGoalFromSession(a.Session)
 	tx := a.Session.ensurePatchTransaction(goal, a.Workspace.Root)
 	if tx == nil {
 		return nil
@@ -786,7 +786,7 @@ func (a *Agent) recordPatchTransactionFromToolMetaIfNeeded(call ToolCall, result
 		return
 	}
 	scopes := resolveHarnessScopes(a.Workspace, strings.TrimSpace(toolMetaString(result.Meta, "owner_node_id")), paths, false)
-	tx := a.Session.ensurePatchTransaction(latestUserMessageText(a.Session.Messages), a.Workspace.Root)
+	tx := a.Session.ensurePatchTransaction(patchTransactionGoalFromSession(a.Session), a.Workspace.Root)
 	if tx == nil {
 		return
 	}
