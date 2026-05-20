@@ -9100,6 +9100,84 @@ func TestAgentAllowsGeneratedDocumentArtifactInspectionBeforeHarnessApproval(t *
 	}
 }
 
+func TestAgentRoutesGeneratedDocumentCommentaryReplyThroughArtifactHarness(t *testing.T) {
+	root := t.TempDir()
+	badReportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 3 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+	}, "\n")
+	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": badReportContent,
+			}),
+			{
+				Message: Message{
+					Role:  "assistant",
+					Phase: messagePhaseCommentary,
+					Text:  "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": goodReportContent,
+			}),
+			{
+				Message: Message{
+					Role:  "assistant",
+					Phase: messagePhaseCommentary,
+					Text:  "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "총 2개") {
+		t.Fatalf("expected commentary document reply to pass through artifact harness and repair, got %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected rejected commentary summary to trigger one repair turn, got %d requests", len(provider.requests))
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected final commentary document harness report to be approved, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
 func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
 	root := t.TempDir()
 	provider := &streamingScriptedProviderClient{

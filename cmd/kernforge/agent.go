@@ -917,40 +917,47 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			reply := strings.TrimSpace(resp.Message.Text)
 			if resp.Message.Phase == messagePhaseCommentary {
-				if reply != "" {
-					commentaryOnlyReplies = 0
-					if a.EmitAssistant != nil && reply != a.lastEmittedText {
-						a.EmitAssistant(reply)
-						a.lastEmittedText = reply
+				if a.shouldRouteCommentaryGeneratedDocumentReplyThroughFinalGates(latestUser, reply) {
+					resp.Message.Phase = messagePhaseFinalAnswerCandidate
+					if len(a.Session.Messages) > 0 {
+						a.Session.Messages[len(a.Session.Messages)-1].Phase = messagePhaseFinalAnswerCandidate
 					}
-					if a.Session.TaskState != nil {
-						if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
-							a.Session.TaskState.SetPhase("done")
-							a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
-							a.Session.TaskState.ClearExecutorFocus()
-							a.Session.completeSharedPlan()
+				} else {
+					if reply != "" {
+						commentaryOnlyReplies = 0
+						if a.EmitAssistant != nil && reply != a.lastEmittedText {
+							a.EmitAssistant(reply)
+							a.lastEmittedText = reply
 						}
+						if a.Session.TaskState != nil {
+							if !a.finalizeSelfDrivingWorkLoopOnReturn(reply, unresolvedVerification) && a.shouldCompleteSharedPlanOnReturn(unresolvedVerification) {
+								a.Session.TaskState.SetPhase("done")
+								a.Session.TaskState.SetNextStep("Wait for the next user instruction.")
+								a.Session.TaskState.ClearExecutorFocus()
+								a.Session.completeSharedPlan()
+							}
+						}
+						a.finalizePatchTransactionOnReturn()
+						a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+						a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						return reply, nil
 					}
-					a.finalizePatchTransactionOnReturn()
-					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
-					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+					commentaryOnlyReplies++
+					if commentaryOnlyReplies >= 3 {
+						return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
+					}
+					a.Session.AddMessage(Message{
+						Role: "user",
+						Text: "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message.",
+					})
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
-					return reply, nil
+					continue
 				}
-				commentaryOnlyReplies++
-				if commentaryOnlyReplies >= 3 {
-					return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
-				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message.",
-				})
-				if err := a.Store.Save(a.Session); err != nil {
-					return "", err
-				}
-				continue
 			}
 			if reply != "" {
 				commentaryOnlyReplies = 0
@@ -2208,6 +2215,16 @@ func (a *Agent) shouldFinalizeGeneratedDocumentArtifactReply(request string, rep
 	}
 	report := a.Session.LastCodingHarnessReport
 	return report != nil && report.Approved
+}
+
+func (a *Agent) shouldRouteCommentaryGeneratedDocumentReplyThroughFinalGates(request string, reply string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if strings.TrimSpace(reply) == "" {
+		return false
+	}
+	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
 func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, resp ChatResponse) bool {
