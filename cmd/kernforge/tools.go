@@ -3062,7 +3062,68 @@ func shellCommandUnsafeReadOnlyToolReason(command string) string {
 	if reason := shellCommandUnsafeGitReason(command); reason != "" {
 		return reason
 	}
+	if reason := shellCommandUnsafeShellExpansionReason(command); reason != "" {
+		return reason
+	}
 	return ""
+}
+
+func shellCommandUnsafeShellExpansionReason(command string) string {
+	tokens := splitShellCommandWords(shellCommandSeparatorsForTokenizing(strings.ToLower(strings.TrimSpace(command))))
+	for start := 0; start < len(tokens); {
+		for start < len(tokens) && shellCommandTokenIsSegmentDelimiter(tokens[start]) {
+			start++
+		}
+		end := start
+		for end < len(tokens) && !shellCommandTokenIsSegmentDelimiter(tokens[end]) {
+			end++
+		}
+		if start < end {
+			payload := shellCommandPOSIXShellPayload(tokens[start:end])
+			if payload != "" && shellCommandContainsUnquotedShellExpansion(payload) {
+				return "POSIX shell expansion can rewrite arguments for a read-only-looking command"
+			}
+		}
+		start = end + 1
+	}
+	return ""
+}
+
+func shellCommandPOSIXShellPayload(tokens []string) string {
+	if len(tokens) == 0 {
+		return ""
+	}
+	base := shellTokenBaseName(tokens[0])
+	if base != "bash" && base != "sh" && base != "zsh" {
+		return ""
+	}
+	unwrapped := unwrapShellCommandLCWrapperTokens(tokens)
+	if len(unwrapped) == len(tokens) {
+		return ""
+	}
+	return strings.Join(unwrapped, " ")
+}
+
+func shellCommandContainsUnquotedShellExpansion(command string) bool {
+	quote := byte(0)
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		if ch == '\'' || ch == '"' {
+			quote = ch
+			continue
+		}
+		switch ch {
+		case '*', '?', '[', ']', '{', '}':
+			return true
+		}
+	}
+	return false
 }
 
 func shellCommandUnsafeGitReason(command string) string {

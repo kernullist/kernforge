@@ -1636,6 +1636,32 @@ func TestRunShellRejectsUnsafeGitReadOnlyForms(t *testing.T) {
 	}
 }
 
+func TestRunShellRejectsPOSIXShellExpansionForms(t *testing.T) {
+	root := t.TempDir()
+	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
+
+	cases := map[string]string{
+		"glob_option_injection": `bash -lc "base64 -i input.txt -* cc06_out"`,
+		"glob_path":             `bash -lc "ls *.rs"`,
+		"brace_expansion":       `bash -lc "echo -{o,}"`,
+		"bracket_glob":          `sh -lc "cat [ab].txt"`,
+		"zsh_question_glob":     `zsh -lc "cat file?.txt"`,
+	}
+	for name, command := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := tool.Execute(context.Background(), map[string]any{
+				"command": command,
+			})
+			if err == nil {
+				t.Fatalf("expected shell expansion command to be rejected")
+			}
+			if !strings.Contains(err.Error(), "read-only-looking tool form") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunShellRejectsManualFileWriteEvenWithScopedWritePaths(t *testing.T) {
 	root := t.TempDir()
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
@@ -2596,6 +2622,12 @@ EOF"`: shellMutationWorkspaceWrite,
 		`git branch -d feature/test`:                             shellMutationUnsafe,
 		`powershell -NoProfile -Command "git --paginate log -1"`: shellMutationUnsafe,
 		`bash -lc "git --git-dir=.evil-git diff HEAD~1..HEAD"`:   shellMutationUnsafe,
+		`bash -lc "base64 -i input.txt -* cc06_out"`:             shellMutationUnsafe,
+		`bash -lc "ls *.rs"`:                                     shellMutationUnsafe,
+		`bash -lc "echo -{o,}"`:                                  shellMutationUnsafe,
+		`sh -lc "cat [ab].txt"`:                                  shellMutationUnsafe,
+		`zsh -lc "cat file?.txt"`:                                shellMutationUnsafe,
+		`bash -lc "echo '-*' '*.rs' '-{o,}'"`:                    shellMutationReadOnly,
 		`git log -p -1`:                                          shellMutationReadOnly,
 		`git show -p HEAD`:                                       shellMutationReadOnly,
 		`git branch`:                                             shellMutationReadOnly,
