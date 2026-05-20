@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,96 @@ func TestArtifactQualityBlocksBugReportCountMismatch(t *testing.T) {
 		if !strings.Contains(feedback, want) {
 			t.Fatalf("expected %q in feedback, got %q", want, feedback)
 		}
+	}
+}
+
+func TestArtifactQualityBlocksBugReportDocumentedClaimAndAbbreviatedSeverityListMismatch(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportLines := []string{
+		"# Tavern Bug Report",
+		"",
+		"- **27 documented bugs**",
+		"",
+		"| Severity | Count | Bug IDs |",
+		"|----------|-------|---------|",
+		"| Critical | 4 | BUG-001, 002, 003, 020, 024 |",
+		"| High | 7 | BUG-004, 005, 006, 007, 008, 009, 010 |",
+		"| Medium | 9 | BUG-011, 012, 013, 014, 015, 016, 017, 018, 019 |",
+		"| Low | 6 | BUG-020, 021, 022, 023, 024, 025 |",
+		"",
+	}
+	for i := 1; i <= 26; i++ {
+		reportLines = append(reportLines,
+			fmt.Sprintf("## BUG-%03d", i),
+			"- File: sample.cpp",
+			"- Impact: documented issue.",
+			"",
+		)
+	}
+	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	contract := buildAcceptanceContract("각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해", TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 27 documented bugs.", false, false)
+	if report.Approved {
+		t.Fatalf("expected inconsistent documented bug report counts to block approval: %#v", report.ArtifactQuality)
+	}
+	feedback := report.BlockingFeedback()
+	for _, want := range []string{
+		"Artifact total does not match bug IDs",
+		"critical severity row claims 4 but lists 5 BUG IDs",
+	} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("expected %q in feedback, got %q", want, feedback)
+		}
+	}
+}
+
+func TestArtifactQualityAllowsSeveritySummaryBugIDsWithLineNumbers(t *testing.T) {
+	text := strings.Join([]string{
+		"# Bug Report",
+		"",
+		"1 documented bug",
+		"",
+		"| Severity | Count | Bug IDs |",
+		"|----------|-------|---------|",
+		"| Critical | 1 | BUG-001 at RuntimeManager.cpp:120 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: RuntimeManager.cpp:120",
+	}, "\n")
+
+	profile := analyzeBugReportDocumentCounts(text)
+	if len(profile.Conflicts) > 0 {
+		t.Fatalf("expected line numbers near BUG IDs not to be counted as abbreviated IDs, got %#v", profile.Conflicts)
+	}
+	if profile.UniqueBugIDs != 1 || profile.SeverityTotal != 1 {
+		t.Fatalf("expected one bug and one severity count, got %#v", profile)
 	}
 }
 

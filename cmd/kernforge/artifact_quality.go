@@ -221,27 +221,92 @@ func collectSeveritySummaryCounts(text string) (map[string]int, []string) {
 	counts := make(map[string]int)
 	var conflicts []string
 	for _, line := range strings.Split(text, "\n") {
-		if !strings.Contains(line, "|") {
+		if strings.Contains(line, "|") {
+			cells := markdownTableCells(line)
+			for i, cell := range cells {
+				severity, ok := canonicalBugSeverityLabel(cell)
+				if !ok {
+					continue
+				}
+				count, found := firstIntegerInCells(cells[i+1:])
+				if !found {
+					continue
+				}
+				conflicts = append(conflicts, recordBugSeverityCount(counts, severity, count)...)
+				if listed := bugReferenceCountInLine(line); listed > 0 && listed != count {
+					conflicts = append(conflicts, fmt.Sprintf("%s severity row claims %d but lists %d BUG IDs", severity, count, listed))
+				}
+			}
 			continue
 		}
-		cells := markdownTableCells(line)
-		for i, cell := range cells {
-			severity, ok := canonicalBugSeverityLabel(cell)
-			if !ok {
-				continue
+		severity, count, ok := severityCountFromTextLine(line)
+		if ok {
+			conflicts = append(conflicts, recordBugSeverityCount(counts, severity, count)...)
+			if listed := bugReferenceCountInLine(line); listed > 0 && listed != count {
+				conflicts = append(conflicts, fmt.Sprintf("%s severity line claims %d but lists %d BUG IDs", severity, count, listed))
 			}
-			count, found := firstIntegerInCells(cells[i+1:])
-			if !found {
-				continue
-			}
-			if previous, exists := counts[severity]; exists && previous != count {
-				conflicts = append(conflicts, fmt.Sprintf("%s severity count is both %d and %d", severity, previous, count))
-				continue
-			}
-			counts[severity] = count
 		}
 	}
 	return counts, normalizeTaskStateList(conflicts, 8)
+}
+
+func recordBugSeverityCount(counts map[string]int, severity string, count int) []string {
+	if previous, exists := counts[severity]; exists && previous != count {
+		return []string{fmt.Sprintf("%s severity count is both %d and %d", severity, previous, count)}
+	}
+	counts[severity] = count
+	return nil
+}
+
+func severityCountFromTextLine(line string) (string, int, bool) {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return "", 0, false
+	}
+	patterns := []*regexp.Regexp{
+		regexp.MustCompile(`(?i)\b(critical|high|medium|low)\b(?:\s*[:：|\-–—]\s*|\s+)(\d{1,5})\b`),
+		regexp.MustCompile(`(치명|높음|중간|낮음)(?:\s*[:：|\-–—]\s*|\s+)(\d{1,5})\b`),
+	}
+	for _, pattern := range patterns {
+		match := pattern.FindStringSubmatch(trimmed)
+		if len(match) < 3 {
+			continue
+		}
+		severity, ok := canonicalBugSeverityLabel(match[1])
+		if !ok {
+			continue
+		}
+		count, err := strconv.Atoi(match[2])
+		if err != nil || count <= 0 {
+			continue
+		}
+		return severity, count, true
+	}
+	return "", 0, false
+}
+
+func bugReferenceCountInLine(line string) int {
+	upper := strings.ToUpper(line)
+	fullIDPattern := regexp.MustCompile(`\bBUG-(\d{3,})\b`)
+	fullMatches := fullIDPattern.FindAllStringSubmatch(upper, -1)
+	if len(fullMatches) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(fullMatches))
+	for _, match := range fullMatches {
+		if len(match) < 2 {
+			continue
+		}
+		seen["BUG-"+match[1]] = struct{}{}
+	}
+	abbreviatedIDPattern := regexp.MustCompile(`(?:^|[,;/(\[])\s*(\d{3,})\b`)
+	for _, match := range abbreviatedIDPattern.FindAllStringSubmatch(upper, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		seen["BUG-"+match[1]] = struct{}{}
+	}
+	return len(seen)
 }
 
 func collectBugTotalClaims(text string) ([]int, []string) {
@@ -355,6 +420,9 @@ func totalBugCountClaimsInText(line string) []int {
 	patterns := []*regexp.Regexp{
 		regexp.MustCompile(`(?i)\b(?:total|overall)\s+(?:of\s+)?(\d{1,5})\s+(?:documented\s+)?bugs?\b`),
 		regexp.MustCompile(`(?i)\b(\d{1,5})\s+(?:documented\s+)?bugs?\s+(?:were\s+)?(?:found|identified|documented)\s+(?:in\s+)?(?:total|overall)\b`),
+		regexp.MustCompile(`(?i)\b(\d{1,5})\s+documented\s+bugs?\b`),
+		regexp.MustCompile(`(?i)\b(\d{1,5})\s+bugs?\s+(?:were\s+)?(?:found|identified)\s+and\s+documented\b`),
+		regexp.MustCompile(`(?i)\b(?:found|identified|documented)\s+(\d{1,5})\s+bugs?\b`),
 		regexp.MustCompile(`총\s*(\d{1,5})\s*개\s*(?:의\s*)?(?:버그|문제)`),
 	}
 	var claims []int
