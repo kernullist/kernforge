@@ -159,9 +159,31 @@ func TestNaturalLanguageReviewSkipsSourceBugDocumentGeneration(t *testing.T) {
 	if looksLikeReviewBeforeFixIntent(request) {
 		t.Fatalf("source bug document generation should not run pre-fix review")
 	}
+	if looksLikeReviewOnlyModeIntent(request) {
+		t.Fatalf("source bug document generation should not enter review-only mode")
+	}
 	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
 	if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
 		t.Fatalf("source bug document generation should be an editable artifact request, got %#v", mode)
+	}
+}
+
+func TestReviewOnlyModeDoesNotSwallowNoSourceEditDocumentGeneration(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		workspace: Workspace{BaseRoot: root, Root: root},
+		session:   NewSession(root, "", "", "", "default"),
+	}
+	request := "소스코드는 수정하지 말고 각 파일을 검토해서 버그를 찾아 보고서로 작성해"
+	if _, _, ok := rt.naturalLanguageReviewOptions(request, nil); ok {
+		t.Fatalf("no-source-edit document generation should stay on normal agent path")
+	}
+	if looksLikeReviewOnlyModeIntent(request) {
+		t.Fatalf("no-source-edit document generation should not be stolen by review-only mode")
+	}
+	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+	if mode.ReadOnlyAnalysis || mode.ReviewOnlyModeRequest || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
+		t.Fatalf("no-source-edit document generation should remain an editable artifact request, got %#v", mode)
 	}
 }
 

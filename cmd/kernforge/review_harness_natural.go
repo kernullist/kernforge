@@ -382,6 +382,9 @@ func looksLikeReviewOnlyModeIntent(input string) bool {
 	if lower == "" || hasNaturalReviewNegation(lower) || !hasNaturalReviewIntent(lower) {
 		return false
 	}
+	if looksLikeReviewArtifactAuthoringRequest(lower) || looksLikeReviewBeforeFixIntent(lower) || looksLikeBugFindingFixIntent(lower) {
+		return false
+	}
 	if hasRepairActionNegation(lower) {
 		return true
 	}

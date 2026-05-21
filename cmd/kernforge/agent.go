@@ -311,7 +311,8 @@ type agentRequestMode struct {
 }
 
 func resolveAgentRequestMode(userText string, intent TurnIntent) agentRequestMode {
-	repairActionNegated := hasRepairActionNegation(userText)
+	documentArtifactEditRequest := looksLikeDocumentAuthoringIntent(userText) && looksLikeExplicitEditIntent(userText)
+	repairActionNegated := hasRepairActionNegation(userText) && !documentArtifactEditRequest
 	explicitEditRequest := looksLikeExplicitEditIntent(userText) && !repairActionNegated
 	reviewOnlyModeRequest := looksLikeReviewOnlyModeIntent(userText) && !explicitEditRequest
 	readOnlyAnalysis := repairActionNegated || prefersReadOnlyAnalysisIntent(userText) || reviewOnlyModeRequest
