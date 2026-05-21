@@ -2730,7 +2730,10 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 	if len(overlay.Capabilities) > 0 {
 		merged.Capabilities = append([]string(nil), overlay.Capabilities...)
 	}
-	merged.Disabled = base.Disabled || overlay.Disabled
+	if overlay.DisabledSet || overlay.Disabled {
+		merged.Disabled = overlay.Disabled
+		merged.DisabledSet = overlay.DisabledSet || overlay.Disabled
+	}
 	merged.Env = mergeMCPServerEnv(base.Env, overlay.Env)
 	merged.EnvVars = mergeMCPServerEnvVars(base.EnvVars, overlay.EnvVars)
 	return merged

@@ -966,6 +966,67 @@ func TestMCPServerConfigForWorkspaceAppliesProfileConfigLayer(t *testing.T) {
 	}
 }
 
+func TestLoadConfigProfileLayerCanReenableMCPServer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(userConfigPath(), []byte(`{
+  "provider": "openai",
+  "model": "gpt-base",
+  "mcp_servers": [
+    {
+      "name": "docs",
+      "command": "node",
+      "args": ["server.js"],
+      "disabled": true,
+      "env": {
+        "BASE_TOKEN": "base"
+      }
+    }
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("mcp-work"), []byte(`{
+  "mcp_servers": [
+    {
+      "name": "docs",
+      "disabled": false,
+      "env": {
+        "PROFILE_TOKEN": "profile"
+      }
+    }
+  ]
+}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "mcp-work"})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if len(cfg.MCPServers) != 1 {
+		t.Fatalf("expected one MCP server, got %#v", cfg.MCPServers)
+	}
+	server := cfg.MCPServers[0]
+	if server.Disabled {
+		t.Fatalf("expected profile disabled=false to re-enable server, got %#v", server)
+	}
+	if !server.DisabledSet {
+		t.Fatalf("expected explicit disabled=false to survive config load, got %#v", server)
+	}
+	if server.Command != "node" || len(server.Args) != 1 || server.Args[0] != "server.js" {
+		t.Fatalf("expected profile layer to inherit base command and args, got %#v", server)
+	}
+	if server.Env["BASE_TOKEN"] != "base" || server.Env["PROFILE_TOKEN"] != "profile" {
+		t.Fatalf("expected merged env across config layers, got %#v", server.Env)
+	}
+}
+
 func TestKernforgeCLIHelpConsumesProfileValue(t *testing.T) {
 	if !kernforgeFlagConsumesHelpValue("-profile") {
 		t.Fatalf("expected -profile to consume its value")
@@ -1893,6 +1954,47 @@ func TestMergeMCPServerConfigPreservesEnvironmentID(t *testing.T) {
 	merged = mergeMCPServerConfig(base, overlay)
 	if merged.EnvironmentID != "remote-overlay" {
 		t.Fatalf("expected overlay environment id, got %#v", merged)
+	}
+}
+
+func TestMCPServerConfigPreservesExplicitDisabledFalse(t *testing.T) {
+	var server MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"docs","command":"node","disabled":false}`), &server); err != nil {
+		t.Fatalf("unmarshal MCP server: %v", err)
+	}
+	if server.Disabled {
+		t.Fatalf("expected disabled=false to keep server enabled, got %#v", server)
+	}
+	if !server.DisabledSet {
+		t.Fatalf("expected disabled=false to be tracked as explicit, got %#v", server)
+	}
+
+	encoded, err := json.Marshal(server)
+	if err != nil {
+		t.Fatalf("marshal MCP server: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"disabled":false`) {
+		t.Fatalf("expected explicit disabled=false to be preserved, got %s", encoded)
+	}
+}
+
+func TestMergeMCPServerConfigAllowsExplicitDisabledFalseOverride(t *testing.T) {
+	base := MCPServerConfig{
+		Name:     "docs",
+		Command:  "node",
+		Disabled: true,
+	}
+	var overlay MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"docs","disabled":false}`), &overlay); err != nil {
+		t.Fatalf("unmarshal overlay: %v", err)
+	}
+
+	merged := mergeMCPServerConfig(base, overlay)
+	if merged.Disabled {
+		t.Fatalf("expected explicit overlay disabled=false to re-enable server, got %#v", merged)
+	}
+	if !merged.DisabledSet {
+		t.Fatalf("expected merged config to preserve explicit disabled=false, got %#v", merged)
 	}
 }
 

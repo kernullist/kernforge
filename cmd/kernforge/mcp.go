@@ -29,6 +29,62 @@ type MCPServerConfig struct {
 	EnvironmentID string            `json:"environment_id,omitempty"`
 	Capabilities  []string          `json:"capabilities,omitempty"`
 	Disabled      bool              `json:"disabled,omitempty"`
+	DisabledSet   bool              `json:"-"`
+}
+
+type mcpServerConfigJSON struct {
+	Name          string            `json:"name"`
+	Command       string            `json:"command"`
+	Args          []string          `json:"args,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	EnvVars       []MCPServerEnvVar `json:"env_vars,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	EnvironmentID string            `json:"environment_id,omitempty"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
+	Disabled      *bool             `json:"disabled,omitempty"`
+}
+
+func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
+	var raw mcpServerConfigJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	*cfg = MCPServerConfig{
+		Name:          raw.Name,
+		Command:       raw.Command,
+		Args:          raw.Args,
+		Env:           raw.Env,
+		EnvVars:       raw.EnvVars,
+		Cwd:           raw.Cwd,
+		EnvironmentID: raw.EnvironmentID,
+		Capabilities:  raw.Capabilities,
+	}
+	if raw.Disabled != nil {
+		cfg.Disabled = *raw.Disabled
+		cfg.DisabledSet = true
+	}
+	return nil
+}
+
+func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
+	var disabled *bool
+	if cfg.DisabledSet || cfg.Disabled {
+		value := cfg.Disabled
+		disabled = &value
+	}
+
+	return json.Marshal(mcpServerConfigJSON{
+		Name:          cfg.Name,
+		Command:       cfg.Command,
+		Args:          cfg.Args,
+		Env:           cfg.Env,
+		EnvVars:       cfg.EnvVars,
+		Cwd:           cfg.Cwd,
+		EnvironmentID: cfg.EnvironmentID,
+		Capabilities:  cfg.Capabilities,
+		Disabled:      disabled,
+	})
 }
 
 type MCPServerEnvVar struct {
