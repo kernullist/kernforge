@@ -94,6 +94,75 @@ func TestLookupToolsRecoverFromRawOwnerEditMismatch(t *testing.T) {
 	assertLookupToolsRecoverFromOwnerEditMismatch(t, false)
 }
 
+func TestLookupToolsRecoverFromOwnerEditMismatchWithAbsoluteWorkspacePath(t *testing.T) {
+	for _, wrapSentinel := range []bool{true, false} {
+		wrapSentinel := wrapSentinel
+		t.Run(fmt.Sprintf("wrapSentinel=%v", wrapSentinel), func(t *testing.T) {
+			root := t.TempDir()
+			sourceDir := filepath.Join(root, "Tavern", "Tavern")
+			if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll sourceDir: %v", err)
+			}
+			sourceFile := filepath.Join(sourceDir, "RuntimeManager.cpp")
+			if err := os.WriteFile(sourceFile, []byte("int runtime_manager_marker = 1;\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile sourceFile: %v", err)
+			}
+
+			ws := Workspace{
+				BaseRoot: root,
+				Root:     root,
+			}
+			ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+				req = req.normalized()
+				if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+					if !wrapSentinel {
+						return EditRoutingResult{}, fmt.Errorf("edit target mismatch: path %s is outside editable ownership for specialist driver-build-fixer", req.Path)
+					}
+					return EditRoutingResult{}, fmt.Errorf("%w: path %s is outside editable ownership for specialist driver-build-fixer", ErrEditTargetMismatch, req.Path)
+				}
+				return ws.resolveEditFallback(req)
+			}
+
+			readTool := NewReadFileTool(ws)
+			readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
+				"path":          sourceFile,
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("read_file should fall back for absolute workspace path after owner mismatch: %v", err)
+			}
+			if !strings.Contains(readResult.DisplayText, "runtime_manager_marker") {
+				t.Fatalf("expected read_file to return absolute workspace file content, got %q", readResult.DisplayText)
+			}
+
+			listTool := NewListFilesTool(ws)
+			listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
+				"path":          sourceDir,
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("list_files should fall back for absolute workspace path after owner mismatch: %v", err)
+			}
+			if !strings.Contains(listResult.DisplayText, "RuntimeManager.cpp") {
+				t.Fatalf("expected list_files to include absolute workspace file, got %q", listResult.DisplayText)
+			}
+
+			grepTool := NewGrepTool(ws)
+			grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
+				"pattern":       "runtime_manager_marker",
+				"path":          sourceDir,
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("grep should fall back for absolute workspace path after owner mismatch: %v", err)
+			}
+			if !strings.Contains(grepResult.DisplayText, "RuntimeManager.cpp") {
+				t.Fatalf("expected grep to find absolute workspace file content, got %q", grepResult.DisplayText)
+			}
+		})
+	}
+}
+
 func TestLookupToolsRecoverWhenOwnedWorktreeRouteIsMissing(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
