@@ -573,7 +573,7 @@ func parseConfigLayerProfileName(value string) (string, error) {
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
 			continue
 		}
-		return "", fmt.Errorf("invalid -profile value %q; pass a plain name such as %q", value, "work")
+		return "", fmt.Errorf("invalid -profile value %q; pass a plain name such as %q. See %s for the profile layering contract", value, "work", configProfileDocsURL)
 	}
 	return name, nil
 }

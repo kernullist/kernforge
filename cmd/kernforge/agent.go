@@ -2856,15 +2856,15 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
 		return true
 	}
-	if generatedDocumentArtifactRequestContextForTurn(a.Session, request) == "" &&
-		!looksLikeInternalReviewFeedbackUserMessage(strings.TrimSpace(baseUserQueryText(request))) {
-		return false
-	}
 	if sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
 		return true
 	}
 	if sessionHasApprovedDocumentArtifactOnlyHarness(a.Session) {
 		return true
+	}
+	if generatedDocumentArtifactRequestContextForTurn(a.Session, request) == "" &&
+		!looksLikeInternalReviewFeedbackUserMessage(strings.TrimSpace(baseUserQueryText(request))) {
+		return false
 	}
 	root := workspaceSnapshotRoot(a.Workspace)
 	if strings.TrimSpace(root) == "" {

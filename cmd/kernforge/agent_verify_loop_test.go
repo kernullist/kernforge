@@ -10255,6 +10255,64 @@ func TestAgentBlocksGeneratedDocumentPostApprovalToolChurn(t *testing.T) {
 	}
 }
 
+func TestAgentKeepsGeneratedDocumentFinalOnlyAfterGenericFollowup(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 256,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "run_shell", output: "shell"},
+			&staticTool{name: "apply_patch", output: "patch"},
+		),
+	}
+
+	genericFollowup := "Please provide the final answer now."
+	if !agent.changesAreGeneratedDocumentArtifactsForTurn(genericFollowup) {
+		t.Fatalf("accepted document-artifact harness should outlive generic final-answer follow-up prompts")
+	}
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls(genericFollowup, []ToolCall{{Name: "read_file", Arguments: `{"path":"Tavern/BugReport.md"}`}}) {
+		t.Fatalf("accepted document-artifact harness should block post-completion inspection churn")
+	}
+	plan := agent.buildTurnToolExposurePlan(nil, genericFollowup, false, false, false, false, false)
+	if !plan.GeneratedDocumentFinalOnly || !plan.SuppressInteractiveWorkers {
+		t.Fatalf("accepted document-artifact harness should force final-only exposure, got %#v", plan)
+	}
+	for _, name := range []string{"read_file", "run_shell", "apply_patch"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("generated document final-only exposure must disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+}
+
 func TestAgentSynthesizesFinalForApprovedGeneratedDocumentToolChurn(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{

@@ -901,7 +901,7 @@ func TestLoadConfigWithProfileRejectsNonPlainName(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected invalid profile name error")
 	}
-	if !strings.Contains(err.Error(), "invalid -profile value") {
+	if !strings.Contains(err.Error(), "invalid -profile value") || !strings.Contains(err.Error(), configProfileDocsURL) {
 		t.Fatalf("unexpected invalid profile error: %v", err)
 	}
 }
@@ -912,8 +912,19 @@ func TestRunProfileFlagRejectsNonPlainNameBeforeRuntime(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected invalid profile name error")
 	}
-	if !strings.Contains(err.Error(), "invalid -profile value") {
+	if !strings.Contains(err.Error(), "invalid -profile value") || !strings.Contains(err.Error(), configProfileDocsURL) {
 		t.Fatalf("unexpected invalid profile error: %v", err)
+	}
+}
+
+func TestRunProfileFlagRejectsConflictingAliases(t *testing.T) {
+	workspace := t.TempDir()
+	err := run([]string{"-cwd", workspace, "-profile", "work", "-p", "other", "-prompt", "hello"})
+	if err == nil {
+		t.Fatalf("expected conflicting profile flag error")
+	}
+	if !strings.Contains(err.Error(), "-profile and -p specify different config profiles") {
+		t.Fatalf("unexpected conflicting profile error: %v", err)
 	}
 }
 

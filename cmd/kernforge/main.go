@@ -216,6 +216,11 @@ func run(args []string) error {
 	}
 
 	strictConfig := strictConfigFlag || strictConfigEnvEnabled()
+	profileFlag = strings.TrimSpace(profileFlag)
+	profileShortFlag = strings.TrimSpace(profileShortFlag)
+	if profileFlag != "" && profileShortFlag != "" && profileFlag != profileShortFlag {
+		return fmt.Errorf("-profile and -p specify different config profiles (%q and %q)", profileFlag, profileShortFlag)
+	}
 	profileFlag = firstNonBlankString(profileFlag, profileShortFlag)
 	cfg, err := LoadConfigWithOptions(cwd, ConfigLoadOptions{StrictConfig: strictConfig, Profile: profileFlag})
 	if err != nil {
