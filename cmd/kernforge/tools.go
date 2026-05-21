@@ -62,21 +62,48 @@ type sharedToolHintsCapacityAware interface {
 type ToolRegistry struct {
 	tools       map[string]Tool
 	definitions map[string]ToolDefinition
+	issues      []ToolRegistrationIssue
+}
+
+type ToolRegistrationIssue struct {
+	Name   string `json:"name,omitempty"`
+	Reason string `json:"reason"`
+}
+
+func (i ToolRegistrationIssue) Summary() string {
+	name := strings.TrimSpace(i.Name)
+	reason := strings.TrimSpace(i.Reason)
+	if name == "" {
+		return reason
+	}
+	if reason == "" {
+		return name
+	}
+	return name + ": " + reason
 }
 
 func NewToolRegistry(items ...Tool) *ToolRegistry {
 	sharedHints := &ToolHints{maxReadSpans: sharedToolHintsLimit(items)}
 	byName := make(map[string]Tool, len(items))
 	definitions := make(map[string]ToolDefinition, len(items))
+	issues := []ToolRegistrationIssue{}
 	for _, item := range items {
 		if isNilTool(item) {
 			continue
 		}
 		def := snapshotToolDefinition(item.Definition())
-		if !validToolDefinition(def) {
+		if err := validateToolDefinition(def); err != nil {
+			issues = append(issues, ToolRegistrationIssue{
+				Name:   def.Name,
+				Reason: err.Error(),
+			})
 			continue
 		}
 		if _, exists := byName[def.Name]; exists {
+			issues = append(issues, ToolRegistrationIssue{
+				Name:   def.Name,
+				Reason: "duplicate tool name; first registration kept",
+			})
 			continue
 		}
 		if aware, ok := item.(sharedToolHintsAware); ok {
@@ -87,7 +114,7 @@ func NewToolRegistry(items ...Tool) *ToolRegistry {
 			definitions[def.Name] = def
 		}
 	}
-	return &ToolRegistry{tools: byName, definitions: definitions}
+	return &ToolRegistry{tools: byName, definitions: definitions, issues: issues}
 }
 
 func sharedToolHintsLimit(items []Tool) int {
@@ -120,10 +147,17 @@ func isNilTool(tool Tool) bool {
 }
 
 func validToolDefinition(def ToolDefinition) bool {
+	return validateToolDefinition(def) == nil
+}
+
+func validateToolDefinition(def ToolDefinition) error {
 	if strings.TrimSpace(def.Name) == "" {
-		return false
+		return fmt.Errorf("missing tool name")
 	}
-	return validToolInputSchema(def.InputSchema)
+	if !validToolInputSchema(def.InputSchema) {
+		return fmt.Errorf("invalid input schema")
+	}
+	return nil
 }
 
 func validToolInputSchema(schema map[string]any) bool {
@@ -502,6 +536,15 @@ func (r *ToolRegistry) ToolNames() []string {
 		out = append(out, name)
 	}
 	slices.Sort(out)
+	return out
+}
+
+func (r *ToolRegistry) RegistrationIssues() []ToolRegistrationIssue {
+	if r == nil || len(r.issues) == 0 {
+		return nil
+	}
+	out := make([]ToolRegistrationIssue, len(r.issues))
+	copy(out, r.issues)
 	return out
 }
 

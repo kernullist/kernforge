@@ -1697,6 +1697,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err == nil && editTargetMismatchRequiresReanchor && editTargetMismatchReanchorTool(call) {
 				editTargetMismatchRequiresReanchor = false
 				editTargetMismatchReanchorBlocks = 0
+				delete(disabledTools, "replace_in_file")
 			}
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr

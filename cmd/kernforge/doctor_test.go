@@ -45,6 +45,7 @@ func TestCollectKernforgeDoctorReportIncludesCoreChecks(t *testing.T) {
 		"configuration.config",
 		"configuration.auth",
 		"configuration.mcp",
+		"runtime.tool_registry",
 		"background.daemon",
 	} {
 		if _, ok := report.Checks[id]; !ok {
@@ -56,6 +57,9 @@ func TestCollectKernforgeDoctorReportIncludesCoreChecks(t *testing.T) {
 	}
 	if got := report.Checks["configuration.mcp"].Status; got != kernforgeDoctorStatusWarn {
 		t.Fatalf("expected MCP missing env warning, got %q", got)
+	}
+	if got := report.Checks["runtime.tool_registry"].Status; got != kernforgeDoctorStatusOK {
+		t.Fatalf("expected tool registry check ok, got %q", got)
 	}
 	data, err := json.Marshal(report)
 	if err != nil {

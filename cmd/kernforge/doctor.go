@@ -131,6 +131,7 @@ func collectKernforgeDoctorReport(cwd string, opts kernforgeDoctorOptions) kernf
 	report.addCheck(kernforgeDoctorConfigCheck(resolvedCWD, cfg, opts, cfgErr, autoPopulateErr))
 	report.addCheck(kernforgeDoctorAuthCheck(cfg))
 	report.addCheck(kernforgeDoctorMCPCheck(cfg))
+	report.addCheck(kernforgeDoctorToolRegistryCheck(resolvedCWD))
 	report.addCheck(kernforgeDoctorSandboxCheck(cfg))
 	report.addCheck(kernforgeDoctorNetworkCheck(cfg))
 	report.addCheck(kernforgeDoctorDaemonCheck())
@@ -519,6 +520,38 @@ func kernforgeDoctorMCPCheck(cfg Config) kernforgeDoctorCheck {
 		}
 	}
 	return kernforgeDoctorCheck{ID: "configuration.mcp", Category: "Configuration", Status: kernforgeDoctorStatusOK, Summary: "MCP configuration is locally consistent", Details: details}
+}
+
+func kernforgeDoctorToolRegistryCheck(cwd string) kernforgeDoctorCheck {
+	ws := Workspace{
+		BaseRoot: cwd,
+		Root:     cwd,
+	}
+	registry := buildRegistry(ws, nil)
+	issues := formatToolRegistrationIssues(registry.RegistrationIssues())
+	details := map[string]string{
+		"dispatchable_tools": fmt.Sprintf("%d", len(registry.ToolNames())),
+		"model_visible":      fmt.Sprintf("%d", len(registry.Definitions())),
+		"issues":             fmt.Sprintf("%d", len(issues)),
+	}
+	if len(issues) > 0 {
+		details["issue_details"] = strings.Join(issues, "; ")
+		return kernforgeDoctorCheck{
+			ID:             "runtime.tool_registry",
+			Category:       "Runtime",
+			Status:         kernforgeDoctorStatusWarn,
+			Summary:        "tool registry skipped invalid or duplicate tool definitions",
+			Details:        details,
+			Recommendation: "Fix the reported tool definitions so hidden or dynamic tools do not disappear silently.",
+		}
+	}
+	return kernforgeDoctorCheck{
+		ID:       "runtime.tool_registry",
+		Category: "Runtime",
+		Status:   kernforgeDoctorStatusOK,
+		Summary:  "tool registry definitions are valid",
+		Details:  details,
+	}
 }
 
 func kernforgeDoctorSandboxCheck(cfg Config) kernforgeDoctorCheck {

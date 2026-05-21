@@ -157,6 +157,26 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 	if _, err := registry.ExecuteDetailed(context.Background(), "invalid_nested_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Fatalf("invalid nested schema tool should not be registered, got %v", err)
 	}
+	issues := registry.RegistrationIssues()
+	if len(issues) != 4 {
+		t.Fatalf("expected duplicate and invalid definitions to be reported, got %#v", issues)
+	}
+	issueText := strings.Join(formatToolRegistrationIssues(issues), "\n")
+	for _, want := range []string{
+		"dup: duplicate tool name",
+		"missing tool name",
+		"invalid_schema: invalid input schema",
+		"invalid_nested_schema: invalid input schema",
+	} {
+		if !strings.Contains(issueText, want) {
+			t.Fatalf("expected registration issue %q, got:\n%s", want, issueText)
+		}
+	}
+
+	issues[0].Reason = "caller mutation"
+	if registry.RegistrationIssues()[0].Reason == "caller mutation" {
+		t.Fatalf("registration issues must be returned as a copy")
+	}
 }
 
 func TestToolRegistryNormalizesObjectSchemasBeforeExposure(t *testing.T) {
@@ -185,6 +205,63 @@ func TestToolRegistryNormalizesObjectSchemasBeforeExposure(t *testing.T) {
 	}
 	if result.DisplayText != "ok" {
 		t.Fatalf("expected normalized tool to remain dispatchable, got %q", result.DisplayText)
+	}
+}
+
+func TestToolRegistryAcceptsRootAnyOfSchemas(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "union_root",
+			InputSchema: map[string]any{
+				"anyOf": []any{
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"const": "file",
+							},
+							"path": map[string]any{
+								"type": "string",
+							},
+						},
+						"required":             []any{"kind", "path"},
+						"additionalProperties": false,
+					},
+					map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"kind": map[string]any{
+								"const": "query",
+							},
+							"text": map[string]any{
+								"type": "string",
+							},
+						},
+						"required":             []any{"kind", "text"},
+						"additionalProperties": false,
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("root anyOf schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected one visible definition, got %#v", defs)
+	}
+	branches := defs[0].InputSchema["anyOf"].([]any)
+	firstProperties := branches[0].(map[string]any)["properties"].(map[string]any)
+	kindSchema := firstProperties["kind"].(map[string]any)
+	if _, hasConst := kindSchema["const"]; hasConst {
+		t.Fatalf("const should be normalized before exposure, got %#v", kindSchema)
+	}
+	if _, hasEnum := kindSchema["enum"]; !hasEnum {
+		t.Fatalf("const should normalize to enum, got %#v", kindSchema)
 	}
 }
 

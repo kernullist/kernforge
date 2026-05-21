@@ -560,6 +560,21 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 	return NewToolRegistry(items...)
 }
 
+func formatToolRegistrationIssues(issues []ToolRegistrationIssue) []string {
+	if len(issues) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		summary := strings.TrimSpace(issue.Summary())
+		if summary == "" {
+			continue
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
 func (rt *runtimeState) runSinglePrompt(prompt string, images []MessageImage) error {
 	if rt.clientErr != nil {
 		return rt.clientErr
@@ -9389,6 +9404,9 @@ func (rt *runtimeState) reloadExtensions() {
 	if rt.agent != nil {
 		rt.agent.MCP = rt.mcp
 		rt.agent.Tools = buildRegistry(rt.workspace, rt.mcp)
+		for _, issue := range formatToolRegistrationIssues(rt.agent.Tools.RegistrationIssues()) {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("Tool registry: "+issue))
+		}
 	}
 }
 
