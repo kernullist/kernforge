@@ -2602,6 +2602,64 @@ func TestAgentSuppressesDuplicateToolPreambleEmitsWithinATurn(t *testing.T) {
 	}
 }
 
+func TestAgentSuppressesFinalLookingToolPreambleEmit(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "작업 완료\n\n수정이 완료되었습니다. 더 이상 변경은 필요 없습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-1",
+						Name:      "list_files",
+						Arguments: `{}`,
+					}},
+				},
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "list_files 결과를 확인했고 아직 최종 완료 전입니다.",
+				},
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var emitted []string
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewListFilesTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		EmitAssistant: func(text string) {
+			emitted = append(emitted, text)
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "최종 완료 전") {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	for _, text := range emitted {
+		if strings.Contains(text, "수정이 완료되었습니다") || strings.Contains(text, "더 이상 변경") {
+			t.Fatalf("final-looking tool preamble leaked to user-visible output: %#v", emitted)
+		}
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "assistant" && len(msg.ToolCalls) > 0 && strings.Contains(msg.Text, "수정이 완료되었습니다") {
+			t.Fatalf("final-looking tool preamble remained in transcript: %#v", msg)
+		}
+	}
+}
+
 func TestAgentNudgesAfterRepeatedIdenticalToolCalls(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -2765,6 +2823,29 @@ func TestSanitizeAssistantMessageTextKeepsSubstantiveKoreanToolPlan(t *testing.T
 	}
 	if strings.Contains(got, "먼저 providers를 확인하겠습니다.") {
 		t.Fatalf("expected korean narration preamble to be removed, got %q", got)
+	}
+}
+
+func TestSanitizeAssistantMessageTextRemovesFinalLookingToolSummary(t *testing.T) {
+	cases := []string{
+		"작업 완료\n\nTavern/BugReport.md 문서가 완성되었습니다. 총 27개 버그를 기록했고 더 이상 변경은 필요 없습니다.",
+		"Final Answer\n\nThe bug report has been completed and saved to Tavern/BugReport.md.",
+	}
+
+	for _, text := range cases {
+		got := sanitizeAssistantMessageText(text, true)
+		if got != "" {
+			t.Fatalf("expected final-looking tool preamble to be dropped, got %q", got)
+		}
+	}
+}
+
+func TestSanitizeAssistantMessageTextKeepsToolCallRootCauseNote(t *testing.T) {
+	text := "The likely root cause is stale review-gate state. I will inspect the runtime ledger next."
+
+	got := sanitizeAssistantMessageText(text, true)
+	if !strings.Contains(got, "root cause") {
+		t.Fatalf("expected substantive non-final tool note to remain, got %q", got)
 	}
 }
 

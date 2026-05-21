@@ -3393,6 +3393,9 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 	if !hasToolCalls {
 		return trimmed
 	}
+	if assistantToolCallTextLooksLikeCompletionSummary(trimmed) {
+		return ""
+	}
 	lines := strings.Split(trimmed, "\n")
 	kept := make([]string, 0, len(lines))
 	sawPreamble := false
@@ -3411,6 +3414,61 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 		return ""
 	}
 	return strings.Join(kept, "\n")
+}
+
+func assistantToolCallTextLooksLikeCompletionSummary(text string) bool {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	if normalized == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"final answer",
+		"final summary",
+		"what was done",
+		"what i changed",
+		"i have completed",
+		"i completed",
+		"has been completed",
+		"is complete",
+		"complete and ready",
+		"ready for review",
+		"ready for use",
+		"no further changes",
+		"no further edits",
+		"no further action",
+		"successfully created",
+		"successfully generated",
+		"successfully saved",
+		"report has been",
+		"document has been",
+		"bug report has been",
+		"saved to ",
+		"created at ",
+		"created in ",
+		"generated at ",
+		"generated in ",
+		"작업 완료",
+		"완료되었습니다",
+		"완성되었습니다",
+		"작성되었습니다",
+		"생성되었습니다",
+		"저장되었습니다",
+		"검증되었습니다",
+		"준비되었습니다",
+		"준비 완료",
+		"최종 요약",
+		"수정 내역",
+		"보고서 요약",
+		"검증 결과",
+		"추가 변경 없음",
+		"더 이상 변경",
+		"더 이상 수정",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 var hiddenAssistantMarkupPatterns = []*regexp.Regexp{
