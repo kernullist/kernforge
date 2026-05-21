@@ -290,6 +290,117 @@ func TestAgentReplyInjectsWorkspaceContinuityMemoryWithoutQueryMatch(t *testing.
 	}
 }
 
+func TestAgentReplySuppressesContinuityMemoryForFreshDocumentArtifactTask(t *testing.T) {
+	dir := t.TempDir()
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(dir, "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-old-report",
+		SessionID:  "old-session",
+		Workspace:  dir,
+		Summary:    "Request: 각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해\n\nOutcome: wrote a stale BugReport.md summary.",
+		Importance: PersistentMemoryHigh,
+		Trust:      PersistentMemoryConfirmed,
+		Files:      []string{"Tavern/BugReport.md"},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	session := NewSession(dir, "fake", "fake-model", "", "default")
+	var progressEvents []ProgressEvent
+	agent := &Agent{
+		Config: Config{AutoCompactChars: 45000},
+		Client: &fakeProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{
+					Role: "assistant",
+					Text: "보고서를 새로 작성했습니다.",
+				},
+			}},
+		},
+		Tools: NewToolRegistry(),
+		Workspace: Workspace{
+			BaseRoot: dir,
+			Root:     dir,
+		},
+		Session: session,
+		Store:   NewSessionStore(filepath.Join(dir, "sessions")),
+		LongMem: store,
+		EmitProgressEvent: func(event ProgressEvent) {
+			progressEvents = append(progressEvents, event)
+		},
+	}
+
+	_, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(agent.Session.Messages) == 0 {
+		t.Fatalf("expected user message")
+	}
+	first := agent.Session.Messages[0].Text
+	if strings.Contains(first, "Relevant persistent memory from past sessions") || strings.Contains(first, "mem-old-report") {
+		t.Fatalf("fresh document artifact task should not inject stale continuity memory, got %q", first)
+	}
+	for _, event := range progressEvents {
+		if event.Kind == progressKindMemoryContext {
+			t.Fatalf("fresh document artifact task should not emit memory progress, got %#v", progressEvents)
+		}
+	}
+}
+
+func TestAgentReplyKeepsExplicitMemoryForDocumentArtifactTask(t *testing.T) {
+	dir := t.TempDir()
+	store := &PersistentMemoryStore{
+		Path: filepath.Join(dir, "persistent-memory.json"),
+	}
+	if err := store.Append(PersistentMemoryRecord{
+		ID:         "mem-old-report",
+		SessionID:  "old-session",
+		Workspace:  dir,
+		Summary:    "Request: 각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해\n\nOutcome: wrote a BugReport.md summary.",
+		Importance: PersistentMemoryHigh,
+		Trust:      PersistentMemoryConfirmed,
+		Files:      []string{"Tavern/BugReport.md"},
+	}); err != nil {
+		t.Fatalf("seed memory: %v", err)
+	}
+
+	session := NewSession(dir, "fake", "fake-model", "", "default")
+	agent := &Agent{
+		Config: Config{AutoCompactChars: 45000},
+		Client: &fakeProviderClient{
+			replies: []ChatResponse{{
+				Message: Message{
+					Role: "assistant",
+					Text: "메모리까지 참고했습니다.",
+				},
+			}},
+		},
+		Tools: NewToolRegistry(),
+		Workspace: Workspace{
+			BaseRoot: dir,
+			Root:     dir,
+		},
+		Session: session,
+		Store:   NewSessionStore(filepath.Join(dir, "sessions")),
+		LongMem: store,
+	}
+
+	_, err := agent.Reply(context.Background(), "워크스페이스 메모리 참고해서 각 소스코드 파일들을 검토하고 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(agent.Session.Messages) == 0 {
+		t.Fatalf("expected user message")
+	}
+	first := agent.Session.Messages[0].Text
+	if !strings.Contains(first, "Relevant persistent memory from past sessions") || !strings.Contains(first, "mem-old-report") {
+		t.Fatalf("explicit memory request should keep continuity memory, got %q", first)
+	}
+}
+
 func TestPersistentMemorySearchHitsPreferExactReferencedFile(t *testing.T) {
 	store := &PersistentMemoryStore{
 		Path: filepath.Join(t.TempDir(), "persistent-memory.json"),

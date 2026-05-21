@@ -152,7 +152,8 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	enriched = a.Skills.InjectPromptContext(enriched)
 	if a.LongMem != nil {
-		if memoryContext := a.LongMem.PromptContextDetails(a.Workspace.BaseRoot, userText, a.Session.ID); strings.TrimSpace(memoryContext.Text) != "" {
+		memoryPolicy := persistentMemoryPromptPolicyForRequest(userText)
+		if memoryContext := a.LongMem.PromptContextDetailsWithPolicy(a.Workspace.BaseRoot, userText, a.Session.ID, memoryPolicy); strings.TrimSpace(memoryContext.Text) != "" {
 			enriched += "\n\nRelevant persistent memory from past sessions:\n" + memoryContext.Text
 			if message := formatPersistentMemoryProgressMessage(a.Config, memoryContext); message != "" {
 				a.emitProgressEvent(ProgressEvent{
@@ -7444,6 +7445,61 @@ func shouldIncludeMCPCatalogInSystemPrompt(lowerLatestUser string) bool {
 		return false
 	}
 	return containsAny(lowerLatestUser, "mcp", "resource", "resources", "prompt", "prompts", "리소스", "프롬프트")
+}
+
+func persistentMemoryPromptPolicyForRequest(userText string) PersistentMemoryPromptPolicy {
+	base := strings.ToLower(strings.TrimSpace(baseUserQueryText(userText)))
+	policy := PersistentMemoryPromptPolicy{
+		IncludeContinuity:   true,
+		IncludeQueryMatches: true,
+	}
+	if base == "" {
+		return policy
+	}
+	if requestExplicitlyAsksForPersistentMemory(base) {
+		return policy
+	}
+	if classifyTurnIntent(base) == TurnIntentContinueLastTask {
+		return policy
+	}
+	if requestLooksLikeFreshExecutionTask(base) {
+		policy.IncludeContinuity = false
+		if looksLikeReviewArtifactAuthoringRequest(base) {
+			policy.IncludeQueryMatches = false
+		}
+	}
+	return policy
+}
+
+func requestLooksLikeFreshExecutionTask(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	if requestLooksLikeLocalCodeWork(lowerLatestUser) ||
+		requestLooksLikeLocalVerificationWork(lowerLatestUser) ||
+		looksLikeDocumentAuthoringIntent(lowerLatestUser) ||
+		looksLikeExplicitGitIntent(lowerLatestUser) ||
+		looksLikeExplicitEditIntent(lowerLatestUser) {
+		return true
+	}
+	return false
+}
+
+func requestExplicitlyAsksForPersistentMemory(lowerLatestUser string) bool {
+	lowerLatestUser = strings.ToLower(strings.TrimSpace(lowerLatestUser))
+	if lowerLatestUser == "" {
+		return false
+	}
+	return containsAny(lowerLatestUser,
+		"persistent memory", "workspace memory", "project memory", "memory context",
+		"memory record", "memory records", "memory search", "/mem", "mem-",
+		"remember from", "recall from", "past session", "previous session", "prior session",
+		"previous work", "prior work", "past work", "prior context", "previous context",
+		"메모리 참고", "메모리에서", "메모리 기록", "메모리 검색", "워크스페이스 메모리",
+		"프로젝트 메모리", "기억해", "기억나", "기억하고", "지난 세션", "이전 세션",
+		"이전 작업", "지난 작업", "과거 작업",
+	)
 }
 
 func shouldPrioritizeWebResearchInSystemPrompt(lowerLatestUser string) bool {

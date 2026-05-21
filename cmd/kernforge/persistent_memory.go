@@ -90,6 +90,11 @@ type PersistentMemoryPromptContext struct {
 	QueryMatches []PersistentMemoryHit
 }
 
+type PersistentMemoryPromptPolicy struct {
+	IncludeContinuity   bool
+	IncludeQueryMatches bool
+}
+
 type PersistentMemoryQuery struct {
 	Text       string
 	Importance string
@@ -1116,6 +1121,13 @@ func (s *PersistentMemoryStore) PromptContext(workspace, query, excludeSession s
 }
 
 func (s *PersistentMemoryStore) PromptContextDetails(workspace, query, excludeSession string) PersistentMemoryPromptContext {
+	return s.PromptContextDetailsWithPolicy(workspace, query, excludeSession, PersistentMemoryPromptPolicy{
+		IncludeContinuity:   true,
+		IncludeQueryMatches: true,
+	})
+}
+
+func (s *PersistentMemoryStore) PromptContextDetailsWithPolicy(workspace, query, excludeSession string, policy PersistentMemoryPromptPolicy) PersistentMemoryPromptContext {
 	out := PersistentMemoryPromptContext{}
 	if s == nil {
 		return out
@@ -1123,14 +1135,16 @@ func (s *PersistentMemoryStore) PromptContextDetails(workspace, query, excludeSe
 	var sections []string
 	seen := map[string]bool{}
 	remaining := defaultPersistentMemoryContextMax
-	if hits, err := s.ContinuityHits(workspace, excludeSession, defaultPersistentMemoryContinuityLimit); err == nil && len(hits) > 0 {
-		if text, used, included := formatPersistentMemoryHitsForPrompt(hits, seen, remaining); text != "" {
-			sections = append(sections, "Workspace continuity:\n"+text)
-			out.Continuity = included
-			remaining -= used
+	if policy.IncludeContinuity {
+		if hits, err := s.ContinuityHits(workspace, excludeSession, defaultPersistentMemoryContinuityLimit); err == nil && len(hits) > 0 {
+			if text, used, included := formatPersistentMemoryHitsForPrompt(hits, seen, remaining); text != "" {
+				sections = append(sections, "Workspace continuity:\n"+text)
+				out.Continuity = included
+				remaining -= used
+			}
 		}
 	}
-	if remaining > 120 && persistentMemoryQueryHasRetrievalSignal(query) {
+	if policy.IncludeQueryMatches && remaining > 120 && persistentMemoryQueryHasRetrievalSignal(query) {
 		if hits, err := s.SearchHits(query, workspace, excludeSession, 3); err == nil && len(hits) > 0 {
 			if text, used, included := formatPersistentMemoryHitsForPrompt(hits, seen, remaining); text != "" {
 				sections = append(sections, "Query matches:\n"+text)
