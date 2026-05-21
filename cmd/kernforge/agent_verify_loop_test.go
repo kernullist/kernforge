@@ -10300,6 +10300,96 @@ func TestAgentDoesNotFinalizeGeneratedDocumentPreambleWithEditToolCalls(t *testi
 	}
 }
 
+func TestAgentExecutesGeneratedDocumentReplaceInFileAfterFinalLookingPreamble(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: needs detail.",
+	}, "\n")
+	replaceArgs, _ := json.Marshal(map[string]any{
+		"path":    "Tavern/BugReport.md",
+		"search":  "- Impact: needs detail.",
+		"replace": "- Impact: resource lifetime bug.",
+	})
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-replace-after-final-looking-preamble",
+						Name:      "replace_in_file",
+						Arguments: string(replaceArgs),
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Tavern/BugReport.md 문서를 생성했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), NewReplaceInFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "총 2개 버그") {
+		t.Fatalf("expected final answer after replace_in_file edit, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected replace_in_file preamble to execute before final answer, got %d requests", len(provider.requests))
+	}
+	content, err := os.ReadFile(filepath.Join(root, "Tavern", "BugReport.md"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(content), "needs detail") || !strings.Contains(string(content), "resource lifetime bug") {
+		t.Fatalf("expected corrective replace_in_file to update the report, got:\n%s", string(content))
+	}
+	if sessionContainsToolResultText(session, "call-replace-after-final-looking-preamble", "generated document artifact turns do not run") {
+		t.Fatalf("replace_in_file was incorrectly treated as post-final tool churn, messages=%#v", session.Messages)
+	}
+}
+
 func TestAgentBlocksApprovedDocumentArtifactToolChurnWithoutRequestContext(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
