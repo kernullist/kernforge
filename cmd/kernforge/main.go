@@ -9812,17 +9812,17 @@ func workspaceCheckpointRoot(ws Workspace) string {
 }
 
 func workspaceEffectiveRoots(ws Workspace, sess *Session) []string {
-	baseRoot := strings.TrimSpace(ws.BaseRoot)
+	baseRoot := canonicalWorkspaceRootForMetadata(ws.BaseRoot)
 	if baseRoot == "" && sess != nil {
-		baseRoot = sessionBaseWorkingDir(sess)
+		baseRoot = canonicalWorkspaceRootForMetadata(sessionBaseWorkingDir(sess))
 	}
 	if baseRoot == "" {
-		baseRoot = strings.TrimSpace(ws.Root)
+		baseRoot = canonicalWorkspaceRootForMetadata(ws.Root)
 	}
 
-	activeRoot := strings.TrimSpace(ws.Root)
+	activeRoot := canonicalWorkspaceRootForMetadata(ws.Root)
 	if activeRoot == "" && sess != nil {
-		activeRoot = strings.TrimSpace(sess.WorkingDir)
+		activeRoot = canonicalWorkspaceRootForMetadata(sess.WorkingDir)
 	}
 	if activeRoot == "" {
 		activeRoot = baseRoot
@@ -9846,6 +9846,22 @@ func workspaceEffectiveRoots(ws Workspace, sess *Session) []string {
 	return roots
 }
 
+func canonicalWorkspaceRootForMetadata(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	cleaned := filepath.Clean(trimmed)
+	if filepath.IsAbs(cleaned) {
+		return cleaned
+	}
+	abs, err := filepath.Abs(cleaned)
+	if err != nil {
+		return cleaned
+	}
+	return filepath.Clean(abs)
+}
+
 func workspaceEffectiveBaseRoot(ws Workspace, sess *Session) string {
 	roots := workspaceEffectiveRoots(ws, sess)
 	if len(roots) == 0 {
@@ -9855,9 +9871,9 @@ func workspaceEffectiveBaseRoot(ws Workspace, sess *Session) string {
 }
 
 func workspaceEffectiveActiveRoot(ws Workspace, sess *Session) string {
-	activeRoot := strings.TrimSpace(ws.Root)
+	activeRoot := canonicalWorkspaceRootForMetadata(ws.Root)
 	if activeRoot == "" && sess != nil {
-		activeRoot = strings.TrimSpace(sess.WorkingDir)
+		activeRoot = canonicalWorkspaceRootForMetadata(sess.WorkingDir)
 	}
 	if activeRoot != "" {
 		return activeRoot

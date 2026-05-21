@@ -1052,7 +1052,7 @@ func firstLine(text string) string {
 func shellInvocation(shell, command string) (string, []string) {
 	base := strings.ToLower(strings.TrimSpace(shell))
 	switch {
-	case strings.Contains(base, "powershell"):
+	case strings.Contains(base, "powershell") || strings.Contains(base, "pwsh"):
 		wrapped := "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[System.Text.UTF8Encoding]::new(); " + command
 		return shell, []string{"-NoProfile", "-Command", wrapped}
 	case base == "cmd":
@@ -3695,6 +3695,23 @@ func shellCommandIsPowerShellEncodedCommandFlag(token string) bool {
 	return len(normalized) >= 2 && strings.HasPrefix("-encodedcommand", normalized)
 }
 
+func shellCommandIsPowerShellCommandFlag(token string) bool {
+	normalized := strings.TrimSpace(strings.Trim(token, `"'`))
+	normalized = strings.ToLower(normalized)
+	return normalized == "-command" || normalized == "/command" || normalized == "-c"
+}
+
+func shellCommandPowerShellInlineCommandPayload(token string) (string, bool) {
+	normalized := strings.TrimSpace(strings.Trim(token, `"'`))
+	lower := strings.ToLower(normalized)
+	for _, prefix := range []string{"-command:", "/command:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(normalized[len(prefix):]), true
+		}
+	}
+	return "", false
+}
+
 func shellCommandContainsUnquotedStopParsingToken(command string) bool {
 	const marker = "--%"
 	quote := byte(0)
@@ -3751,7 +3768,7 @@ func shellCommandTokenCanBeginNestedCommand(tokens []string, idx int) bool {
 	if shellCommandTokenIsSegmentDelimiter(prev) {
 		return true
 	}
-	if prev == "/c" || prev == "-command" || prev == "-c" {
+	if prev == "/c" || prev == "-command" || prev == "/command" || prev == "-c" {
 		return true
 	}
 	return false
@@ -3793,8 +3810,16 @@ unwrap:
 			base := shellTokenBaseName(tokens[0])
 			if base == "powershell" || base == "pwsh" {
 				for i := 1; i < len(tokens); i++ {
-					switch tokens[i] {
-					case "-command", "-c":
+					token := tokens[i]
+					if payload, ok := shellCommandPowerShellInlineCommandPayload(token); ok {
+						if payload == "" {
+							tokens = nil
+						} else {
+							tokens = []string{payload}
+						}
+						continue unwrap
+					}
+					if shellCommandIsPowerShellCommandFlag(token) {
 						if i+1 < len(tokens) {
 							tokens = tokens[i+1:]
 						} else {

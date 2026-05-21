@@ -1508,10 +1508,13 @@ func TestRunShellRejectsPowerShellStopParsingForms(t *testing.T) {
 	tool := NewRunShellTool(Workspace{BaseRoot: root, Root: root})
 
 	cases := map[string]string{
-		"direct":            "git log --% HEAD --output=codex_poc.txt",
-		"powershell_shell":  `powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`,
-		"pwsh_shell":        `pwsh -Command "git log --% HEAD --output=codex_poc.txt"`,
-		"cmd_native_bridge": `cmd /c echo --% > codex_poc.txt`,
+		"direct":                          "git log --% HEAD --output=codex_poc.txt",
+		"powershell_shell":                `powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`,
+		"powershell_slash_command":        `powershell -NoProfile /Command "git log --% HEAD --output=codex_poc.txt"`,
+		"powershell_inline_command":       `powershell -NoProfile -Command:"git log --% HEAD --output=codex_poc.txt"`,
+		"powershell_inline_slash_command": `powershell -NoProfile /Command:"git log --% HEAD --output=codex_poc.txt"`,
+		"pwsh_shell":                      `pwsh -Command "git log --% HEAD --output=codex_poc.txt"`,
+		"cmd_native_bridge":               `cmd /c echo --% > codex_poc.txt`,
 	}
 	for name, command := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1556,6 +1559,16 @@ func TestRunShellRejectsPowerShellEncodedCommandForms(t *testing.T) {
 				t.Fatalf("expected codex_poc.txt to remain absent, stat err=%v", statErr)
 			}
 		})
+	}
+}
+
+func TestShellInvocationPreservesPwshAndDisablesProfiles(t *testing.T) {
+	name, args := shellInvocation("pwsh", "Write-Output ok")
+	if name != "pwsh" {
+		t.Fatalf("expected pwsh shell to be preserved, got %q", name)
+	}
+	if len(args) != 3 || args[0] != "-NoProfile" || args[1] != "-Command" || !strings.Contains(args[2], "Write-Output ok") {
+		t.Fatalf("expected pwsh invocation to use -NoProfile -Command, got %#v", args)
 	}
 }
 
@@ -2710,12 +2723,19 @@ EOF"`: shellMutationWorkspaceWrite,
 		`Get-Command copy`:                                              shellMutationReadOnly,
 		`git log --% HEAD --output=codex_poc.txt`:                       shellMutationUnsupported,
 		`powershell -NoProfile -Command "git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
+		`powershell -NoProfile /Command "git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
+		`powershell -NoProfile -Command:"git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
+		`powershell -NoProfile /Command:"git log --% HEAD --output=codex_poc.txt"`:                                       shellMutationUnsupported,
 		`pwsh -Command "git log --% HEAD --output=codex_poc.txt"`:                                                        shellMutationUnsupported,
 		`powershell -NoProfile -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`: shellMutationUnsupported,
 		`pwsh -enc UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`:                             shellMutationUnsupported,
 		`powershell /EncodedCommand:UwBlAHQALQBDAG8AbgB0AGUAbgB0ACAAYwBvAGQAZQB4AF8AcABvAGMALgB0AHgAdAAgAHgA`:            shellMutationUnsupported,
 		`rg "--%" docs`: shellMutationReadOnly,
 		`powershell -NoProfile -Command "Write-Output '--%'"`:    shellMutationReadOnly,
+		`powershell -NoProfile -Command:"Write-Output '--%'"`:    shellMutationReadOnly,
+		`powershell -NoProfile /Command:"Write-Output '--%'"`:    shellMutationReadOnly,
+		`powershell -NoProfile -Command:"Set-Content out.txt x"`: shellMutationWorkspaceWrite,
+		`powershell -NoProfile /Command:"Set-Content out.txt x"`: shellMutationWorkspaceWrite,
 		`rg --pre ./hook pattern .`:                              shellMutationUnsafe,
 		`rg --pre=./hook pattern .`:                              shellMutationUnsafe,
 		`rg --hostname-bin ./hostname foo .`:                     shellMutationUnsafe,

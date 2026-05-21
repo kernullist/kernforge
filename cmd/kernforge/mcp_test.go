@@ -814,6 +814,21 @@ func TestAgentMCPTurnMetadataDistinguishesActiveWorkspaceRoot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceEffectiveRootsCanonicalizesAndDeduplicates(t *testing.T) {
+	tempRoot := t.TempDir()
+	baseRoot := filepath.Join(tempRoot, "repo")
+	if err := os.MkdirAll(baseRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	dirtyBaseRoot := filepath.Join(tempRoot, ".", "repo")
+	dirtyActiveRoot := filepath.Join(tempRoot, "repo", "worktrees", "..")
+
+	roots := workspaceEffectiveRoots(Workspace{BaseRoot: dirtyBaseRoot, Root: dirtyActiveRoot}, nil)
+	if len(roots) != 1 || roots[0] != filepath.Clean(baseRoot) {
+		t.Fatalf("expected one canonical workspace root %q, got %#v", filepath.Clean(baseRoot), roots)
+	}
+}
+
 func TestAgentMCPTurnMetadataUsesLivePermissionSnapshot(t *testing.T) {
 	root := t.TempDir()
 	agent := &Agent{
