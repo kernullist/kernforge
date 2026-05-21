@@ -1935,6 +1935,23 @@ func TestNormalizeConfigPathsNormalizesMCPEnvironmentID(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsDefaultsMCPEnvironmentIDToLocal(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				Name:    "local",
+				Command: "node",
+			},
+		},
+	}
+
+	normalizeConfigPaths(cfg)
+
+	if got := cfg.MCPServers[0].EnvironmentID; got != defaultMCPServerEnvironmentID {
+		t.Fatalf("expected default MCP environment id %q, got %q", defaultMCPServerEnvironmentID, got)
+	}
+}
+
 func TestMergeMCPServerConfigPreservesEnvironmentID(t *testing.T) {
 	base := MCPServerConfig{
 		Name:          "docs",
@@ -1954,6 +1971,24 @@ func TestMergeMCPServerConfigPreservesEnvironmentID(t *testing.T) {
 	merged = mergeMCPServerConfig(base, overlay)
 	if merged.EnvironmentID != "remote-overlay" {
 		t.Fatalf("expected overlay environment id, got %#v", merged)
+	}
+
+	var explicitLocal MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"docs","environment_id":"local"}`), &explicitLocal); err != nil {
+		t.Fatalf("unmarshal explicit local overlay: %v", err)
+	}
+	merged = mergeMCPServerConfig(base, explicitLocal)
+	if merged.EnvironmentID != defaultMCPServerEnvironmentID {
+		t.Fatalf("expected explicit local overlay environment id, got %#v", merged)
+	}
+
+	var implicitLocal MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"docs"}`), &implicitLocal); err != nil {
+		t.Fatalf("unmarshal implicit local overlay: %v", err)
+	}
+	merged = mergeMCPServerConfig(base, implicitLocal)
+	if merged.EnvironmentID != "remote-base" {
+		t.Fatalf("expected implicit local overlay to preserve base environment id, got %#v", merged)
 	}
 }
 
@@ -1975,6 +2010,27 @@ func TestMCPServerConfigPreservesExplicitDisabledFalse(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"disabled":false`) {
 		t.Fatalf("expected explicit disabled=false to be preserved, got %s", encoded)
+	}
+}
+
+func TestMCPServerConfigDefaultsEnvironmentIDToLocal(t *testing.T) {
+	var server MCPServerConfig
+	if err := json.Unmarshal([]byte(`{"name":"docs","command":"node"}`), &server); err != nil {
+		t.Fatalf("unmarshal MCP server: %v", err)
+	}
+	if server.EnvironmentID != defaultMCPServerEnvironmentID {
+		t.Fatalf("expected default MCP environment id %q, got %#v", defaultMCPServerEnvironmentID, server)
+	}
+	if server.EnvironmentIDSet {
+		t.Fatalf("expected omitted MCP environment id to remain implicit, got %#v", server)
+	}
+
+	encoded, err := json.Marshal(server)
+	if err != nil {
+		t.Fatalf("marshal MCP server: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"environment_id":"local"`) {
+		t.Fatalf("expected default MCP environment id to serialize, got %s", encoded)
 	}
 }
 

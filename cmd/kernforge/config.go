@@ -1499,7 +1499,7 @@ func normalizeConfigPaths(cfg *Config) {
 		if strings.TrimSpace(server.Cwd) != "" {
 			cfg.MCPServers[i].Cwd = expandHome(server.Cwd)
 		}
-		cfg.MCPServers[i].EnvironmentID = strings.TrimSpace(server.EnvironmentID)
+		cfg.MCPServers[i].EnvironmentID = normalizeMCPServerEnvironmentID(server.EnvironmentID)
 		if len(server.Capabilities) > 0 {
 			cleaned := make([]string, 0, len(server.Capabilities))
 			seen := map[string]struct{}{}
@@ -2727,8 +2727,9 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 	if strings.TrimSpace(overlay.Cwd) != "" {
 		merged.Cwd = overlay.Cwd
 	}
-	if strings.TrimSpace(overlay.EnvironmentID) != "" {
-		merged.EnvironmentID = overlay.EnvironmentID
+	if overlay.EnvironmentIDSet || normalizeMCPServerEnvironmentID(overlay.EnvironmentID) != defaultMCPServerEnvironmentID {
+		merged.EnvironmentID = normalizeMCPServerEnvironmentID(overlay.EnvironmentID)
+		merged.EnvironmentIDSet = overlay.EnvironmentIDSet || strings.TrimSpace(overlay.EnvironmentID) != ""
 	}
 	if len(overlay.Capabilities) > 0 {
 		merged.Capabilities = append([]string(nil), overlay.Capabilities...)

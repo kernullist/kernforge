@@ -20,16 +20,17 @@ import (
 )
 
 type MCPServerConfig struct {
-	Name          string            `json:"name"`
-	Command       string            `json:"command"`
-	Args          []string          `json:"args,omitempty"`
-	Env           map[string]string `json:"env,omitempty"`
-	EnvVars       []MCPServerEnvVar `json:"env_vars,omitempty"`
-	Cwd           string            `json:"cwd,omitempty"`
-	EnvironmentID string            `json:"environment_id,omitempty"`
-	Capabilities  []string          `json:"capabilities,omitempty"`
-	Disabled      bool              `json:"disabled,omitempty"`
-	DisabledSet   bool              `json:"-"`
+	Name             string            `json:"name"`
+	Command          string            `json:"command"`
+	Args             []string          `json:"args,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	EnvVars          []MCPServerEnvVar `json:"env_vars,omitempty"`
+	Cwd              string            `json:"cwd,omitempty"`
+	EnvironmentID    string            `json:"environment_id,omitempty"`
+	EnvironmentIDSet bool              `json:"-"`
+	Capabilities     []string          `json:"capabilities,omitempty"`
+	Disabled         bool              `json:"disabled,omitempty"`
+	DisabledSet      bool              `json:"-"`
 }
 
 type mcpServerConfigJSON struct {
@@ -39,7 +40,7 @@ type mcpServerConfigJSON struct {
 	Env           map[string]string `json:"env,omitempty"`
 	EnvVars       []MCPServerEnvVar `json:"env_vars,omitempty"`
 	Cwd           string            `json:"cwd,omitempty"`
-	EnvironmentID string            `json:"environment_id,omitempty"`
+	EnvironmentID *string           `json:"environment_id,omitempty"`
 	Capabilities  []string          `json:"capabilities,omitempty"`
 	Disabled      *bool             `json:"disabled,omitempty"`
 }
@@ -57,8 +58,12 @@ func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 		Env:           raw.Env,
 		EnvVars:       raw.EnvVars,
 		Cwd:           raw.Cwd,
-		EnvironmentID: raw.EnvironmentID,
+		EnvironmentID: defaultMCPServerEnvironmentID,
 		Capabilities:  raw.Capabilities,
+	}
+	if raw.EnvironmentID != nil {
+		cfg.EnvironmentID = normalizeMCPServerEnvironmentID(*raw.EnvironmentID)
+		cfg.EnvironmentIDSet = true
 	}
 	if raw.Disabled != nil {
 		cfg.Disabled = *raw.Disabled
@@ -73,6 +78,7 @@ func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
 		value := cfg.Disabled
 		disabled = &value
 	}
+	environmentID := normalizeMCPServerEnvironmentID(cfg.EnvironmentID)
 
 	return json.Marshal(mcpServerConfigJSON{
 		Name:          cfg.Name,
@@ -81,7 +87,7 @@ func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
 		Env:           cfg.Env,
 		EnvVars:       cfg.EnvVars,
 		Cwd:           cfg.Cwd,
-		EnvironmentID: cfg.EnvironmentID,
+		EnvironmentID: &environmentID,
 		Capabilities:  cfg.Capabilities,
 		Disabled:      disabled,
 	})
@@ -382,7 +388,11 @@ func resolveMCPServerCwd(ws Workspace, cfg MCPServerConfig) string {
 }
 
 func effectiveMCPServerEnvironmentID(cfg MCPServerConfig) string {
-	environmentID := strings.TrimSpace(cfg.EnvironmentID)
+	return normalizeMCPServerEnvironmentID(cfg.EnvironmentID)
+}
+
+func normalizeMCPServerEnvironmentID(environmentID string) string {
+	environmentID = strings.TrimSpace(environmentID)
 	if environmentID == "" {
 		return defaultMCPServerEnvironmentID
 	}
