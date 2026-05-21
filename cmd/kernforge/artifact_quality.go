@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -225,7 +226,52 @@ func countUniqueBugIDs(text string) int {
 	for _, match := range matches {
 		seen[match] = struct{}{}
 	}
+	for _, id := range bugIDRangeMembers(text) {
+		seen[id] = struct{}{}
+	}
 	return len(seen)
+}
+
+func bugIDRangeMembers(text string) []string {
+	upper := strings.ToUpper(text)
+	pattern := regexp.MustCompile(`\bBUG-(\d{3,})\b\s*(?:TO|THROUGH|THRU|[-~]|부터|에서)\s*\bBUG-(\d{3,})\b`)
+	matches := pattern.FindAllStringSubmatch(upper, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, match := range matches {
+		if len(match) < 3 {
+			continue
+		}
+		start, errStart := strconv.Atoi(match[1])
+		end, errEnd := strconv.Atoi(match[2])
+		if errStart != nil || errEnd != nil || start <= 0 || end <= 0 {
+			continue
+		}
+		if end < start {
+			start, end = end, start
+		}
+		if end-start > 500 {
+			continue
+		}
+		width := len(match[1])
+		if len(match[2]) > width {
+			width = len(match[2])
+		}
+		for value := start; value <= end; value++ {
+			seen[fmt.Sprintf("BUG-%0*d", width, value)] = struct{}{}
+		}
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func collectSeveritySummaryCounts(text string) (map[string]int, []string) {
@@ -309,6 +355,9 @@ func bugReferenceCountInLine(line string) int {
 			continue
 		}
 		seen["BUG-"+match[1]] = struct{}{}
+	}
+	for _, id := range bugIDRangeMembers(line) {
+		seen[id] = struct{}{}
 	}
 	abbreviatedIDPattern := regexp.MustCompile(`(?:^|[,;/(\[])\s*(\d{3,})\b`)
 	for _, match := range abbreviatedIDPattern.FindAllStringSubmatch(upper, -1) {

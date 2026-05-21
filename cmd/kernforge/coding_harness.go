@@ -1293,6 +1293,16 @@ func finalAnswerBugCountFindings(reply string) []CodingHarnessFinding {
 	for _, conflict := range profile.Conflicts {
 		addFinding("The final answer has conflicting bug-count metadata: " + conflict + ".")
 	}
+	if profile.UniqueBugIDs > 0 {
+		for _, total := range profile.TotalClaims {
+			if total != profile.UniqueBugIDs {
+				addFinding(fmt.Sprintf("The final answer claims a total of %d bugs, but %d unique BUG IDs are present.", total, profile.UniqueBugIDs))
+			}
+		}
+		if profile.SeverityTotal > 0 && profile.SeverityTotal != profile.UniqueBugIDs {
+			addFinding(fmt.Sprintf("The final answer lists %d unique BUG IDs, but the severity rows add up to %d.", profile.UniqueBugIDs, profile.SeverityTotal))
+		}
+	}
 	if profile.SeverityTotal > 0 {
 		for _, total := range profile.TotalClaims {
 			if total != profile.SeverityTotal {

@@ -354,6 +354,47 @@ func TestArtifactQualityAllowsSeveritySummaryBugIDsWithLineNumbers(t *testing.T)
 	}
 }
 
+func TestArtifactQualityExpandsBugIDRanges(t *testing.T) {
+	text := strings.Join([]string{
+		"# Bug Report",
+		"",
+		"Total 27 documented bugs.",
+		"",
+		"Covered range: BUG-001 through BUG-027.",
+	}, "\n")
+
+	profile := analyzeBugReportDocumentCounts(text)
+	if profile.UniqueBugIDs != 27 {
+		t.Fatalf("expected BUG range to expand to 27 IDs, got %#v", profile)
+	}
+	if len(profile.TotalClaims) != 1 || profile.TotalClaims[0] != 27 {
+		t.Fatalf("expected total claim 27, got %#v", profile.TotalClaims)
+	}
+	if len(profile.Conflicts) > 0 {
+		t.Fatalf("expected no conflicts for matching range and total, got %#v", profile.Conflicts)
+	}
+}
+
+func TestArtifactQualityAllowsSeveritySummaryBugIDRanges(t *testing.T) {
+	text := strings.Join([]string{
+		"# Bug Report",
+		"",
+		"Total 5 documented bugs.",
+		"",
+		"| Severity | Count | Bug IDs |",
+		"|----------|-------|---------|",
+		"| Critical | 5 | BUG-001 through BUG-005 |",
+	}, "\n")
+
+	profile := analyzeBugReportDocumentCounts(text)
+	if profile.UniqueBugIDs != 5 || profile.SeverityTotal != 5 {
+		t.Fatalf("expected matching BUG range and severity total, got %#v", profile)
+	}
+	if len(profile.Conflicts) > 0 {
+		t.Fatalf("expected severity BUG range not to conflict, got %#v", profile.Conflicts)
+	}
+}
+
 func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) {
 	root := t.TempDir()
 	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
@@ -493,6 +534,77 @@ func TestGeneratedDocumentFinalAnswerCountMismatchIsAnswerOnly(t *testing.T) {
 	}
 	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, false) {
 		t.Fatalf("expected document artifact reply mismatch to synthesize a safe final answer instead of entering review")
+	}
+}
+
+func TestGeneratedDocumentFinalAnswerBugRangeMismatchIsAnswerOnly(t *testing.T) {
+	root := t.TempDir()
+	reportPath := filepath.Join(root, "Tavern", "BugReport.md")
+	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportLines := []string{
+		"# Tavern Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 생성한 별도 문서입니다.",
+		"",
+		"총 27개 버그를 문서화했습니다.",
+		"",
+		"Covered range: BUG-001 through BUG-027.",
+	}
+	for i := 1; i <= 27; i++ {
+		reportLines = append(reportLines,
+			fmt.Sprintf("## BUG-%03d", i),
+			"- File: sample.cpp",
+			"- Impact: documented issue.",
+			"",
+		)
+	}
+	if err := os.WriteFile(reportPath, []byte(strings.Join(reportLines, "\n")), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &contract
+	session.Messages = []Message{{Role: "user", Text: request}}
+	addArtifactQualitySourceEvidence(session, "Tavern.cpp")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	reply := strings.Join([]string{
+		"The report documents 26 documented bugs in Tavern/BugReport.md.",
+		"Covered range: BUG-001 through BUG-027.",
+		"",
+		"Build/test verification was not run because this is a documentation-only artifact.",
+	}, "\n")
+	report := agent.buildCodingHarnessReport(reply, false, false)
+	if report.Approved {
+		t.Fatalf("expected final answer range/count mismatch to block approval")
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		t.Fatalf("expected artifact content to remain accepted, got %#v", report.ArtifactQuality.Findings)
+	}
+	if !strings.Contains(report.BlockingFeedback(), "Final answer has inconsistent bug counts") {
+		t.Fatalf("expected final-answer range/count blocker, got %q", report.BlockingFeedback())
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, false) {
+		t.Fatalf("expected document artifact range mismatch to synthesize a safe final answer")
 	}
 }
 
