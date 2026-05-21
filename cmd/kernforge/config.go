@@ -1513,6 +1513,7 @@ func normalizeConfigPaths(cfg *Config) {
 			}
 			cfg.MCPServers[i].Capabilities = cleaned
 		}
+		cfg.MCPServers[i].EnvVars = normalizeMCPServerEnvVars(server.EnvVars)
 		if len(server.Env) > 0 {
 			cleaned := make(map[string]string, len(server.Env))
 			for key, value := range server.Env {
@@ -2501,6 +2502,7 @@ func defaultWebResearchMCPServer(workspaceRoot string) MCPServerConfig {
 		Command:      "node",
 		Args:         []string{"path/to/web-research-mcp.js"},
 		Env:          defaultWebResearchMCPEnvTemplate(),
+		EnvVars:      defaultWebResearchMCPEnvVars(),
 		Cwd:          ".",
 		Capabilities: []string{"web_search", "web_fetch"},
 		Disabled:     true,
@@ -2524,6 +2526,7 @@ func defaultUserWebResearchMCPServer() MCPServerConfig {
 		Command:      "node",
 		Args:         []string{filepath.ToSlash(deployedWebResearchMCPScriptPath())},
 		Env:          defaultWebResearchMCPEnvTemplate(),
+		EnvVars:      defaultWebResearchMCPEnvVars(),
 		Cwd:          ".",
 		Capabilities: []string{"web_search", "web_fetch"},
 	}
@@ -2534,6 +2537,14 @@ func defaultWebResearchMCPEnvTemplate() map[string]string {
 		"TAVILY_API_KEY":       "",
 		"BRAVE_SEARCH_API_KEY": "",
 		"SERPAPI_API_KEY":      "",
+	}
+}
+
+func defaultWebResearchMCPEnvVars() []MCPServerEnvVar {
+	return []MCPServerEnvVar{
+		{Name: "TAVILY_API_KEY"},
+		{Name: "BRAVE_SEARCH_API_KEY"},
+		{Name: "SERPAPI_API_KEY"},
 	}
 }
 
@@ -2588,6 +2599,7 @@ func backfillUserWebResearchMCPServers(servers []MCPServerConfig) ([]MCPServerCo
 	updated := append([]MCPServerConfig(nil), servers...)
 	changed := false
 	defaultEnv := defaultWebResearchMCPEnvTemplate()
+	defaultEnvVars := defaultWebResearchMCPEnvVars()
 	defaultArgs := []string{filepath.ToSlash(deployedWebResearchMCPScriptPath())}
 	defaultCaps := []string{"web_search", "web_fetch"}
 	for i, server := range updated {
@@ -2618,6 +2630,11 @@ func backfillUserWebResearchMCPServers(servers []MCPServerConfig) ([]MCPServerCo
 				continue
 			}
 			updated[i].Env[key] = value
+			changed = true
+		}
+		mergedEnvVars := mergeMCPServerEnvVars(updated[i].EnvVars, defaultEnvVars)
+		if !sameMCPServerEnvVars(updated[i].EnvVars, mergedEnvVars) {
+			updated[i].EnvVars = mergedEnvVars
 			changed = true
 		}
 	}
@@ -2715,6 +2732,7 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 	}
 	merged.Disabled = base.Disabled || overlay.Disabled
 	merged.Env = mergeMCPServerEnv(base.Env, overlay.Env)
+	merged.EnvVars = mergeMCPServerEnvVars(base.EnvVars, overlay.EnvVars)
 	return merged
 }
 
@@ -2728,6 +2746,9 @@ func cloneMCPServerConfig(server MCPServerConfig) MCPServerConfig {
 	}
 	if server.Env != nil {
 		cloned.Env = mergeMCPServerEnv(nil, server.Env)
+	}
+	if server.EnvVars != nil {
+		cloned.EnvVars = append([]MCPServerEnvVar(nil), server.EnvVars...)
 	}
 	return cloned
 }
@@ -2755,6 +2776,29 @@ func mergeMCPServerEnv(base map[string]string, overlay map[string]string) map[st
 		merged[trimmedKey] = trimmedValue
 	}
 	return merged
+}
+
+func mergeMCPServerEnvVars(base []MCPServerEnvVar, overlay []MCPServerEnvVar) []MCPServerEnvVar {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := append([]MCPServerEnvVar(nil), base...)
+	merged = append(merged, overlay...)
+	return normalizeMCPServerEnvVars(merged)
+}
+
+func sameMCPServerEnvVars(a []MCPServerEnvVar, b []MCPServerEnvVar) bool {
+	normalizedA := normalizeMCPServerEnvVars(a)
+	normalizedB := normalizeMCPServerEnvVars(b)
+	if len(normalizedA) != len(normalizedB) {
+		return false
+	}
+	for i := range normalizedA {
+		if normalizedA[i] != normalizedB[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func isWebResearchMCPServer(server MCPServerConfig) bool {

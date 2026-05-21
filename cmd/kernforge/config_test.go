@@ -366,6 +366,9 @@ func TestEnsureUserConfigDeploysBundledWebResearchMCP(t *testing.T) {
 	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
 		t.Fatalf("expected empty web research env placeholders, got %#v", cfg.MCPServers[0].Env)
 	}
+	if !mcpEnvVarsContainNames(cfg.MCPServers[0].EnvVars, "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY") {
+		t.Fatalf("expected web research env_vars to request API keys, got %#v", cfg.MCPServers[0].EnvVars)
+	}
 }
 
 func TestEnsureUserConfigDoesNotOverwriteExistingProfiles(t *testing.T) {
@@ -1483,6 +1486,9 @@ func TestEnsureUserConfigBackfillsExistingWebResearchServerEnvAndArgs(t *testing
 	if cfg.MCPServers[0].Env["TAVILY_API_KEY"] != "" || cfg.MCPServers[0].Env["BRAVE_SEARCH_API_KEY"] != "" || cfg.MCPServers[0].Env["SERPAPI_API_KEY"] != "" {
 		t.Fatalf("expected backfilled env placeholders, got %#v", cfg.MCPServers[0].Env)
 	}
+	if !mcpEnvVarsContainNames(cfg.MCPServers[0].EnvVars, "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY") {
+		t.Fatalf("expected backfilled env_vars to request API keys, got %#v", cfg.MCPServers[0].EnvVars)
+	}
 }
 
 func TestEnsureUserConfigBackfillsExistingWebResearchServerCapabilitiesAndEmptyArgs(t *testing.T) {
@@ -1521,6 +1527,22 @@ func TestEnsureUserConfigBackfillsExistingWebResearchServerCapabilitiesAndEmptyA
 	if !sliceContainsFold(cfg.MCPServers[0].Capabilities, "web_search") || !sliceContainsFold(cfg.MCPServers[0].Capabilities, "web_fetch") {
 		t.Fatalf("expected missing web capability to be backfilled, got %#v", cfg.MCPServers[0].Capabilities)
 	}
+	if !mcpEnvVarsContainNames(cfg.MCPServers[0].EnvVars, "TAVILY_API_KEY", "BRAVE_SEARCH_API_KEY", "SERPAPI_API_KEY") {
+		t.Fatalf("expected backfilled env_vars to request API keys, got %#v", cfg.MCPServers[0].EnvVars)
+	}
+}
+
+func mcpEnvVarsContainNames(vars []MCPServerEnvVar, names ...string) bool {
+	seen := map[string]struct{}{}
+	for _, envVar := range vars {
+		seen[strings.ToUpper(strings.TrimSpace(envVar.Name))] = struct{}{}
+	}
+	for _, name := range names {
+		if _, ok := seen[strings.ToUpper(strings.TrimSpace(name))]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLoadConfigIgnoresWorkspaceWebResearchMCPOverride(t *testing.T) {
@@ -1749,6 +1771,91 @@ func TestNormalizeConfigPathsNormalizesMCPEnvEntries(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigPathsNormalizesMCPEnvVars(t *testing.T) {
+	cfg := &Config{
+		MCPServers: []MCPServerConfig{
+			{
+				Name:    "web",
+				Command: "node",
+				EnvVars: []MCPServerEnvVar{
+					{Name: " TAVILY_API_KEY ", Source: " LOCAL "},
+					{Name: "TAVILY_API_KEY", Source: "local"},
+					{Name: "REMOTE_TOKEN", Source: "REMOTE"},
+					{Name: ""},
+				},
+			},
+		},
+	}
+
+	normalizeConfigPaths(cfg)
+
+	got := cfg.MCPServers[0].EnvVars
+	if len(got) != 2 {
+		t.Fatalf("expected two normalized env_vars, got %#v", got)
+	}
+	if got[0] != (MCPServerEnvVar{Name: "TAVILY_API_KEY", Source: "local"}) {
+		t.Fatalf("expected local env_var first, got %#v", got[0])
+	}
+	if got[1] != (MCPServerEnvVar{Name: "REMOTE_TOKEN", Source: "remote"}) {
+		t.Fatalf("expected remote env_var second, got %#v", got[1])
+	}
+}
+
+func TestMCPServerEnvVarsDecodeStringsAndSourceObjects(t *testing.T) {
+	var cfg Config
+	err := json.Unmarshal([]byte(`{
+		"mcp_servers": [
+			{
+				"name": "env",
+				"command": "node",
+				"env_vars": [
+					"LEGACY_TOKEN",
+					{"name": "LOCAL_TOKEN", "source": "local"},
+					{"name": "REMOTE_TOKEN", "source": "remote"}
+				]
+			}
+		]
+	}`), &cfg)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	got := normalizeMCPServerEnvVars(cfg.MCPServers[0].EnvVars)
+	want := []MCPServerEnvVar{
+		{Name: "LEGACY_TOKEN"},
+		{Name: "LOCAL_TOKEN", Source: "local"},
+		{Name: "REMOTE_TOKEN", Source: "remote"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected env_vars %#v, got %#v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expected env_vars %#v, got %#v", want, got)
+		}
+	}
+}
+
+func TestMCPServerEnvVarsRejectUnsupportedSource(t *testing.T) {
+	var cfg Config
+	err := json.Unmarshal([]byte(`{
+		"mcp_servers": [
+			{
+				"name": "env",
+				"command": "node",
+				"env_vars": [
+					{"name": "TOKEN", "source": "vault"}
+				]
+			}
+		]
+	}`), &cfg)
+	if err == nil {
+		t.Fatalf("expected unsupported env_vars source to fail")
+	}
+	if !strings.Contains(err.Error(), "unsupported env_vars source") {
+		t.Fatalf("expected unsupported env_vars source error, got %v", err)
+	}
+}
+
 func TestNormalizeConfigPathsNormalizesMCPEnvironmentID(t *testing.T) {
 	cfg := &Config{
 		MCPServers: []MCPServerConfig{
@@ -1786,6 +1893,37 @@ func TestMergeMCPServerConfigPreservesEnvironmentID(t *testing.T) {
 	merged = mergeMCPServerConfig(base, overlay)
 	if merged.EnvironmentID != "remote-overlay" {
 		t.Fatalf("expected overlay environment id, got %#v", merged)
+	}
+}
+
+func TestMergeMCPServerConfigMergesEnvVars(t *testing.T) {
+	base := MCPServerConfig{
+		Name:    "docs",
+		Command: "node",
+		EnvVars: []MCPServerEnvVar{
+			{Name: "BASE_TOKEN"},
+		},
+	}
+	overlay := MCPServerConfig{
+		Name: "docs",
+		EnvVars: []MCPServerEnvVar{
+			{Name: "BASE_TOKEN"},
+			{Name: "OVERLAY_TOKEN", Source: "local"},
+		},
+	}
+
+	merged := mergeMCPServerConfig(base, overlay)
+	want := []MCPServerEnvVar{
+		{Name: "BASE_TOKEN"},
+		{Name: "OVERLAY_TOKEN", Source: "local"},
+	}
+	if len(merged.EnvVars) != len(want) {
+		t.Fatalf("expected merged env_vars %#v, got %#v", want, merged.EnvVars)
+	}
+	for i := range want {
+		if merged.EnvVars[i] != want[i] {
+			t.Fatalf("expected merged env_vars %#v, got %#v", want, merged.EnvVars)
+		}
 	}
 }
 

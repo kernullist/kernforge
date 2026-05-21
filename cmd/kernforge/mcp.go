@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,10 +24,16 @@ type MCPServerConfig struct {
 	Command       string            `json:"command"`
 	Args          []string          `json:"args,omitempty"`
 	Env           map[string]string `json:"env,omitempty"`
+	EnvVars       []MCPServerEnvVar `json:"env_vars,omitempty"`
 	Cwd           string            `json:"cwd,omitempty"`
 	EnvironmentID string            `json:"environment_id,omitempty"`
 	Capabilities  []string          `json:"capabilities,omitempty"`
 	Disabled      bool              `json:"disabled,omitempty"`
+}
+
+type MCPServerEnvVar struct {
+	Name   string `json:"name"`
+	Source string `json:"source,omitempty"`
 }
 
 type MCPToolDescriptor struct {
@@ -119,6 +126,80 @@ const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
 const mcpTurnMetadataUserInputRequestedKey = "user_input_requested_during_turn"
 const mcpBridgeCallIDMetaKey = "codex_bridge_mcp_call_id"
 const defaultMCPServerEnvironmentID = "local"
+
+var windowsCoreMCPEnvVars = []string{
+	"PATH",
+	"PATHEXT",
+	"SHELL",
+	"COMSPEC",
+	"SYSTEMROOT",
+	"SYSTEMDRIVE",
+	"USERNAME",
+	"USERDOMAIN",
+	"USERPROFILE",
+	"HOMEDRIVE",
+	"HOMEPATH",
+	"PROGRAMFILES",
+	"PROGRAMFILES(X86)",
+	"PROGRAMW6432",
+	"PROGRAMDATA",
+	"LOCALAPPDATA",
+	"APPDATA",
+	"TEMP",
+	"TMP",
+	"TMPDIR",
+	"POWERSHELL",
+	"PWSH",
+}
+
+var unixCoreMCPEnvVars = []string{
+	"PATH",
+	"SHELL",
+	"TMPDIR",
+	"TEMP",
+	"TMP",
+	"HOME",
+	"LANG",
+	"LC_ALL",
+	"LC_CTYPE",
+	"LOGNAME",
+	"USER",
+}
+
+func (v *MCPServerEnvVar) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		v.Name = strings.TrimSpace(name)
+		v.Source = ""
+		return nil
+	}
+	var raw struct {
+		Name   string `json:"name"`
+		Source string `json:"source,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("mcp env_vars entry must be a string or object with name/source: %w", err)
+	}
+	v.Name = strings.TrimSpace(raw.Name)
+	v.Source = strings.ToLower(strings.TrimSpace(raw.Source))
+	if err := v.validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (v MCPServerEnvVar) validate() error {
+	switch strings.TrimSpace(strings.ToLower(v.Source)) {
+	case "", "local", "remote":
+		return nil
+	default:
+		return fmt.Errorf("unsupported env_vars source %q; expected \"local\" or \"remote\"", v.Source)
+	}
+}
+
+func (v MCPServerEnvVar) isRemoteSource() bool {
+	return strings.EqualFold(strings.TrimSpace(v.Source), "remote")
+}
 
 func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) context.Context {
 	if ctx == nil {
@@ -269,6 +350,83 @@ func validateMCPServerEnvironment(cfg MCPServerConfig) error {
 	return fmt.Errorf("mcp server %q references unsupported environment_id %q", cfg.Name, environmentID)
 }
 
+func normalizeMCPServerEnvVars(vars []MCPServerEnvVar) []MCPServerEnvVar {
+	if len(vars) == 0 {
+		return nil
+	}
+	out := make([]MCPServerEnvVar, 0, len(vars))
+	seen := map[string]struct{}{}
+	for _, envVar := range vars {
+		normalized := MCPServerEnvVar{
+			Name:   strings.TrimSpace(envVar.Name),
+			Source: strings.ToLower(strings.TrimSpace(envVar.Source)),
+		}
+		if normalized.Name == "" {
+			continue
+		}
+		key := strings.ToUpper(normalized.Name) + "\x00" + normalized.Source
+		if runtime.GOOS != "windows" {
+			key = normalized.Name + "\x00" + normalized.Source
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func defaultMCPEnvVarNames() []string {
+	if runtime.GOOS == "windows" {
+		return windowsCoreMCPEnvVars
+	}
+	return unixCoreMCPEnvVars
+}
+
+func buildMCPProcessEnv(cfg MCPServerConfig) ([]string, error) {
+	env := map[string]string{}
+	addFromParent := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if value, ok := os.LookupEnv(name); ok {
+			env[name] = value
+		}
+	}
+	for _, name := range defaultMCPEnvVarNames() {
+		addFromParent(name)
+	}
+	for _, envVar := range normalizeMCPServerEnvVars(cfg.EnvVars) {
+		if err := envVar.validate(); err != nil {
+			return nil, err
+		}
+		if envVar.isRemoteSource() {
+			return nil, fmt.Errorf("env_vars entry %q uses source \"remote\", which requires remote MCP stdio", envVar.Name)
+		}
+		addFromParent(envVar.Name)
+	}
+	for key, value := range cfg.Env {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		trimmedValue := strings.TrimSpace(value)
+		if trimmedValue == "" {
+			addFromParent(trimmedKey)
+			continue
+		}
+		env[trimmedKey] = trimmedValue
+	}
+	out := make([]string, 0, len(env))
+	for key, value := range env {
+		out = append(out, key+"="+value)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, error) {
 	if strings.TrimSpace(cfg.Command) == "" {
 		return nil, nil, fmt.Errorf("missing command")
@@ -278,23 +436,11 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 	}
 	cmd := exec.Command(cfg.Command, cfg.Args...)
 	cmd.Dir = resolveMCPServerCwd(ws, cfg)
-	cmd.Env = os.Environ()
-	if len(cfg.Env) > 0 {
-		env := make([]string, 0, len(cmd.Env)+len(cfg.Env))
-		env = append(env, cmd.Env...)
-		for key, value := range cfg.Env {
-			trimmedKey := strings.TrimSpace(key)
-			if trimmedKey == "" {
-				continue
-			}
-			trimmedValue := strings.TrimSpace(value)
-			if trimmedValue == "" {
-				continue
-			}
-			env = append(env, trimmedKey+"="+trimmedValue)
-		}
-		cmd.Env = env
+	env, err := buildMCPProcessEnv(cfg)
+	if err != nil {
+		return nil, nil, err
 	}
+	cmd.Env = env
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

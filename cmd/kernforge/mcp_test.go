@@ -440,13 +440,17 @@ func TestMCPEnvHelperProcess(t *testing.T) {
 			params, _ := msg["params"].(map[string]any)
 			args, _ := params["arguments"].(map[string]any)
 			name, _ := args["name"].(string)
+			value, ok := os.LookupEnv(name)
+			if !ok {
+				value = "__MISSING__"
+			}
 			_ = writeRPCMessage(os.Stdout, map[string]any{
 				"jsonrpc": "2.0",
 				"id":      msg["id"],
 				"result": map[string]any{
 					"content": []map[string]any{{
 						"type": "text",
-						"text": os.Getenv(name),
+						"text": value,
 					}},
 				},
 			})
@@ -1432,16 +1436,7 @@ func TestLoadMCPManagerSkipsEmptyEnvOverridesAndKeepsConfiguredValues(t *testing
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 
-	var echoTool Tool
-	for _, tool := range manager.Tools() {
-		if tool.Definition().Name == "mcp__env__echo_env" {
-			echoTool = tool
-			break
-		}
-	}
-	if echoTool == nil {
-		t.Fatalf("expected echo_env tool")
-	}
+	echoTool := requireMCPToolByName(t, manager, "mcp__env__echo_env")
 
 	tavilyValue, err := echoTool.Execute(context.Background(), map[string]any{"name": "TAVILY_API_KEY"})
 	if err != nil {
@@ -1458,4 +1453,85 @@ func TestLoadMCPManagerSkipsEmptyEnvOverridesAndKeepsConfiguredValues(t *testing
 	if serpValue != "config-value" {
 		t.Fatalf("expected non-empty config env override, got %q", serpValue)
 	}
+}
+
+func TestLoadMCPManagerUsesCoreEnvAndRequestedEnvVars(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KERNFORGE_MCP_REQUESTED_ENV", "requested")
+	t.Setenv("KERNFORGE_MCP_UNREQUESTED_ENV", "hidden")
+
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "env",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPEnvHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_ENV_HELPER": "1",
+		},
+		EnvVars: []MCPServerEnvVar{
+			{Name: "KERNFORGE_MCP_REQUESTED_ENV"},
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+	echoTool := requireMCPToolByName(t, manager, "mcp__env__echo_env")
+
+	requestedValue, err := echoTool.Execute(context.Background(), map[string]any{"name": "KERNFORGE_MCP_REQUESTED_ENV"})
+	if err != nil {
+		t.Fatalf("Execute requested env: %v", err)
+	}
+	if requestedValue != "requested" {
+		t.Fatalf("expected requested env var to be forwarded, got %q", requestedValue)
+	}
+
+	unrequestedValue, err := echoTool.Execute(context.Background(), map[string]any{"name": "KERNFORGE_MCP_UNREQUESTED_ENV"})
+	if err != nil {
+		t.Fatalf("Execute unrequested env: %v", err)
+	}
+	if unrequestedValue != "__MISSING__" {
+		t.Fatalf("expected unrequested env var to be withheld, got %q", unrequestedValue)
+	}
+}
+
+func TestLoadMCPManagerRejectsRemoteSourceEnvVarsForLocalStdio(t *testing.T) {
+	dir := t.TempDir()
+	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{
+		Name:    "env",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPEnvHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_ENV_HELPER": "1",
+		},
+		EnvVars: []MCPServerEnvVar{
+			{Name: "REMOTE_TOKEN", Source: "remote"},
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `source "remote"`) {
+		t.Fatalf("expected remote env_vars warning, got %#v", warnings)
+	}
+	statuses := manager.Status()
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 failed status, got %d", len(statuses))
+	}
+	if statuses[0].ToolCount != 0 {
+		t.Fatalf("expected failed MCP server without tools, got %#v", statuses[0])
+	}
+	if !strings.Contains(statuses[0].Error, `source "remote"`) {
+		t.Fatalf("expected remote env_vars status error, got %#v", statuses[0])
+	}
+}
+
+func requireMCPToolByName(t *testing.T, manager *MCPManager, name string) Tool {
+	t.Helper()
+	for _, tool := range manager.Tools() {
+		if tool.Definition().Name == name {
+			return tool
+		}
+	}
+	t.Fatalf("expected MCP tool %q", name)
+	return nil
 }
