@@ -548,6 +548,74 @@ func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexModelChoicesUseRemoteCatalogAsSourceOfTruth(t *testing.T) {
+	home := t.TempDir()
+	authPath := filepath.Join(home, "codex_auth.json")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(openAICodexAuthFileEnv, authPath)
+	t.Setenv(openAICodexAccessTokenEnv, "")
+	if err := saveCodexOAuthAuthFile(authPath, codexOAuthTokens{AccessToken: "test-token"}); err != nil {
+		t.Fatalf("save auth file: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[{"slug":"chatgpt-remote-only","display_name":"ChatGPT Remote Only","supported_in_api":true,"visibility":"list"}]}`))
+	}))
+	defer server.Close()
+
+	rt := &runtimeState{
+		cfg: Config{
+			Provider: "openai-codex",
+			BaseURL:  server.URL,
+		},
+	}
+	models, authoritative := rt.openAICodexModelChoicesWithSource("legacy-configured-model")
+	if !authoritative {
+		t.Fatalf("expected remote model catalog to be authoritative")
+	}
+	if len(models) != 1 || models[0].ID != "chatgpt-remote-only" {
+		t.Fatalf("expected remote-only model list, got %#v", models)
+	}
+	for _, model := range models {
+		if model.ID == "legacy-configured-model" {
+			t.Fatalf("remote authoritative catalog must not append unavailable current model: %#v", models)
+		}
+	}
+}
+
+func TestOpenAICodexModelChoicesAppendCurrentWhenRemoteUnavailable(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(openAICodexAuthFileEnv, filepath.Join(home, "missing_auth.json"))
+	t.Setenv(openAICodexAccessTokenEnv, "")
+
+	rt := &runtimeState{
+		cfg: Config{
+			Provider: "openai-codex",
+			BaseURL:  "http://127.0.0.1:1",
+		},
+	}
+	models, authoritative := rt.openAICodexModelChoicesWithSource("legacy-configured-model")
+	if authoritative {
+		t.Fatalf("expected missing remote catalog to fall back")
+	}
+	foundCurrent := false
+	for _, model := range models {
+		if model.ID == "legacy-configured-model" {
+			foundCurrent = true
+			break
+		}
+	}
+	if !foundCurrent {
+		t.Fatalf("fallback catalog should keep current model available, got %#v", models)
+	}
+}
+
 func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/responses" {

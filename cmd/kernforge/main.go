@@ -5545,10 +5545,14 @@ func (rt *runtimeState) chooseOpenAICodexModel(currentModel string) (string, err
 		return "", err
 	}
 
-	models := rt.openAICodexModelChoices(currentModel)
+	models, remoteCatalogAuthoritative := rt.openAICodexModelChoicesWithSource(currentModel)
 	fmt.Fprintln(rt.writer, rt.ui.section("OpenAI Codex Models"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Live models are loaded from the ChatGPT OAuth-backed Codex account when available."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("You can also type any Codex-supported model id directly."))
+	if remoteCatalogAuthoritative {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Live models are loaded from the ChatGPT OAuth-backed Codex account and treated as the source of truth."))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("Live models are loaded from the ChatGPT OAuth-backed Codex account when available."))
+		fmt.Fprintln(rt.writer, rt.ui.hintLine("You can also type any Codex-supported model id directly."))
+	}
 	defaultChoice := "1"
 	for i, m := range models {
 		marker := ""
@@ -5577,6 +5581,9 @@ func (rt *runtimeState) chooseOpenAICodexModel(currentModel string) (string, err
 		if strings.EqualFold(m.ID, choice) {
 			return m.ID, nil
 		}
+	}
+	if remoteCatalogAuthoritative {
+		return "", fmt.Errorf("OpenAI Codex model %s was not returned by the ChatGPT account; choose one of: %s", choice, strings.Join(limitCodexCLIModelLabels(models, 8), ", "))
 	}
 	return choice, nil
 }
@@ -5650,6 +5657,11 @@ func (rt *runtimeState) codexCLIModelChoices(currentModel string) []codexCLIMode
 }
 
 func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIModelOption {
+	choices, _ := rt.openAICodexModelChoicesWithSource(currentModel)
+	return choices
+}
+
+func (rt *runtimeState) openAICodexModelChoicesWithSource(currentModel string) ([]codexCLIModelOption, bool) {
 	baseURL := normalizeOpenAICodexBaseURL("")
 	if rt != nil && strings.EqualFold(normalizeProviderName(rt.cfg.Provider), "openai-codex") {
 		baseURL = normalizeOpenAICodexBaseURL(rt.cfg.BaseURL)
@@ -5681,6 +5693,7 @@ func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIM
 			seen[strings.ToLower(id)] = true
 		}
 	}
+	remoteCatalogAuthoritative := len(choices) > 0
 	if len(choices) == 0 {
 		choices = openAICodexFallbackModels()
 		for _, choice := range choices {
@@ -5688,10 +5701,10 @@ func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIM
 		}
 	}
 	currentModel = strings.TrimSpace(currentModel)
-	if currentModel != "" && !seen[strings.ToLower(currentModel)] {
+	if currentModel != "" && !remoteCatalogAuthoritative && !seen[strings.ToLower(currentModel)] {
 		choices = append(choices, codexCLIModelOption{ID: currentModel, Name: "Current configured model"})
 	}
-	return choices
+	return choices, remoteCatalogAuthoritative
 }
 
 func openAICodexFallbackModels() []codexCLIModelOption {
@@ -5702,6 +5715,22 @@ func openAICodexFallbackModels() []codexCLIModelOption {
 		}
 		out = append(out, model)
 	}
+	return out
+}
+
+func limitCodexCLIModelLabels(models []codexCLIModelOption, limit int) []string {
+	if limit <= 0 || len(models) <= limit {
+		out := make([]string, 0, len(models))
+		for _, model := range models {
+			out = append(out, model.ID)
+		}
+		return out
+	}
+	out := make([]string, 0, limit+1)
+	for _, model := range models[:limit] {
+		out = append(out, model.ID)
+	}
+	out = append(out, fmt.Sprintf("...+%d more", len(models)-limit))
 	return out
 }
 
