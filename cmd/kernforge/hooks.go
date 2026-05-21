@@ -282,7 +282,7 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 		payload["provider"] = rt.Session.Provider
 		payload["model"] = rt.Session.Model
 	}
-	addEffectiveWorkspaceRootMetadata(payload, rt.Workspace, rt.Session)
+	addEffectiveExecutionContextMetadata(payload, rt.Workspace, rt.Session)
 	if activeRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(rt.Workspace, rt.Session)); activeRoot != "" {
 		payload["cwd"] = activeRoot
 	} else {

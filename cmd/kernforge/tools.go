@@ -2202,6 +2202,7 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"requires_verification": err == nil,
 		"effect":                "edit",
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -2420,6 +2421,7 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		"requires_verification": err == nil,
 		"effect":                "edit",
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -2441,7 +2443,7 @@ type RunShellTool struct{ ws Workspace }
 func NewRunShellTool(ws Workspace) RunShellTool { return RunShellTool{ws: ws} }
 
 func (t RunShellTool) shellHookPayload(payload HookPayload) HookPayload {
-	addEffectiveWorkspaceRootMetadata(payload, t.ws, nil)
+	addEffectiveExecutionContextMetadata(payload, t.ws, nil)
 	return payload
 }
 
@@ -2699,7 +2701,7 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		meta["hook_rewritten"] = true
 		meta["original_command"] = originalCommand
 	}
-	addEffectiveWorkspaceRootMetadata(meta, t.ws, nil)
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	if verificationLike {
 		status := VerificationPassed
 		commandStatus := "completed"
@@ -4589,6 +4591,7 @@ func (t GitAddTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecuti
 	if all {
 		meta["stage_scope"] = "all"
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -4672,6 +4675,7 @@ func (t GitCommitTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"commit_subject": commitSubject,
 		"branch":         branch,
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -4780,6 +4784,7 @@ func (t GitPushTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecut
 		"set_upstream": setUpstream,
 		"pushed":       err == nil,
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -4922,6 +4927,7 @@ func (t GitCreatePRTool) ExecuteDetailed(ctx context.Context, input any) (ToolEx
 		"pr_created":  err == nil,
 		"pr_url":      firstHTTPURL(text),
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -4977,6 +4983,7 @@ func (t GitStatusTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"clean":         len(changedPaths) == 0 && err == nil,
 		"effect":        "inspect",
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
@@ -5049,6 +5056,7 @@ func (t GitDiffTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecut
 		"line_count": textLineCount(text),
 		"effect":     "inspect",
 	}
+	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 

@@ -665,12 +665,12 @@ func NewRunShellBundleBackgroundTool(ws Workspace) RunShellBundleBackgroundTool 
 }
 
 func shellBackgroundHookPayload(ws Workspace, payload HookPayload) HookPayload {
-	addEffectiveWorkspaceRootMetadata(payload, ws, nil)
+	addEffectiveExecutionContextMetadata(payload, ws, nil)
 	return payload
 }
 
 func shellBackgroundMeta(ws Workspace, meta map[string]any) map[string]any {
-	addEffectiveWorkspaceRootMetadata(meta, ws, nil)
+	addEffectiveExecutionContextMetadata(meta, ws, nil)
 	return meta
 }
 

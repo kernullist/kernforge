@@ -9927,6 +9927,36 @@ func addEffectiveWorkspaceRootMetadata(meta map[string]any, ws Workspace, sess *
 	}
 }
 
+func addEffectivePermissionMetadata(meta map[string]any, ws Workspace, sess *Session) {
+	if meta == nil {
+		return
+	}
+	permissionMode := ""
+	if ws.Perms != nil {
+		permissionMode = string(ws.Perms.Mode())
+	}
+	if strings.TrimSpace(permissionMode) == "" && sess != nil {
+		permissionMode = strings.TrimSpace(sess.PermissionMode)
+	}
+	permissionMode = strings.TrimSpace(permissionMode)
+	if permissionMode == "" {
+		return
+	}
+	meta["permission_mode"] = permissionMode
+	if profileID := activePermissionProfileIDForModeString(permissionMode); profileID != "" {
+		meta["active_permission_profile_id"] = profileID
+		meta["active_permission_profile"] = activePermissionProfileSnapshotForModeString(permissionMode)
+	}
+	if sandbox := mcpTurnMetadataSandboxTag(permissionMode); sandbox != "" {
+		meta["sandbox"] = sandbox
+	}
+}
+
+func addEffectiveExecutionContextMetadata(meta map[string]any, ws Workspace, sess *Session) {
+	addEffectiveWorkspaceRootMetadata(meta, ws, sess)
+	addEffectivePermissionMetadata(meta, ws, sess)
+}
+
 func (rt *runtimeState) handleInitCommand(args string) error {
 	trimmed := strings.TrimSpace(args)
 	if trimmed == "" {

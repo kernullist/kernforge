@@ -343,6 +343,43 @@ func TestRunShellExecuteDetailedIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	}
 }
 
+func TestRunShellExecuteDetailedIncludesActivePermissionProfile(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms:    NewPermissionManager(ModeBypass, nil),
+	}
+	registry := NewToolRegistry(NewRunShellTool(ws))
+	command := "echo permissions"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output permissions"
+	}
+
+	payload, err := json.Marshal(map[string]any{"command": command})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "run_shell", string(payload))
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "permission_mode"); got != string(ModeBypass) {
+		t.Fatalf("expected permission mode %q, got %#v", ModeBypass, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_permission_profile_id"); got != builtInPermissionProfileDangerFullAccess {
+		t.Fatalf("expected active permission profile id %q, got %#v", builtInPermissionProfileDangerFullAccess, result.Meta)
+	}
+	activeProfile, ok := result.Meta["active_permission_profile"].(map[string]any)
+	if !ok || activeProfile["id"] != builtInPermissionProfileDangerFullAccess {
+		t.Fatalf("expected active permission profile snapshot, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "sandbox"); got != "none" {
+		t.Fatalf("expected sandbox tag to mirror unsandboxed execution, got %#v", result.Meta)
+	}
+}
+
 func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	baseRoot := t.TempDir()
 	activeRoot := filepath.Join(baseRoot, "worktree")
@@ -354,6 +391,9 @@ func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 		BaseRoot: baseRoot,
 		Root:     activeRoot,
 		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			return true, nil
+		}),
 		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
 			if event == HookPreToolUse {
 				prePayload = payload
@@ -386,6 +426,12 @@ func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	roots := toolMetaStringSlice(prePayload, "workspace_roots")
 	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
 		t.Fatalf("expected hook workspace_roots [%q %q], got %#v", baseRoot, activeRoot, prePayload)
+	}
+	if got := toolMetaString(prePayload, "permission_mode"); got != string(ModeDefault) {
+		t.Fatalf("expected hook permission mode %q, got %#v", ModeDefault, prePayload)
+	}
+	if got := toolMetaString(prePayload, "active_permission_profile_id"); got != builtInPermissionProfileWorkspace {
+		t.Fatalf("expected hook active permission profile %q, got %#v", builtInPermissionProfileWorkspace, prePayload)
 	}
 }
 

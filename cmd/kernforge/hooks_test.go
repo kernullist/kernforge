@@ -215,7 +215,11 @@ func TestHookRuntimeEnrichPayloadUsesEffectiveWorkspaceRoots(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	runtime := &HookRuntime{
-		Workspace: Workspace{BaseRoot: baseRoot, Root: activeRoot},
+		Workspace: Workspace{
+			BaseRoot: baseRoot,
+			Root:     activeRoot,
+			Perms:    NewPermissionManager(ModeBypass, nil),
+		},
 	}
 
 	payload := runtime.enrichPayload(HookPreToolUse, HookPayload{
@@ -234,6 +238,12 @@ func TestHookRuntimeEnrichPayloadUsesEffectiveWorkspaceRoots(t *testing.T) {
 	roots := toolMetaStringSlice(payload, "workspace_roots")
 	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
 		t.Fatalf("expected effective workspace_roots [%q %q], got %#v", baseRoot, activeRoot, payload)
+	}
+	if got := toolMetaString(payload, "permission_mode"); got != string(ModeBypass) {
+		t.Fatalf("expected effective permission mode %q, got %#v", ModeBypass, payload)
+	}
+	if got := toolMetaString(payload, "active_permission_profile_id"); got != builtInPermissionProfileDangerFullAccess {
+		t.Fatalf("expected effective permission profile %q, got %#v", builtInPermissionProfileDangerFullAccess, payload)
 	}
 }
 
