@@ -130,6 +130,35 @@ func TestHookRuntimeAskDenied(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeEnrichPayloadUsesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	runtime := &HookRuntime{
+		Workspace: Workspace{BaseRoot: baseRoot, Root: activeRoot},
+	}
+
+	payload := runtime.enrichPayload(HookPreToolUse, HookPayload{
+		"tool_name": "run_shell",
+	})
+
+	if got := toolMetaString(payload, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected base workspace_root %q, got %#v", baseRoot, payload)
+	}
+	if got := toolMetaString(payload, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected active workspace root %q, got %#v", activeRoot, payload)
+	}
+	if got := toolMetaString(payload, "cwd"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected cwd to use active root %q, got %#v", activeRoot, payload)
+	}
+	roots := toolMetaStringSlice(payload, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected effective workspace_roots [%q %q], got %#v", baseRoot, activeRoot, payload)
+	}
+}
+
 func TestHookEngineMatchesCompactTrigger(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,

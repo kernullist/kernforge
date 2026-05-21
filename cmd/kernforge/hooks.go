@@ -212,8 +212,12 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 		payload["provider"] = rt.Session.Provider
 		payload["model"] = rt.Session.Model
 	}
-	payload["workspace_root"] = rt.Workspace.BaseRoot
-	payload["cwd"] = rt.Workspace.Root
+	addEffectiveWorkspaceRootMetadata(payload, rt.Workspace, rt.Session)
+	if activeRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(rt.Workspace, rt.Session)); activeRoot != "" {
+		payload["cwd"] = activeRoot
+	} else {
+		delete(payload, "cwd")
+	}
 	if rt.Evidence != nil {
 		if failed, err := rt.Evidence.RecentFailures(rt.Workspace.BaseRoot, 12); err == nil && len(failed) > 0 {
 			payload["has_recent_failed_evidence"] = true

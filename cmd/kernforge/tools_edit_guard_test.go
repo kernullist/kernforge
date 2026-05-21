@@ -3145,6 +3145,10 @@ func TestRunShellBundleBackgroundReusesExistingRunningBundle(t *testing.T) {
 
 func TestRunShellBundleBackgroundExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()
+	activeRoot := filepath.Join(root, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	session := NewSession(root, "test", "test-model", "", "default")
 	if err := store.Save(session); err != nil {
@@ -3153,7 +3157,7 @@ func TestRunShellBundleBackgroundExecuteDetailedReturnsStructuredMeta(t *testing
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
 	ws := Workspace{
 		BaseRoot:       root,
-		Root:           root,
+		Root:           activeRoot,
 		Shell:          defaultShell(),
 		BackgroundJobs: jobs,
 	}
@@ -3181,6 +3185,12 @@ func TestRunShellBundleBackgroundExecuteDetailedReturnsStructuredMeta(t *testing
 	jobIDs := toolMetaStringSlice(result.Meta, "bundle_job_ids")
 	if len(jobIDs) != 2 {
 		t.Fatalf("expected 2 bundle job ids, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "workspace_root"); !sameFilePath(got, root) {
+		t.Fatalf("expected bundle base workspace root %q, got %#v", root, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected bundle active workspace root %q, got %#v", activeRoot, result.Meta)
 	}
 }
 
@@ -3287,6 +3297,10 @@ func TestRunBackgroundShellReuseRunsPostHookAndReportsActualStatus(t *testing.T)
 
 func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 	root := t.TempDir()
+	activeRoot := filepath.Join(root, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	session := NewSession(root, "test", "test-model", "", "default")
 	if err := store.Save(session); err != nil {
@@ -3295,7 +3309,7 @@ func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
 	ws := Workspace{
 		BaseRoot:       root,
-		Root:           root,
+		Root:           activeRoot,
 		Shell:          defaultShell(),
 		BackgroundJobs: jobs,
 	}
@@ -3314,6 +3328,15 @@ func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 	}
 	if toolMetaString(result.Meta, "owner_node_id") != "plan-02" {
 		t.Fatalf("expected owner node id in meta, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "workspace_root"); !sameFilePath(got, root) {
+		t.Fatalf("expected base workspace root %q, got %#v", root, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected active workspace root %q, got %#v", activeRoot, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected shell work_dir %q, got %#v", activeRoot, result.Meta)
 	}
 	bundles := jobs.SnapshotBundles()
 	if len(bundles) != 1 || bundles[0].OwnerNodeID != "plan-02" {

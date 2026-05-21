@@ -664,6 +664,16 @@ func NewRunShellBundleBackgroundTool(ws Workspace) RunShellBundleBackgroundTool 
 	return RunShellBundleBackgroundTool{ws: ws}
 }
 
+func shellBackgroundHookPayload(ws Workspace, payload HookPayload) HookPayload {
+	addEffectiveWorkspaceRootMetadata(payload, ws, nil)
+	return payload
+}
+
+func shellBackgroundMeta(ws Workspace, meta map[string]any) map[string]any {
+	addEffectiveWorkspaceRootMetadata(meta, ws, nil)
+	return meta
+}
+
 func (t RunShellBundleBackgroundTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name:        "run_shell_bundle_background",
@@ -741,7 +751,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				continue
 			}
 		}
-		if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+		if _, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 			"tool_name":     "run_shell_bundle_background",
 			"tool_kind":     "shell",
 			"command":       command,
@@ -749,7 +759,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			"file_tags":     []string{},
 			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
-		}); err != nil {
+		})); err != nil {
 			return ToolExecutionResult{}, err
 		}
 		if err := t.ws.EnsureShell(command); err != nil {
@@ -760,7 +770,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				reusable.OwnerNodeID = effectiveOwnerNodeID
 				t.ws.BackgroundJobs.session.UpsertBackgroundJob(reusable)
 			}
-			if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+			if _, err := t.ws.Hook(ctx, HookPostToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 				"tool_name":     "run_shell_bundle_background",
 				"tool_kind":     "shell",
 				"command":       command,
@@ -768,7 +778,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				"output":        fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
 				"owner_node_id": effectiveOwnerNodeID,
 				"work_dir":      workDir,
-			}); err != nil {
+			})); err != nil {
 				return ToolExecutionResult{}, err
 			}
 			bundleJobs = append(bundleJobs, reusable)
@@ -779,7 +789,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
-		if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		if _, err := t.ws.Hook(ctx, HookPostToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 			"tool_name":     "run_shell_bundle_background",
 			"tool_kind":     "shell",
 			"command":       command,
@@ -787,7 +797,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 			"output":        fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
 			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
-		}); err != nil {
+		})); err != nil {
 			return ToolExecutionResult{}, err
 		}
 		bundleJobs = append(bundleJobs, job)
@@ -798,7 +808,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		lines = append(lines, "Do not retry these verification commands or poll background jobs for them unless the user explicitly approves verification; disclose that verification was not run.")
 		return ToolExecutionResult{
 			DisplayText: strings.Join(lines, "\n"),
-			Meta: map[string]any{
+			Meta: shellBackgroundMeta(t.ws, map[string]any{
 				"tool_name":                "run_shell_bundle_background",
 				"commands":                 commands,
 				"owner_node_id":            effectiveOwnerNodeID,
@@ -811,7 +821,7 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				"verification_approved":    false,
 				"verification_declined":    true,
 				"command_execution_status": "declined",
-			},
+			}),
 		}, nil
 	}
 	bundle, err := t.ws.BackgroundJobs.RecordShellBundle(bundleJobs, effectiveOwnerNodeID, BackgroundShellBundleOptions{
@@ -825,13 +835,13 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 	lines = append(lines, "Use check_shell_bundle with the returned job ids, or check_shell_job for an individual job.")
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
-		Meta: buildBackgroundBundleMeta(bundle, bundleJobs, map[string]any{
+		Meta: shellBackgroundMeta(t.ws, buildBackgroundBundleMeta(bundle, bundleJobs, map[string]any{
 			"tool_name":         "run_shell_bundle_background",
 			"plan_effect":       "progress",
 			"result_class":      "background_start",
 			"verification_like": bundle.VerificationLike,
 			"work_dir":          workDir,
-		}),
+		})),
 	}, nil
 }
 
@@ -903,7 +913,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		if !ok {
 			return ToolExecutionResult{
 				DisplayText: skippedVerificationCommandText(),
-				Meta: map[string]any{
+				Meta: shellBackgroundMeta(t.ws, map[string]any{
 					"tool_name":                "run_shell_background",
 					"command":                  command,
 					"owner_node_id":            effectiveOwnerNodeID,
@@ -916,11 +926,11 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 					"verification_approved":    false,
 					"verification_declined":    true,
 					"command_execution_status": "declined",
-				},
+				}),
 			}, nil
 		}
 	}
-	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+	if _, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 		"tool_name":     "run_shell_background",
 		"tool_kind":     "shell",
 		"command":       command,
@@ -928,7 +938,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		"file_tags":     []string{},
 		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
-	}); err != nil {
+	})); err != nil {
 		return ToolExecutionResult{}, err
 	}
 	if err := t.ws.EnsureShell(command); err != nil {
@@ -945,7 +955,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		if bundleErr != nil {
 			return ToolExecutionResult{}, bundleErr
 		}
-		if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		if _, err := t.ws.Hook(ctx, HookPostToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 			"tool_name":     "run_shell_background",
 			"tool_kind":     "shell",
 			"command":       command,
@@ -953,20 +963,20 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 			"output":        fmt.Sprintf("reused job=%s status=%s", reusable.ID, reusable.Status),
 			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
-		}); err != nil {
+		})); err != nil {
 			return ToolExecutionResult{}, err
 		}
 		displayText := fmt.Sprintf("reusing background shell job %s [%s]\ncommand: %s\nlog: %s\nbundle: %s\nbundle_status: %s\nUse check_shell_job with this job id to poll progress.", reusable.ID, reusable.Status, reusable.CommandSummary, relOrAbs(t.ws.Root, reusable.LogPath), bundle.ID, bundle.Status)
 		return ToolExecutionResult{
 			DisplayText: displayText,
-			Meta: buildBackgroundJobMeta(reusable, &bundle, map[string]any{
+			Meta: shellBackgroundMeta(t.ws, buildBackgroundJobMeta(reusable, &bundle, map[string]any{
 				"tool_name":         "run_shell_background",
 				"reused":            true,
 				"plan_effect":       "progress",
 				"result_class":      "background_start",
 				"verification_like": bundle.VerificationLike,
 				"work_dir":          workDir,
-			}),
+			})),
 		}, nil
 	}
 	job, err := t.ws.BackgroundJobs.StartShellJob(t.ws.Shell, workDir, command, assessment, effectiveOwnerNodeID)
@@ -979,7 +989,7 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+	if _, err := t.ws.Hook(ctx, HookPostToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
 		"tool_name":     "run_shell_background",
 		"tool_kind":     "shell",
 		"command":       command,
@@ -987,19 +997,19 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 		"output":        fmt.Sprintf("job=%s status=%s", job.ID, job.Status),
 		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
-	}); err != nil {
+	})); err != nil {
 		return ToolExecutionResult{}, err
 	}
 	displayText := fmt.Sprintf("started background shell job %s [%s]\ncommand: %s\nlog: %s\nstatus: %s\nstatus_file: %s\nbundle: %s\nbundle_status: %s\nUse check_shell_job with this job id to poll progress.", job.ID, job.Status, job.CommandSummary, relOrAbs(t.ws.Root, job.LogPath), job.Status, relOrAbs(t.ws.Root, job.StatusPath), bundle.ID, bundle.Status)
 	return ToolExecutionResult{
 		DisplayText: displayText,
-		Meta: buildBackgroundJobMeta(job, &bundle, map[string]any{
+		Meta: shellBackgroundMeta(t.ws, buildBackgroundJobMeta(job, &bundle, map[string]any{
 			"tool_name":         "run_shell_background",
 			"plan_effect":       "progress",
 			"result_class":      "background_start",
 			"verification_like": bundle.VerificationLike,
 			"work_dir":          workDir,
-		}),
+		})),
 	}, nil
 }
 
@@ -1065,7 +1075,7 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 			bundleID = t.ws.BackgroundJobs.LatestBundleID()
 		}
 		if bundleID == "" {
-			return noBackgroundWorkAvailableResult("check_shell_bundle", "bundle"), nil
+			return noBackgroundWorkAvailableResult(t.ws, "check_shell_bundle", "bundle"), nil
 		}
 		bundle, jobs, err := t.ws.BackgroundJobs.SyncBundle(bundleID)
 		if err != nil {
@@ -1085,10 +1095,10 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 		}
 		return ToolExecutionResult{
 			DisplayText: strings.Join(lines, "\n"),
-			Meta: buildBackgroundBundleMeta(bundle, jobs, map[string]any{
+			Meta: shellBackgroundMeta(t.ws, buildBackgroundBundleMeta(bundle, jobs, map[string]any{
 				"tool_name":    "check_shell_bundle",
 				"result_class": "background_status",
-			}),
+			})),
 		}, nil
 	}
 	running := 0
@@ -1122,7 +1132,7 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 	summary := fmt.Sprintf("summary: completed=%d running=%d failed=%d canceled=%d total=%d", completed, running, failed, canceled, len(jobIDs))
 	return ToolExecutionResult{
 		DisplayText: summary + "\n" + strings.Join(lines, "\n"),
-		Meta: map[string]any{
+		Meta: shellBackgroundMeta(t.ws, map[string]any{
 			"tool_name":    "check_shell_bundle",
 			"result_class": "background_status",
 			"running":      running,
@@ -1132,7 +1142,7 @@ func (t CheckShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (T
 			"total":        len(jobIDs),
 			"job_entries":  buildBackgroundJobStatusList(jobs),
 			"job_ids":      jobIDs,
-		},
+		}),
 	}, nil
 }
 
@@ -1168,7 +1178,7 @@ func (t CheckShellJobTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		jobID = t.ws.BackgroundJobs.LatestJobID()
 	}
 	if jobID == "" {
-		return noBackgroundWorkAvailableResult("check_shell_job", "job"), nil
+		return noBackgroundWorkAvailableResult(t.ws, "check_shell_job", "job"), nil
 	}
 	job, err := t.ws.BackgroundJobs.SyncJob(jobID)
 	if err != nil {
@@ -1201,27 +1211,27 @@ func (t CheckShellJobTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 	}
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
-		Meta: buildBackgroundJobMeta(job, bundleMeta, map[string]any{
+		Meta: shellBackgroundMeta(t.ws, buildBackgroundJobMeta(job, bundleMeta, map[string]any{
 			"tool_name":    "check_shell_job",
 			"result_class": "background_status",
-		}),
+		})),
 	}, nil
 }
 
-func noBackgroundWorkAvailableResult(toolName string, kind string) ToolExecutionResult {
+func noBackgroundWorkAvailableResult(ws Workspace, toolName string, kind string) ToolExecutionResult {
 	kind = strings.TrimSpace(strings.ToLower(kind))
 	if kind == "" {
 		kind = "job"
 	}
 	return ToolExecutionResult{
 		DisplayText: fmt.Sprintf("no background shell %s is available; the previous command may have been skipped or declined, so there is nothing to poll. Do not poll again unless a new background command actually starts.", kind),
-		Meta: map[string]any{
+		Meta: shellBackgroundMeta(ws, map[string]any{
 			"tool_name":            strings.TrimSpace(toolName),
 			"plan_effect":          "none",
 			"result_class":         "background_unavailable",
 			"background_available": false,
 			"command_status":       "unavailable",
-		},
+		}),
 	}
 }
 
@@ -1272,11 +1282,11 @@ func (t CancelShellJobTool) ExecuteDetailed(ctx context.Context, input any) (Too
 	}
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
-		Meta: mergeBackgroundPolicyMeta(buildBackgroundJobMeta(job, nil, map[string]any{
+		Meta: shellBackgroundMeta(t.ws, mergeBackgroundPolicyMeta(buildBackgroundJobMeta(job, nil, map[string]any{
 			"tool_name":    "cancel_shell_job",
 			"plan_effect":  "progress",
 			"result_class": "background_cancel",
-		}), job.OwnerNodeID),
+		}), job.OwnerNodeID)),
 	}, nil
 }
 
@@ -1330,11 +1340,11 @@ func (t CancelShellBundleTool) ExecuteDetailed(ctx context.Context, input any) (
 	}
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
-		Meta: mergeBackgroundPolicyMeta(buildBackgroundBundleMeta(bundle, jobs, map[string]any{
+		Meta: shellBackgroundMeta(t.ws, mergeBackgroundPolicyMeta(buildBackgroundBundleMeta(bundle, jobs, map[string]any{
 			"tool_name":    "cancel_shell_bundle",
 			"plan_effect":  "progress",
 			"result_class": "background_cancel",
-		}), bundle.OwnerNodeID),
+		}), bundle.OwnerNodeID)),
 	}, nil
 }
 

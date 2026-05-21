@@ -9669,6 +9669,26 @@ func workspaceEffectiveActiveRoot(ws Workspace, sess *Session) string {
 	return roots[len(roots)-1]
 }
 
+func addEffectiveWorkspaceRootMetadata(meta map[string]any, ws Workspace, sess *Session) {
+	if meta == nil {
+		return
+	}
+	baseRoot := strings.TrimSpace(workspaceEffectiveBaseRoot(ws, sess))
+	activeRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(ws, sess))
+	roots := workspaceEffectiveRoots(ws, sess)
+	if baseRoot != "" {
+		meta["workspace_root"] = baseRoot
+	}
+	if activeRoot != "" && (baseRoot == "" || !samePath(baseRoot, activeRoot)) {
+		meta["active_workspace_root"] = activeRoot
+	} else {
+		delete(meta, "active_workspace_root")
+	}
+	if len(roots) > 0 {
+		meta["workspace_roots"] = roots
+	}
+}
+
 func (rt *runtimeState) handleInitCommand(args string) error {
 	trimmed := strings.TrimSpace(args)
 	if trimmed == "" {

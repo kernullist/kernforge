@@ -2243,6 +2243,11 @@ type RunShellTool struct{ ws Workspace }
 
 func NewRunShellTool(ws Workspace) RunShellTool { return RunShellTool{ws: ws} }
 
+func (t RunShellTool) shellHookPayload(payload HookPayload) HookPayload {
+	addEffectiveWorkspaceRootMetadata(payload, t.ws, nil)
+	return payload
+}
+
 type shellMutationClass string
 
 const (
@@ -2371,7 +2376,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		workspaceBeforeShell = snapshot
 	}
-	if _, err := t.ws.Hook(ctx, HookPreToolUse, HookPayload{
+	if _, err := t.ws.Hook(ctx, HookPreToolUse, t.shellHookPayload(HookPayload{
 		"tool_name":     "run_shell",
 		"tool_kind":     "shell",
 		"command":       command,
@@ -2379,7 +2384,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"file_tags":     []string{},
 		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
-	}); err != nil {
+	})); err != nil {
 		return "", err
 	}
 	if err := t.ws.EnsureShell(command); err != nil {
@@ -2395,7 +2400,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			err = fmt.Errorf("%w; %v", err, workspaceErr)
 		}
 		text = appendRunShellGuidance(text, runShellFailureGuidance(t.ws.Shell, command, text, err))
-		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		_, _ = t.ws.Hook(ctx, HookPostToolUse, t.shellHookPayload(HookPayload{
 			"tool_name":     "run_shell",
 			"tool_kind":     "shell",
 			"command":       command,
@@ -2404,14 +2409,14 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"error":         err.Error(),
 			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
-		})
+		}))
 		return text, err
 	}
 	if text == "" {
 		text = "(no output)"
 	}
 	if workspaceErr := detectUnexpectedShellWorkspaceChanges(workDir, workspaceBeforeShell); workspaceErr != nil {
-		_, _ = t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+		_, _ = t.ws.Hook(ctx, HookPostToolUse, t.shellHookPayload(HookPayload{
 			"tool_name":     "run_shell",
 			"tool_kind":     "shell",
 			"command":       command,
@@ -2420,10 +2425,10 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"error":         workspaceErr.Error(),
 			"owner_node_id": effectiveOwnerNodeID,
 			"work_dir":      workDir,
-		})
+		}))
 		return text, workspaceErr
 	}
-	if _, err := t.ws.Hook(ctx, HookPostToolUse, HookPayload{
+	if _, err := t.ws.Hook(ctx, HookPostToolUse, t.shellHookPayload(HookPayload{
 		"tool_name":     "run_shell",
 		"tool_kind":     "shell",
 		"command":       command,
@@ -2431,7 +2436,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"output":        text,
 		"owner_node_id": effectiveOwnerNodeID,
 		"work_dir":      workDir,
-	}); err != nil {
+	})); err != nil {
 		return "", err
 	}
 	return text, nil
@@ -2481,6 +2486,7 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"changed_workspace": false,
 		"effect":            "execute",
 	}
+	addEffectiveWorkspaceRootMetadata(meta, t.ws, nil)
 	if verificationLike {
 		status := VerificationPassed
 		commandStatus := "completed"

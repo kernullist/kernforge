@@ -133,6 +133,92 @@ func TestRunShellExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	}
 }
 
+func TestRunShellExecuteDetailedIncludesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: baseRoot,
+		Root:     activeRoot,
+		Shell:    defaultShell(),
+	}
+	registry := NewToolRegistry(NewRunShellTool(ws))
+	command := "echo roots"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output roots"
+	}
+
+	payload, err := json.Marshal(map[string]any{"command": command})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "run_shell", string(payload))
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(result.Meta, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected base workspace_root %q, got %#v", baseRoot, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected active workspace root %q, got %#v", activeRoot, result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected shell work_dir %q, got %#v", activeRoot, result.Meta)
+	}
+	roots := toolMetaStringSlice(result.Meta, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected effective workspace_roots [%q %q], got %#v", baseRoot, activeRoot, result.Meta)
+	}
+}
+
+func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
+	baseRoot := t.TempDir()
+	activeRoot := filepath.Join(baseRoot, "worktree")
+	if err := os.MkdirAll(activeRoot, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	var prePayload HookPayload
+	ws := Workspace{
+		BaseRoot: baseRoot,
+		Root:     activeRoot,
+		Shell:    defaultShell(),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			if event == HookPreToolUse {
+				prePayload = payload
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	}
+	registry := NewToolRegistry(NewRunShellTool(ws))
+	command := "echo roots"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output roots"
+	}
+	payload, err := json.Marshal(map[string]any{"command": command})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if _, err := registry.ExecuteDetailed(context.Background(), "run_shell", string(payload)); err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(prePayload, "workspace_root"); !sameFilePath(got, baseRoot) {
+		t.Fatalf("expected hook workspace_root %q, got %#v", baseRoot, prePayload)
+	}
+	if got := toolMetaString(prePayload, "active_workspace_root"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected hook active workspace root %q, got %#v", activeRoot, prePayload)
+	}
+	if got := toolMetaString(prePayload, "work_dir"); !sameFilePath(got, activeRoot) {
+		t.Fatalf("expected hook work_dir %q, got %#v", activeRoot, prePayload)
+	}
+	roots := toolMetaStringSlice(prePayload, "workspace_roots")
+	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
+		t.Fatalf("expected hook workspace_roots [%q %q], got %#v", baseRoot, activeRoot, prePayload)
+	}
+}
+
 func TestBackgroundVerificationStartIsPendingNotEvidence(t *testing.T) {
 	job := BackgroundShellJob{
 		ID:             "job-1",
