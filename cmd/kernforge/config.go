@@ -3771,6 +3771,12 @@ const (
 	ModeBypass      Mode = "bypassPermissions"
 )
 
+const (
+	builtInPermissionProfileReadOnly         = ":read-only"
+	builtInPermissionProfileWorkspace        = ":workspace"
+	builtInPermissionProfileDangerFullAccess = ":danger-full-access"
+)
+
 type Action string
 
 const (
@@ -3869,6 +3875,43 @@ func validPermissionModes() string {
 		string(ModePlan),
 		string(ModeBypass),
 	}, ", ")
+}
+
+func activePermissionProfileIDForMode(mode Mode) string {
+	switch mode {
+	case ModePlan:
+		return builtInPermissionProfileReadOnly
+	case ModeBypass:
+		return builtInPermissionProfileDangerFullAccess
+	case ModeDefault, ModeAcceptEdits:
+		return builtInPermissionProfileWorkspace
+	default:
+		return ""
+	}
+}
+
+func activePermissionProfileIDForModeString(value string) string {
+	mode, ok := ParseModeStrict(value)
+	if !ok {
+		return ""
+	}
+	return activePermissionProfileIDForMode(mode)
+}
+
+func activePermissionProfileSnapshotForModeString(value string) map[string]any {
+	id := activePermissionProfileIDForModeString(value)
+	if id == "" {
+		return nil
+	}
+	return map[string]any{"id": id}
+}
+
+func activePermissionProfileSnapshotForMode(mode Mode) map[string]any {
+	id := activePermissionProfileIDForMode(mode)
+	if id == "" {
+		return nil
+	}
+	return map[string]any{"id": id}
 }
 
 func NewPermissionManager(mode Mode, prompt PromptFunc) *PermissionManager {

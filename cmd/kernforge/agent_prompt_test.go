@@ -54,6 +54,28 @@ func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *te
 	}
 }
 
+func TestSystemPromptIncludesActivePermissionProfileSnapshot(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", string(ModePlan))
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Perms:    NewPermissionManager(ModeBypass, nil),
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "Permission mode: "+string(ModeBypass)) {
+		t.Fatalf("expected live permission mode line, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Active permission profile: "+builtInPermissionProfileDangerFullAccess) {
+		t.Fatalf("expected live permission profile snapshot in system prompt, got %q", prompt)
+	}
+}
+
 func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

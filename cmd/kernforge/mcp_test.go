@@ -755,6 +755,13 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got := turnMeta["permission_mode"]; got != "default" {
 		t.Fatalf("expected permission mode metadata, got %#v in %#v", got, turnMeta)
 	}
+	if got := turnMeta["active_permission_profile_id"]; got != builtInPermissionProfileWorkspace {
+		t.Fatalf("expected active permission profile id metadata, got %#v in %#v", got, turnMeta)
+	}
+	activeProfile, ok := turnMeta["active_permission_profile"].(map[string]any)
+	if !ok || activeProfile["id"] != builtInPermissionProfileWorkspace {
+		t.Fatalf("expected active permission profile snapshot metadata, got %#v in %#v", turnMeta["active_permission_profile"], turnMeta)
+	}
 	if got := turnMeta["sandbox"]; got != "none" {
 		t.Fatalf("expected sandbox metadata to mirror Codex no-platform-sandbox tag, got %#v in %#v", got, turnMeta)
 	}
@@ -821,6 +828,9 @@ func TestAgentMCPTurnMetadataUsesLivePermissionSnapshot(t *testing.T) {
 	turnMeta := agent.mcpTurnMetadataForToolCall(time.UnixMilli(1_700_000_000_123))
 	if got := turnMeta["permission_mode"]; got != string(ModePlan) {
 		t.Fatalf("expected live permission mode metadata %q, got %#v in %#v", ModePlan, got, turnMeta)
+	}
+	if got := turnMeta["active_permission_profile_id"]; got != builtInPermissionProfileReadOnly {
+		t.Fatalf("expected live permission profile id metadata %q, got %#v in %#v", builtInPermissionProfileReadOnly, got, turnMeta)
 	}
 	if got := turnMeta["sandbox"]; got != "none" {
 		t.Fatalf("expected sandbox metadata from live permission mode, got %#v in %#v", got, turnMeta)

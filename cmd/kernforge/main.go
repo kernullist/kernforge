@@ -6108,7 +6108,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("provider", valueOrUnset(rt.session.Provider)),
 			kv("model", valueOrUnset(rt.session.Model)),
 			kv("base_url", valueOrUnset(rt.cfg.BaseURL)),
-			kv("permission_mode", valueOrUnset(rt.session.PermissionMode)),
+			kv("permission_mode", valueOrUnset(rt.activePermissionModeSnapshot())),
+			kv("active_permission_profile", valueOrUnset(activePermissionProfileIDForModeString(rt.activePermissionModeSnapshot()))),
 			kv("progress_display", configProgressDisplay(rt.cfg)),
 		)
 		fmt.Fprintln(rt.writer)
@@ -6886,6 +6887,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		rt.printKVGroup("Runtime",
 			kv("shell", valueOrUnset(rt.cfg.Shell)),
 			kv("permission_mode", string(rt.perms.Mode())),
+			kv("active_permission_profile", valueOrUnset(activePermissionProfileIDForMode(rt.perms.Mode()))),
 			kv("session_dir", rt.cfg.SessionDir),
 			kv("progress_display", configProgressDisplay(rt.cfg)),
 			kv("max_tool_iterations", formatMaxToolIterations(configMaxToolIterations(rt.cfg))),

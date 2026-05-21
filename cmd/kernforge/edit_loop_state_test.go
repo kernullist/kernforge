@@ -89,6 +89,9 @@ func TestSessionExportIncludesEditLoopLedger(t *testing.T) {
 	if !strings.Contains(exported, "## Recent Edit Loops") || !strings.Contains(exported, "main.go") {
 		t.Fatalf("expected exported session to include finalized edit loop, got:\n%s", exported)
 	}
+	if !strings.Contains(exported, "Active permission profile: :workspace") {
+		t.Fatalf("expected exported session to include permission profile provenance, got:\n%s", exported)
+	}
 }
 
 func TestClosedEditLoopDoesNotDriveOutcomeHarness(t *testing.T) {

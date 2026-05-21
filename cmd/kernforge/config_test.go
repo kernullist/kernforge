@@ -584,6 +584,27 @@ func TestLoadConfigRejectsInvalidPermissionMode(t *testing.T) {
 	}
 }
 
+func TestActivePermissionProfileIDForModeMirrorsCodexBuiltIns(t *testing.T) {
+	cases := map[Mode]string{
+		ModePlan:        builtInPermissionProfileReadOnly,
+		ModeDefault:     builtInPermissionProfileWorkspace,
+		ModeAcceptEdits: builtInPermissionProfileWorkspace,
+		ModeBypass:      builtInPermissionProfileDangerFullAccess,
+	}
+	for mode, want := range cases {
+		if got := activePermissionProfileIDForMode(mode); got != want {
+			t.Fatalf("mode %q expected profile %q, got %q", mode, want, got)
+		}
+		snapshot := activePermissionProfileSnapshotForMode(mode)
+		if snapshot == nil || snapshot["id"] != want {
+			t.Fatalf("mode %q expected snapshot id %q, got %#v", mode, want, snapshot)
+		}
+	}
+	if got := activePermissionProfileIDForModeString("full-access"); got != "" {
+		t.Fatalf("invalid mode should not project to a built-in profile, got %q", got)
+	}
+}
+
 func TestSaveUserConfigRejectsInvalidPermissionMode(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

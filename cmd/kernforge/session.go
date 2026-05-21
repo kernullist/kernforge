@@ -227,7 +227,11 @@ func (s *Session) ExportText() string {
 	if strings.TrimSpace(s.BaseURL) != "" {
 		fmt.Fprintf(&b, "Base URL: %s\n", s.BaseURL)
 	}
-	fmt.Fprintf(&b, "Permission mode: %s\n\n", s.PermissionMode)
+	fmt.Fprintf(&b, "Permission mode: %s\n", s.PermissionMode)
+	if profileID := activePermissionProfileIDForModeString(s.PermissionMode); profileID != "" {
+		fmt.Fprintf(&b, "Active permission profile: %s\n", profileID)
+	}
+	b.WriteString("\n")
 	if s.Worktree != nil && strings.TrimSpace(s.Worktree.Root) != "" {
 		b.WriteString("## Worktree\n\n")
 		fmt.Fprintf(&b, "- Root: %s\n", s.Worktree.Root)

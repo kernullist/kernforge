@@ -3250,7 +3250,7 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 		cfg:       DefaultConfig(root),
 		session:   session,
 		store:     store,
-		perms:     NewPermissionManager(ModeDefault, nil),
+		perms:     NewPermissionManager(ModeBypass, nil),
 		workspace: Workspace{BaseRoot: root, Root: root},
 	}
 	rt.alwaysApproveWrites = true
@@ -3265,6 +3265,9 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	}
 	if !strings.Contains(text, "write_approval:") {
 		t.Fatalf("expected runtime approval state in status, got %q", text)
+	}
+	if !strings.Contains(text, "permission_mode:          bypassPermissions") || !strings.Contains(text, "active_permission_profile -> :danger-full-access") {
+		t.Fatalf("expected live permission profile snapshot in status, got %q", text)
 	}
 	if !strings.Contains(text, "-- Connection ") || !strings.Contains(text, "-- Approvals ") || !strings.Contains(text, "-- Extensions ") {
 		t.Fatalf("expected grouped status output, got %q", text)
@@ -3345,6 +3348,9 @@ func TestConfigCommandFocusesOnEffectiveSettings(t *testing.T) {
 	}
 	if !strings.Contains(text, "auto_checkpoint_edits:") {
 		t.Fatalf("expected config settings in config output, got %q", text)
+	}
+	if !strings.Contains(text, "permission_mode:          default") || !strings.Contains(text, "active_permission_profile -> :workspace") {
+		t.Fatalf("expected effective permission profile in config output, got %q", text)
 	}
 	if !strings.Contains(text, "hooks_enabled:") {
 		t.Fatalf("expected hook settings in config output, got %q", text)

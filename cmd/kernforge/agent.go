@@ -6919,6 +6919,10 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 	}
 	if permissionMode := a.activePermissionModeSnapshot(); permissionMode != "" {
 		metadata["permission_mode"] = permissionMode
+		if profileID := activePermissionProfileIDForModeString(permissionMode); profileID != "" {
+			metadata["active_permission_profile_id"] = profileID
+			metadata["active_permission_profile"] = activePermissionProfileSnapshotForModeString(permissionMode)
+		}
 		if sandbox := mcpTurnMetadataSandboxTag(permissionMode); sandbox != "" {
 			metadata["sandbox"] = sandbox
 		}
@@ -7159,7 +7163,14 @@ func (a *Agent) systemPrompt() string {
 		fmt.Fprintf(&b, "Workspace roots: %s\n", strings.Join(workspaceRoots, ", "))
 	}
 	fmt.Fprintf(&b, "Provider/model: %s / %s\n", a.Session.Provider, a.Session.Model)
-	fmt.Fprintf(&b, "Permission mode: %s\n", a.Session.PermissionMode)
+	permissionMode := a.activePermissionModeSnapshot()
+	if permissionMode == "" {
+		permissionMode = a.Session.PermissionMode
+	}
+	fmt.Fprintf(&b, "Permission mode: %s\n", permissionMode)
+	if profileID := activePermissionProfileIDForModeString(permissionMode); profileID != "" {
+		fmt.Fprintf(&b, "Active permission profile: %s\n", profileID)
+	}
 	if strings.TrimSpace(a.Session.Summary) != "" {
 		b.WriteString("\nConversation summary:\n")
 		b.WriteString(compactPromptSection(a.Session.Summary, 900))
