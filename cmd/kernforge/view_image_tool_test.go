@@ -79,6 +79,29 @@ func TestViewImageToolRejectsDirectory(t *testing.T) {
 	}
 }
 
+func TestViewImageToolRejectsSymlinkOutsideWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external.png")
+	if err := os.WriteFile(external, onePixelPNG, 0o644); err != nil {
+		t.Fatalf("WriteFile external image: %v", err)
+	}
+	link := filepath.Join(dir, "link.png")
+	if err := os.Symlink(external, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	tool := NewViewImageTool(Workspace{BaseRoot: dir, Root: dir})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path": "link.png",
+	})
+	if err == nil {
+		t.Fatal("expected outside symlink error")
+	}
+	if !strings.Contains(err.Error(), "resolves outside the active workspace root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestViewImageToolDowngradesOriginalWhenContextDisallows(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")

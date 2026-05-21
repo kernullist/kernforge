@@ -367,6 +367,14 @@ func (w Workspace) resolveEditFallback(req EditRoutingRequest) (EditRoutingResul
 	if err != nil {
 		return EditRoutingResult{}, err
 	}
+	activeRoot := w.Root
+	if strings.TrimSpace(activeRoot) == "" {
+		activeRoot = w.BaseRoot
+	}
+	primary, err = ensureResolvedPathWithinRoot(activeRoot, primary)
+	if err != nil {
+		return EditRoutingResult{}, err
+	}
 	if w.pathLooksAbsoluteForLookup(path) || sameFilePath(w.Root, w.BaseRoot) {
 		return EditRoutingResult{
 			AbsolutePath: primary,
@@ -388,6 +396,10 @@ func (w Workspace) resolveEditFallback(req EditRoutingRequest) (EditRoutingResul
 		return EditRoutingResult{}, err
 	}
 	if _, err := os.Stat(fallback); err == nil {
+		fallback, err = ensureResolvedPathWithinRoot(w.BaseRoot, fallback)
+		if err != nil {
+			return EditRoutingResult{}, err
+		}
 		return EditRoutingResult{
 			AbsolutePath: fallback,
 			DisplayRoot:  w.BaseRoot,
@@ -605,6 +617,14 @@ func (w Workspace) ResolveForLookup(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	activeRoot := w.Root
+	if strings.TrimSpace(activeRoot) == "" {
+		activeRoot = w.BaseRoot
+	}
+	primary, err = ensureResolvedPathWithinRoot(activeRoot, primary)
+	if err != nil {
+		return "", err
+	}
 	if w.pathLooksAbsoluteForLookup(path) || sameFilePath(w.Root, w.BaseRoot) {
 		return primary, nil
 	}
@@ -618,6 +638,10 @@ func (w Workspace) ResolveForLookup(path string) (string, error) {
 		return "", err
 	}
 	if _, err := os.Stat(fallback); err == nil {
+		fallback, err = ensureResolvedPathWithinRoot(w.BaseRoot, fallback)
+		if err != nil {
+			return "", err
+		}
 		return fallback, nil
 	} else if err != nil && !os.IsNotExist(err) {
 		return "", err
@@ -825,6 +849,45 @@ func pathWithinRoot(root string, path string) bool {
 		return false
 	}
 	return true
+}
+
+func ensureResolvedPathWithinRoot(root string, target string) (string, error) {
+	if strings.TrimSpace(root) == "" {
+		return target, nil
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	if resolvedRoot, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootAbs = resolvedRoot
+	}
+	targetAbs, err := filepath.Abs(target)
+	if err != nil {
+		return "", err
+	}
+	checkPath := targetAbs
+	for {
+		resolved, err := filepath.EvalSymlinks(checkPath)
+		if err == nil {
+			resolvedAbs, absErr := filepath.Abs(resolved)
+			if absErr != nil {
+				return "", absErr
+			}
+			if !pathWithinRoot(rootAbs, resolvedAbs) {
+				return "", fmt.Errorf("path resolves outside the active workspace root: %s -> %s", targetAbs, resolvedAbs)
+			}
+			return targetAbs, nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(checkPath)
+		if parent == checkPath || strings.TrimSpace(parent) == "" {
+			return targetAbs, nil
+		}
+		checkPath = parent
+	}
 }
 
 func (w Workspace) EnsureGit(detail string) error {

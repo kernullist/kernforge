@@ -35,6 +35,57 @@ func TestWorkspaceResolveForLookupFallsBackToBaseRoot(t *testing.T) {
 	}
 }
 
+func TestWorkspaceResolveForLookupRejectsSymlinkOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external.txt")
+	if err := os.WriteFile(external, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("WriteFile external: %v", err)
+	}
+	link := filepath.Join(root, "link.txt")
+	if err := os.Symlink(external, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+
+	_, err := ws.ResolveForLookup("link.txt")
+	if err == nil {
+		t.Fatalf("expected symlink lookup outside root to be rejected")
+	}
+	if !strings.Contains(err.Error(), "resolves outside the active workspace root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestReadFileRejectsSymlinkOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external.txt")
+	if err := os.WriteFile(external, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("WriteFile external: %v", err)
+	}
+	link := filepath.Join(root, "link.txt")
+	if err := os.Symlink(external, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+
+	tool := NewReadFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"path": "link.txt",
+	})
+	if err == nil {
+		t.Fatalf("expected read_file through outside symlink to be rejected")
+	}
+	if !strings.Contains(err.Error(), "resolves outside the active workspace root") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLookupToolsRecoverFromOwnerEditMismatch(t *testing.T) {
 	assertLookupToolsRecoverFromOwnerEditMismatch(t, true)
 }
