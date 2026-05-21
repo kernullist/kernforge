@@ -13,13 +13,16 @@ import (
 )
 
 const (
-	goalStatusPending       = "pending"
-	goalStatusRunning       = "running"
+	goalStatusActive        = "active"
+	goalStatusPaused        = "paused"
 	goalStatusComplete      = "complete"
-	goalStatusBlocked       = "blocked"
-	goalStatusUsageLimited  = "usage_limited"
-	goalStatusBudgetLimited = "budget_limited"
-	goalStatusCanceled      = "canceled"
+	goalStatusBudgetLimited = "budgetLimited"
+
+	goalStatusPending      = goalStatusActive
+	goalStatusRunning      = goalStatusActive
+	goalStatusBlocked      = goalStatusPaused
+	goalStatusUsageLimited = goalStatusBudgetLimited
+	goalStatusCanceled     = goalStatusPaused
 
 	defaultGoalMaxIterations = 0
 )
@@ -976,9 +979,6 @@ func (rt *runtimeState) completeGoalBySelector(selector string) error {
 		return fmt.Errorf("goal not found: %s", valueOrDefault(selector, "latest"))
 	}
 	goal := rt.session.Goals[index]
-	if strings.EqualFold(goal.Status, goalStatusCanceled) {
-		return fmt.Errorf("cannot complete canceled goal: %s", goal.ID)
-	}
 	if strings.EqualFold(goal.Status, goalStatusComplete) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal is already complete: "+goal.ID))
 		return nil
@@ -1521,10 +1521,7 @@ func (g *GoalState) Normalize() {
 	g.ID = strings.TrimSpace(g.ID)
 	g.Objective = strings.TrimSpace(g.Objective)
 	g.SourcePath = strings.TrimSpace(g.SourcePath)
-	g.Status = strings.TrimSpace(strings.ToLower(g.Status))
-	if g.Status == "" {
-		g.Status = goalStatusPending
-	}
+	g.Status = canonicalGoalStatus(g.Status)
 	if g.CreatedAt.IsZero() {
 		g.CreatedAt = time.Now()
 	}
@@ -1595,7 +1592,7 @@ func (i *GoalIteration) Normalize() {
 	if i == nil {
 		return
 	}
-	i.Status = strings.TrimSpace(strings.ToLower(i.Status))
+	i.Status = canonicalGoalStatus(i.Status)
 	i.CheckpointID = strings.TrimSpace(i.CheckpointID)
 	i.CheckpointName = strings.TrimSpace(i.CheckpointName)
 	i.ImplementReply = compactPromptSection(strings.TrimSpace(i.ImplementReply), 1200)
@@ -1643,8 +1640,8 @@ func (r *GoalSemanticReview) Normalize() {
 }
 
 func goalStatusTerminal(status string) bool {
-	switch strings.TrimSpace(strings.ToLower(status)) {
-	case goalStatusComplete, goalStatusCanceled:
+	switch canonicalGoalStatus(status) {
+	case goalStatusComplete:
 		return true
 	default:
 		return false
@@ -1652,8 +1649,8 @@ func goalStatusTerminal(status string) bool {
 }
 
 func goalStatusStopsAutonomousLoop(status string) bool {
-	switch strings.TrimSpace(strings.ToLower(status)) {
-	case goalStatusComplete, goalStatusCanceled, goalStatusBlocked, goalStatusUsageLimited, goalStatusBudgetLimited:
+	switch canonicalGoalStatus(status) {
+	case goalStatusComplete, goalStatusPaused, goalStatusBudgetLimited:
 		return true
 	default:
 		return false
@@ -1661,15 +1658,34 @@ func goalStatusStopsAutonomousLoop(status string) bool {
 }
 
 func goalEventSeverity(goal GoalState) string {
-	switch strings.TrimSpace(strings.ToLower(goal.Status)) {
+	switch canonicalGoalStatus(goal.Status) {
 	case goalStatusComplete:
 		return conversationSeverityInfo
-	case goalStatusBlocked:
-		return conversationSeverityError
-	case goalStatusUsageLimited, goalStatusBudgetLimited:
+	case goalStatusPaused, goalStatusBudgetLimited:
 		return conversationSeverityWarn
 	default:
 		return conversationSeverityWarn
+	}
+}
+
+func canonicalGoalStatus(status string) string {
+	trimmed := strings.TrimSpace(status)
+	if trimmed == "" {
+		return goalStatusActive
+	}
+	normalized := strings.ToLower(strings.ReplaceAll(trimmed, "_", ""))
+	normalized = strings.ReplaceAll(normalized, "-", "")
+	switch normalized {
+	case "active", "pending", "running", "run":
+		return goalStatusActive
+	case "paused", "pause", "blocked", "canceled", "cancelled", "stop", "stopped":
+		return goalStatusPaused
+	case "budgetlimited", "usagelimited":
+		return goalStatusBudgetLimited
+	case "complete", "completed", "done":
+		return goalStatusComplete
+	default:
+		return goalStatusActive
 	}
 }
 

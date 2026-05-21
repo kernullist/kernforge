@@ -1122,6 +1122,50 @@ func TestFormatGoalElapsedSecondsIsCompact(t *testing.T) {
 	}
 }
 
+func TestGoalStatusUsesCodexProtocolValues(t *testing.T) {
+	if goalStatusActive != "active" {
+		t.Fatalf("goalStatusActive = %q", goalStatusActive)
+	}
+	if goalStatusPaused != "paused" {
+		t.Fatalf("goalStatusPaused = %q", goalStatusPaused)
+	}
+	if goalStatusBudgetLimited != "budgetLimited" {
+		t.Fatalf("goalStatusBudgetLimited = %q", goalStatusBudgetLimited)
+	}
+	if goalStatusComplete != "complete" {
+		t.Fatalf("goalStatusComplete = %q", goalStatusComplete)
+	}
+}
+
+func TestGoalStatusNormalizesLegacyInternalValuesToCodexProtocol(t *testing.T) {
+	cases := map[string]string{
+		"":               goalStatusActive,
+		"pending":        goalStatusActive,
+		"running":        goalStatusActive,
+		"active":         goalStatusActive,
+		"blocked":        goalStatusPaused,
+		"canceled":       goalStatusPaused,
+		"cancelled":      goalStatusPaused,
+		"paused":         goalStatusPaused,
+		"usage_limited":  goalStatusBudgetLimited,
+		"budget_limited": goalStatusBudgetLimited,
+		"budgetLimited":  goalStatusBudgetLimited,
+		"complete":       goalStatusComplete,
+		"completed":      goalStatusComplete,
+	}
+	for raw, want := range cases {
+		goal := GoalState{
+			ID:        "goal-status",
+			Objective: "finish",
+			Status:    raw,
+		}
+		goal.Normalize()
+		if goal.Status != want {
+			t.Fatalf("Normalize status %q = %q, want %q", raw, goal.Status, want)
+		}
+	}
+}
+
 func TestGoalTimeUsedPreservesExistingValueOnClockSkew(t *testing.T) {
 	now := time.Now()
 	goal := GoalState{
