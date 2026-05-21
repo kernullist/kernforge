@@ -59,6 +59,7 @@ func TestKernforgeGeneralHelpIncludesStandaloneAndMCPUsage(t *testing.T) {
 		"Run Kernforge as a stdio MCP server",
 		"kernforge -mcp-server -cwd",
 		"default | acceptEdits | plan | bypassPermissions",
+		"-dangerously-bypass-hook-trust",
 		"--version",
 		"You usually do not need daemon mode",
 		`"args": ["-mcp-server", "-cwd", "C:\\repo\\driver"]`,

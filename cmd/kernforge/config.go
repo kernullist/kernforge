@@ -242,6 +242,7 @@ type Config struct {
 	HooksEnabled             *bool                         `json:"hooks_enabled,omitempty"`
 	HookPresets              []string                      `json:"hook_presets,omitempty"`
 	HooksFailClosed          *bool                         `json:"hooks_fail_closed,omitempty"`
+	BypassHookTrust          bool                          `json:"-"`
 	MemoryFiles              []string                      `json:"memory_files"`
 	SkillPaths               []string                      `json:"skill_paths,omitempty"`
 	EnabledSkills            []string                      `json:"enabled_skills,omitempty"`
@@ -2049,6 +2050,10 @@ func configHooksFailClosed(cfg Config) bool {
 		return false
 	}
 	return *cfg.HooksFailClosed
+}
+
+func configBypassHookTrust(cfg Config) bool {
+	return cfg.BypassHookTrust
 }
 
 func configAutoVerify(cfg Config) bool {

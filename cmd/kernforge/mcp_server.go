@@ -60,11 +60,12 @@ type mcpServerRunOptions struct {
 }
 
 type mcpServerConfigOverrides struct {
-	Provider       string
-	Model          string
-	BaseURL        string
-	PermissionMode string
-	ForceBypass    bool
+	Provider        string
+	Model           string
+	BaseURL         string
+	PermissionMode  string
+	ForceBypass     bool
+	BypassHookTrust bool
 }
 
 func runKernforgeMCPServer(cwd string, cfg Config, resumeID string, in io.Reader, out io.Writer, options ...mcpServerRunOptions) error {
@@ -217,6 +218,9 @@ func (o mcpServerConfigOverrides) apply(cfg *Config) {
 	}
 	if o.ForceBypass {
 		cfg.PermissionMode = string(ModeBypass)
+	}
+	if o.BypassHookTrust {
+		cfg.BypassHookTrust = true
 	}
 }
 

@@ -62,7 +62,7 @@ func runKernforgeDaemonCommand(cwd string, cfg Config, resumeID string, args []s
 	}
 	switch strings.ToLower(strings.TrimSpace(args[0])) {
 	case "start":
-		return startKernforgeDaemon(cwd, options.StrictConfig, args[1:])
+		return startKernforgeDaemon(cwd, options.StrictConfig, options.ConfigOverrides.BypassHookTrust, args[1:])
 	case "run":
 		return runKernforgeDaemon(cwd, cfg, resumeID, options)
 	case "status":
@@ -125,7 +125,7 @@ func runKernforgeDaemon(cwd string, cfg Config, resumeID string, options mcpServ
 	return nil
 }
 
-func startKernforgeDaemon(cwd string, strictConfig bool, args []string) error {
+func startKernforgeDaemon(cwd string, strictConfig bool, bypassHookTrust bool, args []string) error {
 	if state, ok := readKernforgeDaemonState(); ok {
 		if _, err := kernforgeDaemonHealth(state, 2*time.Second); err == nil {
 			fmt.Fprintf(os.Stdout, "KernForge daemon already running at %s pid=%d\n", state.Addr, state.PID)
@@ -145,6 +145,9 @@ func startKernforgeDaemon(cwd string, strictConfig bool, args []string) error {
 	}
 	if strictConfig {
 		childArgs = append(childArgs, "-strict-config")
+	}
+	if bypassHookTrust {
+		childArgs = append(childArgs, "-dangerously-bypass-hook-trust")
 	}
 	childArgs = append(childArgs, "daemon", "run")
 	cmd := exec.Command(exe, childArgs...)

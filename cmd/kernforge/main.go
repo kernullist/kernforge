@@ -154,6 +154,7 @@ func run(args []string) error {
 		permissionFlag    string
 		yesFlag           bool
 		strictConfigFlag  bool
+		bypassHookTrust   bool
 		mcpServerFlag     bool
 		mcpDaemonProxy    bool
 	)
@@ -181,6 +182,7 @@ func run(args []string) error {
 	fs.StringVar(&permissionFlag, "permission-mode", "", "permissions mode")
 	fs.BoolVar(&yesFlag, "y", false, "auto-approve all permissions")
 	fs.BoolVar(&strictConfigFlag, "strict-config", false, "fail on unknown configuration fields")
+	fs.BoolVar(&bypassHookTrust, "dangerously-bypass-hook-trust", false, "run project-local hooks without saved project hook trust for this invocation")
 	fs.BoolVar(&mcpServerFlag, "mcp-server", false, "run KernForge as a stdio MCP server")
 	fs.BoolVar(&mcpDaemonProxy, "mcp-daemon-proxy", false, "proxy stdio MCP requests through the local KernForge daemon")
 
@@ -252,6 +254,9 @@ func run(args []string) error {
 	if yesFlag {
 		cfg.PermissionMode = string(ModeBypass)
 	}
+	if bypassHookTrust {
+		cfg.BypassHookTrust = true
+	}
 	if _, err := autoPopulateVerificationToolPaths(cwd, &cfg, detectWindowsVerificationToolPath); err != nil {
 		return err
 	}
@@ -261,11 +266,12 @@ func run(args []string) error {
 	if fs.NArg() > 0 && strings.EqualFold(strings.TrimSpace(fs.Arg(0)), "daemon") {
 		return runKernforgeDaemonCommand(cwd, cfg, resumeFlag, fs.Args()[1:], mcpServerRunOptions{
 			ConfigOverrides: mcpServerConfigOverrides{
-				Provider:       providerFlag,
-				Model:          modelFlag,
-				BaseURL:        baseURLFlag,
-				PermissionMode: permissionFlag,
-				ForceBypass:    yesFlag,
+				Provider:        providerFlag,
+				Model:           modelFlag,
+				BaseURL:         baseURLFlag,
+				PermissionMode:  permissionFlag,
+				ForceBypass:     yesFlag,
+				BypassHookTrust: bypassHookTrust,
 			},
 			LoadWorkspaceConfig: true,
 			StrictConfig:        strictConfig,
@@ -277,11 +283,12 @@ func run(args []string) error {
 		}
 		return runKernforgeMCPServer(cwd, cfg, resumeFlag, os.Stdin, os.Stdout, mcpServerRunOptions{
 			ConfigOverrides: mcpServerConfigOverrides{
-				Provider:       providerFlag,
-				Model:          modelFlag,
-				BaseURL:        baseURLFlag,
-				PermissionMode: permissionFlag,
-				ForceBypass:    yesFlag,
+				Provider:        providerFlag,
+				Model:           modelFlag,
+				BaseURL:         baseURLFlag,
+				PermissionMode:  permissionFlag,
+				ForceBypass:     yesFlag,
+				BypassHookTrust: bypassHookTrust,
 			},
 			LoadWorkspaceConfig: true,
 			StrictConfig:        strictConfig,
@@ -341,6 +348,7 @@ func run(args []string) error {
 	if rt.interactive {
 		rt.showBanner()
 	}
+	rt.printBypassHookTrustNotice()
 	rt.printLegacyConfigMigrationNotices(legacyMigrations)
 
 	userInputRequests := NewUserInputRequestTracker()
@@ -1563,6 +1571,13 @@ func (rt *runtimeState) printLegacyConfigMigrationNotices(notices []LegacyDefaul
 		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("  %s: %s -> %s (%s)", n.Field, n.OldValue, n.NewValue, n.Reason)))
 	}
 	fmt.Fprintln(rt.writer, rt.ui.infoLine("To pin a different value, set it explicitly in your .kernforge/config.json."))
+}
+
+func (rt *runtimeState) printBypassHookTrustNotice() {
+	if rt == nil || rt.writer == nil || !configBypassHookTrust(rt.cfg) {
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.warnLine("--dangerously-bypass-hook-trust is enabled. Project-local hooks may run without saved trust for this invocation."))
 }
 
 // resetThinkingTimer rebases the thinking spinner's elapsed clock to "now",
@@ -9264,6 +9279,7 @@ func (rt *runtimeState) reloadRuntimeConfig() error {
 	if notices := MigrateLegacyConfigDefaults(rt.workspace.BaseRoot, &loaded); len(notices) > 0 {
 		rt.printLegacyConfigMigrationNotices(notices)
 	}
+	loaded.BypassHookTrust = configBypassHookTrust(rt.cfg)
 
 	activeProvider := rt.session.Provider
 	if strings.EqualFold(strings.TrimSpace(activeProvider), strings.TrimSpace(rt.cfg.Provider)) {

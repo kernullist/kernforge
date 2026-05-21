@@ -534,6 +534,31 @@ func TestLoadHookEngineSkipsWorkspaceFileUntilProjectTrusted(t *testing.T) {
 	}
 }
 
+func TestLoadHookEngineBypassHookTrustLoadsWorkspaceFileForThisInvocation(t *testing.T) {
+	root := t.TempDir()
+	hooksDir := filepath.Join(root, userConfigDirName)
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	path := filepath.Join(hooksDir, "hooks.json")
+	if err := os.WriteFile(path, []byte(InitHooksTemplate()), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := DefaultConfig(root)
+	cfg.BypassHookTrust = true
+	engine, warns := LoadHookEngine(root, cfg)
+	if engine == nil || len(engine.Rules) == 0 {
+		t.Fatalf("expected bypassed workspace hooks to load, got %#v", engine)
+	}
+	if len(warns) != 1 || !strings.Contains(warns[0], "dangerously-bypass-hook-trust is enabled") {
+		t.Fatalf("expected bypass warning, got %#v", warns)
+	}
+	if configProjectTrusted(cfg, root) {
+		t.Fatalf("bypass must not persist project trust")
+	}
+}
+
 func TestHookRuntimeInjectsRecentFailedEvidence(t *testing.T) {
 	root := t.TempDir()
 	evidence := &EvidenceStore{

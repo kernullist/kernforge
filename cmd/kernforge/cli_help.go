@@ -203,6 +203,8 @@ Common options:
   -resume <session-id>        Resume an existing session.
   -y                          Use bypass permission mode.
   -strict-config              Fail fast on unknown config.json fields.
+  -dangerously-bypass-hook-trust
+                              Runtime-only escape hatch for project-local hook trust.
   --version                   Show the Kernforge PE file version and exit.
   -h, --help, help            Show this help.
 

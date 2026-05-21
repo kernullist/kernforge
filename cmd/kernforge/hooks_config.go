@@ -195,6 +195,8 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 	}
 	engine := &HookEngine{Enabled: true}
 	var warns []string
+	projectTrusted := configProjectTrusted(cfg, root)
+	bypassHookTrust := configBypassHookTrust(cfg)
 	for _, preset := range cfg.HookPresets {
 		rules, err := builtinHookPresetRules(preset)
 		if err != nil {
@@ -203,8 +205,13 @@ func LoadHookEngine(root string, cfg Config) (*HookEngine, []string) {
 		}
 		engine.Rules = append(engine.Rules, rules...)
 	}
-	if !configProjectTrusted(cfg, root) && workspaceHookConfigExists(root) {
-		warns = append(warns, fmt.Sprintf("project-local hooks ignored until project is trusted: %s", filepath.Join(root, userConfigDirName, "hooks.json")))
+	if !projectTrusted && workspaceHookConfigExists(root) {
+		path := filepath.Join(root, userConfigDirName, "hooks.json")
+		if bypassHookTrust {
+			warns = append(warns, fmt.Sprintf("dangerously-bypass-hook-trust is enabled; project-local hooks are eligible without saved trust for this invocation: %s", path))
+		} else {
+			warns = append(warns, fmt.Sprintf("project-local hooks ignored until project is trusted: %s", path))
+		}
 	}
 	for _, path := range hookConfigSearchPaths(root, cfg) {
 		file, err := loadHookFile(path)
@@ -233,7 +240,7 @@ func hookConfigSearchPaths(root string, cfg Config) []string {
 	paths := []string{
 		filepath.Join(userConfigDir(), "hooks.json"),
 	}
-	if configProjectTrusted(cfg, root) {
+	if configProjectTrusted(cfg, root) || configBypassHookTrust(cfg) {
 		paths = append(paths, filepath.Join(root, userConfigDirName, "hooks.json"))
 	}
 	return paths

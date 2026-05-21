@@ -125,6 +125,17 @@ func TestMCPConfigOverrideDefaultsUndefinedReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestMCPConfigOverrideSetsBypassHookTrustForInvocation(t *testing.T) {
+	cfg := Config{}
+	override := mcpServerConfigOverrides{BypassHookTrust: true}
+
+	override.apply(&cfg)
+
+	if !configBypassHookTrust(cfg) {
+		t.Fatalf("expected MCP override to enable hook trust bypass")
+	}
+}
+
 func TestMCPRuntimeUsesConfiguredPermissionMode(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
