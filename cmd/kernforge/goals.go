@@ -243,6 +243,11 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 	if strings.TrimSpace(options.Objective) == "" {
 		return fmt.Errorf("usage: /goal start [--file GOAL.md|@GOAL.md] [--run|--no-run] [--max-iterations N] <objective>")
 	}
+	if existing, ok := rt.session.ActiveGoal(); ok && shouldConfirmBeforeReplacingGoal(existing) {
+		if err := rt.confirmGoalReplacement(existing); err != nil {
+			return err
+		}
+	}
 	now := time.Now()
 	goal := GoalState{
 		ID:                fmt.Sprintf("goal-%s-%03d", now.Format("20060102-150405"), now.Nanosecond()/1_000_000),
@@ -1679,6 +1684,47 @@ func goalStatusTerminal(status string) bool {
 	default:
 		return false
 	}
+}
+
+func shouldConfirmBeforeReplacingGoal(goal GoalState) bool {
+	switch canonicalGoalStatus(goal.Status) {
+	case goalStatusComplete:
+		return false
+	case goalStatusActive, goalStatusPaused, goalStatusBlocked, goalStatusUsageLimited, goalStatusBudgetLimited:
+		return true
+	default:
+		return true
+	}
+}
+
+func (rt *runtimeState) confirmGoalReplacement(goal GoalState) error {
+	if rt == nil {
+		return fmt.Errorf("cannot confirm goal replacement without runtime state")
+	}
+	goal.Normalize()
+	question := goalReplaceQuestion(rt.cfg, goal)
+	allowed, err := rt.confirm(question)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return fmt.Errorf("goal replacement canceled; existing goal %s is %s", goal.ID, goal.Status)
+	}
+	return nil
+}
+
+func goalReplaceQuestion(cfg Config, goal GoalState) string {
+	goal.Normalize()
+	id := strings.TrimSpace(goal.ID)
+	if id == "" {
+		id = "current"
+	}
+	status := canonicalGoalStatus(goal.Status)
+	return fmt.Sprintf(
+		localizedText(cfg, "Replace existing goal %s (%s)?", "Replace existing goal %s (%s)?"),
+		id,
+		status,
+	)
 }
 
 func goalStatusStopsAutonomousLoop(status string) bool {

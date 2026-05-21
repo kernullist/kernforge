@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1076,12 +1077,125 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 	}
 }
 
+func TestGoalStartRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		reader:  bufio.NewReader(strings.NewReader("n\n")),
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish first objective"); err != nil {
+		t.Fatalf("create first goal: %v", err)
+	}
+	first, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected first goal")
+	}
+	err := rt.handleGoalCommand("start --no-run finish second objective")
+	if err == nil || !strings.Contains(err.Error(), "goal replacement canceled") {
+		t.Fatalf("expected replacement cancellation, got %v", err)
+	}
+	active, ok := session.ActiveGoal()
+	if !ok || active.ID != first.ID {
+		t.Fatalf("declined replacement should keep first goal active, got ok=%t goal=%#v", ok, active)
+	}
+
+	rt.reader = bufio.NewReader(strings.NewReader("y\n"))
+	if err := rt.handleGoalCommand("start --no-run finish second objective"); err != nil {
+		t.Fatalf("confirmed replacement should create second goal: %v", err)
+	}
+	second, ok := session.ActiveGoal()
+	if !ok || second.ID == first.ID || !strings.Contains(second.Objective, "second") {
+		t.Fatalf("expected confirmed replacement to activate second goal, got %#v first=%s", second, first.ID)
+	}
+}
+
+func TestGoalStartSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
+	root := initTestGitRepo(t)
+	writeGoalTestModule(t, root)
+	session := NewSession(root, "provider", "model", "", "default")
+	var output bytes.Buffer
+	rt := &runtimeState{
+		reader:        bufio.NewReader(strings.NewReader("")),
+		writer:        &output,
+		ui:            NewUI(),
+		session:       session,
+		store:         NewSessionStore(filepath.Join(root, "sessions")),
+		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
+		workspace: Workspace{
+			BaseRoot:     root,
+			Root:         root,
+			Shell:        defaultShell(),
+			ShellTimeout: 30 * time.Second,
+		},
+		goalReply: func(ctx context.Context, prompt string) (string, error) {
+			if strings.Contains(prompt, "Final semantic goal review") {
+				return "APPROVED: completed goal is done", nil
+			}
+			return "APPROVED: unused", nil
+		},
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish first objective"); err != nil {
+		t.Fatalf("create first goal: %v", err)
+	}
+	first, ok := session.ActiveGoal()
+	if !ok {
+		t.Fatalf("expected first goal")
+	}
+	if err := rt.handleVerifyCommand("--full"); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if err := rt.handleGoalCommand("complete latest"); err != nil {
+		t.Fatalf("complete first goal: %v", err)
+	}
+	completed, ok := session.ActiveGoal()
+	if !ok || completed.ID != first.ID || completed.Status != goalStatusComplete {
+		t.Fatalf("expected completed first goal, got ok=%t goal=%#v first=%s", ok, completed, first.ID)
+	}
+
+	if err := rt.handleGoalCommand("start --no-run finish second objective"); err != nil {
+		t.Fatalf("completed goal replacement should not require prompt: %v", err)
+	}
+	second, ok := session.ActiveGoal()
+	if !ok || second.ID == first.ID || !strings.Contains(second.Objective, "second") {
+		t.Fatalf("expected second goal after completed goal, got %#v first=%s", second, first.ID)
+	}
+}
+
+func TestShouldConfirmBeforeReplacingGoalMatchesCodexStatuses(t *testing.T) {
+	if shouldConfirmBeforeReplacingGoal(GoalState{Status: goalStatusComplete}) {
+		t.Fatalf("completed goals should not require replacement confirmation")
+	}
+	for _, status := range []string{
+		goalStatusActive,
+		goalStatusPaused,
+		goalStatusBlocked,
+		goalStatusUsageLimited,
+		goalStatusBudgetLimited,
+	} {
+		if !shouldConfirmBeforeReplacingGoal(GoalState{Status: status}) {
+			t.Fatalf("status %q should require replacement confirmation", status)
+		}
+	}
+}
+
 func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
+		reader:        bufio.NewReader(strings.NewReader("y\n")),
 		writer:        &output,
 		ui:            NewUI(),
 		session:       session,
