@@ -315,6 +315,123 @@ func TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence(t *testing.T) {
 	}
 }
 
+func TestPreFinalHarnessAnswerOnlyRevisionDisablesTools(t *testing.T) {
+	root := t.TempDir()
+	badReply := strings.Join([]string{
+		"Bug report summary:",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 4 |",
+		"| High | 7 |",
+		"| Medium | 9 |",
+		"| Low | 6 |",
+		"| Total | 27 |",
+	}, "\n")
+	goodReply := strings.ReplaceAll(badReply, "| Total | 27 |", "| Total | 26 |") + "\nVerification not run."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.go",
+				"content": "package main\n",
+			}),
+			{Message: Message{Role: "assistant", Text: badReply}},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+			{Message: Message{Role: "assistant", Text: goodReply}, EndTurn: boolPtr(false)},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoVerify = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "make the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "| Total | 26 |") {
+		t.Fatalf("expected corrected final answer, got %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected answer-only correction, blocked tool attempt, and final answer, got %d requests", len(provider.requests))
+	}
+	if len(provider.requests[2].Tools) != 0 {
+		t.Fatalf("expected final-answer-only correction request to disable tools, got %d tools", len(provider.requests[2].Tools))
+	}
+	if len(provider.requests[3].Tools) != 0 {
+		t.Fatalf("expected redirected correction retry to keep tools disabled, got %d tools", len(provider.requests[3].Tools))
+	}
+	if !scriptedRequestsContainText(provider.requests, "final-answer-only correction") {
+		t.Fatalf("expected final-answer-only guidance in model history")
+	}
+	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: pre-final coding harness requires a final-answer-only correction") {
+		t.Fatalf("expected hallucinated tool call to be blocked, messages=%#v", session.Messages)
+	}
+}
+
+func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {
+	root := t.TempDir()
+	badReply := strings.Join([]string{
+		"Bug report summary:",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 4 |",
+		"| High | 7 |",
+		"| Medium | 9 |",
+		"| Low | 6 |",
+		"| Total | 27 |",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.go",
+				"content": "package main\n",
+			}),
+			{Message: Message{Role: "assistant", Text: badReply}},
+			{Message: Message{Role: "assistant", Text: badReply}},
+			{Message: Message{Role: "assistant", Text: badReply}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoVerify = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "make the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
+		t.Fatalf("expected blocked harness reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "Final answer has inconsistent bug counts") {
+		t.Fatalf("expected blocker details in blocked reply, got %q", reply)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected two correction attempts before blocked final, got %d requests", len(provider.requests))
+	}
+	if len(provider.requests[2].Tools) != 0 || len(provider.requests[3].Tools) != 0 {
+		t.Fatalf("expected exhausted answer-only correction turns to keep tools disabled, got %d and %d tools", len(provider.requests[2].Tools), len(provider.requests[3].Tools))
+	}
+}
+
 func TestDiffAwareHarnessBlocksKoreanBuildPassClaimWithoutEvidence(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

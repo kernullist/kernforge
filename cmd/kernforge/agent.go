@@ -608,6 +608,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	postChangeReviewExhaustedNudge := false
 	lastPostChangeReviewFingerprint := ""
 	lastReviewedFinalAnswer := ""
+	finalAnswerOnlyCorrection := false
 	providerTurnState := &ProviderTurnState{}
 	attemptedEditTool := false
 	successfulEditTool := false
@@ -717,6 +718,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if verificationOutOfScopeFinalOnly {
 			disableAllTools(turnDisabledTools, a.Tools)
 		}
+		if finalAnswerOnlyCorrection {
+			disableAllTools(turnDisabledTools, a.Tools)
+		}
 		if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
 			disableWebResearchToolsForLocalCodeWork(turnDisabledTools, a.Tools)
 		}
@@ -729,6 +733,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			onTextDelta = nil
 		}
 		systemPrompt := a.systemPrompt()
+		if finalAnswerOnlyCorrection {
+			systemPrompt += "\n\n" + finalAnswerOnlyHarnessPromptGuidance()
+		}
 		if generatedDocumentFinalOnly {
 			systemPrompt += "\n\n" + generatedDocumentArtifactFinalOnlyPromptGuidance()
 		}
@@ -764,7 +771,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
 		deferEndTurnFollowUpForGeneratedDocument := a.shouldDeferEndTurnFollowUpForGeneratedDocument(latestUser, resp)
-		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
+		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
 			resp.Message.Phase = messagePhaseCommentary
 		}
 		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
@@ -802,6 +809,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		if len(resp.Message.ToolCalls) > 0 {
 			commentaryOnlyReplies = 0
+			if finalAnswerOnlyCorrection {
+				if err := a.addToolCallRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: pre-final coding harness requires a final-answer-only correction; no tools are available for this retry.",
+					finalAnswerOnlyHarnessToolBlockedGuidance(a.Session.LastCodingHarnessReport),
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
 			if !explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
 				if err := a.addToolCallRedirectGuidance(
 					resp.Message.ToolCalls,
@@ -1061,7 +1078,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
-			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument {
+			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !finalAnswerOnlyCorrection {
 				commentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -1252,9 +1269,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					return reply, nil
 				}
-				if !harnessApproved && a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) && finalHarnessRevisions >= 2 {
+				if !harnessApproved && finalHarnessRevisions >= 2 {
 					a.discardRecentFinalAnswerCandidate(reply)
-					reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+					if a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) {
+						reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+					} else {
+						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
@@ -1265,9 +1286,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if !harnessApproved && finalHarnessRevisions < 2 {
 					finalHarnessRevisions++
 					a.discardRecentFinalAnswerCandidate(reply)
+					finalAnswerOnlyCorrection = codingHarnessReportRequiresFinalAnswerOnlyRevision(a.Session.LastCodingHarnessReport)
+					nextGuidance := harnessFeedback
+					if finalAnswerOnlyCorrection {
+						nextGuidance = finalAnswerOnlyHarnessRevisionGuidance(a.Session.LastCodingHarnessReport, harnessFeedback)
+					}
 					a.Session.AddMessage(Message{
 						Role: "user",
-						Text: harnessFeedback,
+						Text: nextGuidance,
 					})
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -1291,6 +1317,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return "", err
 					}
 					if needsModelTurn {
+						finalAnswerOnlyCorrection = false
 						a.discardRecentFinalAnswerCandidate(reply)
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
@@ -1302,6 +1329,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if runtimeGateBlocksFinalAnswer(ledger, reply) {
 						runtimeGateFinalAnswerRevisions++
+						finalAnswerOnlyCorrection = false
 						a.discardRecentFinalAnswerCandidate(reply)
 						a.Session.AddMessage(Message{
 							Role: "user",
@@ -1323,6 +1351,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastReviewedFinalAnswer = reply
 					if !approved {
 						finalAnswerReviewRevisions++
+						finalAnswerOnlyCorrection = false
 						a.discardRecentFinalAnswerCandidate(reply)
 						nextText := "Reviewer feedback: the proposed final answer is not ready yet. Revise the work or the answer before concluding."
 						if strings.TrimSpace(reviewText) != "" {
@@ -1947,6 +1976,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					edited = true
 					attemptedEditTool = true
 					successfulEditTool = true
+					finalAnswerOnlyCorrection = false
 					finalHarnessRevisions = 0
 					runtimeGateFinalAnswerRevisions = 0
 					finalAnswerReviewRevisions = 0

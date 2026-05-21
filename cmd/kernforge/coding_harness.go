@@ -703,23 +703,124 @@ func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalReply(request stri
 }
 
 func generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(findings []CodingHarnessFinding) bool {
+	return codingHarnessFindingsRequireFinalAnswerOnlyRevision(findings)
+}
+
+func codingHarnessReportRequiresFinalAnswerOnlyRevision(report *CodingHarnessReport) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if copyReport.Approved {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ScenarioReplay.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.SubagentOrchestration.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.TestImpact.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.JobSupervisor.Findings) {
+		return false
+	}
+	if !codingHarnessFindingsRequireFinalAnswerOnlyRevision(copyReport.Findings) {
+		return false
+	}
+	if !codingHarnessFindingsRequireFinalAnswerOnlyRevision(copyReport.Acceptance.Findings) {
+		return false
+	}
+	if !codingHarnessFindingsRequireFinalAnswerOnlyRevision(copyReport.DiffReview.Findings) {
+		return false
+	}
+	if !codingHarnessFindingsRequireFinalAnswerOnlyRevision(copyReport.Outcome.Findings) {
+		return false
+	}
+	return codingHarnessFindingsHaveBlockers(copyReport.allFindings())
+}
+
+func codingHarnessFindingsRequireFinalAnswerOnlyRevision(findings []CodingHarnessFinding) bool {
 	for _, finding := range findings {
 		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
 			continue
 		}
-		switch strings.TrimSpace(finding.Title) {
-		case "Required verification has no outcome",
-			"Unresolved verification failure",
-			"Generated document artifact verification disclosure is missing",
-			"Final answer has inconsistent bug counts",
-			"Final answer contradicts the patch transaction",
-			"Verification claim has no recorded evidence":
+		if codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding) {
 			continue
-		default:
-			return false
 		}
+		return false
 	}
 	return true
+}
+
+func codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding CodingHarnessFinding) bool {
+	switch strings.TrimSpace(finding.Title) {
+	case "Required verification has no outcome",
+		"Unresolved verification failure",
+		"Generated document artifact verification disclosure is missing",
+		"Final answer has inconsistent bug counts",
+		"Final answer contradicts the patch transaction",
+		"Verification claim has no recorded evidence",
+		"Edit loop verification failure is unstated",
+		"Final answer contradicts remaining edit-loop risk":
+		return true
+	default:
+		return false
+	}
+}
+
+func finalAnswerOnlyHarnessRevisionGuidance(report *CodingHarnessReport, feedback string) string {
+	feedback = strings.TrimSpace(feedback)
+	if feedback == "" && report != nil {
+		feedback = report.BlockingFeedback()
+	}
+	lines := []string{
+		"Pre-final coding harness found issues that require revising only the final answer.",
+		"Do not call tools, run shell commands, inspect more source files, start review, or edit files for this correction pass.",
+		"Use only the already recorded workspace state and evidence. Fix the final answer so it does not overclaim verification, artifact state, bug counts, or remaining risk.",
+	}
+	if feedback != "" {
+		lines = append(lines, "", feedback)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func finalAnswerOnlyHarnessPromptGuidance() string {
+	return "The pre-final coding harness is asking for a final-answer-only correction. No tools are available in this turn. Do not request or mention additional tool use, shell validation, source inspection, edits, or review passes. Provide only the corrected final answer based on the already recorded evidence."
+}
+
+func finalAnswerOnlyHarnessToolBlockedGuidance(report *CodingHarnessReport) string {
+	return finalAnswerOnlyHarnessRevisionGuidance(report, "")
+}
+
+func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport) string {
+	if report == nil {
+		return "Pre-final coding harness is still blocking completion. I stopped instead of routing the task into another tool or review loop without a clear repair path."
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	lines := []string{
+		"Pre-final coding harness is still blocking completion.",
+		"I stopped instead of routing the task into another tool or review loop without a clear repair path.",
+	}
+	blockers := make([]string, 0)
+	for _, finding := range copyReport.allFindings() {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		title := firstNonBlankString(finding.Title, "coding harness blocker")
+		detail := strings.TrimSpace(finding.Detail)
+		if detail != "" {
+			blockers = append(blockers, "- "+title+": "+detail)
+		} else {
+			blockers = append(blockers, "- "+title)
+		}
+		if len(blockers) >= finalHarnessMaxFindings {
+			break
+		}
+	}
+	if len(blockers) > 0 {
+		lines = append(lines, "", "Remaining blockers:")
+		lines = append(lines, blockers...)
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
 func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
