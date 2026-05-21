@@ -27,6 +27,10 @@ type Tool interface {
 	Execute(ctx context.Context, input any) (string, error)
 }
 
+type modelHiddenTool interface {
+	HiddenFromModel() bool
+}
+
 type ToolExecutionResult struct {
 	DisplayText       string            `json:"display_text,omitempty"`
 	ContentItems      []ToolContentItem `json:"content_items,omitempty"`
@@ -69,7 +73,7 @@ func NewToolRegistry(items ...Tool) *ToolRegistry {
 			continue
 		}
 		def := snapshotToolDefinition(item.Definition())
-		if def.Name == "" {
+		if !validToolDefinition(def) {
 			continue
 		}
 		if _, exists := byName[def.Name]; exists {
@@ -79,7 +83,9 @@ func NewToolRegistry(items ...Tool) *ToolRegistry {
 			aware.setSharedToolHints(sharedHints)
 		}
 		byName[def.Name] = item
-		definitions[def.Name] = def
+		if !toolHiddenFromModel(item) {
+			definitions[def.Name] = def
+		}
 	}
 	return &ToolRegistry{tools: byName, definitions: definitions}
 }
@@ -111,6 +117,33 @@ func isNilTool(tool Tool) bool {
 	default:
 		return false
 	}
+}
+
+func validToolDefinition(def ToolDefinition) bool {
+	if strings.TrimSpace(def.Name) == "" {
+		return false
+	}
+	return validToolInputSchema(def.InputSchema)
+}
+
+func validToolInputSchema(schema map[string]any) bool {
+	if len(schema) == 0 {
+		return true
+	}
+	rawType, ok := schema["type"]
+	if !ok {
+		return true
+	}
+	typeName, ok := rawType.(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(typeName), "object")
+}
+
+func toolHiddenFromModel(tool Tool) bool {
+	hidden, ok := tool.(modelHiddenTool)
+	return ok && hidden.HiddenFromModel()
 }
 
 func snapshotToolDefinition(def ToolDefinition) ToolDefinition {

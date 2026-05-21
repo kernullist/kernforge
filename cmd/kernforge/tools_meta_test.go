@@ -14,6 +14,7 @@ import (
 type mutableRegistryTool struct {
 	def    ToolDefinition
 	output string
+	hidden bool
 }
 
 func (t *mutableRegistryTool) Definition() ToolDefinition {
@@ -28,6 +29,10 @@ func (t *mutableRegistryTool) Execute(ctx context.Context, input any) (string, e
 		return "", fmt.Errorf("nil mutable registry tool")
 	}
 	return t.output, nil
+}
+
+func (t *mutableRegistryTool) HiddenFromModel() bool {
+	return t != nil && t.hidden
 }
 
 func TestToolRegistrySnapshotsDefinitionsAtRegistration(t *testing.T) {
@@ -108,8 +113,17 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 		},
 		output: "blank output",
 	}
+	invalidSchema := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "invalid_schema",
+			InputSchema: map[string]any{
+				"type": "null",
+			},
+		},
+		output: "invalid output",
+	}
 
-	registry := NewToolRegistry(nilTool, first, second, blank)
+	registry := NewToolRegistry(nilTool, first, second, blank, invalidSchema)
 	defs := registry.Definitions()
 	if len(defs) != 1 {
 		t.Fatalf("expected only first valid unique tool definition, got %#v", defs)
@@ -124,6 +138,45 @@ func TestToolRegistryIgnoresInvalidAndDuplicateDefinitions(t *testing.T) {
 	}
 	if result.DisplayText != "first output" {
 		t.Fatalf("duplicate handling should keep first executor, got %q", result.DisplayText)
+	}
+	if _, err := registry.ExecuteDetailed(context.Background(), "invalid_schema", `{}`); err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("invalid schema tool should not be registered, got %v", err)
+	}
+}
+
+func TestToolRegistrySupportsHiddenDispatchOnlyTools(t *testing.T) {
+	visible := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "visible",
+			Description: "visible tool",
+			InputSchema: emptyObjectSchema(),
+		},
+		output: "visible output",
+	}
+	hidden := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "hidden",
+			Description: "hidden tool",
+			InputSchema: emptyObjectSchema(),
+		},
+		output: "hidden output",
+		hidden: true,
+	}
+
+	registry := NewToolRegistry(visible, hidden)
+	defs := registry.Definitions()
+	if len(defs) != 1 || defs[0].Name != "visible" {
+		t.Fatalf("expected only visible definition, got %#v", defs)
+	}
+	if !toolRegistryHasTool(registry, "hidden") {
+		t.Fatalf("hidden tool should remain dispatchable")
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "hidden", `{}`)
+	if err != nil {
+		t.Fatalf("hidden ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "hidden output" {
+		t.Fatalf("expected hidden executor output, got %q", result.DisplayText)
 	}
 }
 
