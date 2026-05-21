@@ -565,6 +565,59 @@ func TestMCPToolExecuteDetailedPreservesResultMeta(t *testing.T) {
 	}
 }
 
+func TestMCPToolPreToolUseRewriteExecutesUpdatedArguments(t *testing.T) {
+	dir := t.TempDir()
+	var observed string
+	manager, warnings := LoadMCPManager(Workspace{
+		BaseRoot: dir,
+		Root:     dir,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			if input, ok := payload["tool_input"].(map[string]any); ok {
+				observed = stringsValueFromAny(input["message"])
+			}
+			return HookVerdict{
+				Allow:        true,
+				UpdatedInput: HookPayload{"message": "rewritten"},
+			}, nil
+		},
+	}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	registry := NewToolRegistry(manager.Tools()...)
+	result, err := registry.ExecuteDetailed(context.Background(), "mcp__fake__echo", `{"message":"original"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed echo: %v", err)
+	}
+	if observed != "original" {
+		t.Fatalf("expected hook to observe original MCP arguments, got %q", observed)
+	}
+	if result.DisplayText != `{"echoed":"rewritten"}` {
+		t.Fatalf("expected rewritten MCP arguments to execute, got %q", result.DisplayText)
+	}
+	if rewritten, _ := result.Meta["hook_rewritten"].(bool); !rewritten {
+		t.Fatalf("expected hook_rewritten metadata, got %#v", result.Meta)
+	}
+	originalInput, ok := result.Meta["original_input"].(map[string]any)
+	if !ok || stringsValueFromAny(originalInput["message"]) != "original" {
+		t.Fatalf("expected original MCP input metadata, got %#v", result.Meta)
+	}
+}
+
 func TestMCPToolCallIncludesTurnMetadataRequestMeta(t *testing.T) {
 	dir := t.TempDir()
 	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{

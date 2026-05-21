@@ -2423,6 +2423,30 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 	if strings.TrimSpace(command) == "" {
 		return "", fmt.Errorf("command is required")
 	}
+	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
+	if err != nil {
+		return "", err
+	}
+	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
+	originalCommand := command
+	verdict, err := t.ws.Hook(ctx, HookPreToolUse, t.shellHookPayload(HookPayload{
+		"tool_name":     "run_shell",
+		"tool_kind":     "shell",
+		"command":       originalCommand,
+		"risk_tags":     hookCommandRiskTags(originalCommand),
+		"file_tags":     []string{},
+		"owner_node_id": effectiveOwnerNodeID,
+		"work_dir":      workDir,
+	}))
+	if err != nil {
+		return "", err
+	}
+	if updatedCommand, changed, updateErr := hookUpdatedCommand(verdict, "run_shell", command); updateErr != nil {
+		return "", updateErr
+	} else if changed {
+		command = updatedCommand
+		args["command"] = command
+	}
 	if guidance := runShellCompatibilityGuidance(t.ws.Shell, command); guidance != "" {
 		return guidance, fmt.Errorf("shell command is incompatible with the active shell")
 	}
@@ -2438,11 +2462,6 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			return guidance, fmt.Errorf("run_shell command should use a dedicated workspace tool")
 		}
 	}
-	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
-	if err != nil {
-		return "", err
-	}
-	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	if assessment.Class == shellMutationWorkspaceWrite {
 		if reason := shellCommandManualWorkspaceWriteReason(command); reason != "" {
 			return "", fmt.Errorf("run_shell cannot perform manual workspace file writes; use apply_patch or apply_edit_proposal so edits stay reviewable (%s)", reason)
@@ -2477,17 +2496,6 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			return "", fmt.Errorf("run_shell verification command is blocked because the workspace contains symlinks that resolve outside the active root: %s", strings.Join(externalLinks, ", "))
 		}
 		workspaceBeforeShell = snapshot
-	}
-	if _, err := t.ws.Hook(ctx, HookPreToolUse, t.shellHookPayload(HookPayload{
-		"tool_name":     "run_shell",
-		"tool_kind":     "shell",
-		"command":       command,
-		"risk_tags":     hookCommandRiskTags(command),
-		"file_tags":     []string{},
-		"owner_node_id": effectiveOwnerNodeID,
-		"work_dir":      workDir,
-	})); err != nil {
-		return "", err
 	}
 	if err := t.ws.EnsureShell(command); err != nil {
 		return "", err
@@ -2572,12 +2580,16 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 	if inputErr != nil {
 		return ToolExecutionResult{}, inputErr
 	}
-	command := stringValue(args, "command")
+	originalCommand := stringValue(args, "command")
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	workdir := strings.TrimSpace(stringValue(args, "workdir"))
+	text, err := t.Execute(ctx, input)
+	command := stringValue(args, "command")
+	if strings.TrimSpace(command) == "" {
+		command = originalCommand
+	}
 	_, workDir, _ := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
 	assessment := assessShellCommandMutation(command)
-	text, err := t.Execute(ctx, input)
 	verificationLike := assessment.Class == shellMutationVerificationArtifacts || runShellOutputLooksLikeVerification(text) || runShellOutputLooksLikeSkippedVerification(text)
 	meta := map[string]any{
 		"command":           command,
@@ -2587,6 +2599,10 @@ func (t RunShellTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecu
 		"work_dir":          workDir,
 		"changed_workspace": false,
 		"effect":            "execute",
+	}
+	if originalCommand != "" && command != originalCommand {
+		meta["hook_rewritten"] = true
+		meta["original_command"] = originalCommand
 	}
 	addEffectiveWorkspaceRootMetadata(meta, t.ws, nil)
 	if verificationLike {

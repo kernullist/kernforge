@@ -77,6 +77,36 @@ func TestHookEngineDenyWins(t *testing.T) {
 	}
 }
 
+func TestHookEngineAllowCanRewritePreToolUseInput(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:     "rewrite",
+				Events: []HookEvent{HookPreToolUse},
+				Match: HookMatch{
+					ToolNames: []string{"run_shell"},
+				},
+				Action: HookAction{
+					Type:         "allow",
+					UpdatedInput: HookPayload{"command": "echo rewritten"},
+				},
+			},
+		},
+	}
+
+	verdict, err := engine.Evaluate(context.Background(), HookPreToolUse, HookPayload{
+		"tool_name": "run_shell",
+		"command":   "echo original",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if got := stringsValueFromAny(verdict.UpdatedInput["command"]); got != "echo rewritten" {
+		t.Fatalf("expected updated command, got %#v", verdict.UpdatedInput)
+	}
+}
+
 func TestBuiltinWindowsSecurityPreset(t *testing.T) {
 	rules, err := builtinHookPresetRules("windows-security")
 	if err != nil {

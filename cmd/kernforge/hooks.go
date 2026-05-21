@@ -35,15 +35,17 @@ const (
 type HookPayload map[string]any
 
 type HookAction struct {
-	Type              string   `json:"type"`
-	Message           string   `json:"message,omitempty"`
-	Label             string   `json:"label,omitempty"`
-	Command           string   `json:"command,omitempty"`
-	Tags              []string `json:"tags,omitempty"`
-	Scope             string   `json:"scope,omitempty"`
-	Stage             string   `json:"stage,omitempty"`
-	ContinueOnFailure *bool    `json:"continue_on_failure,omitempty"`
-	StopOnFailure     *bool    `json:"stop_on_failure,omitempty"`
+	Type               string      `json:"type"`
+	Message            string      `json:"message,omitempty"`
+	Label              string      `json:"label,omitempty"`
+	Command            string      `json:"command,omitempty"`
+	Tags               []string    `json:"tags,omitempty"`
+	Scope              string      `json:"scope,omitempty"`
+	Stage              string      `json:"stage,omitempty"`
+	ContinueOnFailure  *bool       `json:"continue_on_failure,omitempty"`
+	StopOnFailure      *bool       `json:"stop_on_failure,omitempty"`
+	UpdatedInput       HookPayload `json:"updated_input,omitempty"`
+	UpdatedInputCompat HookPayload `json:"updatedInput,omitempty"`
 }
 
 type HookMatch struct {
@@ -101,6 +103,7 @@ type HookVerdict struct {
 	CheckpointNotes  []string
 	VerificationAdds []VerificationStep
 	MatchedRuleIDs   []string
+	UpdatedInput     HookPayload
 }
 
 type HookEngine struct {
@@ -383,6 +386,9 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 		verdict.MatchedRuleIDs = append(verdict.MatchedRuleIDs, rule.ID)
 		switch strings.ToLower(strings.TrimSpace(rule.Action.Type)) {
 		case "", "allow":
+			if err := applyHookActionUpdatedInput(event, rule, &verdict, false); err != nil {
+				return HookVerdict{}, err
+			}
 		case "warn":
 			verdict.Warns = append(verdict.Warns, HookNotice{RuleID: rule.ID, Message: hookActionMessage(rule, "Hook rule matched.")})
 		case "ask":
@@ -396,6 +402,10 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 			message := strings.TrimSpace(rule.Action.Message)
 			if message != "" {
 				verdict.ContextAdds = append(verdict.ContextAdds, message)
+			}
+		case "rewrite_input", "update_input":
+			if err := applyHookActionUpdatedInput(event, rule, &verdict, true); err != nil {
+				return HookVerdict{}, err
 			}
 		case "create_checkpoint":
 			note := strings.TrimSpace(rule.Action.Message)
@@ -439,6 +449,88 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 		}
 	}
 	return verdict, nil
+}
+
+func applyHookActionUpdatedInput(event HookEvent, rule HookRule, verdict *HookVerdict, required bool) error {
+	updated := hookActionUpdatedInput(rule.Action)
+	if len(updated) == 0 {
+		if required {
+			return fmt.Errorf("hook %s requires updated_input", strings.TrimSpace(rule.ID))
+		}
+		return nil
+	}
+	if event != HookPreToolUse {
+		return fmt.Errorf("hook %s can update input only for PreToolUse", strings.TrimSpace(rule.ID))
+	}
+	if verdict.UpdatedInput == nil {
+		verdict.UpdatedInput = HookPayload{}
+	}
+	for key, value := range updated {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		verdict.UpdatedInput[trimmedKey] = value
+	}
+	return nil
+}
+
+func hookActionUpdatedInput(action HookAction) HookPayload {
+	out := HookPayload{}
+	for key, value := range action.UpdatedInput {
+		if strings.TrimSpace(key) != "" {
+			out[key] = value
+		}
+	}
+	for key, value := range action.UpdatedInputCompat {
+		if strings.TrimSpace(key) != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func hookUpdatedInputString(verdict HookVerdict, key string) (string, bool, error) {
+	if len(verdict.UpdatedInput) == 0 {
+		return "", false, nil
+	}
+	raw, ok := verdict.UpdatedInput[key]
+	if !ok {
+		return "", false, nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return "", true, fmt.Errorf("hook updated input %q must be a string", key)
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", true, fmt.Errorf("hook updated input %q must not be empty", key)
+	}
+	return text, true, nil
+}
+
+func hookUpdatedCommand(verdict HookVerdict, toolName string, current string) (string, bool, error) {
+	updated, ok, err := hookUpdatedInputString(verdict, "command")
+	if err != nil {
+		return "", false, fmt.Errorf("%s hook input rewrite failed: %w", strings.TrimSpace(toolName), err)
+	}
+	if !ok {
+		return current, false, nil
+	}
+	return updated, updated != current, nil
+}
+
+func hookUpdatedPatchText(verdict HookVerdict, toolName string, current string) (string, bool, error) {
+	if updated, ok, err := hookUpdatedInputString(verdict, "command"); err != nil {
+		return "", false, fmt.Errorf("%s hook input rewrite failed: %w", strings.TrimSpace(toolName), err)
+	} else if ok {
+		return updated, updated != current, nil
+	}
+	if updated, ok, err := hookUpdatedInputString(verdict, "patch"); err != nil {
+		return "", false, fmt.Errorf("%s hook input rewrite failed: %w", strings.TrimSpace(toolName), err)
+	} else if ok {
+		return updated, updated != current, nil
+	}
+	return current, false, nil
 }
 
 func hookRuleHasEvent(rule HookRule, event HookEvent) bool {

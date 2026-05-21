@@ -1727,6 +1727,127 @@ func TestRunShellAllowsReadOnlyCommands(t *testing.T) {
 	}
 }
 
+func TestRunShellPreToolUseRewriteExecutesUpdatedCommand(t *testing.T) {
+	root := t.TempDir()
+	var observed string
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			observed = stringsValueFromAny(payload["command"])
+			return HookVerdict{
+				Allow:        true,
+				UpdatedInput: HookPayload{"command": "echo rewritten"},
+			}, nil
+		},
+	})
+	input := map[string]any{"command": "echo original"}
+
+	result, err := tool.ExecuteDetailed(context.Background(), input)
+	if err != nil {
+		t.Fatalf("run shell with hook rewrite: %v", err)
+	}
+	if observed != "echo original" {
+		t.Fatalf("expected hook to observe original command, got %q", observed)
+	}
+	if !strings.Contains(result.DisplayText, "rewritten") || strings.Contains(result.DisplayText, "original") {
+		t.Fatalf("expected rewritten command output only, got %q", result.DisplayText)
+	}
+	if got := toolMetaString(result.Meta, "command"); got != "echo rewritten" {
+		t.Fatalf("expected rewritten command metadata, got %#v", result.Meta)
+	}
+	if got := toolMetaString(result.Meta, "original_command"); got != "echo original" {
+		t.Fatalf("expected original command metadata, got %#v", result.Meta)
+	}
+	if rewritten, _ := result.Meta["hook_rewritten"].(bool); !rewritten {
+		t.Fatalf("expected hook_rewritten metadata, got %#v", result.Meta)
+	}
+}
+
+func TestRunShellPreToolUseRewriteRevalidatesUpdatedCommand(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "hook-write.txt")
+	tool := NewRunShellTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			_ = payload
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			return HookVerdict{
+				Allow:        true,
+				UpdatedInput: HookPayload{"command": "echo nope > hook-write.txt"},
+			}, nil
+		},
+	})
+
+	_, err := tool.Execute(context.Background(), map[string]any{
+		"command": "echo original",
+	})
+	if err == nil {
+		t.Fatalf("expected rewritten workspace write to be rejected")
+	}
+	if !strings.Contains(err.Error(), "manual workspace file writes") {
+		t.Fatalf("expected workspace write guard error, got %v", err)
+	}
+	if _, statErr := os.Stat(target); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("rewritten unsafe command should not create target, stat err=%v", statErr)
+	}
+}
+
+func TestApplyPatchPreToolUseRewriteAppliesUpdatedPatch(t *testing.T) {
+	root := t.TempDir()
+	originalPatch := "*** Begin Patch\n*** Add File: original.txt\n+original\n*** End Patch\n"
+	rewrittenPatch := "*** Begin Patch\n*** Add File: rewritten.txt\n+rewritten\n*** End Patch\n"
+	var observed string
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			observed = stringsValueFromAny(payload["command"])
+			return HookVerdict{
+				Allow:        true,
+				UpdatedInput: HookPayload{"command": rewrittenPatch},
+			}, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": originalPatch,
+	})
+	if err != nil {
+		t.Fatalf("apply patch with hook rewrite: %v", err)
+	}
+	if observed != strings.TrimSpace(originalPatch) {
+		t.Fatalf("expected hook to observe original patch, got %q", observed)
+	}
+	if !strings.Contains(result.DisplayText, "rewritten.txt") {
+		t.Fatalf("expected rewritten patch output, got %q", result.DisplayText)
+	}
+	if _, err := os.Stat(filepath.Join(root, "original.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original patch target should not exist, stat err=%v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "rewritten.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile rewritten target: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != "rewritten" {
+		t.Fatalf("unexpected rewritten file content: %q", data)
+	}
+}
+
 func TestRunShellWorkdirExecutesFromRequestedDirectoryLikeCodex(t *testing.T) {
 	root := t.TempDir()
 	subdir := filepath.Join(root, "subdir")
@@ -3341,6 +3462,56 @@ func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 	bundles := jobs.SnapshotBundles()
 	if len(bundles) != 1 || bundles[0].OwnerNodeID != "plan-02" {
 		t.Fatalf("expected owner node id on persisted bundle, got %#v", bundles)
+	}
+}
+
+func TestRunBackgroundShellPreToolUseRewriteStartsUpdatedCommand(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "test", "test-model", "", "default")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	var observed string
+	ws := Workspace{
+		BaseRoot:       root,
+		Root:           root,
+		Shell:          defaultShell(),
+		BackgroundJobs: jobs,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			observed = stringsValueFromAny(payload["command"])
+			return HookVerdict{
+				Allow:        true,
+				UpdatedInput: HookPayload{"command": "echo rewritten-bg"},
+			}, nil
+		},
+	}
+	runTool := NewRunBackgroundShellTool(ws)
+
+	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+		"command": "echo original-bg",
+	})
+	if err != nil {
+		t.Fatalf("run background shell with hook rewrite: %v", err)
+	}
+	if observed != "echo original-bg" {
+		t.Fatalf("expected hook to observe original background command, got %q", observed)
+	}
+	if !strings.Contains(result.DisplayText, "echo rewritten-bg") {
+		t.Fatalf("expected rewritten command in display text, got %q", result.DisplayText)
+	}
+	jobID := jobs.LatestJobID()
+	job, ok := session.BackgroundJob(jobID)
+	if !ok {
+		t.Fatalf("expected recorded background job %q", jobID)
+	}
+	if job.Command != "echo rewritten-bg" {
+		t.Fatalf("expected rewritten command in job record, got %#v", job)
 	}
 }
 

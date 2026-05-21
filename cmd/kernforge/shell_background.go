@@ -722,7 +722,26 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 		return ToolExecutionResult{}, err
 	}
 	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
-	for _, command := range commands {
+	for index, command := range commands {
+		originalCommand := command
+		verdict, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
+			"tool_name":     "run_shell_bundle_background",
+			"tool_kind":     "shell",
+			"command":       originalCommand,
+			"risk_tags":     hookCommandRiskTags(originalCommand),
+			"file_tags":     []string{},
+			"owner_node_id": effectiveOwnerNodeID,
+			"work_dir":      workDir,
+		}))
+		if err != nil {
+			return ToolExecutionResult{}, err
+		}
+		if updatedCommand, changed, updateErr := hookUpdatedCommand(verdict, "run_shell_bundle_background", command); updateErr != nil {
+			return ToolExecutionResult{}, updateErr
+		} else if changed {
+			command = updatedCommand
+			commands[index] = command
+		}
 		assessment := assessShellCommandMutation(command)
 		if assessment.Class == shellMutationUnsafe {
 			return ToolExecutionResult{}, shellCommandUnsafeError("run_shell_bundle_background", assessment)
@@ -750,17 +769,6 @@ func (t RunShellBundleBackgroundTool) ExecuteDetailed(ctx context.Context, input
 				lines = append(lines, "- skipped verification command because the user declined: "+compactPromptSection(command, 160))
 				continue
 			}
-		}
-		if _, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
-			"tool_name":     "run_shell_bundle_background",
-			"tool_kind":     "shell",
-			"command":       command,
-			"risk_tags":     hookCommandRiskTags(command),
-			"file_tags":     []string{},
-			"owner_node_id": effectiveOwnerNodeID,
-			"work_dir":      workDir,
-		})); err != nil {
-			return ToolExecutionResult{}, err
 		}
 		if err := t.ws.EnsureShell(command); err != nil {
 			return ToolExecutionResult{}, err
@@ -882,6 +890,30 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if t.ws.BackgroundJobs == nil {
 		return ToolExecutionResult{}, fmt.Errorf("background jobs are not configured")
 	}
+	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
+	originalCommand := command
+	verdict, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
+		"tool_name":     "run_shell_background",
+		"tool_kind":     "shell",
+		"command":       originalCommand,
+		"risk_tags":     hookCommandRiskTags(originalCommand),
+		"file_tags":     []string{},
+		"owner_node_id": effectiveOwnerNodeID,
+		"work_dir":      workDir,
+	}))
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	if updatedCommand, changed, updateErr := hookUpdatedCommand(verdict, "run_shell_background", command); updateErr != nil {
+		return ToolExecutionResult{}, updateErr
+	} else if changed {
+		command = strings.TrimSpace(updatedCommand)
+		args["command"] = command
+	}
 	assessment := assessShellCommandMutation(command)
 	if assessment.Class == shellMutationUnsafe {
 		return ToolExecutionResult{}, shellCommandUnsafeError("run_shell_background", assessment)
@@ -892,11 +924,6 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 	if assessment.Class == shellMutationWorkspaceWrite {
 		return ToolExecutionResult{}, fmt.Errorf("run_shell_background only supports read-only, verification/build, cache-only, or external-install commands")
 	}
-	shellRoute, workDir, err := t.ws.ResolveShellWorkDir(ownerNodeID, workdir)
-	if err != nil {
-		return ToolExecutionResult{}, err
-	}
-	effectiveOwnerNodeID := firstNonBlankString(shellRoute.OwnerNodeID, ownerNodeID)
 	if assessment.Class == shellMutationVerificationArtifacts {
 		ok, confirmErr := t.ws.ConfirmVerificationPlan(VerificationPlan{
 			Mode:         VerificationAdaptive,
@@ -929,17 +956,6 @@ func (t RunBackgroundShellTool) ExecuteDetailed(ctx context.Context, input any) 
 				}),
 			}, nil
 		}
-	}
-	if _, err := t.ws.Hook(ctx, HookPreToolUse, shellBackgroundHookPayload(t.ws, HookPayload{
-		"tool_name":     "run_shell_background",
-		"tool_kind":     "shell",
-		"command":       command,
-		"risk_tags":     hookCommandRiskTags(command),
-		"file_tags":     []string{},
-		"owner_node_id": effectiveOwnerNodeID,
-		"work_dir":      workDir,
-	})); err != nil {
-		return ToolExecutionResult{}, err
 	}
 	if err := t.ws.EnsureShell(command); err != nil {
 		return ToolExecutionResult{}, err

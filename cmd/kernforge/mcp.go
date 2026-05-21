@@ -73,8 +73,9 @@ type MCPServerStatus struct {
 }
 
 type MCPManager struct {
-	servers []*MCPClient
-	status  []MCPServerStatus
+	servers   []*MCPClient
+	status    []MCPServerStatus
+	workspace Workspace
 }
 
 type MCPClient struct {
@@ -97,6 +98,7 @@ type MCPTool struct {
 	namespaced  string
 	remote      MCPToolDescriptor
 	description string
+	workspace   Workspace
 }
 
 type MCPResourceTool struct {
@@ -155,7 +157,7 @@ func cloneStringAnyMap(input map[string]any) map[string]any {
 }
 
 func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []string) {
-	manager := &MCPManager{}
+	manager := &MCPManager{workspace: ws}
 	warnings := []string{}
 	usedNames := map[string]int{}
 	for _, cfg := range configs {
@@ -317,6 +319,7 @@ func (m *MCPManager) Tools() []Tool {
 				namespaced:  namespacedMCPToolName(server.config.Name, tool.Name),
 				remote:      tool,
 				description: fmt.Sprintf("[MCP:%s] %s", server.config.Name, strings.TrimSpace(tool.Description)),
+				workspace:   m.workspace,
 			})
 		}
 		if len(server.resources) > 0 {
@@ -1594,15 +1597,41 @@ func (t MCPTool) Definition() ToolDefinition {
 }
 
 func (t MCPTool) Execute(ctx context.Context, input any) (string, error) {
-	return t.client.callTool(ctx, t.remote.Name, input)
+	result, err := t.ExecuteDetailed(ctx, input)
+	return result.DisplayText, err
 }
 
 func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
+	args, err := requireToolInputObject(input, t.Definition().Name)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	originalArgs := cloneStringAnyMap(args)
+	verdict, err := t.workspace.Hook(ctx, HookPreToolUse, HookPayload{
+		"tool_name":           t.namespaced,
+		"tool_kind":           "mcp",
+		"mcp_server":          t.client.config.Name,
+		"mcp_tool":            t.remote.Name,
+		"mcp_namespaced_tool": t.namespaced,
+		"tool_input":          originalArgs,
+		"file_tags":           []string{},
+	})
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	if len(verdict.UpdatedInput) > 0 {
+		args = cloneStringAnyMap(verdict.UpdatedInput)
+		input = args
+	}
 	result, err := t.client.callToolDetailed(ctx, t.remote.Name, input)
 	if result.Meta == nil {
 		result.Meta = map[string]any{}
 	}
 	result.Meta["mcp_namespaced_tool"] = t.namespaced
+	if len(verdict.UpdatedInput) > 0 {
+		result.Meta["hook_rewritten"] = true
+		result.Meta["original_input"] = originalArgs
+	}
 	return result, err
 }
 

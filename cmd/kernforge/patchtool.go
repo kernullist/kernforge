@@ -43,9 +43,29 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if strings.TrimSpace(patchText) == "" {
 		return ToolExecutionResult{}, fmt.Errorf("patch is required")
 	}
+	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
 	ws, err := t.workspaceForWorkdir(stringValue(args, "workdir"))
 	if err != nil {
 		return ToolExecutionResult{}, err
+	}
+	originalPatchText := patchText
+	verdict, err := ws.Hook(ctx, HookPreToolUse, HookPayload{
+		"tool_name":     "apply_patch",
+		"tool_kind":     "edit",
+		"command":       originalPatchText,
+		"patch":         originalPatchText,
+		"file_tags":     []string{},
+		"owner_node_id": ownerNodeID,
+		"work_dir":      ws.Root,
+	})
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	if updatedPatchText, changed, updateErr := hookUpdatedPatchText(verdict, "apply_patch", patchText); updateErr != nil {
+		return ToolExecutionResult{}, updateErr
+	} else if changed {
+		patchText = updatedPatchText
+		args["patch"] = patchText
 	}
 	doc, err := parsePatchDocument(patchText)
 	if err != nil {
@@ -54,7 +74,7 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if len(doc.ops) == 0 {
 		return ToolExecutionResult{}, fmt.Errorf("%w: No files were modified.", ErrInvalidPatchFormat)
 	}
-	text, changedWorkspace, changedPaths, unifiedDiff, err := applyPatchDocument(ctx, ws, doc, strings.TrimSpace(stringValue(args, "owner_node_id")))
+	text, changedWorkspace, changedPaths, unifiedDiff, err := applyPatchDocument(ctx, ws, doc, ownerNodeID)
 	meta := map[string]any{
 		"changed_workspace":     false,
 		"requires_verification": false,
