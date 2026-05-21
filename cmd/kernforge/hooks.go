@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -10,6 +12,11 @@ import (
 )
 
 type HookEvent string
+
+const (
+	hookContextAddSpillThreshold = 6000
+	hookContextAddPreviewChars   = 1800
+)
 
 const (
 	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
@@ -168,7 +175,67 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 	if !verdict.Allow {
 		return HookVerdict{}, fmt.Errorf("hook denied")
 	}
+	verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
 	return verdict, nil
+}
+
+func (rt *HookRuntime) spillLargeHookContextAdds(event HookEvent, contexts []string) []string {
+	if len(contexts) == 0 {
+		return contexts
+	}
+	out := append([]string(nil), contexts...)
+	for i, contextText := range out {
+		contextText = strings.TrimSpace(contextText)
+		if len(contextText) <= hookContextAddSpillThreshold {
+			out[i] = contextText
+			continue
+		}
+		preview := truncateHookContextAddPreview(contextText)
+		path, err := rt.writeHookContextSpill(event, i, contextText)
+		if err != nil {
+			out[i] = preview + "\n\n[hook context truncated: failed to write spill file: " + err.Error() + "]"
+			continue
+		}
+		out[i] = preview + "\n\n[hook context truncated: full text written to " + filepath.ToSlash(path) + "]"
+	}
+	return out
+}
+
+func truncateHookContextAddPreview(text string) string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if len(runes) <= hookContextAddPreviewChars {
+		return text
+	}
+	return strings.TrimSpace(string(runes[:hookContextAddPreviewChars])) + "\n... (hook context truncated)"
+}
+
+func (rt *HookRuntime) writeHookContextSpill(event HookEvent, index int, text string) (string, error) {
+	dir := strings.TrimSpace(rt.Config.SessionDir)
+	if dir == "" {
+		dir = filepath.Join(userConfigDir(), "sessions")
+	}
+	dir = filepath.Join(dir, "hook-spills")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	sessionID := "session"
+	if rt.Session != nil && strings.TrimSpace(rt.Session.ID) != "" {
+		sessionID = sanitizeFileName(rt.Session.ID)
+		if sessionID == "" {
+			sessionID = "session"
+		}
+	}
+	eventName := sanitizeFileName(string(event))
+	if eventName == "" {
+		eventName = "hook"
+	}
+	name := fmt.Sprintf("%s-%s-%d-%02d.txt", eventName, sessionID, time.Now().UTC().UnixNano(), index)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func (rt *HookRuntime) effectiveEngine() *HookEngine {

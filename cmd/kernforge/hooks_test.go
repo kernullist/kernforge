@@ -130,6 +130,54 @@ func TestHookRuntimeAskDenied(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeSpillsLargeContextAdds(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions")
+	longContext := strings.Repeat("remember pre tool context ", 400)
+	runtime := &HookRuntime{
+		Config:  Config{SessionDir: sessionDir},
+		Session: NewSession(root, "openai", "gpt-test", "", "default"),
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "large-context",
+					Events: []HookEvent{HookPreToolUse},
+					Action: HookAction{Type: "append_context", Message: longContext},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookPreToolUse, HookPayload{
+		"tool_name": "run_shell",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(verdict.ContextAdds) != 1 {
+		t.Fatalf("expected one context add, got %#v", verdict.ContextAdds)
+	}
+	if len(verdict.ContextAdds[0]) >= len(longContext) || !strings.Contains(verdict.ContextAdds[0], "full text written to") {
+		t.Fatalf("expected context add to be spilled, got %d chars: %q", len(verdict.ContextAdds[0]), verdict.ContextAdds[0])
+	}
+
+	entries, err := os.ReadDir(filepath.Join(sessionDir, "hook-spills"))
+	if err != nil {
+		t.Fatalf("ReadDir hook-spills: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one spilled hook context, got %#v", entries)
+	}
+	data, err := os.ReadFile(filepath.Join(sessionDir, "hook-spills", entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile spilled hook context: %v", err)
+	}
+	if string(data) != strings.TrimSpace(longContext) {
+		t.Fatalf("spilled hook context did not preserve full text")
+	}
+}
+
 func TestHookRuntimeEnrichPayloadUsesEffectiveWorkspaceRoots(t *testing.T) {
 	baseRoot := t.TempDir()
 	activeRoot := filepath.Join(baseRoot, "worktree")
