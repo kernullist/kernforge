@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1136,6 +1137,67 @@ func TestRunCodexOAuthDeviceLoginSavesDedicatedAuthFile(t *testing.T) {
 	}
 }
 
+func TestRunCodexOAuthDeviceLoginRejectsWorkspaceMismatch(t *testing.T) {
+	var sawExchange bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/accounts/deviceauth/usercode":
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"device_auth_id":"device-1","user_code":"ABCD-EFGH","verification_uri":"https://auth.example/device","interval":1,"expires_in":60}`))
+		case "/api/accounts/deviceauth/token":
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"authorization_code":"auth-code-1","code_verifier":"verifier-1"}`))
+		case "/oauth/token":
+			sawExchange = true
+			w.Header().Set("content-type", "application/json")
+			idToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "workspace-denied")
+			_, _ = w.Write([]byte(fmt.Sprintf(`{"access_token":%q,"refresh_token":"refresh-live","id_token":%q}`, idToken, idToken)))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	oldUserCodeEndpoint := openAICodexDeviceCodeEndpoint
+	oldDeviceTokenEndpoint := openAICodexDeviceTokenEndpoint
+	oldOAuthTokenEndpoint := openAICodexOAuthTokenEndpoint
+	openAICodexDeviceCodeEndpoint = server.URL + "/api/accounts/deviceauth/usercode"
+	openAICodexDeviceTokenEndpoint = server.URL + "/api/accounts/deviceauth/token"
+	openAICodexOAuthTokenEndpoint = server.URL + "/oauth/token"
+	defer func() {
+		openAICodexDeviceCodeEndpoint = oldUserCodeEndpoint
+		openAICodexDeviceTokenEndpoint = oldDeviceTokenEndpoint
+		openAICodexOAuthTokenEndpoint = oldOAuthTokenEndpoint
+	}()
+
+	path := filepath.Join(t.TempDir(), "codex_auth.json")
+	_, err := runCodexOAuthDeviceLoginWithWorkspaces(context.Background(), io.Discard, path, server.Client(), []string{"workspace-allowed"})
+	if err == nil || !strings.Contains(err.Error(), "workspace-allowed") {
+		t.Fatalf("expected workspace mismatch, got %v", err)
+	}
+	if !sawExchange {
+		t.Fatalf("expected token exchange before local workspace validation")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("auth file should not be written on workspace mismatch, stat=%v", statErr)
+	}
+}
+
+func TestCodexOAuthTokenSourceRejectsWorkspaceMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "codex_auth.json")
+	if err := saveCodexOAuthAuthFile(path, codexOAuthTokens{
+		AccessToken:  testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "workspace-denied"),
+		RefreshToken: "refresh-live",
+	}); err != nil {
+		t.Fatalf("save auth file: %v", err)
+	}
+	source := NewCodexOAuthTokenSourceWithWorkspaceIDs(path, nil, []string{"workspace-allowed", "workspace-other"})
+	_, err := source.AccessToken(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "workspace-allowed") {
+		t.Fatalf("expected workspace mismatch, got %v", err)
+	}
+}
+
 func TestPollCodexOAuthDeviceCodeHandlesTwoHundredError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")
@@ -1326,5 +1388,10 @@ func TestExchangeCodexOAuthAuthorizationCodeRetriesRequestTimeout(t *testing.T) 
 
 func testCodexOAuthJWT(expiresAt time.Time) string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d}`, expiresAt.Unix())))
+	return "header." + payload + ".signature"
+}
+
+func testCodexOAuthWorkspaceJWT(expiresAt time.Time, workspaceID string) string {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"exp":%d,"https://api.openai.com/auth":{"chatgpt_account_id":%q}}`, expiresAt.Unix(), workspaceID)))
 	return "header." + payload + ".signature"
 }

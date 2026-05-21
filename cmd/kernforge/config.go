@@ -93,55 +93,119 @@ type ProjectTrustConfig struct {
 	TrustLevel string `json:"trust_level,omitempty"`
 }
 
+type ForcedChatGPTWorkspaceIDs []string
+
+func (ids *ForcedChatGPTWorkspaceIDs) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		*ids = nil
+		return nil
+	}
+	var single string
+	if err := json.Unmarshal(trimmed, &single); err == nil {
+		if strings.Contains(single, ",") {
+			return fmt.Errorf("forced_chatgpt_workspace_id must be a single workspace ID string or a JSON array of strings; comma-separated strings are not supported")
+		}
+		*ids = normalizeForcedChatGPTWorkspaceIDs([]string{single})
+		return nil
+	}
+	var multiple []string
+	if err := json.Unmarshal(trimmed, &multiple); err != nil {
+		return fmt.Errorf("forced_chatgpt_workspace_id must be a string or an array of strings")
+	}
+	*ids = normalizeForcedChatGPTWorkspaceIDs(multiple)
+	return nil
+}
+
+func (ids ForcedChatGPTWorkspaceIDs) MarshalJSON() ([]byte, error) {
+	normalized := normalizeForcedChatGPTWorkspaceIDs(ids)
+	if len(normalized) == 1 {
+		return json.Marshal(normalized[0])
+	}
+	return json.Marshal(normalized)
+}
+
+func normalizeForcedChatGPTWorkspaceIDs(ids []string) ForcedChatGPTWorkspaceIDs {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return ForcedChatGPTWorkspaceIDs(out)
+}
+
+func forcedChatGPTWorkspaceIDsDisplay(ids []string) string {
+	normalized := normalizeForcedChatGPTWorkspaceIDs(ids)
+	if len(normalized) == 0 {
+		return ""
+	}
+	return strings.Join(normalized, ", ")
+}
+
 type Config struct {
-	Provider               string                        `json:"provider"`
-	Model                  string                        `json:"model"`
-	BaseURL                string                        `json:"base_url"`
-	APIKey                 string                        `json:"api_key"`
-	ProviderKeys           map[string]string             `json:"provider_keys,omitempty"`
-	CodexCLIPath           string                        `json:"codex_cli_path,omitempty"`
-	CodexCLIArgs           []string                      `json:"codex_cli_args,omitempty"`
-	ClaudeCLIPath          string                        `json:"claude_cli_path,omitempty"`
-	ClaudeCLIArgs          []string                      `json:"claude_cli_args,omitempty"`
-	Temperature            float64                       `json:"temperature"`
-	ReasoningEffort        string                        `json:"reasoning_effort,omitempty"`
-	MaxTokens              int                           `json:"max_tokens"`
-	MaxToolIterations      int                           `json:"max_tool_iterations"`
-	MaxRequestRetries      int                           `json:"max_request_retries,omitempty"`
-	RequestRetryDelayMs    int                           `json:"request_retry_delay_ms,omitempty"`
-	RequestTimeoutSecs     int                           `json:"request_timeout_seconds,omitempty"`
-	ProgressDisplay        string                        `json:"progress_display,omitempty"`
-	ModelRoutes            ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
-	ShellTimeoutSecs       int                           `json:"shell_timeout_seconds,omitempty"`
-	ReadHintSpans          int                           `json:"read_hint_spans,omitempty"`
-	ReadCacheEntries       int                           `json:"read_cache_entries,omitempty"`
-	MSBuildPath            string                        `json:"msbuild_path,omitempty"`
-	CMakePath              string                        `json:"cmake_path,omitempty"`
-	CTestPath              string                        `json:"ctest_path,omitempty"`
-	NinjaPath              string                        `json:"ninja_path,omitempty"`
-	Command                string                        `json:"command,omitempty"`
-	PermissionMode         string                        `json:"permission_mode"`
-	Shell                  string                        `json:"shell"`
-	SessionDir             string                        `json:"session_dir"`
-	AutoCompactChars       int                           `json:"auto_compact_chars"`
-	AutoCheckpointEdits    *bool                         `json:"auto_checkpoint_edits,omitempty"`
-	AutoVerify             *bool                         `json:"auto_verify,omitempty"`
-	AutoLocale             *bool                         `json:"auto_locale,omitempty"`
-	FuzzFuncOutputLanguage string                        `json:"fuzz_func_output_language,omitempty"`
-	HooksEnabled           *bool                         `json:"hooks_enabled,omitempty"`
-	HookPresets            []string                      `json:"hook_presets,omitempty"`
-	HooksFailClosed        *bool                         `json:"hooks_fail_closed,omitempty"`
-	MemoryFiles            []string                      `json:"memory_files"`
-	SkillPaths             []string                      `json:"skill_paths,omitempty"`
-	EnabledSkills          []string                      `json:"enabled_skills,omitempty"`
-	MCPServers             []MCPServerConfig             `json:"mcp_servers,omitempty"`
-	Profiles               []Profile                     `json:"profiles,omitempty"`
-	ActiveProfileKey       string                        `json:"active_profile_key,omitempty"`
-	Projects               map[string]ProjectTrustConfig `json:"projects,omitempty"`
-	ProjectAnalysis        ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
-	Review                 ReviewHarnessConfig           `json:"review,omitempty"`
-	Specialists            SpecialistSubagentsConfig     `json:"specialists,omitempty"`
-	WorktreeIsolation      WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
+	Provider                 string                        `json:"provider"`
+	Model                    string                        `json:"model"`
+	BaseURL                  string                        `json:"base_url"`
+	APIKey                   string                        `json:"api_key"`
+	ProviderKeys             map[string]string             `json:"provider_keys,omitempty"`
+	CodexCLIPath             string                        `json:"codex_cli_path,omitempty"`
+	CodexCLIArgs             []string                      `json:"codex_cli_args,omitempty"`
+	ClaudeCLIPath            string                        `json:"claude_cli_path,omitempty"`
+	ClaudeCLIArgs            []string                      `json:"claude_cli_args,omitempty"`
+	ForcedChatGPTWorkspaceID ForcedChatGPTWorkspaceIDs     `json:"forced_chatgpt_workspace_id,omitempty"`
+	Temperature              float64                       `json:"temperature"`
+	ReasoningEffort          string                        `json:"reasoning_effort,omitempty"`
+	MaxTokens                int                           `json:"max_tokens"`
+	MaxToolIterations        int                           `json:"max_tool_iterations"`
+	MaxRequestRetries        int                           `json:"max_request_retries,omitempty"`
+	RequestRetryDelayMs      int                           `json:"request_retry_delay_ms,omitempty"`
+	RequestTimeoutSecs       int                           `json:"request_timeout_seconds,omitempty"`
+	ProgressDisplay          string                        `json:"progress_display,omitempty"`
+	ModelRoutes              ModelRouteSchedulerConfig     `json:"model_routes,omitempty"`
+	ShellTimeoutSecs         int                           `json:"shell_timeout_seconds,omitempty"`
+	ReadHintSpans            int                           `json:"read_hint_spans,omitempty"`
+	ReadCacheEntries         int                           `json:"read_cache_entries,omitempty"`
+	MSBuildPath              string                        `json:"msbuild_path,omitempty"`
+	CMakePath                string                        `json:"cmake_path,omitempty"`
+	CTestPath                string                        `json:"ctest_path,omitempty"`
+	NinjaPath                string                        `json:"ninja_path,omitempty"`
+	Command                  string                        `json:"command,omitempty"`
+	PermissionMode           string                        `json:"permission_mode"`
+	Shell                    string                        `json:"shell"`
+	SessionDir               string                        `json:"session_dir"`
+	AutoCompactChars         int                           `json:"auto_compact_chars"`
+	AutoCheckpointEdits      *bool                         `json:"auto_checkpoint_edits,omitempty"`
+	AutoVerify               *bool                         `json:"auto_verify,omitempty"`
+	AutoLocale               *bool                         `json:"auto_locale,omitempty"`
+	FuzzFuncOutputLanguage   string                        `json:"fuzz_func_output_language,omitempty"`
+	HooksEnabled             *bool                         `json:"hooks_enabled,omitempty"`
+	HookPresets              []string                      `json:"hook_presets,omitempty"`
+	HooksFailClosed          *bool                         `json:"hooks_fail_closed,omitempty"`
+	MemoryFiles              []string                      `json:"memory_files"`
+	SkillPaths               []string                      `json:"skill_paths,omitempty"`
+	EnabledSkills            []string                      `json:"enabled_skills,omitempty"`
+	MCPServers               []MCPServerConfig             `json:"mcp_servers,omitempty"`
+	Profiles                 []Profile                     `json:"profiles,omitempty"`
+	ActiveProfileKey         string                        `json:"active_profile_key,omitempty"`
+	Projects                 map[string]ProjectTrustConfig `json:"projects,omitempty"`
+	ProjectAnalysis          ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
+	Review                   ReviewHarnessConfig           `json:"review,omitempty"`
+	Specialists              SpecialistSubagentsConfig     `json:"specialists,omitempty"`
+	WorktreeIsolation        WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
 }
 
 type Profile struct {
@@ -799,6 +863,9 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.ClaudeCLIArgs) > 0 {
 		dst.ClaudeCLIArgs = append([]string(nil), src.ClaudeCLIArgs...)
 	}
+	if len(src.ForcedChatGPTWorkspaceID) > 0 {
+		dst.ForcedChatGPTWorkspaceID = normalizeForcedChatGPTWorkspaceIDs(src.ForcedChatGPTWorkspaceID)
+	}
 	if src.Temperature != 0 {
 		dst.Temperature = src.Temperature
 	}
@@ -1021,6 +1088,9 @@ func applyEnv(cfg *Config) {
 	if rawArgs := strings.TrimSpace(os.Getenv("KERNFORGE_CLAUDE_CLI_ARGS")); rawArgs != "" {
 		cfg.ClaudeCLIArgs = splitAnalysisCommandLine(rawArgs)
 	}
+	if rawWorkspaceIDs := strings.TrimSpace(os.Getenv("KERNFORGE_FORCED_CHATGPT_WORKSPACE_ID")); rawWorkspaceIDs != "" {
+		cfg.ForcedChatGPTWorkspaceID = normalizeForcedChatGPTWorkspaceIDs(strings.Split(rawWorkspaceIDs, ","))
+	}
 	envString("KERNFORGE_PERMISSION_MODE", &cfg.PermissionMode)
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
@@ -1110,6 +1180,7 @@ func applyEnv(cfg *Config) {
 func normalizeConfigPaths(cfg *Config) {
 	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	cfg.ProgressDisplay = normalizeProgressDisplay(cfg.ProgressDisplay)
+	cfg.ForcedChatGPTWorkspaceID = normalizeForcedChatGPTWorkspaceIDs(cfg.ForcedChatGPTWorkspaceID)
 	if cfg.SessionDir != "" {
 		cfg.SessionDir = expandHome(cfg.SessionDir)
 	}

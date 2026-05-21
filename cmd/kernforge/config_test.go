@@ -62,6 +62,29 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 	}
 }
 
+func TestConfigParsesForcedChatGPTWorkspaceIDs(t *testing.T) {
+	var single Config
+	if err := json.Unmarshal([]byte(`{"forced_chatgpt_workspace_id":"workspace-1"}`), &single); err != nil {
+		t.Fatalf("parse single forced workspace: %v", err)
+	}
+	if got := []string(single.ForcedChatGPTWorkspaceID); len(got) != 1 || got[0] != "workspace-1" {
+		t.Fatalf("unexpected single workspace ids: %#v", got)
+	}
+
+	var multiple Config
+	if err := json.Unmarshal([]byte(`{"forced_chatgpt_workspace_id":["workspace-1"," workspace-2 ","workspace-1"]}`), &multiple); err != nil {
+		t.Fatalf("parse multiple forced workspaces: %v", err)
+	}
+	if got := []string(multiple.ForcedChatGPTWorkspaceID); len(got) != 2 || got[0] != "workspace-1" || got[1] != "workspace-2" {
+		t.Fatalf("unexpected multiple workspace ids: %#v", got)
+	}
+
+	var invalid Config
+	if err := json.Unmarshal([]byte(`{"forced_chatgpt_workspace_id":"workspace-1,workspace-2"}`), &invalid); err == nil {
+		t.Fatalf("expected comma-separated forced workspace string to fail")
+	}
+}
+
 func TestInitWorkspaceConfigTemplateOmitsMCPServersEvenWhenDeployedWebResearchExists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -3028,6 +3028,9 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 	path := codexOAuthAuthFilePath()
 	fmt.Fprintln(rt.writer, rt.ui.section("OpenAI Codex OAuth"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", path))
+	if workspaceGuard := forcedChatGPTWorkspaceIDsDisplay(rt.cfg.ForcedChatGPTWorkspaceID); workspaceGuard != "" {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("forced_chatgpt_workspace_id", workspaceGuard))
+	}
 	if strings.TrimSpace(os.Getenv(openAICodexAuthFileEnv)) != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file_source", openAICodexAuthFileEnv))
 	} else {
@@ -3035,6 +3038,11 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 	}
 	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("access_token", "set via "+openAICodexAccessTokenEnv))
+		if err := validateCodexOAuthTokenWorkspaceID(token, rt.cfg.ForcedChatGPTWorkspaceID); err != nil {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "workspace mismatch"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("error", err.Error()))
+			return nil
+		}
 		if expiresAt, ok := jwtExpiresAt(token); ok {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("access_token_expires_at", expiresAt.Format(time.RFC3339)))
 		}
@@ -3043,7 +3051,7 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "not configured"))
-		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsableForWorkspaces(cliPath, rt.cfg.ForcedChatGPTWorkspaceID) {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("codex_cli_auth", "available at "+cliPath))
 			fmt.Fprintln(rt.writer, rt.ui.hintLine("Selecting openai-codex can import the existing Codex CLI login, or run /codex-auth login to create a new Kernforge-owned OAuth file."))
 		} else {
@@ -3054,6 +3062,11 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 	_, auth, err := readCodexOAuthAuthFile(path)
 	if err != nil {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "invalid"))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("error", err.Error()))
+		return nil
+	}
+	if err := validateCodexOAuthWorkspace(auth.Tokens, rt.cfg.ForcedChatGPTWorkspaceID); err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("status", "workspace mismatch"))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("error", err.Error()))
 		return nil
 	}
@@ -3077,7 +3090,7 @@ func (rt *runtimeState) showOpenAICodexAuthStatus() error {
 func (rt *runtimeState) loginOpenAICodexOAuth() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	if _, err := runCodexOAuthDeviceLogin(ctx, rt.writer, codexOAuthAuthFilePath(), nil); err != nil {
+	if _, err := runCodexOAuthDeviceLoginWithWorkspaces(ctx, rt.writer, codexOAuthAuthFilePath(), nil, rt.cfg.ForcedChatGPTWorkspaceID); err != nil {
 		return err
 	}
 	return nil
@@ -3096,20 +3109,26 @@ func (rt *runtimeState) logoutOpenAICodexOAuth() error {
 }
 
 func (rt *runtimeState) ensureOpenAICodexAuthInteractive() error {
-	if strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" || codexOAuthAuthFileUsable("") {
+	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
+		if err := validateCodexOAuthTokenWorkspaceID(token, rt.cfg.ForcedChatGPTWorkspaceID); err != nil {
+			return err
+		}
+		return nil
+	}
+	if codexOAuthAuthFileUsableForWorkspaces("", rt.cfg.ForcedChatGPTWorkspaceID) {
 		return nil
 	}
 	if !rt.interactive {
 		return fmt.Errorf("OpenAI Codex OAuth is not configured; run /codex-auth login")
 	}
-	if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+	if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsableForWorkspaces(cliPath, rt.cfg.ForcedChatGPTWorkspaceID) {
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Existing Codex CLI OAuth login detected."))
 		ok, err := rt.confirm("Use existing Codex CLI OAuth login for Kernforge?")
 		if err != nil {
 			return err
 		}
 		if ok {
-			if err := importCodexCLIOAuthAuthFile(codexOAuthAuthFilePath()); err != nil {
+			if err := importCodexCLIOAuthAuthFileWithWorkspaces(codexOAuthAuthFilePath(), rt.cfg.ForcedChatGPTWorkspaceID); err != nil {
 				return err
 			}
 			fmt.Fprintln(rt.writer, rt.ui.successLine("OpenAI Codex OAuth imported from Codex CLI login."))
@@ -3128,15 +3147,25 @@ func (rt *runtimeState) ensureOpenAICodexAuthInteractive() error {
 }
 
 func openAICodexAuthStatusSummary() string {
-	if strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" {
+	return openAICodexAuthStatusSummaryForWorkspaces(nil)
+}
+
+func openAICodexAuthStatusSummaryForWorkspaces(allowedWorkspaceIDs []string) string {
+	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
+		if err := validateCodexOAuthTokenWorkspaceID(token, allowedWorkspaceIDs); err != nil {
+			return "workspace mismatch"
+		}
 		return "access token env override"
 	}
 	_, auth, err := readCodexOAuthAuthFile(codexOAuthAuthFilePath())
 	if err != nil {
-		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsable(cliPath) {
+		if cliPath := codexCLIOAuthAuthFilePath(); codexOAuthAuthFileUsableForWorkspaces(cliPath, allowedWorkspaceIDs) {
 			return "Codex CLI login available"
 		}
 		return "not configured"
+	}
+	if err := validateCodexOAuthWorkspace(auth.Tokens, allowedWorkspaceIDs); err != nil {
+		return "workspace mismatch"
 	}
 	if tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) {
 		return "ready"
@@ -4769,7 +4798,10 @@ func (rt *runtimeState) showProviderStatus() error {
 	} else if strings.EqualFold(provider, "openai-codex") {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth", "ChatGPT OAuth direct Codex Responses"))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_file", codexOAuthAuthFilePath()))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_status", openAICodexAuthStatusSummary()))
+		if workspaceGuard := forcedChatGPTWorkspaceIDsDisplay(rt.cfg.ForcedChatGPTWorkspaceID); workspaceGuard != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("forced_chatgpt_workspace_id", workspaceGuard))
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("auth_status", openAICodexAuthStatusSummaryForWorkspaces(rt.cfg.ForcedChatGPTWorkspaceID)))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("api_key", providerAPIKeyState(apiKey)))
 	}
@@ -5617,7 +5649,11 @@ func (rt *runtimeState) openAICodexModelChoices(currentModel string) []codexCLIM
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	liveModels, err := FetchOpenAICodexModels(ctx, baseURL, nil, nil)
+	var tokenSource codexOAuthAccessTokenSource
+	if rt != nil {
+		tokenSource = NewCodexOAuthTokenSourceWithWorkspaceIDs("", nil, rt.cfg.ForcedChatGPTWorkspaceID)
+	}
+	liveModels, err := FetchOpenAICodexModels(ctx, baseURL, tokenSource, nil)
 	choices := make([]codexCLIModelOption, 0, len(liveModels))
 	seen := map[string]bool{}
 	if err == nil {

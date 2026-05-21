@@ -47,10 +47,11 @@ type codexOAuthAccessTokenSource interface {
 var codexOAuthRefreshMu sync.Mutex
 
 type OpenAICodexClient struct {
-	baseURL         string
-	reasoningEffort string
-	httpClient      *http.Client
-	tokenSource     codexOAuthAccessTokenSource
+	baseURL             string
+	reasoningEffort     string
+	httpClient          *http.Client
+	tokenSource         codexOAuthAccessTokenSource
+	allowedWorkspaceIDs []string
 }
 
 func NewOpenAICodexClient(baseURL string) *OpenAICodexClient {
@@ -58,12 +59,18 @@ func NewOpenAICodexClient(baseURL string) *OpenAICodexClient {
 }
 
 func NewOpenAICodexClientWithReasoningEffort(baseURL string, reasoningEffort string) *OpenAICodexClient {
+	return NewOpenAICodexClientWithReasoningEffortAndWorkspaceIDs(baseURL, reasoningEffort, nil)
+}
+
+func NewOpenAICodexClientWithReasoningEffortAndWorkspaceIDs(baseURL string, reasoningEffort string, allowedWorkspaceIDs []string) *OpenAICodexClient {
 	httpClient := &http.Client{}
+	normalizedWorkspaces := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
 	return &OpenAICodexClient{
-		baseURL:         normalizeOpenAICodexBaseURL(baseURL),
-		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
-		httpClient:      httpClient,
-		tokenSource:     NewCodexOAuthTokenSource("", httpClient),
+		baseURL:             normalizeOpenAICodexBaseURL(baseURL),
+		reasoningEffort:     normalizeReasoningEffort(reasoningEffort),
+		httpClient:          httpClient,
+		tokenSource:         NewCodexOAuthTokenSourceWithWorkspaceIDs("", httpClient, normalizedWorkspaces),
+		allowedWorkspaceIDs: append([]string(nil), normalizedWorkspaces...),
 	}
 }
 
@@ -91,7 +98,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 	tokenSource := c.tokenSource
 	if tokenSource == nil {
-		tokenSource = NewCodexOAuthTokenSource("", c.httpClient)
+		tokenSource = NewCodexOAuthTokenSourceWithWorkspaceIDs("", c.httpClient, c.allowedWorkspaceIDs)
 	}
 	accessToken, err := tokenSource.AccessToken(ctx)
 	if err != nil {
@@ -810,22 +817,32 @@ func deduplicateOpenAICodexTexts(items []string) []string {
 }
 
 type CodexOAuthTokenSource struct {
-	authPath   string
-	httpClient *http.Client
+	authPath            string
+	httpClient          *http.Client
+	allowedWorkspaceIDs []string
 }
 
 func NewCodexOAuthTokenSource(authPath string, httpClient *http.Client) *CodexOAuthTokenSource {
+	return NewCodexOAuthTokenSourceWithWorkspaceIDs(authPath, httpClient, nil)
+}
+
+func NewCodexOAuthTokenSourceWithWorkspaceIDs(authPath string, httpClient *http.Client, allowedWorkspaceIDs []string) *CodexOAuthTokenSource {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
+	normalizedWorkspaces := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
 	return &CodexOAuthTokenSource{
-		authPath:   strings.TrimSpace(authPath),
-		httpClient: httpClient,
+		authPath:            strings.TrimSpace(authPath),
+		httpClient:          httpClient,
+		allowedWorkspaceIDs: append([]string(nil), normalizedWorkspaces...),
 	}
 }
 
 func (s *CodexOAuthTokenSource) AccessToken(ctx context.Context) (string, error) {
 	if token := strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)); token != "" {
+		if err := validateCodexOAuthTokenWorkspaceID(token, s.allowedWorkspaceIDs); err != nil {
+			return "", err
+		}
 		return token, nil
 	}
 	authPath := s.authPath
@@ -837,6 +854,9 @@ func (s *CodexOAuthTokenSource) AccessToken(ctx context.Context) (string, error)
 		return "", err
 	}
 	if tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) {
+		if err := validateCodexOAuthWorkspace(auth.Tokens, s.allowedWorkspaceIDs); err != nil {
+			return "", err
+		}
 		return auth.Tokens.AccessToken, nil
 	}
 
@@ -848,6 +868,9 @@ func (s *CodexOAuthTokenSource) AccessToken(ctx context.Context) (string, error)
 		return "", err
 	}
 	if tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) {
+		if err := validateCodexOAuthWorkspace(auth.Tokens, s.allowedWorkspaceIDs); err != nil {
+			return "", err
+		}
 		return auth.Tokens.AccessToken, nil
 	}
 	if strings.TrimSpace(auth.Tokens.RefreshToken) == "" {
@@ -859,6 +882,9 @@ func (s *CodexOAuthTokenSource) AccessToken(ctx context.Context) (string, error)
 	}
 	if strings.TrimSpace(refreshed.AccessToken) == "" {
 		return "", fmt.Errorf("OpenAI Codex OAuth refresh returned no access token")
+	}
+	if err := validateCodexOAuthWorkspace(refreshed, s.allowedWorkspaceIDs); err != nil {
+		return "", err
 	}
 	if err := updateCodexOAuthAuthFile(authPath, data, refreshed); err != nil {
 		return "", err
@@ -977,6 +1003,10 @@ func parseCodexOAuthAuthFile(data []byte) (codexOAuthAuthFile, error) {
 }
 
 func runCodexOAuthDeviceLogin(ctx context.Context, writer io.Writer, authPath string, httpClient *http.Client) (codexOAuthTokens, error) {
+	return runCodexOAuthDeviceLoginWithWorkspaces(ctx, writer, authPath, httpClient, nil)
+}
+
+func runCodexOAuthDeviceLoginWithWorkspaces(ctx context.Context, writer io.Writer, authPath string, httpClient *http.Client, allowedWorkspaceIDs []string) (codexOAuthTokens, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
@@ -1016,6 +1046,9 @@ func runCodexOAuthDeviceLogin(ctx context.Context, writer io.Writer, authPath st
 	if strings.TrimSpace(tokens.AccessToken) == "" {
 		return codexOAuthTokens{}, fmt.Errorf("OpenAI Codex OAuth login returned no access token")
 	}
+	if err := validateCodexOAuthWorkspace(tokens, allowedWorkspaceIDs); err != nil {
+		return codexOAuthTokens{}, err
+	}
 	if err := saveCodexOAuthAuthFile(authPath, tokens); err != nil {
 		return codexOAuthTokens{}, err
 	}
@@ -1026,12 +1059,19 @@ func runCodexOAuthDeviceLogin(ctx context.Context, writer io.Writer, authPath st
 }
 
 func importCodexCLIOAuthAuthFile(destPath string) error {
+	return importCodexCLIOAuthAuthFileWithWorkspaces(destPath, nil)
+}
+
+func importCodexCLIOAuthAuthFileWithWorkspaces(destPath string, allowedWorkspaceIDs []string) error {
 	sourcePath := codexCLIOAuthAuthFilePath()
 	if strings.TrimSpace(sourcePath) == "" {
 		return fmt.Errorf("Codex CLI OAuth auth file path is unavailable")
 	}
 	_, auth, err := readCodexOAuthAuthFile(sourcePath)
 	if err != nil {
+		return err
+	}
+	if err := validateCodexOAuthWorkspace(auth.Tokens, allowedWorkspaceIDs); err != nil {
 		return err
 	}
 	return saveCodexOAuthAuthFile(destPath, auth.Tokens)
@@ -1442,12 +1482,19 @@ func codexCLIOAuthAuthFilePath() string {
 }
 
 func codexOAuthAuthFileUsable(path string) bool {
+	return codexOAuthAuthFileUsableForWorkspaces(path, nil)
+}
+
+func codexOAuthAuthFileUsableForWorkspaces(path string, allowedWorkspaceIDs []string) bool {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		path = codexOAuthAuthFilePath()
 	}
 	_, auth, err := readCodexOAuthAuthFile(path)
 	if err != nil {
+		return false
+	}
+	if err := validateCodexOAuthWorkspace(auth.Tokens, allowedWorkspaceIDs); err != nil {
 		return false
 	}
 	return tokenUsable(auth.Tokens.AccessToken, openAICodexTokenRefreshSkew) || strings.TrimSpace(auth.Tokens.RefreshToken) != ""
@@ -1525,6 +1572,65 @@ func codexOAuthIntField(raw map[string]any, keys ...string) int {
 		}
 	}
 	return 0
+}
+
+func validateCodexOAuthWorkspace(tokens codexOAuthTokens, allowedWorkspaceIDs []string) error {
+	allowed := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
+	if len(allowed) == 0 {
+		return nil
+	}
+	actual := firstNonEmptyTrimmed(
+		tokens.AccountID,
+		codexOAuthJWTChatGPTAccountID(tokens.IDToken),
+		codexOAuthJWTChatGPTAccountID(tokens.AccessToken),
+	)
+	if actual == "" {
+		return fmt.Errorf("OpenAI Codex OAuth login is restricted to workspace id(s) %s, but the token did not include a chatgpt_account_id claim", forcedChatGPTWorkspaceIDsDisplay(allowed))
+	}
+	for _, workspaceID := range allowed {
+		if actual == workspaceID {
+			return nil
+		}
+	}
+	return fmt.Errorf("OpenAI Codex OAuth login is restricted to workspace id(s) %s, but token workspace is %q", forcedChatGPTWorkspaceIDsDisplay(allowed), actual)
+}
+
+func validateCodexOAuthTokenWorkspaceID(token string, allowedWorkspaceIDs []string) error {
+	allowed := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
+	if len(allowed) == 0 {
+		return nil
+	}
+	actual := codexOAuthJWTChatGPTAccountID(token)
+	if actual == "" {
+		return fmt.Errorf("OpenAI Codex OAuth access token is restricted to workspace id(s) %s, but the token did not include a chatgpt_account_id claim", forcedChatGPTWorkspaceIDsDisplay(allowed))
+	}
+	for _, workspaceID := range allowed {
+		if actual == workspaceID {
+			return nil
+		}
+	}
+	return fmt.Errorf("OpenAI Codex OAuth access token is restricted to workspace id(s) %s, but token workspace is %q", forcedChatGPTWorkspaceIDsDisplay(allowed), actual)
+}
+
+func codexOAuthJWTChatGPTAccountID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return ""
+	}
+	if auth, ok := raw["https://api.openai.com/auth"].(map[string]any); ok {
+		if accountID := strings.TrimSpace(codexOAuthStringField(auth, "chatgpt_account_id", "account_id", "organization_id")); accountID != "" {
+			return accountID
+		}
+	}
+	return strings.TrimSpace(codexOAuthStringField(raw, "chatgpt_account_id", "account_id", "organization_id"))
 }
 
 func valueOrFallback(value string, fallback string) string {
