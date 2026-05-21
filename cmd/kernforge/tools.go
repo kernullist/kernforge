@@ -4310,7 +4310,7 @@ func (t GitAddTool) Execute(ctx context.Context, input any) (string, error) {
 	if _, err := runGitCommand(ctx, t.ws.Root, cmdArgs...); err != nil {
 		return "", err
 	}
-	status, err := runGitCommand(ctx, t.ws.Root, "status", "--short")
+	status, err := runGitHelperCommand(ctx, t.ws.Root, "status", "--short")
 	if err != nil {
 		return "", err
 	}
@@ -4387,11 +4387,11 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 	if err != nil {
 		return out, err
 	}
-	shortSHA, err := runGitCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
+	shortSHA, err := runGitHelperCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return out, err
 	}
-	subject, err := runGitCommand(ctx, t.ws.Root, "log", "-1", "--pretty=%s")
+	subject, err := runGitHelperCommand(ctx, t.ws.Root, "log", "-1", "--pretty=%s")
 	if err != nil {
 		return out, err
 	}
@@ -4413,8 +4413,8 @@ func (t GitCommitTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	commitSubject := strings.TrimSpace(firstLine(message))
 	branch := ""
 	if err == nil {
-		commitSHA, _ = runGitCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
-		if subject, subjectErr := runGitCommand(ctx, t.ws.Root, "log", "-1", "--pretty=%s"); subjectErr == nil {
+		commitSHA, _ = runGitHelperCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
+		if subject, subjectErr := runGitHelperCommand(ctx, t.ws.Root, "log", "-1", "--pretty=%s"); subjectErr == nil {
 			commitSubject = subject
 		}
 		branch, _ = gitCurrentBranch(ctx, t.ws.Root)
@@ -4826,7 +4826,11 @@ func runCommand(ctx context.Context, dir string, name string, args ...string) (s
 }
 
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
-	return runGitHelperCommand(ctx, dir, args...)
+	out, err := runCommand(ctx, dir, "git", args...)
+	if err != nil {
+		return out, fmt.Errorf("git command failed: %w", err)
+	}
+	return out, nil
 }
 
 func runGitHelperCommand(ctx context.Context, dir string, args ...string) (string, error) {

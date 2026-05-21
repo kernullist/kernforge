@@ -119,7 +119,7 @@ func sanitizeBranchPrefix(prefix string) string {
 }
 
 func gitRepositoryRoot(ctx context.Context, dir string) (string, error) {
-	out, err := runGitCommand(ctx, dir, "rev-parse", "--show-toplevel")
+	out, err := runGitHelperCommand(ctx, dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", err
 	}

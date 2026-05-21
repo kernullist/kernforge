@@ -76,7 +76,7 @@ func TestGitStatusToolDisablesConfiguredHooksPath(t *testing.T) {
 	}
 }
 
-func TestRunGitCommandDisablesConfiguredHooksPath(t *testing.T) {
+func TestRunGitHelperCommandDisablesConfiguredHooksPath(t *testing.T) {
 	binDir := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir bin dir: %v", err)
@@ -88,9 +88,9 @@ func TestRunGitCommandDisablesConfiguredHooksPath(t *testing.T) {
 	t.Setenv("GIT_ENV_FILE", envPath)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	out, err := runGitCommand(context.Background(), t.TempDir(), "status", "--short")
+	out, err := runGitHelperCommand(context.Background(), t.TempDir(), "status", "--short")
 	if err != nil {
-		t.Fatalf("runGitCommand: %v\n%s", err, out)
+		t.Fatalf("runGitHelperCommand: %v\n%s", err, out)
 	}
 
 	argsBytes, err := os.ReadFile(argsPath)
@@ -115,6 +115,50 @@ func TestRunGitCommandDisablesConfiguredHooksPath(t *testing.T) {
 	}
 	if strings.TrimSpace(string(envBytes)) != "0" {
 		t.Fatalf("expected GIT_OPTIONAL_LOCKS=0, got %q", string(envBytes))
+	}
+}
+
+func TestRunGitCommandDoesNotInjectHelperIsolation(t *testing.T) {
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin dir: %v", err)
+	}
+	argsPath := filepath.Join(t.TempDir(), "git_args.txt")
+	envPath := filepath.Join(t.TempDir(), "git_env.txt")
+	installFakeGit(t, binDir)
+	t.Setenv("GIT_ARGS_FILE", argsPath)
+	t.Setenv("GIT_ENV_FILE", envPath)
+	t.Setenv("GIT_OPTIONAL_LOCKS", "parent")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out, err := runGitCommand(context.Background(), t.TempDir(), "commit", "-m", "test")
+	if err != nil {
+		t.Fatalf("runGitCommand: %v\n%s", err, out)
+	}
+
+	argsBytes, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read git args: %v", err)
+	}
+	argsText := strings.TrimSpace(string(argsBytes))
+	for _, forbidden := range []string{
+		"core.hooksPath=",
+		"core.fsmonitor=false",
+	} {
+		if strings.Contains(argsText, forbidden) {
+			t.Fatalf("runGitCommand should preserve normal git behavior, got helper arg %q in %q", forbidden, argsText)
+		}
+	}
+	if !strings.Contains(argsText, "commit -m test") {
+		t.Fatalf("expected fake git args to contain commit command, got %q", argsText)
+	}
+
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read git env: %v", err)
+	}
+	if strings.TrimSpace(string(envBytes)) != "parent" {
+		t.Fatalf("expected normal git command to inherit GIT_OPTIONAL_LOCKS, got %q", string(envBytes))
 	}
 }
 
