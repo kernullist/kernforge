@@ -57,6 +57,63 @@ func TestBuildTestImpactReportRecommendsGoVerification(t *testing.T) {
 	}
 }
 
+func TestBuildTestImpactReportIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile go.mod: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "cmd/app/main.go를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-old",
+		Goal:   "cmd/app/main.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-old-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/app/main.go",
+				Operation: "update",
+			}},
+		}},
+	}}
+	session.LastVerification = &VerificationReport{
+		ChangedPaths: []string{"cmd/app/main.go"},
+		Steps: []VerificationStep{{
+			Label:   "go test",
+			Command: "go test ./cmd/app/...",
+			Status:  VerificationPassed,
+		}},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	report := agent.buildTestImpactReport()
+	if len(report.ChangedPaths) != 0 || len(report.CodeLikeChangedPaths) != 0 {
+		t.Fatalf("expected stale archived patch and verification paths to be ignored, got %#v", report)
+	}
+	if report.Confidence != "not_applicable" {
+		t.Fatalf("expected no current-turn test impact, got %#v", report)
+	}
+}
+
 func TestPreFinalHarnessStoresTestImpactReport(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/demo\n\ngo 1.22\n"), 0o644); err != nil {

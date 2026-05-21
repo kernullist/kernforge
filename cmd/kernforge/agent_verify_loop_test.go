@@ -997,6 +997,59 @@ func TestVerificationRepairScopeDoesNotTreatProjectBuildSiblingFailureAsPatchSco
 	}
 }
 
+func TestVerificationRepairScopeIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "old.go를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "old.go 수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "new.go를 수정해",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-old",
+		Goal:   "old.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-old-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "old.go",
+				Operation: "modify",
+			}},
+		}},
+	}}
+	agent := &Agent{Session: session}
+	report := VerificationReport{
+		ChangedPaths: []string{"new.go"},
+		Steps: []VerificationStep{{
+			Label:   "go test ./...",
+			Command: "go test ./...",
+			Scope:   "new.go",
+			Stage:   "targeted",
+			Status:  VerificationFailed,
+			Output:  "new.go: error: failing test",
+		}},
+	}
+
+	decision := agent.verificationFailureRepairScope(report)
+	if containsString(decision.ChangedPaths, "old.go") {
+		t.Fatalf("stale archived patch path should not be part of current repair scope: %#v", decision)
+	}
+	if !containsString(decision.ChangedPaths, "new.go") || !decision.ShouldRepair {
+		t.Fatalf("expected current verification path to drive repair scope, got %#v", decision)
+	}
+}
+
 func TestAgentDoesNotBroadenRepairForOutOfScopeVerificationFailure(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{

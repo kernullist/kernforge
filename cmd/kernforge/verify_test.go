@@ -332,8 +332,13 @@ func TestAutomaticVerificationSkipsGitFallbackForDocumentOnlyPatchTransaction(t 
 	}
 
 	sess := &Session{
+		Messages: []Message{{
+			Role: "user",
+			Text: "Tavern/BugReport.md를 작성해",
+		}},
 		PatchTransactions: []PatchTransaction{{
 			ID:     "patch-doc",
+			Goal:   "Tavern/BugReport.md를 작성해",
 			Status: patchTransactionStatusCommitted,
 			Entries: []PatchTransactionEntry{{
 				ToolName: "write_file",
@@ -348,6 +353,79 @@ func TestAutomaticVerificationSkipsGitFallbackForDocumentOnlyPatchTransaction(t 
 	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
 	if len(changed) != 0 {
 		t.Fatalf("document-only patch transaction should not fall back to unrelated dirty source paths, got %#v", changed)
+	}
+}
+
+func TestAutomaticVerificationIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not available")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config user.email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config user.name: %v", err)
+	}
+	driverPath := filepath.Join(root, "drivers", "KernelDriver.cpp")
+	if err := os.MkdirAll(filepath.Dir(driverPath), 0o755); err != nil {
+		t.Fatalf("mkdir driver: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_before;\n"), 0o644); err != nil {
+		t.Fatalf("write driver: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "drivers/KernelDriver.cpp"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	if err := os.WriteFile(driverPath, []byte("int driver_after;\n"), 0o644); err != nil {
+		t.Fatalf("dirty driver: %v", err)
+	}
+
+	sess := &Session{
+		Messages: []Message{
+			{
+				Role: "user",
+				Text: "Tavern/BugReport.md를 작성해",
+			},
+			{
+				Role:  "assistant",
+				Phase: messagePhaseFinalAnswer,
+				Text:  "보고서 작성 완료",
+			},
+			{
+				Role: "user",
+				Text: "drivers/KernelDriver.cpp를 수정해",
+			},
+		},
+		PatchTransactions: []PatchTransaction{{
+			ID:     "patch-doc-old",
+			Goal:   "Tavern/BugReport.md를 작성해",
+			Status: patchTransactionStatusCommitted,
+			Entries: []PatchTransactionEntry{{
+				ToolName: "write_file",
+				Status:   "success",
+				Paths: []PatchPathChange{{
+					Path:      "Tavern/BugReport.md",
+					Operation: "write_file",
+				}},
+			}},
+		}},
+	}
+
+	changed := collectAutomaticVerificationChangedPaths(DefaultConfig(root), root, sess)
+	if !containsString(changed, "drivers/KernelDriver.cpp") {
+		t.Fatalf("expected stale archived document patch to be ignored in favor of current dirty code, got %#v", changed)
+	}
+	if containsString(changed, "Tavern/BugReport.md") {
+		t.Fatalf("automatic verification should not include previous-turn document patch, got %#v", changed)
 	}
 }
 

@@ -20,6 +20,45 @@ func addArtifactQualitySourceEvidence(session *Session, path string) {
 	})
 }
 
+func TestArtifactQualityTargetsIgnoreArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "Tavern/BugReport.md를 작성해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "보고서 작성 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc-old",
+		Goal:   "Tavern/BugReport.md를 작성해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-old-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	targets := collectArtifactQualityTargets(session, "")
+	if len(targets) != 0 {
+		t.Fatalf("expected artifact quality to ignore previous-turn document patch, got %#v", targets)
+	}
+}
+
 func TestArtifactQualityBlocksPlaceholderReport(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {

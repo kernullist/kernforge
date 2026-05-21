@@ -420,7 +420,7 @@ func postChangeReviewShouldSkipGeneratedDocumentArtifact(request string, changed
 }
 
 func sessionChangesAreGeneratedDocumentArtifacts(session *Session, request string) bool {
-	return changedPathsAreGeneratedDocumentArtifacts(session, request, sessionPatchTransactionChangedPaths(session))
+	return changedPathsAreGeneratedDocumentArtifacts(session, request, currentTurnPatchTransactionChangedPaths(session))
 }
 
 func changedPathsAreGeneratedDocumentArtifacts(session *Session, request string, changedPaths []string) bool {
@@ -1124,7 +1124,7 @@ func reviewHarnessCanUseAnyModel(a *Agent) bool {
 }
 
 func autoReviewChangedPaths(session *Session, root string) []string {
-	paths := sessionPatchTransactionChangedPaths(session)
+	paths := currentTurnPatchTransactionChangedPaths(session)
 	if len(paths) > 0 {
 		return normalizeTaskStateList(paths, 128)
 	}

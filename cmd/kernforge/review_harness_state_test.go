@@ -48,6 +48,45 @@ func TestReviewRunWritesProtocolArtifacts(t *testing.T) {
 	}
 }
 
+func TestReviewApprovalLedgerChangedPathsIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "", "", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "cmd/app/main.go를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-old",
+		Goal:   "cmd/app/main.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-old-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/app/main.go",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	paths := reviewApprovalLedgerChangedPaths(session, ReviewRun{})
+	if len(paths) != 0 {
+		t.Fatalf("expected approval ledger to ignore previous-turn patch paths, got %#v", paths)
+	}
+}
+
 func TestSingleModelPreWriteRecordsRFObligationStatus(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.cpp")

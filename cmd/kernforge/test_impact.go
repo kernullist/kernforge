@@ -74,9 +74,9 @@ func collectTestImpactChangedPaths(sess *Session) []string {
 		return nil
 	}
 	paths := make([]string, 0)
-	paths = append(paths, sessionPatchTransactionChangedPaths(sess)...)
-	paths = append(paths, collectSessionChangedPaths(sess)...)
-	if sess.LastVerification != nil {
+	paths = append(paths, currentTurnPatchTransactionChangedPaths(sess)...)
+	paths = append(paths, collectRecentSessionChangedPaths(sess)...)
+	if len(paths) > 0 && sess.LastVerification != nil && changedPathsCovered(paths, sess.LastVerification.ChangedPaths) {
 		paths = append(paths, sess.LastVerification.ChangedPaths...)
 	}
 	return normalizeTaskStateList(paths, 64)

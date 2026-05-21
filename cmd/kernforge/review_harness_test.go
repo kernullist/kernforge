@@ -645,8 +645,13 @@ func TestAutoReviewChangedPathsPrefersPatchTransactionScope(t *testing.T) {
 		t.Fatalf("modify unrelated dirty source: %v", err)
 	}
 	session := NewSession(root, "", "", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "버그 검토 보고서를 작성해",
+	}}
 	session.PatchTransactions = []PatchTransaction{{
 		ID:     "patch-doc",
+		Goal:   "버그 검토 보고서를 작성해",
 		Status: patchTransactionStatusCommitted,
 		Entries: []PatchTransactionEntry{{
 			ToolName: "write_file",
@@ -661,6 +666,96 @@ func TestAutoReviewChangedPathsPrefersPatchTransactionScope(t *testing.T) {
 	paths := autoReviewChangedPaths(session, root)
 	if strings.Join(paths, ",") != "버그_검토_보고서.md" {
 		t.Fatalf("expected patch transaction scope to exclude unrelated dirty source, got %#v", paths)
+	}
+}
+
+func TestAutoReviewChangedPathsIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	runTestGit(t, root, "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	runTestGit(t, root, "add", "main.cpp")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("modify dirty source: %v", err)
+	}
+	session := NewSession(root, "", "", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "버그 검토 보고서를 작성해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "보고서 작성 완료",
+		},
+		{
+			Role: "user",
+			Text: "main.cpp를 수정해",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc-old",
+		Goal:   "버그 검토 보고서를 작성해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "버그_검토_보고서.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	paths := autoReviewChangedPaths(session, root)
+	if strings.Join(paths, ",") != "main.cpp" {
+		t.Fatalf("expected stale archived patch to be ignored in favor of current dirty source, got %#v", paths)
+	}
+}
+
+func TestCollectSessionReviewEvidenceIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "", "", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "cmd/app/main.go를 수정해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "수정 완료",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-old",
+		Goal:   "cmd/app/main.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-old-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/app/main.go",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	var evidence ReviewEvidencePack
+	collectSessionReviewEvidence(session, &evidence, false)
+	if len(evidence.ChangedPaths) != 0 {
+		t.Fatalf("expected review evidence to ignore previous-turn patch paths, got %#v", evidence.ChangedPaths)
+	}
+	if containsString(evidence.Sources, "patch_transaction") {
+		t.Fatalf("expected no stale patch transaction evidence source, got %#v", evidence.Sources)
 	}
 }
 

@@ -826,7 +826,7 @@ func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport) string {
 func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
 	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
 	if len(paths) == 0 && a != nil && a.Session != nil {
-		for _, path := range sessionPatchTransactionChangedPaths(a.Session) {
+		for _, path := range currentTurnPatchTransactionChangedPaths(a.Session) {
 			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
 				paths = append(paths, normalizeSessionRelativePath(path))
 			}
@@ -1633,11 +1633,16 @@ func currentTurnPatchTransaction(sess *Session) *PatchTransaction {
 func patchTransactionMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool {
 	goal := normalizedPatchTransactionGoal(tx.Goal)
 	if goal == "" {
-		return false
+		return patchTransactionWithoutGoalMatchesCurrentTurn(sess, tx)
 	}
 	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(sess.Messages)))
 	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
-		return normalizedPatchTransactionGoal(latestUser) == goal
+		if normalizedPatchTransactionGoal(latestUser) == goal {
+			return true
+		}
+		if patchTransactionLatestUserStartsDifferentTask(latestUser) {
+			return false
+		}
 	}
 	candidates := make([]string, 0, 2)
 	if sess.AcceptanceContract != nil {
@@ -1648,6 +1653,50 @@ func patchTransactionMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool
 	}
 	for _, candidate := range candidates {
 		if normalizedPatchTransactionGoal(candidate) == goal {
+			return true
+		}
+	}
+	return false
+}
+
+func patchTransactionLatestUserStartsDifferentTask(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	intent := classifyTurnIntent(lower)
+	return intent == TurnIntentEditCode ||
+		intent == TurnIntentRunCommand ||
+		requestLooksLikeFreshExecutionTask(lower)
+}
+
+func patchTransactionWithoutGoalMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool {
+	paths := normalizeTaskStateList(tx.ChangedPaths(), 64)
+	if len(paths) == 0 {
+		return false
+	}
+	candidates := make([]string, 0, 3)
+	appendCandidate := func(text string) {
+		text = strings.TrimSpace(baseUserQueryText(text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			return
+		}
+		candidates = append(candidates, text)
+	}
+	if sess != nil {
+		appendCandidate(latestExternalOrUserMessageText(sess.Messages))
+		if sess.AcceptanceContract != nil {
+			appendCandidate(sess.AcceptanceContract.SourcePrompt)
+		}
+		if sess.TaskState != nil {
+			appendCandidate(sess.TaskState.Goal)
+		}
+	}
+	for _, candidate := range uniqueStrings(candidates) {
+		if generatedDocumentArtifactRequestContextForTurn(sess, candidate) == "" {
+			continue
+		}
+		if changedPathsAreGeneratedDocumentArtifacts(sess, candidate, paths) {
 			return true
 		}
 	}

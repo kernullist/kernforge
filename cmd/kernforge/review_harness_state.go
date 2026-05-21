@@ -288,7 +288,7 @@ func reviewApprovalLedgerChangedPaths(session *Session, run ReviewRun) []string 
 	paths = append(paths, run.ChangeSet.ChangedPaths...)
 	paths = append(paths, run.Evidence.ChangedPaths...)
 	if len(paths) == 0 {
-		paths = append(paths, sessionPatchTransactionChangedPaths(session)...)
+		paths = append(paths, currentTurnPatchTransactionChangedPaths(session)...)
 	}
 	return normalizeTaskStateList(paths, 128)
 }

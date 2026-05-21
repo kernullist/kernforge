@@ -2490,7 +2490,7 @@ func codingHarnessReportHasArtifactQuality(report CodingHarnessReport) bool {
 func (a *Agent) generatedDocumentArtifactSeedFinalReply() string {
 	paths := make([]string, 0)
 	if a != nil && a.Session != nil {
-		for _, path := range sessionPatchTransactionChangedPaths(a.Session) {
+		for _, path := range currentTurnPatchTransactionChangedPaths(a.Session) {
 			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
 				paths = append(paths, normalizeSessionRelativePath(path))
 			}
@@ -2909,8 +2909,8 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if a == nil || a.Session == nil {
 		return false
 	}
-	if sessionChangesAreGeneratedDocumentArtifacts(a.Session, request) {
-		return true
+	if changedPaths := currentTurnPatchTransactionChangedPaths(a.Session); len(changedPaths) > 0 {
+		return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths)
 	}
 	requestText := strings.TrimSpace(baseUserQueryText(request))
 	requestIsInternalReviewFeedback := looksLikeInternalReviewFeedbackUserMessage(requestText)
@@ -2938,6 +2938,9 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if len(changedPaths) > 0 {
 		return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths)
 	}
+	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+		return false
+	}
 	return sessionHasDocumentArtifactQualityAcceptedHarness(a.Session)
 }
 
@@ -2961,7 +2964,7 @@ func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
 		}
 		artifactPaths[strings.ToLower(path)] = true
 	}
-	changedPaths := sessionPatchTransactionChangedPaths(session)
+	changedPaths := currentTurnPatchTransactionChangedPaths(session)
 	if len(changedPaths) == 0 {
 		return false
 	}
@@ -3024,7 +3027,7 @@ func sessionHasApprovedDocumentArtifactOnlyHarness(session *Session) bool {
 	if !report.Approved {
 		return false
 	}
-	changedPaths := sessionPatchTransactionChangedPaths(session)
+	changedPaths := currentTurnPatchTransactionChangedPaths(session)
 	if len(changedPaths) == 0 {
 		return false
 	}

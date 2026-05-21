@@ -72,7 +72,7 @@ func collectArtifactQualityTargets(sess *Session, reply string) []string {
 		targets = append(targets, sess.AcceptanceContract.RequiredArtifacts...)
 	}
 	targets = append(targets, extractClaimedArtifactPaths(reply)...)
-	for _, path := range sessionPatchTransactionChangedPaths(sess) {
+	for _, path := range currentTurnPatchTransactionChangedPaths(sess) {
 		if pathLooksLikeDocumentArtifact(path) {
 			targets = append(targets, path)
 		}

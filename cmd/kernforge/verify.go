@@ -1219,7 +1219,7 @@ func collectVerificationChangedPaths(root string, sess *Session) []string {
 }
 
 func collectAutomaticVerificationChangedPaths(cfg Config, root string, sess *Session) []string {
-	patchChanged := sessionPatchTransactionChangedPaths(sess)
+	patchChanged := currentTurnPatchTransactionChangedPaths(sess)
 	if len(patchChanged) > 0 {
 		return filterCodeLikePaths(patchChanged)
 	}

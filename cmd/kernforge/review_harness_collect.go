@@ -2021,7 +2021,7 @@ func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack
 	if session == nil || evidence == nil {
 		return
 	}
-	if changed := sessionPatchTransactionChangedPaths(session); len(changed) > 0 {
+	if changed := currentTurnPatchTransactionChangedPaths(session); len(changed) > 0 {
 		evidence.ChangedPaths = append(evidence.ChangedPaths, changed...)
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Patch transaction changed paths", strings.Join(changed, "\n"))
 		evidence.Sources = append(evidence.Sources, "patch_transaction")

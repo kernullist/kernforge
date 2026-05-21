@@ -50,7 +50,7 @@ func (a *Agent) verificationFailureRepairScope(report VerificationReport) verifi
 func verificationRepairChangedPaths(a *Agent, report VerificationReport) []string {
 	var paths []string
 	if a != nil && a.Session != nil {
-		paths = append(paths, sessionPatchTransactionChangedPaths(a.Session)...)
+		paths = append(paths, currentTurnPatchTransactionChangedPaths(a.Session)...)
 		paths = append(paths, collectRecentSessionChangedPaths(a.Session)...)
 	}
 	paths = append(paths, report.ChangedPaths...)
