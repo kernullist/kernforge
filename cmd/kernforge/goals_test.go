@@ -1392,6 +1392,7 @@ func TestGetGoalToolReturnsNullResponseWhenNoGoalExists(t *testing.T) {
 		BaseRoot:    root,
 		Root:        root,
 		GoalSession: session,
+		GoalStore:   NewSessionStore(filepath.Join(root, "sessions")),
 	}).Execute(context.Background(), map[string]any{})
 	if err != nil {
 		t.Fatalf("get_goal: %v", err)
@@ -1402,6 +1403,71 @@ func TestGetGoalToolReturnsNullResponseWhenNoGoalExists(t *testing.T) {
 	}
 	if response.Goal != nil || response.RemainingTokens != nil || response.CompletionBudgetReport != nil {
 		t.Fatalf("expected null goal response, got %#v", response)
+	}
+}
+
+func TestGoalToolsRejectTemporarySessionWithSavedSessionMessage(t *testing.T) {
+	root := t.TempDir()
+	ws := Workspace{
+		BaseRoot:    root,
+		Root:        root,
+		GoalSession: NewSession(root, "provider", "model", "", "default"),
+	}
+	ctx := context.Background()
+	check := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s expected temporary-session goal error", name)
+		}
+		if !strings.Contains(err.Error(), "Goals need a saved session. This session is temporary.") {
+			t.Fatalf("%s error missing saved-session message: %v", name, err)
+		}
+		if !errors.Is(err, errThreadGoalsRequirePersistedThread) {
+			t.Fatalf("%s error should preserve persisted-thread cause: %v", name, err)
+		}
+	}
+
+	_, err := NewGetGoalTool(ws).Execute(ctx, map[string]any{})
+	check("get_goal", err)
+	_, err = NewCreateGoalTool(ws).Execute(ctx, map[string]any{"objective": "persist me"})
+	check("create_goal", err)
+	_, err = NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "complete"})
+	check("update_goal", err)
+}
+
+func TestGoalCommandRejectsTemporarySessionWithSavedSessionMessage(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		writer:  &bytes.Buffer{},
+		ui:      NewUI(),
+		session: NewSession(root, "provider", "model", "", "default"),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	err := rt.handleGoalCommand("status")
+	if err == nil || !strings.Contains(err.Error(), "Goals need a saved session. This session is temporary.") || !errors.Is(err, errThreadGoalsRequirePersistedThread) {
+		t.Fatalf("expected saved-session goal error, got %v", err)
+	}
+}
+
+func TestRunSingleGoalRejectsTemporarySessionWithSavedSessionMessage(t *testing.T) {
+	root := t.TempDir()
+	rt := &runtimeState{
+		writer:  &bytes.Buffer{},
+		ui:      NewUI(),
+		session: NewSession(root, "provider", "model", "", "default"),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	err := rt.runSingleGoal("finish temporary goal", "")
+	if err == nil || !strings.Contains(err.Error(), "Goals need a saved session. This session is temporary.") || !errors.Is(err, errThreadGoalsRequirePersistedThread) {
+		t.Fatalf("expected saved-session goal error, got %v", err)
 	}
 }
 

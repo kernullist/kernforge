@@ -591,6 +591,9 @@ type singleGoalOptions struct {
 }
 
 func (rt *runtimeState) runSingleGoal(objective string, filePath string, options ...singleGoalOptions) error {
+	if err := rt.requirePersistedGoalState(); err != nil {
+		return err
+	}
 	fields := []string{"--run"}
 	if len(options) > 0 {
 		option := options[0]

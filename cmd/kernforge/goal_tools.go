@@ -244,6 +244,9 @@ func (t GetGoalTool) goalSession() (*Session, error) {
 	if t.ws.GoalSession == nil {
 		return nil, fmt.Errorf("goal session is not configured")
 	}
+	if t.ws.GoalStore == nil {
+		return nil, threadGoalRequiresPersistedSessionError()
+	}
 	t.ws.GoalSession.normalizeGoals()
 	return t.ws.GoalSession, nil
 }
@@ -258,14 +261,14 @@ func (t UpdateGoalTool) goalSession() (*Session, error) {
 
 func (t CreateGoalTool) saveGoalSession(session *Session) error {
 	if t.ws.GoalStore == nil {
-		return nil
+		return threadGoalRequiresPersistedSessionError()
 	}
 	return t.ws.GoalStore.Save(session)
 }
 
 func (t UpdateGoalTool) saveGoalSession(session *Session) error {
 	if t.ws.GoalStore == nil {
-		return nil
+		return threadGoalRequiresPersistedSessionError()
 	}
 	return t.ws.GoalStore.Save(session)
 }

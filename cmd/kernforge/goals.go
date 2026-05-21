@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,7 +26,22 @@ const (
 	goalStatusCanceled = goalStatusPaused
 
 	defaultGoalMaxIterations = 0
+
+	ephemeralThreadGoalUserMessage = "Goals need a saved session. This session is temporary.\nRun `kernforge` to start a saved session, or `/resume` to reopen one."
+	ephemeralThreadGoalCause       = "thread goals require a persisted thread; this thread is ephemeral"
 )
+
+var errThreadGoalsRequirePersistedThread = errors.New(ephemeralThreadGoalCause)
+
+type ephemeralThreadGoalError struct{}
+
+func (ephemeralThreadGoalError) Error() string {
+	return ephemeralThreadGoalUserMessage
+}
+
+func (ephemeralThreadGoalError) Unwrap() error {
+	return errThreadGoalsRequirePersistedThread
+}
 
 type GoalState struct {
 	ID                      string              `json:"id"`
@@ -147,6 +163,9 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 	if rt == nil || rt.session == nil {
 		return fmt.Errorf("no active session")
 	}
+	if err := rt.requirePersistedGoalState(); err != nil {
+		return err
+	}
 	fields := splitGoalFields(args)
 	if len(fields) == 0 {
 		return rt.printGoalStatus("")
@@ -191,6 +210,20 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 	default:
 		return fmt.Errorf("unsupported /goal action: %s", action)
 	}
+}
+
+func threadGoalRequiresPersistedSessionError() error {
+	return ephemeralThreadGoalError{}
+}
+
+func (rt *runtimeState) requirePersistedGoalState() error {
+	if rt == nil || rt.session == nil {
+		return fmt.Errorf("no active session")
+	}
+	if rt.store == nil {
+		return threadGoalRequiresPersistedSessionError()
+	}
+	return nil
 }
 
 func isGoalCommandAction(action string) bool {
