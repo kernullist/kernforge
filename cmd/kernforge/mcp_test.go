@@ -650,6 +650,13 @@ func TestMCPToolCallIncludesTurnMetadataRequestMeta(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected helper to receive MCP request _meta, got %#v", structured)
 	}
+	callID, ok := requestMeta[mcpBridgeCallIDMetaKey].(string)
+	if !ok || !strings.HasPrefix(callID, "mcp-") {
+		t.Fatalf("expected MCP bridge call id metadata, got %#v in %#v", requestMeta[mcpBridgeCallIDMetaKey], requestMeta)
+	}
+	if got := result.Meta["mcp_call_id"]; got != callID {
+		t.Fatalf("expected result mcp_call_id %q, got %#v in %#v", callID, got, result.Meta)
+	}
 	turnMeta, ok := requestMeta[mcpTurnMetadataMetaKey].(map[string]any)
 	if !ok {
 		t.Fatalf("expected %s metadata, got %#v", mcpTurnMetadataMetaKey, requestMeta)

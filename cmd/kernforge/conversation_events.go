@@ -880,6 +880,7 @@ func toolMetaEntities(meta map[string]any) map[string]string {
 		"patch_apply_status",
 		"mcp_server",
 		"mcp_tool",
+		"mcp_call_id",
 		"mcp_namespaced_tool",
 	} {
 		if value, ok := meta[key]; ok {

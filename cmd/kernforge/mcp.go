@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -113,6 +115,7 @@ type mcpTurnMetadataContextKey struct{}
 
 const mcpTurnMetadataMetaKey = "x-codex-turn-metadata"
 const mcpTurnMetadataUserInputRequestedKey = "user_input_requested_during_turn"
+const mcpBridgeCallIDMetaKey = "codex_bridge_mcp_call_id"
 
 func contextWithMCPTurnMetadata(ctx context.Context, metadata map[string]any) context.Context {
 	if ctx == nil {
@@ -136,6 +139,28 @@ func mcpToolCallRequestMetaFromContext(ctx context.Context) map[string]any {
 	return map[string]any{
 		mcpTurnMetadataMetaKey: cloneStringAnyMap(metadata),
 	}
+}
+
+func withMCPBridgeCallIDMeta(meta map[string]any, callID string) map[string]any {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]any{}
+	} else {
+		meta = cloneStringAnyMap(meta)
+	}
+	meta[mcpBridgeCallIDMetaKey] = callID
+	return meta
+}
+
+func newMCPBridgeCallID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err == nil {
+		return "mcp-" + hex.EncodeToString(buf[:])
+	}
+	return fmt.Sprintf("mcp-%d", time.Now().UnixNano())
 }
 
 func cloneStringAnyMap(input map[string]any) map[string]any {
@@ -869,8 +894,10 @@ func (c *MCPClient) callToolDetailed(ctx context.Context, name string, args any)
 		"name":      name,
 		"arguments": args,
 	}
+	mcpCallID := ""
 	if requestMeta := mcpToolCallRequestMetaFromContext(ctx); len(requestMeta) > 0 {
-		params["_meta"] = requestMeta
+		mcpCallID = newMCPBridgeCallID()
+		params["_meta"] = withMCPBridgeCallIDMeta(requestMeta, mcpCallID)
 	}
 	result, err := c.request(ctx, "tools/call", params)
 	wallTime := time.Since(started)
@@ -879,6 +906,9 @@ func (c *MCPClient) callToolDetailed(ctx context.Context, name string, args any)
 	}
 	text := formatMCPToolResult(result)
 	meta := buildMCPToolResultMeta(c.config.Name, name, result)
+	if mcpCallID != "" {
+		meta["mcp_call_id"] = mcpCallID
+	}
 	contentItems := mcpToolContentItems(result)
 	modelText, modelContentItems := mcpToolModelOutput(result, wallTime)
 	if boolValue(result, "isError", false) {
