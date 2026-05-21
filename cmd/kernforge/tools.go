@@ -1509,6 +1509,7 @@ func (w Workspace) Hook(ctx context.Context, event HookEvent, payload HookPayloa
 	if w.RunHook == nil {
 		return HookVerdict{Allow: true}, nil
 	}
+	enrichHookSubagentIdentity(payload)
 	return w.RunHook(ctx, event, payload)
 }
 
@@ -2912,6 +2913,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"risk_tags":     hookCommandRiskTags(originalCommand),
 		"file_tags":     []string{},
 		"owner_node_id": effectiveOwnerNodeID,
+		"specialist":    shellRoute.Specialist,
 		"work_dir":      workDir,
 	}))
 	if err != nil {
@@ -2994,6 +2996,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"output":        text,
 			"error":         err.Error(),
 			"owner_node_id": effectiveOwnerNodeID,
+			"specialist":    shellRoute.Specialist,
 			"work_dir":      workDir,
 		}))
 		return text, err
@@ -3010,6 +3013,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 			"output":        text,
 			"error":         workspaceErr.Error(),
 			"owner_node_id": effectiveOwnerNodeID,
+			"specialist":    shellRoute.Specialist,
 			"work_dir":      workDir,
 		}))
 		return text, workspaceErr
@@ -3021,6 +3025,7 @@ func (t RunShellTool) Execute(ctx context.Context, input any) (string, error) {
 		"risk_tags":     hookCommandRiskTags(command),
 		"output":        text,
 		"owner_node_id": effectiveOwnerNodeID,
+		"specialist":    shellRoute.Specialist,
 		"work_dir":      workDir,
 	})); err != nil {
 		return "", err

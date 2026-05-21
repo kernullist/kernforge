@@ -620,6 +620,57 @@ func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	}
 }
 
+func TestRunShellHookPayloadIncludesSpecialistAgentIdentity(t *testing.T) {
+	root := t.TempDir()
+	var prePayload HookPayload
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		Shell:    defaultShell(),
+		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			return true, nil
+		}),
+		ResolveShellRoot: func(ownerNodeID string) (ShellRoutingResult, error) {
+			return ShellRoutingResult{
+				Root:        root,
+				OwnerNodeID: strings.TrimSpace(ownerNodeID),
+				Specialist:  "driver-build-fixer",
+			}, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			if event == HookPreToolUse {
+				prePayload = payload
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	}
+	registry := NewToolRegistry(NewRunShellTool(ws))
+	command := "echo specialist"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output specialist"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"command":       command,
+		"owner_node_id": "plan-02",
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	if _, err := registry.ExecuteDetailed(context.Background(), "run_shell", string(payload)); err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if got := toolMetaString(prePayload, "specialist"); got != "driver-build-fixer" {
+		t.Fatalf("expected hook specialist, got %#v", prePayload)
+	}
+	if got := toolMetaString(prePayload, "agent_id"); got != "plan-02" {
+		t.Fatalf("expected hook agent_id, got %#v", prePayload)
+	}
+	if got := toolMetaString(prePayload, "agent_type"); got != "driver-build-fixer" {
+		t.Fatalf("expected hook agent_type, got %#v", prePayload)
+	}
+}
+
 func TestBackgroundVerificationStartIsPendingNotEvidence(t *testing.T) {
 	job := BackgroundShellJob{
 		ID:             "job-1",

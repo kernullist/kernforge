@@ -282,6 +282,7 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 		payload["provider"] = rt.Session.Provider
 		payload["model"] = rt.Session.Model
 	}
+	enrichHookSubagentIdentity(payload)
 	addEffectiveExecutionContextMetadata(payload, rt.Workspace, rt.Session)
 	if activeRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(rt.Workspace, rt.Session)); activeRoot != "" {
 		payload["cwd"] = activeRoot
@@ -354,6 +355,26 @@ func (rt *HookRuntime) enrichPayload(event HookEvent, payload HookPayload) HookP
 		}
 	}
 	return payload
+}
+
+func enrichHookSubagentIdentity(payload HookPayload) {
+	if payload == nil {
+		return
+	}
+	specialist := strings.TrimSpace(stringValue(payload, "specialist"))
+	if specialist == "" {
+		return
+	}
+	if strings.TrimSpace(stringValue(payload, "agent_id")) == "" {
+		if ownerNodeID := strings.TrimSpace(stringValue(payload, "owner_node_id")); ownerNodeID != "" {
+			payload["agent_id"] = ownerNodeID
+		} else {
+			return
+		}
+	}
+	if strings.TrimSpace(stringValue(payload, "agent_type")) == "" {
+		payload["agent_type"] = specialist
+	}
 }
 
 func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {

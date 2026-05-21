@@ -247,6 +247,59 @@ func TestHookRuntimeEnrichPayloadUsesEffectiveWorkspaceRoots(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeEnrichPayloadAddsSpecialistAgentIdentity(t *testing.T) {
+	runtime := &HookRuntime{}
+
+	payload := runtime.enrichPayload(HookPreToolUse, HookPayload{
+		"tool_name":     "run_shell",
+		"owner_node_id": "plan-02",
+		"specialist":    "driver-build-fixer",
+	})
+
+	if got := toolMetaString(payload, "agent_id"); got != "plan-02" {
+		t.Fatalf("expected specialist hook agent_id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "agent_type"); got != "driver-build-fixer" {
+		t.Fatalf("expected specialist hook agent_type, got %#v", payload)
+	}
+
+	rootPayload := runtime.enrichPayload(HookPreToolUse, HookPayload{
+		"tool_name":     "run_shell",
+		"owner_node_id": "plan-02",
+	})
+	if got := toolMetaString(rootPayload, "agent_id"); got != "" {
+		t.Fatalf("expected root hook payload to omit agent_id, got %#v", rootPayload)
+	}
+	if got := toolMetaString(rootPayload, "agent_type"); got != "" {
+		t.Fatalf("expected root hook payload to omit agent_type, got %#v", rootPayload)
+	}
+
+	partial := runtime.enrichPayload(HookPreToolUse, HookPayload{
+		"tool_name":  "run_shell",
+		"specialist": "driver-build-fixer",
+	})
+	if got := toolMetaString(partial, "agent_id"); got != "" {
+		t.Fatalf("expected partial specialist payload to omit agent_id, got %#v", partial)
+	}
+	if got := toolMetaString(partial, "agent_type"); got != "" {
+		t.Fatalf("expected partial specialist payload to omit agent_type, got %#v", partial)
+	}
+
+	explicit := runtime.enrichPayload(HookPreToolUse, HookPayload{
+		"tool_name":     "run_shell",
+		"owner_node_id": "plan-02",
+		"specialist":    "driver-build-fixer",
+		"agent_id":      "agent-override",
+		"agent_type":    "worker-override",
+	})
+	if got := toolMetaString(explicit, "agent_id"); got != "agent-override" {
+		t.Fatalf("expected explicit agent_id to be preserved, got %#v", explicit)
+	}
+	if got := toolMetaString(explicit, "agent_type"); got != "worker-override" {
+		t.Fatalf("expected explicit agent_type to be preserved, got %#v", explicit)
+	}
+}
+
 func TestHookEngineMatchesCompactTrigger(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,
