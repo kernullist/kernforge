@@ -200,6 +200,8 @@ Common options:
   -model <name>               Model override for this process.
   -base-url <url>             Provider endpoint override.
   -permission-mode <mode>     default | acceptEdits | plan | bypassPermissions.
+                              Also accepts Codex built-in active profile ids:
+                              :workspace | :read-only | :danger-full-access.
   -resume <session-id>        Resume an existing session.
   -y                          Use bypass permission mode.
   -strict-config              Fail fast on unknown config.json fields.
@@ -268,7 +270,7 @@ Useful options:
   -provider <name>
   -model <name>
   -base-url <url>
-  -permission-mode <default|acceptEdits|plan|bypassPermissions>
+  -permission-mode <default|acceptEdits|plan|bypassPermissions|:workspace|:read-only|:danger-full-access>
   -resume <session-id>
   -y
 `) + "\n"

@@ -19,6 +19,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		wantSuggest []string
 	}{
 		{input: "/permissions a", wantBuffer: "/permissions acceptEdits "},
+		{input: "/permissions :", wantSuggest: []string{"/permissions :read-only", "/permissions :workspace", "/permissions :danger-full-access"}},
 		{input: "/analyze-project ", wantBuffer: "/analyze-project --"},
 		{input: "/analyze-project --m", wantBuffer: "/analyze-project --mode "},
 		{input: "/analyze-project --d", wantBuffer: "/analyze-project --d"},

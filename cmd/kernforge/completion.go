@@ -251,10 +251,13 @@ var slashCommandDescriptions = map[string]string{
 
 var slashSubcommandDescriptions = map[string]map[string]string{
 	"permissions": {
-		"default":           "Ask before shell, write, and git actions.",
-		"acceptEdits":       "Auto-approve workspace edits while still asking for shell and git.",
-		"plan":              "Favor planning and read-only analysis before edits.",
-		"bypassPermissions": "Bypass runtime permission prompts for this session.",
+		"default":                                "Ask before shell, write, and git actions.",
+		"acceptEdits":                            "Auto-approve workspace edits while still asking for shell and git.",
+		"plan":                                   "Favor planning and read-only analysis before edits.",
+		"bypassPermissions":                      "Bypass runtime permission prompts for this session.",
+		builtInPermissionProfileReadOnly:         "Codex built-in read-only active permission profile.",
+		builtInPermissionProfileWorkspace:        "Codex built-in workspace active permission profile.",
+		builtInPermissionProfileDangerFullAccess: "Codex built-in danger-full-access active permission profile.",
 	},
 	"checkpoint-auto": {
 		"on":  "Create a safety checkpoint before edits.",
@@ -770,7 +773,7 @@ func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string
 
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
-		"permissions":           {"default", "acceptEdits", "plan", "bypassPermissions"},
+		"permissions":           {"default", "acceptEdits", "plan", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
 		"checkpoint-auto":       {"on", "off"},
 		"locale-auto":           {"on", "off"},
 		"set-auto-verify":       {"on", "off"},

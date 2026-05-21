@@ -605,6 +605,35 @@ func TestActivePermissionProfileIDForModeMirrorsCodexBuiltIns(t *testing.T) {
 	}
 }
 
+func TestPermissionModeAcceptsCodexBuiltInActiveProfileAliases(t *testing.T) {
+	cases := map[string]Mode{
+		builtInPermissionProfileReadOnly:         ModePlan,
+		builtInPermissionProfileWorkspace:        ModeDefault,
+		builtInPermissionProfileDangerFullAccess: ModeBypass,
+	}
+	for input, wantMode := range cases {
+		mode, ok := ParseModeStrict(input)
+		if !ok {
+			t.Fatalf("expected active profile alias %q to parse", input)
+		}
+		if mode != wantMode {
+			t.Fatalf("active profile alias %q expected mode %q, got %q", input, wantMode, mode)
+		}
+		if got := activePermissionProfileIDForModeString(input); got != input {
+			t.Fatalf("active profile alias %q expected round-trip profile id, got %q", input, got)
+		}
+	}
+
+	cfg := DefaultConfig(t.TempDir())
+	cfg.PermissionMode = builtInPermissionProfileDangerFullAccess
+	if err := normalizeConfigPermissionMode(&cfg); err != nil {
+		t.Fatalf("normalizeConfigPermissionMode: %v", err)
+	}
+	if cfg.PermissionMode != string(ModeBypass) {
+		t.Fatalf("expected active profile alias to normalize to %q, got %q", ModeBypass, cfg.PermissionMode)
+	}
+}
+
 func TestSaveUserConfigRejectsInvalidPermissionMode(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

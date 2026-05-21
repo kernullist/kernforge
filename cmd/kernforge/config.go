@@ -2774,7 +2774,7 @@ Provider And Models:
 /model                 Show all model routing and interactively reconfigure one target
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
-/permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions
+/permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions, or Codex built-in profile ids
 /set-max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
 /progress-display [auto|compact|stream] Show or set in-flight progress visibility
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
@@ -3214,6 +3214,7 @@ Provider and model commands control which model is active and how planning/revie
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
+- Codex built-in active profile ids are accepted as aliases: :workspace, :read-only, :danger-full-access.
 
 /progress-display [auto|compact|stream]
 - Show or change in-flight progress visibility.
@@ -3848,6 +3849,19 @@ func ParseModeStrict(value string) (Mode, bool) {
 	case string(ModeBypass):
 		return ModeBypass, true
 	default:
+		return modeForBuiltInActivePermissionProfileID(value)
+	}
+}
+
+func modeForBuiltInActivePermissionProfileID(value string) (Mode, bool) {
+	switch strings.TrimSpace(value) {
+	case builtInPermissionProfileReadOnly:
+		return ModePlan, true
+	case builtInPermissionProfileWorkspace:
+		return ModeDefault, true
+	case builtInPermissionProfileDangerFullAccess:
+		return ModeBypass, true
+	default:
 		return ModeDefault, false
 	}
 }
@@ -3874,6 +3888,9 @@ func validPermissionModes() string {
 		string(ModeAcceptEdits),
 		string(ModePlan),
 		string(ModeBypass),
+		builtInPermissionProfileReadOnly,
+		builtInPermissionProfileWorkspace,
+		builtInPermissionProfileDangerFullAccess,
 	}, ", ")
 }
 
