@@ -118,10 +118,16 @@ func (s *Session) EnsureEditLoop(goal string) *EditLoopState {
 		return nil
 	}
 	now := time.Now()
+	normalizedGoal := strings.Join(strings.Fields(strings.TrimSpace(goal)), " ")
+	if s.ActiveEditLoop != nil &&
+		!editLoopClosedStatus(s.ActiveEditLoop.Status) &&
+		editLoopGoalsConflict(s.ActiveEditLoop.Goal, normalizedGoal) {
+		s.FinalizeActiveEditLoop(editLoopStatusRiskAccepted)
+	}
 	if s.ActiveEditLoop == nil || editLoopClosedStatus(s.ActiveEditLoop.Status) {
 		s.ActiveEditLoop = &EditLoopState{
-			ID:        fmt.Sprintf("edit-loop-%s", now.Format("20060102-150405.000000000")),
-			Goal:      strings.Join(strings.Fields(strings.TrimSpace(goal)), " "),
+			ID:        newEditLoopID(s, now),
+			Goal:      normalizedGoal,
 			Status:    editLoopStatusActive,
 			StartedAt: now,
 			UpdatedAt: now,
@@ -132,6 +138,44 @@ func (s *Session) EnsureEditLoop(goal string) *EditLoopState {
 	}
 	s.ActiveEditLoop.Normalize()
 	return s.ActiveEditLoop
+}
+
+func editLoopGoalsConflict(activeGoal string, nextGoal string) bool {
+	active := normalizedPatchTransactionGoal(activeGoal)
+	next := normalizedPatchTransactionGoal(nextGoal)
+	if active == "" || next == "" || active == next {
+		return false
+	}
+	return classifyTurnIntent(nextGoal) != TurnIntentContinueLastTask
+}
+
+func newEditLoopID(s *Session, now time.Time) string {
+	base := fmt.Sprintf("edit-loop-%s", now.Format("20060102-150405.000000000"))
+	if !sessionHasEditLoopID(s, base) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !sessionHasEditLoopID(s, candidate) {
+			return candidate
+		}
+	}
+}
+
+func sessionHasEditLoopID(s *Session, id string) bool {
+	id = strings.TrimSpace(id)
+	if s == nil || id == "" {
+		return false
+	}
+	if s.ActiveEditLoop != nil && strings.TrimSpace(s.ActiveEditLoop.ID) == id {
+		return true
+	}
+	for _, loop := range s.EditLoops {
+		if strings.TrimSpace(loop.ID) == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) RecordEditLoopEvent(goal string, event EditLoopEvent) *EditLoopState {
@@ -839,6 +883,60 @@ func latestEditLoop(sess *Session) *EditLoopState {
 		return &sess.EditLoops[0]
 	}
 	return nil
+}
+
+func currentTurnActiveEditLoop(sess *Session) *EditLoopState {
+	if sess == nil || sess.ActiveEditLoop == nil {
+		return nil
+	}
+	if !activeEditLoopMatchesCurrentTurn(sess, sess.ActiveEditLoop) {
+		return nil
+	}
+	return sess.ActiveEditLoop
+}
+
+func promptActiveEditLoop(sess *Session) *EditLoopState {
+	if current := currentTurnActiveEditLoop(sess); current != nil {
+		return current
+	}
+	if sess == nil || sess.ActiveEditLoop == nil {
+		return nil
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(sess.Messages)))
+	switch classifyTurnIntent(latestUser) {
+	case TurnIntentContinueLastTask, TurnIntentExplainCurrentState:
+		return sess.ActiveEditLoop
+	default:
+		return nil
+	}
+}
+
+func activeEditLoopMatchesCurrentTurn(sess *Session, loop *EditLoopState) bool {
+	if sess == nil || loop == nil {
+		return false
+	}
+	goal := normalizedPatchTransactionGoal(loop.Goal)
+	if goal == "" {
+		return true
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(sess.Messages)))
+	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
+		if normalizedPatchTransactionGoal(latestUser) == goal {
+			return true
+		}
+		return classifyTurnIntent(latestUser) == TurnIntentContinueLastTask
+	}
+	if sess.AcceptanceContract != nil {
+		if normalizedPatchTransactionGoal(sess.AcceptanceContract.SourcePrompt) == goal {
+			return true
+		}
+	}
+	if sess.TaskState != nil {
+		if normalizedPatchTransactionGoal(sess.TaskState.Goal) == goal {
+			return true
+		}
+	}
+	return false
 }
 
 func editLoopGoal(sess *Session) string {

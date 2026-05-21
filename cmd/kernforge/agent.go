@@ -7482,12 +7482,12 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
-	if a.Session.ActiveEditLoop != nil {
-		if loopText := strings.TrimSpace(a.Session.ActiveEditLoop.RenderPromptSection()); loopText != "" {
+	if activeLoop := promptActiveEditLoop(a.Session); activeLoop != nil {
+		if loopText := strings.TrimSpace(activeLoop.RenderPromptSection()); loopText != "" {
 			b.WriteString("\nActive apply/verify/retry ledger:\n")
 			b.WriteString(loopText)
 			b.WriteString("\n")
-			if contractText := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(a.Session.ActiveEditLoop)); contractText != "" {
+			if contractText := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(activeLoop)); contractText != "" {
 				b.WriteString("Expected final answer outcome contract:\n")
 				b.WriteString(contractText)
 				b.WriteString("\n")

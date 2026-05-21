@@ -73,6 +73,68 @@ func TestEditLoopRecordsApplyVerifyRetryAndFinalReview(t *testing.T) {
 	}
 }
 
+func TestEditLoopStartsFreshWhenGoalChanges(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.RecordEditLoopEvent("fix alpha", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "updated alpha",
+		Status:       "ok",
+		ChangedPaths: []string{"alpha.go"},
+	})
+	firstID := session.ActiveEditLoop.ID
+
+	session.RecordEditLoopEvent("fix beta", EditLoopEvent{
+		Kind:         "apply",
+		Source:       "main",
+		ToolName:     "write_file",
+		Summary:      "updated beta",
+		Status:       "ok",
+		ChangedPaths: []string{"beta.go"},
+	})
+
+	if session.ActiveEditLoop == nil {
+		t.Fatalf("expected a fresh active edit loop")
+	}
+	if session.ActiveEditLoop.ID == firstID {
+		t.Fatalf("expected a new edit loop id after goal change, got %#v", session.ActiveEditLoop)
+	}
+	if session.ActiveEditLoop.Goal != "fix beta" {
+		t.Fatalf("expected new active goal, got %#v", session.ActiveEditLoop)
+	}
+	if !containsString(session.ActiveEditLoop.ChangedPaths, "beta.go") {
+		t.Fatalf("expected beta path in fresh loop, got %#v", session.ActiveEditLoop.ChangedPaths)
+	}
+	if len(session.EditLoops) == 0 {
+		t.Fatalf("expected old loop to be archived")
+	}
+	if session.EditLoops[0].ID != firstID || session.EditLoops[0].Status != editLoopStatusRiskAccepted {
+		t.Fatalf("expected old loop to be archived as risk accepted, got %#v", session.EditLoops)
+	}
+}
+
+func TestPromptActiveEditLoopKeepsStatusContextWithoutFinalGateScope(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: "fix alpha"},
+		{Role: "user", Text: "현재 상태만 알려줘"},
+	}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:           "edit-loop-alpha",
+		Goal:         "fix alpha",
+		Status:       editLoopStatusActive,
+		ChangedPaths: []string{"alpha.go"},
+	}
+
+	if currentTurnActiveEditLoop(session) != nil {
+		t.Fatalf("status-only follow-up must not count stale edit loop as current-turn gate evidence")
+	}
+	if promptActiveEditLoop(session) == nil {
+		t.Fatalf("status-only follow-up should still receive active edit-loop context for answering")
+	}
+}
+
 func TestSessionExportIncludesEditLoopLedger(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.RecordEditLoopEvent("fix file", EditLoopEvent{

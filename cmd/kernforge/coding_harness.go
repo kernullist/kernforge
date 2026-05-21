@@ -1192,7 +1192,7 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification
 			Detail:   "The task state still recommends verification after edits. The final answer should avoid claiming verification passed unless a focused build/test was recorded.",
 		})
 	}
-	if loop := a.Session.ActiveEditLoop; loop != nil {
+	if loop := currentTurnActiveEditLoop(a.Session); loop != nil {
 		loop.Normalize()
 		if strings.TrimSpace(loop.ID) != "" && (len(loop.ChangedPaths) > 0 || len(loop.WorkerSummaries) > 0 || loop.VerificationSummary != "" || len(loop.RemainingRisks) > 0) {
 			check := "edit loop ledger: " + loop.ID
@@ -1711,12 +1711,13 @@ func sessionHasCurrentTurnFinalGateEvidence(sess *Session) bool {
 	if len(currentTurnPatchTransactionChangedPaths(sess)) > 0 {
 		return true
 	}
-	if sess == nil || sess.ActiveEditLoop == nil {
+	loop := currentTurnActiveEditLoop(sess)
+	if loop == nil {
 		return false
 	}
-	return len(sess.ActiveEditLoop.ChangedPaths) > 0 ||
-		len(sess.ActiveEditLoop.WorkerSummaries) > 0 ||
-		strings.TrimSpace(sess.ActiveEditLoop.VerificationSummary) != ""
+	return len(loop.ChangedPaths) > 0 ||
+		len(loop.WorkerSummaries) > 0 ||
+		strings.TrimSpace(loop.VerificationSummary) != ""
 }
 
 func hasPendingVerificationCheck(sess *Session) bool {

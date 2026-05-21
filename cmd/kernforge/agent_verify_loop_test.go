@@ -12096,6 +12096,86 @@ func TestAgentDoesNotRouteUnrelatedCommentaryThroughFinalGatesFromStalePatchHist
 	}
 }
 
+func TestAgentDoesNotRouteUnrelatedFinalGatesFromStaleActiveEditLoop(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "현재 상태만 알려줘"}
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "RuntimeManager.cpp 버그를 수정해",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:              "edit-loop-old",
+		Goal:            "RuntimeManager.cpp 버그를 수정해",
+		Status:          editLoopStatusActive,
+		ChangedPaths:    []string{"cmd/kernforge/agent.go"},
+		WorkerSummaries: []string{"updated RuntimeManager handling"},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if sessionHasCurrentTurnFinalGateEvidence(session) {
+		t.Fatalf("stale active edit loop should not count as current-turn final gate evidence")
+	}
+	if agent.shouldRouteCommentaryReplyThroughFinalGates("현재 상태만 알려줘", "현재 상태를 확인했습니다.", false, false, false) {
+		t.Fatalf("stale active edit loop should not route a read-only commentary reply into final gates")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer("현재 상태를 확인했습니다.", false, false) {
+		t.Fatalf("stale active edit loop should not trigger final-answer review for a read-only turn")
+	}
+	if agent.shouldBufferAssistantDeltaForGatedTurn(false, false, false) {
+		t.Fatalf("stale active edit loop should not buffer ordinary status replies")
+	}
+	report := agent.buildCodingHarnessReport("현재 상태를 확인했습니다.", false, false)
+	for _, finding := range report.Findings {
+		if strings.Contains(strings.ToLower(finding.Title), "edit loop") {
+			t.Fatalf("stale active edit loop should not affect pre-final harness findings, got %#v", report.Findings)
+		}
+	}
+}
+
+func TestAgentRoutesCurrentActiveEditLoopThroughFinalGates(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "RuntimeManager.cpp 버그를 수정해"}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "RuntimeManager.cpp 버그를 수정해",
+	}}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:              "edit-loop-current",
+		Goal:            "RuntimeManager.cpp 버그를 수정해",
+		Status:          editLoopStatusActive,
+		ChangedPaths:    []string{"cmd/kernforge/agent.go"},
+		WorkerSummaries: []string{"updated RuntimeManager handling"},
+	}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if !sessionHasCurrentTurnFinalGateEvidence(session) {
+		t.Fatalf("current active edit loop should count as current-turn final gate evidence")
+	}
+	if !agent.shouldRouteCommentaryReplyThroughFinalGates("RuntimeManager.cpp 버그를 수정해", "수정 완료", false, false, false) {
+		t.Fatalf("current active edit loop should route final-looking commentary through gates")
+	}
+	if !agent.shouldReviewInteractiveFinalAnswer("RuntimeManager.cpp 수정 완료", false, false) {
+		t.Fatalf("current active edit loop should remain eligible for final-answer review")
+	}
+	if !agent.shouldBufferAssistantDeltaForGatedTurn(false, false, false) {
+		t.Fatalf("current active edit loop should buffer final candidates until accepted")
+	}
+}
+
 func TestAgentRoutesCurrentPatchCommentaryThroughFinalGates(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
