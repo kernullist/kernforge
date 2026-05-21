@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -31,6 +32,62 @@ func TestWorkspaceResolveForLookupFallsBackToBaseRoot(t *testing.T) {
 	}
 	if resolved != target {
 		t.Fatalf("expected fallback path %q, got %q", target, resolved)
+	}
+}
+
+func TestLookupToolsRecoverFromOwnerEditMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+		req = req.normalized()
+		if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+			return EditRoutingResult{}, fmt.Errorf("%w: path %s is outside editable ownership for specialist driver-build-fixer", ErrEditTargetMismatch, req.Path)
+		}
+		return ws.resolveEditFallback(req)
+	}
+
+	readTool := NewReadFileTool(ws)
+	readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          "main.go",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("read_file should fall back to normal lookup after owner mismatch: %v", err)
+	}
+	if !strings.Contains(readResult.DisplayText, "package main") {
+		t.Fatalf("expected read_file to return base workspace content, got %q", readResult.DisplayText)
+	}
+
+	listTool := NewListFilesTool(ws)
+	listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":          ".",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("list_files should fall back to normal lookup after owner mismatch: %v", err)
+	}
+	if !strings.Contains(listResult.DisplayText, "main.go") {
+		t.Fatalf("expected list_files to include base workspace files, got %q", listResult.DisplayText)
+	}
+
+	grepTool := NewGrepTool(ws)
+	grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
+		"pattern":       "package main",
+		"path":          ".",
+		"owner_node_id": "plan-01",
+	})
+	if err != nil {
+		t.Fatalf("grep should fall back to normal lookup after owner mismatch: %v", err)
+	}
+	if !strings.Contains(grepResult.DisplayText, "main.go") {
+		t.Fatalf("expected grep to find base workspace content, got %q", grepResult.DisplayText)
 	}
 }
 

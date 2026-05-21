@@ -417,12 +417,21 @@ func (w Workspace) ResolveEditPath(path string, ownerNodeID string, forLookup bo
 }
 
 func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRoutingResult, error) {
-	return w.ResolveEditPathWithOptions(EditRoutingRequest{
+	req := EditRoutingRequest{
 		Path:        path,
 		OwnerNodeID: ownerNodeID,
 		ForLookup:   true,
 		Intent:      editRoutingIntentLookup,
-	})
+	}
+	route, err := w.ResolveEditPathWithOptions(req)
+	if err == nil {
+		return route, nil
+	}
+	if strings.TrimSpace(ownerNodeID) == "" || !errors.Is(err, ErrEditTargetMismatch) {
+		return EditRoutingResult{}, err
+	}
+	req.OwnerNodeID = ""
+	return w.ResolveEditPathWithOptions(req)
 }
 
 func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {
