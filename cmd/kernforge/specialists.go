@@ -16,8 +16,11 @@ type SpecialistAssignment struct {
 }
 
 const (
-	specialistMicroWorkerDescriptionMaxBytes = 320
-	specialistMicroWorkerPromptMaxBytes      = 1200
+	specialistPromptRoleMaxBytes             = 96
+	specialistPromptDescriptionMaxBytes      = 320
+	specialistPromptGuidanceMaxBytes         = 1200
+	specialistMicroWorkerDescriptionMaxBytes = specialistPromptDescriptionMaxBytes
+	specialistMicroWorkerPromptMaxBytes      = specialistPromptGuidanceMaxBytes
 )
 
 func defaultSpecialistProfiles() []SpecialistSubagentProfile {
@@ -758,16 +761,22 @@ func buildSpecialistMicroWorkerSystemPrompt(profile SpecialistSubagentProfile) s
 		"Focus on one task-graph node and return a short brief with the most likely risk, next check, and why the node matters.",
 		"Keep the answer under 4 short bullets.",
 	}
+	lines = append(lines, specialistProfilePromptLines(profile)...)
+	return strings.Join(lines, "\n")
+}
+
+func specialistProfilePromptLines(profile SpecialistSubagentProfile) []string {
+	lines := make([]string, 0, 3)
 	if strings.TrimSpace(profile.Name) != "" {
-		lines = append(lines, "Specialist role: "+compactPromptSection(profile.Name, 96))
+		lines = append(lines, "Specialist role: "+compactPromptSection(profile.Name, specialistPromptRoleMaxBytes))
 	}
 	if strings.TrimSpace(profile.Description) != "" {
-		lines = append(lines, "Specialist description:\n"+compactPromptSection(profile.Description, specialistMicroWorkerDescriptionMaxBytes))
+		lines = append(lines, "Specialist description:\n"+compactPromptSection(profile.Description, specialistPromptDescriptionMaxBytes))
 	}
 	if strings.TrimSpace(profile.Prompt) != "" {
-		lines = append(lines, "Specialist guidance:\n"+compactPromptSection(profile.Prompt, specialistMicroWorkerPromptMaxBytes))
+		lines = append(lines, "Specialist guidance:\n"+compactPromptSection(profile.Prompt, specialistPromptGuidanceMaxBytes))
 	}
-	return strings.Join(lines, "\n")
+	return lines
 }
 
 func buildSpecialistMicroWorkerPrompt(profile SpecialistSubagentProfile, state *TaskState, node TaskNode, trigger string, reason string) string {

@@ -301,6 +301,39 @@ func TestSpecialistMicroWorkerSystemPromptCompactsProfileText(t *testing.T) {
 	}
 }
 
+func TestSpecialistEditableWorkerSystemPromptCompactsProfileText(t *testing.T) {
+	longDescription := "description-head " + strings.Repeat("description-body ", 80) + "description-tail"
+	longPrompt := "prompt-head " + strings.Repeat("prompt-body ", 180) + "prompt-tail"
+
+	systemPrompt := buildSpecialistEditableWorkerSystemPrompt(SpecialistSubagentProfile{
+		Name:        strings.Repeat("editable-role-", 30),
+		Description: longDescription,
+		Prompt:      longPrompt,
+	})
+
+	if !strings.Contains(systemPrompt, "Specialist role: editable-role-") {
+		t.Fatalf("expected compact role line in editable worker prompt, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Specialist description:\ndescription-head") {
+		t.Fatalf("expected compact description section in editable worker prompt, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "Specialist guidance:\nprompt-head") {
+		t.Fatalf("expected compact guidance section in editable worker prompt, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "description-tail") {
+		t.Fatalf("expected long description tail to be omitted, got:\n%s", systemPrompt)
+	}
+	if strings.Contains(systemPrompt, "prompt-tail") {
+		t.Fatalf("expected long prompt tail to be omitted, got:\n%s", systemPrompt)
+	}
+	if !strings.Contains(systemPrompt, "...") {
+		t.Fatalf("expected compacted editable worker prompt to include ellipsis, got:\n%s", systemPrompt)
+	}
+	if len(systemPrompt) > specialistPromptDescriptionMaxBytes+specialistPromptGuidanceMaxBytes+700 {
+		t.Fatalf("expected editable worker system prompt to stay bounded, got %d bytes", len(systemPrompt))
+	}
+}
+
 func TestSpecialistBatchRouteLimiterDoesNotForceCloudDuplicateRouteToSerial(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai"

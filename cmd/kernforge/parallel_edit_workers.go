@@ -540,15 +540,7 @@ func buildSpecialistEditableWorkerSystemPrompt(profile SpecialistSubagentProfile
 		"Inspect before editing when needed, keep the patch minimal, and stop after one successful patch.",
 		"If no safe change is justified, return NO_CHANGE followed by one short reason.",
 	}
-	if strings.TrimSpace(profile.Name) != "" {
-		lines = append(lines, "Specialist role: "+strings.TrimSpace(profile.Name))
-	}
-	if strings.TrimSpace(profile.Description) != "" {
-		lines = append(lines, strings.TrimSpace(profile.Description))
-	}
-	if strings.TrimSpace(profile.Prompt) != "" {
-		lines = append(lines, strings.TrimSpace(profile.Prompt))
-	}
+	lines = append(lines, specialistProfilePromptLines(profile)...)
 	return strings.Join(lines, "\n")
 }
 
