@@ -399,7 +399,7 @@ func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration Go
 	iteration.Status = goalStatusCanceled
 	iteration.FinishedAt = time.Now()
 	goal.Iteration = iteration.Index
-	goal.Status = goalStatusCanceled
+	goal.Status = goalStatusActive
 	goal.LastError = reason
 	goal.CommandHistory = append(goal.CommandHistory, iteration.Commands...)
 	goal.Iterations = append(goal.Iterations, iteration)
@@ -411,7 +411,7 @@ func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration Go
 		Summary:  fmt.Sprintf("goal iteration %d canceled", iteration.Index),
 		Entities: map[string]string{
 			"goal":      goal.ID,
-			"status":    goal.Status,
+			"status":    goalStatusCanceled,
 			"iteration": fmt.Sprintf("%d", iteration.Index),
 		},
 	})
@@ -419,7 +419,7 @@ func (rt *runtimeState) finishGoalIterationCanceled(goal GoalState, iteration Go
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal canceled: "+goal.ID))
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal interrupted: "+goal.ID+" (goal remains active)"))
 	return goal, true, nil
 }
 
@@ -952,11 +952,11 @@ func isGoalCancellationError(err error) bool {
 
 func goalCancellationReason(err error) string {
 	if err == nil {
-		return "goal canceled by user"
+		return "goal interrupted by user"
 	}
 	text := strings.TrimSpace(err.Error())
 	if text == "" || errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(text), "context canceled") {
-		return "goal canceled by user"
+		return "goal interrupted by user"
 	}
 	return text
 }

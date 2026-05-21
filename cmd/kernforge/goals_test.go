@@ -654,7 +654,7 @@ func TestGoalResumeResetsBlockedAuditCounters(t *testing.T) {
 	}
 }
 
-func TestGoalRunCancelsBeforeIteration(t *testing.T) {
+func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -691,18 +691,18 @@ func TestGoalRunCancelsBeforeIteration(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected active goal")
 	}
-	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
-		t.Fatalf("expected canceled goal, got %#v", active)
+	if active.Status != goalStatusActive || !strings.Contains(active.LastError, "interrupted") {
+		t.Fatalf("expected interrupted goal to remain active, got %#v", active)
 	}
 	if len(active.Iterations) != 0 {
 		t.Fatalf("expected no iteration to start after pre-cancel, got %#v", active.Iterations)
 	}
-	if !strings.Contains(output.String(), "Goal canceled") {
-		t.Fatalf("expected cancel output, got %q", output.String())
+	if !strings.Contains(output.String(), "Goal interrupted") || !strings.Contains(output.String(), "remains active") {
+		t.Fatalf("expected interrupt output, got %q", output.String())
 	}
 }
 
-func TestGoalRunCancelsDuringAgentPrompt(t *testing.T) {
+func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -739,8 +739,8 @@ func TestGoalRunCancelsDuringAgentPrompt(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected active goal")
 	}
-	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
-		t.Fatalf("expected canceled goal, got %#v", active)
+	if active.Status != goalStatusActive || !strings.Contains(active.LastError, "interrupted") {
+		t.Fatalf("expected interrupted goal to remain active, got %#v", active)
 	}
 	if replyCount != 1 {
 		t.Fatalf("expected one goal prompt before cancellation, got %d", replyCount)
@@ -748,12 +748,12 @@ func TestGoalRunCancelsDuringAgentPrompt(t *testing.T) {
 	if len(active.Iterations) != 1 || active.Iterations[0].Status != goalStatusCanceled {
 		t.Fatalf("expected canceled iteration evidence, got %#v", active.Iterations)
 	}
-	if !strings.Contains(output.String(), "Goal canceled") {
-		t.Fatalf("expected cancel output, got %q", output.String())
+	if !strings.Contains(output.String(), "Goal interrupted") || !strings.Contains(output.String(), "remains active") {
+		t.Fatalf("expected interrupt output, got %q", output.String())
 	}
 }
 
-func TestGoalRunCancelsDuringVerification(t *testing.T) {
+func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
@@ -796,8 +796,8 @@ func TestGoalRunCancelsDuringVerification(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected active goal")
 	}
-	if active.Status != goalStatusCanceled || !strings.Contains(active.LastError, "canceled") {
-		t.Fatalf("expected canceled goal, got %#v", active)
+	if active.Status != goalStatusActive || !strings.Contains(active.LastError, "interrupted") {
+		t.Fatalf("expected interrupted goal to remain active, got %#v", active)
 	}
 	if replyCount != 2 {
 		t.Fatalf("expected implementation and review prompts before verification cancellation, got %d", replyCount)

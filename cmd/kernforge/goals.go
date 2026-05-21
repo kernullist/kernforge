@@ -425,7 +425,7 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 			return nil
 		}
 		if ctx != nil && ctx.Err() != nil {
-			rt.cancelGoalExecution(goal, "goal canceled by user")
+			rt.interruptGoalExecution(goal, "goal interrupted by user")
 			return nil
 		}
 		if goal.MaxIterations > 0 && goal.Iteration >= goal.MaxIterations {
@@ -451,11 +451,11 @@ func (rt *runtimeState) runGoalLoop(ctx context.Context, goalID string) error {
 	}
 }
 
-func (rt *runtimeState) cancelGoalExecution(goal GoalState, reason string) GoalState {
+func (rt *runtimeState) interruptGoalExecution(goal GoalState, reason string) GoalState {
 	if strings.TrimSpace(reason) == "" {
-		reason = "goal canceled"
+		reason = "goal interrupted"
 	}
-	goal.Status = goalStatusCanceled
+	goal.Status = goalStatusActive
 	goal.LastError = reason
 	goal.Touch()
 	rt.session.UpsertGoal(goal)
@@ -463,7 +463,7 @@ func (rt *runtimeState) cancelGoalExecution(goal GoalState, reason string) GoalS
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal canceled: "+goal.ID))
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Goal interrupted: "+goal.ID+" (goal remains active)"))
 	return goal
 }
 
