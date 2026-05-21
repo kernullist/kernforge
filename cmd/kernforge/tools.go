@@ -216,9 +216,11 @@ func inferToolExecutionEffect(name string) string {
 	switch strings.TrimSpace(name) {
 	case "list_files", "read_file", "grep", "git_status", "git_diff":
 		return "inspect"
+	case "get_goal":
+		return "inspect"
 	case "apply_edit_proposal", "write_file", "replace_in_file", "apply_patch":
 		return "edit"
-	case "update_plan":
+	case "update_plan", "create_goal", "update_goal":
 		return "plan"
 	case "run_shell", "check_shell_job", "check_shell_bundle", "run_shell_background", "run_shell_bundle_background", "cancel_shell_job", "cancel_shell_bundle":
 		return "execute"
@@ -275,6 +277,8 @@ type Workspace struct {
 	BackgroundJobs        *BackgroundJobManager
 	ResolveEditTarget     func(EditRoutingRequest) (EditRoutingResult, error)
 	ResolveShellRoot      func(string) (ShellRoutingResult, error)
+	GoalSession           *Session
+	GoalStore             *SessionStore
 }
 
 type EditPreview struct {

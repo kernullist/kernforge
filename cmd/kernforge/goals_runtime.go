@@ -46,19 +46,26 @@ func (rt *runtimeState) primeGoalRuntimeState(goal *GoalState, reason string) {
 	if rt == nil || rt.session == nil || goal == nil {
 		return
 	}
-	state := rt.session.StartTaskState(goal.Objective)
-	state.SetProfiles(rt.session.Provider+" / "+rt.session.Model, rt.goalReviewerProfileLabel())
+	primeGoalSessionState(rt.session, goal, reason, rt.goalReviewerProfileLabel())
+}
+
+func primeGoalSessionState(session *Session, goal *GoalState, reason string, reviewerProfile string) {
+	if session == nil || goal == nil {
+		return
+	}
+	state := session.StartTaskState(goal.Objective)
+	state.SetProfiles(session.Provider+" / "+session.Model, reviewerProfile)
 	state.SetPhase("execution")
 	state.SetHypothesis("Autonomous goal runtime should inspect, implement, independently review, verify, audit, and recover until the objective is satisfied or a concrete blocker is recorded.")
 	state.SetNextStep("Run the next autonomous goal iteration.")
 	state.RecordEvent(conversationEventKindGoal, "", "", "Goal runtime primed.", strings.TrimSpace(reason), "active", true)
-	rt.session.AcceptanceContract = goalAcceptanceContract(goal.Objective)
-	criteria := goalCompletionCriteria(goal.Objective, rt.session.AcceptanceContract)
+	session.AcceptanceContract = goalAcceptanceContract(goal.Objective)
+	criteria := goalCompletionCriteria(goal.Objective, session.AcceptanceContract)
 	if len(goal.CompletionCriteria) == 0 {
 		goal.CompletionCriteria = criteria
 	}
-	rt.session.SetSharedPlan(goalPlanItems())
-	rt.session.ensureSharedPlanInProgress()
+	session.SetSharedPlan(goalPlanItems())
+	session.ensureSharedPlanInProgress()
 }
 
 func (rt *runtimeState) goalReviewerProfileLabel() string {

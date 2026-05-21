@@ -218,6 +218,8 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 	rt.workspace.ReviewEdit = rt.reviewProposedEdit
 	rt.workspace.ResolveEditTarget = rt.resolveEditTarget
 	rt.workspace.ResolveShellRoot = rt.resolveShellRoot
+	rt.workspace.GoalSession = rt.session
+	rt.workspace.GoalStore = rt.store
 	if rt.backgroundJobs != nil {
 		rt.backgroundJobs.root = filepath.Join(baseRoot, userConfigDirName, "jobs")
 		rt.backgroundJobs.session = rt.session

@@ -2612,7 +2612,11 @@ func generatedDocumentArtifactValidationToolCall(call ToolCall) bool {
 }
 
 func generatedDocumentArtifactPostCompletionToolCall(call ToolCall) bool {
-	name := strings.TrimSpace(call.Name)
+	name := strings.ToLower(strings.TrimSpace(call.Name))
+	switch name {
+	case "write_file", "replace_in_file":
+		return true
+	}
 	return name != "" && !isEditTool(name)
 }
 
@@ -6448,7 +6452,7 @@ func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
 		return false
 	}
 	switch name {
-	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle", "update_plan":
+	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle", "update_plan", "get_goal":
 		return true
 	default:
 		return false
@@ -6457,7 +6461,7 @@ func toolCallAllowedInReadOnlyAnalysis(call ToolCall) bool {
 
 func readOnlyInspectionToolName(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle":
+	case "read_file", "list_files", "grep", "git_status", "git_diff", "check_shell_job", "check_shell_bundle", "get_goal":
 		return true
 	default:
 		return false

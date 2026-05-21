@@ -369,6 +369,8 @@ func run(args []string) error {
 		},
 		RunHook:        rt.runHook,
 		BackgroundJobs: rt.backgroundJobs,
+		GoalSession:    rt.session,
+		GoalStore:      rt.store,
 	}
 	rt.syncWorkspaceFromSession()
 	if err := rt.ensureConfigured(); err != nil {
@@ -499,6 +501,9 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewGitStatusTool(ws),
 		NewGitDiffTool(ws),
 		NewUpdatePlanTool(ws),
+		NewGetGoalTool(ws),
+		NewCreateGoalTool(ws),
+		NewUpdateGoalTool(ws),
 	}
 	if mcp != nil {
 		items = append(items, mcp.Tools()...)

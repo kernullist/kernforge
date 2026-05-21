@@ -926,7 +926,8 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	completionOutput := output.String()
 	for _, want := range []string{
 		"completion_budget_report",
-		"token usage from token_used_estimate and token_budget",
+		"goal.tokensUsed",
+		"goal.tokenBudget",
 		"appropriate to the response language",
 		"token_budget",
 		"token_used_estimate",
@@ -1162,6 +1163,156 @@ func TestGoalStatusNormalizesLegacyInternalValuesToCodexProtocol(t *testing.T) {
 		goal.Normalize()
 		if goal.Status != want {
 			t.Fatalf("Normalize status %q = %q, want %q", raw, goal.Status, want)
+		}
+	}
+}
+
+func TestGoalToolsExposeCodexCompatibleSchemas(t *testing.T) {
+	getDef := NewGetGoalTool(Workspace{}).Definition()
+	if getDef.Name != "get_goal" {
+		t.Fatalf("get_goal name = %q", getDef.Name)
+	}
+	if getDef.InputSchema["additionalProperties"] != false {
+		t.Fatalf("get_goal should reject extra properties, got %#v", getDef.InputSchema)
+	}
+
+	createDef := NewCreateGoalTool(Workspace{}).Definition()
+	if createDef.Name != "create_goal" {
+		t.Fatalf("create_goal name = %q", createDef.Name)
+	}
+	required, ok := createDef.InputSchema["required"].([]string)
+	if !ok || len(required) != 1 || required[0] != "objective" {
+		t.Fatalf("create_goal required = %#v", createDef.InputSchema["required"])
+	}
+	createProps := createDef.InputSchema["properties"].(map[string]any)
+	if _, ok := createProps["token_budget"]; !ok {
+		t.Fatalf("create_goal should expose token_budget: %#v", createProps)
+	}
+
+	updateDef := NewUpdateGoalTool(Workspace{}).Definition()
+	if updateDef.Name != "update_goal" {
+		t.Fatalf("update_goal name = %q", updateDef.Name)
+	}
+	updateProps := updateDef.InputSchema["properties"].(map[string]any)
+	status := updateProps["status"].(map[string]any)
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) != 1 || enum[0] != goalStatusComplete {
+		t.Fatalf("update_goal status enum = %#v", status["enum"])
+	}
+}
+
+func TestGoalToolsCreateGetAndCompleteGoal(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{
+		BaseRoot:    root,
+		Root:        root,
+		GoalSession: session,
+		GoalStore:   store,
+	}
+	ctx := context.Background()
+
+	createOut, err := NewCreateGoalTool(ws).Execute(ctx, map[string]any{
+		"objective":    "finish the Codex-compatible goal tool implementation",
+		"token_budget": 1000000,
+	})
+	if err != nil {
+		t.Fatalf("create_goal: %v", err)
+	}
+	var created goalToolResponse
+	if err := json.Unmarshal([]byte(createOut), &created); err != nil {
+		t.Fatalf("decode create_goal response: %v\n%s", err, createOut)
+	}
+	if created.Goal == nil || created.Goal.Status != goalStatusActive {
+		t.Fatalf("expected active created goal, got %#v", created)
+	}
+	if created.Goal.ThreadID != session.ID {
+		t.Fatalf("threadId = %q, want %q", created.Goal.ThreadID, session.ID)
+	}
+	if created.Goal.TokenBudget == nil || *created.Goal.TokenBudget != 1000000 {
+		t.Fatalf("tokenBudget = %#v", created.Goal.TokenBudget)
+	}
+	if created.RemainingTokens == nil {
+		t.Fatalf("expected remainingTokens in budgeted response: %#v", created)
+	}
+	if created.CompletionBudgetReport != nil {
+		t.Fatalf("create_goal should omit completionBudgetReport, got %#v", *created.CompletionBudgetReport)
+	}
+	if session.AcceptanceContract == nil || len(session.Plan) == 0 {
+		t.Fatalf("create_goal should prime the goal runtime state, got contract=%#v plan=%#v", session.AcceptanceContract, session.Plan)
+	}
+	if _, err := store.Load(session.ID); err != nil {
+		t.Fatalf("create_goal should persist session: %v", err)
+	}
+
+	if _, err := NewCreateGoalTool(ws).Execute(ctx, map[string]any{
+		"objective": "second goal",
+	}); err == nil || !strings.Contains(err.Error(), "cannot create a new goal because this thread already has a goal") {
+		t.Fatalf("expected duplicate create_goal rejection, got %v", err)
+	}
+
+	getOut, err := NewGetGoalTool(ws).Execute(ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("get_goal: %v", err)
+	}
+	var got goalToolResponse
+	if err := json.Unmarshal([]byte(getOut), &got); err != nil {
+		t.Fatalf("decode get_goal response: %v\n%s", err, getOut)
+	}
+	if got.Goal == nil || got.Goal.Status != goalStatusActive || got.CompletionBudgetReport != nil {
+		t.Fatalf("unexpected get_goal response: %#v", got)
+	}
+
+	if _, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "paused"}); err == nil || !strings.Contains(err.Error(), "update_goal can only mark the existing goal complete") {
+		t.Fatalf("expected update_goal to reject non-complete status, got %v", err)
+	}
+
+	completeOut, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "complete"})
+	if err != nil {
+		t.Fatalf("update_goal complete: %v", err)
+	}
+	var complete goalToolResponse
+	if err := json.Unmarshal([]byte(completeOut), &complete); err != nil {
+		t.Fatalf("decode update_goal response: %v\n%s", err, completeOut)
+	}
+	if complete.Goal == nil || complete.Goal.Status != goalStatusComplete {
+		t.Fatalf("expected complete goal response, got %#v", complete)
+	}
+	if complete.CompletionBudgetReport == nil || !strings.Contains(*complete.CompletionBudgetReport, "goal.tokenBudget") || !strings.Contains(*complete.CompletionBudgetReport, "goal.tokensUsed") {
+		t.Fatalf("expected Codex completion budget report, got %#v", complete.CompletionBudgetReport)
+	}
+	active, ok := session.ActiveGoal()
+	if !ok || active.Status != goalStatusComplete || active.CompletedAt.IsZero() {
+		t.Fatalf("expected persisted complete active goal, got ok=%t goal=%#v", ok, active)
+	}
+}
+
+func TestGetGoalToolReturnsNullResponseWhenNoGoalExists(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	out, err := NewGetGoalTool(Workspace{
+		BaseRoot:    root,
+		Root:        root,
+		GoalSession: session,
+	}).Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("get_goal: %v", err)
+	}
+	var response goalToolResponse
+	if err := json.Unmarshal([]byte(out), &response); err != nil {
+		t.Fatalf("decode get_goal response: %v\n%s", err, out)
+	}
+	if response.Goal != nil || response.RemainingTokens != nil || response.CompletionBudgetReport != nil {
+		t.Fatalf("expected null goal response, got %#v", response)
+	}
+}
+
+func TestBuildRegistryIncludesCodexGoalTools(t *testing.T) {
+	registry := buildRegistry(Workspace{}, nil)
+	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
+		if _, ok := registry.tools[name]; !ok {
+			t.Fatalf("registry missing %s", name)
 		}
 	}
 }
