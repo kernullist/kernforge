@@ -15,14 +15,14 @@ import (
 const (
 	goalStatusActive        = "active"
 	goalStatusPaused        = "paused"
+	goalStatusBlocked       = "blocked"
+	goalStatusUsageLimited  = "usageLimited"
 	goalStatusComplete      = "complete"
 	goalStatusBudgetLimited = "budgetLimited"
 
-	goalStatusPending      = goalStatusActive
-	goalStatusRunning      = goalStatusActive
-	goalStatusBlocked      = goalStatusPaused
-	goalStatusUsageLimited = goalStatusBudgetLimited
-	goalStatusCanceled     = goalStatusPaused
+	goalStatusPending  = goalStatusActive
+	goalStatusRunning  = goalStatusActive
+	goalStatusCanceled = goalStatusPaused
 
 	defaultGoalMaxIterations = 0
 )
@@ -1650,7 +1650,7 @@ func goalStatusTerminal(status string) bool {
 
 func goalStatusStopsAutonomousLoop(status string) bool {
 	switch canonicalGoalStatus(status) {
-	case goalStatusComplete, goalStatusPaused, goalStatusBudgetLimited:
+	case goalStatusComplete, goalStatusPaused, goalStatusBlocked, goalStatusUsageLimited, goalStatusBudgetLimited:
 		return true
 	default:
 		return false
@@ -1661,7 +1661,7 @@ func goalEventSeverity(goal GoalState) string {
 	switch canonicalGoalStatus(goal.Status) {
 	case goalStatusComplete:
 		return conversationSeverityInfo
-	case goalStatusPaused, goalStatusBudgetLimited:
+	case goalStatusPaused, goalStatusBlocked, goalStatusUsageLimited, goalStatusBudgetLimited:
 		return conversationSeverityWarn
 	default:
 		return conversationSeverityWarn
@@ -1678,9 +1678,15 @@ func canonicalGoalStatus(status string) string {
 	switch normalized {
 	case "active", "pending", "running", "run":
 		return goalStatusActive
-	case "paused", "pause", "blocked", "canceled", "cancelled", "stop", "stopped":
+	case "paused", "pause":
 		return goalStatusPaused
-	case "budgetlimited", "usagelimited":
+	case "blocked":
+		return goalStatusBlocked
+	case "canceled", "cancelled", "stop", "stopped":
+		return goalStatusPaused
+	case "usagelimited":
+		return goalStatusUsageLimited
+	case "budgetlimited":
 		return goalStatusBudgetLimited
 	case "complete", "completed", "done":
 		return goalStatusComplete

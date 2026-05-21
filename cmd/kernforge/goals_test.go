@@ -1201,6 +1201,12 @@ func TestGoalStatusUsesCodexProtocolValues(t *testing.T) {
 	if goalStatusPaused != "paused" {
 		t.Fatalf("goalStatusPaused = %q", goalStatusPaused)
 	}
+	if goalStatusBlocked != "blocked" {
+		t.Fatalf("goalStatusBlocked = %q", goalStatusBlocked)
+	}
+	if goalStatusUsageLimited != "usageLimited" {
+		t.Fatalf("goalStatusUsageLimited = %q", goalStatusUsageLimited)
+	}
 	if goalStatusBudgetLimited != "budgetLimited" {
 		t.Fatalf("goalStatusBudgetLimited = %q", goalStatusBudgetLimited)
 	}
@@ -1215,11 +1221,12 @@ func TestGoalStatusNormalizesLegacyInternalValuesToCodexProtocol(t *testing.T) {
 		"pending":        goalStatusActive,
 		"running":        goalStatusActive,
 		"active":         goalStatusActive,
-		"blocked":        goalStatusPaused,
+		"blocked":        goalStatusBlocked,
 		"canceled":       goalStatusPaused,
 		"cancelled":      goalStatusPaused,
 		"paused":         goalStatusPaused,
-		"usage_limited":  goalStatusBudgetLimited,
+		"usage_limited":  goalStatusUsageLimited,
+		"usageLimited":   goalStatusUsageLimited,
 		"budget_limited": goalStatusBudgetLimited,
 		"budgetLimited":  goalStatusBudgetLimited,
 		"complete":       goalStatusComplete,
@@ -1267,7 +1274,7 @@ func TestGoalToolsExposeCodexCompatibleSchemas(t *testing.T) {
 	updateProps := updateDef.InputSchema["properties"].(map[string]any)
 	status := updateProps["status"].(map[string]any)
 	enum, ok := status["enum"].([]string)
-	if !ok || len(enum) != 1 || enum[0] != goalStatusComplete {
+	if !ok || len(enum) != 2 || enum[0] != goalStatusComplete || enum[1] != goalStatusBlocked {
 		t.Fatalf("update_goal status enum = %#v", status["enum"])
 	}
 }
@@ -1335,8 +1342,27 @@ func TestGoalToolsCreateGetAndCompleteGoal(t *testing.T) {
 		t.Fatalf("unexpected get_goal response: %#v", got)
 	}
 
-	if _, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "paused"}); err == nil || !strings.Contains(err.Error(), "update_goal can only mark the existing goal complete") {
+	if _, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "paused"}); err == nil || !strings.Contains(err.Error(), "update_goal can only mark the existing goal complete or blocked") {
 		t.Fatalf("expected update_goal to reject non-complete status, got %v", err)
+	}
+
+	blockedOut, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "blocked"})
+	if err != nil {
+		t.Fatalf("update_goal blocked: %v", err)
+	}
+	var blocked goalToolResponse
+	if err := json.Unmarshal([]byte(blockedOut), &blocked); err != nil {
+		t.Fatalf("decode update_goal blocked response: %v\n%s", err, blockedOut)
+	}
+	if blocked.Goal == nil || blocked.Goal.Status != goalStatusBlocked {
+		t.Fatalf("expected blocked goal response, got %#v", blocked)
+	}
+	if blocked.CompletionBudgetReport != nil {
+		t.Fatalf("blocked update should omit completion budget report, got %#v", blocked.CompletionBudgetReport)
+	}
+	active, ok := session.ActiveGoal()
+	if !ok || active.Status != goalStatusBlocked || !active.CompletedAt.IsZero() {
+		t.Fatalf("expected persisted blocked active goal without completion time, got ok=%t goal=%#v", ok, active)
 	}
 
 	completeOut, err := NewUpdateGoalTool(ws).Execute(ctx, map[string]any{"status": "complete"})
@@ -1353,7 +1379,7 @@ func TestGoalToolsCreateGetAndCompleteGoal(t *testing.T) {
 	if complete.CompletionBudgetReport == nil || !strings.Contains(*complete.CompletionBudgetReport, "goal.tokenBudget") || !strings.Contains(*complete.CompletionBudgetReport, "goal.tokensUsed") {
 		t.Fatalf("expected Codex completion budget report, got %#v", complete.CompletionBudgetReport)
 	}
-	active, ok := session.ActiveGoal()
+	active, ok = session.ActiveGoal()
 	if !ok || active.Status != goalStatusComplete || active.CompletedAt.IsZero() {
 		t.Fatalf("expected persisted complete active goal, got ok=%t goal=%#v", ok, active)
 	}

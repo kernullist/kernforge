@@ -159,10 +159,14 @@ func (t UpdateGoalTool) Definition() ToolDefinition {
 	return ToolDefinition{
 		Name: "update_goal",
 		Description: "Update the existing goal.\n" +
-			"Use this tool only to mark the goal achieved.\n" +
+			"Use this tool only to mark the goal achieved or genuinely blocked.\n" +
 			"Set status to `complete` only when the objective has actually been achieved and no required work remains.\n" +
+			"Set status to `blocked` only when the same blocking condition has repeated for at least three consecutive goal turns, counting the original/user-triggered turn and any automatic continuations, and the agent cannot make meaningful progress without user input or an external-state change.\n" +
+			"If the user resumes a goal that was previously marked `blocked`, treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed goal turns, set status to `blocked` again.\n" +
+			"Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the goal active; set status to `blocked`.\n" +
+			"Do not use `blocked` merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.\n" +
 			"Do not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\n" +
-			"You cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system.\n" +
+			"You cannot use this tool to pause, resume, budget-limit, or usage-limit a goal; those status changes are controlled by the user or system.\n" +
 			"When marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
 		InputSchema: map[string]any{
 			"type":                 "object",
@@ -170,8 +174,8 @@ func (t UpdateGoalTool) Definition() ToolDefinition {
 			"properties": map[string]any{
 				"status": map[string]any{
 					"type":        "string",
-					"enum":        []string{"complete"},
-					"description": "Required. Set to complete only when the objective is achieved and no required work remains.",
+					"enum":        []string{"complete", "blocked"},
+					"description": "Required. Set to `complete` only when the objective is achieved and no required work remains. Set to `blocked` only after the same blocking condition has recurred for at least three consecutive goal turns and the agent is at an impasse. After a previously blocked goal is resumed, the resumed run starts a fresh blocked audit.",
 				},
 			},
 			"required": []string{"status"},
@@ -190,8 +194,9 @@ func (t UpdateGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
-	if stringValue(args, "status") != goalStatusComplete {
-		return ToolExecutionResult{}, fmt.Errorf("update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system")
+	status := strings.TrimSpace(stringValue(args, "status"))
+	if status != goalStatusComplete && status != goalStatusBlocked {
+		return ToolExecutionResult{}, fmt.Errorf("update_goal can only mark the existing goal complete or blocked; pause, resume, budget-limited, and usage-limited status changes are controlled by the user or system")
 	}
 	session, err := t.goalSession()
 	if err != nil {
@@ -203,19 +208,23 @@ func (t UpdateGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	}
 	goal := session.Goals[index]
 	now := time.Now()
-	goal.Status = goalStatusComplete
+	goal.Status = status
 	goal.LastError = ""
-	if goal.CompletedAt.IsZero() {
+	if status == goalStatusComplete && goal.CompletedAt.IsZero() {
 		goal.CompletedAt = now
 	}
 	goal.UpdatedAt = now
 	goal.updateUsageTelemetry(session)
 	goal.Normalize()
 	session.UpsertGoal(goal)
+	summaryStatus := "completed"
+	if goal.Status == goalStatusBlocked {
+		summaryStatus = "blocked"
+	}
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindGoal,
-		Severity: conversationSeverityInfo,
-		Summary:  "goal completed: " + compactPromptSection(goal.Objective, 120),
+		Severity: goalEventSeverity(goal),
+		Summary:  "goal " + summaryStatus + ": " + compactPromptSection(goal.Objective, 120),
 		Entities: map[string]string{
 			"goal":   goal.ID,
 			"status": goal.Status,
@@ -224,7 +233,7 @@ func (t UpdateGoalTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	if err := t.saveGoalSession(session); err != nil {
 		return ToolExecutionResult{}, err
 	}
-	response, err := goalToolResponseFor(session, goal, true)
+	response, err := goalToolResponseFor(session, goal, status == goalStatusComplete)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}
