@@ -4826,11 +4826,7 @@ func runCommand(ctx context.Context, dir string, name string, args ...string) (s
 }
 
 func runGitCommand(ctx context.Context, dir string, args ...string) (string, error) {
-	out, err := runCommand(ctx, dir, "git", args...)
-	if err != nil {
-		return out, fmt.Errorf("git command failed: %w", err)
-	}
-	return out, nil
+	return runGitHelperCommand(ctx, dir, args...)
 }
 
 func runGitHelperCommand(ctx context.Context, dir string, args ...string) (string, error) {
