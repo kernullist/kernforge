@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,5 +104,96 @@ func TestSessionStoreListUsesBackupWhenPrimaryIsCorrupt(t *testing.T) {
 	}
 	if items[0].ID != "session-a" || items[0].Name != "listed" {
 		t.Fatalf("unexpected listed session: %#v", items[0])
+	}
+}
+
+func TestSessionStoreSearchIsCaseInsensitive(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "test", "test-model", "", "default")
+	session.ID = "session-search"
+	session.Name = "Search Target"
+	session.Summary = "Runtime gate work is unrelated."
+	session.Messages = []Message{
+		{Role: "user", Text: "Please compare Codex Thread Search behavior against kernforge."},
+	}
+
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	results, err := store.Search("thread search", 10)
+	if err != nil {
+		t.Fatalf("search sessions: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one search result, got %d", len(results))
+	}
+	if results[0].ID != "session-search" {
+		t.Fatalf("unexpected result id: %#v", results[0])
+	}
+	if !strings.Contains(results[0].Snippet, "Thread Search") {
+		t.Fatalf("expected original-case snippet, got %q", results[0].Snippet)
+	}
+}
+
+func TestSessionStoreSearchUsesBackupWhenPrimaryIsCorrupt(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "test", "test-model", "", "default")
+	session.ID = "session-backup"
+	session.Name = "Backup Target"
+	session.Summary = "Backup-only search evidence."
+
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "session-backup.json"), []byte("{"), 0o644); err != nil {
+		t.Fatalf("corrupt primary: %v", err)
+	}
+
+	results, err := store.Search("backup-only", 10)
+	if err != nil {
+		t.Fatalf("search sessions: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one backup-backed search result, got %d", len(results))
+	}
+	if results[0].ID != "session-backup" {
+		t.Fatalf("unexpected result id: %#v", results[0])
+	}
+}
+
+func TestSessionsCommandSearchesSavedContent(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(root)
+	session := NewSession(root, "test", "test-model", "", "default")
+	session.ID = "session-command"
+	session.Name = "Command Target"
+	session.Summary = "Codex parity search through slash command."
+
+	if err := store.Save(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:  &out,
+		ui:      NewUI(),
+		store:   store,
+		session: NewSession(root, "test", "test-model", "", "default"),
+	}
+	if _, err := rt.handleCommand(Command{Name: "sessions", Args: "search parity"}); err != nil {
+		t.Fatalf("handleCommand(sessions search): %v", err)
+	}
+	output := out.String()
+	if !strings.Contains(output, "Session Search") {
+		t.Fatalf("expected session search header, got %q", output)
+	}
+	if !strings.Contains(output, "session-command") {
+		t.Fatalf("expected matching session id, got %q", output)
+	}
+	if !strings.Contains(output, "Codex parity search") {
+		t.Fatalf("expected matching snippet, got %q", output)
 	}
 }

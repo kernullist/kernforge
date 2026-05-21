@@ -2872,7 +2872,7 @@ Conversation And Sessions:
 /rename <name>         Rename the current session
 /resume <session-id>   Resume a saved session
 /session               Show the current session id and storage path
-/sessions              List recent sessions
+/sessions [search <query>] List recent sessions or search saved session content
 /handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
 /suggest [status]      Show proactive situation judgment and suggested next actions
 /suggest-dashboard-html Render proactive suggestions as an HTML dashboard

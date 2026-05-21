@@ -452,6 +452,15 @@ type SessionSummary struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+type SessionSearchResult struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	WorkingDir string    `json:"working_dir"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	MatchField string    `json:"match_field"`
+	Snippet    string    `json:"snippet"`
+}
+
 type SessionStore struct {
 	root string
 }
@@ -537,6 +546,18 @@ func loadSessionFile(path string) (*Session, []byte, error) {
 	return &sess, data, nil
 }
 
+func loadSessionFileWithBackup(path string) (*Session, error) {
+	sess, _, err := loadSessionFile(path)
+	if err == nil {
+		return sess, nil
+	}
+	sess, _, err = loadSessionFile(sessionBackupPath(path))
+	if err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
 func (s *SessionStore) List() ([]SessionSummary, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
@@ -551,12 +572,9 @@ func (s *SessionStore) List() ([]SessionSummary, error) {
 			continue
 		}
 		path := filepath.Join(s.root, entry.Name())
-		sess, _, err := loadSessionFile(path)
+		sess, err := loadSessionFileWithBackup(path)
 		if err != nil {
-			sess, _, err = loadSessionFile(sessionBackupPath(path))
-			if err != nil {
-				continue
-			}
+			continue
 		}
 		items = append(items, SessionSummary{
 			ID:         sess.ID,
@@ -569,6 +587,144 @@ func (s *SessionStore) List() ([]SessionSummary, error) {
 		return items[i].UpdatedAt.After(items[j].UpdatedAt)
 	})
 	return items, nil
+}
+
+func (s *SessionStore) Search(query string, limit int) ([]SessionSearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("session search requires a query")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	results := make([]SessionSearchResult, 0, min(limit, len(entries)))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(s.root, entry.Name())
+		sess, err := loadSessionFileWithBackup(path)
+		if err != nil {
+			continue
+		}
+		field, snippet, ok := sessionSearchMatch(sess, query)
+		if !ok {
+			continue
+		}
+		results = append(results, SessionSearchResult{
+			ID:         sess.ID,
+			Name:       sess.Name,
+			WorkingDir: sess.WorkingDir,
+			UpdatedAt:  sess.UpdatedAt,
+			MatchField: field,
+			Snippet:    snippet,
+		})
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].UpdatedAt.After(results[j].UpdatedAt)
+	})
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, nil
+}
+
+type sessionSearchField struct {
+	name string
+	text string
+}
+
+func sessionSearchMatch(sess *Session, query string) (string, string, bool) {
+	fields := []sessionSearchField{
+		{name: "name", text: sess.Name},
+		{name: "id", text: sess.ID},
+		{name: "working_dir", text: sess.WorkingDir},
+		{name: "summary", text: sess.Summary},
+		{name: "transcript", text: sess.ExportText()},
+	}
+	for _, field := range fields {
+		snippet, ok := sessionSearchSnippet(field.text, query)
+		if ok {
+			return field.name, snippet, true
+		}
+	}
+	return "", "", false
+}
+
+func sessionSearchSnippet(text string, query string) (string, bool) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return "", false
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		matchRune := caseInsensitiveRuneIndex(line, query)
+		if matchRune < 0 {
+			continue
+		}
+		return sessionSearchExcerpt(line, matchRune, 180), true
+	}
+	return "", false
+}
+
+func sessionSearchExcerpt(line string, matchRune int, maxRunes int) string {
+	if maxRunes <= 0 {
+		maxRunes = 180
+	}
+	runes := []rune(line)
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	if matchRune < 0 {
+		matchRune = 0
+	}
+	before := maxRunes / 3
+	start := matchRune - before
+	if start < 0 {
+		start = 0
+	}
+	if start+maxRunes > len(runes) {
+		start = len(runes) - maxRunes
+	}
+	end := start + maxRunes
+	snippet := strings.TrimSpace(string(runes[start:end]))
+	if start > 0 {
+		snippet = "... " + snippet
+	}
+	if end < len(runes) {
+		snippet += " ..."
+	}
+	return snippet
+}
+
+func caseInsensitiveRuneIndex(text string, query string) int {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return -1
+	}
+	textRunes := []rune(text)
+	queryRunes := []rune(query)
+	if len(queryRunes) == 0 || len(queryRunes) > len(textRunes) {
+		return -1
+	}
+	for i := 0; i+len(queryRunes) <= len(textRunes); i++ {
+		if strings.EqualFold(string(textRunes[i:i+len(queryRunes)]), query) {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *Session) normalizeSelectionState() {

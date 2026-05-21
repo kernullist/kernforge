@@ -6831,6 +6831,40 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("name", rt.session.Name))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("stored_at", filepath.Join(rt.store.Root(), rt.session.ID+".json")))
 	case "sessions":
+		sessionArgs := strings.TrimSpace(cmd.Args)
+		if sessionArgs != "" {
+			query := sessionArgs
+			parts := strings.SplitN(sessionArgs, " ", 2)
+			if len(parts) > 0 {
+				action := normalizeSlashCommandName(parts[0])
+				if action == "search" || action == "find" {
+					if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
+						return false, fmt.Errorf("usage: /sessions search <query>")
+					}
+					query = strings.TrimSpace(parts[1])
+				}
+			}
+			items, err := rt.store.Search(query, 20)
+			if err != nil {
+				return false, err
+			}
+			if len(items) == 0 {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("No sessions matched query."))
+				return false, nil
+			}
+			fmt.Fprintln(rt.writer, rt.ui.section("Session Search"))
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("query", query))
+			for _, item := range items {
+				fmt.Fprintf(rt.writer, "%s  %s  %s\n", rt.ui.dim(item.ID), rt.ui.info(item.UpdatedAt.Format(time.RFC3339)), item.Name)
+				if strings.TrimSpace(item.WorkingDir) != "" {
+					fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim("cwd:"), rt.ui.dim(item.WorkingDir))
+				}
+				if strings.TrimSpace(item.Snippet) != "" {
+					fmt.Fprintf(rt.writer, "  %s %s\n", rt.ui.dim(item.MatchField+":"), item.Snippet)
+				}
+			}
+			return false, nil
+		}
 		items, err := rt.store.List()
 		if err != nil {
 			return false, err
