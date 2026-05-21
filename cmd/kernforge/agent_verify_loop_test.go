@@ -2950,6 +2950,48 @@ func TestAgentContinuesSameTurnWhenProviderEndTurnFalse(t *testing.T) {
 	}
 }
 
+func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	endTurnFalse := false
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant", Text: "Final Answer\n\nThe implementation is complete and ready for review."},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message:    Message{Role: "assistant", Text: "This follow-up should not be requested."},
+				StopReason: "completed",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{Model: "model"},
+		Client:    provider,
+		Tools:     NewToolRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "finish the work")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Final Answer\n\nThe implementation is complete and ready for review." {
+		t.Fatalf("expected first final-looking response to become final reply, got %q", reply)
+	}
+	if len(provider.requests) != 1 {
+		t.Fatalf("expected final-looking end_turn=false response to stop the turn, got %d requests", len(provider.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-looking response to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+}
+
 func TestAgentReusesProviderTurnStateOnlyWithinExternalTurn(t *testing.T) {
 	root := t.TempDir()
 	provider := &turnStateObservingProviderClient{

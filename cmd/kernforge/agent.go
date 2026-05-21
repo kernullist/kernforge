@@ -775,7 +775,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
 		deferEndTurnFollowUpForGeneratedDocument := a.shouldDeferEndTurnFollowUpForGeneratedDocument(latestUser, resp)
-		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
+		deferEndTurnFollowUpForFinalLookingReply := shouldDeferEndTurnFollowUpForFinalLookingReply(resp)
+		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
 			resp.Message.Phase = messagePhaseCommentary
 		}
 		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
@@ -1082,7 +1083,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
-			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !finalAnswerOnlyCorrection {
+			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !finalAnswerOnlyCorrection {
 				commentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -2636,6 +2637,16 @@ func (a *Agent) shouldDeferEndTurnFollowUpForGeneratedDocument(request string, r
 	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
+func shouldDeferEndTurnFollowUpForFinalLookingReply(resp ChatResponse) bool {
+	if !chatResponseRequestsFollowUp(resp) {
+		return false
+	}
+	if len(resp.Message.ToolCalls) > 0 {
+		return false
+	}
+	return assistantTextLooksLikeCompletionSummary(resp.Message.Text)
+}
+
 func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request string, calls []ToolCall) bool {
 	if a == nil || a.Session == nil || len(calls) == 0 {
 		return false
@@ -3416,7 +3427,7 @@ func sanitizeAssistantMessageText(text string, hasToolCalls bool) string {
 	return strings.Join(kept, "\n")
 }
 
-func assistantToolCallTextLooksLikeCompletionSummary(text string) bool {
+func assistantTextLooksLikeCompletionSummary(text string) bool {
 	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
 	if normalized == "" {
 		return false
@@ -3469,6 +3480,10 @@ func assistantToolCallTextLooksLikeCompletionSummary(text string) bool {
 		}
 	}
 	return false
+}
+
+func assistantToolCallTextLooksLikeCompletionSummary(text string) bool {
+	return assistantTextLooksLikeCompletionSummary(text)
 }
 
 var hiddenAssistantMarkupPatterns = []*regexp.Regexp{
