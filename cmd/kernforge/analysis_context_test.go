@@ -6,6 +6,21 @@ import (
 	"time"
 )
 
+func TestBaseUserQueryTextStripsConversationRuntimeContext(t *testing.T) {
+	text := strings.Join([]string{
+		"RuntimeManager.cpp 버그를 수정해",
+		"",
+		"[Conversation Runtime Context]",
+		"Working directory: F:\\repo",
+		"Active permission profile: :workspace",
+		"[/Conversation Runtime Context]",
+	}, "\n")
+
+	if got := baseUserQueryText(text); got != "RuntimeManager.cpp 버그를 수정해" {
+		t.Fatalf("expected runtime context to be stripped from base query, got %q", got)
+	}
+}
+
 func TestRenderRelevantProjectAnalysisContextIncludesSemanticIndexV2SecurityHits(t *testing.T) {
 	artifacts := latestAnalysisArtifacts{
 		Pack: KnowledgePack{

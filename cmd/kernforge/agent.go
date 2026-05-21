@@ -7847,6 +7847,9 @@ func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Me
 			break
 		}
 		msg := messages[i]
+		if !messageShouldRetainAfterCompact(msg) {
+			continue
+		}
 		cost := compactMessageRetainedCharCost(msg)
 		if cost <= 0 {
 			cost = 1
@@ -7867,11 +7870,17 @@ func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Me
 		break
 	}
 	if len(retainedReversed) == 0 {
-		latest := messages[len(messages)-1]
-		if truncated, ok := compactTruncateMessageToCharBudget(latest, maxChars); ok {
-			retainedReversed = append(retainedReversed, truncated)
-			firstRetained = len(messages) - 1
-			firstRetainedTruncated = true
+		for i := len(messages) - 1; i >= 0; i-- {
+			latest := messages[i]
+			if !messageShouldRetainAfterCompact(latest) {
+				continue
+			}
+			if truncated, ok := compactTruncateMessageToCharBudget(latest, maxChars); ok {
+				retainedReversed = append(retainedReversed, truncated)
+				firstRetained = i
+				firstRetainedTruncated = true
+			}
+			break
 		}
 	}
 	retained := make([]Message, len(retainedReversed))
@@ -7910,6 +7919,50 @@ func compactMessageRetainedCharCost(msg Message) int {
 		return 1
 	}
 	return total
+}
+
+func messageShouldRetainAfterCompact(msg Message) bool {
+	role := strings.ToLower(strings.TrimSpace(msg.Role))
+	switch role {
+	case "developer", "system":
+		return false
+	case "user":
+		return !messageLooksLikeCompactContextOnly(msg)
+	case "assistant", "tool":
+		return true
+	default:
+		return false
+	}
+}
+
+func messageLooksLikeCompactContextOnly(msg Message) bool {
+	if len(msg.Images) > 0 || len(msg.ToolCalls) > 0 || len(msg.ToolContentItems) > 0 {
+		return false
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(msg.Text, "\r\n", "\n"))
+	if text == "" {
+		return false
+	}
+	return compactWrappedSectionOnly(text, "[Conversation Runtime Context]", "[/Conversation Runtime Context]") ||
+		compactWrappedSectionOnly(text, "<environment_context>", "</environment_context>") ||
+		compactWrappedSectionOnly(text, "<goal_context>", "</goal_context>")
+}
+
+func compactWrappedSectionOnly(text string, start string, end string) bool {
+	text = strings.TrimSpace(text)
+	lowerText := strings.ToLower(text)
+	lowerStart := strings.ToLower(strings.TrimSpace(start))
+	lowerEnd := strings.ToLower(strings.TrimSpace(end))
+	if !strings.HasPrefix(lowerText, lowerStart) || !strings.HasSuffix(lowerText, lowerEnd) {
+		return false
+	}
+	startLen := len(strings.TrimSpace(start))
+	endLen := len(strings.TrimSpace(end))
+	if len(text) < startLen+endLen {
+		return false
+	}
+	inner := strings.TrimSpace(text[startLen : len(text)-endLen])
+	return inner != ""
 }
 
 func compactTruncateMessageToCharBudget(msg Message, maxChars int) (Message, bool) {
@@ -8029,6 +8082,9 @@ func compactMessageSummaryText(msg Message) string {
 }
 
 func messageShouldAppearInCompactSummary(msg Message) bool {
+	if messageLooksLikeCompactContextOnly(msg) {
+		return false
+	}
 	role := strings.TrimSpace(strings.ToLower(msg.Role))
 	if role != "assistant" {
 		return true

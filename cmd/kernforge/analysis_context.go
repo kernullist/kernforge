@@ -1138,6 +1138,7 @@ func baseUserQueryText(text string) string {
 		"\n\nRelevant persistent memory from past sessions:\n",
 		"\n\nRelevant project analysis from past analyze-project runs:\n",
 		"\n\nAuto-discovered code context:\n",
+		"\n\n[Conversation Runtime Context]\n",
 	}
 	cut := len(trimmed)
 	for _, marker := range markers {

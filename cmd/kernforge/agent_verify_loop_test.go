@@ -4034,6 +4034,39 @@ func TestCompactRetainedMessagesWithinBudgetPreservesImagesOnBoundary(t *testing
 	}
 }
 
+func TestCompactRetainedMessagesWithinBudgetDropsContextOnlyMessagesBeforeBudget(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "old"},
+		{Role: "user", Text: "[Conversation Runtime Context]\n" + strings.Repeat("runtime-context-", 20) + "\n[/Conversation Runtime Context]"},
+		{Role: "user", Text: "new"},
+	}
+
+	retained, summarizePrefix := compactRetainedMessagesWithinBudget(messages, 6)
+	if summarizePrefix != 0 {
+		t.Fatalf("expected context-only message to be discarded before budget accounting, got prefix %d", summarizePrefix)
+	}
+	if len(retained) != 2 {
+		t.Fatalf("expected old and newest user messages to survive, got %#v", retained)
+	}
+	if retained[0].Text != "old" || retained[1].Text != "new" {
+		t.Fatalf("expected context-only message to be omitted from retained history, got %#v", retained)
+	}
+}
+
+func TestSummarizeMessagesOmitsContextOnlyMessages(t *testing.T) {
+	summary := summarizeMessages([]Message{
+		{Role: "user", Text: "<environment_context>\n" + strings.Repeat("cwd=/tmp\n", 8) + "</environment_context>"},
+		{Role: "user", Text: "real user request"},
+	}, "compact")
+
+	if strings.Contains(summary, "environment_context") || strings.Contains(summary, "cwd=/tmp") {
+		t.Fatalf("expected context-only wrapper to be omitted from compact summary, got %q", summary)
+	}
+	if !strings.Contains(summary, "real user request") {
+		t.Fatalf("expected real user request in compact summary, got %q", summary)
+	}
+}
+
 func TestCompactWithTriggerSummarizesRetainedMessagesDroppedByBudget(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
