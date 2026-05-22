@@ -92,6 +92,55 @@ func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
 	}
 }
 
+func TestLatestExternalOrUserMessageTextSkipsAgentLoopInternalGuidance(t *testing.T) {
+	original := "Fix the runtime gate loop"
+	internalMessages := []string{
+		"Pre-final coding harness found issues that require revising only the final answer.\nDo not call tools.",
+		"Runtime gate ledger blocked final_answer. Resolve the blockers before continuing.",
+		"Generated document artifact finalization is answer-only now. The artifact content has already passed deterministic content checks.",
+		"The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem.",
+		"You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient.",
+		"Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer.",
+	}
+	for _, internal := range internalMessages {
+		messages := []Message{
+			{Role: "user", Text: original},
+			{Role: "user", Text: internal},
+		}
+		if got := latestExternalOrUserMessageText(messages); got != original {
+			t.Fatalf("expected latest external request to skip internal guidance %q, got %q", internal, got)
+		}
+	}
+}
+
+func TestCurrentTurnPatchTransactionSurvivesAgentLoopInternalGuidance(t *testing.T) {
+	root := t.TempDir()
+	original := "Fix the runtime gate loop"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "user", Text: "Pre-final coding harness found issues that require revising only the final answer.\nDo not call tools."},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-001",
+		Goal:   original,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+
+	changed := currentTurnPatchTransactionChangedPaths(session)
+	if len(changed) != 1 || changed[0] != "cmd/kernforge/agent.go" {
+		t.Fatalf("expected current-turn patch transaction to survive internal guidance, got %#v", changed)
+	}
+}
+
 func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	root := t.TempDir()
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"

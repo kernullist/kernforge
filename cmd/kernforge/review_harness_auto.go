@@ -714,10 +714,24 @@ func looksLikePreWriteInternalContextMessage(text string) bool {
 		return false
 	}
 	return strings.HasPrefix(lower, "you are repeating the same tool call sequence") ||
+		strings.HasPrefix(lower, "you have already made multiple rounds of edits") ||
+		strings.HasPrefix(lower, "you have already completed multiple edit rounds") ||
+		strings.HasPrefix(lower, "your last assistant message was commentary/progress") ||
+		strings.HasPrefix(lower, "this request explicitly asks you to inspect and fix the code") ||
+		strings.HasPrefix(lower, "your last answer appears to have been cut off") ||
+		strings.HasPrefix(lower, "your last response was a raw internal review_result block") ||
+		strings.HasPrefix(lower, "verification is still unresolved") ||
+		strings.HasPrefix(lower, "please provide the final answer to the user now. do not return an empty message") ||
 		strings.HasPrefix(lower, "your last edit targeted stale or mismatched file contents") ||
+		strings.HasPrefix(lower, "the last read-only inspection tool was blocked by editable ownership routing") ||
 		strings.HasPrefix(lower, "your latest read_file result") ||
 		strings.HasPrefix(lower, "the same tool failure repeated") ||
 		strings.HasPrefix(lower, "recovery mode:") ||
+		strings.HasPrefix(lower, "pre-final coding harness found issues") ||
+		strings.HasPrefix(lower, "generated document artifact finalization is answer-only now") ||
+		strings.HasPrefix(lower, "runtime gate ledger blocked") ||
+		strings.HasPrefix(lower, "automatic verification has been disabled") ||
+		strings.HasPrefix(lower, "this request likely needs current external research") ||
 		strings.HasPrefix(lower, "pre-write 리뷰가 이미 수정안을 차단했고") ||
 		strings.HasPrefix(lower, "the pre-write review already blocked the edit") ||
 		strings.HasPrefix(lower, "next step requirements:") ||

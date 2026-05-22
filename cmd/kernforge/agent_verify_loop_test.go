@@ -9771,6 +9771,85 @@ func TestAgentGeneratedDocumentArtifactFinalizesAfterSkippedAutoVerifyDisclosure
 	}
 }
 
+func TestAgentGeneratedDocumentArtifactSynthesizesFinalBeforePostCompletionTools(t *testing.T) {
+	root := t.TempDir()
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 2개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| High | 1 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: resource lifetime bug.",
+	}, "\n")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "Tavern/BugReport.md",
+				"content": reportContent,
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "The bug report document has been created at `Tavern/BugReport.md` with detailed findings and suggested fixes.",
+				},
+				StopReason: "stop",
+			},
+			toolCallResponse("run_shell", map[string]any{"command": "echo should not run"}),
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	var progress []string
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		EmitProgress: func(text string) {
+			progress = append(progress, text)
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected generated document final reply, got %q", reply)
+	}
+	if !replyMentionsVerificationNotRun(reply) {
+		t.Fatalf("expected synthesized final reply to disclose skipped verification, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected post-completion shell response to remain unrequested, got %d requests", len(provider.requests))
+	}
+	for _, line := range progress {
+		if strings.Contains(line, "자동 변경 후 리뷰") || strings.Contains(line, "Automatic post-change review") {
+			t.Fatalf("generated document finalization should not enter post-change review, progress=%q", line)
+		}
+	}
+}
+
 func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{
