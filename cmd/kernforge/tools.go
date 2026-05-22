@@ -2569,12 +2569,14 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	if inputErr != nil {
 		return ToolExecutionResult{}, inputErr
 	}
-	displayPath, unifiedDiff := writeFileUnifiedDiffPreview(t.ws, args)
+	planned := writeFileMutationPreview(t.ws, args)
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
-	if displayPath != "" {
-		path = displayPath
+	if planned.DisplayPath != "" {
+		path = planned.DisplayPath
 	}
+	committedPlanned := err == nil || planned.Committed()
+	changedWorkspace := err == nil || planned.ChangedOnDisk()
 	meta := map[string]any{
 		"path":                  path,
 		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
@@ -2582,18 +2584,26 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		"append":                boolValue(args, "append", false),
 		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
 		"bytes_written":         len(stringValue(args, "content")),
-		"changed_workspace":     err == nil,
-		"requires_verification": err == nil,
+		"changed_workspace":     changedWorkspace,
+		"requires_verification": changedWorkspace,
 		"effect":                "edit",
 	}
-	if err == nil && strings.TrimSpace(unifiedDiff) != "" {
-		meta["unified_diff"] = unifiedDiff
+	if changedWorkspace && committedPlanned && strings.TrimSpace(planned.UnifiedDiff) != "" {
+		meta["unified_diff"] = planned.UnifiedDiff
+	} else if changedWorkspace && err != nil {
+		meta["turn_diff_invalidated"] = true
+		meta["unified_diff_unavailable_reason"] = "workspace changed but final contents did not match the planned edit after tool failure"
 	}
 	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
 func writeFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string, string) {
+	planned := writeFileMutationPreview(ws, args)
+	return planned.DisplayPath, planned.UnifiedDiff
+}
+
+func writeFileMutationPreview(ws Workspace, args map[string]any) plannedTextFileEdit {
 	route, err := ws.ResolveEditPathWithOptions(EditRoutingRequest{
 		Path:              stringValue(args, "path"),
 		OwnerNodeID:       stringValue(args, "owner_node_id"),
@@ -2601,18 +2611,79 @@ func writeFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string, str
 		AllowBaseFallback: true,
 	})
 	if err != nil {
-		return "", ""
+		return plannedTextFileEdit{}
 	}
 	before := ""
+	beforeExists := false
 	if existing, readErr := os.ReadFile(route.AbsolutePath); readErr == nil {
 		before = string(existing)
+		beforeExists = true
 	}
 	after := stringValue(args, "content")
 	if boolValue(args, "append", false) {
 		after = before + after
 	}
 	displayPath := route.DisplayPath()
-	return displayPath, buildUnifiedDiff(displayPath, before, after)
+	return plannedTextFileEdit{
+		AbsolutePath:  route.AbsolutePath,
+		DisplayPath:   displayPath,
+		Before:        before,
+		After:         after,
+		BeforeExists:  beforeExists,
+		AfterExists:   true,
+		UnifiedDiff:   buildUnifiedDiff(displayPath, before, after),
+		PlanAvailable: strings.TrimSpace(displayPath) != "",
+	}
+}
+
+type plannedTextFileEdit struct {
+	AbsolutePath  string
+	DisplayPath   string
+	Before        string
+	After         string
+	BeforeExists  bool
+	AfterExists   bool
+	UnifiedDiff   string
+	PlanAvailable bool
+}
+
+func (p plannedTextFileEdit) PlannedChange() bool {
+	if !p.PlanAvailable {
+		return false
+	}
+	return p.BeforeExists != p.AfterExists || p.Before != p.After
+}
+
+func (p plannedTextFileEdit) Committed() bool {
+	if !p.PlannedChange() {
+		return false
+	}
+	if strings.TrimSpace(p.AbsolutePath) == "" {
+		return false
+	}
+	if !p.AfterExists {
+		_, err := os.Stat(p.AbsolutePath)
+		return errors.Is(err, os.ErrNotExist)
+	}
+	data, err := os.ReadFile(p.AbsolutePath)
+	return err == nil && string(data) == p.After
+}
+
+func (p plannedTextFileEdit) ChangedOnDisk() bool {
+	if !p.PlanAvailable {
+		return false
+	}
+	if strings.TrimSpace(p.AbsolutePath) == "" {
+		return false
+	}
+	data, err := os.ReadFile(p.AbsolutePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return p.BeforeExists
+		}
+		return false
+	}
+	return !p.BeforeExists || string(data) != p.Before
 }
 
 func suspiciousRewritePayload(path, before, after string) bool {
@@ -2806,11 +2877,11 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 	if inputErr != nil {
 		return ToolExecutionResult{}, inputErr
 	}
-	displayPath, unifiedDiff, plannedReplacements := replaceInFileUnifiedDiffPreview(t.ws, args)
+	planned, plannedReplacements := replaceInFileMutationPreview(t.ws, args)
 	text, err := t.Execute(ctx, input)
 	path := strings.TrimSpace(stringValue(args, "path"))
-	if displayPath != "" {
-		path = displayPath
+	if planned.DisplayPath != "" {
+		path = planned.DisplayPath
 	}
 	all := boolValue(args, "all", false)
 	replacements := 0
@@ -2826,6 +2897,11 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 			replacements = plannedReplacements
 		}
 	}
+	committedPlanned := err == nil || planned.Committed()
+	changedWorkspace := err == nil || planned.ChangedOnDisk()
+	if changedWorkspace && replacements == 0 && plannedReplacements > 0 {
+		replacements = plannedReplacements
+	}
 	meta := map[string]any{
 		"path":                  path,
 		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
@@ -2833,18 +2909,26 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		"all":                   all,
 		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
 		"applied_replacements":  replacements,
-		"changed_workspace":     err == nil,
-		"requires_verification": err == nil,
+		"changed_workspace":     changedWorkspace,
+		"requires_verification": changedWorkspace,
 		"effect":                "edit",
 	}
-	if err == nil && strings.TrimSpace(unifiedDiff) != "" {
-		meta["unified_diff"] = unifiedDiff
+	if changedWorkspace && committedPlanned && strings.TrimSpace(planned.UnifiedDiff) != "" {
+		meta["unified_diff"] = planned.UnifiedDiff
+	} else if changedWorkspace && err != nil {
+		meta["turn_diff_invalidated"] = true
+		meta["unified_diff_unavailable_reason"] = "workspace changed but final contents did not match the planned edit after tool failure"
 	}
 	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
 func replaceInFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string, string, int) {
+	planned, replacements := replaceInFileMutationPreview(ws, args)
+	return planned.DisplayPath, planned.UnifiedDiff, replacements
+}
+
+func replaceInFileMutationPreview(ws Workspace, args map[string]any) (plannedTextFileEdit, int) {
 	route, err := ws.ResolveEditPathWithOptions(EditRoutingRequest{
 		Path:              stringValue(args, "path"),
 		OwnerNodeID:       stringValue(args, "owner_node_id"),
@@ -2852,21 +2936,41 @@ func replaceInFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string,
 		AllowBaseFallback: true,
 	})
 	if err != nil {
-		return "", "", 0
+		return plannedTextFileEdit{}, 0
 	}
 	data, err := os.ReadFile(route.AbsolutePath)
 	if err != nil {
-		return route.DisplayPath(), "", 0
+		return plannedTextFileEdit{
+			AbsolutePath:  route.AbsolutePath,
+			DisplayPath:   route.DisplayPath(),
+			PlanAvailable: strings.TrimSpace(route.DisplayPath()) != "",
+		}, 0
 	}
 	before := string(data)
 	search := stringValue(args, "search")
 	count := strings.Count(before, search)
 	if count == 0 {
-		return route.DisplayPath(), "", 0
+		return plannedTextFileEdit{
+			AbsolutePath:  route.AbsolutePath,
+			DisplayPath:   route.DisplayPath(),
+			Before:        before,
+			After:         before,
+			BeforeExists:  true,
+			AfterExists:   true,
+			PlanAvailable: strings.TrimSpace(route.DisplayPath()) != "",
+		}, 0
 	}
 	all := boolValue(args, "all", false)
 	if !all && count > 1 {
-		return route.DisplayPath(), "", 0
+		return plannedTextFileEdit{
+			AbsolutePath:  route.AbsolutePath,
+			DisplayPath:   route.DisplayPath(),
+			Before:        before,
+			After:         before,
+			BeforeExists:  true,
+			AfterExists:   true,
+			PlanAvailable: strings.TrimSpace(route.DisplayPath()) != "",
+		}, 0
 	}
 	replace := stringValue(args, "replace")
 	after := ""
@@ -2877,7 +2981,16 @@ func replaceInFileUnifiedDiffPreview(ws Workspace, args map[string]any) (string,
 		count = 1
 	}
 	displayPath := route.DisplayPath()
-	return displayPath, buildUnifiedDiff(displayPath, before, after), count
+	return plannedTextFileEdit{
+		AbsolutePath:  route.AbsolutePath,
+		DisplayPath:   displayPath,
+		Before:        before,
+		After:         after,
+		BeforeExists:  true,
+		AfterExists:   true,
+		UnifiedDiff:   buildUnifiedDiff(displayPath, before, after),
+		PlanAvailable: strings.TrimSpace(displayPath) != "",
+	}, count
 }
 
 func parseReplacementCountFromOutput(text string) (int, error) {

@@ -540,6 +540,44 @@ func TestWriteFileRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestPatchToolFailureInvalidatesTurnDiffWhenDiffUnavailable(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-write-failed",
+		Name:      "write_file",
+		Arguments: mustJSON(map[string]any{"path": "main.go", "content": "package main\n"}),
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationFailureResult(call, ToolExecutionResult{
+		DisplayText: "post edit hook failed",
+		Meta: map[string]any{
+			"path":                            "main.go",
+			"changed_paths":                   []string{"main.go"},
+			"changed_workspace":               true,
+			"turn_diff_invalidated":           true,
+			"unified_diff_unavailable_reason": "workspace changed but final contents did not match the planned edit after tool failure",
+		},
+	}, errors.New("post edit hook failed"), false)
+
+	turnDiffs := latestEventsByKind(session.ConversationEvents, conversationEventKindTurnDiff)
+	if len(turnDiffs) != 1 {
+		t.Fatalf("expected one invalidating turn diff event, got %#v", turnDiffs)
+	}
+	if strings.TrimSpace(turnDiffs[0].Raw) != "" || turnDiffs[0].Entities["invalidated"] != "true" {
+		t.Fatalf("expected empty invalidating turn diff event, got %#v", turnDiffs[0])
+	}
+	if turnDiffs[0].Entities["changed_paths"] != "main.go" || !strings.Contains(turnDiffs[0].Summary, "invalidated") {
+		t.Fatalf("expected invalidating turn diff to retain changed path context, got %#v", turnDiffs[0])
+	}
+}
+
 func TestMetadataEditToolRecordsTurnDiffEvent(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

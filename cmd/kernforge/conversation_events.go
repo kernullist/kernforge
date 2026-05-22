@@ -414,7 +414,9 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 			CorrelationID: strings.TrimSpace(call.ID),
 			Entities:      entities,
 		})
-		a.appendCodexStyleTurnDiffEvent(call, result, entities)
+		if !a.appendCodexStyleTurnDiffEvent(call, result, entities) {
+			a.appendCodexStyleTurnDiffInvalidatedEvent(call, result, entities)
+		}
 		emittedTurnDiff = true
 	case toolCallIsMCPToolLike(name):
 		entities = mcpToolLifecycleEntities(call, result.Meta)
@@ -442,16 +444,18 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 	}
 	if !emittedTurnDiff && strings.TrimSpace(toolMetaString(result.Meta, "unified_diff")) != "" {
 		a.appendCodexStyleTurnDiffEvent(call, result, entities)
+	} else if !emittedTurnDiff && toolMetaBool(result.Meta, "turn_diff_invalidated") {
+		a.appendCodexStyleTurnDiffInvalidatedEvent(call, result, entities)
 	}
 }
 
-func (a *Agent) appendCodexStyleTurnDiffEvent(call ToolCall, result ToolExecutionResult, lifecycleEntities map[string]string) {
+func (a *Agent) appendCodexStyleTurnDiffEvent(call ToolCall, result ToolExecutionResult, lifecycleEntities map[string]string) bool {
 	if a == nil || a.Session == nil {
-		return
+		return false
 	}
 	unifiedDiff := strings.TrimSpace(toolMetaString(result.Meta, "unified_diff"))
 	if unifiedDiff == "" {
-		return
+		return false
 	}
 	entities := map[string]string{
 		"tool": strings.TrimSpace(call.Name),
@@ -471,6 +475,36 @@ func (a *Agent) appendCodexStyleTurnDiffEvent(call ToolCall, result ToolExecutio
 		CorrelationID: strings.TrimSpace(call.ID),
 		Entities:      entities,
 	})
+	return true
+}
+
+func (a *Agent) appendCodexStyleTurnDiffInvalidatedEvent(call ToolCall, result ToolExecutionResult, lifecycleEntities map[string]string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if !toolMetaBool(result.Meta, "turn_diff_invalidated") {
+		return false
+	}
+	entities := map[string]string{
+		"tool":        strings.TrimSpace(call.Name),
+		"invalidated": "true",
+	}
+	for key, value := range lifecycleEntities {
+		if strings.TrimSpace(value) != "" {
+			entities[key] = strings.TrimSpace(value)
+		}
+	}
+	if reason := strings.TrimSpace(toolMetaString(result.Meta, "unified_diff_unavailable_reason")); reason != "" {
+		entities["reason"] = compactPromptSection(reason, 220)
+	}
+	a.Session.AppendConversationEvent(ConversationEvent{
+		Kind:          conversationEventKindTurnDiff,
+		Severity:      conversationSeverityInfo,
+		Summary:       "turn_diff: invalidated | " + compactPromptSection(firstNonEmptyRuntimeString(entities["changed_paths"], strings.TrimSpace(call.Name)), 220),
+		CorrelationID: strings.TrimSpace(call.ID),
+		Entities:      entities,
+	})
+	return true
 }
 
 func toolCallIsExecCommandLike(name string) bool {

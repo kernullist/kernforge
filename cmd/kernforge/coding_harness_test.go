@@ -158,6 +158,37 @@ func TestPatchTransactionWarnsOnUnscopedWorkspaceMutation(t *testing.T) {
 	}
 }
 
+func TestPatchTransactionWarnsWhenTurnDiffInvalidated(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "Fix the runtime bug"}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	result := ToolExecutionResult{Meta: map[string]any{
+		"effect":                          "edit",
+		"changed_workspace":               true,
+		"changed_paths":                   []string{"main.go"},
+		"turn_diff_invalidated":           true,
+		"unified_diff_unavailable_reason": "workspace changed but final contents did not match the planned edit after tool failure",
+	}}
+
+	agent.recordPatchTransactionFromToolMetaIfNeeded(
+		ToolCall{Name: "external_edit", Arguments: `{}`},
+		result,
+		nil,
+	)
+
+	if session.ActivePatchTransaction == nil {
+		t.Fatalf("expected patch transaction for invalidated diff mutation")
+	}
+	warnings := strings.Join(session.ActivePatchTransaction.Warnings, "\n")
+	if !strings.Contains(warnings, "invalidated turn diff evidence") {
+		t.Fatalf("expected invalidated turn diff warning, got %#v", session.ActivePatchTransaction.Warnings)
+	}
+}
+
 func TestNoopMetadataEditDoesNotCreateUnknownScopeWarning(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

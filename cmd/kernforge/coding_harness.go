@@ -988,6 +988,13 @@ func (a *Agent) finishPatchTransactionToolProbe(probe *PatchTransactionProbe, ca
 		entry.Error = joinSentence(entry.Error, "post-snapshot: "+snapshotErr.Error())
 		tx.Warnings = appendTaskStateItem(tx.Warnings, "Could not capture post-edit fingerprint for "+entry.ToolName+": "+snapshotErr.Error(), 8)
 	}
+	if toolMetaBool(result.Meta, "turn_diff_invalidated") {
+		reason := strings.TrimSpace(toolMetaString(result.Meta, "unified_diff_unavailable_reason"))
+		if reason == "" {
+			reason = "workspace changed but unified diff metadata is unavailable"
+		}
+		tx.Warnings = appendTaskStateItem(tx.Warnings, entry.ToolName+" invalidated turn diff evidence: "+reason, 8)
+	}
 	tx.Entries = append(tx.Entries, entry)
 	tx.UpdatedAt = entry.CompletedAt
 	if result.Meta != nil {
@@ -1070,6 +1077,13 @@ func (a *Agent) recordPatchTransactionFromToolMetaIfNeeded(call ToolCall, result
 		})
 	}
 	entry.Paths = normalizePatchPathChanges(entry.Paths)
+	if toolMetaBool(result.Meta, "turn_diff_invalidated") {
+		reason := strings.TrimSpace(toolMetaString(result.Meta, "unified_diff_unavailable_reason"))
+		if reason == "" {
+			reason = "workspace changed but unified diff metadata is unavailable"
+		}
+		tx.Warnings = appendTaskStateItem(tx.Warnings, entry.ToolName+" invalidated turn diff evidence: "+reason, 8)
+	}
 	tx.Entries = append(tx.Entries, entry)
 	tx.UpdatedAt = now
 	result.Meta["patch_transaction_id"] = tx.ID

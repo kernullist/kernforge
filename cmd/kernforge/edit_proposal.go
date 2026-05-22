@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -412,6 +413,7 @@ type plannedEditProposal struct {
 	DisplayRoot  string
 	Before       string
 	After        string
+	BeforeExists bool
 	Count        int
 }
 
@@ -460,6 +462,9 @@ func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal,
 	case "delete_file":
 		ws.Progress("Deleting " + planned.DisplayPath + "...")
 		if err := os.Remove(planned.AbsolutePath); err != nil {
+			if editProposalMutationChangedOnDisk(planned) {
+				meta = editProposalObservedMutationMeta(proposal, planned)
+			}
 			return "", meta, err
 		}
 		ws.Progress("Deleted " + planned.DisplayPath + ".")
@@ -469,6 +474,9 @@ func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal,
 			return "", meta, err
 		}
 		if err := os.WriteFile(planned.AbsolutePath, []byte(planned.After), 0o644); err != nil {
+			if editProposalMutationChangedOnDisk(planned) {
+				meta = editProposalObservedMutationMeta(proposal, planned)
+			}
 			return "", meta, err
 		}
 		ws.Progress("Saved " + planned.DisplayPath + ".")
@@ -483,6 +491,9 @@ func applyEditProposal(ctx context.Context, ws Workspace, proposal EditProposal,
 		"owner_node_id":      ownerNodeID,
 		"worktree_root":      planned.DisplayRoot,
 	}); err != nil {
+		if editProposalMutationChangedOnDisk(planned) {
+			meta = editProposalObservedMutationMeta(proposal, planned)
+		}
 		return "", meta, err
 	}
 	meta = editProposalToolMeta(proposal, planned, true)
@@ -522,6 +533,7 @@ func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, a
 		DisplayPath:  displayPath,
 		DisplayRoot:  displayRoot,
 		Before:       before,
+		BeforeExists: readErr == nil,
 	}
 	switch operation {
 	case "replace_in_file":
@@ -572,6 +584,46 @@ func planEditProposal(ws Workspace, proposal EditProposal, ownerNodeID string, a
 		return plannedEditProposal{}, fmt.Errorf("unsupported edit proposal operation %q; use apply_patch for complex hunk-level fallback", proposal.Operation)
 	}
 	return planned, nil
+}
+
+func editProposalMutationCommitted(planned plannedEditProposal) bool {
+	if strings.TrimSpace(planned.AbsolutePath) == "" {
+		return false
+	}
+	afterExists := planned.Operation != "delete_file"
+	if planned.BeforeExists == afterExists && planned.Before == planned.After {
+		return false
+	}
+	if !afterExists {
+		_, err := os.Stat(planned.AbsolutePath)
+		return errors.Is(err, os.ErrNotExist)
+	}
+	data, err := os.ReadFile(planned.AbsolutePath)
+	return err == nil && string(data) == planned.After
+}
+
+func editProposalMutationChangedOnDisk(planned plannedEditProposal) bool {
+	if strings.TrimSpace(planned.AbsolutePath) == "" {
+		return false
+	}
+	data, err := os.ReadFile(planned.AbsolutePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return planned.BeforeExists
+		}
+		return false
+	}
+	return !planned.BeforeExists || string(data) != planned.Before
+}
+
+func editProposalObservedMutationMeta(proposal EditProposal, planned plannedEditProposal) map[string]any {
+	meta := editProposalToolMeta(proposal, planned, true)
+	if !editProposalMutationCommitted(planned) {
+		delete(meta, "unified_diff")
+		meta["turn_diff_invalidated"] = true
+		meta["unified_diff_unavailable_reason"] = "workspace changed but final contents did not match the planned edit after tool failure"
+	}
+	return meta
 }
 
 func normalizeEditProposalOperation(raw string, proposal EditProposal) string {

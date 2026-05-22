@@ -838,6 +838,45 @@ func TestWriteFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestWriteFileExecuteDetailedReportsCommittedMutationWhenPostEditHookFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewWriteFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			if event == HookPostEdit {
+				return HookVerdict{}, fmt.Errorf("post edit hook failed")
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"content": "package main\n",
+	})
+	if err == nil {
+		t.Fatalf("expected post edit hook failure")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != "package main\n" {
+		t.Fatalf("expected write to be committed before hook failure, data=%q err=%v", string(data), readErr)
+	}
+	if !toolMetaBool(result.Meta, "changed_workspace") || !toolMetaBool(result.Meta, "requires_verification") {
+		t.Fatalf("committed failed write must require verification, got %#v", result.Meta)
+	}
+	if unifiedDiff := toolMetaString(result.Meta, "unified_diff"); !strings.Contains(unifiedDiff, "+package main") {
+		t.Fatalf("expected committed failed write diff, got %q", unifiedDiff)
+	}
+}
+
 func TestReplaceInFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
@@ -878,6 +917,49 @@ func TestReplaceInFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestReplaceInFileExecuteDetailedReportsCommittedMutationWhenPostEditHookFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewReplaceInFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			if event == HookPostEdit {
+				return HookVerdict{}, fmt.Errorf("post edit hook failed")
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"search":  "oldName",
+		"replace": "newName",
+	})
+	if err == nil {
+		t.Fatalf("expected post edit hook failure")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || !strings.Contains(string(data), "newName") {
+		t.Fatalf("expected replacement to be committed before hook failure, data=%q err=%v", string(data), readErr)
+	}
+	if !toolMetaBool(result.Meta, "changed_workspace") || !toolMetaBool(result.Meta, "requires_verification") {
+		t.Fatalf("committed failed replacement must require verification, got %#v", result.Meta)
+	}
+	if got := toolMetaInt(result.Meta, "applied_replacements"); got != 1 {
+		t.Fatalf("expected replacement count to survive post-hook failure, got %#v", result.Meta)
+	}
+	if unifiedDiff := toolMetaString(result.Meta, "unified_diff"); !strings.Contains(unifiedDiff, "+func newName() {}") {
+		t.Fatalf("expected committed failed replacement diff, got %q", unifiedDiff)
+	}
+}
+
 func TestApplyEditProposalExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
@@ -913,6 +995,47 @@ func TestApplyEditProposalExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 		if !strings.Contains(unifiedDiff, want) {
 			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
 		}
+	}
+}
+
+func TestApplyEditProposalReportsCommittedMutationWhenPostEditHookFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyEditProposalTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			return true, nil
+		},
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			if event == HookPostEdit {
+				return HookVerdict{}, fmt.Errorf("post edit hook failed")
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"file":         "main.go",
+		"operation":    "replace_in_file",
+		"exact_search": "oldName",
+		"replacement":  "newName",
+	})
+	if err == nil {
+		t.Fatalf("expected post edit hook failure")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || !strings.Contains(string(data), "newName") {
+		t.Fatalf("expected proposal edit to be committed before hook failure, data=%q err=%v", string(data), readErr)
+	}
+	if !toolMetaBool(result.Meta, "changed_workspace") || !toolMetaBool(result.Meta, "requires_verification") {
+		t.Fatalf("committed failed proposal must require verification, got %#v", result.Meta)
+	}
+	if unifiedDiff := toolMetaString(result.Meta, "unified_diff"); !strings.Contains(unifiedDiff, "+func newName() {}") {
+		t.Fatalf("expected committed failed proposal diff, got %q", unifiedDiff)
 	}
 }
 
