@@ -2914,7 +2914,8 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	}
 	requestText := strings.TrimSpace(baseUserQueryText(request))
 	requestIsInternalReviewFeedback := looksLikeInternalReviewFeedbackUserMessage(requestText)
-	if generatedDocumentArtifactRequestContextForTurn(a.Session, request) == "" &&
+	documentRequestContext := generatedDocumentArtifactRequestContextForTurn(a.Session, request)
+	if documentRequestContext == "" &&
 		!requestIsInternalReviewFeedback {
 		return false
 	}
@@ -2938,7 +2939,14 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if len(changedPaths) > 0 {
 		return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths)
 	}
-	if len(sessionPatchTransactionChangedPaths(a.Session)) > 0 {
+	sessionChangedPaths := sessionPatchTransactionChangedPaths(a.Session)
+	if len(sessionChangedPaths) > 0 {
+		if documentRequestContext != "" && changedPathsAreGeneratedDocumentArtifacts(a.Session, request, sessionChangedPaths) {
+			return true
+		}
+		if requestIsInternalReviewFeedback && sessionHasDocumentArtifactQualityAcceptedHarness(a.Session) && changedPathsMatchDocumentArtifactQuality(a.Session, sessionChangedPaths) {
+			return true
+		}
 		return false
 	}
 	return sessionHasDocumentArtifactQualityAcceptedHarness(a.Session)
@@ -2964,7 +2972,7 @@ func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
 		}
 		artifactPaths[strings.ToLower(path)] = true
 	}
-	changedPaths := currentTurnPatchTransactionChangedPaths(session)
+	changedPaths := documentArtifactHarnessChangedPaths(session)
 	if len(changedPaths) == 0 {
 		return false
 	}
@@ -3027,7 +3035,7 @@ func sessionHasApprovedDocumentArtifactOnlyHarness(session *Session) bool {
 	if !report.Approved {
 		return false
 	}
-	changedPaths := currentTurnPatchTransactionChangedPaths(session)
+	changedPaths := documentArtifactHarnessChangedPaths(session)
 	if len(changedPaths) == 0 {
 		return false
 	}
@@ -3053,6 +3061,47 @@ func sessionHasApprovedDocumentArtifactOnlyHarness(session *Session) bool {
 		}
 	}
 	return true
+}
+
+func documentArtifactHarnessChangedPaths(session *Session) []string {
+	changedPaths := currentTurnPatchTransactionChangedPaths(session)
+	if len(changedPaths) == 0 {
+		changedPaths = sessionPatchTransactionChangedPaths(session)
+	}
+	return normalizeTaskStateList(changedPaths, 64)
+}
+
+func changedPathsMatchDocumentArtifactQuality(session *Session, changedPaths []string) bool {
+	if session == nil || session.LastCodingHarnessReport == nil {
+		return false
+	}
+	report := *session.LastCodingHarnessReport
+	report.Normalize()
+	if len(report.ArtifactQuality.Artifacts) == 0 {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(report.ArtifactQuality.Findings) {
+		return false
+	}
+	artifactPaths := make(map[string]bool)
+	for _, artifact := range report.ArtifactQuality.Artifacts {
+		path := normalizeSessionRelativePath(artifact.Path)
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+			return false
+		}
+		artifactPaths[strings.ToLower(path)] = true
+	}
+	normalizedChangedPaths := normalizeTaskStateList(changedPaths, 64)
+	for _, path := range normalizedChangedPaths {
+		normalized := normalizeSessionRelativePath(path)
+		if !preWritePathLooksLikeGeneratedDocumentArtifact(normalized) {
+			return false
+		}
+		if len(artifactPaths) > 0 && !artifactPaths[strings.ToLower(normalized)] {
+			return false
+		}
+	}
+	return len(normalizedChangedPaths) > 0
 }
 
 func changedPathsLookLikeGeneratedReportArtifacts(paths []string) bool {
@@ -7475,8 +7524,8 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
-	if a.Session.ActivePatchTransaction != nil {
-		if txText := strings.TrimSpace(a.Session.ActivePatchTransaction.RenderPromptSection()); txText != "" {
+	if activeTx := currentTurnPatchTransaction(a.Session); activeTx != nil {
+		if txText := strings.TrimSpace(activeTx.RenderPromptSection()); txText != "" {
 			b.WriteString("\nActive patch transaction:\n")
 			b.WriteString(txText)
 			b.WriteString("\n")

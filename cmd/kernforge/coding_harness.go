@@ -136,18 +136,24 @@ func (s *Session) ensurePatchTransaction(goal string, root string) *PatchTransac
 		root = strings.TrimSpace(s.WorkingDir)
 	}
 	now := time.Now()
+	normalizedGoal := strings.Join(strings.Fields(strings.TrimSpace(baseUserQueryText(goal))), " ")
 	if s.ActivePatchTransaction != nil {
 		s.ActivePatchTransaction.Normalize()
 		if strings.EqualFold(s.ActivePatchTransaction.Status, patchTransactionStatusActive) {
-			s.ActivePatchTransaction.UpdatedAt = now
-			return s.ActivePatchTransaction
+			if patchTransactionGoalsConflict(s.ActivePatchTransaction.Goal, normalizedGoal) {
+				s.archiveActivePatchTransaction()
+			} else {
+				s.ActivePatchTransaction.UpdatedAt = now
+				return s.ActivePatchTransaction
+			}
+		} else {
+			s.archiveActivePatchTransaction()
 		}
-		s.archiveActivePatchTransaction()
 	}
 	id := fmt.Sprintf("patch-tx-%s", now.Format("20060102-150405.000"))
 	tx := &PatchTransaction{
 		ID:            id,
-		Goal:          strings.Join(strings.Fields(strings.TrimSpace(baseUserQueryText(goal))), " "),
+		Goal:          normalizedGoal,
 		WorkspaceRoot: root,
 		Status:        patchTransactionStatusActive,
 		StartedAt:     now,
@@ -155,6 +161,15 @@ func (s *Session) ensurePatchTransaction(goal string, root string) *PatchTransac
 	}
 	s.ActivePatchTransaction = tx
 	return tx
+}
+
+func patchTransactionGoalsConflict(activeGoal string, nextGoal string) bool {
+	active := normalizedPatchTransactionGoal(activeGoal)
+	next := normalizedPatchTransactionGoal(nextGoal)
+	if active == "" || next == "" || active == next {
+		return false
+	}
+	return classifyTurnIntent(nextGoal) != TurnIntentContinueLastTask
 }
 
 func (s *Session) archiveActivePatchTransaction() {
@@ -1612,7 +1627,7 @@ func currentTurnPatchTransaction(sess *Session) *PatchTransaction {
 	if sess.ActivePatchTransaction != nil {
 		copyTx := *sess.ActivePatchTransaction
 		copyTx.Normalize()
-		if strings.TrimSpace(copyTx.ID) != "" {
+		if strings.TrimSpace(copyTx.ID) != "" && patchTransactionMatchesCurrentTurn(sess, copyTx) {
 			return &copyTx
 		}
 	}

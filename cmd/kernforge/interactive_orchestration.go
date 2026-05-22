@@ -804,20 +804,20 @@ func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, u
 				b.WriteString("\n")
 			}
 		}
-		if session.ActivePatchTransaction != nil {
-			if rendered := strings.TrimSpace(session.ActivePatchTransaction.RenderPromptSection()); rendered != "" {
+		if activeTx := currentTurnPatchTransaction(session); activeTx != nil {
+			if rendered := strings.TrimSpace(activeTx.RenderPromptSection()); rendered != "" {
 				b.WriteString("\nPatch transaction:\n")
 				b.WriteString(rendered)
 				b.WriteString("\n")
 			}
 		}
-		if session.ActiveEditLoop != nil {
-			if rendered := strings.TrimSpace(session.ActiveEditLoop.RenderPromptSection()); rendered != "" {
+		if activeLoop := currentTurnActiveEditLoop(session); activeLoop != nil {
+			if rendered := strings.TrimSpace(activeLoop.RenderPromptSection()); rendered != "" {
 				b.WriteString("\nApply/verify/retry ledger:\n")
 				b.WriteString(rendered)
 				b.WriteString("\n")
 			}
-			if rendered := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(session.ActiveEditLoop)); rendered != "" {
+			if rendered := strings.TrimSpace(renderEditLoopOutcomeContractPrompt(activeLoop)); rendered != "" {
 				b.WriteString("\nExpected final answer outcome contract:\n")
 				b.WriteString(rendered)
 				b.WriteString("\n")

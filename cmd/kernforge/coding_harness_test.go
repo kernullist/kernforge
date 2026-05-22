@@ -591,6 +591,7 @@ func TestFinalReviewerPromptIncludesCodingHarnessContext(t *testing.T) {
 	session.AcceptanceContract = &contract
 	session.ActivePatchTransaction = &PatchTransaction{
 		ID:            "patch-tx-test",
+		Goal:          "create docs/missing.md and run tests",
 		WorkspaceRoot: root,
 		Status:        patchTransactionStatusActive,
 		Entries: []PatchTransactionEntry{{
@@ -626,6 +627,139 @@ func TestFinalReviewerPromptIncludesCodingHarnessContext(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Claimed artifact is missing") {
 		t.Fatalf("expected coding harness finding in reviewer prompt, got %q", prompt)
+	}
+}
+
+func TestFinalReviewerPromptOmitsStaleActiveEditLoop(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "현재 상태만 알려줘"}
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "RuntimeManager.cpp 버그를 수정해",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:              "edit-loop-old",
+		Goal:            "RuntimeManager.cpp 버그를 수정해",
+		Status:          editLoopStatusActive,
+		ChangedPaths:    []string{"cmd/kernforge/agent.go"},
+		WorkerSummaries: []string{"updated RuntimeManager handling"},
+	}
+
+	prompt := buildInteractiveFinalAnswerReviewerPrompt(session, "현재 상태를 확인했습니다.", false)
+	if strings.Contains(prompt, "Apply/verify/retry ledger") {
+		t.Fatalf("stale active edit loop should not be included in final reviewer prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "cmd/kernforge/agent.go") {
+		t.Fatalf("stale edit-loop changed path should not be included in final reviewer prompt, got %q", prompt)
+	}
+}
+
+func TestFinalReviewerPromptIncludesCurrentActiveEditLoop(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "RuntimeManager.cpp 버그를 수정해"}
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "RuntimeManager.cpp 버그를 수정해",
+	}}
+	session.ActiveEditLoop = &EditLoopState{
+		ID:              "edit-loop-current",
+		Goal:            "RuntimeManager.cpp 버그를 수정해",
+		Status:          editLoopStatusActive,
+		ChangedPaths:    []string{"cmd/kernforge/agent.go"},
+		WorkerSummaries: []string{"updated RuntimeManager handling"},
+	}
+
+	prompt := buildInteractiveFinalAnswerReviewerPrompt(session, "RuntimeManager.cpp 수정 완료", false)
+	if !strings.Contains(prompt, "Apply/verify/retry ledger") {
+		t.Fatalf("current active edit loop should be included in final reviewer prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "cmd/kernforge/agent.go") {
+		t.Fatalf("current edit-loop changed path should be included in final reviewer prompt, got %q", prompt)
+	}
+}
+
+func TestCurrentTurnPatchTransactionIgnoresStaleActiveGoal(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "현재 상태만 알려줘"}
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "RuntimeManager.cpp 버그를 수정해",
+		},
+		{
+			Role: "user",
+			Text: "현재 상태만 알려줘",
+		},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-old",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-old-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+
+	if tx := currentTurnPatchTransaction(session); tx != nil {
+		t.Fatalf("stale active patch transaction should not be current-turn evidence, got %#v", tx)
+	}
+	if changed := currentTurnPatchTransactionChangedPaths(session); len(changed) != 0 {
+		t.Fatalf("stale active patch changed paths should be ignored, got %#v", changed)
+	}
+	prompt := buildInteractiveFinalAnswerReviewerPrompt(session, "현재 상태를 확인했습니다.", false)
+	if strings.Contains(prompt, "Patch transaction") {
+		t.Fatalf("stale active patch should not be included in final reviewer prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "cmd/kernforge/agent.go") {
+		t.Fatalf("stale active patch path should not be included in final reviewer prompt, got %q", prompt)
+	}
+}
+
+func TestEnsurePatchTransactionStartsFreshWhenGoalChanges(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-old",
+		Goal:   "RuntimeManager.cpp 버그를 수정해",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-old-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+
+	tx := session.ensurePatchTransaction("KnIocpPipeServer.cpp 버그를 수정해", root)
+	if tx == nil {
+		t.Fatalf("expected fresh patch transaction")
+	}
+	if tx.ID == "patch-old" {
+		t.Fatalf("expected old patch transaction to be archived instead of reused")
+	}
+	if tx.Goal != "KnIocpPipeServer.cpp 버그를 수정해" {
+		t.Fatalf("expected new goal, got %q", tx.Goal)
+	}
+	if len(session.PatchTransactions) != 1 || session.PatchTransactions[0].ID != "patch-old" {
+		t.Fatalf("expected stale patch transaction to be archived, got %#v", session.PatchTransactions)
 	}
 }
 

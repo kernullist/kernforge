@@ -12179,6 +12179,10 @@ func TestAgentRoutesCurrentActiveEditLoopThroughFinalGates(t *testing.T) {
 func TestAgentRoutesCurrentPatchCommentaryThroughFinalGates(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "RuntimeManager.cpp 버그를 수정해",
+	}}
 	session.ActivePatchTransaction = &PatchTransaction{
 		ID:     "patch-code",
 		Goal:   "RuntimeManager.cpp 버그를 수정해",
