@@ -53,6 +53,15 @@ type Message struct {
 	ToolContentItems []ToolContentItem `json:"tool_content_items,omitempty"`
 	ToolMeta         map[string]any    `json:"tool_meta,omitempty"`
 	IsError          bool              `json:"is_error,omitempty"`
+	Internal         bool              `json:"internal,omitempty"`
+}
+
+func internalUserMessage(text string) Message {
+	return Message{
+		Role:     "user",
+		Text:     text,
+		Internal: true,
+	}
 }
 
 type ChatRequest struct {

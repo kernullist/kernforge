@@ -678,10 +678,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if a.EmitProgress != nil {
 						a.EmitProgress(fmt.Sprintf("Recent tool turns show progress. Extending the tool budget by %d more turn(s)...", extraTurns))
 					}
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: toolBudgetExtensionGuidance(extraTurns, recoveryRecent),
-					})
+					a.Session.AddMessage(internalUserMessage(toolBudgetExtensionGuidance(extraTurns, recoveryRecent)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -698,14 +695,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if a.EmitProgress != nil {
 				a.EmitProgress("Tool loop limit reached. Asking the model to replan or conclude without more tool churn...")
 			}
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: a.recoveryGuidance(ctx, recoveryTriggerToolBudgetExceeded, recoveryInput{
-					Summary: lastToolCallSummary,
-					Recent:  recoveryRecent,
-					Detail:  lastStopReason,
-				}),
-			})
+			a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerToolBudgetExceeded, recoveryInput{
+				Summary: lastToolCallSummary,
+				Recent:  recoveryRecent,
+				Detail:  lastStopReason,
+			})))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -788,20 +782,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			resp.Message.Phase = messagePhaseCommentary
 		}
 		if shouldRetryKoreanLocalCodeToolNarration(resp.Message, a.Session, a.Config) {
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: koreanLocalCodeToolNarrationGuidance(),
-			})
+			a.Session.AddMessage(internalUserMessage(koreanLocalCodeToolNarrationGuidance()))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
 			continue
 		}
 		if shouldRetryPreFixEditWithoutVisibleReviewSummary(resp.Message, a.Session) {
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: preFixVisibleReviewSummaryGuidance(*a.Session.LastReviewRun),
-			})
+			a.Session.AddMessage(internalUserMessage(preFixVisibleReviewSummaryGuidance(*a.Session.LastReviewRun)))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -976,14 +964,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallRecoveryThreshold && repeatedToolCallRecoveryTurns < 1 {
 					repeatedToolCallRecoveryTurns++
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
-							Summary: lastToolCallSummary,
-							Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
-							Detail:  lastToolCallSummary,
-						}),
-					})
+					a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
+						Summary: lastToolCallSummary,
+						Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
+						Detail:  lastToolCallSummary,
+					})))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -993,10 +978,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if lastToolCallSignatureCount >= repeatedToolCallNudgeThreshold {
 					if repeatedToolCallNudges < 1 {
 						repeatedToolCallNudges++
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: "You are repeating the same tool call sequence with the same arguments. Do not repeat it again unless the previous tool result explicitly requires it. Use a different next step or provide the final answer now.",
-						})
+						a.Session.AddMessage(internalUserMessage("You are repeating the same tool call sequence with the same arguments. Do not repeat it again unless the previous tool result explicitly requires it. Use a different next step or provide the final answer now."))
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
 						}
@@ -1019,15 +1001,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathRecoveryThreshold && repeatedReadFilePathRecoveryCount < 1 {
 					repeatedReadFilePathRecoveryCount++
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedReadFile, recoveryInput{
-							Path:   readPath,
-							Turns:  lastReadFilePathTurns,
-							Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
-							Detail: readPath,
-						}),
-					})
+					a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedReadFile, recoveryInput{
+						Path:   readPath,
+						Turns:  lastReadFilePathTurns,
+						Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
+						Detail: readPath,
+					})))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1036,10 +1015,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns && repeatedReadFilePathNudges < 1 {
 					repeatedReadFilePathNudges++
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: fmt.Sprintf("You have read the same file repeatedly across multiple tool turns: %s. Do not keep scanning more ranges from the same file unless a specific missing section is still required. Either explain what you found so far, switch to a different tool or file, or provide the final answer now.", readPath),
-					})
+					a.Session.AddMessage(internalUserMessage(fmt.Sprintf("You have read the same file repeatedly across multiple tool turns: %s. Do not keep scanning more ranges from the same file unless a specific missing section is still required. Either explain what you found so far, switch to a different tool or file, or provide the final answer now.", readPath)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1068,10 +1044,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			}
 			if postEditFinalAnswerNudges > 0 && allToolCallsAreEditTools(resp.Message.ToolCalls) {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient. If the requested work is complete, provide the final answer now and summarize what changed.",
-				})
+				a.Session.AddMessage(internalUserMessage("You have already made multiple rounds of edits. Do not call more edit tools unless the previous changes are clearly insufficient. If the requested work is complete, provide the final answer now and summarize what changed."))
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
@@ -1122,10 +1095,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if commentaryOnlyReplies >= 3 {
 						return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
 					}
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message.",
-					})
+					a.Session.AddMessage(internalUserMessage("Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message."))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1154,10 +1124,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if replyBlamesInternalToolTranscriptRecovery(reply) && internalToolTranscriptFailureReplyRetries < 1 {
 					internalToolTranscriptFailureReplyRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: internalToolTranscriptFailureGuidance(explicitEditRequest),
-					})
+					a.Session.AddMessage(internalUserMessage(internalToolTranscriptFailureGuidance(explicitEditRequest)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1168,10 +1135,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					toolAvailabilityBlameReplyRetries < 1 {
 					toolAvailabilityBlameReplyRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: toolAvailabilityAfterSkippedVerificationGuidance(a.Config),
-					})
+					a.Session.AddMessage(internalUserMessage(toolAvailabilityAfterSkippedVerificationGuidance(a.Config)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1183,10 +1147,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					localCodeToolAvailabilityBlameRetries < 1 {
 					localCodeToolAvailabilityBlameRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: localCodeToolAvailabilityBlameGuidance(a.Config),
-					})
+					a.Session.AddMessage(internalUserMessage(localCodeToolAvailabilityBlameGuidance(a.Config)))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1195,10 +1156,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && manualEditHandoffRetries < 1 {
 					manualEditHandoffRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error.",
-					})
+					a.Session.AddMessage(internalUserMessage("This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error."))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1208,10 +1166,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					abruptReplyRetries++
 					continuedReplyPrefix = reply
 					continuedReplyMessageIndex = len(a.Session.Messages) - 1
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "Your last answer appears to have been cut off mid-sentence. Continue exactly from where you stopped and finish the answer. Do not restart from the beginning, do not apologize, and do not repeat the earlier text.",
-					})
+					a.Session.AddMessage(internalUserMessage("Your last answer appears to have been cut off mid-sentence. Continue exactly from where you stopped and finish the answer. Do not restart from the beginning, do not apologize, and do not repeat the earlier text."))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1220,10 +1175,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if rawReviewResultReplyRetries < 1 && replyLooksLikeRawReviewHarnessResult(reply) {
 					rawReviewResultReplyRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer. Provide a normal user-facing final answer that summarizes what changed, verification status, and any remaining blockers or risks.",
-					})
+					a.Session.AddMessage(internalUserMessage("Your last response was a raw internal REVIEW_RESULT block. Do not expose review harness result syntax to the user as the final answer. Provide a normal user-facing final answer that summarizes what changed, verification status, and any remaining blockers or risks."))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1232,10 +1184,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if unresolvedVerification && !a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser) && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 					finalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed.",
-					})
+					a.Session.AddMessage(internalUserMessage("Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1301,10 +1250,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if finalAnswerOnlyCorrection {
 						nextGuidance = finalAnswerOnlyHarnessRevisionGuidance(a.Session.LastCodingHarnessReport, harnessFeedback)
 					}
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: nextGuidance,
-					})
+					a.Session.AddMessage(internalUserMessage(nextGuidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1336,10 +1282,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						runtimeGateFinalAnswerRevisions++
 						finalAnswerOnlyCorrection = false
 						a.discardRecentFinalAnswerCandidate(reply)
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: renderRuntimeGateBlockedFeedback(ledger, runtimeGateActionFinalAnswer),
-						})
+						a.Session.AddMessage(internalUserMessage(renderRuntimeGateBlockedFeedback(ledger, runtimeGateActionFinalAnswer)))
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
 						}
@@ -1362,10 +1305,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						if strings.TrimSpace(reviewText) != "" {
 							nextText += "\n\n" + strings.TrimSpace(reviewText)
 						}
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: nextText,
-						})
+						a.Session.AddMessage(internalUserMessage(nextText))
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
 						}
@@ -1390,15 +1330,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
 			}
 			if readOnlyAnalysis {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message.",
-				})
+				a.Session.AddMessage(internalUserMessage("Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message."))
 			} else {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: "Please provide the final answer to the user now. Do not return an empty message.",
-				})
+				a.Session.AddMessage(internalUserMessage("Please provide the final answer to the user now. Do not return an empty message."))
 			}
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
@@ -1464,10 +1398,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.EmitProgress(localizedText(a.Config, "Tool call blocked: verification already failed outside the current patch scope; final answer only.", "도구 호출을 차단했습니다: 검증이 현재 patch scope 밖에서 실패했으므로 최종 답변만 허용합니다."))
 				}
 				sawToolResultThisTurn = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: verificationOutOfScopeFinalOnlyGuidance(a.Config),
-				})
+				a.Session.AddMessage(internalUserMessage(verificationOutOfScopeFinalOnlyGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; no further tools are available in this turn, provide the final answer.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1490,10 +1421,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.noteToolConversationBlockedResult(call, result, nil)
 				a.noteToolExecutionResultDetailed(call, result, nil)
 				sawToolResultThisTurn = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: verificationFollowupBlockedGuidance(a.Config),
-				})
+				a.Session.AddMessage(internalUserMessage(verificationFollowupBlockedGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier verification command was already skipped or declined in this turn; do not retry verification until the user explicitly approves it.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1516,10 +1444,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.noteToolConversationBlockedResult(call, result, errVerificationOutOfScopeFollowupBlocked)
 				a.noteToolExecutionResultDetailed(call, result, errVerificationOutOfScopeFollowupBlocked)
 				sawToolResultThisTurn = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: verificationOutOfScopeFollowupBlockedGuidance(a.Config),
-				})
+				a.Session.AddMessage(internalUserMessage(verificationOutOfScopeFollowupBlockedGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: automatic verification already failed outside the current patch scope; do not retry build, test, or verification commands in this turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1543,10 +1468,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.noteToolConversationBlockedResult(call, result, errPreWriteReviewReanchorRequired)
 				a.noteToolExecutionResultDetailed(call, result, errPreWriteReviewReanchorRequired)
 				sawToolResultThisTurn = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: preWriteReviewReanchorRequiredGuidance(a.Config),
-				})
+				a.Session.AddMessage(internalUserMessage(preWriteReviewReanchorRequiredGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit proposal was blocked before writing; re-read the current file or current diff before issuing another edit.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1580,10 +1502,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					return reply, nil
 				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: editTargetMismatchReanchorRequiredGuidance(a.Config),
-				})
+				a.Session.AddMessage(internalUserMessage(editTargetMismatchReanchorRequiredGuidance(a.Config)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a previous edit targeted stale or mismatched file contents; re-anchor on the current file or diff before issuing another edit.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1608,10 +1527,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if preWriteReviewRepairInspectNudges < maxPreWriteReviewRepairInspectNudges {
 						preWriteReviewRepairInspectNudges++
 						preWriteReviewRepairInspectTools = 0
-						a.Session.AddMessage(Message{
-							Role: "user",
-							Text: formatPreWriteReviewRepairForceEditGuidance(a.Config, a.Session, summarizeRecentToolTurns(a.Session.Messages, 4)),
-						})
+						a.Session.AddMessage(internalUserMessage(formatPreWriteReviewRepairForceEditGuidance(a.Config, a.Session, summarizeRecentToolTurns(a.Session.Messages, 4))))
 						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: pre-write repair inspection budget was exhausted; retry from the next model turn with an edit tool or final answer.")
 						if saveErr := a.Store.Save(a.Session); saveErr != nil {
 							return "", saveErr
@@ -1694,10 +1610,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			a.noteToolExecutionResultDetailed(call, result, err)
 			accounting := a.accountGoalProgressAfterTool(call)
 			if accounting.StatusChanged && accounting.Goal.Status == goalStatusBudgetLimited {
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: goalBudgetLimitContextMessage(accounting.Goal),
-				})
+				a.Session.AddMessage(internalUserMessage(goalBudgetLimitContextMessage(accounting.Goal)))
 			}
 			if err == nil && preWriteReviewRequiresReanchor && preWriteReviewReanchorTool(call) {
 				preWriteReviewRequiresReanchor = false
@@ -1785,10 +1698,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				disabledTools["replace_in_file"] = true
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: formatPreWriteReviewBlockedRetryGuidance(a.Config, a.Session),
-				})
+				a.Session.AddMessage(internalUserMessage(formatPreWriteReviewBlockedRetryGuidance(a.Config, a.Session)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response was blocked by pre-write review; retry from the next model turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1840,10 +1750,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if toolShouldBeDisabledAfterInvalidJSON(call.Name) {
 					disabledTools[strings.TrimSpace(call.Name)] = true
 				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: invalidToolArgumentsGuidance(call.Name),
-				})
+				a.Session.AddMessage(internalUserMessage(invalidToolArgumentsGuidance(call.Name)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier tool call had invalid JSON arguments; retry from the next model turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -1869,17 +1776,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				if readOnlyInspectionToolName(call.Name) {
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem. Retry the same local inspection without owner_node_id, or inspect the main workspace path directly with read_file, list_files, grep, git_status, or git_diff. Do not switch to web research, do not create a replacement report from partial evidence, and do not attempt an edit until local evidence reads succeed.",
-					})
+					a.Session.AddMessage(internalUserMessage("The last read-only inspection tool was blocked by editable ownership routing. This is not a stale patch problem. Retry the same local inspection without owner_node_id, or inspect the main workspace path directly with read_file, list_files, grep, git_status, or git_diff. Do not switch to web research, do not create a replacement report from partial evidence, and do not attempt an edit until local evidence reads succeed."))
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: a read-only lookup was blocked by editable ownership routing; retry local inspection without owner_node_id from the next model turn.")
 				} else {
 					disabledTools["replace_in_file"] = true
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing.",
-					})
+					a.Session.AddMessage(internalUserMessage("Your last edit targeted stale or mismatched file contents. This is still local code review/repair work. Do not use MCP web/search/browser tools or external web research. Do not repeat or lightly reformat the previous patch text. First read the exact file again from the same path, confirm the current contents, and compare that fresh read with the tool error's expected/current context diagnostics. After that re-anchor, build a cohesive standalone apply_patch against the current workspace state. The patch may include multiple related hunks or files when that is the smallest complete repair for the root cause; do not split only because the previous attempt mismatched. If the resolved path points into a different worktree or administrative worktree directory, correct the path before editing."))
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response targeted stale file contents; retry from the next model turn.")
 				}
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -1988,10 +1889,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastPatchFormatFailureSignature = signature
 					patchFormatRetries++
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: invalidPatchFormatGuidance(repeatedSignature, err),
-					})
+					a.Session.AddMessage(internalUserMessage(invalidPatchFormatGuidance(repeatedSignature, err)))
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier apply_patch call had invalid patch format; retry from the next model turn.")
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
@@ -2052,10 +1950,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 		}
 		if deferredMixedTools {
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: mixedToolCallEditDeferralGuidance(a.Config),
-			})
+			a.Session.AddMessage(internalUserMessage(mixedToolCallEditDeferralGuidance(a.Config)))
 			if saveErr := a.Store.Save(a.Session); saveErr != nil {
 				return "", saveErr
 			}
@@ -2070,10 +1965,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
 			repeatedCachedReadFileNudges++
 			repeatedReadFilePathNudges++
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: fmt.Sprintf("Your latest read_file result for %s came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again. Either inspect a different file or tool, or give the final answer now.", lastReadFilePath),
-			})
+			a.Session.AddMessage(internalUserMessage(fmt.Sprintf("Your latest read_file result for %s came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again. Either inspect a different file or tool, or give the final answer now.", lastReadFilePath)))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -2101,13 +1993,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		if lastToolErrorCount >= repeatedToolFailureRecoveryThreshold && lastToolError != "" && repeatedToolFailureRecoveryTurns < 1 {
 			repeatedToolFailureRecoveryTurns++
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolError, recoveryInput{
-					Detail: lastToolError,
-					Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
-				}),
-			})
+			a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolError, recoveryInput{
+				Detail: lastToolError,
+				Recent: summarizeRecentToolTurns(a.Session.Messages, 3),
+			})))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -2115,10 +2004,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			continue
 		}
 		if lastToolErrorCount == repeatedToolFailureNudgeThreshold && lastToolError != "" {
-			a.Session.AddMessage(Message{
-				Role: "user",
-				Text: "The same tool failure repeated. Do not repeat the same failing tool call again unless you materially change the approach or inputs. Read the error carefully, choose a different next step, or provide a final answer if the issue is external.",
-			})
+			a.Session.AddMessage(internalUserMessage("The same tool failure repeated. Do not repeat the same failing tool call again unless you materially change the approach or inputs. Read the error carefully, choose a different next step, or provide a final answer if the issue is external."))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -2147,10 +2033,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if report.WasSkipped() {
 					verificationPrefix = localizedText(a.Config, "Automatic verification was not run:\n", "자동 검증이 실행되지 않았습니다:\n")
 				}
-				a.Session.AddMessage(Message{
-					Role: "user",
-					Text: verificationPrefix + verification,
-				})
+				a.Session.AddMessage(internalUserMessage(verificationPrefix + verification))
 				unresolvedVerification = report.HasFailures() || report.WasSkipped()
 				if report.WasSkipped() {
 					verificationDeclinedThisTurn = true
@@ -2179,10 +2062,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								report = retriedReport
 								a.noteVerificationResult(report)
 								verification = strings.TrimSpace(report.RenderDetailed())
-								a.Session.AddMessage(Message{
-									Role: "user",
-									Text: localizedText(a.Config, "Automatic verification results after tool-path update:\n", "도구 경로 업데이트 후 자동 검증 결과:\n") + verification,
-								})
+								a.Session.AddMessage(internalUserMessage(localizedText(a.Config, "Automatic verification results after tool-path update:\n", "도구 경로 업데이트 후 자동 검증 결과:\n") + verification))
 								unresolvedVerification = report.HasFailures() || report.WasSkipped()
 								if report.WasSkipped() {
 									verificationDeclinedThisTurn = true
@@ -2197,10 +2077,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							if a.EmitProgress != nil {
 								a.EmitProgress(localizedText(a.Config, "Automatic verification was disabled after repeated tool-path verification failures.", "검증 도구 경로 실패가 반복되어 자동 검증을 비활성화했습니다."))
 							}
-							a.Session.AddMessage(Message{
-								Role: "user",
-								Text: "Automatic verification has been disabled for this workspace after repeated verification tool startup failures. Do not spend more turns trying to repair the local verification environment unless the user explicitly asks for that. Continue with the task and summarize any unverified risk briefly if needed.",
-							})
+							a.Session.AddMessage(internalUserMessage("Automatic verification has been disabled for this workspace after repeated verification tool startup failures. Do not spend more turns trying to repair the local verification environment unless the user explicitly asks for that. Continue with the task and summarize any unverified risk briefly if needed."))
 						}
 					}
 					if !autoVerifyDisabledAfterPrompt {
@@ -2213,10 +2090,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							if a.Session.TaskState != nil {
 								a.Session.TaskState.RecordEvent("verification_terminal", strings.TrimSpace(a.Session.TaskState.ExecutorFocusNode), "verify", "Automatic verification failed outside the current patch scope; switching to final-answer-only.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"), "blocked", true)
 							}
-							a.Session.AddMessage(Message{
-								Role: "user",
-								Text: automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision),
-							})
+							a.Session.AddMessage(internalUserMessage(automaticVerificationOutOfScopeMessage(a.Config, report, scopeDecision)))
 							if a.EmitProgress != nil {
 								a.EmitProgress(localizedText(a.Config, "Verification failure is outside the current patch scope; stopping edit expansion and requiring disclosure.", "검증 실패가 현재 patch scope 밖입니다. 수정 범위 확장을 중단하고 보고하도록 전환합니다."))
 							}
@@ -2236,10 +2110,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 									text += "\n\nRetry loop policy:\n" + policy
 								}
 							}
-							a.Session.AddMessage(Message{
-								Role: "user",
-								Text: text,
-							})
+							a.Session.AddMessage(internalUserMessage(text))
 						}
 					}
 				}
@@ -2254,10 +2125,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				consecutiveEditTurns++
 				if consecutiveEditTurns >= 2 && postEditFinalAnswerNudges < 1 {
 					postEditFinalAnswerNudges++
-					a.Session.AddMessage(Message{
-						Role: "user",
-						Text: "You have already completed multiple edit rounds. If there is no specific remaining issue to fix, stop editing and provide the final answer now. Only continue editing if the earlier changes are clearly insufficient.",
-					})
+					a.Session.AddMessage(internalUserMessage("You have already completed multiple edit rounds. If there is no specific remaining issue to fix, stop editing and provide the final answer now. Only continue editing if the earlier changes are clearly insufficient."))
 				}
 			} else {
 				consecutiveEditTurns = 0
@@ -5443,10 +5311,7 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 		a.noteToolConversationBlockedResult(call, result, nil)
 	}
 	if strings.TrimSpace(guidance) != "" {
-		a.Session.AddMessage(Message{
-			Role: "user",
-			Text: guidance,
-		})
+		a.Session.AddMessage(internalUserMessage(guidance))
 	}
 	if a.Store != nil {
 		return a.Store.Save(a.Session)

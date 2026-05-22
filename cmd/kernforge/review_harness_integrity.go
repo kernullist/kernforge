@@ -376,7 +376,7 @@ func buildReviewResumeSanityCheck(root string, rt *runtimeState, run ReviewRun) 
 		check.NextState = run.StateTransitions[len(run.StateTransitions)-1].To
 	}
 	if rt != nil && rt.session != nil {
-		latest := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestUserMessageText(rt.session.Messages))))
+		latest := strings.ToLower(strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(rt.session.Messages))))
 		if reason := reviewResumeRequestConflictReason(latest, run); reason != "" {
 			check.Status = reviewResumeSanityConflict
 			check.ConflictReason = reason

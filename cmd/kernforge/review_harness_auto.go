@@ -565,7 +565,7 @@ func generatedDocumentArtifactRequestCandidates(session *Session, request string
 	}
 	for i := len(session.Messages) - 1; i >= 0 && len(candidates) < 12; i-- {
 		msg := session.Messages[i]
-		if !strings.EqualFold(msg.Role, "user") {
+		if !strings.EqualFold(msg.Role, "user") || messageIsInternalUserGuidance(msg) {
 			continue
 		}
 		appendCandidate(msg.Text)
@@ -580,11 +580,11 @@ func preWriteReviewUserRequest(session *Session) string {
 	lastReviewRequest := preWriteReviewLastReviewRequest(session)
 	for i := len(session.Messages) - 1; i >= 0; i-- {
 		msg := session.Messages[i]
-		if !strings.EqualFold(msg.Role, "user") {
+		if !strings.EqualFold(msg.Role, "user") || messageIsInternalUserGuidance(msg) {
 			continue
 		}
 		text := strings.TrimSpace(baseUserQueryText(msg.Text))
-		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+		if text == "" {
 			continue
 		}
 		if shouldPreferLastReviewRequestForPreWrite(text, lastReviewRequest) {
@@ -607,7 +607,7 @@ func preWriteReviewUserRequest(session *Session) string {
 			return text
 		}
 	}
-	text := strings.TrimSpace(baseUserQueryText(latestUserMessageText(session.Messages)))
+	text := strings.TrimSpace(baseUserQueryText(latestExternalUserMessageText(session.Messages)))
 	if text != "" && !looksLikeInternalReviewFeedbackUserMessage(text) {
 		return text
 	}
@@ -950,10 +950,7 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	}
 	if needsRevision && *revisionCount < configReviewHarness(a.Config).AutoRepairMaxRounds {
 		*revisionCount++
-		a.Session.AddMessage(Message{
-			Role: "user",
-			Text: reviewFeedback,
-		})
+		a.Session.AddMessage(internalUserMessage(reviewFeedback))
 		if a.Store != nil {
 			if err := a.Store.Save(a.Session); err != nil {
 				return true, err
@@ -966,10 +963,7 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		exhaustedInstruction := localizedTextForReviewRequest(a.Config, request,
 			"Automatic post-change review still has blockers, but the automatic repair limit is exhausted. Do not claim completion. Provide the final answer as blocked or incomplete, cite the review gate, and list the exact remaining actions.",
 			"자동 변경 후 리뷰에 아직 차단 항목이 있지만 자동 수정 한도에 도달했습니다. 완료됐다고 주장하지 말고, 최종 답변에서 차단 또는 미완료 상태를 명시하고 리뷰 게이트와 남은 조치를 정확히 나열하세요.")
-		a.Session.AddMessage(Message{
-			Role: "user",
-			Text: reviewFeedback + "\n\n" + exhaustedInstruction,
-		})
+		a.Session.AddMessage(internalUserMessage(reviewFeedback + "\n\n" + exhaustedInstruction))
 		if a.Store != nil {
 			if err := a.Store.Save(a.Session); err != nil {
 				return true, err

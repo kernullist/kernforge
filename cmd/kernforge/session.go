@@ -94,8 +94,16 @@ func NewSession(workingDir, providerName, model, baseURL, permissionMode string)
 }
 
 func (s *Session) AddMessage(msg Message) {
+	msg = normalizeSessionMessage(msg)
 	s.Messages = append(s.Messages, msg)
 	s.UpdatedAt = time.Now()
+}
+
+func normalizeSessionMessage(msg Message) Message {
+	if strings.EqualFold(strings.TrimSpace(msg.Role), "user") && !msg.Internal && looksLikeInternalReviewFeedbackUserMessage(msg.Text) {
+		msg.Internal = true
+	}
+	return msg
 }
 
 func (s *Session) ApproxChars() int {

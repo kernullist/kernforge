@@ -114,10 +114,7 @@ func (a *Agent) maybeRunReviewBeforeFix(ctx context.Context, userText string, im
 		}
 		return true, nil
 	}
-	a.Session.AddMessage(Message{
-		Role: "user",
-		Text: formatReviewBeforeFixFeedback(run),
-	})
+	a.Session.AddMessage(internalUserMessage(formatReviewBeforeFixFeedback(run)))
 	a.primeTaskStateFromReviewBeforeFix(run)
 	if a.Store != nil {
 		if err := a.Store.Save(a.Session); err != nil {
@@ -253,10 +250,7 @@ func (a *Agent) maybePrimeRepairFromLastReview(userText string, images []Message
 	if proposal := formatLatestEditProposalForUserDecision(a.Config, a.Session); proposal != "" {
 		feedback += "\n\n" + proposal
 	}
-	a.Session.AddMessage(Message{
-		Role: "user",
-		Text: feedback,
-	})
+	a.Session.AddMessage(internalUserMessage(feedback))
 	a.primeTaskStateFromReviewBeforeFix(*run)
 	if a.EmitProgress != nil {
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Continuing from latest review findings...", "최신 리뷰 결과를 기준으로 수정 흐름을 이어갑니다..."))
@@ -283,10 +277,7 @@ func (a *Agent) primeReviewerGateRepairFromLastReview(userText string) bool {
 	if proposal := formatLatestEditProposalForUserDecision(a.Config, a.Session); proposal != "" {
 		feedback += "\n\n" + proposal
 	}
-	a.Session.AddMessage(Message{
-		Role: "user",
-		Text: feedback,
-	})
+	a.Session.AddMessage(internalUserMessage(feedback))
 	a.primeTaskStateFromReviewBeforeFix(*run)
 	if a.EmitProgress != nil {
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Continuing from actionable review findings after reviewer gate failure...", "리뷰어 게이트 실패 후 실행 가능한 finding을 기준으로 수정 흐름을 이어갑니다..."))

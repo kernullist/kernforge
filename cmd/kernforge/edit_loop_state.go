@@ -946,5 +946,5 @@ func editLoopGoal(sess *Session) string {
 	if sess.TaskState != nil && strings.TrimSpace(sess.TaskState.Goal) != "" {
 		return sess.TaskState.Goal
 	}
-	return latestUserMessageText(sess.Messages)
+	return latestExternalOrUserMessageText(sess.Messages)
 }

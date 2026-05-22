@@ -113,6 +113,64 @@ func TestLatestExternalOrUserMessageTextSkipsAgentLoopInternalGuidance(t *testin
 	}
 }
 
+func TestLatestExternalOrUserMessageTextSkipsStructuredInternalGuidance(t *testing.T) {
+	original := "Fix the runtime gate loop"
+	messages := []Message{
+		{Role: "user", Text: original},
+		internalUserMessage("Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first."),
+		internalUserMessage("This internal recovery note intentionally looks like a normal user instruction."),
+	}
+
+	if got := latestExternalOrUserMessageText(messages); got != original {
+		t.Fatalf("expected latest external request to skip structured internal guidance, got %q", got)
+	}
+}
+
+func TestSessionAddMessageMarksKnownInternalGuidance(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Fix the runtime gate loop"})
+	session.AddMessage(Message{Role: "user", Text: "Reviewer feedback: revise the final answer before concluding."})
+
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected two messages, got %d", len(session.Messages))
+	}
+	if !session.Messages[1].Internal {
+		t.Fatalf("expected known internal feedback to be marked internal: %#v", session.Messages[1])
+	}
+	if got := latestExternalOrUserMessageText(session.Messages); got != "Fix the runtime gate loop" {
+		t.Fatalf("expected latest external request, got %q", got)
+	}
+}
+
+func TestPreWriteReviewUserRequestSkipsStructuredInternalGuidance(t *testing.T) {
+	original := "Fix the runtime gate loop"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		internalUserMessage("Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first."),
+		{Role: "assistant", Text: "This assistant text should never become the review request."},
+	}
+
+	if got := preWriteReviewUserRequest(session); got != original {
+		t.Fatalf("expected pre-write request to skip structured internal guidance, got %q", got)
+	}
+}
+
+func TestGeneratedDocumentCandidatesSkipStructuredInternalAndNonUserMessages(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		internalUserMessage("This internal note intentionally looks like a generated document request."),
+		{Role: "assistant", Text: "assistant generated document summary"},
+	}
+
+	candidates := generatedDocumentArtifactRequestCandidates(session, "")
+	if len(candidates) != 1 || candidates[0] != original {
+		t.Fatalf("expected only the external document request, got %#v", candidates)
+	}
+}
+
 func TestCurrentTurnPatchTransactionSurvivesAgentLoopInternalGuidance(t *testing.T) {
 	root := t.TempDir()
 	original := "Fix the runtime gate loop"
@@ -138,6 +196,34 @@ func TestCurrentTurnPatchTransactionSurvivesAgentLoopInternalGuidance(t *testing
 	changed := currentTurnPatchTransactionChangedPaths(session)
 	if len(changed) != 1 || changed[0] != "cmd/kernforge/agent.go" {
 		t.Fatalf("expected current-turn patch transaction to survive internal guidance, got %#v", changed)
+	}
+}
+
+func TestCurrentTurnPatchTransactionSurvivesStructuredInternalGuidance(t *testing.T) {
+	root := t.TempDir()
+	original := "Fix the runtime gate loop"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		internalUserMessage("Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first."),
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-001",
+		Goal:   original,
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "cmd/kernforge/agent.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+
+	changed := currentTurnPatchTransactionChangedPaths(session)
+	if len(changed) != 1 || changed[0] != "cmd/kernforge/agent.go" {
+		t.Fatalf("expected current-turn patch transaction to survive structured internal guidance, got %#v", changed)
 	}
 }
 

@@ -26,13 +26,26 @@ func latestExternalUserMessageText(messages []Message) string {
 		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
 			continue
 		}
+		if messageIsInternalUserGuidance(msg) {
+			continue
+		}
 		text := strings.TrimSpace(baseUserQueryText(msg.Text))
-		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+		if text == "" {
 			continue
 		}
 		return text
 	}
 	return ""
+}
+
+func messageIsInternalUserGuidance(msg Message) bool {
+	if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+		return false
+	}
+	if msg.Internal {
+		return true
+	}
+	return looksLikeInternalReviewFeedbackUserMessage(msg.Text)
 }
 
 func latestExternalOrUserMessageText(messages []Message) string {

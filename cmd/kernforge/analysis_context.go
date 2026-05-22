@@ -946,7 +946,7 @@ func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (strin
 	if !ok {
 		return "", false, nil
 	}
-	query := baseUserQueryText(latestUserMessageText(a.Session.Messages))
+	query := baseUserQueryText(latestExternalOrUserMessageText(a.Session.Messages))
 	meta := buildCachedAnalysisFastPathMetadata(artifacts, query)
 	messages := append([]Message(nil), a.Session.Messages...)
 	fastPathInstruction := "Fast-path check: Use only the cached project analysis already present in this conversation. Do not use tools and do not assume unseen code. If the cached analysis is sufficient to fully answer the user's latest request, answer now. Otherwise reply exactly NEEDS_TOOLS."
@@ -1008,7 +1008,7 @@ func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
-	lastUser := strings.TrimSpace(latestUserMessageText(a.Session.Messages))
+	lastUser := strings.TrimSpace(latestExternalOrUserMessageText(a.Session.Messages))
 	if lastUser == "" {
 		return false
 	}
