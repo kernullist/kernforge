@@ -2778,6 +2778,142 @@ func TestAgentSuppressesFinalLookingToolPreambleEmit(t *testing.T) {
 	}
 }
 
+func TestAgentPromotesFinalLookingToolPreambleAfterCodeEdit(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	readArgs, _ := json.Marshal(map[string]any{"path": "main.txt"})
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.txt",
+				"content": "fixed\n",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Final Answer\n\nThe implementation is complete and ready for review.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-read-after-final-looking-code-edit",
+						Name:      "read_file",
+						Arguments: string(readArgs),
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), readTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{
+				GeneratedAt:  time.Now(),
+				ChangedPaths: []string{"main.txt"},
+				Steps: []VerificationStep{{
+					Label:  "targeted",
+					Status: VerificationPassed,
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.txt")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Final Answer\n\nThe implementation is complete and ready for review." {
+		t.Fatalf("expected final-looking preamble to become final answer, got %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("read_file should not execute after a final-looking code-edit summary, got %d calls", readTool.calls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected runtime to finish without post-final inspection churn, got %d request(s)", len(provider.requests))
+	}
+	last := session.Messages[len(session.Messages)-1]
+	if last.Phase != messagePhaseFinalAnswer || len(last.ToolCalls) != 0 {
+		t.Fatalf("expected final-looking tool preamble to be stored as final answer without tool calls, got %#v", last)
+	}
+}
+
+func TestAgentDoesNotPromoteFinalLookingVerificationToolBeforeVerification(t *testing.T) {
+	root := t.TempDir()
+	shellTool := &staticTool{name: "run_shell", output: "tests passed"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.txt",
+				"content": "fixed\n",
+			}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Final Answer\n\nThe implementation is complete and ready for review.",
+					ToolCalls: []ToolCall{{
+						ID:        "call-test-after-edit",
+						Name:      "run_shell",
+						Arguments: `{"command":"go test ./cmd/kernforge"}`,
+					}},
+				},
+				StopReason: "tool_calls",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "Verification ran and the change is complete.",
+				},
+				StopReason: "stop",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws), shellTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix main.txt")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Verification ran and the change is complete." {
+		t.Fatalf("expected verification follow-up final answer, got %q", reply)
+	}
+	if shellTool.calls != 1 {
+		t.Fatalf("verification shell should execute when no current verification exists, got %d calls", shellTool.calls)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected verification tool turn before final answer, got %d request(s)", len(provider.requests))
+	}
+}
+
 func TestAgentNudgesAfterRepeatedIdenticalToolCalls(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{

@@ -769,16 +769,23 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			return "", err
 		}
-		resp.Message.Text = sanitizeAssistantMessageText(resp.Message.Text, len(resp.Message.ToolCalls) > 0)
+		rawAssistantText := resp.Message.Text
+		resp.Message.Text = sanitizeAssistantMessageText(rawAssistantText, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
+		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
+			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
+		}
+		if a.shouldPromoteFinalLookingToolPreambleToFinalCandidate(latestUser, resp.Message.ToolCalls, rawAssistantText, attemptedEditTool, successfulEditTool, unresolvedVerification) {
+			if finalText := sanitizeAssistantMessageText(rawAssistantText, false); finalText != "" {
+				resp.Message.Text = finalText
+				resp.Message.ToolCalls = nil
+			}
+		}
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
 		deferEndTurnFollowUpForGeneratedDocument := a.shouldDeferEndTurnFollowUpForGeneratedDocument(latestUser, resp)
 		deferEndTurnFollowUpForFinalLookingReply := shouldDeferEndTurnFollowUpForFinalLookingReply(resp)
 		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
 			resp.Message.Phase = messagePhaseCommentary
-		}
-		if !readOnlyAnalysis && !turnDisabledTools["apply_patch"] && toolRegistryHasTool(a.Tools, "apply_patch") {
-			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
 		if shouldRetryKoreanLocalCodeToolNarration(resp.Message, a.Session, a.Config) {
 			a.Session.AddMessage(Message{
@@ -2705,6 +2712,86 @@ func shouldDeferEndTurnFollowUpForFinalLookingReply(resp ChatResponse) bool {
 		return false
 	}
 	return assistantTextLooksLikeCompletionSummary(resp.Message.Text)
+}
+
+func (a *Agent) shouldPromoteFinalLookingToolPreambleToFinalCandidate(request string, calls []ToolCall, reply string, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil || len(calls) == 0 {
+		return false
+	}
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return false
+	}
+	if a.changesAreGeneratedDocumentArtifactsForTurn(request) {
+		return false
+	}
+	if !assistantTextLooksLikeCompletionSummary(reply) {
+		return false
+	}
+	if !a.shouldRouteCommentaryReplyThroughFinalGates(request, reply, attemptedEditTool, successfulEditTool, unresolvedVerification) {
+		return false
+	}
+	if !finalLookingPostCompletionOnlyToolCalls(calls) {
+		return false
+	}
+	if finalLookingToolCallsIncludeVerification(calls, a.Session) && !runtimeGateVerificationPassed(a.Session) {
+		return false
+	}
+	return true
+}
+
+func finalLookingPostCompletionOnlyToolCalls(calls []ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			return false
+		}
+		if isEditTool(name) || toolCallMutatesGitState(call) {
+			return false
+		}
+		if shellToolCallMayWriteWorkspace(call) {
+			return false
+		}
+		if !finalLookingPostCompletionToolName(name) {
+			return false
+		}
+	}
+	return true
+}
+
+func finalLookingPostCompletionToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "read_file",
+		"list_files",
+		"grep",
+		"git_status",
+		"git_diff",
+		"run_shell",
+		"run_shell_background",
+		"run_shell_bundle_background",
+		"check_shell_job",
+		"check_shell_bundle",
+		"review",
+		"run_review",
+		"post_change_review",
+		"update_plan",
+		"get_goal":
+		return true
+	default:
+		return false
+	}
+}
+
+func finalLookingToolCallsIncludeVerification(calls []ToolCall, session *Session) bool {
+	for _, call := range calls {
+		if toolCallIsVerificationRetryOrPoll(call, session) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) shouldBlockGeneratedDocumentArtifactValidationToolCalls(request string, calls []ToolCall) bool {
