@@ -5409,17 +5409,16 @@ func (a *Agent) setRemainingToolCallsNotExecuted(calls []ToolCall, indexes []int
 		if i >= 0 && i < len(indexes) {
 			index = indexes[i]
 		}
+		result := notExecutedToolResult(call, reason)
 		a.setToolExecutionResult(index, Message{
 			Role:       "tool",
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
-			Text:       reason,
+			Text:       result.DisplayText,
 			IsError:    true,
-			ToolMeta: map[string]any{
-				"status": "not_executed",
-				"reason": reason,
-			},
+			ToolMeta:   result.Meta,
 		})
+		a.noteToolConversationBlockedResult(call, result, nil)
 	}
 }
 
@@ -5432,17 +5431,16 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 		reason = "NOT_EXECUTED: this tool-call batch was redirected by the runtime before execution."
 	}
 	for _, call := range calls {
+		result := notExecutedToolResult(call, reason)
 		a.Session.AddMessage(Message{
 			Role:       "tool",
 			ToolCallID: call.ID,
 			ToolName:   call.Name,
-			Text:       reason,
+			Text:       result.DisplayText,
 			IsError:    true,
-			ToolMeta: map[string]any{
-				"status": "not_executed",
-				"reason": reason,
-			},
+			ToolMeta:   result.Meta,
 		})
+		a.noteToolConversationBlockedResult(call, result, nil)
 	}
 	if strings.TrimSpace(guidance) != "" {
 		a.Session.AddMessage(Message{
@@ -5454,6 +5452,33 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 		return a.Store.Save(a.Session)
 	}
 	return nil
+}
+
+func notExecutedToolResult(call ToolCall, reason string) ToolExecutionResult {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "NOT_EXECUTED: this tool call was redirected by the runtime before execution."
+	}
+	meta := defaultToolExecutionMeta(call.Name, toolCallArgumentsMap(call))
+	meta["status"] = "not_executed"
+	meta["reason"] = reason
+	meta["success"] = false
+	meta["changed_workspace"] = false
+	meta["deferred"] = true
+	meta["requires_reissue"] = true
+	if toolCallIsExecCommandLike(call.Name) {
+		meta["command_execution_status"] = "declined"
+	}
+	if toolCallIsPatchApplyLike(call.Name) {
+		meta["patch_apply_status"] = "declined"
+	}
+	if toolCallIsMCPToolLike(call.Name) {
+		meta["mcp_is_error"] = true
+	}
+	return ToolExecutionResult{
+		DisplayText: reason,
+		Meta:        meta,
+	}
 }
 
 func summarizeToolInvocation(cfg Config, call ToolCall) string {

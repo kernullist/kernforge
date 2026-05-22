@@ -5622,6 +5622,17 @@ func TestAgentBlocksShellGitCommitWithoutExplicitUserRequest(t *testing.T) {
 	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Text, "Do not stage, commit, push, or open a PR") {
 		t.Fatalf("expected git mutation guidance, got %#v", lastMessage)
 	}
+	var blockedEnd *ConversationEvent
+	for i := range session.ConversationEvents {
+		event := &session.ConversationEvents[i]
+		if event.CorrelationID == "call-1" && event.Kind == conversationEventKindExecCommandEnd {
+			blockedEnd = event
+			break
+		}
+	}
+	if blockedEnd == nil || blockedEnd.Entities["status"] != "declined" {
+		t.Fatalf("expected blocked shell git mutation to have declined exec end event, got %#v", session.ConversationEvents)
+	}
 }
 
 func TestAgentBlocksDocumentReadBeforeParentListing(t *testing.T) {
@@ -13316,6 +13327,17 @@ func TestAgentRejectsImplicitRunShellPatchBodyLikeCodex(t *testing.T) {
 	}
 	if !foundImplicitRejection {
 		t.Fatalf("expected raw run_shell patch body to be rejected before shell execution, messages=%#v", session.Messages)
+	}
+	var blockedEnd *ConversationEvent
+	for i := range session.ConversationEvents {
+		event := &session.ConversationEvents[i]
+		if event.CorrelationID == "call-1" && event.Kind == conversationEventKindExecCommandEnd {
+			blockedEnd = event
+			break
+		}
+	}
+	if blockedEnd == nil || blockedEnd.Entities["status"] != "declined" {
+		t.Fatalf("expected implicit shell patch rejection to have declined exec end event, got %#v", session.ConversationEvents)
 	}
 }
 
