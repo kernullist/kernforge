@@ -1415,6 +1415,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		preWriteBlockedRetryQueued := false
 		editMismatchRetryQueued := false
 		preWriteForceEditQueued := false
+		toolRetryQueued := false
 		toolMsgIndexes, saveErr := a.beginToolExecutions(resp.Message.ToolCalls)
 		if saveErr != nil {
 			return "", saveErr
@@ -1707,6 +1708,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err != nil && errors.Is(err, ErrEditCanceled) {
 				toolMsg.Text = "CANCELED: user canceled the edit preview. No files were changed."
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit was canceled before this tool could run.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -1715,6 +1717,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if err != nil && errors.Is(err, ErrWriteDenied) {
 				toolMsg.Text = "CANCELED: user declined write approval. No files were changed, and no filesystem permission issue was detected."
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier write approval was declined before this tool could run.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -1724,6 +1727,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				toolMsg.IsError = true
 				toolMsg.Text = toolExecutionModelTextWithError(result, err)
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit payload was invalid before this tool could run.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
@@ -1753,6 +1757,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						})
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
 					reply := formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -1803,6 +1808,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						})
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated edit target mismatches stopped this tool-call batch before this tool could run.")
 					reply := formatEditTargetMismatchLoopLimitReply(a.Config, a.Session)
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -1832,13 +1838,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					Role: "user",
 					Text: invalidToolArgumentsGuidance(call.Name),
 				})
+				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier tool call had invalid JSON arguments; retry from the next model turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
 				}
 				invalidToolArgsRetries++
 				lastToolError = ""
 				lastToolErrorCount = 0
-				continue
+				toolRetryQueued = true
+				break
 			}
 			if err != nil && errors.Is(err, ErrEditTargetMismatch) && editTargetMismatchRetries < 1 {
 				toolMsg.IsError = true
@@ -1894,6 +1902,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						})
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: reviewer gate stopped this tool-call batch before this tool could run.")
 					reply := localizedText(a.Config,
 						"The pre-write reviewer gate did not produce reliable evidence, so I stopped the edit. No code changes were applied.",
 						"쓰기 전 리뷰어 게이트가 신뢰 가능한 근거를 만들지 못해서 편집을 중단했습니다. 코드 수정은 적용하지 않았습니다.",
@@ -1941,7 +1950,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						lastToolError = ""
 						lastToolErrorCount = 0
-						continue
+						toolRetryQueued = true
+						break
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -1976,12 +1986,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						Role: "user",
 						Text: invalidPatchFormatGuidance(repeatedSignature, err),
 					})
+					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier apply_patch call had invalid patch format; retry from the next model turn.")
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
 					}
 					lastToolError = ""
 					lastToolErrorCount = 0
-					continue
+					toolRetryQueued = true
+					break
 				}
 			} else {
 				iterationHadToolSuccess = true
@@ -2046,7 +2058,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 			continue
 		}
-		if preWriteForceEditQueued || preWriteBlockedRetryQueued || editMismatchRetryQueued {
+		if preWriteForceEditQueued || preWriteBlockedRetryQueued || editMismatchRetryQueued || toolRetryQueued {
 			continue
 		}
 		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {

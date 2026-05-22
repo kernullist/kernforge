@@ -472,6 +472,18 @@ func sessionContainsToolResultText(session *Session, toolCallID string, needle s
 	return false
 }
 
+func sessionContainsInProgressToolResult(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if msg.Role == "tool" && strings.HasPrefix(strings.TrimSpace(msg.Text), "IN_PROGRESS:") {
+			return true
+		}
+	}
+	return false
+}
+
 func approvedReviewResponse(summary string) ChatResponse {
 	if strings.TrimSpace(summary) == "" {
 		summary = "no actionable findings"
@@ -917,6 +929,65 @@ func TestAgentDefersCacheOnlyShellWhenMixedWithEditTool(t *testing.T) {
 	}
 	if reason := toolMetaString(deferredShell.ToolMeta, "reason"); reason != "non_read_only_tool_deferred_until_edit_is_isolated" {
 		t.Fatalf("expected cache-only shell to use non-read-only deferral reason, got %#v", deferredShell.ToolMeta)
+	}
+}
+
+func TestAgentClosesRemainingToolPlaceholdersAfterInvalidJSON(t *testing.T) {
+	root := t.TempDir()
+	readTool := &staticTool{name: "read_file", output: "read should not run"}
+	listTool := &staticTool{name: "list_files", output: "list should not run"}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(
+				ToolCall{
+					ID:        "call-bad-json",
+					Name:      "read_file",
+					Arguments: `{"path":`,
+				},
+				ToolCall{
+					ID:        "call-list-after-bad-json",
+					Name:      "list_files",
+					Arguments: `{}`,
+				},
+			),
+			{Message: Message{Role: "assistant", Text: "Stopped after invalid tool arguments."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(readTool, listTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "inspect the workspace")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "Stopped after invalid tool arguments." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if readTool.calls != 0 {
+		t.Fatalf("invalid JSON should be rejected before executing read_file, got %d calls", readTool.calls)
+	}
+	if listTool.calls != 0 {
+		t.Fatalf("remaining tool should be closed without execution after invalid JSON, got %d calls", listTool.calls)
+	}
+	if !sessionContainsToolResultText(session, "call-bad-json", "invalid JSON") {
+		t.Fatalf("expected invalid JSON tool result, messages=%#v", session.Messages)
+	}
+	if !sessionContainsToolResultText(session, "call-list-after-bad-json", "NOT_EXECUTED") {
+		t.Fatalf("expected later placeholder to be closed as NOT_EXECUTED, messages=%#v", session.Messages)
+	}
+	if sessionContainsInProgressToolResult(session) {
+		t.Fatalf("tool placeholders must not remain IN_PROGRESS, messages=%#v", session.Messages)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected one retry turn after invalid JSON guidance, got %d requests", len(provider.requests))
 	}
 }
 
