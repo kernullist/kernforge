@@ -12447,6 +12447,7 @@ func TestAgentBuffersFinalAnswerDeltaAfterMetadataOnlyEdit(t *testing.T) {
 			meta: map[string]any{
 				"changed_workspace": true,
 				"effect":            "edit",
+				"changed_paths":     []string{"main.go"},
 			},
 		}),
 		Workspace:          ws,

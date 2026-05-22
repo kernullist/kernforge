@@ -540,6 +540,47 @@ func TestWriteFileRecordsCodexStyleLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestMetadataEditToolRecordsTurnDiffEvent(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	call := ToolCall{
+		ID:        "call-external-edit",
+		Name:      "external_edit",
+		Arguments: `{}`,
+	}
+	agent.noteToolConversationStart(call)
+	agent.noteToolConversationResult(call, ToolExecutionResult{
+		DisplayText: "external edit complete",
+		Meta: map[string]any{
+			"changed_paths": []string{"main.go"},
+			"unified_diff": strings.Join([]string{
+				"diff --git a/main.go b/main.go",
+				"--- a/main.go",
+				"+++ b/main.go",
+				"@@ -1 +1 @@",
+				"-package old",
+				"+package main",
+			}, "\n"),
+			"changed_workspace": true,
+			"success":           true,
+		},
+	})
+
+	turnDiffs := latestEventsByKind(session.ConversationEvents, conversationEventKindTurnDiff)
+	if len(turnDiffs) != 1 || !strings.Contains(turnDiffs[0].Raw, "diff --git a/main.go b/main.go") {
+		t.Fatalf("expected metadata edit turn diff event, got %#v", turnDiffs)
+	}
+	if turnDiffs[0].Entities["tool"] != "external_edit" || turnDiffs[0].Entities["changed_paths"] != "main.go" {
+		t.Fatalf("expected metadata edit turn diff entities, got %#v", turnDiffs[0].Entities)
+	}
+}
+
 func TestToolFailureRecordsCodexStyleEndEvent(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

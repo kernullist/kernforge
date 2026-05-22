@@ -1007,6 +1007,21 @@ func (a *Agent) recordPatchTransactionFromToolMetaIfNeeded(call ToolCall, result
 	}
 	paths := toolMetaStringSlice(result.Meta, "changed_paths")
 	if len(paths) == 0 {
+		if !toolMetaBool(result.Meta, "changed_workspace") {
+			return
+		}
+		tx := a.Session.ensurePatchTransaction(patchTransactionGoalFromSession(a.Session), a.Workspace.Root)
+		if tx != nil {
+			toolName := strings.TrimSpace(call.Name)
+			if toolName == "" {
+				toolName = "tool"
+			}
+			warning := toolName + " reported a workspace mutation without changed_paths metadata, so the changed file scope is unknown."
+			tx.Warnings = appendTaskStateItem(tx.Warnings, warning, 8)
+			tx.UpdatedAt = time.Now()
+			result.Meta["patch_transaction_id"] = tx.ID
+			result.Meta["patch_transaction_scope_unknown"] = true
+		}
 		return
 	}
 	scopes := resolveHarnessScopes(a.Workspace, strings.TrimSpace(toolMetaString(result.Meta, "owner_node_id")), paths, false)
@@ -1160,6 +1175,13 @@ func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool b
 			Severity: "warning",
 			Title:    "Edit tool produced no fingerprinted diff",
 			Detail:   "An edit tool was attempted, but the patch transaction did not record a changed file fingerprint. Confirm this was intentional before claiming a code change.",
+		})
+	}
+	if scopeWarnings := currentTurnPatchTransactionScopeWarnings(a.Session); len(scopeWarnings) > 0 {
+		report.Findings = append(report.Findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Workspace mutation has unknown review scope",
+			Detail:   "A tool reported workspace changes without changed_paths metadata, so Codex-style review evidence cannot identify the changed files: " + strings.Join(scopeWarnings, " | "),
 		})
 	}
 	report.Findings = normalizeCodingHarnessFindings(report.Findings)
@@ -1617,6 +1639,24 @@ func currentTurnPatchTransactionChangedPaths(sess *Session) []string {
 		return nil
 	}
 	return normalizeTaskStateList(paths, 64)
+}
+
+func currentTurnPatchTransactionScopeWarnings(sess *Session) []string {
+	tx := currentTurnPatchTransaction(sess)
+	if tx == nil {
+		return nil
+	}
+	warnings := make([]string, 0, len(tx.Warnings))
+	for _, warning := range tx.Warnings {
+		trimmed := strings.TrimSpace(warning)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(trimmed), "without changed_paths") {
+			warnings = append(warnings, trimmed)
+		}
+	}
+	return normalizeTaskStateList(warnings, 8)
 }
 
 func currentTurnPatchTransaction(sess *Session) *PatchTransaction {

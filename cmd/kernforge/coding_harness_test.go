@@ -123,6 +123,64 @@ func TestPatchTransactionGoalSkipsInternalReviewerFeedback(t *testing.T) {
 	}
 }
 
+func TestPatchTransactionWarnsOnUnscopedWorkspaceMutation(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "Fix the runtime bug"}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	result := ToolExecutionResult{Meta: map[string]any{
+		"effect":            "edit",
+		"changed_workspace": true,
+	}}
+
+	agent.recordPatchTransactionFromToolMetaIfNeeded(
+		ToolCall{Name: "external_edit", Arguments: `{}`},
+		result,
+		nil,
+	)
+
+	if session.ActivePatchTransaction == nil {
+		t.Fatalf("expected patch transaction for unscoped workspace mutation")
+	}
+	if len(session.ActivePatchTransaction.Warnings) == 0 ||
+		!strings.Contains(session.ActivePatchTransaction.Warnings[0], "without changed_paths") {
+		t.Fatalf("expected changed_paths warning, got %#v", session.ActivePatchTransaction.Warnings)
+	}
+	if !toolMetaBool(result.Meta, "patch_transaction_scope_unknown") {
+		t.Fatalf("expected metadata to mark unknown patch scope, got %#v", result.Meta)
+	}
+	report := agent.buildDiffAwareSelfReviewReport("수정 완료", true)
+	if !codingHarnessReportHasFinding(report.Findings, "Workspace mutation has unknown review scope") {
+		t.Fatalf("expected unknown scope blocker, got %#v", report.Findings)
+	}
+}
+
+func TestNoopMetadataEditDoesNotCreateUnknownScopeWarning(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "Try a metadata edit"}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	agent.recordPatchTransactionFromToolMetaIfNeeded(
+		ToolCall{Name: "external_edit", Arguments: `{}`},
+		ToolExecutionResult{Meta: map[string]any{
+			"effect":            "edit",
+			"changed_workspace": false,
+		}},
+		nil,
+	)
+
+	if session.ActivePatchTransaction != nil {
+		t.Fatalf("no-op metadata edit must not create patch transaction, got %#v", session.ActivePatchTransaction)
+	}
+}
+
 func TestAcceptanceContractExtractsArtifactsAndVerificationIntent(t *testing.T) {
 	contract := buildAcceptanceContract(
 		"docs/result.md 파일을 생성하고 테스트까지 실행해줘",

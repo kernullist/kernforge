@@ -389,6 +389,7 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 	if blocked {
 		entities["blocked"] = "true"
 	}
+	emittedTurnDiff := false
 	switch {
 	case toolCallIsExecCommandLike(name):
 		a.Session.AppendConversationEvent(ConversationEvent{
@@ -409,6 +410,7 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 			Entities:      entities,
 		})
 		a.appendCodexStyleTurnDiffEvent(call, result, entities)
+		emittedTurnDiff = true
 	case toolCallIsMCPToolLike(name):
 		entities = mcpToolLifecycleEntities(call, result.Meta)
 		entities["status"] = status
@@ -432,6 +434,9 @@ func (a *Agent) appendCodexStyleToolLifecycleEnd(call ToolCall, result ToolExecu
 			Metadata:      metadata,
 		})
 	default:
+	}
+	if !emittedTurnDiff && strings.TrimSpace(toolMetaString(result.Meta, "unified_diff")) != "" {
+		a.appendCodexStyleTurnDiffEvent(call, result, entities)
 	}
 }
 
