@@ -1314,13 +1314,7 @@ func collectSessionChangedPathsInRange(sess *Session, start int) []string {
 }
 
 func messageRepresentsWorkspaceEdit(msg Message) bool {
-	if isEditTool(msg.ToolName) {
-		return true
-	}
-	if toolMetaBool(msg.ToolMeta, "changed_workspace") {
-		return true
-	}
-	return strings.EqualFold(strings.TrimSpace(toolMetaString(msg.ToolMeta, "effect")), "edit")
+	return toolResultRepresentsWorkspaceEdit(msg.ToolName, msg.ToolMeta)
 }
 
 func collectVerificationPathsFromToolText(text, marker string) []string {

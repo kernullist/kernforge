@@ -2443,11 +2443,13 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	editRoot := firstNonBlankString(route.WorktreeRoot, route.DisplayRoot, t.ws.Root)
 	content := stringValue(args, "content")
 	before := ""
+	beforeExists := false
 	if err := t.ws.CheckEditBoundary(path); err != nil {
 		return "", err
 	}
 	if existing, err := os.ReadFile(path); err == nil {
 		before = string(existing)
+		beforeExists = true
 	}
 	if suspiciousRewritePayload(path, before, content) {
 		return "", fmt.Errorf("%w: write_file content looks like a malformed serialized payload instead of real file contents; use apply_patch or provide the final file text", ErrInvalidEditPayload)
@@ -2461,6 +2463,11 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 	after := content
 	if boolValue(args, "append", false) {
 		after = before + content
+	}
+	if beforeExists && after == before {
+		return fmt.Sprintf("no changes to %s; file already matches requested content", displayPath), nil
+	}
+	if boolValue(args, "append", false) {
 		if _, err := t.ws.Hook(ctx, HookPreEdit, HookPayload{
 			"path":          displayPath,
 			"absolute_path": path,
@@ -2576,14 +2583,19 @@ func (t WriteFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		path = planned.DisplayPath
 	}
 	committedPlanned := err == nil || planned.Committed()
-	changedWorkspace := err == nil || planned.ChangedOnDisk()
+	changedWorkspace := planned.ChangedOnDisk()
+	changedPaths, changedCount := changedWorkspacePathMeta(path, changedWorkspace)
+	bytesWritten := 0
+	if changedWorkspace {
+		bytesWritten = len(stringValue(args, "content"))
+	}
 	meta := map[string]any{
 		"path":                  path,
-		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
-		"changed_count":         1,
+		"changed_paths":         changedPaths,
+		"changed_count":         changedCount,
 		"append":                boolValue(args, "append", false),
 		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
-		"bytes_written":         len(stringValue(args, "content")),
+		"bytes_written":         bytesWritten,
 		"changed_workspace":     changedWorkspace,
 		"requires_verification": changedWorkspace,
 		"effect":                "edit",
@@ -2812,6 +2824,9 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	if suspiciousReplacePayload(path, search, replace, content, updated) {
 		return "", fmt.Errorf("%w: replace_in_file replacement looks like a malformed serialized payload instead of real code; use apply_patch or provide the exact replacement text", ErrInvalidEditPayload)
 	}
+	if updated == content {
+		return fmt.Sprintf("no changes to %s; replacement leaves file unchanged", displayPath), nil
+	}
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -2898,14 +2913,18 @@ func (t ReplaceInFileTool) ExecuteDetailed(ctx context.Context, input any) (Tool
 		}
 	}
 	committedPlanned := err == nil || planned.Committed()
-	changedWorkspace := err == nil || planned.ChangedOnDisk()
+	changedWorkspace := planned.ChangedOnDisk()
 	if changedWorkspace && replacements == 0 && plannedReplacements > 0 {
 		replacements = plannedReplacements
 	}
+	if !changedWorkspace {
+		replacements = 0
+	}
+	changedPaths, changedCount := changedWorkspacePathMeta(path, changedWorkspace)
 	meta := map[string]any{
 		"path":                  path,
-		"changed_paths":         normalizeTaskStateList([]string{path}, 8),
-		"changed_count":         1,
+		"changed_paths":         changedPaths,
+		"changed_count":         changedCount,
 		"all":                   all,
 		"owner_node_id":         strings.TrimSpace(stringValue(args, "owner_node_id")),
 		"applied_replacements":  replacements,

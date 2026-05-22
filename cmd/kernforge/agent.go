@@ -1912,12 +1912,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			} else {
 				iterationHadToolSuccess = true
-				editLike := isEditTool(call.Name) ||
-					toolMetaBool(result.Meta, "changed_workspace") ||
-					strings.EqualFold(strings.TrimSpace(toolMetaString(result.Meta, "effect")), "edit")
-				if editLike {
-					edited = true
+				if toolResultAttemptedWorkspaceEdit(call.Name, result.Meta) {
 					attemptedEditTool = true
+				}
+				if toolResultRepresentsWorkspaceEdit(call.Name, result.Meta) {
+					edited = true
 					successfulEditTool = true
 					finalAnswerOnlyCorrection = false
 					finalHarnessRevisions = 0

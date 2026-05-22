@@ -302,6 +302,9 @@ func runtimeGateFinalAnswerShouldUseGitChangedFallback(session *Session) bool {
 	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
 		return classifyTurnIntent(latestUser) == TurnIntentEditCode
 	}
+	if latestUser == "" && session.AcceptanceContract == nil && session.TaskState == nil {
+		return true
+	}
 	if session.AcceptanceContract != nil {
 		contract := *session.AcceptanceContract
 		contract.Normalize()

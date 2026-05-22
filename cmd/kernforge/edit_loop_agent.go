@@ -9,7 +9,6 @@ func (a *Agent) recordEditLoopToolResult(call ToolCall, result ToolExecutionResu
 		return
 	}
 	meta := result.Meta
-	effect := strings.TrimSpace(strings.ToLower(toolMetaString(meta, "effect")))
 	paths := toolMetaStringSlice(meta, "changed_paths")
 	if len(paths) == 0 && isEditTool(call.Name) {
 		if path := strings.TrimSpace(toolMetaString(meta, "path")); path != "" {
@@ -17,8 +16,10 @@ func (a *Agent) recordEditLoopToolResult(call ToolCall, result ToolExecutionResu
 		}
 	}
 	verificationLike := toolResultLooksLikeVerificationAttempt(call.Name, meta, result.DisplayText)
-	editLike := isEditTool(call.Name) || effect == "edit" || toolMetaBool(meta, "changed_workspace") || len(paths) > 0 ||
-		strings.EqualFold(toolMetaString(meta, "mutation_class"), string(shellMutationWorkspaceWrite))
+	editLike := toolResultRepresentsWorkspaceEdit(call.Name, meta)
+	if !editLike && execErr != nil && toolResultAttemptedWorkspaceEdit(call.Name, meta) {
+		editLike = true
+	}
 	if !editLike && !verificationLike {
 		return
 	}

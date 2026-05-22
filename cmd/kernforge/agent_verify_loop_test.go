@@ -1042,6 +1042,74 @@ func TestAgentVerificationFailurePromptsAnotherTurnBeforeFinalAnswer(t *testing.
 	}
 }
 
+func TestAgentDoesNotAutoVerifyNoOpWriteFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: "No source changes were needed."}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	verifyCalls := 0
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCalls++
+			return VerificationReport{
+				ChangedPaths: []string{"main.go"},
+				Steps: []VerificationStep{{
+					Label:  "go test ./...",
+					Stage:  "targeted",
+					Status: VerificationFailed,
+					Output: "verification must not run for a no-op write",
+				}},
+			}, true
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "ensure main.go has this content")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "No source changes were needed." {
+		t.Fatalf("unexpected final reply: %q", reply)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("no-op write_file must not trigger auto verification, got %d call(s)", verifyCalls)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected tool turn and final turn only, got %d requests", len(provider.requests))
+	}
+	var sawNoOpTool bool
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.ToolName != "write_file" {
+			continue
+		}
+		sawNoOpTool = true
+		if toolMetaBool(msg.ToolMeta, "changed_workspace") {
+			t.Fatalf("no-op tool result must not report changed_workspace=true: %#v", msg.ToolMeta)
+		}
+		if paths := toolMetaStringSlice(msg.ToolMeta, "changed_paths"); len(paths) != 0 {
+			t.Fatalf("no-op tool result must not report changed_paths: %#v", msg.ToolMeta)
+		}
+	}
+	if !sawNoOpTool {
+		t.Fatalf("expected write_file tool result in session: %#v", session.Messages)
+	}
+}
+
 func TestVerificationRepairScopeDoesNotTreatProjectBuildSiblingFailureAsPatchScoped(t *testing.T) {
 	agent := &Agent{}
 	report := VerificationReport{

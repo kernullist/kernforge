@@ -838,6 +838,48 @@ func TestWriteFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 	}
 }
 
+func TestWriteFileExecuteDetailedReportsNoWorkspaceChangeForNoOp(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewWriteFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			t.Fatalf("no-op write_file must not request edit preview: %#v", preview)
+			return false, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"content": "package main\n",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "no changes to main.go") {
+		t.Fatalf("expected no-op display text, got %q", result.DisplayText)
+	}
+	if toolMetaBool(result.Meta, "changed_workspace") || toolMetaBool(result.Meta, "requires_verification") {
+		t.Fatalf("no-op write must not report workspace changes, got %#v", result.Meta)
+	}
+	if paths := toolMetaStringSlice(result.Meta, "changed_paths"); len(paths) != 0 {
+		t.Fatalf("no-op write must not report changed paths, got %#v", paths)
+	}
+	if got := toolMetaInt(result.Meta, "changed_count"); got != 0 {
+		t.Fatalf("expected changed_count=0, got %#v", result.Meta)
+	}
+	if got := toolMetaInt(result.Meta, "bytes_written"); got != 0 {
+		t.Fatalf("expected bytes_written=0 for no-op, got %#v", result.Meta)
+	}
+	if diff := toolMetaString(result.Meta, "unified_diff"); diff != "" {
+		t.Fatalf("no-op write must not report a unified diff, got %q", diff)
+	}
+}
+
 func TestWriteFileExecuteDetailedReportsCommittedMutationWhenPostEditHookFails(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
@@ -914,6 +956,49 @@ func TestReplaceInFileExecuteDetailedIncludesUnifiedDiff(t *testing.T) {
 		if !strings.Contains(unifiedDiff, want) {
 			t.Fatalf("expected unified diff to contain %q, got %q", want, unifiedDiff)
 		}
+	}
+}
+
+func TestReplaceInFileExecuteDetailedReportsNoWorkspaceChangeForNoOp(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc oldName() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewReplaceInFileTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+		PreviewEdit: func(preview EditPreview) (bool, error) {
+			t.Fatalf("no-op replace_in_file must not request edit preview: %#v", preview)
+			return false, nil
+		},
+	})
+
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path":    "main.go",
+		"search":  "oldName",
+		"replace": "oldName",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "no changes to main.go") {
+		t.Fatalf("expected no-op display text, got %q", result.DisplayText)
+	}
+	if toolMetaBool(result.Meta, "changed_workspace") || toolMetaBool(result.Meta, "requires_verification") {
+		t.Fatalf("no-op replacement must not report workspace changes, got %#v", result.Meta)
+	}
+	if paths := toolMetaStringSlice(result.Meta, "changed_paths"); len(paths) != 0 {
+		t.Fatalf("no-op replacement must not report changed paths, got %#v", paths)
+	}
+	if got := toolMetaInt(result.Meta, "changed_count"); got != 0 {
+		t.Fatalf("expected changed_count=0, got %#v", result.Meta)
+	}
+	if got := toolMetaInt(result.Meta, "applied_replacements"); got != 0 {
+		t.Fatalf("expected applied_replacements=0 for no-op, got %#v", result.Meta)
+	}
+	if diff := toolMetaString(result.Meta, "unified_diff"); diff != "" {
+		t.Fatalf("no-op replacement must not report a unified diff, got %q", diff)
 	}
 }
 
