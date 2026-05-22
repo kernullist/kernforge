@@ -2026,6 +2026,12 @@ func collectSessionReviewEvidence(session *Session, evidence *ReviewEvidencePack
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Patch transaction changed paths", strings.Join(changed, "\n"))
 		evidence.Sources = append(evidence.Sources, "patch_transaction")
 	}
+	if tx := currentTurnPatchTransaction(session); tx != nil {
+		if unifiedDiff := strings.TrimSpace(tx.UnifiedDiff()); unifiedDiff != "" {
+			evidence.Text = appendReviewEvidenceSection(evidence.Text, "Patch transaction unified diff", compactPromptSection(unifiedDiff, 12000))
+			evidence.Sources = append(evidence.Sources, "patch_transaction_diff")
+		}
+	}
 	if session.AcceptanceContract != nil {
 		contract := *session.AcceptanceContract
 		contract.Normalize()

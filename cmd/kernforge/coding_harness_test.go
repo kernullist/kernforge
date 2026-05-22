@@ -181,6 +181,40 @@ func TestNoopMetadataEditDoesNotCreateUnknownScopeWarning(t *testing.T) {
 	}
 }
 
+func TestPatchTransactionChangedPathsIncludesFailedPartialMutation(t *testing.T) {
+	tx := PatchTransaction{
+		ID:     "patch-tx-test",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:          "patch-tx-test-001",
+			ToolName:    "apply_patch",
+			Status:      "failed",
+			UnifiedDiff: "diff --git a/dir b/dir\n+++ b/dir\n@@ -0,0 +1 @@\n+not a directory\n",
+			Paths: []PatchPathChange{{
+				Path:      "dir",
+				Operation: "create",
+				After: HarnessFileFingerprint{
+					Path:   "dir",
+					Kind:   "file",
+					Exists: true,
+				},
+			}},
+		}},
+	}
+
+	paths := tx.ChangedPaths()
+	if len(paths) != 1 || paths[0] != "dir" {
+		t.Fatalf("failed entries with real mutations must still expose changed paths, got %#v", paths)
+	}
+	if diff := tx.UnifiedDiff(); !strings.Contains(diff, "diff --git a/dir b/dir") {
+		t.Fatalf("expected partial mutation unified diff, got %q", diff)
+	}
+	rendered := tx.RenderPromptSection()
+	if !strings.Contains(rendered, "Changed paths: dir") || !strings.Contains(rendered, "Unified diff excerpt") {
+		t.Fatalf("expected rendered transaction to include failed mutation evidence, got %q", rendered)
+	}
+}
+
 func TestAcceptanceContractExtractsArtifactsAndVerificationIntent(t *testing.T) {
 	contract := buildAcceptanceContract(
 		"docs/result.md 파일을 생성하고 테스트까지 실행해줘",

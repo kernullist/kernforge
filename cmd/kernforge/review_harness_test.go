@@ -759,6 +759,50 @@ func TestCollectSessionReviewEvidenceIgnoresArchivedPatchFromPreviousTurn(t *tes
 	}
 }
 
+func TestCollectSessionReviewEvidenceIncludesPatchTransactionUnifiedDiff(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "", "", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "main.go를 수정해",
+	}}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-code-current",
+		Goal:   "main.go를 수정해",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-current-001",
+			ToolName: "apply_patch",
+			Status:   "failed",
+			UnifiedDiff: strings.Join([]string{
+				"diff --git a/main.go b/main.go",
+				"--- a/main.go",
+				"+++ b/main.go",
+				"@@ -1 +1 @@",
+				"-package old",
+				"+package main",
+			}, "\n"),
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "update",
+			}},
+		}},
+	}}
+
+	var evidence ReviewEvidencePack
+	collectSessionReviewEvidence(session, &evidence, false)
+	if !containsString(evidence.Sources, "patch_transaction_diff") {
+		t.Fatalf("expected patch transaction diff evidence source, got %#v", evidence.Sources)
+	}
+	if !strings.Contains(evidence.Text, "Patch transaction unified diff") ||
+		!strings.Contains(evidence.Text, "diff --git a/main.go b/main.go") {
+		t.Fatalf("expected review evidence to include unified diff, got %q", evidence.Text)
+	}
+	if len(evidence.ChangedPaths) != 1 || evidence.ChangedPaths[0] != "main.go" {
+		t.Fatalf("expected failed partial mutation path in review evidence, got %#v", evidence.ChangedPaths)
+	}
+}
+
 func TestAutoReviewChangedPathsPrefersActivePatchTransactionOverArchivedCode(t *testing.T) {
 	root := t.TempDir()
 	runTestGit(t, root, "init")

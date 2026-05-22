@@ -41,6 +41,7 @@ type PatchTransactionEntry struct {
 	Reason      string            `json:"reason,omitempty"`
 	Status      string            `json:"status,omitempty"`
 	Error       string            `json:"error,omitempty"`
+	UnifiedDiff string            `json:"unified_diff,omitempty"`
 	StartedAt   time.Time         `json:"started_at,omitempty"`
 	CompletedAt time.Time         `json:"completed_at,omitempty"`
 	Paths       []PatchPathChange `json:"paths,omitempty"`
@@ -462,6 +463,7 @@ func (e *PatchTransactionEntry) Normalize() {
 	e.Reason = strings.TrimSpace(e.Reason)
 	e.Status = strings.TrimSpace(strings.ToLower(e.Status))
 	e.Error = strings.TrimSpace(e.Error)
+	e.UnifiedDiff = strings.TrimSpace(e.UnifiedDiff)
 	for i := range e.Paths {
 		e.Paths[i].Normalize()
 	}
@@ -535,9 +537,6 @@ func (c *AcceptanceContract) Normalize() {
 func (t PatchTransaction) ChangedPaths() []string {
 	paths := make([]string, 0)
 	for _, entry := range t.Entries {
-		if strings.EqualFold(strings.TrimSpace(entry.Status), "failed") {
-			continue
-		}
 		for _, change := range entry.Paths {
 			if strings.TrimSpace(change.Path) != "" {
 				paths = append(paths, change.Path)
@@ -547,17 +546,34 @@ func (t PatchTransaction) ChangedPaths() []string {
 	return normalizeTaskStateList(paths, 64)
 }
 
+func (t PatchTransaction) UnifiedDiff() string {
+	t.Normalize()
+	diffs := make([]string, 0, len(t.Entries))
+	for _, entry := range t.Entries {
+		diff := strings.TrimSpace(entry.UnifiedDiff)
+		if diff == "" {
+			continue
+		}
+		diffs = append(diffs, diff)
+	}
+	return strings.TrimSpace(strings.Join(diffs, "\n"))
+}
+
 func (t PatchTransaction) RenderPromptSection() string {
 	t.Normalize()
 	if strings.TrimSpace(t.ID) == "" {
 		return ""
 	}
 	changed := t.ChangedPaths()
+	unifiedDiff := t.UnifiedDiff()
 	lines := []string{
 		fmt.Sprintf("- Patch transaction: %s [%s]", t.ID, t.Status),
 	}
 	if len(changed) > 0 {
 		lines = append(lines, "- Changed paths: "+strings.Join(changed, ", "))
+	}
+	if unifiedDiff != "" {
+		lines = append(lines, "- Unified diff excerpt:\n"+indentBlock(compactPromptSection(unifiedDiff, 2000), "  "))
 	}
 	if len(t.Warnings) > 0 {
 		lines = append(lines, "- Warnings: "+strings.Join(t.Warnings, " | "))
@@ -959,6 +975,7 @@ func (a *Agent) finishPatchTransactionToolProbe(probe *PatchTransactionProbe, ca
 		StartedAt:   probe.StartedAt,
 		CompletedAt: time.Now(),
 		Paths:       changes,
+		UnifiedDiff: strings.TrimSpace(toolMetaString(result.Meta, "unified_diff")),
 	}
 	if execErr != nil {
 		entry.Status = "failed"
@@ -1039,6 +1056,7 @@ func (a *Agent) recordPatchTransactionFromToolMetaIfNeeded(call ToolCall, result
 		Status:      "success",
 		StartedAt:   now,
 		CompletedAt: now,
+		UnifiedDiff: strings.TrimSpace(toolMetaString(result.Meta, "unified_diff")),
 	}
 	for _, path := range normalizeTaskStateList(paths, 32) {
 		fingerprint, ok := after[normalizeSessionRelativePath(path)]
