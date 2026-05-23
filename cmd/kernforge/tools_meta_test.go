@@ -221,6 +221,60 @@ func TestToolRegistryNormalizesObjectSchemasBeforeExposure(t *testing.T) {
 	}
 }
 
+func TestToolRegistryAcceptsEmptyPermissiveRootSchema(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "empty_schema",
+			InputSchema: map[string]any{},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("empty root schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected empty-schema tool to remain visible, got %#v", defs)
+	}
+	if len(defs[0].InputSchema) != 0 {
+		t.Fatalf("expected empty root schema to remain permissive, got %#v", defs[0].InputSchema)
+	}
+	result, err := registry.ExecuteDetailed(context.Background(), "empty_schema", `{}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if result.DisplayText != "ok" {
+		t.Fatalf("expected empty-schema tool to remain dispatchable, got %q", result.DisplayText)
+	}
+}
+
+func TestToolRegistryNormalizesUnrecognizedRootSchemaToEmpty(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "unrecognized_root",
+			InputSchema: map[string]any{
+				"description": "Ticket identifier",
+				"title":       "Ticket ID",
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("unrecognized root schema should normalize to empty schema, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected normalized root schema to remain visible, got %#v", defs)
+	}
+	if len(defs[0].InputSchema) != 0 {
+		t.Fatalf("expected unrecognized root schema to normalize to empty schema, got %#v", defs[0].InputSchema)
+	}
+}
+
 func TestToolRegistryAcceptsRootAnyOfSchemas(t *testing.T) {
 	tool := &mutableRegistryTool{
 		def: ToolDefinition{
@@ -309,8 +363,8 @@ func TestToolRegistryInfersAndSanitizesNestedSchemasBeforeExposure(t *testing.T)
 	}
 	properties := defs[0].InputSchema["properties"].(map[string]any)
 	query := properties["query"].(map[string]any)
-	if query["type"] != "string" {
-		t.Fatalf("expected property without type to default to string, got %#v", query)
+	if len(query) != 0 {
+		t.Fatalf("expected property without recognized schema hints to normalize to an empty schema, got %#v", query)
 	}
 	tags := properties["tags"].(map[string]any)
 	if _, ok := tags["items"].(map[string]any); !ok {
@@ -323,6 +377,150 @@ func TestToolRegistryInfersAndSanitizesNestedSchemasBeforeExposure(t *testing.T)
 	}
 	if _, ok := mode["const"]; ok {
 		t.Fatalf("expected const keyword to be removed after normalization, got %#v", mode)
+	}
+}
+
+func TestToolRegistryPreservesReferenceSchemasWithoutTypeFallback(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "referenced_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"user": map[string]any{
+						"$ref": "#/$defs/User",
+					},
+				},
+				"$defs": map[string]any{
+					"User": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name": map[string]any{
+								"type": "string",
+							},
+							"address": map[string]any{
+								"$ref": "#/$defs/Address",
+							},
+						},
+					},
+					"Address": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"city": map[string]any{
+								"type": "string",
+							},
+						},
+					},
+					"Unused": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"ignored": map[string]any{
+								"type": "string",
+							},
+						},
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("reference schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected one visible definition, got %#v", defs)
+	}
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	user := properties["user"].(map[string]any)
+	if user["$ref"] != "#/$defs/User" {
+		t.Fatalf("expected local definition reference to be preserved, got %#v", user)
+	}
+	if _, ok := user["type"]; ok {
+		t.Fatalf("reference schemas must not receive a fallback type, got %#v", user)
+	}
+	defsTable, ok := defs[0].InputSchema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected definition table to be preserved, got %#v", defs[0].InputSchema)
+	}
+	userDef := defsTable["User"].(map[string]any)
+	if userDef["type"] != "object" {
+		t.Fatalf("expected referenced definition to stay normalized, got %#v", userDef)
+	}
+	if _, ok := defsTable["Address"]; !ok {
+		t.Fatalf("expected transitively referenced definition to be preserved, got %#v", defsTable)
+	}
+	if _, ok := defsTable["Unused"]; ok {
+		t.Fatalf("expected unreachable definition to be pruned, got %#v", defsTable)
+	}
+}
+
+func TestToolRegistryDropsMalformedDefinitionTables(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "malformed_definitions",
+			InputSchema: map[string]any{
+				"type":        "object",
+				"properties":  map[string]any{},
+				"definitions": []any{"not", "a", "schema", "table"},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("malformed definition tables should be dropped during normalization, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected one visible definition, got %#v", defs)
+	}
+	if _, ok := defs[0].InputSchema["definitions"]; ok {
+		t.Fatalf("malformed definition table should be removed, got %#v", defs[0].InputSchema)
+	}
+}
+
+func TestToolRegistryDecodesEscapedDefinitionReferences(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "escaped_ref_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"value": map[string]any{
+						"$ref": "#/$defs/Name~1With~0Escape",
+					},
+				},
+				"$defs": map[string]any{
+					"Name/With~Escape": map[string]any{
+						"type": "string",
+					},
+					"Unused": map[string]any{
+						"type": "string",
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("escaped reference schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	defsTable, ok := defs[0].InputSchema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected definition table to be preserved, got %#v", defs[0].InputSchema)
+	}
+	if _, ok := defsTable["Name/With~Escape"]; !ok {
+		t.Fatalf("expected escaped local definition reference to keep target, got %#v", defsTable)
+	}
+	if _, ok := defsTable["Unused"]; ok {
+		t.Fatalf("expected unreachable escaped-reference sibling to be pruned, got %#v", defsTable)
 	}
 }
 

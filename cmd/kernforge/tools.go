@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,7 +163,7 @@ func validateToolDefinition(def ToolDefinition) error {
 	if strings.TrimSpace(def.Name) == "" {
 		return fmt.Errorf("missing tool name")
 	}
-	if len(def.InputSchema) == 0 {
+	if def.InputSchema == nil {
 		return fmt.Errorf("missing input schema")
 	}
 	if !validToolInputSchema(def.InputSchema) {
@@ -172,8 +173,11 @@ func validateToolDefinition(def ToolDefinition) error {
 }
 
 func validToolInputSchema(schema map[string]any) bool {
-	if len(schema) == 0 {
+	if schema == nil {
 		return false
+	}
+	if len(schema) == 0 {
+		return true
 	}
 	if !validToolJSONSchemaMap(schema) {
 		return false
@@ -365,11 +369,12 @@ func normalizeToolInputSchema(schema map[string]any) map[string]any {
 	if schema == nil {
 		return nil
 	}
-	normalizeToolJSONSchemaMap(schema, true)
+	normalizeToolJSONSchemaMap(schema)
+	pruneUnreachableToolDefinitions(schema)
 	return schema
 }
 
-func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
+func normalizeToolJSONSchemaMap(schema map[string]any) {
 	if rawProperties, ok := schema["properties"]; ok {
 		if properties, ok := rawProperties.(map[string]any); ok {
 			for key, value := range properties {
@@ -385,7 +390,7 @@ func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
 	}
 	if rawAdditional, ok := schema["additionalProperties"]; ok {
 		if nested, ok := rawAdditional.(map[string]any); ok {
-			normalizeToolJSONSchemaMap(nested, false)
+			normalizeToolJSONSchemaMap(nested)
 		}
 	}
 	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
@@ -399,6 +404,8 @@ func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
 				for name, value := range definitions {
 					definitions[name] = normalizeToolJSONSchemaValue(value)
 				}
+			} else {
+				delete(schema, key)
 			}
 		}
 	}
@@ -407,8 +414,14 @@ func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
 		schema["enum"] = []any{rawConst}
 	}
 	if _, ok := schema["type"]; !ok {
-		if inferred, ok := inferToolSchemaType(schema, root); ok {
+		if schemaHasReferenceOrComposition(schema) {
+			return
+		}
+		if inferred, ok := inferToolSchemaType(schema); ok {
 			schema["type"] = inferred
+		} else {
+			clearUnrecognizedToolSchema(schema)
+			return
 		}
 	}
 	if toolSchemaHasType(schema, "object") || (schema["type"] == nil && toolSchemaInfersObject(schema)) {
@@ -423,12 +436,30 @@ func normalizeToolJSONSchemaMap(schema map[string]any, root bool) {
 	}
 }
 
+func schemaHasReferenceOrComposition(schema map[string]any) bool {
+	for _, key := range []string{"$ref", "anyOf", "oneOf", "allOf"} {
+		if _, ok := schema[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func clearUnrecognizedToolSchema(schema map[string]any) {
+	if len(schema) == 0 {
+		return
+	}
+	for key := range schema {
+		delete(schema, key)
+	}
+}
+
 func normalizeToolJSONSchemaValue(raw any) any {
 	switch typed := raw.(type) {
 	case bool:
 		return map[string]any{"type": "string"}
 	case map[string]any:
-		normalizeToolJSONSchemaMap(typed, false)
+		normalizeToolJSONSchemaMap(typed)
 		return typed
 	case []any:
 		for i, item := range typed {
@@ -440,7 +471,7 @@ func normalizeToolJSONSchemaValue(raw any) any {
 	}
 }
 
-func inferToolSchemaType(schema map[string]any, root bool) (string, bool) {
+func inferToolSchemaType(schema map[string]any) (string, bool) {
 	if toolSchemaInfersObject(schema) {
 		return "object", true
 	}
@@ -458,9 +489,6 @@ func inferToolSchemaType(schema map[string]any, root bool) (string, bool) {
 		if _, ok := schema[key]; ok {
 			return "string", true
 		}
-	}
-	if !root {
-		return "string", true
 	}
 	return "", false
 }
@@ -498,6 +526,116 @@ func toolSchemaInfersObject(schema map[string]any) bool {
 		}
 	}
 	return false
+}
+
+type toolDefinitionRef struct {
+	table string
+	name  string
+}
+
+func pruneUnreachableToolDefinitions(schema map[string]any) {
+	reachable := collectReachableToolDefinitionRefs(schema)
+	for _, table := range []string{"$defs", "definitions"} {
+		raw, ok := schema[table]
+		if !ok {
+			continue
+		}
+		definitions, ok := raw.(map[string]any)
+		if !ok {
+			delete(schema, table)
+			continue
+		}
+		for name := range definitions {
+			if !reachable[toolDefinitionRef{table: table, name: name}] {
+				delete(definitions, name)
+			}
+		}
+		if len(definitions) == 0 {
+			delete(schema, table)
+		}
+	}
+}
+
+func collectReachableToolDefinitionRefs(schema map[string]any) map[toolDefinitionRef]bool {
+	reachable := map[toolDefinitionRef]bool{}
+	pending := collectToolDefinitionRefsFromValue(schema, false)
+	for len(pending) > 0 {
+		ref := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if reachable[ref] {
+			continue
+		}
+		reachable[ref] = true
+		if definition, ok := toolDefinitionForRef(schema, ref); ok {
+			pending = append(pending, collectToolDefinitionRefsFromValue(definition, true)...)
+		}
+	}
+	return reachable
+}
+
+func toolDefinitionForRef(schema map[string]any, ref toolDefinitionRef) (any, bool) {
+	definitions, ok := schema[ref.table].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	definition, ok := definitions[ref.name]
+	return definition, ok
+}
+
+func collectToolDefinitionRefsFromValue(value any, includeDefinitionTables bool) []toolDefinitionRef {
+	var refs []toolDefinitionRef
+	collectToolDefinitionRefs(value, includeDefinitionTables, &refs)
+	return refs
+}
+
+func collectToolDefinitionRefs(value any, includeDefinitionTables bool, refs *[]toolDefinitionRef) {
+	switch typed := value.(type) {
+	case map[string]any:
+		if rawRef, ok := typed["$ref"].(string); ok {
+			if ref, ok := parseLocalToolDefinitionRef(rawRef); ok {
+				*refs = append(*refs, ref)
+			}
+		}
+		for key, child := range typed {
+			if !includeDefinitionTables && (key == "$defs" || key == "definitions") {
+				continue
+			}
+			collectToolDefinitionRefs(child, includeDefinitionTables, refs)
+		}
+	case []any:
+		for _, child := range typed {
+			collectToolDefinitionRefs(child, includeDefinitionTables, refs)
+		}
+	}
+}
+
+func parseLocalToolDefinitionRef(raw string) (toolDefinitionRef, bool) {
+	fragment, ok := strings.CutPrefix(strings.TrimSpace(raw), "#")
+	if !ok {
+		return toolDefinitionRef{}, false
+	}
+	if decoded, err := url.PathUnescape(fragment); err == nil {
+		fragment = decoded
+	}
+	parts := strings.Split(fragment, "/")
+	if len(parts) < 3 || parts[0] != "" {
+		return toolDefinitionRef{}, false
+	}
+	table := decodeJSONPointerToken(parts[1])
+	if table != "$defs" && table != "definitions" {
+		return toolDefinitionRef{}, false
+	}
+	name := decodeJSONPointerToken(parts[2])
+	if name == "" {
+		return toolDefinitionRef{}, false
+	}
+	return toolDefinitionRef{table: table, name: name}, true
+}
+
+func decodeJSONPointerToken(token string) string {
+	token = strings.ReplaceAll(token, "~1", "/")
+	token = strings.ReplaceAll(token, "~0", "~")
+	return token
 }
 
 func cloneToolDefinitionMap(src map[string]any) map[string]any {
