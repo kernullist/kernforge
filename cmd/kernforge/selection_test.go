@@ -193,6 +193,82 @@ func TestSyncWorkspaceSelectionsUsesBackupWhenPrimaryIsCorrupt(t *testing.T) {
 	}
 }
 
+func TestSyncWorkspaceSelectionsMergesAnnotatedWritesByKey(t *testing.T) {
+	root := t.TempDir()
+	first := ViewerSelection{
+		FilePath:  filepath.Join(root, "first.go"),
+		StartLine: 1,
+		EndLine:   3,
+		Note:      "written by another session",
+	}
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{first}); err != nil {
+		t.Fatalf("initial SyncWorkspaceSelections: %v", err)
+	}
+
+	staleUnannotated := ViewerSelection{
+		FilePath:  filepath.Join(root, "first.go"),
+		StartLine: 1,
+		EndLine:   3,
+	}
+	second := ViewerSelection{
+		FilePath:  filepath.Join(root, "second.go"),
+		StartLine: 4,
+		EndLine:   5,
+		Tags:      []string{"fresh"},
+	}
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{staleUnannotated, second}); err != nil {
+		t.Fatalf("merge SyncWorkspaceSelections: %v", err)
+	}
+
+	selections, err := LoadWorkspaceSelections(root)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceSelections: %v", err)
+	}
+	if len(selections) != 2 {
+		t.Fatalf("expected two merged selections, got %#v", selections)
+	}
+	var foundFirst bool
+	var foundSecond bool
+	for _, selection := range selections {
+		switch {
+		case selection.FilePath == filepath.Join(root, "first.go"):
+			foundFirst = selection.Note == "written by another session"
+		case selection.FilePath == filepath.Join(root, "second.go"):
+			foundSecond = len(selection.Tags) == 1 && selection.Tags[0] == "fresh"
+		}
+	}
+	if !foundFirst || !foundSecond {
+		t.Fatalf("expected stale unannotated selection not to delete annotated writes, got %#v", selections)
+	}
+}
+
+func TestSyncWorkspaceSelectionsIgnoresUnannotatedOnlySnapshot(t *testing.T) {
+	root := t.TempDir()
+	persisted := ViewerSelection{
+		FilePath:  filepath.Join(root, "main.go"),
+		StartLine: 8,
+		EndLine:   12,
+		Tags:      []string{"keep"},
+	}
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{persisted}); err != nil {
+		t.Fatalf("initial SyncWorkspaceSelections: %v", err)
+	}
+
+	if err := SyncWorkspaceSelections(root, []ViewerSelection{
+		{FilePath: filepath.Join(root, "main.go"), StartLine: 8, EndLine: 12},
+	}); err != nil {
+		t.Fatalf("unannotated SyncWorkspaceSelections: %v", err)
+	}
+
+	selections, err := LoadWorkspaceSelections(root)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceSelections: %v", err)
+	}
+	if len(selections) != 1 || selections[0].FilePath != filepath.Join(root, "main.go") || len(selections[0].Tags) != 1 || selections[0].Tags[0] != "keep" {
+		t.Fatalf("expected unannotated snapshot to preserve existing workspace metadata, got %#v", selections)
+	}
+}
+
 func TestParseSelectionReviewArgsSupportsSubsetAndExtraInstructions(t *testing.T) {
 	sess := NewSession("F:/repo", "openai", "gpt", "", "default")
 	sess.AddSelection(ViewerSelection{FilePath: "main.go", StartLine: 1, EndLine: 2})

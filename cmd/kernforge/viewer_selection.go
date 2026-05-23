@@ -168,23 +168,19 @@ func SyncWorkspaceSelections(root string, sessionSelections []ViewerSelection) e
 
 	merged := make(map[string]ViewerSelection)
 	for _, sel := range existing {
-		rel := sel.FilePath
-		if filepath.IsAbs(rel) {
-			rel = relOrAbs(root, rel)
+		key, sel, ok := prepareWorkspaceSelection(root, sel)
+		if !ok {
+			continue
 		}
-		key := fmt.Sprintf("%s:%d-%d", rel, sel.StartLine, sel.EndLine)
 		merged[key] = sel
 	}
 
 	for _, sel := range sessionSelections {
-		rel := relOrAbs(root, sel.FilePath)
-		key := fmt.Sprintf("%s:%d-%d", rel, sel.StartLine, sel.EndLine)
-		if strings.TrimSpace(sel.Note) != "" || len(sel.Tags) > 0 {
-			sel.FilePath = rel
-			merged[key] = sel
-		} else {
-			delete(merged, key)
+		key, sel, ok := prepareWorkspaceSelection(root, sel)
+		if !ok {
+			continue
 		}
+		merged[key] = sel
 	}
 
 	var final []ViewerSelection
@@ -220,6 +216,30 @@ func SyncWorkspaceSelections(root string, sessionSelections []ViewerSelection) e
 	}
 	_ = atomicWriteFile(workspaceSelectionsBackupPath(path), out, 0o644)
 	return nil
+}
+
+func prepareWorkspaceSelection(root string, sel ViewerSelection) (string, ViewerSelection, bool) {
+	if !sel.HasSelection() {
+		return "", ViewerSelection{}, false
+	}
+	sel.Note = strings.TrimSpace(sel.Note)
+	sel.Tags = normalizeSelectionTags(sel.Tags)
+	if sel.Note == "" && len(sel.Tags) == 0 {
+		return "", ViewerSelection{}, false
+	}
+	rel := relOrAbs(root, sel.FilePath)
+	sel.FilePath = rel
+	return fmt.Sprintf("%s:%d-%d", rel, sel.StartLine, sel.EndLine), sel, true
+}
+
+func normalizeSelectionTags(tags []string) []string {
+	normalized := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if value := strings.TrimSpace(tag); value != "" {
+			normalized = append(normalized, value)
+		}
+	}
+	return uniqueStrings(normalized)
 }
 
 func workspaceSelectionsBackupPath(path string) string {
