@@ -365,6 +365,107 @@ func TestToolRegistrySupportsHiddenDispatchOnlyTools(t *testing.T) {
 	}
 }
 
+func TestToolRegistryRunsDefaultFunctionToolHooks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "original"), 0o755); err != nil {
+		t.Fatalf("MkdirAll original: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "rewritten"), 0o755); err != nil {
+		t.Fatalf("MkdirAll rewritten: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "original", "old.txt"), []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile old: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "rewritten", "new.txt"), []byte("new\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile new: %v", err)
+	}
+	var prePayload HookPayload
+	var postPayload HookPayload
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			switch event {
+			case HookPreToolUse:
+				prePayload = payload
+				return HookVerdict{
+					Allow:        true,
+					UpdatedInput: HookPayload{"path": "rewritten"},
+				}, nil
+			case HookPostToolUse:
+				postPayload = payload
+				return HookVerdict{
+					Allow:       true,
+					ContextAdds: []string{"post hook context"},
+				}, nil
+			default:
+				return HookVerdict{Allow: true}, nil
+			}
+		},
+	}
+	registry := NewToolRegistry(NewListFilesTool(ws))
+
+	result, err := registry.ExecuteDetailed(context.Background(), "list_files", `{"path":"original"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed: %v", err)
+	}
+	if strings.Contains(result.DisplayText, "old.txt") || !strings.Contains(result.DisplayText, "new.txt") {
+		t.Fatalf("expected rewritten input to list rewritten directory, got %q", result.DisplayText)
+	}
+	input, ok := prePayload["tool_input"].(map[string]any)
+	if !ok || stringsValueFromAny(input["path"]) != "original" {
+		t.Fatalf("expected pre hook to observe original input, got %#v", prePayload)
+	}
+	if got := stringsValueFromAny(prePayload["tool_name"]); got != "list_files" {
+		t.Fatalf("expected pre hook tool_name list_files, got %#v", prePayload)
+	}
+	if got := stringsValueFromAny(postPayload["tool_name"]); got != "list_files" {
+		t.Fatalf("expected post hook tool_name list_files, got %#v", postPayload)
+	}
+	if response := stringsValueFromAny(postPayload["tool_response"]); !strings.Contains(response, "new.txt") {
+		t.Fatalf("expected post hook response to contain tool output, got %#v", postPayload)
+	}
+	if rewritten, _ := result.Meta["hook_rewritten"].(bool); !rewritten {
+		t.Fatalf("expected hook_rewritten metadata, got %#v", result.Meta)
+	}
+	original, ok := result.Meta["original_input"].(map[string]any)
+	if !ok || stringsValueFromAny(original["path"]) != "original" {
+		t.Fatalf("expected original_input metadata, got %#v", result.Meta)
+	}
+	contextAdds := stringSliceFromAny(result.Meta["post_tool_use_context_adds"])
+	if len(contextAdds) != 1 || contextAdds[0] != "post hook context" {
+		t.Fatalf("expected post hook context metadata, got %#v", result.Meta)
+	}
+}
+
+func TestToolRegistryDefaultFunctionHookDenialBlocksBeforeExecution(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secret.txt"), []byte("secret\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event == HookPreToolUse {
+				return HookVerdict{
+					Allow:      false,
+					DenyReason: "blocked read",
+				}, nil
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	}
+	registry := NewToolRegistry(NewReadFileTool(ws))
+
+	_, err := registry.ExecuteDetailed(context.Background(), "read_file", `{"path":"secret.txt"}`)
+	if err == nil || !strings.Contains(err.Error(), "blocked read") {
+		t.Fatalf("expected pre hook denial, got %v", err)
+	}
+}
+
 func TestReadFileExecuteDetailedReturnsStructuredMeta(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "sample.txt")

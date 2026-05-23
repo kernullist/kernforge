@@ -43,6 +43,14 @@ type detailedTool interface {
 	ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error)
 }
 
+type toolWorkspaceProvider interface {
+	hookWorkspace() Workspace
+}
+
+type selfManagedToolUseHooks interface {
+	managesDefaultToolUseHooks() bool
+}
+
 func requireToolInputObject(input any, toolName string) (map[string]any, error) {
 	args, ok := input.(map[string]any)
 	if !ok {
@@ -584,6 +592,13 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 			return ToolExecutionResult{}, fmt.Errorf("%w: tool %s received invalid JSON: %v", ErrInvalidToolArgumentsJSON, name, err)
 		}
 	}
+	hookState, err := runDefaultPreToolUseHook(ctx, tool, name, payload)
+	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	if len(hookState.updatedInput) > 0 {
+		payload = cloneStringAnyMap(hookState.updatedInput)
+	}
 	if detailed, ok := tool.(detailedTool); ok {
 		result, err := detailed.ExecuteDetailed(ctx, payload)
 		result.DisplayText = strings.TrimSpace(result.DisplayText)
@@ -591,22 +606,167 @@ func (r *ToolRegistry) ExecuteDetailed(ctx context.Context, name string, args st
 		result.ContentItems = normalizeToolContentItems(result.ContentItems)
 		result.ModelContentItems = normalizeToolContentItems(result.ModelContentItems)
 		result.Meta = mergeToolMetaMaps(defaultToolExecutionMeta(name, payload), result.Meta)
+		result.Meta = applyDefaultToolUseHookMeta(result.Meta, hookState)
 		result.Meta["success"] = err == nil
 		if err != nil {
 			result.Meta["error"] = err.Error()
+		} else {
+			result = runDefaultPostToolUseHook(ctx, tool, name, payload, result)
 		}
 		return result, err
 	}
 	out, err := tool.Execute(ctx, payload)
 	meta := defaultToolExecutionMeta(name, payload)
+	meta = applyDefaultToolUseHookMeta(meta, hookState)
 	meta["success"] = err == nil
 	if err != nil {
 		meta["error"] = err.Error()
 	}
-	return ToolExecutionResult{
+	result := ToolExecutionResult{
 		DisplayText: strings.TrimSpace(out),
 		Meta:        meta,
-	}, err
+	}
+	if err == nil {
+		result = runDefaultPostToolUseHook(ctx, tool, name, payload, result)
+	}
+	return result, err
+}
+
+type defaultToolUseHookState struct {
+	enabled       bool
+	updatedInput  HookPayload
+	originalInput map[string]any
+}
+
+func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any) (defaultToolUseHookState, error) {
+	ws, ok := defaultToolUseHookWorkspace(tool)
+	if !ok {
+		return defaultToolUseHookState{}, nil
+	}
+	originalInput := cloneStringAnyMap(payload)
+	verdict, err := ws.Hook(ctx, HookPreToolUse, defaultToolUseHookPayload(ws, name, payload))
+	if err != nil {
+		return defaultToolUseHookState{}, err
+	}
+	if err := defaultToolUseHookVerdictError(verdict); err != nil {
+		return defaultToolUseHookState{}, err
+	}
+	state := defaultToolUseHookState{enabled: true}
+	if len(verdict.UpdatedInput) > 0 {
+		state.updatedInput = cloneStringAnyMap(verdict.UpdatedInput)
+		state.originalInput = originalInput
+	}
+	return state, nil
+}
+
+func runDefaultPostToolUseHook(ctx context.Context, tool Tool, name string, payload map[string]any, result ToolExecutionResult) ToolExecutionResult {
+	ws, ok := defaultToolUseHookWorkspace(tool)
+	if !ok {
+		return result
+	}
+	hookPayload := defaultToolUseHookPayload(ws, name, payload)
+	hookPayload["tool_response"] = defaultToolUseHookResponse(result)
+	verdict, err := ws.Hook(ctx, HookPostToolUse, hookPayload)
+	if result.Meta == nil {
+		result.Meta = map[string]any{}
+	}
+	if err != nil {
+		result.Meta["post_tool_use_hook_error"] = err.Error()
+		return result
+	}
+	if len(verdict.ContextAdds) > 0 {
+		result.Meta["post_tool_use_context_adds"] = append([]string(nil), verdict.ContextAdds...)
+	}
+	return result
+}
+
+func defaultToolUseHookWorkspace(tool Tool) (Workspace, bool) {
+	if tool == nil {
+		return Workspace{}, false
+	}
+	if managed, ok := tool.(selfManagedToolUseHooks); ok && managed.managesDefaultToolUseHooks() {
+		return Workspace{}, false
+	}
+	provider, ok := tool.(toolWorkspaceProvider)
+	if !ok {
+		return Workspace{}, false
+	}
+	return provider.hookWorkspace(), true
+}
+
+func defaultToolUseHookVerdictError(verdict HookVerdict) error {
+	if strings.TrimSpace(verdict.DenyReason) != "" {
+		return fmt.Errorf("hook denied: %s", strings.TrimSpace(verdict.DenyReason))
+	}
+	if !verdict.Allow {
+		return fmt.Errorf("hook denied")
+	}
+	return nil
+}
+
+func defaultToolUseHookPayload(ws Workspace, name string, payload map[string]any) HookPayload {
+	hookPayload := HookPayload{
+		"tool_name":  strings.TrimSpace(name),
+		"tool_kind":  "function",
+		"tool_input": cloneStringAnyMap(payload),
+	}
+	for key, value := range defaultToolExecutionMeta(name, payload) {
+		if key == "tool_name" {
+			continue
+		}
+		hookPayload[key] = value
+	}
+	paths := collectDefaultToolUseHookPaths(payload)
+	hookPayload["file_tags"] = normalizedHookFileTagsForPaths(paths)
+	if command := strings.TrimSpace(stringValue(payload, "command")); command != "" {
+		hookPayload["risk_tags"] = hookCommandRiskTags(command)
+	} else {
+		hookPayload["risk_tags"] = []string{}
+	}
+	if workDir := strings.TrimSpace(workspaceEffectiveActiveRoot(ws, nil)); workDir != "" {
+		hookPayload["work_dir"] = workDir
+	}
+	addEffectiveExecutionContextMetadata(hookPayload, ws, nil)
+	return hookPayload
+}
+
+func collectDefaultToolUseHookPaths(payload map[string]any) []string {
+	if payload == nil {
+		return nil
+	}
+	paths := []string{}
+	if path := strings.TrimSpace(stringValue(payload, "path")); path != "" {
+		paths = append(paths, path)
+	}
+	paths = append(paths, stringSliceValue(payload, "paths")...)
+	return uniqueStrings(paths)
+}
+
+func defaultToolUseHookResponse(result ToolExecutionResult) any {
+	if text := strings.TrimSpace(toolExecutionModelText(result)); text != "" {
+		return text
+	}
+	if len(result.ModelContentItems) > 0 {
+		return result.ModelContentItems
+	}
+	if len(result.ContentItems) > 0 {
+		return result.ContentItems
+	}
+	return strings.TrimSpace(result.DisplayText)
+}
+
+func applyDefaultToolUseHookMeta(meta map[string]any, state defaultToolUseHookState) map[string]any {
+	if meta == nil {
+		meta = map[string]any{}
+	}
+	if !state.enabled {
+		return meta
+	}
+	if len(state.updatedInput) > 0 {
+		meta["hook_rewritten"] = true
+		meta["original_input"] = cloneStringAnyMap(state.originalInput)
+	}
+	return meta
 }
 
 func toolExecutionModelText(result ToolExecutionResult) string {
