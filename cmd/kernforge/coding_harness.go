@@ -1761,37 +1761,104 @@ func patchTransactionLatestUserStartsDifferentTask(text string) bool {
 		requestLooksLikeFreshExecutionTask(lower)
 }
 
+type patchTransactionContextCandidate struct {
+	text   string
+	source string
+}
+
 func patchTransactionWithoutGoalMatchesCurrentTurn(sess *Session, tx PatchTransaction) bool {
 	paths := normalizeTaskStateList(tx.ChangedPaths(), 64)
 	if len(paths) == 0 {
 		return false
 	}
-	candidates := make([]string, 0, 3)
-	appendCandidate := func(text string) {
+	candidates := make([]patchTransactionContextCandidate, 0, 3)
+	appendCandidateFrom := func(source string, text string) {
 		text = strings.TrimSpace(baseUserQueryText(text))
 		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
 			return
 		}
-		candidates = append(candidates, text)
+		candidates = append(candidates, patchTransactionContextCandidate{text: text, source: strings.TrimSpace(source)})
 	}
 	if sess != nil {
-		appendCandidate(latestExternalOrUserMessageText(sess.Messages))
+		appendCandidateFrom("latest_user", latestExternalOrUserMessageText(sess.Messages))
 		if sess.AcceptanceContract != nil {
-			appendCandidate(sess.AcceptanceContract.SourcePrompt)
+			appendCandidateFrom("acceptance_contract", sess.AcceptanceContract.SourcePrompt)
 		}
 		if sess.TaskState != nil {
-			appendCandidate(sess.TaskState.Goal)
+			appendCandidateFrom("task_state", sess.TaskState.Goal)
 		}
 	}
-	for _, candidate := range uniqueStrings(candidates) {
-		if generatedDocumentArtifactRequestContextForTurn(sess, candidate) == "" {
+	if len(candidates) == 0 {
+		return true
+	}
+	seenCandidates := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if _, ok := seenCandidates[candidate.text]; ok {
 			continue
 		}
-		if changedPathsAreGeneratedDocumentArtifacts(sess, candidate, paths) {
+		seenCandidates[candidate.text] = struct{}{}
+		if generatedDocumentArtifactRequestContextForTurn(sess, candidate.text) == "" {
+			continue
+		}
+		if changedPathsAreGeneratedDocumentArtifacts(sess, candidate.text, paths) {
+			return true
+		}
+	}
+	if len(filterCodeLikePaths(paths)) > 0 && patchTransactionWithoutGoalCodeContextMatches(sess, candidates) {
+		return true
+	}
+	return false
+}
+
+func patchTransactionWithoutGoalCodeContextMatches(sess *Session, candidates []patchTransactionContextCandidate) bool {
+	if len(candidates) == 0 {
+		return true
+	}
+	for _, candidate := range candidates {
+		text := strings.TrimSpace(candidate.text)
+		if text == "" {
+			continue
+		}
+		switch candidate.source {
+		case "acceptance_contract", "task_state":
+			if requestModeLooksCodeChanging(text) {
+				return true
+			}
+		case "latest_user":
+			if requestModeLooksCodeChanging(text) && !patchTransactionLatestUserStartsDifferentTask(text) {
+				return true
+			}
+		default:
+			if requestModeLooksCodeChanging(text) {
+				return true
+			}
+		}
+	}
+	if sess != nil && sess.AcceptanceContract != nil {
+		mode := strings.TrimSpace(strings.ToLower(sess.AcceptanceContract.Mode))
+		if mode == "inspect_and_fix" || mode == "command" {
 			return true
 		}
 	}
 	return false
+}
+
+func requestModeLooksCodeChanging(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	intent := classifyTurnIntent(lower)
+	if intent == TurnIntentEditCode || intent == TurnIntentRunCommand || requestLooksLikeLocalVerificationWork(lower) {
+		return true
+	}
+	if looksLikeExplicitEditIntent(lower) {
+		return true
+	}
+	return containsAny(lower,
+		"fix ", "implement ", "modify ", "patch ", "refactor ", "repair ", "update ",
+		"고쳐", "구현", "변경", "수정", "적용", "패치",
+	)
 }
 
 func normalizedPatchTransactionGoal(text string) string {
@@ -1799,7 +1866,10 @@ func normalizedPatchTransactionGoal(text string) string {
 }
 
 func sessionHasCurrentTurnFinalGateEvidence(sess *Session) bool {
-	if len(currentTurnPatchTransactionChangedPaths(sess)) > 0 {
+	if tx := currentTurnPatchTransaction(sess); tx != nil && len(tx.ChangedPaths()) > 0 {
+		if strings.EqualFold(strings.TrimSpace(tx.Status), patchTransactionStatusCommitted) && !sessionHasPatchTransactionContext(sess) {
+			return false
+		}
 		return true
 	}
 	loop := currentTurnActiveEditLoop(sess)
@@ -1809,6 +1879,22 @@ func sessionHasCurrentTurnFinalGateEvidence(sess *Session) bool {
 	return len(loop.ChangedPaths) > 0 ||
 		len(loop.WorkerSummaries) > 0 ||
 		strings.TrimSpace(loop.VerificationSummary) != ""
+}
+
+func sessionHasPatchTransactionContext(sess *Session) bool {
+	if sess == nil {
+		return false
+	}
+	if strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(sess.Messages))) != "" {
+		return true
+	}
+	if sess.AcceptanceContract != nil && strings.TrimSpace(baseUserQueryText(sess.AcceptanceContract.SourcePrompt)) != "" {
+		return true
+	}
+	if sess.TaskState != nil && strings.TrimSpace(baseUserQueryText(sess.TaskState.Goal)) != "" {
+		return true
+	}
+	return false
 }
 
 func hasPendingVerificationCheck(sess *Session) bool {

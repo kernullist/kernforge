@@ -332,6 +332,104 @@ func TestToolRegistryAcceptsRootAnyOfSchemas(t *testing.T) {
 	}
 }
 
+func TestToolRegistryDropsUnsupportedSchemaKeywordsBeforeExposure(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "connector_schema",
+			InputSchema: map[string]any{
+				"$schema": "https://json-schema.org/draft/2020-12/schema",
+				"title":   "connector_schema.input",
+				"type":    "object",
+				"not": map[string]any{
+					"required": []any{"markdown", "children"},
+				},
+				"properties": map[string]any{
+					"timestamp": map[string]any{
+						"format":      "date-time",
+						"description": "RFC3339 timestamp",
+					},
+					"thread_ts": map[string]any{
+						"type":        "string",
+						"pattern":     "^[0-9]+[.][0-9]+$",
+						"description": "Slack timestamp string.",
+					},
+					"file": map[string]any{
+						"description": "File selector.",
+						"oneOf": []any{
+							map[string]any{"type": "string"},
+							map[string]any{"type": "object"},
+						},
+					},
+					"metadata": map[string]any{
+						"description": "Optional metadata.",
+						"allOf": []any{
+							map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"source": map[string]any{"type": "string"},
+								},
+							},
+						},
+					},
+					"tuple": map[string]any{
+						"type": "array",
+						"prefixItems": []any{
+							map[string]any{"type": "string"},
+						},
+					},
+					"count": map[string]any{
+						"minimum": 0,
+						"maximum": 10,
+					},
+				},
+				"required": []any{"timestamp"},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("connector schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("expected one visible definition, got %#v", defs)
+	}
+	schema := defs[0].InputSchema
+	for _, key := range []string{"$schema", "title", "not"} {
+		if _, ok := schema[key]; ok {
+			t.Fatalf("root unsupported keyword %s should be dropped, got %#v", key, schema)
+		}
+	}
+	properties := schema["properties"].(map[string]any)
+	timestamp := properties["timestamp"].(map[string]any)
+	if timestamp["type"] != "string" || timestamp["format"] != nil {
+		t.Fatalf("format should infer a plain string schema and then be dropped, got %#v", timestamp)
+	}
+	threadTS := properties["thread_ts"].(map[string]any)
+	if threadTS["type"] != "string" || threadTS["pattern"] != nil {
+		t.Fatalf("pattern should be dropped while preserving string type, got %#v", threadTS)
+	}
+	if file := properties["file"].(map[string]any); len(file) != 0 {
+		t.Fatalf("oneOf-only connector selector should degrade to permissive empty schema, got %#v", file)
+	}
+	if metadata := properties["metadata"].(map[string]any); len(metadata) != 0 {
+		t.Fatalf("allOf-only connector selector should degrade to permissive empty schema, got %#v", metadata)
+	}
+	tuple := properties["tuple"].(map[string]any)
+	if _, ok := tuple["prefixItems"]; ok {
+		t.Fatalf("prefixItems should be dropped, got %#v", tuple)
+	}
+	if items, ok := tuple["items"].(map[string]any); !ok || items["type"] != "string" {
+		t.Fatalf("array prefixItems fallback should expose default string items, got %#v", tuple)
+	}
+	count := properties["count"].(map[string]any)
+	if count["type"] != "number" || count["minimum"] != nil || count["maximum"] != nil {
+		t.Fatalf("numeric bounds should infer number and then be dropped, got %#v", count)
+	}
+}
+
 func TestToolRegistryInfersAndSanitizesNestedSchemasBeforeExposure(t *testing.T) {
 	tool := &mutableRegistryTool{
 		def: ToolDefinition{

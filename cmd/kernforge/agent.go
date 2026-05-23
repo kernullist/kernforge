@@ -2927,11 +2927,17 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	if a == nil || a.Session == nil {
 		return false
 	}
-	if changedPaths := currentTurnPatchTransactionChangedPaths(a.Session); len(changedPaths) > 0 {
-		return changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths)
-	}
 	requestText := strings.TrimSpace(baseUserQueryText(request))
 	requestIsInternalReviewFeedback := looksLikeInternalReviewFeedbackUserMessage(requestText)
+	if changedPaths := currentTurnPatchTransactionChangedPaths(a.Session); len(changedPaths) > 0 {
+		if changedPathsAreGeneratedDocumentArtifacts(a.Session, request, changedPaths) {
+			return true
+		}
+		if requestIsInternalReviewFeedback && sessionHasDocumentArtifactQualityAcceptedHarness(a.Session) && changedPathsMatchDocumentArtifactQuality(a.Session, changedPaths) {
+			return true
+		}
+		return false
+	}
 	documentRequestContext := generatedDocumentArtifactRequestContextForTurn(a.Session, request)
 	rawActiveChangedPaths := rawActivePatchTransactionChangedPaths(a.Session)
 	if len(rawActiveChangedPaths) > 0 {

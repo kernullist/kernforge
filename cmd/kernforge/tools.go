@@ -417,10 +417,8 @@ func normalizeToolJSONSchemaMap(schema map[string]any) {
 			normalizeToolJSONSchemaMap(nested)
 		}
 	}
-	for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-		if raw, ok := schema[key]; ok {
-			schema[key] = normalizeToolJSONSchemaValue(raw)
-		}
+	if raw, ok := schema["anyOf"]; ok {
+		schema["anyOf"] = normalizeToolJSONSchemaValue(raw)
 	}
 	for _, key := range []string{"$defs", "definitions"} {
 		if raw, ok := schema[key]; ok {
@@ -458,15 +456,26 @@ func normalizeToolJSONSchemaMap(schema map[string]any) {
 			schema["items"] = map[string]any{"type": "string"}
 		}
 	}
+	dropUnsupportedToolSchemaKeywords(schema)
 }
 
 func schemaHasReferenceOrComposition(schema map[string]any) bool {
-	for _, key := range []string{"$ref", "anyOf", "oneOf", "allOf"} {
+	for _, key := range []string{"$ref", "anyOf"} {
 		if _, ok := schema[key]; ok {
 			return true
 		}
 	}
 	return false
+}
+
+func dropUnsupportedToolSchemaKeywords(schema map[string]any) {
+	for key := range schema {
+		switch key {
+		case "$ref", "type", "description", "enum", "items", "properties", "required", "additionalProperties", "anyOf", "$defs", "definitions":
+		default:
+			delete(schema, key)
+		}
+	}
 }
 
 func clearUnrecognizedToolSchema(schema map[string]any) {

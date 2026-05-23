@@ -1008,7 +1008,7 @@ func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
 	if a == nil || a.Session == nil {
 		return false
 	}
-	lastUser := strings.TrimSpace(latestExternalOrUserMessageText(a.Session.Messages))
+	lastUser := strings.TrimSpace(latestUserMessageText(a.Session.Messages))
 	if lastUser == "" {
 		return false
 	}
