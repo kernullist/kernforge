@@ -577,6 +577,31 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 		return item
 	}
+	toolCallIndexByID := map[string]int{}
+	rememberToolCallID := func(index int, item *openAICodexStreamToolCall) {
+		if item == nil {
+			return
+		}
+		callID := strings.TrimSpace(item.ID)
+		if callID == "" {
+			return
+		}
+		toolCallIndexByID[callID] = index
+	}
+	ensureToolCallForCallID := func(callID string, fallbackIndex int) *openAICodexStreamToolCall {
+		callID = strings.TrimSpace(callID)
+		if callID != "" {
+			if index, ok := toolCallIndexByID[callID]; ok {
+				return ensureToolCall(index)
+			}
+		}
+		item := ensureToolCall(fallbackIndex)
+		if callID != "" && strings.TrimSpace(item.ID) == "" {
+			item.ID = callID
+			rememberToolCallID(fallbackIndex, item)
+		}
+		return item
+	}
 	emitToolReady := func(item *openAICodexStreamToolCall) {
 		if item == nil || item.ReadyEmitted {
 			return
@@ -608,6 +633,8 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			Delta       string                `json:"delta,omitempty"`
 			Text        string                `json:"text,omitempty"`
 			Arguments   string                `json:"arguments,omitempty"`
+			Input       string                `json:"input,omitempty"`
+			CallID      string                `json:"call_id,omitempty"`
 			OutputIndex int                   `json:"output_index,omitempty"`
 			EndTurn     *bool                 `json:"end_turn,omitempty"`
 			Response    json.RawMessage       `json:"response,omitempty"`
@@ -638,6 +665,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				item := ensureToolCall(event.OutputIndex)
 				if openAICodexPopulateStreamToolCall(item, event.Item, false) {
+					rememberToolCallID(event.OutputIndex, item)
 					emitProgressEvent(progress, ProgressEvent{
 						Kind:       progressKindModelStreamToolCall,
 						Provider:   "openai-codex",
@@ -666,6 +694,28 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 				item.Arguments.WriteString(arguments)
 			}
 			emitToolReady(item)
+		case "response.custom_tool_call_input.delta":
+			item := ensureToolCallForCallID(event.CallID, event.OutputIndex)
+			item.Type = firstNonEmptyTrimmed(item.Type, "custom_tool_call")
+			if !item.ArgsStarted {
+				item.ArgsStarted = true
+				emitProgressEvent(progress, ProgressEvent{
+					Kind:       progressKindModelStreamToolArgs,
+					Provider:   "openai-codex",
+					ToolName:   item.Name,
+					ToolCallID: item.ID,
+				})
+			}
+			item.Arguments.WriteString(event.Delta)
+		case "response.custom_tool_call_input.done":
+			item := ensureToolCallForCallID(event.CallID, event.OutputIndex)
+			item.Type = firstNonEmptyTrimmed(item.Type, "custom_tool_call")
+			input := firstNonEmptyTrimmed(event.Input, event.Text, event.Arguments)
+			if input != "" {
+				item.Arguments.Reset()
+				item.Arguments.WriteString(input)
+			}
+			emitToolReady(item)
 		case "response.output_item.done":
 			if event.Item.Type == "message" {
 				messagePhase = firstNonEmptyTrimmed(normalizeOpenAICodexMessagePhase(event.Item.Phase), messagePhase)
@@ -679,6 +729,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				item := ensureToolCall(event.OutputIndex)
 				if openAICodexPopulateStreamToolCall(item, event.Item, true) {
+					rememberToolCallID(event.OutputIndex, item)
 					emitToolReady(item)
 				}
 			}
@@ -752,7 +803,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		out.ToolCalls = append(out.ToolCalls, ToolCall{
 			ID:        strings.TrimSpace(item.ID),
 			Name:      strings.TrimSpace(item.Name),
-			Arguments: normalizeOpenAIToolCallArguments(item.Arguments.String()),
+			Arguments: normalizeOpenAICodexStreamToolCallArguments(item),
 		})
 	}
 	if out.Text == "" && len(out.ToolCalls) == 0 {
@@ -837,6 +888,29 @@ func openAICodexOutputItemHasArguments(item openAICodexOutputItem) bool {
 		raw := strings.TrimSpace(string(item.Arguments))
 		return raw != "" && raw != "null"
 	}
+}
+
+func normalizeOpenAICodexStreamToolCallArguments(item *openAICodexStreamToolCall) string {
+	if item == nil {
+		return "{}"
+	}
+	raw := strings.TrimSpace(item.Arguments.String())
+	if strings.TrimSpace(item.Type) == "custom_tool_call" {
+		if raw == "" {
+			return normalizeOpenAICodexToolCallArguments(item.Type, item.Name, raw)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(raw), &payload); err == nil {
+			if _, ok := payload["patch"]; ok {
+				return normalizeOpenAIToolCallArguments(raw)
+			}
+			if _, ok := payload["raw"]; ok {
+				return normalizeOpenAIToolCallArguments(raw)
+			}
+		}
+		return normalizeOpenAICodexToolCallArguments(item.Type, item.Name, raw)
+	}
+	return normalizeOpenAIToolCallArguments(raw)
 }
 
 func normalizeOpenAICodexOutputItemArguments(item openAICodexOutputItem, name string) string {

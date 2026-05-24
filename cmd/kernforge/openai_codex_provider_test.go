@@ -1393,6 +1393,44 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamAccumulatesCustomToolCallInputDeltas(t *testing.T) {
+	patch := "*** Begin Patch\n*** Add File: streamed.txt\n+hello\n+world\n*** End Patch"
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"custom_tool_call","call_id":"call_patch_stream","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.custom_tool_call_input.delta","call_id":"call_patch_stream","delta":"*** Begin Patch\n"}`,
+		`data: {"type":"response.custom_tool_call_input.delta","call_id":"call_patch_stream","delta":"*** Add File: streamed.txt\n+hello"}`,
+		`data: {"type":"response.custom_tool_call_input.delta","call_id":"call_patch_stream","delta":"\n+world\n*** End Patch"}`,
+		`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_patch_stream","name":"apply_patch","input":""}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	var events []ProgressEvent
+	resp, err := readOpenAICodexStream(context.Background(), stream, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one custom tool call, got %#v", resp.Message.ToolCalls)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.ID != "call_patch_stream" || call.Name != "apply_patch" {
+		t.Fatalf("unexpected custom tool call: %#v", call)
+	}
+	var patchArgs map[string]string
+	if err := json.Unmarshal([]byte(call.Arguments), &patchArgs); err != nil {
+		t.Fatalf("custom tool arguments are not JSON: %v", err)
+	}
+	if patchArgs["patch"] != patch {
+		t.Fatalf("expected accumulated custom input patch, got %#v", patchArgs)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolArgs, "apply_patch") ||
+		!progressEventsContain(events, progressKindModelStreamToolReady, "apply_patch") {
+		t.Fatalf("expected custom tool arg and ready progress events, got %#v", events)
+	}
+}
+
 func TestReadOpenAICodexStreamEmitsToolReadyFromCompletedResponse(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"read_file","arguments":"{\"path\":\"main.go\"}"}]}}`,
