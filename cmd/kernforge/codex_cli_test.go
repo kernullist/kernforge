@@ -94,13 +94,23 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 	}
 }
 
-func TestCodexCLIModelListIncludesGPT55Pro(t *testing.T) {
+func TestCodexCLIModelListMatchesBundledCodexCatalog(t *testing.T) {
+	got := make([]string, 0, len(codexCLIModels))
 	for _, model := range codexCLIModels {
-		if model.ID == "gpt-5.5-pro" {
-			return
-		}
+		got = append(got, model.ID)
 	}
-	t.Fatalf("expected Codex CLI model chooser to include gpt-5.5-pro")
+	want := []string{
+		codexCLIDefaultModel,
+		"gpt-5.5",
+		"gpt-5.4",
+		"gpt-5.4-mini",
+		"gpt-5.3-codex",
+		"gpt-5.2",
+		"codex-auto-review",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("codexCLIModels = %#v, want %#v", got, want)
+	}
 }
 
 func TestCodexCLIClientCompleteInvokesRunner(t *testing.T) {

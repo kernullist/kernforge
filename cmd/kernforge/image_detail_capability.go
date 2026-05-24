@@ -14,21 +14,10 @@ var codexImageDetailSupport = struct {
 }{
 	byModel: map[string]bool{
 		openAICodexDefaultModel: true,
-		"gpt-5.5-pro":           true,
 		"gpt-5.4":               true,
-		"gpt-5.4-pro":           true,
 		"gpt-5.4-mini":          true,
 		"gpt-5.3-codex":         true,
-		"gpt-5.3-codex-spark":   true,
 		"gpt-5.2":               false,
-		"gpt-5.2-codex":         false,
-		"gpt-5.1":               false,
-		"gpt-5.1-codex":         false,
-		"gpt-5.1-codex-max":     false,
-		"gpt-5.1-codex-mini":    false,
-		"gpt-5":                 false,
-		"gpt-5-codex":           false,
-		"codex-mini-latest":     false,
 		"codex-auto-review":     true,
 	},
 }

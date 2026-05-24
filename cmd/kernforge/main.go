@@ -5518,21 +5518,11 @@ type codexCLIModelOption struct {
 var codexCLIModels = []codexCLIModelOption{
 	{ID: codexCLIDefaultModel, Name: "Codex CLI default", SupportsImageDetailOriginal: true},
 	{ID: "gpt-5.5", Name: "GPT-5.5", SupportsImageDetailOriginal: true},
-	{ID: "gpt-5.5-pro", Name: "GPT-5.5 Pro", SupportsImageDetailOriginal: true},
 	{ID: "gpt-5.4", Name: "GPT-5.4", SupportsImageDetailOriginal: true},
-	{ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", SupportsImageDetailOriginal: true},
 	{ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", SupportsImageDetailOriginal: true},
 	{ID: "gpt-5.3-codex", Name: "GPT-5.3 Codex", SupportsImageDetailOriginal: true},
-	{ID: "gpt-5.3-codex-spark", Name: "GPT-5.3 Codex Spark", SupportsImageDetailOriginal: true},
 	{ID: "gpt-5.2", Name: "GPT-5.2"},
-	{ID: "gpt-5.2-codex", Name: "GPT-5.2 Codex"},
-	{ID: "gpt-5.1", Name: "GPT-5.1"},
-	{ID: "gpt-5.1-codex", Name: "GPT-5.1 Codex"},
-	{ID: "gpt-5.1-codex-max", Name: "GPT-5.1 Codex Max"},
-	{ID: "gpt-5.1-codex-mini", Name: "GPT-5.1 Codex Mini"},
-	{ID: "gpt-5", Name: "GPT-5"},
-	{ID: "gpt-5-codex", Name: "GPT-5 Codex"},
-	{ID: "codex-mini-latest", Name: "Codex Mini Latest"},
+	{ID: "codex-auto-review", Name: "Codex Auto Review", SupportsImageDetailOriginal: true},
 }
 
 func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error) {

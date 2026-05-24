@@ -79,12 +79,9 @@ var openAICodexVerbosityDefaults = struct {
 }{
 	byModel: map[string]string{
 		openAICodexDefaultModel: "low",
-		"gpt-5.5-pro":           "low",
 		"gpt-5.4":               "low",
-		"gpt-5.4-pro":           "low",
 		"gpt-5.4-mini":          "medium",
 		"gpt-5.3-codex":         "low",
-		"gpt-5.3-codex-spark":   "low",
 		"gpt-5.2":               "low",
 		"codex-auto-review":     "low",
 	},
@@ -102,12 +99,9 @@ var openAICodexReasoningDefaults = struct {
 }{
 	byModel: map[string]openAICodexReasoningModelDefaults{
 		openAICodexDefaultModel: {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
-		"gpt-5.5-pro":           {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
 		"gpt-5.4":               {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
-		"gpt-5.4-pro":           {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
 		"gpt-5.4-mini":          {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
 		"gpt-5.3-codex":         {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
-		"gpt-5.3-codex-spark":   {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
 		"gpt-5.2":               {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "auto"},
 		"codex-auto-review":     {SupportsSummaries: true, DefaultEffort: "medium", DefaultSummary: "none"},
 	},
@@ -119,12 +113,9 @@ var openAICodexParallelToolCallSupport = struct {
 }{
 	byModel: map[string]bool{
 		openAICodexDefaultModel: true,
-		"gpt-5.5-pro":           true,
 		"gpt-5.4":               true,
-		"gpt-5.4-pro":           true,
 		"gpt-5.4-mini":          true,
 		"gpt-5.3-codex":         true,
-		"gpt-5.3-codex-spark":   true,
 		"gpt-5.2":               true,
 		"codex-auto-review":     true,
 	},
