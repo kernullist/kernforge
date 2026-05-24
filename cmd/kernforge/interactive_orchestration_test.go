@@ -78,6 +78,26 @@ func TestShouldPrimeInteractivePlanSkipsBroadBugFindAndFix(t *testing.T) {
 	}
 }
 
+func TestShouldPrimeInteractivePlanSkipsSourceReviewDocumentArtifact(t *testing.T) {
+	state := &TaskState{
+		Goal: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해",
+	}
+
+	if shouldPrimeInteractivePlan(state, false, true, false) {
+		t.Fatalf("expected source-review document artifact task to skip hidden preflight planning")
+	}
+}
+
+func TestShouldPrimeInteractivePlanSkipsEnglishSourceReviewReportArtifact(t *testing.T) {
+	state := &TaskState{
+		Goal: "Review each source code file for bugs and create a separate report document",
+	}
+
+	if shouldPrimeInteractivePlan(state, false, true, false) {
+		t.Fatalf("expected English source-review report artifact task to skip hidden preflight planning")
+	}
+}
+
 func TestInteractivePlanReviewPolicyCapsHiddenPreflight(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.RequestTimeoutSecs = 1200

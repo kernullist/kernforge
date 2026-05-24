@@ -180,6 +180,9 @@ func shouldSkipInteractivePlanPreflight(goal string, readOnlyAnalysis bool, expl
 	if explicitEditRequest && looksLikeBugSearchAndFixIntent(lowerGoal) {
 		return true
 	}
+	if preWriteRequestLooksLikeGeneratedDocumentArtifact(lowerGoal) {
+		return true
+	}
 	if requestLooksLikeLocalVerificationWork(lowerGoal) && !requestLooksLikeImplementationOrSourceEditWork(lowerGoal) {
 		return true
 	}
