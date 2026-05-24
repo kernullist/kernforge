@@ -849,6 +849,99 @@ func TestLoadConfigWithProfileConfigLayer(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWithProfileIgnoresSavedActiveProfileSelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	oldProfile := Profile{
+		Name:     "old",
+		Provider: "deepseek",
+		Model:    "deepseek-chat",
+		RoleModels: &ProfileRoleModels{
+			AnalysisWorker: &Profile{
+				Name:     "old-worker",
+				Provider: "openai",
+				Model:    "gpt-old-worker",
+			},
+		},
+	}
+	base := DefaultConfig(workspace)
+	base.Provider = "openai"
+	base.Model = "gpt-base"
+	base.Profiles = []Profile{oldProfile}
+	base.ActiveProfileKey = configProfileKey(oldProfile)
+	if err := SaveUserConfig(base); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro","base_url":"https://openrouter.ai/api/v1"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected selected profile layer to win over saved active profile, got provider=%q model=%q", loaded.Provider, loaded.Model)
+	}
+	if loaded.ActiveProfileKey != "" {
+		t.Fatalf("expected selected config profile to clear saved active profile key, got %q", loaded.ActiveProfileKey)
+	}
+	if loaded.ProjectAnalysis.WorkerProfile != nil {
+		t.Fatalf("expected saved active profile role models to be ignored under -profile, got %#v", loaded.ProjectAnalysis.WorkerProfile)
+	}
+}
+
+func TestRuntimeSaveUserConfigWritesSelectedProfileFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	base := DefaultConfig(workspace)
+	base.Provider = "openai"
+	base.Model = "gpt-base"
+	if err := SaveUserConfig(base); err != nil {
+		t.Fatalf("SaveUserConfig base: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openai","model":"gpt-profile-old","active_profile_key":"legacy-key"}`), 0o644); err != nil {
+		t.Fatalf("write existing profile config: %v", err)
+	}
+
+	rt := &runtimeState{
+		cfg:           base,
+		configProfile: "work",
+	}
+	rt.cfg.Provider = "openrouter"
+	rt.cfg.Model = "deepseek/deepseek-v4-pro"
+	rt.cfg.BaseURL = normalizeOpenRouterBaseURL("")
+	if err := rt.saveUserConfig(); err != nil {
+		t.Fatalf("runtime saveUserConfig: %v", err)
+	}
+
+	baseLoaded, err := loadRawConfigFile(userConfigPath())
+	if err != nil {
+		t.Fatalf("load base config: %v", err)
+	}
+	if baseLoaded.Provider != "openai" || baseLoaded.Model != "gpt-base" {
+		t.Fatalf("expected base config to remain unchanged, got provider=%q model=%q", baseLoaded.Provider, baseLoaded.Model)
+	}
+	profileLoaded, err := loadRawConfigFile(userProfileConfigPath("work"))
+	if err != nil {
+		t.Fatalf("load profile config: %v", err)
+	}
+	if profileLoaded.Provider != "openrouter" || profileLoaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected runtime save to write selected profile file, got provider=%q model=%q", profileLoaded.Provider, profileLoaded.Model)
+	}
+	if profileLoaded.ActiveProfileKey != "" {
+		t.Fatalf("expected profile config save to avoid legacy active profile key, got %q", profileLoaded.ActiveProfileKey)
+	}
+}
+
 func TestLoadConfigWithProfileDoesNotBootstrapBaseConfigFromProfileLayer(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

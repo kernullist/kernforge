@@ -361,7 +361,11 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 	}
 	applyEnv(&cfg)
 	normalizeConfigPaths(&cfg)
-	applyActiveProfileRoleModels(&cfg)
+	if profileName == "" {
+		applyActiveProfileRoleModels(&cfg)
+	} else {
+		cfg.ActiveProfileKey = ""
+	}
 	applyReasoningEffortEnvOverride(&cfg)
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		return cfg, err
@@ -1602,37 +1606,62 @@ func normalizeConfigPaths(cfg *Config) {
 
 type saveUserConfigOptions struct {
 	PreserveReviewRoleModels bool
+	PreserveActiveProfileKey bool
 }
 
 func SaveUserConfig(cfg Config) error {
-	return saveUserConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: true})
+	return saveConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: true, PreserveActiveProfileKey: true}, userConfigPath())
 }
 
 func SaveUserConfigReplacingReviewRoleModels(cfg Config) error {
-	return saveUserConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: false})
+	return saveConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: false, PreserveActiveProfileKey: true}, userConfigPath())
 }
 
-func saveUserConfigWithOptions(cfg Config, opts saveUserConfigOptions) error {
+func SaveUserProfileConfig(cfg Config, profile string) error {
+	profileName, err := parseConfigLayerProfileName(profile)
+	if err != nil {
+		return err
+	}
+	if profileName == "" {
+		return SaveUserConfig(cfg)
+	}
+	cfg.ActiveProfileKey = ""
+	return saveConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: true}, userProfileConfigPath(profileName))
+}
+
+func SaveUserProfileConfigReplacingReviewRoleModels(cfg Config, profile string) error {
+	profileName, err := parseConfigLayerProfileName(profile)
+	if err != nil {
+		return err
+	}
+	if profileName == "" {
+		return SaveUserConfigReplacingReviewRoleModels(cfg)
+	}
+	cfg.ActiveProfileKey = ""
+	return saveConfigWithOptions(cfg, saveUserConfigOptions{PreserveReviewRoleModels: false}, userProfileConfigPath(profileName))
+}
+
+func saveConfigWithOptions(cfg Config, opts saveUserConfigOptions, path string) error {
 	normalizeConfigPaths(&cfg)
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		return err
 	}
-	preserveExistingUserConfig(&cfg, opts)
-	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+	preserveExistingConfigAtPath(&cfg, opts, path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(userConfigPath(), data, 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
-func preserveExistingUserConfig(cfg *Config, opts saveUserConfigOptions) {
+func preserveExistingConfigAtPath(cfg *Config, opts saveUserConfigOptions, path string) {
 	if cfg == nil {
 		return
 	}
-	data, err := os.ReadFile(userConfigPath())
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
@@ -1685,7 +1714,7 @@ func preserveExistingUserConfig(cfg *Config, opts saveUserConfigOptions) {
 	} else if len(cfg.Profiles) > 0 && len(existing.Profiles) > 0 {
 		cfg.Profiles = mergeConfigProfiles(existing.Profiles, cfg.Profiles)
 	}
-	if strings.TrimSpace(cfg.ActiveProfileKey) == "" && strings.TrimSpace(existing.ActiveProfileKey) != "" {
+	if opts.PreserveActiveProfileKey && strings.TrimSpace(cfg.ActiveProfileKey) == "" && strings.TrimSpace(existing.ActiveProfileKey) != "" {
 		cfg.ActiveProfileKey = strings.TrimSpace(existing.ActiveProfileKey)
 	}
 	cfg.Projects = mergeProjectTrustConfigs(existing.Projects, cfg.Projects)

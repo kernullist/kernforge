@@ -4321,10 +4321,16 @@ func (rt *runtimeState) configuredInteractiveReviewModel() (ReviewModelConfig, b
 }
 
 func (rt *runtimeState) saveUserConfig() error {
+	if profile := strings.TrimSpace(rt.configProfile); profile != "" {
+		return SaveUserProfileConfig(rt.cfg, profile)
+	}
 	return SaveUserConfig(rt.cfg)
 }
 
 func (rt *runtimeState) saveUserConfigReplacingReviewRoleModels() error {
+	if profile := strings.TrimSpace(rt.configProfile); profile != "" {
+		return SaveUserProfileConfigReplacingReviewRoleModels(rt.cfg, profile)
+	}
 	return SaveUserConfigReplacingReviewRoleModels(rt.cfg)
 }
 
@@ -7111,7 +7117,7 @@ func (rt *runtimeState) handleLocaleAutoCommand(args string) error {
 		return fmt.Errorf("usage: /locale-auto [on|off]")
 	}
 	rt.cfg.AutoLocale = boolPtr(val)
-	if err := SaveUserConfig(rt.cfg); err != nil {
+	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Auto-locale set to %t", val)))
@@ -7697,7 +7703,7 @@ func (rt *runtimeState) handleSetAnalysisModelsCommand(args string) error {
 			rt.cfg.ProjectAnalysis.WorkerProfile = nil
 			rt.cfg.ProjectAnalysis.ReviewerProfile = nil
 			rt.rememberCurrentProfile()
-			if err := SaveUserConfig(rt.cfg); err != nil {
+			if err := rt.saveUserConfig(); err != nil {
 				return err
 			}
 			fmt.Fprintln(rt.writer, rt.ui.successLine("Project analysis worker/reviewer models reset to the main active model."))
@@ -8304,7 +8310,7 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	}
 	rt.storeProviderKey(provider, apiKey)
 	rt.rememberCurrentProfile()
-	if err := SaveUserConfig(rt.cfg); err != nil {
+	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
 	rt.printReasoningEffortDefaultNotice("analysis "+role+" model", defaultedEffort)
