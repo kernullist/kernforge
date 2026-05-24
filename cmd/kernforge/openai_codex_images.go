@@ -88,34 +88,54 @@ func (c *OpenAICodexClient) postImageRequest(ctx context.Context, path string, r
 	if err != nil {
 		return OpenAICodexImageResponse{}, fmt.Errorf("failed to encode %s request: %w", operation, err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexAPIURL(c.baseURL, path), bytes.NewReader(body))
-	if err != nil {
-		return OpenAICodexImageResponse{}, err
-	}
-	copyHTTPHeaders(httpReq.Header, extraHeaders)
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("accept", "application/json")
-	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
-
 	httpClient := c.httpClient
 	if httpClient == nil {
 		httpClient = &http.Client{}
 	}
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return OpenAICodexImageResponse{}, err
+
+	newHTTPRequest := func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openAICodexAPIURL(c.baseURL, path), bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		copyHTTPHeaders(httpReq.Header, extraHeaders)
+		httpReq.Header.Set("content-type", "application/json")
+		httpReq.Header.Set("accept", "application/json")
+		applyOpenAICodexAuthHeaders(httpReq.Header, token)
+		httpReq.Header.Set("originator", "codex_cli_rs")
+		httpReq.Header.Set("user-agent", "kernforge/openai-codex")
+		return httpReq, nil
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return OpenAICodexImageResponse{}, err
+
+	for attempt := 0; ; attempt++ {
+		httpReq, err := newHTTPRequest(accessToken)
+		if err != nil {
+			return OpenAICodexImageResponse{}, err
+		}
+		resp, err := httpClient.Do(httpReq)
+		if err != nil {
+			return OpenAICodexImageResponse{}, err
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return OpenAICodexImageResponse{}, readErr
+		}
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
+				refreshedToken, err := refreshOpenAICodexTokenAfterUnauthorized(ctx, recovery)
+				if err != nil {
+					return OpenAICodexImageResponse{}, err
+				}
+				accessToken = refreshedToken
+				continue
+			}
+		}
+		if resp.StatusCode >= 300 {
+			return OpenAICodexImageResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+		}
+		return decodeOpenAICodexImageResponse(data, operation)
 	}
-	if resp.StatusCode >= 300 {
-		return OpenAICodexImageResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
-	}
-	return decodeOpenAICodexImageResponse(data, operation)
 }
 
 func validateOpenAICodexImageRequest(request any, operation string) error {

@@ -247,17 +247,12 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		captureProviderTurnStateHeader(resp, req.TurnState)
 
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
-			recovery, ok := tokenSource.(codexOAuthUnauthorizedRecovery)
-			if ok && codexOAuthCanRecoverAfterUnauthorized(tokenSource) {
+			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
-				refreshedToken, err := recovery.RefreshAfterUnauthorized(ctx)
+				refreshedToken, err := refreshOpenAICodexTokenAfterUnauthorized(ctx, recovery)
 				if err != nil {
-					return ChatResponse{}, fmt.Errorf("OpenAI Codex OAuth recovery after 401 failed: %w", err)
-				}
-				refreshedToken = strings.TrimSpace(refreshedToken)
-				if refreshedToken == "" {
-					return ChatResponse{}, fmt.Errorf("OpenAI Codex OAuth recovery after 401 returned no access token")
+					return ChatResponse{}, err
 				}
 				accessToken = refreshedToken
 				continue
@@ -288,6 +283,26 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 }
 
+func openAICodexUnauthorizedRecovery(tokenSource codexOAuthAccessTokenSource) (codexOAuthUnauthorizedRecovery, bool) {
+	recovery, ok := tokenSource.(codexOAuthUnauthorizedRecovery)
+	if !ok || !codexOAuthCanRecoverAfterUnauthorized(tokenSource) {
+		return nil, false
+	}
+	return recovery, true
+}
+
+func refreshOpenAICodexTokenAfterUnauthorized(ctx context.Context, recovery codexOAuthUnauthorizedRecovery) (string, error) {
+	refreshedToken, err := recovery.RefreshAfterUnauthorized(ctx)
+	if err != nil {
+		return "", fmt.Errorf("OpenAI Codex OAuth recovery after 401 failed: %w", err)
+	}
+	refreshedToken = strings.TrimSpace(refreshedToken)
+	if refreshedToken == "" {
+		return "", fmt.Errorf("OpenAI Codex OAuth recovery after 401 returned no access token")
+	}
+	return refreshedToken, nil
+}
+
 func codexOAuthCanRecoverAfterUnauthorized(tokenSource codexOAuthAccessTokenSource) bool {
 	if _, ok := tokenSource.(*CodexOAuthTokenSource); ok && strings.TrimSpace(os.Getenv(openAICodexAccessTokenEnv)) != "" {
 		return false
@@ -314,28 +329,47 @@ func FetchOpenAICodexModels(ctx context.Context, baseURL string, tokenSource cod
 	query.Set("client_version", "1.0.0")
 	endpoint.RawQuery = query.Encode()
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
-	if err != nil {
-		return nil, err
+	newHTTPRequest := func(token string) (*http.Request, error) {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("accept", "application/json")
+		applyOpenAICodexAuthHeaders(httpReq.Header, token)
+		httpReq.Header.Set("originator", "codex_cli_rs")
+		httpReq.Header.Set("user-agent", "kernforge/openai-codex")
+		return httpReq, nil
 	}
-	httpReq.Header.Set("accept", "application/json")
-	applyOpenAICodexAuthHeaders(httpReq.Header, accessToken)
-	httpReq.Header.Set("originator", "codex_cli_rs")
-	httpReq.Header.Set("user-agent", "kernforge/openai-codex")
 
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		httpReq, err := newHTTPRequest(accessToken)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := httpClient.Do(httpReq)
+		if err != nil {
+			return nil, err
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
+				refreshedToken, err := refreshOpenAICodexTokenAfterUnauthorized(ctx, recovery)
+				if err != nil {
+					return nil, err
+				}
+				accessToken = refreshedToken
+				continue
+			}
+		}
+		if resp.StatusCode >= 300 {
+			return nil, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
+		}
+		return parseCodexCLIModelsJSON(data)
 	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode >= 300 {
-		return nil, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, "", resp.Header)
-	}
-	return parseCodexCLIModelsJSON(data)
 }
 
 func applyOpenAICodexAuthHeaders(headers http.Header, accessToken string) {

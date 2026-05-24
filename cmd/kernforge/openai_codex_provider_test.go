@@ -889,6 +889,52 @@ func TestFetchOpenAICodexModelsUsesOAuthBackend(t *testing.T) {
 	}
 }
 
+func TestFetchOpenAICodexModelsRefreshesAfterUnauthorized(t *testing.T) {
+	tokenSource := &refreshingCodexTokenSource{
+		token:          "old-token",
+		refreshedToken: "new-token",
+	}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requestCount++
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get("authorization"); got != "Bearer old-token" {
+				t.Fatalf("unexpected first authorization header: %q", got)
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+		case 2:
+			if got := r.Header.Get("authorization"); got != "Bearer new-token" {
+				t.Fatalf("unexpected retry authorization header: %q", got)
+			}
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-5.5","display_name":"GPT-5.5","supported_in_api":true,"visibility":"list"}]}`))
+		default:
+			t.Fatalf("unexpected request count: %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	models, err := FetchOpenAICodexModels(context.Background(), server.URL, tokenSource, server.Client())
+	if err != nil {
+		t.Fatalf("FetchOpenAICodexModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "gpt-5.5" {
+		t.Fatalf("unexpected models: %#v", models)
+	}
+	if requestCount != 2 {
+		t.Fatalf("expected one retry after 401, got %d requests", requestCount)
+	}
+	if tokenSource.accessCalls != 1 || tokenSource.refreshCalls != 1 {
+		t.Fatalf("expected one access and one refresh, got access=%d refresh=%d", tokenSource.accessCalls, tokenSource.refreshCalls)
+	}
+}
+
 func TestOpenAICodexModelChoicesUseRemoteCatalogAsSourceOfTruth(t *testing.T) {
 	home := t.TempDir()
 	authPath := filepath.Join(home, "codex_auth.json")
@@ -1162,6 +1208,69 @@ func TestOpenAICodexClientGenerateImagePostsTypedRequest(t *testing.T) {
 		t.Fatalf("GenerateImage: %v", err)
 	}
 	assertOpenAICodexImageResponseFixture(t, resp)
+}
+
+func TestOpenAICodexClientGenerateImageRefreshesAfterUnauthorized(t *testing.T) {
+	tokenSource := &refreshingCodexTokenSource{
+		token:          "old-token",
+		refreshedToken: "new-token",
+	}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requestCount++
+		switch requestCount {
+		case 1:
+			if got := r.Header.Get("authorization"); got != "Bearer old-token" {
+				t.Fatalf("unexpected first authorization header: %q", got)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("Decode first body: %v", err)
+			}
+			if body["prompt"] != "a red fox in a field" {
+				t.Fatalf("unexpected first request body: %#v", body)
+			}
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid_token"}`))
+		case 2:
+			if got := r.Header.Get("authorization"); got != "Bearer new-token" {
+				t.Fatalf("unexpected retry authorization header: %q", got)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("Decode retry body: %v", err)
+			}
+			if body["prompt"] != "a red fox in a field" {
+				t.Fatalf("unexpected retry request body: %#v", body)
+			}
+			w.Header().Set("content-type", "application/json")
+			_, _ = w.Write(openAICodexImageResponseFixture())
+		default:
+			t.Fatalf("unexpected request count: %d", requestCount)
+		}
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = tokenSource
+	resp, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt: "a red fox in a field",
+		Model:  "gpt-image-1.5",
+	}, nil)
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	assertOpenAICodexImageResponseFixture(t, resp)
+	if requestCount != 2 {
+		t.Fatalf("expected one retry after 401, got %d requests", requestCount)
+	}
+	if tokenSource.accessCalls != 1 || tokenSource.refreshCalls != 1 {
+		t.Fatalf("expected one access and one refresh, got access=%d refresh=%d", tokenSource.accessCalls, tokenSource.refreshCalls)
+	}
 }
 
 func TestOpenAICodexClientEditImagePostsTypedRequest(t *testing.T) {
