@@ -920,7 +920,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return reply, nil
 			}
 			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
-				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
+				reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation, planning, or additional inspection after the document is written."
 				if a.prepareGeneratedDocumentArtifactFinalAfterBlockedToolCalls(latestUser, attemptedEditTool, unresolvedVerification) {
 					reply, err := a.finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(resp.Message.ToolCalls, attemptedEditTool, unresolvedVerification, reason)
 					if err != nil {
@@ -2604,7 +2604,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request s
 		}
 	}
 
-	reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation or additional inspection after the document is written."
+	reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation, planning, or additional inspection after the document is written."
 	if err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
 		return "", false, err
 	}
