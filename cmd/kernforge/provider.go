@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"net/http"
 	"strconv"
@@ -33,11 +35,14 @@ type ToolContentItem struct {
 }
 
 const codexResizedImageBytesEstimate = 7373
+const codexOriginalImagePatchSize = 32
+const codexOriginalImageMaxPatches = 10000
+const codexApproxBytesPerToken = 4
 
 func toolContentItemApproxChars(item ToolContentItem) int {
 	total := len(item.Type) + len(item.Text) + len(item.Detail)
 	if strings.TrimSpace(item.ImageURL) != "" {
-		total += imageURLApproxChars(item.ImageURL)
+		total += imageURLApproxCharsForDetail(item.ImageURL, item.Detail)
 	}
 	if strings.TrimSpace(item.EncryptedContent) != "" {
 		if strings.TrimSpace(item.Type) == "encrypted_content" {
@@ -50,6 +55,10 @@ func toolContentItemApproxChars(item ToolContentItem) int {
 }
 
 func imageURLApproxChars(imageURL string) int {
+	return imageURLApproxCharsForDetail(imageURL, "")
+}
+
+func imageURLApproxCharsForDetail(imageURL string, detail string) int {
 	imageURL = strings.TrimSpace(imageURL)
 	if imageURL == "" {
 		return 0
@@ -58,7 +67,13 @@ func imageURLApproxChars(imageURL string) int {
 	if !ok {
 		return len(imageURL)
 	}
-	return len(imageURL) - len(payload) + codexResizedImageBytesEstimate
+	estimate := codexResizedImageBytesEstimate
+	if strings.TrimSpace(detail) == imageDetailOriginal {
+		if originalEstimate := originalImageDataURLApproxChars(payload); originalEstimate > 0 {
+			estimate = originalEstimate
+		}
+	}
+	return len(imageURL) - len(payload) + estimate
 }
 
 func base64ImageDataURLPayload(imageURL string) (string, bool) {
@@ -86,6 +101,31 @@ func base64ImageDataURLPayload(imageURL string) (string, bool) {
 		return "", false
 	}
 	return payload, true
+}
+
+func originalImageDataURLApproxChars(payload string) int {
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(payload))
+	if err != nil || len(decoded) == 0 {
+		return 0
+	}
+	config, _, err := image.DecodeConfig(bytes.NewReader(decoded))
+	if err != nil || config.Width <= 0 || config.Height <= 0 {
+		return 0
+	}
+	patchesWide := ceilDivInt(config.Width, codexOriginalImagePatchSize)
+	patchesHigh := ceilDivInt(config.Height, codexOriginalImagePatchSize)
+	patches := patchesWide * patchesHigh
+	if patches > codexOriginalImageMaxPatches {
+		patches = codexOriginalImageMaxPatches
+	}
+	return patches * codexApproxBytesPerToken
+}
+
+func ceilDivInt(value int, divisor int) int {
+	if value <= 0 || divisor <= 0 {
+		return 0
+	}
+	return (value + divisor - 1) / divisor
 }
 
 func encryptedToolContentApproxChars(encodedLen int) int {

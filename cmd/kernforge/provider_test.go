@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,6 +41,43 @@ func TestToolContentItemApproxCharsKeepsNonBase64ImageURLRaw(t *testing.T) {
 	expected := len("input_image") + len(imageDetailHigh) + len(imageURL)
 	if got != expected {
 		t.Fatalf("approx chars = %d, want %d", got, expected)
+	}
+}
+
+func TestToolContentItemApproxCharsUsesOriginalImagePatchEstimate(t *testing.T) {
+	payload := base64.StdEncoding.EncodeToString(onePixelPNG)
+	imageURL := "data:image/png;base64," + payload
+	got := toolContentItemApproxChars(ToolContentItem{
+		Type:     "input_image",
+		ImageURL: imageURL,
+		Detail:   imageDetailOriginal,
+	})
+	expectedImageCost := len(imageURL) - len(payload) + codexApproxBytesPerToken
+	expected := len("input_image") + len(imageDetailOriginal) + expectedImageCost
+	if got != expected {
+		t.Fatalf("approx chars = %d, want %d", got, expected)
+	}
+	high := toolContentItemApproxChars(ToolContentItem{
+		Type:     "input_image",
+		ImageURL: imageURL,
+		Detail:   imageDetailHigh,
+	})
+	if got >= high {
+		t.Fatalf("original one-pixel image should use patch estimate below resized estimate, got=%d high=%d", got, high)
+	}
+}
+
+func TestToolContentItemApproxCharsOriginalFallsBackForInvalidImageData(t *testing.T) {
+	payload := strings.Repeat("A", 12000)
+	imageURL := "data:image/png;base64," + payload
+	got := toolContentItemApproxChars(ToolContentItem{
+		Type:     "input_image",
+		ImageURL: imageURL,
+		Detail:   imageDetailOriginal,
+	})
+	expected := len("input_image") + len(imageDetailOriginal) + len(imageURL) - len(payload) + codexResizedImageBytesEstimate
+	if got != expected {
+		t.Fatalf("approx chars = %d, want fallback %d", got, expected)
 	}
 }
 
