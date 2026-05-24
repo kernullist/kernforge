@@ -1005,6 +1005,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 
 	var text strings.Builder
 	var reasoning strings.Builder
+	deltaPrefixTexts := []string{}
 	itemTexts := []string{}
 	finalItemTexts := []string{}
 	var completedResponse json.RawMessage
@@ -1099,6 +1100,13 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			finalItemTexts = append(finalItemTexts, itemText)
 		}
 	}
+	collectMessageDeltaPrefixText := func(item openAICodexOutputItem) {
+		itemText := openAICodexOutputItemText(item)
+		if strings.TrimSpace(itemText) == "" {
+			return
+		}
+		deltaPrefixTexts = append(deltaPrefixTexts, itemText)
+	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
 		payload = strings.TrimSpace(payload)
@@ -1155,6 +1163,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if event.Item.Type == "message" {
 				messagePhase = mergeOpenAICodexMessagePhase(messagePhase, event.Item.Phase)
 				collectMessageItemText(event.Item)
+				collectMessageDeltaPrefixText(event.Item)
 			} else if event.Item.Type == "reasoning" {
 				if reasoningText := openAICodexReasoningItemText(event.Item); strings.TrimSpace(reasoningText) != "" {
 					reasoning.WriteString(reasoningText)
@@ -1357,7 +1366,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	}
 
 	streamText := text.String()
-	if strings.TrimSpace(streamText) == "" {
+	if strings.TrimSpace(streamText) != "" {
+		prefix := openAICodexDeltaPrefixText(deltaPrefixTexts)
+		if strings.TrimSpace(prefix) != "" && !strings.HasPrefix(streamText, prefix) {
+			streamText = prefix + streamText
+		}
+	} else {
 		texts := itemTexts
 		if len(finalItemTexts) > 0 {
 			texts = finalItemTexts
@@ -1407,6 +1421,22 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		}
 	}
 	return strings.TrimSpace(decoded.Model)
+}
+
+func openAICodexDeltaPrefixText(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	var out strings.Builder
+	seen := map[string]bool{}
+	for _, item := range items {
+		if strings.TrimSpace(item) == "" || seen[item] {
+			continue
+		}
+		out.WriteString(item)
+		seen[item] = true
+	}
+	return out.String()
 }
 
 func openAICodexEndTurnFromResponsePayload(data json.RawMessage) *bool {
