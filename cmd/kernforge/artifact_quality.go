@@ -77,7 +77,28 @@ func collectArtifactQualityTargets(sess *Session, reply string) []string {
 			targets = append(targets, path)
 		}
 	}
+	if sessionHasGeneratedDocumentArtifactContext(sess) {
+		targets = append(targets, generatedDocumentArtifactPathsFromHarnessReport(sess.LastCodingHarnessReport)...)
+		for _, path := range documentArtifactHarnessChangedPaths(sess) {
+			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+				targets = append(targets, path)
+			}
+		}
+	}
 	return normalizeTaskStateList(targets, 32)
+}
+
+func sessionHasGeneratedDocumentArtifactContext(sess *Session) bool {
+	if sess == nil {
+		return false
+	}
+	if generatedDocumentArtifactRequestContextForTurn(sess, codingHarnessSourcePrompt(sess)) != "" {
+		return true
+	}
+	if generatedDocumentArtifactRequestContextForTurn(sess, "") != "" {
+		return true
+	}
+	return false
 }
 
 func (a *Agent) checkArtifactQuality(target string, prompt string, reply string) (ArtifactQualityCheck, []CodingHarnessFinding) {

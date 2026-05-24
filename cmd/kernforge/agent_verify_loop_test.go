@@ -12892,6 +12892,106 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	}
 }
 
+func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *testing.T) {
+	root := t.TempDir()
+	reportLines := []string{
+		"# Tavern Client Bug Report",
+		"",
+		"각 소스코드 파일들을 검토해서 총 26개 버그를 문서화했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 4 |",
+		"| High | 7 |",
+		"| Medium | 9 |",
+		"| Low | 6 |",
+		"| Total | 26 |",
+		"",
+	}
+	for i := 1; i <= 26; i++ {
+		reportLines = append(reportLines,
+			fmt.Sprintf("## BUG-%03d", i),
+			"- File: Tavern/Tavern/RuntimeManager.cpp",
+			"- Impact: documented issue.",
+			"",
+		)
+	}
+	reportContent := strings.Join(reportLines, "\n")
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: request,
+	}
+	session.TaskState = &TaskState{
+		Goal: request,
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				ContentChars: len([]rune(reportContent)),
+				Substantive:  true,
+				Checks:       []string{"text readable"},
+			}},
+		},
+	}
+	agent := &Agent{
+		Config: Config{
+			AutoLocale: boolPtr(false),
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	inconsistentReply := strings.Join([]string{
+		"The bug report document has been reviewed and is now in final form.",
+		"",
+		"27 documented bugs were found.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 4 |",
+		"| High | 7 |",
+		"| Medium | 9 |",
+		"| Low | 6 |",
+		"| **Total** | **26** |",
+		"",
+		"Build/test verification was not run because this is a documentation-only artifact.",
+	}, "\n")
+
+	reply, finalized, err := agent.maybeFinalizeGeneratedDocumentArtifactFinalReply(request, inconsistentReply, true, false)
+	if err != nil {
+		t.Fatalf("maybeFinalizeGeneratedDocumentArtifactFinalReply: %v", err)
+	}
+	if !finalized {
+		t.Fatalf("expected artifact finalizer to synthesize a final reply when the model omits the path")
+	}
+	if strings.Contains(reply, "27 documented bugs") {
+		t.Fatalf("expected inconsistent bug-count reply to be replaced, got %q", reply)
+	}
+	if !strings.Contains(reply, "Tavern/BugReport.md") {
+		t.Fatalf("expected synthesized reply to retain the artifact path, got %q", reply)
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected synthesized document final to approve harness report, got %#v", session.LastCodingHarnessReport)
+	}
+	if len(session.LastCodingHarnessReport.ArtifactQuality.Artifacts) == 0 {
+		t.Fatalf("expected artifact quality target to be preserved")
+	}
+	if agent.shouldReviewInteractiveFinalAnswer(reply, true, false) {
+		t.Fatalf("expected synthesized generated document final to skip final-answer reviewer")
+	}
+}
+
 func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
