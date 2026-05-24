@@ -1091,9 +1091,7 @@ func (rt *runtimeState) runAgentReplyWithImagesManagedCancel(ctx context.Context
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if verdict, err := rt.runHook(ctx, HookUserPromptSubmit, HookPayload{
-		"user_text": input,
-	}); err != nil {
+	if verdict, err := rt.runHook(ctx, HookUserPromptSubmit, userPromptSubmitHookPayload(input)); err != nil {
 		return "", err
 	} else if len(verdict.ContextAdds) > 0 {
 		input = strings.TrimSpace(input) + "\n\nAdditional hook guidance:\n- " + strings.Join(verdict.ContextAdds, "\n- ")

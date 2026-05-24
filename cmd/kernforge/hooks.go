@@ -906,9 +906,16 @@ func collectPayloadBranches(payload HookPayload) []string {
 	return nil
 }
 
+func userPromptSubmitHookPayload(prompt string) HookPayload {
+	return HookPayload{
+		"prompt":    prompt,
+		"user_text": prompt,
+	}
+}
+
 func collectPayloadText(payload HookPayload) string {
 	var parts []string
-	for _, key := range []string{"user_text", "command", "output", "error", "path", "branch"} {
+	for _, key := range []string{"prompt", "user_text", "command", "output", "error", "path", "branch"} {
 		if text := stringsValueFromAny(payload[key]); text != "" {
 			parts = append(parts, text)
 		}

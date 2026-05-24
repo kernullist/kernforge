@@ -107,6 +107,49 @@ func TestHookEngineAllowCanRewritePreToolUseInput(t *testing.T) {
 	}
 }
 
+func TestUserPromptSubmitHookPayloadIncludesCodexPromptAlias(t *testing.T) {
+	payload := userPromptSubmitHookPayload("please review this patch")
+
+	if got := toolMetaString(payload, "prompt"); got != "please review this patch" {
+		t.Fatalf("expected prompt alias, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "user_text"); got != "please review this patch" {
+		t.Fatalf("expected legacy user_text alias, got %#v", payload)
+	}
+	if text := collectPayloadText(payload); !strings.Contains(text, "please review this patch") {
+		t.Fatalf("expected payload text to include prompt, got %q", text)
+	}
+}
+
+func TestHookEngineMatchesUserPromptSubmitPromptAlias(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:     "prompt-guidance",
+				Events: []HookEvent{HookUserPromptSubmit},
+				Match: HookMatch{
+					ContainsText: []string{"review"},
+				},
+				Action: HookAction{
+					Type:    "append_context",
+					Message: "include review guidance",
+				},
+			},
+		},
+	}
+
+	verdict, err := engine.Evaluate(context.Background(), HookUserPromptSubmit, HookPayload{
+		"prompt": "please review this patch",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "include review guidance" {
+		t.Fatalf("expected prompt alias to match contains_text, got %#v", verdict)
+	}
+}
+
 func TestBuiltinWindowsSecurityPreset(t *testing.T) {
 	rules, err := builtinHookPresetRules("windows-security")
 	if err != nil {
