@@ -817,7 +817,7 @@ func openAICodexToolParameters(schema map[string]any) map[string]any {
 }
 
 func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
-	messages := ensureOpenAIToolCallResponses(req.Messages)
+	messages := ensureOpenAICodexToolCallResponses(req.Messages)
 	items := make([]any, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
@@ -879,6 +879,76 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 		}
 	}
 	return items, nil
+}
+
+func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	expected := map[string]ToolCall{}
+	outputs := map[string]bool{}
+	for _, msg := range messages {
+		switch msg.Role {
+		case "assistant":
+			for _, call := range msg.ToolCalls {
+				callID := firstNonEmptyTrimmed(call.ID, call.Name)
+				if callID != "" {
+					expected[callID] = call
+				}
+			}
+		case "tool":
+			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
+			if callID != "" {
+				outputs[callID] = true
+			}
+		}
+	}
+	if len(expected) == 0 {
+		out := make([]Message, 0, len(messages))
+		for _, msg := range messages {
+			if msg.Role != "tool" {
+				out = append(out, msg)
+			}
+		}
+		return out
+	}
+
+	out := make([]Message, 0, len(messages))
+	for index, msg := range messages {
+		if msg.Role == "tool" {
+			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
+			call, ok := expected[callID]
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(msg.ToolName) == "" {
+				msg.ToolName = call.Name
+			}
+			out = append(out, msg)
+			continue
+		}
+
+		out = append(out, msg)
+		if msg.Role != "assistant" || len(msg.ToolCalls) == 0 {
+			continue
+		}
+		for _, call := range msg.ToolCalls {
+			callID := firstNonEmptyTrimmed(call.ID, call.Name)
+			if callID == "" || outputs[callID] {
+				continue
+			}
+			text := missingOpenAIToolResultText(messages, index+1)
+			isError := strings.HasPrefix(text, "ERROR:")
+			out = append(out, Message{
+				Role:       "tool",
+				ToolCallID: callID,
+				ToolName:   call.Name,
+				Text:       text,
+				IsError:    isError,
+			})
+		}
+	}
+	return out
 }
 
 func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {

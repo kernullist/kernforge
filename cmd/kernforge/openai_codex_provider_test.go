@@ -1314,6 +1314,49 @@ func TestBuildOpenAICodexRequestBodyDropsOrphanToolOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyKeepsNonAdjacentToolOutput(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_late", Name: "read_file", Arguments: `{"path":"main.go"}`}}},
+			{Role: "user", Text: "Runtime note before the tool result."},
+			{Role: "tool", ToolCallID: "call_late", ToolName: "read_file", Text: "package main"},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	outputs := 0
+	for _, item := range payload.Input {
+		if item["type"] != "function_call_output" || item["call_id"] != "call_late" {
+			continue
+		}
+		outputs++
+		if item["output"] != "package main" {
+			t.Fatalf("expected late real tool output to be preserved, got %#v in %s", item, body)
+		}
+	}
+	if outputs != 1 {
+		t.Fatalf("expected exactly one real late tool output, got %d in %s", outputs, body)
+	}
+	if strings.Contains(string(body), "aborted") {
+		t.Fatalf("late matching tool output must not be replaced by synthetic aborted output: %s", body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
