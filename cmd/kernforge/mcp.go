@@ -1343,8 +1343,9 @@ func (c *MCPClient) listPrompts(ctx context.Context) ([]MCPPromptDescriptor, err
 
 func emptyObjectSchema() map[string]any {
 	return map[string]any{
-		"type":       "object",
-		"properties": map[string]any{},
+		"type":                 "object",
+		"properties":           map[string]any{},
+		"additionalProperties": false,
 	}
 }
 

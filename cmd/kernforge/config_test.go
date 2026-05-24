@@ -992,6 +992,56 @@ func TestLoadConfigWithProfileRejectsLegacySavedProfileName(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWithProfileRejectsMatchingLegacyProfileSelector(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	base := `{"provider":"openai","model":"gpt-base","profile":"work"}`
+	if err := os.WriteFile(userConfigPath(), []byte(base), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	_, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err == nil {
+		t.Fatalf("expected legacy profile selector conflict")
+	}
+	if !strings.Contains(err.Error(), `-profile "work" cannot be used`) || !strings.Contains(err.Error(), `profile = "work"`) || !strings.Contains(err.Error(), userProfileConfigPath("work")) {
+		t.Fatalf("unexpected legacy selector error: %v", err)
+	}
+}
+
+func TestLoadConfigWithProfileAllowsUnrelatedLegacyProfileSelector(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	if err := os.MkdirAll(userConfigDir(), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	base := `{"provider":"openai","model":"gpt-base","profile":"dev"}`
+	if err := os.WriteFile(userConfigPath(), []byte(base), 0o644); err != nil {
+		t.Fatalf("write base config: %v", err)
+	}
+	if err := os.WriteFile(userProfileConfigPath("work"), []byte(`{"provider":"openrouter","model":"deepseek/deepseek-v4-pro","base_url":"https://openrouter.ai/api/v1"}`), 0o644); err != nil {
+		t.Fatalf("write profile config: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{Profile: "work"})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.Provider != "openrouter" || loaded.Model != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("expected selected profile layer to load, got provider=%q model=%q", loaded.Provider, loaded.Model)
+	}
+}
+
 func TestLoadConfigWithProfileRejectsNonPlainName(t *testing.T) {
 	_, err := LoadConfigWithOptions(t.TempDir(), ConfigLoadOptions{Profile: "../work"})
 	if err == nil {

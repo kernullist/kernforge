@@ -617,6 +617,7 @@ func (s *kernforgeMCPServer) registerTools() {
 		"target":                  map[string]any{"type": "string", "description": "Optional function, symbol, file, subsystem, or target."},
 		"file":                    map[string]any{"type": "string", "description": "Optional source file related to the fuzz target."},
 		"mode":                    map[string]any{"type": "string", "enum": []string{"", "source", "plan", "native_preview"}, "description": "How far to go. Default source produces a source-level fuzz plan only. native_preview reviews build/run command shape without executing."},
+		"include_artifacts":       map[string]any{"type": "boolean", "description": "Include generated fuzz report, plan, and harness excerpts when the request explicitly asks to inspect artifacts."},
 		"approve_recovered_build": map[string]any{"type": "boolean", "description": "Explicitly approve partial or heuristic recovered build settings for build_only or execute."},
 		"max_chars":               map[string]any{"type": "integer", "description": "Maximum response text characters. Source fuzz results enforce a larger minimum so code, trigger values, and artifact paths stay visible."},
 	}), s.toolFuzz)
@@ -639,7 +640,7 @@ func (s *kernforgeMCPServer) registerTools() {
 		"file":      map[string]any{"type": "string", "description": "Optional source file related to the request."},
 		"max_chars": map[string]any{"type": "integer", "description": "Maximum response text characters."},
 	}), s.toolLook)
-	s.addTool("kernforge_status", "Show KernForge workspace, provider, latest analysis, verification, evidence, and git status.", emptyObjectSchema(), s.toolStatus)
+	s.addTool("kernforge_status", "Show KernForge workspace, provider, latest analysis, verification, evidence, and git status.", mcpObjectSchema(map[string]any{}), s.toolStatus)
 	s.addTool("kernforge_latest_analysis", "Summarize the latest KernForge project analysis artifacts and optionally include one generated document.", mcpObjectSchema(map[string]any{
 		"document":  map[string]any{"type": "string", "description": "Optional latest docs file name, such as INDEX.md or SECURITY_SURFACE.md."},
 		"max_chars": map[string]any{"type": "integer", "description": "Maximum text characters to return."},
@@ -888,6 +889,9 @@ func (s *kernforgeMCPServer) handleToolCall(ctx context.Context, id any, params 
 		return mcpServerError(id, -32602, "unknown tool: "+name, nil)
 	}
 	args := mcpArgsObject(params["arguments"])
+	if err := mcpValidateToolArgs(name, tool.InputSchema, args); err != nil {
+		return mcpServerError(id, -32602, err.Error(), nil)
+	}
 	text, err := tool.Handler(ctx, args)
 	text = strings.TrimSpace(text)
 	if text == "" && err == nil {
@@ -4774,13 +4778,34 @@ func mcpArgsObject(raw any) map[string]any {
 func mcpObjectSchema(properties map[string]any, required ...string) map[string]any {
 	properties = mcpSchemaWithWorkspaceHint(properties)
 	schema := map[string]any{
-		"type":       "object",
-		"properties": properties,
+		"type":                 "object",
+		"properties":           properties,
+		"additionalProperties": false,
 	}
 	if len(required) > 0 {
 		schema["required"] = required
 	}
 	return schema
+}
+
+func mcpValidateToolArgs(toolName string, schema map[string]any, args map[string]any) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if len(schema) == 0 {
+		schema = emptyObjectSchema()
+	}
+	if additional, ok := schema["additionalProperties"].(bool); ok && additional {
+		return nil
+	}
+	properties, _ := schema["properties"].(map[string]any)
+	for key := range args {
+		if _, ok := properties[key]; ok {
+			continue
+		}
+		return fmt.Errorf("unknown argument %q for tool %q", key, toolName)
+	}
+	return nil
 }
 
 func mcpSchemaWithWorkspaceHint(properties map[string]any) map[string]any {

@@ -523,9 +523,52 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 	}
 	reviewTool := mcpListItemByName(toolsResult["tools"], "kernforge_review")
 	schema, _ := reviewTool["inputSchema"].(map[string]any)
+	if schema["additionalProperties"] != false {
+		t.Fatalf("kernforge_review schema should reject unknown arguments: %#v", schema)
+	}
 	properties, _ := schema["properties"].(map[string]any)
 	if _, ok := properties["workspace"]; !ok {
 		t.Fatalf("kernforge_review schema missing workspace hint: %#v", schema)
+	}
+	statusTool := mcpListItemByName(toolsResult["tools"], "kernforge_status")
+	statusSchema, _ := statusTool["inputSchema"].(map[string]any)
+	if statusSchema["additionalProperties"] != false {
+		t.Fatalf("kernforge_status schema should reject unknown arguments: %#v", statusSchema)
+	}
+	statusProperties, _ := statusSchema["properties"].(map[string]any)
+	if _, ok := statusProperties["workspace"]; !ok {
+		t.Fatalf("kernforge_status schema missing workspace hint: %#v", statusSchema)
+	}
+}
+
+func TestKernforgeMCPServerRejectsUnknownToolArgument(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	resp, ok := server.handleMessage(context.Background(), map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name": "kernforge_status",
+			"arguments": map[string]any{
+				"profile": "work",
+			},
+		},
+	})
+	if !ok {
+		t.Fatalf("tools/call produced no response")
+	}
+	errorObj, ok := resp["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected mcp error for unknown argument, got %#v", resp)
+	}
+	if errorObj["code"] != -32602 {
+		t.Fatalf("unexpected mcp error code: %#v", errorObj)
+	}
+	message, _ := errorObj["message"].(string)
+	if !strings.Contains(message, `unknown argument "profile"`) || !strings.Contains(message, `kernforge_status`) {
+		t.Fatalf("unexpected unknown argument error: %s", message)
 	}
 }
 

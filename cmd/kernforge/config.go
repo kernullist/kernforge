@@ -811,6 +811,9 @@ func mergeConfigFileForSourceWithOptions(cfg *Config, path string, source config
 		}
 		return err
 	}
+	if err := rejectLegacyProfileSelectorForSelectedProfile(data, path, source, options); err != nil {
+		return err
+	}
 	dataForDecode := sanitizeConfigDataForSource(data, source)
 	var patch Config
 	if err := decodeConfigPatchJSON(dataForDecode, &patch, options.StrictConfig); err != nil {
@@ -827,6 +830,44 @@ func mergeConfigFileForSourceWithOptions(cfg *Config, path string, source config
 	}
 	sanitizeConfigPatchForSource(&patch, source)
 	mergeConfig(cfg, patch)
+	return nil
+}
+
+func rejectLegacyProfileSelectorForSelectedProfile(data []byte, path string, source configSourceKind, options ConfigLoadOptions) error {
+	if source != configSourceUser {
+		return nil
+	}
+	if !samePath(path, userConfigPath()) {
+		return nil
+	}
+	profileName, err := parseConfigLayerProfileName(options.Profile)
+	if err != nil {
+		return err
+	}
+	if profileName == "" {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	value, ok := raw["profile"]
+	if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+		return nil
+	}
+	var legacyProfile string
+	if err := json.Unmarshal(value, &legacyProfile); err != nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(legacyProfile), profileName) {
+		return fmt.Errorf("-profile %q cannot be used while %s contains legacy profile selector profile = %q; move those settings into %s or remove the top-level profile field. See %s for the profile layering contract",
+			profileName,
+			userConfigPath(),
+			legacyProfile,
+			userProfileConfigPath(profileName),
+			configProfileDocsURL,
+		)
+	}
 	return nil
 }
 
