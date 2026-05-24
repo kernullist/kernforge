@@ -558,6 +558,7 @@ type HookVerdict struct
 4. `append_context`와 `add_verification_step`는 누적 가능
 5. `PermissionRequest`에서는 `allow`/`deny`가 prompt 전 decision으로 해석된다
 6. `Stop`에서는 `deny`가 일반 hook error가 아니라 final answer continuation block으로 해석된다
+7. `SubagentStart`는 Codex와 동일하게 context-injection-only 이벤트로 취급한다. `append_context`는 worker prompt에 주입하지만, `deny`와 `ask`는 worker 시작을 막지 않고 warning으로 강등한다
 
 ### 6.3 PermissionManager와의 관계
 

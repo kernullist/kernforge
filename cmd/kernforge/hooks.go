@@ -150,6 +150,7 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 		}
 		return HookVerdict{Allow: true}, nil
 	}
+	verdict = normalizeContextInjectingHookVerdict(event, verdict)
 	for _, notice := range verdict.Warns {
 		if rt.Print != nil {
 			rt.Print(fmt.Sprintf("Hook warning [%s] %s", notice.RuleID, notice.Message))
@@ -197,6 +198,33 @@ func (rt *HookRuntime) Run(ctx context.Context, event HookEvent, payload HookPay
 	}
 	verdict.ContextAdds = rt.spillLargeHookContextAdds(event, verdict.ContextAdds)
 	return verdict, nil
+}
+
+func normalizeContextInjectingHookVerdict(event HookEvent, verdict HookVerdict) HookVerdict {
+	if event != HookSubagentStart {
+		return verdict
+	}
+	if askMessage := strings.TrimSpace(verdict.AskMessage); askMessage != "" {
+		verdict.Warns = append(verdict.Warns, HookNotice{
+			RuleID:  "hook-runtime",
+			Message: "SubagentStart hook confirmation ignored because SubagentStart is context-injection-only: " + askMessage,
+		})
+		verdict.AskMessage = ""
+	}
+	denyReason := strings.TrimSpace(verdict.DenyReason)
+	if denyReason == "" && !verdict.Allow {
+		denyReason = "SubagentStart hook requested a block."
+	}
+	if denyReason == "" {
+		return verdict
+	}
+	verdict.Warns = append(verdict.Warns, HookNotice{
+		RuleID:  "hook-runtime",
+		Message: "SubagentStart hook block ignored because SubagentStart is context-injection-only: " + denyReason,
+	})
+	verdict.Allow = true
+	verdict.DenyReason = ""
+	return verdict
 }
 
 func (rt *HookRuntime) spillLargeHookContextAdds(event HookEvent, contexts []string) []string {
@@ -443,6 +471,13 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 				verdict.AskMessage = hookActionMessage(rule, "Continue?")
 			}
 		case "deny":
+			if event == HookSubagentStart {
+				verdict.Warns = append(verdict.Warns, HookNotice{
+					RuleID:  rule.ID,
+					Message: "SubagentStart hook block ignored because SubagentStart is context-injection-only: " + hookActionMessage(rule, "Blocked by hook policy."),
+				})
+				break
+			}
 			verdict.Allow = false
 			verdict.DenyReason = hookActionMessage(rule, "Blocked by hook policy.")
 			if event == HookPermissionRequest {

@@ -437,6 +437,88 @@ func TestHookEngineMatchesSubagentStartAgentIdentity(t *testing.T) {
 	}
 }
 
+func TestHookRuntimeSubagentStartDenyIsContextOnly(t *testing.T) {
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "subagent-start-deny",
+					Events: []HookEvent{HookSubagentStart},
+					Match: HookMatch{
+						ContainsText: []string{"reviewer"},
+					},
+					Action: HookAction{
+						Type:    "deny",
+						Message: "do not start reviewer",
+					},
+				},
+				{
+					ID:     "subagent-start-context-after-deny",
+					Events: []HookEvent{HookSubagentStart},
+					Match: HookMatch{
+						ContainsText: []string{"reviewer"},
+					},
+					Action: HookAction{
+						Type:    "append_context",
+						Message: "later context still applies",
+					},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookSubagentStart, HookPayload{
+		"agent_type": "reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !verdict.Allow || verdict.DenyReason != "" {
+		t.Fatalf("SubagentStart deny must not block startup, got %#v", verdict)
+	}
+	if len(verdict.Warns) != 1 || !strings.Contains(verdict.Warns[0].Message, "context-injection-only") {
+		t.Fatalf("expected context-only warning, got %#v", verdict.Warns)
+	}
+	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "later context still applies" {
+		t.Fatalf("expected later context rule to run after deny, got %#v", verdict.ContextAdds)
+	}
+}
+
+func TestHookRuntimeSubagentStartAskIsContextOnly(t *testing.T) {
+	runtime := &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "subagent-start-ask",
+					Events: []HookEvent{HookSubagentStart},
+					Match: HookMatch{
+						ContainsText: []string{"reviewer"},
+					},
+					Action: HookAction{
+						Type:    "ask",
+						Message: "start reviewer?",
+					},
+				},
+			},
+		},
+	}
+
+	verdict, err := runtime.Run(context.Background(), HookSubagentStart, HookPayload{
+		"agent_type": "reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !verdict.Allow || verdict.AskMessage != "" {
+		t.Fatalf("SubagentStart ask must not request confirmation, got %#v", verdict)
+	}
+	if len(verdict.Warns) != 1 || !strings.Contains(verdict.Warns[0].Message, "context-injection-only") {
+		t.Fatalf("expected context-only warning, got %#v", verdict.Warns)
+	}
+}
+
 func TestHookEngineMatchesSubagentStopAgentIdentity(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,
