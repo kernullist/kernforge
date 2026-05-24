@@ -4822,6 +4822,54 @@ func TestCompactRetainedMessagesWithinBudgetPreservesImagesOnBoundary(t *testing
 	}
 }
 
+func TestCompactRetainedMessagesWithinBudgetPreservesCodexStructuredHistoryItems(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "old"},
+		{
+			Role: "assistant",
+			LocalShellCalls: []MessageLocalShellCall{{
+				CallID: "call_shell",
+				Status: "completed",
+				Action: map[string]any{
+					"type":    "exec",
+					"command": []any{"echo", "hi"},
+				},
+			}},
+			CodexCompactionItems: []MessageCodexCompactionItem{{
+				Type:             "context_compaction",
+				EncryptedContent: "sealed-context",
+			}},
+		},
+		{Role: "user", Text: "new"},
+	}
+
+	retained, _ := compactRetainedMessagesWithinBudget(messages, 4)
+	if len(retained) != 2 {
+		t.Fatalf("expected newest message plus structured assistant history, got %#v", retained)
+	}
+	if len(retained[0].LocalShellCalls) != 1 || len(retained[0].CodexCompactionItems) != 1 {
+		t.Fatalf("expected compact boundary to preserve Codex structured items, got %#v", retained[0])
+	}
+	if retained[1].Text != "new" {
+		t.Fatalf("expected newest message to survive intact, got %#v", retained)
+	}
+}
+
+func TestMessageLooksLikeCompactContextOnlyKeepsStructuredHistoryItems(t *testing.T) {
+	msg := Message{
+		Role: "user",
+		Text: "[Conversation Runtime Context]\nstate\n[/Conversation Runtime Context]",
+		LocalShellCalls: []MessageLocalShellCall{{
+			CallID: "call_shell",
+			Status: "completed",
+		}},
+	}
+
+	if messageLooksLikeCompactContextOnly(msg) {
+		t.Fatalf("structured history item must prevent context-only compaction drop")
+	}
+}
+
 func TestCompactRetainedMessagesWithinBudgetDropsContextOnlyMessagesBeforeBudget(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Text: "old"},
@@ -4838,6 +4886,37 @@ func TestCompactRetainedMessagesWithinBudgetDropsContextOnlyMessagesBeforeBudget
 	}
 	if retained[0].Text != "old" || retained[1].Text != "new" {
 		t.Fatalf("expected context-only message to be omitted from retained history, got %#v", retained)
+	}
+}
+
+func TestSummarizeMessagesIncludesCodexStructuredHistoryItems(t *testing.T) {
+	summary := summarizeMessages([]Message{
+		{
+			Role: "assistant",
+			WebSearchCalls: []MessageWebSearchCall{{
+				Status: "completed",
+			}},
+		},
+		{
+			Role: "assistant",
+			LocalShellCalls: []MessageLocalShellCall{{
+				CallID: "call_shell",
+				Status: "completed",
+			}},
+		},
+		{
+			Role: "assistant",
+			CodexCompactionItems: []MessageCodexCompactionItem{{
+				Type:             "context_compaction",
+				EncryptedContent: "sealed-context",
+			}},
+		},
+	}, "compact")
+
+	for _, want := range []string{"web search call(s): 1", "local shell call(s): 1", "codex compaction item(s): 1"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected compact summary to include %q, got %q", want, summary)
+		}
 	}
 }
 

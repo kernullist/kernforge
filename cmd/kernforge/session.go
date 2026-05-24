@@ -220,9 +220,21 @@ func (s *Session) ApproxChars() int {
 				total += len(encoded)
 			}
 		}
+		for _, call := range msg.LocalShellCalls {
+			total += len(call.ID) + len(call.CallID) + len(call.Status)
+			if encoded, err := json.Marshal(call.Action); err == nil {
+				total += len(encoded)
+			}
+		}
+		for _, item := range msg.CodexCompactionItems {
+			total += len(item.Type) + len(item.EncryptedContent)
+		}
 		total += len(msg.ToolCallID) + len(msg.ToolName)
 		for _, tc := range msg.ToolCalls {
-			total += len(tc.Name) + len(tc.Arguments)
+			total += len(tc.ID) + len(tc.Name) + len(tc.Namespace) + len(tc.Arguments)
+		}
+		for _, item := range msg.ToolContentItems {
+			total += len(item.Type) + len(item.Text) + len(item.EncryptedContent)
 		}
 	}
 	return total
@@ -457,6 +469,30 @@ func (s *Session) ExportText() string {
 					action = " " + string(encoded)
 				}
 				fmt.Fprintf(&b, "- web_search: %s%s\n", strings.TrimSpace(call.Status), action)
+			}
+			b.WriteString("\n")
+		}
+		if len(msg.LocalShellCalls) > 0 {
+			for _, call := range msg.LocalShellCalls {
+				action := ""
+				if encoded, err := json.Marshal(call.Action); err == nil && len(encoded) > 0 && string(encoded) != "null" {
+					action = " " + string(encoded)
+				}
+				callID := strings.TrimSpace(call.CallID)
+				if callID == "" {
+					callID = strings.TrimSpace(call.ID)
+				}
+				fmt.Fprintf(&b, "- local_shell_call: %s %s%s\n", strings.TrimSpace(callID), strings.TrimSpace(call.Status), action)
+			}
+			b.WriteString("\n")
+		}
+		if len(msg.CodexCompactionItems) > 0 {
+			for _, item := range msg.CodexCompactionItems {
+				if strings.TrimSpace(item.EncryptedContent) != "" {
+					fmt.Fprintf(&b, "- codex_%s: encrypted content present (%d bytes)\n", strings.TrimSpace(item.Type), len(item.EncryptedContent))
+				} else {
+					fmt.Fprintf(&b, "- codex_%s\n", strings.TrimSpace(item.Type))
+				}
 			}
 			b.WriteString("\n")
 		}

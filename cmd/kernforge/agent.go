@@ -8660,6 +8660,15 @@ func summarizeMessages(messages []Message, instructions string) string {
 		if text == "" && len(msg.Images) > 0 {
 			text = fmt.Sprintf("attached %d image(s)", len(msg.Images))
 		}
+		if text == "" && len(msg.WebSearchCalls) > 0 {
+			text = fmt.Sprintf("web search call(s): %d", len(msg.WebSearchCalls))
+		}
+		if text == "" && len(msg.LocalShellCalls) > 0 {
+			text = fmt.Sprintf("local shell call(s): %d", len(msg.LocalShellCalls))
+		}
+		if text == "" && len(msg.CodexCompactionItems) > 0 {
+			text = fmt.Sprintf("codex compaction item(s): %d", len(msg.CodexCompactionItems))
+		}
 		if text == "" && len(msg.ToolCalls) > 0 {
 			var names []string
 			for _, call := range msg.ToolCalls {
@@ -8805,8 +8814,19 @@ func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Me
 }
 
 func compactMessageRetainedCharCost(msg Message) int {
-	total := len(msg.Text) + len(msg.ReasoningContent)
+	total := len(msg.Text) + len(msg.ReasoningContent) + len(msg.ReasoningEncryptedContent)
 	total += len(msg.ToolCallID) + len(msg.ToolName)
+	for _, call := range msg.WebSearchCalls {
+		total += len(call.Status)
+		total += compactActionCharCost(call.Action)
+	}
+	for _, call := range msg.LocalShellCalls {
+		total += len(call.ID) + len(call.CallID) + len(call.Status)
+		total += compactActionCharCost(call.Action)
+	}
+	for _, item := range msg.CodexCompactionItems {
+		total += len(item.Type) + len(item.EncryptedContent)
+	}
 	for _, call := range msg.ToolCalls {
 		total += len(call.ID) + len(call.Name) + len(call.Arguments)
 	}
@@ -8820,10 +8840,33 @@ func compactMessageRetainedCharCost(msg Message) int {
 	if len(msg.Images) > 0 {
 		total += len(msg.Images)
 	}
-	if total == 0 && (len(msg.ToolCalls) > 0 || len(msg.ToolContentItems) > 0) {
+	if total == 0 && messageHasStructuredHistoryItems(msg) {
 		return 1
 	}
 	return total
+}
+
+func compactActionCharCost(action map[string]any) int {
+	if len(action) == 0 {
+		return 0
+	}
+	if encoded, err := json.Marshal(action); err == nil {
+		return len(encoded)
+	}
+	total := 0
+	for key := range action {
+		total += len(key)
+	}
+	return total
+}
+
+func messageHasStructuredHistoryItems(msg Message) bool {
+	return len(msg.Images) > 0 ||
+		len(msg.WebSearchCalls) > 0 ||
+		len(msg.LocalShellCalls) > 0 ||
+		len(msg.CodexCompactionItems) > 0 ||
+		len(msg.ToolCalls) > 0 ||
+		len(msg.ToolContentItems) > 0
 }
 
 func messageShouldRetainAfterCompact(msg Message) bool {
@@ -8841,7 +8884,7 @@ func messageShouldRetainAfterCompact(msg Message) bool {
 }
 
 func messageLooksLikeCompactContextOnly(msg Message) bool {
-	if len(msg.Images) > 0 || len(msg.ToolCalls) > 0 || len(msg.ToolContentItems) > 0 {
+	if messageHasStructuredHistoryItems(msg) {
 		return false
 	}
 	text := strings.TrimSpace(strings.ReplaceAll(msg.Text, "\r\n", "\n"))
@@ -8893,7 +8936,7 @@ func compactTruncateMessageToCharBudget(msg Message, maxChars int) (Message, boo
 			return truncated, true
 		}
 	}
-	if len(truncated.Images) > 0 || len(truncated.ToolCalls) > 0 || len(truncated.ToolContentItems) > 0 {
+	if messageHasStructuredHistoryItems(truncated) {
 		return truncated, true
 	}
 	return Message{}, false
@@ -8997,7 +9040,7 @@ func messageShouldAppearInCompactSummary(msg Message) bool {
 	if role != "assistant" {
 		return true
 	}
-	if len(msg.ToolCalls) > 0 {
+	if messageHasStructuredHistoryItems(msg) {
 		return true
 	}
 	return false
