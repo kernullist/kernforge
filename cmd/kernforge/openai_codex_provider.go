@@ -1927,7 +1927,7 @@ func openAICodexOutputItemToolName(item openAICodexOutputItem) string {
 	}
 	name := strings.TrimSpace(item.Name)
 	namespace := strings.TrimSpace(item.Namespace)
-	if namespace == "" || name == "" || strings.HasPrefix(name, namespace) {
+	if namespace == "" || name == "" {
 		return name
 	}
 	return namespace + name

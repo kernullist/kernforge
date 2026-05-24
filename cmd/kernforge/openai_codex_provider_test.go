@@ -2232,6 +2232,29 @@ func TestParseOpenAICodexResponsePreservesFunctionCallNamespace(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseMirrorsCodexNamespacedDisplayName(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"function_call",
+			"call_id":"call_mcp",
+			"namespace":"mcp__filesystem__",
+			"name":"mcp__filesystem__read_file",
+			"arguments":"{\"path\":\"main.go\"}"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one namespaced function call, got %#v", resp.Message.ToolCalls)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.Name != "mcp__filesystem__mcp__filesystem__read_file" {
+		t.Fatalf("expected Codex ToolName display semantics, got %#v", call)
+	}
+}
+
 func TestParseOpenAICodexResponseAcceptsHostedOutputItems(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
