@@ -872,6 +872,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				}
 				items = append(items, openAICodexToolCallInputItem(callID, tc))
 			}
+			items = append(items, openAICodexAssistantImageGenerationInputItems(req.WorkingDir, msg.Images, supportsImages)...)
 		case "tool":
 			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
 			if callID == "" {
@@ -881,6 +882,42 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 		}
 	}
 	return items, nil
+}
+
+func openAICodexAssistantImageGenerationInputItems(workingDir string, images []MessageImage, supportsImages bool) []any {
+	if len(images) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(images))
+	for index, image := range images {
+		item := map[string]any{
+			"type":   "image_generation_call",
+			"id":     openAICodexAssistantImageGenerationID(image, index),
+			"status": "completed",
+			"result": "",
+		}
+		if supportsImages {
+			if encoded, err := encodeMessageImages(workingDir, []MessageImage{image}); err == nil && len(encoded) > 0 {
+				item["result"] = encoded[0].Data
+			}
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func openAICodexAssistantImageGenerationID(image MessageImage, index int) string {
+	base := strings.TrimSpace(filepath.Base(strings.TrimSpace(image.Path)))
+	if base != "" {
+		if ext := filepath.Ext(base); ext != "" {
+			base = strings.TrimSuffix(base, ext)
+		}
+	}
+	id := sanitizeOpenAICodexImageGenerationPathSegment(base)
+	if id != "generated_image" {
+		return id
+	}
+	return fmt.Sprintf("generated_image_%d", index+1)
 }
 
 func ensureOpenAICodexToolCallResponses(messages []Message) []Message {

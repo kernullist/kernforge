@@ -1269,6 +1269,98 @@ func TestBuildOpenAICodexRequestBodyDefaultsImageDetailHigh(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesAssistantGeneratedImagesLikeCodex(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      "gpt-5.5",
+		WorkingDir: dir,
+		Messages: []Message{
+			{Role: "user", Text: "generate an image"},
+			{
+				Role: "assistant",
+				Text: "Image generation completed",
+				Images: []MessageImage{{
+					Path:      "shot.png",
+					MediaType: "image/png",
+				}},
+			},
+			{Role: "user", Text: "use the prior image"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	var imageItem map[string]any
+	for _, raw := range input {
+		item, ok := raw.(map[string]any)
+		if ok && item["type"] == "image_generation_call" {
+			imageItem = item
+			break
+		}
+	}
+	if imageItem == nil {
+		t.Fatalf("expected assistant image to be replayed as image_generation_call, got %s", body)
+	}
+	if imageItem["id"] != "shot" || imageItem["status"] != "completed" {
+		t.Fatalf("unexpected generated image item metadata: %#v", imageItem)
+	}
+	if imageItem["result"] != base64.StdEncoding.EncodeToString(onePixelPNG) {
+		t.Fatalf("expected generated image result to preserve image bytes, got %#v", imageItem["result"])
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyClearsAssistantGeneratedImageResultForTextOnlyModel(t *testing.T) {
+	dir := t.TempDir()
+	writeTestImage(t, dir, "shot.png")
+	model := "text-only-generated-image-history-test"
+	registerCodexModelImageInputSupport(model, false)
+	t.Cleanup(func() {
+		registerCodexModelImageInputSupport(model, true)
+	})
+
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      model,
+		WorkingDir: dir,
+		Messages: []Message{
+			{
+				Role: "assistant",
+				Text: "Image generation completed",
+				Images: []MessageImage{{
+					Path:      "shot.png",
+					MediaType: "image/png",
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected assistant text plus image_generation_call, got %#v in %s", input, body)
+	}
+	imageItem, ok := input[1].(map[string]any)
+	if !ok || imageItem["type"] != "image_generation_call" {
+		t.Fatalf("expected image_generation_call, got %#v in %s", input[1], body)
+	}
+	if imageItem["result"] != "" {
+		t.Fatalf("text-only model should keep the image_generation_call but clear result, got %#v", imageItem)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:       "gpt-5.5",
