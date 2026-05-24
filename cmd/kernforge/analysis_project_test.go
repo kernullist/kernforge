@@ -21,6 +21,29 @@ type stubAnalysisClient struct {
 	synthesisCalls int
 }
 
+func TestAnalysisRequestWithCodexSubagentLabelsWorkerAndReviewer(t *testing.T) {
+	workerReq := analysisRequestWithCodexSubagent("worker", ChatRequest{})
+	if workerReq.CodexSubagent != openAICodexSubagentCollabSpawn {
+		t.Fatalf("worker CodexSubagent = %q, want %q", workerReq.CodexSubagent, openAICodexSubagentCollabSpawn)
+	}
+	repairReq := analysisRequestWithCodexSubagent("worker-repair", ChatRequest{})
+	if repairReq.CodexSubagent != openAICodexSubagentCollabSpawn {
+		t.Fatalf("worker-repair CodexSubagent = %q, want %q", repairReq.CodexSubagent, openAICodexSubagentCollabSpawn)
+	}
+	reviewerReq := analysisRequestWithCodexSubagent("reviewer", ChatRequest{})
+	if reviewerReq.CodexSubagent != openAICodexSubagentReview {
+		t.Fatalf("reviewer CodexSubagent = %q, want %q", reviewerReq.CodexSubagent, openAICodexSubagentReview)
+	}
+	presetReq := analysisRequestWithCodexSubagent("worker", ChatRequest{CodexSubagent: "custom"})
+	if presetReq.CodexSubagent != "custom" {
+		t.Fatalf("explicit CodexSubagent should be preserved, got %q", presetReq.CodexSubagent)
+	}
+	mainReq := analysisRequestWithCodexSubagent("synthesis", ChatRequest{})
+	if mainReq.CodexSubagent != "" {
+		t.Fatalf("main analysis stages should not be marked as subagents, got %q", mainReq.CodexSubagent)
+	}
+}
+
 func (c *stubAnalysisClient) Name() string {
 	return "stub"
 }

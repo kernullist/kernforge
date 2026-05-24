@@ -10216,6 +10216,7 @@ func hasPathPrefix(paths []string, prefix string) bool {
 }
 
 func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, client ProviderClient, stage string, shardName string, model string, req ChatRequest) (ChatResponse, error) {
+	req = analysisRequestWithCodexSubagent(stage, req)
 	if req.OnProgressEvent == nil {
 		req.OnProgressEvent = func(event ProgressEvent) {
 			if trimmedStage := strings.TrimSpace(stage); trimmedStage != "" {
@@ -10267,6 +10268,19 @@ func (a *projectAnalyzer) completeAnalysisRequestWithRetry(ctx context.Context, 
 		}
 	}
 	return ChatResponse{}, lastErr
+}
+
+func analysisRequestWithCodexSubagent(stage string, req ChatRequest) ChatRequest {
+	if strings.TrimSpace(req.CodexSubagent) != "" {
+		return req
+	}
+	switch strings.TrimSpace(stage) {
+	case "worker", "worker-repair":
+		req.CodexSubagent = openAICodexSubagentCollabSpawn
+	case "reviewer":
+		req.CodexSubagent = openAICodexSubagentReview
+	}
+	return req
 }
 
 func (a *projectAnalyzer) logProviderRuntimeError(stage string, shardName string, model string, err error, final bool, attempt int, totalAttempts int) {

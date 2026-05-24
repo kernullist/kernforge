@@ -2873,6 +2873,53 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexClientSendsSubagentIdentityHeadersAndMetadata(t *testing.T) {
+	accessToken := testCodexOAuthWorkspaceJWT(time.Now().Add(time.Hour), "account-123")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(openAICodexSubagentHeader); got != openAICodexSubagentCollabSpawn {
+			t.Fatalf("unexpected %s: %q", openAICodexSubagentHeader, got)
+		}
+		if got := r.Header.Get(openAICodexParentThreadIDHeader); got != "parent-thread" {
+			t.Fatalf("unexpected %s: %q", openAICodexParentThreadIDHeader, got)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		metadata, ok := payload["client_metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected client_metadata object, got %#v", payload["client_metadata"])
+		}
+		if metadata[openAICodexSubagentHeader] != openAICodexSubagentCollabSpawn {
+			t.Fatalf("expected subagent metadata, got %#v", metadata)
+		}
+		if metadata[openAICodexParentThreadIDHeader] != "parent-thread" {
+			t.Fatalf("expected parent thread metadata, got %#v", metadata)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: accessToken}
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model:               "gpt-5.5",
+		SessionID:           "session-123",
+		ThreadID:            "child-thread",
+		CodexSubagent:       openAICodexSubagentCollabSpawn,
+		CodexParentThreadID: "parent-thread",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+}
+
 func assertTurnMetadataHeader(t *testing.T, r *http.Request, wantTurnID string) {
 	t.Helper()
 	raw := strings.TrimSpace(r.Header.Get(codexTurnMetadataHeader))

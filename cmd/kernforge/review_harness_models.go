@@ -371,6 +371,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 			Temperature:     0.1,
 			ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
 			WorkingDir:      root,
+			CodexSubagent:   openAICodexSubagentReview,
 		})
 	})
 	cancelCall()
@@ -427,6 +428,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 					Temperature:     0.05,
 					ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
 					WorkingDir:      root,
+					CodexSubagent:   openAICodexSubagentReview,
 				})
 			})
 			cancelRetry()
@@ -529,6 +531,7 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 				Temperature:     0.05,
 				ReasoningEffort: reviewRoleReasoningEffortForRun(rt.cfg, role, *run),
 				WorkingDir:      root,
+				CodexSubagent:   openAICodexSubagentReview,
 			})
 		})
 		cancelRetry()

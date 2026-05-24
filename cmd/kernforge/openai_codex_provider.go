@@ -43,7 +43,16 @@ const (
 	openAICodexReasoningIncludedHeader = "x-reasoning-included"
 	openAICodexTrustedAccessForCyber   = "trusted_access_for_cyber"
 	openAICodexInstallationIDHeader    = "x-codex-installation-id"
+	openAICodexParentThreadIDHeader    = "x-codex-parent-thread-id"
+	openAICodexSubagentHeader          = "x-openai-subagent"
 	openAICodexWindowIDHeader          = "x-codex-window-id"
+)
+
+const (
+	openAICodexSubagentReview              = "review"
+	openAICodexSubagentCompact             = "compact"
+	openAICodexSubagentMemoryConsolidation = "memory_consolidation"
+	openAICodexSubagentCollabSpawn         = "collab_spawn"
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -226,6 +235,14 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	if windowID != "" {
 		clientMetadata[openAICodexWindowIDHeader] = windowID
 	}
+	subagent := openAICodexRequestHeaderValue(req.CodexSubagent)
+	parentThreadID := openAICodexRequestHeaderValue(req.CodexParentThreadID)
+	if subagent != "" {
+		clientMetadata[openAICodexSubagentHeader] = subagent
+	}
+	if parentThreadID != "" {
+		clientMetadata[openAICodexParentThreadIDHeader] = parentThreadID
+	}
 
 	body, err := buildOpenAICodexRequestBodyWithClientMetadata(req, clientMetadata)
 	if err != nil {
@@ -251,6 +268,12 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		httpReq.Header.Set("x-client-request-id", threadID)
 		if windowID != "" {
 			httpReq.Header.Set(openAICodexWindowIDHeader, windowID)
+		}
+		if subagent != "" {
+			httpReq.Header.Set(openAICodexSubagentHeader, subagent)
+		}
+		if parentThreadID != "" {
+			httpReq.Header.Set(openAICodexParentThreadIDHeader, parentThreadID)
 		}
 		applyProviderTurnStateHeader(httpReq, req.TurnState)
 		applyProviderTurnMetadataHeader(httpReq, req.TurnMetadata)
@@ -411,6 +434,14 @@ func openAICodexWindowID(threadID string) string {
 		return ""
 	}
 	return threadID + ":0"
+}
+
+func openAICodexRequestHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return ""
+	}
+	return value
 }
 
 func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {

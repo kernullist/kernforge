@@ -397,13 +397,15 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 
 	for turn := 0; turn < parallelEditableWorkerMaxTurns; turn++ {
 		resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
-			Model:       model,
-			System:      buildSpecialistEditableWorkerSystemPrompt(plan.Assignment.Profile),
-			Messages:    messages,
-			Tools:       tools,
-			MaxTokens:   min(768, max(256, a.Config.MaxTokens/3)),
-			Temperature: 0.1,
-			WorkingDir:  a.Session.WorkingDir,
+			Model:               model,
+			System:              buildSpecialistEditableWorkerSystemPrompt(plan.Assignment.Profile),
+			Messages:            messages,
+			Tools:               tools,
+			MaxTokens:           min(768, max(256, a.Config.MaxTokens/3)),
+			Temperature:         0.1,
+			WorkingDir:          a.Session.WorkingDir,
+			CodexSubagent:       openAICodexSubagentCollabSpawn,
+			CodexParentThreadID: a.Session.ID,
 		})
 		if err != nil {
 			return parallelEditableWorkerResult{

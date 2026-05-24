@@ -284,9 +284,10 @@ func (a *Agent) requestReviewerGuidance(ctx context.Context, reason string, rece
 			Role: "user",
 			Text: buildInteractiveRecoveryReviewerPrompt(a.Session.TaskState, reason, recent, detail),
 		}},
-		MaxTokens:   min(512, max(256, a.Config.MaxTokens/4)),
-		Temperature: 0.1,
-		WorkingDir:  a.Session.WorkingDir,
+		MaxTokens:     min(512, max(256, a.Config.MaxTokens/4)),
+		Temperature:   0.1,
+		WorkingDir:    a.Session.WorkingDir,
+		CodexSubagent: openAICodexSubagentReview,
 	})
 	if err != nil {
 		return ""
@@ -522,12 +523,14 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		stopHookActive := false
 		for stopHookRevisions := 0; ; stopHookRevisions++ {
 			resp, err := a.completeModelTurnWithClient(ctx, plan.client, ChatRequest{
-				Model:       plan.model,
-				System:      buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
-				Messages:    messages,
-				MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
-				Temperature: 0.1,
-				WorkingDir:  a.Session.WorkingDir,
+				Model:               plan.model,
+				System:              buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
+				Messages:            messages,
+				MaxTokens:           min(256, max(128, a.Config.MaxTokens/6)),
+				Temperature:         0.1,
+				WorkingDir:          a.Session.WorkingDir,
+				CodexSubagent:       openAICodexSubagentCollabSpawn,
+				CodexParentThreadID: a.Session.ID,
 			})
 			if err != nil {
 				if stopErr := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, "", turnID); stopErr != nil {
@@ -800,9 +803,10 @@ func (a *Agent) reviewInteractiveFinalAnswer(ctx context.Context, reply string, 
 			Role: "user",
 			Text: buildInteractiveFinalAnswerReviewerPrompt(a.Session, reply, unresolvedVerification),
 		}},
-		MaxTokens:   min(512, max(256, a.Config.MaxTokens/4)),
-		Temperature: 0.1,
-		WorkingDir:  a.Session.WorkingDir,
+		MaxTokens:     min(512, max(256, a.Config.MaxTokens/4)),
+		Temperature:   0.1,
+		WorkingDir:    a.Session.WorkingDir,
+		CodexSubagent: openAICodexSubagentReview,
 	})
 	if err != nil {
 		return true, ""

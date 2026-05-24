@@ -193,22 +193,24 @@ func internalUserMessage(text string) Message {
 }
 
 type ChatRequest struct {
-	Model           string
-	System          string
-	Messages        []Message
-	Tools           []ToolDefinition
-	MaxTokens       int
-	Temperature     float64
-	ReasoningEffort string
-	ServiceTier     string
-	WorkingDir      string
-	JSONMode        bool
-	OnTextDelta     func(string)
-	OnProgressEvent func(ProgressEvent)
-	TurnState       *ProviderTurnState
-	TurnMetadata    map[string]any
-	SessionID       string
-	ThreadID        string
+	Model               string
+	System              string
+	Messages            []Message
+	Tools               []ToolDefinition
+	MaxTokens           int
+	Temperature         float64
+	ReasoningEffort     string
+	ServiceTier         string
+	WorkingDir          string
+	JSONMode            bool
+	OnTextDelta         func(string)
+	OnProgressEvent     func(ProgressEvent)
+	TurnState           *ProviderTurnState
+	TurnMetadata        map[string]any
+	SessionID           string
+	ThreadID            string
+	CodexSubagent       string
+	CodexParentThreadID string
 }
 
 type ChatResponse struct {
