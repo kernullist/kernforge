@@ -33,6 +33,7 @@ const (
 	openAICodexDefaultAuthFile  = "codex_auth.json"
 	openAICodexTokenRefreshSkew = 2 * time.Minute
 	openAICodexInstallationFile = "installation_id"
+	openAICodexSSEMaxLineBytes  = 16 * 1024 * 1024
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -591,7 +592,7 @@ type openAICodexStreamToolCall struct {
 
 func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent ...func(ProgressEvent)) (ChatResponse, error) {
 	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), openAICodexSSEMaxLineBytes)
 
 	var text strings.Builder
 	var reasoning strings.Builder

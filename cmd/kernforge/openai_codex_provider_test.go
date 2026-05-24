@@ -1384,6 +1384,25 @@ func TestReadOpenAICodexStreamUsesAddedMessageTextAsPrefix(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamAcceptsLargeSSEDataLine(t *testing.T) {
+	large := strings.Repeat("x", 1024*1024+4096)
+	event, err := json.Marshal(map[string]any{
+		"type":  "response.output_text.delta",
+		"delta": large,
+	})
+	if err != nil {
+		t.Fatalf("Marshal event: %v", err)
+	}
+	stream := strings.NewReader("data: " + string(event) + "\n\n" + `data: {"type":"response.completed"}` + "\n\n")
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != large {
+		t.Fatalf("expected large streamed text length %d, got %d", len(large), len(resp.Message.Text))
+	}
+}
+
 func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
