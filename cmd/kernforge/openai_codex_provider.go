@@ -371,6 +371,17 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 		switch msg.Role {
 		case "system":
 			continue
+		case "developer":
+			if strings.TrimSpace(msg.Text) == "" {
+				continue
+			}
+			items = append(items, map[string]any{
+				"role": "developer",
+				"content": []map[string]any{{
+					"type": "input_text",
+					"text": msg.Text,
+				}},
+			})
 		case "user":
 			content, err := openAICodexUserContent(req.WorkingDir, msg)
 			if err != nil {

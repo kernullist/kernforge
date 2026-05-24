@@ -157,6 +157,40 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesDeveloperMessages(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "developer", Text: "follow AGENTS.md and workspace policy"},
+			{Role: "user", Text: "hello"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 2 {
+		t.Fatalf("expected developer and user input items, got %#v", payload["input"])
+	}
+	developer, ok := input[0].(map[string]any)
+	if !ok || developer["role"] != "developer" {
+		t.Fatalf("expected first item to be developer, got %#v", input[0])
+	}
+	content, ok := developer["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected developer text content, got %#v", developer["content"])
+	}
+	text, ok := content[0].(map[string]any)
+	if !ok || text["text"] != "follow AGENTS.md and workspace policy" {
+		t.Fatalf("expected developer text to be preserved, got %#v", content[0])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "test-no-verbosity",
