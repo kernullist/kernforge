@@ -2262,6 +2262,40 @@ func TestParseOpenAICodexResponseAcceptsHostedOutputItems(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseSummarizesHostedWebSearchActionVariants(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"web_search_call",
+			"id":"ws_queries",
+			"status":"completed",
+			"action":{"type":"search","queries":["codex hosted tools","responses web search"]}
+		},{
+			"type":"web_search_call",
+			"id":"ws_open",
+			"status":"completed",
+			"action":{"type":"open_page","url":"https://example.test/page"}
+		},{
+			"type":"web_search_call",
+			"id":"ws_find",
+			"status":"completed",
+			"action":{"type":"find_in_page","url":"https://example.test/page","pattern":"needle"}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	for _, want := range []string{
+		"Web search completed: codex hosted tools, responses web search (ws_queries)",
+		"Web search completed: https://example.test/page (ws_open)",
+		`Web search completed: https://example.test/page find "needle" (ws_find)`,
+	} {
+		if !strings.Contains(resp.Message.Text, want) {
+			t.Fatalf("expected hosted web search summary %q, got %q", want, resp.Message.Text)
+		}
+	}
+}
+
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done text"}]}}`,

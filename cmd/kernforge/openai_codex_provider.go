@@ -1765,12 +1765,36 @@ func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {
 		return ""
 	}
 	var action struct {
-		Query string `json:"query,omitempty"`
+		Type    string   `json:"type,omitempty"`
+		Query   string   `json:"query,omitempty"`
+		Queries []string `json:"queries,omitempty"`
+		URL     string   `json:"url,omitempty"`
+		Pattern string   `json:"pattern,omitempty"`
 	}
 	if err := json.Unmarshal(item.Action, &action); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(action.Query)
+	if query := strings.TrimSpace(action.Query); query != "" {
+		return query
+	}
+	queries := make([]string, 0, len(action.Queries))
+	for _, query := range action.Queries {
+		if trimmed := strings.TrimSpace(query); trimmed != "" {
+			queries = append(queries, trimmed)
+		}
+	}
+	if len(queries) > 0 {
+		return strings.Join(queries, ", ")
+	}
+	url := strings.TrimSpace(action.URL)
+	pattern := strings.TrimSpace(action.Pattern)
+	if url != "" && pattern != "" {
+		return fmt.Sprintf("%s find %q", url, pattern)
+	}
+	if url != "" {
+		return url
+	}
+	return strings.TrimSpace(action.Type)
 }
 
 func saveOpenAICodexImageGenerationOutputItem(root string, sessionID string, item openAICodexOutputItem) (string, error) {
