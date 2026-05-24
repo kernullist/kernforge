@@ -11,16 +11,49 @@ const (
 	defaultAgentsMDFilename = "AGENTS.md"
 	localAgentsMDFilename   = "AGENTS.override.md"
 	agentsMDMaxBytes        = 32 * 1024
+	agentsMDSeparator       = "\n\n--- project-doc ---\n\n"
 )
 
-func (a *Agent) projectAgentsMDPromptSection() string {
+func (a *Agent) agentsMDPromptSection() string {
 	if a == nil || a.Session == nil {
 		return ""
 	}
-	cwd := strings.TrimSpace(a.Session.WorkingDir)
+	cwd := a.agentsMDPromptCWD()
 	if cwd == "" {
-		cwd = strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
+		return ""
 	}
+	global := strings.TrimSpace(loadGlobalAgentsMD(userConfigDir()))
+	project := strings.TrimSpace(a.projectAgentsMDContents())
+	if global == "" && project == "" {
+		return ""
+	}
+	contents := global
+	if project != "" {
+		if contents != "" {
+			contents += agentsMDSeparator
+		}
+		contents += project
+	}
+	return fmt.Sprintf("# AGENTS.md instructions for %s\n\n<INSTRUCTIONS>\n%s\n</INSTRUCTIONS>", cwd, contents)
+}
+
+func (a *Agent) projectAgentsMDPromptSection() string {
+	cwd := a.agentsMDPromptCWD()
+	if cwd == "" {
+		return ""
+	}
+	contents := strings.TrimSpace(a.projectAgentsMDContents())
+	if contents == "" {
+		return ""
+	}
+	return fmt.Sprintf("# AGENTS.md instructions for %s\n\n<INSTRUCTIONS>\n%s\n</INSTRUCTIONS>", cwd, contents)
+}
+
+func (a *Agent) projectAgentsMDContents() string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	cwd := a.agentsMDPromptCWD()
 	if cwd == "" {
 		return ""
 	}
@@ -35,11 +68,41 @@ func (a *Agent) projectAgentsMDPromptSection() string {
 	if a.Config.ProjectDocMaxBytes != nil {
 		maxBytes = *a.Config.ProjectDocMaxBytes
 	}
-	contents := loadProjectAgentsMD(root, cwd, maxBytes, a.Config.ProjectDocFallbackFilenames)
-	if strings.TrimSpace(contents) == "" {
+	return loadProjectAgentsMD(root, cwd, maxBytes, a.Config.ProjectDocFallbackFilenames)
+}
+
+func (a *Agent) agentsMDPromptCWD() string {
+	if a == nil || a.Session == nil {
 		return ""
 	}
-	return fmt.Sprintf("# AGENTS.md instructions for %s\n\n<INSTRUCTIONS>\n%s\n</INSTRUCTIONS>", cwd, strings.TrimSpace(contents))
+	cwd := strings.TrimSpace(a.Session.WorkingDir)
+	if cwd == "" {
+		cwd = strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
+	}
+	return cwd
+}
+
+func loadGlobalAgentsMD(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	for _, name := range []string{localAgentsMDFilename, defaultAgentsMDFilename} {
+		path := filepath.Join(dir, name)
+		info, err := os.Stat(path)
+		if err != nil || info == nil || info.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		text := strings.TrimSpace(strings.ToValidUTF8(string(data), "\uFFFD"))
+		if text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func loadProjectAgentsMD(root string, cwd string, maxBytes int, fallbackNames []string) string {

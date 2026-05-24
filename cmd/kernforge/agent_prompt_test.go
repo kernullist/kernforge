@@ -7,6 +7,14 @@ import (
 	"testing"
 )
 
+func setTempUserConfigHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
@@ -78,6 +86,7 @@ func TestSystemPromptIncludesActivePermissionProfileSnapshot(t *testing.T) {
 }
 
 func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
+	setTempUserConfigHome(t)
 	root := t.TempDir()
 	nested := filepath.Join(root, "pkg", "worker")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
@@ -117,6 +126,7 @@ func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
 }
 
 func TestSystemPromptUsesProjectDocFallbackFilenames(t *testing.T) {
+	setTempUserConfigHome(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte("fallback project instruction"), 0o644); err != nil {
 		t.Fatalf("write fallback project doc: %v", err)
@@ -140,6 +150,7 @@ func TestSystemPromptUsesProjectDocFallbackFilenames(t *testing.T) {
 }
 
 func TestSystemPromptCanDisableProjectAgentsMDInstructions(t *testing.T) {
+	setTempUserConfigHome(t)
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("disabled project instruction"), 0o644); err != nil {
 		t.Fatalf("write AGENTS.md: %v", err)
@@ -159,6 +170,102 @@ func TestSystemPromptCanDisableProjectAgentsMDInstructions(t *testing.T) {
 	prompt := agent.systemPrompt()
 	if strings.Contains(prompt, "disabled project instruction") || strings.Contains(prompt, "# AGENTS.md instructions for ") {
 		t.Fatalf("expected project docs to be disabled, got %q", prompt)
+	}
+}
+
+func TestSystemPromptIncludesGlobalAgentsMDInstructions(t *testing.T) {
+	home := setTempUserConfigHome(t)
+	configDir := filepath.Join(home, userConfigDirName)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir user config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "AGENTS.md"), []byte("global user instruction"), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "# AGENTS.md instructions for "+root) {
+		t.Fatalf("expected AGENTS.md contextual header, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "global user instruction") {
+		t.Fatalf("expected global AGENTS.md instruction in prompt, got %q", prompt)
+	}
+}
+
+func TestSystemPromptPrefersGlobalAgentsOverride(t *testing.T) {
+	home := setTempUserConfigHome(t)
+	configDir := filepath.Join(home, userConfigDirName)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir user config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "AGENTS.md"), []byte("global default instruction"), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "AGENTS.override.md"), []byte("global override instruction"), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.override.md: %v", err)
+	}
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "global override instruction") {
+		t.Fatalf("expected global AGENTS.override.md in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "global default instruction") {
+		t.Fatalf("expected global AGENTS.override.md to win over AGENTS.md, got %q", prompt)
+	}
+}
+
+func TestSystemPromptCombinesGlobalAndProjectAgentsMDInstructions(t *testing.T) {
+	home := setTempUserConfigHome(t)
+	configDir := filepath.Join(home, userConfigDirName)
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir user config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "AGENTS.md"), []byte("global user instruction"), 0o644); err != nil {
+		t.Fatalf("write global AGENTS.md: %v", err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("project instruction"), 0o644); err != nil {
+		t.Fatalf("write project AGENTS.md: %v", err)
+	}
+	session := NewSession(root, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	globalIndex := strings.Index(prompt, "global user instruction")
+	separatorIndex := strings.Index(prompt, agentsMDSeparator)
+	projectIndex := strings.Index(prompt, "project instruction")
+	if globalIndex < 0 || separatorIndex < 0 || projectIndex < 0 {
+		t.Fatalf("expected global/project AGENTS.md instructions and separator, got %q", prompt)
+	}
+	if !(globalIndex < separatorIndex && separatorIndex < projectIndex) {
+		t.Fatalf("expected global instructions before project instructions, got %q", prompt)
 	}
 }
 

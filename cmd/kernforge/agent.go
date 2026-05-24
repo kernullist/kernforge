@@ -7997,7 +7997,7 @@ func (a *Agent) systemPrompt() string {
 	if workspaceRoots := workspaceEffectiveRoots(a.Workspace, a.Session); len(workspaceRoots) > 0 {
 		fmt.Fprintf(&b, "Workspace roots: %s\n", strings.Join(workspaceRoots, ", "))
 	}
-	if agentsMD := strings.TrimSpace(a.projectAgentsMDPromptSection()); agentsMD != "" {
+	if agentsMD := strings.TrimSpace(a.agentsMDPromptSection()); agentsMD != "" {
 		b.WriteString("\n")
 		b.WriteString(agentsMD)
 		b.WriteString("\n")
