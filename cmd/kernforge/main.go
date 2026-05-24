@@ -3457,13 +3457,13 @@ func (rt *runtimeState) applyProfileAction(action string, index int, newName str
 			rt.cfg.APIKey = apiKey
 		}
 		rt.storeProviderKey(selected.Provider, rt.cfg.APIKey)
-		roleDefaultEffortProvider := rt.applyProfileRoleModels(selected)
+		roleDefaultEffortTarget, roleDefaultEffort := rt.applyProfileRoleModels(selected)
 
 		if err := rt.activateProviderWithRoleModels(selected.Provider, selected.Model, selected.BaseURL, true); err != nil {
 			return err
 		}
-		if roleDefaultEffortProvider != "" {
-			rt.printReasoningEffortDefaultNotice(roleDefaultEffortProvider, true)
+		if roleDefaultEffortTarget != "" {
+			rt.printReasoningEffortDefaultNotice(roleDefaultEffortTarget, roleDefaultEffort, true)
 		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Activated profile "+selected.Name))
 		return nil
@@ -3620,19 +3620,21 @@ func cloneProfile(profile *Profile) *Profile {
 	return &cloned
 }
 
-func (rt *runtimeState) applyProfileRoleModels(profile Profile) string {
+func (rt *runtimeState) applyProfileRoleModels(profile Profile) (string, string) {
 	if rt == nil {
-		return ""
+		return "", ""
 	}
 	roles := profile.RoleModels
 	if roles == nil {
 		roles = &ProfileRoleModels{}
 	}
 	defaultedEffortTarget := ""
+	defaultedEffortValue := ""
 	roleEffort := func(label string, provider string, effort string) string {
 		resolved, defaulted := reasoningEffortOrDefaultForProvider(provider, effort)
 		if defaulted && defaultedEffortTarget == "" {
 			defaultedEffortTarget = label
+			defaultedEffortValue = resolved
 		}
 		return resolved
 	}
@@ -3670,7 +3672,7 @@ func (rt *runtimeState) applyProfileRoleModels(profile Profile) string {
 	rt.cfg.ProjectAnalysis.WorkerProfile = profileRoleModelClone(roles.AnalysisWorker, rt)
 	rt.cfg.ProjectAnalysis.ReviewerProfile = profileRoleModelClone(roles.AnalysisReviewer, rt)
 	rt.applyProfileSpecialistRoleModels(roles.Specialists)
-	return defaultedEffortTarget
+	return defaultedEffortTarget, defaultedEffortValue
 }
 
 func profileRoleModelClone(profile *Profile, rt *runtimeState) *Profile {
@@ -4481,7 +4483,7 @@ func (rt *runtimeState) activateProviderWithRoleModels(providerName, model, base
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
-	rt.printReasoningEffortDefaultNotice("main "+providerDisplayName(providerName)+" model", defaultedEffort)
+	rt.printReasoningEffortDefaultNotice("main "+providerDisplayName(providerName)+" model", rt.cfg.ReasoningEffort, defaultedEffort)
 	return rt.clientErr
 }
 
@@ -4688,10 +4690,14 @@ func providerSupportsReasoningEffort(provider string) bool {
 }
 
 func defaultReasoningEffortForProvider(provider string) string {
-	if providerSupportsReasoningEffort(provider) {
+	switch normalizeProviderName(provider) {
+	case "openai-codex":
+		return "medium"
+	case "deepseek":
 		return "low"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func reasoningEffortOrDefaultForProvider(provider string, effort string) (string, bool) {
@@ -4715,11 +4721,11 @@ func applyDefaultReasoningEffortForProvider(cfg *Config, provider string) bool {
 	return defaulted
 }
 
-func (rt *runtimeState) printReasoningEffortDefaultNotice(target string, defaulted bool) {
+func (rt *runtimeState) printReasoningEffortDefaultNotice(target string, effort string, defaulted bool) {
 	if !defaulted || rt == nil || rt.writer == nil {
 		return
 	}
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("reasoning_effort was undefined; defaulted to low for "+target+"."))
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("reasoning_effort was undefined; defaulted to "+reasoningEffortDisplay(effort)+" for "+target+"."))
 }
 
 func validateReasoningEffortTarget(provider string, effort string, target string) (string, error) {
@@ -8328,7 +8334,7 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
-	rt.printReasoningEffortDefaultNotice("analysis "+role+" model", defaultedEffort)
+	rt.printReasoningEffortDefaultNotice("analysis "+role+" model", nextEffort, defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Analysis %s set: %s", role, formatProviderModelLabel(provider, model))))
 	return nil
 }
@@ -8377,7 +8383,7 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 	if err := rt.persistSpecialistOverrides(); err != nil {
 		return err
 	}
-	rt.printReasoningEffortDefaultNotice("specialist "+strings.TrimSpace(name)+" model", defaultedEffort)
+	rt.printReasoningEffortDefaultNotice("specialist "+strings.TrimSpace(name)+" model", nextEffort, defaultedEffort)
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s", name, formatProviderModelLabel(provider, model))))
 	return nil
 }

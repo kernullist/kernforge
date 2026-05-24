@@ -2084,18 +2084,18 @@ func TestActivateProviderDefaultsUndefinedReasoningEffortForEffortProvider(t *te
 	if err := rt.activateProvider("openai-codex", "gpt-5.5", ""); err != nil {
 		t.Fatalf("activateProvider: %v", err)
 	}
-	if rt.cfg.ReasoningEffort != "low" {
-		t.Fatalf("expected reasoning effort to default to low, got %q", rt.cfg.ReasoningEffort)
+	if rt.cfg.ReasoningEffort != "medium" {
+		t.Fatalf("expected reasoning effort to default to medium, got %q", rt.cfg.ReasoningEffort)
 	}
-	if !strings.Contains(output.String(), "defaulted to low") {
+	if !strings.Contains(output.String(), "defaulted to medium") {
 		t.Fatalf("expected default effort notice, got %q", output.String())
 	}
 	saved, err := LoadConfig(workspace)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if saved.ReasoningEffort != "low" {
-		t.Fatalf("expected saved reasoning effort low, got %q", saved.ReasoningEffort)
+	if saved.ReasoningEffort != "medium" {
+		t.Fatalf("expected saved reasoning effort medium, got %q", saved.ReasoningEffort)
 	}
 }
 
@@ -2483,10 +2483,10 @@ func TestProfileActivationDefaultsUndefinedReasoningEffortForRoleModel(t *testin
 	if rt.cfg.ReasoningEffort != "" {
 		t.Fatalf("expected main reasoning effort to stay unchanged, got %q", rt.cfg.ReasoningEffort)
 	}
-	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "low" {
-		t.Fatalf("expected profile role reasoning effort to default to low, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
+	if rt.cfg.ProjectAnalysis.WorkerProfile == nil || rt.cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort != "medium" {
+		t.Fatalf("expected profile role reasoning effort to default to medium, got %#v", rt.cfg.ProjectAnalysis.WorkerProfile)
 	}
-	if !strings.Contains(output.String(), "defaulted to low") {
+	if !strings.Contains(output.String(), "defaulted to medium") {
 		t.Fatalf("expected default effort notice, got %q", output.String())
 	}
 }

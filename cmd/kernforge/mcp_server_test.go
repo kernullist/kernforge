@@ -120,8 +120,8 @@ func TestMCPConfigOverrideDefaultsUndefinedReasoningEffort(t *testing.T) {
 
 	override.apply(&cfg)
 
-	if cfg.ReasoningEffort != "low" {
-		t.Fatalf("expected reasoning effort to default to low, got %q", cfg.ReasoningEffort)
+	if cfg.ReasoningEffort != "medium" {
+		t.Fatalf("expected reasoning effort to default to medium, got %q", cfg.ReasoningEffort)
 	}
 }
 
