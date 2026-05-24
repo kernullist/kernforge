@@ -1609,6 +1609,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				patchProbe := a.beginPatchTransactionToolProbe(call)
 				toolCtx := contextWithOriginalImageDetailSupport(ctx, canRequestOriginalImageDetail(a.Session.Provider, a.Session.Model))
 				toolCtx = a.contextWithMCPToolInvocationMetadata(toolCtx, mcpTurnMetadata)
+				toolCtx = contextWithToolCallHookMetadata(toolCtx, call)
 				result, err = a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				result = sanitizeToolExecutionImageDetailForModel(result, a.Session.Provider, a.Session.Model)
 				a.finishPatchTransactionToolProbe(patchProbe, call, result, err)
@@ -7020,6 +7021,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 		go func(index int, item ToolCall) {
 			defer wg.Done()
 			toolCtx := contextWithOriginalImageDetailSupport(baseToolCtx, canRequestOriginalImageDetail(provider, model))
+			toolCtx = contextWithToolCallHookMetadata(toolCtx, item)
 			result, err := a.Tools.ExecuteDetailed(toolCtx, item.Name, item.Arguments)
 			result = sanitizeToolExecutionImageDetailForModel(result, provider, model)
 			results[index] = parallelToolCallExecution{

@@ -369,7 +369,8 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 						Detail:  err.Error(),
 					}
 				}
-				result, execErr := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+				toolCtx := contextWithToolCallHookMetadata(ctx, call)
+				result, execErr := a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 				if execErr != nil {
 					return parallelEditableWorkerResult{
 						Plan:          plan,
@@ -417,7 +418,8 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 				lastErrToolName = ""
 				continue
 			}
-			result, execErr := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+			toolCtx := contextWithToolCallHookMetadata(ctx, call)
+			result, execErr := a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 			display := strings.TrimSpace(result.DisplayText)
 			if execErr != nil {
 				if display == "" {
@@ -510,7 +512,8 @@ func (a *Agent) maybeStartParallelEditableVerification(ctx context.Context, plan
 		Name:      "run_shell_bundle_background",
 		Arguments: string(payload),
 	}
-	result, execErr := a.Tools.ExecuteDetailed(ctx, call.Name, call.Arguments)
+	toolCtx := contextWithToolCallHookMetadata(ctx, call)
+	result, execErr := a.Tools.ExecuteDetailed(toolCtx, call.Name, call.Arguments)
 	if execErr != nil {
 		if parallelEditableVerificationStartOptionalError(execErr) {
 			return ""

@@ -1080,7 +1080,11 @@ func TestToolRegistryRunsDefaultFunctionToolHooks(t *testing.T) {
 	}
 	registry := NewToolRegistry(NewListFilesTool(ws))
 
-	result, err := registry.ExecuteDetailed(context.Background(), "list_files", `{"path":"original"}`)
+	ctx := contextWithToolCallHookMetadata(context.Background(), ToolCall{
+		ID:   "call-list-files",
+		Name: "list_files",
+	})
+	result, err := registry.ExecuteDetailed(ctx, "list_files", `{"path":"original"}`)
 	if err != nil {
 		t.Fatalf("ExecuteDetailed: %v", err)
 	}
@@ -1094,8 +1098,14 @@ func TestToolRegistryRunsDefaultFunctionToolHooks(t *testing.T) {
 	if got := stringsValueFromAny(prePayload["tool_name"]); got != "list_files" {
 		t.Fatalf("expected pre hook tool_name list_files, got %#v", prePayload)
 	}
+	if got := stringsValueFromAny(prePayload["tool_use_id"]); got != "call-list-files" {
+		t.Fatalf("expected pre hook tool_use_id call-list-files, got %#v", prePayload)
+	}
 	if got := stringsValueFromAny(postPayload["tool_name"]); got != "list_files" {
 		t.Fatalf("expected post hook tool_name list_files, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(postPayload["tool_use_id"]); got != "call-list-files" {
+		t.Fatalf("expected post hook tool_use_id call-list-files, got %#v", postPayload)
 	}
 	if response := stringsValueFromAny(postPayload["tool_response"]); !strings.Contains(response, "new.txt") {
 		t.Fatalf("expected post hook response to contain tool output, got %#v", postPayload)

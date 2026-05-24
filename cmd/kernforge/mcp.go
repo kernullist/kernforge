@@ -276,11 +276,13 @@ type MCPTool struct {
 }
 
 type MCPResourceTool struct {
-	client *MCPClient
+	client    *MCPClient
+	workspace Workspace
 }
 
 type MCPPromptTool struct {
-	client *MCPClient
+	client    *MCPClient
+	workspace Workspace
 }
 
 type mcpTurnMetadataContextKey struct{}
@@ -947,10 +949,10 @@ func (m *MCPManager) Tools() []Tool {
 			})
 		}
 		if len(server.resources) > 0 {
-			out = append(out, MCPResourceTool{client: server})
+			out = append(out, MCPResourceTool{client: server, workspace: m.workspace})
 		}
 		if len(server.prompts) > 0 {
-			out = append(out, MCPPromptTool{client: server})
+			out = append(out, MCPPromptTool{client: server, workspace: m.workspace})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2555,16 +2557,11 @@ func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionR
 		return ToolExecutionResult{}, err
 	}
 	originalArgs := cloneStringAnyMap(args)
-	verdict, err := t.workspace.Hook(ctx, HookPreToolUse, HookPayload{
-		"tool_name":           t.namespaced,
-		"tool_kind":           "mcp",
-		"mcp_server":          t.client.config.Name,
-		"mcp_tool":            t.remote.Name,
-		"mcp_namespaced_tool": t.namespaced,
-		"tool_input":          originalArgs,
-		"file_tags":           []string{},
-	})
+	verdict, err := t.workspace.Hook(ctx, HookPreToolUse, t.hookPayload(ctx, originalArgs))
 	if err != nil {
+		return ToolExecutionResult{}, err
+	}
+	if err := defaultToolUseHookVerdictError(verdict); err != nil {
 		return ToolExecutionResult{}, err
 	}
 	if len(verdict.UpdatedInput) > 0 {
@@ -2580,7 +2577,42 @@ func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionR
 		result.Meta["hook_rewritten"] = true
 		result.Meta["original_input"] = originalArgs
 	}
+	if err == nil {
+		result = t.runPostToolUseHook(ctx, args, result)
+	}
 	return result, err
+}
+
+func (t MCPTool) hookPayload(ctx context.Context, args map[string]any) HookPayload {
+	payload := defaultToolUseHookPayload(ctx, t.workspace, t.namespaced, args)
+	payload["tool_kind"] = "mcp"
+	payload["mcp_server"] = strings.TrimSpace(t.client.config.Name)
+	payload["mcp_tool"] = strings.TrimSpace(t.remote.Name)
+	payload["mcp_namespaced_tool"] = strings.TrimSpace(t.namespaced)
+	return payload
+}
+
+func (t MCPTool) runPostToolUseHook(ctx context.Context, args map[string]any, result ToolExecutionResult) ToolExecutionResult {
+	payload := t.hookPayload(ctx, args)
+	payload["tool_response"] = defaultToolUseHookResponse(result)
+	verdict, err := t.workspace.Hook(ctx, HookPostToolUse, payload)
+	if result.Meta == nil {
+		result.Meta = map[string]any{}
+	}
+	if err != nil {
+		if feedback, ok := postToolUseHookFeedbackFromError(err); ok {
+			return applyPostToolUseHookFeedback(result, feedback)
+		}
+		result.Meta["post_tool_use_hook_error"] = err.Error()
+		return result
+	}
+	if len(verdict.ContextAdds) > 0 {
+		result.Meta["post_tool_use_context_adds"] = append([]string(nil), verdict.ContextAdds...)
+	}
+	if feedback, ok := postToolUseHookFeedbackFromVerdict(verdict); ok {
+		return applyPostToolUseHookFeedback(result, feedback)
+	}
+	return result
 }
 
 func (t MCPResourceTool) Definition() ToolDefinition {

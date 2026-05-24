@@ -74,4 +74,8 @@ func (t MCPTool) hookWorkspace() Workspace { return t.workspace }
 
 func (t MCPTool) managesDefaultToolUseHooks() bool { return true }
 
+func (t MCPResourceTool) hookWorkspace() Workspace { return t.workspace }
+
+func (t MCPPromptTool) hookWorkspace() Workspace { return t.workspace }
+
 func (t ViewImageTool) hookWorkspace() Workspace { return t.ws }

@@ -1181,6 +1181,185 @@ func TestMCPToolPreToolUseRewriteExecutesUpdatedArguments(t *testing.T) {
 	}
 }
 
+func TestMCPToolPreToolUseDenialBlocksBeforeExecution(t *testing.T) {
+	dir := t.TempDir()
+	var observed string
+	manager, warnings := LoadMCPManager(Workspace{
+		BaseRoot: dir,
+		Root:     dir,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			if event != HookPreToolUse {
+				return HookVerdict{Allow: true}, nil
+			}
+			if input, ok := payload["tool_input"].(map[string]any); ok {
+				observed = stringsValueFromAny(input["message"])
+			}
+			return HookVerdict{
+				Allow:      false,
+				DenyReason: "blocked mcp echo",
+			}, nil
+		},
+	}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	registry := NewToolRegistry(manager.Tools()...)
+	_, err := registry.ExecuteDetailed(context.Background(), "mcp__fake__echo", `{"message":"original"}`)
+	if err == nil || !strings.Contains(err.Error(), "blocked mcp echo") {
+		t.Fatalf("expected MCP pre hook denial, got %v", err)
+	}
+	if observed != "original" {
+		t.Fatalf("expected hook to observe original MCP arguments, got %q", observed)
+	}
+}
+
+func TestMCPToolPostToolUseHookRunsWithResponseAndFeedback(t *testing.T) {
+	dir := t.TempDir()
+	var postPayload HookPayload
+	manager, warnings := LoadMCPManager(Workspace{
+		BaseRoot: dir,
+		Root:     dir,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			switch event {
+			case HookPreToolUse:
+				return HookVerdict{Allow: true}, nil
+			case HookPostToolUse:
+				postPayload = payload
+				return HookVerdict{
+					Allow:      false,
+					DenyReason: "redacted mcp output",
+				}, nil
+			default:
+				return HookVerdict{Allow: true}, nil
+			}
+		},
+	}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	registry := NewToolRegistry(manager.Tools()...)
+	ctx := contextWithToolCallHookMetadata(context.Background(), ToolCall{
+		ID:   "call-mcp-echo",
+		Name: "mcp__fake__echo",
+	})
+	result, err := registry.ExecuteDetailed(ctx, "mcp__fake__echo", `{"message":"hello"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed echo: %v", err)
+	}
+	if result.DisplayText != "redacted mcp output" {
+		t.Fatalf("expected post hook feedback to replace MCP display text, got %q", result.DisplayText)
+	}
+	if got := toolExecutionModelText(result); got != "redacted mcp output" {
+		t.Fatalf("expected post hook feedback as model text, got %q", got)
+	}
+	if got := stringsValueFromAny(postPayload["tool_name"]); got != "mcp__fake__echo" {
+		t.Fatalf("expected post hook MCP tool name, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(postPayload["tool_use_id"]); got != "call-mcp-echo" {
+		t.Fatalf("expected post hook tool_use_id, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(postPayload["tool_kind"]); got != "mcp" {
+		t.Fatalf("expected MCP tool_kind, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(postPayload["mcp_server"]); got != "fake" {
+		t.Fatalf("expected MCP server metadata, got %#v", postPayload)
+	}
+	if response := stringsValueFromAny(postPayload["tool_response"]); !strings.Contains(response, `"echoed":"hello"`) {
+		t.Fatalf("expected post hook response to include MCP output, got %#v", postPayload)
+	}
+	if got := stringsValueFromAny(result.Meta["post_tool_use_hook_feedback"]); got != "redacted mcp output" {
+		t.Fatalf("expected post hook feedback metadata, got %#v", result.Meta)
+	}
+	if stopped, _ := result.Meta["post_tool_use_hook_stopped"].(bool); !stopped {
+		t.Fatalf("expected post hook stopped metadata, got %#v", result.Meta)
+	}
+}
+
+func TestMCPResourceToolRunsDefaultFunctionHooks(t *testing.T) {
+	dir := t.TempDir()
+	var events []HookEvent
+	var prePayload HookPayload
+	var postPayload HookPayload
+	manager, warnings := LoadMCPManager(Workspace{
+		BaseRoot: dir,
+		Root:     dir,
+		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+			_ = ctx
+			events = append(events, event)
+			switch event {
+			case HookPreToolUse:
+				prePayload = payload
+			case HookPostToolUse:
+				postPayload = payload
+			}
+			return HookVerdict{Allow: true}, nil
+		},
+	}, []MCPServerConfig{{
+		Name:    "fake",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestMCPHelperProcess"},
+		Env: map[string]string{
+			"KERNFORGE_MCP_HELPER": "1",
+		},
+	}})
+	defer manager.Close()
+
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings, got %v", warnings)
+	}
+
+	registry := NewToolRegistry(manager.Tools()...)
+	ctx := contextWithToolCallHookMetadata(context.Background(), ToolCall{
+		ID:   "call-mcp-resource",
+		Name: "mcp__resource__fake",
+	})
+	result, err := registry.ExecuteDetailed(ctx, "mcp__resource__fake", `{"uri":"memo://project"}`)
+	if err != nil {
+		t.Fatalf("ExecuteDetailed resource: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "resource body") {
+		t.Fatalf("unexpected resource output: %q", result.DisplayText)
+	}
+	eventNames := make([]string, len(events))
+	for index, event := range events {
+		eventNames[index] = string(event)
+	}
+	if strings.Join(eventNames, ",") != "PreToolUse,PostToolUse" {
+		t.Fatalf("expected pre and post hooks for MCP resource tool, got %#v", events)
+	}
+	if got := stringsValueFromAny(prePayload["tool_name"]); got != "mcp__resource__fake" {
+		t.Fatalf("expected resource pre hook tool name, got %#v", prePayload)
+	}
+	if got := stringsValueFromAny(prePayload["tool_use_id"]); got != "call-mcp-resource" {
+		t.Fatalf("expected resource pre hook tool_use_id, got %#v", prePayload)
+	}
+	if response := stringsValueFromAny(postPayload["tool_response"]); !strings.Contains(response, "resource body") {
+		t.Fatalf("expected resource post hook response, got %#v", postPayload)
+	}
+}
+
 func TestMCPToolCallIncludesTurnMetadataRequestMeta(t *testing.T) {
 	dir := t.TempDir()
 	manager, warnings := LoadMCPManager(Workspace{BaseRoot: dir, Root: dir}, []MCPServerConfig{{

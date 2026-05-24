@@ -60,6 +60,35 @@ type selfManagedToolUseHooks interface {
 	managesDefaultToolUseHooks() bool
 }
 
+type toolCallHookMetadata struct {
+	ID   string
+	Name string
+}
+
+type toolCallHookMetadataContextKey struct{}
+
+func contextWithToolCallHookMetadata(ctx context.Context, call ToolCall) context.Context {
+	meta := toolCallHookMetadata{
+		ID:   strings.TrimSpace(call.ID),
+		Name: strings.TrimSpace(call.Name),
+	}
+	if meta.ID == "" && meta.Name == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, toolCallHookMetadataContextKey{}, meta)
+}
+
+func toolCallHookMetadataFromContext(ctx context.Context) toolCallHookMetadata {
+	if ctx == nil {
+		return toolCallHookMetadata{}
+	}
+	meta, _ := ctx.Value(toolCallHookMetadataContextKey{}).(toolCallHookMetadata)
+	return toolCallHookMetadata{
+		ID:   strings.TrimSpace(meta.ID),
+		Name: strings.TrimSpace(meta.Name),
+	}
+}
+
 func requireToolInputObject(input any, toolName string) (map[string]any, error) {
 	args, ok := input.(map[string]any)
 	if !ok {
@@ -952,7 +981,7 @@ func runDefaultPreToolUseHook(ctx context.Context, tool Tool, name string, paylo
 		return defaultToolUseHookState{}, nil
 	}
 	originalInput := cloneStringAnyMap(payload)
-	verdict, err := ws.Hook(ctx, HookPreToolUse, defaultToolUseHookPayload(ws, name, payload))
+	verdict, err := ws.Hook(ctx, HookPreToolUse, defaultToolUseHookPayload(ctx, ws, name, payload))
 	if err != nil {
 		return defaultToolUseHookState{}, err
 	}
@@ -972,7 +1001,7 @@ func runDefaultPostToolUseHook(ctx context.Context, tool Tool, name string, payl
 	if !ok {
 		return result
 	}
-	hookPayload := defaultToolUseHookPayload(ws, name, payload)
+	hookPayload := defaultToolUseHookPayload(ctx, ws, name, payload)
 	hookPayload["tool_response"] = defaultToolUseHookResponse(result)
 	verdict, err := ws.Hook(ctx, HookPostToolUse, hookPayload)
 	if result.Meta == nil {
@@ -1064,11 +1093,14 @@ func defaultToolUseHookVerdictError(verdict HookVerdict) error {
 	return nil
 }
 
-func defaultToolUseHookPayload(ws Workspace, name string, payload map[string]any) HookPayload {
+func defaultToolUseHookPayload(ctx context.Context, ws Workspace, name string, payload map[string]any) HookPayload {
 	hookPayload := HookPayload{
 		"tool_name":  strings.TrimSpace(name),
 		"tool_kind":  "function",
 		"tool_input": cloneStringAnyMap(payload),
+	}
+	if meta := toolCallHookMetadataFromContext(ctx); meta.ID != "" && (meta.Name == "" || meta.Name == strings.TrimSpace(name)) {
+		hookPayload["tool_use_id"] = meta.ID
 	}
 	for key, value := range defaultToolExecutionMeta(name, payload) {
 		if key == "tool_name" {
