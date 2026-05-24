@@ -902,6 +902,28 @@ func TestBuildOpenAICodexRequestBodyOmitsDefaultServiceTier(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyOmitsUnsupportedServiceTier(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:       "gpt-5.5",
+		ServiceTier: "experimental-tier-id",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, exists := payload["service_tier"]; exists {
+		t.Fatalf("unsupported service_tier should be omitted to match Codex catalog filtering, got body %s", body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyWrapsImageOnlyMessageLikeCodex(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")

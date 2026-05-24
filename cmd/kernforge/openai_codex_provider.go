@@ -461,7 +461,13 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 }
 
 func openAICodexServiceTierForRequest(serviceTier string) string {
-	return normalizeServiceTier(serviceTier)
+	normalized := normalizeServiceTier(serviceTier)
+	switch normalized {
+	case "", "priority", "flex":
+		return normalized
+	default:
+		return ""
+	}
 }
 
 func openAICodexTextControls(model string, jsonMode bool) map[string]any {
