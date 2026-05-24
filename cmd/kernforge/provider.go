@@ -25,10 +25,11 @@ type ToolDefinition struct {
 }
 
 type ToolContentItem struct {
-	Type     string `json:"type"`
-	Text     string `json:"text,omitempty"`
-	ImageURL string `json:"image_url,omitempty"`
-	Detail   string `json:"detail,omitempty"`
+	Type             string `json:"type"`
+	Text             string `json:"text,omitempty"`
+	ImageURL         string `json:"image_url,omitempty"`
+	Detail           string `json:"detail,omitempty"`
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 type ToolCall struct {
@@ -493,6 +494,11 @@ func toolOutputForResponses(msg Message) any {
 				image["detail"] = strings.TrimSpace(item.Detail)
 			}
 			out = append(out, image)
+		case "encrypted_content":
+			out = append(out, map[string]any{
+				"type":              "encrypted_content",
+				"encrypted_content": item.EncryptedContent,
+			})
 		}
 	}
 	if len(out) == 0 {
@@ -529,6 +535,14 @@ func normalizeToolContentItems(items []ToolContentItem) []ToolContentItem {
 				Type:     "input_image",
 				ImageURL: strings.TrimSpace(item.ImageURL),
 				Detail:   detail,
+			})
+		case "encrypted_content":
+			if strings.TrimSpace(item.EncryptedContent) == "" {
+				continue
+			}
+			out = append(out, ToolContentItem{
+				Type:             "encrypted_content",
+				EncryptedContent: strings.TrimSpace(item.EncryptedContent),
 			})
 		}
 	}

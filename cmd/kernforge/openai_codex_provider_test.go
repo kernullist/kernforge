@@ -1115,6 +1115,64 @@ func TestBuildOpenAICodexRequestBodyCollapsesSingleTextToolContentItem(t *testin
 	t.Fatalf("missing function_call_output in %s", body)
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesEncryptedToolContentItems(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "run tool"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_secret", Name: "secure_tool", Arguments: `{}`}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_secret",
+				ToolName:   "secure_tool",
+				Text:       "fallback text",
+				ToolContentItems: []ToolContentItem{
+					{
+						Type: "input_text",
+						Text: "visible",
+					},
+					{
+						Type:             "encrypted_content",
+						EncryptedContent: "sealed-payload",
+					},
+				},
+			},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "secure_tool",
+			Description: "Secure tool",
+			InputSchema: map[string]any{
+				"type": "object",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	for _, raw := range input {
+		item := raw.(map[string]any)
+		if item["type"] != "function_call_output" {
+			continue
+		}
+		output := item["output"].([]any)
+		if len(output) != 2 {
+			t.Fatalf("expected two output content items, got %#v", output)
+		}
+		encrypted := output[1].(map[string]any)
+		if encrypted["type"] != "encrypted_content" || encrypted["encrypted_content"] != "sealed-payload" {
+			t.Fatalf("expected encrypted content item to survive request encoding, got %#v in %s", encrypted, body)
+		}
+		return
+	}
+	t.Fatalf("missing function_call_output in %s", body)
+}
+
 func assertCodexLocalImageContent(t *testing.T, content []any, openIndex int) map[string]any {
 	t.Helper()
 	if openIndex < 0 || openIndex+2 >= len(content) {

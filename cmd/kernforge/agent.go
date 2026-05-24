@@ -8812,6 +8812,7 @@ func compactMessageRetainedCharCost(msg Message) int {
 	}
 	for _, item := range msg.ToolContentItems {
 		total += len(item.Text)
+		total += len(item.EncryptedContent)
 		if item.Type == "input_image" {
 			total++
 		}
@@ -8886,6 +8887,9 @@ func compactTruncateMessageToCharBudget(msg Message, maxChars int) (Message, boo
 	}
 	for i := range truncated.ToolContentItems {
 		if compactConsumeTextBudget(&truncated.ToolContentItems[i].Text, &remaining) {
+			return truncated, true
+		}
+		if compactConsumeTextBudget(&truncated.ToolContentItems[i].EncryptedContent, &remaining) {
 			return truncated, true
 		}
 	}

@@ -35,6 +35,36 @@ func TestOpenAIClientUsesVersionedBaseURLWithoutDuplicatingV1(t *testing.T) {
 	}
 }
 
+func TestToolOutputForResponsesPreservesEncryptedContentItemLikeCodex(t *testing.T) {
+	output := toolOutputForResponses(Message{
+		Text: "fallback",
+		ToolContentItems: []ToolContentItem{
+			{
+				Type: "input_text",
+				Text: "visible",
+			},
+			{
+				Type:             "encrypted_content",
+				EncryptedContent: "sealed-payload",
+			},
+		},
+	})
+
+	items, ok := output.([]map[string]any)
+	if !ok {
+		t.Fatalf("expected content item array, got %#v", output)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected two content items, got %#v", items)
+	}
+	if items[0]["type"] != "input_text" || items[0]["text"] != "visible" {
+		t.Fatalf("unexpected text content item: %#v", items[0])
+	}
+	if items[1]["type"] != "encrypted_content" || items[1]["encrypted_content"] != "sealed-payload" {
+		t.Fatalf("unexpected encrypted content item: %#v", items[1])
+	}
+}
+
 func TestOpenAIClientOmitsToolChoiceWithoutTools(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
