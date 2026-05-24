@@ -1375,6 +1375,24 @@ func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseCapturesServerModel(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"headers":{"OpenAI-Model":"gpt-5.2"},
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.ServerModel != "gpt-5.2" {
+		t.Fatalf("expected server model to be captured, got %q", resp.ServerModel)
+	}
+}
+
 func TestParseOpenAICodexResponseUsesFinalTextOverCommentary(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -1557,6 +1575,22 @@ func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.
 	}
 	if resp.Message.Text != "Intro body" {
 		t.Fatalf("expected added message prefix to stay single, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamCapturesCreatedResponseModelHeader(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp-1","headers":{"OpenAI-Model":"gpt-5.2"}}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.ServerModel != "gpt-5.2" {
+		t.Fatalf("expected response.created server model to be captured, got %q", resp.ServerModel)
 	}
 }
 

@@ -204,7 +204,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	if err != nil {
 		return ChatResponse{}, err
 	}
-	out.ServerModel = strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader))
+	if serverModel := strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader)); serverModel != "" {
+		out.ServerModel = serverModel
+	}
 	out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
 	out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
 	return out, nil
@@ -657,9 +659,10 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
 	}
 	return ChatResponse{
-		Message:    out,
-		StopReason: stopReason,
-		EndTurn:    decoded.EndTurn,
+		Message:     out,
+		StopReason:  stopReason,
+		EndTurn:     decoded.EndTurn,
+		ServerModel: openAICodexServerModelFromResponsePayload(data),
 	}, nil
 }
 
@@ -685,6 +688,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	messagePhase := ""
 	completedSeen := false
 	var endTurn *bool
+	serverModel := ""
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
 		progress = onProgressEvent[0]
@@ -766,6 +770,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 		if event.Error != nil {
 			return ChatResponse{}, false, newProviderMessageError("openai-codex", event.Error.Message, event.Error.Type, event.Error.Param, event.Error.Code, []byte(payload))
+		}
+		if model := openAICodexServerModelFromResponsePayload(event.Response); model != "" {
+			serverModel = model
 		}
 		switch event.Type {
 		case "response.output_text.delta":
@@ -962,6 +969,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 					ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 				})
 			}
+			if resp.ServerModel == "" {
+				resp.ServerModel = serverModel
+			}
 			return resp, nil
 		}
 	}
@@ -981,7 +991,26 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	if out.Text == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
-	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn}, nil
+	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn, ServerModel: serverModel}, nil
+}
+
+func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var decoded struct {
+		Model   string         `json:"model,omitempty"`
+		Headers map[string]any `json:"headers,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return ""
+	}
+	for _, key := range []string{"OpenAI-Model", "openai-model", "x-openai-model", "X-OpenAI-Model"} {
+		if value := strings.TrimSpace(fmt.Sprint(decoded.Headers[key])); value != "" && value != "<nil>" {
+			return value
+		}
+	}
+	return strings.TrimSpace(decoded.Model)
 }
 
 func openAICodexIncompleteReason(response json.RawMessage) string {
