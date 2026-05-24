@@ -685,6 +685,15 @@ func openAICodexToolCallInputItem(callID string, call ToolCall) map[string]any {
 }
 
 func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
+	if strings.TrimSpace(msg.ToolName) == "tool_search" {
+		return map[string]any{
+			"type":      "tool_search_output",
+			"call_id":   callID,
+			"status":    "completed",
+			"execution": "client",
+			"tools":     openAICodexToolSearchOutputTools(msg),
+		}
+	}
 	if strings.TrimSpace(msg.ToolName) == "apply_patch" {
 		return map[string]any{
 			"type":    "custom_tool_call_output",
@@ -698,6 +707,28 @@ func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
 		"call_id": callID,
 		"output":  toolOutputForResponses(msg),
 	}
+}
+
+func openAICodexToolSearchOutputTools(msg Message) []any {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" {
+		return []any{}
+	}
+	var array []any
+	if err := json.Unmarshal([]byte(text), &array); err == nil {
+		return array
+	}
+	var object map[string]any
+	if err := json.Unmarshal([]byte(text), &object); err != nil {
+		return []any{}
+	}
+	if rawTools, ok := object["tools"].([]any); ok {
+		return rawTools
+	}
+	if rawTools, ok := object["data"].([]any); ok {
+		return rawTools
+	}
+	return []any{}
 }
 
 func openAICodexApplyPatchInputFromArguments(arguments string) string {

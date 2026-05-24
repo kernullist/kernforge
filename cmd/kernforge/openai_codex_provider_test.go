@@ -397,6 +397,58 @@ func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "discover tool"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_search",
+				Name:      "tool_search",
+				Arguments: mustJSON(map[string]any{"query": "apply_patch"}),
+			}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_search",
+				ToolName:   "tool_search",
+				Text: mustJSON(map[string]any{
+					"tools": []any{
+						map[string]any{
+							"type":        "function",
+							"name":        "apply_patch",
+							"description": "Apply patch",
+						},
+					},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	output := input[2].(map[string]any)
+	if output["type"] != "tool_search_output" || output["call_id"] != "call_search" || output["status"] != "completed" || output["execution"] != "client" {
+		t.Fatalf("expected Codex tool_search_output item, got %#v", output)
+	}
+	tools, ok := output["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected one discovered tool, got %#v in %s", output["tools"], body)
+	}
+	tool := tools[0].(map[string]any)
+	if tool["name"] != "apply_patch" {
+		t.Fatalf("expected apply_patch tool payload, got %#v", tool)
+	}
+	if encoded := string(body); strings.Contains(encoded, `"type":"function_call_output"`) {
+		t.Fatalf("native tool_search result must not be serialized as function_call_output: %s", encoded)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesAssistantPhase(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
