@@ -74,6 +74,29 @@ func TestCompactMessageRetainedCharCostUsesCodexImageEstimate(t *testing.T) {
 	}
 }
 
+func TestCompactAndSessionCostsCountMessageImages(t *testing.T) {
+	image := MessageImage{
+		Path:      "shot.png",
+		MediaType: "image/png",
+		Detail:    imageDetailHigh,
+	}
+	msg := Message{
+		Role:   "user",
+		Images: []MessageImage{image},
+	}
+	expected := messageImageApproxChars(image)
+	if got := compactMessageRetainedCharCost(msg); got != expected {
+		t.Fatalf("compact image char cost = %d, want %d", got, expected)
+	}
+
+	session := NewSession("C:\\workspace", "openai-codex", "gpt-5", "", "default")
+	baseline := session.ApproxChars()
+	session.AddMessage(msg)
+	if got := session.ApproxChars() - baseline; got < expected {
+		t.Fatalf("session image char cost = %d, want at least %d", got, expected)
+	}
+}
+
 func TestSessionExportTextIncludesCodexStructuredHistoryItems(t *testing.T) {
 	session := NewSession("C:\\workspace", "openai-codex", "gpt-5", "", "default")
 	session.AddMessage(Message{

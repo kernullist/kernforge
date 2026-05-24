@@ -8871,7 +8871,9 @@ func compactMessageRetainedCharCost(msg Message) int {
 		total += toolContentItemApproxChars(item)
 	}
 	if len(msg.Images) > 0 {
-		total += len(msg.Images)
+		for _, image := range msg.Images {
+			total += messageImageApproxChars(image)
+		}
 	}
 	if total == 0 && messageHasStructuredHistoryItems(msg) {
 		return 1

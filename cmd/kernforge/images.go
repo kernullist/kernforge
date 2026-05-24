@@ -22,6 +22,10 @@ type MessageImage struct {
 	Detail    string `json:"detail,omitempty"`
 }
 
+func messageImageApproxChars(image MessageImage) int {
+	return len(image.Path) + len(image.MediaType) + len(image.Detail) + codexResizedImageBytesEstimate
+}
+
 type EncodedImage struct {
 	Path      string
 	MediaType string
