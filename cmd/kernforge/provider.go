@@ -73,6 +73,7 @@ type ChatRequest struct {
 	MaxTokens       int
 	Temperature     float64
 	ReasoningEffort string
+	ServiceTier     string
 	WorkingDir      string
 	JSONMode        bool
 	OnTextDelta     func(string)

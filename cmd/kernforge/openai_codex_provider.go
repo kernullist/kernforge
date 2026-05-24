@@ -405,6 +405,9 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	if threadID := strings.TrimSpace(req.ThreadID); threadID != "" {
 		payload["prompt_cache_key"] = threadID
 	}
+	if serviceTier := openAICodexServiceTierForRequest(req.ServiceTier); serviceTier != "" {
+		payload["service_tier"] = serviceTier
+	}
 	if len(clientMetadata) > 0 {
 		metadata := map[string]string{}
 		for key, value := range clientMetadata {
@@ -441,6 +444,24 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	}
 	payload["tools"] = tools
 	return json.Marshal(payload)
+}
+
+func openAICodexServiceTierForRequest(serviceTier string) string {
+	trimmed := strings.TrimSpace(serviceTier)
+	switch {
+	case trimmed == "":
+		return ""
+	case strings.EqualFold(trimmed, "default"):
+		return ""
+	case strings.EqualFold(trimmed, "fast"):
+		return "priority"
+	case strings.EqualFold(trimmed, "priority"):
+		return "priority"
+	case strings.EqualFold(trimmed, "flex"):
+		return "flex"
+	default:
+		return trimmed
+	}
 }
 
 func openAICodexTextControls(model string, jsonMode bool) map[string]any {

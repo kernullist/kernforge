@@ -780,6 +780,72 @@ func TestBuildOpenAICodexRequestBodyDefaultsImageDetailHigh(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:       "gpt-5.5",
+		ServiceTier: "flex",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["service_tier"] != "flex" {
+		t.Fatalf("expected flex service_tier, got %#v in body %s", payload["service_tier"], body)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyMapsLegacyFastServiceTier(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:       "gpt-5.5",
+		ServiceTier: "fast",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["service_tier"] != "priority" {
+		t.Fatalf("expected priority service_tier, got %#v in body %s", payload["service_tier"], body)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyOmitsDefaultServiceTier(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:       "gpt-5.5",
+		ServiceTier: "default",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, exists := payload["service_tier"]; exists {
+		t.Fatalf("default service_tier should be omitted, got body %s", body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyWrapsImageOnlyMessageLikeCodex(t *testing.T) {
 	dir := t.TempDir()
 	writeTestImage(t, dir, "shot.png")
