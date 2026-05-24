@@ -2092,6 +2092,49 @@ func TestOpenAICodexClientGenerateImageRefreshesAfterUnauthorized(t *testing.T) 
 	}
 }
 
+func TestOpenAICodexClientGenerateImageRetriesServerError(t *testing.T) {
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/generations" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		requestCount++
+		if requestCount == 1 {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":{"message":"temporary outage"}}`))
+			return
+		}
+		if requestCount != 2 {
+			t.Fatalf("unexpected request count: %d", requestCount)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode retry body: %v", err)
+		}
+		if body["prompt"] != "a red fox in a field" {
+			t.Fatalf("unexpected retry request body: %#v", body)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write(openAICodexImageResponseFixture())
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClient(server.URL)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	resp, err := client.GenerateImage(context.Background(), OpenAICodexImageGenerationRequest{
+		Prompt: "a red fox in a field",
+		Model:  "gpt-image-1.5",
+	}, nil)
+	if err != nil {
+		t.Fatalf("GenerateImage: %v", err)
+	}
+	assertOpenAICodexImageResponseFixture(t, resp)
+	if requestCount != 2 {
+		t.Fatalf("expected one retry after 503, got %d requests", requestCount)
+	}
+}
+
 func TestOpenAICodexClientEditImagePostsTypedRequest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/images/edits" {
@@ -2178,10 +2221,12 @@ func TestOpenAICodexClientGenerateImageRejectsInvalidTypedEnum(t *testing.T) {
 }
 
 func TestOpenAICodexClientGenerateImagePreservesRateLimitReachedType(t *testing.T) {
+	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/images/generations" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
+		requestCount++
 		w.Header().Set(providerRateLimitReachedTypeHeader, "workspace_owner_credits_depleted")
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -2207,6 +2252,9 @@ func TestOpenAICodexClientGenerateImagePreservesRateLimitReachedType(t *testing.
 	}
 	if !strings.Contains(err.Error(), "Your workspace is out of credits. Add credits to continue.") {
 		t.Fatalf("expected workspace credit copy, got %q", err.Error())
+	}
+	if requestCount != 1 {
+		t.Fatalf("429 should not be retried, got %d requests", requestCount)
 	}
 }
 

@@ -7,6 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
+)
+
+const (
+	openAICodexUnaryRequestMaxRetries     = 4
+	openAICodexUnaryRequestRetryBaseDelay = 200 * time.Millisecond
 )
 
 type OpenAICodexImageBackground string
@@ -107,34 +113,91 @@ func (c *OpenAICodexClient) postImageRequest(ctx context.Context, path string, r
 		return httpReq, nil
 	}
 
-	for attempt := 0; ; attempt++ {
+	unauthorizedRefreshed := false
+	retryAttempts := 0
+	for {
 		httpReq, err := newHTTPRequest(accessToken)
 		if err != nil {
 			return OpenAICodexImageResponse{}, err
 		}
 		resp, err := httpClient.Do(httpReq)
 		if err != nil {
+			if shouldRetryOpenAICodexUnaryError(ctx, err, retryAttempts) {
+				if waitErr := waitOpenAICodexUnaryRetry(ctx, retryAttempts); waitErr != nil {
+					return OpenAICodexImageResponse{}, waitErr
+				}
+				retryAttempts++
+				continue
+			}
 			return OpenAICodexImageResponse{}, err
 		}
 		data, readErr := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if readErr != nil {
+			if shouldRetryOpenAICodexUnaryError(ctx, readErr, retryAttempts) {
+				if waitErr := waitOpenAICodexUnaryRetry(ctx, retryAttempts); waitErr != nil {
+					return OpenAICodexImageResponse{}, waitErr
+				}
+				retryAttempts++
+				continue
+			}
 			return OpenAICodexImageResponse{}, readErr
 		}
-		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+		if resp.StatusCode == http.StatusUnauthorized && !unauthorizedRefreshed {
 			if recovery, ok := openAICodexUnauthorizedRecovery(tokenSource); ok {
 				refreshedToken, err := refreshOpenAICodexTokenAfterUnauthorized(ctx, recovery)
 				if err != nil {
 					return OpenAICodexImageResponse{}, err
 				}
 				accessToken = refreshedToken
+				unauthorizedRefreshed = true
 				continue
 			}
 		}
 		if resp.StatusCode >= 300 {
-			return OpenAICodexImageResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+			apiErr := newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+			if shouldRetryOpenAICodexUnaryStatus(resp.StatusCode, retryAttempts) {
+				if waitErr := waitOpenAICodexUnaryRetry(ctx, retryAttempts); waitErr != nil {
+					return OpenAICodexImageResponse{}, waitErr
+				}
+				retryAttempts++
+				continue
+			}
+			return OpenAICodexImageResponse{}, apiErr
 		}
 		return decodeOpenAICodexImageResponse(data, operation)
+	}
+}
+
+func shouldRetryOpenAICodexUnaryError(ctx context.Context, err error, retryAttempts int) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	return retryAttempts < openAICodexUnaryRequestMaxRetries
+}
+
+func shouldRetryOpenAICodexUnaryStatus(statusCode int, retryAttempts int) bool {
+	if retryAttempts >= openAICodexUnaryRequestMaxRetries {
+		return false
+	}
+	return statusCode >= http.StatusInternalServerError && statusCode <= 599
+}
+
+func waitOpenAICodexUnaryRetry(ctx context.Context, retryAttempts int) error {
+	delay := providerRetryDelay(openAICodexUnaryRequestRetryBaseDelay, retryAttempts)
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 
