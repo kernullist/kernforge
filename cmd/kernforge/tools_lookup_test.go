@@ -983,6 +983,44 @@ func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
 	}
 }
 
+func TestListFilesToolMissingPathReportsCandidates(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "Tavern", "Tavern")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceDir, "Tavern.cpp"), []byte("int main() {}\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := NewListFilesTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"path": "Tavern.cpp",
+	})
+	if err == nil {
+		t.Fatalf("expected missing path error")
+	}
+	if !strings.Contains(result.DisplayText, "list_files target does not exist: Tavern.cpp") {
+		t.Fatalf("expected missing path diagnostic, got %q", result.DisplayText)
+	}
+	if !strings.Contains(result.DisplayText, "Tavern/Tavern/Tavern.cpp") {
+		t.Fatalf("expected same-basename candidate, got %q", result.DisplayText)
+	}
+	if toolMetaString(result.Meta, "path_type") != "missing" {
+		t.Fatalf("expected path_type=missing metadata, got %#v", result.Meta)
+	}
+	if toolMetaString(result.Meta, "error_kind") != "missing_path" {
+		t.Fatalf("expected missing_path error_kind, got %#v", result.Meta)
+	}
+	candidates := toolMetaStringSlice(result.Meta, "candidate_paths")
+	if len(candidates) != 1 || candidates[0] != "Tavern/Tavern/Tavern.cpp" {
+		t.Fatalf("expected candidate_paths metadata, got %#v", result.Meta)
+	}
+}
+
 func TestListFilesToolReportsTruncationAndClampsInvalidMaxEntries(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {

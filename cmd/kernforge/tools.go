@@ -2492,6 +2492,13 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		maxEntries = 200
 	}
 	if info, err := os.Stat(root); err != nil {
+		if os.IsNotExist(err) {
+			display, meta := buildMissingListFilesPathResult(displayRoot, root, recursive, maxEntries)
+			return ToolExecutionResult{
+				DisplayText: display,
+				Meta:        meta,
+			}, fmt.Errorf("list_files target does not exist: %s", relOrAbs(displayRoot, root))
+		}
 		return ToolExecutionResult{}, err
 	} else if !info.IsDir() {
 		displayPath := relOrAbs(displayRoot, root)
@@ -2584,6 +2591,53 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			"truncated":   truncated,
 		},
 	}, nil
+}
+
+func buildMissingListFilesPathResult(displayRoot string, path string, recursive bool, maxEntries int) (string, map[string]any) {
+	resolvedPath := relOrAbs(displayRoot, path)
+	candidatePaths, candidatesTruncated := findMissingReadFileCandidates(displayRoot, path, 16, 5000)
+	parentPath := relOrAbs(displayRoot, filepath.Dir(path))
+	parentExists := false
+	parentEntryCount := 0
+	if info, err := os.Stat(filepath.Dir(path)); err == nil && info.IsDir() {
+		parentExists = true
+		if entries, readErr := os.ReadDir(filepath.Dir(path)); readErr == nil {
+			parentEntryCount = len(entries)
+		}
+	}
+	lines := []string{
+		"list_files target does not exist: " + resolvedPath,
+		"",
+		"Confirm the nearest existing parent directory, then retry list_files with that path.",
+	}
+	if parentExists {
+		lines = append(lines, "Parent directory exists: "+parentPath)
+	} else {
+		lines = append(lines, "Parent directory does not exist: "+parentPath)
+	}
+	if len(candidatePaths) > 0 {
+		lines = append(lines, "", "Candidate paths with the same filename:")
+		for _, candidate := range candidatePaths {
+			lines = append(lines, "- "+candidate)
+		}
+		if candidatesTruncated {
+			lines = append(lines, "- ... (more candidates omitted)")
+		}
+	}
+	return strings.Join(lines, "\n"), map[string]any{
+		"path":                       resolvedPath,
+		"path_type":                  "missing",
+		"recursive":                  recursive,
+		"max_entries":                maxEntries,
+		"entry_count":                0,
+		"truncated":                  false,
+		"error_kind":                 "missing_path",
+		"parent_path":                parentPath,
+		"parent_exists":              parentExists,
+		"parent_entry_count":         parentEntryCount,
+		"candidate_paths":            candidatePaths,
+		"candidate_search_truncated": candidatesTruncated,
+	}
 }
 
 type readFileCacheEntry struct {
