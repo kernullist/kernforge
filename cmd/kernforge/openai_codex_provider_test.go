@@ -2630,6 +2630,29 @@ func TestReadOpenAICodexStreamPrefersFinalAnswerItemOverCommentaryDeltas(t *test
 	}
 }
 
+func TestReadOpenAICodexStreamDoesNotLetCompletedSnapshotOverrideFinalItem(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
+		`data: {"type":"response.output_text.delta","delta":"checking report"}`,
+		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"report complete"}]}}`,
+		`data: {"type":"response.completed","response":{"status":"completed","end_turn":true,"output":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"stale commentary snapshot"}]}]}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "report complete" {
+		t.Fatalf("expected streamed final-answer item to win, got %q", resp.Message.Text)
+	}
+	if resp.Message.Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected final-answer phase, got %q", resp.Message.Phase)
+	}
+	if resp.EndTurn == nil || !*resp.EndTurn {
+		t.Fatalf("expected completed response end_turn=true to be preserved, got %#v", resp.EndTurn)
+	}
+}
+
 func TestReadOpenAICodexStreamUsesFinalMessageItemWhenCompletedResponseHasNoOutput(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"still working"}]}}`,

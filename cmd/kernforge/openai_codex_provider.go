@@ -1399,6 +1399,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	if !completedSeen {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "stream closed before response.completed", "", "", nil, nil)
 	}
+	var completedParsed *ChatResponse
 	if len(completedResponse) > 0 {
 		resp, err := parseOpenAICodexResponse(completedResponse)
 		if err == nil {
@@ -1437,7 +1438,10 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			if len(hostedItemTexts) > 0 && (strings.TrimSpace(resp.Message.Text) == "" || !openAICodexResponsePayloadHasMessageText(completedResponse)) {
 				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
 			}
-			return resp, nil
+			completedParsed = &resp
+			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, reasoning.String(), toolCalls, toolOrder) {
+				return resp, nil
+			}
 		}
 	}
 
@@ -1469,6 +1473,21 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			Arguments: normalizeOpenAICodexStreamToolCallArguments(item),
 		})
 	}
+	if completedParsed != nil {
+		if out.Text == "" {
+			out.Text = completedParsed.Message.Text
+			out.Phase = completedParsed.Message.Phase
+		}
+		if out.ReasoningContent == "" {
+			out.ReasoningContent = completedParsed.Message.ReasoningContent
+		}
+		if len(out.ToolCalls) == 0 && len(completedParsed.Message.ToolCalls) > 0 {
+			out.ToolCalls = append(out.ToolCalls, completedParsed.Message.ToolCalls...)
+		}
+		if len(out.Images) == 0 && len(completedParsed.Message.Images) > 0 {
+			out.Images = appendUniqueImages(out.Images, completedParsed.Message.Images...)
+		}
+	}
 	if out.Text == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
@@ -1480,6 +1499,22 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		RateLimitSummary:   rateLimitSummary,
 		ModelVerifications: append([]string(nil), modelVerifications...),
 	}, nil
+}
+
+func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, reasoningText string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
+	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" {
+		return true
+	}
+	if len(itemTexts) > 0 || len(finalItemTexts) > 0 || len(hostedItemTexts) > 0 || len(hostedImages) > 0 {
+		return true
+	}
+	for _, index := range toolOrder {
+		item := toolCalls[index]
+		if item != nil && strings.TrimSpace(item.ID) != "" && strings.TrimSpace(item.Name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
