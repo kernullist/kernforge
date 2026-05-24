@@ -36,6 +36,12 @@ const (
 	openAICodexSSEMaxLineBytes  = 16 * 1024 * 1024
 )
 
+const (
+	openAICodexServerModelHeader       = "OpenAI-Model"
+	openAICodexServerModelsETagHeader  = "X-Models-Etag"
+	openAICodexReasoningIncludedHeader = "x-reasoning-included"
+)
+
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
 
 const openAICodexApplyPatchLarkGrammar = `start: begin_patch hunk+ end_patch
@@ -198,6 +204,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	if err != nil {
 		return ChatResponse{}, err
 	}
+	out.ServerModel = strings.TrimSpace(resp.Header.Get(openAICodexServerModelHeader))
+	out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
+	out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
 	return out, nil
 }
 

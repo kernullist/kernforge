@@ -903,6 +903,9 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
 		w.Header().Set("content-type", "text/event-stream")
+		w.Header().Set("OpenAI-Model", "gpt-5.2")
+		w.Header().Set("X-Models-Etag", "etag-123")
+		w.Header().Set("x-reasoning-included", "true")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"grep\"}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":1,\"arguments\":\"{\\\"pattern\\\":\\\"x\\\"}\"}\n\n"))
@@ -934,6 +937,9 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	}
 	if len(resp.Message.ToolCalls) != 1 || resp.Message.ToolCalls[0].ID != "call_2" || resp.Message.ToolCalls[0].Name != "grep" {
 		t.Fatalf("unexpected tool calls: %#v", resp.Message.ToolCalls)
+	}
+	if resp.ServerModel != "gpt-5.2" || resp.ModelsETag != "etag-123" || !resp.ReasoningIncluded {
+		t.Fatalf("expected Codex response metadata to be captured, got %#v", resp)
 	}
 }
 
