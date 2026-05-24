@@ -24,12 +24,12 @@ func (a *Agent) agentsMDPromptSection() string {
 		return ""
 	}
 	global := strings.TrimSpace(loadGlobalAgentsMD(userConfigDir()))
-	project := strings.TrimSpace(a.projectAgentsMDContents())
-	if global == "" && project == "" {
+	project := a.projectAgentsMDContents()
+	if global == "" && strings.TrimSpace(project) == "" {
 		return ""
 	}
 	contents := global
-	if project != "" {
+	if strings.TrimSpace(project) != "" {
 		if contents != "" {
 			contents += agentsMDSeparator
 		}
@@ -43,8 +43,8 @@ func (a *Agent) projectAgentsMDPromptSection() string {
 	if cwd == "" {
 		return ""
 	}
-	contents := strings.TrimSpace(a.projectAgentsMDContents())
-	if contents == "" {
+	contents := a.projectAgentsMDContents()
+	if strings.TrimSpace(contents) == "" {
 		return ""
 	}
 	return fmt.Sprintf("# AGENTS.md instructions for %s\n\n<INSTRUCTIONS>\n%s\n</INSTRUCTIONS>", cwd, contents)
@@ -125,8 +125,8 @@ func loadProjectAgentsMD(root string, cwd string, maxBytes int, fallbackNames []
 		if len(data) > remaining {
 			data = data[:remaining]
 		}
-		text := strings.TrimSpace(strings.ToValidUTF8(string(data), "\uFFFD"))
-		if text == "" {
+		text := strings.ToValidUTF8(string(data), "\uFFFD")
+		if strings.TrimSpace(text) == "" {
 			continue
 		}
 		parts = append(parts, text)

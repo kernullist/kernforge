@@ -209,6 +209,38 @@ func TestSystemPromptDiscoversGitRootAgentsMDFromNestedSessionRoot(t *testing.T)
 	}
 }
 
+func TestSystemPromptPreservesProjectAgentsMDWhitespaceBetweenFiles(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("root doc\n\n"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("  child doc\n"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "root doc\n\n\n\n  child doc\n") {
+		t.Fatalf("expected project AGENTS.md whitespace to be preserved like Codex, got %q", prompt)
+	}
+}
+
 func TestSystemPromptWithoutProjectRootMarkerUsesCWDOnly(t *testing.T) {
 	setTempUserConfigHome(t)
 	root := t.TempDir()
