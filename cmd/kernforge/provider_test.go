@@ -97,6 +97,15 @@ func TestToolContentItemApproxCharsEstimatesEncryptedContent(t *testing.T) {
 	}
 }
 
+func TestEncryptedReasoningApproxCharsMatchesCodexEstimate(t *testing.T) {
+	if got := encryptedReasoningApproxChars(1200); got != 250 {
+		t.Fatalf("reasoning estimate = %d, want 250", got)
+	}
+	if got := encryptedReasoningApproxChars(400); got != 0 {
+		t.Fatalf("small reasoning estimate = %d, want 0", got)
+	}
+}
+
 func TestOpenAIClientUsesVersionedBaseURLWithoutDuplicatingV1(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/chat/completions" {

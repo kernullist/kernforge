@@ -8887,7 +8887,7 @@ func compactDropOrphanToolMessages(messages []Message) []Message {
 }
 
 func compactMessageRetainedCharCost(msg Message) int {
-	total := len(msg.Text) + len(msg.ReasoningContent) + len(msg.ReasoningEncryptedContent)
+	total := len(msg.Text) + len(msg.ReasoningContent) + encryptedReasoningApproxChars(len(msg.ReasoningEncryptedContent))
 	total += len(msg.ToolCallID) + len(msg.ToolName)
 	for _, call := range msg.WebSearchCalls {
 		total += len(call.Status)
@@ -8898,7 +8898,7 @@ func compactMessageRetainedCharCost(msg Message) int {
 		total += compactActionCharCost(call.Action)
 	}
 	for _, item := range msg.CodexCompactionItems {
-		total += len(item.Type) + len(item.EncryptedContent)
+		total += encryptedReasoningApproxChars(len(item.EncryptedContent))
 	}
 	for _, item := range msg.CodexToolOutputItems {
 		total += len(item.Type) + len(item.CallID) + len(item.Name) + len(item.Status) + len(item.Execution) + len(item.Text)

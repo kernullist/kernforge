@@ -135,6 +135,17 @@ func encryptedToolContentApproxChars(encodedLen int) int {
 	return (encodedLen*9 + 15) / 16
 }
 
+func encryptedReasoningApproxChars(encodedLen int) int {
+	if encodedLen <= 0 {
+		return 0
+	}
+	estimate := (encodedLen * 3) / 4
+	if estimate <= 650 {
+		return 0
+	}
+	return estimate - 650
+}
+
 type ToolCall struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`

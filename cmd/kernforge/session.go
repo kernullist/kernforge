@@ -210,7 +210,7 @@ func (s *Session) ApproxChars() int {
 		}
 	}
 	for _, msg := range s.Messages {
-		total += len(msg.Text) + len(msg.ReasoningContent) + len(msg.ReasoningEncryptedContent)
+		total += len(msg.Text) + len(msg.ReasoningContent) + encryptedReasoningApproxChars(len(msg.ReasoningEncryptedContent))
 		for _, image := range msg.Images {
 			total += messageImageApproxChars(s.WorkingDir, image)
 		}
@@ -227,7 +227,7 @@ func (s *Session) ApproxChars() int {
 			}
 		}
 		for _, item := range msg.CodexCompactionItems {
-			total += len(item.Type) + len(item.EncryptedContent)
+			total += encryptedReasoningApproxChars(len(item.EncryptedContent))
 		}
 		for _, item := range msg.CodexToolOutputItems {
 			total += len(item.Type) + len(item.CallID) + len(item.Name) + len(item.Status) + len(item.Execution) + len(item.Text)

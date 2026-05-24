@@ -45,11 +45,33 @@ func TestSessionApproxCharsCountsCodexStructuredHistoryItems(t *testing.T) {
 	})
 
 	approx := session.ApproxChars()
-	minAdded := len("sealed-reasoning") + len("completed") + len("call_shell") +
-		len("context_compaction") + len("sealed-context") + len("sealed-tool") +
-		codexResizedImageBytesEstimate
+	minAdded := len("completed") + len("call_shell") + len("sealed-tool") + codexResizedImageBytesEstimate
 	if approx-baseline < minAdded {
 		t.Fatalf("expected approx chars to count structured history items, baseline=%d approx=%d minAdded=%d", baseline, approx, minAdded)
+	}
+}
+
+func TestSessionAndCompactCostsUseCodexEncryptedReasoningEstimate(t *testing.T) {
+	reasoning := strings.Repeat("R", 1200)
+	compaction := strings.Repeat("C", 1600)
+	msg := Message{
+		Role:                      "assistant",
+		ReasoningEncryptedContent: reasoning,
+		CodexCompactionItems: []MessageCodexCompactionItem{{
+			Type:             "context_compaction",
+			EncryptedContent: compaction,
+		}},
+	}
+	expected := encryptedReasoningApproxChars(len(reasoning)) + encryptedReasoningApproxChars(len(compaction))
+	if got := compactMessageRetainedCharCost(msg); got != expected {
+		t.Fatalf("compact encrypted reasoning cost = %d, want %d", got, expected)
+	}
+
+	session := NewSession("C:\\workspace", "openai-codex", "gpt-5", "", "default")
+	baseline := session.ApproxChars()
+	session.AddMessage(msg)
+	if got := session.ApproxChars() - baseline; got != expected {
+		t.Fatalf("session encrypted reasoning cost = %d, want %d", got, expected)
 	}
 }
 
