@@ -244,7 +244,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		clientMetadata[openAICodexParentThreadIDHeader] = parentThreadID
 	}
 
-	body, err := buildOpenAICodexRequestBodyWithClientMetadata(req, clientMetadata)
+	body, err := buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req, clientMetadata, openAICodexRequestBodyOptions{
+		Store: openAICodexIsAzureResponsesEndpoint(c.baseURL),
+	})
 	if err != nil {
 		return ChatResponse{}, err
 	}
@@ -449,6 +451,14 @@ func buildOpenAICodexRequestBody(req ChatRequest) ([]byte, error) {
 }
 
 func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetadata map[string]string) ([]byte, error) {
+	return buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req, clientMetadata, openAICodexRequestBodyOptions{})
+}
+
+type openAICodexRequestBodyOptions struct {
+	Store bool
+}
+
+func buildOpenAICodexRequestBodyWithClientMetadataAndOptions(req ChatRequest, clientMetadata map[string]string, options openAICodexRequestBodyOptions) ([]byte, error) {
 	model := strings.TrimSpace(req.Model)
 	if model == "" || strings.EqualFold(model, codexCLIDefaultModel) {
 		model = openAICodexDefaultModel
@@ -460,7 +470,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	payload := map[string]any{
 		"model":               model,
 		"input":               input,
-		"store":               false,
+		"store":               options.Store,
 		"stream":              true,
 		"include":             []string{},
 		"tools":               []map[string]any{},
@@ -511,6 +521,27 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 	tools = mergeOpenAICodexNamespaceTools(tools)
 	payload["tools"] = tools
 	return json.Marshal(payload)
+}
+
+func openAICodexIsAzureResponsesEndpoint(baseURL string) bool {
+	baseURL = strings.ToLower(strings.TrimSpace(baseURL))
+	if baseURL == "" {
+		return false
+	}
+	markers := []string{
+		"openai.azure.",
+		"cognitiveservices.azure.",
+		"aoai.azure.",
+		"azure-api.",
+		"azurefd.",
+		"windows.net/openai",
+	}
+	for _, marker := range markers {
+		if strings.Contains(baseURL, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func openAICodexServiceTierForRequest(model string, serviceTier string) string {

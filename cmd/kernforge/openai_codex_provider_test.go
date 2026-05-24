@@ -201,6 +201,65 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesAzureStoreSemantics(t *testing.T) {
+	for _, baseURL := range []string{
+		"https://foo.openai.azure.com/openai",
+		"https://foo.cognitiveservices.azure.cn/openai",
+		"https://foo.aoai.azure.com/openai",
+		"https://foo.openai.azure-api.net/openai",
+		"https://foo.z01.azurefd.net/",
+		"https://example.windows.net/openai/deployments/model",
+	} {
+		if !openAICodexIsAzureResponsesEndpoint(baseURL) {
+			t.Fatalf("expected Azure Responses endpoint detection for %s", baseURL)
+		}
+	}
+	for _, baseURL := range []string{
+		openAICodexDefaultBaseURL,
+		"https://api.openai.com/v1",
+		"https://example.com/openai",
+	} {
+		if openAICodexIsAzureResponsesEndpoint(baseURL) {
+			t.Fatalf("did not expect Azure Responses endpoint detection for %s", baseURL)
+		}
+	}
+
+	body, err := buildOpenAICodexRequestBodyWithClientMetadataAndOptions(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	}, nil, openAICodexRequestBodyOptions{Store: true})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBodyWithClientMetadataAndOptions: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["store"] != true {
+		t.Fatalf("expected Azure Responses request to set store=true, got %#v", payload["store"])
+	}
+
+	body, err = buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if payload["store"] != false {
+		t.Fatalf("expected default Codex request to set store=false, got %#v", payload["store"])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesCatalogReasoningDefaults(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.2",
