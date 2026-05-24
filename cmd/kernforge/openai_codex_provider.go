@@ -635,7 +635,7 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 	}
 	if namespace, childName, ok := splitOpenAICodexMCPToolName(name); ok {
 		description := strings.TrimSpace(tool.Description)
-		return map[string]any{
+		item := map[string]any{
 			"type":        "namespace",
 			"name":        namespace,
 			"description": openAICodexNamespaceDescription(namespace, ""),
@@ -649,6 +649,12 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 				},
 			},
 		}
+		if tool.DeferLoading {
+			children := item["tools"].([]any)
+			child := children[0].(map[string]any)
+			child["defer_loading"] = true
+		}
+		return item
 	}
 	item := map[string]any{
 		"type":        "function",
@@ -656,6 +662,9 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 		"description": strings.TrimSpace(tool.Description),
 		"strict":      false,
 		"parameters":  openAICodexToolParameters(tool.InputSchema),
+	}
+	if tool.DeferLoading {
+		item["defer_loading"] = true
 	}
 	return item
 }

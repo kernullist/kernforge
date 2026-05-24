@@ -20,6 +20,7 @@ type ToolDefinition struct {
 	Description  string         `json:"description"`
 	InputSchema  map[string]any `json:"input_schema"`
 	OutputSchema map[string]any `json:"output_schema,omitempty"`
+	DeferLoading bool           `json:"defer_loading,omitempty"`
 }
 
 type ToolContentItem struct {

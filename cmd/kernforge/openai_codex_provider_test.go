@@ -438,6 +438,51 @@ func TestBuildOpenAICodexRequestBodyUsesNamespaceForMCPTools(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesDeferredToolDefinitions(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "use deferred tools"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:         "lookup_order",
+				Description:  "Look up an order",
+				InputSchema:  map[string]any{"type": "object"},
+				DeferLoading: true,
+			},
+			{
+				Name:         "mcp__orders__lookup_order",
+				Description:  "[MCP:orders] Look up an order",
+				InputSchema:  map[string]any{"type": "object"},
+				DeferLoading: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected deferred function and namespace tools, got %#v in %s", payload["tools"], body)
+	}
+	functionTool := tools[0].(map[string]any)
+	if functionTool["type"] != "function" || functionTool["defer_loading"] != true {
+		t.Fatalf("expected function defer_loading=true, got %#v", functionTool)
+	}
+	namespace := tools[1].(map[string]any)
+	children := namespace["tools"].([]any)
+	child := children[0].(map[string]any)
+	if namespace["type"] != "namespace" || child["name"] != "lookup_order" || child["defer_loading"] != true {
+		t.Fatalf("expected namespace child defer_loading=true, got %#v", namespace)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesNativeToolSearchTool(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
