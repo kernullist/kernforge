@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func setTempUserConfigHome(t *testing.T) string {
@@ -13,6 +14,49 @@ func setTempUserConfigHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	return home
+}
+
+type agentsMDTestFileInfo struct {
+	mode os.FileMode
+}
+
+func (info agentsMDTestFileInfo) Name() string {
+	return "AGENTS.md"
+}
+
+func (info agentsMDTestFileInfo) Size() int64 {
+	return 0
+}
+
+func (info agentsMDTestFileInfo) Mode() os.FileMode {
+	return info.mode
+}
+
+func (info agentsMDTestFileInfo) ModTime() time.Time {
+	return time.Time{}
+}
+
+func (info agentsMDTestFileInfo) IsDir() bool {
+	return info.mode.IsDir()
+}
+
+func (info agentsMDTestFileInfo) Sys() any {
+	return nil
+}
+
+func TestAgentsMDFileIsRegularMatchesCodexFileOnlyPolicy(t *testing.T) {
+	if !agentsMDFileIsRegular(agentsMDTestFileInfo{mode: 0o644}) {
+		t.Fatalf("expected regular AGENTS.md file to be readable")
+	}
+	if agentsMDFileIsRegular(nil) {
+		t.Fatalf("nil file info must not be readable")
+	}
+	if agentsMDFileIsRegular(agentsMDTestFileInfo{mode: os.ModeDir | 0o755}) {
+		t.Fatalf("directory AGENTS.md must not be readable")
+	}
+	if agentsMDFileIsRegular(agentsMDTestFileInfo{mode: os.ModeNamedPipe | 0o644}) {
+		t.Fatalf("special AGENTS.md file must not be readable")
+	}
 }
 
 func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *testing.T) {

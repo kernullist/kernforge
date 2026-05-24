@@ -85,7 +85,7 @@ func loadGlobalAgentsMD(dir string) string {
 	for _, name := range []string{localAgentsMDFilename, defaultAgentsMDFilename} {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
-		if err != nil || info == nil || info.IsDir() {
+		if err != nil || !agentsMDFileIsRegular(info) {
 			continue
 		}
 		data, err := os.ReadFile(path)
@@ -178,12 +178,19 @@ func firstAgentsMDPath(dir string, fallbackNames []string) string {
 	for _, name := range candidateAgentsMDFilenames(fallbackNames) {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)
-		if err != nil || info == nil || info.IsDir() {
+		if err != nil || !agentsMDFileIsRegular(info) {
 			continue
 		}
 		return path
 	}
 	return ""
+}
+
+func agentsMDFileIsRegular(info os.FileInfo) bool {
+	if info == nil {
+		return false
+	}
+	return info.Mode().IsRegular()
 }
 
 func candidateAgentsMDFilenames(fallbackNames []string) []string {
