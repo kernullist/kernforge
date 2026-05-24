@@ -66,7 +66,7 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 			`{"slug":"gpt-5.5","display_name":"duplicate","supported_in_api":true,"visibility":"list","priority":1},` +
 			`{"slug":"hidden-model","display_name":"Hidden","supported_in_api":true,"visibility":"hide"},` +
 			`{"slug":"unsupported-model","display_name":"Unsupported","supported_in_api":false,"visibility":"list"},` +
-			`{"id":"custom-codex","name":"Custom Codex","visibility":"list","default_verbosity":"high","supports_reasoning_summaries":true,"default_reasoning_level":"high","default_reasoning_summary":"detailed","supports_parallel_tool_calls":true}` +
+			`{"id":"custom-codex","name":"Custom Codex","visibility":"list","default_verbosity":"high","supports_reasoning_summaries":true,"default_reasoning_level":"high","default_reasoning_summary":"detailed","supports_parallel_tool_calls":true,"input_modalities":["text"]}` +
 			`]}`,
 		"plugin warning after json",
 	}, "\n")))
@@ -74,8 +74,8 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 		t.Fatalf("parseCodexCLIModelsJSON: %v", err)
 	}
 	want := []CodexCLIModelInfo{
-		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0, SupportsImageDetailOriginal: true, DefaultVerbosity: "low"},
-		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0, DefaultVerbosity: "high", SupportsReasoningSummaries: true, DefaultReasoningEffort: "high", DefaultReasoningSummary: "detailed", SupportsParallelToolCalls: true},
+		{ID: "gpt-5.5", Name: "GPT-5.5", SupportedInAPI: true, Visibility: "list", Priority: 0, SupportsImageDetailOriginal: true, SupportsImageInput: true, DefaultVerbosity: "low"},
+		{ID: "custom-codex", Name: "Custom Codex", SupportedInAPI: true, Visibility: "list", Priority: 0, SupportsImageInput: false, DefaultVerbosity: "high", SupportsReasoningSummaries: true, DefaultReasoningEffort: "high", DefaultReasoningSummary: "detailed", SupportsParallelToolCalls: true},
 	}
 	if !reflect.DeepEqual(models, want) {
 		t.Fatalf("models = %#v, want %#v", models, want)
@@ -91,6 +91,12 @@ func TestParseCodexCLIModelsJSONFiltersHiddenUnsupportedAndDuplicates(t *testing
 	}
 	if openAICodexSupportsParallelToolCalls("gpt-5.5") {
 		t.Fatalf("expected parsed model without parallel metadata to reset gpt-5.5 parallel support to Codex default false")
+	}
+	if !canRequestImageInput("openai-codex", "gpt-5.5") {
+		t.Fatalf("missing input_modalities should default to image support")
+	}
+	if canRequestImageInput("openai-codex", "custom-codex") {
+		t.Fatalf("text-only input_modalities should disable Codex image input")
 	}
 }
 

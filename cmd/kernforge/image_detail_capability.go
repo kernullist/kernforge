@@ -7,6 +7,7 @@ import (
 )
 
 type imageDetailOriginalSupportContextKey struct{}
+type imageInputSupportContextKey struct{}
 
 var codexImageDetailSupport = struct {
 	sync.RWMutex
@@ -22,12 +23,35 @@ var codexImageDetailSupport = struct {
 	},
 }
 
+var codexImageInputSupport = struct {
+	sync.RWMutex
+	byModel map[string]bool
+}{
+	byModel: map[string]bool{
+		openAICodexDefaultModel: true,
+		"gpt-5.4":               true,
+		"gpt-5.4-mini":          true,
+		"gpt-5.3-codex":         true,
+		"gpt-5.2":               true,
+		"codex-auto-review":     true,
+	},
+}
+
 func contextWithOriginalImageDetailSupport(ctx context.Context, supported bool) context.Context {
 	return context.WithValue(ctx, imageDetailOriginalSupportContextKey{}, supported)
 }
 
+func contextWithImageInputSupport(ctx context.Context, supported bool) context.Context {
+	return context.WithValue(ctx, imageInputSupportContextKey{}, supported)
+}
+
 func originalImageDetailSupportFromContext(ctx context.Context) (bool, bool) {
 	supported, ok := ctx.Value(imageDetailOriginalSupportContextKey{}).(bool)
+	return supported, ok
+}
+
+func imageInputSupportFromContext(ctx context.Context) (bool, bool) {
+	supported, ok := ctx.Value(imageInputSupportContextKey{}).(bool)
 	return supported, ok
 }
 
@@ -48,6 +72,23 @@ func canRequestOriginalImageDetail(provider string, model string) bool {
 	return false
 }
 
+func canRequestImageInput(provider string, model string) bool {
+	if !providerUsesCodexImageDetailPolicy(provider) {
+		return true
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" || model == codexCLIDefaultModel {
+		return true
+	}
+	codexImageInputSupport.RLock()
+	supported, ok := codexImageInputSupport.byModel[model]
+	codexImageInputSupport.RUnlock()
+	if ok {
+		return supported
+	}
+	return true
+}
+
 func registerCodexModelImageDetailSupport(model string, supported bool) {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
@@ -56,6 +97,28 @@ func registerCodexModelImageDetailSupport(model string, supported bool) {
 	codexImageDetailSupport.Lock()
 	codexImageDetailSupport.byModel[model] = supported
 	codexImageDetailSupport.Unlock()
+}
+
+func registerCodexModelImageInputSupport(model string, supported bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return
+	}
+	codexImageInputSupport.Lock()
+	codexImageInputSupport.byModel[model] = supported
+	codexImageInputSupport.Unlock()
+}
+
+func codexInputModalitiesSupportImages(modalities *[]string) bool {
+	if modalities == nil {
+		return true
+	}
+	for _, modality := range *modalities {
+		if strings.EqualFold(strings.TrimSpace(modality), "image") {
+			return true
+		}
+	}
+	return false
 }
 
 func providerUsesCodexImageDetailPolicy(provider string) bool {

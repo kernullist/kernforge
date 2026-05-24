@@ -64,6 +64,24 @@ func TestViewImageToolRejectsUnsupportedDetail(t *testing.T) {
 	}
 }
 
+func TestViewImageToolReturnsUnsupportedMessageForTextOnlyModel(t *testing.T) {
+	tool := NewViewImageTool(Workspace{BaseRoot: t.TempDir(), Root: t.TempDir()})
+	ctx := contextWithImageInputSupport(context.Background(), false)
+
+	result, err := tool.ExecuteDetailed(ctx, map[string]any{
+		"path": "missing.png",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported image input error")
+	}
+	if result.DisplayText != viewImageUnsupportedMessage {
+		t.Fatalf("expected model-visible unsupported message, got %#v", result)
+	}
+	if err.Error() != viewImageUnsupportedMessage {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestViewImageToolRejectsDirectory(t *testing.T) {
 	dir := t.TempDir()
 	tool := NewViewImageTool(Workspace{BaseRoot: dir, Root: dir})

@@ -27,6 +27,7 @@ type CodexCLIModelInfo struct {
 	Visibility                  string
 	Priority                    int
 	SupportsImageDetailOriginal bool
+	SupportsImageInput          bool
 	DefaultVerbosity            string
 	SupportsReasoningSummaries  bool
 	DefaultReasoningEffort      string
@@ -186,19 +187,20 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 	}
 	var decoded struct {
 		Models []struct {
-			Slug                        string `json:"slug"`
-			ID                          string `json:"id"`
-			Name                        string `json:"name"`
-			DisplayName                 string `json:"display_name"`
-			SupportedInAPI              *bool  `json:"supported_in_api"`
-			Visibility                  string `json:"visibility"`
-			Priority                    int    `json:"priority"`
-			SupportsImageDetailOriginal bool   `json:"supports_image_detail_original"`
-			DefaultVerbosity            string `json:"default_verbosity"`
-			SupportsReasoningSummaries  *bool  `json:"supports_reasoning_summaries"`
-			DefaultReasoningLevel       string `json:"default_reasoning_level"`
-			DefaultReasoningSummary     string `json:"default_reasoning_summary"`
-			SupportsParallelToolCalls   *bool  `json:"supports_parallel_tool_calls"`
+			Slug                        string    `json:"slug"`
+			ID                          string    `json:"id"`
+			Name                        string    `json:"name"`
+			DisplayName                 string    `json:"display_name"`
+			SupportedInAPI              *bool     `json:"supported_in_api"`
+			Visibility                  string    `json:"visibility"`
+			Priority                    int       `json:"priority"`
+			SupportsImageDetailOriginal bool      `json:"supports_image_detail_original"`
+			DefaultVerbosity            string    `json:"default_verbosity"`
+			SupportsReasoningSummaries  *bool     `json:"supports_reasoning_summaries"`
+			DefaultReasoningLevel       string    `json:"default_reasoning_level"`
+			DefaultReasoningSummary     string    `json:"default_reasoning_summary"`
+			SupportsParallelToolCalls   *bool     `json:"supports_parallel_tool_calls"`
+			InputModalities             *[]string `json:"input_modalities"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
@@ -239,6 +241,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 		if item.SupportsParallelToolCalls != nil {
 			supportsParallelToolCalls = *item.SupportsParallelToolCalls
 		}
+		supportsImageInput := codexInputModalitiesSupportImages(item.InputModalities)
 		models = append(models, CodexCLIModelInfo{
 			ID:                          id,
 			Name:                        name,
@@ -246,6 +249,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			Visibility:                  strings.TrimSpace(item.Visibility),
 			Priority:                    item.Priority,
 			SupportsImageDetailOriginal: item.SupportsImageDetailOriginal,
+			SupportsImageInput:          supportsImageInput,
 			DefaultVerbosity:            normalizeOpenAICodexVerbosity(item.DefaultVerbosity),
 			SupportsReasoningSummaries:  supportsReasoningSummaries,
 			DefaultReasoningEffort:      normalizeReasoningEffort(item.DefaultReasoningLevel),
@@ -253,6 +257,7 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 			SupportsParallelToolCalls:   supportsParallelToolCalls,
 		})
 		registerCodexModelImageDetailSupport(id, item.SupportsImageDetailOriginal)
+		registerCodexModelImageInputSupport(id, supportsImageInput)
 		registerOpenAICodexDefaultVerbosity(id, item.DefaultVerbosity)
 		if item.SupportsReasoningSummaries != nil || strings.TrimSpace(item.DefaultReasoningLevel) != "" || strings.TrimSpace(item.DefaultReasoningSummary) != "" {
 			registerOpenAICodexReasoningDefaults(id, supportsReasoningSummaries, item.DefaultReasoningLevel, item.DefaultReasoningSummary)

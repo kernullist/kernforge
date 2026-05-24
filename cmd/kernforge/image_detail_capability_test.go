@@ -71,3 +71,31 @@ func TestCanRequestOriginalImageDetailUsesDiscoveredCodexModelSupport(t *testing
 		t.Fatalf("expected discovered unsupported model to be honored")
 	}
 }
+
+func TestCanRequestImageInputUsesDiscoveredCodexModalities(t *testing.T) {
+	registerCodexModelImageInputSupport("future-text-only-codex-model", false)
+	if canRequestImageInput("openai-codex", "future-text-only-codex-model") {
+		t.Fatalf("expected text-only Codex model to reject image input")
+	}
+	registerCodexModelImageInputSupport("future-vision-codex-model", true)
+	if !canRequestImageInput("openai-codex", "future-vision-codex-model") {
+		t.Fatalf("expected image-capable Codex model to allow image input")
+	}
+	if !canRequestImageInput("lmstudio", "text-only") {
+		t.Fatalf("non-Codex providers should keep image input behavior unchanged")
+	}
+}
+
+func TestCodexInputModalitiesDefaultToImageSupportWhenAbsent(t *testing.T) {
+	if !codexInputModalitiesSupportImages(nil) {
+		t.Fatalf("missing input_modalities should match Codex default image support")
+	}
+	textOnly := []string{"text"}
+	if codexInputModalitiesSupportImages(&textOnly) {
+		t.Fatalf("text-only input_modalities should not support images")
+	}
+	vision := []string{"text", "image"}
+	if !codexInputModalitiesSupportImages(&vision) {
+		t.Fatalf("image input modality should support images")
+	}
+}

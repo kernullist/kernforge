@@ -878,6 +878,50 @@ func TestAgentDowngradesOriginalViewImageResultForUnsupportedCodexModel(t *testi
 	}
 }
 
+func TestAgentReturnsUnsupportedViewImageForTextOnlyCodexModel(t *testing.T) {
+	root := t.TempDir()
+	model := "text-only-agent-view-image-test"
+	registerCodexModelImageInputSupport(model, false)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			multiToolCallResponse(ToolCall{
+				ID:        "call-image",
+				Name:      "view_image",
+				Arguments: `{"path":"missing.png"}`,
+			}),
+			{Message: Message{Role: "assistant", Text: "done"}},
+		},
+	}
+	session := NewSession(root, "openai-codex", model, "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewViewImageTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "inspect image"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected follow-up request after view_image, got %d", len(provider.requests))
+	}
+	toolMsg := findToolMessageForTest(provider.requests[1].Messages, "call-image")
+	if toolMsg == nil {
+		t.Fatalf("follow-up request missing tool message: %#v", provider.requests[1].Messages)
+	}
+	if toolMsg.Text != viewImageUnsupportedMessage {
+		t.Fatalf("expected unsupported view_image message, got %#v", toolMsg)
+	}
+	if len(toolMsg.ToolContentItems) != 0 {
+		t.Fatalf("unsupported view_image result must not attach image content: %#v", toolMsg.ToolContentItems)
+	}
+}
+
 func findToolDefinitionForTest(tools []ToolDefinition, name string) *ToolDefinition {
 	for i := range tools {
 		if tools[i].Name == name {

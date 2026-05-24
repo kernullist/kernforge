@@ -13,6 +13,8 @@ type ViewImageTool struct {
 	ws Workspace
 }
 
+const viewImageUnsupportedMessage = "view_image is not allowed because you do not support image inputs"
+
 func NewViewImageTool(ws Workspace) ViewImageTool {
 	return ViewImageTool{ws: ws}
 }
@@ -64,6 +66,9 @@ func (t ViewImageTool) Execute(ctx context.Context, input any) (string, error) {
 func (t ViewImageTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
 	if err := ctx.Err(); err != nil {
 		return ToolExecutionResult{}, err
+	}
+	if supported, ok := imageInputSupportFromContext(ctx); ok && !supported {
+		return ToolExecutionResult{DisplayText: viewImageUnsupportedMessage}, fmt.Errorf(viewImageUnsupportedMessage)
 	}
 	args, err := requireToolInputObject(input, "view_image")
 	if err != nil {

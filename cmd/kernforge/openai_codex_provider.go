@@ -45,6 +45,7 @@ const (
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
+const openAICodexImageContentOmittedPlaceholder = "image content omitted because you do not support image input"
 
 const openAICodexApplyPatchLarkGrammar = `start: begin_patch hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
@@ -818,6 +819,7 @@ func openAICodexToolParameters(schema map[string]any) map[string]any {
 
 func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 	messages := ensureOpenAICodexToolCallResponses(req.Messages)
+	supportsImages := canRequestImageInput("openai-codex", req.Model)
 	items := make([]any, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
@@ -836,7 +838,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				}},
 			})
 		case "user":
-			content, err := openAICodexUserContent(req.WorkingDir, msg)
+			content, err := openAICodexUserContent(req.WorkingDir, msg, supportsImages)
 			if err != nil {
 				return nil, err
 			}
@@ -875,7 +877,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 			if callID == "" {
 				continue
 			}
-			items = append(items, openAICodexToolCallOutputItem(callID, msg))
+			items = append(items, openAICodexToolCallOutputItem(callID, msg, supportsImages))
 		}
 	}
 	return items, nil
@@ -996,7 +998,7 @@ func openAICodexFunctionCallWireName(call ToolCall) string {
 	return name
 }
 
-func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
+func openAICodexToolCallOutputItem(callID string, msg Message, supportsImages bool) map[string]any {
 	if strings.TrimSpace(msg.ToolName) == "tool_search" {
 		return map[string]any{
 			"type":      "tool_search_output",
@@ -1010,13 +1012,13 @@ func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
 		return map[string]any{
 			"type":    "custom_tool_call_output",
 			"call_id": callID,
-			"output":  toolOutputForResponses(msg),
+			"output":  openAICodexToolOutputForResponses(msg, supportsImages),
 		}
 	}
 	return map[string]any{
 		"type":    "function_call_output",
 		"call_id": callID,
-		"output":  toolOutputForResponses(msg),
+		"output":  openAICodexToolOutputForResponses(msg, supportsImages),
 	}
 }
 
@@ -1171,7 +1173,7 @@ func openAICodexInputMessagePhase(msg Message) string {
 	return ""
 }
 
-func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, error) {
+func openAICodexUserContent(workingDir string, msg Message, supportsImages bool) ([]map[string]any, error) {
 	content := make([]map[string]any, 0, len(msg.Images)+1)
 	if strings.TrimSpace(msg.Text) != "" {
 		content = append(content, map[string]any{
@@ -1182,11 +1184,46 @@ func openAICodexUserContent(workingDir string, msg Message) ([]map[string]any, e
 	if len(msg.Images) == 0 {
 		return content, nil
 	}
+	if !supportsImages {
+		for range msg.Images {
+			content = append(content, map[string]any{
+				"type": "input_text",
+				"text": openAICodexImageContentOmittedPlaceholder,
+			})
+		}
+		return content, nil
+	}
 	encodedImages, err := encodeMessageImages(workingDir, msg.Images)
 	if err != nil {
 		return nil, err
 	}
 	return appendCodexResponsesImages(content, encodedImages), nil
+}
+
+func openAICodexToolOutputForResponses(msg Message, supportsImages bool) any {
+	if supportsImages {
+		return toolOutputForResponses(msg)
+	}
+	msg.ToolContentItems = openAICodexStripUnsupportedImageContentItems(msg.ToolContentItems)
+	return toolOutputForResponses(msg)
+}
+
+func openAICodexStripUnsupportedImageContentItems(items []ToolContentItem) []ToolContentItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]ToolContentItem, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Type) == "input_image" {
+			out = append(out, ToolContentItem{
+				Type: "input_text",
+				Text: openAICodexImageContentOmittedPlaceholder,
+			})
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 type openAICodexOutputItem struct {

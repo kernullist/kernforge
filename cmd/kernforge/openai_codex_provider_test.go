@@ -1260,6 +1260,47 @@ func TestBuildOpenAICodexRequestBodyWrapsImageOnlyMessageLikeCodex(t *testing.T)
 	assertCodexLocalImageContent(t, content, 0)
 }
 
+func TestBuildOpenAICodexRequestBodyStripsImagesForTextOnlyModel(t *testing.T) {
+	model := "text-only-codex-request-test"
+	registerCodexModelImageInputSupport(model, false)
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:      model,
+		WorkingDir: t.TempDir(),
+		Messages: []Message{
+			{
+				Role: "user",
+				Text: "inspect",
+				Images: []MessageImage{{
+					Path:      "missing.png",
+					MediaType: "image/png",
+				}},
+			},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call_img", Name: "view_image", Arguments: `{"path":"missing.png"}`}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_img",
+				ToolName:   "view_image",
+				Text:       `{"image_url":"data:image/png;base64,AAA","detail":"high"}`,
+				ToolContentItems: []ToolContentItem{{
+					Type:     "input_image",
+					ImageURL: "data:image/png;base64,AAA",
+					Detail:   imageDetailHigh,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	encoded := string(body)
+	if strings.Contains(encoded, "input_image") || strings.Contains(encoded, "data:image/png;base64") {
+		t.Fatalf("text-only Codex request must not include image payloads: %s", body)
+	}
+	if count := strings.Count(encoded, openAICodexImageContentOmittedPlaceholder); count != 2 {
+		t.Fatalf("expected user and tool image placeholders, count=%d body=%s", count, body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyDropsOrphanToolOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
