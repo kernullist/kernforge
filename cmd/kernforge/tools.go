@@ -637,12 +637,9 @@ func collectToolDefinitionRefs(value any, includeDefinitionTables bool, refs *[]
 				*refs = append(*refs, ref)
 			}
 		}
-		for key, child := range typed {
-			if !includeDefinitionTables && (key == "$defs" || key == "definitions") {
-				continue
-			}
+		forEachToolSchemaChild(typed, includeDefinitionTables, func(child any) {
 			collectToolDefinitionRefs(child, includeDefinitionTables, refs)
-		}
+		})
 	case []any:
 		for _, child := range typed {
 			collectToolDefinitionRefs(child, includeDefinitionTables, refs)
@@ -679,13 +676,40 @@ func decodeJSONPointerToken(token string) string {
 	return token
 }
 
+func forEachToolSchemaChild(schema map[string]any, includeDefinitionTables bool, visitor func(any)) {
+	if rawProperties, ok := schema["properties"].(map[string]any); ok {
+		for _, child := range rawProperties {
+			visitor(child)
+		}
+	}
+	for _, key := range []string{"items", "anyOf"} {
+		if child, ok := schema[key]; ok {
+			visitor(child)
+		}
+	}
+	if child, ok := schema["additionalProperties"]; ok && !isBoolValue(child) {
+		visitor(child)
+	}
+	if includeDefinitionTables {
+		for _, key := range []string{"$defs", "definitions"} {
+			definitions, ok := schema[key].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, child := range definitions {
+				visitor(child)
+			}
+		}
+	}
+}
+
 func stripToolSchemaDescriptions(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		delete(typed, "description")
-		for _, child := range typed {
+		forEachToolSchemaChild(typed, true, func(child any) {
 			stripToolSchemaDescriptions(child)
-		}
+		})
 	case []any:
 		for _, child := range typed {
 			stripToolSchemaDescriptions(child)
@@ -710,12 +734,9 @@ func rewriteToolDefinitionRefsToEmptySchemas(value any) {
 				return
 			}
 		}
-		for key, child := range typed {
-			if key == "$defs" || key == "definitions" {
-				continue
-			}
+		forEachToolSchemaChild(typed, false, func(child any) {
 			rewriteToolDefinitionRefsToEmptySchemas(child)
-		}
+		})
 	case []any:
 		for _, child := range typed {
 			rewriteToolDefinitionRefsToEmptySchemas(child)
@@ -733,28 +754,9 @@ func collapseDeepToolSchemaObjects(value any, depth int) {
 			return
 		}
 
-		if rawProperties, ok := typed["properties"].(map[string]any); ok {
-			for _, child := range rawProperties {
-				collapseDeepToolSchemaObjects(child, depth+1)
-			}
-		}
-		for _, key := range []string{"items", "prefixItems"} {
-			child, ok := typed[key]
-			if !ok {
-				continue
-			}
+		forEachToolSchemaChild(typed, false, func(child any) {
 			collapseDeepToolSchemaObjects(child, depth+1)
-		}
-		if child, ok := typed["additionalProperties"]; ok && !isBoolValue(child) {
-			collapseDeepToolSchemaObjects(child, depth+1)
-		}
-		for _, key := range []string{"anyOf", "oneOf", "allOf"} {
-			child, ok := typed[key]
-			if !ok {
-				continue
-			}
-			collapseDeepToolSchemaObjects(child, depth+1)
-		}
+		})
 	case []any:
 		for _, child := range typed {
 			collapseDeepToolSchemaObjects(child, depth)
@@ -768,7 +770,7 @@ func isBoolValue(value any) bool {
 }
 
 func isComplexToolSchemaObject(schema map[string]any) bool {
-	for _, key := range []string{"properties", "items", "prefixItems", "additionalProperties", "$ref", "anyOf", "oneOf", "allOf"} {
+	for _, key := range []string{"properties", "items", "additionalProperties", "$ref", "anyOf"} {
 		if _, ok := schema[key]; ok {
 			return true
 		}

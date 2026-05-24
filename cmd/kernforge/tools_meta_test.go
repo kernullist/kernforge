@@ -662,6 +662,138 @@ func TestToolRegistryCompactsLargeSchemaByStrippingDescriptions(t *testing.T) {
 	}
 }
 
+func TestToolRegistryCompactsLargeSchemaWithoutRemovingDescriptionProperty(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "large_schema_with_description_property",
+			InputSchema: map[string]any{
+				"type":        "object",
+				"description": strings.Repeat("root description ", 300),
+				"properties": map[string]any{
+					"description": map[string]any{
+						"type":        "string",
+						"description": "user-facing description value",
+					},
+					"metadata": map[string]any{
+						"type":        "object",
+						"description": "metadata object",
+						"properties": map[string]any{
+							"label": map[string]any{
+								"type":        "string",
+								"description": "metadata label",
+							},
+						},
+					},
+					"tags": map[string]any{
+						"type":        "array",
+						"description": "tag list",
+						"items": map[string]any{
+							"type":        "string",
+							"description": "tag value",
+						},
+					},
+					"extras": map[string]any{
+						"type": "object",
+						"additionalProperties": map[string]any{
+							"type":        "string",
+							"description": "extra value",
+						},
+					},
+					"choice": map[string]any{
+						"description": "choice value",
+						"anyOf": []any{
+							map[string]any{
+								"type":        "string",
+								"description": "string choice",
+							},
+							map[string]any{
+								"type":        "number",
+								"description": "number choice",
+							},
+						},
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("large schema with description property should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	descriptionProperty, ok := properties["description"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected property named description to survive compaction, got %#v", properties)
+	}
+	if descriptionProperty["type"] != "string" {
+		t.Fatalf("expected description property schema to survive, got %#v", descriptionProperty)
+	}
+	if _, ok := descriptionProperty["description"]; ok {
+		t.Fatalf("expected schema metadata description to be stripped, got %#v", descriptionProperty)
+	}
+	tags := properties["tags"].(map[string]any)
+	tagItems := tags["items"].(map[string]any)
+	if _, ok := tagItems["description"]; ok {
+		t.Fatalf("expected nested schema metadata description to be stripped, got %#v", tagItems)
+	}
+	extras := properties["extras"].(map[string]any)
+	extraProperties := extras["additionalProperties"].(map[string]any)
+	if _, ok := extraProperties["description"]; ok {
+		t.Fatalf("expected additionalProperties metadata description to be stripped, got %#v", extraProperties)
+	}
+	choice := properties["choice"].(map[string]any)
+	for _, variant := range choice["anyOf"].([]any) {
+		variantSchema := variant.(map[string]any)
+		if _, ok := variantSchema["description"]; ok {
+			t.Fatalf("expected anyOf metadata description to be stripped, got %#v", variantSchema)
+		}
+	}
+}
+
+func TestToolRegistryCompactsLargeSchemaPreservesObjectEnumLiteralDescriptions(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "large_schema_with_object_enum_literals",
+			InputSchema: map[string]any{
+				"type":        "object",
+				"description": strings.Repeat("root description ", 300),
+				"properties": map[string]any{
+					"choice": map[string]any{
+						"enum": []any{
+							map[string]any{
+								"description": "first literal",
+								"id":          float64(1),
+							},
+							map[string]any{
+								"description": "second literal",
+								"id":          float64(2),
+							},
+						},
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("large schema with object enum literals should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	choice := properties["choice"].(map[string]any)
+	enumValues := choice["enum"].([]any)
+	first := enumValues[0].(map[string]any)
+	second := enumValues[1].(map[string]any)
+	if first["description"] != "first literal" || second["description"] != "second literal" {
+		t.Fatalf("expected enum literal descriptions to survive compaction, got %#v", enumValues)
+	}
+}
+
 func TestToolRegistryCompactsLargeSchemaByDroppingDefinitions(t *testing.T) {
 	defProperties := map[string]any{}
 	for i := 0; i < 260; i++ {
