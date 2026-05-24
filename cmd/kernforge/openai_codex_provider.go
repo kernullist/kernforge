@@ -40,6 +40,7 @@ const (
 	openAICodexServerModelHeader       = "OpenAI-Model"
 	openAICodexServerModelsETagHeader  = "X-Models-Etag"
 	openAICodexReasoningIncludedHeader = "x-reasoning-included"
+	openAICodexTrustedAccessForCyber   = "trusted_access_for_cyber"
 )
 
 const openAICodexApplyPatchDescription = "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do not wrap the patch in JSON."
@@ -593,7 +594,8 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			Param   string `json:"param,omitempty"`
 			Code    any    `json:"code,omitempty"`
 		} `json:"error,omitempty"`
-		Output []openAICodexOutputItem `json:"output,omitempty"`
+		Metadata json.RawMessage         `json:"metadata,omitempty"`
+		Output   []openAICodexOutputItem `json:"output,omitempty"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return ChatResponse{}, err
@@ -662,10 +664,11 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
 	}
 	return ChatResponse{
-		Message:     out,
-		StopReason:  stopReason,
-		EndTurn:     decoded.EndTurn,
-		ServerModel: openAICodexServerModelFromResponsePayload(data),
+		Message:            out,
+		StopReason:         stopReason,
+		EndTurn:            decoded.EndTurn,
+		ServerModel:        openAICodexServerModelFromResponsePayload(data),
+		ModelVerifications: openAICodexModelVerificationsFromMetadata(decoded.Metadata),
 	}, nil
 }
 
@@ -693,6 +696,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	var endTurn *bool
 	serverModel := ""
 	rateLimitSummary := ""
+	modelVerifications := []string{}
 	var progress func(ProgressEvent)
 	if len(onProgressEvent) > 0 {
 		progress = onProgressEvent[0]
@@ -761,6 +765,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			OutputIndex int                   `json:"output_index,omitempty"`
 			EndTurn     *bool                 `json:"end_turn,omitempty"`
 			Response    json.RawMessage       `json:"response,omitempty"`
+			Metadata    json.RawMessage       `json:"metadata,omitempty"`
 			Item        openAICodexOutputItem `json:"item,omitempty"`
 			Error       *struct {
 				Message string `json:"message"`
@@ -782,6 +787,10 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if summary := openAICodexRateLimitSummaryFromEventPayload([]byte(payload)); summary != "" {
 				rateLimitSummary = summary
 			}
+			return ChatResponse{}, false, nil
+		}
+		if event.Type == "response.metadata" {
+			modelVerifications = mergeOpenAICodexModelVerifications(modelVerifications, openAICodexModelVerificationsFromMetadata(event.Metadata))
 			return ChatResponse{}, false, nil
 		}
 		switch event.Type {
@@ -985,6 +994,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			if resp.RateLimitSummary == "" {
 				resp.RateLimitSummary = rateLimitSummary
 			}
+			if len(resp.ModelVerifications) == 0 {
+				resp.ModelVerifications = append([]string(nil), modelVerifications...)
+			}
 			return resp, nil
 		}
 	}
@@ -1004,7 +1016,14 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 	if out.Text == "" && len(out.ToolCalls) == 0 {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
 	}
-	return ChatResponse{Message: out, StopReason: stopReason, EndTurn: endTurn, ServerModel: serverModel, RateLimitSummary: rateLimitSummary}, nil
+	return ChatResponse{
+		Message:            out,
+		StopReason:         stopReason,
+		EndTurn:            endTurn,
+		ServerModel:        serverModel,
+		RateLimitSummary:   rateLimitSummary,
+		ModelVerifications: append([]string(nil), modelVerifications...),
+	}, nil
 }
 
 func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
@@ -1024,6 +1043,61 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		}
 	}
 	return strings.TrimSpace(decoded.Model)
+}
+
+func openAICodexModelVerificationsFromMetadata(data json.RawMessage) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	var decoded struct {
+		Recommendation any `json:"openai_verification_recommendation,omitempty"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil
+	}
+	return openAICodexNormalizeModelVerifications(decoded.Recommendation)
+}
+
+func openAICodexNormalizeModelVerifications(value any) []string {
+	switch typed := value.(type) {
+	case string:
+		return openAICodexAppendModelVerification(nil, typed)
+	case []any:
+		out := []string{}
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			out = openAICodexAppendModelVerification(out, text)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openAICodexAppendModelVerification(existing []string, value string) []string {
+	normalized := strings.TrimSpace(value)
+	switch normalized {
+	case openAICodexTrustedAccessForCyber:
+	default:
+		return existing
+	}
+	for _, item := range existing {
+		if item == normalized {
+			return existing
+		}
+	}
+	return append(existing, normalized)
+}
+
+func mergeOpenAICodexModelVerifications(existing []string, incoming []string) []string {
+	out := append([]string(nil), existing...)
+	for _, item := range incoming {
+		out = openAICodexAppendModelVerification(out, item)
+	}
+	return out
 }
 
 func openAICodexRateLimitSummaryFromEventPayload(data []byte) string {

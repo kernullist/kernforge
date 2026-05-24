@@ -16,6 +16,8 @@ const (
 	progressKindModelStreamToolCall  = "model_stream_tool_call"
 	progressKindModelStreamToolArgs  = "model_stream_tool_arguments"
 	progressKindModelStreamToolReady = "model_stream_tool_ready"
+	progressKindModelReroute         = "model_reroute"
+	progressKindModelVerification    = "model_verification"
 	progressKindToolStarted          = "tool_started"
 	progressKindToolCompleted        = "tool_completed"
 	progressKindToolFailed           = "tool_failed"
@@ -94,6 +96,16 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model prepared tool call: %s", "모델 tool call 준비 완료: %s"), event.ToolName))
 		}
 		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model prepared a tool call.", "모델 tool call 준비 완료."))
+	case progressKindModelReroute:
+		if event.Model != "" && event.Status != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Server routed request to %s instead of %s.", "서버가 요청을 %s로 라우팅했습니다(요청 모델: %s)."), event.Status, event.Model))
+		}
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Server reported a different model route.", "서버가 다른 모델 route를 보고했습니다."))
+	case progressKindModelVerification:
+		if event.Status != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model verification received: %s", "모델 verification 수신: %s"), event.Status))
+		}
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model verification received.", "모델 verification 수신."))
 	case progressKindToolStarted:
 		if event.ToolName != "" {
 			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), event.ToolName))
@@ -159,6 +171,8 @@ func progressEventAllowsContextPrefix(event ProgressEvent) bool {
 		progressKindModelStreamToolCall,
 		progressKindModelStreamToolArgs,
 		progressKindModelStreamToolReady,
+		progressKindModelReroute,
+		progressKindModelVerification,
 		progressKindProviderRetry:
 		return true
 	default:

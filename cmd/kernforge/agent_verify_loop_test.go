@@ -3570,6 +3570,56 @@ func TestAgentContinuesSameTurnWhenProviderEndTurnFalse(t *testing.T) {
 	}
 }
 
+func TestAgentEmitsCodexServerModelAndVerificationMetadata(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{{
+			Message:            Message{Role: "assistant", Text: "The request is complete."},
+			ServerModel:        "gpt-5.2",
+			ModelVerifications: []string{openAICodexTrustedAccessForCyber},
+		}},
+	}
+	session := NewSession(root, "openai-codex", "gpt-5.3-codex", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	events := []ProgressEvent{}
+	agent := &Agent{
+		Config: Config{
+			Model: "gpt-5.3-codex",
+		},
+		Client: provider,
+		Tools:  NewToolRegistry(),
+		EmitProgressEvent: func(event ProgressEvent) {
+			events = append(events, event)
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != "The request is complete." {
+		t.Fatalf("expected reply, got %q", reply)
+	}
+	if !progressEventsContainKind(events, progressKindModelReroute) {
+		t.Fatalf("expected model reroute progress event, got %#v", events)
+	}
+	if !progressEventsContainKind(events, progressKindModelVerification) {
+		t.Fatalf("expected model verification progress event, got %#v", events)
+	}
+}
+
+func progressEventsContainKind(events []ProgressEvent, kind string) bool {
+	for _, event := range events {
+		if strings.TrimSpace(event.Kind) == kind {
+			return true
+		}
+	}
+	return false
+}
+
 func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
 	endTurnFalse := false

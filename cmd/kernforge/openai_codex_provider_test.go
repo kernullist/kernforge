@@ -1407,6 +1407,24 @@ func TestParseOpenAICodexResponseCapturesServerModel(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseCapturesModelVerifications(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"metadata":{"openai_verification_recommendation":["trusted_access_for_cyber","unknown","trusted_access_for_cyber"]},
+		"output":[{
+			"type":"message",
+			"role":"assistant",
+			"content":[{"type":"output_text","text":"done"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.ModelVerifications) != 1 || resp.ModelVerifications[0] != openAICodexTrustedAccessForCyber {
+		t.Fatalf("expected trusted access verification to be captured once, got %#v", resp.ModelVerifications)
+	}
+}
+
 func TestParseOpenAICodexResponseUsesFinalTextOverCommentary(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -1622,6 +1640,22 @@ func TestReadOpenAICodexStreamCapturesRateLimitEvent(t *testing.T) {
 	want := "primary=12.5% window=10m reset_at=1704069000, secondary=40% window=60m, credits(has_credits=true unlimited=false balance=42)"
 	if resp.RateLimitSummary != want {
 		t.Fatalf("expected rate limit event summary %q, got %q", want, resp.RateLimitSummary)
+	}
+}
+
+func TestReadOpenAICodexStreamCapturesModelVerificationEvent(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber","ignored"]}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.ModelVerifications) != 1 || resp.ModelVerifications[0] != openAICodexTrustedAccessForCyber {
+		t.Fatalf("expected trusted access verification to be captured once, got %#v", resp.ModelVerifications)
 	}
 }
 

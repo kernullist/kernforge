@@ -626,6 +626,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastPostChangeReviewFingerprint := ""
 	lastReviewedFinalAnswer := ""
 	finalAnswerOnlyCorrection := false
+	serverModelWarningEmitted := false
+	modelVerificationEmitted := false
 	providerTurnState := &ProviderTurnState{}
 	attemptedEditTool := false
 	successfulEditTool := false
@@ -771,6 +773,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 			return "", err
 		}
+		a.emitProviderResponseMetadata(turnReq, resp, &serverModelWarningEmitted, &modelVerificationEmitted)
 		rawAssistantText := resp.Message.Text
 		resp.Message.Text = sanitizeAssistantMessageText(rawAssistantText, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
@@ -4175,6 +4178,52 @@ func (a *Agent) completeModelTurnOnce(ctx context.Context, req ChatRequest) (Cha
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}
 	return completeModelTurnOnceWithModelRoutes(ctx, a.modelRouteScheduler(), a.modelRoutePolicy(), a.Config, a.Client, req)
+}
+
+func (a *Agent) emitProviderResponseMetadata(req ChatRequest, resp ChatResponse, serverModelWarningEmitted *bool, modelVerificationEmitted *bool) {
+	if a == nil {
+		return
+	}
+	requestedModel := strings.TrimSpace(req.Model)
+	serverModel := strings.TrimSpace(resp.ServerModel)
+	if serverModel != "" &&
+		requestedModel != "" &&
+		!strings.EqualFold(serverModel, requestedModel) &&
+		(serverModelWarningEmitted == nil || !*serverModelWarningEmitted) {
+		if serverModelWarningEmitted != nil {
+			*serverModelWarningEmitted = true
+		}
+		a.emitProgressEvent(ProgressEvent{
+			Kind:    progressKindModelReroute,
+			Model:   requestedModel,
+			Status:  serverModel,
+			Message: openAICodexServerModelMismatchMessage(requestedModel, serverModel),
+		})
+	}
+	if len(resp.ModelVerifications) == 0 ||
+		(modelVerificationEmitted != nil && *modelVerificationEmitted) {
+		return
+	}
+	if modelVerificationEmitted != nil {
+		*modelVerificationEmitted = true
+	}
+	a.emitProgressEvent(ProgressEvent{
+		Kind:   progressKindModelVerification,
+		Model:  requestedModel,
+		Status: strings.Join(resp.ModelVerifications, ", "),
+	})
+}
+
+func openAICodexServerModelMismatchMessage(requestedModel string, serverModel string) string {
+	requestedModel = strings.TrimSpace(requestedModel)
+	serverModel = strings.TrimSpace(serverModel)
+	if strings.EqualFold(serverModel, "gpt-5.2") && strings.Contains(strings.ToLower(requestedModel), "codex") {
+		return "Your account was flagged for potentially high-risk cyber activity and this request was routed to gpt-5.2 as a fallback. To regain access to Codex models, apply for trusted access: https://chatgpt.com/cyber or learn more: https://developers.openai.com/codex/concepts/cyber-safety"
+	}
+	if requestedModel == "" || serverModel == "" {
+		return ""
+	}
+	return fmt.Sprintf("Server routed request to %s instead of %s.", serverModel, requestedModel)
 }
 
 func (a *Agent) attachProviderRequestMetadata(req ChatRequest) ChatRequest {
