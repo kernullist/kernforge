@@ -882,6 +882,99 @@ func TestBuildOpenAICodexRequestBodyMarksToolSearchNamespaceOutputDeferred(t *te
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyFiltersToolSearchOutputToLoadableSpecs(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "discover tools"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_search",
+				Name:      "tool_search",
+				Arguments: mustJSON(map[string]any{"query": "tools"}),
+			}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_search",
+				ToolName:   "tool_search",
+				Text: mustJSON(map[string]any{
+					"tools": []any{
+						map[string]any{
+							"type":        "tool_search",
+							"execution":   "client",
+							"description": "Recursive search should not be re-exposed",
+							"parameters":  map[string]any{"type": "object"},
+						},
+						map[string]any{
+							"type":          "image_generation",
+							"output_format": "png",
+						},
+						map[string]any{
+							"type": "web_search",
+						},
+						map[string]any{
+							"type":        "custom",
+							"name":        "apply_patch",
+							"description": "Freeform tools are not loadable tool_search specs",
+						},
+						map[string]any{
+							"type":        "function",
+							"name":        "read_file",
+							"description": "Read file",
+						},
+						map[string]any{
+							"type": "namespace",
+							"name": "mcp__repo__",
+							"tools": []any{
+								map[string]any{
+									"type":        "function",
+									"name":        "inspect",
+									"description": "Inspect repo",
+								},
+								map[string]any{
+									"type": "web_search",
+								},
+							},
+						},
+					},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	output := input[2].(map[string]any)
+	tools, ok := output["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected only function and namespace loadable specs, got %#v in %s", output["tools"], body)
+	}
+	functionTool := tools[0].(map[string]any)
+	if functionTool["type"] != "function" || functionTool["name"] != "read_file" || functionTool["defer_loading"] != true {
+		t.Fatalf("expected deferred read_file function, got %#v", functionTool)
+	}
+	namespace := tools[1].(map[string]any)
+	if namespace["type"] != "namespace" || namespace["name"] != "mcp__repo__" {
+		t.Fatalf("expected namespace loadable spec, got %#v", namespace)
+	}
+	if namespace["description"] != "Tools in the mcp__repo__ namespace." {
+		t.Fatalf("expected default namespace description, got %#v", namespace["description"])
+	}
+	children, ok := namespace["tools"].([]any)
+	if !ok || len(children) != 1 {
+		t.Fatalf("expected unsupported namespace children to be filtered, got %#v", namespace["tools"])
+	}
+	child := children[0].(map[string]any)
+	if child["type"] != "function" || child["name"] != "inspect" || child["defer_loading"] != true {
+		t.Fatalf("expected deferred namespace child function, got %#v", child)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyPreservesAssistantPhase(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",

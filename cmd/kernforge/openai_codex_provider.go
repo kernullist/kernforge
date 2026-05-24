@@ -1050,9 +1050,60 @@ func openAICodexSanitizeToolSearchTools(tools []any) []any {
 	}
 	out := make([]any, 0, len(tools))
 	for _, tool := range tools {
-		out = append(out, openAICodexMarkToolSearchSpecDeferred(openAICodexStripOutputSchemaFields(tool)))
+		if sanitized, ok := openAICodexSanitizeToolSearchToolSpec(tool); ok {
+			out = append(out, sanitized)
+		}
 	}
 	return coalesceOpenAICodexToolSearchNamespaceTools(out)
+}
+
+func openAICodexSanitizeToolSearchToolSpec(value any) (any, bool) {
+	tool, ok := openAICodexStripOutputSchemaFields(value).(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	switch strings.TrimSpace(stringsValueFromAny(tool["type"])) {
+	case "function":
+		if strings.TrimSpace(stringsValueFromAny(tool["name"])) == "" {
+			return nil, false
+		}
+		tool["defer_loading"] = true
+		return tool, true
+	case "namespace":
+		namespace := strings.TrimSpace(stringsValueFromAny(tool["name"]))
+		if namespace == "" {
+			return nil, false
+		}
+		if strings.TrimSpace(stringsValueFromAny(tool["description"])) == "" {
+			tool["description"] = openAICodexNamespaceDescription(namespace, "")
+		}
+		children, ok := tool["tools"].([]any)
+		if !ok {
+			return nil, false
+		}
+		filteredChildren := make([]any, 0, len(children))
+		for _, child := range children {
+			childTool, ok := child.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(stringsValueFromAny(childTool["type"])) != "function" {
+				continue
+			}
+			if strings.TrimSpace(stringsValueFromAny(childTool["name"])) == "" {
+				continue
+			}
+			childTool["defer_loading"] = true
+			filteredChildren = append(filteredChildren, childTool)
+		}
+		if len(filteredChildren) == 0 {
+			return nil, false
+		}
+		tool["tools"] = filteredChildren
+		return tool, true
+	default:
+		return nil, false
+	}
 }
 
 func openAICodexStripOutputSchemaFields(value any) any {
@@ -1075,36 +1126,6 @@ func openAICodexStripOutputSchemaFields(value any) any {
 	default:
 		return value
 	}
-}
-
-func openAICodexMarkToolSearchSpecDeferred(value any) any {
-	tool, ok := value.(map[string]any)
-	if !ok {
-		return value
-	}
-	switch strings.TrimSpace(stringsValueFromAny(tool["type"])) {
-	case "function":
-		tool["defer_loading"] = true
-	case "namespace":
-		namespace := strings.TrimSpace(stringsValueFromAny(tool["name"]))
-		if strings.TrimSpace(stringsValueFromAny(tool["description"])) == "" && namespace != "" {
-			tool["description"] = openAICodexNamespaceDescription(namespace, "")
-		}
-		children, ok := tool["tools"].([]any)
-		if !ok {
-			return tool
-		}
-		for _, child := range children {
-			childTool, ok := child.(map[string]any)
-			if !ok {
-				continue
-			}
-			if strings.TrimSpace(stringsValueFromAny(childTool["type"])) == "function" {
-				childTool["defer_loading"] = true
-			}
-		}
-	}
-	return tool
 }
 
 func coalesceOpenAICodexToolSearchNamespaceTools(tools []any) []any {
