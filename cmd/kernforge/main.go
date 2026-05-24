@@ -745,6 +745,7 @@ func (rt *runtimeState) showBanner() {
 	if rt.bannerShown {
 		return
 	}
+	ensureVirtualTerminalProcessing()
 	fmt.Fprint(rt.writer, rt.ui.clearScreen())
 	fmt.Fprintln(rt.writer, rt.ui.banner(rt.session.Provider, rt.session.Model, rt.session.ID, rt.session.WorkingDir))
 	rt.bannerShown = true
@@ -1495,6 +1496,7 @@ func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text str
 func (rt *runtimeState) writeOutput(text string) {
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
+	ensureVirtualTerminalProcessing()
 	fmt.Fprint(rt.writer, text)
 }
 
@@ -1549,6 +1551,7 @@ func (rt *runtimeState) renderFooterTextLocked(text string) {
 		rt.clearFooterLineLocked()
 		return
 	}
+	ensureVirtualTerminalProcessing()
 	nextLineCount := footerDisplayLineCount(text)
 	if rt.footerVisible && rt.footerLineCount == 1 && nextLineCount == 1 {
 		oldWidth := visibleLen(rt.footerText)
@@ -1589,6 +1592,7 @@ func (rt *runtimeState) renderFooterLine(text string) {
 func (rt *runtimeState) writeOutputLines(lines ...string) {
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
+	ensureVirtualTerminalProcessing()
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			fmt.Fprintln(rt.writer)

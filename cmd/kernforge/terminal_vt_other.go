@@ -2,4 +2,6 @@
 
 package main
 
-func ensureVirtualTerminalProcessing() {}
+func ensureVirtualTerminalProcessing() error {
+	return nil
+}

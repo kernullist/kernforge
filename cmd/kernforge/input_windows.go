@@ -208,6 +208,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			if rt.shouldIgnorePromptEscape() {
 				continue
 			}
+			ensureVirtualTerminalProcessing()
 			fmt.Fprint(rt.writer, cancelInteractiveLine(prevLines))
 			return "", true, ErrPromptCanceled
 		case inputVKBack:

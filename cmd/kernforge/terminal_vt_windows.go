@@ -22,27 +22,36 @@ var (
 	setConsoleModeVTProc  = kernel32TerminalVTDLL.NewProc("SetConsoleMode")
 )
 
-func ensureVirtualTerminalProcessing() {
-	enableVirtualTerminalProcessingForHandle(stdOutputHandle)
-	enableVirtualTerminalProcessingForHandle(stdErrorHandle)
+func ensureVirtualTerminalProcessing() error {
+	if err := enableVirtualTerminalProcessingForHandle(stdOutputHandle); err != nil {
+		return err
+	}
+	return enableVirtualTerminalProcessingForHandle(stdErrorHandle)
 }
 
-func enableVirtualTerminalProcessingForHandle(stdHandle uint32) {
+func enableVirtualTerminalProcessingForHandle(stdHandle uint32) error {
 	handle, _, _ := getStdHandleVTProc.Call(uintptr(stdHandle))
 	if handle == 0 || handle == invalidHandleValue {
-		return
+		return nil
 	}
 
 	var mode uint32
 	ok, _, _ := getConsoleModeVTProc.Call(handle, uintptr(unsafe.Pointer(&mode)))
 	if ok == 0 {
-		return
+		return nil
 	}
 
 	requested := uint32(enableProcessedOutput | enableVirtualTerminalProcessing)
 	if mode&requested == requested {
-		return
+		return nil
 	}
 
-	setConsoleModeVTProc.Call(handle, uintptr(mode|requested))
+	ok, _, err := setConsoleModeVTProc.Call(handle, uintptr(mode|requested))
+	if ok == 0 {
+		if err != syscall.Errno(0) {
+			return err
+		}
+		return syscall.EINVAL
+	}
+	return nil
 }
