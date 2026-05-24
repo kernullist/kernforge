@@ -1928,6 +1928,36 @@ func TestParseOpenAICodexResponseParsesCodexToolCallVariants(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesFunctionCallNamespace(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"function_call",
+			"call_id":"call_mcp",
+			"namespace":"mcp__filesystem__",
+			"name":"read_file",
+			"arguments":"{\"path\":\"main.go\"}"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one namespaced function call, got %#v", resp.Message.ToolCalls)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" {
+		t.Fatalf("expected namespace and name to be flattened like Codex, got %#v", call)
+	}
+	var args map[string]string
+	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+		t.Fatalf("function arguments are not JSON: %v", err)
+	}
+	if args["path"] != "main.go" {
+		t.Fatalf("unexpected namespaced function arguments: %#v", args)
+	}
+}
+
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done text"}]}}`,
@@ -2268,6 +2298,33 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	if !progressEventsContain(events, progressKindModelStreamToolReady, "apply_patch") ||
 		!progressEventsContain(events, progressKindModelStreamToolReady, "tool_search") {
 		t.Fatalf("expected ready events for client tool calls, got %#v", events)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesFunctionCallNamespace(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_mcp","namespace":"mcp__filesystem__","name":"read_file"}}`,
+		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"main.go\"}"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	var events []ProgressEvent
+	resp, err := readOpenAICodexStream(context.Background(), stream, func(event ProgressEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one namespaced function call, got %#v", resp.Message.ToolCalls)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.ID != "call_mcp" || call.Name != "mcp__filesystem__read_file" {
+		t.Fatalf("expected namespace and name to be flattened like Codex, got %#v", call)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolCall, "mcp__filesystem__read_file") ||
+		!progressEventsContain(events, progressKindModelStreamToolReady, "mcp__filesystem__read_file") {
+		t.Fatalf("expected namespaced tool progress events, got %#v", events)
 	}
 }
 

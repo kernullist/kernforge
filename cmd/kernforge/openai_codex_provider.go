@@ -789,6 +789,7 @@ type openAICodexOutputItem struct {
 	Phase     string          `json:"phase,omitempty"`
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
+	Namespace string          `json:"namespace,omitempty"`
 	Input     string          `json:"input,omitempty"`
 	Execution string          `json:"execution,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
@@ -1483,10 +1484,7 @@ func openAICodexToolCallFromOutputItem(item openAICodexOutputItem) (ToolCall, bo
 	if callID == "" {
 		return ToolCall{}, false
 	}
-	name := strings.TrimSpace(item.Name)
-	if strings.TrimSpace(item.Type) == "tool_search_call" {
-		name = "tool_search"
-	}
+	name := openAICodexOutputItemToolName(item)
 	if name == "" {
 		return ToolCall{}, false
 	}
@@ -1501,10 +1499,7 @@ func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item o
 	if target == nil || !openAICodexOutputItemIsToolCall(item) {
 		return false
 	}
-	name := strings.TrimSpace(item.Name)
-	if strings.TrimSpace(item.Type) == "tool_search_call" {
-		name = "tool_search"
-	}
+	name := openAICodexOutputItemToolName(item)
 	target.ID = firstNonEmptyTrimmed(item.CallID, item.ID, target.ID)
 	target.Name = firstNonEmptyTrimmed(name, target.Name)
 	target.Type = firstNonEmptyTrimmed(item.Type, target.Type)
@@ -1519,6 +1514,18 @@ func openAICodexPopulateStreamToolCall(target *openAICodexStreamToolCall, item o
 		}
 	}
 	return true
+}
+
+func openAICodexOutputItemToolName(item openAICodexOutputItem) string {
+	if strings.TrimSpace(item.Type) == "tool_search_call" {
+		return "tool_search"
+	}
+	name := strings.TrimSpace(item.Name)
+	namespace := strings.TrimSpace(item.Namespace)
+	if namespace == "" || name == "" || strings.HasPrefix(name, namespace) {
+		return name
+	}
+	return namespace + name
 }
 
 func openAICodexOutputItemHasArguments(item openAICodexOutputItem) bool {
