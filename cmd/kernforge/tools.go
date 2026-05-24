@@ -1453,11 +1453,15 @@ func (w Workspace) ResolveLookupPath(path string, ownerNodeID string) (EditRouti
 		}
 		return route, nil
 	}
-	if strings.TrimSpace(ownerNodeID) == "" || !isEditTargetMismatchError(err) {
+	if strings.TrimSpace(ownerNodeID) == "" || !isLookupOwnerFallbackError(err) {
 		return EditRoutingResult{}, err
 	}
 	req.OwnerNodeID = ""
-	return w.ResolveEditPathWithOptions(req)
+	fallback, fallbackErr := w.ResolveEditPathWithOptions(req)
+	if fallbackErr != nil {
+		return EditRoutingResult{}, err
+	}
+	return fallback, nil
 }
 
 func (w Workspace) lookupFallbackForMissingOwnedWorktreeRoute(req EditRoutingRequest, route EditRoutingResult) (EditRoutingResult, bool) {
@@ -1494,6 +1498,19 @@ func isEditTargetMismatchError(err error) bool {
 	text := strings.ToLower(strings.TrimSpace(err.Error()))
 	return strings.Contains(text, "edit target mismatch") ||
 		strings.Contains(text, "outside editable ownership")
+}
+
+func isLookupOwnerFallbackError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isEditTargetMismatchError(err) || errors.Is(err, fs.ErrNotExist) || os.IsNotExist(err) {
+		return true
+	}
+	text := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(text, "cannot find path") ||
+		strings.Contains(text, "no such file") ||
+		strings.Contains(text, "system cannot find")
 }
 
 func (w Workspace) ResolveEditPathWithOptions(req EditRoutingRequest) (EditRoutingResult, error) {

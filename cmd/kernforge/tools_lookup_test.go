@@ -236,6 +236,78 @@ func TestLookupToolsRecoverWhenOwnedWorktreeRouteIsMissing(t *testing.T) {
 	}
 }
 
+func TestLookupToolsRecoverWhenOwnedLookupReturnsMissingPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "sentinel", err: os.ErrNotExist},
+		{name: "windows-text", err: fmt.Errorf("The system cannot find the path specified")},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			sourceDir := filepath.Join(root, "src")
+			if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+				t.Fatalf("MkdirAll sourceDir: %v", err)
+			}
+			sourceFile := filepath.Join(sourceDir, "main.go")
+			if err := os.WriteFile(sourceFile, []byte("package main\nfunc main() {}\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile sourceFile: %v", err)
+			}
+
+			ws := Workspace{
+				BaseRoot: root,
+				Root:     root,
+			}
+			ws.ResolveEditTarget = func(req EditRoutingRequest) (EditRoutingResult, error) {
+				req = req.normalized()
+				if req.lookupIntent() && strings.TrimSpace(req.OwnerNodeID) != "" {
+					return EditRoutingResult{}, tc.err
+				}
+				return ws.resolveEditFallback(req)
+			}
+
+			readTool := NewReadFileTool(ws)
+			readResult, err := readTool.ExecuteDetailed(context.Background(), map[string]any{
+				"path":          "src/main.go",
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("read_file should fall back after owned lookup missing path: %v", err)
+			}
+			if !strings.Contains(readResult.DisplayText, "package main") {
+				t.Fatalf("expected read_file to return main workspace file, got %q", readResult.DisplayText)
+			}
+
+			listTool := NewListFilesTool(ws)
+			listResult, err := listTool.ExecuteDetailed(context.Background(), map[string]any{
+				"path":          "src/main.go",
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("list_files should fall back after owned lookup missing path: %v", err)
+			}
+			if toolMetaString(listResult.Meta, "path_type") != "file" {
+				t.Fatalf("expected list_files fallback to return file metadata, got %#v", listResult.Meta)
+			}
+
+			grepTool := NewGrepTool(ws)
+			grepResult, err := grepTool.ExecuteDetailed(context.Background(), map[string]any{
+				"pattern":       "package main",
+				"path":          "src",
+				"owner_node_id": "plan-01",
+			})
+			if err != nil {
+				t.Fatalf("grep should fall back after owned lookup missing path: %v", err)
+			}
+			if !strings.Contains(grepResult.DisplayText, "src/main.go") {
+				t.Fatalf("expected grep to find main workspace file, got %q", grepResult.DisplayText)
+			}
+		})
+	}
+}
+
 func assertLookupToolsRecoverFromOwnerEditMismatch(t *testing.T, wrapSentinel bool) {
 	t.Helper()
 
