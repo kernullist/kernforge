@@ -1643,6 +1643,82 @@ func TestLoadMCPManagerSkipsEmptyEnvOverridesAndKeepsConfiguredValues(t *testing
 	}
 }
 
+func TestBuildMCPProcessEnvForwardsManagedProxyEnvAndEnablesNodeProxyOptIn(t *testing.T) {
+	t.Setenv("CODEX_NETWORK_PROXY_ACTIVE", "1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:3128")
+	t.Setenv("NO_PROXY", "localhost,127.0.0.1")
+
+	envList, err := buildMCPProcessEnv(MCPServerConfig{})
+	if err != nil {
+		t.Fatalf("build MCP process env: %v", err)
+	}
+	env := splitProcessEnv(envList)
+	if env["HTTP_PROXY"] != "http://127.0.0.1:3128" {
+		t.Fatalf("expected HTTP_PROXY to be forwarded, got %#v", env)
+	}
+	if env["CODEX_NETWORK_PROXY_ACTIVE"] != "1" {
+		t.Fatalf("expected managed proxy marker to be forwarded, got %#v", env)
+	}
+	if env["NO_PROXY"] != "localhost,127.0.0.1" {
+		t.Fatalf("expected NO_PROXY to be forwarded, got %#v", env)
+	}
+	if env["NODE_USE_ENV_PROXY"] != "1" {
+		t.Fatalf("expected NODE_USE_ENV_PROXY opt-in for proxied MCP child, got %#v", env)
+	}
+}
+
+func TestBuildMCPProcessEnvPreservesExplicitNodeProxyOptIn(t *testing.T) {
+	t.Setenv("CODEX_NETWORK_PROXY_ACTIVE", "1")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:3128")
+	t.Setenv("NODE_USE_ENV_PROXY", "0")
+
+	envList, err := buildMCPProcessEnv(MCPServerConfig{})
+	if err != nil {
+		t.Fatalf("build MCP process env: %v", err)
+	}
+	env := splitProcessEnv(envList)
+	if env["NODE_USE_ENV_PROXY"] != "0" {
+		t.Fatalf("expected explicit NODE_USE_ENV_PROXY to be preserved, got %#v", env)
+	}
+}
+
+func TestBuildMCPProcessEnvDoesNotForwardAmbientProxyWithoutManagedProxy(t *testing.T) {
+	t.Setenv("CODEX_NETWORK_PROXY_ACTIVE", "")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:3128")
+
+	envList, err := buildMCPProcessEnv(MCPServerConfig{})
+	if err != nil {
+		t.Fatalf("build MCP process env: %v", err)
+	}
+	env := splitProcessEnv(envList)
+	if _, ok := env["HTTP_PROXY"]; ok {
+		t.Fatalf("ambient HTTP_PROXY should not be forwarded without managed proxy marker, got %#v", env)
+	}
+	if _, ok := env["NODE_USE_ENV_PROXY"]; ok {
+		t.Fatalf("NODE_USE_ENV_PROXY should not be added without forwarded proxy, got %#v", env)
+	}
+}
+
+func TestBuildMCPProcessEnvEnablesNodeProxyOptInForConfiguredProxy(t *testing.T) {
+	t.Setenv("CODEX_NETWORK_PROXY_ACTIVE", "")
+
+	envList, err := buildMCPProcessEnv(MCPServerConfig{
+		Env: map[string]string{
+			"HTTPS_PROXY": "http://127.0.0.1:3128",
+		},
+	})
+	if err != nil {
+		t.Fatalf("build MCP process env: %v", err)
+	}
+	env := splitProcessEnv(envList)
+	if env["HTTPS_PROXY"] != "http://127.0.0.1:3128" {
+		t.Fatalf("expected configured HTTPS_PROXY, got %#v", env)
+	}
+	if env["NODE_USE_ENV_PROXY"] != "1" {
+		t.Fatalf("expected NODE_USE_ENV_PROXY opt-in for configured proxy, got %#v", env)
+	}
+}
+
 func TestLoadMCPManagerUsesCoreEnvAndRequestedEnvVars(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KERNFORGE_MCP_REQUESTED_ENV", "requested")
@@ -1722,4 +1798,16 @@ func requireMCPToolByName(t *testing.T, manager *MCPManager, name string) Tool {
 	}
 	t.Fatalf("expected MCP tool %q", name)
 	return nil
+}
+
+func splitProcessEnv(values []string) map[string]string {
+	out := map[string]string{}
+	for _, value := range values {
+		key, val, ok := strings.Cut(value, "=")
+		if !ok {
+			continue
+		}
+		out[key] = val
+	}
+	return out
 }

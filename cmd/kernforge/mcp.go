@@ -243,6 +243,72 @@ var unixCoreMCPEnvVars = []string{
 	"USER",
 }
 
+var managedProxyMCPEnvVars = []string{
+	"CODEX_NETWORK_PROXY_ACTIVE",
+	"CODEX_NETWORK_ALLOW_LOCAL_BINDING",
+	"ELECTRON_GET_USE_PROXY",
+	"NODE_USE_ENV_PROXY",
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"WS_PROXY",
+	"WSS_PROXY",
+	"ws_proxy",
+	"wss_proxy",
+	"ALL_PROXY",
+	"all_proxy",
+	"FTP_PROXY",
+	"ftp_proxy",
+	"NO_PROXY",
+	"no_proxy",
+	"npm_config_http_proxy",
+	"npm_config_https_proxy",
+	"npm_config_proxy",
+	"NPM_CONFIG_HTTP_PROXY",
+	"NPM_CONFIG_HTTPS_PROXY",
+	"NPM_CONFIG_PROXY",
+	"npm_config_noproxy",
+	"NPM_CONFIG_NOPROXY",
+	"YARN_HTTP_PROXY",
+	"YARN_HTTPS_PROXY",
+	"YARN_NO_PROXY",
+	"BUNDLE_HTTP_PROXY",
+	"BUNDLE_HTTPS_PROXY",
+	"BUNDLE_NO_PROXY",
+	"PIP_PROXY",
+	"DOCKER_HTTP_PROXY",
+	"DOCKER_HTTPS_PROXY",
+}
+
+var proxyURLMCPEnvVars = []string{
+	"HTTP_PROXY",
+	"HTTPS_PROXY",
+	"http_proxy",
+	"https_proxy",
+	"WS_PROXY",
+	"WSS_PROXY",
+	"ws_proxy",
+	"wss_proxy",
+	"ALL_PROXY",
+	"all_proxy",
+	"FTP_PROXY",
+	"ftp_proxy",
+	"npm_config_http_proxy",
+	"npm_config_https_proxy",
+	"npm_config_proxy",
+	"NPM_CONFIG_HTTP_PROXY",
+	"NPM_CONFIG_HTTPS_PROXY",
+	"NPM_CONFIG_PROXY",
+	"YARN_HTTP_PROXY",
+	"YARN_HTTPS_PROXY",
+	"BUNDLE_HTTP_PROXY",
+	"BUNDLE_HTTPS_PROXY",
+	"PIP_PROXY",
+	"DOCKER_HTTP_PROXY",
+	"DOCKER_HTTPS_PROXY",
+}
+
 func (v *MCPServerEnvVar) UnmarshalJSON(data []byte) error {
 	var name string
 	if err := json.Unmarshal(data, &name); err == nil {
@@ -479,6 +545,11 @@ func buildMCPProcessEnv(cfg MCPServerConfig) ([]string, error) {
 	for _, name := range defaultMCPEnvVarNames() {
 		addFromParent(name)
 	}
+	if parentManagedProxyActive() {
+		for _, name := range managedProxyMCPEnvVars {
+			addFromParent(name)
+		}
+	}
 	for _, envVar := range normalizeMCPServerEnvVars(cfg.EnvVars) {
 		if err := envVar.validate(); err != nil {
 			return nil, err
@@ -500,12 +571,31 @@ func buildMCPProcessEnv(cfg MCPServerConfig) ([]string, error) {
 		}
 		env[trimmedKey] = trimmedValue
 	}
+	applyMCPNodeProxyOptIn(env)
 	out := make([]string, 0, len(env))
 	for key, value := range env {
 		out = append(out, key+"="+value)
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func parentManagedProxyActive() bool {
+	value, ok := os.LookupEnv("CODEX_NETWORK_PROXY_ACTIVE")
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	return ok && normalized != "" && normalized != "0" && normalized != "false"
+}
+
+func applyMCPNodeProxyOptIn(env map[string]string) {
+	if strings.TrimSpace(env["NODE_USE_ENV_PROXY"]) != "" {
+		return
+	}
+	for _, key := range proxyURLMCPEnvVars {
+		if strings.TrimSpace(env[key]) != "" {
+			env["NODE_USE_ENV_PROXY"] = "1"
+			return
+		}
+	}
 }
 
 func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, error) {
