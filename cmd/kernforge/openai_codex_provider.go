@@ -698,7 +698,6 @@ func openAICodexToolCallOutputItem(callID string, msg Message) map[string]any {
 		return map[string]any{
 			"type":    "custom_tool_call_output",
 			"call_id": callID,
-			"name":    "apply_patch",
 			"output":  toolOutputForResponses(msg),
 		}
 	}

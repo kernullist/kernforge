@@ -392,8 +392,11 @@ func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing
 		t.Fatalf("custom apply_patch call must not use JSON arguments, got %#v", call)
 	}
 	output := input[2].(map[string]any)
-	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" || output["name"] != "apply_patch" {
+	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" {
 		t.Fatalf("expected custom apply_patch output item, got %#v", output)
+	}
+	if _, exists := output["name"]; exists {
+		t.Fatalf("custom apply_patch output should omit name to match Codex, got %#v", output)
 	}
 }
 
@@ -786,8 +789,11 @@ func TestBuildOpenAICodexRequestBodySynthesizesMissingApplyPatchOutputAsCustom(t
 		t.Fatalf("expected apply_patch custom tool call, got %#v", call)
 	}
 	output := input[2].(map[string]any)
-	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" || output["name"] != "apply_patch" {
+	if output["type"] != "custom_tool_call_output" || output["call_id"] != "call_patch" {
 		t.Fatalf("expected synthesized apply_patch custom output, got %#v", output)
+	}
+	if _, exists := output["name"]; exists {
+		t.Fatalf("synthesized apply_patch custom output should omit name to match Codex, got %#v", output)
 	}
 	if encoded := string(body); strings.Contains(encoded, `"type":"function_call_output"`) {
 		t.Fatalf("apply_patch missing result must not be synthesized as function_call_output: %s", encoded)
