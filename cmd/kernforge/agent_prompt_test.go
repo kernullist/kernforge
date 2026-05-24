@@ -209,6 +209,47 @@ func TestSystemPromptDiscoversGitRootAgentsMDFromNestedSessionRoot(t *testing.T)
 	}
 }
 
+func TestSystemPromptDiscoversAgentsMDThroughSymlinkedWorkingDir(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("real root instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("real nested instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	link := filepath.Join(t.TempDir(), "worker-link")
+	if err := os.Symlink(nested, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	session := NewSession(link, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: link,
+			Root:     link,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	rootIndex := strings.Index(prompt, "real root instruction")
+	nestedIndex := strings.Index(prompt, "real nested instruction")
+	if rootIndex < 0 || nestedIndex < 0 {
+		t.Fatalf("expected symlinked cwd to resolve real repo AGENTS.md chain, got %q", prompt)
+	}
+	if rootIndex > nestedIndex {
+		t.Fatalf("expected real root AGENTS.md before nested AGENTS.md, got %q", prompt)
+	}
+}
+
 func TestSystemPromptPreservesProjectAgentsMDWhitespaceBetweenFiles(t *testing.T) {
 	setTempUserConfigHome(t)
 	root := t.TempDir()
