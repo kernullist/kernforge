@@ -159,6 +159,17 @@ type MessageCodexCompactionItem struct {
 	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
+type MessageCodexToolOutputItem struct {
+	Type             string            `json:"type"`
+	CallID           string            `json:"call_id,omitempty"`
+	Name             string            `json:"name,omitempty"`
+	Status           string            `json:"status,omitempty"`
+	Execution        string            `json:"execution,omitempty"`
+	Text             string            `json:"text,omitempty"`
+	ToolContentItems []ToolContentItem `json:"tool_content_items,omitempty"`
+	Tools            []map[string]any  `json:"tools,omitempty"`
+}
+
 const (
 	messagePhaseCommentary           = "commentary"
 	messagePhaseFinalAnswer          = "final_answer"
@@ -175,6 +186,7 @@ type Message struct {
 	WebSearchCalls            []MessageWebSearchCall       `json:"web_search_calls,omitempty"`
 	LocalShellCalls           []MessageLocalShellCall      `json:"local_shell_calls,omitempty"`
 	CodexCompactionItems      []MessageCodexCompactionItem `json:"codex_compaction_items,omitempty"`
+	CodexToolOutputItems      []MessageCodexToolOutputItem `json:"codex_tool_output_items,omitempty"`
 	ToolCalls                 []ToolCall                   `json:"tool_calls,omitempty"`
 	ToolCallID                string                       `json:"tool_call_id,omitempty"`
 	ToolName                  string                       `json:"tool_name,omitempty"`

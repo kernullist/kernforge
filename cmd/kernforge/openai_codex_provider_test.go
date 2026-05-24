@@ -1833,6 +1833,86 @@ func TestBuildOpenAICodexRequestBodyKeepsNonAdjacentToolOutput(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyRoundTripsCodexToolOutputItems(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "inspect"},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{{
+					ID:        "call_read",
+					Name:      "read_file",
+					Arguments: `{"path":"main.go"}`,
+				}},
+				CodexToolOutputItems: []MessageCodexToolOutputItem{{
+					Type:   "function_call_output",
+					CallID: "call_read",
+					Text:   "package main",
+				}, {
+					Type:      "tool_search_output",
+					CallID:    "call_search",
+					Status:    "completed",
+					Execution: "client",
+					Tools: []map[string]any{{
+						"name":        "read_file",
+						"description": "Read a file",
+					}},
+				}},
+			},
+		},
+		Tools: []ToolDefinition{{
+			Name:        "read_file",
+			Description: "Read a file",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload struct {
+		Input []map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	callIndex := -1
+	outputIndex := -1
+	searchOutputIndex := -1
+	for index, item := range payload.Input {
+		switch item["type"] {
+		case "function_call":
+			if item["call_id"] == "call_read" {
+				callIndex = index
+			}
+		case "function_call_output":
+			if item["call_id"] == "call_read" {
+				outputIndex = index
+				if item["output"] != "package main" {
+					t.Fatalf("unexpected function output payload: %#v", item)
+				}
+			}
+		case "tool_search_output":
+			if item["call_id"] == "call_search" {
+				searchOutputIndex = index
+				if item["status"] != "completed" || item["execution"] != "client" {
+					t.Fatalf("unexpected tool_search_output metadata: %#v", item)
+				}
+			}
+		}
+	}
+	if callIndex < 0 || outputIndex < 0 || outputIndex <= callIndex {
+		t.Fatalf("expected preserved output after matching call, callIndex=%d outputIndex=%d body=%s", callIndex, outputIndex, body)
+	}
+	if searchOutputIndex < 0 {
+		t.Fatalf("expected tool_search_output to round-trip in %s", body)
+	}
+	if strings.Contains(string(body), "aborted") {
+		t.Fatalf("preserved Codex tool output must suppress synthetic aborted output: %s", body)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySynthesizesMissingToolOutput(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "gpt-5.5",
@@ -3046,6 +3126,46 @@ func TestParseOpenAICodexResponsePreservesCompactionItems(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponsePreservesCodexToolOutputItems(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"output":[{
+			"type":"function_call_output",
+			"call_id":"call_read",
+			"output":[{"type":"input_text","text":"file body"}]
+		},{
+			"type":"custom_tool_call_output",
+			"call_id":"call_patch",
+			"name":"apply_patch",
+			"output":"Patch applied"
+		},{
+			"type":"tool_search_output",
+			"call_id":"call_search",
+			"status":"completed",
+			"execution":"client",
+			"tools":[{"name":"read_file","description":"Read a file"}]
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if len(resp.Message.CodexToolOutputItems) != 3 {
+		t.Fatalf("expected three Codex tool output items, got %#v", resp.Message.CodexToolOutputItems)
+	}
+	functionOutput := resp.Message.CodexToolOutputItems[0]
+	if functionOutput.Type != "function_call_output" || functionOutput.CallID != "call_read" || len(functionOutput.ToolContentItems) != 1 || functionOutput.ToolContentItems[0].Text != "file body" {
+		t.Fatalf("unexpected function tool output: %#v", functionOutput)
+	}
+	customOutput := resp.Message.CodexToolOutputItems[1]
+	if customOutput.Type != "custom_tool_call_output" || customOutput.CallID != "call_patch" || customOutput.Name != "apply_patch" || customOutput.Text != "Patch applied" {
+		t.Fatalf("unexpected custom tool output: %#v", customOutput)
+	}
+	searchOutput := resp.Message.CodexToolOutputItems[2]
+	if searchOutput.Type != "tool_search_output" || searchOutput.CallID != "call_search" || searchOutput.Status != "completed" || searchOutput.Execution != "client" || len(searchOutput.Tools) != 1 {
+		t.Fatalf("unexpected tool search output: %#v", searchOutput)
+	}
+}
+
 func TestParseOpenAICodexResponsePreservesReasoningContent(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -3650,6 +3770,28 @@ func TestReadOpenAICodexStreamCapturesModelVerificationEvent(t *testing.T) {
 	}
 	if len(resp.ModelVerifications) != 1 || resp.ModelVerifications[0] != openAICodexTrustedAccessForCyber {
 		t.Fatalf("expected trusted access verification to be captured once, got %#v", resp.ModelVerifications)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesCodexToolOutputItem(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"function_call_output","call_id":"call_read","output":"ok"}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.CodexToolOutputItems) != 1 {
+		t.Fatalf("expected one Codex tool output item, got %#v", resp.Message.CodexToolOutputItems)
+	}
+	output := resp.Message.CodexToolOutputItems[0]
+	if output.Type != "function_call_output" || output.CallID != "call_read" || output.Text != "ok" {
+		t.Fatalf("unexpected stream tool output: %#v", output)
+	}
+	if resp.Message.Text != "" || len(resp.Message.ToolCalls) != 0 {
+		t.Fatalf("unexpected visible response for stream tool output: %#v", resp.Message)
 	}
 }
 

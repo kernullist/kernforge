@@ -229,6 +229,17 @@ func (s *Session) ApproxChars() int {
 		for _, item := range msg.CodexCompactionItems {
 			total += len(item.Type) + len(item.EncryptedContent)
 		}
+		for _, item := range msg.CodexToolOutputItems {
+			total += len(item.Type) + len(item.CallID) + len(item.Name) + len(item.Status) + len(item.Execution) + len(item.Text)
+			for _, content := range item.ToolContentItems {
+				total += toolContentItemApproxChars(content)
+			}
+			for _, tool := range item.Tools {
+				if encoded, err := json.Marshal(tool); err == nil {
+					total += len(encoded)
+				}
+			}
+		}
 		total += len(msg.ToolCallID) + len(msg.ToolName)
 		for _, tc := range msg.ToolCalls {
 			total += len(tc.ID) + len(tc.Name) + len(tc.Namespace) + len(tc.Arguments)
@@ -492,6 +503,24 @@ func (s *Session) ExportText() string {
 					fmt.Fprintf(&b, "- codex_%s: encrypted content present (%d bytes)\n", strings.TrimSpace(item.Type), len(item.EncryptedContent))
 				} else {
 					fmt.Fprintf(&b, "- codex_%s\n", strings.TrimSpace(item.Type))
+				}
+			}
+			b.WriteString("\n")
+		}
+		if len(msg.CodexToolOutputItems) > 0 {
+			for _, item := range msg.CodexToolOutputItems {
+				callID := strings.TrimSpace(item.CallID)
+				detail := strings.TrimSpace(item.Text)
+				if detail == "" && len(item.ToolContentItems) > 0 {
+					detail = fmt.Sprintf("%d content item(s)", len(item.ToolContentItems))
+				}
+				if detail == "" && len(item.Tools) > 0 {
+					detail = fmt.Sprintf("%d tool(s)", len(item.Tools))
+				}
+				if detail != "" {
+					fmt.Fprintf(&b, "- codex_%s: %s %s\n", strings.TrimSpace(item.Type), callID, compactPromptSection(detail, 160))
+				} else {
+					fmt.Fprintf(&b, "- codex_%s: %s\n", strings.TrimSpace(item.Type), callID)
 				}
 			}
 			b.WriteString("\n")

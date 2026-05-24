@@ -925,6 +925,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				items = append(items, openAICodexToolCallInputItem(callID, tc))
 			}
 			items = append(items, openAICodexAssistantLocalShellInputItems(msg.LocalShellCalls)...)
+			items = append(items, openAICodexAssistantToolOutputInputItems(msg.CodexToolOutputItems, supportsImages)...)
 			items = append(items, openAICodexAssistantImageGenerationInputItems(req.WorkingDir, msg.Images, supportsImages)...)
 			items = append(items, openAICodexAssistantWebSearchInputItems(msg.WebSearchCalls)...)
 		case "tool":
@@ -1067,6 +1068,68 @@ func openAICodexAssistantCompactionInputItems(compactions []MessageCodexCompacti
 	return items
 }
 
+func openAICodexAssistantToolOutputInputItems(outputs []MessageCodexToolOutputItem, supportsImages bool) []any {
+	if len(outputs) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(outputs))
+	for _, output := range outputs {
+		itemType := strings.TrimSpace(output.Type)
+		callID := strings.TrimSpace(output.CallID)
+		if itemType == "" || callID == "" {
+			continue
+		}
+		switch itemType {
+		case "function_call_output":
+			items = append(items, map[string]any{
+				"type":    itemType,
+				"call_id": callID,
+				"output":  openAICodexCodexToolOutputPayload(output, supportsImages),
+			})
+		case "custom_tool_call_output":
+			item := map[string]any{
+				"type":    itemType,
+				"call_id": callID,
+				"output":  openAICodexCodexToolOutputPayload(output, supportsImages),
+			}
+			if name := strings.TrimSpace(output.Name); name != "" {
+				item["name"] = name
+			}
+			items = append(items, item)
+		case "tool_search_output":
+			execution := firstNonEmptyTrimmed(output.Execution, "client")
+			status := firstNonEmptyTrimmed(output.Status, "completed")
+			items = append(items, map[string]any{
+				"type":      itemType,
+				"call_id":   callID,
+				"status":    status,
+				"execution": execution,
+				"tools":     cloneOpenAICodexToolMaps(output.Tools),
+			})
+		}
+	}
+	return items
+}
+
+func openAICodexCodexToolOutputPayload(output MessageCodexToolOutputItem, supportsImages bool) any {
+	msg := Message{
+		Text:             output.Text,
+		ToolContentItems: append([]ToolContentItem(nil), output.ToolContentItems...),
+	}
+	return openAICodexToolOutputForResponses(msg, supportsImages)
+}
+
+func cloneOpenAICodexToolMaps(tools []map[string]any) []map[string]any {
+	if len(tools) == 0 {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, cloneToolDefinitionMap(tool))
+	}
+	return out
+}
+
 func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 	if len(messages) == 0 {
 		return messages
@@ -1086,6 +1149,12 @@ func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
 				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
 				if callID != "" {
 					expected[callID] = ToolCall{ID: callID}
+				}
+			}
+			for _, output := range msg.CodexToolOutputItems {
+				callID := strings.TrimSpace(output.CallID)
+				if callID != "" {
+					outputs[callID] = true
 				}
 			}
 		case "tool":
@@ -1452,21 +1521,23 @@ func openAICodexStripUnsupportedImageContentItems(items []ToolContentItem) []Too
 }
 
 type openAICodexOutputItem struct {
-	ID               string          `json:"id,omitempty"`
-	Type             string          `json:"type"`
-	Status           string          `json:"status,omitempty"`
-	RevisedPrompt    string          `json:"revised_prompt,omitempty"`
-	Result           string          `json:"result,omitempty"`
-	Role             string          `json:"role,omitempty"`
-	Phase            string          `json:"phase,omitempty"`
-	CallID           string          `json:"call_id,omitempty"`
-	Name             string          `json:"name,omitempty"`
-	Namespace        string          `json:"namespace,omitempty"`
-	Input            string          `json:"input,omitempty"`
-	Execution        string          `json:"execution,omitempty"`
-	Arguments        json.RawMessage `json:"arguments,omitempty"`
-	Action           json.RawMessage `json:"action,omitempty"`
-	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	ID               string           `json:"id,omitempty"`
+	Type             string           `json:"type"`
+	Status           string           `json:"status,omitempty"`
+	RevisedPrompt    string           `json:"revised_prompt,omitempty"`
+	Result           string           `json:"result,omitempty"`
+	Role             string           `json:"role,omitempty"`
+	Phase            string           `json:"phase,omitempty"`
+	CallID           string           `json:"call_id,omitempty"`
+	Name             string           `json:"name,omitempty"`
+	Namespace        string           `json:"namespace,omitempty"`
+	Input            string           `json:"input,omitempty"`
+	Execution        string           `json:"execution,omitempty"`
+	Arguments        json.RawMessage  `json:"arguments,omitempty"`
+	Output           json.RawMessage  `json:"output,omitempty"`
+	Action           json.RawMessage  `json:"action,omitempty"`
+	EncryptedContent string           `json:"encrypted_content,omitempty"`
+	Tools            []map[string]any `json:"tools,omitempty"`
 	Content          []struct {
 		Type string `json:"type"`
 		Text string `json:"text,omitempty"`
@@ -1510,6 +1581,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	webSearchCalls := []MessageWebSearchCall{}
 	localShellCalls := []MessageLocalShellCall{}
 	compactionItems := []MessageCodexCompactionItem{}
+	codexToolOutputItems := []MessageCodexToolOutputItem{}
 	textMessageCount := 0
 	commentaryTextMessageCount := 0
 	messagePhase := ""
@@ -1549,6 +1621,10 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if compaction, ok := openAICodexCompactionItemFromOutputItem(item); ok {
 				compactionItems = append(compactionItems, compaction)
 			}
+		case "function_call_output", "custom_tool_call_output", "tool_search_output":
+			if output, ok := openAICodexToolOutputFromOutputItem(item); ok {
+				codexToolOutputItems = append(codexToolOutputItems, output)
+			}
 		case "reasoning":
 			if reasoningText := openAICodexReasoningItemText(item); strings.TrimSpace(reasoningText) != "" {
 				reasoningTexts = append(reasoningTexts, reasoningText)
@@ -1579,6 +1655,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	out.WebSearchCalls = append(out.WebSearchCalls, webSearchCalls...)
 	out.LocalShellCalls = append(out.LocalShellCalls, localShellCalls...)
 	out.CodexCompactionItems = append(out.CodexCompactionItems, compactionItems...)
+	out.CodexToolOutputItems = append(out.CodexToolOutputItems, codexToolOutputItems...)
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
@@ -1645,6 +1722,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	hostedWebSearchCalls := []MessageWebSearchCall{}
 	localShellCalls := []MessageLocalShellCall{}
 	compactionItems := []MessageCodexCompactionItem{}
+	codexToolOutputItems := []MessageCodexToolOutputItem{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -1774,6 +1852,13 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			return
 		}
 		compactionItems = append(compactionItems, compaction)
+	}
+	collectCodexToolOutputItem := func(item openAICodexOutputItem) {
+		output, ok := openAICodexToolOutputFromOutputItem(item)
+		if !ok {
+			return
+		}
+		codexToolOutputItems = append(codexToolOutputItems, output)
 	}
 
 	processPayload := func(payload string) (ChatResponse, bool, error) {
@@ -1922,6 +2007,8 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				collectLocalShellCall(event.Item)
 			} else if event.Item.Type == "compaction" || event.Item.Type == "compaction_summary" || event.Item.Type == "context_compaction" || event.Item.Type == "compaction_trigger" {
 				collectCompactionItem(event.Item)
+			} else if event.Item.Type == "function_call_output" || event.Item.Type == "custom_tool_call_output" || event.Item.Type == "tool_search_output" {
+				collectCodexToolOutputItem(event.Item)
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
 				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
 				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
@@ -2058,7 +2145,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				resp.Message.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(hostedItemTexts), "\n"))
 			}
 			completedParsed = &resp
-			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, hostedWebSearchCalls, localShellCalls, compactionItems, reasoning.String(), reasoningEncryptedContent, toolCalls, toolOrder) {
+			if !openAICodexStreamHasOutput(text.String(), itemTexts, finalItemTexts, hostedItemTexts, hostedImages, hostedWebSearchCalls, localShellCalls, compactionItems, codexToolOutputItems, reasoning.String(), reasoningEncryptedContent, toolCalls, toolOrder) {
 				return resp, nil
 			}
 		}
@@ -2079,7 +2166,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...), CodexCompactionItems: append([]MessageCodexCompactionItem(nil), compactionItems...)}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...), LocalShellCalls: append([]MessageLocalShellCall(nil), localShellCalls...), CodexCompactionItems: append([]MessageCodexCompactionItem(nil), compactionItems...), CodexToolOutputItems: append([]MessageCodexToolOutputItem(nil), codexToolOutputItems...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -2121,6 +2208,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		if len(out.CodexCompactionItems) == 0 && len(completedParsed.Message.CodexCompactionItems) > 0 {
 			out.CodexCompactionItems = append(out.CodexCompactionItems, completedParsed.Message.CodexCompactionItems...)
 		}
+		if len(out.CodexToolOutputItems) == 0 && len(completedParsed.Message.CodexToolOutputItems) > 0 {
+			out.CodexToolOutputItems = append(out.CodexToolOutputItems, completedParsed.Message.CodexToolOutputItems...)
+		}
 	}
 	if !openAICodexMessageHasOutput(out) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses stream", "", "", nil, nil)
@@ -2144,10 +2234,11 @@ func openAICodexMessageHasOutput(msg Message) bool {
 		len(msg.WebSearchCalls) > 0 ||
 		len(msg.LocalShellCalls) > 0 ||
 		len(msg.CodexCompactionItems) > 0 ||
+		len(msg.CodexToolOutputItems) > 0 ||
 		len(msg.ToolCalls) > 0
 }
 
-func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, hostedWebSearchCalls []MessageWebSearchCall, localShellCalls []MessageLocalShellCall, compactionItems []MessageCodexCompactionItem, reasoningText string, reasoningEncryptedContent string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
+func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItemTexts []string, hostedItemTexts []string, hostedImages []MessageImage, hostedWebSearchCalls []MessageWebSearchCall, localShellCalls []MessageLocalShellCall, compactionItems []MessageCodexCompactionItem, codexToolOutputItems []MessageCodexToolOutputItem, reasoningText string, reasoningEncryptedContent string, toolCalls map[int]*openAICodexStreamToolCall, toolOrder []int) bool {
 	if strings.TrimSpace(streamText) != "" || strings.TrimSpace(reasoningText) != "" || strings.TrimSpace(reasoningEncryptedContent) != "" {
 		return true
 	}
@@ -2161,6 +2252,9 @@ func openAICodexStreamHasOutput(streamText string, itemTexts []string, finalItem
 		return true
 	}
 	if len(compactionItems) > 0 {
+		return true
+	}
+	if len(codexToolOutputItems) > 0 {
 		return true
 	}
 	for _, index := range toolOrder {
@@ -2570,6 +2664,48 @@ func openAICodexCompactionItemFromOutputItem(item openAICodexOutputItem) (Messag
 	default:
 		return MessageCodexCompactionItem{}, false
 	}
+}
+
+func openAICodexToolOutputFromOutputItem(item openAICodexOutputItem) (MessageCodexToolOutputItem, bool) {
+	itemType := strings.TrimSpace(item.Type)
+	switch itemType {
+	case "function_call_output", "custom_tool_call_output", "tool_search_output":
+	default:
+		return MessageCodexToolOutputItem{}, false
+	}
+	callID := strings.TrimSpace(item.CallID)
+	if callID == "" {
+		return MessageCodexToolOutputItem{}, false
+	}
+	output := MessageCodexToolOutputItem{
+		Type:      itemType,
+		CallID:    callID,
+		Name:      strings.TrimSpace(item.Name),
+		Status:    strings.TrimSpace(item.Status),
+		Execution: strings.TrimSpace(item.Execution),
+	}
+	if itemType == "tool_search_output" {
+		output.Tools = cloneOpenAICodexToolMaps(item.Tools)
+		return output, true
+	}
+	output.Text, output.ToolContentItems = openAICodexToolOutputPayloadFromRaw(item.Output)
+	return output, true
+}
+
+func openAICodexToolOutputPayloadFromRaw(raw json.RawMessage) (string, []ToolContentItem) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+	var items []ToolContentItem
+	if err := json.Unmarshal(raw, &items); err == nil {
+		return "", normalizeToolContentItems(items)
+	}
+	return string(raw), nil
 }
 
 func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {

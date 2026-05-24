@@ -8692,6 +8692,9 @@ func summarizeMessages(messages []Message, instructions string) string {
 		if text == "" && len(msg.CodexCompactionItems) > 0 {
 			text = fmt.Sprintf("codex compaction item(s): %d", len(msg.CodexCompactionItems))
 		}
+		if text == "" && len(msg.CodexToolOutputItems) > 0 {
+			text = fmt.Sprintf("codex tool output item(s): %d", len(msg.CodexToolOutputItems))
+		}
 		if text == "" && len(msg.ToolCalls) > 0 {
 			var names []string
 			for _, call := range msg.ToolCalls {
@@ -8887,6 +8890,15 @@ func compactMessageRetainedCharCost(msg Message) int {
 	for _, item := range msg.CodexCompactionItems {
 		total += len(item.Type) + len(item.EncryptedContent)
 	}
+	for _, item := range msg.CodexToolOutputItems {
+		total += len(item.Type) + len(item.CallID) + len(item.Name) + len(item.Status) + len(item.Execution) + len(item.Text)
+		for _, content := range item.ToolContentItems {
+			total += toolContentItemApproxChars(content)
+		}
+		for _, tool := range item.Tools {
+			total += compactActionCharCost(tool)
+		}
+	}
 	for _, call := range msg.ToolCalls {
 		total += len(call.ID) + len(call.Name) + len(call.Arguments)
 	}
@@ -8923,6 +8935,7 @@ func messageHasStructuredHistoryItems(msg Message) bool {
 		len(msg.WebSearchCalls) > 0 ||
 		len(msg.LocalShellCalls) > 0 ||
 		len(msg.CodexCompactionItems) > 0 ||
+		len(msg.CodexToolOutputItems) > 0 ||
 		len(msg.ToolCalls) > 0 ||
 		len(msg.ToolContentItems) > 0
 }
@@ -8992,6 +9005,19 @@ func compactTruncateMessageToCharBudget(msg Message, maxChars int) (Message, boo
 		}
 		if compactConsumeTextBudget(&truncated.ToolContentItems[i].EncryptedContent, &remaining) {
 			return truncated, true
+		}
+	}
+	for i := range truncated.CodexToolOutputItems {
+		if compactConsumeTextBudget(&truncated.CodexToolOutputItems[i].Text, &remaining) {
+			return truncated, true
+		}
+		for j := range truncated.CodexToolOutputItems[i].ToolContentItems {
+			if compactConsumeTextBudget(&truncated.CodexToolOutputItems[i].ToolContentItems[j].Text, &remaining) {
+				return truncated, true
+			}
+			if compactConsumeTextBudget(&truncated.CodexToolOutputItems[i].ToolContentItems[j].EncryptedContent, &remaining) {
+				return truncated, true
+			}
 		}
 	}
 	if messageHasStructuredHistoryItems(truncated) {
