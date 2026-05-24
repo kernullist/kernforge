@@ -7550,14 +7550,76 @@ func (a *Agent) runHook(ctx context.Context, event HookEvent, payload HookPayloa
 	return hooks.Run(ctx, event, payload)
 }
 
-func (a *Agent) subagentStopHookPayload(agentID string, agentType string, model string, lastAssistantMessage string) HookPayload {
+func (a *Agent) subagentStartHookPayload(agentID string, agentType string, model string, turnID string) HookPayload {
 	agentID = firstNonBlankString(strings.TrimSpace(agentID), "subagent")
 	agentType = firstNonBlankString(strings.TrimSpace(agentType), "specialist")
-	model = strings.TrimSpace(model)
-	lastAssistantMessage = strings.TrimSpace(lastAssistantMessage)
+	sessionID, transcriptPath, cwd, permissionMode, model := a.subagentLifecycleHookMetadata(model)
+	if strings.TrimSpace(turnID) == "" {
+		turnID = a.newSubagentLifecycleTurnID(agentID)
+	}
 
+	return HookPayload{
+		"agent_id":        agentID,
+		"agent_type":      agentType,
+		"cwd":             cwd,
+		"hook_event_name": string(HookSubagentStart),
+		"model":           model,
+		"permission_mode": permissionMode,
+		"session_id":      sessionID,
+		"transcript_path": nullableHookString(transcriptPath),
+		"turn_id":         strings.TrimSpace(turnID),
+	}
+}
+
+func (a *Agent) subagentStopHookPayload(agentID string, agentType string, model string, lastAssistantMessage string) HookPayload {
+	return a.subagentStopHookPayloadWithTurnID(agentID, agentType, model, lastAssistantMessage, "")
+}
+
+func (a *Agent) subagentStopHookPayloadWithTurnID(agentID string, agentType string, model string, lastAssistantMessage string, turnID string) HookPayload {
+	agentID = firstNonBlankString(strings.TrimSpace(agentID), "subagent")
+	agentType = firstNonBlankString(strings.TrimSpace(agentType), "specialist")
+	lastAssistantMessage = strings.TrimSpace(lastAssistantMessage)
+	sessionID, transcriptPath, cwd, permissionMode, model := a.subagentLifecycleHookMetadata(model)
+	if strings.TrimSpace(turnID) == "" {
+		turnID = a.newSubagentLifecycleTurnID(agentID)
+	}
+
+	return HookPayload{
+		"agent_id":               agentID,
+		"agent_type":             agentType,
+		"agent_transcript_path":  nullableHookString(""),
+		"cwd":                    cwd,
+		"hook_event_name":        string(HookSubagentStop),
+		"last_assistant_message": nullableHookString(lastAssistantMessage),
+		"model":                  model,
+		"permission_mode":        permissionMode,
+		"session_id":             sessionID,
+		"stop_hook_active":       true,
+		"transcript_path":        nullableHookString(transcriptPath),
+		"turn_id":                strings.TrimSpace(turnID),
+	}
+}
+
+func (a *Agent) runSubagentStartHook(ctx context.Context, agentID string, agentType string, model string, turnID string) ([]string, error) {
+	verdict, err := a.runHook(ctx, HookSubagentStart, a.subagentStartHookPayload(agentID, agentType, model, turnID))
+	if err != nil {
+		return nil, err
+	}
+	return append([]string(nil), verdict.ContextAdds...), nil
+}
+
+func (a *Agent) runSubagentStopHook(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string) error {
+	return a.runSubagentStopHookWithTurnID(ctx, agentID, agentType, model, lastAssistantMessage, "")
+}
+
+func (a *Agent) runSubagentStopHookWithTurnID(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string, turnID string) error {
+	_, err := a.runHook(ctx, HookSubagentStop, a.subagentStopHookPayloadWithTurnID(agentID, agentType, model, lastAssistantMessage, turnID))
+	return err
+}
+
+func (a *Agent) subagentLifecycleHookMetadata(model string) (string, string, string, string, string) {
+	model = strings.TrimSpace(model)
 	sessionID := ""
-	turnID := ""
 	transcriptPath := ""
 	cwd := ""
 	permissionMode := ""
@@ -7583,29 +7645,39 @@ func (a *Agent) subagentStopHookPayload(agentID string, agentType string, model 
 	if permissionMode == "" {
 		permissionMode = string(ModeDefault)
 	}
-	if sessionID != "" {
-		turnID = mcpTurnMetadataTurnID(sessionID, time.Now())
-	}
-
-	return HookPayload{
-		"agent_id":               agentID,
-		"agent_type":             agentType,
-		"agent_transcript_path":  nullableHookString(""),
-		"cwd":                    cwd,
-		"hook_event_name":        string(HookSubagentStop),
-		"last_assistant_message": nullableHookString(lastAssistantMessage),
-		"model":                  model,
-		"permission_mode":        permissionMode,
-		"session_id":             sessionID,
-		"stop_hook_active":       true,
-		"transcript_path":        nullableHookString(transcriptPath),
-		"turn_id":                turnID,
-	}
+	return sessionID, transcriptPath, cwd, permissionMode, model
 }
 
-func (a *Agent) runSubagentStopHook(ctx context.Context, agentID string, agentType string, model string, lastAssistantMessage string) error {
-	_, err := a.runHook(ctx, HookSubagentStop, a.subagentStopHookPayload(agentID, agentType, model, lastAssistantMessage))
-	return err
+func (a *Agent) newSubagentLifecycleTurnID(agentID string) string {
+	if a == nil || a.Session == nil {
+		return ""
+	}
+	sessionID := strings.TrimSpace(a.Session.ID)
+	if sessionID == "" {
+		return ""
+	}
+	safeAgentID := sanitizeFileName(agentID)
+	if safeAgentID == "" {
+		safeAgentID = "subagent"
+	}
+	return fmt.Sprintf("%s:subagent:%s:%d", sessionID, safeAgentID, time.Now().UnixNano())
+}
+
+func appendSubagentHookContextGuidance(prompt string, contexts []string) string {
+	if len(contexts) == 0 {
+		return prompt
+	}
+	var parts []string
+	for _, context := range contexts {
+		if context = strings.TrimSpace(context); context != "" {
+			parts = append(parts, context)
+		}
+	}
+	if len(parts) == 0 {
+		return prompt
+	}
+	prompt = strings.TrimSpace(prompt)
+	return prompt + "\n\nAdditional SubagentStart hook guidance:\n- " + strings.Join(parts, "\n- ")
 }
 
 func nullableHookString(value string) any {

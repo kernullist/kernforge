@@ -23,6 +23,7 @@ const (
 	HookSessionStart     HookEvent = "SessionStart"
 	HookPreToolUse       HookEvent = "PreToolUse"
 	HookPostToolUse      HookEvent = "PostToolUse"
+	HookSubagentStart    HookEvent = "SubagentStart"
 	HookSubagentStop     HookEvent = "SubagentStop"
 	HookPreCompact       HookEvent = "PreCompact"
 	HookPostCompact      HookEvent = "PostCompact"

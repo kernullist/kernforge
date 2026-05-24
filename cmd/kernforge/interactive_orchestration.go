@@ -499,22 +499,43 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	}
 	results := make(chan microWorkerResult, len(plans))
 	runPlan := func(plan microWorkerPlan) {
+		turnID := a.newSubagentLifecycleTurnID(plan.node.ID)
+		startContexts, err := a.runSubagentStartHook(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, turnID)
+		if err != nil {
+			results <- microWorkerResult{
+				nodeID:     plan.node.ID,
+				specialist: plan.assignment.Profile.Name,
+				reason:     plan.assignment.Reason,
+				err:        err,
+			}
+			return
+		}
+		prompt := buildSpecialistMicroWorkerPrompt(plan.assignment.Profile, a.Session.TaskState, plan.node, trigger, plan.assignment.Reason)
+		prompt = appendSubagentHookContextGuidance(prompt, startContexts)
 		resp, err := a.completeModelTurnWithClient(ctx, plan.client, ChatRequest{
 			Model:  plan.model,
 			System: buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
 			Messages: []Message{{
 				Role: "user",
-				Text: buildSpecialistMicroWorkerPrompt(plan.assignment.Profile, a.Session.TaskState, plan.node, trigger, plan.assignment.Reason),
+				Text: prompt,
 			}},
 			MaxTokens:   min(256, max(128, a.Config.MaxTokens/6)),
 			Temperature: 0.1,
 			WorkingDir:  a.Session.WorkingDir,
 		})
 		if err != nil {
+			if stopErr := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, "", turnID); stopErr != nil {
+				results <- microWorkerResult{
+					nodeID:     plan.node.ID,
+					specialist: plan.assignment.Profile.Name,
+					reason:     plan.assignment.Reason,
+					err:        stopErr,
+				}
+			}
 			return
 		}
 		assistantText := strings.TrimSpace(resp.Message.Text)
-		if err := a.runSubagentStopHook(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, assistantText); err != nil {
+		if err := a.runSubagentStopHookWithTurnID(ctx, plan.node.ID, plan.assignment.Profile.Name, plan.model, assistantText, turnID); err != nil {
 			results <- microWorkerResult{
 				nodeID:     plan.node.ID,
 				specialist: plan.assignment.Profile.Name,

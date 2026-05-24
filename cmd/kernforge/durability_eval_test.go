@@ -202,6 +202,17 @@ func TestDurabilityEvalMicroWorkerBriefAttachesToTaskGraphNode(t *testing.T) {
 			Enabled: true,
 			Rules: []HookRule{
 				{
+					ID:     "micro-worker-start",
+					Events: []HookEvent{HookSubagentStart},
+					Match: HookMatch{
+						ContainsText: []string{"plan-02"},
+					},
+					Action: HookAction{
+						Type:    "append_context",
+						Message: "start hook context for plan-02",
+					},
+				},
+				{
 					ID:     "micro-worker-stop",
 					Events: []HookEvent{HookSubagentStop},
 					Match: HookMatch{
@@ -235,6 +246,20 @@ func TestDurabilityEvalMicroWorkerBriefAttachesToTaskGraphNode(t *testing.T) {
 	}
 	if len(reviewer.requests) != 2 {
 		t.Fatalf("expected two reviewer micro-worker requests, got %d", len(reviewer.requests))
+	}
+	foundStartContext := false
+	for _, request := range reviewer.requests {
+		if len(request.Messages) == 0 {
+			continue
+		}
+		text := request.Messages[0].Text
+		if strings.Contains(text, "plan-02") && strings.Contains(text, "start hook context for plan-02") {
+			foundStartContext = true
+			break
+		}
+	}
+	if !foundStartContext {
+		t.Fatalf("expected SubagentStart context in plan-02 worker prompt, got %#v", reviewer.requests)
 	}
 	hookWarningsMu.Lock()
 	defer hookWarningsMu.Unlock()

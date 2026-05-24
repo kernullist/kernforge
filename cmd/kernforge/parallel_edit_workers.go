@@ -330,9 +330,21 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 		return parallelEditableWorkerResult{Plan: plan, Skipped: true}
 	}
 
+	turnID := a.newSubagentLifecycleTurnID(plan.Node.ID)
+	startContexts, err := a.runSubagentStartHook(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, turnID)
+	if err != nil {
+		return parallelEditableWorkerResult{
+			Plan:    plan,
+			Err:     err,
+			Summary: "Parallel editable worker SubagentStart hook failed for " + plan.Node.Title,
+			Detail:  err.Error(),
+		}
+	}
+	prompt := buildSpecialistEditableWorkerPrompt(a.Session.TaskState, plan)
+	prompt = appendSubagentHookContextGuidance(prompt, startContexts)
 	messages := []Message{{
 		Role: "user",
-		Text: buildSpecialistEditableWorkerPrompt(a.Session.TaskState, plan),
+		Text: prompt,
 	}}
 	lastText := ""
 	defer func() {
@@ -340,7 +352,7 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 			return
 		}
 		lastAssistantMessage := firstNonBlankString(out.Detail, out.Summary, lastText)
-		if err := a.runSubagentStopHook(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage); err != nil && out.Err == nil {
+		if err := a.runSubagentStopHookWithTurnID(ctx, plan.Node.ID, plan.Assignment.Profile.Name, model, lastAssistantMessage, turnID); err != nil && out.Err == nil {
 			out.Err = err
 			out.Summary = "Parallel editable worker SubagentStop hook failed for " + plan.Node.Title
 			out.Detail = err.Error()

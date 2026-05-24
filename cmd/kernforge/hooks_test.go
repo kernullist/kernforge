@@ -202,6 +202,78 @@ func TestSubagentStopHookPayloadIncludesCodexFields(t *testing.T) {
 	}
 }
 
+func TestSubagentStartHookPayloadIncludesCodexFields(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "provider", "main-model", "", "default")
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Session:   session,
+		Store:     store,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	payload := agent.subagentStartHookPayload("plan-02", "reviewer", "reviewer-model", "turn-123")
+
+	if got := toolMetaString(payload, "hook_event_name"); got != string(HookSubagentStart) {
+		t.Fatalf("expected SubagentStart hook event, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "agent_id"); got != "plan-02" {
+		t.Fatalf("expected agent_id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "agent_type"); got != "reviewer" {
+		t.Fatalf("expected agent_type, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "model"); got != "reviewer-model" {
+		t.Fatalf("expected specialist model, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "session_id"); got != session.ID {
+		t.Fatalf("expected session_id %q, got %#v", session.ID, payload)
+	}
+	if got := toolMetaString(payload, "turn_id"); got != "turn-123" {
+		t.Fatalf("expected supplied turn id, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "transcript_path"); got != store.sessionPath(session.ID) {
+		t.Fatalf("expected transcript path, got %#v", payload)
+	}
+	if got := toolMetaString(payload, "cwd"); got != root {
+		t.Fatalf("expected cwd %q, got %#v", root, payload)
+	}
+	if got := toolMetaString(payload, "permission_mode"); got != "default" {
+		t.Fatalf("expected permission mode, got %#v", payload)
+	}
+}
+
+func TestHookEngineMatchesSubagentStartAgentIdentity(t *testing.T) {
+	engine := &HookEngine{
+		Enabled: true,
+		Rules: []HookRule{
+			{
+				ID:     "subagent-start-context",
+				Events: []HookEvent{HookSubagentStart},
+				Match: HookMatch{
+					ContainsText: []string{"plan-02", "reviewer"},
+				},
+				Action: HookAction{
+					Type:    "append_context",
+					Message: "subagent start captured",
+				},
+			},
+		},
+	}
+
+	verdict, err := engine.Evaluate(context.Background(), HookSubagentStart, HookPayload{
+		"agent_id":   "plan-02",
+		"agent_type": "reviewer",
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "subagent start captured" {
+		t.Fatalf("expected subagent identity to match contains_text, got %#v", verdict)
+	}
+}
+
 func TestHookEngineMatchesSubagentStopAgentIdentity(t *testing.T) {
 	engine := &HookEngine{
 		Enabled: true,

@@ -305,6 +305,24 @@ func TestMaybeRunInteractiveParallelEditableWorkersAppliesPatchForSecondaryEditN
 			bgTool,
 		),
 	}
+	agent.Hooks = &HookRuntime{
+		Engine: &HookEngine{
+			Enabled: true,
+			Rules: []HookRule{
+				{
+					ID:     "parallel-worker-start",
+					Events: []HookEvent{HookSubagentStart},
+					Match: HookMatch{
+						ContainsText: []string{"plan-02"},
+					},
+					Action: HookAction{
+						Type:    "append_context",
+						Message: "parallel start hook context",
+					},
+				},
+			},
+		},
+	}
 
 	if err := agent.maybeRunInteractiveParallelEditableWorkers(context.Background(), "executor"); err != nil {
 		t.Fatalf("maybeRunInteractiveParallelEditableWorkers: %v", err)
@@ -365,6 +383,9 @@ func TestMaybeRunInteractiveParallelEditableWorkersAppliesPatchForSecondaryEditN
 	}
 	if len(reviewer.requests) != 2 {
 		t.Fatalf("expected two specialist worker model turns, got %d", len(reviewer.requests))
+	}
+	if len(reviewer.requests[0].Messages) == 0 || !strings.Contains(reviewer.requests[0].Messages[0].Text, "parallel start hook context") {
+		t.Fatalf("expected SubagentStart hook context in editable worker prompt, got %#v", reviewer.requests[0].Messages)
 	}
 	for _, def := range reviewer.requests[0].Tools {
 		if !parallelEditableWorkerAllowsTool(def.Name) {
