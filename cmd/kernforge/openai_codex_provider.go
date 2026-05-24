@@ -924,6 +924,15 @@ type openAICodexStreamToolCall struct {
 	ReadyEmitted bool
 }
 
+func openAICodexStreamToolCallIndex(toolCalls map[int]*openAICodexStreamToolCall, target *openAICodexStreamToolCall) (int, bool) {
+	for index, item := range toolCalls {
+		if item == target {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
 func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent ...func(ProgressEvent)) (ChatResponse, error) {
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), openAICodexSSEMaxLineBytes)
@@ -956,29 +965,49 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 		}
 		return item
 	}
-	toolCallIndexByID := map[string]int{}
-	rememberToolCallID := func(index int, item *openAICodexStreamToolCall) {
+	toolCallIndexByRef := map[string]int{}
+	nextSyntheticToolIndex := -1
+	allocateSyntheticToolIndex := func() int {
+		index := nextSyntheticToolIndex
+		nextSyntheticToolIndex--
+		return index
+	}
+	rememberToolCallRef := func(index int, ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			return
+		}
+		toolCallIndexByRef[ref] = index
+	}
+	rememberToolCallRefs := func(index int, item *openAICodexStreamToolCall, itemID string) {
 		if item == nil {
 			return
 		}
-		callID := strings.TrimSpace(item.ID)
-		if callID == "" {
-			return
-		}
-		toolCallIndexByID[callID] = index
+		rememberToolCallRef(index, itemID)
+		rememberToolCallRef(index, item.ID)
 	}
-	ensureToolCallForCallID := func(callID string, fallbackIndex int) *openAICodexStreamToolCall {
+	ensureToolCallForRefs := func(itemID string, callID string, fallbackIndex *int) *openAICodexStreamToolCall {
+		itemID = strings.TrimSpace(itemID)
 		callID = strings.TrimSpace(callID)
-		if callID != "" {
-			if index, ok := toolCallIndexByID[callID]; ok {
+		for _, ref := range []string{itemID, callID} {
+			if ref == "" {
+				continue
+			}
+			if index, ok := toolCallIndexByRef[ref]; ok {
 				return ensureToolCall(index)
 			}
 		}
-		item := ensureToolCall(fallbackIndex)
+		index := 0
+		if fallbackIndex != nil {
+			index = *fallbackIndex
+		} else if itemID != "" || callID != "" {
+			index = allocateSyntheticToolIndex()
+		}
+		item := ensureToolCall(index)
 		if callID != "" && strings.TrimSpace(item.ID) == "" {
 			item.ID = callID
-			rememberToolCallID(fallbackIndex, item)
 		}
+		rememberToolCallRefs(index, item, itemID)
 		return item
 	}
 	emitToolReady := func(item *openAICodexStreamToolCall) {
@@ -1016,8 +1045,9 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			Text        string                `json:"text,omitempty"`
 			Arguments   string                `json:"arguments,omitempty"`
 			Input       string                `json:"input,omitempty"`
+			ItemID      string                `json:"item_id,omitempty"`
 			CallID      string                `json:"call_id,omitempty"`
-			OutputIndex int                   `json:"output_index,omitempty"`
+			OutputIndex *int                  `json:"output_index,omitempty"`
 			EndTurn     *bool                 `json:"end_turn,omitempty"`
 			Response    json.RawMessage       `json:"response,omitempty"`
 			Metadata    json.RawMessage       `json:"metadata,omitempty"`
@@ -1064,9 +1094,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 					reasoning.WriteString(reasoningText)
 				}
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
-				item := ensureToolCall(event.OutputIndex)
+				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
+				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
 				if openAICodexPopulateStreamToolCall(item, event.Item, false) {
-					rememberToolCallID(event.OutputIndex, item)
+					if index, ok := openAICodexStreamToolCallIndex(toolCalls, item); ok {
+						rememberToolCallRefs(index, item, itemID)
+					}
 					emitProgressEvent(progress, ProgressEvent{
 						Kind:       progressKindModelStreamToolCall,
 						Provider:   "openai-codex",
@@ -1076,7 +1109,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 				}
 			}
 		case "response.function_call_arguments.delta":
-			item := ensureToolCall(event.OutputIndex)
+			item := ensureToolCallForRefs(event.ItemID, event.CallID, event.OutputIndex)
 			if !item.ArgsStarted {
 				item.ArgsStarted = true
 				emitProgressEvent(progress, ProgressEvent{
@@ -1088,7 +1121,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 			item.Arguments.WriteString(event.Delta)
 		case "response.function_call_arguments.done":
-			item := ensureToolCall(event.OutputIndex)
+			item := ensureToolCallForRefs(event.ItemID, event.CallID, event.OutputIndex)
 			arguments := firstNonEmptyTrimmed(event.Arguments, event.Text)
 			if strings.TrimSpace(arguments) != "" {
 				item.Arguments.Reset()
@@ -1096,7 +1129,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 			emitToolReady(item)
 		case "response.custom_tool_call_input.delta":
-			item := ensureToolCallForCallID(event.CallID, event.OutputIndex)
+			item := ensureToolCallForRefs(event.ItemID, event.CallID, event.OutputIndex)
 			item.Type = firstNonEmptyTrimmed(item.Type, "custom_tool_call")
 			if !item.ArgsStarted {
 				item.ArgsStarted = true
@@ -1109,7 +1142,7 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 			}
 			item.Arguments.WriteString(event.Delta)
 		case "response.custom_tool_call_input.done":
-			item := ensureToolCallForCallID(event.CallID, event.OutputIndex)
+			item := ensureToolCallForRefs(event.ItemID, event.CallID, event.OutputIndex)
 			item.Type = firstNonEmptyTrimmed(item.Type, "custom_tool_call")
 			input := firstNonEmptyTrimmed(event.Input, event.Text, event.Arguments)
 			if input != "" {
@@ -1132,9 +1165,12 @@ func readOpenAICodexStream(ctx context.Context, body io.Reader, onProgressEvent 
 					reasoning.WriteString(reasoningText)
 				}
 			} else if openAICodexOutputItemIsToolCall(event.Item) {
-				item := ensureToolCall(event.OutputIndex)
+				itemID := firstNonEmptyTrimmed(event.ItemID, event.Item.ID)
+				item := ensureToolCallForRefs(itemID, event.Item.CallID, event.OutputIndex)
 				if openAICodexPopulateStreamToolCall(item, event.Item, true) {
-					rememberToolCallID(event.OutputIndex, item)
+					if index, ok := openAICodexStreamToolCallIndex(toolCalls, item); ok {
+						rememberToolCallRefs(index, item, itemID)
+					}
 					emitToolReady(item)
 				}
 			}

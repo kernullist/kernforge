@@ -2340,6 +2340,32 @@ func TestReadOpenAICodexStreamEmitsToolProgressEvents(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamRoutesToolArgumentsByItemIDWithoutOutputIndex(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"id":"fc_one","type":"function_call","call_id":"call_one","name":"read_file"}}`,
+		`data: {"type":"response.output_item.added","item":{"id":"fc_two","type":"function_call","call_id":"call_two","name":"grep"}}`,
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_one","arguments":"{\"path\":\"a.txt\"}"}`,
+		`data: {"type":"response.function_call_arguments.done","item_id":"fc_two","arguments":"{\"pattern\":\"needle\"}"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 2 {
+		t.Fatalf("expected two tool calls, got %#v", resp.Message.ToolCalls)
+	}
+	first := resp.Message.ToolCalls[0]
+	if first.ID != "call_one" || first.Name != "read_file" || first.Arguments != `{"path":"a.txt"}` {
+		t.Fatalf("unexpected first tool call: %#v", first)
+	}
+	second := resp.Message.ToolCalls[1]
+	if second.ID != "call_two" || second.Name != "grep" || second.Arguments != `{"pattern":"needle"}` {
+		t.Fatalf("unexpected second tool call: %#v", second)
+	}
+}
+
 func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"custom_tool_call","call_id":"call_patch","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`,
