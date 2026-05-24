@@ -668,11 +668,101 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 	if tool["name"] != "apply_patch" {
 		t.Fatalf("expected apply_patch tool payload, got %#v", tool)
 	}
+	if tool["defer_loading"] != true {
+		t.Fatalf("expected tool_search function result to set defer_loading=true, got %#v", tool)
+	}
 	if _, exists := tool["output_schema"]; exists {
 		t.Fatalf("Codex tool_search output tool specs must omit output_schema, got %#v", tool)
 	}
 	if encoded := string(body); strings.Contains(encoded, `"type":"function_call_output"`) {
 		t.Fatalf("native tool_search result must not be serialized as function_call_output: %s", encoded)
+	}
+}
+
+func TestBuildOpenAICodexRequestBodyMarksToolSearchNamespaceOutputDeferred(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "discover mcp tool"},
+			{Role: "assistant", ToolCalls: []ToolCall{{
+				ID:        "call_search",
+				Name:      "tool_search",
+				Arguments: mustJSON(map[string]any{"query": "mcp"}),
+			}}},
+			{
+				Role:       "tool",
+				ToolCallID: "call_search",
+				ToolName:   "tool_search",
+				Text: mustJSON(map[string]any{
+					"tools": []any{
+						map[string]any{
+							"type": "namespace",
+							"name": "mcp__web_research__",
+							"tools": []any{
+								map[string]any{
+									"type":        "function",
+									"name":        "search_web",
+									"description": "Search web",
+									"output_schema": map[string]any{
+										"type": "object",
+									},
+								},
+							},
+						},
+						map[string]any{
+							"type":        "namespace",
+							"name":        "mcp__web_research__",
+							"description": "Tools for web research.",
+							"tools": []any{
+								map[string]any{
+									"type":        "function",
+									"name":        "fetch_url",
+									"description": "Fetch URL",
+								},
+							},
+						},
+					},
+				}),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	output := input[2].(map[string]any)
+	tools, ok := output["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected coalesced namespace tool_search output, got %#v in %s", output["tools"], body)
+	}
+	namespace := tools[0].(map[string]any)
+	if namespace["type"] != "namespace" || namespace["name"] != "mcp__web_research__" {
+		t.Fatalf("expected namespace loadable spec, got %#v", namespace)
+	}
+	if namespace["description"] != "Tools in the mcp__web_research__ namespace." {
+		t.Fatalf("expected first non-empty/default namespace description to be preserved, got %#v", namespace["description"])
+	}
+	children, ok := namespace["tools"].([]any)
+	if !ok || len(children) != 2 {
+		t.Fatalf("expected merged namespace children, got %#v", namespace["tools"])
+	}
+	fetchURL := children[0].(map[string]any)
+	searchWeb := children[1].(map[string]any)
+	if fetchURL["name"] != "fetch_url" || searchWeb["name"] != "search_web" {
+		t.Fatalf("expected namespace children sorted by name, got %#v", children)
+	}
+	for _, child := range []map[string]any{fetchURL, searchWeb} {
+		if child["defer_loading"] != true {
+			t.Fatalf("expected namespace child to set defer_loading=true, got %#v", child)
+		}
+		if _, exists := child["output_schema"]; exists {
+			t.Fatalf("expected namespace child output_schema to be stripped, got %#v", child)
+		}
 	}
 }
 
