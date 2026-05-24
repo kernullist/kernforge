@@ -325,6 +325,9 @@ func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	if readFile["type"] != "function" || readFile["name"] != "read_file" {
 		t.Fatalf("expected non-apply_patch tools to remain functions, got %#v", readFile)
 	}
+	if strict, ok := readFile["strict"].(bool); !ok || strict {
+		t.Fatalf("expected function tool strict=false to match Codex Responses shape, got %#v", readFile["strict"])
+	}
 }
 
 func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing.T) {

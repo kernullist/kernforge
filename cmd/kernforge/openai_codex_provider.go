@@ -474,6 +474,7 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 		"type":        "function",
 		"name":        name,
 		"description": strings.TrimSpace(tool.Description),
+		"strict":      false,
 		"parameters":  openAICodexToolParameters(tool.InputSchema),
 	}
 	if len(tool.OutputSchema) > 0 {
