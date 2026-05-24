@@ -209,6 +209,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 	out.ModelsETag = strings.TrimSpace(resp.Header.Get(openAICodexServerModelsETagHeader))
 	out.ReasoningIncluded = resp.Header.Get(openAICodexReasoningIncludedHeader) != ""
+	out.RateLimitSummary = providerCodexRateLimitSummaryFromHeaders(resp.Header)
 	return out, nil
 }
 

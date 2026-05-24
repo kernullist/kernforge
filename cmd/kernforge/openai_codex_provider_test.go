@@ -906,6 +906,9 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 		w.Header().Set("OpenAI-Model", "gpt-5.2")
 		w.Header().Set("X-Models-Etag", "etag-123")
 		w.Header().Set("x-reasoning-included", "true")
+		w.Header().Set("X-Codex-Primary-Used-Percent", "12.5")
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "10")
+		w.Header().Set("X-Codex-Primary-Reset-At", "1704069000")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"grep\"}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":1,\"arguments\":\"{\\\"pattern\\\":\\\"x\\\"}\"}\n\n"))
@@ -941,6 +944,9 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 	if resp.ServerModel != "gpt-5.2" || resp.ModelsETag != "etag-123" || !resp.ReasoningIncluded {
 		t.Fatalf("expected Codex response metadata to be captured, got %#v", resp)
 	}
+	if resp.RateLimitSummary != "primary=12.5% window=10m reset_at=1704069000" {
+		t.Fatalf("expected Codex rate limit summary to be captured, got %q", resp.RateLimitSummary)
+	}
 }
 
 func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
@@ -949,6 +955,8 @@ func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set(providerRateLimitReachedTypeHeader, "workspace_member_usage_limit_reached")
+		w.Header().Set("X-Codex-Primary-Used-Percent", "100.0")
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "15")
 		w.Header().Set("content-type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"message":"usage_limit_reached","type":"usage_limit_exceeded","code":"usage_limit_reached"}}`))
@@ -974,8 +982,14 @@ func TestOpenAICodexClientCompletePreservesRateLimitReachedType(t *testing.T) {
 	if providerErr.RateLimitReachedType != "workspace_member_usage_limit_reached" {
 		t.Fatalf("expected rate limit reached type, got %q", providerErr.RateLimitReachedType)
 	}
+	if providerErr.RateLimitSummary != "primary=100.0% window=15m" {
+		t.Fatalf("expected rate limit summary, got %q", providerErr.RateLimitSummary)
+	}
 	if !strings.Contains(err.Error(), "Ask an owner to increase your spend cap to continue.") {
 		t.Fatalf("expected workspace usage-limit copy, got %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "rate_limits=primary=100.0% window=15m") {
+		t.Fatalf("expected rate limit details in error, got %q", err.Error())
 	}
 }
 

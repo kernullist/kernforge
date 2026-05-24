@@ -90,6 +90,7 @@ type ChatResponse struct {
 	ServerModel       string
 	ModelsETag        string
 	ReasoningIncluded bool
+	RateLimitSummary  string
 }
 
 const (
@@ -221,6 +222,7 @@ type ProviderAPIError struct {
 	Param                string
 	Code                 string
 	RateLimitReachedType string
+	RateLimitSummary     string
 	RequestSummary       string
 	RawBody              string
 }
@@ -262,6 +264,9 @@ func (e *ProviderAPIError) Details() string {
 	if strings.TrimSpace(e.Code) != "" {
 		parts = append(parts, "code="+strings.TrimSpace(e.Code))
 	}
+	if strings.TrimSpace(e.RateLimitSummary) != "" {
+		parts = append(parts, "rate_limits="+strings.TrimSpace(e.RateLimitSummary))
+	}
 	detail := strings.Join(parts, " | ")
 	rawText := strings.TrimSpace(e.RawBody)
 	if strings.EqualFold(strings.TrimSpace(e.Message), "Provider returned error") && rawText != "" && !strings.Contains(rawText, detail) {
@@ -289,6 +294,7 @@ func newProviderHTTPErrorWithHeaders(provider string, statusCode int, status str
 		Param:                param,
 		Code:                 code,
 		RateLimitReachedType: providerRateLimitReachedTypeFromHeaders(headers),
+		RateLimitSummary:     providerCodexRateLimitSummaryFromHeaders(headers),
 		RequestSummary:       requestSummary,
 		RawBody:              rawBody,
 	}
@@ -356,6 +362,51 @@ func providerRateLimitReachedTypeMessage(value string) string {
 	default:
 		return ""
 	}
+}
+
+func providerCodexRateLimitSummaryFromHeaders(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	parts := []string{}
+	if primary := providerCodexRateLimitWindowSummary(headers, "X-Codex-Primary", "primary"); primary != "" {
+		parts = append(parts, primary)
+	}
+	if secondary := providerCodexRateLimitWindowSummary(headers, "X-Codex-Secondary", "secondary"); secondary != "" {
+		parts = append(parts, secondary)
+	}
+	credits := []string{}
+	if value := strings.TrimSpace(headers.Get("X-Codex-Credits-Has-Credits")); value != "" {
+		credits = append(credits, "has_credits="+value)
+	}
+	if value := strings.TrimSpace(headers.Get("X-Codex-Credits-Unlimited")); value != "" {
+		credits = append(credits, "unlimited="+value)
+	}
+	if value := strings.TrimSpace(headers.Get("X-Codex-Credits-Balance")); value != "" {
+		credits = append(credits, "balance="+value)
+	}
+	if len(credits) > 0 {
+		parts = append(parts, "credits("+strings.Join(credits, " ")+")")
+	}
+	return strings.Join(parts, ", ")
+}
+
+func providerCodexRateLimitWindowSummary(headers http.Header, prefix string, label string) string {
+	used := strings.TrimSpace(headers.Get(prefix + "-Used-Percent"))
+	if used == "" {
+		return ""
+	}
+	parts := []string{label + "=" + used + "%"}
+	if value := strings.TrimSpace(headers.Get(prefix + "-Window-Minutes")); value != "" {
+		parts = append(parts, "window="+value+"m")
+	}
+	if value := strings.TrimSpace(headers.Get(prefix + "-Reset-At")); value != "" {
+		parts = append(parts, "reset_at="+value)
+	}
+	if value := strings.TrimSpace(headers.Get(prefix + "-Over-Secondary-Limit-Percent")); value != "" {
+		parts = append(parts, "over_secondary="+value+"%")
+	}
+	return strings.Join(parts, " ")
 }
 
 func normalizeProviderErrorCode(code any) string {
