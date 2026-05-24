@@ -8429,7 +8429,7 @@ func (rt *runtimeState) printProjectTrustStatus() {
 	if level == "" {
 		level = "unknown"
 	}
-	keys := projectTrustCandidateKeys(rt.workspace.BaseRoot)
+	keys := projectTrustCandidateKeys(rt.cfg, rt.workspace.BaseRoot)
 	key := ""
 	if len(keys) > 0 {
 		key = keys[0]

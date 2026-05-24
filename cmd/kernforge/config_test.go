@@ -11,7 +11,7 @@ import (
 
 func markConfigProjectTrustedForTest(t *testing.T, cfg *Config, workspace string) {
 	t.Helper()
-	keys := projectTrustCandidateKeys(workspace)
+	keys := projectTrustCandidateKeys(*cfg, workspace)
 	if len(keys) == 0 {
 		t.Fatalf("expected project trust key for %q", workspace)
 	}
@@ -674,7 +674,7 @@ func TestLoadConfigIgnoresWorkspaceConfigUntilProjectTrusted(t *testing.T) {
 		"auto_verify":  false,
 		"msbuild_path": `C:\Tools\MSBuild\MSBuild.exe`,
 		"projects": map[string]ProjectTrustConfig{
-			projectTrustCandidateKeys(workspace)[0]: {TrustLevel: "trusted"},
+			projectTrustCandidateKeys(Config{}, workspace)[0]: {TrustLevel: "trusted"},
 		},
 	}); err != nil {
 		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
@@ -716,6 +716,116 @@ func TestLoadConfigIgnoresWorkspaceConfigUntilProjectTrusted(t *testing.T) {
 	}
 	if loaded.MSBuildPath != `C:\Tools\MSBuild\MSBuild.exe` {
 		t.Fatalf("expected trusted workspace msbuild_path, got %q", loaded.MSBuildPath)
+	}
+}
+
+func TestLoadConfigUsesProjectRootWorkspaceConfigFromNestedCWD(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "worker")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	userCfg := DefaultConfig(nested)
+	userCfg.AutoCompactChars = 11111
+	markConfigProjectTrustedForTest(t, &userCfg, nested)
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(root, map[string]any{
+		"auto_compact_chars": 22222,
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(nested, ConfigLoadOptions{SkipEnsureUserConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.AutoCompactChars != 22222 {
+		t.Fatalf("expected nested cwd to load root workspace config, got auto_compact_chars=%d", loaded.AutoCompactChars)
+	}
+}
+
+func TestLoadConfigUsesConfiguredProjectRootMarkerForWorkspaceConfig(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "worker")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.WriteFile(filepath.Join(root, ".kernforge-root"), []byte("marker"), 0o644); err != nil {
+		t.Fatalf("write custom root marker: %v", err)
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	markers := []string{".kernforge-root"}
+	userCfg := DefaultConfig(nested)
+	userCfg.ProjectRootMarkers = &markers
+	userCfg.AutoCompactChars = 11111
+	markConfigProjectTrustedForTest(t, &userCfg, nested)
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(root, map[string]any{
+		"auto_compact_chars":   33333,
+		"project_root_markers": []string{},
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(nested, ConfigLoadOptions{SkipEnsureUserConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.AutoCompactChars != 33333 {
+		t.Fatalf("expected custom marker root workspace config, got auto_compact_chars=%d", loaded.AutoCompactChars)
+	}
+	if loaded.ProjectRootMarkers == nil || len(*loaded.ProjectRootMarkers) != 1 || (*loaded.ProjectRootMarkers)[0] != ".kernforge-root" {
+		t.Fatalf("expected workspace config project_root_markers to be ignored, got %#v", loaded.ProjectRootMarkers)
+	}
+}
+
+func TestLoadConfigEmptyProjectRootMarkersUseNestedCWDOnly(t *testing.T) {
+	home := t.TempDir()
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "worker")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+
+	markers := []string{}
+	userCfg := DefaultConfig(nested)
+	userCfg.ProjectRootMarkers = &markers
+	userCfg.AutoCompactChars = 11111
+	markConfigProjectTrustedForTest(t, &userCfg, root)
+	if err := SaveUserConfig(userCfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	if err := SaveWorkspaceConfigOverrides(root, map[string]any{
+		"auto_compact_chars": 44444,
+	}); err != nil {
+		t.Fatalf("SaveWorkspaceConfigOverrides: %v", err)
+	}
+
+	loaded, err := LoadConfigWithOptions(nested, ConfigLoadOptions{SkipEnsureUserConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if loaded.AutoCompactChars != 11111 {
+		t.Fatalf("expected empty project_root_markers to ignore parent workspace config, got auto_compact_chars=%d", loaded.AutoCompactChars)
 	}
 }
 
@@ -2374,6 +2484,24 @@ func TestMergeMCPServerConfigSwitchesTransportCleanly(t *testing.T) {
 	stdio := mergeMCPServerConfig(merged, MCPServerConfig{Name: "docs", Command: "node"})
 	if stdio.URL != "" || stdio.BearerTokenEnvVar != "" || len(stdio.HTTPHeaders) != 0 || len(stdio.EnvHTTPHeaders) != 0 || stdio.OAuth != nil || stdio.OAuthResource != "" {
 		t.Fatalf("expected HTTP fields to be cleared after command overlay, got %#v", stdio)
+	}
+}
+
+func TestMergeConfigPreservesEmptyProjectRootMarkersOverride(t *testing.T) {
+	baseMarkers := []string{".git"}
+	dst := Config{
+		ProjectRootMarkers: &baseMarkers,
+	}
+	emptyMarkers := []string{}
+	mergeConfig(&dst, Config{
+		ProjectRootMarkers: &emptyMarkers,
+	})
+
+	if dst.ProjectRootMarkers == nil {
+		t.Fatalf("expected project_root_markers override to remain configured")
+	}
+	if len(*dst.ProjectRootMarkers) != 0 {
+		t.Fatalf("expected empty project_root_markers override, got %#v", *dst.ProjectRootMarkers)
 	}
 }
 

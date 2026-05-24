@@ -50,6 +50,7 @@ var workspaceLocalConfigDenylist = []string{
 	"active_profile_key",
 	"model_routes",
 	"projects",
+	"project_root_markers",
 	"hooks_enabled",
 	"hook_presets",
 	"hooks_fail_closed",
@@ -253,6 +254,7 @@ type Config struct {
 	Projects                    map[string]ProjectTrustConfig `json:"projects,omitempty"`
 	ProjectDocMaxBytes          *int                          `json:"project_doc_max_bytes,omitempty"`
 	ProjectDocFallbackFilenames []string                      `json:"project_doc_fallback_filenames,omitempty"`
+	ProjectRootMarkers          *[]string                     `json:"project_root_markers,omitempty"`
 	ProjectAnalysis             ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
 	Review                      ReviewHarnessConfig           `json:"review,omitempty"`
 	Specialists                 SpecialistSubagentsConfig     `json:"specialists,omitempty"`
@@ -358,7 +360,7 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 		}
 	}
 	if configProjectTrusted(cfg, cwd) {
-		if err := mergeConfigFileForSourceWithOptions(&cfg, workspaceConfigPath(cwd), configSourceWorkspace, options); err != nil {
+		if err := mergeConfigFileForSourceWithOptions(&cfg, workspaceConfigPath(projectConfigRoot(cfg, cwd)), configSourceWorkspace, options); err != nil {
 			return cfg, err
 		}
 	}
@@ -613,7 +615,7 @@ func projectTrustLevelForPath(cfg Config, cwd string) string {
 	if len(cfg.Projects) == 0 {
 		return ""
 	}
-	keys := projectTrustCandidateKeys(cwd)
+	keys := projectTrustCandidateKeys(cfg, cwd)
 	if len(keys) == 0 {
 		return ""
 	}
@@ -633,9 +635,17 @@ func projectTrustLevelForPath(cfg Config, cwd string) string {
 	return ""
 }
 
-func projectTrustCandidateKeys(cwd string) []string {
+func projectConfigRoot(cfg Config, cwd string) string {
+	root := projectRootFromMarkers(cwd, projectRootMarkers(cfg))
+	if root != "" {
+		return root
+	}
+	return cwd
+}
+
+func projectTrustCandidateKeys(cfg Config, cwd string) []string {
 	var candidates []string
-	if root := findGitProjectRoot(cwd); root != "" {
+	if root := projectConfigRoot(cfg, cwd); root != "" {
 		candidates = append(candidates, root)
 	}
 	if abs, err := filepath.Abs(cwd); err == nil {
@@ -655,6 +665,34 @@ func projectTrustCandidateKeys(cwd string) []string {
 		}
 	}
 	return keys
+}
+
+func projectRootFromMarkers(cwd string, markers []string) string {
+	cwd = cleanAbsPath(cwd)
+	if cwd == "" {
+		return ""
+	}
+	info, err := os.Stat(cwd)
+	if err == nil && info != nil && !info.IsDir() {
+		cwd = filepath.Dir(cwd)
+	}
+	if len(markers) == 0 {
+		return cwd
+	}
+	cursor := cwd
+	for {
+		for _, marker := range markers {
+			if _, err := os.Stat(filepath.Join(cursor, marker)); err == nil {
+				return cursor
+			}
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			break
+		}
+		cursor = parent
+	}
+	return cwd
 }
 
 func findGitProjectRoot(cwd string) string {
@@ -777,13 +815,13 @@ func SaveProjectTrustLevel(cwd string, level string) (string, error) {
 	if level == "" {
 		return "", fmt.Errorf("project trust level must be trusted or untrusted")
 	}
-	keys := projectTrustCandidateKeys(cwd)
-	if len(keys) == 0 {
-		return "", fmt.Errorf("could not resolve project trust key for %s", cwd)
-	}
 	cfg, err := loadUserConfigOnly(cwd)
 	if err != nil {
 		return "", err
+	}
+	keys := projectTrustCandidateKeys(cfg, cwd)
+	if len(keys) == 0 {
+		return "", fmt.Errorf("could not resolve project trust key for %s", cwd)
 	}
 	if cfg.Projects == nil {
 		cfg.Projects = map[string]ProjectTrustConfig{}
@@ -1297,6 +1335,10 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if len(src.ProjectDocFallbackFilenames) > 0 {
 		dst.ProjectDocFallbackFilenames = normalizeProjectDocFallbackNames(src.ProjectDocFallbackFilenames)
+	}
+	if src.ProjectRootMarkers != nil {
+		markers := append([]string(nil), (*src.ProjectRootMarkers)...)
+		dst.ProjectRootMarkers = &markers
 	}
 	if src.ProjectAnalysis.Enabled != nil {
 		value := *src.ProjectAnalysis.Enabled

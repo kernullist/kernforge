@@ -88,6 +88,9 @@ func TestSystemPromptIncludesActivePermissionProfileSnapshot(t *testing.T) {
 func TestSystemPromptIncludesProjectAgentsMDInstructions(t *testing.T) {
 	setTempUserConfigHome(t)
 	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
 	nested := filepath.Join(root, "pkg", "worker")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatalf("mkdir nested: %v", err)
@@ -159,6 +162,116 @@ func TestSystemPromptDiscoversGitRootAgentsMDFromNestedSessionRoot(t *testing.T)
 	}
 	if rootIndex > nestedIndex {
 		t.Fatalf("expected repo root AGENTS.md before nested AGENTS.md, got %q", prompt)
+	}
+}
+
+func TestSystemPromptWithoutProjectRootMarkerUsesCWDOnly(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("unmarked parent instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("unmarked cwd instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if strings.Contains(prompt, "unmarked parent instruction") {
+		t.Fatalf("expected parent AGENTS.md to be ignored without project root marker, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "unmarked cwd instruction") {
+		t.Fatalf("expected cwd AGENTS.md to be included, got %q", prompt)
+	}
+}
+
+func TestSystemPromptUsesConfiguredProjectRootMarker(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".kernforge-root"), []byte("marker"), 0o644); err != nil {
+		t.Fatalf("write custom root marker: %v", err)
+	}
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("custom marker root instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("custom marker nested instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	markers := []string{".kernforge-root"}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config: Config{
+			ProjectRootMarkers: &markers,
+		},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: nested,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	rootIndex := strings.Index(prompt, "custom marker root instruction")
+	nestedIndex := strings.Index(prompt, "custom marker nested instruction")
+	if rootIndex < 0 || nestedIndex < 0 {
+		t.Fatalf("expected custom marker root and nested AGENTS.md instructions, got %q", prompt)
+	}
+	if rootIndex > nestedIndex {
+		t.Fatalf("expected root AGENTS.md before nested AGENTS.md, got %q", prompt)
+	}
+}
+
+func TestSystemPromptProjectRootMarkersCanDisableParentTraversal(t *testing.T) {
+	setTempUserConfigHome(t)
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git marker: %v", err)
+	}
+	nested := filepath.Join(root, "pkg", "worker")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "AGENTS.md"), []byte("disabled parent root instruction"), 0o644); err != nil {
+		t.Fatalf("write root AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "AGENTS.md"), []byte("disabled parent nested instruction"), 0o644); err != nil {
+		t.Fatalf("write nested AGENTS.md: %v", err)
+	}
+	markers := []string{}
+	session := NewSession(nested, "provider", "model", "", "default")
+	agent := &Agent{
+		Config: Config{
+			ProjectRootMarkers: &markers,
+		},
+		Session: session,
+		Workspace: Workspace{
+			BaseRoot: root,
+			Root:     nested,
+		},
+	}
+
+	prompt := agent.systemPrompt()
+	if strings.Contains(prompt, "disabled parent root instruction") {
+		t.Fatalf("expected empty project_root_markers to disable parent AGENTS.md traversal, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "disabled parent nested instruction") {
+		t.Fatalf("expected cwd AGENTS.md to remain visible, got %q", prompt)
 	}
 }
 

@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	defaultAgentsMDFilename = "AGENTS.md"
-	localAgentsMDFilename   = "AGENTS.override.md"
-	agentsMDMaxBytes        = 32 * 1024
-	agentsMDSeparator       = "\n\n--- project-doc ---\n\n"
+	defaultAgentsMDFilename  = "AGENTS.md"
+	localAgentsMDFilename    = "AGENTS.override.md"
+	defaultProjectRootMarker = ".git"
+	agentsMDMaxBytes         = 32 * 1024
+	agentsMDSeparator        = "\n\n--- project-doc ---\n\n"
 )
 
 func (a *Agent) agentsMDPromptSection() string {
@@ -57,14 +58,7 @@ func (a *Agent) projectAgentsMDContents() string {
 	if cwd == "" {
 		return ""
 	}
-	root := strings.TrimSpace(workspaceEffectiveBaseRoot(a.Workspace, a.Session))
-	if root == "" {
-		root = strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
-	}
-	if root == "" {
-		root = cwd
-	}
-	root = agentsMDProjectRoot(root, cwd)
+	root := projectRootFromMarkers(cwd, projectRootMarkers(a.Config))
 	maxBytes := agentsMDMaxBytes
 	if a.Config.ProjectDocMaxBytes != nil {
 		maxBytes = *a.Config.ProjectDocMaxBytes
@@ -141,14 +135,11 @@ func loadProjectAgentsMD(root string, cwd string, maxBytes int, fallbackNames []
 	return strings.Join(parts, "\n\n")
 }
 
-func agentsMDProjectRoot(root string, cwd string) string {
-	root = cleanAbsPath(root)
-	cwd = cleanAbsPath(cwd)
-	gitRoot := cleanAbsPath(findGitProjectRoot(cwd))
-	if gitRoot == "" || cwd == "" || !pathContains(gitRoot, cwd) {
-		return root
+func projectRootMarkers(cfg Config) []string {
+	if cfg.ProjectRootMarkers == nil {
+		return []string{defaultProjectRootMarker}
 	}
-	return gitRoot
+	return append([]string(nil), (*cfg.ProjectRootMarkers)...)
 }
 
 func agentsMDSearchDirs(root string, cwd string) []string {
