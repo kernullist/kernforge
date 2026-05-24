@@ -8890,7 +8890,7 @@ func compactMessageRetainedCharCost(msg Message) int {
 	total := len(msg.Text) + len(msg.ReasoningContent) + encryptedReasoningApproxChars(len(msg.ReasoningEncryptedContent))
 	total += len(msg.ToolCallID) + len(msg.ToolName)
 	for _, call := range msg.WebSearchCalls {
-		total += len(call.Status)
+		total += len(call.ID) + len(call.Status)
 		total += compactActionCharCost(call.Action)
 	}
 	for _, call := range msg.LocalShellCalls {

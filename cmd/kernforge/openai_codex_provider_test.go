@@ -1623,6 +1623,7 @@ func TestBuildOpenAICodexRequestBodyPreservesAssistantWebSearchCallsLikeCodex(t 
 				Role: "assistant",
 				Text: "Web search completed: codex hosted tools",
 				WebSearchCalls: []MessageWebSearchCall{{
+					ID:     "ws_123",
 					Status: "completed",
 					Action: map[string]any{
 						"type":  "search",
@@ -3663,6 +3664,9 @@ func TestParseOpenAICodexResponseAcceptsHostedOutputItems(t *testing.T) {
 		t.Fatalf("expected web search call metadata, got %#v", resp.Message.WebSearchCalls)
 	}
 	call := resp.Message.WebSearchCalls[0]
+	if call.ID != "ws_123" {
+		t.Fatalf("expected web search id to be preserved in session history, got %#v", call)
+	}
 	if call.Status != "completed" {
 		t.Fatalf("expected web search status to be preserved, got %#v", call)
 	}
@@ -3809,6 +3813,9 @@ func TestReadOpenAICodexStreamPreservesHostedWebSearchCall(t *testing.T) {
 		t.Fatalf("expected web search call metadata, got %#v", resp.Message.WebSearchCalls)
 	}
 	call := resp.Message.WebSearchCalls[0]
+	if call.ID != "ws_123" {
+		t.Fatalf("expected web search id to be preserved in stream history, got %#v", call)
+	}
 	if call.Status != "completed" {
 		t.Fatalf("expected web search status to be preserved, got %#v", call)
 	}

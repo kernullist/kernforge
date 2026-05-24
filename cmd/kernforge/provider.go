@@ -155,6 +155,7 @@ type ToolCall struct {
 }
 
 type MessageWebSearchCall struct {
+	ID     string         `json:"id,omitempty"`
 	Status string         `json:"status,omitempty"`
 	Action map[string]any `json:"action,omitempty"`
 }

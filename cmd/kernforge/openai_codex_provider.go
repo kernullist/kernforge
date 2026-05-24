@@ -2740,6 +2740,7 @@ func openAICodexWebSearchCallFromOutputItem(item openAICodexOutputItem) (Message
 		return MessageWebSearchCall{}, false
 	}
 	call := MessageWebSearchCall{
+		ID:     strings.TrimSpace(item.ID),
 		Status: strings.TrimSpace(item.Status),
 	}
 	if len(item.Action) > 0 {

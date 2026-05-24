@@ -14,6 +14,7 @@ func TestSessionApproxCharsCountsCodexStructuredHistoryItems(t *testing.T) {
 		Role:                      "assistant",
 		ReasoningEncryptedContent: "sealed-reasoning",
 		WebSearchCalls: []MessageWebSearchCall{{
+			ID:     "ws_1",
 			Status: "completed",
 			Action: map[string]any{
 				"type":  "search",
@@ -45,7 +46,7 @@ func TestSessionApproxCharsCountsCodexStructuredHistoryItems(t *testing.T) {
 	})
 
 	approx := session.ApproxChars()
-	minAdded := len("completed") + len("call_shell") + len("sealed-tool") + codexResizedImageBytesEstimate
+	minAdded := len("ws_1") + len("completed") + len("call_shell") + len("sealed-tool") + codexResizedImageBytesEstimate
 	if approx-baseline < minAdded {
 		t.Fatalf("expected approx chars to count structured history items, baseline=%d approx=%d minAdded=%d", baseline, approx, minAdded)
 	}
@@ -148,6 +149,14 @@ func TestSessionExportTextIncludesCodexStructuredHistoryItems(t *testing.T) {
 	session := NewSession("C:\\workspace", "openai-codex", "gpt-5", "", "default")
 	session.AddMessage(Message{
 		Role: "assistant",
+		WebSearchCalls: []MessageWebSearchCall{{
+			ID:     "ws_123",
+			Status: "completed",
+			Action: map[string]any{
+				"type":  "search",
+				"query": "codex hosted tools",
+			},
+		}},
 		LocalShellCalls: []MessageLocalShellCall{{
 			CallID: "call_shell",
 			Status: "completed",
@@ -162,7 +171,7 @@ func TestSessionExportTextIncludesCodexStructuredHistoryItems(t *testing.T) {
 	})
 
 	exported := session.ExportText()
-	for _, want := range []string{"local_shell_call: call_shell completed", "codex_context_compaction", "encrypted content present"} {
+	for _, want := range []string{"web_search: id=ws_123 completed", "codex hosted tools", "local_shell_call: call_shell completed", "codex_context_compaction", "encrypted content present"} {
 		if !strings.Contains(exported, want) {
 			t.Fatalf("expected exported session to include %q, got:\n%s", want, exported)
 		}
