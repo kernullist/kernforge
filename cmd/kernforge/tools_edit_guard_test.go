@@ -352,6 +352,54 @@ func TestApplyPatchRejectsMalformedInputWithoutPanic(t *testing.T) {
 	}
 }
 
+func TestApplyPatchAcceptsRawFreeformPayloadLikeCodex(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(context.Context, Workspace, string) (ToolExecutionResult, error)
+	}{
+		{
+			name: "direct tool",
+			run: func(ctx context.Context, ws Workspace, patch string) (ToolExecutionResult, error) {
+				return NewApplyPatchTool(ws).ExecuteDetailed(ctx, map[string]any{
+					"raw": patch,
+				})
+			},
+		},
+		{
+			name: "registry",
+			run: func(ctx context.Context, ws Workspace, patch string) (ToolExecutionResult, error) {
+				return NewToolRegistry(NewApplyPatchTool(ws)).ExecuteDetailed(ctx, "apply_patch", mustJSON(map[string]any{
+					"raw": patch,
+				}))
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "main.go")
+			if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			patch := "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+\n+func freeformPatch() {}\n*** End Patch\n"
+
+			result, err := tc.run(context.Background(), Workspace{BaseRoot: root, Root: root}, patch)
+			if err != nil {
+				t.Fatalf("expected raw freeform patch payload to apply, got %v", err)
+			}
+			if changed, _ := result.Meta["changed_workspace"].(bool); !changed {
+				t.Fatalf("expected changed_workspace metadata, got %#v", result.Meta)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("ReadFile: %v", err)
+			}
+			if !strings.Contains(string(data), "func freeformPatch() {}") {
+				t.Fatalf("expected raw freeform patch to update file, got %q", string(data))
+			}
+		})
+	}
+}
+
 func TestListFilesRejectsMalformedInputWithoutPanic(t *testing.T) {
 	tool := NewListFilesTool(Workspace{})
 	for _, input := range []any{nil, "not an object", []any{"path"}} {

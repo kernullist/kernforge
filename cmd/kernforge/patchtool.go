@@ -41,6 +41,12 @@ func (t ApplyPatchTool) ExecuteDetailed(ctx context.Context, input any) (ToolExe
 	}
 	patchText := stringValue(args, "patch")
 	if strings.TrimSpace(patchText) == "" {
+		if rawPatchText := stringValue(args, "raw"); strings.TrimSpace(rawPatchText) != "" {
+			patchText = rawPatchText
+			args["patch"] = patchText
+		}
+	}
+	if strings.TrimSpace(patchText) == "" {
 		return ToolExecutionResult{}, fmt.Errorf("patch is required")
 	}
 	ownerNodeID := strings.TrimSpace(stringValue(args, "owner_node_id"))
