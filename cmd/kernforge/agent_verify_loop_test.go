@@ -4855,6 +4855,37 @@ func TestCompactRetainedMessagesWithinBudgetPreservesCodexStructuredHistoryItems
 	}
 }
 
+func TestCompactRetainedMessagesWithinBudgetDropsOrphanToolOutputAtBoundary(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Text: "old"},
+		{
+			Role: "assistant",
+			ToolCalls: []ToolCall{{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: `{"path":"` + strings.Repeat("deep/", 20) + `main.go"}`,
+			}},
+		},
+		{
+			Role:       "tool",
+			ToolCallID: "call_read",
+			ToolName:   "read_file",
+			Text:       "ok",
+		},
+		{Role: "user", Text: "new"},
+	}
+
+	retained, _ := compactRetainedMessagesWithinBudget(messages, 20)
+	for _, msg := range retained {
+		if msg.Role == "tool" && msg.ToolCallID == "call_read" {
+			t.Fatalf("compaction must not retain orphan tool output without its assistant call, got %#v", retained)
+		}
+	}
+	if len(retained) != 1 || retained[0].Text != "new" {
+		t.Fatalf("expected only newest message after dropping orphan tool output, got %#v", retained)
+	}
+}
+
 func TestMessageLooksLikeCompactContextOnlyKeepsStructuredHistoryItems(t *testing.T) {
 	msg := Message{
 		Role: "user",

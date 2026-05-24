@@ -8800,6 +8800,7 @@ func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Me
 	for i := range retainedReversed {
 		retained[len(retainedReversed)-1-i] = retainedReversed[i]
 	}
+	retained = compactDropOrphanToolMessages(retained)
 	summarizePrefix := firstRetained
 	if firstRetainedTruncated && summarizePrefix < len(messages) {
 		summarizePrefix++
@@ -8811,6 +8812,42 @@ func compactRetainedMessagesWithinBudget(messages []Message, maxChars int) ([]Me
 		summarizePrefix = len(messages)
 	}
 	return retained, summarizePrefix
+}
+
+func compactDropOrphanToolMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	expected := map[string]bool{}
+	out := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") {
+			for _, call := range msg.ToolCalls {
+				callID := firstNonEmptyTrimmed(call.ID, call.Name)
+				if callID != "" {
+					expected[callID] = true
+				}
+			}
+			for _, call := range msg.LocalShellCalls {
+				callID := firstNonEmptyTrimmed(call.CallID, call.ID)
+				if callID != "" {
+					expected[callID] = true
+				}
+			}
+			out = append(out, msg)
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
+			if callID == "" || !expected[callID] {
+				continue
+			}
+			out = append(out, msg)
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
 }
 
 func compactMessageRetainedCharCost(msg Message) int {
