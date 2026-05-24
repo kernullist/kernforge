@@ -622,6 +622,113 @@ func TestToolRegistryDecodesEscapedDefinitionReferences(t *testing.T) {
 	}
 }
 
+func TestToolRegistryPreservesNestedDefinitionReferenceParent(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "nested_ref_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{
+						"$ref": "#/$defs/User/properties/name",
+					},
+				},
+				"$defs": map[string]any{
+					"User": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"name": map[string]any{
+								"type": "string",
+							},
+						},
+					},
+					"name": map[string]any{
+						"type": "string",
+					},
+					"Unused": map[string]any{
+						"type": "boolean",
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("nested reference schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	properties := defs[0].InputSchema["properties"].(map[string]any)
+	name := properties["name"].(map[string]any)
+	if name["$ref"] != "#/$defs/User/properties/name" {
+		t.Fatalf("expected nested local definition reference to be preserved, got %#v", name)
+	}
+	defsTable, ok := defs[0].InputSchema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected definition table to be preserved, got %#v", defs[0].InputSchema)
+	}
+	if _, ok := defsTable["User"]; !ok {
+		t.Fatalf("expected parent definition for nested reference to be preserved, got %#v", defsTable)
+	}
+	if _, ok := defsTable["name"]; ok {
+		t.Fatalf("expected similarly named root definition to be pruned, got %#v", defsTable)
+	}
+	if _, ok := defsTable["Unused"]; ok {
+		t.Fatalf("expected unused root definition to be pruned, got %#v", defsTable)
+	}
+}
+
+func TestToolRegistryPreservesPercentEncodedDefinitionReferences(t *testing.T) {
+	tool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name: "percent_encoded_ref_schema",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"user": map[string]any{
+						"$ref": "#/$defs/User%20Name",
+					},
+					"profile": map[string]any{
+						"$ref": "#/%24defs/Profile%7E0Name",
+					},
+				},
+				"$defs": map[string]any{
+					"User Name": map[string]any{
+						"type": "string",
+					},
+					"Profile~Name": map[string]any{
+						"type": "string",
+					},
+					"Unused": map[string]any{
+						"type": "boolean",
+					},
+				},
+			},
+		},
+		output: "ok",
+	}
+
+	registry := NewToolRegistry(tool)
+	if issues := registry.RegistrationIssues(); len(issues) != 0 {
+		t.Fatalf("percent-encoded reference schema should be accepted, got %#v", issues)
+	}
+	defs := registry.Definitions()
+	defsTable, ok := defs[0].InputSchema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected definition table to be preserved, got %#v", defs[0].InputSchema)
+	}
+	if _, ok := defsTable["User Name"]; !ok {
+		t.Fatalf("expected percent-decoded User Name definition to be preserved, got %#v", defsTable)
+	}
+	if _, ok := defsTable["Profile~Name"]; !ok {
+		t.Fatalf("expected percent-decoded Profile~Name definition to be preserved, got %#v", defsTable)
+	}
+	if _, ok := defsTable["Unused"]; ok {
+		t.Fatalf("expected unused definition to be pruned, got %#v", defsTable)
+	}
+}
+
 func TestToolRegistryCompactsLargeSchemaByStrippingDescriptions(t *testing.T) {
 	properties := map[string]any{}
 	for i := 0; i < 40; i++ {

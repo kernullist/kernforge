@@ -637,6 +637,12 @@ func collectToolDefinitionRefs(value any, includeDefinitionTables bool, refs *[]
 				*refs = append(*refs, ref)
 			}
 		}
+		if includeDefinitionTables {
+			for _, child := range typed {
+				collectToolDefinitionRefs(child, includeDefinitionTables, refs)
+			}
+			return
+		}
 		forEachToolSchemaChild(typed, includeDefinitionTables, func(child any) {
 			collectToolDefinitionRefs(child, includeDefinitionTables, refs)
 		})
