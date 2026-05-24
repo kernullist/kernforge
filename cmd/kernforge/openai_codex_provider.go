@@ -1416,6 +1416,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			OutputIndex *int                  `json:"output_index,omitempty"`
 			EndTurn     *bool                 `json:"end_turn,omitempty"`
 			Response    json.RawMessage       `json:"response,omitempty"`
+			Headers     json.RawMessage       `json:"headers,omitempty"`
 			Metadata    json.RawMessage       `json:"metadata,omitempty"`
 			Item        openAICodexOutputItem `json:"item,omitempty"`
 			Error       *struct {
@@ -1431,7 +1432,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		if event.Error != nil {
 			return ChatResponse{}, false, newProviderMessageError("openai-codex", event.Error.Message, event.Error.Type, event.Error.Param, event.Error.Code, []byte(payload))
 		}
-		if model := openAICodexServerModelFromResponsePayload(event.Response); model != "" {
+		if model := openAICodexServerModelFromEventPayload(event.Response, event.Headers); model != "" {
 			serverModel = model
 		}
 		if event.Type == "codex.rate_limits" {
@@ -1769,18 +1770,53 @@ func openAICodexServerModelFromResponsePayload(data json.RawMessage) string {
 		return ""
 	}
 	var decoded struct {
-		Model   string         `json:"model,omitempty"`
 		Headers map[string]any `json:"headers,omitempty"`
 	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return ""
 	}
+	return openAICodexServerModelFromHeaderMap(decoded.Headers)
+}
+
+func openAICodexServerModelFromEventPayload(response json.RawMessage, headers json.RawMessage) string {
+	if model := openAICodexServerModelFromResponsePayload(response); model != "" {
+		return model
+	}
+	return openAICodexServerModelFromHeadersPayload(headers)
+}
+
+func openAICodexServerModelFromHeadersPayload(data json.RawMessage) string {
+	if len(data) == 0 {
+		return ""
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return ""
+	}
+	return openAICodexServerModelFromHeaderMap(decoded)
+}
+
+func openAICodexServerModelFromHeaderMap(headers map[string]any) string {
 	for _, key := range []string{"OpenAI-Model", "openai-model", "x-openai-model", "X-OpenAI-Model"} {
-		if value := strings.TrimSpace(fmt.Sprint(decoded.Headers[key])); value != "" && value != "<nil>" {
+		if value := openAICodexHeaderString(headers[key]); value != "" {
 			return value
 		}
 	}
-	return strings.TrimSpace(decoded.Model)
+	return ""
+}
+
+func openAICodexHeaderString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		for _, item := range typed {
+			if text := openAICodexHeaderString(item); text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 func openAICodexResponsePayloadHasMessageText(data json.RawMessage) bool {

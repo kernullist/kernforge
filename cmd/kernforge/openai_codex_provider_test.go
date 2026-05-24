@@ -2414,6 +2414,20 @@ func TestParseOpenAICodexResponseCapturesServerModel(t *testing.T) {
 	}
 }
 
+func TestParseOpenAICodexResponseIgnoresModelFieldForServerModel(t *testing.T) {
+	resp, err := parseOpenAICodexResponse([]byte(`{
+		"status":"completed",
+		"model":"gpt-5.2",
+		"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]
+	}`))
+	if err != nil {
+		t.Fatalf("parseOpenAICodexResponse: %v", err)
+	}
+	if resp.ServerModel != "" {
+		t.Fatalf("expected server model to come only from headers, got %q", resp.ServerModel)
+	}
+}
+
 func TestParseOpenAICodexResponseCapturesModelVerifications(t *testing.T) {
 	resp, err := parseOpenAICodexResponse([]byte(`{
 		"status":"completed",
@@ -2778,6 +2792,38 @@ func TestReadOpenAICodexStreamCapturesCreatedResponseModelHeader(t *testing.T) {
 	}
 	if resp.ServerModel != "gpt-5.2" {
 		t.Fatalf("expected response.created server model to be captured, got %q", resp.ServerModel)
+	}
+}
+
+func TestReadOpenAICodexStreamCapturesTopLevelModelHeader(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.created","headers":{"x-openai-model":["gpt-5.4"]},"response":{"id":"resp-1"}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.ServerModel != "gpt-5.4" {
+		t.Fatalf("expected top-level model header to be captured, got %q", resp.ServerModel)
+	}
+}
+
+func TestReadOpenAICodexStreamPrefersResponseModelHeader(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.created","headers":{"OpenAI-Model":"outer-model"},"response":{"id":"resp-1","headers":{"OpenAI-Model":"inner-model"}}}`,
+		`data: {"type":"response.output_text.delta","delta":"done"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.ServerModel != "inner-model" {
+		t.Fatalf("expected response header model to win, got %q", resp.ServerModel)
 	}
 }
 
