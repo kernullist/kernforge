@@ -1399,6 +1399,51 @@ func TestBuildOpenAICodexRequestBodyPreservesAssistantReasoningEncryptedContentL
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPreservesAssistantWebSearchCallsLikeCodex(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{
+				Role: "assistant",
+				Text: "Web search completed: codex hosted tools",
+				WebSearchCalls: []MessageWebSearchCall{{
+					Status: "completed",
+					Action: map[string]any{
+						"type":  "search",
+						"query": "codex hosted tools",
+					},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input := payload["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected assistant message plus web_search_call, got %#v in %s", input, body)
+	}
+	webSearch, ok := input[1].(map[string]any)
+	if !ok || webSearch["type"] != "web_search_call" {
+		t.Fatalf("expected web_search_call, got %#v in %s", input[1], body)
+	}
+	if _, hasID := webSearch["id"]; hasID {
+		t.Fatalf("Codex web_search_call history should not replay transient ids, got %#v", webSearch)
+	}
+	if webSearch["status"] != "completed" {
+		t.Fatalf("expected web search status to be preserved, got %#v", webSearch)
+	}
+	action := webSearch["action"].(map[string]any)
+	if action["type"] != "search" || action["query"] != "codex hosted tools" {
+		t.Fatalf("expected web search action to be preserved, got %#v", webSearch)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodySerializesServiceTier(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:       "gpt-5.5",
@@ -3065,6 +3110,16 @@ func TestParseOpenAICodexResponseAcceptsHostedOutputItems(t *testing.T) {
 	if !strings.Contains(resp.Message.Text, "Web search completed: codex hosted tools (ws_123)") {
 		t.Fatalf("expected web search hosted output text, got %q", resp.Message.Text)
 	}
+	if len(resp.Message.WebSearchCalls) != 1 {
+		t.Fatalf("expected web search call metadata, got %#v", resp.Message.WebSearchCalls)
+	}
+	call := resp.Message.WebSearchCalls[0]
+	if call.Status != "completed" {
+		t.Fatalf("expected web search status to be preserved, got %#v", call)
+	}
+	if call.Action["type"] != "search" || call.Action["query"] != "codex hosted tools" {
+		t.Fatalf("expected web search action to be preserved, got %#v", call)
+	}
 }
 
 func TestParseOpenAICodexResponseSummarizesHostedWebSearchActionVariants(t *testing.T) {
@@ -3144,6 +3199,31 @@ func TestReadOpenAICodexStreamSavesImageGenerationOutput(t *testing.T) {
 	}
 	if strings.Contains(resp.Message.Text, encoded) {
 		t.Fatalf("stream response text must not expose raw base64 payload: %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamPreservesHostedWebSearchCall(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_123","status":"completed","action":{"type":"search","query":"codex hosted tools"}}}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if !strings.Contains(resp.Message.Text, "Web search completed: codex hosted tools (ws_123)") {
+		t.Fatalf("expected web search hosted output text, got %q", resp.Message.Text)
+	}
+	if len(resp.Message.WebSearchCalls) != 1 {
+		t.Fatalf("expected web search call metadata, got %#v", resp.Message.WebSearchCalls)
+	}
+	call := resp.Message.WebSearchCalls[0]
+	if call.Status != "completed" {
+		t.Fatalf("expected web search status to be preserved, got %#v", call)
+	}
+	if call.Action["type"] != "search" || call.Action["query"] != "codex hosted tools" {
+		t.Fatalf("expected web search action to be preserved, got %#v", call)
 	}
 }
 

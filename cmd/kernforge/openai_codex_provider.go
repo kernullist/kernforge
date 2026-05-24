@@ -876,6 +876,7 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 				items = append(items, openAICodexToolCallInputItem(callID, tc))
 			}
 			items = append(items, openAICodexAssistantImageGenerationInputItems(req.WorkingDir, msg.Images, supportsImages)...)
+			items = append(items, openAICodexAssistantWebSearchInputItems(msg.WebSearchCalls)...)
 		case "tool":
 			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
 			if callID == "" {
@@ -939,6 +940,26 @@ func openAICodexAssistantImageGenerationID(image MessageImage, index int) string
 		return id
 	}
 	return fmt.Sprintf("generated_image_%d", index+1)
+}
+
+func openAICodexAssistantWebSearchInputItems(calls []MessageWebSearchCall) []any {
+	if len(calls) == 0 {
+		return nil
+	}
+	items := make([]any, 0, len(calls))
+	for _, call := range calls {
+		item := map[string]any{
+			"type": "web_search_call",
+		}
+		if status := strings.TrimSpace(call.Status); status != "" {
+			item["status"] = status
+		}
+		if len(call.Action) > 0 {
+			item["action"] = cloneToolDefinitionMap(call.Action)
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func ensureOpenAICodexToolCallResponses(messages []Message) []Message {
@@ -1361,6 +1382,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	finalTexts := []string{}
 	reasoningTexts := []string{}
 	reasoningEncryptedContents := []string{}
+	webSearchCalls := []MessageWebSearchCall{}
 	textMessageCount := 0
 	commentaryTextMessageCount := 0
 	messagePhase := ""
@@ -1403,6 +1425,9 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 			if itemText := openAICodexHostedOutputItemText(item, ""); strings.TrimSpace(itemText) != "" {
 				fallbackTexts = append(fallbackTexts, itemText)
 			}
+			if call, ok := openAICodexWebSearchCallFromOutputItem(item); ok {
+				webSearchCalls = append(webSearchCalls, call)
+			}
 		}
 	}
 	texts := fallbackTexts
@@ -1416,6 +1441,7 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	out.Text = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(texts), "\n"))
 	out.ReasoningContent = strings.TrimSpace(strings.Join(deduplicateOpenAICodexTexts(reasoningTexts), "\n"))
 	out.ReasoningEncryptedContent = firstNonEmptyTrimmed(reasoningEncryptedContents...)
+	out.WebSearchCalls = append(out.WebSearchCalls, webSearchCalls...)
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
@@ -1479,6 +1505,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 	finalItemTexts := []string{}
 	hostedItemTexts := []string{}
 	hostedImages := []MessageImage{}
+	hostedWebSearchCalls := []MessageWebSearchCall{}
 	var completedResponse json.RawMessage
 	toolCalls := map[int]*openAICodexStreamToolCall{}
 	toolOrder := []int{}
@@ -1590,6 +1617,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		if itemText := openAICodexHostedOutputItemText(item, savedPath); strings.TrimSpace(itemText) != "" {
 			hostedItemTexts = append(hostedItemTexts, itemText)
+		}
+		if call, ok := openAICodexWebSearchCallFromOutputItem(item); ok {
+			hostedWebSearchCalls = append(hostedWebSearchCalls, call)
 		}
 	}
 
@@ -1892,7 +1922,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		streamText = strings.Join(deduplicateOpenAICodexTexts(texts), "\n")
 	}
-	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...)}
+	out := Message{Role: "assistant", Phase: messagePhase, Text: strings.TrimSpace(streamText), ReasoningContent: strings.TrimSpace(reasoning.String()), ReasoningEncryptedContent: strings.TrimSpace(reasoningEncryptedContent), Images: appendUniqueImages(nil, hostedImages...), WebSearchCalls: append([]MessageWebSearchCall(nil), hostedWebSearchCalls...)}
 	for _, index := range toolOrder {
 		item := toolCalls[index]
 		if item == nil || strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
@@ -1924,6 +1954,9 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 		}
 		if len(out.Images) == 0 && len(completedParsed.Message.Images) > 0 {
 			out.Images = appendUniqueImages(out.Images, completedParsed.Message.Images...)
+		}
+		if len(out.WebSearchCalls) == 0 && len(completedParsed.Message.WebSearchCalls) > 0 {
+			out.WebSearchCalls = append(out.WebSearchCalls, completedParsed.Message.WebSearchCalls...)
 		}
 	}
 	if out.Text == "" && len(out.ToolCalls) == 0 {
@@ -2287,6 +2320,22 @@ func openAICodexWebSearchOutputItemText(item openAICodexOutputItem) string {
 		return fmt.Sprintf("Web search %s: %s (%s)", status, query, id)
 	}
 	return fmt.Sprintf("Web search %s: %s", status, id)
+}
+
+func openAICodexWebSearchCallFromOutputItem(item openAICodexOutputItem) (MessageWebSearchCall, bool) {
+	if strings.TrimSpace(item.Type) != "web_search_call" {
+		return MessageWebSearchCall{}, false
+	}
+	call := MessageWebSearchCall{
+		Status: strings.TrimSpace(item.Status),
+	}
+	if len(item.Action) > 0 {
+		var action map[string]any
+		if err := json.Unmarshal(item.Action, &action); err == nil && len(action) > 0 {
+			call.Action = cloneToolDefinitionMap(action)
+		}
+	}
+	return call, true
 }
 
 func openAICodexWebSearchOutputItemQuery(item openAICodexOutputItem) string {

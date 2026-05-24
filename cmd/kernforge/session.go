@@ -214,6 +214,12 @@ func (s *Session) ApproxChars() int {
 		for _, image := range msg.Images {
 			total += len(image.Path) + len(image.MediaType) + len(image.Detail)
 		}
+		for _, call := range msg.WebSearchCalls {
+			total += len(call.Status)
+			if encoded, err := json.Marshal(call.Action); err == nil {
+				total += len(encoded)
+			}
+		}
 		total += len(msg.ToolCallID) + len(msg.ToolName)
 		for _, tc := range msg.ToolCalls {
 			total += len(tc.Name) + len(tc.Arguments)
@@ -441,6 +447,16 @@ func (s *Session) ExportText() string {
 				} else {
 					fmt.Fprintf(&b, "- image: %s (%s)\n", image.Path, image.MediaType)
 				}
+			}
+			b.WriteString("\n")
+		}
+		if len(msg.WebSearchCalls) > 0 {
+			for _, call := range msg.WebSearchCalls {
+				action := ""
+				if encoded, err := json.Marshal(call.Action); err == nil && len(encoded) > 0 && string(encoded) != "null" {
+					action = " " + string(encoded)
+				}
+				fmt.Fprintf(&b, "- web_search: %s%s\n", strings.TrimSpace(call.Status), action)
 			}
 			b.WriteString("\n")
 		}

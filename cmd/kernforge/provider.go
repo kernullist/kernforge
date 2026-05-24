@@ -39,6 +39,11 @@ type ToolCall struct {
 	Arguments string `json:"arguments"`
 }
 
+type MessageWebSearchCall struct {
+	Status string         `json:"status,omitempty"`
+	Action map[string]any `json:"action,omitempty"`
+}
+
 const (
 	messagePhaseCommentary           = "commentary"
 	messagePhaseFinalAnswer          = "final_answer"
@@ -46,19 +51,20 @@ const (
 )
 
 type Message struct {
-	Role                      string            `json:"role"`
-	Phase                     string            `json:"phase,omitempty"`
-	Text                      string            `json:"text,omitempty"`
-	ReasoningContent          string            `json:"reasoning_content,omitempty"`
-	ReasoningEncryptedContent string            `json:"reasoning_encrypted_content,omitempty"`
-	Images                    []MessageImage    `json:"images,omitempty"`
-	ToolCalls                 []ToolCall        `json:"tool_calls,omitempty"`
-	ToolCallID                string            `json:"tool_call_id,omitempty"`
-	ToolName                  string            `json:"tool_name,omitempty"`
-	ToolContentItems          []ToolContentItem `json:"tool_content_items,omitempty"`
-	ToolMeta                  map[string]any    `json:"tool_meta,omitempty"`
-	IsError                   bool              `json:"is_error,omitempty"`
-	Internal                  bool              `json:"internal,omitempty"`
+	Role                      string                 `json:"role"`
+	Phase                     string                 `json:"phase,omitempty"`
+	Text                      string                 `json:"text,omitempty"`
+	ReasoningContent          string                 `json:"reasoning_content,omitempty"`
+	ReasoningEncryptedContent string                 `json:"reasoning_encrypted_content,omitempty"`
+	Images                    []MessageImage         `json:"images,omitempty"`
+	WebSearchCalls            []MessageWebSearchCall `json:"web_search_calls,omitempty"`
+	ToolCalls                 []ToolCall             `json:"tool_calls,omitempty"`
+	ToolCallID                string                 `json:"tool_call_id,omitempty"`
+	ToolName                  string                 `json:"tool_name,omitempty"`
+	ToolContentItems          []ToolContentItem      `json:"tool_content_items,omitempty"`
+	ToolMeta                  map[string]any         `json:"tool_meta,omitempty"`
+	IsError                   bool                   `json:"is_error,omitempty"`
+	Internal                  bool                   `json:"internal,omitempty"`
 }
 
 func internalUserMessage(text string) Message {
