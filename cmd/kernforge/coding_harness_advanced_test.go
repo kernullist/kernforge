@@ -724,6 +724,56 @@ func TestGeneratedDocumentFinalAnswerSeverityListMismatchIsAnswerOnly(t *testing
 	}
 }
 
+func TestGeneratedDocumentFinalAnswerTopLevelAnswerOnlyBlockerSynthesizes(t *testing.T) {
+	root := t.TempDir()
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: request}}
+	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
+	session.AcceptanceContract = &contract
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-doc-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	report := CodingHarnessReport{
+		Approved: false,
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Verification claim has no recorded evidence",
+			Detail:   "The final answer claims verification passed, but no verification evidence was recorded.",
+		}},
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 512,
+				Checks:       []string{"document artifact exists", "substantive content"},
+			}},
+		},
+	}
+
+	if !codingHarnessReportRequiresFinalAnswerOnlyRevision(&report) {
+		t.Fatalf("expected top-level blocker to be final-answer-only")
+	}
+	if !agent.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, false) {
+		t.Fatalf("expected accepted document artifact with top-level answer-only blocker to synthesize a safe final reply")
+	}
+}
+
 func TestScenarioReplayBlocksFixedClaimWithoutScenarioStatus(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")

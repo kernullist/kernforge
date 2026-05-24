@@ -714,23 +714,7 @@ func (a *Agent) shouldSynthesizeGeneratedDocumentArtifactFinalReply(request stri
 	if codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) {
 		return false
 	}
-	if codingHarnessFindingsHaveBlockers(copyReport.Findings) ||
-		codingHarnessFindingsHaveBlockers(copyReport.ScenarioReplay.Findings) ||
-		codingHarnessFindingsHaveBlockers(copyReport.SubagentOrchestration.Findings) ||
-		codingHarnessFindingsHaveBlockers(copyReport.TestImpact.Findings) ||
-		codingHarnessFindingsHaveBlockers(copyReport.JobSupervisor.Findings) {
-		return false
-	}
-	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Acceptance.Findings) {
-		return false
-	}
-	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.DiffReview.Findings) {
-		return false
-	}
-	if !generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(copyReport.Outcome.Findings) {
-		return false
-	}
-	return true
+	return codingHarnessReportRequiresFinalAnswerOnlyRevision(&copyReport)
 }
 
 func generatedDocumentArtifactFinalReplyFindingsAreAnswerOnly(findings []CodingHarnessFinding) bool {
