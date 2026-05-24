@@ -2617,7 +2617,11 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			return ToolExecutionResult{}, readErr
 		}
 		if start > normalizedEnd {
-			return ToolExecutionResult{}, fmt.Errorf("invalid line range")
+			display, meta := buildOutOfRangeReadFileResult(displayRoot, path, startArg, endArg, normalizedEnd)
+			return ToolExecutionResult{
+				DisplayText: display,
+				Meta:        meta,
+			}, nil
 		}
 		result := strings.Join(renderedLines, "\n")
 		t.storeCachedRead(cacheKey, path, start, normalizedEnd, info, renderedLines, result)
@@ -2632,7 +2636,11 @@ func (t *ReadFileTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		return ToolExecutionResult{}, err
 	}
 	if start > normalizedEnd {
-		return ToolExecutionResult{}, fmt.Errorf("invalid line range")
+		display, meta := buildOutOfRangeReadFileResult(displayRoot, path, startArg, endArg, normalizedEnd)
+		return ToolExecutionResult{
+			DisplayText: display,
+			Meta:        meta,
+		}, nil
 	}
 	result := strings.Join(renderedLines, "\n")
 	t.storeCachedRead(cacheKey, path, start, normalizedEnd, info, renderedLines, result)
@@ -2660,6 +2668,30 @@ func buildReadFileMeta(root string, path string, requestedStart int, requestedEn
 		"cache_mode":     cacheMode,
 		"output_lines":   textLineCount(output),
 	}
+}
+
+func buildOutOfRangeReadFileResult(root string, path string, requestedStart int, requestedEnd int, lineCount int) (string, map[string]any) {
+	resolvedPath := relOrAbs(root, path)
+	lines := []string{
+		"read_file range is outside file: " + resolvedPath,
+		fmt.Sprintf("Requested start_line: %d", requestedStart),
+		fmt.Sprintf("Requested end_line: %d", requestedEnd),
+		fmt.Sprintf("File line count: %d", lineCount),
+		"Use a start_line within the file line count, or omit the range to read from the beginning.",
+	}
+	meta := map[string]any{
+		"path":            resolvedPath,
+		"requested_path":  resolvedPath,
+		"start_line":      requestedStart,
+		"end_line":        requestedEnd,
+		"actual_start":    0,
+		"actual_end":      lineCount,
+		"line_count":      0,
+		"file_line_count": lineCount,
+		"cache_mode":      "out_of_range",
+		"error_kind":      "range_out_of_bounds",
+	}
+	return strings.Join(lines, "\n"), meta
 }
 
 func buildMissingReadFileResult(root string, path string, requestedStart int, requestedEnd int) (string, map[string]any) {
