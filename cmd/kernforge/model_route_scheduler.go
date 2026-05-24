@@ -22,6 +22,7 @@ type ModelRouteMetadata struct {
 	Model           string
 	BaseURL         string
 	ReasoningEffort string
+	ServiceTier     string
 }
 
 type modelRouteMetadataProvider interface {
@@ -35,6 +36,7 @@ type ModelRoute struct {
 	Model           string
 	BaseURL         string
 	ReasoningEffort string
+	ServiceTier     string
 }
 
 type ModelRoutePolicy struct {
@@ -315,6 +317,7 @@ func (p ModelRoutePolicy) LimitFor(route ModelRoute) int {
 
 func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) ModelRoute {
 	req = requestWithRouteReasoningEffort(cfg, client, req)
+	req = requestWithRouteServiceTier(cfg, client, req)
 	provider := ""
 	model := firstNonBlankString(req.Model, cfg.Model)
 	baseURL := ""
@@ -323,7 +326,9 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 		baseURL = strings.TrimSpace(cfg.BaseURL)
 	}
 	reasoningEffort := strings.TrimSpace(req.ReasoningEffort)
+	serviceTier := strings.TrimSpace(req.ServiceTier)
 	metaEffort := ""
+	metaServiceTier := ""
 	if client != nil {
 		if metaProvider, ok := client.(modelRouteMetadataProvider); ok {
 			meta := metaProvider.ModelRouteMetadata()
@@ -338,6 +343,9 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 			}
 			if strings.TrimSpace(meta.ReasoningEffort) != "" && strings.TrimSpace(req.ReasoningEffort) == "" {
 				metaEffort = strings.TrimSpace(meta.ReasoningEffort)
+			}
+			if strings.TrimSpace(meta.ServiceTier) != "" && strings.TrimSpace(req.ServiceTier) == "" {
+				metaServiceTier = strings.TrimSpace(meta.ServiceTier)
 			}
 		}
 		if strings.TrimSpace(provider) == "" {
@@ -362,14 +370,22 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 	if reasoningEffort == "" && reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
 		reasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	}
-	key := modelRouteKeyFromParts(provider, model, baseURL, reasoningEffort)
+	serviceTier = normalizeServiceTier(serviceTier)
+	if serviceTier == "" {
+		serviceTier = normalizeServiceTier(metaServiceTier)
+	}
+	if serviceTier == "" && reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
+		serviceTier = normalizeServiceTier(cfg.ServiceTier)
+	}
+	key := modelRouteKeyFromParts(provider, model, baseURL, reasoningEffort, serviceTier)
 	return ModelRoute{
 		Key:             key,
-		Label:           modelRouteLabel(provider, model, baseURL, reasoningEffort),
+		Label:           modelRouteLabel(provider, model, baseURL, reasoningEffort, serviceTier),
 		Provider:        provider,
 		Model:           model,
 		BaseURL:         baseURL,
 		ReasoningEffort: reasoningEffort,
+		ServiceTier:     serviceTier,
 	}
 }
 
@@ -422,22 +438,73 @@ func requestWithRouteReasoningEffort(cfg Config, client ProviderClient, req Chat
 	return req
 }
 
-func modelRouteKeyFromParts(provider string, model string, baseURL string, reasoningEffort string) string {
-	provider = normalizeProviderName(provider)
-	model = strings.TrimSpace(model)
-	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
-	reasoningEffort = normalizeReasoningEffort(reasoningEffort)
-	if provider == "" && model == "" && baseURL == "" && reasoningEffort == "" {
-		return ""
+func requestWithRouteServiceTier(cfg Config, client ProviderClient, req ChatRequest) ChatRequest {
+	if strings.TrimSpace(req.ServiceTier) != "" {
+		req.ServiceTier = normalizeServiceTier(req.ServiceTier)
+		return req
 	}
-	return provider + "\x00" + model + "\x00" + baseURL + "\x00" + reasoningEffort
+
+	provider := ""
+	model := firstNonBlankString(req.Model, cfg.Model)
+	baseURL := ""
+	if client == nil {
+		provider = strings.TrimSpace(cfg.Provider)
+		baseURL = strings.TrimSpace(cfg.BaseURL)
+	}
+	metaServiceTier := ""
+	if client != nil {
+		if metaProvider, ok := client.(modelRouteMetadataProvider); ok {
+			meta := metaProvider.ModelRouteMetadata()
+			if strings.TrimSpace(meta.Provider) != "" {
+				provider = strings.TrimSpace(meta.Provider)
+			}
+			if strings.TrimSpace(meta.Model) != "" && strings.TrimSpace(req.Model) == "" && strings.TrimSpace(cfg.Model) == "" {
+				model = strings.TrimSpace(meta.Model)
+			}
+			if strings.TrimSpace(meta.BaseURL) != "" {
+				baseURL = strings.TrimSpace(meta.BaseURL)
+			}
+			metaServiceTier = normalizeServiceTier(meta.ServiceTier)
+		}
+		if strings.TrimSpace(provider) == "" {
+			provider = strings.TrimSpace(client.Name())
+		}
+		if strings.TrimSpace(provider) == "" {
+			provider = strings.TrimSpace(cfg.Provider)
+		}
+	}
+
+	if reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
+		mainServiceTier := normalizeServiceTier(cfg.ServiceTier)
+		if mainServiceTier != "" {
+			req.ServiceTier = mainServiceTier
+			return req
+		}
+	}
+	if metaServiceTier != "" {
+		req.ServiceTier = metaServiceTier
+	}
+	return req
 }
 
-func modelRouteLabel(provider string, model string, baseURL string, reasoningEffort string) string {
+func modelRouteKeyFromParts(provider string, model string, baseURL string, reasoningEffort string, serviceTier string) string {
 	provider = normalizeProviderName(provider)
 	model = strings.TrimSpace(model)
 	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
 	reasoningEffort = normalizeReasoningEffort(reasoningEffort)
+	serviceTier = normalizeServiceTier(serviceTier)
+	if provider == "" && model == "" && baseURL == "" && reasoningEffort == "" && serviceTier == "" {
+		return ""
+	}
+	return provider + "\x00" + model + "\x00" + baseURL + "\x00" + reasoningEffort + "\x00" + serviceTier
+}
+
+func modelRouteLabel(provider string, model string, baseURL string, reasoningEffort string, serviceTier string) string {
+	provider = normalizeProviderName(provider)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
+	reasoningEffort = normalizeReasoningEffort(reasoningEffort)
+	serviceTier = normalizeServiceTier(serviceTier)
 	label := providerUserLabel(provider)
 	if model != "" {
 		if label != "" {
@@ -450,6 +517,9 @@ func modelRouteLabel(provider string, model string, baseURL string, reasoningEff
 	}
 	if reasoningEffort != "" {
 		label += "#" + reasoningEffort
+	}
+	if serviceTier != "" {
+		label += "~" + serviceTier
 	}
 	if label == "" {
 		return "(unrouted model)"

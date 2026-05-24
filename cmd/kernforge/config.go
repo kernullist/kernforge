@@ -62,6 +62,7 @@ type ReviewModelConfig struct {
 	BaseURL         string `json:"base_url,omitempty"`
 	APIKey          string `json:"api_key,omitempty"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	ServiceTier     string `json:"service_tier,omitempty"`
 }
 
 type SpecialistSubagentProfile struct {
@@ -73,6 +74,7 @@ type SpecialistSubagentProfile struct {
 	BaseURL         string   `json:"base_url,omitempty"`
 	APIKey          string   `json:"api_key,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	ServiceTier     string   `json:"service_tier,omitempty"`
 	NodeKinds       []string `json:"node_kinds,omitempty"`
 	Keywords        []string `json:"keywords,omitempty"`
 	ReadOnly        *bool    `json:"read_only,omitempty"`
@@ -218,6 +220,7 @@ type Config struct {
 	ForcedChatGPTWorkspaceID    ForcedChatGPTWorkspaceIDs     `json:"forced_chatgpt_workspace_id,omitempty"`
 	Temperature                 float64                       `json:"temperature"`
 	ReasoningEffort             string                        `json:"reasoning_effort,omitempty"`
+	ServiceTier                 string                        `json:"service_tier,omitempty"`
 	MaxTokens                   int                           `json:"max_tokens"`
 	MaxToolIterations           int                           `json:"max_tool_iterations"`
 	MaxRequestRetries           int                           `json:"max_request_retries,omitempty"`
@@ -275,6 +278,7 @@ type Profile struct {
 	BaseURL         string             `json:"base_url,omitempty"`
 	APIKey          string             `json:"api_key,omitempty"`
 	ReasoningEffort string             `json:"reasoning_effort,omitempty"`
+	ServiceTier     string             `json:"service_tier,omitempty"`
 	Pinned          bool               `json:"pinned,omitempty"`
 	RoleModels      *ProfileRoleModels `json:"role_models,omitempty"`
 }
@@ -372,6 +376,7 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 		cfg.ActiveProfileKey = ""
 	}
 	applyReasoningEffortEnvOverride(&cfg)
+	applyServiceTierEnvOverride(&cfg)
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		return cfg, err
 	}
@@ -382,6 +387,7 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 			applyEnv(&ensureCfg)
 			normalizeConfigPaths(&ensureCfg)
 			applyReasoningEffortEnvOverride(&ensureCfg)
+			applyServiceTierEnvOverride(&ensureCfg)
 			if err := normalizeConfigPermissionMode(&ensureCfg); err != nil {
 				return cfg, err
 			}
@@ -414,6 +420,15 @@ func applyReasoningEffortEnvOverride(cfg *Config) {
 	}
 	if raw := strings.TrimSpace(os.Getenv("KERNFORGE_REASONING_EFFORT")); raw != "" {
 		cfg.ReasoningEffort = normalizeReasoningEffort(raw)
+	}
+}
+
+func applyServiceTierEnvOverride(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if raw := strings.TrimSpace(os.Getenv("KERNFORGE_SERVICE_TIER")); raw != "" {
+		cfg.ServiceTier = normalizeServiceTier(raw)
 	}
 }
 
@@ -1149,6 +1164,7 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 			model.BaseURL = normalizeOptionalProfileBaseURL(model.Provider, model.BaseURL)
 			model.APIKey = strings.TrimSpace(model.APIKey)
 			model.ReasoningEffort = normalizeReasoningEffort(model.ReasoningEffort)
+			model.ServiceTier = normalizeServiceTier(model.ServiceTier)
 			if role != "" && model.Provider != "" && model.Model != "" {
 				normalized[role] = model
 			}
@@ -1201,6 +1217,9 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if strings.TrimSpace(src.ReasoningEffort) != "" {
 		dst.ReasoningEffort = normalizeReasoningEffort(src.ReasoningEffort)
+	}
+	if strings.TrimSpace(src.ServiceTier) != "" {
+		dst.ServiceTier = normalizeServiceTier(src.ServiceTier)
 	}
 	if src.MaxTokens != 0 {
 		dst.MaxTokens = src.MaxTokens
@@ -1439,6 +1458,7 @@ func applyEnv(cfg *Config) {
 	envString("KERNFORGE_SHELL", &cfg.Shell)
 	envString("KERNFORGE_SESSION_DIR", &cfg.SessionDir)
 	envString("KERNFORGE_REASONING_EFFORT", &cfg.ReasoningEffort)
+	envString("KERNFORGE_SERVICE_TIER", &cfg.ServiceTier)
 	envString("KERNFORGE_PROGRESS_DISPLAY", &cfg.ProgressDisplay)
 	envInt("KERNFORGE_MAX_REQUEST_RETRIES", &cfg.MaxRequestRetries)
 	envInt("KERNFORGE_REQUEST_RETRY_DELAY_MS", &cfg.RequestRetryDelayMs)
@@ -1523,6 +1543,7 @@ func applyEnv(cfg *Config) {
 
 func normalizeConfigPaths(cfg *Config) {
 	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
+	cfg.ServiceTier = normalizeServiceTier(cfg.ServiceTier)
 	cfg.ProgressDisplay = normalizeProgressDisplay(cfg.ProgressDisplay)
 	cfg.ForcedChatGPTWorkspaceID = normalizeForcedChatGPTWorkspaceIDs(cfg.ForcedChatGPTWorkspaceID)
 	cfg.Desktop = mergeOpaqueConfigMaps(nil, cfg.Desktop)
@@ -1566,6 +1587,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.ProjectAnalysis.WorkerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.WorkerProfile.Provider, cfg.ProjectAnalysis.WorkerProfile.BaseURL)
 		cfg.ProjectAnalysis.WorkerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.WorkerProfile.APIKey)
 		cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort = normalizeReasoningEffort(cfg.ProjectAnalysis.WorkerProfile.ReasoningEffort)
+		cfg.ProjectAnalysis.WorkerProfile.ServiceTier = normalizeServiceTier(cfg.ProjectAnalysis.WorkerProfile.ServiceTier)
 	}
 	if cfg.ProjectAnalysis.ReviewerProfile != nil {
 		cfg.ProjectAnalysis.ReviewerProfile.Provider = normalizeProviderName(cfg.ProjectAnalysis.ReviewerProfile.Provider)
@@ -1573,6 +1595,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.ProjectAnalysis.ReviewerProfile.BaseURL = normalizeOptionalProfileBaseURL(cfg.ProjectAnalysis.ReviewerProfile.Provider, cfg.ProjectAnalysis.ReviewerProfile.BaseURL)
 		cfg.ProjectAnalysis.ReviewerProfile.APIKey = strings.TrimSpace(cfg.ProjectAnalysis.ReviewerProfile.APIKey)
 		cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort = normalizeReasoningEffort(cfg.ProjectAnalysis.ReviewerProfile.ReasoningEffort)
+		cfg.ProjectAnalysis.ReviewerProfile.ServiceTier = normalizeServiceTier(cfg.ProjectAnalysis.ReviewerProfile.ServiceTier)
 	}
 	normalizeReviewHarnessConfig(&cfg.Review)
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
@@ -2002,6 +2025,24 @@ func normalizeReasoningEffort(effort string) string {
 	}
 }
 
+func normalizeServiceTier(serviceTier string) string {
+	trimmed := strings.TrimSpace(serviceTier)
+	switch {
+	case trimmed == "":
+		return ""
+	case strings.EqualFold(trimmed, "default"):
+		return ""
+	case strings.EqualFold(trimmed, "fast"):
+		return "priority"
+	case strings.EqualFold(trimmed, "priority"):
+		return "priority"
+	case strings.EqualFold(trimmed, "flex"):
+		return "flex"
+	default:
+		return trimmed
+	}
+}
+
 func validReasoningEffort(effort string) bool {
 	switch normalizeReasoningEffort(effort) {
 	case "", "minimal", "low", "medium", "high", "xhigh":
@@ -2053,6 +2094,7 @@ func normalizeConfigProfile(profile Profile) Profile {
 	profile.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
 	profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
+	profile.ServiceTier = normalizeServiceTier(profile.ServiceTier)
 	if profile.Name == "" && profile.Provider != "" && profile.Model != "" {
 		profile.Name = profileName(profile.Provider, profile.Model)
 	}
@@ -2092,6 +2134,9 @@ func applyActiveProfileRoleModels(cfg *Config) {
 	cfg.Model = strings.TrimSpace(profile.Model)
 	cfg.BaseURL = normalizeProfileBaseURL(profile.Provider, profile.BaseURL)
 	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
+	if serviceTier := normalizeServiceTier(profile.ServiceTier); serviceTier != "" {
+		cfg.ServiceTier = serviceTier
+	}
 	if strings.TrimSpace(profile.APIKey) != "" {
 		cfg.APIKey = strings.TrimSpace(profile.APIKey)
 	}
@@ -2151,6 +2196,7 @@ func cloneConfigProfile(profile *Profile) *Profile {
 	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
 	cloned.APIKey = strings.TrimSpace(cloned.APIKey)
 	cloned.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(cloned.Provider, cloned.ReasoningEffort)
+	cloned.ServiceTier = normalizeServiceTier(cloned.ServiceTier)
 	if cloned.Name == "" && cloned.Provider != "" && cloned.Model != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
@@ -2170,6 +2216,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.APIKey = strings.TrimSpace(profile.APIKey)
 		profile.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(profile.Provider, profile.ReasoningEffort)
+		profile.ServiceTier = normalizeServiceTier(profile.ServiceTier)
 		modelsByName[name] = profile
 	}
 	next := make([]SpecialistSubagentProfile, 0, len(cfg.Specialists.Profiles)+len(modelsByName))
@@ -2185,6 +2232,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 			existing.BaseURL = model.BaseURL
 			existing.APIKey = model.APIKey
 			existing.ReasoningEffort = model.ReasoningEffort
+			existing.ServiceTier = model.ServiceTier
 			seen[name] = true
 			next = append(next, normalizeSpecialistProfile(existing))
 			continue
@@ -2194,6 +2242,7 @@ func applyConfigProfileSpecialistRoleModels(cfg *Config, roleSpecialists []Speci
 		existing.BaseURL = ""
 		existing.APIKey = ""
 		existing.ReasoningEffort = ""
+		existing.ServiceTier = ""
 		if specialistProfileHasNonModelOverrides(existing) {
 			next = append(next, normalizeSpecialistProfile(existing))
 		}

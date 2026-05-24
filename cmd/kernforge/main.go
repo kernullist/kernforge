@@ -3572,6 +3572,7 @@ func (rt *runtimeState) activeProviderProfile(name string) (Profile, bool) {
 		BaseURL:         normalizeProfileBaseURL(provider, baseURL),
 		APIKey:          rt.providerAPIKey(provider),
 		ReasoningEffort: normalizeReasoningEffort(rt.cfg.ReasoningEffort),
+		ServiceTier:     normalizeServiceTier(rt.cfg.ServiceTier),
 		RoleModels:      rt.currentProfileRoleModels(),
 	}, true
 }
@@ -3601,6 +3602,7 @@ func (rt *runtimeState) currentProfileRoleModels() *ProfileRoleModels {
 			BaseURL:         normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL),
 			APIKey:          strings.TrimSpace(profile.APIKey),
 			ReasoningEffort: normalizeReasoningEffort(profile.ReasoningEffort),
+			ServiceTier:     normalizeServiceTier(profile.ServiceTier),
 		})
 	}
 	return roles
@@ -3615,6 +3617,7 @@ func cloneProfile(profile *Profile) *Profile {
 	cloned.Model = strings.TrimSpace(cloned.Model)
 	cloned.BaseURL = normalizeOptionalProfileBaseURL(cloned.Provider, cloned.BaseURL)
 	cloned.ReasoningEffort = normalizeReasoningEffort(cloned.ReasoningEffort)
+	cloned.ServiceTier = normalizeServiceTier(cloned.ServiceTier)
 	if strings.TrimSpace(cloned.Name) == "" && strings.TrimSpace(cloned.Provider) != "" && strings.TrimSpace(cloned.Model) != "" {
 		cloned.Name = profileName(cloned.Provider, cloned.Model)
 	}
@@ -3702,6 +3705,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		profile.Model = strings.TrimSpace(profile.Model)
 		profile.BaseURL = normalizeOptionalProfileBaseURL(profile.Provider, profile.BaseURL)
 		profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
+		profile.ServiceTier = normalizeServiceTier(profile.ServiceTier)
 		if strings.TrimSpace(profile.APIKey) == "" {
 			profile.APIKey = rt.providerAPIKey(profile.Provider)
 		}
@@ -3721,6 +3725,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 			existing.BaseURL = model.BaseURL
 			existing.APIKey = model.APIKey
 			existing.ReasoningEffort = model.ReasoningEffort
+			existing.ServiceTier = model.ServiceTier
 			seen[name] = true
 			next = append(next, normalizeSpecialistProfile(existing))
 			continue
@@ -3730,6 +3735,7 @@ func (rt *runtimeState) applyProfileSpecialistRoleModels(roleSpecialists []Speci
 		existing.BaseURL = ""
 		existing.APIKey = ""
 		existing.ReasoningEffort = ""
+		existing.ServiceTier = ""
 		if specialistProfileHasNonModelOverrides(existing) {
 			next = append(next, normalizeSpecialistProfile(existing))
 		}
@@ -4260,6 +4266,9 @@ func upsertProfileWithOptions(profiles []Profile, profile Profile, max int, pres
 			if strings.TrimSpace(profile.ReasoningEffort) == "" {
 				profile.ReasoningEffort = existing.ReasoningEffort
 			}
+			if strings.TrimSpace(profile.ServiceTier) == "" {
+				profile.ServiceTier = existing.ServiceTier
+			}
 			if preserveExistingRoleModels && profile.RoleModels == nil {
 				profile.RoleModels = existing.RoleModels
 			}
@@ -4372,6 +4381,7 @@ func (rt *runtimeState) rememberCurrentProfileWithRoleModels(includeRoleModels b
 		BaseURL:         rt.session.BaseURL,
 		APIKey:          rt.providerAPIKey(rt.session.Provider),
 		ReasoningEffort: normalizeReasoningEffort(rt.cfg.ReasoningEffort),
+		ServiceTier:     normalizeServiceTier(rt.cfg.ServiceTier),
 		RoleModels:      roleModels,
 	}
 
@@ -8323,6 +8333,12 @@ func (rt *runtimeState) activateProjectAnalysisRole(role string, provider string
 	}
 	nextEffort, defaultedEffort := rt.profileReasoningEffortForActivation(current, provider, model, baseURL)
 	profile.ReasoningEffort = nextEffort
+	profile.ServiceTier = normalizeServiceTier(rt.cfg.ServiceTier)
+	if current != nil {
+		if serviceTier := normalizeServiceTier(current.ServiceTier); serviceTier != "" {
+			profile.ServiceTier = serviceTier
+		}
+	}
 	if role == "worker" {
 		rt.cfg.ProjectAnalysis.WorkerProfile = profile
 	} else if role == "reviewer" {
@@ -8365,6 +8381,11 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 		profiles[i].BaseURL = normalizeProfileBaseURL(provider, baseURL)
 		profiles[i].APIKey = strings.TrimSpace(apiKey)
 		profiles[i].ReasoningEffort = nextEffort
+		if serviceTier := normalizeServiceTier(profiles[i].ServiceTier); serviceTier == "" {
+			profiles[i].ServiceTier = normalizeServiceTier(rt.cfg.ServiceTier)
+		} else {
+			profiles[i].ServiceTier = serviceTier
+		}
 		updated = true
 		break
 	}
@@ -8376,6 +8397,7 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 			BaseURL:         normalizeProfileBaseURL(provider, baseURL),
 			APIKey:          strings.TrimSpace(apiKey),
 			ReasoningEffort: nextEffort,
+			ServiceTier:     normalizeServiceTier(rt.cfg.ServiceTier),
 		})
 	}
 	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(profiles)

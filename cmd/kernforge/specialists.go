@@ -164,6 +164,7 @@ func normalizeSpecialistProfile(profile SpecialistSubagentProfile) SpecialistSub
 	profile.BaseURL = strings.TrimSpace(profile.BaseURL)
 	profile.APIKey = strings.TrimSpace(profile.APIKey)
 	profile.ReasoningEffort = normalizeReasoningEffort(profile.ReasoningEffort)
+	profile.ServiceTier = normalizeServiceTier(profile.ServiceTier)
 	profile.NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 	profile.Keywords = normalizeTaskStateList(profile.Keywords, 32)
 	profile.OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)
@@ -196,6 +197,9 @@ func mergeSpecialistProfile(base SpecialistSubagentProfile, overlay SpecialistSu
 	}
 	if overlay.ReasoningEffort != "" {
 		merged.ReasoningEffort = overlay.ReasoningEffort
+	}
+	if overlay.ServiceTier != "" {
+		merged.ServiceTier = overlay.ServiceTier
 	}
 	if len(overlay.NodeKinds) > 0 {
 		merged.NodeKinds = append([]string(nil), overlay.NodeKinds...)
@@ -253,7 +257,8 @@ func specialistProfileHasExplicitRoute(profile SpecialistSubagentProfile) bool {
 	return strings.TrimSpace(profile.Provider) != "" ||
 		strings.TrimSpace(profile.Model) != "" ||
 		strings.TrimSpace(profile.BaseURL) != "" ||
-		strings.TrimSpace(profile.ReasoningEffort) != ""
+		strings.TrimSpace(profile.ReasoningEffort) != "" ||
+		strings.TrimSpace(profile.ServiceTier) != ""
 }
 
 func configuredSpecialistProfileByName(cfg Config, name string) (SpecialistSubagentProfile, bool) {
@@ -686,8 +691,10 @@ func (a *Agent) specialistClient(profile SpecialistSubagentProfile) (ProviderCli
 	cfg.APIKey = apiKey
 	if strings.TrimSpace(profile.Provider) == "" && strings.TrimSpace(profile.Model) == "" {
 		cfg.ReasoningEffort = normalizeReasoningEffort(a.Config.ReasoningEffort)
+		cfg.ServiceTier = normalizeServiceTier(a.Config.ServiceTier)
 	} else {
 		cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, profile.ReasoningEffort)
+		cfg.ServiceTier = normalizeServiceTier(firstNonBlankString(profile.ServiceTier, a.Config.ServiceTier))
 	}
 	client, err := NewProviderClient(cfg)
 	if err != nil {

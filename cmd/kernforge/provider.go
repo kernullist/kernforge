@@ -581,7 +581,7 @@ func NewProviderClient(cfg Config) (ProviderClient, error) {
 	case "lmstudio", "vllm", "llama.cpp":
 		return NewOpenAICompatibleClient(cfg.Provider, cfg.BaseURL, cfg.APIKey), nil
 	case "openai-codex":
-		return NewOpenAICodexClientWithReasoningEffortAndWorkspaceIDs(cfg.BaseURL, cfg.ReasoningEffort, cfg.ForcedChatGPTWorkspaceID), nil
+		return NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(cfg.BaseURL, cfg.ReasoningEffort, cfg.ServiceTier, cfg.ForcedChatGPTWorkspaceID), nil
 	case "codex-cli":
 		return NewCodexCLIClient(cfg.CodexCLIPath, cfg.CodexCLIArgs), nil
 	case "anthropic-claude-cli":

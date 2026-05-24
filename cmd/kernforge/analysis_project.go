@@ -3489,8 +3489,8 @@ func analysisRouteForProfile(profile *Profile, fallbackProvider string, fallback
 	}
 	baseURL = normalizeProviderBaseURL(provider, baseURL)
 	return ModelRoute{
-		Key:      modelRouteKeyFromParts(provider, model, baseURL, ""),
-		Label:    modelRouteLabel(provider, model, baseURL, ""),
+		Key:      modelRouteKeyFromParts(provider, model, baseURL, "", ""),
+		Label:    modelRouteLabel(provider, model, baseURL, "", ""),
 		Provider: provider,
 		Model:    strings.TrimSpace(model),
 		BaseURL:  normalizeModelRouteBaseURL(provider, baseURL),
@@ -11210,6 +11210,7 @@ func createProviderClientFromProfile(profile Profile, mainCfg Config) (ProviderC
 	cfg.BaseURL = normalizeProfileBaseURL(provider, baseURL)
 	cfg.APIKey = apiKey
 	cfg.ReasoningEffort, _ = reasoningEffortOrDefaultForProvider(provider, profile.ReasoningEffort)
+	cfg.ServiceTier = normalizeServiceTier(firstNonBlankString(profile.ServiceTier, mainCfg.ServiceTier))
 	return NewProviderClient(cfg)
 }
 

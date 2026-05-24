@@ -142,6 +142,7 @@ var codexOAuthRefreshMu sync.Mutex
 type OpenAICodexClient struct {
 	baseURL             string
 	reasoningEffort     string
+	serviceTier         string
 	httpClient          *http.Client
 	tokenSource         codexOAuthAccessTokenSource
 	allowedWorkspaceIDs []string
@@ -156,11 +157,16 @@ func NewOpenAICodexClientWithReasoningEffort(baseURL string, reasoningEffort str
 }
 
 func NewOpenAICodexClientWithReasoningEffortAndWorkspaceIDs(baseURL string, reasoningEffort string, allowedWorkspaceIDs []string) *OpenAICodexClient {
+	return NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(baseURL, reasoningEffort, "", allowedWorkspaceIDs)
+}
+
+func NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(baseURL string, reasoningEffort string, serviceTier string, allowedWorkspaceIDs []string) *OpenAICodexClient {
 	httpClient := &http.Client{}
 	normalizedWorkspaces := normalizeForcedChatGPTWorkspaceIDs(allowedWorkspaceIDs)
 	return &OpenAICodexClient{
 		baseURL:             normalizeOpenAICodexBaseURL(baseURL),
 		reasoningEffort:     normalizeReasoningEffort(reasoningEffort),
+		serviceTier:         normalizeServiceTier(serviceTier),
 		httpClient:          httpClient,
 		tokenSource:         NewCodexOAuthTokenSourceWithWorkspaceIDs("", httpClient, normalizedWorkspaces),
 		allowedWorkspaceIDs: append([]string(nil), normalizedWorkspaces...),
@@ -179,6 +185,7 @@ func (c *OpenAICodexClient) ModelRouteMetadata() ModelRouteMetadata {
 		Provider:        "openai-codex",
 		BaseURL:         c.baseURL,
 		ReasoningEffort: c.reasoningEffort,
+		ServiceTier:     c.serviceTier,
 	}
 }
 
@@ -188,6 +195,9 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 	if strings.TrimSpace(req.ReasoningEffort) == "" {
 		req.ReasoningEffort = c.reasoningEffort
+	}
+	if strings.TrimSpace(req.ServiceTier) == "" {
+		req.ServiceTier = c.serviceTier
 	}
 	tokenSource := c.tokenSource
 	if tokenSource == nil {
@@ -447,21 +457,7 @@ func buildOpenAICodexRequestBodyWithClientMetadata(req ChatRequest, clientMetada
 }
 
 func openAICodexServiceTierForRequest(serviceTier string) string {
-	trimmed := strings.TrimSpace(serviceTier)
-	switch {
-	case trimmed == "":
-		return ""
-	case strings.EqualFold(trimmed, "default"):
-		return ""
-	case strings.EqualFold(trimmed, "fast"):
-		return "priority"
-	case strings.EqualFold(trimmed, "priority"):
-		return "priority"
-	case strings.EqualFold(trimmed, "flex"):
-		return "flex"
-	default:
-		return trimmed
-	}
+	return normalizeServiceTier(serviceTier)
 }
 
 func openAICodexTextControls(model string, jsonMode bool) map[string]any {

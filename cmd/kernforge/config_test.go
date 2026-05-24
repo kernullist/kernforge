@@ -1321,6 +1321,98 @@ func TestLoadConfigEnvReasoningEffortOverridesActiveProfile(t *testing.T) {
 	}
 }
 
+func TestLoadConfigEnvServiceTierOverridesActiveProfile(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("KERNFORGE_SERVICE_TIER", "flex")
+
+	active := Profile{
+		Name:        "codex-main",
+		Provider:    "openai-codex",
+		Model:       "gpt-5.5",
+		ServiceTier: "fast",
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = active.Provider
+	cfg.Model = active.Model
+	cfg.ServiceTier = "default"
+	cfg.Profiles = []Profile{active}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ServiceTier != "flex" {
+		t.Fatalf("expected env service tier to override active profile, got %q", loaded.ServiceTier)
+	}
+}
+
+func TestLoadConfigActiveProfileNormalizesServiceTier(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	active := Profile{
+		Name:        "codex-main",
+		Provider:    "openai-codex",
+		Model:       "gpt-5.5",
+		ServiceTier: "fast",
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = active.Provider
+	cfg.Model = active.Model
+	cfg.Profiles = []Profile{active}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ServiceTier != "priority" {
+		t.Fatalf("expected active profile service tier to normalize to priority, got %q", loaded.ServiceTier)
+	}
+}
+
+func TestLoadConfigActiveProfilePreservesTopLevelServiceTierWhenUnset(t *testing.T) {
+	home := t.TempDir()
+	workspace := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	active := Profile{
+		Name:     "codex-main",
+		Provider: "openai-codex",
+		Model:    "gpt-5.5",
+	}
+	cfg := DefaultConfig(workspace)
+	cfg.Provider = active.Provider
+	cfg.Model = active.Model
+	cfg.ServiceTier = "flex"
+	cfg.Profiles = []Profile{active}
+	cfg.ActiveProfileKey = configProfileKey(active)
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+
+	loaded, err := LoadConfig(workspace)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if loaded.ServiceTier != "flex" {
+		t.Fatalf("expected top-level service tier to survive empty active profile, got %q", loaded.ServiceTier)
+	}
+}
+
 func TestLoadConfigRestoresSingleModelActiveProfileAndClearsAnalysisRoles(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()

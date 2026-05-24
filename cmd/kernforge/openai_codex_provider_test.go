@@ -1137,6 +1137,35 @@ func TestOpenAICodexClientAppliesConfiguredReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestOpenAICodexClientAppliesConfiguredServiceTier(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs(server.URL, "", "fast", nil)
+	client.tokenSource = staticCodexTokenSource{token: "test-token"}
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{{
+			Role: "user",
+			Text: "hello",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if payload["service_tier"] != "priority" {
+		t.Fatalf("expected configured priority service tier, got %#v", payload["service_tier"])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyRejectsInvalidReasoningEffort(t *testing.T) {
 	_, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model:           "gpt-5.5",

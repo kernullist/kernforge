@@ -554,6 +554,88 @@ func TestModelRequestKeepsDistinctReviewerClientEffort(t *testing.T) {
 	}
 }
 
+func TestModelRequestUsesMainServiceTierWhenReviewerClientSharesRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ServiceTier = "flex"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider:    "openai-codex",
+			ServiceTier: "priority",
+		},
+	}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: cfg.Model,
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ServiceTier != "flex" {
+		t.Fatalf("request service tier = %q, want flex", client.req.ServiceTier)
+	}
+}
+
+func TestModelRequestKeepsDistinctReviewerClientServiceTier(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ServiceTier = "flex"
+	cfg.MaxRequestRetries = 0
+	cfg.RequestTimeoutSecs = 2
+	client := &reasoningCaptureProviderClient{
+		name: "openai-codex",
+		meta: ModelRouteMetadata{
+			Provider:    "openai-codex",
+			ServiceTier: "priority",
+		},
+	}
+
+	_, err := completeModelTurnOnceWithModelRoutes(context.Background(), NewModelRouteScheduler(), modelRoutePolicyFromConfig(cfg), cfg, client, ChatRequest{
+		Model: "gpt-5.4",
+		Messages: []Message{{
+			Role: "user",
+			Text: "review final answer",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
+	}
+	if client.req.ServiceTier != "priority" {
+		t.Fatalf("request service tier = %q, want priority", client.req.ServiceTier)
+	}
+}
+
+func TestModelRouteSeparatesServiceTier(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+
+	flexRoute := modelRouteForRequest(cfg, NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs("", "", "flex", nil), ChatRequest{Model: cfg.Model})
+	priorityRoute := modelRouteForRequest(cfg, NewOpenAICodexClientWithReasoningEffortServiceTierAndWorkspaceIDs("", "", "fast", nil), ChatRequest{Model: cfg.Model})
+
+	if flexRoute.ServiceTier != "flex" {
+		t.Fatalf("flex route service tier = %q, want flex", flexRoute.ServiceTier)
+	}
+	if priorityRoute.ServiceTier != "priority" {
+		t.Fatalf("priority route service tier = %q, want priority", priorityRoute.ServiceTier)
+	}
+	if flexRoute.Key == priorityRoute.Key {
+		t.Fatalf("routes with distinct service tiers should not share key: %q", flexRoute.Key)
+	}
+	if !strings.Contains(flexRoute.Label, "~flex") {
+		t.Fatalf("route label should include service tier, got %q", flexRoute.Label)
+	}
+}
+
 func TestModelRequestKeepsDistinctBaseURLReviewerClientEffort(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai-codex"
