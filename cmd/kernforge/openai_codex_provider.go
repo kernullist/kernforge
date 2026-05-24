@@ -581,6 +581,18 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 			},
 		}
 	}
+	if name == "tool_search" {
+		description := strings.TrimSpace(tool.Description)
+		if description == "" {
+			description = "Searches over deferred tool metadata and exposes matching tools for the next model call."
+		}
+		return map[string]any{
+			"type":        "tool_search",
+			"execution":   "client",
+			"description": description,
+			"parameters":  openAICodexToolParameters(tool.InputSchema),
+		}
+	}
 	item := map[string]any{
 		"type":        "function",
 		"name":        name,

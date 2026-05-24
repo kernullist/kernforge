@@ -362,6 +362,73 @@ func TestBuildOpenAICodexRequestBodyUsesCustomApplyPatchTool(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesNativeToolSearchTool(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "find a deferred tool"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "tool_search",
+				Description: "Search app tools",
+				InputSchema: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Search query for deferred tools.",
+						},
+						"limit": map[string]any{
+							"type":        "number",
+							"description": "Maximum number of tools to return.",
+						},
+					},
+					"required":             []any{"query"},
+					"additionalProperties": false,
+				},
+			},
+			{
+				Name:        "read_file",
+				Description: "Read file",
+				InputSchema: map[string]any{
+					"type": "object",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected two tools, got %#v in %s", payload["tools"], body)
+	}
+	toolSearch := tools[0].(map[string]any)
+	if toolSearch["type"] != "tool_search" || toolSearch["execution"] != "client" {
+		t.Fatalf("expected native client tool_search tool, got %#v", toolSearch)
+	}
+	if _, exists := toolSearch["name"]; exists {
+		t.Fatalf("native tool_search must not include function name, got %#v", toolSearch)
+	}
+	if _, exists := toolSearch["strict"]; exists {
+		t.Fatalf("native tool_search must not include function strict flag, got %#v", toolSearch)
+	}
+	params, ok := toolSearch["parameters"].(map[string]any)
+	if !ok || params["type"] != "object" || params["additionalProperties"] != false {
+		t.Fatalf("expected tool_search parameters to be preserved, got %#v", toolSearch["parameters"])
+	}
+	readFile := tools[1].(map[string]any)
+	if readFile["type"] != "function" || readFile["name"] != "read_file" {
+		t.Fatalf("expected non-native tools to remain functions, got %#v", readFile)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
