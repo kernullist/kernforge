@@ -983,6 +983,51 @@ func TestListFilesToolReturnsFilePathWhenTargetIsFile(t *testing.T) {
 	}
 }
 
+func TestListFilesToolReportsTruncationAndClampsInvalidMaxEntries(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	tool := NewListFilesTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+	result, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"max_entries": 2,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed truncated: %v", err)
+	}
+	if !strings.Contains(result.DisplayText, "... (truncated at 2 entries") {
+		t.Fatalf("expected visible truncation hint, got %q", result.DisplayText)
+	}
+	if toolMetaBool(result.Meta, "truncated") != true {
+		t.Fatalf("expected truncated=true metadata, got %#v", result.Meta)
+	}
+	if toolMetaInt(result.Meta, "entry_count") != 2 {
+		t.Fatalf("expected entry_count=2 metadata, got %#v", result.Meta)
+	}
+
+	result, err = tool.ExecuteDetailed(context.Background(), map[string]any{
+		"max_entries": 0,
+	})
+	if err != nil {
+		t.Fatalf("ExecuteDetailed clamped: %v", err)
+	}
+	if strings.Contains(result.DisplayText, "truncated at 0") {
+		t.Fatalf("max_entries=0 should be clamped instead of producing a zero-entry truncation, got %q", result.DisplayText)
+	}
+	if toolMetaInt(result.Meta, "max_entries") != 200 {
+		t.Fatalf("expected max_entries to be clamped to default, got %#v", result.Meta)
+	}
+	if toolMetaBool(result.Meta, "truncated") {
+		t.Fatalf("did not expect clamped default listing to truncate, got %#v", result.Meta)
+	}
+}
+
 func TestWriteFileToolUpdatesFallbackTargetInsteadOfCreatingSiblingFile(t *testing.T) {
 	base := t.TempDir()
 	current := filepath.Join(base, "nested")

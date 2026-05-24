@@ -2447,6 +2447,8 @@ func isText(data []byte) bool {
 
 type ListFilesTool struct{ ws Workspace }
 
+var errListFilesMaxEntriesReached = errors.New("max entries reached")
+
 func NewListFilesTool(ws Workspace) ListFilesTool { return ListFilesTool{ws: ws} }
 
 func (t ListFilesTool) Definition() ToolDefinition {
@@ -2486,6 +2488,9 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	}
 	recursive := boolValue(args, "recursive", false)
 	maxEntries := intValue(args, "max_entries", 200)
+	if maxEntries <= 0 {
+		maxEntries = 200
+	}
 	if info, err := os.Stat(root); err != nil {
 		return ToolExecutionResult{}, err
 	} else if !info.IsDir() {
@@ -2503,8 +2508,8 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		}, nil
 	}
 	var lines []string
+	truncated := false
 	if recursive {
-		stop := fmt.Errorf("max entries reached")
 		err = filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -2526,11 +2531,12 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			}
 			lines = append(lines, rel)
 			if len(lines) >= maxEntries {
-				return stop
+				truncated = true
+				return errListFilesMaxEntriesReached
 			}
 			return nil
 		})
-		if err != nil && err.Error() != "max entries reached" {
+		if err != nil && !errors.Is(err, errListFilesMaxEntriesReached) {
 			return ToolExecutionResult{}, err
 		}
 	} else {
@@ -2538,18 +2544,20 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
-		for _, entry := range entries {
+		for index, entry := range entries {
+			if index >= maxEntries {
+				truncated = true
+				break
+			}
 			rel := relOrAbs(displayRoot, filepath.Join(root, entry.Name()))
 			if entry.IsDir() {
 				rel += "/"
 			}
 			lines = append(lines, rel)
-			if len(lines) >= maxEntries {
-				break
-			}
 		}
 	}
 	text := "(no files found)"
+	listedCount := len(lines)
 	if len(lines) == 0 {
 		return ToolExecutionResult{
 			DisplayText: text,
@@ -2558,8 +2566,12 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 				"recursive":   recursive,
 				"max_entries": maxEntries,
 				"entry_count": 0,
+				"truncated":   false,
 			},
 		}, nil
+	}
+	if truncated {
+		lines = append(lines, fmt.Sprintf("... (truncated at %d entries; use max_entries or a narrower path to continue)", maxEntries))
 	}
 	text = strings.Join(lines, "\n")
 	return ToolExecutionResult{
@@ -2568,8 +2580,8 @@ func (t ListFilesTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			"path":        relOrAbs(displayRoot, root),
 			"recursive":   recursive,
 			"max_entries": maxEntries,
-			"entry_count": len(lines),
-			"truncated":   len(lines) >= maxEntries,
+			"entry_count": listedCount,
+			"truncated":   truncated,
 		},
 	}, nil
 }
