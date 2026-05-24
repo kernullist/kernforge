@@ -429,6 +429,62 @@ func TestBuildOpenAICodexRequestBodyUsesNativeToolSearchTool(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyUsesNativeHostedTools(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "use hosted tools"},
+		},
+		Tools: []ToolDefinition{
+			{
+				Name:        "image_generation",
+				Description: "Generate an image",
+				InputSchema: map[string]any{"type": "object"},
+			},
+			{
+				Name:        "web_search",
+				Description: "Search the web",
+				InputSchema: map[string]any{"type": "object"},
+			},
+			{
+				Name:        "read_file",
+				Description: "Read file",
+				InputSchema: map[string]any{"type": "object"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 3 {
+		t.Fatalf("expected three tools, got %#v in %s", payload["tools"], body)
+	}
+	imageGeneration := tools[0].(map[string]any)
+	if imageGeneration["type"] != "image_generation" || imageGeneration["output_format"] != "png" {
+		t.Fatalf("expected native image_generation tool, got %#v", imageGeneration)
+	}
+	if _, exists := imageGeneration["name"]; exists {
+		t.Fatalf("native image_generation must not include function name, got %#v", imageGeneration)
+	}
+	webSearch := tools[1].(map[string]any)
+	if webSearch["type"] != "web_search" {
+		t.Fatalf("expected native web_search tool, got %#v", webSearch)
+	}
+	if _, exists := webSearch["name"]; exists {
+		t.Fatalf("native web_search must not include function name, got %#v", webSearch)
+	}
+	readFile := tools[2].(map[string]any)
+	if readFile["type"] != "function" || readFile["name"] != "read_file" {
+		t.Fatalf("expected ordinary tool to remain a function, got %#v", readFile)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyRoundTripsApplyPatchAsCustomItems(t *testing.T) {
 	patch := "*** Begin Patch\n*** Add File: main.go\n+package main\n*** End Patch\n"
 	body, err := buildOpenAICodexRequestBody(ChatRequest{

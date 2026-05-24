@@ -610,6 +610,17 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 			"parameters":  openAICodexToolParameters(tool.InputSchema),
 		}
 	}
+	if name == "image_generation" {
+		return map[string]any{
+			"type":          "image_generation",
+			"output_format": "png",
+		}
+	}
+	if name == "web_search" {
+		return map[string]any{
+			"type": "web_search",
+		}
+	}
 	item := map[string]any{
 		"type":        "function",
 		"name":        name,
