@@ -13382,6 +13382,63 @@ func TestAgentRoutesPostEditCommentaryReplyThroughFinalGates(t *testing.T) {
 	}
 }
 
+func TestAgentFinalizesPostEditReplyWhenProviderEndTurnFalse(t *testing.T) {
+	root := t.TempDir()
+	endTurnFalse := false
+	replyText := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: replyText,
+				},
+				StopReason: "completed",
+				EndTurn:    &endTurnFalse,
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: "This follow-up should not be requested.",
+				},
+				StopReason: "completed",
+			},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+		},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "main.go 파일을 생성해")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if reply != replyText {
+		t.Fatalf("expected post-edit end_turn=false reply to finalize, got %q", reply)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected post-edit end_turn=false reply to stop after edit and final turns, got %d requests", len(provider.requests))
+	}
+	if session.Messages[len(session.Messages)-1].Phase != messagePhaseFinalAnswer {
+		t.Fatalf("expected post-edit end_turn=false reply to be accepted as final, got %#v", session.Messages[len(session.Messages)-1])
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("expected final coding harness to approve post-edit reply, got %#v", session.LastCodingHarnessReport)
+	}
+}
+
 func TestAgentContinuesAfterHiddenOnlyAssistantMessage(t *testing.T) {
 	root := t.TempDir()
 	hidden := "<oai-mem-citation>hidden only</oai-mem-citation>"

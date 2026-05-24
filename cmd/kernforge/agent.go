@@ -786,7 +786,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
 		deferEndTurnFollowUpForGeneratedDocument := a.shouldDeferEndTurnFollowUpForGeneratedDocument(latestUser, resp)
 		deferEndTurnFollowUpForFinalLookingReply := shouldDeferEndTurnFollowUpForFinalLookingReply(resp)
-		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
+		deferEndTurnFollowUpForPostWorkReply := a.shouldDeferEndTurnFollowUpForPostWorkReply(latestUser, resp, attemptedEditTool, successfulEditTool, unresolvedVerification)
+		if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !deferEndTurnFollowUpForPostWorkReply && !finalAnswerOnlyCorrection && len(resp.Message.ToolCalls) == 0 && strings.TrimSpace(resp.Message.Text) != "" {
 			resp.Message.Phase = messagePhaseCommentary
 		}
 		if shouldRetryKoreanLocalCodeToolNarration(resp.Message, a.Session, a.Config) {
@@ -1069,7 +1070,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			repeatedReadFilePathNudges = 0
 			repeatedCachedReadFileNudges = 0
 			repeatedReadFilePathRecoveryCount = 0
-			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !finalAnswerOnlyCorrection {
+			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !deferEndTurnFollowUpForPostWorkReply && !finalAnswerOnlyCorrection {
 				commentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
@@ -2657,6 +2658,25 @@ func shouldDeferEndTurnFollowUpForFinalLookingReply(resp ChatResponse) bool {
 		return false
 	}
 	return assistantTextLooksLikeCompletionSummary(resp.Message.Text)
+}
+
+func (a *Agent) shouldDeferEndTurnFollowUpForPostWorkReply(request string, resp ChatResponse, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	if !chatResponseRequestsFollowUp(resp) {
+		return false
+	}
+	if len(resp.Message.ToolCalls) > 0 || strings.TrimSpace(resp.Message.Text) == "" {
+		return false
+	}
+	if attemptedEditTool || successfulEditTool || sessionHasCurrentTurnFinalGateEvidence(a.Session) {
+		return true
+	}
+	if unresolvedVerification && (replyMentionsVerificationBlocker(resp.Message.Text) || replyMentionsVerificationNotRun(resp.Message.Text)) {
+		return true
+	}
+	return a.changesAreGeneratedDocumentArtifactsForTurn(request)
 }
 
 func (a *Agent) shouldPromoteFinalLookingToolPreambleToFinalCandidate(request string, calls []ToolCall, reply string, attemptedEditTool bool, successfulEditTool bool, unresolvedVerification bool) bool {
