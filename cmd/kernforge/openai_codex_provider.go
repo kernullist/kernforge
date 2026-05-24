@@ -2186,13 +2186,16 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 				}
 			}
 		case "response.completed":
-			completedSeen = true
-			if len(event.Response) > 0 {
-				completedResponse = append(completedResponse[:0], event.Response...)
-				if id := openAICodexResponseIDFromResponsePayload(event.Response); id != "" {
-					responseID = id
-				}
+			if len(event.Response) == 0 {
+				return ChatResponse{}, false, nil
 			}
+			completedID := openAICodexResponseIDFromResponsePayload(event.Response)
+			if completedID == "" {
+				return ChatResponse{}, false, fmt.Errorf("failed to parse ResponseCompleted: missing response id")
+			}
+			completedSeen = true
+			completedResponse = append(completedResponse[:0], event.Response...)
+			responseID = completedID
 			if nestedEndTurn := openAICodexEndTurnFromResponsePayload(event.Response); nestedEndTurn != nil {
 				endTurn = nestedEndTurn
 			} else if event.EndTurn != nil {

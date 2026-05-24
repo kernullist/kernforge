@@ -2340,7 +2340,7 @@ func TestOpenAICodexClientAppliesConfiguredReasoningEffort(t *testing.T) {
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -2370,7 +2370,7 @@ func TestOpenAICodexClientAppliesConfiguredServiceTier(t *testing.T) {
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -2640,7 +2640,7 @@ func TestOpenAICodexClientCompleteParsesResponsesOutput(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_2\",\"name\":\"grep\"}}\n\n"))
 		_, _ = w.Write([]byte("data: {\"type\":\"response.function_call_arguments.done\",\"output_index\":1,\"arguments\":\"{\\\"pattern\\\":\\\"x\\\"}\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -2702,7 +2702,7 @@ func TestOpenAICodexClientCompleteRefreshesAfterUnauthorized(t *testing.T) {
 			}
 			w.Header().Set("content-type", "text/event-stream")
 			_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ready\"}\n\n"))
-			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+			_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 		default:
 			t.Fatalf("unexpected request count: %d", requestCount)
 		}
@@ -3165,7 +3165,7 @@ func TestOpenAICodexClientReplaysTurnState(t *testing.T) {
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -3222,7 +3222,7 @@ func TestOpenAICodexClientSendsSubagentIdentityHeadersAndMetadata(t *testing.T) 
 		}
 		w.Header().Set("content-type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"))
-		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\"}\n\n"))
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\"}}\n\n"))
 	}))
 	defer server.Close()
 
@@ -3807,7 +3807,7 @@ func TestParseOpenAICodexResponseSummarizesHostedWebSearchActionVariants(t *test
 func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"output_text","text":"done text"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3822,7 +3822,7 @@ func TestReadOpenAICodexStreamUsesDoneMessageWhenNoDelta(t *testing.T) {
 func TestReadOpenAICodexStreamPreservesLocalShellCall(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"local_shell_call","call_id":"call_shell","status":"completed","action":{"type":"exec","command":["echo","hi"],"working_directory":"."}}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3841,7 +3841,7 @@ func TestReadOpenAICodexStreamPreservesLocalShellCall(t *testing.T) {
 func TestReadOpenAICodexStreamPreservesCompactionItem(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"context_compaction","encrypted_content":"sealed-context"}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3862,7 +3862,7 @@ func TestReadOpenAICodexStreamSavesImageGenerationOutput(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(imageData)
 	stream := strings.NewReader(strings.Join([]string{
 		fmt.Sprintf(`data: {"type":"response.output_item.done","item":{"type":"image_generation_call","id":"ig/save:1","status":"completed","revised_prompt":"A saved image","result":%q}}`, encoded),
-		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"image_generation_call","id":"ig/save:1","status":"completed","revised_prompt":"A saved image","result":"` + encoded + `"}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","output":[{"type":"image_generation_call","id":"ig/save:1","status":"completed","revised_prompt":"A saved image","result":"` + encoded + `"}]}}`,
 		"",
 	}, "\n\n"))
 	root := t.TempDir()
@@ -3894,7 +3894,7 @@ func TestReadOpenAICodexStreamSavesImageGenerationOutput(t *testing.T) {
 func TestReadOpenAICodexStreamPreservesHostedWebSearchCall(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"web_search_call","id":"ws_123","status":"completed","action":{"type":"search","query":"codex hosted tools"}}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3923,7 +3923,7 @@ func TestReadOpenAICodexStreamUsesAddedMessageTextAsPrefix(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
 		`data: {"type":"response.output_text.delta","delta":"body"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3944,7 +3944,7 @@ func TestReadOpenAICodexStreamAcceptsLargeSSEDataLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal event: %v", err)
 	}
-	stream := strings.NewReader("data: " + string(event) + "\n\n" + `data: {"type":"response.completed"}` + "\n\n")
+	stream := strings.NewReader("data: " + string(event) + "\n\n" + `data: {"type":"response.completed","response":{"id":"resp_test"}}` + "\n\n")
 	resp, err := readOpenAICodexStream(context.Background(), stream)
 	if err != nil {
 		t.Fatalf("readOpenAICodexStream: %v", err)
@@ -3960,7 +3960,7 @@ func TestReadOpenAICodexStreamParsesMultilineSSEDataEvent(t *testing.T) {
 		`data: {"type":"response.output_text.delta",`,
 		`data: "delta":"multi line"}`,
 		"",
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3977,7 +3977,7 @@ func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
 		`data: {"type":"response.output_text.delta","delta":"body"}`,
 		`data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro body"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -3993,7 +3993,7 @@ func TestReadOpenAICodexStreamCapturesCreatedResponseModelHeader(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"resp-1","headers":{"OpenAI-Model":"gpt-5.2"}}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4009,7 +4009,7 @@ func TestReadOpenAICodexStreamCapturesTopLevelModelHeader(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.created","headers":{"x-openai-model":["gpt-5.4"]},"response":{"id":"resp-1"}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4025,7 +4025,7 @@ func TestReadOpenAICodexStreamPrefersResponseModelHeader(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.created","headers":{"OpenAI-Model":"outer-model"},"response":{"id":"resp-1","headers":{"OpenAI-Model":"inner-model"}}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4041,7 +4041,7 @@ func TestReadOpenAICodexStreamCapturesRateLimitEvent(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"codex.rate_limits","rate_limits":{"primary":{"used_percent":12.5,"window_minutes":10,"reset_at":1704069000},"secondary":{"used_percent":40,"window_minutes":60}},"credits":{"has_credits":true,"unlimited":false,"balance":"42"}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4058,7 +4058,7 @@ func TestReadOpenAICodexStreamCapturesModelVerificationEvent(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.metadata","metadata":{"openai_verification_recommendation":["trusted_access_for_cyber","ignored"]}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4073,7 +4073,7 @@ func TestReadOpenAICodexStreamCapturesModelVerificationEvent(t *testing.T) {
 func TestReadOpenAICodexStreamPreservesCodexToolOutputItem(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"function_call_output","call_id":"call_read","output":"ok"}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4098,7 +4098,7 @@ func TestReadOpenAICodexStreamAccumulatesReasoningDeltas(t *testing.T) {
 		`data: {"type":"response.reasoning_summary_text.delta","delta":"step one"}`,
 		`data: {"type":"response.reasoning_text.delta","delta":" raw detail"}`,
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4117,7 +4117,7 @@ func TestReadOpenAICodexStreamPreservesReasoningEncryptedContent(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","encrypted_content":"sealed-reasoning"}}`,
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4135,7 +4135,7 @@ func TestReadOpenAICodexStreamPreservesReasoningEncryptedContent(t *testing.T) {
 func TestReadOpenAICodexStreamPreservesReasoningEncryptedOnly(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","encrypted_content":"sealed-reasoning"}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4157,7 +4157,7 @@ func TestReadOpenAICodexStreamPreservesReasoningSummarySectionBreaks(t *testing.
 		`data: {"type":"response.reasoning_summary_part.added","summary_index":1}`,
 		`data: {"type":"response.reasoning_summary_text.delta","delta":"second section"}`,
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4173,7 +4173,7 @@ func TestReadOpenAICodexStreamUsesDoneReasoningWhenNoDeltas(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.done","item":{"type":"reasoning","id":"reasoning-1","summary":[{"type":"summary_text","text":"Consider inputs"}],"content":[{"type":"reasoning_text","text":"Detailed trace"}]}}`,
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4216,11 +4216,11 @@ func TestReadOpenAICodexStreamReturnsIncompleteReason(t *testing.T) {
 	}
 }
 
-func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponseBody(t *testing.T) {
+func TestReadOpenAICodexStreamPreservesMessagePhaseWithCompletedResponseID(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
 		`data: {"type":"response.output_text.delta","delta":"checking"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4235,12 +4235,41 @@ func TestReadOpenAICodexStreamPreservesMessagePhaseWithoutCompletedResponseBody(
 	}
 }
 
+func TestReadOpenAICodexStreamIgnoresCompletedWithoutResponseBodyLikeCodex(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		`data: {"type":"response.completed"}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err == nil {
+		t.Fatalf("expected completed event without response body to fail, got %#v", resp)
+	}
+	if !strings.Contains(err.Error(), "stream closed before response.completed") {
+		t.Fatalf("expected Codex-style missing completed error, got %v", err)
+	}
+}
+
+func TestReadOpenAICodexStreamRejectsCompletedResponseWithoutIDLikeCodex(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.completed","response":{"status":"completed"}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err == nil {
+		t.Fatalf("expected completed response without id to fail, got %#v", resp)
+	}
+	if !strings.Contains(err.Error(), "failed to parse ResponseCompleted") {
+		t.Fatalf("expected Codex-style completed parse error, got %v", err)
+	}
+}
+
 func TestReadOpenAICodexStreamKeepsFinalPhaseAfterLaterCommentaryItem(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"final_answer"}}`,
 		`data: {"type":"response.output_text.delta","delta":"done"}`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"ignored late commentary"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4260,7 +4289,7 @@ func TestReadOpenAICodexStreamPrefersFinalAnswerItemOverCommentaryDeltas(t *test
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
 		`data: {"type":"response.output_text.delta","delta":"checking report"}`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"report complete"}]}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4280,7 +4309,7 @@ func TestReadOpenAICodexStreamDoesNotLetCompletedSnapshotOverrideFinalItem(t *te
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","phase":"commentary"}}`,
 		`data: {"type":"response.output_text.delta","delta":"checking report"}`,
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"report complete"}]}}`,
-		`data: {"type":"response.completed","response":{"status":"completed","end_turn":true,"output":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"stale commentary snapshot"}]}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","end_turn":true,"output":[{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"stale commentary snapshot"}]}]}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4325,7 +4354,7 @@ func TestReadOpenAICodexStreamUsesFinalMessageItemWhenCompletedResponseHasNoOutp
 
 func TestReadOpenAICodexStreamPreservesEndTurnFromCompletedResponse(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
-		`data: {"type":"response.completed","response":{"status":"completed","end_turn":false,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continuing"}]}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","end_turn":false,"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continuing"}]}]}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4363,7 +4392,7 @@ func TestReadOpenAICodexStreamEmitsToolProgressEvents(t *testing.T) {
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_1","name":"read_file"}}`,
 		`data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"path\""}`,
 		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"main.go\"}"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	var events []ProgressEvent
@@ -4390,7 +4419,7 @@ func TestReadOpenAICodexStreamRoutesToolArgumentsByItemIDWithoutOutputIndex(t *t
 		`data: {"type":"response.output_item.added","item":{"id":"fc_two","type":"function_call","call_id":"call_two","name":"grep"}}`,
 		`data: {"type":"response.function_call_arguments.done","item_id":"fc_one","arguments":"{\"path\":\"a.txt\"}"}`,
 		`data: {"type":"response.function_call_arguments.done","item_id":"fc_two","arguments":"{\"pattern\":\"needle\"}"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	resp, err := readOpenAICodexStream(context.Background(), stream)
@@ -4416,7 +4445,7 @@ func TestReadOpenAICodexStreamParsesCodexToolCallVariants(t *testing.T) {
 		`data: {"type":"response.output_item.done","output_index":1,"item":{"type":"tool_search_call","call_id":"call_search","status":"in_progress","execution":"client","arguments":{"query":"apply_patch","limit":5}}}`,
 		`data: {"type":"response.output_item.done","output_index":2,"item":{"type":"tool_search_call","call_id":null,"execution":"client","arguments":{"query":"nullable"}}}`,
 		`data: {"type":"response.output_item.done","output_index":3,"item":{"type":"tool_search_call","call_id":"call_server","execution":"server","arguments":{"query":"ignored"}}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	var events []ProgressEvent
@@ -4458,7 +4487,7 @@ func TestReadOpenAICodexStreamPreservesFunctionCallNamespace(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_mcp","namespace":"mcp__filesystem__","name":"read_file"}}`,
 		`data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"path\":\"main.go\"}"}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	var events []ProgressEvent
@@ -4489,7 +4518,7 @@ func TestReadOpenAICodexStreamAccumulatesCustomToolCallInputDeltas(t *testing.T)
 		`data: {"type":"response.custom_tool_call_input.delta","call_id":"call_patch_stream","delta":"*** Add File: streamed.txt\n+hello"}`,
 		`data: {"type":"response.custom_tool_call_input.delta","call_id":"call_patch_stream","delta":"\n+world\n*** End Patch"}`,
 		`data: {"type":"response.output_item.done","item":{"type":"custom_tool_call","call_id":"call_patch_stream","name":"apply_patch","input":""}}`,
-		`data: {"type":"response.completed"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
 		"",
 	}, "\n\n"))
 	var events []ProgressEvent
@@ -4521,7 +4550,7 @@ func TestReadOpenAICodexStreamAccumulatesCustomToolCallInputDeltas(t *testing.T)
 
 func TestReadOpenAICodexStreamEmitsToolReadyFromCompletedResponse(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
-		`data: {"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"read_file","arguments":"{\"path\":\"main.go\"}"}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test","status":"completed","output":[{"type":"function_call","call_id":"call_9","name":"read_file","arguments":"{\"path\":\"main.go\"}"}]}}`,
 		"",
 	}, "\n\n"))
 	var events []ProgressEvent
