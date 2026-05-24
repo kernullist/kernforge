@@ -495,6 +495,9 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 							"type":        "function",
 							"name":        "apply_patch",
 							"description": "Apply patch",
+							"output_schema": map[string]any{
+								"type": "object",
+							},
 						},
 					},
 				}),
@@ -532,6 +535,9 @@ func TestBuildOpenAICodexRequestBodyPreservesToolSearchOutput(t *testing.T) {
 	tool := tools[0].(map[string]any)
 	if tool["name"] != "apply_patch" {
 		t.Fatalf("expected apply_patch tool payload, got %#v", tool)
+	}
+	if _, exists := tool["output_schema"]; exists {
+		t.Fatalf("Codex tool_search output tool specs must omit output_schema, got %#v", tool)
 	}
 	if encoded := string(body); strings.Contains(encoded, `"type":"function_call_output"`) {
 		t.Fatalf("native tool_search result must not be serialized as function_call_output: %s", encoded)
@@ -626,8 +632,8 @@ func TestBuildOpenAICodexRequestBodyPreservesToolContentItems(t *testing.T) {
 	}
 	tools := payload["tools"].([]any)
 	tool := tools[0].(map[string]any)
-	if _, ok := tool["output_schema"].(map[string]any); !ok {
-		t.Fatalf("expected output_schema to be preserved, got %#v", tool)
+	if _, ok := tool["output_schema"]; ok {
+		t.Fatalf("Codex Responses tool schema must omit output_schema, got %#v", tool)
 	}
 }
 

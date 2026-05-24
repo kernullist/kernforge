@@ -600,9 +600,6 @@ func openAICodexToolPayload(tool ToolDefinition) map[string]any {
 		"strict":      false,
 		"parameters":  openAICodexToolParameters(tool.InputSchema),
 	}
-	if len(tool.OutputSchema) > 0 {
-		item["output_schema"] = tool.OutputSchema
-	}
 	return item
 }
 
@@ -757,19 +754,52 @@ func openAICodexToolSearchOutputTools(msg Message) []any {
 	}
 	var array []any
 	if err := json.Unmarshal([]byte(text), &array); err == nil {
-		return array
+		return openAICodexSanitizeToolSearchTools(array)
 	}
 	var object map[string]any
 	if err := json.Unmarshal([]byte(text), &object); err != nil {
 		return []any{}
 	}
 	if rawTools, ok := object["tools"].([]any); ok {
-		return rawTools
+		return openAICodexSanitizeToolSearchTools(rawTools)
 	}
 	if rawTools, ok := object["data"].([]any); ok {
-		return rawTools
+		return openAICodexSanitizeToolSearchTools(rawTools)
 	}
 	return []any{}
+}
+
+func openAICodexSanitizeToolSearchTools(tools []any) []any {
+	if len(tools) == 0 {
+		return []any{}
+	}
+	out := make([]any, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, openAICodexStripOutputSchemaFields(tool))
+	}
+	return out
+}
+
+func openAICodexStripOutputSchemaFields(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			if key == "output_schema" {
+				continue
+			}
+			out[key] = openAICodexStripOutputSchemaFields(child)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			out = append(out, openAICodexStripOutputSchemaFields(child))
+		}
+		return out
+	default:
+		return value
+	}
 }
 
 func openAICodexToolSearchArguments(arguments string) any {
