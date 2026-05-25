@@ -908,7 +908,7 @@ func summarizeChatRequestForEvent(req ChatRequest) string {
 		parts = append(parts, "working_dir="+strings.TrimSpace(req.WorkingDir))
 	}
 	if len(req.Messages) > 0 {
-		latest := compactPromptSection(baseUserQueryText(latestUserMessageText(req.Messages)), 160)
+		latest := compactPromptSection(latestExternalOrUserMessageText(req.Messages), 160)
 		if latest != "" {
 			parts = append(parts, "latest_user="+latest)
 		}

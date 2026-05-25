@@ -334,6 +334,24 @@ func TestProviderErrorIsRecordedInConversationEvents(t *testing.T) {
 	}
 }
 
+func TestChatRequestEventSummaryUsesExternalUserPrompt(t *testing.T) {
+	req := ChatRequest{
+		Model: "model",
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Generated document artifact finalization is answer-only now. Do not call tools."),
+		},
+	}
+
+	got := summarizeChatRequestForEvent(req)
+	if !strings.Contains(got, "latest_user=Fix the runtime gate loop") {
+		t.Fatalf("expected external user prompt in request summary, got %q", got)
+	}
+	if strings.Contains(got, "Generated document artifact") || strings.Contains(got, "Do not call tools") {
+		t.Fatalf("internal guidance leaked into request summary: %q", got)
+	}
+}
+
 func TestNormalizeRuntimeErrorUsesCodexRateLimitReachedTypeMessage(t *testing.T) {
 	normalized := normalizeRuntimeError(&ProviderAPIError{
 		Provider:             "openai-codex",
