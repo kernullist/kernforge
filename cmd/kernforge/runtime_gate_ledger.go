@@ -121,6 +121,9 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 	default:
 		return false
 	}
+	if runtimeGateLatestUserStartsFreshNonDocumentArtifactTurn(session) {
+		return false
+	}
 	if generatedDocumentArtifactGateAcceptedForRequest(session, "", changedPaths) {
 		return true
 	}
@@ -132,6 +135,17 @@ func runtimeGateDocumentArtifactOnly(session *Session, action string, changedPat
 		return true
 	}
 	return changedPathsAreGeneratedDocumentArtifacts(session, "", changedPaths)
+}
+
+func runtimeGateLatestUserStartsFreshNonDocumentArtifactTurn(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
+	if latestUser == "" || looksLikeInternalReviewFeedbackUserMessage(latestUser) {
+		return false
+	}
+	return generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(latestUser)
 }
 
 func runtimeGateHasGeneratedDocumentArtifactContext(session *Session, changedPaths []string) bool {

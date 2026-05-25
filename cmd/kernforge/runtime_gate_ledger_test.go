@@ -300,6 +300,47 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *t
 	}
 }
 
+func TestRuntimeGateBroaderScopeSteeringDoesNotUseDocumentArtifactBypass(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "Tavern/BugReport.md 생성 완료",
+		},
+		{
+			Role: "user",
+			Text: "문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해",
+		},
+	}
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc",
+		SourcePrompt: "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 문서로 생성해",
+		Mode:         "inspect_and_fix",
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+				Checks:       []string{"text readable"},
+			}},
+		},
+	}
+
+	if runtimeGateDocumentArtifactOnly(session, runtimeGateActionFinalAnswer, nil) {
+		t.Fatalf("broader-scope steering must not use generated document artifact runtime-gate bypass")
+	}
+}
+
 func TestRuntimeGateBlocksUnknownPatchScopeForFinalAnswer(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
