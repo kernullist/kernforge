@@ -59,7 +59,7 @@ func (rt *runtimeState) printReviewModeRun(run ReviewRun) {
 	}
 }
 
-func (a *Agent) maybeRunCodexAppReviewMode(ctx context.Context, userText string, reviewText string, images []MessageImage) (bool, string, error) {
+func (a *Agent) maybeRunCodexAppReviewMode(ctx context.Context, userText string, images []MessageImage) (bool, string, error) {
 	if a == nil || a.Session == nil {
 		return false, "", nil
 	}
@@ -74,10 +74,6 @@ func (a *Agent) maybeRunCodexAppReviewMode(ctx context.Context, userText string,
 	opts, selection, ok := rt.naturalLanguageReviewOptions(userText, images)
 	if !ok {
 		return false, "", nil
-	}
-	if expanded := strings.TrimSpace(reviewText); expanded != "" {
-		opts.Request = expanded
-		opts.RawArgs = expanded
 	}
 	if selection != nil {
 		rt.rememberNaturalReviewSelection(*selection)

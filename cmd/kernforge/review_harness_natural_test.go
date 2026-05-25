@@ -355,7 +355,8 @@ func TestAgentReplyReviewModeRunsReviewOnly(t *testing.T) {
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	reply, err := agent.Reply(context.Background(), "@main.cpp 리뷰 모드로 검토해")
+	request := "@main.cpp 리뷰 모드로 검토해"
+	reply, err := agent.Reply(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -368,13 +369,26 @@ func TestAgentReplyReviewModeRunsReviewOnly(t *testing.T) {
 	if !strings.Contains(provider.requests[0].Messages[0].Text, "read-only code review") {
 		t.Fatalf("expected review-mode prompt rule, got %q", provider.requests[0].Messages[0].Text)
 	}
-	if !strings.Contains(provider.requests[0].Messages[0].Text, "Request mode: analysis-only.") {
-		t.Fatalf("expected review-mode prompt to include enriched request context, got %q", provider.requests[0].Messages[0].Text)
+	for _, internalNeedle := range []string{
+		"Request mode:",
+		"Relevant persistent memory",
+		"Relevant project analysis",
+		"Auto-discovered code context",
+	} {
+		if strings.Contains(provider.requests[0].Messages[0].Text, internalNeedle) {
+			t.Fatalf("review-mode request should not be overwritten by injected context %q, got %q", internalNeedle, provider.requests[0].Messages[0].Text)
+		}
 	}
 	if session.LastReviewRun == nil || session.LastReviewRun.Trigger != naturalReviewTrigger {
 		t.Fatalf("expected natural review run, got %#v", session.LastReviewRun)
 	}
-	for _, needle := range []string{"검토 결과:", "Wrong return value", "위치: main.cpp, 심볼 value", "요약:", "판정: needs_revision"} {
+	if session.LastReviewRun.Objective != request {
+		t.Fatalf("review-mode objective should preserve the external user request, got %q want %q", session.LastReviewRun.Objective, request)
+	}
+	if session.LastReviewRun.RequestAnalysis.OriginalRequest != request {
+		t.Fatalf("review-mode analysis should preserve the external user request, got %q want %q", session.LastReviewRun.RequestAnalysis.OriginalRequest, request)
+	}
+	for _, needle := range []string{"검토 결과:", "Wrong return value", "위치: main.cpp, 심볼 value", "요약:", "판정:"} {
 		if !strings.Contains(reply, needle) {
 			t.Fatalf("expected review-only reply to contain %q, got %q", needle, reply)
 		}

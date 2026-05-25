@@ -223,7 +223,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 		return reply, nil
 	}
-	ranReviewMode, reviewModeReply, err := a.maybeRunCodexAppReviewMode(ctx, userText, enriched, images)
+	ranReviewMode, reviewModeReply, err := a.maybeRunCodexAppReviewMode(ctx, userText, images)
 	if err != nil {
 		return "", err
 	}
