@@ -10917,6 +10917,107 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 	}
 }
 
+func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPatchTransaction(t *testing.T) {
+	root := t.TempDir()
+	ctx := context.Background()
+	if _, err := runGitCommand(ctx, root, "init"); err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
+		t.Fatalf("git config email: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
+		t.Fatalf("git config name: %v", err)
+	}
+	reportDir := filepath.Join(root, "Tavern")
+	if err := os.MkdirAll(reportDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	reportPath := filepath.Join(reportDir, "BugReport.md")
+	if err := os.WriteFile(reportPath, []byte("# Initial Report\n\nPlaceholder before generated artifact.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile initial report: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "add", "Tavern/BugReport.md"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
+		t.Fatalf("git commit: %v", err)
+	}
+	reportContent := strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"소스코드 검토 결과 총 1개 버그를 문서로 생성했습니다.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: crash risk.",
+	}, "\n")
+	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
+		t.Fatalf("WriteFile report: %v", err)
+	}
+
+	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	reply := "Tavern/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	session := NewSession(root, "scripted", "model", "", "default")
+	contract := buildAcceptanceContract(request, TurnIntentEditCode, false, true, false)
+	session.AcceptanceContract = &contract
+	session.Messages = []Message{
+		{Role: "user", Text: request},
+		{Role: "assistant", Phase: messagePhaseFinalAnswerCandidate, Text: reply},
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:       "patch-doc",
+		Goal:     request,
+		Status:   patchTransactionStatusActive,
+		Warnings: []string{"tool reported workspace changes without changed_paths metadata"},
+	}
+	agent := &Agent{
+		Config: Config{
+			Model:      "model",
+			AutoLocale: boolPtr(false),
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	lastFingerprint := ""
+	reviewed, needsRevision, reviewFeedback, fingerprint, err := agent.maybeRunPostChangeReview(ctx, request, lastFingerprint)
+	if err != nil {
+		t.Fatalf("maybeRunPostChangeReview: %v", err)
+	}
+	if !reviewed || needsRevision {
+		t.Fatalf("expected generated document quality skip to avoid a repair turn, reviewed=%t needsRevision=%t fingerprint=%q feedback=%q changed=%#v report=%#v", reviewed, needsRevision, fingerprint, reviewFeedback, autoReviewChangedPaths(session, root), session.LastCodingHarnessReport)
+	}
+	if !isGeneratedDocumentArtifactQualityFingerprint(fingerprint) {
+		t.Fatalf("expected generated document quality fingerprint, got %q", fingerprint)
+	}
+	if session.LastCodingHarnessReport == nil || !sessionHasDocumentArtifactQualityAcceptedHarness(session) {
+		t.Fatalf("expected post-change quality skip to seed an accepted artifact report, got %#v", session.LastCodingHarnessReport)
+	}
+	finalReply, finalized, err := agent.maybeFinalizeGeneratedDocumentArtifactFinalReply(request, reply, true, false)
+	if err != nil {
+		t.Fatalf("maybeFinalizeGeneratedDocumentArtifactFinalReply: %v", err)
+	}
+	if !finalized {
+		t.Fatalf("expected accepted generated document artifact to finalize instead of reopening model turns, reply=%q report=%#v", finalReply, session.LastCodingHarnessReport)
+	}
+	if !strings.Contains(finalReply, "Tavern/BugReport.md") {
+		t.Fatalf("expected generated document final reply, got %q", finalReply)
+	}
+	if session.ActivePatchTransaction != nil {
+		t.Fatalf("expected final acceptance to close the active patch transaction, got %#v", session.ActivePatchTransaction)
+	}
+}
+
 func TestAgentGeneratedDocumentArtifactSynthesisAllowsSkippedVerificationDisclosureRepair(t *testing.T) {
 	root := t.TempDir()
 	reportContent := strings.Join([]string{

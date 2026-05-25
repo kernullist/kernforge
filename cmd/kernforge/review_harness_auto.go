@@ -37,7 +37,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		if generatedDocumentArtifactQualityAlreadyAccepted(a.Session, artifactFingerprint, lastFingerprint) {
 			return false, false, "", artifactFingerprint, nil
 		}
-		if needsRevision, feedback := a.validateGeneratedDocumentArtifactForPostChangeSkip(skipRequest); needsRevision {
+		if needsRevision, feedback := a.validateGeneratedDocumentArtifactForPostChangeSkip(skipRequest, changedPaths); needsRevision {
 			a.Session.LastDocumentArtifactFingerprint = ""
 			if a.EmitProgress != nil {
 				a.EmitProgress(localizedTextForReviewRequest(a.Config, skipRequest, "Generated document artifact quality checks found blockers. Asking the model to revise the document artifact without starting code review.", "생성 문서 산출물 품질 검사에서 차단 항목을 발견했습니다. 코드 리뷰를 시작하지 않고 문서 산출물 수정을 요청합니다."))
@@ -989,7 +989,7 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	return false, nil
 }
 
-func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request string) (bool, string) {
+func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request string, changedPaths []string) (bool, string) {
 	if a == nil || a.Session == nil {
 		return false, ""
 	}
@@ -998,6 +998,7 @@ func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request strin
 	}
 	reply := a.generatedDocumentArtifactSeedFinalReply()
 	report := a.buildCodingHarnessReport(reply, true, false)
+	reconcileGeneratedDocumentArtifactPostChangeScope(&report, changedPaths)
 	a.Session.LastCodingHarnessReport = &report
 	a.Session.LastTestImpactReport = &report.TestImpact
 	a.Session.LastJobSupervisorReport = &report.JobSupervisor
@@ -1007,6 +1008,38 @@ func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request strin
 		return true, copyReport.BlockingFeedback()
 	}
 	return false, ""
+}
+
+func reconcileGeneratedDocumentArtifactPostChangeScope(report *CodingHarnessReport, changedPaths []string) {
+	if report == nil {
+		return
+	}
+	normalized := normalizeTaskStateList(changedPaths, 64)
+	if !changedPathsLookLikeGeneratedReportArtifacts(normalized) {
+		return
+	}
+	report.DiffReview.ChangedPaths = normalized
+	report.DiffReview.Findings = filterCodingHarnessFindingsByTitle(report.DiffReview.Findings, "Workspace mutation has unknown review scope")
+	report.TestImpact.ChangedPaths = normalized
+	report.TestImpact.CodeLikeChangedPaths = nil
+	report.TestImpact.Confidence = "not_applicable"
+	report.TestImpact.Notes = normalizeTaskStateList([]string{"Only generated document artifact paths changed in the post-change evidence."}, 8)
+	report.TestImpact.Gaps = nil
+	report.Normalize()
+}
+
+func filterCodingHarnessFindingsByTitle(findings []CodingHarnessFinding, title string) []CodingHarnessFinding {
+	if len(findings) == 0 {
+		return nil
+	}
+	filtered := make([]CodingHarnessFinding, 0, len(findings))
+	for _, finding := range findings {
+		if strings.EqualFold(strings.TrimSpace(finding.Title), strings.TrimSpace(title)) {
+			continue
+		}
+		filtered = append(filtered, finding)
+	}
+	return normalizeCodingHarnessFindings(filtered)
 }
 
 func (a *Agent) reviewHarnessRuntime(root string) *runtimeState {

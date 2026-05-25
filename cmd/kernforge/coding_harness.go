@@ -1170,6 +1170,10 @@ func (a *Agent) buildAcceptanceContractReport(reply string) AcceptanceContractRe
 func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool bool) DiffAwareSelfReviewReport {
 	report := DiffAwareSelfReviewReport{}
 	changed := currentTurnPatchTransactionChangedPaths(a.Session)
+	scopeResolvedChanged := a.generatedDocumentArtifactScopeResolvedChangedPaths()
+	if len(changed) == 0 && len(scopeResolvedChanged) > 0 {
+		changed = scopeResolvedChanged
+	}
 	report.ChangedPaths = changed
 	lowerReply := strings.ToLower(strings.TrimSpace(reply))
 	if len(changed) > 0 && replyClaimsNoFileChanges(lowerReply) {
@@ -1194,14 +1198,40 @@ func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool b
 		})
 	}
 	if scopeWarnings := currentTurnPatchTransactionScopeWarnings(a.Session); len(scopeWarnings) > 0 {
-		report.Findings = append(report.Findings, CodingHarnessFinding{
-			Severity: "blocker",
-			Title:    "Workspace mutation has unknown review scope",
-			Detail:   "A tool reported workspace changes without changed_paths metadata, so Codex-style review evidence cannot identify the changed files: " + strings.Join(scopeWarnings, " | "),
-		})
+		if len(scopeResolvedChanged) == 0 {
+			report.Findings = append(report.Findings, CodingHarnessFinding{
+				Severity: "blocker",
+				Title:    "Workspace mutation has unknown review scope",
+				Detail:   "A tool reported workspace changes without changed_paths metadata, so Codex-style review evidence cannot identify the changed files: " + strings.Join(scopeWarnings, " | "),
+			})
+		}
 	}
 	report.Findings = normalizeCodingHarnessFindings(report.Findings)
 	return report
+}
+
+func (a *Agent) generatedDocumentArtifactScopeResolvedChangedPaths() []string {
+	if a == nil || a.Session == nil {
+		return nil
+	}
+	if !sessionHasDocumentArtifactQualityAcceptedHarness(a.Session) {
+		return nil
+	}
+	root := workspaceSnapshotRoot(a.Workspace)
+	if strings.TrimSpace(root) == "" {
+		root = a.Workspace.Root
+	}
+	if strings.TrimSpace(root) == "" {
+		root = a.Session.WorkingDir
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	changed := autoReviewChangedPaths(a.Session, root)
+	if !changedPathsMatchDocumentArtifactQuality(a.Session, changed) {
+		return nil
+	}
+	return normalizeTaskStateList(changed, 64)
 }
 
 func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification bool) OutcomeInvariantReport {
