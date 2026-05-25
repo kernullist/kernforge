@@ -41,3 +41,32 @@ func TestClassifyTurnIntentPreservesCurrentTaskSteering(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyTurnIntentSeparatesFixDirectionFromEditExecution(t *testing.T) {
+	for _, request := range []string{
+		"이번 테스트 로그를 분석하고 Codex repo와 자세히 비교 분석해서 수정 방향을 잡자",
+		"Codex repo와 비교해서 개선 방향을 먼저 정하자",
+		"Analyze the log and plan the fix direction before editing.",
+	} {
+		if got := classifyTurnIntent(request); got != TurnIntentPlanOrDesign {
+			t.Fatalf("expected fix-direction request %q to be plan/design intent, got %q", request, got)
+		}
+		if looksLikeExplicitEditIntent(request) {
+			t.Fatalf("fix-direction request %q should not be treated as explicit edit execution", request)
+		}
+		mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+		if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
+			t.Fatalf("fix-direction request %q should be read-only planning, got %#v", request, mode)
+		}
+	}
+
+	for _, request := range []string{
+		"수정 방향을 잡고 바로 적용하자",
+		"개선 방향대로 구현해",
+		"Plan the fix direction and then implement it.",
+	} {
+		if !looksLikeExplicitEditIntent(request) {
+			t.Fatalf("execution request %q should still be treated as explicit edit", request)
+		}
+	}
+}

@@ -36,6 +36,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	if looksLikeCurrentTaskSteeringRequest(base) {
 		return TurnIntentContinueLastTask
 	}
+	if looksLikePlanOrDirectionOnlyRequest(base) {
+		return TurnIntentPlanOrDesign
+	}
 	if looksLikeExecutionFlowQuestion(base) {
 		return TurnIntentAskProjectKnowledge
 	}
@@ -83,6 +86,30 @@ func looksLikeCurrentTaskSteeringRequest(text string) bool {
 		return true
 	}
 	return false
+}
+
+func looksLikePlanOrDirectionOnlyRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"바로 적용", "적용해", "적용하자", "구현해", "구현하자", "수정해", "수정하자", "고쳐", "패치해", "패치하자",
+		"apply it", "implement it", "fix it", "patch it", "make the change",
+	) {
+		return false
+	}
+	if !containsAny(lower,
+		"수정 방향", "개선 방향", "대응 방향", "보강 방향", "방향을 잡", "방향 잡", "방향을 정",
+		"수정 계획", "개선 계획", "보강 계획", "수정 전략", "개선 전략",
+		"fix direction", "improvement direction", "repair direction", "fix plan", "repair plan", "improvement plan", "fix strategy", "repair strategy",
+	) {
+		return false
+	}
+	return containsAny(lower,
+		"분석", "비교", "검토", "잡자", "정하", "세우", "찾자", "확인", "방향", "계획", "전략",
+		"analyze", "compare", "review", "plan", "strategy", "direction", "approach",
+	)
 }
 
 func looksLikeGitOperationRequest(text string) bool {

@@ -1088,6 +1088,9 @@ func looksLikeExplicitEditIntent(text string) bool {
 	if looksLikeExecutionFlowQuestion(lower) {
 		return false
 	}
+	if looksLikePlanOrDirectionOnlyRequest(lower) {
+		return false
+	}
 	return containsAny(lower,
 		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "draft ", "edit ", "fix ", "generate ", "implement ", "modify ", "patch ", "prepare ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
 		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "생성", "수정", "실행", "적용", "작성", "저장", "추가", "테스트", "패치",
