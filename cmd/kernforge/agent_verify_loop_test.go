@@ -8316,6 +8316,53 @@ func TestAgentClosesBlockedReadOnlyEditToolBatchBeforeGuidance(t *testing.T) {
 	}
 }
 
+func TestAgentTreatsReviewIntentAsReadOnlyWhenModelAttemptsEdit(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	patchTool := &sequenceTool{name: "apply_patch", outputs: []string{"patched"}}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{
+				"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n-before\n+after\n*** End Patch\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "리뷰만 수행했습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "RuntimeManager.cpp 코드 리뷰해줘")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "리뷰") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if patchTool.calls != 0 {
+		t.Fatalf("review-only intent must not execute edit tools, got %d call(s)", patchTool.calls)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected provider request")
+	}
+	if chatRequestHasTool(provider.requests[0], "apply_patch") {
+		t.Fatalf("review-only intent must not expose apply_patch")
+	}
+	if !strings.Contains(provider.requests[0].Messages[0].Text, "Request mode: analysis-only.") {
+		t.Fatalf("expected review-only prompt to be analysis-only, got %q", provider.requests[0].Messages[0].Text)
+	}
+	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this is a read-only analysis turn") {
+		t.Fatalf("blocked review edit call must be closed with a NOT_EXECUTED tool result")
+	}
+}
+
 func TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {

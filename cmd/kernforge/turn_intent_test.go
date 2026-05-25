@@ -8,6 +8,19 @@ func TestClassifyTurnIntentRecognizesReviewOnlyRequest(t *testing.T) {
 	}
 }
 
+func TestResolveAgentRequestModeTreatsReviewIntentAsReadOnly(t *testing.T) {
+	for _, request := range []string{
+		"RuntimeManager.cpp 코드 리뷰해줘",
+		"Review RuntimeManager.cpp for bugs",
+		"이 코드 검토하고 버그 찾아줘",
+	} {
+		mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+		if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
+			t.Fatalf("review-only request %q should be read-only, got %#v", request, mode)
+		}
+	}
+}
+
 func TestClassifyTurnIntentKeepsReviewReportAuthoringAsEdit(t *testing.T) {
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
 	if got := classifyTurnIntent(request); got != TurnIntentEditCode {
