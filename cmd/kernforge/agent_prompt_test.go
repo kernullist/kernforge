@@ -617,6 +617,26 @@ func TestSystemPromptUsesExternalUserRequestAfterGoalSteering(t *testing.T) {
 	}
 }
 
+func TestSystemPromptPreservesEditIntentForContinuationSteering(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	original := "Codex upstream과 kernforge를 비교해서 turn orchestration을 수정해"
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+	session.AddMessage(Message{Role: "assistant", Text: "provider role 분리를 적용했습니다."})
+	session.AddMessage(Message{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "explicitly asks for a fix") {
+		t.Fatalf("expected continuation steering to keep preserved edit intent in system prompt, got %q", prompt)
+	}
+}
+
 func TestSystemPromptFallsBackToAcceptanceContextWhenOnlyInternalMessagesRemain(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

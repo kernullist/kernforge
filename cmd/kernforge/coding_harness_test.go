@@ -213,6 +213,42 @@ func TestSessionEffectiveUserRequestTextFallsBackToAcceptanceContext(t *testing.
 	}
 }
 
+func TestSessionEffectiveUserRequestTextPreservesActionContextForContinuation(t *testing.T) {
+	original := "Codex upstream과 kernforge를 비교해서 turn orchestration을 수정해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "1차 provider role 분리를 적용했습니다."},
+		{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"},
+	}
+
+	if got := sessionEffectiveUserRequestText(session); got != original {
+		t.Fatalf("expected continuation steering to preserve effective action request %q, got %q", original, got)
+	}
+}
+
+func TestSessionEffectiveUserRequestTextKeepsStatusQuestionAsLatestRequest(t *testing.T) {
+	original := "Codex upstream과 kernforge를 비교해서 turn orchestration을 수정해"
+	status := "지금 몇 % 정도 작업 완료된 것 같아?"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "1차 provider role 분리를 적용했습니다."},
+		{Role: "user", Text: status},
+	}
+
+	if got := sessionEffectiveUserRequestText(session); got != status {
+		t.Fatalf("expected status question to remain the effective latest request, got %q", got)
+	}
+	if got := codingHarnessSourcePrompt(session); got != original {
+		t.Fatalf("expected coding harness source prompt to keep original task for status follow-up, got %q", got)
+	}
+}
+
 func TestSourcePromptAndPatchGoalDoNotFallbackToInternalOnly(t *testing.T) {
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AddMessage(internalUserMessage("Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."))

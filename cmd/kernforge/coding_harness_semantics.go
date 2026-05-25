@@ -121,8 +121,15 @@ func sessionEffectiveUserRequestText(sess *Session) string {
 	if sess == nil {
 		return ""
 	}
-	if prompt := latestExternalOrUserMessageText(sess.Messages); prompt != "" {
-		return prompt
+	latestExternal := latestExternalOrUserMessageText(sess.Messages)
+	if latestExternal != "" && !actionContextPreservingControlRequest(latestExternal) {
+		return latestExternal
+	}
+	if latestExternal != "" {
+		if prompt := preservableSessionAcceptancePrompt(sess); prompt != "" {
+			return prompt
+		}
+		return latestExternal
 	}
 	return preservableSessionAcceptancePrompt(sess)
 }
@@ -182,6 +189,23 @@ func acceptanceContextPreservingControlRequest(text string) bool {
 	default:
 		return false
 	}
+}
+
+func actionContextPreservingControlRequest(text string) bool {
+	text = strings.TrimSpace(baseUserQueryText(text))
+	if text == "" {
+		return false
+	}
+	lower := strings.ToLower(text)
+	if requestExplicitlyAsksForWebResearch(lower) ||
+		requestLooksLikeLocalVerificationWork(lower) ||
+		looksLikeGitOperationRequest(lower) {
+		return false
+	}
+	if looksLikeFinalAnswerFollowupPrompt(text) {
+		return true
+	}
+	return classifyTurnIntent(text) == TurnIntentContinueLastTask
 }
 
 func preservableSessionAcceptancePrompt(sess *Session) string {
