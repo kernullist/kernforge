@@ -21,7 +21,7 @@ func codingHarnessSourcePrompt(sess *Session) string {
 	if latestExternal != "" {
 		return latestExternal
 	}
-	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
+	return ""
 }
 
 func latestExternalUserMessageText(messages []Message) string {
@@ -165,7 +165,7 @@ func patchTransactionGoalFromSession(sess *Session) string {
 	if latestExternal != "" {
 		return latestExternal
 	}
-	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
+	return ""
 }
 
 func acceptanceContextPreservingControlRequest(text string) bool {

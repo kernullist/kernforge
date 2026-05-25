@@ -213,6 +213,19 @@ func TestSessionEffectiveUserRequestTextFallsBackToAcceptanceContext(t *testing.
 	}
 }
 
+func TestSourcePromptAndPatchGoalDoNotFallbackToInternalOnly(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AddMessage(internalUserMessage("Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."))
+	session.AddMessage(internalUserMessage("Reviewer feedback: revise the final answer before concluding."))
+
+	if got := codingHarnessSourcePrompt(session); got != "" {
+		t.Fatalf("expected internal-only context not to become source prompt, got %q", got)
+	}
+	if got := patchTransactionGoalFromSession(session); got != "" {
+		t.Fatalf("expected internal-only context not to become patch transaction goal, got %q", got)
+	}
+}
+
 func TestSessionAddMessageMarksKnownInternalGuidance(t *testing.T) {
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
 	session.AddMessage(Message{Role: "user", Text: "Fix the runtime gate loop"})
