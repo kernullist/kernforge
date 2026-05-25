@@ -3037,6 +3037,10 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 	}
 	if documentRequestContext == "" &&
 		!requestIsInternalReviewFeedback {
+		if generatedDocumentArtifactAcceptedGateCanRecoverRequestContext(request) &&
+			generatedDocumentArtifactGateAcceptedForRequest(a.Session, request, nil) {
+			return true
+		}
 		return false
 	}
 	if sessionHasDocumentArtifactContentAcceptedHarness(a.Session) {
@@ -3070,6 +3074,23 @@ func (a *Agent) changesAreGeneratedDocumentArtifactsForTurn(request string) bool
 		return false
 	}
 	return sessionHasDocumentArtifactQualityAcceptedHarness(a.Session)
+}
+
+func generatedDocumentArtifactAcceptedGateCanRecoverRequestContext(request string) bool {
+	requestText := strings.TrimSpace(baseUserQueryText(request))
+	if requestText == "" || looksLikeInternalReviewFeedbackUserMessage(requestText) {
+		return true
+	}
+	lower := strings.ToLower(requestText)
+	if requestLooksLikeLocalVerificationWork(lower) ||
+		looksLikeExplicitEditIntent(lower) ||
+		looksLikeExecutionFlowQuestion(lower) {
+		return false
+	}
+	if looksLikeFinalAnswerFollowupPrompt(requestText) {
+		return true
+	}
+	return classifyTurnIntent(requestText) == TurnIntentContinueLastTask
 }
 
 func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {

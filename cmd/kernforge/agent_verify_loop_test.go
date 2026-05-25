@@ -13333,6 +13333,66 @@ func TestAgentPreservesGeneratedDocumentArtifactStateWithoutPatchTransactionPath
 	}
 }
 
+func TestAgentRecoversGeneratedDocumentArtifactStateFromAcceptedHarnessWithoutRequestContext(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Please provide the final answer now.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   "Reviewer feedback: provide a final answer.",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "run_shell", output: "shell"},
+		),
+	}
+
+	if !agent.changesAreGeneratedDocumentArtifactsForTurn("Please provide the final answer now.") {
+		t.Fatalf("expected accepted artifact harness to recover document-artifact state for final-answer follow-up")
+	}
+	plan := agent.buildTurnToolExposurePlan(nil, "Please provide the final answer now.", false, false, false, false, false)
+	if !plan.GeneratedDocumentFinalOnly {
+		t.Fatalf("expected accepted document artifact state to force final-only tools")
+	}
+	for _, name := range []string{"read_file", "run_shell"} {
+		if !plan.DisabledTools[name] {
+			t.Fatalf("expected final-only document artifact turn to disable %s, got %#v", name, plan.DisabledTools)
+		}
+	}
+	if !agent.shouldBlockGeneratedDocumentArtifactValidationToolCalls("Please provide the final answer now.", []ToolCall{{
+		Name:      "read_file",
+		Arguments: `{"path":"Tavern/BugReport.md"}`,
+	}}) {
+		t.Fatalf("expected accepted document artifact state to block post-completion inspection churn")
+	}
+}
+
 func TestAgentSynthesizesGeneratedDocumentFinalWhenReplyOmitsArtifactPath(t *testing.T) {
 	root := t.TempDir()
 	reportLines := []string{
