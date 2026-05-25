@@ -226,6 +226,9 @@ func TestControlFollowupsPreservePatchTransactionGoalWithoutContract(t *testing.
 	for _, followup := range []string{
 		"지금 몇 % 정도 작업 완료된 것 같아?",
 		"계속 진행해",
+		"좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자",
+		"문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해. 잊지마",
+		"좁게만 수정하려고 하지 말고 근본적으로 개선해야 해",
 	} {
 		session.Messages = append(session.Messages, Message{Role: "user", Text: followup})
 		if got := preservableSessionAcceptancePrompt(session); got != original {
@@ -243,6 +246,9 @@ func TestAcceptanceContextPreservingControlRequestRecognizesKoreanFollowups(t *t
 		"최종 답변 줘",
 		"지금 몇 % 정도 작업 완료된 것 같아?",
 		"계속 진행해",
+		"좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자",
+		"문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해. 잊지마",
+		"좁게만 수정하려고 하지 말고 근본적으로 개선해야 해",
 	} {
 		if !acceptanceContextPreservingControlRequest(followup) {
 			t.Fatalf("expected %q to preserve acceptance context", followup)

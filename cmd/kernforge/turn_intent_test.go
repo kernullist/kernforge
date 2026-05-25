@@ -27,3 +27,17 @@ func TestClassifyTurnIntentRecognizesGitOperationRequest(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyTurnIntentPreservesCurrentTaskSteering(t *testing.T) {
+	for _, request := range []string{
+		"좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자",
+		"문서 산출에 관해서만 검토하지 말고 모든 영역을 검토해야 해. 잊지마",
+		"좁게만 수정하려고 하지 말고 근본적으로 개선해야 해",
+		"Focus on the broader flow first, not tiny feature details.",
+		"Do not just review document artifacts; inspect all areas.",
+	} {
+		if got := classifyTurnIntent(request); got != TurnIntentContinueLastTask {
+			t.Fatalf("expected current-task steering request %q to preserve active task, got %q", request, got)
+		}
+	}
+}

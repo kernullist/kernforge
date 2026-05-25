@@ -33,6 +33,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	if containsAny(base, "현재 상태", "status", "어디까지", "뭐 하는 중", "몇 %", "몇 퍼센트", "진행률", "작업 완료", "what happened", "current state", "progress") {
 		return TurnIntentExplainCurrentState
 	}
+	if looksLikeCurrentTaskSteeringRequest(base) {
+		return TurnIntentContinueLastTask
+	}
 	if looksLikeExecutionFlowQuestion(base) {
 		return TurnIntentAskProjectKnowledge
 	}
@@ -52,6 +55,34 @@ func classifyTurnIntent(text string) TurnIntent {
 		return TurnIntentAskProjectKnowledge
 	}
 	return TurnIntentGeneral
+}
+
+func looksLikeCurrentTaskSteeringRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower, "잊지마", "기억해", "remember this", "keep this in mind") {
+		return true
+	}
+	if containsAny(lower, "좁게만", "작은 기능", "작은 것", "small feature", "tiny feature", "narrowly") &&
+		containsAny(lower, "근본", "큰 흐름", "전체", "overall", "big picture", "broader flow", "fundamental") {
+		return true
+	}
+	if containsAny(lower, "큰 흐름", "전체적인 흐름", "전체 흐름", "overall flow", "big flow", "big picture", "broader flow") &&
+		containsAny(lower, "위주", "먼저", "집중", "focus", "prioritize", "first") {
+		return true
+	}
+	if containsAny(lower, "문서 산출", "document artifact", "documentation artifact") &&
+		containsAny(lower, "만 검토하지 말고", "만 보지 말고", "not only", "not just") {
+		return true
+	}
+	if containsAny(lower, "모든 영역", "전체 영역", "all areas", "whole area") &&
+		containsAny(lower, "검토해야", "확인해야", "review", "inspect") &&
+		containsAny(lower, "말고", "not just", "not only") {
+		return true
+	}
+	return false
 }
 
 func looksLikeGitOperationRequest(text string) bool {
