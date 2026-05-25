@@ -113,6 +113,25 @@ func TestClaudeCLIClientCompleteInvokesRunner(t *testing.T) {
 			t.Fatalf("expected prompt to contain %q, got %q", needle, prompt)
 		}
 	}
+	if strings.Contains(prompt, "INTERNAL GUIDANCE") {
+		t.Fatalf("ordinary user prompt should not be labeled internal: %q", prompt)
+	}
+}
+
+func TestClaudeCLIPromptLabelsInternalGuidance(t *testing.T) {
+	prompt := renderClaudeCLIPrompt(ChatRequest{
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Reviewer feedback: revise the final answer before concluding."),
+		},
+	})
+	if !strings.Contains(prompt, "### USER\n\nFix the runtime gate loop") {
+		t.Fatalf("expected external user request to remain user-labeled, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "### INTERNAL GUIDANCE\n\n"+internalModelGuidanceHeader) ||
+		!strings.Contains(prompt, "Reviewer feedback") {
+		t.Fatalf("expected internal guidance label and prefix, got %q", prompt)
+	}
 }
 
 func TestClaudeCLIModelChoicesIncludeCurrentCustomModel(t *testing.T) {

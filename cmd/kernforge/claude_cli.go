@@ -188,10 +188,7 @@ func renderClaudeCLIPrompt(req ChatRequest) string {
 		b.WriteString("\n## Conversation\n")
 	}
 	for _, msg := range req.Messages {
-		role := strings.ToUpper(strings.TrimSpace(msg.Role))
-		if role == "" {
-			role = "MESSAGE"
-		}
+		role := cliConversationRoleLabel(msg)
 		b.WriteString("\n### ")
 		b.WriteString(role)
 		if strings.TrimSpace(msg.ToolName) != "" {
@@ -206,8 +203,9 @@ func renderClaudeCLIPrompt(req ChatRequest) string {
 			b.WriteString(" ERROR")
 		}
 		b.WriteString("\n\n")
-		if strings.TrimSpace(msg.Text) != "" {
-			b.WriteString(strings.TrimSpace(msg.Text))
+		text := modelFacingMessageText(msg)
+		if strings.TrimSpace(text) != "" {
+			b.WriteString(strings.TrimSpace(text))
 			b.WriteString("\n")
 		}
 		if len(msg.Images) > 0 {

@@ -176,6 +176,37 @@ func TestBuildOpenCodeResponsesPayloadPreservesToolContentItems(t *testing.T) {
 	}
 }
 
+func TestBuildOpenCodeResponsesPayloadLabelsInternalGuidance(t *testing.T) {
+	payload, err := buildOpenCodeResponsesPayload(ChatRequest{
+		Model: "opencode/gpt-5.3-codex",
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Please provide the final answer now."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenCodeResponsesPayload: %v", err)
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	input := decoded["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("expected two input messages, got %#v", input)
+	}
+	second := input[1].(map[string]any)
+	content := second["content"].([]any)
+	text := content[0].(map[string]any)
+	if second["role"] != "user" || !strings.HasPrefix(text["text"].(string), internalModelGuidanceHeader) {
+		t.Fatalf("expected internal guidance prefix in compatibility input, got %#v", second)
+	}
+}
+
 func TestOpenCodeClientUsesChatCompletionsForCompatibleModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {

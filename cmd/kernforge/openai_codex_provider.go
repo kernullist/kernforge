@@ -982,7 +982,11 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 	supportsImages := canRequestImageInput("openai-codex", req.Model)
 	items := make([]any, 0, len(messages))
 	for _, msg := range messages {
-		switch msg.Role {
+		role := openAICodexInputRoleForMessage(msg)
+		if role != "developer" {
+			msg.Text = modelFacingMessageText(msg)
+		}
+		switch role {
 		case "system":
 			continue
 		case "developer":

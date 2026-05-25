@@ -223,6 +223,7 @@ func buildOpenCodeResponsesPayload(req ChatRequest) (map[string]any, error) {
 
 	input := make([]any, 0, len(req.Messages))
 	for _, msg := range req.Messages {
+		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":
 			if strings.TrimSpace(msg.Text) != "" {

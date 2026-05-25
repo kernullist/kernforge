@@ -217,6 +217,42 @@ func internalUserMessage(text string) Message {
 	}
 }
 
+const internalModelGuidanceHeader = "Kernforge internal guidance (not a user request):"
+
+func modelFacingMessageText(msg Message) string {
+	text := strings.TrimSpace(msg.Text)
+	if text == "" || !messageIsInternalUserGuidanceForModel(msg) {
+		return msg.Text
+	}
+	if strings.HasPrefix(text, internalModelGuidanceHeader) {
+		return msg.Text
+	}
+	return internalModelGuidanceHeader + "\n" + msg.Text
+}
+
+func messageIsInternalUserGuidanceForModel(msg Message) bool {
+	return msg.Internal && strings.EqualFold(strings.TrimSpace(msg.Role), "user")
+}
+
+func openAICodexInputRoleForMessage(msg Message) string {
+	role := strings.TrimSpace(msg.Role)
+	if messageIsInternalUserGuidanceForModel(msg) && len(msg.Images) == 0 {
+		return "developer"
+	}
+	return role
+}
+
+func cliConversationRoleLabel(msg Message) string {
+	if messageIsInternalUserGuidanceForModel(msg) {
+		return "INTERNAL GUIDANCE"
+	}
+	role := strings.ToUpper(strings.TrimSpace(msg.Role))
+	if role == "" {
+		return "MESSAGE"
+	}
+	return role
+}
+
 type ChatRequest struct {
 	Model               string
 	System              string
@@ -935,6 +971,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	}
 
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		msg.Text = modelFacingMessageText(msg)
 		blocked := anthropicMessage{Role: msg.Role}
 		switch msg.Role {
 		case "system":
@@ -1199,6 +1236,7 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":
 			continue
@@ -2044,6 +2082,7 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		})
 	}
 	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
+		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
 		case "system":
 			continue

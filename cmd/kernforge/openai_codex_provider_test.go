@@ -323,6 +323,40 @@ func TestBuildOpenAICodexRequestBodyPreservesDeveloperMessages(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAICodexRequestBodyPromotesInternalUserGuidanceToDeveloper(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model: "gpt-5.5",
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Reviewer feedback: revise the final answer before concluding."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 2 {
+		t.Fatalf("expected user and developer input items, got %#v", payload["input"])
+	}
+	user, ok := input[0].(map[string]any)
+	if !ok || user["role"] != "user" {
+		t.Fatalf("expected external request to stay user role, got %#v", input[0])
+	}
+	developer, ok := input[1].(map[string]any)
+	if !ok || developer["role"] != "developer" {
+		t.Fatalf("expected internal guidance to become developer role, got %#v", input[1])
+	}
+	encoded, _ := json.Marshal(developer)
+	if strings.Contains(string(encoded), internalModelGuidanceHeader) {
+		t.Fatalf("developer-role guidance should not need compatibility prefix: %s", encoded)
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyOmitsDefaultVerbosityForUnknownModel(t *testing.T) {
 	body, err := buildOpenAICodexRequestBody(ChatRequest{
 		Model: "test-no-verbosity",

@@ -1269,6 +1269,48 @@ func TestOpenAIClientSetsToolChoiceWhenToolsExist(t *testing.T) {
 	}
 }
 
+func TestOpenAIClientLabelsInternalUserGuidanceAsNotUserRequest(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAICompatibleClient("lm-studio", server.URL, "test-key")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model: "qwen/qwen3.6-27b",
+		Messages: []Message{
+			{Role: "user", Text: "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"},
+			internalUserMessage("Reviewer feedback: revise the final answer before concluding."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected two messages, got %#v", body["messages"])
+	}
+	first, ok := messages[0].(map[string]any)
+	if !ok || first["role"] != "user" || first["content"] != "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해" {
+		t.Fatalf("expected external user request to stay unmodified, got %#v", messages[0])
+	}
+	second, ok := messages[1].(map[string]any)
+	if !ok || second["role"] != "user" {
+		t.Fatalf("expected compatibility provider to keep user role, got %#v", messages[1])
+	}
+	content, _ := second["content"].(string)
+	if !strings.HasPrefix(content, internalModelGuidanceHeader) ||
+		!strings.Contains(content, "Reviewer feedback") {
+		t.Fatalf("expected internal guidance compatibility prefix, got %#v", second["content"])
+	}
+}
+
 func TestOpenAIClientIncludesStructuredErrorDetails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "application/json")

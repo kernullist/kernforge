@@ -178,6 +178,25 @@ func TestCodexCLIClientCompleteInvokesRunner(t *testing.T) {
 			t.Fatalf("expected prompt to contain %q, got %q", needle, prompt)
 		}
 	}
+	if strings.Contains(prompt, "INTERNAL GUIDANCE") {
+		t.Fatalf("ordinary user prompt should not be labeled internal: %q", prompt)
+	}
+}
+
+func TestCodexCLIPromptLabelsInternalGuidance(t *testing.T) {
+	prompt := renderCodexCLIPrompt(ChatRequest{
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Generated document artifact finalization is answer-only now. Do not call tools."),
+		},
+	})
+	if !strings.Contains(prompt, "### USER\n\nFix the runtime gate loop") {
+		t.Fatalf("expected external user request to remain user-labeled, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "### INTERNAL GUIDANCE\n\n"+internalModelGuidanceHeader) ||
+		!strings.Contains(prompt, "Do not call tools") {
+		t.Fatalf("expected internal guidance label and prefix, got %q", prompt)
+	}
 }
 
 func TestCodexCLIClientCompleteExtractsJSONFromTranscript(t *testing.T) {
