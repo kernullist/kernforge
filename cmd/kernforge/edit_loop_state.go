@@ -943,8 +943,8 @@ func editLoopGoal(sess *Session) string {
 	if sess == nil {
 		return ""
 	}
-	if sess.TaskState != nil && strings.TrimSpace(sess.TaskState.Goal) != "" {
-		return sess.TaskState.Goal
+	if goal := patchTransactionGoalFromSession(sess); goal != "" {
+		return goal
 	}
 	return latestExternalOrUserMessageText(sess.Messages)
 }

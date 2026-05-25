@@ -174,6 +174,47 @@ func TestCurrentTurnActiveEditLoopRejectsBroaderDocumentSteering(t *testing.T) {
 	}
 }
 
+func TestEditLoopGoalPreservesOriginalTaskForContinuationWithoutContract(t *testing.T) {
+	original := "Codex repo와 비교해서 turn orchestration의 큰 흐름을 수정해"
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "핵심 흐름을 수정하고 있습니다."},
+		{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"},
+	}
+
+	if got := editLoopGoal(session); got != original {
+		t.Fatalf("expected continuation steering to preserve original edit-loop goal, got %q", got)
+	}
+}
+
+func TestEditLoopGoalUsesFreshExternalTaskOverStaleTaskState(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "fix alpha"}
+	session.Messages = []Message{
+		{Role: "user", Text: "fix alpha"},
+		{Role: "assistant", Text: "alpha done"},
+		{Role: "user", Text: "fix beta"},
+	}
+
+	if got := editLoopGoal(session); got != "fix beta" {
+		t.Fatalf("expected fresh external edit request to replace stale edit-loop goal, got %q", got)
+	}
+}
+
+func TestEditLoopGoalKeepsStatusTaskStateForStatusFollowup(t *testing.T) {
+	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session.TaskState = &TaskState{Goal: "현재 상태만 알려줘"}
+	session.Messages = []Message{
+		{Role: "user", Text: "RuntimeManager.cpp 버그를 수정해"},
+		{Role: "user", Text: "현재 상태만 알려줘"},
+	}
+
+	if got := editLoopGoal(session); got != "현재 상태만 알려줘" {
+		t.Fatalf("expected status-only task state to remain the edit-loop goal for status follow-up, got %q", got)
+	}
+}
+
 func TestSessionExportIncludesEditLoopLedger(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.RecordEditLoopEvent("fix file", EditLoopEvent{
