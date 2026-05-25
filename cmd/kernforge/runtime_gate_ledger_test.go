@@ -681,6 +681,63 @@ func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *test
 	}
 }
 
+func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	original := "main.go 버그를 수정해"
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-code",
+		SourcePrompt: original,
+		Mode:         "inspect_and_fix",
+	}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "main.go 수정 중입니다."},
+		{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"},
+	}
+	session.LastVerification = &VerificationReport{
+		GeneratedAt:  time.Now(),
+		Trigger:      "manual",
+		Workspace:    root,
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:   "go test",
+			Command: "go test ./cmd/kernforge",
+			Status:  VerificationPassed,
+		}},
+	}
+	session.LastReviewRun = &ReviewRun{
+		ID:                "review-main",
+		SchemaVersion:     reviewSchemaVersion,
+		Target:            reviewTargetChange,
+		Mode:              reviewModeGeneralChange,
+		Branch:            delegationGitBranch(root),
+		ReviewFingerprint: "fp-main",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"main.go"},
+		},
+		Freshness: ReviewFreshness{
+			ReviewFingerprint: "fp-main",
+		},
+		Gate: GateDecision{
+			Verdict: reviewVerdictApproved,
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if !slices.Equal(ledger.ChangedPaths, []string{"main.go"}) {
+		t.Fatalf("expected preserved code continuation to use git changed fallback, got %#v", ledger.ChangedPaths)
+	}
+	if ledger.Status != runtimeGateStatusReady || !ledger.Ready {
+		t.Fatalf("expected reviewed preserved code continuation to be ready, got %#v", ledger)
+	}
+}
+
 func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {

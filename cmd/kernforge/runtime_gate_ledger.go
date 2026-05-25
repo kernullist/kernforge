@@ -345,7 +345,21 @@ func runtimeGateFinalAnswerShouldUseGitChangedFallback(session *Session) bool {
 		return false
 	}
 	if latestUser != "" && !looksLikeInternalReviewFeedbackUserMessage(latestUser) {
-		return classifyTurnIntent(latestUser) == TurnIntentEditCode
+		if classifyTurnIntent(latestUser) == TurnIntentEditCode {
+			return true
+		}
+		if !controlRequestContinuesCurrentWorkContext(latestUser) {
+			return false
+		}
+		effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
+		if effective == "" || strings.EqualFold(effective, latestUser) {
+			return false
+		}
+		if generatedDocumentArtifactRequestContextForTurn(session, effective) != "" {
+			return false
+		}
+		return classifyTurnIntent(effective) == TurnIntentEditCode ||
+			requestModeLooksCodeChanging(effective)
 	}
 	if latestUser == "" && session.AcceptanceContract == nil && session.TaskState == nil {
 		return true
