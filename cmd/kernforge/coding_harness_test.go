@@ -212,6 +212,44 @@ func TestControlFollowupsPreservePatchTransactionGoal(t *testing.T) {
 	}
 }
 
+func TestControlFollowupsPreservePatchTransactionGoalWithoutContract(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "보고서를 생성했습니다."},
+	}
+	if got := preservableSessionAcceptancePrompt(session); got != original {
+		t.Fatalf("expected prior user request to be preservable before follow-up, got %q", got)
+	}
+
+	for _, followup := range []string{
+		"지금 몇 % 정도 작업 완료된 것 같아?",
+		"계속 진행해",
+	} {
+		session.Messages = append(session.Messages, Message{Role: "user", Text: followup})
+		if got := preservableSessionAcceptancePrompt(session); got != original {
+			t.Fatalf("expected prior user request to be preservable after follow-up %q, got %q", followup, got)
+		}
+		if got := patchTransactionGoalFromSession(session); got != original {
+			t.Fatalf("expected control follow-up %q to recover prior patch transaction goal %q without contract, got %q", followup, original, got)
+		}
+		session.Messages = session.Messages[:len(session.Messages)-1]
+	}
+}
+
+func TestAcceptanceContextPreservingControlRequestRecognizesKoreanFollowups(t *testing.T) {
+	for _, followup := range []string{
+		"최종 답변 줘",
+		"지금 몇 % 정도 작업 완료된 것 같아?",
+		"계속 진행해",
+	} {
+		if !acceptanceContextPreservingControlRequest(followup) {
+			t.Fatalf("expected %q to preserve acceptance context", followup)
+		}
+	}
+}
+
 func TestPatchTransactionGoalUsesFreshExternalTaskOverStaleContext(t *testing.T) {
 	stale := "Tavern/BugReport.md 보고서를 생성해"
 	fresh := "RuntimeManager.cpp 버그를 수정해"

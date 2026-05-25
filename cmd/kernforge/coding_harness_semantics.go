@@ -78,8 +78,13 @@ func patchTransactionGoalFromSession(sess *Session) string {
 		return ""
 	}
 	latestExternal := latestExternalUserMessageText(sess.Messages)
+	preservedExternalContext := ""
 	if latestExternal != "" {
-		if !acceptanceContextPreservingControlRequest(latestExternal) || preservableSessionAcceptancePrompt(sess) == "" {
+		if !acceptanceContextPreservingControlRequest(latestExternal) {
+			return latestExternal
+		}
+		preservedExternalContext = preservableSessionAcceptancePrompt(sess)
+		if preservedExternalContext == "" {
 			return latestExternal
 		}
 	}
@@ -92,6 +97,9 @@ func patchTransactionGoalFromSession(sess *Session) string {
 		if goal := strings.TrimSpace(sess.TaskState.Goal); goal != "" && !looksLikeInternalReviewFeedbackUserMessage(goal) {
 			return strings.TrimSpace(baseUserQueryText(goal))
 		}
+	}
+	if preservedExternalContext != "" {
+		return preservedExternalContext
 	}
 	if latestExternal != "" {
 		return latestExternal
@@ -128,6 +136,23 @@ func preservableSessionAcceptancePrompt(sess *Session) string {
 		if goal := strings.TrimSpace(baseUserQueryText(sess.TaskState.Goal)); goal != "" && !looksLikeInternalReviewFeedbackUserMessage(goal) {
 			return goal
 		}
+	}
+	for i := len(sess.Messages) - 1; i >= 0; i-- {
+		msg := sess.Messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		if messageIsInternalUserGuidance(msg) {
+			continue
+		}
+		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
+			continue
+		}
+		if acceptanceContextPreservingControlRequest(text) {
+			continue
+		}
+		return text
 	}
 	return ""
 }
