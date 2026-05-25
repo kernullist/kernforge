@@ -2056,7 +2056,7 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			} `json:"error,omitempty"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
-			return ChatResponse{}, false, err
+			return ChatResponse{}, false, nil
 		}
 		if event.Error != nil {
 			return ChatResponse{}, false, newProviderMessageError("openai-codex", event.Error.Message, event.Error.Type, event.Error.Param, event.Error.Code, []byte(payload))

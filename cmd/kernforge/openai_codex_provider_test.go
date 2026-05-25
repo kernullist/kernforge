@@ -3972,6 +3972,23 @@ func TestReadOpenAICodexStreamParsesMultilineSSEDataEvent(t *testing.T) {
 	}
 }
 
+func TestReadOpenAICodexStreamSkipsMalformedSSEDataLikeCodex(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_text.delta","delta":"before"}`,
+		`data: {"type":"response.output_text.delta","delta":`,
+		`data: {"type":"response.output_text.delta","delta":" after"}`,
+		`data: {"type":"response.completed","response":{"id":"resp_test"}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("readOpenAICodexStream: %v", err)
+	}
+	if resp.Message.Text != "before after" {
+		t.Fatalf("expected malformed SSE data to be skipped, got %q", resp.Message.Text)
+	}
+}
+
 func TestReadOpenAICodexStreamDoesNotDuplicateAddedMessageTextOnDone(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Intro "}]}}`,
