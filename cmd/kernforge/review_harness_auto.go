@@ -475,10 +475,13 @@ func postChangeGeneratedDocumentArtifactRequest(session *Session, request string
 }
 
 func generatedDocumentArtifactRequestContextForTurn(session *Session, request string) string {
+	requestText := strings.TrimSpace(baseUserQueryText(request))
+	if generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(requestText) {
+		return ""
+	}
 	if contextRequest := generatedDocumentArtifactCurrentRequestContext(session, request); contextRequest != "" {
 		return contextRequest
 	}
-	requestText := strings.TrimSpace(baseUserQueryText(request))
 	if looksLikeInternalReviewFeedbackUserMessage(requestText) ||
 		looksLikeFinalAnswerFollowupPrompt(requestText) {
 		return generatedDocumentArtifactRequestContext(session, request)
@@ -490,6 +493,35 @@ func generatedDocumentArtifactRequestContextForTurn(session *Session, request st
 		return generatedDocumentArtifactRequestContext(session, request)
 	}
 	return ""
+}
+
+func generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(requestText string) bool {
+	trimmed := strings.TrimSpace(baseUserQueryText(requestText))
+	if trimmed == "" || looksLikeInternalReviewFeedbackUserMessage(trimmed) {
+		return false
+	}
+	if preWriteRequestLooksLikeGeneratedDocumentArtifact(trimmed) ||
+		looksLikeFinalAnswerFollowupPrompt(trimmed) {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if looksLikeExplicitGitIntent(lower) ||
+		requestLooksLikeLocalVerificationWork(lower) ||
+		looksLikeExplicitEditIntent(lower) ||
+		looksLikeExecutionFlowQuestion(lower) {
+		return true
+	}
+	switch classifyTurnIntent(lower) {
+	case TurnIntentDiagnoseRecentError,
+		TurnIntentExplainCurrentState,
+		TurnIntentAskProjectKnowledge,
+		TurnIntentEditCode,
+		TurnIntentRunCommand,
+		TurnIntentPlanOrDesign:
+		return true
+	default:
+		return false
+	}
 }
 
 func looksLikeFinalAnswerFollowupPrompt(text string) bool {

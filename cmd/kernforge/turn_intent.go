@@ -26,7 +26,7 @@ func classifyTurnIntent(text string) TurnIntent {
 	if containsAny(base, "계속", "이어", "continue", "resume", "go on", "next step", "다음 단계") {
 		return TurnIntentContinueLastTask
 	}
-	if containsAny(base, "현재 상태", "status", "어디까지", "뭐 하는 중", "what happened", "current state") {
+	if containsAny(base, "현재 상태", "status", "어디까지", "뭐 하는 중", "몇 %", "몇 퍼센트", "진행률", "작업 완료", "what happened", "current state", "progress") {
 		return TurnIntentExplainCurrentState
 	}
 	if looksLikeExecutionFlowQuestion(base) {

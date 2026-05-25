@@ -13577,6 +13577,86 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoUnrelatedTurn(t *tes
 	}
 }
 
+func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		SourcePrompt: originalRequest,
+	}
+	session.TaskState = &TaskState{
+		Goal:  originalRequest,
+		Phase: "done",
+	}
+	session.Messages = []Message{
+		{
+			Role: "user",
+			Text: originalRequest,
+		},
+		{
+			Role:  "assistant",
+			Phase: messagePhaseFinalAnswer,
+			Text:  "Tavern/BugReport.md 문서 산출물이 완료되었습니다.",
+		},
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   originalRequest,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:     "patch-doc-001",
+			Status: "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Tools: NewToolRegistry(
+			&staticTool{name: "read_file", output: "read"},
+			&staticTool{name: "git_commit", output: "commit"},
+			&staticTool{name: "run_shell", output: "shell"},
+		),
+	}
+
+	requests := []string{
+		"커밋하자",
+		"지금 몇 % 정도 작업 완료된 것 같아?",
+		"테스트 실행해",
+		"RuntimeManager.cpp 버그를 수정해",
+	}
+	if !looksLikeExplicitGitIntent("커밋하자") {
+		t.Fatalf("expected Korean commit follow-up to be explicit git intent")
+	}
+	for _, request := range requests {
+		session.Messages = append(session.Messages, Message{Role: "user", Text: request})
+		if agent.changesAreGeneratedDocumentArtifactsForTurn(request) {
+			t.Fatalf("fresh follow-up %q should not revive stale generated document final-only state", request)
+		}
+		plan := agent.buildTurnToolExposurePlan(nil, request, false, false, false, false, false)
+		if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
+			t.Fatalf("fresh follow-up %q should keep normal orchestration, got %#v", request, plan)
+		}
+		if plan.DisabledTools["read_file"] || plan.DisabledTools["git_commit"] || plan.DisabledTools["run_shell"] {
+			t.Fatalf("fresh follow-up %q should not inherit generated-document tool hiding, got %#v", request, plan.DisabledTools)
+		}
+	}
+}
+
 func TestAgentSkipsFinalReviewerForApprovedDocOnlyChangesWithoutArtifactList(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
