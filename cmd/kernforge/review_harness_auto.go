@@ -32,7 +32,7 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 	if len(changedPaths) == 0 {
 		return false, false, "", "", nil
 	}
-	if skipRequest := postChangeGeneratedDocumentArtifactRequest(a.Session, request, changedPaths); skipRequest != "" {
+	if skipRequest := postChangeGeneratedDocumentArtifactSkipRequest(a.Session, request, changedPaths); skipRequest != "" {
 		artifactFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, changedPaths)
 		if generatedDocumentArtifactQualityAlreadyAccepted(a.Session, artifactFingerprint, lastFingerprint) {
 			return false, false, "", artifactFingerprint, nil
@@ -89,6 +89,21 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 		run.Gate.Verdict == reviewVerdictInsufficientEvidence
 	feedback := formatPostChangeReviewFeedback(a.Config, run, needsRevision)
 	return true, needsRevision, feedback, fingerprint, nil
+}
+
+func postChangeGeneratedDocumentArtifactSkipRequest(session *Session, request string, changedPaths []string) string {
+	if skipRequest := postChangeGeneratedDocumentArtifactRequest(session, request, changedPaths); skipRequest != "" {
+		return skipRequest
+	}
+	if !generatedDocumentArtifactGateAcceptedForRequest(session, request, changedPaths) {
+		return ""
+	}
+	return firstNonBlankString(
+		generatedDocumentArtifactRequestContextForTurn(session, request),
+		codingHarnessSourcePrompt(session),
+		strings.TrimSpace(baseUserQueryText(request)),
+		"generated document artifact",
+	)
 }
 
 func postChangeReviewRunStillMatchesSessionEvidence(run *ReviewRun, session *Session) bool {

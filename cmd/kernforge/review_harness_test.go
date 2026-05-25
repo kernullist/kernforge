@@ -575,6 +575,124 @@ func TestPostChangeReviewSkipsGeneratedDocumentArtifactFromAcceptanceContract(t 
 	}
 }
 
+func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestContext(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Tavern"), 0o755); err != nil {
+		t.Fatalf("mkdir Tavern: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"Static review findings were written as a standalone document artifact.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 1 |",
+		"| Total | 1 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("write generated report: %v", err)
+	}
+	runTestGit(t, root, "init")
+	runTestGit(t, root, "add", "Tavern/BugReport.md")
+	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	if err := os.WriteFile(filepath.Join(root, "Tavern", "BugReport.md"), []byte(strings.Join([]string{
+		"# Tavern Bug Report",
+		"",
+		"Static review findings were written as a standalone document artifact.",
+		"",
+		"| Severity | Count |",
+		"|----------|-------|",
+		"| Critical | 2 |",
+		"| Total | 2 |",
+		"",
+		"## BUG-001",
+		"- File: Tavern/Tavern/RuntimeManager.cpp",
+		"- Impact: documented issue.",
+		"",
+		"## BUG-002",
+		"- File: Tavern/Tavern/TavernWorkerManager.cpp",
+		"- Impact: documented issue.",
+	}, "\n")), 0o644); err != nil {
+		t.Fatalf("rewrite generated report: %v", err)
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{
+		Role: "user",
+		Text: "Please provide the final answer now.",
+	}}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   "Reviewer feedback: provide a final answer.",
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "apply_patch",
+			}},
+		}},
+	}}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "model"
+	client := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: this review should not run after accepted document artifact state",
+			"severity: high",
+			"category: correctness",
+			"path: Tavern/BugReport.md",
+			"title: should not run",
+			"evidence: accepted document artifact state should suppress model review",
+			"required_fix: do not call the review model",
+		}, "\n")},
+	}}}
+	var progress []string
+	agent := &Agent{
+		Config:    cfg,
+		Client:    client,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		EmitProgress: func(message string) {
+			progress = append(progress, message)
+		},
+	}
+
+	reviewed, needsRevision, feedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), "Please provide the final answer now.", "")
+	if err != nil {
+		t.Fatalf("post-change review: %v", err)
+	}
+	expectedFingerprint := generatedDocumentArtifactQualityFingerprintForPaths(root, []string{"Tavern/BugReport.md"})
+	if !reviewed || needsRevision || feedback != "" || fingerprint != expectedFingerprint {
+		t.Fatalf("expected accepted document artifact state to consume deterministic quality gate, reviewed=%t needs=%t feedback=%q fingerprint=%q", reviewed, needsRevision, feedback, fingerprint)
+	}
+	if len(client.requests) != 0 {
+		t.Fatalf("expected no review model call for accepted generated report artifact, got %d", len(client.requests))
+	}
+	joinedProgress := strings.Join(progress, "\n")
+	if !strings.Contains(joinedProgress, "자동 변경 후 리뷰를 건너뜁니다") &&
+		!strings.Contains(joinedProgress, "Skipping automatic post-change review") {
+		t.Fatalf("expected generated document skip progress, got %#v", progress)
+	}
+}
+
 func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t *testing.T) {
 	root := t.TempDir()
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
