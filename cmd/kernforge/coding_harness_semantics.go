@@ -33,7 +33,7 @@ func latestExternalUserMessageText(messages []Message) string {
 		if messageIsInternalUserGuidance(msg) {
 			continue
 		}
-		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		text := strings.TrimSpace(baseUserQueryText(messageExternalSourceText(msg)))
 		if text == "" {
 			continue
 		}
@@ -51,13 +51,36 @@ func latestExternalUserMessageRawText(messages []Message) string {
 		if messageIsInternalUserGuidance(msg) {
 			continue
 		}
-		text := strings.TrimSpace(msg.Text)
+		text := strings.TrimSpace(messageExternalSourceText(msg))
 		if text == "" {
 			continue
 		}
 		return text
 	}
 	return ""
+}
+
+func latestUserMessageSatisfies(messages []Message, predicate func(string) bool) bool {
+	if predicate == nil {
+		return false
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		text := strings.TrimSpace(messageExternalSourceText(msg))
+		if text == "" {
+			continue
+		}
+		if predicate(text) {
+			return true
+		}
+		if !msg.Internal && !messageIsInternalUserGuidance(msg) {
+			return false
+		}
+	}
+	return false
 }
 
 func messageIsInternalUserGuidance(msg Message) bool {
@@ -75,6 +98,13 @@ func latestExternalOrUserMessageText(messages []Message) string {
 		return prompt
 	}
 	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(messages)))
+}
+
+func messageExternalSourceText(msg Message) string {
+	if text := strings.TrimSpace(msg.SourceText); text != "" {
+		return text
+	}
+	return msg.Text
 }
 
 func patchTransactionGoalFromSession(sess *Session) string {
@@ -149,7 +179,7 @@ func preservableSessionAcceptancePrompt(sess *Session) string {
 		if messageIsInternalUserGuidance(msg) {
 			continue
 		}
-		text := strings.TrimSpace(baseUserQueryText(msg.Text))
+		text := strings.TrimSpace(baseUserQueryText(messageExternalSourceText(msg)))
 		if text == "" || looksLikeInternalReviewFeedbackUserMessage(text) {
 			continue
 		}
@@ -159,6 +189,22 @@ func preservableSessionAcceptancePrompt(sess *Session) string {
 		return text
 	}
 	return ""
+}
+
+func splitInjectedPromptContext(enriched string) (string, string) {
+	trimmed := strings.TrimSpace(enriched)
+	if trimmed == "" {
+		return "", ""
+	}
+	external := strings.TrimSpace(baseUserQueryText(trimmed))
+	if external == "" {
+		return trimmed, ""
+	}
+	if !strings.HasPrefix(trimmed, external) {
+		return external, ""
+	}
+	internal := strings.TrimSpace(strings.TrimPrefix(trimmed, external))
+	return external, internal
 }
 
 func codingHarnessMeaningfulTokens(text string) []string {

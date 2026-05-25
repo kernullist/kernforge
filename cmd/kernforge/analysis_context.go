@@ -953,10 +953,7 @@ func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (strin
 	if projectAnalysisQAIntentNeedsAnswerPack(classifyProjectAnalysisQAIntent(query)) {
 		fastPathInstruction = "Fast-path check: Use only the latest cached project analysis and Project structure answer pack already present in this conversation. Do not use tools and do not assume unseen code. Prefer the latest project analysis over persistent memory; do not cite older memory as a stale caveat unless the answer pack or latest docs report the same marker. For deep structure questions, treat a medium/high confidence Project structure answer pack with source anchors, priority docs, graph views, and domain-specific critical anchors as sufficient for a grounded architecture answer. Respect domain_hints: for windows_driver, describe it as a Windows kernel/WDM .sys driver, not a DLL, unless source artifacts explicitly say DLL; if a file/minifilter subsystem exists, describe it as a subsystem unless build evidence says the whole driver is minifilter-only; describe dynamic kernel API resolver/wrapper modules as resolver/wrapper layers when that is what the anchors show. Separate user-mode IOCTL/control-client wrappers from kernel-side IRP/IOCTL dispatch and validation. Treat the domain flow map as a constrained architecture map, not permission to invent direct call chains; include every relevant Domain-specific flow map spine and every Required driver answer fact in the answer. Keep IRP create/open request-origin validation, IRP_MJ_DEVICE_CONTROL command dispatch, process notify callbacks, object callbacks, and Finalize/Unload teardown paths separate unless explicit call-edge evidence connects them. Do not place runtime filter start/registration symbols in DriverEntry/Core Initialize unless direct evidence says so; initialization symbols prepare state, while start/register symbols usually belong to runtime control or subsystem activation paths. Do not place request-origin validation symbols inside the DeviceIoControl command spine unless call-edge evidence says so; keep control-open validation separate from command-payload validation. Include both the device-control branch spine and REQUIRED device-control command spine when explaining IOCTL flow; do not stop at DeviceIoControl handler -> command dispatch if decrypt/shape/command-validation anchors are present. Spell out exact command spine symbols for payload decrypt/unpack, command validation, and requestor/control-process checks when the answer pack provides them. Use exact slash-separated folder paths and treat root folders as siblings. For top-level directory tables, copy the CLOSED SET or exact top-level directory table from Required driver answer facts and do not add extra rows. Never list paths from 'Never list these paths as top-level directory rows' as top-level directory rows. Do not nest one root folder under another unless the path explicitly says so. Do not invent root directories from source/header files; paths ending in .h, .hpp, .cpp, .c, .cc, .vcxproj, .sln, or .inf are files, not top-level folders. When IRP_MJ_DEVICE_CONTROL reaches DeviceIoControl, describe it as a branch of the IRP router. Use exact symbol names and exact file:line anchors; never replace known line numbers with ellipsis and never relabel helper/accessor anchors as lifecycle functions. Control PID/accessor symbols are not Finalize/Unload lifecycle functions. Cover structure layers, execution or dependency flow, key source anchors, impact or verification points, stale caveats when real markers are present, and next docs or files to read. If no real stale markers are present, say the cached analysis did not report stale markers. Reply exactly NEEDS_TOOLS only when the pack is absent, marked current_source_needed, or lacks source anchors/priority docs needed for the user's question."
 	}
-	messages = append(messages, Message{
-		Role: "user",
-		Text: fastPathInstruction,
-	})
+	messages = append(messages, internalUserMessage(fastPathInstruction))
 	resp, err := a.completeModelTurn(ctx, ChatRequest{
 		Model:       a.Session.Model,
 		System:      a.systemPrompt(),
@@ -1012,7 +1009,8 @@ func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
 	if lastUser == "" {
 		return false
 	}
-	if !strings.Contains(lastUser, "Relevant project analysis from past analyze-project runs") {
+	if !strings.Contains(lastUser, "Relevant project analysis from past analyze-project runs") &&
+		!latestTurnInternalContextContains(a.Session.Messages, "Relevant project analysis from past analyze-project runs") {
 		return false
 	}
 	baseQuery := baseUserQueryText(lastUser)
@@ -1023,6 +1021,27 @@ func (a *Agent) shouldTryProjectAnalysisFastPath() bool {
 		return false
 	}
 	return !looksLikeActionOrToolIntent(baseQuery)
+}
+
+func latestTurnInternalContextContains(messages []Message, needle string) bool {
+	needle = strings.TrimSpace(needle)
+	if needle == "" {
+		return false
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+			continue
+		}
+		if messageIsInternalUserGuidance(msg) {
+			if strings.Contains(msg.Text, needle) {
+				return true
+			}
+			continue
+		}
+		return false
+	}
+	return false
 }
 
 func latestUserMessageText(messages []Message) string {
@@ -1142,6 +1161,7 @@ func baseUserQueryText(text string) string {
 		"\n\nRequest mode:",
 		"\n\nGit intent:\n",
 		"\n\nActivated skills for this request:\n",
+		"\n\nAttached context:\n",
 		"\n\nPending review repair confirmation:\n",
 		"\n\nPending reviewer-gate repair confirmation:\n",
 		"\n\nRelevant persistent memory from past sessions:\n",

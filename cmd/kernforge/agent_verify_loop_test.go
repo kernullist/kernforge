@@ -8355,8 +8355,15 @@ func TestAgentTreatsReviewIntentAsReadOnlyWhenModelAttemptsEdit(t *testing.T) {
 	if chatRequestHasTool(provider.requests[0], "apply_patch") {
 		t.Fatalf("review-only intent must not expose apply_patch")
 	}
-	if !strings.Contains(provider.requests[0].Messages[0].Text, "Request mode: analysis-only.") {
-		t.Fatalf("expected review-only prompt to be analysis-only, got %q", provider.requests[0].Messages[0].Text)
+	foundAnalysisOnlyGuidance := false
+	for _, msg := range provider.requests[0].Messages {
+		if msg.Internal && strings.Contains(msg.Text, "Request mode: analysis-only.") {
+			foundAnalysisOnlyGuidance = true
+			break
+		}
+	}
+	if !foundAnalysisOnlyGuidance {
+		t.Fatalf("expected review-only prompt to include internal analysis-only guidance, got %#v", provider.requests[0].Messages)
 	}
 	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: this is a read-only analysis turn") {
 		t.Fatalf("blocked review edit call must be closed with a NOT_EXECUTED tool result")

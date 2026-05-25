@@ -125,6 +125,36 @@ func TestLatestExternalOrUserMessageTextSkipsInternalSteering(t *testing.T) {
 	}
 }
 
+func TestLatestExternalUserMessageTextPrefersSourceText(t *testing.T) {
+	original := "검토해서 @Tavern.cpp 보고서를 작성해"
+	enriched := strings.Join([]string{
+		"검토해서 Tavern/Tavern.cpp 보고서를 작성해",
+		"",
+		"Attached context:",
+		"Referenced file: F:\\repo\\Tavern\\Tavern.cpp",
+		"```",
+		"int main() { return 0; }",
+		"```",
+		"",
+		"Request mode: analysis-only.",
+	}, "\n")
+	externalText, injectedContext := splitInjectedPromptContext(enriched)
+	messages := []Message{
+		{Role: "user", Text: externalText, SourceText: original},
+		internalUserMessage("Additional turn context for the preceding user request:\n" + injectedContext),
+	}
+
+	if got := latestExternalOrUserMessageText(messages); got != original {
+		t.Fatalf("expected source text to preserve the original user request, got %q", got)
+	}
+	if strings.Contains(externalText, "Attached context") || strings.Contains(externalText, "Request mode") {
+		t.Fatalf("expected external text to exclude injected context, got %q", externalText)
+	}
+	if !strings.Contains(injectedContext, "Attached context:") || !strings.Contains(injectedContext, "Request mode: analysis-only.") {
+		t.Fatalf("expected injected context to be separated, got %q", injectedContext)
+	}
+}
+
 func TestLatestExternalOrUserMessageTextSkipsAgentLoopInternalGuidance(t *testing.T) {
 	original := "Fix the runtime gate loop"
 	internalMessages := []string{

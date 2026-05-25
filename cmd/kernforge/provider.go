@@ -193,6 +193,7 @@ type Message struct {
 	Role                      string                       `json:"role"`
 	Phase                     string                       `json:"phase,omitempty"`
 	Text                      string                       `json:"text,omitempty"`
+	SourceText                string                       `json:"source_text,omitempty"`
 	ReasoningContent          string                       `json:"reasoning_content,omitempty"`
 	ReasoningEncryptedContent string                       `json:"reasoning_encrypted_content,omitempty"`
 	Images                    []MessageImage               `json:"images,omitempty"`

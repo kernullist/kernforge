@@ -200,11 +200,19 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 	}
 	a.startUserChangeIsolation()
+	externalText, injectedContext := splitInjectedPromptContext(enriched)
+	if strings.TrimSpace(externalText) == "" {
+		externalText = strings.TrimSpace(userText)
+	}
 	a.Session.AddMessage(Message{
-		Role:   "user",
-		Text:   enriched,
-		Images: images,
+		Role:       "user",
+		Text:       externalText,
+		SourceText: strings.TrimSpace(userText),
+		Images:     images,
 	})
+	if strings.TrimSpace(injectedContext) != "" {
+		a.Session.AddMessage(internalUserMessage("Additional turn context for the preceding user request:\n" + injectedContext))
+	}
 	if err := a.Store.Save(a.Session); err != nil {
 		return "", err
 	}

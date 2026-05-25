@@ -14,6 +14,28 @@ type fakeProviderClient struct {
 	index   int
 }
 
+func sessionInternalContextContains(session *Session, needles ...string) bool {
+	if session == nil {
+		return false
+	}
+	for _, msg := range session.Messages {
+		if !msg.Internal {
+			continue
+		}
+		matched := true
+		for _, needle := range needles {
+			if !strings.Contains(msg.Text, needle) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeProviderClient) Name() string { return "fake" }
 
 func (f *fakeProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
@@ -208,11 +230,11 @@ func TestAgentReplyInjectsAndCapturesPersistentMemory(t *testing.T) {
 	if !strings.Contains(reply, "Implemented the login update.") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
-	if len(agent.Session.Messages) == 0 || !strings.Contains(agent.Session.Messages[0].Text, "Relevant persistent memory from past sessions") {
+	if len(agent.Session.Messages) == 0 || !sessionInternalContextContains(agent.Session, "Relevant persistent memory from past sessions") {
 		t.Fatalf("expected injected persistent memory in user message, got %#v", agent.Session.Messages)
 	}
-	if !strings.Contains(agent.Session.Messages[0].Text, "mem-1") {
-		t.Fatalf("expected injected citation marker, got %#v", agent.Session.Messages[0].Text)
+	if !sessionInternalContextContains(agent.Session, "mem-1") {
+		t.Fatalf("expected injected citation marker, got %#v", agent.Session.Messages)
 	}
 	stats, err := store.Stats()
 	if err != nil {
@@ -271,9 +293,8 @@ func TestAgentReplyInjectsWorkspaceContinuityMemoryWithoutQueryMatch(t *testing.
 	if len(agent.Session.Messages) == 0 {
 		t.Fatalf("expected injected user message")
 	}
-	first := agent.Session.Messages[0].Text
-	if !strings.Contains(first, "Workspace continuity:") || !strings.Contains(first, "mem-continuity") {
-		t.Fatalf("expected continuity memory injection, got %q", first)
+	if !sessionInternalContextContains(agent.Session, "Workspace continuity:", "mem-continuity") {
+		t.Fatalf("expected continuity memory injection, got %#v", agent.Session.Messages)
 	}
 	if len(progressEvents) == 0 {
 		t.Fatalf("expected visible memory progress event")
@@ -339,9 +360,9 @@ func TestAgentReplySuppressesContinuityMemoryForFreshDocumentArtifactTask(t *tes
 	if len(agent.Session.Messages) == 0 {
 		t.Fatalf("expected user message")
 	}
-	first := agent.Session.Messages[0].Text
-	if strings.Contains(first, "Relevant persistent memory from past sessions") || strings.Contains(first, "mem-old-report") {
-		t.Fatalf("fresh document artifact task should not inject stale continuity memory, got %q", first)
+	if sessionInternalContextContains(agent.Session, "Relevant persistent memory from past sessions") ||
+		sessionInternalContextContains(agent.Session, "mem-old-report") {
+		t.Fatalf("fresh document artifact task should not inject stale continuity memory, got %#v", agent.Session.Messages)
 	}
 	for _, event := range progressEvents {
 		if event.Kind == progressKindMemoryContext {
@@ -395,9 +416,8 @@ func TestAgentReplyKeepsExplicitMemoryForDocumentArtifactTask(t *testing.T) {
 	if len(agent.Session.Messages) == 0 {
 		t.Fatalf("expected user message")
 	}
-	first := agent.Session.Messages[0].Text
-	if !strings.Contains(first, "Relevant persistent memory from past sessions") || !strings.Contains(first, "mem-old-report") {
-		t.Fatalf("explicit memory request should keep continuity memory, got %q", first)
+	if !sessionInternalContextContains(agent.Session, "Relevant persistent memory from past sessions", "mem-old-report") {
+		t.Fatalf("explicit memory request should keep continuity memory, got %#v", agent.Session.Messages)
 	}
 }
 

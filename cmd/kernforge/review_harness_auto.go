@@ -830,7 +830,7 @@ func preWriteMainOnlyReviewerFallbackApproved(session *Session) bool {
 	if !reviewRunHasUsableMainReviewer(last) {
 		return false
 	}
-	return looksLikeMainOnlyReviewFallbackApproval(latestUserMessageText(session.Messages))
+	return latestUserMessageSatisfies(session.Messages, looksLikeMainOnlyReviewFallbackApproval)
 }
 
 func looksLikeMainOnlyReviewFallbackApproval(text string) bool {
