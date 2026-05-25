@@ -164,6 +164,71 @@ func TestGenericFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
 	}
 }
 
+func TestKoreanFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+
+	agent := &Agent{Session: session}
+	if agent.shouldStartNewExternalAcceptanceContext("최종 답변 줘") {
+		t.Fatalf("korean finalization prompt should preserve existing acceptance context")
+	}
+
+	session.AddMessage(Message{Role: "user", Text: "최종 답변 줘"})
+	if !session.Messages[len(session.Messages)-1].Internal {
+		t.Fatalf("expected korean finalization prompt to be stored as internal guidance")
+	}
+	if got := latestExternalOrUserMessageText(session.Messages); got != original {
+		t.Fatalf("expected latest external request to remain original, got %q", got)
+	}
+}
+
+func TestControlFollowupsPreservePatchTransactionGoal(t *testing.T) {
+	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.Messages = []Message{
+		{Role: "user", Text: original},
+		{Role: "assistant", Text: "보고서를 생성했습니다."},
+	}
+	agent := &Agent{Session: session}
+
+	for _, followup := range []string{
+		"최종 답변 줘",
+		"지금 몇 % 정도 작업 완료된 것 같아?",
+		"계속 진행해",
+	} {
+		if agent.shouldStartNewExternalAcceptanceContext(followup) {
+			t.Fatalf("control follow-up %q should preserve existing acceptance context", followup)
+		}
+		session.Messages = append(session.Messages, Message{Role: "user", Text: followup})
+		if got := patchTransactionGoalFromSession(session); got != original {
+			t.Fatalf("expected control follow-up %q to preserve patch transaction goal %q, got %q", followup, original, got)
+		}
+		session.Messages = session.Messages[:len(session.Messages)-1]
+	}
+}
+
+func TestPatchTransactionGoalUsesFreshExternalTaskOverStaleContext(t *testing.T) {
+	stale := "Tavern/BugReport.md 보고서를 생성해"
+	fresh := "RuntimeManager.cpp 버그를 수정해"
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: stale}
+	session.TaskState = &TaskState{Goal: stale}
+	session.Messages = []Message{
+		{Role: "user", Text: stale},
+		{Role: "assistant", Text: "보고서를 생성했습니다."},
+		{Role: "user", Text: fresh},
+	}
+
+	if got := patchTransactionGoalFromSession(session); got != fresh {
+		t.Fatalf("expected fresh external edit task to become patch transaction goal, got %q", got)
+	}
+}
+
 func TestPreWriteReviewUserRequestSkipsStructuredInternalGuidance(t *testing.T) {
 	original := "Fix the runtime gate loop"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")

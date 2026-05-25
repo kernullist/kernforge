@@ -77,8 +77,11 @@ func patchTransactionGoalFromSession(sess *Session) string {
 	if sess == nil {
 		return ""
 	}
-	if goal := latestExternalUserMessageText(sess.Messages); goal != "" {
-		return goal
+	latestExternal := latestExternalUserMessageText(sess.Messages)
+	if latestExternal != "" {
+		if !acceptanceContextPreservingControlRequest(latestExternal) || preservableSessionAcceptancePrompt(sess) == "" {
+			return latestExternal
+		}
 	}
 	if sess.AcceptanceContract != nil {
 		if prompt := strings.TrimSpace(sess.AcceptanceContract.SourcePrompt); prompt != "" {
@@ -90,7 +93,43 @@ func patchTransactionGoalFromSession(sess *Session) string {
 			return strings.TrimSpace(baseUserQueryText(goal))
 		}
 	}
+	if latestExternal != "" {
+		return latestExternal
+	}
 	return strings.TrimSpace(baseUserQueryText(latestUserMessageText(sess.Messages)))
+}
+
+func acceptanceContextPreservingControlRequest(text string) bool {
+	text = strings.TrimSpace(baseUserQueryText(text))
+	if text == "" {
+		return false
+	}
+	if looksLikeFinalAnswerFollowupPrompt(text) {
+		return true
+	}
+	switch classifyTurnIntent(text) {
+	case TurnIntentContinueLastTask, TurnIntentExplainCurrentState:
+		return true
+	default:
+		return false
+	}
+}
+
+func preservableSessionAcceptancePrompt(sess *Session) string {
+	if sess == nil {
+		return ""
+	}
+	if sess.AcceptanceContract != nil {
+		if prompt := strings.TrimSpace(baseUserQueryText(sess.AcceptanceContract.SourcePrompt)); prompt != "" && !looksLikeInternalReviewFeedbackUserMessage(prompt) {
+			return prompt
+		}
+	}
+	if sess.TaskState != nil {
+		if goal := strings.TrimSpace(baseUserQueryText(sess.TaskState.Goal)); goal != "" && !looksLikeInternalReviewFeedbackUserMessage(goal) {
+			return goal
+		}
+	}
+	return ""
 }
 
 func codingHarnessMeaningfulTokens(text string) []string {

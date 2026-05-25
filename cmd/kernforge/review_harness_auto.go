@@ -770,6 +770,7 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		hasGoalContextPrefix ||
 		hasInternalReviewPrefix ||
 		hasToolFailurePrefix ||
+		looksLikeFinalAnswerFollowupPrompt(text) ||
 		looksLikePreWriteInternalContextMessage(text) ||
 		looksLikeMainOnlyReviewFallbackApproval(text)
 }

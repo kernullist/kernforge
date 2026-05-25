@@ -370,6 +370,9 @@ func (a *Agent) shouldStartNewExternalAcceptanceContext(userText string) bool {
 	if looksLikeInternalReviewFeedbackUserMessage(text) {
 		return !a.hasPreservableExternalAcceptanceContext()
 	}
+	if a.hasPreservableExternalAcceptanceContext() && acceptanceContextPreservingControlRequest(text) {
+		return false
+	}
 	return true
 }
 
