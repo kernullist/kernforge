@@ -298,6 +298,32 @@ func hasNaturalReviewIntent(input string) bool {
 		"review", "code review", "audit", "inspect")
 }
 
+func looksLikeReviewInspectionOnlyRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(input)))
+	if lower == "" || hasNaturalReviewNegation(lower) || !hasNaturalReviewIntent(lower) {
+		return false
+	}
+	if looksLikeReviewArtifactAuthoringRequest(lower) {
+		return false
+	}
+	if looksLikeBugSearchAndFixIntent(lower) {
+		return false
+	}
+	if containsAny(lower,
+		"검토하고 수정", "검토 후 수정", "검토해서 수정", "리뷰하고 수정", "리뷰 후 수정", "리뷰해서 수정",
+		"review and fix", "review then fix", "review, then fix", "fix after review",
+	) {
+		return false
+	}
+	if containsAny(lower,
+		"수정해", "수정 해", "수정하", "고쳐", "고치", "패치해", "패치 해", "패치하", "반영해", "반영 해", "반영하", "해결해", "해결 해", "해결하",
+		"fix ", "fix this", "fix the", "repair ", "repair this", "repair the", "patch ", "patch this", "patch the", "address ", "address this", "address the", "correct ", "correct this", "correct the",
+	) {
+		return false
+	}
+	return true
+}
+
 func hasNaturalReviewNegation(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	return containsAny(lower,

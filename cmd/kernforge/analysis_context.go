@@ -1065,6 +1065,9 @@ func prefersReadOnlyAnalysisIntent(text string) bool {
 	if base == "" {
 		return false
 	}
+	if looksLikeReviewInspectionOnlyRequest(base) {
+		return true
+	}
 	if looksLikeExplicitEditIntent(base) {
 		return false
 	}

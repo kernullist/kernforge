@@ -578,6 +578,24 @@ func TestSystemPromptUsesExternalUserRequestAfterInternalSteering(t *testing.T) 
 	}
 }
 
+func TestSystemPromptTreatsModifiedCodeReviewAsReadOnly(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "수정한 코드에 버그는 없는지 검토해"})
+	agent := &Agent{
+		Config:  Config{},
+		Session: session,
+	}
+
+	prompt := agent.systemPrompt()
+	if !strings.Contains(prompt, "analysis-only") {
+		t.Fatalf("expected modified-code review request to be read-only, got %q", prompt)
+	}
+	if strings.Contains(prompt, "The latest user request explicitly asks for a fix.") {
+		t.Fatalf("modified-code review request should not be prompted as an edit request, got %q", prompt)
+	}
+}
+
 func TestSystemPromptUsesExternalUserRequestAfterGoalSteering(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")

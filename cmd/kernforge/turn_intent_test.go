@@ -13,10 +13,46 @@ func TestResolveAgentRequestModeTreatsReviewIntentAsReadOnly(t *testing.T) {
 		"RuntimeManager.cpp 코드 리뷰해줘",
 		"Review RuntimeManager.cpp for bugs",
 		"이 코드 검토하고 버그 찾아줘",
+		"수정한 코드에 버그는 없는지 검토해",
+		"변경사항 리뷰해줘",
+		"Review the modified RuntimeManager.cpp for regressions",
 	} {
 		mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
 		if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
 			t.Fatalf("review-only request %q should be read-only, got %#v", request, mode)
+		}
+	}
+}
+
+func TestClassifyTurnIntentKeepsReviewOnlySubjectsOutOfEditMode(t *testing.T) {
+	for _, request := range []string{
+		"수정한 코드에 버그는 없는지 검토해",
+		"수정된 부분 코드 리뷰해줘",
+		"변경사항 리뷰해줘",
+		"Review the modified RuntimeManager.cpp for regressions",
+	} {
+		if got := classifyTurnIntent(request); got != TurnIntentReviewCode {
+			t.Fatalf("expected review-only subject request %q to be review intent, got %q", request, got)
+		}
+		if !prefersReadOnlyAnalysisIntent(request) {
+			t.Fatalf("review-only subject request %q should prefer read-only analysis", request)
+		}
+	}
+}
+
+func TestClassifyTurnIntentKeepsReviewThenFixAsEdit(t *testing.T) {
+	for _, request := range []string{
+		"검토하고 버그 있으면 수정해",
+		"리뷰 후 문제를 수정해줘",
+		"Review and fix RuntimeManager.cpp",
+		"find bugs and fix RuntimeManager.cpp",
+	} {
+		if got := classifyTurnIntent(request); got != TurnIntentEditCode {
+			t.Fatalf("expected review-then-fix request %q to remain edit intent, got %q", request, got)
+		}
+		mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+		if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest {
+			t.Fatalf("review-then-fix request %q should be explicit edit mode, got %#v", request, mode)
 		}
 	}
 }
