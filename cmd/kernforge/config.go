@@ -2935,6 +2935,15 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 		merged.OAuthResource = ""
 	}
 	if strings.TrimSpace(overlay.URL) != "" {
+		baseURL := strings.TrimSpace(merged.URL)
+		overlayURL := strings.TrimSpace(overlay.URL)
+		if baseURL != "" && baseURL != overlayURL {
+			merged.BearerTokenEnvVar = ""
+			merged.HTTPHeaders = nil
+			merged.EnvHTTPHeaders = nil
+			merged.OAuth = nil
+			merged.OAuthResource = ""
+		}
 		merged.URL = overlay.URL
 		merged.Command = ""
 		merged.Args = nil
@@ -2946,10 +2955,10 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 		merged.BearerTokenEnvVar = overlay.BearerTokenEnvVar
 	}
 	if len(overlay.HTTPHeaders) > 0 && strings.TrimSpace(merged.URL) != "" {
-		merged.HTTPHeaders = mergeMCPServerEnv(base.HTTPHeaders, overlay.HTTPHeaders)
+		merged.HTTPHeaders = mergeMCPServerEnv(merged.HTTPHeaders, overlay.HTTPHeaders)
 	}
 	if len(overlay.EnvHTTPHeaders) > 0 && strings.TrimSpace(merged.URL) != "" {
-		merged.EnvHTTPHeaders = mergeMCPServerEnv(base.EnvHTTPHeaders, overlay.EnvHTTPHeaders)
+		merged.EnvHTTPHeaders = mergeMCPServerEnv(merged.EnvHTTPHeaders, overlay.EnvHTTPHeaders)
 	}
 	if overlay.OAuth != nil && strings.TrimSpace(merged.URL) != "" {
 		merged.OAuth = &MCPServerOAuthConfig{ClientID: strings.TrimSpace(overlay.OAuth.ClientID)}

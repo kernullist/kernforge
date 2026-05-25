@@ -2585,6 +2585,69 @@ func TestMergeMCPServerConfigSwitchesTransportCleanly(t *testing.T) {
 	}
 }
 
+func TestMergeMCPServerConfigClearsHTTPAuthWhenURLChanges(t *testing.T) {
+	base := MCPServerConfig{
+		Name:              "docs",
+		URL:               "https://old.example.com/mcp",
+		BearerTokenEnvVar: "OLD_TOKEN",
+		HTTPHeaders: map[string]string{
+			"X-Old": "old",
+		},
+		EnvHTTPHeaders: map[string]string{
+			"X-Old-Env": "OLD_ENV_TOKEN",
+		},
+		OAuth: &MCPServerOAuthConfig{
+			ClientID: "old-client",
+		},
+		OAuthResource: "https://old.example.com/resource",
+	}
+
+	merged := mergeMCPServerConfig(base, MCPServerConfig{
+		Name: "docs",
+		URL:  "https://new.example.com/mcp",
+	})
+	if merged.URL != "https://new.example.com/mcp" {
+		t.Fatalf("expected URL to change, got %#v", merged)
+	}
+	if merged.BearerTokenEnvVar != "" || len(merged.HTTPHeaders) != 0 || len(merged.EnvHTTPHeaders) != 0 || merged.OAuth != nil || merged.OAuthResource != "" {
+		t.Fatalf("expected URL-bound auth fields to be cleared on URL change, got %#v", merged)
+	}
+
+	replaced := mergeMCPServerConfig(base, MCPServerConfig{
+		Name:              "docs",
+		URL:               "https://replacement.example.com/mcp",
+		BearerTokenEnvVar: "NEW_TOKEN",
+		HTTPHeaders: map[string]string{
+			"X-New": "new",
+		},
+		EnvHTTPHeaders: map[string]string{
+			"X-New-Env": "NEW_ENV_TOKEN",
+		},
+		OAuth: &MCPServerOAuthConfig{
+			ClientID: "new-client",
+		},
+		OAuthResource: "https://replacement.example.com/resource",
+	})
+	if replaced.BearerTokenEnvVar != "NEW_TOKEN" {
+		t.Fatalf("expected replacement bearer token env var, got %#v", replaced)
+	}
+	if _, ok := replaced.HTTPHeaders["X-Old"]; ok {
+		t.Fatalf("expected old static header to be dropped, got %#v", replaced.HTTPHeaders)
+	}
+	if replaced.HTTPHeaders["X-New"] != "new" {
+		t.Fatalf("expected replacement static header, got %#v", replaced.HTTPHeaders)
+	}
+	if _, ok := replaced.EnvHTTPHeaders["X-Old-Env"]; ok {
+		t.Fatalf("expected old env header to be dropped, got %#v", replaced.EnvHTTPHeaders)
+	}
+	if replaced.EnvHTTPHeaders["X-New-Env"] != "NEW_ENV_TOKEN" {
+		t.Fatalf("expected replacement env header, got %#v", replaced.EnvHTTPHeaders)
+	}
+	if replaced.OAuth == nil || replaced.OAuth.ClientID != "new-client" || replaced.OAuthResource != "https://replacement.example.com/resource" {
+		t.Fatalf("expected replacement OAuth config, got %#v", replaced)
+	}
+}
+
 func TestMergeConfigPreservesEmptyProjectRootMarkersOverride(t *testing.T) {
 	baseMarkers := []string{".git"}
 	dst := Config{
