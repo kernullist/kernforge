@@ -206,6 +206,22 @@ func TestSessionAddMessageMarksKnownInternalGuidance(t *testing.T) {
 	}
 }
 
+func TestSessionAddMessageMarksAdditionalTurnContextInternal(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: "Fix the runtime gate loop"})
+	session.AddMessage(Message{Role: "user", Text: "Additional turn context for the preceding user request:\nRequest mode: inspect-and-fix."})
+
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected two messages, got %d", len(session.Messages))
+	}
+	if !session.Messages[1].Internal {
+		t.Fatalf("expected additional turn context to be marked internal: %#v", session.Messages[1])
+	}
+	if got := latestExternalOrUserMessageText(session.Messages); got != "Fix the runtime gate loop" {
+		t.Fatalf("expected latest external request, got %q", got)
+	}
+}
+
 func TestGenericFinalAnswerPromptPreservesAcceptanceContext(t *testing.T) {
 	original := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
 	session := NewSession(t.TempDir(), "scripted", "model", "", "default")

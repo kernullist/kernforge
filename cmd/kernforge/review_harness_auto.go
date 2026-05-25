@@ -754,6 +754,7 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		strings.HasPrefix(lower, "final semantic goal review for autonomous goal ") ||
 		strings.HasPrefix(lower, "continue working toward the active thread goal.") ||
 		strings.HasPrefix(lower, "<goal_context>")
+	hasTurnContextPrefix := strings.HasPrefix(lower, "additional turn context for the preceding user request:")
 
 	return strings.HasPrefix(lower, "automatic pre-write review ") ||
 		strings.HasPrefix(lower, "automatic post-change review ") ||
@@ -768,6 +769,7 @@ func looksLikeInternalReviewFeedbackUserMessage(text string) bool {
 		strings.HasPrefix(lower, "리뷰어 피드백:") ||
 		strings.HasPrefix(lower, "도구 경로 업데이트 후 자동 검증") ||
 		hasGoalContextPrefix ||
+		hasTurnContextPrefix ||
 		hasInternalReviewPrefix ||
 		hasToolFailurePrefix ||
 		looksLikeFinalAnswerFollowupPrompt(text) ||
