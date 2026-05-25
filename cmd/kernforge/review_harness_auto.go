@@ -1469,9 +1469,9 @@ func formatReviewerGateUnavailableToolError(cfg Config, run ReviewRun) string {
 	hint := ""
 	if reviewRunHasReviewerTimeoutFailure(&run) {
 		if korean {
-			hint = " 다음 reviewer call은 timeout을 자동으로 한 단계 늘립니다; `/review models`, `/review models clear primary`, `/model` 중 하나로도 복구할 수 있습니다."
+			hint = " 다음 reviewer call은 timeout을 자동으로 한 단계 늘립니다; `/review models`, `/review models clear cross`, `/model` 중 하나로도 복구할 수 있습니다."
 		} else {
-			hint = " The next reviewer call will automatically extend the timeout once; recovery options are `/review models`, `/review models clear primary`, or `/model`."
+			hint = " The next reviewer call will automatically extend the timeout once; recovery options are `/review models`, `/review models clear cross`, or `/model`."
 		}
 	}
 	if korean {

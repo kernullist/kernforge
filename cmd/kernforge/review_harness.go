@@ -233,6 +233,8 @@ type ReviewModelPlan struct {
 	Strategy           string                  `json:"strategy,omitempty"`
 	RequiredRoles      []string                `json:"required_roles,omitempty"`
 	OptionalRoles      []string                `json:"optional_roles,omitempty"`
+	RequiredLenses     []string                `json:"required_lenses,omitempty"`
+	OptionalLenses     []string                `json:"optional_lenses,omitempty"`
 	AssignedModels     map[string]string       `json:"assigned_models,omitempty"`
 	CapabilityProfiles []ReviewModelCapability `json:"capability_profiles,omitempty"`
 	RouteHealth        []ReviewRouteHealth     `json:"route_health,omitempty"`

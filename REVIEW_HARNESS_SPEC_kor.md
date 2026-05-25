@@ -81,7 +81,7 @@ Review Harness = Intent + ChangeSet + Evidence + PolicyPack + Findings + Gate
 
 ### 4.3 Evidence Pack
 
-리뷰어가 볼 수 있는 근거 묶음이다. 모델 prompt에 그대로 다 넣는 것이 아니라, artifact로 저장하고 role별 prompt에는 필요한 부분만 압축한다.
+리뷰어가 볼 수 있는 근거 묶음이다. 모델 prompt에 그대로 다 넣는 것이 아니라, artifact로 저장하고 primary/cross route와 lens prompt에는 필요한 부분만 압축한다.
 
 포함 후보:
 
@@ -199,7 +199,7 @@ ReviewRequestAnalysis
   ambiguity_warnings
 ```
 
-`selected_flow`는 target, mode, collector, reviewer roles, follow-up policy를 묶은 실행 경로다.
+`selected_flow`는 target, mode, collector, reviewer route/lens policy, follow-up policy를 묶은 실행 경로다.
 
 기본 flow:
 
@@ -400,7 +400,7 @@ Gate rule:
 6. pre-write review의 "build/test verification was not run" 류 순수 검증 gap은 edit preview를 막지 않고 post-edit verification obligation으로 남긴다.
 7. pre-write review에서 "함수 후반부가 보이지 않는다", "complete function body is not visible", "제공된 preview/evidence가 부족하다"처럼 하네스 증거 패키지 부족을 지적한 `evidence_gap`은 코드 수리 루프로 넘기지 않는다. 먼저 하네스가 current file context, selection 후반부, cleanup/success 경로를 증거에 보강해야 한다.
 8. 하네스 증거 부족 경고는 implementation model에게 패치를 다시 쓰게 할 근거가 아니다. 실제 코드 누락, header/API surface 누락, member declaration 누락, requested scope 미구현처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
-9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, 별도 review role이 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 확인한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
+9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, optional cross route가 있으면 같은 evidence와 primary draft를 받아 second-pass로 확인한다. domain 전문성은 review lens로 주입한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
 10. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
 11. build/test 검증 명령이 사용자에게 거절되어 `skipped`/`declined`로 기록된 뒤에는 같은 턴에서 동일 검증 재실행이나 `latest` background poll을 실행하지 않는다. 하네스는 tool progress를 emit하기 전에 `NOT_EXECUTED` tool result와 guidance로 접고, 미검증 gap만 final/status에 남긴다.
 12. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
@@ -650,17 +650,17 @@ mode별 role을 선택한다.
 
 ### 6.4.1 Model Plan And Configuration UX
 
-리뷰 타입에 따라 두 개 이상의 모델이 유리한 경우가 있다. 예를 들어 `core_build`는 architecture reviewer와 security reviewer가 분리되는 편이 좋고, `security_hardening`은 threat/bypass reviewer와 false-positive reviewer가 서로 다른 관점으로 보는 것이 낫다. 반대로 docs-only 또는 tiny change는 deterministic reviewer와 단일 reviewer면 충분하다.
-
-`ReviewModelPlanner`는 selected flow를 보고 필요한 reviewer role과 모델 구성을 결정한다.
+리뷰 전문성은 더 이상 role별 모델 수를 늘려서 표현하지 않는다. 실행 route는 `primary_reviewer`와 `cross_reviewer` 두 축으로 유지하고, security/design/false-positive/regression/test/final 관점은 `required_lenses`와 `optional_lenses`로 같은 프롬프트에 주입한다.
 
 ```text
 ReviewModelPlan
   strategy
-  required_roles
-  optional_roles
+  required_roles      # primary route, plus required cross only when the gate needs it
+  optional_roles      # configured cross route when available
+  required_lenses
+  optional_lenses
   assigned_models
-  missing_roles
+  missing_roles       # route availability only, not domain lens availability
   degraded_roles
   route_limits
   user_guidance
@@ -668,73 +668,74 @@ ReviewModelPlan
 
 `strategy` 값:
 
-1. `single`: main reviewer 하나로 충분하다.
-2. `dual`: primary reviewer + specialist reviewer를 쓴다.
-3. `multi`: 세 개 이상의 role reviewer가 유리하다.
-4. `deterministic_only`: 모델 없이 deterministic gate만 실행한다.
-5. `degraded`: 필요한 role이 없어서 더 약한 구성으로 실행한다.
+1. `single`: active main model이 primary review route로 실행된다.
+2. `dual`: primary route 뒤에 독립 cross route가 한 번 더 실행된다.
+3. `deterministic_only`: 모델 없이 deterministic gate만 실행한다.
+4. `degraded`: 필요한 route가 실패했거나 약한 출력으로 끝났다.
 
-권장 role:
+Route:
 
-1. `primary_reviewer`: 일반 correctness/stability review.
-2. `design_reviewer`: architecture/core build review.
-3. `security_reviewer`: security boundary, privileged path, abuse risk review.
-4. `false_positive_reviewer`: detection, telemetry, anti-cheat 오탐 review.
-5. `regression_reviewer`: live fix, refactor, compatibility review.
-6. `test_reviewer`: verification, replay, coverage gap review.
-7. `final_gate_reviewer`: conflicting findings를 합쳐 최종 gate를 검토.
+1. `primary_reviewer`: active main model. `/model` 또는 `/provider`로 바꾼다.
+2. `cross_reviewer`: 선택적 독립 second-pass reviewer. `/review models cross`로만 설정한다.
+
+Lens:
+
+1. `correctness`: 일반 correctness/stability/maintainability.
+2. `design`: architecture/core build/complexity.
+3. `security`: privileged path, trust boundary, bypass risk.
+4. `false_positive`: detection, telemetry, anti-cheat 오탐과 운영 해석 가능성.
+5. `regression`: behavior compatibility, OS/version drift, refactor risk.
+6. `test`: verification, replay, coverage gap.
+7. `final_gate`: final readiness와 residual risk.
 
 Flow별 기본 추천:
 
-1. `change_review`: `primary_reviewer`; security-sensitive이면 `security_reviewer` 추가.
-2. `plan_review`: `design_reviewer`; security-sensitive이면 `security_reviewer` 추가.
-3. `security_review`: `security_reviewer` + `false_positive_reviewer`; high-risk이면 `test_reviewer` 또는 `final_gate_reviewer` 추가.
-4. `refactor`: `primary_reviewer` + `regression_reviewer`.
-5. `pr_review`: `primary_reviewer`; checks가 실패했으면 `test_reviewer` 추가.
-6. `goal_review`: `primary_reviewer` + `final_gate_reviewer`.
+1. `change_review`: `correctness`; security-sensitive이면 `security` lens 추가.
+2. `plan_review`: `design`; security-sensitive이면 `security` lens 추가.
+3. `security_review`: `security`, 필요 시 `false_positive`; high-risk이면 `test` 또는 `final_gate` lens 추가.
+4. `refactor`: `correctness` + `regression`.
+5. `pr_review`: `correctness`; checks가 실패했으면 `test` lens 추가.
+6. `goal_review`: `correctness` + `final_gate`.
 
 모델 설정 UX:
 
 ```text
 /review models
 /review models status
-/review models primary
-/review models security
-/review models false-positive
-/review models clear <role>
+/review models cross
+/review models clear cross
 ```
 
-명령은 짧게 유지하되, `/review models`는 `/model`처럼 role, provider, model을 번호로 고르는 interactive flow를 제공한다. 직접 지정이 필요한 script/MCP client는 `/review models <role> <provider> <model> [reasoning_effort]`를 사용할 수 있다. 설정이 부족한 경우 review 결과에 guidance를 함께 남긴다.
+`/review models`는 route 설정 surface다. domain 전문성은 별도 모델 role이 아니라 lens로 자동 선택된다. 직접 지정이 필요한 script/MCP client는 `/review models cross <provider> <model> [reasoning_effort]`를 사용할 수 있다.
 
 예:
 
 ```text
 Review model guidance:
-- This security review would benefit from a dedicated false-positive reviewer.
-- Configure it with: /review models false-positive
-- Current run used primary reviewer only and is marked degraded=false, missing_roles=false_positive_reviewer.
+- Review specialization is applied as lenses, not separate reviewer routes: required=correctness,security optional=false_positive.
+- Single-model review mode is active; no independent cross reviewer is configured for this run.
+- Configure an independent second pass with: /review models cross
 ```
 
 기존 설정과의 관계:
 
 1. 기존 `PlanReviewConfig` 기반 plan-review reviewer 경로는 제거한다.
-2. 기존 `ProjectAnalysis.ReviewerProfile`은 analysis/report review의 reviewer 기본값으로 재사용할 수 있다.
-3. 기존 `ReviewProfiles` 기반 별도 reviewer profile 경로는 제거하고, review role model 저장은 `review.role_models`로 단일화한다.
-4. 기존 specialist profile은 domain 조사/작업 lens로 유지하되, 공통 review role model과 혼합하지 않는다.
-5. model route scheduler는 reviewer role들이 같은 provider/model/base_url/reasoning_effort를 공유할 때 saturation을 막는다.
+2. 기존 `ProjectAnalysis.ReviewerProfile`은 project analysis 전용 reviewer로만 유지한다.
+3. 기존 role-specific `review.role_models` 항목은 호환용 cross-route fallback으로 읽을 수 있지만, 새 설정 UX는 `cross_reviewer`만 쓴다.
+4. 기존 specialist profile은 domain 조사/작업 lens로 유지하되, review gate route와 혼합하지 않는다.
+5. model route scheduler는 primary/cross route가 같은 provider/model/base_url/reasoning_effort를 공유할 때 saturation을 막는다.
 
 설정 부족 처리:
 
-1. 필수 role이 없으면 `primary_reviewer` 또는 main model로 fallback한다. 별도 plan-review reviewer fallback은 두지 않는다.
-2. fallback model도 없으면 deterministic-only review를 실행하고 `model_plan.strategy=deterministic_only`로 표시한다.
-3. high-risk security review에서 `security_reviewer`가 없으면 `missing_roles`에 기록하고 `next_commands`에 `/review models security`를 추천한다.
-4. anti-cheat detection/telemetry change에서 `false_positive_reviewer`가 없으면 warning과 추천 명령을 남긴다.
-5. 모델 설정 부족은 review 실행을 막지 않지만, `ReviewResult.degraded` 또는 gate `quality_notes`에 반영한다.
-6. 사용자에게 설정을 강요하지 않는다. "이번 run은 이렇게 fallback 했다"와 "더 좋은 구성을 원하면 이 명령"을 짧게 보여준다.
+1. primary route가 없으면 deterministic-only review를 실행하고 `model_plan.strategy=deterministic_only`로 표시한다.
+2. cross route가 없으면 single-model review mode로 실행한다. 이것은 실패가 아니라 명시적인 residual-risk 상태다.
+3. high-risk security/detection review는 `security`와 `false_positive` lens를 적용하되, 전용 role 모델 누락을 `missing_roles`로 기록하지 않는다.
+4. 더 강한 독립 검토가 필요하면 `next_commands`는 role별 모델이 아니라 `/review models cross`를 추천한다.
+5. 사용자에게 설정을 강요하지 않는다. "이번 run은 single-model/cross 중 어떤 mode였는지"와 "더 강한 구성을 원하면 이 명령"을 짧게 보여준다.
 
 ### 6.4.2 Multi-Model Merge Policy
 
-여러 reviewer role을 실행하면 결과를 단순 concatenate하면 안 된다. `ReviewFinding`은 중복 제거, 충돌 기록, severity 보정, deterministic gate 보존을 거쳐 하나의 `merge_result`로 합쳐야 한다.
+primary/cross reviewer route를 함께 실행하면 결과를 단순 concatenate하면 안 된다. `ReviewFinding`은 중복 제거, 충돌 기록, severity 보정, deterministic gate 보존을 거쳐 하나의 `merge_result`로 합쳐야 한다.
 
 ```text
 ReviewMergeResult
@@ -751,9 +752,9 @@ merge 규칙:
 1. deterministic finding은 모델 reviewer가 반박해도 삭제하지 않는다.
 2. 같은 path/symbol/category/evidence fingerprint를 가진 finding은 deduplicate한다.
 3. 중복 finding의 severity가 다르면 기본적으로 더 높은 severity를 유지한다.
-4. severity downgrade는 `final_gate_reviewer`가 concrete reason을 남긴 경우에만 가능하다.
+4. severity downgrade는 `final_gate` lens 또는 cross route가 concrete reason을 남긴 경우에만 가능하다.
 5. security, stability, data-loss, external-write risk finding은 downgrade보다 conflict 기록을 우선한다.
-6. `false_positive_reviewer`가 detection quality finding을 냈고 `security_reviewer`가 approved했더라도 false-positive finding은 유지한다.
+6. `false_positive` lens가 detection quality finding을 냈고 `security` lens 관점에서 다른 blocker가 없어도 false-positive finding은 유지한다.
 7. 모델 간 의견 충돌은 숨기지 않고 `conflicts`에 남긴다.
 8. `quality=weak` finding은 merge 후에도 gate blocker로 승격하지 않는다.
 9. final gate는 `merge_result.merged_findings`와 deterministic evidence를 기준으로 계산한다.
@@ -973,7 +974,7 @@ analysis
 
 긴 하위 명령을 많이 만들지 않는다. 예를 들어 `/review-change`, `/review-plan`, `/review-pr-status`, `/review-security-hardening`처럼 기능별 top-level 또는 deep subcommand를 늘리지 않는다. Target은 짧은 명사 하나로 두고, 세부 동작은 option과 review gate의 `next_commands`가 담당한다.
 
-`models`는 review target이 아니라 설정 surface다. `/review models`는 현재 role별 reviewer 설정과 부족한 추천 구성을 짧게 보여준다.
+`models`는 review target이 아니라 설정 surface다. `/review models`는 primary/cross route, 적용 lens, deprecated role 설정의 호환 fallback 상태를 짧게 보여준다.
 
 `/review`는 `.kernforge/reviews/latest.md`와 `.kernforge/reviews/latest.json`을 쓴다.
 
@@ -1181,7 +1182,7 @@ MCP에서 plan review를 제공할 때는 `target=plan`과 `code` 또는 `reques
 
 MCP client가 별도 구현 도구나 workflow를 통해 workspace를 변경하는 경우, 서버 설정의 `review.auto_after_change=true`가 적용된다. MCP request의 `auto_review` 값은 `inherit`, `on`, `off` 중 하나로 두고, 생략 시 서버 설정을 따른다.
 
-MCP response의 `model_plan`은 현재 실행이 단일 모델, 복수 모델, deterministic-only, degraded 중 무엇인지 알려주고, `reviewer_runs`는 실제 main/cross reviewer의 role, kind, model, status, quality를 알려준다. MCP client는 `model_plan.missing_roles`, `reviewer_runs`, `next_commands`를 보고 사용자에게 "더 강한 리뷰 구성을 원하면 `/review models security`를 설정하라"처럼 안내할 수 있다. MCP 서버는 클라이언트 대신 모델 설정을 변경하지 않는다.
+MCP response의 `model_plan`은 현재 실행이 단일 모델, 복수 모델, deterministic-only, degraded 중 무엇인지 알려주고, `required_lenses`/`optional_lenses`와 `reviewer_runs`는 실제 main/cross route의 kind, model, status, quality를 알려준다. MCP client는 `model_plan`, `reviewer_runs`, `next_commands`를 보고 사용자에게 "더 강한 독립 검토를 원하면 `/review models cross`를 설정하라"처럼 안내할 수 있다. MCP 서버는 클라이언트 대신 모델 설정을 변경하지 않는다.
 
 MCP status 처리:
 
@@ -1338,7 +1339,7 @@ cmd/kernforge/review_harness_status_test.go
 8. `config.go`
    - `review.auto_after_change`, `review.auto_after_goal_iteration`, `review.auto_before_git_write`, `review.auto_follow_up` 기본값을 정의한다.
    - `review.auto_repair_max_rounds`, `review.repeated_finding_block_threshold` 기본값을 정의한다.
-   - review role model 저장 방식과 기존 `ReviewProfiles`/`PlanReviewConfig` 제거 정책을 정의한다.
+   - cross review route 저장 방식과 기존 `ReviewProfiles`/`PlanReviewConfig` 제거 정책을 정의한다.
 
 ## 13. 단계별 구현 계획
 
@@ -1361,7 +1362,7 @@ cmd/kernforge/review_harness_status_test.go
 2. `/review "이 변경 안정성 관점에서 봐줘"`가 target/mode/flow를 자동 선택한다.
 3. "xx 기능을 구현해" 같은 explicit edit request 뒤 변경이 있으면 기본 설정으로 자동 review가 실행된다.
 4. 같은 patch fingerprint에 대해 자동 review가 반복 실행되지 않는다.
-5. security-sensitive change에서 dedicated reviewer가 없으면 missing-role guidance와 추천 명령이 남는다.
+5. security-sensitive change에서 cross route가 없으면 single-model residual-risk guidance와 `/review models cross` 추천 명령이 남는다.
 6. weak or failed model reviewer에서도 deterministic findings와 degraded result가 남는다.
 7. verification failure가 있으면 gate가 approved 되지 않는다.
 8. docs-only change와 code change의 test gap severity가 다르게 나온다.
@@ -1656,7 +1657,7 @@ gate는 `weak` finding만으로 코드를 수정하게 만들지 않는다.
 
 ### 16.6 "다음 명령"은 명령 나열이 아니라 실행 가능한 action contract여야 한다
 
-현재 `다음 명령`이 단순히 `/verify --full`, `/completion-audit`, `/review models security`처럼 보이면 사용자는 무엇을 왜 해야 하는지 알기 어렵다.
+현재 `다음 명령`이 단순히 `/verify --full`, `/completion-audit`, `/review models cross`처럼 보이면 사용자는 무엇을 왜 해야 하는지 알기 어렵다.
 
 각 next command는 아래 정보를 가져야 한다.
 
@@ -1764,7 +1765,7 @@ MCP response에서는 사람이 읽는 문장뿐 아니라 machine-readable acti
 
 1. raw patch tool-call 의존 축소.
 2. review run, patch transaction, verification ledger, final-answer review를 하나의 runtime protocol로 묶기.
-3. role-specific reviewer graph를 provider capability와 비용/지연 예산에 따라 자동 최적화.
+3. primary/cross reviewer route를 provider capability와 비용/지연 예산에 따라 자동 최적화.
 4. dashboard와 hook에서 review freshness, blocker, waiver, next action을 first-class 상태로 표시.
 
 목표는 "Kernforge가 Codex App처럼 보이게 만들기"가 아니다. 목표는 모델이 어떤 provider이든 Kernforge 런타임이 review evidence, finding schema, patch safety, gate freshness를 끝까지 책임지는 것이다.
@@ -1810,8 +1811,8 @@ Phase 1: 단기 hardening
 
 5. Service/SCM/driver/domain signal 기반 mode inference를 구조화한다.
    - `CreateService`, `StartService`, `OpenSCManager`, service install/start/stop, registry persistence, process creation은 `security_hardening`으로 분류하되 false-positive reviewer는 기본 호출하지 않는다.
-   - `.sys`, IOCTL, IRQL, pool, signing, verifier, INF, SCM driver service는 `security_reviewer`와 필요 시 `test_reviewer`를 호출한다.
-   - anti-cheat detection, telemetry, memory scan, spoof/evasion, false-positive signal은 `security_reviewer`와 `false_positive_reviewer`를 같이 호출한다.
+   - `.sys`, IOCTL, IRQL, pool, signing, verifier, INF, SCM driver service는 `security` lens와 필요 시 `test` lens를 적용한다.
+   - anti-cheat detection, telemetry, memory scan, spoof/evasion, false-positive signal은 `security` lens와 `false_positive` lens를 같이 적용한다.
 
 6. Next command를 action contract로 완성한다.
    - `ReviewNextCommand`에 `ExpectedResult`를 추가한다.
@@ -1855,7 +1856,7 @@ Phase 3: 장기 runtime protocol화
    - ledger는 latest valid review, patch preview/write, verification, completion audit, final answer review를 연결한다.
    - final answer, git write, MCP write-side response는 ledger가 stale이 아니고 blocker가 없을 때만 완료 근거로 삼는다.
 
-3. Role-specific reviewer graph를 자동 최적화한다.
+3. Primary/cross reviewer route를 자동 최적화한다.
    - domain signal, provider capability, 비용, 지연 예산을 기준으로 reviewer graph를 고른다.
    - service/SCM은 security 중심, detection/telemetry는 security + false-positive, refactor는 primary + regression, final answer는 final-gate 중심으로 제한한다.
 
@@ -2927,7 +2928,7 @@ Acceptance criteria:
    - capability recommended timeout
    - provider class default: cloud API 5분, CLI/local 8분
    - route health가 timeout-heavy면 다음 call에 한해서 adaptive extension을 적용하고 fallback 안내를 강화
-5. `/review models status`에서 role별 route health와 권장 변경을 보여준다.
+5. `/review models status`에서 primary/cross route health, lens 상태, 권장 변경을 보여준다.
 6. reviewer route가 없으면 `SingleModelReviewPolicy`를 적용한다.
    - `enabled=true`
    - `independence_level=single_model`
@@ -3450,6 +3451,12 @@ P2:
    - 수정: `previewEdit`가 session-wide preview approval을 확인한 뒤, confirmation prompt를 띄우기 전에 `autoAcceptPreviewOnce`를 먼저 소비한다. 기존 `a` 답변 경로는 유지되며, 사전 flag와 현재 confirmation side effect 모두 같은 one-shot 의미를 가진다.
    - Codex 참고: Codex app-server approval handlers가 approval response를 decision으로 정규화한 뒤 실행 단계에 전달하는 것처럼, Kernforge도 preview approval flag를 prompt side effect가 아니라 명시 state로 취급한다.
    - 회귀 테스트: `TestRuntimeStatePreviewEditConsumesPreArmedAutoAcceptOnceWithoutPrompt`, 기존 `TestRuntimeStatePreviewEditAutoAcceptsCurrentDiffPreviewAlwaysAnswer`.
+
+90. review specialist 모델을 route + lens 구조로 축소
+   - 발견: security/design/false-positive/regression/test/final을 각각 reviewer model role로 관리하면 설정, route health, gate guidance, 실제 실행 role이 계속 벌어져 복잡성이 기능보다 커졌다.
+   - 원칙: 실행 route는 active main model을 따르는 `primary_reviewer`와 선택적 독립 `cross_reviewer` 두 축으로 제한한다. 전문성은 model route가 아니라 `required_lenses`와 `optional_lenses`로 prompt에 주입한다.
+   - 수정: `planReviewModels`가 항상 primary route를 기본으로 삼고, 보안/설계/오탐/회귀/테스트/final 관점은 lens로 계산한다. `/review models` 설정 surface는 `cross`만 새로 설정하게 하고, 기존 role별 설정은 deprecated compatibility fallback으로만 읽는다. security-sensitive single-model review는 missing role을 만들지 않고, 더 강한 독립 검토가 필요할 때 `/review models cross`를 추천한다.
+   - 회귀 테스트: `TestReviewModelsCommandShortFormConfiguresCrossRoute`, `TestExecuteReviewModelRunsUsesPrimaryRouteWithDesignLens`, `TestMainFirstCrossReviewerSatisfiesDedicatedSecurityRole`, `TestSecuritySensitiveFallbackModelsProduceGuidance`, 전체 `go test ./cmd/kernforge -count=1 -timeout 10m`.
 
 남은 항목:
 

@@ -906,9 +906,9 @@ func formatReviewerGateUnavailableRepairFollowUpFeedback(run ReviewRun) string {
 	}
 	if len(findings) == 0 {
 		if korean {
-			b.WriteString("- 없음. 이번 중단은 코드 수정으로 해결할 항목이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답입니다. `primary`가 실패했다면 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 해결하세요. `cross` 또는 전용 reviewer가 실패했다면 `/review models`로 해당 reviewer route를 정상 동작하는 모델로 바꾸세요. 그 뒤 같은 요청을 다시 실행하세요.\n")
+			b.WriteString("- 없음. 이번 중단은 코드 수정으로 해결할 항목이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답입니다. `primary`가 실패했다면 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 해결하세요. `cross`가 실패했다면 `/review models cross`로 해당 reviewer route를 바꾸거나 `/review models clear cross`로 single-model mode를 사용하세요. 그 뒤 같은 요청을 다시 실행하세요.\n")
 		} else {
-			b.WriteString("- None. This stop is a required review-stage model route failure or weak output, not a code-repair item. If `primary` failed, use `/model` to switch the main model or fix the LM Studio/Qwen response issue. If `cross` or a dedicated reviewer failed, use `/review models` to switch that reviewer route to a working model. Then rerun the same request.\n")
+			b.WriteString("- None. This stop is a required review-stage model route failure or weak output, not a code-repair item. If `primary` failed, use `/model` to switch the main model or fix the LM Studio/Qwen response issue. If `cross` failed, use `/review models cross` to switch that reviewer route to a working model or `/review models clear cross` for single-model mode. Then rerun the same request.\n")
 		}
 		return strings.TrimSpace(b.String())
 	}
@@ -1077,7 +1077,7 @@ func formatReviewerGateUnavailableReply(cfg Config, run ReviewRun) string {
 		} else {
 			b.WriteString("The reviewer gate did not produce enough reliable evidence, so I stopped the edit.")
 		}
-		b.WriteString("\n\n- Cause: a required review-stage model route failed or was classified as `weak` quality. `primary` is the active main model route; `cross` is a dedicated reviewer route.")
+		b.WriteString("\n\n- Cause: a required review-stage model route failed or was classified as `weak` quality. `primary` is the active main model route; `cross` is the independent reviewer route.")
 		b.WriteString("\n- Result: this review cannot be trusted as write approval, so the edit was not applied.")
 		b.WriteString("\n- Next step: if `primary` failed, use `/model` to switch the main model or fix that provider route. If `cross` failed, use `/review models` to switch the reviewer route. Then rerun the same request.")
 		if reviewRunHasUsableMainReviewer(run) {
@@ -1124,7 +1124,7 @@ func formatReviewerGateRecoveryOptions(korean bool, run *ReviewRun) string {
 			b.WriteString("\n- 같은 reviewer로 재시도: route 설정을 유지하고 같은 요청을 다시 실행합니다.")
 		}
 		b.WriteString("\n- reviewer 모델 변경: `/review models`로 더 가까운/강한 reviewer를 선택합니다.")
-		b.WriteString("\n- reviewer 없이 single-model mode: `/review models clear primary` 후 같은 요청을 다시 실행하고 diff preview에서 직접 확인합니다.")
+		b.WriteString("\n- reviewer 없이 single-model mode: `/review models clear cross` 후 같은 요청을 다시 실행하고 diff preview에서 직접 확인합니다.")
 		b.WriteString("\n- main model 변경: `[0] 실패한 리뷰어`가 `primary`이면 `/model`로 메인 모델을 바꿉니다.")
 		return b.String()
 	}
@@ -1136,7 +1136,7 @@ func formatReviewerGateRecoveryOptions(korean bool, run *ReviewRun) string {
 		b.WriteString("\n- Retry the same reviewer: keep the route and rerun the same request.")
 	}
 	b.WriteString("\n- Change reviewer model: use `/review models` to pick a closer or stronger reviewer.")
-	b.WriteString("\n- Use single-model mode: run `/review models clear primary`, rerun, and inspect the diff preview yourself.")
+	b.WriteString("\n- Use single-model mode: run `/review models clear cross`, rerun, and inspect the diff preview yourself.")
 	b.WriteString("\n- Change main model: if `[0] Failed reviewer` shows `primary`, use `/model`.")
 	return b.String()
 }

@@ -584,9 +584,9 @@ func (rt *runtimeState) runGoalReviewHarnessReply(ctx context.Context, goal Goal
 
 func skippedGoalReviewerReply(prompt string) string {
 	if strings.Contains(prompt, "Final semantic goal review") {
-		return "APPROVED: independent semantic reviewer skipped because no common review role model is configured; relying on completion audit and verification evidence."
+		return "APPROVED: independent semantic reviewer skipped because no cross review route is configured; relying on completion audit and verification evidence."
 	}
-	return "APPROVED: independent reviewer skipped because no common review role model is configured; relying on the main implementation pass and subsequent verification."
+	return "APPROVED: independent reviewer skipped because no cross review route is configured; relying on the main implementation pass and subsequent verification."
 }
 
 func buildGoalImplementationPrompt(goal GoalState, iteration int) string {

@@ -2179,16 +2179,19 @@ func TestMainFirstCrossReviewerSatisfiesDedicatedSecurityRole(t *testing.T) {
 	if len(run.ReviewerRuns) != 2 {
 		t.Fatalf("expected main and security cross reviewer runs, got %#v", run.ReviewerRuns)
 	}
-	if run.ReviewerRuns[1].Role != "security_reviewer" || run.ReviewerRuns[1].Kind != "cross" {
-		t.Fatalf("expected second pass to satisfy security reviewer role, got %#v", run.ReviewerRuns[1])
+	if run.ReviewerRuns[1].Role != "cross_reviewer" || run.ReviewerRuns[1].Kind != "cross" {
+		t.Fatalf("expected second pass to satisfy cross reviewer route, got %#v", run.ReviewerRuns[1])
 	}
-	if stringSliceContainsCI(run.ModelPlan.MissingRoles, "security_reviewer") ||
-		stringSliceContainsCI(run.ModelPlan.DegradedRoles, "security_reviewer") {
-		t.Fatalf("satisfied security reviewer role should not remain missing or degraded: %#v", run.ModelPlan)
+	if !stringSliceContainsCI(run.ModelPlan.RequiredLenses, "security") {
+		t.Fatalf("security review should keep security lens, got %#v", run.ModelPlan)
+	}
+	if stringSliceContainsCI(run.ModelPlan.MissingRoles, "cross_reviewer") ||
+		stringSliceContainsCI(run.ModelPlan.DegradedRoles, "cross_reviewer") {
+		t.Fatalf("satisfied cross reviewer route should not remain missing or degraded: %#v", run.ModelPlan)
 	}
 	for _, command := range run.Gate.NextCommands {
-		if command.ID == "set-security-model" {
-			t.Fatalf("satisfied security reviewer should not recommend setup command: %#v", run.Gate.NextCommands)
+		if command.ID == "set-cross-model" {
+			t.Fatalf("satisfied cross reviewer should not recommend setup command: %#v", run.Gate.NextCommands)
 		}
 	}
 }
@@ -8336,18 +8339,54 @@ func TestSecuritySensitiveFallbackModelsProduceGuidance(t *testing.T) {
 		Objective:   "kernel anti-cheat false positive review",
 	}
 	plan := planReviewModels(cfg, run)
-	if !stringSliceContainsCI(plan.MissingRoles, "security_reviewer") {
-		t.Fatalf("expected missing dedicated security role, got %#v", plan)
+	if !stringSliceContainsCI(plan.RequiredLenses, "security") {
+		t.Fatalf("expected required security lens, got %#v", plan)
 	}
-	if !stringSliceContainsCI(plan.MissingRoles, "false_positive_reviewer") {
-		t.Fatalf("expected missing dedicated false-positive role, got %#v", plan)
+	if !stringSliceContainsCI(plan.RequiredLenses, "false_positive") {
+		t.Fatalf("expected required false-positive lens, got %#v", plan)
 	}
 	if len(plan.AssignedModels) == 0 {
 		t.Fatalf("fallback model should still be assigned for execution: %#v", plan)
 	}
 	gate := evaluateReviewGate(ReviewRun{ModelPlan: plan})
-	if len(gate.NextCommands) < 2 {
-		t.Fatalf("expected model setup next commands, got %#v", gate.NextCommands)
+	if len(gate.NextCommands) != 0 {
+		t.Fatalf("lens-only plan should not emit specialist setup commands, got %#v", gate.NextCommands)
+	}
+}
+
+func TestReviewLensLegacyRoleConfigFeedsCrossRoute(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai"
+	cfg.Model = "gpt-main"
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"design_reviewer": {
+			Provider: "openai",
+			Model:    "gpt-design",
+		},
+		"regression_reviewer": {
+			Provider: "openai",
+			Model:    "gpt-regression",
+		},
+	}
+	reviewCfg := configReviewHarness(cfg)
+	planRun := ReviewRun{
+		Flow: "plan_review",
+		Mode: reviewModeGeneralChange,
+	}
+	label, role := reviewConfiguredCrossRouteLabelAndRole(cfg, reviewCfg, planRun)
+	if role != "design_reviewer" || !strings.Contains(label, "gpt-design") {
+		t.Fatalf("plan review should use legacy design route as cross fallback, role=%q label=%q", role, label)
+	}
+	plan := planReviewModels(cfg, planRun)
+	if !stringSliceContainsCI(plan.OptionalRoles, "cross_reviewer") {
+		t.Fatalf("legacy design route should be exposed as cross reviewer, got %#v", plan)
+	}
+	if !strings.Contains(plan.AssignedModels["cross_reviewer"], "gpt-design") {
+		t.Fatalf("expected cross assignment to use legacy design model, got %#v", plan.AssignedModels)
+	}
+	refactorRun := ReviewRun{Mode: reviewModeRefactor}
+	if got := reviewPreferredCrossReviewRouteRole(cfg, refactorRun, nil); got != "regression_reviewer" {
+		t.Fatalf("refactor review should prefer legacy regression route, got %q", got)
 	}
 }
 
@@ -8365,12 +8404,12 @@ func TestSecurityServiceReviewDoesNotRequireFalsePositiveReviewer(t *testing.T) 
 		},
 	}
 	plan := planReviewModels(cfg, run)
-	if !stringSliceContainsCI(plan.RequiredRoles, "security_reviewer") {
-		t.Fatalf("expected security reviewer, got %#v", plan)
+	if !stringSliceContainsCI(plan.RequiredLenses, "security") {
+		t.Fatalf("expected security lens, got %#v", plan)
 	}
-	if stringSliceContainsCI(plan.RequiredRoles, "false_positive_reviewer") ||
-		stringSliceContainsCI(plan.MissingRoles, "false_positive_reviewer") {
-		t.Fatalf("service install review should not require false-positive reviewer, got %#v", plan)
+	if stringSliceContainsCI(plan.RequiredLenses, "false_positive") ||
+		stringSliceContainsCI(plan.OptionalLenses, "false_positive") {
+		t.Fatalf("service install review should not require false-positive lens, got %#v", plan)
 	}
 }
 
@@ -9869,7 +9908,7 @@ func normalizeGoldenText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func TestReviewModelsCommandShortFormConfiguresRole(t *testing.T) {
+func TestReviewModelsCommandShortFormConfiguresCrossRoute(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9886,19 +9925,19 @@ func TestReviewModelsCommandShortFormConfiguresRole(t *testing.T) {
 		session: &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("security openai gpt-5.4"); err != nil {
+	if err := rt.handleReviewModelsCommand("cross openai gpt-5.4"); err != nil {
 		t.Fatalf("handleReviewModelsCommand: %v", err)
 	}
-	roleCfg := rt.cfg.Review.RoleModels["security_reviewer"]
+	roleCfg := rt.cfg.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "openai" || roleCfg.Model != "gpt-5.4" {
-		t.Fatalf("unexpected security reviewer config: %#v", roleCfg)
+		t.Fatalf("unexpected cross reviewer config: %#v", roleCfg)
 	}
-	if !strings.Contains(out.String(), "Review security set") {
+	if !strings.Contains(out.String(), "Review cross route set") {
 		t.Fatalf("expected success output, got %q", out.String())
 	}
 }
 
-func TestReviewModelsCommandShortFormPersistsRole(t *testing.T) {
+func TestReviewModelsCommandShortFormPersistsCrossRoute(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9915,20 +9954,20 @@ func TestReviewModelsCommandShortFormPersistsRole(t *testing.T) {
 		session: &Session{Provider: "deepseek", Model: "deepseek-v4-pro", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("primary deepseek deepseek-v4-pro low"); err != nil {
+	if err := rt.handleReviewModelsCommand("cross deepseek deepseek-v4-pro low"); err != nil {
 		t.Fatalf("handleReviewModelsCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	roleCfg := loaded.Review.RoleModels["primary_reviewer"]
+	roleCfg := loaded.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "deepseek" || roleCfg.Model != "deepseek-v4-pro" || roleCfg.ReasoningEffort != "high" {
-		t.Fatalf("expected review primary model to persist, got %#v", loaded.Review.RoleModels)
+		t.Fatalf("expected review cross model to persist, got %#v", loaded.Review.RoleModels)
 	}
 }
 
-func TestReviewModelsCommandDefaultsRoleEffortToHigh(t *testing.T) {
+func TestReviewModelsCommandDefaultsCrossRouteEffortToHigh(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9945,23 +9984,23 @@ func TestReviewModelsCommandDefaultsRoleEffortToHigh(t *testing.T) {
 		session: &Session{Provider: "deepseek", Model: "deepseek-v4-pro", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("primary deepseek deepseek-v4-pro"); err != nil {
+	if err := rt.handleReviewModelsCommand("cross deepseek deepseek-v4-pro"); err != nil {
 		t.Fatalf("handleReviewModelsCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	roleCfg := loaded.Review.RoleModels["primary_reviewer"]
+	roleCfg := loaded.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "deepseek" || roleCfg.Model != "deepseek-v4-pro" || roleCfg.ReasoningEffort != "high" {
-		t.Fatalf("expected review primary model to default to high, got %#v", loaded.Review.RoleModels)
+		t.Fatalf("expected review cross model to default to high, got %#v", loaded.Review.RoleModels)
 	}
 	if !strings.Contains(out.String(), "defaulted to high") {
 		t.Fatalf("expected high default notice, got %q", out.String())
 	}
 }
 
-func TestReviewModelsClearPersistsLastRoleRemoval(t *testing.T) {
+func TestReviewModelsClearPersistsLastRouteRemoval(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9972,7 +10011,7 @@ func TestReviewModelsClearPersistsLastRoleRemoval(t *testing.T) {
 	cfg.Provider = "openai"
 	cfg.Model = "gpt-main"
 	cfg.Review.RoleModels = map[string]ReviewModelConfig{
-		"primary_reviewer": {
+		"cross_reviewer": {
 			Provider:        "codex-cli",
 			Model:           "gpt-5.5",
 			ReasoningEffort: "low",
@@ -9988,7 +10027,7 @@ func TestReviewModelsClearPersistsLastRoleRemoval(t *testing.T) {
 		session: &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("clear primary"); err != nil {
+	if err := rt.handleReviewModelsCommand("clear cross"); err != nil {
 		t.Fatalf("handleReviewModelsCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
@@ -10019,11 +10058,12 @@ func TestReviewModelsStatusExplainsRolesAndSettings(t *testing.T) {
 		"Automatic Review",
 		"after_change",
 		"review code-changing agent edits by default",
-		"Reviewer Roles",
+		"Reviewer Routes",
+		"Review Lenses",
 		"security",
-		"security boundary",
+		"security boundaries",
 		"follows main: openai-api / gpt-main",
-		"Direct form: /review models security openai-api gpt-5.4",
+		"Direct form: /review models cross openai-api gpt-5.4",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected status output to contain %q, got %q", needle, rendered)
@@ -10048,7 +10088,7 @@ func TestReviewModelsCommandInteractiveUsesNumberedChoices(t *testing.T) {
 	cfg.Model = "gpt-main"
 	cfg.APIKey = "test-key"
 	rt := &runtimeState{
-		reader:      bufio.NewReader(strings.NewReader("2\n3\n1\n")),
+		reader:      bufio.NewReader(strings.NewReader("1\n3\n1\n")),
 		writer:      &out,
 		ui:          UI{},
 		interactive: true,
@@ -10059,13 +10099,13 @@ func TestReviewModelsCommandInteractiveUsesNumberedChoices(t *testing.T) {
 	if err := rt.handleReviewModelsCommand(""); err != nil {
 		t.Fatalf("handleReviewModelsCommand: %v", err)
 	}
-	roleCfg := rt.cfg.Review.RoleModels["security_reviewer"]
+	roleCfg := rt.cfg.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "openai" || roleCfg.Model != "gpt-5.4" {
-		t.Fatalf("unexpected interactive security reviewer config: %#v", roleCfg)
+		t.Fatalf("unexpected interactive cross reviewer config: %#v", roleCfg)
 	}
 	rendered := out.String()
-	if !strings.Contains(rendered, "Review Model Role") || !strings.Contains(rendered, "2. security") {
-		t.Fatalf("expected numbered role choices, got %q", rendered)
+	if !strings.Contains(rendered, "Review Model Route") || !strings.Contains(rendered, "1. cross") {
+		t.Fatalf("expected numbered route choices, got %q", rendered)
 	}
 }
 

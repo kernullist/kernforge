@@ -175,7 +175,7 @@ func (rt *runtimeState) handleReviewModelsCommand(args string) error {
 func (rt *runtimeState) printReviewModelsStatus() {
 	reviewCfg := configReviewHarness(rt.cfg)
 	fmt.Fprintln(rt.writer, rt.ui.section("Review Models"))
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Use /review models to choose a reviewer role/provider/model by number."))
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Use /review models to choose a reviewer route/provider/model by number. Domain specialization is applied through review lenses, not extra routes."))
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.section("Automatic Review"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_change", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterChange), "review code-changing agent edits by default")))
@@ -183,12 +183,26 @@ func (rt *runtimeState) printReviewModelsStatus() {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("before_git_write", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoBeforeGitWrite), "gate commit/push/write-side git actions with review")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("follow_up", reviewSettingLine(reviewCfg.AutoFollowUp, "allow safe next-command recommendations after review")))
 	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.section("Reviewer Roles"))
+	fmt.Fprintln(rt.writer, rt.ui.section("Reviewer Routes"))
+	primaryOption := reviewModelRoleChoice{Number: "-", Token: "primary", Role: "primary_reviewer", Label: "primary"}
+	primaryLabel, primarySource := reviewRoleModelLabelAndSource(rt.cfg, reviewCfg, primaryOption.Role)
+	for _, line := range reviewRoleDisplayLines(primaryOption, primaryLabel, primarySource, false) {
+		fmt.Fprintln(rt.writer, rt.ui.info(line))
+	}
 	for _, option := range reviewModelRoleChoices() {
 		label, source := reviewRoleModelLabelAndSource(rt.cfg, reviewCfg, option.Role)
 		for _, line := range reviewRoleDisplayLines(option, label, source, false) {
 			fmt.Fprintln(rt.writer, rt.ui.info(line))
 		}
+	}
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.section("Review Lenses"))
+	for _, lens := range reviewLensStatusLines() {
+		fmt.Fprintln(rt.writer, rt.ui.info(lens))
+	}
+	if legacy := configuredLegacyReviewRoleModels(reviewCfg); len(legacy) > 0 {
+		fmt.Fprintln(rt.writer)
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Deprecated role-specific reviewer configs are still present and are used only as compatibility cross-route fallbacks: "+strings.Join(legacy, ", ")))
 	}
 	var lastReview *ReviewRun
 	if rt.session != nil {
@@ -209,7 +223,7 @@ func (rt *runtimeState) printReviewModelsStatus() {
 		}
 	}
 	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Direct form: /review models security openai-api gpt-5.4"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Direct form: /review models cross openai-api gpt-5.4"))
 }
 
 func reviewBoolLabel(value bool) string {
@@ -247,6 +261,8 @@ func reviewRoleRouteLine(label string, source string) string {
 	switch strings.TrimSpace(source) {
 	case "role":
 		route = "configured: " + label
+	case "legacy_primary_reviewer":
+		route = "legacy cross fallback: " + label
 	case "primary_reviewer":
 		route = "inherits primary: " + label
 	case "main":
@@ -296,14 +312,7 @@ func reviewRouteHealthActionHint(item ReviewRouteHealth) string {
 }
 
 func reviewRouteHealthClearCommand(item ReviewRouteHealth) string {
-	role := normalizeReviewRole(item.Role)
-	if role == "cross_reviewer" || role == "" {
-		return "/review models clear primary"
-	}
-	if choice, ok := resolveReviewModelRoleChoice(role); ok {
-		return "/review models clear " + choice.Token
-	}
-	return "/review models clear primary"
+	return "/review models clear cross"
 }
 
 func reviewRouteHealthItemHasTimeout(item ReviewRouteHealth) bool {
@@ -334,21 +343,23 @@ func reviewRouteHealthNeedsAdaptiveTimeout(item ReviewRouteHealth) bool {
 func reviewModelRoleDescription(role string) string {
 	switch normalizeReviewRole(role) {
 	case "primary_reviewer":
-		return "general reviewer and fallback for roles without a dedicated model"
+		return "main session model used for the first-pass structured review"
+	case "cross_reviewer":
+		return "optional independent second-pass reviewer route"
 	case "security_reviewer":
-		return "security boundary, abuse-risk, kernel, driver, and sensitive-path review"
+		return "deprecated route; security is now a review lens"
 	case "false_positive_reviewer":
-		return "anti-cheat detection quality, telemetry noise, and false-positive risk review"
+		return "deprecated route; false-positive is now a review lens"
 	case "design_reviewer":
-		return "architecture, core-build direction, complexity, and long-term shape review"
+		return "deprecated route; design is now a review lens"
 	case "regression_reviewer":
-		return "behavior compatibility, OS/version drift, and refactor-risk review"
+		return "deprecated route; regression is now a review lens"
 	case "test_reviewer":
-		return "verification plan, coverage gap, and reproducibility review"
+		return "deprecated route; test is now a review lens"
 	case "final_gate_reviewer":
-		return "last gate for final answers, merge candidates, and goal completion"
+		return "deprecated route; final-gate is now a review lens"
 	default:
-		return "review role"
+		return "review route"
 	}
 }
 
@@ -361,13 +372,19 @@ type reviewModelRoleChoice struct {
 
 func reviewModelRoleChoices() []reviewModelRoleChoice {
 	return []reviewModelRoleChoice{
-		{Number: "1", Token: "primary", Role: "primary_reviewer", Label: "primary"},
-		{Number: "2", Token: "security", Role: "security_reviewer", Label: "security"},
-		{Number: "3", Token: "false-positive", Role: "false_positive_reviewer", Label: "false-positive"},
-		{Number: "4", Token: "design", Role: "design_reviewer", Label: "design"},
-		{Number: "5", Token: "regression", Role: "regression_reviewer", Label: "regression"},
-		{Number: "6", Token: "test", Role: "test_reviewer", Label: "test"},
-		{Number: "7", Token: "final", Role: "final_gate_reviewer", Label: "final"},
+		{Number: "1", Token: "cross", Role: "cross_reviewer", Label: "cross"},
+	}
+}
+
+func reviewModelLegacyRoleChoices() []reviewModelRoleChoice {
+	return []reviewModelRoleChoice{
+		{Number: "2", Token: "primary", Role: "primary_reviewer", Label: "primary"},
+		{Number: "3", Token: "security", Role: "security_reviewer", Label: "security"},
+		{Number: "4", Token: "false-positive", Role: "false_positive_reviewer", Label: "false-positive"},
+		{Number: "5", Token: "design", Role: "design_reviewer", Label: "design"},
+		{Number: "6", Token: "regression", Role: "regression_reviewer", Label: "regression"},
+		{Number: "7", Token: "test", Role: "test_reviewer", Label: "test"},
+		{Number: "8", Token: "final", Role: "final_gate_reviewer", Label: "final"},
 	}
 }
 
@@ -390,7 +407,51 @@ func resolveReviewModelRoleChoice(choice string) (reviewModelRoleChoice, bool) {
 			return option, true
 		}
 	}
+	for _, option := range reviewModelLegacyRoleChoices() {
+		if strings.EqualFold(trimmed, option.Number) ||
+			strings.EqualFold(trimmed, option.Token) ||
+			normalized == option.Role {
+			return option, true
+		}
+	}
 	return reviewModelRoleChoice{}, false
+}
+
+func resolveReviewModelRouteChoice(choice string) (reviewModelRoleChoice, bool) {
+	trimmed := strings.TrimSpace(choice)
+	normalized := normalizeReviewRole(trimmed)
+	for _, option := range reviewModelRoleChoices() {
+		if strings.EqualFold(trimmed, option.Number) ||
+			strings.EqualFold(trimmed, option.Token) ||
+			normalized == option.Role {
+			return option, true
+		}
+	}
+	return reviewModelRoleChoice{}, false
+}
+
+func reviewLensStatusLines() []string {
+	lenses := []string{"correctness", "design", "security", "false_positive", "regression", "test", "final_gate"}
+	lines := make([]string, 0, len(lenses))
+	for _, lens := range lenses {
+		lines = append(lines, fmt.Sprintf("  %-21s lens    %s", lens, reviewLensDescription(lens)))
+	}
+	return lines
+}
+
+func configuredLegacyReviewRoleModels(reviewCfg ReviewHarnessConfig) []string {
+	var out []string
+	for _, option := range reviewModelLegacyRoleChoices() {
+		roleCfg, ok := reviewCfg.RoleModels[option.Role]
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+			out = append(out, option.Token)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (rt *runtimeState) configureReviewModelFromFields(fields []string) error {
@@ -398,11 +459,17 @@ func (rt *runtimeState) configureReviewModelFromFields(fields []string) error {
 		if rt.interactive {
 			return rt.configureReviewModelInteractive("")
 		}
-		return fmt.Errorf("usage: /review models <role> [provider] [model] [reasoning_effort]")
+		return fmt.Errorf("usage: /review models cross [provider] [model] [reasoning_effort]")
 	}
-	roleChoice, ok := resolveReviewModelRoleChoice(fields[0])
+	roleChoice, ok := resolveReviewModelRouteChoice(fields[0])
 	if !ok {
-		return fmt.Errorf("unknown review model role: %s", fields[0])
+		if legacy, legacyOK := resolveReviewModelRoleChoice(fields[0]); legacyOK {
+			if legacy.Role == "primary_reviewer" {
+				return fmt.Errorf("primary review route follows the active main model; use /model to change it, or /review models cross <provider> <model> for an independent reviewer route")
+			}
+			return fmt.Errorf("%s is now a review lens, not a model route; use /review models cross <provider> <model> for an independent reviewer route", legacy.Token)
+		}
+		return fmt.Errorf("unknown review model route: %s", fields[0])
 	}
 	if len(fields) == 1 {
 		if rt.interactive {
@@ -435,8 +502,8 @@ func (rt *runtimeState) configureReviewModelFromFields(fields []string) error {
 
 func (rt *runtimeState) configureReviewModelInteractive(role string) error {
 	role = normalizeReviewRole(role)
-	if _, ok := resolveReviewModelRoleChoice(role); !ok {
-		fmt.Fprintln(rt.writer, rt.ui.section("Review Model Role"))
+	if _, ok := resolveReviewModelRouteChoice(role); !ok {
+		fmt.Fprintln(rt.writer, rt.ui.section("Review Model Route"))
 		reviewCfg := configReviewHarness(rt.cfg)
 		for _, option := range reviewModelRoleChoices() {
 			label, source := reviewRoleModelLabelAndSource(rt.cfg, reviewCfg, option.Role)
@@ -445,7 +512,7 @@ func (rt *runtimeState) configureReviewModelInteractive(role string) error {
 			}
 		}
 		for {
-			choice, err := rt.promptValue("Select review role", "1")
+			choice, err := rt.promptValue("Select review route", "1")
 			if err != nil {
 				return err
 			}
@@ -454,22 +521,22 @@ func (rt *runtimeState) configureReviewModelInteractive(role string) error {
 				role = selected.Role
 				break
 			}
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("Choose a role number or name."))
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("Choose a route number or name."))
 		}
 	}
 	return rt.configureReviewModelInteractiveForProvider(role, "")
 }
 
 func (rt *runtimeState) configureReviewModelInteractiveForProvider(role string, providerArg string) error {
-	roleChoice, ok := resolveReviewModelRoleChoice(role)
+	roleChoice, ok := resolveReviewModelRouteChoice(role)
 	if !ok {
-		return fmt.Errorf("unknown review model role: %s", role)
+		return fmt.Errorf("unknown review model route: %s", role)
 	}
 	provider := normalizeProviderName(providerArg)
 	reviewCfg := configReviewHarness(rt.cfg)
 	current := reviewCfg.RoleModels[roleChoice.Role]
 	if provider == "" {
-		fmt.Fprintln(rt.writer, rt.ui.section("Set Review "+strings.Title(roleChoice.Label)+" Model"))
+		fmt.Fprintln(rt.writer, rt.ui.section("Set Review "+strings.Title(roleChoice.Label)+" Route"))
 		rt.printProviderChoiceOptions()
 		defaultProvider := current.Provider
 		if strings.TrimSpace(defaultProvider) == "" {
@@ -621,9 +688,9 @@ func (rt *runtimeState) configureReviewModelInteractiveForProvider(role string, 
 }
 
 func (rt *runtimeState) activateReviewModelRole(role string, provider string, model string, baseURL string, apiKey string, effort string) error {
-	roleChoice, ok := resolveReviewModelRoleChoice(role)
+	roleChoice, ok := resolveReviewModelRouteChoice(role)
 	if !ok {
-		return fmt.Errorf("unknown review model role: %s", role)
+		return fmt.Errorf("unknown review model route: %s", role)
 	}
 	provider = normalizeProviderName(provider)
 	model = strings.TrimSpace(model)
@@ -675,7 +742,7 @@ func (rt *runtimeState) activateReviewModelRole(role string, provider string, mo
 		return err
 	}
 	rt.printReviewReasoningEffortDefaultNotice("review "+roleChoice.Label+" model", defaultedEffort)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Review %s set: %s", roleChoice.Label, formatProviderModelEffortLabel(provider, model, nextEffort))))
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Review %s route set: %s", roleChoice.Label, formatProviderModelEffortLabel(provider, model, nextEffort))))
 	return nil
 }
 
@@ -696,7 +763,7 @@ func (rt *runtimeState) clearReviewModelInteractive() error {
 		}
 	}
 	for {
-		choice, err := rt.promptValue("Select review role to clear", "1")
+		choice, err := rt.promptValue("Select review route to clear", "1")
 		if err != nil {
 			return err
 		}
@@ -704,23 +771,33 @@ func (rt *runtimeState) clearReviewModelInteractive() error {
 		if ok {
 			return rt.clearReviewModelRole(selected.Role)
 		}
-		fmt.Fprintln(rt.writer, rt.ui.warnLine("Choose a role number or name."))
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Choose a route or deprecated role number/name."))
 	}
 }
 
 func (rt *runtimeState) clearReviewModelRole(role string) error {
 	roleChoice, ok := resolveReviewModelRoleChoice(role)
 	if !ok {
-		return fmt.Errorf("unknown review model role: %s", role)
+		return fmt.Errorf("unknown review model route or deprecated role: %s", role)
 	}
 	reviewCfg := configReviewHarness(rt.cfg)
-	delete(reviewCfg.RoleModels, roleChoice.Role)
+	if roleChoice.Role == "cross_reviewer" {
+		for _, key := range []string{"cross_reviewer", "primary_reviewer", "security_reviewer", "false_positive_reviewer", "design_reviewer", "regression_reviewer", "test_reviewer", "final_gate_reviewer"} {
+			delete(reviewCfg.RoleModels, key)
+		}
+	} else {
+		delete(reviewCfg.RoleModels, roleChoice.Role)
+	}
 	rt.cfg.Review = reviewCfg
 	rt.syncAgentReviewerClientFromConfig()
 	if err := rt.saveUserConfigReplacingReviewRoleModels(); err != nil {
 		return err
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared review "+roleChoice.Label+" model"))
+	if roleChoice.Role == "cross_reviewer" {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared review cross route and deprecated reviewer route fallbacks"))
+	} else {
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared deprecated review "+roleChoice.Label+" model"))
+	}
 	return nil
 }
 

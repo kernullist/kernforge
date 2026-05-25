@@ -1707,7 +1707,7 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 		"main",
 		"analysis_worker",
 		"analysis_reviewer",
-		"Common /review role models are separate",
+		"primary /review route follows main",
 		"use /review models",
 		"Specialist Subagents",
 		"not /review roles",

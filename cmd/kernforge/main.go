@@ -2998,7 +2998,7 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", providerUserLabel(rt.cfg.Provider), rt.cfg.Model)))
 	if rt.hasInheritedRoleModels() {
-		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer stays disabled until explicitly configured. Use /review models for common review roles."))
+		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer stays disabled until explicitly configured. The primary review route also follows main; use /review models cross only for an independent reviewer route."))
 	}
 	return nil
 }
@@ -4328,7 +4328,7 @@ func (rt *runtimeState) configuredInteractiveReviewModel() (ReviewModelConfig, b
 		return ReviewModelConfig{}, false
 	}
 	reviewCfg := configReviewHarness(rt.cfg)
-	for _, role := range []string{"primary_reviewer", "design_reviewer", "final_gate_reviewer"} {
+	for _, role := range []string{"cross_reviewer", "primary_reviewer", "design_reviewer", "security_reviewer", "false_positive_reviewer", "regression_reviewer", "test_reviewer", "final_gate_reviewer"} {
 		roleCfg, ok := reviewCfg.RoleModels[role]
 		if !ok {
 			continue
@@ -4588,7 +4588,7 @@ func (rt *runtimeState) handleModelCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.info("  2. analysis worker"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis reviewer (project analysis only)"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  4. specialist subagent"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Common /review role models are configured with /review models."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows the main model; configure only the optional cross route with /review models."))
 
 	choice, err := rt.promptValue("Select model target", "1")
 	if errors.Is(err, ErrPromptCanceled) {
@@ -4613,7 +4613,7 @@ func (rt *runtimeState) applyModelHubChoice(choice string) error {
 	case "4", "specialist", "specialist subagent", "subagent":
 		err = rt.handleSetSpecialistModelCommand("")
 	case "plan", "plan-review", "plan reviewer", "plan-review reviewer":
-		return fmt.Errorf("plan-review reviewer routing was removed; use /review models design")
+		return fmt.Errorf("plan-review reviewer routing was removed; plan review now uses the design lens on the primary/cross review routes")
 	default:
 		return fmt.Errorf("unknown model target: %s", choice)
 	}
@@ -4770,7 +4770,7 @@ func (rt *runtimeState) setReasoningEffortTarget(target string, effort string) e
 	case "main", "session", "main-model", "main_model":
 		return rt.setMainReasoningEffort(effort)
 	case "plan", "plan-review", "plan-reviewer", "reviewer":
-		return fmt.Errorf("plan-review reviewer routing was removed; configure review role effort with /review models <role> <provider> <model> [reasoning_effort]")
+		return fmt.Errorf("plan-review reviewer routing was removed; configure the independent route with /review models cross <provider> <model> [reasoning_effort]")
 	case "worker", "analysis-worker", "analysis_worker":
 		return rt.setAnalysisReasoningEffort("worker", effort)
 	case "analysis-reviewer", "analysis_reviewer":
@@ -4923,7 +4923,7 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Common /review role models are separate; use /review models."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /review models for the optional cross route."))
 	profiles := configuredSpecialistProfiles(rt.cfg)
 	if len(profiles) == 0 {
 		return nil
@@ -7122,9 +7122,9 @@ func removedReviewCommandSuggestion(name string) string {
 	case "do-plan-review":
 		return "Use /review plan instead."
 	case "set-plan-review":
-		return "Use /review models design instead."
+		return "Use /review plan. The design lens is applied automatically."
 	case "profile-review":
-		return "Use /review models or /review models <role> instead."
+		return "Use /review models or /review models cross instead."
 	default:
 		return ""
 	}

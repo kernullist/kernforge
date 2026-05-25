@@ -341,7 +341,7 @@ func TestFormatCompletionSuggestionsShowsReviewSubcommandDescriptions(t *testing
 		"/review plan",
 		"Review an implementation plan",
 		"/review models",
-		"role-specific reviewer model",
+		"independent cross-review route",
 		"/review --mode",
 		"Force review mode",
 	} {

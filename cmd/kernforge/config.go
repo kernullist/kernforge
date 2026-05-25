@@ -3591,17 +3591,17 @@ Provider and model commands control which model is active and how planning/revie
 
 /model
 - Show all current model routing at once, including the main model, project-analysis models, and specialist subagent models.
-- Common /review role models are separate. Use /review models for primary, design, security, false-positive, regression, test, and final-gate reviewers.
+- Common /review model routing is separate. The primary review route follows the active main model; use /review models only for the optional independent cross reviewer route.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
-- Changing the main model does not overwrite explicit role model profiles. Targets marked "not configured" follow the main model until configured.
+- Changing the main model changes the primary review route. It does not overwrite the independent cross reviewer route.
 - Main profiles store their own analysis and specialist role model set. When you change analysis or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
-- /effort high sets the active main model effort. Use /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for role-specific models.
+- /effort high sets the active main model effort. Use /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for analysis/specialist models.
 - Main profiles, analysis role profiles, and specialist profiles each store their own reasoning_effort.
 - When the active main provider supports reasoning effort, the main input prompt includes effort=<current>.
-- When model selection through /model, /provider, or role-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
+- When model selection through /model, /provider, or route-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
 /permissions [mode]
 - Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
@@ -3613,12 +3613,12 @@ Provider and model commands control which model is active and how planning/revie
 - compact keeps progress updates in the footer, and stream writes every progress update persistently.
 
 /profile
-- Show saved main provider/model profiles and each profile's stored role model set.
+- Show saved main provider/model profiles and each profile's stored analysis, specialist, and review route model set.
 - If no main profile exists but a main provider/model is already selected, Kernforge saves that selection as the first profile automatically.
 - In interactive mode, enter a number to activate, rN to rename, dN to delete, or pN to pin/unpin.
 - In one-shot or scripted mode, /profile only lists profiles; use /profile <number>, /profile rename <number> <name>, /profile delete <number>, /profile pin <number>, or /profile unpin <number> for explicit changes.
 - Use /model as the main entry point for changing main, analysis, and specialist models.
-- Use /review models for common review harness role models.
+- Use /review models for the independent common review harness cross route.
 
 /provider
 - Choose and configure a provider interactively.
@@ -3640,9 +3640,10 @@ Provider and model commands control which model is active and how planning/revie
 - Review an implementation plan through the common ReviewRun schema and gate.
 
 /review models
-- Show role-specific common review harness models and, in interactive mode, choose a reviewer role/provider/model by number.
-- /review models <primary|security|false-positive|design|regression|test|final> [provider] [model] [reasoning_effort] configures one role directly.
-- /review models clear <role> clears one role override.
+- Show common review harness routes, lenses, and recent route health. In interactive mode, choose a reviewer route/provider/model by number.
+- /review models cross [provider] [model] [reasoning_effort] configures the optional independent second-pass reviewer route.
+- Security, false-positive, design, regression, test, and final-gate specialization are review lenses inside the same route, not separate model routes.
+- /review models clear cross clears the independent route. Deprecated role names are accepted only by clear for old configs.
 - This is separate from /model's project-analysis and specialist subagent routes.
 
 /new-feature <task>

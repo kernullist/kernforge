@@ -100,7 +100,7 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		SchemaStrictness:       "standard",
 		ToolCallRecoveryPolicy: "standard",
 		PatchFormatRisk:        "medium",
-		RecommendedRoles:       []string{"primary_reviewer"},
+		RecommendedRoles:       []string{"primary_reviewer", "cross_reviewer"},
 	}
 	switch normalized {
 	case "openai-codex":
@@ -111,7 +111,7 @@ func reviewProviderBehavior(provider string) ReviewProviderBehavior {
 		behavior.SchemaStrictness = "strict"
 		behavior.ToolCallRecoveryPolicy = "structured"
 		behavior.PatchFormatRisk = "low"
-		behavior.RecommendedRoles = []string{"primary_reviewer", "security_reviewer", "final_gate_reviewer"}
+		behavior.RecommendedRoles = []string{"primary_reviewer", "cross_reviewer"}
 	case "codex-cli":
 		behavior.DefaultReviewEffort = minimumReviewRoleReasoningEffort
 		behavior.MaxReviewTokens = 6000

@@ -1202,7 +1202,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	}
 	if reviewRunHasRequiredReviewerFailure(run) {
 		expected := "The failed review route is changed or the user explicitly chooses main-model fallback before any write is attempted."
-		hint := "If primary failed, change the active main model with /model or fix that provider route. If cross/dedicated reviewer failed, fix that route with /review models. Retry with a longer timeout only after the route is healthy."
+		hint := "If primary failed, change the active main model with /model or fix that provider route. If cross failed, fix that route with /review models cross or clear it with /review models clear cross. Retry with a longer timeout only after the route is healthy."
 		if reviewRunHasUsableMainReviewer(run) {
 			hint = "The main review is usable. In an interactive edit flow, explicitly say that the main model review may be used for this pre-write fallback before diff preview."
 		}
@@ -1274,28 +1274,16 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 			ExpectedResult: "Completion readiness is evaluated with warnings still visible.",
 		})
 	}
-	if strings.Contains(strings.Join(run.ModelPlan.MissingRoles, ","), "security_reviewer") || reviewHasSecurityFinding(run.Findings) {
+	if reviewHasSecurityFinding(run.Findings) && !reviewStringSliceContainsCI(run.ModelPlan.OptionalRoles, "cross_reviewer") && !reviewStringSliceContainsCI(run.ModelPlan.RequiredRoles, "cross_reviewer") {
 		out = append(out, ReviewNextCommand{
-			ID:             "set-security-model",
-			Command:        "/review models security",
-			Reason:         "security-sensitive review is using a fallback reviewer",
+			ID:             "set-cross-model",
+			Command:        "/review models cross",
+			Reason:         "security-sensitive review is using single-model review",
 			Safety:         "read_only",
 			When:           "before future security reviews",
 			AutoRun:        false,
-			ClientHint:     "Configure a dedicated security reviewer model.",
-			ExpectedResult: "Future security reviews use a dedicated reviewer route.",
-		})
-	}
-	if strings.Contains(strings.Join(run.ModelPlan.MissingRoles, ","), "false_positive_reviewer") {
-		out = append(out, ReviewNextCommand{
-			ID:             "set-false-positive-model",
-			Command:        "/review models false-positive",
-			Reason:         "anti-cheat or detection review is using a fallback false-positive reviewer",
-			Safety:         "read_only",
-			When:           "before future security reviews",
-			AutoRun:        false,
-			ClientHint:     "Configure a dedicated false-positive reviewer model.",
-			ExpectedResult: "Future detection reviews include a dedicated false-positive reviewer route.",
+			ClientHint:     "Configure an independent cross reviewer route.",
+			ExpectedResult: "Future security reviews can run an independent second-pass reviewer with the security lens.",
 		})
 	}
 	return out

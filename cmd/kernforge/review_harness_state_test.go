@@ -740,7 +740,7 @@ func TestUIPolishReviewRequiresPrimaryForBehavioralFormats(t *testing.T) {
 	}{
 		{name: "config", path: "src/ui/config.json", wantPrimary: true},
 		{name: "template", path: "src/views/page.html", wantPrimary: true},
-		{name: "css", path: "src/styles/page.css", wantPrimary: false, wantDesignOK: true},
+		{name: "css", path: "src/styles/page.css", wantPrimary: true, wantDesignOK: true},
 	}
 
 	for _, tc := range cases {
@@ -755,8 +755,8 @@ func TestUIPolishReviewRequiresPrimaryForBehavioralFormats(t *testing.T) {
 			if hasPrimary != tc.wantPrimary {
 				t.Fatalf("primary coverage for %s = %t, want %t; plan=%#v", tc.path, hasPrimary, tc.wantPrimary, plan)
 			}
-			if tc.wantDesignOK && !reviewStringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
-				t.Fatalf("expected design reviewer for %s, plan=%#v", tc.path, plan)
+			if tc.wantDesignOK && !reviewStringSliceContainsCI(plan.RequiredLenses, "design") {
+				t.Fatalf("expected design lens for %s, plan=%#v", tc.path, plan)
 			}
 		})
 	}
@@ -940,8 +940,8 @@ func TestReviewRouteHealthActionUsesRoleSpecificClearCommand(t *testing.T) {
 		LastQuality: reviewModelQualityFailed,
 	}
 	action := reviewRouteHealthActionHint(item)
-	if !strings.Contains(action, "/review models clear security") {
-		t.Fatalf("expected role-specific clear command, got %q", action)
+	if !strings.Contains(action, "/review models clear cross") {
+		t.Fatalf("expected cross-route clear command, got %q", action)
 	}
 	crossAction := reviewRouteHealthActionHint(ReviewRouteHealth{
 		Role:        "cross_reviewer",
@@ -951,8 +951,8 @@ func TestReviewRouteHealthActionUsesRoleSpecificClearCommand(t *testing.T) {
 		LastStatus:  "failed",
 		LastQuality: reviewModelQualityFailed,
 	})
-	if !strings.Contains(crossAction, "/review models clear primary") {
-		t.Fatalf("expected synthetic cross reviewer to clear primary, got %q", crossAction)
+	if !strings.Contains(crossAction, "/review models clear cross") {
+		t.Fatalf("expected synthetic cross reviewer to clear cross route, got %q", crossAction)
 	}
 }
 

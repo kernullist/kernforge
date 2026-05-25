@@ -201,6 +201,16 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(run.ModelPlan.RequiredLenses) > 0 || len(run.ModelPlan.OptionalLenses) > 0 {
+		b.WriteString("## Review Lenses\n\n")
+		if len(run.ModelPlan.RequiredLenses) > 0 {
+			fmt.Fprintf(&b, "- required: `%s`\n", strings.Join(run.ModelPlan.RequiredLenses, "`, `"))
+		}
+		if len(run.ModelPlan.OptionalLenses) > 0 {
+			fmt.Fprintf(&b, "- optional: `%s`\n", strings.Join(run.ModelPlan.OptionalLenses, "`, `"))
+		}
+		b.WriteString("\n")
+	}
 	if rendered := strings.TrimSpace(run.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
 		b.WriteString("## Runtime Gate Ledger\n\n")
 		b.WriteString(rendered)
@@ -455,10 +465,8 @@ func reviewNextCommandReasonText(cfg Config, run ReviewRun, cmd ReviewNextComman
 		return "deterministic scope discovery가 리뷰 범위를 넓다고 판단했습니다."
 	case "reviewer-fallback":
 		return "필수 reviewer route가 실패했거나 약한 출력을 반환했습니다."
-	case "set-security-model":
-		return "보안 민감 리뷰가 전용 보안 리뷰어 없이 fallback 모델로 실행되었습니다."
-	case "set-false-positive-model":
-		return "탐지/안티치트 리뷰가 전용 오탐 리뷰어 없이 fallback 모델로 실행되었습니다."
+	case "set-cross-model":
+		return "고위험 리뷰가 독립 cross reviewer 없이 single-model mode로 실행되었습니다."
 	default:
 		return cmd.Reason
 	}
@@ -487,7 +495,7 @@ func reviewNextCommandWhenText(cfg Config, run ReviewRun, cmd ReviewNextCommand)
 		return "모델 finding을 완료 근거로 신뢰하기 전에"
 	case "reviewer-fallback":
 		return "편집을 재시도하거나 파일 쓰기를 승인하기 전에"
-	case "set-security-model", "set-false-positive-model":
+	case "set-cross-model":
 		return "다음 보안/탐지 리뷰 전에"
 	default:
 		return cmd.When
@@ -517,10 +525,8 @@ func reviewNextCommandHintText(cfg Config, run ReviewRun, cmd ReviewNextCommand)
 		return "path, symbol, selection 또는 검색 결과로 리뷰 범위를 좁힌 뒤 `/review`를 다시 실행하세요."
 	case "reviewer-fallback":
 		return "`/review models status`로 route 상태를 확인하고, 모델을 바꾸거나 명시적으로 main-review fallback을 승인하세요."
-	case "set-security-model":
-		return "`/review models security`에서 전용 보안 리뷰어 모델을 번호로 선택하세요."
-	case "set-false-positive-model":
-		return "`/review models false-positive`에서 전용 오탐 리뷰어 모델을 번호로 선택하세요."
+	case "set-cross-model":
+		return "`/review models cross`에서 독립 cross reviewer route를 번호로 선택하세요. 보안/오탐 전문성은 review lens로 같은 프롬프트에 적용됩니다."
 	default:
 		return cmd.ClientHint
 	}
@@ -549,10 +555,8 @@ func reviewNextCommandExpectedResultText(cfg Config, run ReviewRun, cmd ReviewNe
 		return "구체적인 candidate file 또는 symbol을 가진 focused review run이 생성됩니다."
 	case "reviewer-fallback":
 		return "reviewer route 변경 또는 명시적 fallback 승인 전에는 파일 쓰기가 진행되지 않습니다."
-	case "set-security-model":
-		return "다음 보안 리뷰부터 전용 security reviewer route를 사용할 수 있습니다."
-	case "set-false-positive-model":
-		return "다음 탐지 리뷰부터 전용 false-positive reviewer route를 사용할 수 있습니다."
+	case "set-cross-model":
+		return "다음 고위험 리뷰부터 독립 second-pass reviewer route를 사용할 수 있습니다."
 	default:
 		return cmd.ExpectedResult
 	}

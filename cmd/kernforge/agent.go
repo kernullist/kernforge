@@ -464,9 +464,9 @@ func formatMissingPendingReviewRepairReply(cfg Config) string {
 
 func formatNoActionableReviewerGateRepairReply(cfg Config) string {
 	if localePrefersKorean(cfg) {
-		return "이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다. `primary`가 실패했다면 현재 메인 모델 또는 프로바이더 route 문제이므로 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요. `cross` 또는 전용 reviewer가 실패했다면 `/review models`로 해당 reviewer route를 정상 동작하는 모델로 바꾸세요. 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다. route를 복구한 뒤 같은 요청을 다시 실행해 주세요."
+		return "이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다. `primary`가 실패했다면 현재 메인 모델 또는 프로바이더 route 문제이므로 `/model`로 메인 모델을 바꾸거나 LM Studio/Qwen 응답 문제를 먼저 해결하세요. `cross`가 실패했다면 `/review models cross`로 해당 reviewer route를 정상 동작하는 모델로 바꾸거나 `/review models clear cross`로 single-model mode를 사용하세요. 지금 계속해도 수정할 코드 항목이 없으므로 추가 편집은 진행하지 않습니다. route를 복구한 뒤 같은 요청을 다시 실행해 주세요."
 	}
-	return "This stop was caused by a required review-stage model route failure or weak output, not by a code finding. If `primary` failed, the active main model/provider route is the problem; use `/model` to switch the main model or fix the LM Studio/Qwen response issue first. If `cross` or a dedicated reviewer failed, use `/review models` to switch that reviewer route to a working model. There is no code item to repair right now, so I will not continue editing. Restore the route, then rerun the same request."
+	return "This stop was caused by a required review-stage model route failure or weak output, not by a code finding. If `primary` failed, the active main model/provider route is the problem; use `/model` to switch the main model or fix the LM Studio/Qwen response issue first. If `cross` failed, use `/review models cross` to switch that reviewer route to a working model or `/review models clear cross` for single-model mode. There is no code item to repair right now, so I will not continue editing. Restore the route, then rerun the same request."
 }
 
 func (a *Agent) Compact(instructions string) string {
@@ -4670,7 +4670,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 			b.WriteString("Reviewer gate: not approved (did not pass)")
 		}
 		b.WriteString("\n- Result: no code changes were applied.")
-		b.WriteString("\n- Cause: a required review-stage model route failed or was classified as `weak` quality. A `primary` failure points at the active main model route; a `cross` failure points at a dedicated reviewer route.")
+		b.WriteString("\n- Cause: a required review-stage model route failed or was classified as `weak` quality. A `primary` failure points at the active main model route; a `cross` failure points at the independent cross route.")
 		b.WriteString("\n- Important: this is not write approval and not approval to bypass review.")
 		if preWriteGate {
 			b.WriteString("\n- Next condition: repair from the latest review findings and last edit proposal below, then pass the normal pre-write review through the edit tool path.")
@@ -4751,7 +4751,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n\n[3] Next step\nThis stop was caused by a required review-stage model route failure or weak output, not by a code finding.")
 		b.WriteString("\n- There is no code item to repair right now, so I will not continue editing.")
 		b.WriteString("\n- If `[0] Failed reviewer` shows `primary`, the active main model route is the problem. Use `/model` to switch the main model or fix that provider route first.")
-		b.WriteString("\n- If it shows `cross` or a dedicated reviewer, use `/review models` to switch that reviewer route to a working model.")
+		b.WriteString("\n- If it shows `cross`, use `/review models cross` to switch that reviewer route to a working model or `/review models clear cross` for single-model mode.")
 		b.WriteString("\n- Restore the route, then rerun the same request.")
 		if includeInlinePrompt {
 			b.WriteString("\n- No `y/N` continuation is offered in this state.")

@@ -16,63 +16,32 @@ func planReviewModels(cfg Config, run ReviewRun) ReviewModelPlan {
 	plan := ReviewModelPlan{
 		AssignedModels: map[string]string{},
 	}
-	required := []string{"primary_reviewer"}
-	optional := []string{}
-	switch {
-	case strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger):
-		required = []string{preFixReviewRole(reviewCfg, run)}
-	case run.Flow == "plan_review":
-		required = []string{"design_reviewer"}
-		if reviewRunSecuritySensitive(run) {
-			optional = append(optional, "security_reviewer")
-		}
-	case run.Flow == "security_review" || run.Mode == reviewModeSecurityHardening:
-		required = []string{"security_reviewer"}
-		if reviewRunFalsePositiveSensitive(run) {
-			required = append(required, "false_positive_reviewer")
-		}
-		optional = append(optional, "test_reviewer", "final_gate_reviewer")
-	case run.Mode == reviewModeRefactor:
-		required = []string{"primary_reviewer", "regression_reviewer"}
-	case run.Mode == reviewModeUIPolish:
-		if reviewRunUIPolishNeedsPrimaryCoverage(run) {
-			required = []string{"primary_reviewer", "design_reviewer"}
+	plan.RequiredRoles = []string{"primary_reviewer"}
+	plan.RequiredLenses, plan.OptionalLenses = reviewLensesForRun(run)
+	if label := reviewMainModelLabel(cfg); label != "" {
+		plan.AssignedModels["primary_reviewer"] = label
+		provider, model := reviewPrimaryRouteProviderModelForRun(cfg)
+		plan.CapabilityProfiles = append(plan.CapabilityProfiles, reviewModelCapabilityProfile("primary_reviewer", provider, model, reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run)))
+	} else {
+		label, _ := reviewRoleModelLabelAndSource(cfg, reviewCfg, "primary_reviewer")
+		if label != "" {
+			plan.AssignedModels["primary_reviewer"] = label
+			provider, model := reviewRoleProviderModelForRun(cfg, "primary_reviewer")
+			plan.CapabilityProfiles = append(plan.CapabilityProfiles, reviewModelCapabilityProfile("primary_reviewer", provider, model, reviewRoleReasoningEffortForRun(cfg, "primary_reviewer", run)))
 		} else {
-			required = []string{"design_reviewer"}
-		}
-		optional = append(optional, "regression_reviewer")
-	case run.Mode == reviewModeLiveFix:
-		required = []string{"primary_reviewer", "test_reviewer"}
-		optional = append(optional, "regression_reviewer")
-	case run.Flow == "goal_review":
-		required = []string{"primary_reviewer", "final_gate_reviewer"}
-	case run.Flow == "pr_review":
-		required = []string{"primary_reviewer"}
-		optional = append(optional, "test_reviewer")
-	default:
-		required = []string{"primary_reviewer"}
-		if reviewRunSecuritySensitive(run) {
-			optional = append(optional, "security_reviewer")
+			plan.MissingRoles = append(plan.MissingRoles, "primary_reviewer")
 		}
 	}
-	plan.RequiredRoles = analysisUniqueStrings(required)
-	plan.OptionalRoles = analysisUniqueStrings(optional)
-	for _, role := range append(append([]string(nil), plan.RequiredRoles...), plan.OptionalRoles...) {
-		label, source := reviewRoleModelLabelAndSource(cfg, reviewCfg, role)
-		if label != "" {
-			plan.AssignedModels[role] = label
-			provider, model := reviewRoleProviderModelForRun(cfg, role)
-			plan.CapabilityProfiles = append(plan.CapabilityProfiles, reviewModelCapabilityProfile(role, provider, model, reviewRoleReasoningEffortForRun(cfg, role, run)))
-		} else {
-			plan.MissingRoles = append(plan.MissingRoles, role)
-		}
-		if label != "" && reviewRoleNeedsDedicatedModel(role, run) && source != "role" {
-			plan.MissingRoles = append(plan.MissingRoles, role)
-			plan.DegradedRoles = append(plan.DegradedRoles, role)
-		}
+	if label, role := reviewConfiguredCrossRouteLabelAndRole(cfg, reviewCfg, run); label != "" {
+		plan.OptionalRoles = append(plan.OptionalRoles, "cross_reviewer")
+		plan.AssignedModels["cross_reviewer"] = label
+		provider, model := reviewRoleProviderModelForRun(cfg, role)
+		plan.CapabilityProfiles = append(plan.CapabilityProfiles, reviewModelCapabilityProfile("cross_reviewer", provider, model, reviewRoleReasoningEffortForRun(cfg, "cross_reviewer", run)))
 	}
 	plan.MissingRoles = analysisUniqueStrings(plan.MissingRoles)
 	plan.DegradedRoles = analysisUniqueStrings(plan.DegradedRoles)
+	plan.RequiredLenses = analysisUniqueStrings(plan.RequiredLenses)
+	plan.OptionalLenses = analysisUniqueStrings(plan.OptionalLenses)
 	switch {
 	case len(plan.RequiredRoles) == 0:
 		plan.Strategy = "deterministic_only"
@@ -87,15 +56,113 @@ func planReviewModels(cfg Config, run ReviewRun) ReviewModelPlan {
 		plan.Strategy = "deterministic_only"
 		plan.UserGuidance = append(plan.UserGuidance, "No reviewer model is configured; deterministic review only.")
 	}
-	for _, role := range plan.MissingRoles {
-		switch role {
-		case "security_reviewer":
-			plan.UserGuidance = append(plan.UserGuidance, "This review would benefit from a dedicated security reviewer. Configure it with /review models security.")
-		case "false_positive_reviewer":
-			plan.UserGuidance = append(plan.UserGuidance, "Anti-cheat or detection reviews benefit from a false-positive reviewer. Configure it with /review models false-positive.")
-		}
+	if len(plan.RequiredLenses) > 0 || len(plan.OptionalLenses) > 0 {
+		plan.UserGuidance = append(plan.UserGuidance, "Review specialization is applied as lenses, not separate reviewer routes: "+reviewLensSummary(plan.RequiredLenses, plan.OptionalLenses)+".")
 	}
 	return plan
+}
+
+func reviewLensesForRun(run ReviewRun) ([]string, []string) {
+	required := []string{"correctness"}
+	optional := []string{}
+	switch {
+	case strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger):
+		if reviewRunSecuritySensitive(run) {
+			required = append(required, "security")
+		}
+		if reviewRunFalsePositiveSensitive(run) {
+			required = append(required, "false_positive")
+		}
+	case run.Flow == "plan_review":
+		required = append(required, "design")
+		if reviewRunSecuritySensitive(run) {
+			optional = append(optional, "security")
+		}
+	case run.Flow == "security_review" || run.Mode == reviewModeSecurityHardening:
+		required = append(required, "security")
+		if reviewRunFalsePositiveSensitive(run) {
+			required = append(required, "false_positive")
+		}
+		optional = append(optional, "test", "final_gate")
+	case run.Mode == reviewModeRefactor:
+		required = append(required, "regression")
+	case run.Mode == reviewModeUIPolish:
+		required = append(required, "design")
+		if reviewRunUIPolishNeedsPrimaryCoverage(run) {
+			required = append(required, "correctness")
+		}
+		optional = append(optional, "regression")
+	case run.Mode == reviewModeLiveFix:
+		required = append(required, "test")
+		optional = append(optional, "regression")
+	case run.Flow == "goal_review":
+		required = append(required, "final_gate")
+	case run.Flow == "pr_review":
+		optional = append(optional, "test")
+	default:
+		if reviewRunSecuritySensitive(run) {
+			required = append(required, "security")
+		}
+		if reviewRunFalsePositiveSensitive(run) {
+			optional = append(optional, "false_positive")
+		}
+	}
+	return analysisUniqueStrings(required), analysisUniqueStrings(optional)
+}
+
+func reviewLensSummary(required []string, optional []string) string {
+	parts := []string{}
+	if len(required) > 0 {
+		parts = append(parts, "required="+strings.Join(required, ","))
+	}
+	if len(optional) > 0 {
+		parts = append(parts, "optional="+strings.Join(optional, ","))
+	}
+	return strings.Join(parts, " ")
+}
+
+func reviewConfiguredCrossRouteLabelAndRole(cfg Config, reviewCfg ReviewHarnessConfig, run ReviewRun) (string, string) {
+	for _, role := range reviewCrossRouteCandidateRoles(run) {
+		label, source := reviewRoleModelLabelAndSource(cfg, reviewCfg, role)
+		if label == "" || source == "main" {
+			continue
+		}
+		if !reviewModelLabelDiffersFromMain(cfg, label) {
+			continue
+		}
+		return label, role
+	}
+	return "", ""
+}
+
+func reviewCrossRouteCandidateRoles(run ReviewRun) []string {
+	roles := []string{"cross_reviewer"}
+	required, optional := reviewLensesForRun(run)
+	for _, lens := range append(required, optional...) {
+		switch normalizeReviewLens(lens) {
+		case "design":
+			roles = append(roles, "design_reviewer")
+		case "security":
+			roles = append(roles, "security_reviewer")
+		case "false_positive":
+			roles = append(roles, "false_positive_reviewer")
+		case "regression":
+			roles = append(roles, "regression_reviewer")
+		case "test":
+			roles = append(roles, "test_reviewer")
+		case "final_gate":
+			roles = append(roles, "final_gate_reviewer")
+		}
+	}
+	roles = append(roles, "primary_reviewer")
+	return analysisUniqueStrings(roles)
+}
+
+func reviewPrimaryRouteProviderModelForRun(cfg Config) (string, string) {
+	if strings.TrimSpace(cfg.Provider) != "" || strings.TrimSpace(cfg.Model) != "" {
+		return cfg.Provider, cfg.Model
+	}
+	return reviewRoleProviderModelForRun(cfg, "primary_reviewer")
 }
 
 func reviewRunUIPolishNeedsPrimaryCoverage(run ReviewRun) bool {
@@ -206,9 +273,20 @@ func configuredReviewRoleLabel(cfg Config, reviewCfg ReviewHarnessConfig, role s
 
 func reviewRoleModelLabelAndSource(cfg Config, reviewCfg ReviewHarnessConfig, role string) (string, string) {
 	role = normalizeReviewRole(role)
+	if role == "primary_reviewer" && strings.TrimSpace(cfg.Provider) != "" && strings.TrimSpace(cfg.Model) != "" {
+		effort, _ := reviewReasoningEffortOrDefaultForProvider(cfg.Provider, cfg.ReasoningEffort)
+		return formatProviderModelEffortLabel(cfg.Provider, cfg.Model, effort), "main"
+	}
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
 		effort := reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
 		return formatProviderModelEffortLabel(roleCfg.Provider, roleCfg.Model, effort), "role"
+	}
+	if role == "cross_reviewer" {
+		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+			effort := reviewRoleConfiguredReasoningEffort(cfg, "primary_reviewer", roleCfg)
+			return formatProviderModelEffortLabel(roleCfg.Provider, roleCfg.Model, effort), "legacy_primary_reviewer"
+		}
+		return "", ""
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
@@ -220,17 +298,6 @@ func reviewRoleModelLabelAndSource(cfg Config, reviewCfg ReviewHarnessConfig, ro
 		return formatProviderModelEffortLabel(cfg.Provider, cfg.Model, reviewRoleReasoningEffort(cfg, role)), "main"
 	}
 	return "", ""
-}
-
-func reviewRoleNeedsDedicatedModel(role string, run ReviewRun) bool {
-	switch normalizeReviewRole(role) {
-	case "security_reviewer":
-		return run.Mode == reviewModeSecurityHardening || reviewRunSecuritySensitive(run)
-	case "false_positive_reviewer":
-		return reviewRunFalsePositiveSensitive(run)
-	default:
-		return false
-	}
 }
 
 func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, run *ReviewRun) ([]ReviewFinding, []ReviewReviewerRun) {
@@ -598,22 +665,6 @@ func reviewMainRoleClient(rt *runtimeState) (ProviderClient, string, string, err
 }
 
 func reviewMainExecutionRole(plan ReviewModelPlan) string {
-	required := analysisUniqueStrings(plan.RequiredRoles)
-	if len(required) == 1 {
-		role := normalizeReviewRole(required[0])
-		if role != "" {
-			return role
-		}
-	}
-	if reviewStringSliceContainsCI(required, "primary_reviewer") || len(required) == 0 {
-		return "primary_reviewer"
-	}
-	for _, role := range required {
-		role = normalizeReviewRole(role)
-		if role != "" {
-			return role
-		}
-	}
 	return "primary_reviewer"
 }
 
@@ -727,7 +778,7 @@ func normalizeReviewReviewerGatePolicy(policy string) string {
 }
 
 func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles []string, mainClient ProviderClient, mainModel string) (ProviderClient, string, string, string, string, bool) {
-	routeRole := reviewPreferredCrossReviewRouteRole(run, preferredRoles)
+	routeRole := reviewPreferredCrossReviewRouteRole(rt.cfg, run, preferredRoles)
 	client, model, label, err := reviewRoleClient(rt, routeRole)
 	if err != nil || client == nil || strings.TrimSpace(model) == "" {
 		return nil, "", "", "", "", false
@@ -739,11 +790,7 @@ func reviewCrossReviewerClient(rt *runtimeState, run ReviewRun, preferredRoles [
 	if !reviewModelLabelDiffersFromMain(rt.cfg, label) {
 		return nil, "", "", "", "", false
 	}
-	crossRole := routeRole
-	if normalizeReviewRole(crossRole) == "primary_reviewer" {
-		crossRole = "cross_reviewer"
-	}
-	return client, model, label, normalizeReviewRole(crossRole), normalizeReviewRole(routeRole), true
+	return client, model, label, "cross_reviewer", normalizeReviewRole(routeRole), true
 }
 
 func reviewClientMatchesMain(rt *runtimeState, client ProviderClient, model string) bool {
@@ -846,17 +893,21 @@ func reviewModelConfigMatchesMain(cfg Config, roleCfg ReviewModelConfig) bool {
 	return strings.EqualFold(roleBaseURL, mainBaseURL)
 }
 
-func reviewPreferredCrossReviewRouteRole(run ReviewRun, preferredRoles []string) string {
-	for _, role := range preferredRoles {
+func reviewPreferredCrossReviewRouteRole(cfg Config, run ReviewRun, preferredRoles []string) string {
+	reviewCfg := configReviewHarness(cfg)
+	for _, role := range reviewCrossRouteCandidateRoles(run) {
 		role = normalizeReviewRole(role)
-		if role != "" {
+		if role != "" && role != "primary_reviewer" && roleHasDedicatedReviewModel(reviewCfg, role) {
 			return role
 		}
 	}
-	if reviewRunSecuritySensitive(run) {
-		return "security_reviewer"
+	for _, role := range preferredRoles {
+		role = normalizeReviewRole(role)
+		if role != "" && role != "primary_reviewer" && roleHasDedicatedReviewModel(reviewCfg, role) {
+			return role
+		}
 	}
-	return "primary_reviewer"
+	return "cross_reviewer"
 }
 
 func reviewShouldRetryOmittedReviewOutput(raw string, findings []ReviewFinding, quality string) bool {
@@ -949,7 +1000,7 @@ func requiredReviewerFailureFindings(run ReviewRun) []ReviewFinding {
 		Title:              "Required review route failed or returned weak output",
 		Evidence:           strings.Join(details, " | "),
 		Impact:             "The review gate cannot treat a failed or weak required review-stage model route as approval for a write-gated change.",
-		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross or a dedicated reviewer failed, switch that reviewer route with /review models. Then rerun the review before writing.",
+		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross failed, switch that reviewer route with /review models cross or clear it with /review models clear cross. Then rerun the review before writing.",
 		TestRecommendation: "Rerun the same review request and confirm every required review route completes with usable structured findings or approval.",
 		BlocksGate:         true,
 	}}
@@ -1584,9 +1635,17 @@ func reviewRouteHealthHasRecentTimeout(items []ReviewRouteHealth, reviewerRun Re
 
 func reviewRoleProviderModelForRun(cfg Config, role string) (string, string) {
 	role = normalizeReviewRole(role)
+	if role == "primary_reviewer" && (strings.TrimSpace(cfg.Provider) != "" || strings.TrimSpace(cfg.Model) != "") {
+		return cfg.Provider, cfg.Model
+	}
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
 		return roleCfg.Provider, roleCfg.Model
+	}
+	if role == "cross_reviewer" {
+		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
+			return roleCfg.Provider, roleCfg.Model
+		}
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" && strings.TrimSpace(roleCfg.Model) != "" {
@@ -2022,6 +2081,14 @@ func reviewRoleProgressName(role string) string {
 
 func reviewRoleReasoningEffort(cfg Config, role string) string {
 	role = normalizeReviewRole(role)
+	if role == "primary_reviewer" && strings.TrimSpace(cfg.Provider) != "" && strings.TrimSpace(cfg.Model) != "" {
+		if strings.TrimSpace(cfg.ReasoningEffort) != "" {
+			effort, _ := reviewReasoningEffortOrDefaultForProvider(cfg.Provider, cfg.ReasoningEffort)
+			return effort
+		}
+		effort, _ := reviewReasoningEffortOrDefaultForProvider(cfg.Provider, "")
+		return effort
+	}
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
 		return reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
@@ -2045,6 +2112,13 @@ func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) str
 	}
 	needsDeepBugHunt := reviewBeforeFixNeedsDeepBugHunt(run)
 	role = normalizeReviewRole(role)
+	if role == "primary_reviewer" && strings.TrimSpace(cfg.Provider) != "" && strings.TrimSpace(cfg.Model) != "" {
+		effort := reviewRoleReasoningEffort(cfg, role)
+		if needsDeepBugHunt {
+			return reasoningEffortAtLeast(effort, minimumReviewRoleReasoningEffort)
+		}
+		return effort
+	}
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.ReasoningEffort) != "" {
 		effort := reviewRoleConfiguredReasoningEffort(cfg, role, roleCfg)
@@ -2213,9 +2287,17 @@ func reviewRoleOmissionRetryBudgetForReviewRun(cfg Config, role string, run Revi
 
 func reviewRoleProviderForRun(cfg Config, role string) string {
 	role = normalizeReviewRole(role)
+	if role == "primary_reviewer" && strings.TrimSpace(cfg.Provider) != "" {
+		return cfg.Provider
+	}
 	reviewCfg := configReviewHarness(cfg)
 	if roleCfg, ok := reviewCfg.RoleModels[role]; ok && strings.TrimSpace(roleCfg.Provider) != "" {
 		return roleCfg.Provider
+	}
+	if role == "cross_reviewer" {
+		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" {
+			return roleCfg.Provider
+		}
 	}
 	if role != "primary_reviewer" {
 		if roleCfg, ok := reviewCfg.RoleModels["primary_reviewer"]; ok && strings.TrimSpace(roleCfg.Provider) != "" {
@@ -2223,25 +2305,6 @@ func reviewRoleProviderForRun(cfg Config, role string) string {
 		}
 	}
 	return cfg.Provider
-}
-
-func preFixReviewRole(reviewCfg ReviewHarnessConfig, run ReviewRun) string {
-	if reviewRunSecuritySensitive(run) {
-		if roleHasDedicatedReviewModel(reviewCfg, "security_reviewer") {
-			return "security_reviewer"
-		}
-		if strings.Contains(strings.ToLower(run.Objective), "오탐") ||
-			strings.Contains(strings.ToLower(run.Objective), "false positive") ||
-			strings.Contains(strings.ToLower(run.Objective), "false-positive") {
-			if roleHasDedicatedReviewModel(reviewCfg, "false_positive_reviewer") {
-				return "false_positive_reviewer"
-			}
-		}
-	}
-	if roleHasDedicatedReviewModel(reviewCfg, "primary_reviewer") {
-		return "primary_reviewer"
-	}
-	return "primary_reviewer"
 }
 
 func roleHasDedicatedReviewModel(reviewCfg ReviewHarnessConfig, role string) bool {
@@ -2309,16 +2372,11 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	switch normalizeReviewRole(role) {
 	case "cross_reviewer":
 		b.WriteString("Act as an independent second-pass reviewer. First review the supplied evidence yourself, then compare against the primary model draft. Do not assume the primary draft is correct.\n")
-	case "design_reviewer":
-		b.WriteString("Focus on architecture, scope, reversibility, and long-term maintenance cost.\n")
-	case "security_reviewer":
-		b.WriteString("Focus on security boundaries, privileged paths, bypass risk, stability, and abuse cases.\n")
-	case "false_positive_reviewer":
-		b.WriteString("Focus on false positives, telemetry provenance, operator interpretability, and version drift.\n")
-	case "regression_reviewer":
-		b.WriteString("Focus on behavior preservation, compatibility, and regression risk.\n")
 	default:
 		b.WriteString("Focus on correctness, security, stability, test gaps, and maintainability.\n")
+	}
+	if lensText := reviewLensSystemPrompt(run.ModelPlan); lensText != "" {
+		b.WriteString(lensText)
 	}
 	b.WriteString("Return structured output in this shape:\n")
 	b.WriteString("REVIEW_RESULT\n")
@@ -2350,12 +2408,91 @@ func reviewModelLocalCompactSystemPrompt(cfg Config, run ReviewRun, role string)
 	switch normalizeReviewRole(role) {
 	case "cross_reviewer":
 		b.WriteString("Act as a compact second-pass reviewer.\n")
-	case "security_reviewer":
-		b.WriteString("Prioritize concrete security, stability, and bypass-relevant issues.\n")
 	default:
 		b.WriteString("Prioritize concrete correctness, stability, and maintainability issues.\n")
 	}
+	if lensText := reviewLensSystemPrompt(run.ModelPlan); lensText != "" {
+		b.WriteString(lensText)
+	}
 	return b.String()
+}
+
+func reviewLensSystemPrompt(plan ReviewModelPlan) string {
+	lenses := analysisUniqueStrings(append(append([]string(nil), plan.RequiredLenses...), plan.OptionalLenses...))
+	if len(lenses) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Apply these review lenses as checklist priorities inside this route:\n")
+	for _, lens := range lenses {
+		if description := reviewLensDescription(lens); description != "" {
+			b.WriteString("- ")
+			b.WriteString(lens)
+			b.WriteString(": ")
+			b.WriteString(description)
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func reviewLensDescription(lens string) string {
+	switch normalizeReviewLens(lens) {
+	case "correctness":
+		return "correctness, stability, maintainability, and concrete code behavior."
+	case "design":
+		return "architecture, scope, reversibility, and long-term maintenance cost."
+	case "security":
+		return "security boundaries, privileged paths, bypass risk, stability, and abuse cases."
+	case "false_positive":
+		return "false positives, telemetry provenance, operator interpretability, and version drift."
+	case "regression":
+		return "behavior preservation, compatibility, OS/version drift, and refactor risk."
+	case "test":
+		return "verification coverage, replayability, and missing validation evidence."
+	case "final_gate":
+		return "final-readiness, conflicting findings, and residual-risk clarity."
+	default:
+		return ""
+	}
+}
+
+func normalizeReviewLens(lens string) string {
+	lens = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(lens, "-", "_")))
+	switch lens {
+	case "primary", "primary_reviewer", "general":
+		return "correctness"
+	case "architecture", "architect", "design_reviewer":
+		return "design"
+	case "security_reviewer":
+		return "security"
+	case "falsepositive", "fp", "false_positive_reviewer":
+		return "false_positive"
+	case "regression_reviewer":
+		return "regression"
+	case "test_reviewer", "verification":
+		return "test"
+	case "final", "gate", "final_gate_reviewer":
+		return "final_gate"
+	default:
+		return lens
+	}
+}
+
+func appendReviewLensPromptSection(b *strings.Builder, plan ReviewModelPlan) {
+	if b == nil {
+		return
+	}
+	if len(plan.RequiredLenses) == 0 && len(plan.OptionalLenses) == 0 {
+		return
+	}
+	b.WriteString("\nReview lenses:\n")
+	if len(plan.RequiredLenses) > 0 {
+		fmt.Fprintf(b, "- required: %s\n", strings.Join(plan.RequiredLenses, ", "))
+	}
+	if len(plan.OptionalLenses) > 0 {
+		fmt.Fprintf(b, "- optional: %s\n", strings.Join(plan.OptionalLenses, ", "))
+	}
 }
 
 func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
@@ -2365,6 +2502,7 @@ func buildReviewModelPrompt(cfg Config, run ReviewRun, role string) string {
 	fmt.Fprintf(&b, "Target: %s\n", run.Target)
 	fmt.Fprintf(&b, "Mode: %s\n", run.Mode)
 	fmt.Fprintf(&b, "Flow: %s\n", run.Flow)
+	appendReviewLensPromptSection(&b, run.ModelPlan)
 	if strings.TrimSpace(run.Objective) != "" {
 		fmt.Fprintf(&b, "\nObjective:\n%s\n", run.Objective)
 	}
@@ -2463,6 +2601,7 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 	fmt.Fprintf(&b, "Target: %s\n", run.Target)
 	fmt.Fprintf(&b, "Mode: %s\n", run.Mode)
 	fmt.Fprintf(&b, "Flow: %s\n", run.Flow)
+	appendReviewLensPromptSection(&b, run.ModelPlan)
 	if strings.TrimSpace(run.Objective) != "" {
 		fmt.Fprintf(&b, "\nObjective:\n%s\n", run.Objective)
 	}
@@ -2516,6 +2655,7 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 	fmt.Fprintf(&b, "Target: %s\n", run.Target)
 	fmt.Fprintf(&b, "Mode: %s\n", run.Mode)
 	fmt.Fprintf(&b, "Flow: %s\n", run.Flow)
+	appendReviewLensPromptSection(&b, run.ModelPlan)
 	if strings.TrimSpace(run.Objective) != "" {
 		fmt.Fprintf(&b, "\nObjective:\n%s\n", run.Objective)
 	}

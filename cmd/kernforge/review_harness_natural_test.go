@@ -1006,8 +1006,8 @@ func TestUIPolishReviewRequiresPrimaryForCorePaths(t *testing.T) {
 	if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
 		t.Fatalf("core-path UI polish review should require primary reviewer, got %#v", plan.RequiredRoles)
 	}
-	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
-		t.Fatalf("UI polish review should keep design reviewer, got %#v", plan.RequiredRoles)
+	if !stringSliceContainsCI(plan.RequiredLenses, "design") {
+		t.Fatalf("UI polish review should keep design lens, got %#v", plan.RequiredLenses)
 	}
 }
 
@@ -1022,8 +1022,8 @@ func TestUIPolishReviewRequiresPrimaryForEmptyPathSet(t *testing.T) {
 	if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
 		t.Fatalf("empty-path UI polish review should require primary reviewer, got %#v", plan.RequiredRoles)
 	}
-	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
-		t.Fatalf("empty-path UI polish review should keep design reviewer, got %#v", plan.RequiredRoles)
+	if !stringSliceContainsCI(plan.RequiredLenses, "design") {
+		t.Fatalf("empty-path UI polish review should keep design lens, got %#v", plan.RequiredLenses)
 	}
 }
 
@@ -1038,15 +1038,15 @@ func TestUIPolishReviewAllowsDesignOnlyForUIPaths(t *testing.T) {
 		},
 	}
 	plan := planReviewModels(cfg, run)
-	if stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
-		t.Fatalf("UI-only polish review should not force primary reviewer, got %#v", plan.RequiredRoles)
+	if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("UI-only polish review should still use primary route, got %#v", plan.RequiredRoles)
 	}
-	if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
-		t.Fatalf("UI-only polish review should require design reviewer, got %#v", plan.RequiredRoles)
+	if !stringSliceContainsCI(plan.RequiredLenses, "design") {
+		t.Fatalf("UI-only polish review should require design lens, got %#v", plan.RequiredLenses)
 	}
 }
 
-func TestExecuteReviewModelRunsUsesPlannedSingleRequiredRole(t *testing.T) {
+func TestExecuteReviewModelRunsUsesPrimaryRouteWithDesignLens(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.Provider = "scripted"
@@ -1088,32 +1088,29 @@ func TestExecuteReviewModelRunsUsesPlannedSingleRequiredRole(t *testing.T) {
 		},
 	}
 	run.ModelPlan = planReviewModels(cfg, run)
-	if role := reviewMainExecutionRole(run.ModelPlan); role != "design_reviewer" {
-		t.Fatalf("expected design reviewer main role before execution, got %q plan=%#v", role, run.ModelPlan)
+	if role := reviewMainExecutionRole(run.ModelPlan); role != "primary_reviewer" {
+		t.Fatalf("expected primary reviewer main role before execution, got %q plan=%#v", role, run.ModelPlan)
 	}
 
 	_, reviewerRuns := executeReviewModelRuns(context.Background(), rt, root, &run)
 	if len(reviewerRuns) != 1 {
 		t.Fatalf("expected one reviewer run, got %#v", reviewerRuns)
 	}
-	if reviewerRuns[0].Role != "design_reviewer" {
-		t.Fatalf("expected main review run to use design role, got %#v", reviewerRuns[0])
+	if reviewerRuns[0].Role != "primary_reviewer" {
+		t.Fatalf("expected main review run to use primary route, got %#v", reviewerRuns[0])
 	}
 	if len(provider.requests) != 1 {
 		t.Fatalf("expected one model request, got %d", len(provider.requests))
 	}
 	prompt := provider.requests[0].Messages[0].Text
-	if !strings.Contains(prompt, "Role: design_reviewer") {
-		t.Fatalf("expected planned design role in prompt, got %q", prompt)
+	if !strings.Contains(prompt, "Role: primary_reviewer") || !strings.Contains(prompt, "required: correctness, design") {
+		t.Fatalf("expected primary route with design lens in prompt, got %q", prompt)
 	}
-	if stringSliceContainsCI(run.ModelPlan.RequiredRoles, "primary_reviewer") {
-		t.Fatalf("main execution must not rewrite design-only plan to primary, got %#v", run.ModelPlan.RequiredRoles)
+	if !stringSliceContainsCI(run.ModelPlan.RequiredRoles, "primary_reviewer") {
+		t.Fatalf("main execution must preserve primary route, got %#v", run.ModelPlan.RequiredRoles)
 	}
-	if !stringSliceContainsCI(run.ModelPlan.RequiredRoles, "design_reviewer") {
-		t.Fatalf("main execution must preserve design required role, got %#v", run.ModelPlan.RequiredRoles)
-	}
-	if _, ok := run.ModelPlan.AssignedModels["design_reviewer"]; !ok {
-		t.Fatalf("expected main model assignment on design role, got %#v", run.ModelPlan.AssignedModels)
+	if _, ok := run.ModelPlan.AssignedModels["primary_reviewer"]; !ok {
+		t.Fatalf("expected main model assignment on primary route, got %#v", run.ModelPlan.AssignedModels)
 	}
 }
 
@@ -1132,8 +1129,8 @@ func TestUIPolishReviewRequiresPrimaryForExecutableUIPaths(t *testing.T) {
 		if !stringSliceContainsCI(plan.RequiredRoles, "primary_reviewer") {
 			t.Fatalf("executable UI polish path %q should require primary reviewer, got %#v", changedPath, plan.RequiredRoles)
 		}
-		if !stringSliceContainsCI(plan.RequiredRoles, "design_reviewer") {
-			t.Fatalf("executable UI polish path %q should keep design reviewer, got %#v", changedPath, plan.RequiredRoles)
+		if !stringSliceContainsCI(plan.RequiredLenses, "design") {
+			t.Fatalf("executable UI polish path %q should keep design lens, got %#v", changedPath, plan.RequiredLenses)
 		}
 	}
 }
@@ -1167,8 +1164,8 @@ func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
 		Model:           "deepseek-v4-pro",
 		ReasoningEffort: "xhigh",
 	}
-	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "xhigh" {
-		t.Fatalf("review role should preserve xhigh configured effort, got %q", got)
+	if got := reviewRoleReasoningEffort(cfg, "cross_reviewer"); got != "xhigh" {
+		t.Fatalf("legacy primary review route should preserve xhigh configured effort for cross reviewer, got %q", got)
 	}
 
 	cfg.Provider = "openai-codex-subscription"
@@ -1180,7 +1177,7 @@ func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
 		ReasoningEffort: "high",
 	}
 	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "xhigh" {
-		t.Fatalf("same-route review role should preserve higher active main effort, got %q", got)
+		t.Fatalf("primary review route should preserve higher active main effort, got %q", got)
 	}
 
 	cfg.Review.RoleModels["primary_reviewer"] = ReviewModelConfig{
@@ -1188,8 +1185,8 @@ func TestReviewRoleReasoningEffortDefaultsToAtLeastHigh(t *testing.T) {
 		Model:           "deepseek-v4-pro",
 		ReasoningEffort: "high",
 	}
-	if got := reviewRoleReasoningEffort(cfg, "primary_reviewer"); got != "high" {
-		t.Fatalf("dedicated review route should keep its configured effort, got %q", got)
+	if got := reviewRoleReasoningEffort(cfg, "cross_reviewer"); got != "high" {
+		t.Fatalf("legacy primary review route should keep configured cross effort, got %q", got)
 	}
 }
 

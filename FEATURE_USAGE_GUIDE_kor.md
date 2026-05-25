@@ -118,7 +118,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 현재 동작:
 1. "구현하자", "수정해줘", "남은 항목들을 처리해줘", "테스트까지 돌려서 끝내줘" 같은 요청은 self-driving loop 후보가 된다.
-2. 공통 review role model이 설정되어 있으면 reviewer/planner preflight에 사용할 수 있고, 없으면 deterministic 기본 plan을 사용한다.
+2. 독립 cross review route가 설정되어 있으면 reviewer/planner preflight에 사용할 수 있고, 없으면 active main model과 deterministic gate를 사용한다.
 3. "방금 에러는 왜 난거야?", "현재 상태 알려줘", "분석해줘" 같은 read-only 요청은 자동 편집 루프를 켜지 않는다.
 
 ### Proactive Suggestion Dashboard
@@ -384,9 +384,9 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
 LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_files_per_shard` / `max_lines_per_shard`가 비어 있으면 confirmation 전에 provider, 모델 크기, max token, request timeout을 보고 값을 조정한다. 일반 request retry를 모두 소진한 뒤에도 timeout, 5xx, overload, empty response, connection reset 같은 provider-pressure error로 run이 끝나면 Kernforge는 `adaptive_retry_shards` 줄을 출력하고 더 작은 shard 제한으로 한 번 다시 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 방식으로 재시도하지 않는다.
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
-reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, common review role model, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있다. effort 지원 main/analysis/specialist target을 새로 선택했는데 undefined이면 해당 target은 기본 `low`로 저장되지만, common review role model은 기본이 최소 `high`이며 저장된 `low`/`medium` 값도 runtime에서는 `high`로 올려 실행한다.
+reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, optional cross review route, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있다. effort 지원 main/analysis/specialist target을 새로 선택했는데 undefined이면 해당 target은 기본 `low`로 저장되지만, cross review route는 기본이 최소 `high`이며 저장된 `low`/`medium` 값도 runtime에서는 `high`로 올려 실행한다.
 엄격 생략 재시도는 finding field 기준으로만 동작한다. 구조화된 finding 자체가 생략, 잘림, 또는 생략 표식이 포함된 weak output일 때 재시도하고, summary 같은 prose 영역에 `omitted`류 문구가 있어도 usable structured finding이 완성돼 있으면 그대로 수락한다.
-common review role, analysis worker/reviewer, specialist의 role별 `base_url`은 안전하게 생략할 수 있다. 같은 provider role은 main endpoint를 상속하고, 다른 provider role은 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
+cross review route, analysis worker/reviewer, specialist의 route별 `base_url`은 안전하게 생략할 수 있다. 같은 provider route는 main endpoint를 상속하고, 다른 provider route는 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 main provider/model만 바꾸면 명시적인 analysis worker/reviewer profile은 유지된다. 이전에 따로 둔 route가 아니라 현재 main model을 다시 상속시키고 싶으면 `/set-analysis-models clear`를 사용한다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 생성 문서 세트에는 run 마지막에 출력된 assistant-facing final synthesis를 그대로 보존하는 `FINAL_REPORT.md`와 architecture, security, entrypoint, build artifact, verification, fuzz target, operation 운영 문서가 함께 들어간다.
@@ -775,14 +775,14 @@ review artifact:
 
 목적:
 1. 구현 계획도 code, selection, PR, goal, final, analysis review와 같은 공통 review harness로 검토한다.
-2. role별 reviewer 모델은 `/review models`에서만 설정하며, 별도 legacy plan-review reviewer fallback은 두지 않는다.
+2. active main model은 primary review route가 되고, `/review models cross`만 독립 second-pass route로 둔다. design/security/false-positive/test 관점은 별도 모델 role이 아니라 review lens다.
 3. gate와 사용자 흐름이 허용할 때만 실행으로 이어진다.
 
 대표 명령:
 - `/review plan <task>`
 - `/review models status`
 - `/review models`
-- `/review models <role> <provider> [model]`
+- `/review models cross <provider> [model]`
 - `/review waive <finding-id> --reason <text>`
 
 좋은 상황:
@@ -793,13 +793,13 @@ review artifact:
 현재 연동:
 1. recent simulation finding이 task와 겹치면 review evidence pack에 자동 주입된다.
 2. gate는 objective fit, architecture risk, testability, security boundary, maintainability, evidence gap을 structured finding으로 남긴다.
-3. review role별 모델을 따로 설정할 수 있고, 추가 모델이 유리한 review인데 설정이 빠져 있으면 조용히 넘어가지 않고 UX 안내를 남긴다.
+3. multi-model review는 primary plus optional cross route로 제한한다. domain별 추가 모델 누락은 기록하지 않고, planner가 `required_lenses`와 `optional_lenses`를 남긴다.
 4. 명시 timeout policy가 없으면 model reviewer 요청은 bounded timeout을 사용한다. 긴 preflight 대기로 전체 턴을 붙잡기보다 빠르게 실패하고 다음 recovery path로 넘어가는 쪽을 우선한다.
 5. `@file:line-line 리뷰해줘` 같은 자연어 리뷰 요청은 `/review selection`으로 라우팅하고, focused review-and-fix 요청은 먼저 리뷰를 실행한 뒤 최신 finding을 기준으로 repair 흐름을 이어간다.
 6. focused review 요청은 더 작은 evidence/prompt budget을 쓴다. 자동 pre-write review는 diff-first로 동작해서 proposed diff, edit proposal, 필수 repair finding을 넓은 파일 재수집보다 먼저 싣는다. range-focused pre-write evidence는 가능하면 선택 범위부터 감싼 함수 끝까지의 current file context를 보장하고, `function_body_excerpt`를 별도 source로 추가한다.
 7. 자동 쓰기 전 리뷰는 문법적으로 유효한 edit preview가 나온 뒤 실제 파일 쓰기 전에 실행하고, 자동 변경 후 리뷰는 changed path가 생긴 뒤 실행한다.
-8. service, SCM, driver, 민감 경로 신호는 `security` reviewer role을 선택한다. `false-positive` role은 detection, telemetry, scan, spoofing, evasion-quality surface에만 붙인다.
-9. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 role과 provider route를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다. 또한 각 모델 호출 전에 main/cross 단계, context mode, retry budget, soft timeout을 출력하고, 긴 대기 중에는 현재 단계가 메인 1차 리뷰인지 cross 검토인지 설명한다.
+8. service, SCM, driver, 민감 경로 신호는 `security` lens를 추가한다. detection, telemetry, scan, spoofing, evasion-quality surface는 `false_positive` lens를 추가한다.
+9. review 진행 출력은 main model과 다른 reviewer가 쓰일 때 route와 provider를 명시하고, 완료 후 gate 결과와 finding 수를 별도로 보여준다. 또한 각 모델 호출 전에 main/cross 단계, context mode, retry budget, soft timeout을 출력하고, 긴 대기 중에는 현재 단계가 메인 1차 리뷰인지 cross 검토인지 설명한다.
 10. 단순 exact edit은 `apply_edit_proposal`을 사용할 수 있다. 이 경로는 file, operation, exact search, replacement/content, rationale, risk, preview fingerprint, review evidence를 기록한 뒤 write한다. `apply_patch`는 복잡한 hunk-level fallback으로 남긴다.
 11. runtime gate freshness는 review, patch transaction, verification, completion audit, final-answer review를 연결한다. stale review coverage나 waiver 없는 blocker는 `/review`, verification, 표시된 `next_command`가 장부를 회복할 때까지 final answer, 명시적 git write, MCP write-side response, completion audit readiness를 막거나 경고한다.
 12. invalid patch recovery는 흔한 wrapper 문제를 정규화하고 반복 patch signature를 기록해, 같은 malformed patch를 재제출하는 대신 target-file context를 다시 읽게 한다.
@@ -808,8 +808,8 @@ review artifact:
 15. 로컬 코드 리뷰/수리 턴은 로컬 소스 근거에 머문다. 사용자가 외부 리서치를 명시적으로 요청하지 않는 한 web/search/browser MCP tool은 tool 목록에서 숨겨지고 실행 전에도 차단된다. 모델이 그래도 웹 리서치를 시도하면 어떤 query 또는 URL을 확인하려 했는지 progress에 남기고, 로컬 코드 근거로 돌아오게 한다. 활성 작업 자체가 최신/현재 리서치 요청이면 continuation 턴은 웹 결과가 생길 때까지 그 리서치 의도를 보존하지만, 새 로컬 코드/깃/검증 요청은 우선순위를 다시 로컬 근거로 돌린다.
 16. 명시적 수정 흐름에서는 complete high-severity finding과 actionable medium correctness, stability, performance finding이 security finding이 아니어도 repair gate를 막는다. low-severity style, formatting, maintainability finding은 reviewer가 명시적으로 blocker라고 표시하지 않는 한 수정 전 리뷰에서는 warning으로 유지한다.
 17. pre-write review는 build/test verification gap을 edit preview 차단 사유가 아니라 edit 이후 검증 의무로 취급한다. "검증이 생략됨"만 말하는 warning은 계속 보이지만 같은 patch를 다시 쓰게 만들지는 않는다. 다만 Allman brace, indentation 같은 patch-local style 문제는 실제 쓰기 전에 고칠 수 있으므로 pre-write에서 차단한다.
-18. Claude Code CLI 기본 선택지는 현재 Claude family version을 표시하지만, 실제 CLI 실행에는 `sonnet`, `opus`, `haiku` 같은 안전한 alias를 넘긴다. `/review`, 자연어 리뷰, 수정 전 repair check는 main-first로 동작한다. active main model이 로컬 evidence로 첫 구조화 리뷰를 만들고, 별도 review role이 설정돼 있으면 같은 evidence와 primary draft를 받아 second-pass cross reviewer로 다시 본다. main-first 실행 role은 review model plan을 따른다. required role이 `design_reviewer` 하나뿐인 UI-only review는 실제 prompt, progress, reviewer run, assigned-model ledger 모두 design role로 실행하고, 다중-role 계획에 `primary_reviewer`가 포함된 경우에만 primary를 main pass로 둔다. cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질로 끝나도 run은 degraded 상태로 표시될 뿐, main review finding 보고나 repair loop 시작 자체를 막지는 않는다.
-19. common review role은 기본적으로 최소 `effort=high`를 사용하고, 저장된 `low`/`medium` 값도 reviewer 요청을 만들 때 `high`로 올린다. focused pre-fix bug-hunt review도 이 최소값을 유지한다. pre-write review는 여전히 hard edit gate다. 실제 edit preview가 생긴 뒤에는 필수 main/cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고, Kernforge는 파일을 건드리기 전에 reviewer route 문제를 보고한다. 이때도 implementation model에게 재시도나 웹 근거 수집을 시키지 않는다. 단, 메인 모델의 pre-write 1차 리뷰가 usable이면 중단 응답에 `메인 모델 리뷰 기준으로 진행` 선택지를 함께 보여준다. 사용자가 그 문구로 명시 승인하고 interactive diff preview가 가능한 경우에만 다음 pre-write review에서 cross reviewer 실패를 degraded evidence로 기록하되 hard blocker로는 보지 않고, 그래도 실제 쓰기 전에는 기존 diff preview 확인을 반드시 거친다.
+18. Claude Code CLI 기본 선택지는 현재 Claude family version을 표시하지만, 실제 CLI 실행에는 `sonnet`, `opus`, `haiku` 같은 안전한 alias를 넘긴다. `/review`, 자연어 리뷰, 수정 전 repair check는 main-first로 동작한다. active main model이 로컬 evidence로 첫 구조화 리뷰를 만들고, optional cross route가 설정돼 있으면 같은 evidence와 primary draft를 받아 second-pass로 다시 본다. domain 전문성은 `security`, `design`, `false_positive`, `regression`, `test`, `final_gate` lens로 prompt에 주입된다. cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질로 끝나도 run은 degraded 상태로 표시될 뿐, main review finding 보고나 repair loop 시작 자체를 막지는 않는다.
+19. cross review route는 기본적으로 최소 `effort=high`를 사용하고, 저장된 `low`/`medium` 값도 reviewer 요청을 만들 때 `high`로 올린다. focused pre-fix bug-hunt review도 이 최소값을 유지한다. pre-write review는 여전히 hard edit gate다. 실제 edit preview가 생긴 뒤에는 필수 main/cross reviewer가 실패하거나 빈 응답을 반환하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고, Kernforge는 파일을 건드리기 전에 reviewer route 문제를 보고한다. 이때도 implementation model에게 재시도나 웹 근거 수집을 시키지 않는다. 단, 메인 모델의 pre-write 1차 리뷰가 usable이면 중단 응답에 `메인 모델 리뷰 기준으로 진행` 선택지를 함께 보여준다. 사용자가 그 문구로 명시 승인하고 interactive diff preview가 가능한 경우에만 다음 pre-write review에서 cross reviewer 실패를 degraded evidence로 기록하되 hard blocker로는 보지 않고, 그래도 실제 쓰기 전에는 기존 diff preview 확인을 반드시 거친다.
 20. pre-write review가 diff preview로 진행할 수 있다고 판단하면, diff preview 질문 전에 최종 검토 결과 본문을 사용자에게 먼저 출력한다. 이 본문은 판정, blocker/warning 수, 수정 확인 대상, 남은 검토 항목, evidence, impact, required fix, test recommendation을 포함하며 긴 필드도 `...`로 잘라 조치 기준을 숨기지 않는다.
 21. build/test verification gap은 edit preview를 막는 semantic blocker가 아니라 post-edit obligation으로 처리한다. verification report는 현재 patch transaction 이후에 생성됐고 changed path를 덮을 때만 current로 보며, 오래된 session verification이나 persisted verification history는 review blocker가 아니라 runtime gate warning과 `/verify --full` next action으로 내려간다. artifact를 만들 수 있는 build/test shell 명령은 diff preview와 같은 pinned confirmation 형식인 `자동 검증을 실행할까요? [y/N/a=자동 실행]`으로 묻고, `-prompt -y` 같은 비대화형 bypass 실행에서는 diff preview처럼 자동 승인한다. progress line도 승인 전에는 `검증 승인 확인 중`으로 표시해서 실제 실행/거절/증거 상태를 분리한다. 이 lifecycle은 Codex의 command approval처럼 승인 요청, 사용자 결정, 실제 실행 결과와 evidence 기록을 분리한다. background verification은 시작 시 `pending` evidence gap이며, 완료 결과가 확인될 때만 pass/fail evidence가 된다. 검증이 거절되거나 스킵되면 이후 같은 턴의 shell 검증 재시도와 `latest` background poll은 새 shell/progress status를 내기 전에 `NOT_EXECUTED`로 막는다. 최종 답변이 skipped verification을 고지하는 것은 disclosure 의무를 충족할 뿐 성공 evidence를 만들지 않으므로, 변경 path에 성공 검증 report가 없으면 edit-loop status는 `risk_accepted`로 남긴다. background job bundle metadata는 job-list evidence를 `job_entries`에 저장하고 scalar `job_status`는 단일 job 상태에만 사용한다. 편집 후 자동 검증이 실패하면 Kernforge는 모델에게 수정을 더 시키기 전에 실패 증거가 현재 patch scope에 속하는지 판정한다. 명령/scope 또는 실패 라인이 변경 path를 직접 가리키는 경우만 좁은 repair loop로 이어가고, workspace 또는 sibling-file 실패가 변경 path와 연결되지 않으면 검증 risk로 보고하되 unrelated source/project file 수정으로 확장하지 않는다. out-of-scope 자동 검증 실패 이후 같은 턴에서 build/test/verification 재시도나 probing이 나오면 이것도 `NOT_EXECUTED`로 막아 모델이 대체 빌드 수리로 빠지지 않고 외부/환경성 blocker를 보고하게 한다. 검증 명령이 만드는 build artifact 변경은 허용하지만 source/config file 변경은 edit review gate 밖에서 계속 차단한다. C++/MSBuild adaptive verification은 변경 source를 포함하는 가장 가까운 `.vcxproj`를 먼저 사용하고, 해당 project가 선언한 `Configuration|Platform` 속성을 같이 넘겨 MSBuild가 지원하지 않는 기본 platform으로 빠지지 않게 한다. 솔루션 전체 빌드는 명시적 full verification에 남긴다. configured/detected verification tool path는 shell 경계에서 정규화하며, PowerShell에서는 quoted executable 앞에 `&`를 붙여 detected MSBuild/CMake/CTest/Ninja 경로가 문자열 literal로 파싱되지 않게 한다. verification summary는 논리 명령과 실제 resolved shell command가 다르면 둘 다 보존하고, missing-tool 판정은 빌드 출력의 임의 문구가 아니라 primary executable 기준으로만 한다.
    bypass가 아닌 비대화형 `-prompt` 실행도 검증 계획과 pinned confirmation label을 출력하고 pipe로 들어온 답변을 읽는다. stdin이 없거나 EOF이면 조용한 기본 승인이나 tool failure가 아니라 skipped/declined verification decision으로 기록한다.
@@ -858,7 +858,7 @@ review artifact:
 1. slash command 이름
 2. workspace path와 `@file` 멘션
 3. MCP resource/prompt target
-4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models primary|security|false-positive|design|regression|test|final|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
+4. `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models cross|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, `/analyze-project --mode <mode>` 같은 고정 인자
 5. `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, `/new-feature status|plan|implement|close`에 필요한 저장된 id
 6. command/subcommand 후보가 이름만이 아니라 설명까지 같이 보이도록 completion list를 렌더링한다.
 
