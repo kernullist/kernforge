@@ -7370,6 +7370,66 @@ func TestExplicitWebResearchRequestOverridesRecentLocalCodeContext(t *testing.T)
 	}
 }
 
+func TestWebResearchIntentPreservesContinuationSourcePrompt(t *testing.T) {
+	root := t.TempDir()
+	original := "Hypervisor 기반 게임핵 탐지 최신 기술들을 리서치하고 설계 문서를 작성해줘"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+	session.AddMessage(Message{Role: "assistant", Text: "웹 리서치 작업을 준비했습니다."})
+	session.AddMessage(Message{Role: "user", Text: "계속해"})
+	manager := &MCPManager{
+		servers: []*MCPClient{{
+			config: MCPServerConfig{Name: "web_research"},
+			tools: []MCPToolDescriptor{{
+				Name:        "search_web",
+				Description: "Search the web for current articles and references",
+			}},
+		}},
+	}
+
+	if got := webResearchIntentForToolTurn(session); got != original {
+		t.Fatalf("expected continuation to preserve web research intent %q, got %q", original, got)
+	}
+	if !shouldBlockLocalToolCallsBeforeWebResearch([]ToolCall{{
+		Name:      "list_files",
+		Arguments: `{"path":"."}`,
+	}}, session, manager) {
+		t.Fatalf("continuation of an unmet web research request should block local inspection first")
+	}
+}
+
+func TestWebResearchIntentDoesNotStickToFreshLocalCodeRequest(t *testing.T) {
+	root := t.TempDir()
+	original := "최신 Windows storage API 문서를 웹에서 검색해서 알려줘"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+	session.AddMessage(Message{Role: "assistant", Text: "웹 리서치 결과를 정리했습니다."})
+	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:1-20 검토하고 버그를 수정해"})
+	manager := &MCPManager{
+		servers: []*MCPClient{{
+			config: MCPServerConfig{Name: "web_research"},
+			tools: []MCPToolDescriptor{{
+				Name:        "search_web",
+				Description: "Search the web for current articles and references",
+			}},
+		}},
+	}
+
+	if got := webResearchIntentForToolTurn(session); got != "" {
+		t.Fatalf("fresh local code request should not inherit web research intent, got %q", got)
+	}
+	if shouldBlockLocalToolCallsBeforeWebResearch([]ToolCall{{
+		Name:      "list_files",
+		Arguments: `{"path":"."}`,
+	}}, session, manager) {
+		t.Fatalf("fresh local code request should not be blocked behind stale web research")
+	}
+}
+
 func TestLocalCodeToolPolicyDoesNotStickToLaterNonCodeRequest(t *testing.T) {
 	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
 	session.AddMessage(Message{Role: "user", Text: "@Source/Sample.cpp:1-20 검토하고 버그를 수정해"})

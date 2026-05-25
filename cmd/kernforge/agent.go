@@ -6296,12 +6296,32 @@ func documentAuthoringIntentForToolTurn(session *Session) string {
 	return ""
 }
 
+func webResearchIntentForToolTurn(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
+	if latestUser != "" {
+		if shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(latestUser)) {
+			return latestUser
+		}
+		if !controlRequestContinuesCurrentWorkContext(latestUser) {
+			return ""
+		}
+	}
+	effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
+	if shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(effective)) {
+		return effective
+	}
+	return ""
+}
+
 func shouldBlockLocalToolCallsBeforeWebResearch(calls []ToolCall, session *Session, mcp *MCPManager) bool {
 	if session == nil || mcp == nil || !mcp.HasWebResearchCapability() {
 		return false
 	}
-	latestUser := latestExternalOrUserMessageText(session.Messages)
-	if !shouldPrioritizeWebResearchInSystemPrompt(strings.ToLower(strings.TrimSpace(latestUser))) {
+	researchIntent := webResearchIntentForToolTurn(session)
+	if researchIntent == "" {
 		return false
 	}
 	if sessionHasWebResearchToolResult(session, mcp) || toolCallsIncludeWebResearch(calls, mcp) {
