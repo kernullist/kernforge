@@ -21,6 +21,60 @@ func TestBaseUserQueryTextStripsConversationRuntimeContext(t *testing.T) {
 	}
 }
 
+func TestBaseUserQueryTextStripsInjectedExecutionContext(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "activated skill",
+			text: strings.Join([]string{
+				"RuntimeManager.cpp 버그를 수정해",
+				"",
+				"Activated skills for this request:",
+				"### tavern-anticheat",
+				"Source: C:\\skills\\tavern-anticheat\\SKILL.md",
+				"Use Tavern-specific anti-cheat guidance.",
+			}, "\n"),
+		},
+		{
+			name: "pending review repair",
+			text: strings.Join([]string{
+				"계속 수정해",
+				"",
+				"Pending review repair confirmation:",
+				"- The user selected `y` for the pending pre-write review repair prompt.",
+				"- Continue from the latest review findings.",
+			}, "\n"),
+		},
+		{
+			name: "pending reviewer gate repair",
+			text: strings.Join([]string{
+				"계속 수정해",
+				"",
+				"Pending reviewer-gate repair confirmation:",
+				"- The user selected `y` after a pre-write reviewer gate failed.",
+				"- Do not bypass the reviewer gate.",
+			}, "\n"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := baseUserQueryText(tc.text)
+			if strings.Contains(got, "Activated skills") ||
+				strings.Contains(got, "Pending review") ||
+				strings.Contains(got, "Pending reviewer-gate") ||
+				strings.Contains(got, "Source:") {
+				t.Fatalf("expected injected execution context to be stripped, got %q", got)
+			}
+			if got == "" {
+				t.Fatalf("expected original user request to remain")
+			}
+		})
+	}
+}
+
 func TestRenderRelevantProjectAnalysisContextIncludesSemanticIndexV2SecurityHits(t *testing.T) {
 	artifacts := latestAnalysisArtifacts{
 		Pack: KnowledgePack{

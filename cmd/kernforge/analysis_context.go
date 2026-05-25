@@ -1138,6 +1138,9 @@ func baseUserQueryText(text string) string {
 	markers := []string{
 		"\n\nRequest mode:",
 		"\n\nGit intent:\n",
+		"\n\nActivated skills for this request:\n",
+		"\n\nPending review repair confirmation:\n",
+		"\n\nPending reviewer-gate repair confirmation:\n",
 		"\n\nRelevant persistent memory from past sessions:\n",
 		"\n\nRelevant project analysis from past analyze-project runs:\n",
 		"\n\nAuto-discovered code context:\n",
