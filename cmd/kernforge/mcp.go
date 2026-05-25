@@ -225,6 +225,7 @@ type MCPServerStatus struct {
 	URL           string
 	Cwd           string
 	EnvironmentID string
+	AuthStatus    string
 	ToolCount     int
 	ResourceCount int
 	PromptCount   int
@@ -569,6 +570,7 @@ func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []str
 				URL:           cfg.URL,
 				Cwd:           resolveMCPServerCwd(ws, cfg),
 				EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
+				AuthStatus:    mcpHTTPAuthStatus(cfg, buildMCPHTTPHeaders(cfg), os.Getenv),
 				Error:         err.Error(),
 			})
 			warnings = append(warnings, fmt.Sprintf("mcp server %s: %v", cfg.Name, err))
@@ -868,6 +870,7 @@ func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
 			Transport:     mcpServerTransport(cfg),
 			URL:           endpoint,
 			EnvironmentID: effectiveMCPServerEnvironmentID(cfg),
+			AuthStatus:    mcpHTTPAuthStatus(cfg, headers, os.Getenv),
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -924,6 +927,39 @@ func buildMCPHTTPHeaders(cfg MCPServerConfig) map[string]string {
 		}
 	}
 	return headers
+}
+
+func mcpHTTPAuthStatus(cfg MCPServerConfig, headers map[string]string, getenv func(string) string) string {
+	if strings.TrimSpace(cfg.URL) == "" {
+		return ""
+	}
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	if envName := strings.TrimSpace(cfg.BearerTokenEnvVar); envName != "" {
+		if strings.TrimSpace(getenv(envName)) == "" {
+			return "bearer_token_missing"
+		}
+		return "bearer_token"
+	}
+	for name := range headers {
+		if strings.EqualFold(strings.TrimSpace(name), "Authorization") {
+			return "bearer_token"
+		}
+	}
+	for name, envName := range cfg.EnvHTTPHeaders {
+		if !strings.EqualFold(strings.TrimSpace(name), "Authorization") {
+			continue
+		}
+		if strings.TrimSpace(envName) == "" {
+			continue
+		}
+		return "bearer_token_missing"
+	}
+	if cfg.OAuth != nil || strings.TrimSpace(cfg.OAuthResource) != "" {
+		return "oauth_configured"
+	}
+	return "none"
 }
 
 func (m *MCPManager) Close() {

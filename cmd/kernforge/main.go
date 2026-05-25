@@ -6682,8 +6682,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.section("MCP"))
 		for _, status := range statuses {
 			environmentID := mcpStatusEnvironmentID(status)
+			authSuffix := mcpStatusAuthSuffix(status)
 			if strings.TrimSpace(status.Error) != "" {
-				fmt.Fprintf(rt.writer, "%s  transport=%s  env=%s  error=%s\n", status.Name, valueOrDefault(status.Transport, "stdio"), environmentID, status.Error)
+				fmt.Fprintf(rt.writer, "%s  transport=%s  env=%s%s  error=%s\n", status.Name, valueOrDefault(status.Transport, "stdio"), environmentID, authSuffix, status.Error)
 				continue
 			}
 			extra := ""
@@ -6698,7 +6699,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 				location = status.URL
 				locationLabel = "url"
 			}
-			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  transport=%s  env=%s  %s=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, valueOrDefault(status.Transport, "stdio"), environmentID, locationLabel, location, extra)
+			fmt.Fprintf(rt.writer, "%s  tools=%d  resources=%d  prompts=%d  transport=%s  env=%s%s  %s=%s%s\n", status.Name, status.ToolCount, status.ResourceCount, status.PromptCount, valueOrDefault(status.Transport, "stdio"), environmentID, authSuffix, locationLabel, location, extra)
 		}
 	case "resources":
 		items := rt.mcpResources()
@@ -9538,6 +9539,14 @@ func mcpStatusEnvironmentID(status MCPServerStatus) string {
 		return defaultMCPServerEnvironmentID
 	}
 	return environmentID
+}
+
+func mcpStatusAuthSuffix(status MCPServerStatus) string {
+	authStatus := strings.TrimSpace(status.AuthStatus)
+	if authStatus == "" {
+		return ""
+	}
+	return "  auth=" + authStatus
 }
 
 func (rt *runtimeState) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {

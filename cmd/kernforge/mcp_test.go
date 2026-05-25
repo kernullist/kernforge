@@ -795,6 +795,9 @@ func TestLoadMCPManagerStartsStreamableHTTPServerAndCallsTools(t *testing.T) {
 	if statuses[0].Transport != "streamable_http" || statuses[0].URL != server.URL {
 		t.Fatalf("unexpected HTTP MCP status: %#v", statuses[0])
 	}
+	if statuses[0].AuthStatus != "bearer_token" {
+		t.Fatalf("expected bearer token auth status, got %#v", statuses[0])
+	}
 	tools := manager.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
@@ -812,6 +815,50 @@ func TestLoadMCPManagerStartsStreamableHTTPServerAndCallsTools(t *testing.T) {
 	manager.Close()
 	if !sawDelete {
 		t.Fatalf("expected HTTP MCP session delete on close")
+	}
+}
+
+func TestMCPHTTPAuthStatusReportsConfiguredModes(t *testing.T) {
+	if got := mcpHTTPAuthStatus(MCPServerConfig{URL: "https://example.com/mcp"}, nil, nil); got != "none" {
+		t.Fatalf("expected no auth status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{
+		URL:               "https://example.com/mcp",
+		BearerTokenEnvVar: "MCP_TOKEN",
+	}, nil, func(string) string { return "" }); got != "bearer_token_missing" {
+		t.Fatalf("expected missing bearer token status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{
+		URL:               "https://example.com/mcp",
+		BearerTokenEnvVar: "MCP_TOKEN",
+	}, nil, func(string) string { return "token" }); got != "bearer_token" {
+		t.Fatalf("expected bearer token status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{URL: "https://example.com/mcp"}, map[string]string{
+		"Authorization": "Bearer token",
+	}, nil); got != "bearer_token" {
+		t.Fatalf("expected authorization header bearer status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{
+		URL: "https://example.com/mcp",
+		EnvHTTPHeaders: map[string]string{
+			"Authorization": "MCP_AUTH_HEADER",
+		},
+	}, nil, func(string) string { return "" }); got != "bearer_token_missing" {
+		t.Fatalf("expected missing authorization env header status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{
+		URL: "https://example.com/mcp",
+		OAuth: &MCPServerOAuthConfig{
+			ClientID: "client",
+		},
+	}, nil, nil); got != "oauth_configured" {
+		t.Fatalf("expected oauth status, got %q", got)
+	}
+	if got := mcpHTTPAuthStatus(MCPServerConfig{
+		Command: "node",
+	}, nil, nil); got != "" {
+		t.Fatalf("expected stdio auth status to be empty, got %q", got)
 	}
 }
 
