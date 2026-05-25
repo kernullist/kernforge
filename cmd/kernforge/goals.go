@@ -27,7 +27,7 @@ const (
 
 	defaultGoalMaxIterations = 0
 
-	ephemeralThreadGoalUserMessage = "Goals need a saved session. This session is temporary.\nRun `kernforge` to start a saved session, or `/resume` to reopen one."
+	ephemeralThreadGoalUserMessage = "Goals need a saved session. This session is temporary.\nRun `kernforge` to start a saved session, or `kernforge -resume <session-id>` / `/resume` to reopen one."
 	ephemeralThreadGoalCause       = "thread goals require a persisted thread; this thread is ephemeral"
 )
 

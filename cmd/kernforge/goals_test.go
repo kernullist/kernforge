@@ -1612,6 +1612,17 @@ func TestGoalToolsRejectTemporarySessionWithSavedSessionMessage(t *testing.T) {
 	check("update_goal", err)
 }
 
+func TestEphemeralThreadGoalErrorExplainsResumeOptions(t *testing.T) {
+	err := ephemeralThreadGoalError{}
+	want := "Goals need a saved session. This session is temporary.\nRun `kernforge` to start a saved session, or `kernforge -resume <session-id>` / `/resume` to reopen one."
+	if err.Error() != want {
+		t.Fatalf("temporary-session goal message mismatch:\nwant: %q\n got: %q", want, err.Error())
+	}
+	if !errors.Is(err, errThreadGoalsRequirePersistedThread) {
+		t.Fatalf("temporary-session goal error should preserve persisted-thread cause")
+	}
+}
+
 func TestGoalCommandRejectsTemporarySessionWithSavedSessionMessage(t *testing.T) {
 	root := t.TempDir()
 	rt := &runtimeState{
