@@ -92,6 +92,9 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 }
 
 func postChangeGeneratedDocumentArtifactSkipRequest(session *Session, request string, changedPaths []string) string {
+	if generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(request) {
+		return ""
+	}
 	if skipRequest := postChangeGeneratedDocumentArtifactRequest(session, request, changedPaths); skipRequest != "" {
 		return skipRequest
 	}
@@ -515,6 +518,7 @@ func generatedDocumentArtifactRequestStartsFreshNonArtifactTurn(requestText stri
 	case TurnIntentDiagnoseRecentError,
 		TurnIntentExplainCurrentState,
 		TurnIntentAskProjectKnowledge,
+		TurnIntentReviewCode,
 		TurnIntentEditCode,
 		TurnIntentRunCommand,
 		TurnIntentPlanOrDesign:

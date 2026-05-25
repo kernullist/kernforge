@@ -13637,6 +13637,8 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 		"커밋하자",
 		"지금 몇 % 정도 작업 완료된 것 같아?",
 		"테스트 실행해",
+		"RuntimeManager.cpp 코드 리뷰해줘",
+		"수정하지 말고 RuntimeManager.cpp 리뷰만 해줘",
 		"RuntimeManager.cpp 버그를 수정해",
 	}
 	if !looksLikeExplicitGitIntent("커밋하자") {

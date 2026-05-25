@@ -693,6 +693,49 @@ func TestPostChangeReviewSkipsAcceptedGeneratedDocumentArtifactWithoutRequestCon
 	}
 }
 
+func TestPostChangeReviewDoesNotTreatFreshReviewRequestAsDocumentFinalization(t *testing.T) {
+	root := t.TempDir()
+	originalRequest := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"
+	reviewRequest := "RuntimeManager.cpp 코드 리뷰해줘"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:           "accept-doc-report",
+		SourcePrompt: originalRequest,
+	}
+	session.TaskState = &TaskState{
+		Goal:  originalRequest,
+		Phase: "done",
+	}
+	session.LastCodingHarnessReport = &CodingHarnessReport{
+		Approved: true,
+		ArtifactQuality: ArtifactQualityReport{
+			Artifacts: []ArtifactQualityCheck{{
+				Path:         "Tavern/BugReport.md",
+				Kind:         "document",
+				Substantive:  true,
+				ContentChars: 4096,
+			}},
+		},
+	}
+	session.PatchTransactions = []PatchTransaction{{
+		ID:     "patch-doc",
+		Goal:   originalRequest,
+		Status: patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "Tavern/BugReport.md",
+				Operation: "write_file",
+			}},
+		}},
+	}}
+
+	if skipRequest := postChangeGeneratedDocumentArtifactSkipRequest(session, reviewRequest, []string{"Tavern/BugReport.md"}); skipRequest != "" {
+		t.Fatalf("fresh review request must not reuse stale document artifact skip context, got %q", skipRequest)
+	}
+}
+
 func TestPostChangeReviewGeneratedDocumentArtifactRunsDeterministicQualityGate(t *testing.T) {
 	root := t.TempDir()
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"

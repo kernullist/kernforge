@@ -10,6 +10,7 @@ const (
 	TurnIntentContinueLastTask    TurnIntent = "continue_last_task"
 	TurnIntentExplainCurrentState TurnIntent = "explain_current_state"
 	TurnIntentAskProjectKnowledge TurnIntent = "ask_project_knowledge"
+	TurnIntentReviewCode          TurnIntent = "review_code"
 	TurnIntentEditCode            TurnIntent = "edit_code"
 	TurnIntentRunCommand          TurnIntent = "run_command"
 	TurnIntentPlanOrDesign        TurnIntent = "plan_or_design"
@@ -34,6 +35,9 @@ func classifyTurnIntent(text string) TurnIntent {
 	}
 	if looksLikeExplicitEditIntent(base) {
 		return TurnIntentEditCode
+	}
+	if hasNaturalReviewIntent(base) && !looksLikeReviewArtifactAuthoringRequest(base) {
+		return TurnIntentReviewCode
 	}
 	if containsAny(base, "실행", "run ", "command", "명령", "테스트", "빌드", "build", "test") {
 		return TurnIntentRunCommand
