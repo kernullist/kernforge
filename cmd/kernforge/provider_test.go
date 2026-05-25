@@ -1111,6 +1111,50 @@ func TestOllamaClientDropsOrphanToolOutputLikeCodex(t *testing.T) {
 	}
 }
 
+func TestOllamaClientPromotesInternalUserGuidanceToLeadingSystemMessage(t *testing.T) {
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","content":"ok"},"done_reason":"stop"}`))
+	}))
+	defer server.Close()
+
+	client := NewOllamaClient(server.URL, "")
+	_, err := client.Complete(context.Background(), ChatRequest{
+		Model:  "llama-test",
+		System: "base policy",
+		Messages: []Message{
+			{Role: "user", Text: "Fix the runtime gate loop"},
+			internalUserMessage("Please provide the final answer now."),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("expected leading system and user messages, got %#v", captured["messages"])
+	}
+	system, ok := messages[0].(map[string]any)
+	if !ok || system["role"] != "system" {
+		t.Fatalf("expected leading system message, got %#v", messages[0])
+	}
+	content, _ := system["content"].(string)
+	if !strings.Contains(content, "base policy") ||
+		!strings.Contains(content, internalModelGuidanceHeader) ||
+		!strings.Contains(content, "Please provide the final answer now.") {
+		t.Fatalf("expected base system and internal guidance to be merged, got %#v", system["content"])
+	}
+	user, ok := messages[1].(map[string]any)
+	if !ok || user["role"] != "user" || user["content"] != "Fix the runtime gate loop" {
+		t.Fatalf("expected external user request after system message, got %#v", messages[1])
+	}
+}
+
 func TestOpenAICompatibleClientUsesNameFallbackForMissingToolCallID(t *testing.T) {
 	var captured map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1297,17 +1341,17 @@ func TestOpenAIClientPromotesInternalUserGuidanceToSystemMessage(t *testing.T) {
 		t.Fatalf("expected two messages, got %#v", body["messages"])
 	}
 	first, ok := messages[0].(map[string]any)
-	if !ok || first["role"] != "user" || first["content"] != "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해" {
-		t.Fatalf("expected external user request to stay unmodified, got %#v", messages[0])
+	if !ok || first["role"] != "system" {
+		t.Fatalf("expected internal guidance to move to leading system role, got %#v", messages[0])
 	}
-	second, ok := messages[1].(map[string]any)
-	if !ok || second["role"] != "system" {
-		t.Fatalf("expected internal guidance to move out of user role, got %#v", messages[1])
-	}
-	content, _ := second["content"].(string)
+	content, _ := first["content"].(string)
 	if !strings.HasPrefix(content, internalModelGuidanceHeader) ||
 		!strings.Contains(content, "Reviewer feedback") {
-		t.Fatalf("expected internal guidance system prefix, got %#v", second["content"])
+		t.Fatalf("expected internal guidance system prefix, got %#v", first["content"])
+	}
+	second, ok := messages[1].(map[string]any)
+	if !ok || second["role"] != "user" || second["content"] != "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해" {
+		t.Fatalf("expected external user request to stay unmodified after leading system message, got %#v", messages[1])
 	}
 }
 

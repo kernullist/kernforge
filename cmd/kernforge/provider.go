@@ -239,6 +239,9 @@ func providerSystemGuidanceMessage(msg Message) (string, bool) {
 	if messageIsInternalUserGuidanceForModel(msg) && len(msg.Images) == 0 {
 		return strings.TrimSpace(modelFacingMessageText(msg)), true
 	}
+	if strings.EqualFold(strings.TrimSpace(msg.Role), "system") && len(msg.Images) == 0 {
+		return strings.TrimSpace(msg.Text), true
+	}
 	if strings.EqualFold(strings.TrimSpace(msg.Role), "developer") {
 		return strings.TrimSpace(msg.Text), true
 	}
@@ -263,6 +266,19 @@ func appendProviderSystemText(existing string, addition string) string {
 		return addition
 	}
 	return existing + "\n\n" + addition
+}
+
+func splitProviderSystemGuidance(baseSystem string, messages []Message) (string, []Message) {
+	system := strings.TrimSpace(baseSystem)
+	conversation := make([]Message, 0, len(messages))
+	for _, msg := range messages {
+		if text, ok := providerSystemGuidanceMessage(msg); ok {
+			system = appendProviderSystemText(system, text)
+			continue
+		}
+		conversation = append(conversation, msg)
+	}
+	return system, conversation
 }
 
 func cliConversationRoleLabel(msg Message) string {
@@ -978,12 +994,13 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 
 	payload := anthropicRequest{
 		Model:       req.Model,
-		System:      req.System,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 		Messages:    make([]anthropicMessage, 0, len(req.Messages)),
 		Tools:       make([]anthropicTool, 0, len(req.Tools)),
 	}
+	messages := ensureOpenAIToolCallResponses(req.Messages)
+	payload.System, messages = splitProviderSystemGuidance(req.System, messages)
 
 	for _, tool := range req.Tools {
 		payload.Tools = append(payload.Tools, anthropicTool{
@@ -993,16 +1010,10 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		})
 	}
 
-	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
-		if text, ok := providerSystemGuidanceMessage(msg); ok {
-			payload.System = appendProviderSystemText(payload.System, text)
-			continue
-		}
+	for _, msg := range messages {
 		msg.Text = modelFacingMessageText(msg)
 		blocked := anthropicMessage{Role: msg.Role}
 		switch msg.Role {
-		case "system":
-			continue
 		case "user":
 			encodedImages, err := encodeMessageImages(req.WorkingDir, msg.Images)
 			if err != nil {
@@ -1255,25 +1266,18 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		}
 	}
 
-	if strings.TrimSpace(req.System) != "" {
+	messages := ensureOpenAIToolCallResponses(req.Messages)
+	systemText, messages := splitProviderSystemGuidance(req.System, messages)
+	if strings.TrimSpace(systemText) != "" {
 		payload.Messages = append(payload.Messages, openAIMessage{
 			Role:    "system",
-			Content: req.System,
+			Content: systemText,
 		})
 	}
 
-	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
-		if text, ok := providerSystemGuidanceMessage(msg); ok {
-			payload.Messages = append(payload.Messages, openAIMessage{
-				Role:    "system",
-				Content: text,
-			})
-			continue
-		}
+	for _, msg := range messages {
 		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
-		case "system":
-			continue
 		case "user":
 			content := any(msg.Text)
 			if len(msg.Images) > 0 {
@@ -2109,24 +2113,17 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			payload.Options["num_predict"] = req.MaxTokens
 		}
 	}
-	if strings.TrimSpace(req.System) != "" {
+	messages := ensureOpenAIToolCallResponses(req.Messages)
+	systemText, messages := splitProviderSystemGuidance(req.System, messages)
+	if strings.TrimSpace(systemText) != "" {
 		payload.Messages = append(payload.Messages, ollamaMessage{
 			Role:    "system",
-			Content: req.System,
+			Content: systemText,
 		})
 	}
-	for _, msg := range ensureOpenAIToolCallResponses(req.Messages) {
-		if text, ok := providerSystemGuidanceMessage(msg); ok {
-			payload.Messages = append(payload.Messages, ollamaMessage{
-				Role:    "system",
-				Content: text,
-			})
-			continue
-		}
+	for _, msg := range messages {
 		msg.Text = modelFacingMessageText(msg)
 		switch msg.Role {
-		case "system":
-			continue
 		case "user":
 			item := ollamaMessage{Role: "user", Content: msg.Text}
 			if len(msg.Images) > 0 {
