@@ -12658,6 +12658,64 @@ func TestAgentTurnToolExposurePlanSuppressesWorkersForAnswerOnlyStates(t *testin
 	}
 }
 
+func TestAgentBlocksModelRequestedHiddenDispatchOnlyTool(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	hiddenTool := &mutableRegistryTool{
+		def: ToolDefinition{
+			Name:        "dispatch_only",
+			Description: "hidden dispatch-only tool",
+			InputSchema: emptyObjectSchema(),
+		},
+		output: "hidden executed",
+		hidden: true,
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("dispatch_only", map[string]any{"value": "from-model"}),
+			{Message: Message{Role: "assistant", Text: "숨김 도구는 실행하지 않았습니다."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(hiddenTool),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "숨김 dispatch 도구를 호출해봐")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "실행하지") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	if hiddenTool.lastInput != nil {
+		t.Fatalf("model-requested hidden dispatch-only tool must not execute, got input %#v", hiddenTool.lastInput)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected provider request")
+	}
+	if chatRequestHasTool(provider.requests[0], "dispatch_only") {
+		t.Fatalf("hidden dispatch-only tool must not be model-visible")
+	}
+	blocked := false
+	for _, msg := range session.Messages {
+		if msg.Role != "tool" || msg.ToolCallID != "call-1" {
+			continue
+		}
+		blocked = strings.Contains(msg.Text, "NOT_EXECUTED") &&
+			toolMetaString(msg.ToolMeta, "result_class") == "model_hidden_tool_block" &&
+			toolMetaBool(msg.ToolMeta, "hidden_from_model")
+	}
+	if !blocked {
+		t.Fatalf("expected hidden model tool call to be closed with a blocked result, got %#v", session.Messages)
+	}
+}
+
 func TestAgentSuppressesInteractiveWorkersAfterGeneratedDocumentWriteBeforeHarnessApproval(t *testing.T) {
 	root := t.TempDir()
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 Tavern/BugReport.md 별도 문서로 생성해"

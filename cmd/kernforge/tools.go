@@ -907,6 +907,17 @@ func (r *ToolRegistry) ToolCallSupportsParallel(name string) bool {
 	return ok && parallel.SupportsParallelToolCalls()
 }
 
+func (r *ToolRegistry) ToolHiddenFromModel(name string) bool {
+	if r == nil {
+		return false
+	}
+	tool, ok := r.tools[strings.TrimSpace(name)]
+	if !ok || isNilTool(tool) {
+		return false
+	}
+	return toolHiddenFromModel(tool)
+}
+
 func (r *ToolRegistry) RegistrationIssues() []ToolRegistrationIssue {
 	if r == nil || len(r.issues) == 0 {
 		return nil

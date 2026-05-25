@@ -1629,6 +1629,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				result = readOnlyAnalysisToolBlockedResult(a.Config, call)
 				err = fmt.Errorf("%w: %s", errReadOnlyAnalysisToolBlocked, strings.TrimSpace(call.Name))
 				blockedToolResult = true
+			} else if a.Tools.ToolHiddenFromModel(call.Name) {
+				result = hiddenModelToolCallBlockedResult(a.Config, call)
+				err = fmt.Errorf("%w: %s", errTurnDisabledToolBlocked, strings.TrimSpace(call.Name))
+				blockedToolResult = true
 			} else if turnDisabledTools[strings.TrimSpace(call.Name)] {
 				result = turnDisabledToolBlockedResult(a.Config, call)
 				err = fmt.Errorf("%w: %s", errTurnDisabledToolBlocked, strings.TrimSpace(call.Name))
@@ -7358,6 +7362,29 @@ func turnDisabledToolBlockedResult(cfg Config, call ToolCall) ToolExecutionResul
 			"plan_effect":              "none",
 			"result_class":             "turn_tool_exposure_block",
 			"turn_tool_disabled":       true,
+			"exposed_to_model":         false,
+			"command_execution_status": "blocked",
+			"changed_workspace":        false,
+			"success":                  false,
+		},
+	}
+}
+
+func hiddenModelToolCallBlockedResult(cfg Config, call ToolCall) ToolExecutionResult {
+	name := strings.TrimSpace(call.Name)
+	if name == "" {
+		name = "unknown"
+	}
+	return ToolExecutionResult{
+		DisplayText: localizedText(cfg,
+			fmt.Sprintf("NOT_EXECUTED: tool `%s` is dispatch-only and is not exposed to the model, so this model-requested call was not executed. Use the currently exposed tools or provide the final answer from existing evidence.", name),
+			fmt.Sprintf("NOT_EXECUTED: `%s` 도구는 dispatch-only이며 모델에 노출되지 않으므로, 모델이 요청한 이 호출은 실행하지 않았습니다. 현재 노출된 도구를 사용하거나 기존 근거로 최종 답변을 작성하세요.", name),
+		),
+		Meta: map[string]any{
+			"tool_name":                name,
+			"plan_effect":              "none",
+			"result_class":             "model_hidden_tool_block",
+			"hidden_from_model":        true,
 			"exposed_to_model":         false,
 			"command_execution_status": "blocked",
 			"changed_workspace":        false,

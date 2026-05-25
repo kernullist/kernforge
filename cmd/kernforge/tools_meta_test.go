@@ -136,6 +136,9 @@ func TestToolRegistryHiddenToolIsDispatchOnlyAndNotParallel(t *testing.T) {
 	if registry.ToolCallSupportsParallel("hidden_parallel") {
 		t.Fatalf("hidden dispatch-only tools must not advertise parallel execution")
 	}
+	if !registry.ToolHiddenFromModel("hidden_parallel") {
+		t.Fatalf("hidden dispatch-only tool should be detectable as model-hidden")
+	}
 	result, err := registry.ExecuteDetailed(context.Background(), "hidden_parallel", `{}`)
 	if err != nil {
 		t.Fatalf("ExecuteDetailed: %v", err)
