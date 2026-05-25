@@ -997,7 +997,7 @@ func preWritePreFixWarningIsConcreteRepairObligation(finding ReviewFinding) bool
 		preWritePreFixFindingIsConcreteRepairObligation(finding)
 }
 
-func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
+func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request string, finalReply string, lastFingerprint *string, revisionCount *int, exhaustedNudge *bool) (bool, error) {
 	if a == nil || a.Session == nil || lastFingerprint == nil || revisionCount == nil || exhaustedNudge == nil {
 		return false, nil
 	}
@@ -1013,6 +1013,13 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	}
 	*lastFingerprint = fingerprint
 	if isGeneratedDocumentArtifactQualityFingerprint(fingerprint) && !needsRevision {
+		return false, nil
+	}
+	if needsRevision && reviewRunOnlyRequiresVerificationEvidence(a.Session.LastReviewRun) && replyMentionsVerificationNotRun(finalReply) {
+		markReviewVerificationEvidenceDisclosed(a.Session.LastReviewRun)
+		if a.EmitProgress != nil {
+			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review found only missing verification evidence; the final answer already discloses verification was not run.", "자동 변경 후 리뷰에서 검증 증거 부족만 확인됐고, 최종 답변이 이미 검증 미실행을 명시했습니다."))
+		}
 		return false, nil
 	}
 	if a.EmitProgress != nil {
@@ -1046,6 +1053,148 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 		return true, nil
 	}
 	return false, nil
+}
+
+func reviewRunOnlyRequiresVerificationEvidence(run *ReviewRun) bool {
+	if run == nil {
+		return false
+	}
+	blockers := make([]ReviewFinding, 0, len(run.Findings)+len(run.RepairFindings))
+	for _, finding := range append(append([]ReviewFinding{}, run.Findings...), run.RepairFindings...) {
+		if reviewFindingBlocksPostChangeFinalGate(finding) {
+			blockers = append(blockers, finding)
+		}
+	}
+	if len(blockers) == 0 {
+		return false
+	}
+	for _, finding := range blockers {
+		if !reviewFindingOnlyRequiresVerificationEvidence(finding) {
+			return false
+		}
+	}
+	return true
+}
+
+func markReviewVerificationEvidenceDisclosed(run *ReviewRun) {
+	if run == nil {
+		return
+	}
+	blockingIDs := map[string]bool{}
+	for _, id := range run.Gate.BlockingFindings {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			blockingIDs[strings.ToLower(id)] = true
+		}
+	}
+	if len(blockingIDs) == 0 {
+		return
+	}
+	disclosedIDs := map[string]bool{}
+	warnings := append([]string{}, run.Gate.WarningFindings...)
+	for i := range run.Findings {
+		id := strings.TrimSpace(run.Findings[i].ID)
+		key := strings.ToLower(id)
+		if id == "" || !blockingIDs[key] {
+			continue
+		}
+		if !reviewFindingOnlyRequiresVerificationEvidence(run.Findings[i]) {
+			continue
+		}
+		run.Findings[i].Severity = "warning"
+		run.Findings[i].BlocksGate = false
+		run.Findings[i].ResolutionStatus = "disclosed_in_final_answer"
+		disclosedIDs[key] = true
+		warnings = append(warnings, id)
+	}
+	for i := range run.RepairFindings {
+		id := strings.TrimSpace(run.RepairFindings[i].ID)
+		key := strings.ToLower(id)
+		if id == "" || !blockingIDs[key] {
+			continue
+		}
+		if !reviewFindingOnlyRequiresVerificationEvidence(run.RepairFindings[i]) {
+			continue
+		}
+		run.RepairFindings[i].Severity = "warning"
+		run.RepairFindings[i].BlocksGate = false
+		run.RepairFindings[i].ResolutionStatus = "disclosed_in_final_answer"
+		disclosedIDs[key] = true
+		warnings = append(warnings, id)
+	}
+	remainingBlockers := make([]string, 0, len(run.Gate.BlockingFindings))
+	for _, id := range run.Gate.BlockingFindings {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !disclosedIDs[strings.ToLower(id)] {
+			remainingBlockers = append(remainingBlockers, id)
+		}
+	}
+	run.Gate.BlockingFindings = normalizeTaskStateList(remainingBlockers, 32)
+	run.Gate.WarningFindings = normalizeTaskStateList(warnings, 32)
+	if len(run.Gate.BlockingFindings) == 0 {
+		run.Gate.Verdict = reviewVerdictApprovedWithWarnings
+		run.Gate.Action = "proceed_with_disclosure"
+		run.Gate.Reason = "verification evidence is missing, but final answer discloses verification was not run"
+		run.Status = reviewVerdictApprovedWithWarnings
+		run.MachineStatus = reviewMachineStatusWarning
+		run.Result.Verdict = reviewVerdictApprovedWithWarnings
+		run.Result.Summary = "Verification evidence is missing, but the final answer discloses verification was not run."
+		run.Result.BlockingCount = 0
+		run.Result.WarningCount = len(run.Gate.WarningFindings)
+		run.RepairPlan = ReviewRepairPlan{}
+		run.RuntimeGateLedger.Blockers = nil
+		run.RuntimeGateLedger.Warnings = normalizeTaskStateList(append(run.RuntimeGateLedger.Warnings, "verification evidence missing but disclosed in final answer"), 32)
+		run.RuntimeGateLedger.Normalize()
+	}
+}
+
+func reviewFindingBlocksPostChangeFinalGate(finding ReviewFinding) bool {
+	if finding.BlocksGate {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(finding.Severity)) {
+	case "blocker", "critical", "high":
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewFindingOnlyRequiresVerificationEvidence(finding ReviewFinding) bool {
+	text := strings.ToLower(strings.Join([]string{
+		finding.ID,
+		finding.Category,
+		finding.Title,
+		finding.Evidence,
+		finding.Impact,
+		finding.RequiredFix,
+		finding.TestRecommendation,
+	}, " "))
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	if containsAny(text, "correctness", "security", "crash", "race", "leak", "overflow", "panic", "data loss", "bug fix") &&
+		!containsAny(text, "verification", "test", "build", "검증", "테스트", "빌드") {
+		return false
+	}
+	return containsAny(text,
+		"verification is required but missing",
+		"missing verification",
+		"verification evidence",
+		"no latest verification",
+		"no verification",
+		"required verification",
+		"run the required verification",
+		"/verify",
+		"run tests",
+		"test gap",
+		"검증",
+		"테스트",
+		"빌드",
+	)
 }
 
 func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request string, changedPaths []string) (bool, string) {

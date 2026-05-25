@@ -7359,6 +7359,57 @@ func TestLocalCodeToolPolicyDoesNotStickToLaterNonCodeRequest(t *testing.T) {
 	}
 }
 
+func TestLocalCodeToolPolicyPreservesAcceptanceForContinuationSteering(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
+	original := "@Source/Sample.cpp:1-20 검토하고 버그를 수정해"
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+	session.AddMessage(Message{Role: "assistant", Text: "로컬 코드 수정을 진행했습니다."})
+	session.AddMessage(Message{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"})
+
+	if got := sessionEffectiveUserRequestText(session); got != original {
+		t.Fatalf("expected continuation steering to preserve effective request %q, got %q", original, got)
+	}
+	if !shouldUseLocalCodeToolPolicy(session) {
+		t.Fatalf("continuation steering should inherit the preserved local-code tool policy")
+	}
+	if !shouldBlockWebResearchForLocalCodeWork([]ToolCall{{
+		Name:      "mcp__web_research__search_web",
+		Arguments: `{"query":"C++ static analysis best practices"}`,
+	}}, session, nil) {
+		t.Fatalf("preserved local-code continuation should block web research churn")
+	}
+}
+
+func TestToolExposureHidesWebResearchForPreservedContinuationSteering(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	original := "@Source/Sample.cpp:1-20 검토하고 버그를 수정해"
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: original}
+	session.TaskState = &TaskState{Goal: original}
+	session.AddMessage(Message{Role: "user", Text: original})
+	session.AddMessage(Message{Role: "assistant", Text: "로컬 코드 수정을 진행했습니다."})
+	session.AddMessage(Message{Role: "user", Text: "좋아 너무 작은 기능까지 먼저 확인하지 말고 전체적인 큰 흐름과 관련된 것들 위주로 먼저 확인하자"})
+	agent := &Agent{
+		Session: session,
+		Tools: NewToolRegistry(
+			&staticTool{name: "mcp__web_research__search_web", output: "web"},
+			&staticTool{name: "read_file", output: "read"},
+		),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	latestUser := sessionEffectiveUserRequestText(session)
+	plan := agent.buildTurnToolExposurePlan(nil, latestUser, false, false, false, false, shouldUseLocalCodeToolPolicy(session))
+	if !plan.DisabledTools["mcp__web_research__search_web"] {
+		t.Fatalf("preserved local-code continuation should hide web research tools, got %#v", plan.DisabledTools)
+	}
+	if plan.DisabledTools["read_file"] {
+		t.Fatalf("preserved local-code continuation should keep local inspection tools available, got %#v", plan.DisabledTools)
+	}
+}
+
 func TestLocalCodeToolPolicyAllowsCurrentRepairContinuation(t *testing.T) {
 	session := NewSession(t.TempDir(), "scripted", "main-model", "", "default")
 	session.LastReviewRun = &ReviewRun{
@@ -10962,7 +11013,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 	lastFingerprint := ""
 	revisionCount := 0
 	exhaustedNudge := false
-	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(context.Background(), request, &lastFingerprint, &revisionCount, &exhaustedNudge)
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(context.Background(), request, "Tavern/BugReport.md 문서 산출물이 완료되었습니다. 빌드/테스트 검증은 실행하지 않았습니다.", &lastFingerprint, &revisionCount, &exhaustedNudge)
 	if err != nil {
 		t.Fatalf("runAutomaticPostChangeReviewGate: %v", err)
 	}

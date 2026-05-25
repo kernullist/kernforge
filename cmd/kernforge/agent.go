@@ -1302,7 +1302,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, err
 				}
 				if successfulEditTool && !a.shouldSkipPostChangeReviewForKnownFinalBlocker(reply, unresolvedVerification) {
-					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
+					needsModelTurn, err := a.runAutomaticPostChangeReviewGate(ctx, latestUser, reply, &lastPostChangeReviewFingerprint, &postChangeReviewRevisions, &postChangeReviewExhaustedNudge)
 					if err != nil {
 						return "", err
 					}
@@ -6379,7 +6379,7 @@ func shouldUseLocalCodeToolPolicy(session *Session) bool {
 		return false
 	}
 	candidates := []string{latestExternal}
-	if latestExternal == "" {
+	if latestExternal == "" || actionContextPreservingControlRequest(latestExternal) {
 		candidates = append(candidates, strings.ToLower(strings.TrimSpace(preservableSessionAcceptancePrompt(session))))
 	}
 	if internalGuidance := strings.ToLower(strings.TrimSpace(latestInternalUserGuidanceText(session.Messages))); internalGuidance != "" {
