@@ -65,6 +65,8 @@ type ReviewModelConfig struct {
 	ServiceTier     string `json:"service_tier,omitempty"`
 }
 
+// SpecialistSubagentProfile is the persisted task-owner profile shape.
+// The old specialist naming remains in code and legacy JSON for compatibility.
 type SpecialistSubagentProfile struct {
 	Name            string   `json:"name"`
 	Description     string   `json:"description,omitempty"`
@@ -260,9 +262,49 @@ type Config struct {
 	ProjectRootMarkers          *[]string                     `json:"project_root_markers,omitempty"`
 	ProjectAnalysis             ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
 	Review                      ReviewHarnessConfig           `json:"review,omitempty"`
-	Specialists                 SpecialistSubagentsConfig     `json:"specialists,omitempty"`
+	Specialists                 SpecialistSubagentsConfig     `json:"-"`
+	TaskOwnership               *SpecialistSubagentsConfig    `json:"task_ownership,omitempty"`
+	LegacySpecialists           *SpecialistSubagentsConfig    `json:"specialists,omitempty"`
 	WorktreeIsolation           WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
 	Desktop                     map[string]any                `json:"desktop,omitempty"`
+}
+
+func (cfg *Config) UnmarshalJSON(data []byte) error {
+	type configAlias Config
+	var decoded configAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*cfg = Config(decoded)
+	normalizeTaskOwnershipConfigAliases(cfg)
+	return nil
+}
+
+func (cfg Config) MarshalJSON() ([]byte, error) {
+	normalizeTaskOwnershipConfigAliases(&cfg)
+	type configAlias Config
+	encoded := configAlias(cfg)
+	encoded.LegacySpecialists = nil
+	if cfg.Specialists.Enabled != nil || len(cfg.Specialists.Profiles) > 0 {
+		taskOwnership := cfg.Specialists
+		encoded.TaskOwnership = &taskOwnership
+	} else {
+		encoded.TaskOwnership = nil
+	}
+	return json.Marshal(encoded)
+}
+
+func normalizeTaskOwnershipConfigAliases(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.TaskOwnership != nil {
+		cfg.Specialists = *cfg.TaskOwnership
+	} else if cfg.LegacySpecialists != nil {
+		cfg.Specialists = *cfg.LegacySpecialists
+	}
+	cfg.TaskOwnership = nil
+	cfg.LegacySpecialists = nil
 }
 
 type ConfigLoadOptions struct {
@@ -284,9 +326,48 @@ type Profile struct {
 }
 
 type ProfileRoleModels struct {
-	AnalysisWorker   *Profile                    `json:"analysis_worker,omitempty"`
-	AnalysisReviewer *Profile                    `json:"analysis_reviewer,omitempty"`
-	Specialists      []SpecialistSubagentProfile `json:"specialists,omitempty"`
+	AnalysisWorker    *Profile                    `json:"analysis_worker,omitempty"`
+	AnalysisReviewer  *Profile                    `json:"analysis_reviewer,omitempty"`
+	Specialists       []SpecialistSubagentProfile `json:"-"`
+	TaskOwners        []SpecialistSubagentProfile `json:"task_owners,omitempty"`
+	LegacySpecialists []SpecialistSubagentProfile `json:"specialists,omitempty"`
+}
+
+func (roles *ProfileRoleModels) UnmarshalJSON(data []byte) error {
+	type roleModelsAlias ProfileRoleModels
+	var decoded roleModelsAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*roles = ProfileRoleModels(decoded)
+	normalizeProfileRoleModelAliases(roles)
+	return nil
+}
+
+func (roles ProfileRoleModels) MarshalJSON() ([]byte, error) {
+	normalizeProfileRoleModelAliases(&roles)
+	type roleModelsAlias ProfileRoleModels
+	encoded := roleModelsAlias(roles)
+	encoded.LegacySpecialists = nil
+	if len(roles.Specialists) > 0 {
+		encoded.TaskOwners = append([]SpecialistSubagentProfile(nil), roles.Specialists...)
+	} else {
+		encoded.TaskOwners = nil
+	}
+	return json.Marshal(encoded)
+}
+
+func normalizeProfileRoleModelAliases(roles *ProfileRoleModels) {
+	if roles == nil {
+		return
+	}
+	if roles.TaskOwners != nil {
+		roles.Specialists = append([]SpecialistSubagentProfile(nil), roles.TaskOwners...)
+	} else if roles.LegacySpecialists != nil {
+		roles.Specialists = append([]SpecialistSubagentProfile(nil), roles.LegacySpecialists...)
+	}
+	roles.TaskOwners = nil
+	roles.LegacySpecialists = nil
 }
 
 func DefaultConfig(cwd string) Config {
@@ -1174,6 +1255,7 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 }
 
 func mergeConfig(dst *Config, src Config) {
+	normalizeTaskOwnershipConfigAliases(&src)
 	if src.Provider != "" {
 		dst.Provider = src.Provider
 	}
@@ -1542,6 +1624,7 @@ func applyEnv(cfg *Config) {
 }
 
 func normalizeConfigPaths(cfg *Config) {
+	normalizeTaskOwnershipConfigAliases(cfg)
 	cfg.ReasoningEffort = normalizeReasoningEffort(cfg.ReasoningEffort)
 	cfg.ServiceTier = normalizeServiceTier(cfg.ServiceTier)
 	cfg.ProgressDisplay = normalizeProgressDisplay(cfg.ProgressDisplay)
@@ -2090,6 +2173,7 @@ func mergeConfigProfiles(base []Profile, overlay []Profile) []Profile {
 }
 
 func normalizeConfigProfile(profile Profile) Profile {
+	normalizeProfileRoleModelAliases(profile.RoleModels)
 	profile.Name = strings.TrimSpace(profile.Name)
 	profile.Provider = normalizeProviderName(profile.Provider)
 	profile.Model = strings.TrimSpace(profile.Model)
@@ -2646,23 +2730,26 @@ func InitMemoryTemplate(projectName string) string {
 
 func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 	sample := struct {
-		AutoCheckpointEdits *bool                     `json:"auto_checkpoint_edits,omitempty"`
-		AutoVerify          *bool                     `json:"auto_verify,omitempty"`
-		MaxRequestRetries   int                       `json:"max_request_retries,omitempty"`
-		RequestRetryDelayMs int                       `json:"request_retry_delay_ms,omitempty"`
-		RequestTimeoutSecs  int                       `json:"request_timeout_seconds,omitempty"`
-		ProgressDisplay     string                    `json:"progress_display,omitempty"`
-		ShellTimeoutSecs    int                       `json:"shell_timeout_seconds,omitempty"`
-		ReadHintSpans       int                       `json:"read_hint_spans,omitempty"`
-		ReadCacheEntries    int                       `json:"read_cache_entries,omitempty"`
-		MSBuildPath         string                    `json:"msbuild_path,omitempty"`
-		CMakePath           string                    `json:"cmake_path,omitempty"`
-		CTestPath           string                    `json:"ctest_path,omitempty"`
-		NinjaPath           string                    `json:"ninja_path,omitempty"`
-		SkillPaths          []string                  `json:"skill_paths,omitempty"`
-		EnabledSkills       []string                  `json:"enabled_skills,omitempty"`
-		Specialists         SpecialistSubagentsConfig `json:"specialists,omitempty"`
-		WorktreeIsolation   WorktreeIsolationConfig   `json:"worktree_isolation,omitempty"`
+		AutoCheckpointEdits *bool    `json:"auto_checkpoint_edits,omitempty"`
+		AutoVerify          *bool    `json:"auto_verify,omitempty"`
+		MaxRequestRetries   int      `json:"max_request_retries,omitempty"`
+		RequestRetryDelayMs int      `json:"request_retry_delay_ms,omitempty"`
+		RequestTimeoutSecs  int      `json:"request_timeout_seconds,omitempty"`
+		ProgressDisplay     string   `json:"progress_display,omitempty"`
+		ShellTimeoutSecs    int      `json:"shell_timeout_seconds,omitempty"`
+		ReadHintSpans       int      `json:"read_hint_spans,omitempty"`
+		ReadCacheEntries    int      `json:"read_cache_entries,omitempty"`
+		MSBuildPath         string   `json:"msbuild_path,omitempty"`
+		CMakePath           string   `json:"cmake_path,omitempty"`
+		CTestPath           string   `json:"ctest_path,omitempty"`
+		NinjaPath           string   `json:"ninja_path,omitempty"`
+		SkillPaths          []string `json:"skill_paths,omitempty"`
+		EnabledSkills       []string `json:"enabled_skills,omitempty"`
+		TaskOwnership       struct {
+			Enabled  *bool                       `json:"enabled"`
+			Profiles []SpecialistSubagentProfile `json:"profiles"`
+		} `json:"task_ownership"`
+		WorktreeIsolation WorktreeIsolationConfig `json:"worktree_isolation,omitempty"`
 	}{
 		AutoCheckpointEdits: boolPtr(false),
 		AutoVerify:          boolPtr(true),
@@ -2679,10 +2766,6 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		NinjaPath:           "",
 		SkillPaths:          []string{"./.kernforge/skills"},
 		EnabledSkills:       []string{},
-		Specialists: SpecialistSubagentsConfig{
-			Enabled:  boolPtr(true),
-			Profiles: []SpecialistSubagentProfile{},
-		},
 		WorktreeIsolation: WorktreeIsolationConfig{
 			Enabled:                boolPtr(false),
 			RootDir:                filepath.Join("~", userConfigDirName, "worktrees"),
@@ -2690,6 +2773,8 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 			AutoForTrackedFeatures: boolPtr(true),
 		},
 	}
+	sample.TaskOwnership.Enabled = boolPtr(true)
+	sample.TaskOwnership.Profiles = []SpecialistSubagentProfile{}
 	data, err := json.MarshalIndent(sample, "", "  ")
 	if err != nil {
 		return "{\n  \"skill_paths\": [\"./.kernforge/skills\"]\n}\n"
@@ -3159,9 +3244,9 @@ Provider And Models:
 /docs-refresh          Regenerate latest analysis docs, docs manifest, dashboard, and docs-backed vector corpus from saved artifacts
 /analyze-dashboard [latest|path] Open the latest or selected project analysis document portal
 /analyze-performance [focus] Analyze likely performance bottlenecks and suggest hotspot follow-up commands
-/specialists           Show specialist profiles plus editable ownership and worktree routing state
+/specialists           Show task ownership profiles plus editable ownership and worktree routing state
 /set-analysis-models   Configure worker/reviewer models for /analyze-project
-/set-specialist-model  Configure the provider/model used by a specialist subagent
+/set-specialist-model  Configure an optional provider/model override for a task owner profile
 /model                 Show all model routing and interactively reconfigure one target
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
@@ -3590,16 +3675,16 @@ Conversation and session commands manage chat history and saved sessions.
 Provider and model commands control which model is active and how planning/review flows work.
 
 /model
-- Show all current model routing at once, including the main model, project-analysis models, and specialist subagent models.
+- Show current model routing, including the main model, project-analysis models, and explicit task-owner model overrides.
 - Common /review model routing is separate. The primary review route follows the active main model; use /review models only for the optional independent cross reviewer route.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
 - Changing the main model changes the primary review route. It does not overwrite the independent cross reviewer route.
-- Main profiles store their own analysis and specialist role model set. When you change analysis or specialist models through /model, the active main profile remembers those role models; activating that profile restores the full set.
+- Main profiles store their own analysis models and optional task-owner model overrides. When you change analysis or task-owner models through /model, the active main profile remembers those role models; activating that profile restores the full set.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
-- /effort high sets the active main model effort. Use /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for analysis/specialist models.
-- Main profiles, analysis role profiles, and specialist profiles each store their own reasoning_effort.
+- /effort high sets the active main model effort. Use /effort analysis-worker low, /effort analysis-reviewer medium, or /effort specialist <name> high for analysis models and optional task-owner model overrides.
+- Main profiles, analysis role profiles, and explicit task-owner model overrides each store their own reasoning_effort.
 - When the active main provider supports reasoning effort, the main input prompt includes effort=<current>.
 - When model selection through /model, /provider, or route-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
@@ -3613,11 +3698,11 @@ Provider and model commands control which model is active and how planning/revie
 - compact keeps progress updates in the footer, and stream writes every progress update persistently.
 
 /profile
-- Show saved main provider/model profiles and each profile's stored analysis, specialist, and review route model set.
+- Show saved main provider/model profiles and each profile's stored analysis, task-owner, and review route model set.
 - If no main profile exists but a main provider/model is already selected, Kernforge saves that selection as the first profile automatically.
 - In interactive mode, enter a number to activate, rN to rename, dN to delete, or pN to pin/unpin.
 - In one-shot or scripted mode, /profile only lists profiles; use /profile <number>, /profile rename <number> <name>, /profile delete <number>, /profile pin <number>, or /profile unpin <number> for explicit changes.
-- Use /model as the main entry point for changing main, analysis, and specialist models.
+- Use /model as the main entry point for changing main, analysis, and optional task-owner model overrides.
 - Use /review models for the independent common review harness cross route.
 
 /provider
@@ -3644,7 +3729,7 @@ Provider and model commands control which model is active and how planning/revie
 - /review models cross [provider] [model] [reasoning_effort] configures the optional independent second-pass reviewer route.
 - Security, false-positive, design, regression, test, and final-gate specialization are review lenses inside the same route, not separate model routes.
 - /review models clear cross clears the independent route. Deprecated role names are accepted only by clear for old configs.
-- This is separate from /model's project-analysis and specialist subagent routes.
+- This is separate from /model's project-analysis routes and optional task-owner model overrides.
 
 /new-feature <task>
 - Create a tracked feature workspace under .kernforge/features/<id>, generate spec.md, plan.md, and tasks.md, then mark it as the active feature.
@@ -3706,17 +3791,18 @@ Provider and model commands control which model is active and how planning/revie
 - After the report, Kernforge prints a Performance handoff toward /analyze-dashboard, /verify, /simulate stealth-surface, or a hotspot /fuzz-func drilldown when an entry point is available.
 
 /specialists
-- Show the effective specialist catalog plus editable ownership and specialist worktree state for the current session.
+- Show task ownership profiles plus editable ownership and task-owner worktree state for the current session.
+- Domain owners require a strong task/path match or manual assignment; normal edits stay on implementation-owner.
 
 /specialists status
-- Show the same catalog explicitly, including active editable specialist assignments and worktree leases.
+- Show the same catalog explicitly, including active editable task-owner assignments and worktree leases.
 
-/specialists assign <node-id> <specialist> [glob,glob2]
-- Bind one task-graph node to an editable specialist, optionally override its ownership globs, and ensure that specialist has an isolated worktree lease.
+/specialists assign <node-id> <owner-profile> [glob,glob2]
+- Bind one task-graph node to an editable task owner, optionally override its ownership globs, and ensure that owner has an isolated worktree lease.
 - After assignment, Kernforge points back to /specialists status and /new-feature status when a tracked feature is active.
 
-/specialists cleanup <specialist|all>
-- Remove one specialist worktree or all recorded specialist worktrees after verifying they are clean.
+/specialists cleanup <owner-profile|all>
+- Remove one task-owner worktree or all recorded task-owner worktrees after verifying they are clean.
 
 /set-analysis-models
 - Configure dedicated worker and reviewer models used by /analyze-project.
@@ -3724,9 +3810,9 @@ Provider and model commands control which model is active and how planning/revie
 - Use /set-analysis-models clear to reset worker and reviewer to the main active model.
 
 /set-specialist-model
-- Configure the provider/model used by a specific specialist subagent.
-- Use /set-specialist-model status to show effective specialist model routing.
-- Use /set-specialist-model <specialist> <provider> [model] to set an override, or /set-specialist-model clear <specialist|all> to remove overrides.
+- Configure an optional provider/model override for a specific task owner profile.
+- Use /set-specialist-model status to show effective task owner model routing.
+- Use /set-specialist-model <owner-profile> <provider> [model] to set an override, or /set-specialist-model clear <owner-profile|all> to remove overrides.
 `), true
 	case "verify", "verification", "checkpoint", "checkpoints", "rollback", "verify-dashboard", "verify-dashboard-html", "checkpoint-auto", "checkpoint-diff", "set-auto-verify", "detect-verification-tools", "set-msbuild-path", "clear-msbuild-path", "set-cmake-path", "clear-cmake-path", "set-ctest-path", "clear-ctest-path", "set-ninja-path", "clear-ninja-path", "fuzz-func", "fuzz-campaign", "source-scan", "source_scan", "sourcescan", "create-driver-poc", "create_driver_poc", "createdriverpoc":
 		return strings.TrimSpace(`
@@ -4073,7 +4159,7 @@ Workspace setup commands generate starter files and adjust workspace-level behav
 - Show the base workspace root, active root, configured worktree root directory, and any attached isolated worktree metadata.
 
 /worktree list
-- Show the session worktree, editable specialist worktree leases, and git worktree list --porcelain output in one terminal view.
+- Show the session worktree, editable task-owner worktree leases, and git worktree list --porcelain output in one terminal view.
 - Use this before switching roots or resuming delegated work so edits do not cross into the wrong worktree.
 
 /worktree create [name]

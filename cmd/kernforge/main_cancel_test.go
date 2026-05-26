@@ -1709,16 +1709,22 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 		"analysis_reviewer",
 		"primary /review route follows main",
 		"use /review models",
-		"Specialist Subagents",
-		"not /review roles",
+		"Task Owner Model Overrides",
+		"not /review routes",
 		"planner",
 		"gpt-5.4-mini",
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected model routing output to contain %q, got %q", needle, rendered)
+		}
+	}
+	for _, bad := range []string{
 		"unreal-integrity-analyst:",
 		"memory-inspection-analyst:",
 		"not configured; follows main model -> openai-api / gpt-main",
 	} {
-		if !strings.Contains(rendered, needle) {
-			t.Fatalf("expected model routing output to contain %q, got %q", needle, rendered)
+		if strings.Contains(rendered, bad) {
+			t.Fatalf("expected unconfigured owner model routes to stay hidden, got %q", rendered)
 		}
 	}
 	for _, bad := range []string{
@@ -1803,7 +1809,7 @@ func TestRuntimeStateHandleSetSpecialistModelCommandPersistsWorkspaceOverride(t 
 	if err := rt.handleSetSpecialistModelCommand("planner openai gpt-5.4-mini"); err != nil {
 		t.Fatalf("handleSetSpecialistModelCommand: %v", err)
 	}
-	if !strings.Contains(output.String(), "Specialist planner set: openai-api / gpt-5.4-mini") {
+	if !strings.Contains(output.String(), "Task owner planner model override set: openai-api / gpt-5.4-mini") {
 		t.Fatalf("expected success output, got %q", output.String())
 	}
 	profile, ok := configuredSpecialistProfileByName(rt.cfg, "planner")
@@ -2608,7 +2614,7 @@ func TestHandleProfileCommandShowsStoredRoleModelSetInline(t *testing.T) {
 		"ollama / llama3",
 		"analysis_reviewer",
 		"openai-api / gpt-analysis-review",
-		"specialist:kernel-investigator",
+		"owner:kernel-investigator",
 		"openrouter / meta-llama/llama-3.1-70b",
 	} {
 		if !strings.Contains(text, want) {

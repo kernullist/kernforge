@@ -425,7 +425,7 @@ func renderContinuityPacketMarkdown(packet ContinuityPacket) string {
 	}
 	writeDelegationList(&b, "Changed Files", packet.ChangedFiles, "No changed files detected.")
 	writeDelegationList(&b, "Open Tasks", packet.OpenTasks, "No open task graph nodes.")
-	writeDelegationList(&b, "Worktrees", packet.Worktrees, "No isolated or specialist worktrees recorded.")
+	writeDelegationList(&b, "Worktrees", packet.Worktrees, "No isolated or task-owner worktrees recorded.")
 	if strings.TrimSpace(packet.EditLoop) != "" {
 		fmt.Fprintf(&b, "\n## Edit Loop\n\n%s\n", packet.EditLoop)
 	}

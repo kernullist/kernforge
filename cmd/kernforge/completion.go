@@ -138,7 +138,7 @@ var slashCommandDescriptions = map[string]string{
 	"effort":                     "Show or set reasoning effort for a configured model target.",
 	"codex-auth":                 "Manage Kernforge-owned OpenAI Codex OAuth login state.",
 	"codex-login":                "Start Kernforge-owned OpenAI Codex OAuth login.",
-	"specialists":                "Show specialist profiles plus editable ownership and worktree routing state.",
+	"specialists":                "Show task ownership profiles plus editable ownership and worktree routing state.",
 	"suggest":                    "Inspect proactive situation judgment, suggested next actions, and suggestion mode.",
 	"suggest-dashboard-html":     "Render proactive situation judgment and suggestions in an HTML dashboard.",
 	"session-dashboard-html":     "Render the current session thread, task graph, automation, and artifact state in an HTML dashboard.",
@@ -238,7 +238,7 @@ var slashCommandDescriptions = map[string]string{
 	"config":                     "Show effective configuration values.",
 	"trust":                      "Show or set whether this project may load project-local config and hooks.",
 	"set-analysis-models":        "Configure worker and reviewer providers for analysis.",
-	"set-specialist-model":       "Configure the provider and model used by one specialist subagent.",
+	"set-specialist-model":       "Configure an optional provider/model override for one task owner profile.",
 	"new-feature":                "Create or manage tracked feature workspaces with implement, verify, close, and cleanup handoffs.",
 	"analyze-project":            "Run project analysis and suggest the next dashboard, fuzzing, or verification step.",
 	"analyze-dashboard":          "Open the latest project analysis document portal with search, graph-linked stale diff, trust/data graphs, attack flows, and drilldowns.",
@@ -340,7 +340,7 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"main":              "Set reasoning effort for the active main model.",
 		"analysis-worker":   "Set reasoning effort for the project-analysis worker model.",
 		"analysis-reviewer": "Set reasoning effort for the project-analysis reviewer model.",
-		"specialist":        "Set reasoning effort for a specialist model.",
+		"specialist":        "Set reasoning effort for an optional task owner model override.",
 		"undefined":         "Do not send a reasoning effort override.",
 		"minimal":           "Use minimal reasoning where the selected model supports it.",
 		"low":               "Favor speed and lower reasoning token use.",
@@ -370,8 +370,8 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"clear":    "Clear provider overrides and use defaults again.",
 	},
 	"set-specialist-model": {
-		"status": "Show the effective provider and model for specialist subagents.",
-		"clear":  "Clear one specialist override or remove all specialist model overrides.",
+		"status": "Show optional task owner model overrides and inherited defaults.",
+		"clear":  "Clear one task owner override or remove all task owner model overrides.",
 	},
 	"analyze-project": {
 		"--mode":      "Choose the analysis mode; Kernforge will infer a default goal when you omit one.",
@@ -472,9 +472,9 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"cancel-bundle": "Cancel one background bundle by id or latest.",
 	},
 	"specialists": {
-		"status":  "Show specialist profiles plus editable ownership and worktree assignments.",
-		"assign":  "Bind one task-graph node to an editable specialist and ensure its worktree lease.",
-		"cleanup": "Remove one or all specialist worktrees recorded for this session.",
+		"status":  "Show task ownership profiles plus editable ownership and worktree assignments.",
+		"assign":  "Bind one task-graph node to an editable task owner and ensure its worktree lease.",
+		"cleanup": "Remove one or all task-owner worktrees recorded for this session.",
 	},
 }
 
@@ -1325,7 +1325,7 @@ func commandCompletionDescription(item string) string {
 			}
 		}
 		if commandName == "set-specialist-model" && !strings.HasPrefix(subcommand, "-") {
-			return "Configure the provider and model used by the " + strings.TrimSpace(fields[1]) + " specialist subagent."
+			return "Configure an optional provider/model override for the " + strings.TrimSpace(fields[1]) + " task owner profile."
 		}
 	}
 	return strings.TrimSpace(slashCommandDescriptions[commandName])

@@ -105,8 +105,8 @@ Its current differentiators are:
 - Evidence-backed apply/verify/retry edit-loop ledger that carries worker edits, patch evidence, background verification bundles, retry decisions, final review, and remaining risk into the final answer
 - Runtime gate ledger that ties the latest review transaction, patch transaction, verification report, completion audit, and final-answer review together, then surfaces review freshness, blockers, waivers, and next commands in `/status`, `/hooks`, session dashboards, review artifacts, MCP responses, and final-answer prompts
 - Structured interactive orchestration with `TaskState`, `TaskGraph`, node-aware recovery, and executor guidance
-- Built-in specialist subagent catalog with editable and read-only routing profiles
-- Node-level editable ownership and lease routing plus specialist worktree leases and session-level worktree isolation
+- Built-in task ownership profile catalog with editable/read-only routing and optional model overrides
+- Node-level editable ownership and lease routing plus task-owner worktree leases and session-level worktree isolation
 - Interactive REPL, one-shot `-prompt` mode, and one-shot `-command` slash command mode for schedulers
 - Codex-style autonomous goals through `/goal`, `-goal`, and `-goal-file`, with prompt or markdown objectives that loop through implementation, self-review, verification, completion audit, final semantic review, and recovery without user prompts
 - Providers: `openai-codex-subscription`, `openai-codex-cli`, `openai-api`, `anthropic-claude-cli`, `anthropic-api`, `DeepSeek`, `openrouter`, `opencode`, `opencode-go`, `ollama`, `lmstudio`, `vllm`, `llama.cpp`, plus explicit OpenAI-compatible routes
@@ -201,7 +201,7 @@ Its current differentiators are:
 - Evidence search and evidence dashboards
 - `/investigate` and `/simulate` now print handoffs into snapshots, risk simulation, `/verify`, and evidence dashboards so the user does not need to memorize the analysis loop
 - Evidence and memory views now print handoffs back into `/verify`, source dashboards, `/mem-confirm`, `/mem-promote`, or dashboard review when records need action
-- Checkpoints, tracked features, isolated worktrees, and specialist assignments now give short follow-up hints for diff review, implementation, cleanup, preservation, and fuzz verification gates
+- Checkpoints, tracked features, isolated worktrees, and task-owner assignments now give short follow-up hints for diff review, implementation, cleanup, preservation, and fuzz verification gates
 - Runtime toggle for automatic verification with `/set-auto-verify [on|off]`
 - Windows verification tool path detection and overrides with `/detect-verification-tools` and `/set-*-path`
 - Hook-based push and PR warnings, confirmations, and blocks based on recent failed evidence
@@ -271,12 +271,12 @@ Its current differentiators are:
 - Automatic checkpoint creation before the first edit in a request
 - Manual checkpoints, checkpoint diff, and rollback
 - Selection-first edit and review flow through `/open`
-- In ordinary product development, `implementation-owner` is the default editable specialist, while narrower domain specialists such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-analyst`, and `memory-inspection-analyst` take ownership only when the task or paths match strongly.
-- `apply_edit_proposal`, `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned specialist worktree.
-- `/specialists assign <node-id> <specialist> [glob,glob2]` lets you pin an editable specialist and override ownership globs when auto-routing picked a broader default.
-- `/set-specialist-model <specialist> <provider> [model]` pins the LLM used by one specialist in this workspace, and `/set-specialist-model clear <specialist|all>` removes that override.
+- In ordinary product development, `implementation-owner` is the default editable task owner, while narrower domain owners such as `driver-build-fixer`, `telemetry-analyst`, `unreal-integrity-analyst`, and `memory-inspection-analyst` take ownership only when the task or paths match strongly.
+- `apply_edit_proposal`, `apply_patch`, `write_file`, `replace_in_file`, and scoped shell writes follow node ownership and lease routing into the assigned task-owner worktree.
+- `/specialists assign <node-id> <owner-profile> [glob,glob2]` lets you pin an editable task owner and override ownership globs when auto-routing picked a broader default.
+- `/set-specialist-model <owner-profile> <provider> [model]` pins the LLM used by one task owner in this workspace, and `/set-specialist-model clear <owner-profile|all>` removes that override.
 - Secondary edit nodes with disjoint leases can run through automatic editable workers, while overlapping leases are deferred instead of racing on the same files.
-- When a parallel specialist edit restarts verification, older background verification bundles for the same owner or same lease are superseded automatically, and verification-like bundle completion closes the owning node.
+- When a parallel task-owner edit restarts verification, older background verification bundles for the same owner or same lease are superseded automatically, and verification-like bundle completion closes the owning node.
 
 ### Tracked Feature Workflow
 
@@ -534,17 +534,18 @@ Basic flow for telemetry regressions:
 4. Run `/mem-search category:telemetry tag:provider` to recall earlier reasoning and regression context.
 5. Before push or PR, hooks may inject extra review context or require confirmation.
 
-### Specialist Subagents And Worktree Isolation Example
+### Task Ownership Profiles And Worktree Isolation Example
 
-`specialists` are enabled by default, while `worktree_isolation` is off by default. The combination is especially valuable for tracked feature execution, high-risk driver/telemetry/Unreal/memory changes, and any request that touches multiple ownership domains in one turn.
+`task_ownership` is the current config key for task ownership profiles. The `/specialists` command namespace and legacy `specialists` config key still work for compatibility. Task ownership is enabled by default, while `worktree_isolation` is off by default. The combination is especially valuable for tracked feature execution, high-risk driver/telemetry/Unreal/memory changes, and any request that touches multiple ownership domains in one turn.
 
-For most ordinary web, backend, tooling, and application development, think of `implementation-owner`, `planner`, and `reviewer` as the default trio. Driver, telemetry, Unreal, and memory specialists are narrower profiles that activate when task text or file paths strongly match those domains.
+For most ordinary web, backend, tooling, and application development, `implementation-owner` owns edits by default and `planner` handles read-only planning evidence. Driver, telemetry, Unreal, and memory owners activate only when task text or file paths strongly match those domains, or when you pin them manually with `/specialists assign`.
 
 ```json
 {
   "auto_verify": true,
-  "specialists": {
-    "enabled": true
+  "task_ownership": {
+    "enabled": true,
+    "profiles": []
   },
   "worktree_isolation": {
     "enabled": true,
@@ -559,7 +560,7 @@ When to use it:
 
 1. Even in normal feature work, you want to touch files like `api/handlers.go`, `pkg/cache/store.go`, and `web/src/settings.tsx` in one request without one edit lane spilling into the others.
 2. You are implementing a tracked feature and want a rollback-friendly isolated git worktree instead of mutating the base workspace directly.
-3. Auto-routing picked the broad default `implementation-owner`, but you want to pin a narrower domain specialist for one node.
+3. Auto-routing picked the broad default `implementation-owner`, but you want to pin a narrower domain owner for one node.
 4. You are iterating on the same file repeatedly and do not want to manually clean up stale background verification bundles between attempts.
 
 Recommended flow 1: let Kernforge auto-assign for ordinary feature work
@@ -568,19 +569,19 @@ Recommended flow 1: let Kernforge auto-assign for ordinary feature work
 2. Run `/new-feature start settings page and cache invalidation cleanup`.
 3. Run `/new-feature implement`.
 4. Phrase the implementation request with concrete paths. Example: `Safely update web/src/settings.tsx and pkg/cache/store.go, and keep the settings save flow and cache invalidation verification tight.`
-5. Kernforge will assign specialists per task-graph node, then attach editable ownership and lease paths to each node.
-6. If the secondary edit nodes have disjoint leases, an automatic editable worker can create an additional patch in its own specialist worktree.
+5. Kernforge will assign task owners per task-graph node, then attach editable ownership and lease paths to each node.
+6. If the secondary edit nodes have disjoint leases, an automatic editable worker can create an additional patch in its own task-owner worktree.
 7. If verification restarts for the same owner or same lease, the older background verification bundle is superseded automatically, so you do not keep following stale output.
 8. Use `/tasks`, `/specialists status`, `/worktree status`, and `/verify-dashboard` to inspect routing and verification progress.
 9. When the isolated worktree is clean and no longer needed, run `/worktree cleanup`.
 
-Recommended flow 2: pin domain specialists manually
+Recommended flow 2: pin domain owners manually
 
 1. Run `/tasks` to inspect the node ids.
 2. Run `/specialists assign plan-02 driver-build-fixer driver/**,*.inf,*.cat`.
 3. Run `/specialists assign plan-03 telemetry-analyst telemetry/**,*.man,*.xml`.
 4. Continue the implementation request.
-5. After that, edit tools and scoped shell writes are only allowed inside that node's ownership and specialist worktree.
+5. After that, edit tools and scoped shell writes are only allowed inside that node's ownership and task-owner worktree.
 6. If you try to write outside the owned scope, Kernforge will return a reassignment hint instead of silently widening the boundary.
 
 Recommended flow 3: use worktree isolation first
@@ -594,7 +595,29 @@ Practical tips:
 
 1. If you want automatic parallel edit lanes, mention concrete paths such as `pkg/cache/store.go`, `web/src/settings.tsx`, or `Config/DefaultGame.ini` directly in the request.
 2. If two edit nodes overlap on the same path or glob, Kernforge intentionally defers the secondary lane and falls back to serial execution.
-3. `specialists.profiles` can override built-in profiles. This is useful when you want a stronger model only for `telemetry-analyst`, or when `driver-build-fixer` should also own `package/**`.
+3. `task_ownership.profiles` can override built-in owner profiles. The legacy `specialists.profiles` key is still accepted. This is useful when you want a stronger model only for `telemetry-analyst`, or when `driver-build-fixer` should also own `package/**`.
+
+Task-owner profile overlay shape:
+
+```json
+{
+  "task_ownership": {
+    "enabled": true,
+    "profiles": [
+      {
+        "name": "telemetry-analyst",
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "high",
+        "node_kinds": ["edit", "verification"],
+        "keywords": ["etw", "manifest", "provider"],
+        "editable": true,
+        "ownership_paths": ["telemetry/**", "*.man", "*.xml"]
+      }
+    ]
+  }
+}
+```
 
 ### Frequently Used Command Cheat Sheet
 
@@ -618,8 +641,8 @@ Policy:
 Isolated implementation:
 - `/specialists`
 - `/specialists status`
-- `/specialists assign <node-id> <specialist> [glob,glob2]`
-- `/set-specialist-model <specialist> <provider> [model]`
+- `/specialists assign <node-id> <owner-profile> [glob,glob2]`
+- `/set-specialist-model <owner-profile> <provider> [model]`
 - `/worktree status`
 - `/worktree list`
 - `/worktree create [name]`
@@ -735,8 +758,9 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
   "auto_compact_chars": 45000,
   "auto_checkpoint_edits": true,
   "auto_verify": true,
-  "specialists": {
-    "enabled": true
+  "task_ownership": {
+    "enabled": true,
+    "profiles": []
   },
   "worktree_isolation": {
     "enabled": true,
@@ -761,7 +785,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `base_url` | Provider API base URL |
 | `api_key` | API key |
 | `temperature` | Model temperature |
-| `reasoning_effort` | Optional OpenAI Codex and DeepSeek reasoning effort for the active main model: `minimal`, `low`, `medium`, `high`, or `xhigh`; unset is shown as `undefined`. Saved profiles, review profiles, analysis role profiles, and specialist profiles can each store their own `reasoning_effort`. DeepSeek maps `minimal`/`low`/`medium`/`high` to `high` and `xhigh` to `max`. |
+| `reasoning_effort` | Optional OpenAI Codex and DeepSeek reasoning effort for the active main model: `minimal`, `low`, `medium`, `high`, or `xhigh`; unset is shown as `undefined`. Saved profiles, review profiles, analysis role profiles, and explicit task-owner model overrides can each store their own `reasoning_effort`. DeepSeek maps `minimal`/`low`/`medium`/`high` to `high` and `xhigh` to `max`. |
 | `max_tokens` | Max completion tokens. Default is `8192` |
 | `max_request_retries` | Retry count for transient provider errors or timed-out model requests |
 | `request_retry_delay_ms` | Base backoff delay in milliseconds before retrying model requests |
@@ -794,10 +818,12 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `hooks_fail_closed` | Block when hook evaluation fails instead of allowing by default. Host policy only: ignored from workspace config |
 | `project_analysis` | Multi-agent project analysis configuration, output path, and worker/reviewer profiles |
 | `review` | Common review harness automation settings and the optional cross-review route |
-| `specialists` | Enable specialist subagents and overlay built-in specialist profiles |
+| `task_ownership` | Enable task ownership profiles and overlay built-in owner profiles. Legacy `specialists` is accepted as a compatibility alias |
 | `worktree_isolation` | Configure isolated git worktree roots, branch prefixes, and tracked-feature auto-isolation |
 
-Cross-review, analysis worker/reviewer, and specialist `base_url` values are optional. When a route uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the route sets its own `base_url`.
+Saved main profiles store task-owner model overrides under `profiles[].role_models.task_owners`. Legacy `profiles[].role_models.specialists` is still accepted on load.
+
+Cross-review, analysis worker/reviewer, and task-owner `base_url` values are optional. When a route uses the same provider as the main model and leaves `base_url` empty, it inherits the main normalized endpoint; when it uses a different provider, Kernforge uses that provider's default endpoint unless the route sets its own `base_url`.
 On startup and `/reload`, Kernforge migrates config files that still hold the old literal defaults `max_tool_iterations: 16` or `max_tokens: 4096` to `0` (unlimited) and `8192`, then prints a one-time `INFO` notice. Other explicitly chosen values are preserved; if you intentionally want the old numbers, set them again after the notice.
 `project_analysis.max_files_per_shard`, `project_analysis.max_lines_per_shard`, and `project_analysis.max_total_shards` can be set explicitly for deterministic sizing. Leaving them unset lets Kernforge apply local-model adaptive sizing and the smaller-shard recovery retry described above. `project_analysis.max_provider_retries` may be set to `-1` to disable per-request provider retries.
 
@@ -979,8 +1005,8 @@ Provider setup and review-route setup intentionally display stable user-facing l
 - Default base URL: `https://chatgpt.com/backend-api/codex`
 - Authentication uses a Kernforge-owned OAuth file at the Kernforge config path, `codex_auth.json`, and refreshes it when needed. Run `/codex-auth login` to create it, `/codex-auth status` to inspect it, or `/codex-auth logout` to remove it
 - Kernforge no longer defaults to the Codex CLI `~/.codex/auth.json` file for the direct provider. Set `KERNFORGE_CODEX_AUTH_FILE` for a different auth file or `KERNFORGE_CODEX_ACCESS_TOKEN` for a temporary access token override
-- Use `/effort` to show per-target reasoning effort, `/effort high` to set the active main model, or `/effort analysis-worker low`, `/effort analysis-reviewer medium`, and `/effort specialist <name> high` for analysis/specialist models. The independent review route effort is set through `/review models cross <provider> <model> [reasoning_effort]`, while `/review models` provides a numbered interactive setup flow. Unset effort is displayed as `undefined`
-- Reasoning effort is stored per configured model target. Main profiles, the cross review route, analysis worker/reviewer profiles, and specialist profiles can use different values even when they share the same provider family
+- Use `/effort` to show per-target reasoning effort, `/effort high` to set the active main model, or `/effort analysis-worker low`, `/effort analysis-reviewer medium`, and `/effort specialist <name> high` for analysis and task-owner models. The independent review route effort is set through `/review models cross <provider> <model> [reasoning_effort]`, while `/review models` provides a numbered interactive setup flow. Unset effort is displayed as `undefined`
+- Reasoning effort is stored per configured model target. Main profiles, the cross review route, analysis worker/reviewer profiles, and explicit task-owner model overrides can use different values even when they share the same provider family
 - When model selection through `/model`, `/provider`, or route-specific model commands selects an effort-capable model while that target's effort is `undefined`, Kernforge defaults that target to `low`. Use `/effort` to change or clear it afterward
 - Unlike the `codex-cli` bridge, this provider is wired into Kernforge's main LLM tool loop, so conversation context, tool calls, and tool results stay in the Kernforge session
 - Only models exposed to the current ChatGPT/Codex account are usable. Example: `.\kernforge.exe -provider openai-codex -model gpt-5.5`
@@ -1177,7 +1203,7 @@ Explain the structure of this repository
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 /profile [list|<number>|rN|dN|pN]
 /set-analysis-models
-/set-specialist-model [status|clear <specialist|all>|<specialist> <provider> [model]]
+/set-specialist-model [status|clear <owner-profile|all>|<owner-profile> <provider> [model]]
 /analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]
 /analyze-dashboard [latest|path]
 /docs-refresh
@@ -1194,17 +1220,17 @@ Explain the structure of this repository
 ```
 
 - `/model` does not take parameters. It first shows the current routing, then in interactive mode asks which target you want to change.
-- `/model` is the main entry point for changing the main model, analysis worker/reviewer, and specialist subagent models. Use `/review models cross` only when you want an independent common review harness second pass.
-- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort analysis-worker high` or `/effort specialist <name> low` changes an analysis/specialist model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
+- `/model` is the main entry point for changing the main model, analysis worker/reviewer, and optional task-owner model overrides. Use `/review models cross` only when you want an independent common review harness second pass.
+- `/effort` is intentionally separate from `/model`. Running `/effort` with no arguments prints each model target's value, `/effort undefined` clears the active main model override, and `/effort analysis-worker high` or `/effort specialist <name> low` changes an analysis or task-owner model. When the active main provider supports reasoning effort, the input prompt also shows `effort=<current>`.
 - If a model change selects an effort-capable provider while that target's effort is `undefined`, Kernforge saves `low` as the starting effort instead of leaving that route ambiguous.
 - `/config` also reports the model route scheduler. The scheduler queues requests by provider/model/base_url/reasoning_effort, does not hold a permit during retry backoff, and holds the route only while the provider call is actually running.
-- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and specialist routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/set-analysis-models clear`.
-- `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and specialist subagent model set. Changing those role models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
+- Changing only the main model also changes the primary review route. The optional cross route, analysis worker/reviewer routes, and task-owner routes keep their explicit overrides. If project analysis should stop using a dedicated worker/reviewer route and follow the main model again, run `/set-analysis-models clear`.
+- `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and optional task-owner model override set. Changing those route models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/review models` is the single supported path for the optional `cross` review route. `design`, `security`, `false_positive`, `regression`, `test`, and `final_gate` are review lenses selected by the planner, not model routes.
 - `/hooks` also prints the compact runtime gate summary, so hook/policy inspection and `/status` use the same freshness and next-command vocabulary.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
-- `/set-specialist-model ...` applies a workspace-scoped model override to one specialist subagent.
+- `/set-specialist-model ...` applies a workspace-scoped optional model override to one task owner profile.
 - `/set-max-tool-iterations 0`, `/set-max-tool-iterations unlimited`, `/set-max-tool-iterations none`, and `/set-max-tool-iterations off` disable the per-request tool loop cap.
 - `/progress-display` shows or saves the runtime progress mode; `/progress_display` is accepted as the same command. The default is `stream` for a fully persistent progress transcript. Use `auto` for durable tool/model ledger lines with transient noisy output, or `compact` for footer-only progress.
 - `/analyze-project` generates docs, manifests, and dashboards by default. Older `--docs` input is kept only as hidden parser compatibility and is not shown in help or completion; use `/docs-refresh` when you only need to regenerate docs from the latest run.

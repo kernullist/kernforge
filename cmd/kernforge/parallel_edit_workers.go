@@ -55,6 +55,9 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 	if a == nil || a.Session == nil || a.Tools == nil || a.Session.TaskState == nil {
 		return nil
 	}
+	if !parallelEditableWorkersEnabledForSession(a.Config, a.Session) {
+		return nil
+	}
 	if len(a.Session.TaskState.ExecutorParallelNodes) == 0 {
 		return nil
 	}
@@ -212,6 +215,13 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 		return a.Store.Save(a.Session)
 	}
 	return nil
+}
+
+func parallelEditableWorkersEnabledForSession(cfg Config, session *Session) bool {
+	if configWorktreeIsolationEnabled(cfg) {
+		return true
+	}
+	return session != nil && strings.TrimSpace(session.ActiveFeatureID) != ""
 }
 
 func (a *Agent) revalidateParallelEditableWorkerPlans(plans []parallelEditableWorkerPlan) ([]parallelEditableWorkerPlan, []deferredParallelEditableWorkerPlan) {

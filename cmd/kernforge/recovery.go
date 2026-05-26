@@ -1401,7 +1401,7 @@ func renderRecoveryBriefMarkdown(brief RecoveryBrief) string {
 	writeDelegationList(&b, "Background Bundles", brief.BackgroundBundles, "No background bundles recorded.")
 	writeDelegationList(&b, "Changed Files", brief.ChangedFiles, "No changed files detected.")
 	writeDelegationList(&b, "Open Tasks", brief.OpenTasks, "No open task graph nodes.")
-	writeDelegationList(&b, "Worktrees", brief.Worktrees, "No isolated or specialist worktrees recorded.")
+	writeDelegationList(&b, "Worktrees", brief.Worktrees, "No isolated or task-owner worktrees recorded.")
 	writeDelegationList(&b, "Artifact Refs", brief.ArtifactRefs, "No artifact refs recorded.")
 	fmt.Fprintf(&b, "\n## Suggested Prompt\n\n%s\n", brief.SuggestedPrompt)
 	return strings.TrimSpace(b.String())

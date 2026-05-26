@@ -30,7 +30,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 7. `/review selection`, `/edit-selection`, `/review plan`, `/new-feature`로 실제 작업을 진행한다.
 8. `/verify`로 verification plan을 돌린다.
 9. `/evidence-*`와 `/mem-*`로 상태와 맥락을 다시 확인한다.
-10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, specialist action 뒤에 출력되는 handoff block과 `/continuity` packet을 따라가면 명령 순서를 외우지 않아도 된다.
+10. analysis, investigation, simulation, performance, root-cause, fuzzing, verification, evidence, memory, checkpoint, feature, worktree, jobs, task-owner action 뒤에 출력되는 handoff block과 `/continuity` packet을 따라가면 명령 순서를 외우지 않아도 된다.
 11. push/PR 전에는 hooks가 마지막 방어선으로 동작한다.
 
 핵심 해석:
@@ -190,7 +190,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 2. packet에는 active/base workspace root, branch, provider/model, changed files, open task graph node, worktree lease, active edit loop, active failure repair, 최신 verification failure, background job/bundle, 최근 runtime error, artifact ref, recovery action, next command, continuation prompt가 포함된다.
 3. 직접 실행한 `!shell` 실패는 `command_error` conversation event로 저장되므로, 이후 `/continuity`와 최근 오류 답변이 사용자의 로그 재입력 없이 실패 맥락을 회수할 수 있다.
 4. `/jobs`는 저장된 background job/bundle 상태를 동기화해 보여주고, id 또는 `latest` 기준으로 직접 polling/cancel을 지원한다.
-5. `/worktree list`는 session worktree, specialist editable worktree lease, `git worktree list --porcelain` 출력을 한 화면에 모아 root 전환이나 재개 전에 확인하게 한다.
+5. `/worktree list`는 session worktree, task-owner editable worktree lease, `git worktree list --porcelain` 출력을 한 화면에 모아 root 전환이나 재개 전에 확인하게 한다.
 6. `/worktree enter`는 `/worktree leave` 이후 기록된 isolated worktree로 다시 들어가고, `/worktree attach <path> [branch]`는 기존 worktree를 unmanaged session worktree로 붙인다.
 7. `/recover`는 최신 error, verification failure, failure-repair 상태, background job, open task, next command를 `.kernforge/recovery/latest.md/json`에 더 좁은 failure runbook으로 저장한다. runbook에는 structured diagnosis, 안정적인 failure signature, action plan status, execution log가 포함된다.
 8. `/completion-audit`는 finalizing 전에 blocker, warning, required artifact, 최신 verification, open task, background job, 최근 error, coding harness evidence를 `.kernforge/completion_audit/latest.md/json`으로 저장한다.
@@ -384,9 +384,9 @@ confirmation 전에 analysis plan이 선택된 `baseline_map`을 출력하므로
 큰 analysis run은 provider failure tolerant하게 동작한다. worker/reviewer rate limit은 저신뢰 shard failure로 기록하고, 최종 synthesis 요청이 실패하면 local fallback document를 생성한다.
 LM Studio, vLLM, llama.cpp, Ollama 같은 local-model provider에서는 `max_files_per_shard` / `max_lines_per_shard`가 비어 있으면 confirmation 전에 provider, 모델 크기, max token, request timeout을 보고 값을 조정한다. 일반 request retry를 모두 소진한 뒤에도 timeout, 5xx, overload, empty response, connection reset 같은 provider-pressure error로 run이 끝나면 Kernforge는 `adaptive_retry_shards` 줄을 출력하고 더 작은 shard 제한으로 한 번 다시 실행한다. rate limit은 shard를 줄이면 요청 수가 늘 수 있으므로 이 방식으로 재시도하지 않는다.
 worker와 reviewer가 같은 provider/model/base_url/reasoning_effort route를 쓰는 구성에서는 shard 실행이 model route limit 이하로 제한된다. local provider의 기본 route limit은 1이므로 직렬 실행이 기본이지만, cloud/API route는 `model_routes`가 그렇게 지정하지 않는 한 강제로 1로 낮추지 않는다.
-reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, optional cross review route, analysis worker/reviewer, specialist profile이 각각 다른 `reasoning_effort`를 가질 수 있다. effort 지원 main/analysis/specialist target을 새로 선택했는데 undefined이면 해당 target은 기본 `low`로 저장되지만, cross review route는 기본이 최소 `high`이며 저장된 `low`/`medium` 값도 runtime에서는 `high`로 올려 실행한다.
+reasoning effort는 하나의 전역 override가 아니라 configured model target별로 저장된다. main profile, optional cross review route, analysis worker/reviewer, 명시적 task-owner model override가 각각 다른 `reasoning_effort`를 가질 수 있다. effort 지원 main/analysis/task-owner target을 새로 선택했는데 undefined이면 해당 target은 기본 `low`로 저장되지만, cross review route는 기본이 최소 `high`이며 저장된 `low`/`medium` 값도 runtime에서는 `high`로 올려 실행한다.
 엄격 생략 재시도는 finding field 기준으로만 동작한다. 구조화된 finding 자체가 생략, 잘림, 또는 생략 표식이 포함된 weak output일 때 재시도하고, summary 같은 prose 영역에 `omitted`류 문구가 있어도 usable structured finding이 완성돼 있으면 그대로 수락한다.
-cross review route, analysis worker/reviewer, specialist의 route별 `base_url`은 안전하게 생략할 수 있다. 같은 provider route는 main endpoint를 상속하고, 다른 provider route는 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
+cross review route, analysis worker/reviewer, task-owner model override의 route별 `base_url`은 안전하게 생략할 수 있다. 같은 provider route는 main endpoint를 상속하고, 다른 provider route는 직접 지정한 endpoint 또는 해당 provider 기본 endpoint를 사용하므로 proxy/local route가 조용히 엇갈리지 않는다.
 main provider/model만 바꾸면 명시적인 analysis worker/reviewer profile은 유지된다. 이전에 따로 둔 route가 아니라 현재 main model을 다시 상속시키고 싶으면 `/set-analysis-models clear`를 사용한다.
 `/analyze-project`는 docs, manifest, dashboard를 기본 생성한다. 예전 `--docs` 입력은 하위 호환용으로만 조용히 허용되고 help와 completion에는 나오지 않는다. 저장된 최신 run에서 문서만 다시 만들 때는 `/docs-refresh`를 쓴다.
 생성 문서 세트에는 run 마지막에 출력된 assistant-facing final synthesis를 그대로 보존하는 `FINAL_REPORT.md`와 architecture, security, entrypoint, build artifact, verification, fuzz target, operation 운영 문서가 함께 들어간다.

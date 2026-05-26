@@ -1208,7 +1208,7 @@ func renderCompletionAuditMarkdown(artifact CompletionAuditArtifact) string {
 	writeDelegationList(&b, "Background Jobs", artifact.BackgroundJobs, "No background jobs recorded.")
 	writeDelegationList(&b, "Background Bundles", artifact.BackgroundBundles, "No background bundles recorded.")
 	writeDelegationList(&b, "Recent Errors", artifact.RecentErrors, "No recent runtime errors recorded.")
-	writeDelegationList(&b, "Worktrees", artifact.Worktrees, "No isolated or specialist worktrees recorded.")
+	writeDelegationList(&b, "Worktrees", artifact.Worktrees, "No isolated or task-owner worktrees recorded.")
 	writeDelegationList(&b, "Artifact Refs", artifact.ArtifactRefs, "No artifact refs recorded.")
 	writeDelegationList(&b, "Next Commands", artifact.NextCommands, "No next commands suggested.")
 	if artifact.RuntimeGateLedger != nil {

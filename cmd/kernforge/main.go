@@ -1001,7 +1001,7 @@ func (rt *runtimeState) formatAssistantError(err error) []string {
 				lines = append(lines, rt.ui.hintLine("Rejected target path: "+rejectedPath))
 			}
 			if strings.Contains(strings.ToLower(text), "editable ownership") {
-				lines = append(lines, rt.ui.hintLine("The routed specialist owns only a limited file scope. Pick a path that matches its ownership globs, or reassign the node with /specialists assign before editing."))
+				lines = append(lines, rt.ui.hintLine("The routed task owner has a limited file scope. Pick a path that matches its ownership globs, or reassign the node with /specialists assign before editing."))
 			}
 			lines = append(lines, rt.ui.hintLine("Re-read the file from the exact same path before editing again, and avoid crossing into a different worktree."))
 		}
@@ -3393,7 +3393,7 @@ func (rt *runtimeState) renderProfileList() {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a number to activate a profile."))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /profile <number>, /profile r<number>, /profile d<number>, or /profile p<number>."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure main, review, analysis, or specialist models."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Use /model to configure main, review, analysis, or optional task-owner model overrides."))
 }
 
 func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent string) {
@@ -3416,7 +3416,7 @@ func (rt *runtimeState) renderStoredProfileRoleModels(profile Profile, indent st
 		if strings.TrimSpace(specialist.Name) == "" {
 			continue
 		}
-		label := "specialist:" + specialist.Name
+		label := "owner:" + specialist.Name
 		value := formatProviderModelEffortLabel(specialist.Provider, specialist.Model, specialist.ReasoningEffort)
 		if strings.TrimSpace(specialist.BaseURL) != "" {
 			value += " | " + strings.TrimSpace(specialist.BaseURL)
@@ -3649,9 +3649,9 @@ func (rt *runtimeState) applyProfileRoleModels(profile Profile) (string, string)
 		return roleEffort(label, profile.Provider, profile.ReasoningEffort)
 	}
 	specialistRoleEffort := func(profile SpecialistSubagentProfile) string {
-		label := "specialist " + strings.TrimSpace(profile.Name)
+		label := "task owner " + strings.TrimSpace(profile.Name)
 		if strings.TrimSpace(profile.Name) == "" {
-			label = "specialist model"
+			label = "task owner model"
 		}
 		return roleEffort(label, profile.Provider, profile.ReasoningEffort)
 	}
@@ -4587,7 +4587,7 @@ func (rt *runtimeState) handleModelCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.info("  1. main session model"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  2. analysis worker"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis reviewer (project analysis only)"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  4. specialist subagent"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  4. task owner model override"))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows the main model; configure only the optional cross route with /review models."))
 
 	choice, err := rt.promptValue("Select model target", "1")
@@ -4610,7 +4610,7 @@ func (rt *runtimeState) applyModelHubChoice(choice string) error {
 		err = rt.configureProjectAnalysisRoleInteractive("worker", "")
 	case "3", "analysis reviewer", "reviewer":
 		err = rt.configureProjectAnalysisRoleInteractive("reviewer", "")
-	case "4", "specialist", "specialist subagent", "subagent":
+	case "4", "specialist", "specialist subagent", "subagent", "task owner", "task-owner", "owner":
 		err = rt.handleSetSpecialistModelCommand("")
 	case "plan", "plan-review", "plan reviewer", "plan-review reviewer":
 		return fmt.Errorf("plan-review reviewer routing was removed; plan review now uses the design lens on the primary/cross review routes")
@@ -4660,11 +4660,15 @@ func (rt *runtimeState) showReasoningEffortStatus() error {
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", inheritedMainModelLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
 	}
-	for _, profile := range configuredSpecialistProfiles(rt.cfg) {
+	explicitOwners := explicitSpecialistModelProfiles(rt.cfg)
+	for _, profile := range explicitOwners {
 		if strings.TrimSpace(profile.Name) == "" {
 			continue
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("specialist:"+profile.Name, rt.describeSpecialistModel(profile)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("owner:"+profile.Name, rt.describeSpecialistModel(profile)))
+	}
+	if len(explicitOwners) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("task_owner_overrides", "none; ownership profiles use the active main/reviewer client unless explicitly configured"))
 	}
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("applies_to", "openai-codex Responses and DeepSeek thinking-mode requests per configured model target"))
 	return nil
@@ -4831,7 +4835,7 @@ func (rt *runtimeState) setSpecialistReasoningEffort(name string, effort string)
 		fmt.Fprintln(rt.writer, rt.ui.successLine("specialist "+strings.TrimSpace(profiles[i].Name)+" reasoning_effort set to "+reasoningEffortDisplay(normalized)))
 		return nil
 	}
-	return fmt.Errorf("unknown specialist profile: %s", name)
+	return fmt.Errorf("unknown task owner profile: %s", name)
 }
 
 func (rt *runtimeState) handleOpenCommand(pathArg string) error {
@@ -4924,12 +4928,13 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
 	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /review models for the optional cross route."))
-	profiles := configuredSpecialistProfiles(rt.cfg)
+	profiles := explicitSpecialistModelProfiles(rt.cfg)
 	if len(profiles) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("task_owner_model_overrides", "none; /specialists manages ownership profiles, /set-specialist-model is optional"))
 		return nil
 	}
 	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.subsection("Specialist Subagents (not /review roles)"))
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Task Owner Model Overrides (optional; not /review routes)"))
 	columnWidth := specialistStatusColumnWidth(profiles)
 	for _, profile := range profiles {
 		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(profile.Name, rt.describeSpecialistModel(profile), columnWidth))
@@ -7034,7 +7039,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("hook_rules", fmt.Sprintf("%d", rt.hookRuleCount())),
 		)
 		fmt.Fprintln(rt.writer)
-		rt.printKVGroup("Specialists",
+		rt.printKVGroup("Task Ownership",
+			kv("config_key", "task_ownership"),
+			kv("legacy_alias", "specialists"),
 			kv("enabled", fmt.Sprintf("%t", configSpecialistsEnabled(rt.cfg))),
 			kv("profiles", fmt.Sprintf("%d", len(configuredSpecialistProfiles(rt.cfg)))),
 		)
@@ -7787,7 +7794,7 @@ func (rt *runtimeState) handleSetSpecialistModelCommand(args string) error {
 			return rt.showSpecialistModelStatus(name)
 		case "clear", "reset":
 			if len(parts) < 2 {
-				return fmt.Errorf("usage: /set-specialist-model clear <specialist|all>")
+				return fmt.Errorf("usage: /set-specialist-model clear <owner-profile|all>")
 			}
 			return rt.clearSpecialistModelOverride(parts[1])
 		default:
@@ -7808,13 +7815,13 @@ func (rt *runtimeState) handleSetSpecialistModelCommand(args string) error {
 		}
 	}
 
-	fmt.Fprintln(rt.writer, rt.ui.section("Set Specialist Model"))
+	fmt.Fprintln(rt.writer, rt.ui.section("Set Task Owner Model Override"))
 	if err := rt.showSpecialistModelStatus(""); err != nil {
 		return err
 	}
 	names := rt.allSpecialistNames()
 	if len(names) == 0 {
-		return fmt.Errorf("no specialist profiles are configured")
+		return fmt.Errorf("no task ownership profiles are configured")
 	}
 	for idx, name := range names {
 		fmt.Fprintln(rt.writer, rt.ui.info(fmt.Sprintf("  %d. %s", idx+1, name)))
@@ -7908,7 +7915,7 @@ func (rt *runtimeState) showProjectAnalysisModelStatus() error {
 }
 
 func (rt *runtimeState) showSpecialistModelStatus(name string) error {
-	fmt.Fprintln(rt.writer, rt.ui.section("Specialist Models"))
+	fmt.Fprintln(rt.writer, rt.ui.section("Task Owner Model Overrides"))
 	target := normalizeSpecialistProfileName(name)
 	selected := make([]SpecialistSubagentProfile, 0, len(configuredSpecialistProfiles(rt.cfg)))
 	for _, profile := range configuredSpecialistProfiles(rt.cfg) {
@@ -7918,7 +7925,7 @@ func (rt *runtimeState) showSpecialistModelStatus(name string) error {
 		selected = append(selected, profile)
 	}
 	if target != "" && len(selected) == 0 {
-		return fmt.Errorf("unknown specialist profile: %s", name)
+		return fmt.Errorf("unknown task owner profile: %s", name)
 	}
 	columnWidth := specialistStatusColumnWidth(selected)
 	for _, profile := range selected {
@@ -7957,11 +7964,11 @@ func (rt *runtimeState) describeSpecialistModel(profile SpecialistSubagentProfil
 func (rt *runtimeState) configureSpecialistModelInteractive(name string, providerArg string, modelArg string) error {
 	profile, ok := configuredSpecialistProfileByName(rt.cfg, name)
 	if !ok {
-		return fmt.Errorf("unknown specialist profile: %s", name)
+		return fmt.Errorf("unknown task owner profile: %s", name)
 	}
 	provider := normalizeProviderName(providerArg)
 	if provider == "" {
-		fmt.Fprintln(rt.writer, rt.ui.section("Set Specialist "+profile.Name))
+		fmt.Fprintln(rt.writer, rt.ui.section("Set Task Owner "+profile.Name))
 		rt.printProviderChoiceOptions()
 		defaultChoice := defaultProviderChoice(firstNonBlankString(profile.Provider, rt.cfg.Provider))
 		choice, err := rt.promptValue("Select provider", defaultChoice)
@@ -8397,8 +8404,8 @@ func (rt *runtimeState) activateSpecialistModel(name string, provider string, mo
 	if err := rt.persistSpecialistOverrides(); err != nil {
 		return err
 	}
-	rt.printReasoningEffortDefaultNotice("specialist "+strings.TrimSpace(name)+" model", nextEffort, defaultedEffort)
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Specialist %s set: %s", name, formatProviderModelLabel(provider, model))))
+	rt.printReasoningEffortDefaultNotice("task owner "+strings.TrimSpace(name)+" model", nextEffort, defaultedEffort)
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Task owner %s model override set: %s", name, formatProviderModelLabel(provider, model))))
 	return nil
 }
 
@@ -8474,7 +8481,7 @@ func (rt *runtimeState) printProjectTrustStatus() {
 func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 	target := normalizeSpecialistProfileName(name)
 	if target == "" {
-		return fmt.Errorf("usage: /set-specialist-model clear <specialist|all>")
+		return fmt.Errorf("usage: /set-specialist-model clear <owner-profile|all>")
 	}
 	removed := false
 	current := append([]SpecialistSubagentProfile(nil), rt.cfg.Specialists.Profiles...)
@@ -8497,10 +8504,10 @@ func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 	}
 	if !removed {
 		if target == "all" {
-			fmt.Fprintln(rt.writer, rt.ui.warnLine("No specialist model overrides were set."))
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("No task owner model overrides were set."))
 			return nil
 		}
-		return fmt.Errorf("no specialist model override found for %s", name)
+		return fmt.Errorf("no task owner model override found for %s", name)
 	}
 	rt.cfg.Specialists.Profiles = normalizeSpecialistProfiles(next)
 	rt.rememberCurrentProfile()
@@ -8508,9 +8515,9 @@ func (rt *runtimeState) clearSpecialistModelOverride(name string) error {
 		return err
 	}
 	if target == "all" {
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared all specialist model overrides."))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared all task owner model overrides."))
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared specialist model override for "+name+"."))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Cleared task owner model override for "+name+"."))
 	}
 	return nil
 }
@@ -8535,11 +8542,13 @@ func (rt *runtimeState) persistSpecialistOverrides() error {
 	if strings.TrimSpace(rt.workspace.BaseRoot) == "" {
 		return rt.saveUserConfig()
 	}
-	overrides := map[string]any{}
+	overrides := map[string]any{
+		"specialists": nil,
+	}
 	if !specialistConfigIsEmpty(rt.cfg.Specialists) {
-		overrides["specialists"] = rt.cfg.Specialists
+		overrides["task_ownership"] = rt.cfg.Specialists
 	} else {
-		overrides["specialists"] = nil
+		overrides["task_ownership"] = nil
 	}
 	if err := SaveWorkspaceConfigOverrides(rt.workspace.BaseRoot, overrides); err != nil {
 		return err
@@ -8560,7 +8569,7 @@ func (rt *runtimeState) resolveSpecialistChoice(choice string, names []string) (
 	trimmed := strings.TrimSpace(choice)
 	if trimmed == "" {
 		if len(names) == 0 {
-			return "", fmt.Errorf("no specialist profiles are configured")
+			return "", fmt.Errorf("no task ownership profiles are configured")
 		}
 		return names[0], nil
 	}
@@ -8569,7 +8578,7 @@ func (rt *runtimeState) resolveSpecialistChoice(choice string, names []string) (
 			return name, nil
 		}
 	}
-	return "", fmt.Errorf("unknown specialist profile: %s", choice)
+	return "", fmt.Errorf("unknown task owner profile: %s", choice)
 }
 
 func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {

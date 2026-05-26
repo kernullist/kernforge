@@ -288,6 +288,7 @@ func TestParallelEditableWorkerReadOnlyLookupOutsideLeaseDoesNotTripOwnership(t 
 
 func TestMaybeRunInteractiveParallelEditableWorkersDefersOverlappingSecondaryEditNode(t *testing.T) {
 	session := NewSession("C:\\workspace", "openai", "gpt-test", "", "default")
+	session.ActiveFeatureID = "feature-parallel-edit"
 	session.TaskState = &TaskState{
 		ExecutorFocusNode:        "plan-01",
 		ExecutorParallelNodes:    []string{"plan-02"},
@@ -359,6 +360,7 @@ func TestMaybeRunInteractiveParallelEditableWorkersAppliesPatchForSecondaryEditN
 	}
 
 	session := NewSession(root, "openai", "gpt-test", "", "default")
+	session.ActiveFeatureID = "feature-parallel-edit"
 	session.TaskState = &TaskState{
 		ExecutorFocusNode:     "plan-01",
 		ExecutorParallelNodes: []string{"plan-02"},

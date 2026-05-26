@@ -144,6 +144,55 @@ func TestSelectEditableSpecialistForTaskNodePrefersImplementationOwner(t *testin
 	}
 }
 
+func TestSelectEditableSpecialistForTaskNodeRequiresStrongDomainMatch(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	weakNode := TaskNode{
+		ID:     "plan-weak",
+		Title:  "Patch telemetry label copy",
+		Kind:   "edit",
+		Status: "ready",
+	}
+	weakAssignment, ok := selectEditableSpecialistForTaskNode(cfg, weakNode, &TaskState{}, "executor-focus")
+	if !ok {
+		t.Fatalf("expected editable ownership fallback")
+	}
+	if weakAssignment.Profile.Name != "implementation-owner" {
+		t.Fatalf("weak domain signal should stay on implementation-owner, got %#v", weakAssignment)
+	}
+
+	strongNode := TaskNode{
+		ID:     "plan-strong",
+		Title:  "Patch telemetry ETW provider manifest schema trace event",
+		Kind:   "edit",
+		Status: "ready",
+	}
+	strongAssignment, ok := selectEditableSpecialistForTaskNode(cfg, strongNode, &TaskState{}, "executor-focus")
+	if !ok {
+		t.Fatalf("expected strong domain ownership route")
+	}
+	if strongAssignment.Profile.Name != "telemetry-analyst" {
+		t.Fatalf("strong telemetry signal should route to telemetry owner, got %#v", strongAssignment)
+	}
+}
+
+func TestSelectSpecialistForTaskNodeWeakDomainSignalFallsBackToPlanner(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	node := TaskNode{
+		ID:     "plan-weak-readonly",
+		Title:  "Inspect telemetry warning",
+		Kind:   "inspection",
+		Status: "ready",
+	}
+
+	assignment, ok := selectSpecialistForTaskNode(cfg, node, &TaskState{}, "executor", true)
+	if !ok {
+		t.Fatalf("expected read-only fallback")
+	}
+	if assignment.Profile.Name != "planner" {
+		t.Fatalf("weak read-only domain signal should fall back to planner, got %#v", assignment)
+	}
+}
+
 func TestSpecialistBatchRouteLimiterSerializesLocalDuplicateRoute(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "ollama"
@@ -375,8 +424,8 @@ func TestFormatSpecialistCatalogAlignsDescriptionsAndSeparatesHints(t *testing.T
 	}
 
 	lines := strings.Split(text, "\n")
-	generalIndex := strings.Index(text, "General-purpose specialists:")
-	domainIndex := strings.Index(text, "Domain-specific specialists:")
+	generalIndex := strings.Index(text, "General-purpose ownership profiles:")
+	domainIndex := strings.Index(text, "Domain-specific ownership profiles:")
 	if generalIndex < 0 || domainIndex < 0 {
 		t.Fatalf("expected grouped specialist headings, got %q", text)
 	}

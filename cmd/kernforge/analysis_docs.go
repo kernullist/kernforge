@@ -580,7 +580,7 @@ func buildAnalysisOperationsRunbookDoc(run ProjectAnalysisRun) string {
 	fmt.Fprintf(&b, "- Fuzz target discovery: `FUZZ_TARGETS.md` is consumed before `/fuzz-func` ranking so documented parser, IOCTL, telemetry, and protocol surfaces rank first.\n")
 	fmt.Fprintf(&b, "\n## Operational State Checklist\n\n")
 	fmt.Fprintf(&b, "- Hooks: run `/hooks status` before enforcing generated guidance; stale docs should refresh before strict gates.\n")
-	fmt.Fprintf(&b, "- Specialists: route architecture/documentation work to project analysis, security-surface review to verification planning, and target selection to fuzz discovery.\n")
+	fmt.Fprintf(&b, "- Task ownership: route architecture/documentation work to project analysis, security-surface review to verification planning, and target selection to fuzz discovery.\n")
 	fmt.Fprintf(&b, "- Worktree: checkpoint or review dirty changes before large documentation refreshes so stale markers can be interpreted against the intended tree state.\n")
 	fmt.Fprintf(&b, "- Evidence handoff: after fuzzing or verification, record pass/fail artifacts so the next analysis run can distinguish confirmed facts from stale assumptions.\n")
 	if len(run.KnowledgePack.Unknowns) > 0 {

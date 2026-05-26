@@ -36,11 +36,12 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 
 	text := InitWorkspaceConfigTemplate(workspace)
 	var decoded struct {
-		SkillPaths        []string                  `json:"skill_paths"`
-		EnabledSkills     []string                  `json:"enabled_skills"`
-		MCPServers        []MCPServerConfig         `json:"mcp_servers"`
-		Specialists       SpecialistSubagentsConfig `json:"specialists"`
-		WorktreeIsolation WorktreeIsolationConfig   `json:"worktree_isolation"`
+		SkillPaths        []string                   `json:"skill_paths"`
+		EnabledSkills     []string                   `json:"enabled_skills"`
+		MCPServers        []MCPServerConfig          `json:"mcp_servers"`
+		TaskOwnership     SpecialistSubagentsConfig  `json:"task_ownership"`
+		LegacySpecialists *SpecialistSubagentsConfig `json:"specialists"`
+		WorktreeIsolation WorktreeIsolationConfig    `json:"worktree_isolation"`
 	}
 	if err := json.Unmarshal([]byte(text), &decoded); err != nil {
 		t.Fatalf("template must be valid json: %v\n%s", err, text)
@@ -51,14 +52,133 @@ func TestInitWorkspaceConfigTemplateIsValidJSON(t *testing.T) {
 	if len(decoded.MCPServers) != 0 {
 		t.Fatalf("workspace config template must not suggest host-local MCP servers, got %#v", decoded.MCPServers)
 	}
-	if decoded.Specialists.Enabled == nil || !*decoded.Specialists.Enabled {
-		t.Fatalf("expected specialists to be enabled in template, got %#v", decoded.Specialists)
+	if decoded.TaskOwnership.Enabled == nil || !*decoded.TaskOwnership.Enabled {
+		t.Fatalf("expected task ownership to be enabled in template, got %#v", decoded.TaskOwnership)
+	}
+	if decoded.LegacySpecialists != nil {
+		t.Fatalf("workspace config template should use task_ownership, got legacy specialists %#v", decoded.LegacySpecialists)
+	}
+	if decoded.TaskOwnership.Profiles == nil {
+		t.Fatalf("expected task ownership profiles array to document the config shape")
 	}
 	if decoded.WorktreeIsolation.Enabled == nil || *decoded.WorktreeIsolation.Enabled {
 		t.Fatalf("expected worktree isolation to default off in template, got %#v", decoded.WorktreeIsolation)
 	}
 	if decoded.WorktreeIsolation.BranchPrefix != "kernforge/" {
 		t.Fatalf("expected worktree branch prefix, got %#v", decoded.WorktreeIsolation)
+	}
+}
+
+func TestConfigTaskOwnershipKeyLoadsAndSaves(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	input := `{
+		"task_ownership": {
+			"enabled": false,
+			"profiles": [
+				{
+					"name": "planner",
+					"provider": "openai-codex",
+					"model": "gpt-owner"
+				}
+			]
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{SkipEnsureUserConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if cfg.Specialists.Enabled == nil || *cfg.Specialists.Enabled {
+		t.Fatalf("expected task ownership enabled=false to load, got %#v", cfg.Specialists)
+	}
+	if len(cfg.Specialists.Profiles) != 1 || cfg.Specialists.Profiles[0].Model != "gpt-owner" {
+		t.Fatalf("expected task ownership profile to load, got %#v", cfg.Specialists.Profiles)
+	}
+	if err := SaveUserConfig(cfg); err != nil {
+		t.Fatalf("SaveUserConfig: %v", err)
+	}
+	rewritten, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(rewritten, &raw); err != nil {
+		t.Fatalf("Unmarshal rewritten config: %v", err)
+	}
+	if _, ok := raw["task_ownership"]; !ok {
+		t.Fatalf("expected saved config to use task_ownership, got %s", rewritten)
+	}
+	if _, ok := raw["specialists"]; ok {
+		t.Fatalf("saved config should not rewrite the legacy specialists key, got %s", rewritten)
+	}
+}
+
+func TestConfigLegacySpecialistsKeyStillLoads(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	workspace := t.TempDir()
+	configPath := filepath.Join(home, ".kernforge", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	input := `{
+		"specialists": {
+			"enabled": true,
+			"profiles": [
+				{
+					"name": "telemetry-analyst",
+					"provider": "openai-codex",
+					"model": "gpt-telemetry"
+				}
+			]
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(input), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := LoadConfigWithOptions(workspace, ConfigLoadOptions{SkipEnsureUserConfig: true})
+	if err != nil {
+		t.Fatalf("LoadConfigWithOptions: %v", err)
+	}
+	if len(cfg.Specialists.Profiles) != 1 || cfg.Specialists.Profiles[0].Model != "gpt-telemetry" {
+		t.Fatalf("expected legacy specialists key to load, got %#v", cfg.Specialists.Profiles)
+	}
+}
+
+func TestProfileRoleModelsTaskOwnersKeyLoadsAndSaves(t *testing.T) {
+	var roles ProfileRoleModels
+	if err := json.Unmarshal([]byte(`{"task_owners":[{"name":"planner","provider":"openai-codex","model":"gpt-owner"}]}`), &roles); err != nil {
+		t.Fatalf("Unmarshal task_owners: %v", err)
+	}
+	if len(roles.Specialists) != 1 || roles.Specialists[0].Model != "gpt-owner" {
+		t.Fatalf("expected task_owners to load into task owner role models, got %#v", roles.Specialists)
+	}
+	data, err := json.Marshal(roles)
+	if err != nil {
+		t.Fatalf("Marshal role models: %v", err)
+	}
+	if !strings.Contains(string(data), `"task_owners"`) || strings.Contains(string(data), `"specialists"`) {
+		t.Fatalf("expected role models to save task_owners only, got %s", data)
+	}
+
+	var legacy ProfileRoleModels
+	if err := json.Unmarshal([]byte(`{"specialists":[{"name":"telemetry-analyst","provider":"openai-codex","model":"gpt-telemetry"}]}`), &legacy); err != nil {
+		t.Fatalf("Unmarshal legacy specialists: %v", err)
+	}
+	if len(legacy.Specialists) != 1 || legacy.Specialists[0].Model != "gpt-telemetry" {
+		t.Fatalf("expected legacy specialists role models to load, got %#v", legacy.Specialists)
 	}
 }
 

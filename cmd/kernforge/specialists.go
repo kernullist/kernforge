@@ -21,6 +21,8 @@ const (
 	specialistPromptGuidanceMaxBytes         = 1200
 	specialistMicroWorkerDescriptionMaxBytes = specialistPromptDescriptionMaxBytes
 	specialistMicroWorkerPromptMaxBytes      = specialistPromptGuidanceMaxBytes
+	specialistReadOnlyDomainAutoMinScore     = 70
+	specialistEditableDomainAutoMinScore     = 80
 )
 
 func defaultSpecialistProfiles() []SpecialistSubagentProfile {
@@ -261,6 +263,44 @@ func specialistProfileHasExplicitRoute(profile SpecialistSubagentProfile) bool {
 		strings.TrimSpace(profile.ServiceTier) != ""
 }
 
+func specialistProfileGeneralPurpose(profile SpecialistSubagentProfile) bool {
+	switch normalizeSpecialistProfileName(profile.Name) {
+	case "implementation-owner", "planner":
+		return true
+	default:
+		return false
+	}
+}
+
+func specialistProfileDefaultDomain(profile SpecialistSubagentProfile) bool {
+	return defaultSpecialistProfileKnown(profile.Name) && !specialistProfileGeneralPurpose(profile)
+}
+
+func specialistAutoAssignmentAllowed(profile SpecialistSubagentProfile, score int, editable bool) bool {
+	if score <= 0 {
+		return false
+	}
+	if !specialistProfileDefaultDomain(profile) {
+		return true
+	}
+	minScore := specialistReadOnlyDomainAutoMinScore
+	if editable {
+		minScore = specialistEditableDomainAutoMinScore
+	}
+	return score >= minScore
+}
+
+func explicitSpecialistModelProfiles(cfg Config) []SpecialistSubagentProfile {
+	profiles := configuredSpecialistProfiles(cfg)
+	out := make([]SpecialistSubagentProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		if specialistProfileHasExplicitRoute(profile) {
+			out = append(out, profile)
+		}
+	}
+	return out
+}
+
 func configuredSpecialistProfileByName(cfg Config, name string) (SpecialistSubagentProfile, bool) {
 	target := normalizeSpecialistProfileName(name)
 	if target == "" {
@@ -302,7 +342,7 @@ func specialistProfileHint(profile SpecialistSubagentProfile) string {
 func specialistCatalogSummary(cfg Config) []string {
 	items := specialistCatalogItems(cfg)
 	if len(items) == 0 {
-		return []string{"(no specialist profiles configured)"}
+		return []string{"(no task ownership profiles configured)"}
 	}
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
@@ -357,7 +397,7 @@ func specialistCatalogItems(cfg Config) []specialistCatalogItem {
 func formatSpecialistCatalog(cfg Config) string {
 	items := specialistCatalogItems(cfg)
 	if len(items) == 0 {
-		return "(no specialist profiles configured)"
+		return "(no task ownership profiles configured)"
 	}
 	var buf bytes.Buffer
 	currentGroup := ""
@@ -376,7 +416,7 @@ func formatSpecialistCatalog(cfg Config) string {
 			}
 			currentGroup = item.Group
 			buf.WriteString(currentGroup)
-			buf.WriteString(" specialists:\n")
+			buf.WriteString(" ownership profiles:\n")
 			tw = tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 		}
 		fmt.Fprintf(tw, "%s\t%s\n", item.Name, item.Description)
@@ -391,7 +431,7 @@ func formatSpecialistCatalog(cfg Config) string {
 func formatSpecialistCatalogWithUI(ui UI, cfg Config) string {
 	items := specialistCatalogItems(cfg)
 	if len(items) == 0 {
-		return "(no specialist profiles configured)"
+		return "(no task ownership profiles configured)"
 	}
 	var buf strings.Builder
 	currentGroup := ""
@@ -403,7 +443,7 @@ func formatSpecialistCatalogWithUI(ui UI, cfg Config) string {
 		if buf.Len() > 0 {
 			buf.WriteString("\n\n")
 		}
-		buf.WriteString(ui.subsection(currentGroup + " Specialists"))
+		buf.WriteString(ui.subsection(currentGroup + " Ownership Profiles"))
 		buf.WriteString("\n")
 		nameWidth := 0
 		for _, item := range groupItems {
@@ -533,7 +573,7 @@ func selectSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskState, tr
 				score += 10
 			}
 		}
-		if score <= 0 {
+		if !specialistAutoAssignmentAllowed(profile, score, false) {
 			continue
 		}
 		reason := strings.Join(reasons, ", ")
@@ -622,7 +662,7 @@ func selectEditableSpecialistForTaskNode(cfg Config, node TaskNode, state *TaskS
 				score += 12
 			}
 		}
-		if score <= 0 {
+		if !specialistAutoAssignmentAllowed(profile, score, true) {
 			continue
 		}
 		reason := strings.Join(reasons, ", ")
@@ -765,6 +805,7 @@ func (l specialistBatchRouteLimiter) run(ctx context.Context, route ModelRoute, 
 func buildSpecialistMicroWorkerSystemPrompt(profile SpecialistSubagentProfile) string {
 	lines := []string{
 		"You are a specialist micro-worker assisting a terminal coding agent.",
+		"Treat this profile as a task ownership lens, not as an independent review route.",
 		"Focus on one task-graph node and return a short brief with the most likely risk, next check, and why the node matters.",
 		"Keep the answer under 4 short bullets.",
 	}
@@ -803,9 +844,9 @@ func buildSpecialistMicroWorkerPrompt(profile SpecialistSubagentProfile, state *
 }
 
 func (rt *runtimeState) handleSpecialistsStatus() error {
-	fmt.Fprintln(rt.writer, rt.ui.section("Specialists"))
+	fmt.Fprintln(rt.writer, rt.ui.section("Task Ownership Profiles"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled", fmt.Sprintf("%t", configSpecialistsEnabled(rt.cfg))))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Most normal app, backend, frontend, and tooling work routes through implementation-owner or planner first. Review gates use /review models; domain specialists engage when task text or file paths strongly match."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Most work uses implementation-owner or planner. Domain owners require a strong path/keyword match or manual /specialists assign; review specialization stays in /review lenses."))
 	if catalog := strings.TrimSpace(formatSpecialistCatalogWithUI(rt.ui, rt.cfg)); catalog != "" {
 		fmt.Fprintln(rt.writer, catalog)
 	}
@@ -865,7 +906,7 @@ func (rt *runtimeState) handleSpecialistsAssign(args string) error {
 	}
 	fields := strings.Fields(strings.TrimSpace(args))
 	if len(fields) < 2 {
-		return fmt.Errorf("usage: /specialists assign <node-id> <specialist> [glob,glob2]")
+		return fmt.Errorf("usage: /specialists assign <node-id> <owner-profile> [glob,glob2]")
 	}
 	nodeID := strings.TrimSpace(fields[0])
 	profileName := strings.TrimSpace(fields[1])
@@ -879,7 +920,7 @@ func (rt *runtimeState) handleSpecialistsAssign(args string) error {
 	}
 	profile, ok := configuredSpecialistProfileByName(rt.cfg, profileName)
 	if !ok {
-		return fmt.Errorf("unknown specialist profile: %s", profileName)
+		return fmt.Errorf("unknown task owner profile: %s", profileName)
 	}
 	if !specialistProfileEditable(profile) {
 		return fmt.Errorf("specialist is not editable: %s", profile.Name)
@@ -906,7 +947,7 @@ func (rt *runtimeState) handleSpecialistsAssign(args string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine("Assigned editable specialist "+profile.Name+" to "+node.ID))
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Assigned editable task owner "+profile.Name+" to "+node.ID))
 	if lease.Root != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_root", lease.Root))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("worktree_branch", valueOrUnset(lease.Branch)))
@@ -927,11 +968,11 @@ func (rt *runtimeState) handleSpecialistsCleanup(args string) error {
 	}
 	target := normalizeSpecialistProfileName(args)
 	if target == "" {
-		return fmt.Errorf("usage: /specialists cleanup <specialist|all>")
+		return fmt.Errorf("usage: /specialists cleanup <owner-profile|all>")
 	}
 	leases := append([]SpecialistWorktree(nil), rt.session.SpecialistWorktrees...)
 	if len(leases) == 0 {
-		return fmt.Errorf("no specialist worktrees are recorded for this session")
+		return fmt.Errorf("no task-owner worktrees are recorded for this session")
 	}
 	manager := newWorktreeManager(rt.cfg)
 	removed := 0
@@ -955,14 +996,14 @@ func (rt *runtimeState) handleSpecialistsCleanup(args string) error {
 		removed++
 	}
 	if removed == 0 {
-		return fmt.Errorf("no specialist worktrees matched: %s", args)
+		return fmt.Errorf("no task-owner worktrees matched: %s", args)
 	}
 	if rt.store != nil {
 		if err := rt.store.Save(rt.session); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Removed %d specialist worktree(s)", removed)))
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Removed %d task-owner worktree(s)", removed)))
 	return nil
 }
 
@@ -980,6 +1021,6 @@ func (rt *runtimeState) handleSpecialistsCommand(args string) error {
 	case "cleanup":
 		return rt.handleSpecialistsCleanup(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(args), parts[0])))
 	default:
-		return fmt.Errorf("usage: /specialists [status|assign <node-id> <specialist> [glob,glob2]|cleanup <specialist|all>]")
+		return fmt.Errorf("usage: /specialists [status|assign <node-id> <owner-profile> [glob,glob2]|cleanup <owner-profile|all>]")
 	}
 }
