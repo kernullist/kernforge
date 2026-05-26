@@ -1045,7 +1045,7 @@ func TestRuntimeStatePromptCanceledCommandPrintsInfoNotError(t *testing.T) {
 		store:   NewSessionStore(filepath.Join(root, "sessions")),
 	}
 
-	rt.printCommandExecutionError("/review models", ErrPromptCanceled)
+	rt.printCommandExecutionError("/model cross-review", ErrPromptCanceled)
 
 	rendered := out.String()
 	if !strings.Contains(rendered, "INFO  Canceled.") {
@@ -1657,13 +1657,13 @@ func TestRuntimeStateHandleSetAutoVerifyCommand(t *testing.T) {
 	}
 }
 
-func TestRuntimeStateHandleModelCommandRejectsArguments(t *testing.T) {
+func TestRuntimeStateHandleModelCommandRejectsUnknownTarget(t *testing.T) {
 	rt := &runtimeState{}
 	err := rt.handleModelCommand("gpt-5.4")
 	if err == nil {
-		t.Fatalf("expected /model to reject direct arguments")
+		t.Fatalf("expected /model to reject an unknown target")
 	}
-	if !strings.Contains(err.Error(), "usage: /model") {
+	if !strings.Contains(err.Error(), "unknown model target") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1707,8 +1707,9 @@ func TestRuntimeStateHandleModelCommandShowsAllRoutingNonInteractive(t *testing.
 		"main",
 		"analysis_worker",
 		"analysis_reviewer",
+		"cross_review",
 		"primary /review route follows main",
-		"use /review models",
+		"use /model cross-review",
 		"Task Owner Model Overrides",
 		"not /review routes",
 		"planner",

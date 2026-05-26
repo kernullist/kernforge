@@ -3676,10 +3676,12 @@ Provider and model commands control which model is active and how planning/revie
 
 /model
 - Show current model routing, including the main model, project-analysis models, and explicit task-owner model overrides.
-- Common /review model routing is separate. The primary review route follows the active main model; use /review models only for the optional independent cross reviewer route.
+- The primary /review route follows the active main model; use /model cross-review only for the optional independent cross reviewer route.
 - In interactive mode, select which target you want to reconfigure and continue through the matching setup flow.
 - Changing the main model changes the primary review route. It does not overwrite the independent cross reviewer route.
 - Main profiles store their own analysis models and optional task-owner model overrides. When you change analysis or task-owner models through /model, the active main profile remembers those role models; activating that profile restores the full set.
+- /model cross-review [provider] [model] [reasoning_effort] configures the optional independent second-pass reviewer route.
+- /model clear cross-review clears the independent route and returns reviews to single-model mode.
 
 /effort [target] [undefined|minimal|low|medium|high|xhigh]
 - Show per-target reasoning effort when no value is provided. Empty config is displayed as undefined.
@@ -3703,7 +3705,7 @@ Provider and model commands control which model is active and how planning/revie
 - In interactive mode, enter a number to activate, rN to rename, dN to delete, or pN to pin/unpin.
 - In one-shot or scripted mode, /profile only lists profiles; use /profile <number>, /profile rename <number> <name>, /profile delete <number>, /profile pin <number>, or /profile unpin <number> for explicit changes.
 - Use /model as the main entry point for changing main, analysis, and optional task-owner model overrides.
-- Use /review models for the independent common review harness cross route.
+- Use /model cross-review for the independent common review harness cross route.
 
 /provider
 - Choose and configure a provider interactively.
@@ -3723,13 +3725,6 @@ Provider and model commands control which model is active and how planning/revie
 
 /review plan <task>
 - Review an implementation plan through the common ReviewRun schema and gate.
-
-/review models
-- Show common review harness routes, lenses, and recent route health. In interactive mode, choose a reviewer route/provider/model by number.
-- /review models cross [provider] [model] [reasoning_effort] configures the optional independent second-pass reviewer route.
-- Security, false-positive, design, regression, test, and final-gate specialization are review lenses inside the same route, not separate model routes.
-- /review models clear cross clears the independent route. Deprecated role names are accepted only by clear for old configs.
-- This is separate from /model's project-analysis routes and optional task-owner model overrides.
 
 /new-feature <task>
 - Create a tracked feature workspace under .kernforge/features/<id>, generate spec.md, plan.md, and tasks.md, then mark it as the active feature.

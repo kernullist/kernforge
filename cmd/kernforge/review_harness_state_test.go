@@ -762,7 +762,7 @@ func TestUIPolishReviewRequiresPrimaryForBehavioralFormats(t *testing.T) {
 	}
 }
 
-func TestReviewModelsStatusReportsRouteHealth(t *testing.T) {
+func TestCrossReviewModelStatusReportsRouteHealth(t *testing.T) {
 	root := t.TempDir()
 	rt := reviewStateTestRuntime(root, nil)
 	var output strings.Builder
@@ -776,7 +776,7 @@ func TestReviewModelsStatusReportsRouteHealth(t *testing.T) {
 		LastQuality:    reviewModelQualityFailed,
 		Recommendation: "route is timeout-heavy; reduce strict retries and consider a closer or stronger reviewer",
 	}}
-	rt.printReviewModelsStatus()
+	rt.printCrossReviewModelStatus()
 	rendered := output.String()
 	for _, want := range []string{
 		"Route Health",
@@ -787,7 +787,7 @@ func TestReviewModelsStatusReportsRouteHealth(t *testing.T) {
 		"next reviewer call auto-extends timeout",
 	} {
 		if !strings.Contains(rendered, want) {
-			t.Fatalf("expected review models status to contain %q, got %q", want, rendered)
+			t.Fatalf("expected cross review model status to contain %q, got %q", want, rendered)
 		}
 	}
 }
@@ -940,7 +940,7 @@ func TestReviewRouteHealthActionUsesRoleSpecificClearCommand(t *testing.T) {
 		LastQuality: reviewModelQualityFailed,
 	}
 	action := reviewRouteHealthActionHint(item)
-	if !strings.Contains(action, "/review models clear cross") {
+	if !strings.Contains(action, "/model clear cross-review") {
 		t.Fatalf("expected cross-route clear command, got %q", action)
 	}
 	crossAction := reviewRouteHealthActionHint(ReviewRouteHealth{
@@ -951,7 +951,7 @@ func TestReviewRouteHealthActionUsesRoleSpecificClearCommand(t *testing.T) {
 		LastStatus:  "failed",
 		LastQuality: reviewModelQualityFailed,
 	})
-	if !strings.Contains(crossAction, "/review models clear cross") {
+	if !strings.Contains(crossAction, "/model clear cross-review") {
 		t.Fatalf("expected synthetic cross reviewer to clear cross route, got %q", crossAction)
 	}
 }

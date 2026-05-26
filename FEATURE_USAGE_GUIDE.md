@@ -779,14 +779,15 @@ Review artifacts:
 
 Purpose:
 1. Review implementation plans through the same common review harness used for code, selection, PR, goal, final, and analysis reviews.
-2. Use the active main model as the primary review route and optional `/review models cross` as the independent second-pass route; design/security/false-positive/test concerns are review lenses, not separate model routes.
+2. Use the active main model as the primary review route and optional `/model cross-review` as the independent second-pass route; design/security/false-positive/test concerns are review lenses, not separate model routes.
 3. Execute only when the gate and user flow allow it.
 
 Useful commands:
 - `/review plan <task>`
-- `/review models status`
-- `/review models`
-- `/review models cross <provider> [model]`
+- `/model cross-review status`
+- `/model cross-review`
+- `/model cross-review <provider> [model]`
+- `/model clear cross-review`
 - `/review waive <finding-id> --reason <text>`
 
 Best used when:
@@ -861,7 +862,7 @@ What `Tab` completion now covers:
 1. Slash commands
 2. Workspace paths and `@file` mentions
 3. MCP resource and prompt targets
-4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/review models cross|status|clear`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
+4. Fixed command arguments such as `/set-auto-verify on|off`, `/progress-display auto|compact|stream`, `/progress_display auto|compact|stream`, `/permissions`, `/checkpoint-auto`, `/provider status|openai-codex-subscription|openai-codex-cli|openai-api|anthropic-claude-cli|anthropic-api|deepseek|openrouter|opencode|opencode-go|ollama|lmstudio|vllm|llama.cpp`, `/profile list|pin|unpin|rename|delete`, `/model cross-review|clear cross-review|status`, `/verify --full`, `/investigate start <preset>`, `/simulate <profile>`, and `/analyze-project --mode <mode>`
 5. Saved ids for `/resume`, `/evidence-show`, `/mem-show`, `/mem-promote`, `/mem-demote`, `/mem-confirm`, `/mem-tentative`, `/investigate show`, `/simulate show`, and `/new-feature status|plan|implement|close`
 6. Inline descriptions for command and subcommand suggestions so the completion list explains what each candidate does
 

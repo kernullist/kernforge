@@ -524,9 +524,9 @@ func reviewNextCommandHintText(cfg Config, run ReviewRun, cmd ReviewNextCommand)
 	case "narrow-review":
 		return "path, symbol, selection 또는 검색 결과로 리뷰 범위를 좁힌 뒤 `/review`를 다시 실행하세요."
 	case "reviewer-fallback":
-		return "`/review models status`로 route 상태를 확인하고, 모델을 바꾸거나 명시적으로 main-review fallback을 승인하세요."
+		return "`/model cross-review status`로 route 상태를 확인하고, 모델을 바꾸거나 명시적으로 main-review fallback을 승인하세요."
 	case "set-cross-model":
-		return "`/review models cross`에서 독립 cross reviewer route를 번호로 선택하세요. 보안/오탐 전문성은 review lens로 같은 프롬프트에 적용됩니다."
+		return "`/model cross-review`에서 독립 cross reviewer route를 번호로 선택하세요. 보안/오탐 전문성은 review lens로 같은 프롬프트에 적용됩니다."
 	default:
 		return cmd.ClientHint
 	}

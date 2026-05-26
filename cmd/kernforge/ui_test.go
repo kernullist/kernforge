@@ -333,15 +333,15 @@ func TestFormatCompletionSuggestionsShowsSubcommandDescriptions(t *testing.T) {
 
 func TestFormatCompletionSuggestionsShowsReviewSubcommandDescriptions(t *testing.T) {
 	ui := UI{color: false}
-	rendered := ui.formatCompletionSuggestions([]string{"/review change", "/review plan", "/review models", "/review --mode"}, "/review ")
+	rendered := ui.formatCompletionSuggestions([]string{"/review change", "/review plan", "/model cross-review", "/review --mode"}, "/review ")
 
 	for _, needle := range []string{
 		"/review change",
 		"Review the current workspace diff",
 		"/review plan",
 		"Review an implementation plan",
-		"/review models",
-		"independent cross-review route",
+		"/model cross-review",
+		"independent second-pass reviewer route",
 		"/review --mode",
 		"Force review mode",
 	} {

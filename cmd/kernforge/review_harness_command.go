@@ -16,7 +16,7 @@ func (rt *runtimeState) handleReviewCommand(args string) error {
 	if len(fields) > 0 {
 		switch strings.ToLower(fields[0]) {
 		case "models":
-			return rt.handleReviewModelsCommand(strings.TrimSpace(strings.TrimPrefix(args, fields[0])))
+			return fmt.Errorf("/review models was removed; use /model cross-review for the optional cross review route")
 		case "waive", "waivers":
 			return rt.handleReviewWaiverCommand(args)
 		}
@@ -144,38 +144,10 @@ func parseReviewCommandOptions(args string) ReviewHarnessOptions {
 	return opts
 }
 
-func (rt *runtimeState) handleReviewModelsCommand(args string) error {
-	fields := splitCommandFields(args)
-	if len(fields) == 0 {
-		rt.printReviewModelsStatus()
-		if rt.interactive {
-			fmt.Fprintln(rt.writer)
-			return rt.configureReviewModelInteractive("")
-		}
-		return nil
-	}
-	if strings.EqualFold(fields[0], "status") || strings.EqualFold(fields[0], "show") || strings.EqualFold(fields[0], "list") {
-		rt.printReviewModelsStatus()
-		return nil
-	}
-	switch strings.ToLower(fields[0]) {
-	case "clear":
-		if len(fields) < 2 {
-			if rt.interactive {
-				return rt.clearReviewModelInteractive()
-			}
-			return fmt.Errorf("usage: /review models clear <role>")
-		}
-		return rt.clearReviewModelRole(fields[1])
-	default:
-		return rt.configureReviewModelFromFields(fields)
-	}
-}
-
-func (rt *runtimeState) printReviewModelsStatus() {
+func (rt *runtimeState) printCrossReviewModelStatus() {
 	reviewCfg := configReviewHarness(rt.cfg)
-	fmt.Fprintln(rt.writer, rt.ui.section("Review Models"))
-	fmt.Fprintln(rt.writer, rt.ui.infoLine("Use /review models to choose a reviewer route/provider/model by number. Domain specialization is applied through review lenses, not extra routes."))
+	fmt.Fprintln(rt.writer, rt.ui.section("Cross Review Model"))
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Use /model cross-review to configure the optional independent second-pass reviewer route. Domain specialization is applied through review lenses, not extra routes."))
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, rt.ui.section("Automatic Review"))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("after_change", reviewSettingLine(reviewBoolLabel(*reviewCfg.AutoAfterChange), "review code-changing agent edits by default")))
@@ -223,7 +195,7 @@ func (rt *runtimeState) printReviewModelsStatus() {
 		}
 	}
 	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Direct form: /review models cross openai-api gpt-5.4"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Direct form: /model cross-review openai-api gpt-5.4"))
 }
 
 func reviewBoolLabel(value bool) string {
@@ -297,22 +269,22 @@ func reviewRouteHealthNextSoftTimeout(item ReviewRouteHealth) time.Duration {
 func reviewRouteHealthActionHint(item ReviewRouteHealth) string {
 	clearCommand := reviewRouteHealthClearCommand(item)
 	if reviewRouteHealthNeedsAdaptiveTimeout(item) {
-		return "next reviewer call auto-extends timeout; alternatives: /review models, " + clearCommand + ", /model"
+		return "next reviewer call auto-extends timeout; alternatives: /model cross-review, " + clearCommand
 	}
 	if reviewRouteHealthItemHasTimeout(item) {
-		return "route has timeout history; switch reviewer with /review models if it repeats"
+		return "route has timeout history; switch reviewer with /model cross-review if it repeats"
 	}
 	if item.WeakRate > 0 || strings.EqualFold(strings.TrimSpace(item.LastQuality), reviewModelQualityWeak) {
-		return "switch reviewer with /review models or use single-model mode with " + clearCommand
+		return "switch reviewer with /model cross-review or use single-model mode with " + clearCommand
 	}
 	if item.EmptyResponseRate > 0 {
-		return "switch reviewer with /review models or fix the provider response format"
+		return "switch reviewer with /model cross-review or fix the provider response format"
 	}
 	return "rerun after changing reviewer or main model if the route keeps failing"
 }
 
 func reviewRouteHealthClearCommand(item ReviewRouteHealth) string {
-	return "/review models clear cross"
+	return "/model clear cross-review"
 }
 
 func reviewRouteHealthItemHasTimeout(item ReviewRouteHealth) bool {
@@ -372,7 +344,7 @@ type reviewModelRoleChoice struct {
 
 func reviewModelRoleChoices() []reviewModelRoleChoice {
 	return []reviewModelRoleChoice{
-		{Number: "1", Token: "cross", Role: "cross_reviewer", Label: "cross"},
+		{Number: "1", Token: "cross-review", Role: "cross_reviewer", Label: "cross"},
 	}
 }
 
@@ -454,40 +426,30 @@ func configuredLegacyReviewRoleModels(reviewCfg ReviewHarnessConfig) []string {
 	return out
 }
 
-func (rt *runtimeState) configureReviewModelFromFields(fields []string) error {
+func (rt *runtimeState) configureCrossReviewModelFromFields(fields []string) error {
 	if len(fields) == 0 {
 		if rt.interactive {
-			return rt.configureReviewModelInteractive("")
+			return rt.configureReviewModelInteractive("cross_reviewer")
 		}
-		return fmt.Errorf("usage: /review models cross [provider] [model] [reasoning_effort]")
+		return fmt.Errorf("usage: /model cross-review <provider> <model> [reasoning_effort]")
 	}
-	roleChoice, ok := resolveReviewModelRouteChoice(fields[0])
+	provider, ok := resolveProviderChoice(fields[0])
 	if !ok {
 		if legacy, legacyOK := resolveReviewModelRoleChoice(fields[0]); legacyOK {
 			if legacy.Role == "primary_reviewer" {
-				return fmt.Errorf("primary review route follows the active main model; use /model to change it, or /review models cross <provider> <model> for an independent reviewer route")
+				return fmt.Errorf("primary review route follows the active main model; use /model to change it, or /model cross-review <provider> <model> for an independent reviewer route")
 			}
-			return fmt.Errorf("%s is now a review lens, not a model route; use /review models cross <provider> <model> for an independent reviewer route", legacy.Token)
+			return fmt.Errorf("%s is now a review lens, not a model route; use /model cross-review <provider> <model> for an independent reviewer route", legacy.Token)
 		}
-		return fmt.Errorf("unknown review model route: %s", fields[0])
+		return fmt.Errorf("unknown provider: %s", fields[0])
 	}
 	if len(fields) == 1 {
 		if rt.interactive {
-			return rt.configureReviewModelInteractive(roleChoice.Role)
+			return rt.configureReviewModelInteractiveForProvider("cross_reviewer", provider)
 		}
-		return fmt.Errorf("usage: /review models %s <provider> <model> [reasoning_effort]", roleChoice.Token)
+		return fmt.Errorf("usage: /model cross-review %s <model> [reasoning_effort]", provider)
 	}
-	provider, ok := resolveProviderChoice(fields[1])
-	if !ok {
-		return fmt.Errorf("unknown provider: %s", fields[1])
-	}
-	if len(fields) == 2 {
-		if rt.interactive {
-			return rt.configureReviewModelInteractiveForProvider(roleChoice.Role, provider)
-		}
-		return fmt.Errorf("usage: /review models %s %s <model> [reasoning_effort]", roleChoice.Token, provider)
-	}
-	modelParts := append([]string(nil), fields[2:]...)
+	modelParts := append([]string(nil), fields[1:]...)
 	effort := ""
 	if len(modelParts) > 1 && validReasoningEffort(modelParts[len(modelParts)-1]) {
 		effort = modelParts[len(modelParts)-1]
@@ -497,7 +459,7 @@ func (rt *runtimeState) configureReviewModelFromFields(fields []string) error {
 	if model == "" {
 		return fmt.Errorf("model is required")
 	}
-	return rt.activateReviewModelRole(roleChoice.Role, provider, model, "", "", effort)
+	return rt.activateReviewModelRole("cross_reviewer", provider, model, "", "", effort)
 }
 
 func (rt *runtimeState) configureReviewModelInteractive(role string) error {

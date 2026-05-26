@@ -2998,7 +2998,7 @@ func (rt *runtimeState) configureProviderInteractive(provider string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Saved provider=%s model=%s", providerUserLabel(rt.cfg.Provider), rt.cfg.Model)))
 	if rt.hasInheritedRoleModels() {
-		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer stays disabled until explicitly configured. The primary review route also follows main; use /review models cross only for an independent reviewer route."))
+		fmt.Fprintln(rt.writer, rt.ui.info("Only the main model changed. Analysis worker follows main when unset; analysis reviewer stays disabled until explicitly configured. The primary review route also follows main; use /model cross-review only for an independent reviewer route."))
 	}
 	return nil
 }
@@ -4572,8 +4572,9 @@ func (rt *runtimeState) handleProviderCommand(args string) error {
 }
 
 func (rt *runtimeState) handleModelCommand(args string) error {
-	if strings.TrimSpace(args) != "" {
-		return fmt.Errorf("usage: /model")
+	args = strings.TrimSpace(args)
+	if args != "" {
+		return rt.handleModelCommandArgs(args)
 	}
 	if err := rt.showModelRoutingStatus(); err != nil {
 		return err
@@ -4587,8 +4588,9 @@ func (rt *runtimeState) handleModelCommand(args string) error {
 	fmt.Fprintln(rt.writer, rt.ui.info("  1. main session model"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  2. analysis worker"))
 	fmt.Fprintln(rt.writer, rt.ui.info("  3. analysis reviewer (project analysis only)"))
-	fmt.Fprintln(rt.writer, rt.ui.info("  4. task owner model override"))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows the main model; configure only the optional cross route with /review models."))
+	fmt.Fprintln(rt.writer, rt.ui.info("  4. cross review model"))
+	fmt.Fprintln(rt.writer, rt.ui.info("  5. task owner model override"))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows the main model; configure the optional cross route with /model cross-review."))
 
 	choice, err := rt.promptValue("Select model target", "1")
 	if errors.Is(err, ErrPromptCanceled) {
@@ -4598,6 +4600,54 @@ func (rt *runtimeState) handleModelCommand(args string) error {
 		return err
 	}
 	return rt.applyModelHubChoice(choice)
+}
+
+func (rt *runtimeState) handleModelCommandArgs(args string) error {
+	fields := splitCommandFields(args)
+	if len(fields) == 0 {
+		return rt.showModelRoutingStatus()
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[0])) {
+	case "status":
+		if len(fields) != 1 {
+			return fmt.Errorf("usage: /model status")
+		}
+		return rt.showModelRoutingStatus()
+	case "cross-review":
+		return rt.handleModelCrossReviewCommand(fields[1:])
+	case "clear":
+		if len(fields) == 2 && strings.EqualFold(fields[1], "cross-review") {
+			return rt.clearReviewModelRole("cross_reviewer")
+		}
+		return fmt.Errorf("usage: /model clear cross-review")
+	case "main", "analysis-worker", "analysis-reviewer", "task-owner":
+		if len(fields) != 1 {
+			return fmt.Errorf("usage: /model %s", fields[0])
+		}
+		return rt.applyModelHubChoice(fields[0])
+	case "plan-review":
+		return fmt.Errorf("plan-review reviewer routing was removed; plan review now uses the design lens on the primary/cross review routes")
+	default:
+		return fmt.Errorf("unknown model target: %s", fields[0])
+	}
+}
+
+func (rt *runtimeState) handleModelCrossReviewCommand(fields []string) error {
+	if len(fields) == 0 {
+		if rt.interactive {
+			return rt.configureReviewModelInteractive("cross_reviewer")
+		}
+		return fmt.Errorf("usage: /model cross-review <provider> <model> [reasoning_effort]")
+	}
+	switch strings.ToLower(strings.TrimSpace(fields[0])) {
+	case "status":
+		if len(fields) != 1 {
+			return fmt.Errorf("usage: /model cross-review status")
+		}
+		rt.printCrossReviewModelStatus()
+		return nil
+	}
+	return rt.configureCrossReviewModelFromFields(fields)
 }
 
 func (rt *runtimeState) applyModelHubChoice(choice string) error {
@@ -4610,7 +4660,9 @@ func (rt *runtimeState) applyModelHubChoice(choice string) error {
 		err = rt.configureProjectAnalysisRoleInteractive("worker", "")
 	case "3", "analysis reviewer", "reviewer":
 		err = rt.configureProjectAnalysisRoleInteractive("reviewer", "")
-	case "4", "specialist", "specialist subagent", "subagent", "task owner", "task-owner", "owner":
+	case "4", "cross review", "cross review model", "cross-review":
+		err = rt.configureReviewModelInteractive("cross_reviewer")
+	case "5", "specialist", "specialist subagent", "subagent", "task owner", "task-owner", "owner":
 		err = rt.handleSetSpecialistModelCommand("")
 	case "plan", "plan-review", "plan reviewer", "plan-review reviewer":
 		return fmt.Errorf("plan-review reviewer routing was removed; plan review now uses the design lens on the primary/cross review routes")
@@ -4774,7 +4826,7 @@ func (rt *runtimeState) setReasoningEffortTarget(target string, effort string) e
 	case "main", "session", "main-model", "main_model":
 		return rt.setMainReasoningEffort(effort)
 	case "plan", "plan-review", "plan-reviewer", "reviewer":
-		return fmt.Errorf("plan-review reviewer routing was removed; configure the independent route with /review models cross <provider> <model> [reasoning_effort]")
+		return fmt.Errorf("plan-review reviewer routing was removed; configure the independent route with /model cross-review <provider> <model> [reasoning_effort]")
 	case "worker", "analysis-worker", "analysis_worker":
 		return rt.setAnalysisReasoningEffort("worker", effort)
 	case "analysis-reviewer", "analysis_reviewer":
@@ -4927,7 +4979,8 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("main", formatProviderModelEffortLabel(mainProvider, mainModel, rt.cfg.ReasoningEffort)))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_worker", rt.describeProjectAnalysisRoleModel("worker")))
 	fmt.Fprintln(rt.writer, rt.ui.statusKV("analysis_reviewer", rt.describeProjectAnalysisRoleModel("reviewer")))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /review models for the optional cross route."))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review", rt.describeCrossReviewModel()))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("The primary /review route follows main; use /model cross-review for the optional cross route."))
 	profiles := explicitSpecialistModelProfiles(rt.cfg)
 	if len(profiles) == 0 {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("task_owner_model_overrides", "none; /specialists manages ownership profiles, /set-specialist-model is optional"))
@@ -4940,6 +4993,15 @@ func (rt *runtimeState) showModelRoutingStatus() error {
 		fmt.Fprintln(rt.writer, rt.ui.statusKVAligned(profile.Name, rt.describeSpecialistModel(profile), columnWidth))
 	}
 	return nil
+}
+
+func (rt *runtimeState) describeCrossReviewModel() string {
+	reviewCfg := configReviewHarness(rt.cfg)
+	label, source := reviewRoleModelLabelAndSource(rt.cfg, reviewCfg, "cross_reviewer")
+	if strings.TrimSpace(source) == "" {
+		return "not configured; single-model review mode"
+	}
+	return reviewRoleRouteLine(label, source)
 }
 
 func specialistStatusColumnWidth(profiles []SpecialistSubagentProfile) int {
@@ -7131,7 +7193,7 @@ func removedReviewCommandSuggestion(name string) string {
 	case "set-plan-review":
 		return "Use /review plan. The design lens is applied automatically."
 	case "profile-review":
-		return "Use /review models or /review models cross instead."
+		return "Use /model cross-review instead."
 	default:
 		return ""
 	}

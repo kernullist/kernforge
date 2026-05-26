@@ -1000,7 +1000,7 @@ func requiredReviewerFailureFindings(run ReviewRun) []ReviewFinding {
 		Title:              "Required review route failed or returned weak output",
 		Evidence:           strings.Join(details, " | "),
 		Impact:             "The review gate cannot treat a failed or weak required review-stage model route as approval for a write-gated change.",
-		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross failed, switch that reviewer route with /review models cross or clear it with /review models clear cross. Then rerun the review before writing.",
+		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross failed, switch that reviewer route with /model cross-review or clear it with /model clear cross-review. Then rerun the review before writing.",
 		TestRecommendation: "Rerun the same review request and confirm every required review route completes with usable structured findings or approval.",
 		BlocksGate:         true,
 	}}

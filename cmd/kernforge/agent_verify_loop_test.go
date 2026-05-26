@@ -8077,7 +8077,7 @@ func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testin
 	if !strings.Contains(reply, "Pre-write reviewer gate: not approved") ||
 		!strings.Contains(reply, "no code changes were applied") ||
 		!strings.Contains(reply, "[3] Next step") ||
-		!strings.Contains(reply, "/review models") {
+		!strings.Contains(reply, "/model cross-review") {
 		t.Fatalf("expected reviewer-gate stop reply, got %q", reply)
 	}
 	if len(provider.requests) != 3 {
@@ -9033,7 +9033,7 @@ func TestAgentReviewerGateUnavailableWithoutActionableFindingDoesNotPrompt(t *te
 	}
 	for _, want := range []string{
 		"not by a code finding",
-		"/review models",
+		"/model cross-review",
 		"No `y/N` continuation is offered",
 	} {
 		if !strings.Contains(reply, want) {
@@ -9289,7 +9289,7 @@ func TestAgentReviewerGateRepairYWithoutActionableFindingStops(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "/review models") ||
+	if !strings.Contains(reply, "/model cross-review") ||
 		!strings.Contains(reply, "no code item to repair") {
 		t.Fatalf("expected no-actionable reply, got %q", reply)
 	}

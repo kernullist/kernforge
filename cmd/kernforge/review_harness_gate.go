@@ -1202,13 +1202,13 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	}
 	if reviewRunHasRequiredReviewerFailure(run) {
 		expected := "The failed review route is changed or the user explicitly chooses main-model fallback before any write is attempted."
-		hint := "If primary failed, change the active main model with /model or fix that provider route. If cross failed, fix that route with /review models cross or clear it with /review models clear cross. Retry with a longer timeout only after the route is healthy."
+		hint := "If primary failed, change the active main model with /model or fix that provider route. If cross failed, fix that route with /model cross-review or clear it with /model clear cross-review. Retry with a longer timeout only after the route is healthy."
 		if reviewRunHasUsableMainReviewer(run) {
 			hint = "The main review is usable. In an interactive edit flow, explicitly say that the main model review may be used for this pre-write fallback before diff preview."
 		}
 		out = append(out, ReviewNextCommand{
 			ID:                   "reviewer-fallback",
-			Command:              "/review models status",
+			Command:              "/model cross-review status",
 			Reason:               "a required review route failed or returned weak output",
 			Safety:               "read_only",
 			When:                 "before retrying the edit or approving a write",
@@ -1277,7 +1277,7 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 	if reviewHasSecurityFinding(run.Findings) && !reviewStringSliceContainsCI(run.ModelPlan.OptionalRoles, "cross_reviewer") && !reviewStringSliceContainsCI(run.ModelPlan.RequiredRoles, "cross_reviewer") {
 		out = append(out, ReviewNextCommand{
 			ID:             "set-cross-model",
-			Command:        "/review models cross",
+			Command:        "/model cross-review",
 			Reason:         "security-sensitive review is using single-model review",
 			Safety:         "read_only",
 			When:           "before future security reviews",

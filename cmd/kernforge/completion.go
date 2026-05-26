@@ -134,7 +134,7 @@ var slashCommandDescriptions = map[string]string{
 	"provider":                   "Configure the model provider and inspect provider status.",
 	"profile":                    "Show saved main profiles plus each profile's role model set.",
 	"version":                    "Print the current Kernforge version.",
-	"model":                      "Show explicit or inherited model routing and interactively reconfigure one target.",
+	"model":                      "Show or change main, analysis, cross-review, and task-owner model routing.",
 	"effort":                     "Show or set reasoning effort for a configured model target.",
 	"codex-auth":                 "Manage Kernforge-owned OpenAI Codex OAuth login state.",
 	"codex-login":                "Start Kernforge-owned OpenAI Codex OAuth login.",
@@ -286,36 +286,35 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"all": "Render dashboard entries across all workspaces in HTML.",
 	},
 	"review": {
-		"change":                      "Review the current workspace diff, patch transaction, or supplied diff/code.",
-		"plan":                        "Review an implementation plan or architecture proposal as a typed ReviewRun.",
-		"selection":                   "Review the active viewer selection or selected paths with bounded evidence.",
-		"pr":                          "Review pull-request context, changed files, checks, and reusable findings.",
-		"final":                       "Review the final answer against the actual workspace state before completion.",
-		"goal":                        "Review the active goal iteration and its latest implementation evidence.",
-		"analysis":                    "Review an analysis, root-cause, fuzz, or project report for evidence gaps.",
-		"models":                      "Show or change the independent cross-review route.",
-		"models status":               "Show effective review routes, lenses, and automatic review settings.",
-		"models cross":                "Configure the independent second-pass reviewer route.",
-		"models clear":                "Clear a reviewer route override.",
-		"--no-model":                  "Run deterministic reviewers only and still write review artifacts.",
-		"--mode":                      "Force review mode such as security-hardening, core-build, live-fix, refactor, research, or ui-polish.",
-		"--follow-up":                 "Enable safe follow-up recommendations for this review run.",
-		"--no-follow-up":              "Disable automatic safe follow-up recommendations for this review run.",
-		"models clear cross":          "Clear the independent cross-review route.",
-		"models clear primary":        "Clear a deprecated primary reviewer override.",
-		"models clear security":       "Clear a deprecated security reviewer override.",
-		"models clear false-positive": "Clear a deprecated false-positive reviewer override.",
-		"models clear design":         "Clear a deprecated design reviewer override.",
-		"models clear regression":     "Clear a deprecated regression reviewer override.",
-		"models clear test":           "Clear a deprecated test reviewer override.",
-		"models clear final":          "Clear a deprecated final gate reviewer override.",
-		"--mode general-change":       "Use the default code-change review policy.",
-		"--mode security-hardening":   "Use security, kernel, bypass, and false-positive review policy.",
-		"--mode core-build":           "Use architecture-heavy review for new core functionality.",
-		"--mode live-fix":             "Use bug-fix, repro, and regression review policy.",
-		"--mode refactor":             "Use dependency impact and behavior-preservation review policy.",
-		"--mode research":             "Use evidence and decision-review policy for research or PoC work.",
-		"--mode ui-polish":            "Use UI, visual, interaction, and accessibility review policy.",
+		"change":                    "Review the current workspace diff, patch transaction, or supplied diff/code.",
+		"plan":                      "Review an implementation plan or architecture proposal as a typed ReviewRun.",
+		"selection":                 "Review the active viewer selection or selected paths with bounded evidence.",
+		"pr":                        "Review pull-request context, changed files, checks, and reusable findings.",
+		"final":                     "Review the final answer against the actual workspace state before completion.",
+		"goal":                      "Review the active goal iteration and its latest implementation evidence.",
+		"analysis":                  "Review an analysis, root-cause, fuzz, or project report for evidence gaps.",
+		"--no-model":                "Run deterministic reviewers only and still write review artifacts.",
+		"--mode":                    "Force review mode such as security-hardening, core-build, live-fix, refactor, research, or ui-polish.",
+		"--follow-up":               "Enable safe follow-up recommendations for this review run.",
+		"--no-follow-up":            "Disable automatic safe follow-up recommendations for this review run.",
+		"--mode general-change":     "Use the default code-change review policy.",
+		"--mode security-hardening": "Use security, kernel, bypass, and false-positive review policy.",
+		"--mode core-build":         "Use architecture-heavy review for new core functionality.",
+		"--mode live-fix":           "Use bug-fix, repro, and regression review policy.",
+		"--mode refactor":           "Use dependency impact and behavior-preservation review policy.",
+		"--mode research":           "Use evidence and decision-review policy for research or PoC work.",
+		"--mode ui-polish":          "Use UI, visual, interaction, and accessibility review policy.",
+	},
+	"model": {
+		"status":              "Show current model routing, including the optional cross-review route.",
+		"main":                "Configure the main session model.",
+		"analysis-worker":     "Configure the project-analysis worker model.",
+		"analysis-reviewer":   "Configure the project-analysis reviewer model.",
+		"cross-review":        "Configure the optional independent second-pass reviewer route.",
+		"cross-review status": "Show common review routes, lenses, automation, and route health.",
+		"clear":               "Clear a model route override.",
+		"clear cross-review":  "Clear the optional independent second-pass reviewer route.",
+		"task-owner":          "Configure optional task-owner model overrides.",
 	},
 	"mem-prune": {
 		"all": "Prune memory entries without limiting to the current workspace.",
@@ -785,7 +784,8 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"verify":                {"--full"},
 		"verify-dashboard":      {"all"},
 		"verify-dashboard-html": {"all"},
-		"review":                {"change", "plan", "selection", "pr", "final", "goal", "analysis", "models", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
+		"model":                 {"status", "main", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
+		"review":                {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
 		"handoff":               {"import"},
 		"mem-prune":             {"all"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
@@ -926,10 +926,26 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 			}
 		}
 		return nil, 0, false
+	case "model":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "cross-review") {
+			if len(fields) == 2 {
+				options := append([]string{"status"}, providerChoiceCompletionTokens()...)
+				return options, 1, true
+			}
+			return nil, 0, false
+		}
+		if strings.EqualFold(fields[0], "clear") {
+			if len(fields) == 2 {
+				return []string{"cross-review"}, 1, true
+			}
+			return nil, 0, false
+		}
+		return nil, 0, false
 	case "review":
-		reviewRoles := reviewModelRoleTokens()
 		reviewModes := []string{"general-change", "security-hardening", "core-build", "live-fix", "refactor", "research", "ui-polish"}
-		reviewProviders := providerChoiceCompletionTokens()
 		if len(fields) <= 1 {
 			return firstLevel[commandName], 0, true
 		}
@@ -938,25 +954,6 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 				return reviewModes, 1, true
 			}
 			return nil, 0, false
-		}
-		if strings.EqualFold(fields[0], "models") {
-			if len(fields) == 2 {
-				options := append([]string{}, reviewRoles...)
-				options = append(options, "status", "clear")
-				return options, 1, true
-			}
-			if _, ok := resolveReviewModelRoleChoice(fields[1]); ok {
-				if len(fields) == 3 {
-					return reviewProviders, 2, true
-				}
-				return nil, 0, false
-			}
-			if strings.EqualFold(fields[1], "clear") {
-				if len(fields) == 3 {
-					return reviewRoles, 2, true
-				}
-				return nil, 0, false
-			}
 		}
 		return nil, 0, false
 	case "analyze-project":

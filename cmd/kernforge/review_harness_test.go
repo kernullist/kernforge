@@ -9908,7 +9908,7 @@ func normalizeGoldenText(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func TestReviewModelsCommandShortFormConfiguresCrossRoute(t *testing.T) {
+func TestModelCommandShortFormConfiguresCrossReviewRoute(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9925,8 +9925,8 @@ func TestReviewModelsCommandShortFormConfiguresCrossRoute(t *testing.T) {
 		session: &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("cross openai gpt-5.4"); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand("cross-review openai gpt-5.4"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	roleCfg := rt.cfg.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "openai" || roleCfg.Model != "gpt-5.4" {
@@ -9937,7 +9937,7 @@ func TestReviewModelsCommandShortFormConfiguresCrossRoute(t *testing.T) {
 	}
 }
 
-func TestReviewModelsCommandShortFormPersistsCrossRoute(t *testing.T) {
+func TestModelCommandShortFormPersistsCrossReviewRoute(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9954,8 +9954,8 @@ func TestReviewModelsCommandShortFormPersistsCrossRoute(t *testing.T) {
 		session: &Session{Provider: "deepseek", Model: "deepseek-v4-pro", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("cross deepseek deepseek-v4-pro low"); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand("cross-review deepseek deepseek-v4-pro low"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
 	if err != nil {
@@ -9967,7 +9967,7 @@ func TestReviewModelsCommandShortFormPersistsCrossRoute(t *testing.T) {
 	}
 }
 
-func TestReviewModelsCommandDefaultsCrossRouteEffortToHigh(t *testing.T) {
+func TestModelCommandDefaultsCrossReviewRouteEffortToHigh(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -9984,8 +9984,8 @@ func TestReviewModelsCommandDefaultsCrossRouteEffortToHigh(t *testing.T) {
 		session: &Session{Provider: "deepseek", Model: "deepseek-v4-pro", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("cross deepseek deepseek-v4-pro"); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand("cross-review deepseek deepseek-v4-pro"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
 	if err != nil {
@@ -10000,7 +10000,7 @@ func TestReviewModelsCommandDefaultsCrossRouteEffortToHigh(t *testing.T) {
 	}
 }
 
-func TestReviewModelsClearPersistsLastRouteRemoval(t *testing.T) {
+func TestModelCommandClearPersistsLastCrossRouteRemoval(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -10027,19 +10027,19 @@ func TestReviewModelsClearPersistsLastRouteRemoval(t *testing.T) {
 		session: &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand("clear cross"); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand("clear cross-review"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	loaded, err := LoadConfig(workspace)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 	if len(loaded.Review.RoleModels) != 0 {
-		t.Fatalf("expected /review models clear to persist last role removal, got %#v", loaded.Review.RoleModels)
+		t.Fatalf("expected /model clear cross-review to persist last role removal, got %#v", loaded.Review.RoleModels)
 	}
 }
 
-func TestReviewModelsStatusExplainsRolesAndSettings(t *testing.T) {
+func TestModelCommandCrossReviewStatusExplainsRoutesAndSettings(t *testing.T) {
 	var out bytes.Buffer
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai"
@@ -10050,8 +10050,8 @@ func TestReviewModelsStatusExplainsRolesAndSettings(t *testing.T) {
 		cfg:    cfg,
 	}
 
-	if err := rt.handleReviewModelsCommand("status"); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand("cross-review status"); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	rendered := out.String()
 	for _, needle := range []string{
@@ -10063,7 +10063,7 @@ func TestReviewModelsStatusExplainsRolesAndSettings(t *testing.T) {
 		"security",
 		"security boundaries",
 		"follows main: openai-api / gpt-main",
-		"Direct form: /review models cross openai-api gpt-5.4",
+		"Direct form: /model cross-review openai-api gpt-5.4",
 	} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected status output to contain %q, got %q", needle, rendered)
@@ -10076,7 +10076,7 @@ func TestReviewModelsStatusExplainsRolesAndSettings(t *testing.T) {
 	}
 }
 
-func TestReviewModelsCommandInteractiveUsesNumberedChoices(t *testing.T) {
+func TestModelCommandInteractiveCanConfigureCrossReviewRoute(t *testing.T) {
 	home := t.TempDir()
 	workspace := t.TempDir()
 	t.Setenv("HOME", home)
@@ -10088,7 +10088,7 @@ func TestReviewModelsCommandInteractiveUsesNumberedChoices(t *testing.T) {
 	cfg.Model = "gpt-main"
 	cfg.APIKey = "test-key"
 	rt := &runtimeState{
-		reader:      bufio.NewReader(strings.NewReader("1\n3\n1\n")),
+		reader:      bufio.NewReader(strings.NewReader("4\n3\n1\n")),
 		writer:      &out,
 		ui:          UI{},
 		interactive: true,
@@ -10096,16 +10096,32 @@ func TestReviewModelsCommandInteractiveUsesNumberedChoices(t *testing.T) {
 		session:     &Session{Provider: "openai", Model: "gpt-main", PermissionMode: "default"},
 	}
 
-	if err := rt.handleReviewModelsCommand(""); err != nil {
-		t.Fatalf("handleReviewModelsCommand: %v", err)
+	if err := rt.handleModelCommand(""); err != nil {
+		t.Fatalf("handleModelCommand: %v", err)
 	}
 	roleCfg := rt.cfg.Review.RoleModels["cross_reviewer"]
 	if roleCfg.Provider != "openai" || roleCfg.Model != "gpt-5.4" {
 		t.Fatalf("unexpected interactive cross reviewer config: %#v", roleCfg)
 	}
 	rendered := out.String()
-	if !strings.Contains(rendered, "Review Model Route") || !strings.Contains(rendered, "1. cross") {
-		t.Fatalf("expected numbered route choices, got %q", rendered)
+	if !strings.Contains(rendered, "Change Model") || !strings.Contains(rendered, "4. cross review model") {
+		t.Fatalf("expected numbered model target choices, got %q", rendered)
+	}
+}
+
+func TestReviewModelsCommandIsRemoved(t *testing.T) {
+	rt := &runtimeState{
+		writer: &bytes.Buffer{},
+		ui:     UI{},
+		cfg:    DefaultConfig(t.TempDir()),
+	}
+	err := rt.handleReviewCommand("models")
+	if err == nil {
+		t.Fatalf("expected removed /review models command to fail")
+	}
+	if !strings.Contains(err.Error(), "/review models was removed") ||
+		!strings.Contains(err.Error(), "/model cross-review") {
+		t.Fatalf("unexpected removed command error: %v", err)
 	}
 }
 
