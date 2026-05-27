@@ -1202,6 +1202,41 @@ func TestApplyPatchRejectsEmptyUpdateHunkLikeCodex(t *testing.T) {
 	}
 }
 
+func TestApplyPatchRejectsDoubleAtEmptyHunkAsInvalidFormat(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "foo.txt")
+	if err := os.WriteFile(target, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	tool := NewApplyPatchTool(Workspace{
+		BaseRoot: root,
+		Root:     root,
+	})
+
+	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
+		"patch": "*** Begin Patch\n*** Update File: foo.txt\n@@\n@@\n old\n+new\n*** End Patch\n",
+	})
+	if err == nil {
+		t.Fatalf("expected double @@ empty hunk to be rejected")
+	}
+	if !errors.Is(err, ErrInvalidPatchFormat) {
+		t.Fatalf("expected ErrInvalidPatchFormat, got %v", err)
+	}
+	if errors.Is(err, ErrEditTargetMismatch) {
+		t.Fatalf("empty hunk must not be classified as edit target mismatch: %v", err)
+	}
+	if !strings.Contains(err.Error(), "patch_format_empty_hunk") {
+		t.Fatalf("expected empty hunk format error, got %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(data) != "old\n" {
+		t.Fatalf("invalid patch must not update file, got %q", string(data))
+	}
+}
+
 func TestApplyPatchErrorMetadataDoesNotClaimWorkspaceChanged(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")

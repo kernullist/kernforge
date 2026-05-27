@@ -393,6 +393,9 @@ func parseUpdateFileOp(lines []string, index *int) (patchOperation, error) {
 			hunk.lines = append(hunk.lines, patchLine{kind: prefix, text: current[1:]})
 			*index++
 		}
+		if len(hunk.lines) == 0 {
+			return patchOperation{}, fmt.Errorf("patch_format_empty_hunk: update patch hunk has no context or addition lines")
+		}
 		op.hunks = append(op.hunks, hunk)
 	}
 	if len(op.hunks) == 0 && op.moveTo == "" {
@@ -695,7 +698,7 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 		}
 		if len(oldChunk) == 0 {
 			if len(newChunk) == 0 {
-				return "", fmt.Errorf("%w: update hunk has no context or addition lines", ErrEditTargetMismatch)
+				return "", fmt.Errorf("%w: update hunk has no context or addition lines", ErrInvalidPatchFormat)
 			}
 			oldLines = append(oldLines, newChunk...)
 			cursor = len(oldLines)
