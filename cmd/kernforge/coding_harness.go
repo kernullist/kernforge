@@ -110,19 +110,23 @@ type OutcomeInvariantReport struct {
 }
 
 type AcceptanceContract struct {
-	ID                   string    `json:"id,omitempty"`
-	SourcePrompt         string    `json:"source_prompt,omitempty"`
-	Mode                 string    `json:"mode,omitempty"`
-	RequestClass         string    `json:"request_class,omitempty"`
-	RequestClassReason   string    `json:"request_class_reason,omitempty"`
-	ExpectedBehaviors    []string  `json:"expected_behaviors,omitempty"`
-	NonGoals             []string  `json:"non_goals,omitempty"`
-	ChangedSurfaces      []string  `json:"changed_surfaces,omitempty"`
-	RequiredArtifacts    []string  `json:"required_artifacts,omitempty"`
-	VerificationRequired bool      `json:"verification_required,omitempty"`
-	VerificationNotes    []string  `json:"verification_notes,omitempty"`
-	CreatedAt            time.Time `json:"created_at,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at,omitempty"`
+	ID                     string    `json:"id,omitempty"`
+	SourcePrompt           string    `json:"source_prompt,omitempty"`
+	Mode                   string    `json:"mode,omitempty"`
+	RequestClass           string    `json:"request_class,omitempty"`
+	RequestClassReason     string    `json:"request_class_reason,omitempty"`
+	RequestClassConfidence float64   `json:"request_class_confidence,omitempty"`
+	RequestClassAmbiguous  bool      `json:"request_class_ambiguous,omitempty"`
+	RequestClassSignals    []string  `json:"request_class_signals,omitempty"`
+	AmbiguityWarnings      []string  `json:"ambiguity_warnings,omitempty"`
+	ExpectedBehaviors      []string  `json:"expected_behaviors,omitempty"`
+	NonGoals               []string  `json:"non_goals,omitempty"`
+	ChangedSurfaces        []string  `json:"changed_surfaces,omitempty"`
+	RequiredArtifacts      []string  `json:"required_artifacts,omitempty"`
+	VerificationRequired   bool      `json:"verification_required,omitempty"`
+	VerificationNotes      []string  `json:"verification_notes,omitempty"`
+	CreatedAt              time.Time `json:"created_at,omitempty"`
+	UpdatedAt              time.Time `json:"updated_at,omitempty"`
 }
 
 type AcceptanceContractReport struct {
@@ -264,7 +268,13 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	contract.RequestClass, contract.RequestClassReason = classifyAcceptanceContractRequestClass(base, intent, readOnlyAnalysis, explicitEditRequest)
+	classDecision := classifyAcceptanceContractRequestClassDecision(base, intent, readOnlyAnalysis, explicitEditRequest)
+	contract.RequestClass = classDecision.RequestClass
+	contract.RequestClassReason = classDecision.Reason
+	contract.RequestClassConfidence = classDecision.Confidence
+	contract.RequestClassAmbiguous = classDecision.Ambiguous
+	contract.RequestClassSignals = classDecision.Signals
+	contract.AmbiguityWarnings = classDecision.AmbiguityWarnings
 	if contract.SourcePrompt != "" {
 		contract.ExpectedBehaviors = append(contract.ExpectedBehaviors, "Satisfy the latest user request: "+compactPromptSection(contract.SourcePrompt, 220))
 	}
@@ -433,7 +443,16 @@ func (c AcceptanceContract) RenderPromptSection() string {
 		if c.RequestClassReason != "" {
 			line += " (" + c.RequestClassReason + ")"
 		}
+		if c.RequestClassConfidence > 0 {
+			line += fmt.Sprintf(" confidence=%.2f", c.RequestClassConfidence)
+		}
+		if c.RequestClassAmbiguous {
+			line += " ambiguous=true"
+		}
 		lines = append(lines, line)
+	}
+	if len(c.AmbiguityWarnings) > 0 {
+		lines = append(lines, "- Classification ambiguity: "+strings.Join(c.AmbiguityWarnings, " | "))
 	}
 	if len(c.ExpectedBehaviors) > 0 {
 		lines = append(lines, "- Expected: "+strings.Join(c.ExpectedBehaviors, " | "))
@@ -565,6 +584,17 @@ func (c *AcceptanceContract) Normalize() {
 		c.RequestClass = ""
 	}
 	c.RequestClassReason = strings.TrimSpace(c.RequestClassReason)
+	if c.RequestClassConfidence < 0 {
+		c.RequestClassConfidence = 0
+	}
+	if c.RequestClassConfidence > 1 {
+		c.RequestClassConfidence = 1
+	}
+	c.RequestClassSignals = normalizeTaskStateList(c.RequestClassSignals, 12)
+	c.AmbiguityWarnings = normalizeTaskStateList(c.AmbiguityWarnings, 8)
+	if len(c.AmbiguityWarnings) > 0 {
+		c.RequestClassAmbiguous = true
+	}
 	c.ExpectedBehaviors = normalizeTaskStateList(c.ExpectedBehaviors, 8)
 	c.NonGoals = normalizeTaskStateList(c.NonGoals, 8)
 	c.ChangedSurfaces = normalizeTaskStateList(c.ChangedSurfaces, 16)
@@ -827,7 +857,11 @@ func codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding CodingHarnessFi
 		"Review-only answer is not findings-first",
 		"Review-only no-edit statement is missing",
 		"No-finding review omits residual risk",
-		"Cross-review residual risk is undisclosed":
+		"Cross-review residual risk is undisclosed",
+		"Document artifact path is missing",
+		"Document artifact quality status is missing",
+		"Document artifact verification disclosure is missing",
+		"Document artifact limitation statement is missing":
 		return true
 	default:
 		return false
@@ -913,13 +947,99 @@ func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarn
 	if a != nil {
 		cfg = a.Config
 	}
-	english := fmt.Sprintf("%s is complete. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run because this turn only produced a generated document artifact.", target)
-	korean := fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
+	english := fmt.Sprintf("%s is complete. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run because this turn only produced a generated document artifact. Remaining limitations: no known remaining artifact limitation is recorded.", target)
+	korean := fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다.", target)
 	language, _ := inferResponseLanguageForUserText(codingHarnessSourcePrompt(a.Session), cfg)
 	if language == "ko" {
 		return korean
 	}
 	return english
+}
+
+func (a *Agent) completeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport, reply string) string {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return a.synthesizeGeneratedDocumentArtifactFinalReply(report)
+	}
+	if generatedDocumentArtifactFinalReplyShouldReplace(report) {
+		return a.synthesizeGeneratedDocumentArtifactFinalReply(report)
+	}
+	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
+	if len(paths) == 0 && a != nil && a.Session != nil {
+		for _, path := range currentTurnPatchTransactionChangedPaths(a.Session) {
+			if preWritePathLooksLikeGeneratedDocumentArtifact(path) {
+				paths = append(paths, normalizeSessionRelativePath(path))
+			}
+		}
+		paths = normalizeTaskStateList(paths, 8)
+	}
+	cfg := Config{}
+	sourcePrompt := ""
+	if a != nil {
+		cfg = a.Config
+		if a.Session != nil {
+			sourcePrompt = codingHarnessSourcePrompt(a.Session)
+		}
+	}
+	language, _ := inferResponseLanguageForUserText(sourcePrompt, cfg)
+	additions := make([]string, 0, 4)
+	if len(paths) > 0 && !replyMentionsChangedFileSummary(reply, paths) {
+		quoted := make([]string, 0, len(paths))
+		for _, path := range paths {
+			quoted = append(quoted, "`"+path+"`")
+		}
+		if language == "ko" {
+			additions = append(additions, "산출물 경로: "+strings.Join(quoted, ", ")+".")
+		} else {
+			additions = append(additions, "Artifact path: "+strings.Join(quoted, ", ")+".")
+		}
+	}
+	if !replyMentionsArtifactQualityStatus(reply) {
+		if language == "ko" {
+			additions = append(additions, "결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다.")
+		} else {
+			additions = append(additions, "Deterministic artifact-quality checks found no blocking document-content issues.")
+		}
+	}
+	if !replyMentionsVerificationOutcome(reply) {
+		if language == "ko" {
+			additions = append(additions, "이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.")
+		} else {
+			additions = append(additions, "Build/test verification was not run because this turn only produced a generated document artifact.")
+		}
+	}
+	if !replyMentionsDocumentArtifactLimitation(reply) {
+		if language == "ko" {
+			additions = append(additions, "남은 제한: 기록된 산출물 제한은 없습니다.")
+		} else {
+			additions = append(additions, "Remaining limitations: no known remaining artifact limitation is recorded.")
+		}
+	}
+	if len(additions) == 0 {
+		return reply
+	}
+	return strings.TrimSpace(reply + " " + strings.Join(additions, " "))
+}
+
+func generatedDocumentArtifactFinalReplyShouldReplace(report *CodingHarnessReport) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	for _, finding := range copyReport.allFindings() {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		switch strings.TrimSpace(finding.Title) {
+		case "Final answer has inconsistent bug counts",
+			"Final answer contradicts the patch transaction",
+			"Verification claim has no recorded evidence",
+			"Final answer contradicts remaining edit-loop risk":
+			return true
+		}
+	}
+	return false
 }
 
 func generatedDocumentArtifactPathsFromHarnessReport(report *CodingHarnessReport) []string {

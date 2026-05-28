@@ -46,13 +46,15 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 	if flow == "" {
 		flow = reviewFlowForTargetMode(target, mode)
 	}
-	requestClass, requestClassReason := classifyReviewRequestClass(rt, root, opts, target, mode, discovery)
+	requestClassDecision := classifyReviewRequestClassDecision(rt, root, opts, target, mode, discovery)
+	requestClass, requestClassReason := requestClassDecision.RequestClass, requestClassDecision.Reason
 	packs := reviewPolicyPacksFor(target, mode, append([]string(nil), opts.Paths...), request)
 	packs = analysisUniqueStrings(append(packs, reviewPolicyPacksForScopeDiscovery(discovery, domainSignals)...))
 	confidence := 0.78
 	reason := "selected from request text and workspace state"
 	var warnings []string
 	warnings = append(warnings, discovery.Warnings...)
+	warnings = append(warnings, requestClassDecision.AmbiguityWarnings...)
 	if strings.TrimSpace(opts.Target) == "" && strings.TrimSpace(request) == "" {
 		confidence = 0.64
 		reason = "selected from workspace state because no explicit review target was provided"
@@ -63,22 +65,28 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		confidence = 0.45
 		warnings = append(warnings, "no strong target signal found; defaulted to change review")
 	}
+	if requestClassDecision.Confidence > 0 && requestClassDecision.Confidence < confidence {
+		confidence = requestClassDecision.Confidence
+	}
 	return ReviewRequestAnalysis{
-		OriginalRequest:    request,
-		InferredTarget:     target,
-		InferredMode:       mode,
-		SelectedFlow:       flow,
-		RequestClass:       requestClass,
-		RequestClassReason: requestClassReason,
-		Confidence:         confidence,
-		EvidenceNeeds:      reviewEvidenceNeeds(target, mode),
-		PolicyPacks:        packs,
-		CandidateFlows:     reviewCandidateFlows(target, mode),
-		DomainSignals:      domainSignals,
-		RiskSignals:        riskSignals,
-		ScopeDiscovery:     discovery,
-		Reason:             reason,
-		AmbiguityWarnings:  warnings,
+		OriginalRequest:        request,
+		InferredTarget:         target,
+		InferredMode:           mode,
+		SelectedFlow:           flow,
+		RequestClass:           requestClass,
+		RequestClassReason:     requestClassReason,
+		RequestClassConfidence: requestClassDecision.Confidence,
+		RequestClassAmbiguous:  requestClassDecision.Ambiguous,
+		RequestClassSignals:    requestClassDecision.Signals,
+		Confidence:             confidence,
+		EvidenceNeeds:          reviewEvidenceNeeds(target, mode),
+		PolicyPacks:            packs,
+		CandidateFlows:         reviewCandidateFlows(target, mode),
+		DomainSignals:          domainSignals,
+		RiskSignals:            riskSignals,
+		ScopeDiscovery:         discovery,
+		Reason:                 reason,
+		AmbiguityWarnings:      warnings,
 	}
 }
 

@@ -167,7 +167,7 @@ func TestArtifactQualityWarnsSourceReviewReportWithoutSourceEvidence(t *testing.
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Verification was not run.", false, false)
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected missing source evidence to warn without blocking document finalization: %s", report.BlockingFeedback())
 	}
@@ -240,7 +240,7 @@ func TestArtifactQualityRecordsSourceEvidenceForSourceReviewReport(t *testing.T)
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Verification was not run.", false, false)
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 1 bug. Deterministic artifact-quality checks found no blocking document-content issues. Verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected source evidence to satisfy artifact quality: %s", report.BlockingFeedback())
 	}
@@ -265,12 +265,12 @@ func TestArtifactQualityAllowsPathOnlyArtifactRequest(t *testing.T) {
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created docs/required.md. Verification not run.", false, false)
+	report := agent.buildCodingHarnessReport("Created docs/required.md. Deterministic artifact-quality checks found no blocking document-content issues. Verification not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected path-only artifact request to pass quality gate, got %s", report.BlockingFeedback())
 	}
 
-	seedReply := "`docs/required.md` is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact."
+	seedReply := "`docs/required.md` is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact. Remaining limitations: no known remaining artifact limitation is recorded."
 	report = agent.buildCodingHarnessReport(seedReply, false, false)
 	if !report.Approved {
 		t.Fatalf("expected path-only artifact request to pass generated-document seed quality gate, got %s", report.BlockingFeedback())
@@ -526,7 +526,7 @@ func TestArtifactQualityAllowsSeverityBugIDListWithoutCountColumn(t *testing.T) 
 		Workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs. Build/test verification was not run.", false, false)
+	report := agent.buildCodingHarnessReport("Created Tavern/BugReport.md with 2 bugs. Deterministic artifact-quality checks found no blocking document-content issues. Build/test verification was not run. Remaining limitations: no known remaining artifact limitation is recorded.", false, false)
 	if !report.Approved {
 		t.Fatalf("expected bug ID list table to pass without count-column false positive: %s", report.BlockingFeedback())
 	}

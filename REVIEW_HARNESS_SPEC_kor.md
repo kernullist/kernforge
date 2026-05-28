@@ -3660,6 +3660,27 @@ P2:
      3. document artifact skip rule은 generated-document-only flow에 한정된다. 코드 변경과 문서 생성이 섞이면 code review/validation obligation이 다시 열린다.
    - 회귀 테스트: request class classifier, MCP response parity, review-only read-only/finding-first reply, document artifact accepted/failing gate, review-then-modify review-before-repair evidence, single-model second-pass state, cross-model triage obligation, `needs_user_decision` continuation guidance, final-answer completeness disclosure, 기존 pre-write/post-change review gate 테스트.
 
+96. Request-class-aware operator reliability polish
+   - 발견: 95번 lifecycle은 request class를 runtime state로 만들었지만, 실제 Codex App식 운영에서는 "코드를 리뷰하고 리포트 생성", "확인된 버그만 수정", "기존 변경만 검증", "수정 없이 리뷰만" 같은 혼합 프롬프트가 classification confidence, ambiguity, route quality, final-answer contract까지 한 화면에서 설명되어야 한다. 단순 generic 완료 문구나 weak reviewer approval이 final answer 또는 gate evidence처럼 보이면 사용자가 실제 남은 의무를 놓칠 수 있다.
+   - 원칙:
+     1. request class 선택은 class, reason, confidence, ambiguity warning, signal, contract를 함께 남긴다.
+     2. ambiguity가 있으면 review-only를 수정으로 조용히 승격하지 않고, document-only artifact를 code modification으로 과분류하지 않으며, 안전한 lifecycle과 이유를 status/MCP/artifact에 노출한다.
+     3. single-model second-pass는 code behavior가 영향을 받고 독립 reviewer가 없을 때만 evidence phase로 실행한다. 실행하지 않으면 skipped reason을 남기며, 독립 cross-review 승인처럼 표시하지 않는다.
+     4. configured reviewer-only post-change 흐름은 single-model policy state를 유지하되, 동일 목적의 primary second-pass를 중복 호출하지 않는다.
+     5. cross-review triage는 primary implementation blocker와 required verification failure보다 낮은 priority로 렌더링되어야 하며, reviewer route가 weak/empty/malformed/stale이면 degraded route로 남긴다.
+   - 구현:
+     1. `ReviewRequestClassDecision`을 추가해 `RequestClass`, `Reason`, `Confidence`, `Ambiguous`, `AmbiguityWarnings`, `Signals`를 분리했다. `ReviewRequestLifecycle`에는 `classification_confidence`, `classification_ambiguous`, `ambiguity_warnings`, `contract`, `route_quality`, `route_degraded_reasons`를 additive/omitempty field로 추가했다.
+     2. mixed request classifier는 `review code and create a report`, `inspect bugs and fix only confirmed issues`, `generate a document from a code review`, `verify only after existing changes`, explicit no-edit review, document-only report, document plus source edit를 분리한다.
+     3. class별 final-answer contract는 `review_only`, `document_artifact`, `review_then_modify`, `modify_then_review`, `verification_only`, `validation_only`마다 필요한 disclosure를 runtime prompt와 completeness gate에 제공한다. 수정 흐름은 changed files, review/self-review, validation 또는 gap, residual risk가 필요하고, 문서 artifact는 artifact path, artifact-quality status, verification limitation, remaining limitation이 필요하다.
+     4. final-answer correction은 class contract 기반 reason으로만 동작한다. `done`, `patched`, `implemented` 같은 legacy phrase whitelist는 evidence로 인정하지 않는다.
+     5. `cross_review_triage`의 `needs_user_decision` entry는 확인할 대상, 안전하게 바꿀 범위, 아직 바꾸면 안 되는 범위, 다음 명령을 별도 field로 가진다.
+     6. `/status`, runtime gate summary, review markdown/JSON, MCP `kernforge_review` 응답은 request class, lifecycle phase, route mode, classification confidence/ambiguity, review/repair/document/verification gate, second-pass state, route quality/degraded reason, triage counts, remaining obligations, next command를 compact 기본값으로 노출한다. MCP는 raw model output을 dump하지 않고 additive field만 늘린다.
+   - 알려진 한계:
+     1. classifier는 여전히 deterministic signal과 prompt wording에 의존하므로, 극단적으로 모호한 문장은 confidence가 낮은 conservative lifecycle로 남는다.
+     2. document artifact skip rule은 generated-document-only scope에만 적용된다. source behavior를 바꾸는 순간 modification lifecycle의 review/validation obligation이 우선한다.
+     3. degraded reviewer route는 primary work를 자동 승인하지 않는다. 사용자는 `/review models cross`, `/review`, `/verify --full`, `/continuity continue from review` 같은 다음 명령으로 evidence를 복구해야 한다.
+   - 회귀 테스트: mixed review/document classification, explicit no-edit review-only, document-only report skip, document plus code change modification lifecycle, single-model second-pass run/record state, reviewer-only post-change duplicate-call suppression, cross-model triage priority, actionable `needs_user_decision` guidance, generic final-answer rejection, final-answer reviewer sequencing, status/MCP lifecycle metadata, 기존 pre-write/post-change review gate 테스트.
+
 남은 항목:
 
 1. 수동 smoke 검증

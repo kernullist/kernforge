@@ -317,6 +317,18 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 		if l.Lifecycle.RouteMode != "" {
 			lines = append(lines, "- Route mode: "+l.Lifecycle.RouteMode)
 		}
+		if l.Lifecycle.ClassificationConfidence > 0 {
+			lines = append(lines, fmt.Sprintf("- Classification confidence: %.2f", l.Lifecycle.ClassificationConfidence))
+		}
+		if l.Lifecycle.ClassificationAmbiguous {
+			lines = append(lines, "- Classification ambiguity: "+strings.Join(l.Lifecycle.AmbiguityWarnings, " | "))
+		}
+		if l.Lifecycle.RouteQuality != "" {
+			lines = append(lines, "- Route quality: "+l.Lifecycle.RouteQuality)
+		}
+		if len(l.Lifecycle.RouteDegradedReasons) > 0 {
+			lines = append(lines, "- Route degraded reasons: "+strings.Join(l.Lifecycle.RouteDegradedReasons, " | "))
+		}
 		if l.Lifecycle.DocumentGateStatus != "" && l.Lifecycle.DocumentGateStatus != "not_applicable" {
 			lines = append(lines, "- Document gate: "+l.Lifecycle.DocumentGateStatus)
 		}
@@ -1035,6 +1047,19 @@ func (rt *runtimeState) printRuntimeGateStatus(action string) {
 		if ledger.Lifecycle.RouteMode != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_mode", ledger.Lifecycle.RouteMode))
 		}
+		if ledger.Lifecycle.ClassificationConfidence > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_confidence", fmt.Sprintf("%.2f", ledger.Lifecycle.ClassificationConfidence)))
+		}
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_ambiguous", fmt.Sprintf("%t", ledger.Lifecycle.ClassificationAmbiguous)))
+		if len(ledger.Lifecycle.AmbiguityWarnings) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_ambiguity", strings.Join(limitStrings(ledger.Lifecycle.AmbiguityWarnings, 2), " | ")))
+		}
+		if ledger.Lifecycle.RouteQuality != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_quality", ledger.Lifecycle.RouteQuality))
+		}
+		if len(ledger.Lifecycle.RouteDegradedReasons) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_degraded", strings.Join(limitStrings(ledger.Lifecycle.RouteDegradedReasons, 2), " | ")))
+		}
 		if ledger.Lifecycle.ReviewGateStatus != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("review_gate", ledger.Lifecycle.ReviewGateStatus))
 		}
@@ -1069,6 +1094,9 @@ func (rt *runtimeState) printRuntimeGateStatus(action string) {
 		obs := ledger.ReviewObservability
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("review_decision", reviewDecisionObservabilityStatusLine(obs)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("gate_decision", reviewGateObservabilityStatusLine(obs)))
+		if obs.RouteQuality != nil {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("review_route_quality", reviewRouteQualityStatusLine(obs.RouteQuality)))
+		}
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("second_pass", reviewSecondPassStatusLine(obs.SingleModelSecondPass)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review_triage", reviewCrossReviewTriageStatusLine(obs.CrossReviewTriage)))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_obligations", reviewRemainingObligationsStatusLine(obs.RemainingObligations)))

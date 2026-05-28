@@ -6732,7 +6732,7 @@ func TestAgentBlocksShellGitCommitWithoutExplicitUserRequest(t *testing.T) {
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("run_shell", map[string]any{"command": `git commit -m "fix: unexpected commit"`}),
-			{Message: Message{Role: "assistant", Text: "문서만 작성했고 git 작업은 하지 않았습니다."}},
+			{Message: Message{Role: "assistant", Text: "문서 파일은 아직 생성하지 않았고 git 작업은 하지 않았습니다. 검증은 실행하지 않았습니다. 남은 제한: 문서 산출물이 아직 없습니다."}},
 		},
 	}
 	agent := &Agent{
@@ -11575,7 +11575,9 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 		t.Fatalf("maybeFinalizeGeneratedDocumentArtifactFinalReply: %v", err)
 	}
 	if !finalized || finalReply != reply {
-		t.Fatalf("expected post-change quality skip to converge into final acceptance, finalized=%t reply=%q", finalized, finalReply)
+		if !finalized || !strings.Contains(finalReply, reply) || !strings.Contains(finalReply, "품질 검사") || !strings.Contains(finalReply, "남은 제한") {
+			t.Fatalf("expected post-change quality skip to converge into final acceptance, finalized=%t reply=%q", finalized, finalReply)
+		}
 	}
 	if session.ActivePatchTransaction != nil {
 		t.Fatalf("expected final acceptance to close the active patch transaction, got %#v", session.ActivePatchTransaction)
@@ -12454,7 +12456,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseAfterArtifactWrite(t *testing.
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -12529,7 +12531,7 @@ func TestAgentGeneratedDocumentIgnoresEndTurnFalseCommentaryPhaseAfterArtifactWr
 		"- Impact: crash risk.",
 	}, "\n")
 	endTurnFalse := false
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -12601,7 +12603,7 @@ func TestAgentGeneratedDocumentSkippedVerificationCompletesSelfDrivingState(t *t
 		"- File: Tavern/Tavern/RuntimeManager.cpp",
 		"- Impact: crash risk.",
 	}, "\n")
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -15210,7 +15212,7 @@ func TestAgentDropsRejectedFinalAnswerCandidateFromNextTurnHistory(t *testing.T)
 	}, "\n")
 	goodReportContent := strings.ReplaceAll(badReportContent, "| Total | 3 |", "| Total | 2 |")
 	rejectedReply := "Tavern/BugReport.md 문서를 생성했고 총 3개 버그를 기록했습니다."
-	acceptedReply := "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	acceptedReply := "Tavern/BugReport.md 문서를 수정했고 총 2개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{
@@ -15653,7 +15655,7 @@ func TestAgentContinuesGeneratedDocumentInProgressEndTurnFalseAfterArtifactWrite
 	}, "\n")
 	endTurnFalse := false
 	inProgress := "Still checking the generated artifact."
-	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
+	finalReply := "Tavern/BugReport.md 문서를 생성했고 총 1개 버그를 기록했습니다. 결정적 산출물 품질 검사에서 문서 내용 차단 항목은 없었습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{

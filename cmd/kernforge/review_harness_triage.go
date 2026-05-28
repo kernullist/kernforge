@@ -40,6 +40,10 @@ type CrossReviewTriageEntry struct {
 	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
 	UserActionNeeded bool     `json:"user_action_needed,omitempty"`
 	UserActionPrompt string   `json:"user_action_prompt,omitempty"`
+	InspectTargets   []string `json:"inspect_targets,omitempty"`
+	SafeToChange     string   `json:"safe_to_change,omitempty"`
+	DoNotChangeYet   string   `json:"do_not_change_yet,omitempty"`
+	NextCommand      string   `json:"next_command,omitempty"`
 }
 
 func buildCrossReviewTriageLedger(run ReviewRun) *CrossReviewTriageLedger {
@@ -77,6 +81,10 @@ func normalizedCrossReviewTriageLedger(ledger *CrossReviewTriageLedger) *CrossRe
 		}
 		if status == crossReviewTriageNeedsUserDecision {
 			out.Items[i].UserActionNeeded = true
+			out.Items[i].InspectTargets = crossReviewTriageInspectTargets(out.Items[i])
+			out.Items[i].SafeToChange = crossReviewTriageSafeChangeGuidance(out.Items[i])
+			out.Items[i].DoNotChangeYet = crossReviewTriageDoNotChangeGuidance(out.Items[i])
+			out.Items[i].NextCommand = crossReviewTriageNextCommand(out.Items[i])
 			if strings.TrimSpace(out.Items[i].UserActionPrompt) == "" {
 				out.Items[i].UserActionPrompt = crossReviewTriageUserActionPrompt(out.Items[i])
 			}
@@ -136,6 +144,10 @@ func crossReviewTriageEntryFromFinding(run ReviewRun, finding ReviewFinding) Cro
 	}
 	if status == crossReviewTriageNeedsUserDecision {
 		entry.UserActionNeeded = true
+		entry.InspectTargets = crossReviewTriageInspectTargets(entry)
+		entry.SafeToChange = crossReviewTriageSafeChangeGuidance(entry)
+		entry.DoNotChangeYet = crossReviewTriageDoNotChangeGuidance(entry)
+		entry.NextCommand = crossReviewTriageNextCommand(entry)
 		entry.UserActionPrompt = crossReviewTriageUserActionPrompt(entry)
 	}
 	return entry
@@ -227,7 +239,42 @@ func crossReviewTriageVerificationRefs(run ReviewRun, finding ReviewFinding) []s
 
 func crossReviewTriageUserActionPrompt(entry CrossReviewTriageEntry) string {
 	label := firstNonBlankString(strings.TrimSpace(entry.FindingID), strings.TrimSpace(entry.Title), "this cross-review finding")
-	return fmt.Sprintf("Use `/continuity continue from review` to repair %s, or reply with a triage decision: accepted_fixed with fix refs, accepted_deferred with reason, or rejected_with_reason with code evidence.", label)
+	inspect := strings.Join(crossReviewTriageInspectTargets(entry), ", ")
+	if inspect == "" {
+		inspect = "the finding path, symbol, and evidence excerpt"
+	}
+	return fmt.Sprintf("Inspect %s for %s. Safe change: %s Do not change yet: %s Next command: %s. Or reply with accepted_fixed plus fix refs, accepted_deferred plus reason, or rejected_with_reason plus code evidence.", inspect, label, crossReviewTriageSafeChangeGuidance(entry), crossReviewTriageDoNotChangeGuidance(entry), crossReviewTriageNextCommand(entry))
+}
+
+func crossReviewTriageInspectTargets(entry CrossReviewTriageEntry) []string {
+	targets := make([]string, 0)
+	if strings.TrimSpace(entry.Path) != "" {
+		target := filepath.ToSlash(strings.TrimSpace(entry.Path))
+		if entry.Line > 0 {
+			target = fmt.Sprintf("%s:%d", target, entry.Line)
+		}
+		targets = append(targets, target)
+	}
+	if strings.TrimSpace(entry.Symbol) != "" {
+		targets = append(targets, "symbol:"+strings.TrimSpace(entry.Symbol))
+	}
+	targets = append(targets, entry.EvidenceRefs...)
+	return normalizeTaskStateList(targets, 8)
+}
+
+func crossReviewTriageSafeChangeGuidance(entry CrossReviewTriageEntry) string {
+	if strings.TrimSpace(entry.Path) != "" || strings.TrimSpace(entry.Symbol) != "" {
+		return "limit edits to the referenced path or symbol after confirming the cross-review evidence."
+	}
+	return "make only the smallest change needed after reproducing the reviewer evidence locally."
+}
+
+func crossReviewTriageDoNotChangeGuidance(entry CrossReviewTriageEntry) string {
+	return "do not broaden the repair into unrelated files, generated artifacts, route configuration, or verification policy until this finding is confirmed."
+}
+
+func crossReviewTriageNextCommand(entry CrossReviewTriageEntry) string {
+	return "/continuity continue from review"
 }
 
 func reviewRunHasCrossReviewUserDecision(run ReviewRun) bool {

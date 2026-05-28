@@ -82,11 +82,17 @@ func finalAnswerCorrectionReasonForFinding(finding CodingHarnessFinding) string 
 		"Final answer contradicts remaining edit-loop risk",
 		"Edit loop remaining risk is omitted",
 		"No-finding review omits residual risk",
-		"Cross-review residual risk is undisclosed":
+		"Cross-review residual risk is undisclosed",
+		"Document artifact limitation statement is missing":
 		return "remaining_risk_disclosure"
 	case "Review-only answer is not findings-first",
 		"Review-only no-edit statement is missing":
 		return "review_only_findings_first_no_edit"
+	case "Document artifact path is missing",
+		"Document artifact quality status is missing":
+		return "document_artifact_disclosure"
+	case "Document artifact verification disclosure is missing":
+		return "validation_disclosure"
 	default:
 		return ""
 	}

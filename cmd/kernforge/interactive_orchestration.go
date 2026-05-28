@@ -914,6 +914,11 @@ func buildInteractiveFinalAnswerReviewerPrompt(session *Session, reply string, u
 				b.WriteString("\n")
 			}
 		}
+		if rendered := strings.TrimSpace(renderFinalAnswerContractPrompt(session)); rendered != "" {
+			b.WriteString("\nFinal answer contract:\n")
+			b.WriteString(rendered)
+			b.WriteString("\n")
+		}
 		if session.LastUserChangeIsolationReport != nil {
 			if rendered := strings.TrimSpace(session.LastUserChangeIsolationReport.RenderPromptSection()); rendered != "" {
 				b.WriteString("\nUser-change isolation report:\n")

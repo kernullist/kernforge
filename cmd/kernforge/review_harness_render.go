@@ -20,10 +20,19 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
 		fmt.Fprintf(&b, "- Request class reason: %s\n", run.RequestAnalysis.RequestClassReason)
 	}
+	if run.RequestAnalysis.RequestClassConfidence > 0 {
+		fmt.Fprintf(&b, "- Request class confidence: `%.2f`\n", run.RequestAnalysis.RequestClassConfidence)
+	}
+	if run.RequestAnalysis.RequestClassAmbiguous {
+		fmt.Fprintf(&b, "- Request class ambiguity: `%s`\n", strings.Join(run.RequestAnalysis.AmbiguityWarnings, " | "))
+	}
 	if run.Lifecycle != nil {
 		fmt.Fprintf(&b, "- Lifecycle phase: `%s`\n", run.Lifecycle.Phase)
 		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
 			fmt.Fprintf(&b, "- Route mode: `%s`\n", run.Lifecycle.RouteMode)
+		}
+		if strings.TrimSpace(run.Lifecycle.RouteQuality) != "" {
+			fmt.Fprintf(&b, "- Route quality: `%s`\n", run.Lifecycle.RouteQuality)
 		}
 	}
 	fmt.Fprintf(&b, "- Verdict: `%s`\n", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
@@ -95,6 +104,22 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		if strings.TrimSpace(run.Lifecycle.Reason) != "" {
 			fmt.Fprintf(&b, "- reason: %s\n", run.Lifecycle.Reason)
+		}
+		if run.Lifecycle.ClassificationConfidence > 0 {
+			fmt.Fprintf(&b, "- classification_confidence: `%.2f`\n", run.Lifecycle.ClassificationConfidence)
+		}
+		fmt.Fprintf(&b, "- classification_ambiguous: `%t`\n", run.Lifecycle.ClassificationAmbiguous)
+		if len(run.Lifecycle.AmbiguityWarnings) > 0 {
+			fmt.Fprintf(&b, "- ambiguity_warnings: `%s`\n", strings.Join(run.Lifecycle.AmbiguityWarnings, "`, `"))
+		}
+		if run.Lifecycle.Contract != nil && len(run.Lifecycle.Contract.FinalAnswerRequirements) > 0 {
+			fmt.Fprintf(&b, "- final_answer_contract: `%s`\n", strings.Join(run.Lifecycle.Contract.FinalAnswerRequirements, "`, `"))
+		}
+		if strings.TrimSpace(run.Lifecycle.RouteQuality) != "" {
+			fmt.Fprintf(&b, "- route_quality: `%s`\n", run.Lifecycle.RouteQuality)
+		}
+		if len(run.Lifecycle.RouteDegradedReasons) > 0 {
+			fmt.Fprintf(&b, "- route_degraded_reasons: `%s`\n", strings.Join(run.Lifecycle.RouteDegradedReasons, "`, `"))
 		}
 		if strings.TrimSpace(run.Lifecycle.ReviewGateStatus) != "" {
 			fmt.Fprintf(&b, "- review_gate: `%s`\n", run.Lifecycle.ReviewGateStatus)
@@ -192,6 +217,18 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 			fmt.Fprintf(&b, "- user_action_needed: `%t`\n", item.UserActionNeeded)
 			if strings.TrimSpace(item.UserActionPrompt) != "" {
 				fmt.Fprintf(&b, "- user_action_prompt: %s\n", item.UserActionPrompt)
+			}
+			if len(item.InspectTargets) > 0 {
+				fmt.Fprintf(&b, "- inspect_targets: `%s`\n", strings.Join(item.InspectTargets, "`, `"))
+			}
+			if strings.TrimSpace(item.SafeToChange) != "" {
+				fmt.Fprintf(&b, "- safe_to_change: %s\n", item.SafeToChange)
+			}
+			if strings.TrimSpace(item.DoNotChangeYet) != "" {
+				fmt.Fprintf(&b, "- do_not_change_yet: %s\n", item.DoNotChangeYet)
+			}
+			if strings.TrimSpace(item.NextCommand) != "" {
+				fmt.Fprintf(&b, "- next_command: `%s`\n", item.NextCommand)
 			}
 		}
 		if len(triage.Blockers) > 0 {

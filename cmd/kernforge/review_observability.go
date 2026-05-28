@@ -17,6 +17,7 @@ type ReviewDecisionObservability struct {
 	Gate                     ReviewGateObservability           `json:"gate,omitempty"`
 	SingleModelSecondPass    *ReviewSecondPassObservability    `json:"single_model_second_pass,omitempty"`
 	CrossReviewTriage        *ReviewCrossReviewTriageSummary   `json:"cross_review_triage,omitempty"`
+	RouteQuality             *ReviewRouteQualitySummary        `json:"route_quality,omitempty"`
 	BlockerClasses           *ReviewBlockerClassCounts         `json:"blocker_classes,omitempty"`
 	RemainingObligations     *ReviewRemainingObligationSummary `json:"remaining_obligations,omitempty"`
 	IncompleteTriageBlockers []string                          `json:"incomplete_triage_blockers,omitempty"`
@@ -51,6 +52,17 @@ type ReviewCrossReviewTriageSummary struct {
 	UserDecisionCount   int            `json:"user_decision_count,omitempty"`
 	Blockers            []string       `json:"blockers,omitempty"`
 	UserDecisionPrompts []string       `json:"user_decision_prompts,omitempty"`
+}
+
+type ReviewRouteQualitySummary struct {
+	Status          string   `json:"status,omitempty"`
+	Degraded        bool     `json:"degraded,omitempty"`
+	ReviewerRuns    int      `json:"reviewer_runs,omitempty"`
+	WeakOutputs     int      `json:"weak_outputs,omitempty"`
+	FailedOutputs   int      `json:"failed_outputs,omitempty"`
+	DegradedRoutes  []string `json:"degraded_routes,omitempty"`
+	Reasons         []string `json:"reasons,omitempty"`
+	Recommendations []string `json:"recommendations,omitempty"`
 }
 
 type ReviewBlockerClassCounts struct {
@@ -92,6 +104,7 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		},
 		SingleModelSecondPass:    buildReviewSecondPassObservability(copyRun),
 		CrossReviewTriage:        buildReviewCrossReviewTriageSummary(copyRun.CrossReviewTriage),
+		RouteQuality:             reviewRouteQualityForRun(copyRun),
 		BlockerClasses:           buildReviewBlockerClassCounts(copyRun, report),
 		RemainingObligations:     buildReviewRemainingObligationSummary(copyRun.ObligationLedger),
 		IncompleteTriageBlockers: reviewIncompleteTriageBlockers(copyRun.CrossReviewTriage),
@@ -211,6 +224,60 @@ func buildReviewCrossReviewTriageSummary(ledger *CrossReviewTriageLedger) *Revie
 	summary.UserDecisionPrompts = normalizeTaskStateList(summary.UserDecisionPrompts, 4)
 	if len(summary.StatusCounts) == 0 {
 		summary.StatusCounts = nil
+	}
+	return summary
+}
+
+func reviewRouteQualityForRun(run ReviewRun) *ReviewRouteQualitySummary {
+	summary := &ReviewRouteQualitySummary{
+		ReviewerRuns: len(run.ReviewerRuns),
+	}
+	for _, reviewerRun := range run.ReviewerRuns {
+		role := firstNonBlankString(normalizeReviewRole(reviewerRun.Role), "primary_reviewer")
+		status := strings.TrimSpace(reviewerRun.Status)
+		quality := strings.TrimSpace(reviewerRun.ModelQuality)
+		model := strings.TrimSpace(reviewerRun.Model)
+		if strings.EqualFold(status, "failed") || strings.EqualFold(quality, reviewModelQualityFailed) || strings.TrimSpace(reviewerRun.Error) != "" {
+			summary.FailedOutputs++
+			summary.DegradedRoutes = append(summary.DegradedRoutes, role)
+			summary.Reasons = append(summary.Reasons, fmt.Sprintf("%s failed quality=%s model=%s: %s", role, valueOrDefault(quality, "unknown"), valueOrDefault(model, "unknown"), firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), status, "failed review route")))
+			continue
+		}
+		if strings.EqualFold(quality, reviewModelQualityWeak) {
+			summary.WeakOutputs++
+			summary.DegradedRoutes = append(summary.DegradedRoutes, role)
+			summary.Reasons = append(summary.Reasons, fmt.Sprintf("%s returned weak output model=%s", role, valueOrDefault(model, "unknown")))
+		}
+	}
+	for _, health := range run.ModelPlan.RouteHealth {
+		role := firstNonBlankString(normalizeReviewRole(health.Role), "reviewer")
+		if health.TimeoutRate > 0 || health.EmptyResponseRate > 0 || health.WeakRate > 0 || strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityWeak) || strings.EqualFold(strings.TrimSpace(health.LastQuality), reviewModelQualityFailed) {
+			summary.DegradedRoutes = append(summary.DegradedRoutes, role)
+			detail := fmt.Sprintf("%s health timeout=%.2f empty=%.2f weak=%.2f last=%s/%s", role, health.TimeoutRate, health.EmptyResponseRate, health.WeakRate, valueOrDefault(health.LastStatus, "unknown"), valueOrDefault(health.LastQuality, "unknown"))
+			summary.Reasons = append(summary.Reasons, detail)
+			if strings.TrimSpace(health.Recommendation) != "" {
+				summary.Recommendations = append(summary.Recommendations, health.Recommendation)
+			}
+		}
+	}
+	if run.Result.Degraded {
+		summary.Reasons = append(summary.Reasons, firstNonBlankString(run.Result.DegradedReason, "review result is degraded"))
+	}
+	summary.DegradedRoutes = normalizeTaskStateList(summary.DegradedRoutes, 8)
+	summary.Reasons = normalizeTaskStateList(summary.Reasons, 8)
+	summary.Recommendations = normalizeTaskStateList(summary.Recommendations, 8)
+	summary.Degraded = len(summary.Reasons) > 0 || summary.WeakOutputs > 0 || summary.FailedOutputs > 0
+	switch {
+	case summary.FailedOutputs > 0:
+		summary.Status = "failed"
+	case summary.Degraded:
+		summary.Status = "degraded"
+	case summary.ReviewerRuns == 0:
+		summary.Status = "not_run"
+	case run.SingleModelPolicy.Enabled && !reviewRunHasReviewerRun(run, "cross_reviewer"):
+		summary.Status = "single_model"
+	default:
+		summary.Status = "healthy"
 	}
 	return summary
 }
@@ -469,6 +536,30 @@ func reviewCrossReviewTriageStatusLine(obs *ReviewCrossReviewTriageSummary) stri
 	}
 	if obs.UserActionNeeded {
 		parts = append(parts, "user_action=true")
+	}
+	return strings.Join(parts, " ")
+}
+
+func reviewRouteQualityStatusLine(obs *ReviewRouteQualitySummary) string {
+	if obs == nil {
+		return "none"
+	}
+	parts := []string{"status=" + valueOrDefault(obs.Status, "unknown")}
+	parts = append(parts, fmt.Sprintf("degraded=%t", obs.Degraded))
+	if obs.ReviewerRuns > 0 {
+		parts = append(parts, fmt.Sprintf("runs=%d", obs.ReviewerRuns))
+	}
+	if obs.WeakOutputs > 0 {
+		parts = append(parts, fmt.Sprintf("weak=%d", obs.WeakOutputs))
+	}
+	if obs.FailedOutputs > 0 {
+		parts = append(parts, fmt.Sprintf("failed=%d", obs.FailedOutputs))
+	}
+	if len(obs.DegradedRoutes) > 0 {
+		parts = append(parts, "routes="+strings.Join(limitStrings(obs.DegradedRoutes, 3), ","))
+	}
+	if len(obs.Reasons) > 0 {
+		parts = append(parts, "reason="+compactPromptSection(strings.Join(obs.Reasons, " | "), 120))
 	}
 	return strings.Join(parts, " ")
 }

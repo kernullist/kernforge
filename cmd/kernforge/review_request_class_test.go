@@ -15,9 +15,10 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 	}
 	rt := requestClassTestRuntime(root, &scriptedProviderClient{})
 	tests := []struct {
-		name string
-		opts ReviewHarnessOptions
-		want string
+		name      string
+		opts      ReviewHarnessOptions
+		want      string
+		ambiguous bool
 	}{
 		{
 			name: "review only",
@@ -73,6 +74,49 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 			},
 			want: reviewRequestClassValidationOnly,
 		},
+		{
+			name: "mixed review document stays document artifact",
+			opts: ReviewHarnessOptions{
+				Target:  reviewTargetAnalysis,
+				Request: "review main.go and create docs/review_report.md as a report",
+				Paths:   []string{"main.go", "docs/review_report.md"},
+			},
+			want:      reviewRequestClassDocumentArtifact,
+			ambiguous: true,
+		},
+		{
+			name: "inspect bugs fix confirmed uses review then modify",
+			opts: ReviewHarnessOptions{
+				Request: "inspect bugs in main.go and fix only confirmed issues",
+				Paths:   []string{"main.go"},
+			},
+			want:      reviewRequestClassReviewThenModify,
+			ambiguous: true,
+		},
+		{
+			name: "explicit no edit review stays read only",
+			opts: ReviewHarnessOptions{
+				Request: "review main.go only; do not edit files",
+				Paths:   []string{"main.go"},
+			},
+			want: reviewRequestClassReviewOnly,
+		},
+		{
+			name: "document request with code change uses modification lifecycle",
+			opts: ReviewHarnessOptions{
+				Request: "fix main.go and write docs/review_report.md with the review notes",
+				Paths:   []string{"main.go", "docs/review_report.md"},
+			},
+			want:      reviewRequestClassModifyThenReview,
+			ambiguous: true,
+		},
+		{
+			name: "verify only after existing changes",
+			opts: ReviewHarnessOptions{
+				Request: "verify only after the existing changes and report the result",
+			},
+			want: reviewRequestClassVerificationOnly,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -82,6 +126,12 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 			}
 			if strings.TrimSpace(analysis.RequestClassReason) == "" {
 				t.Fatalf("expected request class reason")
+			}
+			if analysis.RequestClassConfidence <= 0 {
+				t.Fatalf("expected request class confidence, got %#v", analysis)
+			}
+			if tt.ambiguous && !analysis.RequestClassAmbiguous {
+				t.Fatalf("expected ambiguous request class decision, got %#v", analysis)
 			}
 		})
 	}
@@ -110,19 +160,22 @@ func TestReviewRunPersistsRequestClassLifecycleAndMCPResponse(t *testing.T) {
 	if run.Lifecycle == nil || run.Lifecycle.RequestClass != reviewRequestClassReviewOnly || run.Lifecycle.RouteMode == "" {
 		t.Fatalf("expected lifecycle state, got %#v", run.Lifecycle)
 	}
+	if run.Lifecycle.ClassificationConfidence <= 0 || run.Lifecycle.Contract == nil || len(run.Lifecycle.Contract.FinalAnswerRequirements) == 0 {
+		t.Fatalf("expected lifecycle classification confidence and contract, got %#v", run.Lifecycle)
+	}
 	if run.RuntimeGateLedger.RequestClass != reviewRequestClassReviewOnly ||
 		run.RuntimeGateLedger.Lifecycle == nil ||
 		run.RuntimeGateLedger.Lifecycle.RequestClass != reviewRequestClassReviewOnly {
 		t.Fatalf("expected runtime gate request class lifecycle, got %#v", run.RuntimeGateLedger)
 	}
 	markdown := renderReviewRunMarkdown(run)
-	for _, want := range []string{"Request class: `review_only`", "Request Lifecycle", "route_mode"} {
+	for _, want := range []string{"Request class: `review_only`", "Request Lifecycle", "route_mode", "classification_confidence", "final_answer_contract"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("expected markdown to contain %q, got:\n%s", want, markdown)
 		}
 	}
 	mcp := renderReviewMCPResponse(run, 40000)
-	for _, want := range []string{`"request_class": "review_only"`, `"lifecycle"`, `"review_gate_status"`} {
+	for _, want := range []string{`"request_class": "review_only"`, `"lifecycle"`, `"review_gate_status"`, `"classification_confidence"`, `"contract"`, `"route_quality"`} {
 		if !strings.Contains(mcp, want) {
 			t.Fatalf("expected MCP response to contain %q, got:\n%s", want, mcp)
 		}
@@ -342,6 +395,12 @@ func TestCrossModelReviewThenModifyProducesTriageObligationAndGuidance(t *testin
 		!strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "rejected_with_reason") {
 		t.Fatalf("expected concrete safe continuation guidance, got %#v", run.CrossReviewTriage.Items[0])
 	}
+	if !strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Inspect") ||
+		!strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Safe change") ||
+		!strings.Contains(run.CrossReviewTriage.Items[0].UserActionPrompt, "Do not change yet") ||
+		run.CrossReviewTriage.Items[0].NextCommand != "/continuity continue from review" {
+		t.Fatalf("expected actionable continuation guidance, got %#v", run.CrossReviewTriage.Items[0])
+	}
 }
 
 func TestFinalAnswerCompletenessUsesRequestClassForReviewOnlyDisclosure(t *testing.T) {
@@ -361,6 +420,81 @@ func TestFinalAnswerCompletenessUsesRequestClassForReviewOnlyDisclosure(t *testi
 	if !containsString(report.FinalAnswerCorrection.Reasons, "review_only_findings_first_no_edit") {
 		t.Fatalf("expected review-only correction reason, got %#v", report.FinalAnswerCorrection)
 	}
+}
+
+func TestFinalAnswerContractRejectsGenericModificationAndDocumentAnswers(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{
+		ID:                 "accept-modify",
+		SourcePrompt:       "fix main.go",
+		Mode:               "edit",
+		RequestClass:       reviewRequestClassModifyThenReview,
+		RequestClassReason: "test",
+	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-1",
+		Goal:   "fix main.go",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+	report := agent.buildCodingHarnessReport("Done.", false, false)
+	for _, want := range []string{
+		"Changed-file summary is missing",
+		"Review result is missing",
+		"Validation result is missing",
+		"Remaining-risk statement is missing",
+	} {
+		if !codingHarnessReportContainsFindingTitle(report, want) {
+			t.Fatalf("expected generic modification answer to be rejected for %q, got %#v", want, report.FinalAnswerCorrection)
+		}
+	}
+
+	docSession := NewSession(root, "scripted", "model", "", "default")
+	docSession.AcceptanceContract = &AcceptanceContract{
+		ID:                "accept-doc",
+		SourcePrompt:      "write docs/review_report.md as a report",
+		Mode:              "edit",
+		RequestClass:      reviewRequestClassDocumentArtifact,
+		RequiredArtifacts: []string{"docs/review_report.md"},
+	}
+	docAgent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   docSession,
+	}
+	docReport := docAgent.buildCodingHarnessReport("Done.", false, false)
+	for _, want := range []string{
+		"Document artifact path is missing",
+		"Document artifact quality status is missing",
+		"Document artifact verification disclosure is missing",
+		"Document artifact limitation statement is missing",
+	} {
+		if !codingHarnessReportContainsFindingTitle(docReport, want) {
+			t.Fatalf("expected generic document answer to be rejected for %q, got %#v", want, docReport.FinalAnswerCorrection)
+		}
+	}
+}
+
+func codingHarnessReportContainsFindingTitle(report CodingHarnessReport, title string) bool {
+	for _, finding := range report.allFindings() {
+		if strings.EqualFold(strings.TrimSpace(finding.Title), strings.TrimSpace(title)) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestClassTestRuntime(root string, provider *scriptedProviderClient) *runtimeState {

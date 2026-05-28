@@ -1261,7 +1261,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
 				if !harnessApproved && a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(latestUser, a.Session.LastCodingHarnessReport, unresolvedVerification) {
 					a.discardRecentFinalAnswerCandidate(reply)
-					reply = a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
+					reply = a.completeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport, reply)
 					synthesizedReport := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
 					a.Session.LastCodingHarnessReport = &synthesizedReport
 					a.Session.LastTestImpactReport = &synthesizedReport.TestImpact
@@ -2593,7 +2593,12 @@ func (a *Agent) generatedDocumentArtifactSeedFinalReply() string {
 				paths = append(paths, normalizeSessionRelativePath(path))
 			}
 		}
+		paths = append(paths, generatedDocumentArtifactPathsFromHarnessReport(a.Session.LastCodingHarnessReport)...)
 	}
+	return a.generatedDocumentArtifactSeedFinalReplyForPaths(paths)
+}
+
+func (a *Agent) generatedDocumentArtifactSeedFinalReplyForPaths(paths []string) string {
 	paths = normalizeTaskStateList(paths, 8)
 	target := "the generated document artifact"
 	if len(paths) > 0 {
@@ -2613,9 +2618,9 @@ func (a *Agent) generatedDocumentArtifactSeedFinalReply() string {
 	}
 	language, _ := inferResponseLanguageForUserText(sourcePrompt, cfg)
 	if language == "ko" {
-		return fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사로 내용을 확인했습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다.", target)
+		return fmt.Sprintf("%s 문서 산출물이 완료되었습니다. 결정적 산출물 품질 검사로 내용을 확인했습니다. 이번 턴은 생성 문서 산출물만 변경했으므로 빌드/테스트 검증은 실행하지 않았습니다. 남은 제한: 기록된 산출물 제한은 없습니다.", target)
 	}
-	return fmt.Sprintf("%s is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact.", target)
+	return fmt.Sprintf("%s is complete. Deterministic artifact-quality checks validated the document content. Build/test verification was not run because this turn only produced a generated document artifact. Remaining limitations: no known remaining artifact limitation is recorded.", target)
 }
 
 func (a *Agent) finalizeAcceptedFinalAnswer(reply string, unresolvedVerification bool) (string, error) {
@@ -2652,7 +2657,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string,
 			return "", false, nil
 		}
 		a.discardRecentFinalAnswerCandidate(reply)
-		reply = a.synthesizeGeneratedDocumentArtifactFinalReply(&report)
+		reply = a.completeGeneratedDocumentArtifactFinalReply(&report, reply)
 		report = a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
 		a.Session.LastCodingHarnessReport = &report
 		a.Session.LastTestImpactReport = &report.TestImpact
@@ -2673,7 +2678,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string,
 		return "", false, nil
 	}
 	a.discardRecentFinalAnswerCandidate(reply)
-	reply = a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
+	reply = a.completeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport, reply)
 	report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
 	a.Session.LastCodingHarnessReport = &report
 	a.Session.LastTestImpactReport = &report.TestImpact
@@ -2739,7 +2744,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request s
 		if !a.shouldSynthesizeGeneratedDocumentArtifactFinalReply(request, &report, unresolvedVerification) {
 			return "", false, nil
 		}
-		reply = a.synthesizeGeneratedDocumentArtifactFinalReply(&report)
+		reply = a.completeGeneratedDocumentArtifactFinalReply(&report, reply)
 		report = a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
 		a.Session.LastCodingHarnessReport = &report
 		a.Session.LastTestImpactReport = &report.TestImpact
@@ -8855,6 +8860,11 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
+	if contractText := strings.TrimSpace(renderFinalAnswerContractPrompt(a.Session)); contractText != "" {
+		b.WriteString("\nFinal answer contract:\n")
+		b.WriteString(contractText)
+		b.WriteString("\n")
+	}
 	if a.Session.LastUserChangeIsolationReport != nil {
 		if isolationText := strings.TrimSpace(a.Session.LastUserChangeIsolationReport.RenderPromptSection()); isolationText != "" {
 			b.WriteString("\nLatest user-change isolation report:\n")
@@ -9016,11 +9026,15 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 		routeMode = "cross_review"
 	}
 	intent := classifyTurnIntent(latestUser)
-	requestClass, requestClassReason := classifyAcceptanceContractRequestClass(latestUser, intent, prefersReadOnlyAnalysisIntent(latestUser) || looksLikeReviewInspectionOnlyRequest(latestUser), looksLikeExplicitEditIntent(latestUser))
+	classDecision := classifyAcceptanceContractRequestClassDecision(latestUser, intent, prefersReadOnlyAnalysisIntent(latestUser) || looksLikeReviewInspectionOnlyRequest(latestUser), looksLikeExplicitEditIntent(latestUser))
+	requestClass, requestClassReason := classDecision.RequestClass, classDecision.Reason
 	var b strings.Builder
 	b.WriteString("Codex-grade request handling:\n")
 	fmt.Fprintf(&b, "- Review route mode: %s.\n", routeMode)
-	fmt.Fprintf(&b, "- Request class: %s (%s).\n", requestClass, requestClassReason)
+	fmt.Fprintf(&b, "- Request class: %s (%s; confidence=%.2f; ambiguous=%t).\n", requestClass, requestClassReason, classDecision.Confidence, classDecision.Ambiguous)
+	if len(classDecision.AmbiguityWarnings) > 0 {
+		fmt.Fprintf(&b, "- Classification ambiguity: %s.\n", strings.Join(classDecision.AmbiguityWarnings, " | "))
+	}
 	b.WriteString("- Classify the latest external request before acting as review_only, document_artifact, review_then_modify, modify_then_review, verification_only, or validation_only.\n")
 	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")

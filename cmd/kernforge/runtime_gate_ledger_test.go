@@ -1114,11 +1114,17 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	run := ReviewRun{
-		ID:        "review-ops-1",
-		Trigger:   "post_change",
-		Target:    reviewTargetChange,
-		Mode:      reviewModeGeneralChange,
-		Flow:      "change_review",
+		ID:           "review-ops-1",
+		Trigger:      "post_change",
+		Target:       reviewTargetChange,
+		Mode:         reviewModeGeneralChange,
+		Flow:         "change_review",
+		RequestClass: reviewRequestClassModifyThenReview,
+		RequestAnalysis: ReviewRequestAnalysis{
+			RequestClass:           reviewRequestClassModifyThenReview,
+			RequestClassReason:     "test classification",
+			RequestClassConfidence: 0.87,
+		},
 		CreatedAt: time.Now(),
 		Gate: GateDecision{
 			Verdict: reviewVerdictNeedsRevision,
@@ -1188,10 +1194,14 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 		"trigger=post_change",
 		"target=change",
 		"mode=general_change",
+		"class=modify_then_review",
+		"classification_confidence",
+		"classification_ambiguous",
 		"gate_decision",
 		"verdict=needs_revision",
 		"action=repair_required",
 		"second_pass",
+		"review_route_quality",
 		"status=cached",
 		"cache_hit=true",
 		"cross_review_triage",

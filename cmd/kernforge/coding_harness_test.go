@@ -754,7 +754,7 @@ func TestAcceptanceContractDrivesMissingRequiredArtifactRepair(t *testing.T) {
 				"path":    "docs/required.md",
 				"content": "# Required\n",
 			}),
-			{Message: Message{Role: "assistant", Text: "Created docs/required.md. Verification not run."}},
+			{Message: Message{Role: "assistant", Text: "Created docs/required.md. Deterministic artifact-quality checks found no blocking document-content issues. Verification not run. Remaining limitations: no known remaining artifact limitation is recorded."}},
 		},
 	}
 	cfg := DefaultConfig(root)

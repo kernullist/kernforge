@@ -9,13 +9,14 @@ func (a *Agent) finalAnswerCompletenessFindings(reply string, attemptedEditTool 
 	if a == nil || a.Session == nil {
 		return nil
 	}
-	if a.changesAreGeneratedDocumentArtifactsForTurn(codingHarnessSourcePrompt(a.Session)) {
-		return nil
-	}
 	if finalAnswerCompletenessIsTrivialOrStatusOnly(a.Session) {
 		return nil
 	}
 	var findings []CodingHarnessFinding
+	if a.finalAnswerCompletenessRequiresDocumentArtifactFacts(reply) {
+		findings = append(findings, a.documentArtifactFinalAnswerCompletenessFindings(reply)...)
+		return normalizeCodingHarnessFindings(findings)
+	}
 	if a.finalAnswerCompletenessRequiresModificationFacts(attemptedEditTool) {
 		findings = append(findings, a.modificationFinalAnswerCompletenessFindings(reply)...)
 	}
@@ -30,6 +31,43 @@ func (a *Agent) finalAnswerCompletenessFindings(reply string, attemptedEditTool 
 		})
 	}
 	return normalizeCodingHarnessFindings(findings)
+}
+
+func (a *Agent) finalAnswerCompletenessRequiresDocumentArtifactFacts(reply string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	class := finalAnswerCompletenessRequestClass(a.Session)
+	if currentTurnPatchTransactionIncludesNonDocumentChange(a.Session) {
+		return false
+	}
+	if a.changesAreGeneratedDocumentArtifactsForTurn(codingHarnessSourcePrompt(a.Session)) {
+		return true
+	}
+	if class == reviewRequestClassDocumentArtifact {
+		if len(documentArtifactFinalAnswerPaths(a.Session, reply)) > 0 {
+			return true
+		}
+		return replyClaimsDocumentArtifactCompletion(reply) || replyStatesNoDocumentArtifactCreated(reply)
+	}
+	return false
+}
+
+func finalAnswerCompletenessRequestClass(session *Session) string {
+	if session == nil {
+		return reviewRequestClassGeneral
+	}
+	if session.AcceptanceContract != nil {
+		if class := normalizeReviewRequestClass(session.AcceptanceContract.RequestClass); class != reviewRequestClassGeneral {
+			return class
+		}
+	}
+	if session.LastReviewRun != nil {
+		if class := normalizeReviewRequestClass(firstNonBlankString(session.LastReviewRun.RequestClass, session.LastReviewRun.RequestAnalysis.RequestClass)); class != reviewRequestClassGeneral {
+			return class
+		}
+	}
+	return reviewRequestClassGeneral
 }
 
 func finalAnswerCompletenessIsTrivialOrStatusOnly(session *Session) bool {
@@ -86,6 +124,236 @@ func currentTurnPatchTransactionIncludesNonDocumentChange(session *Session) bool
 		}
 	}
 	return false
+}
+
+func (a *Agent) documentArtifactFinalAnswerCompletenessFindings(reply string) []CodingHarnessFinding {
+	paths := documentArtifactFinalAnswerPaths(a.Session, reply)
+	var findings []CodingHarnessFinding
+	noArtifactCreated := replyStatesNoDocumentArtifactCreated(reply)
+	if len(paths) == 0 && !noArtifactCreated {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Document artifact path is missing",
+			Detail:   "A document-artifact final answer must name the artifact path that was created or updated.",
+		})
+	} else if len(paths) > 0 && !noArtifactCreated && !replyMentionsChangedFileSummary(reply, paths) {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Document artifact path is missing",
+			Detail:   "The document artifact path is known, but the final answer does not name it: " + strings.Join(paths, ", "),
+		})
+	}
+	if !noArtifactCreated && !replyMentionsArtifactQualityStatus(reply) {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Document artifact quality status is missing",
+			Detail:   "A document-artifact final answer must disclose the artifact-quality check status instead of only saying it is done.",
+		})
+	}
+	if !replyMentionsVerificationOutcome(reply) {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Document artifact verification disclosure is missing",
+			Detail:   "A document-artifact final answer must say whether build/test verification ran, did not run, or is blocked.",
+		})
+	}
+	if !replyMentionsDocumentArtifactLimitation(reply) {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Document artifact limitation statement is missing",
+			Detail:   "A document-artifact final answer must state remaining limitations or that no known remaining artifact limitation is recorded.",
+		})
+	}
+	return findings
+}
+
+func replyStatesNoDocumentArtifactCreated(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"did not create",
+		"didn't create",
+		"not created",
+		"was not created",
+		"no artifact was created",
+		"no document was created",
+		"no files were changed",
+		"no file was changed",
+		"생성하지 않았",
+		"생성되지 않았",
+		"만들지 않았",
+		"문서를 만들지",
+		"파일 변경 없음",
+		"변경된 파일 없음",
+	)
+}
+
+func replyClaimsDocumentArtifactCompletion(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"continue",
+		"continuing",
+		"will proceed",
+		"ready to proceed",
+		"first ",
+		"진행하겠습니다",
+		"진행합니다",
+		"계속합니다",
+		"넘어갈 준비",
+		"먼저 ",
+		"확인한 뒤",
+	) {
+		return false
+	}
+	return containsAny(lower,
+		"created",
+		"generated",
+		"wrote",
+		"written",
+		"saved",
+		"complete",
+		"completed",
+		"document is done",
+		"report is done",
+		"문서를 생성",
+		"문서가 생성",
+		"문서를 작성",
+		"문서가 작성",
+		"문서만 작성",
+		"보고서를 생성",
+		"보고서를 작성",
+		"저장",
+		"완료",
+		"기록했습니다",
+	)
+}
+
+func documentArtifactFinalAnswerPaths(session *Session, reply string) []string {
+	if session == nil {
+		return nil
+	}
+	paths := make([]string, 0)
+	if session.AcceptanceContract != nil {
+		for _, path := range session.AcceptanceContract.RequiredArtifacts {
+			if pathLooksLikeDocumentArtifact(path) {
+				paths = append(paths, normalizeSessionRelativePath(path))
+			}
+		}
+	}
+	for _, path := range currentTurnPatchTransactionChangedPaths(session) {
+		if pathLooksLikeDocumentArtifact(path) {
+			paths = append(paths, normalizeSessionRelativePath(path))
+		}
+	}
+	paths = append(paths, generatedDocumentArtifactPathsFromHarnessReport(session.LastCodingHarnessReport)...)
+	for _, path := range extractClaimedArtifactPaths(reply) {
+		if pathLooksLikeDocumentArtifact(path) {
+			paths = append(paths, normalizeSessionRelativePath(path))
+		}
+	}
+	return normalizeTaskStateList(paths, 16)
+}
+
+func replyMentionsArtifactQualityStatus(reply string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"artifact-quality",
+		"artifact quality",
+		"quality check",
+		"quality gate",
+		"content quality",
+		"document-content",
+		"document content",
+		"placeholder",
+		"topic coverage",
+		"품질 검사",
+		"품질 게이트",
+		"산출물 품질",
+		"문서 품질",
+		"문서 내용",
+		"내용 차단",
+		"내용 확인",
+	)
+}
+
+func replyMentionsDocumentArtifactLimitation(reply string) bool {
+	if replyMentionsRemainingRisk(reply) || replyMentionsVerificationBlocker(reply) {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(reply))
+	return containsAny(lower,
+		"remaining limitation",
+		"remaining limitations",
+		"known limitation",
+		"known limitations",
+		"no known remaining limitation",
+		"no known remaining limitations",
+		"no remaining artifact limitation",
+		"no remaining document limitation",
+		"limited to",
+		"limitation:",
+		"limitations:",
+		"잔여 제한",
+		"남은 제한",
+		"알려진 제한",
+		"남은 한계",
+		"잔여 한계",
+		"남은 산출물 제한",
+		"남은 문서 제한",
+		"제한 없음",
+		"한계 없음",
+	)
+}
+
+func renderFinalAnswerContractPrompt(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	class := finalAnswerCompletenessRequestClass(session)
+	if class == reviewRequestClassGeneral {
+		return ""
+	}
+	contract := reviewLifecycleContractForClass(class)
+	if contract == nil {
+		return ""
+	}
+	contract.Normalize()
+	lines := []string{
+		"- Request class: " + contract.RequestClass,
+	}
+	if contract.ReadOnly {
+		lines = append(lines, "- Read-only: true")
+	}
+	if contract.RequiresReviewBeforeModify {
+		lines = append(lines, "- Requires review before modification: true")
+	}
+	if contract.RequiresPostChangeReview {
+		lines = append(lines, "- Requires post-change review or explicit self-review state: true")
+	}
+	if contract.RequiresDocumentGate {
+		lines = append(lines, "- Requires document artifact-quality gate: true")
+	}
+	if contract.RequiresVerificationDisclosure {
+		lines = append(lines, "- Requires verification disclosure: true")
+	}
+	if contract.RequiresValidationDisclosure {
+		lines = append(lines, "- Requires validation disclosure: true")
+	}
+	if len(contract.FinalAnswerRequirements) > 0 {
+		lines = append(lines, "- Final answer must disclose: "+strings.Join(contract.FinalAnswerRequirements, ", "))
+	}
+	if len(contract.SkipRules) > 0 {
+		lines = append(lines, "- Skip rules: "+strings.Join(contract.SkipRules, " | "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func finalAnswerCompletenessChangedPaths(session *Session) []string {

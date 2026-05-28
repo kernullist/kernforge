@@ -1261,7 +1261,7 @@ func (a *Agent) validateGeneratedDocumentArtifactForPostChangeSkip(request strin
 	if requestLooksLikeLocalVerificationWork(strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))) {
 		return false, ""
 	}
-	reply := a.generatedDocumentArtifactSeedFinalReply()
+	reply := a.generatedDocumentArtifactSeedFinalReplyForPaths(changedPaths)
 	report := a.buildCodingHarnessReport(reply, true, false)
 	reconcileGeneratedDocumentArtifactPostChangeScope(&report, changedPaths)
 	a.Session.LastCodingHarnessReport = &report
