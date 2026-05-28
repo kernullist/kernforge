@@ -387,6 +387,14 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 				run.SingleModelSecondPass.PromptPath = secondRun.PromptPath
 				run.SingleModelSecondPass.RawOutputPath = secondRun.RawOutputPath
 			}
+		} else if run.SingleModelPolicy.Enabled {
+			run.SingleModelSecondPass = &SingleModelSecondPassReview{
+				Enabled:       true,
+				Status:        "skipped",
+				Model:         mainLabel,
+				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
+				SkippedReason: singleModelSecondPassSkipReason(*run, mainRun, mainRaw),
+			}
 		}
 	}
 	assignReviewFindingIDs(findings)

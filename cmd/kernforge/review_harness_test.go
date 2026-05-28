@@ -11914,7 +11914,7 @@ func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
 			"  evidence: main uses the changed value without validation.",
 			"  impact: Invalid startup input can be accepted.",
 			"  required_fix: Validate the startup input.",
-			"  test_recommendation: Add invalid startup input coverage.",
+			"  test_recommendation: Add invalid startup input test coverage.",
 		}, "\n")}}},
 	}
 	cfg := DefaultConfig(root)
@@ -11946,12 +11946,242 @@ func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
 		t.Fatalf("expected one cross-review triage item, got %#v", run.CrossReviewTriage)
 	}
 	item := run.CrossReviewTriage.Items[0]
-	if item.TriageStatus != crossReviewTriageNeedsUserDecision || item.FindingID == "" || item.RequiredFix == "" {
+	if item.TriageStatus != crossReviewTriageNeedsUserDecision || item.FindingID == "" || item.RequiredFix == "" || !item.UserActionNeeded {
 		t.Fatalf("unexpected triage item: %#v", item)
 	}
+	if !strings.Contains(item.UserActionPrompt, "/continuity continue from review") {
+		t.Fatalf("expected actionable triage prompt, got %#v", item)
+	}
 	rendered := renderReviewRunMarkdown(run)
-	if !strings.Contains(rendered, "Cross-Review Triage Ledger") || !strings.Contains(rendered, "needs_user_decision") {
-		t.Fatalf("expected markdown triage ledger, got:\n%s", rendered)
+	for _, want := range []string{
+		"Cross-Review Triage Ledger",
+		"needs_user_decision",
+		"user_action_needed: `true`",
+		"user_action_prompt:",
+		"required_fix:",
+		"verification_refs:",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected markdown triage ledger to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	cli := renderReviewCLIResult(cfg, run)
+	for _, want := range []string{"Cross-review triage", "needs_user_decision=1", "/continuity continue from review"} {
+		if !strings.Contains(cli, want) {
+			t.Fatalf("expected CLI triage summary to contain %q, got:\n%s", want, cli)
+		}
+	}
+	if !reviewNextCommandsContainID(run.Gate.NextCommands, "cross-review-triage") {
+		t.Fatalf("expected cross-review triage next command, got %#v", run.Gate.NextCommands)
+	}
+}
+
+func TestCrossReviewTriageMarkdownKeepsCodeBlockersPrimary(t *testing.T) {
+	run := ReviewRun{
+		ID:     "review-primary-blocker",
+		Target: reviewTargetChange,
+		Mode:   reviewModeGeneralChange,
+		Findings: []ReviewFinding{{
+			ID:          "RF-CODE-001",
+			Severity:    reviewSeverityBlocker,
+			Category:    "correctness",
+			Path:        "main.go",
+			Title:       "Primary code blocker",
+			Evidence:    "The changed code returns before cleanup.",
+			RequiredFix: "Keep cleanup on the error path.",
+			BlocksGate:  true,
+		}},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-CODE-001"},
+		},
+		CrossReviewTriage: &CrossReviewTriageLedger{
+			Items: []CrossReviewTriageEntry{{
+				FindingID:        "RF-X",
+				TriageStatus:     crossReviewTriageNeedsUserDecision,
+				Title:            "Secondary cross-review item",
+				UserActionNeeded: true,
+				UserActionPrompt: "Use `/continuity continue from review` to repair RF-X.",
+			}},
+			TotalCount:   1,
+			StatusCounts: map[string]int{crossReviewTriageNeedsUserDecision: 1},
+		},
+	}
+	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
+	codeIndex := strings.Index(rendered, "Primary code blocker")
+	triageIndex := strings.Index(rendered, "Cross-review triage")
+	if codeIndex < 0 || triageIndex < 0 || codeIndex > triageIndex {
+		t.Fatalf("primary code blocker must render before triage residual risk, got:\n%s", rendered)
+	}
+}
+
+func TestCrossReviewTriageObservabilityNormalizesPartialLedger(t *testing.T) {
+	run := ReviewRun{
+		ID:     "review-partial-triage",
+		Target: reviewTargetChange,
+		Mode:   reviewModeGeneralChange,
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+			Action:  reviewGateActionRepairRequired,
+		},
+		CrossReviewTriage: &CrossReviewTriageLedger{
+			Items: []CrossReviewTriageEntry{
+				{
+					FindingID:       "RF-DEFER",
+					TriageStatus:    "accepted/deferred",
+					Title:           "Needs later verification",
+					TechnicalReason: "path main.go still needs follow-up verification evidence",
+				},
+				{
+					FindingID:    "RF-USER",
+					TriageStatus: "needs-user-decision",
+					Title:        "Needs a product decision",
+				},
+			},
+		},
+	}
+
+	obs := buildReviewDecisionObservability(&run, nil, nil)
+	if obs == nil || obs.CrossReviewTriage == nil {
+		t.Fatalf("expected cross-review triage observability, got %#v", obs)
+	}
+	if obs.CrossReviewTriage.TotalCount != 2 ||
+		obs.CrossReviewTriage.StatusCounts[crossReviewTriageAcceptedDeferred] != 1 ||
+		obs.CrossReviewTriage.StatusCounts[crossReviewTriageNeedsUserDecision] != 1 {
+		t.Fatalf("expected normalized triage counts, got %#v", obs.CrossReviewTriage)
+	}
+	if !obs.CrossReviewTriage.UserActionNeeded || len(obs.CrossReviewTriage.UserDecisionPrompts) == 0 {
+		t.Fatalf("expected generated user action prompt, got %#v", obs.CrossReviewTriage)
+	}
+	if !strings.Contains(obs.ResidualRiskSummary, "accepted_deferred=1") ||
+		!strings.Contains(obs.ResidualRiskSummary, "user_decision=1") {
+		t.Fatalf("expected normalized residual risk summary, got %q", obs.ResidualRiskSummary)
+	}
+
+	cli := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
+	for _, want := range []string{
+		"total=2",
+		"accepted_deferred=1",
+		"needs_user_decision=1",
+		"/continuity continue from review",
+	} {
+		if !strings.Contains(cli, want) {
+			t.Fatalf("expected CLI triage summary to contain %q, got:\n%s", want, cli)
+		}
+	}
+
+	markdown := renderReviewRunMarkdown(run)
+	for _, want := range []string{
+		"- total: `2`",
+		"status_counts: `accepted_deferred=1, needs_user_decision=1`",
+		"user_action_prompt:",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("expected markdown triage ledger to contain %q, got:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestSkippedSingleModelSecondPassExplainsReason(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-skip-second",
+		Target:  reviewTargetSelection,
+		Mode:    reviewModeGeneralChange,
+		Trigger: "explicit_cli",
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:             true,
+			IndependenceLevel:   "single_model",
+			NoCrossReviewReason: "no independent reviewer configured",
+		},
+		SingleModelSecondPass: &SingleModelSecondPassReview{
+			Enabled:       true,
+			Status:        "skipped",
+			Model:         "main-model",
+			SkippedReason: "review target did not require enforced single-model second pass",
+		},
+	}
+	rendered := renderReviewRunMarkdown(run)
+	for _, want := range []string{"Single-Model Second Pass", "status: `skipped`", "skipped_reason: review target did not require enforced single-model second pass"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected skipped second-pass artifact field %q, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestReviewMCPResponseExposesObservabilityFields(t *testing.T) {
+	run := ReviewRun{
+		ID:      "review-mcp-ops",
+		Target:  reviewTargetChange,
+		Mode:    reviewModeGeneralChange,
+		Trigger: "explicit_mcp",
+		Gate: GateDecision{
+			Verdict: reviewVerdictApprovedWithWarnings,
+			Action:  reviewGateActionVerificationRequired,
+			NextCommands: []ReviewNextCommand{{
+				ID:      "verify",
+				Command: "/verify --full",
+				Reason:  "changed files have no latest verification evidence",
+			}},
+		},
+		SingleModelSecondPass: &SingleModelSecondPassReview{
+			Enabled:       true,
+			Status:        "completed",
+			Model:         "main-model",
+			FindingCount:  1,
+			ReviewedPaths: []string{"main.go"},
+			PromptPath:    ".kernforge/reviews/review-mcp-ops/single_model_second_pass.prompt.md",
+			RawOutputPath: ".kernforge/reviews/review-mcp-ops/single_model_second_pass.raw.md",
+		},
+		CrossReviewTriage: &CrossReviewTriageLedger{
+			Items: []CrossReviewTriageEntry{{
+				FindingID:    "RF-X",
+				TriageStatus: crossReviewTriageAcceptedDeferred,
+				Title:        "Needs later verification",
+			}},
+			TotalCount:   1,
+			StatusCounts: map[string]int{crossReviewTriageAcceptedDeferred: 1},
+		},
+	}
+	rendered := renderReviewMCPResponse(run, 40000)
+	for _, want := range []string{
+		`"single_model_second_pass"`,
+		`"cross_review_triage"`,
+		`"review_observability"`,
+		`"prompt_ref"`,
+		`"raw_output_ref"`,
+		`"recommended_command"`,
+		`"/verify --full"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected MCP response to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "REVIEW_RESULT") {
+		t.Fatalf("MCP response must not dump raw model output, got:\n%s", rendered)
+	}
+}
+
+func TestSingleModelSecondPassArtifactsExposeCacheAndRefs(t *testing.T) {
+	run := ReviewRun{
+		ID:     "review-second-pass-refs",
+		Target: reviewTargetChange,
+		Mode:   reviewModeGeneralChange,
+		SingleModelSecondPass: &SingleModelSecondPassReview{
+			Enabled:       true,
+			Status:        "cached",
+			CacheHit:      true,
+			Model:         "main-model",
+			FindingCount:  2,
+			ReviewedPaths: []string{"main.go", "lib.go"},
+			PromptPath:    ".kernforge/reviews/review-second-pass-refs/single_model_second_pass.prompt.md",
+			RawOutputPath: ".kernforge/reviews/review-second-pass-refs/single_model_second_pass.raw.md",
+		},
+	}
+	rendered := renderReviewRunMarkdown(run)
+	for _, want := range []string{"cache_hit: `true`", "reviewed_paths: `main.go`, `lib.go`", "prompt_ref:", "raw_output_ref:", "finding_count: `2`"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected second-pass artifact detail %q, got:\n%s", want, rendered)
+		}
 	}
 }
 

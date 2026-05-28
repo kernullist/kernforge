@@ -566,6 +566,14 @@ func renderSessionDashboardRuntimeGate(ledger RuntimeGateLedger) string {
 	if ledger.ReviewRunID != "" {
 		b.WriteString(`<p><strong>Latest review</strong><br><code>` + htmlEscape(ledger.ReviewRunID) + `</code></p>`)
 	}
+	if ledger.ReviewObservability != nil {
+		b.WriteString(`<p><strong>Review decision</strong><br><code>` + htmlEscape(reviewDecisionObservabilityStatusLine(ledger.ReviewObservability)) + `</code></p>`)
+		b.WriteString(`<p><strong>Second pass</strong><br><code>` + htmlEscape(reviewSecondPassStatusLine(ledger.ReviewObservability.SingleModelSecondPass)) + `</code></p>`)
+		b.WriteString(`<p><strong>Cross-review triage</strong><br><code>` + htmlEscape(reviewCrossReviewTriageStatusLine(ledger.ReviewObservability.CrossReviewTriage)) + `</code></p>`)
+	}
+	if ledger.FinalAnswerCorrection != nil {
+		b.WriteString(`<p><strong>Final answer correction</strong><br><code>` + htmlEscape(finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)) + `</code></p>`)
+	}
 	if len(ledger.StaleReasons) > 0 {
 		b.WriteString(`<pre>` + htmlEscape(strings.Join(limitStrings(ledger.StaleReasons, 3), "\n")) + `</pre>`)
 	}

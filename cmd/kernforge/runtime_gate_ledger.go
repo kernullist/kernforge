@@ -19,24 +19,26 @@ const (
 )
 
 type RuntimeGateLedger struct {
-	ID                   string              `json:"id,omitempty"`
-	GeneratedAt          time.Time           `json:"generated_at,omitempty"`
-	Action               string              `json:"action,omitempty"`
-	Status               string              `json:"status,omitempty"`
-	Ready                bool                `json:"ready"`
-	Branch               string              `json:"branch,omitempty"`
-	ReviewRunID          string              `json:"review_run_id,omitempty"`
-	PatchTransactionID   string              `json:"patch_transaction_id,omitempty"`
-	VerificationReportID string              `json:"verification_report_id,omitempty"`
-	CompletionAuditID    string              `json:"completion_audit_id,omitempty"`
-	FinalAnswerReviewID  string              `json:"final_answer_review_id,omitempty"`
-	ReviewTransaction    ReviewTransaction   `json:"review_transaction,omitempty"`
-	ChangedPaths         []string            `json:"changed_paths,omitempty"`
-	Blockers             []string            `json:"blockers,omitempty"`
-	Warnings             []string            `json:"warnings,omitempty"`
-	StaleReasons         []string            `json:"stale_reasons,omitempty"`
-	Waivers              []string            `json:"waivers,omitempty"`
-	NextCommands         []ReviewNextCommand `json:"next_commands,omitempty"`
+	ID                    string                           `json:"id,omitempty"`
+	GeneratedAt           time.Time                        `json:"generated_at,omitempty"`
+	Action                string                           `json:"action,omitempty"`
+	Status                string                           `json:"status,omitempty"`
+	Ready                 bool                             `json:"ready"`
+	Branch                string                           `json:"branch,omitempty"`
+	ReviewRunID           string                           `json:"review_run_id,omitempty"`
+	PatchTransactionID    string                           `json:"patch_transaction_id,omitempty"`
+	VerificationReportID  string                           `json:"verification_report_id,omitempty"`
+	CompletionAuditID     string                           `json:"completion_audit_id,omitempty"`
+	FinalAnswerReviewID   string                           `json:"final_answer_review_id,omitempty"`
+	ReviewTransaction     ReviewTransaction                `json:"review_transaction,omitempty"`
+	ChangedPaths          []string                         `json:"changed_paths,omitempty"`
+	Blockers              []string                         `json:"blockers,omitempty"`
+	Warnings              []string                         `json:"warnings,omitempty"`
+	StaleReasons          []string                         `json:"stale_reasons,omitempty"`
+	Waivers               []string                         `json:"waivers,omitempty"`
+	NextCommands          []ReviewNextCommand              `json:"next_commands,omitempty"`
+	ReviewObservability   *ReviewDecisionObservability     `json:"review_observability,omitempty"`
+	FinalAnswerCorrection *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
 }
 
 type ReviewTransaction struct {
@@ -83,11 +85,13 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	ledger.FinalAnswerReviewID = runtimeGateFinalAnswerReviewID(session)
 
 	reviewRun, ok := runtimeGateReviewRun(root, session, review)
+	var observedReview *ReviewRun
 	if documentArtifactOnly {
 		// Generated document artifacts are guarded by deterministic artifact
 		// quality checks, not the code-review freshness ledger.
 	} else if ok {
 		runtimeGateAttachReview(root, &ledger, reviewRun)
+		observedReview = &reviewRun
 	} else if len(ledger.ChangedPaths) > 0 {
 		message := "no latest review run covers current changed files"
 		if runtimeGateActionRequiresReview(action) {
@@ -111,6 +115,14 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 	runtimeGateAttachVerification(session, &ledger)
 	runtimeGateAttachCodingHarness(session, &ledger)
 	ledger.Normalize()
+	if observedReview != nil {
+		var report *CodingHarnessReport
+		if session != nil && session.LastCodingHarnessReport != nil {
+			report = session.LastCodingHarnessReport
+		}
+		ledger.ReviewObservability = buildReviewDecisionObservability(observedReview, &ledger, report)
+		ledger.Normalize()
+	}
 	return ledger
 }
 
@@ -191,6 +203,12 @@ func (l *RuntimeGateLedger) Normalize() {
 	l.Waivers = normalizeTaskStateList(l.Waivers, 16)
 	l.NextCommands = normalizeRuntimeGateNextCommands(l.NextCommands, 8)
 	l.ReviewTransaction.Normalize()
+	if l.FinalAnswerCorrection != nil {
+		l.FinalAnswerCorrection.Normalize()
+	}
+	if l.ReviewObservability != nil && l.ReviewObservability.FinalAnswerCorrection != nil {
+		l.ReviewObservability.FinalAnswerCorrection.Normalize()
+	}
 	if len(l.Blockers) > 0 {
 		l.Status = runtimeGateStatusBlocked
 		l.Ready = false
@@ -276,6 +294,17 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 		if strings.TrimSpace(next.Command) != "" {
 			lines = append(lines, "- Next command: "+next.Command)
 		}
+	}
+	if l.ReviewObservability != nil {
+		lines = append(lines, "- Review decision: "+reviewDecisionObservabilityStatusLine(l.ReviewObservability))
+		lines = append(lines, "- Review gate: "+reviewGateObservabilityStatusLine(l.ReviewObservability))
+		lines = append(lines, "- Single-model second pass: "+reviewSecondPassStatusLine(l.ReviewObservability.SingleModelSecondPass))
+		lines = append(lines, "- Cross-review triage: "+reviewCrossReviewTriageStatusLine(l.ReviewObservability.CrossReviewTriage))
+		lines = append(lines, "- Remaining obligations: "+reviewRemainingObligationsStatusLine(l.ReviewObservability.RemainingObligations))
+		lines = append(lines, "- Blocker classes: "+reviewBlockerClassesStatusLine(l.ReviewObservability.BlockerClasses))
+	}
+	if l.FinalAnswerCorrection != nil {
+		lines = append(lines, "- Final answer correction: "+finalAnswerCorrectionStatusLine(l.FinalAnswerCorrection))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -672,6 +701,15 @@ func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger)
 	}
 	report := *session.LastCodingHarnessReport
 	report.Normalize()
+	if session.LastFinalAnswerCorrection != nil {
+		correction := *session.LastFinalAnswerCorrection
+		correction.Normalize()
+		ledger.FinalAnswerCorrection = &correction
+	} else if report.FinalAnswerCorrection != nil {
+		correction := *report.FinalAnswerCorrection
+		correction.Normalize()
+		ledger.FinalAnswerCorrection = &correction
+	}
 	if report.Approved {
 		return
 	}
@@ -930,6 +968,27 @@ func (rt *runtimeState) printRuntimeGateStatus(action string) {
 	if ledger.ReviewRunID != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_review", ledger.ReviewRunID))
 	}
+	if ledger.ReviewObservability != nil {
+		obs := ledger.ReviewObservability
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("review_decision", reviewDecisionObservabilityStatusLine(obs)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("gate_decision", reviewGateObservabilityStatusLine(obs)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("second_pass", reviewSecondPassStatusLine(obs.SingleModelSecondPass)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review_triage", reviewCrossReviewTriageStatusLine(obs.CrossReviewTriage)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_obligations", reviewRemainingObligationsStatusLine(obs.RemainingObligations)))
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("blocker_classes", reviewBlockerClassesStatusLine(obs.BlockerClasses)))
+		if len(obs.IncompleteTriageBlockers) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("triage_blockers", strings.Join(limitStrings(obs.IncompleteTriageBlockers, 2), " | ")))
+		}
+		if strings.TrimSpace(obs.ResidualRiskSummary) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("triage_residual", obs.ResidualRiskSummary))
+		}
+	}
+	if ledger.FinalAnswerCorrection != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
+		if detail := finalAnswerCorrectionDetailedLine(ledger.FinalAnswerCorrection); detail != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_detail", detail))
+		}
+	}
 	if ledger.PatchTransactionID != "" {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("patch_transaction", ledger.PatchTransactionID))
 	}
@@ -1014,7 +1073,9 @@ func runtimeGateLedgerEmpty(ledger RuntimeGateLedger) bool {
 		len(ledger.Warnings) == 0 &&
 		len(ledger.StaleReasons) == 0 &&
 		len(ledger.Waivers) == 0 &&
-		len(ledger.NextCommands) == 0
+		len(ledger.NextCommands) == 0 &&
+		ledger.ReviewObservability == nil &&
+		ledger.FinalAnswerCorrection == nil
 }
 
 func runtimeGatePrimaryNextCommandLine(ledger RuntimeGateLedger) string {

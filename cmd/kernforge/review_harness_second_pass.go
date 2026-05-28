@@ -19,6 +19,7 @@ type SingleModelSecondPassReview struct {
 	FindingCount  int       `json:"finding_count,omitempty"`
 	PromptPath    string    `json:"prompt_path,omitempty"`
 	RawOutputPath string    `json:"raw_output_path,omitempty"`
+	SkippedReason string    `json:"skipped_reason,omitempty"`
 }
 
 type SecondPassReviewCacheEntry struct {
@@ -57,6 +58,32 @@ func shouldRunSingleModelSecondPass(run *ReviewRun, mainRun ReviewReviewerRun, m
 		return true
 	}
 	return false
+}
+
+func singleModelSecondPassSkipReason(run ReviewRun, mainRun ReviewReviewerRun, mainRaw string) string {
+	if !run.SingleModelPolicy.Enabled {
+		return "single-model review policy is not active"
+	}
+	if strings.TrimSpace(mainRaw) == "" {
+		return "first-pass review output was empty"
+	}
+	if !strings.EqualFold(strings.TrimSpace(mainRun.Status), "completed") ||
+		!reviewModelQualityUsableOrBetter(mainRun.ModelQuality) ||
+		strings.TrimSpace(mainRun.Error) != "" {
+		return "first-pass review did not complete with usable quality"
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
+		return ""
+	}
+	if reviewRunHasChangeEvidence(run) {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetChange) ||
+		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetFinal) ||
+		strings.EqualFold(strings.TrimSpace(run.Target), reviewTargetGoal) {
+		return ""
+	}
+	return "review target did not require enforced single-model second pass"
 }
 
 func prepareSingleModelSecondPassPlan(run *ReviewRun, label string) {

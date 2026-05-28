@@ -772,8 +772,24 @@ Best used when:
 Review artifacts:
 1. `/review selection` writes `.kernforge/reviews/latest.json` and `.kernforge/reviews/latest.md`.
 2. The result includes typed findings, freshness/redaction state, gate status, scope discovery, repair steps, runtime gate ledger, and recommended next commands.
-3. MCP clients get the same structure through `kernforge_review`, including `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, and action-contract fields on `next_commands`.
+3. MCP clients get the same structure through `kernforge_review`, including `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `single_model_second_pass`, `cross_review_triage`, `review_observability`, `scope_discovery`, and action-contract fields on `next_commands`.
 4. Protocol artifacts also include action envelopes, approval ledger, capability manifest, external lookup intents, artifact integrity, ledger consistency, resume sanity, state transitions, route health, single-model second-pass status, and cross-review triage so CLI output, Markdown reports, JSON artifacts, and MCP responses describe the same gate state.
+
+Review UX/Ops observability:
+1. Runtime enforcement already exists in the review gate ledger, cross-review triage ledger, enforced single-model second-pass phase, and pre-final answer completeness gate.
+2. The UX/Ops layer exposes those decisions through `/status`, `/hooks`, session dashboard, Markdown artifacts, JSON artifacts, and MCP responses. The compact status view shows latest review id, trigger/target/mode, gate verdict/action, second-pass ran/skipped/cached state, triage counts by status, incomplete triage blockers, remaining repair/verification/evidence obligations, final-answer correction state, blocker classes, and the next recommended command.
+3. Blocker classes separate code repair blockers, reviewer route problems, evidence gaps, verification gaps, and final-answer completeness blockers. This keeps a primary code blocker above cross-review residual-risk noise.
+4. Cross-review triage artifacts render each finding with id/title, location, status, reason, required fix, fix refs/changed paths, verification refs, and user-action guidance. `needs_user_decision` entries include a concrete continuation prompt instead of asking the user to infer the next step from raw review text.
+5. Single-model second pass is visible as runtime evidence. Artifacts and status output show ran/skipped/cached state, reviewed paths, route/model, finding count, prompt/raw-output refs when available, and skipped reason when applicable. It must not be presented as independent cross-review approval.
+6. Final-answer completeness corrections are exposed as lifecycle facts: changed-file disclosure, review/self-review disclosure, validation disclosure, remaining-risk disclosure, or review-only findings-first/no-edit formatting. Internal prompt text is not surfaced.
+7. Known residual limits: raw model output stays in local artifact refs, MCP responses remain additive/backward-compatible instead of dumping transcripts, generated-document artifact skip behavior remains intentionally separate from code review gates, and full-package tests may still need cluster-level diagnosis before a single all-in-one run is useful.
+
+Review/Ops test strategy:
+1. Start with `go test ./cmd/kernforge -list .` to confirm the package compiles and inventory current tests.
+2. Use `go test -json ./cmd/kernforge -count=1 -timeout 2m` or `-v` when diagnosing a silent timeout; plain `go test` may print nothing until the package exits.
+3. Run UX/Ops regressions as a focused cluster: `go test ./cmd/kernforge -run "TestRuntimeGate|TestReviewMCPResponse|TestCrossReview|TestSingleModel|TestPreFinalHarness" -count=1`.
+4. Run existing behavior clusters separately when needed: `TestAgent|TestApplyEditProposal|TestRunShell|TestVerification|TestProjectAnalyzer`.
+5. The 2026-05-28 timeout investigation saved a JSON trace under `.kernforge/test-logs/` and showed the short 2 minute budget expired in the project-analysis cluster after earlier agent/review tests consumed most of the time; the practical repeatable path is cluster isolation before a full `go test ./cmd/kernforge -count=1 -timeout 15m`.
 
 ### 2.8 Plan Review Workflow
 

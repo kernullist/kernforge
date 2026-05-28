@@ -35,12 +35,45 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if run.SingleModelPolicy.Enabled {
 		fmt.Fprintf(&b, "- Independence: `%s` (%s)\n", run.SingleModelPolicy.IndependenceLevel, run.SingleModelPolicy.NoCrossReviewReason)
 	}
-	if run.SingleModelSecondPass != nil && run.SingleModelSecondPass.Enabled {
-		fmt.Fprintf(&b, "- Single-model second pass: `%s` fingerprint=`%s` cache_hit=`%t`\n", run.SingleModelSecondPass.Status, run.SingleModelSecondPass.Fingerprint, run.SingleModelSecondPass.CacheHit)
+	if second := buildReviewSecondPassObservability(run); second != nil {
+		fmt.Fprintf(&b, "- Single-model second pass: `%s` ran=`%t` cache_hit=`%t`", second.Status, second.Ran, second.CacheHit)
+		if strings.TrimSpace(second.ModelRoute) != "" {
+			fmt.Fprintf(&b, " route=`%s`", second.ModelRoute)
+		}
+		if second.FindingCount > 0 {
+			fmt.Fprintf(&b, " findings=`%d`", second.FindingCount)
+		}
+		if strings.TrimSpace(second.SkippedReason) != "" {
+			fmt.Fprintf(&b, " reason=%s", second.SkippedReason)
+		}
+		b.WriteString("\n")
 	}
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
 	b.WriteString("\n\n")
+	if second := buildReviewSecondPassObservability(run); second != nil {
+		b.WriteString("## Single-Model Second Pass\n\n")
+		fmt.Fprintf(&b, "- status: `%s`\n", second.Status)
+		fmt.Fprintf(&b, "- ran: `%t`\n", second.Ran)
+		fmt.Fprintf(&b, "- cache_hit: `%t`\n", second.CacheHit)
+		if strings.TrimSpace(second.ModelRoute) != "" {
+			fmt.Fprintf(&b, "- model_route: `%s`\n", second.ModelRoute)
+		}
+		if len(second.ReviewedPaths) > 0 {
+			fmt.Fprintf(&b, "- reviewed_paths: `%s`\n", strings.Join(second.ReviewedPaths, "`, `"))
+		}
+		fmt.Fprintf(&b, "- finding_count: `%d`\n", second.FindingCount)
+		if strings.TrimSpace(second.PromptRef) != "" {
+			fmt.Fprintf(&b, "- prompt_ref: `%s`\n", second.PromptRef)
+		}
+		if strings.TrimSpace(second.RawOutputRef) != "" {
+			fmt.Fprintf(&b, "- raw_output_ref: `%s`\n", second.RawOutputRef)
+		}
+		if strings.TrimSpace(second.SkippedReason) != "" {
+			fmt.Fprintf(&b, "- skipped_reason: %s\n", second.SkippedReason)
+		}
+		b.WriteString("\n")
+	}
 	if len(run.ObligationLedger.Items) > 0 {
 		b.WriteString("## Obligation Ledger\n\n")
 		fmt.Fprintf(&b, "- total: `%d` open: `%d`\n", run.ObligationLedger.TotalCount, run.ObligationLedger.OpenCount)
@@ -55,18 +88,18 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		b.WriteString("\n")
 	}
-	if run.CrossReviewTriage != nil && len(run.CrossReviewTriage.Items) > 0 {
+	if triage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage); triage != nil && len(triage.Items) > 0 {
 		b.WriteString("## Cross-Review Triage Ledger\n\n")
-		fmt.Fprintf(&b, "- total: `%d` incomplete: `%d`\n", run.CrossReviewTriage.TotalCount, run.CrossReviewTriage.IncompleteCount)
-		if len(run.CrossReviewTriage.StatusCounts) > 0 {
-			parts := make([]string, 0, len(run.CrossReviewTriage.StatusCounts))
+		fmt.Fprintf(&b, "- total: `%d` incomplete: `%d`\n", triage.TotalCount, triage.IncompleteCount)
+		if len(triage.StatusCounts) > 0 {
+			parts := make([]string, 0, len(triage.StatusCounts))
 			for _, status := range []string{
 				crossReviewTriageAcceptedFixed,
 				crossReviewTriageAcceptedDeferred,
 				crossReviewTriageRejectedWithReason,
 				crossReviewTriageNeedsUserDecision,
 			} {
-				if count := run.CrossReviewTriage.StatusCounts[status]; count > 0 {
+				if count := triage.StatusCounts[status]; count > 0 {
 					parts = append(parts, fmt.Sprintf("%s=%d", status, count))
 				}
 			}
@@ -74,36 +107,47 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 				fmt.Fprintf(&b, "- status_counts: `%s`\n", strings.Join(parts, ", "))
 			}
 		}
-		for _, item := range run.CrossReviewTriage.Items {
-			fmt.Fprintf(&b, "- `%s` status=`%s` reviewer=`%s` severity=`%s` category=`%s`: %s\n", item.FindingID, item.TriageStatus, item.ReviewerRole, item.Severity, item.Category, item.Title)
+		for _, item := range triage.Items {
+			fmt.Fprintf(&b, "\n### `%s` - %s\n\n", valueOrDefault(item.FindingID, "cross-review-finding"), valueOrDefault(item.Title, "untitled finding"))
+			fmt.Fprintf(&b, "- status: `%s`\n", item.TriageStatus)
+			fmt.Fprintf(&b, "- reviewer: `%s`\n", item.ReviewerRole)
+			fmt.Fprintf(&b, "- severity: `%s`\n", item.Severity)
+			fmt.Fprintf(&b, "- category: `%s`\n", item.Category)
 			if strings.TrimSpace(item.Path) != "" {
 				if item.Line > 0 {
-					fmt.Fprintf(&b, "  - Location: `%s:%d`\n", filepath.ToSlash(item.Path), item.Line)
+					fmt.Fprintf(&b, "- location: `%s:%d`\n", filepath.ToSlash(item.Path), item.Line)
 				} else {
-					fmt.Fprintf(&b, "  - Location: `%s`\n", filepath.ToSlash(item.Path))
+					fmt.Fprintf(&b, "- location: `%s`\n", filepath.ToSlash(item.Path))
 				}
 			}
 			if strings.TrimSpace(item.Symbol) != "" {
-				fmt.Fprintf(&b, "  - Symbol: `%s`\n", item.Symbol)
-			}
-			if strings.TrimSpace(item.RequiredFix) != "" {
-				fmt.Fprintf(&b, "  - Required fix: %s\n", item.RequiredFix)
+				fmt.Fprintf(&b, "- symbol: `%s`\n", item.Symbol)
 			}
 			if strings.TrimSpace(item.TechnicalReason) != "" {
-				fmt.Fprintf(&b, "  - Reason: %s\n", item.TechnicalReason)
+				fmt.Fprintf(&b, "- reason: %s\n", item.TechnicalReason)
+			}
+			if strings.TrimSpace(item.RequiredFix) != "" {
+				fmt.Fprintf(&b, "- required_fix: %s\n", item.RequiredFix)
 			}
 			if len(item.FixRefs) > 0 {
-				fmt.Fprintf(&b, "  - Fix refs: `%s`\n", strings.Join(item.FixRefs, "`, `"))
+				fmt.Fprintf(&b, "- fix_refs: `%s`\n", strings.Join(item.FixRefs, "`, `"))
 			}
 			if len(item.ChangedPaths) > 0 {
-				fmt.Fprintf(&b, "  - Changed paths: `%s`\n", strings.Join(item.ChangedPaths, "`, `"))
+				fmt.Fprintf(&b, "- changed_paths: `%s`\n", strings.Join(item.ChangedPaths, "`, `"))
 			}
 			if len(item.VerificationRefs) > 0 {
-				fmt.Fprintf(&b, "  - Verification refs: `%s`\n", strings.Join(item.VerificationRefs, "`, `"))
+				fmt.Fprintf(&b, "- verification_refs: `%s`\n", strings.Join(item.VerificationRefs, "`, `"))
+			}
+			if len(item.EvidenceRefs) > 0 {
+				fmt.Fprintf(&b, "- evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
+			}
+			fmt.Fprintf(&b, "- user_action_needed: `%t`\n", item.UserActionNeeded)
+			if strings.TrimSpace(item.UserActionPrompt) != "" {
+				fmt.Fprintf(&b, "- user_action_prompt: %s\n", item.UserActionPrompt)
 			}
 		}
-		if len(run.CrossReviewTriage.Blockers) > 0 {
-			fmt.Fprintf(&b, "- blockers: %s\n", strings.Join(run.CrossReviewTriage.Blockers, " | "))
+		if len(triage.Blockers) > 0 {
+			fmt.Fprintf(&b, "- blockers: %s\n", strings.Join(triage.Blockers, " | "))
 		}
 		b.WriteString("\n")
 	}
@@ -433,6 +477,9 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 			}
 		}
 	}
+	if line := renderReviewCLITriageResidualRisk(cfg, run); line != "" {
+		fmt.Fprintf(&b, "\n%s\n", line)
+	}
 	if len(run.Gate.NextCommands) > 0 {
 		fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Next commands", "다음 명령"))
 		for _, cmd := range run.Gate.NextCommands {
@@ -440,6 +487,34 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func renderReviewCLITriageResidualRisk(cfg Config, run ReviewRun) string {
+	ledger := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
+	if ledger == nil || len(ledger.Items) == 0 {
+		return ""
+	}
+	obs := buildReviewCrossReviewTriageSummary(ledger)
+	if obs == nil {
+		return ""
+	}
+	if obs.IncompleteCount == 0 && !obs.UserActionNeeded {
+		deferred := 0
+		for _, item := range ledger.Items {
+			if normalizeCrossReviewTriageStatus(item.TriageStatus) == crossReviewTriageAcceptedDeferred {
+				deferred++
+			}
+		}
+		if deferred == 0 {
+			return ""
+		}
+	}
+	label := reviewRunLocalizedText(cfg, run, "Cross-review triage", "교차 리뷰 triage")
+	line := "- " + label + ": " + reviewCrossReviewTriageStatusLine(obs)
+	if obs.UserActionNeeded && len(obs.UserDecisionPrompts) > 0 {
+		line += "\n  " + reviewRunLocalizedText(cfg, run, "Action", "실행 방법") + ": " + obs.UserDecisionPrompts[0]
+	}
+	return line
 }
 
 func renderReviewCLIFinding(b *strings.Builder, cfg Config, run ReviewRun, finding ReviewFinding, fixLabel string) {
@@ -468,6 +543,9 @@ func renderReviewCLIRouteStatus(cfg Config, run ReviewRun) string {
 		}
 		if detail := renderReviewCLIReviewerRunDetails(run); detail != "" {
 			status += "; " + detail
+		}
+		if second := buildReviewSecondPassObservability(run); second != nil {
+			status += "; second_pass=" + reviewSecondPassStatusLine(second)
 		}
 		return status
 	}

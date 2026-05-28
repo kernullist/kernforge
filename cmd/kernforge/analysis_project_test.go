@@ -546,6 +546,7 @@ func TestProjectAnalyzerContinuesWhenReviewerFails(t *testing.T) {
 
 	cfg := DefaultConfig(root)
 	cfg.Model = "stub-model"
+	cfg.ProjectAnalysis.MaxProviderRetries = -1
 	cfg.ProjectAnalysis.OutputDir = filepath.Join(root, ".kernforge", "analysis")
 	client := &reviewerFailureAnalysisClient{}
 	ws := Workspace{

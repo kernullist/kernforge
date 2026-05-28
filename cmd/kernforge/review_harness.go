@@ -157,6 +157,7 @@ type ReviewRun struct {
 	Waivers               []ReviewWaiver               `json:"waivers,omitempty"`
 	RepairPlan            ReviewRepairPlan             `json:"repair_plan,omitempty"`
 	RuntimeGateLedger     RuntimeGateLedger            `json:"runtime_gate_ledger,omitempty"`
+	DecisionObservability *ReviewDecisionObservability `json:"decision_observability,omitempty"`
 	NextCommandResults    []ReviewNextCommandRun       `json:"next_command_results,omitempty"`
 	ArtifactRefs          []string                     `json:"artifact_refs,omitempty"`
 	AuditTrail            []string                     `json:"audit_trail,omitempty"`
@@ -836,8 +837,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		CheckedAt:         time.Now(),
 	}
 	run.finalizeStatus(false)
-	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
 	finalizeReviewRunProtocol(root, rt, &run)
+	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
+	run.DecisionObservability = buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
 	if run.SingleModelSecondPass != nil {
 		recordAcceptedSecondPassCache(rt, run, *run.SingleModelSecondPass)
 	}

@@ -15388,7 +15388,7 @@ func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
 
 func TestAgentRoutesPostEditCommentaryReplyThroughFinalGates(t *testing.T) {
 	root := t.TempDir()
-	commentary := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	commentary := "main.go 파일을 수정했습니다. 자체 검토: 추가 차단 항목 없음. 검증은 실행하지 않았습니다. 남은 리스크 없음."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
@@ -15438,7 +15438,7 @@ func TestAgentRoutesPostEditCommentaryReplyThroughFinalGates(t *testing.T) {
 func TestAgentFinalizesPostEditReplyWhenProviderEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
 	endTurnFalse := false
-	replyText := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	replyText := "main.go 파일을 수정했습니다. 자체 검토: 추가 차단 항목 없음. 검증은 실행하지 않았습니다. 남은 리스크 없음."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
@@ -15496,7 +15496,7 @@ func TestAgentContinuesPostEditInProgressEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
 	endTurnFalse := false
 	inProgress := "Still checking the edit before the final answer."
-	finalReply := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	finalReply := "main.go 파일을 수정했습니다. 자체 검토: 추가 차단 항목 없음. 검증은 실행하지 않았습니다. 남은 리스크 없음."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
@@ -15560,7 +15560,7 @@ func TestAgentContinuesPostEditFutureVerificationEndTurnFalse(t *testing.T) {
 	root := t.TempDir()
 	endTurnFalse := false
 	inProgress := "main.go 파일을 수정했습니다. 이제 go test를 실행하겠습니다."
-	finalReply := "main.go 파일을 수정했습니다. 검증은 실행하지 않았습니다."
+	finalReply := "main.go 파일을 수정했습니다. 자체 검토: 추가 차단 항목 없음. 검증은 실행하지 않았습니다. 남은 리스크 없음."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),

@@ -38,6 +38,8 @@ type CrossReviewTriageEntry struct {
 	ChangedPaths     []string `json:"changed_paths,omitempty"`
 	VerificationRefs []string `json:"verification_refs,omitempty"`
 	EvidenceRefs     []string `json:"evidence_refs,omitempty"`
+	UserActionNeeded bool     `json:"user_action_needed,omitempty"`
+	UserActionPrompt string   `json:"user_action_prompt,omitempty"`
 }
 
 func buildCrossReviewTriageLedger(run ReviewRun) *CrossReviewTriageLedger {
@@ -56,9 +58,32 @@ func buildCrossReviewTriageLedger(run ReviewRun) *CrossReviewTriageLedger {
 	if len(ledger.Items) == 0 {
 		return nil
 	}
-	ledger.TotalCount = len(ledger.Items)
-	ledger.validate()
-	return ledger
+	return normalizedCrossReviewTriageLedger(ledger)
+}
+
+func normalizedCrossReviewTriageLedger(ledger *CrossReviewTriageLedger) *CrossReviewTriageLedger {
+	if ledger == nil {
+		return nil
+	}
+	out := *ledger
+	out.Items = append([]CrossReviewTriageEntry(nil), ledger.Items...)
+	out.TotalCount = len(out.Items)
+	out.StatusCounts = map[string]int{}
+	for i := range out.Items {
+		status := normalizeCrossReviewTriageStatus(out.Items[i].TriageStatus)
+		out.Items[i].TriageStatus = status
+		if status != "" {
+			out.StatusCounts[status]++
+		}
+		if status == crossReviewTriageNeedsUserDecision {
+			out.Items[i].UserActionNeeded = true
+			if strings.TrimSpace(out.Items[i].UserActionPrompt) == "" {
+				out.Items[i].UserActionPrompt = crossReviewTriageUserActionPrompt(out.Items[i])
+			}
+		}
+	}
+	out.validate()
+	return &out
 }
 
 func crossReviewFindingRequiresTriage(run ReviewRun, finding ReviewFinding) bool {
@@ -92,7 +117,7 @@ func crossReviewFindingRequiresTriage(run ReviewRun, finding ReviewFinding) bool
 
 func crossReviewTriageEntryFromFinding(run ReviewRun, finding ReviewFinding) CrossReviewTriageEntry {
 	status := inferCrossReviewTriageStatus(finding)
-	return CrossReviewTriageEntry{
+	entry := CrossReviewTriageEntry{
 		FindingID:        strings.TrimSpace(finding.ID),
 		ReviewerRole:     normalizeReviewRole(finding.ReviewerRole),
 		Severity:         strings.TrimSpace(finding.Severity),
@@ -109,6 +134,11 @@ func crossReviewTriageEntryFromFinding(run ReviewRun, finding ReviewFinding) Cro
 		VerificationRefs: crossReviewTriageVerificationRefs(run, finding),
 		EvidenceRefs:     normalizeTaskStateList(finding.EvidenceRefs, 12),
 	}
+	if status == crossReviewTriageNeedsUserDecision {
+		entry.UserActionNeeded = true
+		entry.UserActionPrompt = crossReviewTriageUserActionPrompt(entry)
+	}
+	return entry
 }
 
 func inferCrossReviewTriageStatus(finding ReviewFinding) string {
@@ -195,6 +225,24 @@ func crossReviewTriageVerificationRefs(run ReviewRun, finding ReviewFinding) []s
 	return normalizeTaskStateList(refs, 12)
 }
 
+func crossReviewTriageUserActionPrompt(entry CrossReviewTriageEntry) string {
+	label := firstNonBlankString(strings.TrimSpace(entry.FindingID), strings.TrimSpace(entry.Title), "this cross-review finding")
+	return fmt.Sprintf("Use `/continuity continue from review` to repair %s, or reply with a triage decision: accepted_fixed with fix refs, accepted_deferred with reason, or rejected_with_reason with code evidence.", label)
+}
+
+func reviewRunHasCrossReviewUserDecision(run ReviewRun) bool {
+	ledger := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
+	if ledger == nil {
+		return false
+	}
+	for _, item := range ledger.Items {
+		if normalizeCrossReviewTriageStatus(item.TriageStatus) == crossReviewTriageNeedsUserDecision {
+			return true
+		}
+	}
+	return false
+}
+
 func (l *CrossReviewTriageLedger) validate() {
 	if l == nil {
 		return
@@ -252,7 +300,8 @@ func crossReviewRejectionReasonLooksTechnical(reason string) bool {
 }
 
 func crossReviewTriageConsistencyFindings(run ReviewRun) []ReviewFinding {
-	if run.CrossReviewTriage == nil || run.CrossReviewTriage.IncompleteCount == 0 {
+	ledger := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
+	if ledger == nil || ledger.IncompleteCount == 0 {
 		return nil
 	}
 	finding := ReviewFinding{
@@ -264,7 +313,7 @@ func crossReviewTriageConsistencyFindings(run ReviewRun) []ReviewFinding {
 		Confidence:   "high",
 		Quality:      reviewFindingQualityComplete,
 		Title:        "Cross-review triage ledger is incomplete",
-		Evidence:     strings.Join(limitStrings(run.CrossReviewTriage.Blockers, 6), " | "),
+		Evidence:     strings.Join(limitStrings(ledger.Blockers, 6), " | "),
 		Impact:       "The primary repair loop cannot silently accept or reject independent cross-review findings without auditable reconciliation.",
 		RequiredFix:  "Record fix refs, a deferral reason, a technical rejection reason, or a needs_user_decision status for every actionable cross-review finding.",
 		BlocksGate:   true,

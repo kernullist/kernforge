@@ -1080,6 +1080,69 @@ func TestPreFinalHarnessAnswerOnlyRevisionDisablesTools(t *testing.T) {
 	if !sessionContainsToolResultText(session, "call-1", "NOT_EXECUTED: pre-final coding harness requires a final-answer-only correction") {
 		t.Fatalf("expected hallucinated tool call to be blocked, messages=%#v", session.Messages)
 	}
+	if session.LastFinalAnswerCorrection == nil || !session.LastFinalAnswerCorrection.Corrected {
+		t.Fatalf("expected final-answer correction lifecycle to be recorded, got %#v", session.LastFinalAnswerCorrection)
+	}
+	for _, want := range []string{"changed_file_disclosure", "validation_disclosure", "remaining_risk_disclosure"} {
+		if !containsString(session.LastFinalAnswerCorrection.Reasons, want) {
+			t.Fatalf("expected correction reason %q, got %#v", want, session.LastFinalAnswerCorrection)
+		}
+	}
+	if strings.Contains(strings.Join(session.LastFinalAnswerCorrection.Reasons, " "), "Do not call tools") ||
+		strings.Contains(strings.Join(session.LastFinalAnswerCorrection.FindingTitles, " "), "Pre-final coding harness found issues") {
+		t.Fatalf("correction visibility should not expose prompt noise: %#v", session.LastFinalAnswerCorrection)
+	}
+	if session.RuntimeGateLedger == nil || session.RuntimeGateLedger.FinalAnswerCorrection == nil {
+		t.Fatalf("expected runtime gate to expose final-answer correction, got %#v", session.RuntimeGateLedger)
+	}
+}
+
+func TestFinalAnswerCorrectionVisibilityClassifiesReviewOnlyFormatting(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	contract := buildAcceptanceContract("review main.go", TurnIntentReviewCode, true, false, false)
+	session.AcceptanceContract = &contract
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	report := agent.buildCodingHarnessReport("Summary: no issues.", false, false)
+
+	if report.FinalAnswerCorrection == nil || !report.FinalAnswerCorrection.Required {
+		t.Fatalf("expected correction visibility for review-only formatting, got %#v", report.FinalAnswerCorrection)
+	}
+	if !containsString(report.FinalAnswerCorrection.Reasons, "review_only_findings_first_no_edit") {
+		t.Fatalf("expected review-only correction reason, got %#v", report.FinalAnswerCorrection)
+	}
+}
+
+func TestFinalAnswerCorrectionAcceptedDoesNotCrossExternalTurn(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{Session: session}
+	report := CodingHarnessReport{
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Changed-file summary is missing",
+			Detail:   "Changed paths are recorded but not disclosed.",
+		}},
+	}
+	report.Normalize()
+
+	agent.recordFinalAnswerCorrectionRequired(&report)
+	session.Messages = append(session.Messages, Message{Role: "user", Text: "새 작업을 하자"})
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
+
+	agent.markFinalAnswerCorrectionAccepted()
+
+	if session.LastFinalAnswerCorrection == nil {
+		t.Fatalf("expected pending correction visibility")
+	}
+	if session.LastFinalAnswerCorrection.Corrected {
+		t.Fatalf("external user turn must not mark stale correction as corrected: %#v", session.LastFinalAnswerCorrection)
+	}
 }
 
 func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {

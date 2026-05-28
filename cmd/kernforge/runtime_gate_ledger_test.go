@@ -1110,6 +1110,109 @@ func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 	}
 }
 
+func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
+	root := initTestGitRepo(t)
+	session := NewSession(root, "provider", "model", "", "default")
+	run := ReviewRun{
+		ID:        "review-ops-1",
+		Trigger:   "post_change",
+		Target:    reviewTargetChange,
+		Mode:      reviewModeGeneralChange,
+		Flow:      "change_review",
+		CreatedAt: time.Now(),
+		Gate: GateDecision{
+			Verdict: reviewVerdictNeedsRevision,
+			Action:  reviewGateActionRepairRequired,
+			Reason:  "blocking review findings require revision",
+			NextCommands: []ReviewNextCommand{{
+				ID:      "repair",
+				Command: "/continuity continue from review",
+				Reason:  "latest review has blocking findings",
+				Safety:  "safe_local",
+			}},
+		},
+		Result: ReviewResult{Verdict: reviewVerdictNeedsRevision},
+		SingleModelPolicy: SingleModelReviewPolicy{
+			Enabled:             true,
+			IndependenceLevel:   "single_model",
+			NoCrossReviewReason: "no independent reviewer configured",
+		},
+		SingleModelSecondPass: &SingleModelSecondPassReview{
+			Enabled:       true,
+			Status:        "cached",
+			CacheHit:      true,
+			Model:         "openai-codex-subscription/gpt-5.4",
+			ReviewedPaths: []string{"main.go"},
+		},
+		CrossReviewTriage: &CrossReviewTriageLedger{
+			Items: []CrossReviewTriageEntry{{
+				FindingID:        "RF-X",
+				TriageStatus:     crossReviewTriageNeedsUserDecision,
+				Title:            "Needs a product decision",
+				UserActionNeeded: true,
+				UserActionPrompt: "Use `/continuity continue from review` to repair RF-X.",
+			}},
+			TotalCount:      1,
+			StatusCounts:    map[string]int{crossReviewTriageNeedsUserDecision: 1},
+			IncompleteCount: 0,
+		},
+		ObligationLedger: ReviewObligationLedger{
+			TotalCount:            3,
+			OpenCount:             3,
+			OpenRepairCount:       1,
+			OpenVerificationCount: 1,
+			OpenEvidenceCount:     1,
+			Summary:               []string{"repair=1", "verification=1", "evidence=1"},
+			Items: []ReviewObligation{
+				{ID: "RO-1", Type: reviewObligationTypeRepair, Status: reviewObligationStatusOpen, Blocking: true},
+				{ID: "RO-2", Type: reviewObligationTypeVerification, Status: reviewObligationStatusVerificationRequired, Blocking: true},
+				{ID: "RO-3", Type: reviewObligationTypeEvidence, Status: reviewObligationStatusEvidenceUnconfirmed, Blocking: true},
+			},
+		},
+	}
+	session.LastReviewRun = &run
+	var output bytes.Buffer
+	rt := &runtimeState{
+		writer:    &output,
+		ui:        NewUI(),
+		session:   session,
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+
+	text := output.String()
+	for _, want := range []string{
+		"review_decision",
+		"id=review-ops-1",
+		"trigger=post_change",
+		"target=change",
+		"mode=general_change",
+		"gate_decision",
+		"verdict=needs_revision",
+		"action=repair_required",
+		"second_pass",
+		"status=cached",
+		"cache_hit=true",
+		"cross_review_triage",
+		"needs_user_decision=1",
+		"remaining_obligations",
+		"repair=1",
+		"verification=1",
+		"evidence=1",
+		"blocker_classes",
+		"code_repair=1",
+		"verification_gap=1",
+		"evidence_gap=1",
+		"next_command",
+		"/continuity continue from review",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected status output to contain %q, got %q", want, text)
+		}
+	}
+}
+
 func TestHooksStatusIncludesRuntimeGateSummary(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {

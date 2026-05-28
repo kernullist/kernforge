@@ -79,17 +79,18 @@ type PatchTransactionProbe struct {
 }
 
 type CodingHarnessReport struct {
-	GeneratedAt           time.Time                   `json:"generated_at,omitempty"`
-	Approved              bool                        `json:"approved,omitempty"`
-	Findings              []CodingHarnessFinding      `json:"findings,omitempty"`
-	Acceptance            AcceptanceContractReport    `json:"acceptance,omitempty"`
-	ArtifactQuality       ArtifactQualityReport       `json:"artifact_quality,omitempty"`
-	ScenarioReplay        ScenarioReplayReport        `json:"scenario_replay,omitempty"`
-	SubagentOrchestration SubagentOrchestrationReport `json:"subagent_orchestration,omitempty"`
-	TestImpact            TestImpactReport            `json:"test_impact,omitempty"`
-	JobSupervisor         JobSupervisorReport         `json:"job_supervisor,omitempty"`
-	DiffReview            DiffAwareSelfReviewReport   `json:"diff_review,omitempty"`
-	Outcome               OutcomeInvariantReport      `json:"outcome,omitempty"`
+	GeneratedAt           time.Time                        `json:"generated_at,omitempty"`
+	Approved              bool                             `json:"approved,omitempty"`
+	Findings              []CodingHarnessFinding           `json:"findings,omitempty"`
+	Acceptance            AcceptanceContractReport         `json:"acceptance,omitempty"`
+	ArtifactQuality       ArtifactQualityReport            `json:"artifact_quality,omitempty"`
+	ScenarioReplay        ScenarioReplayReport             `json:"scenario_replay,omitempty"`
+	SubagentOrchestration SubagentOrchestrationReport      `json:"subagent_orchestration,omitempty"`
+	TestImpact            TestImpactReport                 `json:"test_impact,omitempty"`
+	JobSupervisor         JobSupervisorReport              `json:"job_supervisor,omitempty"`
+	DiffReview            DiffAwareSelfReviewReport        `json:"diff_review,omitempty"`
+	Outcome               OutcomeInvariantReport           `json:"outcome,omitempty"`
+	FinalAnswerCorrection *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
 }
 
 type CodingHarnessFinding struct {
@@ -518,6 +519,9 @@ func (r *CodingHarnessReport) Normalize() {
 	r.DiffReview.ChangedPaths = normalizeTaskStateList(r.DiffReview.ChangedPaths, 32)
 	r.Outcome.Findings = normalizeCodingHarnessFindings(r.Outcome.Findings)
 	r.Outcome.Checks = normalizeTaskStateList(r.Outcome.Checks, 16)
+	if r.FinalAnswerCorrection != nil {
+		r.FinalAnswerCorrection.Normalize()
+	}
 	r.Approved = !codingHarnessFindingsHaveBlockers(r.Findings) &&
 		!codingHarnessFindingsHaveBlockers(r.Acceptance.Findings) &&
 		!codingHarnessFindingsHaveBlockers(r.ArtifactQuality.Findings) &&
@@ -650,6 +654,9 @@ func (r CodingHarnessReport) RenderPromptSection() string {
 	}
 	if len(r.Outcome.Checks) > 0 {
 		lines = append(lines, "- Outcome checks: "+strings.Join(r.Outcome.Checks, " | "))
+	}
+	if r.FinalAnswerCorrection != nil {
+		lines = append(lines, "- Final answer correction: "+finalAnswerCorrectionStatusLine(r.FinalAnswerCorrection))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1115,6 +1122,7 @@ func (a *Agent) runPreFinalCodingHarnesses(ctx context.Context, reply string, at
 	if report.Approved {
 		return true, ""
 	}
+	a.recordFinalAnswerCorrectionRequired(&report)
 	return false, report.BlockingFeedback()
 }
 
@@ -1135,6 +1143,9 @@ func (a *Agent) buildCodingHarnessReport(reply string, attemptedEditTool bool, u
 	report.DiffReview = a.buildDiffAwareSelfReviewReport(reply, attemptedEditTool)
 	report.Outcome = a.buildOutcomeInvariantReport(reply, attemptedEditTool, unresolvedVerification)
 	report.Normalize()
+	if correction := finalAnswerCorrectionVisibilityFromReport(&report, false); correction != nil {
+		report.FinalAnswerCorrection = correction
+	}
 	return report
 }
 

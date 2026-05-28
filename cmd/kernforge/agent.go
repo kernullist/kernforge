@@ -1270,6 +1270,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						reply = generatedDocumentArtifactHarnessBlockedReply(&synthesizedReport)
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					a.markFinalAnswerCorrectionAccepted()
 					a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 					a.finalizePatchTransactionOnReturn()
 					a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
@@ -1287,6 +1288,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport)
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					a.markFinalAnswerCorrectionAccepted()
 					a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -2417,6 +2419,7 @@ func (a *Agent) acceptRecentFinalAnswerCandidate(reply string) bool {
 		return false
 	}
 	a.Session.Messages[index].Phase = messagePhaseFinalAnswer
+	a.markFinalAnswerCorrectionAccepted()
 	return true
 }
 
@@ -2658,6 +2661,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string,
 			reply = generatedDocumentArtifactHarnessBlockedReply(&report)
 		}
 		a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+		a.markFinalAnswerCorrectionAccepted()
 		finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
 		return finalReply, true, err
 	}
@@ -2678,6 +2682,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string,
 		reply = generatedDocumentArtifactHarnessBlockedReply(&report)
 	}
 	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.markFinalAnswerCorrectionAccepted()
 	finalReply, err := a.finalizeAcceptedFinalAnswer(reply, unresolvedVerification)
 	return finalReply, true, err
 }
@@ -2695,6 +2700,7 @@ func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []T
 		reply = generatedDocumentArtifactHarnessBlockedReply(&synthesizedReport)
 	}
 	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.markFinalAnswerCorrectionAccepted()
 	a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 	a.finalizePatchTransactionOnReturn()
 	a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
@@ -2748,6 +2754,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request s
 		return "", false, err
 	}
 	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+	a.markFinalAnswerCorrectionAccepted()
 	a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 	a.finalizePatchTransactionOnReturn()
 	a.finalizeEditLoopOnReturn(reply, unresolvedVerification)

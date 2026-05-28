@@ -768,8 +768,24 @@ diff workflow 메모:
 review artifact:
 1. `/review selection`은 `.kernforge/reviews/latest.json`과 `.kernforge/reviews/latest.md`를 쓴다.
 2. 결과에는 typed finding, freshness/redaction 상태, gate verdict, scope discovery, repair step, runtime gate ledger, 추천 next command가 포함된다.
-3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `scope_discovery`, `next_commands` action contract가 포함된다.
+3. MCP client도 `kernforge_review`를 통해 같은 구조를 받는다. 응답에는 `model_plan`, `reviewer_runs`, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, `single_model_second_pass`, `cross_review_triage`, `review_observability`, `scope_discovery`, `next_commands` action contract가 포함된다.
 4. protocol artifact에는 action envelope, approval ledger, capability manifest, external lookup intent, artifact integrity, ledger consistency, resume sanity, state transition, route health, single-model second-pass 상태, cross-review triage ledger도 포함된다. 따라서 CLI 출력, Markdown report, JSON artifact, MCP 응답이 같은 gate 상태를 말한다.
+
+review UX/Ops observability:
+1. runtime enforcement는 이미 review gate ledger, cross-review triage ledger, 강제 single-model second-pass phase, pre-final answer completeness gate에 있다.
+2. 새 UX/Ops layer는 이 결정을 `/status`, `/hooks`, session dashboard, Markdown artifact, JSON artifact, MCP response로 노출한다. compact status에는 latest review id, trigger/target/mode, gate verdict/action, second-pass ran/skipped/cached 상태, triage status별 count, incomplete triage blocker, 남은 repair/verification/evidence obligation, final-answer correction 상태, blocker class, 다음 추천 명령이 들어간다.
+3. blocker class는 code repair blocker, reviewer route problem, evidence gap, verification gap, final-answer completeness blocker를 분리한다. 그래서 cross-review residual-risk noise가 primary code blocker를 가리지 않는다.
+4. cross-review triage artifact는 각 finding에 id/title, location, status, reason, required fix, fix refs/changed paths, verification refs, user-action guidance를 보여준다. `needs_user_decision`은 raw review 문장에서 다음 행동을 추측하게 하지 않고 구체적인 continuation prompt를 제공한다.
+5. single-model second pass는 runtime evidence로 보인다. artifact와 status output은 ran/skipped/cached 상태, reviewed path, route/model, finding count, 가능한 경우 prompt/raw-output ref, skipped reason을 보여준다. 이것을 독립 cross-review approval처럼 표시하지 않는다.
+6. final-answer completeness correction은 changed-file disclosure, review/self-review disclosure, validation disclosure, remaining-risk disclosure, review-only findings-first/no-edit formatting 같은 lifecycle fact로 노출한다. 내부 prompt text는 노출하지 않는다.
+7. 알려진 한계: raw model output은 local artifact ref 뒤에 남기고 MCP response에 dump하지 않는다. MCP field는 additive/backward-compatible로 유지한다. generated-document artifact skip behavior는 code review gate와 계속 분리한다. 전체 패키지 테스트는 한 번에 빠르게 끝난다고 가정하지 말고 cluster 단위 진단이 필요할 수 있다.
+
+review/Ops 테스트 전략:
+1. 먼저 `go test ./cmd/kernforge -list .`로 package compile과 테스트 inventory를 확인한다.
+2. 무출력 timeout을 진단할 때는 `go test -json ./cmd/kernforge -count=1 -timeout 2m` 또는 `-v`를 쓴다. plain `go test`는 package 종료 전까지 조용할 수 있다.
+3. UX/Ops 회귀는 `go test ./cmd/kernforge -run "TestRuntimeGate|TestReviewMCPResponse|TestCrossReview|TestSingleModel|TestPreFinalHarness" -count=1`처럼 묶는다.
+4. 기존 동작은 필요에 따라 `TestAgent|TestApplyEditProposal|TestRunShell|TestVerification|TestProjectAnalyzer` cluster로 나눠 본다.
+5. 2026-05-28 timeout 진단은 `.kernforge/test-logs/`에 JSON trace를 저장했고, 2분 budget은 앞쪽 agent/review 테스트 누적 뒤 project-analysis cluster에서 소진됐다. 실무적으로는 cluster isolation을 먼저 하고, 마지막에 `go test ./cmd/kernforge -count=1 -timeout 15m` 같은 full run을 돌리는 편이 재현성이 좋다.
 
 ### 2.8 Plan Review Workflow
 

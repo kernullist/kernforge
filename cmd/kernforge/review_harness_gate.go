@@ -1489,6 +1489,19 @@ func reviewNextCommands(run ReviewRun, gate GateDecision) []ReviewNextCommand {
 			ExpectedResult: expected,
 		})
 	}
+	if reviewRunHasCrossReviewUserDecision(run) {
+		out = append(out, ReviewNextCommand{
+			ID:                   "cross-review-triage",
+			Command:              "/continuity continue from review",
+			Reason:               "cross-review triage has findings that need a user or primary repair decision",
+			Safety:               "safe_local",
+			When:                 "before final answer if the finding affects accepted risk or next repair scope",
+			AutoRun:              false,
+			RequiresConfirmation: true,
+			ClientHint:           "Repair the finding, or reply with accepted_fixed plus fix refs, accepted_deferred plus reason, or rejected_with_reason plus code evidence.",
+			ExpectedResult:       "The cross-review triage ledger no longer has needs_user_decision items.",
+		})
+	}
 	if gate.Verdict == reviewVerdictApprovedWithWarnings {
 		out = append(out, ReviewNextCommand{
 			ID:             "completion-audit",

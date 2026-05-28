@@ -165,6 +165,7 @@ ReviewRun
   result
   findings
   cross_review_triage
+  decision_observability
   gate
   waivers
   repair_plan
@@ -400,6 +401,8 @@ CrossReviewTriageEntry
   changed_paths
   verification_refs
   evidence_refs
+  user_action_needed
+  user_action_prompt
 ```
 
 `triage_status` 값:
@@ -416,6 +419,8 @@ CrossReviewTriageEntry
 3. `rejected_with_reason`은 단순 선호가 아니라 evidence 기반 기술 이유가 있어야 한다.
 4. 위 조건을 만족하지 못하면 deterministic `RF-CROSS-TRIAGE-001` blocker가 추가되어 review gate를 통과하지 못한다.
 5. ledger는 `ReviewRun` JSON과 markdown report 모두에 기록되어 나중에 어떤 cross-review finding이 수용, 보류, 기각, 사용자 결정으로 갔는지 감사할 수 있어야 한다.
+6. `needs_user_decision`은 `user_action_needed=true`와 구체적인 `user_action_prompt`를 가져야 한다. 기본 prompt는 최신 review에서 안전하게 이어갈 수 있는 continuation 명령을 가리켜야 한다.
+7. Markdown artifact는 각 triage item을 id/title, location, status, reason, required fix, fix refs, changed paths, verification refs, user action 순서로 렌더링한다. CLI compact summary는 status별 count와 사용자 결정 항목만 짧게 보여주며 primary code blocker 목록보다 앞서지 않는다.
 
 ### 5.4.2 SingleModelSecondPassReview
 
@@ -433,6 +438,7 @@ SingleModelSecondPassReview
   finding_count
   prompt_path
   raw_output_path
+  skipped_reason
 ```
 
 실행 규칙:
@@ -442,6 +448,8 @@ SingleModelSecondPassReview
 3. focus checklist는 touched function, call site, ABI/data contract, default initialization, buffer/length, error path, cancellation/timeout, logging/output compatibility, stale docs, missing focused validation을 포함한다.
 4. 결과 finding은 기존 `ReviewFinding`과 같은 parser/gate/repair loop로 들어간다. concrete blocker가 나오면 일반 repair path가 소비한다.
 5. 같은 diff와 review evidence를 반복 검토해 loop가 무한 반복되지 않도록 fingerprint를 저장하고, approved 또는 approved_with_warnings second-pass는 `second_pass_review_cache`에 기록해 재사용한다.
+6. second pass가 실행되지 않은 경우도 `status=skipped`와 compact `skipped_reason`을 남긴다. skipped 상태는 독립 cross-review 승인으로 해석하면 안 된다.
+7. artifact와 status output은 ran/skipped/cached, reviewed paths, route/model, finding count, prompt/raw-output ref를 노출하되 raw model output 전문은 사용자-facing compact surface나 MCP response에 직접 넣지 않는다.
 
 ### 5.5 GateDecision
 
@@ -617,6 +625,34 @@ ReviewStatusContract
 7. usage error or no reviewable target -> `usage_error`, exit code `6`.
 
 MCP response는 exit code 대신 `machine_status`, `status_code`, `retryable`, `recommended_command`를 반환한다. CLI와 MCP 모두 gate를 통과하지 못한 run도 artifact를 남겨야 한다.
+
+ReviewDecisionObservability:
+
+```text
+ReviewDecisionObservability
+  latest_review_id
+  trigger
+  target
+  mode
+  gate
+  single_model_second_pass
+  cross_review_triage
+  incomplete_triage_blockers
+  remaining_obligations
+  blocker_classes
+  final_answer_correction
+  next_command
+```
+
+표시 규칙:
+
+1. `/status`, `/hooks`, session dashboard, review markdown, JSON artifact, MCP `kernforge_review`는 같은 review state를 서로 다른 자세로 보여준다.
+2. compact status는 review id, trigger/target/mode, gate verdict/action, second-pass status/cache hit, triage status count, incomplete triage blocker, remaining obligation, blocker class, next command만 보여준다.
+3. detailed artifact는 cross-review triage item별 required fix/fix refs/verification refs와 second-pass prompt/raw-output artifact ref를 보여준다.
+4. blocker class는 code repair blocker, reviewer route problem, evidence gap, verification gap, final-answer completeness blocker를 구분한다.
+5. final-answer correction visibility는 changed-file disclosure, review/self-review disclosure, validation disclosure, remaining-risk disclosure, review-only findings-first/no-edit formatting만 노출한다. 내부 prompt text는 저장하거나 렌더링하지 않는다.
+6. MCP response는 `single_model_second_pass`, `cross_review_triage`, `review_observability`를 additive field로 반환하되 raw model output 전문은 반환하지 않는다. 기존 client는 해당 field를 무시해도 동작해야 한다.
+7. generated document artifact skip rule은 review observability 추가와 무관하게 유지한다.
 
 ## 6. 파이프라인
 
@@ -3585,6 +3621,24 @@ P2:
      6. generated document artifact, trivial command/status, 순수 document artifact flow는 과차단하지 않도록 skip rule을 유지한다.
    - artifact 반영: `ReviewRun` JSON에는 `implementation_reply`, `single_model_second_pass`, `cross_review_triage`가 추가되고 markdown review report에도 second-pass 상태와 cross-review triage ledger가 렌더링된다. 기존 reader는 omitempty/additive field로 하위 호환된다.
    - 회귀 테스트: `TestSingleModelEditRequestRunsEnforcedSecondPass`, `TestSingleModelSecondPassFindingBlocksReviewGate`, `TestSingleModelSecondPassUsesAcceptedFingerprintCache`, `TestCrossReviewFindingCreatesTriageLedgerEntry`, `TestCrossReviewAcceptedFindingRequiresFixEvidence`, `TestCrossReviewRejectedFindingRequiresTechnicalReason`, `TestPreFinalHarnessCorrectsMissingChangedFileSummary`, `TestPreFinalHarnessCorrectsMissingValidationDisclosure`, `TestReviewOnlyFinalAnswerRemainsReadOnlyAndFindingsFirst`, generated document artifact skip tests, pre-write review gate tests.
+
+94. Codex App-grade review UX/Ops observability
+   - 발견: 93번 runtime enforcement는 gate를 강하게 만들었지만, 사용자는 최신 review가 왜 통과/차단/degraded/needs action인지 raw model output이나 여러 artifact를 뒤져야 했다. 특히 single-model second pass가 독립 cross-review처럼 보일 위험, cross-review triage noise가 primary code blocker를 가리는 문제, final-answer correction이 lifecycle fact로 남지 않는 문제가 있었다.
+   - 원칙: enforcement 결과는 사람이 바로 운영할 수 있는 compact status와 automation이 같은 의미로 소비하는 structured field에 동시에 노출되어야 한다. raw prompt/model output은 필요한 경우 artifact ref로만 추적하고, 사용자-facing surface에는 decision fact와 next command만 보여준다.
+   - 수정:
+     1. `ReviewDecisionObservability`를 추가해 latest review id, trigger/target/mode, gate verdict/action, second-pass 상태/cache hit, cross-review triage count, incomplete triage blocker, remaining repair/verification/evidence obligation, blocker class, next command를 한 구조로 묶었다.
+     2. `RuntimeGateLedger`, `/status`, `/hooks`, session dashboard가 같은 compact review decision summary를 출력한다. blocker class는 code repair, reviewer route, evidence gap, verification gap, final-answer completeness를 구분한다.
+     3. Markdown review artifact의 cross-review triage item을 id/title, location, status, reason, required fix, fix refs/changed paths, verification refs, user action 순서로 재정리했다. `needs_user_decision`은 `/continuity continue from review` 계열의 concrete prompt를 포함한다.
+     4. single-model second-pass artifact/status에는 ran/skipped/cached, reviewed path, route/model, finding count, prompt/raw-output ref, skipped reason을 표시한다. skipped second pass는 승인으로 보이지 않게 `status=skipped`와 reason을 별도로 둔다.
+     5. pre-final coding harness의 final-answer-only correction은 changed-file disclosure, review/self-review disclosure, validation disclosure, remaining-risk disclosure, review-only findings-first/no-edit formatting으로만 노출하고 내부 prompt noise는 저장하지 않는다.
+     6. MCP `kernforge_review` 응답에 `single_model_second_pass`, `cross_review_triage`, `review_observability`를 additive field로 추가했다. raw model output 전문은 MCP 응답에 넣지 않는다.
+     7. generated document artifact skip behavior는 유지하고, review/final-answer completion gate와 과하게 섞지 않는다.
+   - slow/full-suite 진단:
+     1. `go test ./cmd/kernforge -list .`는 빠르게 통과해 compile/test inventory 문제는 아니었다.
+     2. `go test -json ./cmd/kernforge -count=1 -timeout 2m` 재현 로그를 `.kernforge/test-logs/cmd-kernforge-full-timeout-2m.jsonl`에 남겼고, plain `go test`의 무출력 체감은 패키지 종료 전까지 출력이 숨겨지는 Go test 기본 동작 때문임을 확인했다.
+     3. 짧은 2분 budget은 앞쪽 agent/review 테스트 누적 뒤 project-analysis cluster에서 소진됐다. `TestProjectAnalyzerContinuesWhenReviewerFails`는 provider retry를 끄도록 fixture를 좁혀 failure-continuation 검증만 남겼다.
+     4. 운영 전략은 review/runtime-gate, agent/edit-loop, shell/verification, project-analysis cluster를 `-run`으로 나눠 보고, full `go test ./cmd/kernforge -count=1 -timeout 15m`는 마지막 확인으로 사용한다.
+   - 회귀 테스트: `TestRuntimeGateStatusShowsReviewDecisionObservability`, `TestCrossReviewFindingCreatesTriageLedgerEntry`, `TestCrossReviewTriageMarkdownKeepsCodeBlockersPrimary`, `TestSkippedSingleModelSecondPassExplainsReason`, `TestSingleModelSecondPassArtifactsExposeCacheAndRefs`, `TestReviewMCPResponseExposesObservabilityFields`, `TestPreFinalHarnessAnswerOnlyRevisionDisablesTools`, `TestFinalAnswerCorrectionVisibilityClassifiesReviewOnlyFormatting`, generated document artifact skip tests, pre-write/post-change review behavior tests.
 
 남은 항목:
 
