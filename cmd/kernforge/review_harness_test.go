@@ -4091,7 +4091,7 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": after}),
-			{Message: Message{Role: "assistant", Text: "main.go updated. Review gate is stale because verification was not run."}},
+			{Message: Message{Role: "assistant", Text: "main.go updated. Changed files: main.go. Self-review: review gate is stale because verification was not run. Validation: verification not run. Remaining risk: no known remaining blocker."}},
 			{Message: Message{Role: "assistant", Text: "APPROVED\nThe final answer matches the edit."}},
 		},
 	}
@@ -11726,6 +11726,276 @@ func TestCompletionAuditFlagsUnreviewedChangedFilesAsStale(t *testing.T) {
 	reason := completionAuditReviewFreshnessIssue(t.TempDir(), review, artifact)
 	if !strings.Contains(reason, "cmd/kernforge/new_file.go") {
 		t.Fatalf("expected stale reason for unreviewed file, got %q", reason)
+	}
+}
+
+func TestSingleModelEditRequestRunsEnforcedSecondPass(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			approvedReviewResponse("main first-pass review found no blockers"),
+			approvedReviewResponse("single-model second pass found no blockers"),
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "scripted", "main-model", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	run, err := runReviewHarness(context.Background(), agent.reviewHarnessRuntime(root), ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Request:             "fix main startup behavior",
+		ProvidedDiff:        "diff --git a/main.go b/main.go\n@@\n-func main() {}\n+func main() { println(\"ok\") }\n",
+		ImplementationReply: "Changed main.go and did not run verification.",
+		Paths:               []string{"main.go"},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected first-pass and enforced second-pass model calls, got %d", len(provider.requests))
+	}
+	if run.SingleModelSecondPass == nil || !run.SingleModelSecondPass.Enabled || run.SingleModelSecondPass.Status != "completed" {
+		t.Fatalf("expected completed single-model second pass, got %#v", run.SingleModelSecondPass)
+	}
+	if len(run.ReviewerRuns) != 2 || run.ReviewerRuns[1].Kind != "second_pass" || run.ReviewerRuns[1].Role != singleModelSecondPassRole {
+		t.Fatalf("expected second reviewer run to be single-model second pass, got %#v", run.ReviewerRuns)
+	}
+	secondPrompt := provider.requests[1].Messages[0].Text
+	for _, want := range []string{"Original user request", "Touched files", "Relevant diff", "Implementation reply", "Latest verification summary"} {
+		if !strings.Contains(secondPrompt, want) {
+			t.Fatalf("expected second-pass prompt to include %q, got:\n%s", want, secondPrompt)
+		}
+	}
+}
+
+func TestSingleModelSecondPassFindingBlocksReviewGate(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			approvedReviewResponse("main first-pass review found no blockers"),
+			{Message: Message{Role: "assistant", Text: strings.Join([]string{
+				"REVIEW_RESULT",
+				"verdict: needs_revision",
+				"summary: second pass found a blocker",
+				"findings:",
+				"- severity: blocker",
+				"  category: correctness",
+				"  path: main.go",
+				"  line: 3",
+				"  symbol: main",
+				"  title: Startup path drops the required initialization",
+				"  evidence: The diff changes main without calling the initialization helper mentioned in the request.",
+				"  impact: The program can start without required initialization.",
+				"  required_fix: Call the initialization helper before returning from main.",
+				"  test_recommendation: Add a startup behavior test.",
+			}, "\n")}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   NewSession(root, "scripted", "main-model", "", "default"),
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	run, err := runReviewHarness(context.Background(), agent.reviewHarnessRuntime(root), ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Request:             "fix main startup initialization",
+		ProvidedDiff:        "diff --git a/main.go b/main.go\n@@\n-func main() {}\n+func main() { println(\"ok\") }\n",
+		ImplementationReply: "Changed main.go.",
+		Paths:               []string{"main.go"},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if run.Gate.Verdict != reviewVerdictNeedsRevision || !run.RepairPlan.Required {
+		t.Fatalf("expected second-pass blocker to drive normal repair gate, gate=%#v repair=%#v", run.Gate, run.RepairPlan)
+	}
+	if !reviewNextCommandsContainID(run.Gate.NextCommands, "repair") {
+		t.Fatalf("expected normal repair next command, got %#v", run.Gate.NextCommands)
+	}
+}
+
+func TestSingleModelSecondPassUsesAcceptedFingerprintCache(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			approvedReviewResponse("main first-pass review found no blockers"),
+			approvedReviewResponse("single-model second pass found no blockers"),
+			approvedReviewResponse("main first-pass review found no blockers"),
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	opts := ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Request:             "fix main startup behavior",
+		ProvidedDiff:        "diff --git a/main.go b/main.go\n@@\n-func main() {}\n+func main() { println(\"ok\") }\n",
+		ImplementationReply: "Changed main.go and did not run verification.",
+		Paths:               []string{"main.go"},
+		IncludeFileContents: true,
+	}
+	first, err := runReviewHarness(context.Background(), agent.reviewHarnessRuntime(root), opts)
+	if err != nil {
+		t.Fatalf("first runReviewHarness: %v", err)
+	}
+	second, err := runReviewHarness(context.Background(), agent.reviewHarnessRuntime(root), opts)
+	if err != nil {
+		t.Fatalf("second runReviewHarness: %v", err)
+	}
+	if first.SingleModelSecondPass == nil || first.SingleModelSecondPass.CacheHit {
+		t.Fatalf("first run should execute second pass, got %#v", first.SingleModelSecondPass)
+	}
+	if second.SingleModelSecondPass == nil || !second.SingleModelSecondPass.CacheHit {
+		t.Fatalf("second run should reuse accepted second-pass cache, got %#v", second.SingleModelSecondPass)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected second run to skip the second-pass model call, got %d request(s)", len(provider.requests))
+	}
+	if len(second.ReviewerRuns) != 2 || second.ReviewerRuns[1].Status != "cached" {
+		t.Fatalf("expected cached second-pass reviewer run, got %#v", second.ReviewerRuns)
+	}
+}
+
+func TestCrossReviewFindingCreatesTriageLedgerEntry(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	mainReviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("main review found no blockers")}}
+	crossReviewer := &scriptedProviderClient{
+		replies: []ChatResponse{{Message: Message{Role: "assistant", Text: strings.Join([]string{
+			"REVIEW_RESULT",
+			"verdict: needs_revision",
+			"summary: cross review found one issue",
+			"findings:",
+			"- severity: medium",
+			"  category: correctness",
+			"  path: main.go",
+			"  line: 3",
+			"  symbol: main",
+			"  title: Missing startup validation",
+			"  evidence: main uses the changed value without validation.",
+			"  impact: Invalid startup input can be accepted.",
+			"  required_fix: Validate the startup input.",
+			"  test_recommendation: Add invalid startup input coverage.",
+		}, "\n")}}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	cfg.AutoLocale = boolPtr(false)
+	agent := &Agent{
+		Config:         cfg,
+		Client:         mainReviewer,
+		ReviewerClient: crossReviewer,
+		ReviewerModel:  "cross-model",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	run, err := runReviewHarness(context.Background(), agent.reviewHarnessRuntime(root), ReviewHarnessOptions{
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Request:             "review main.go changes",
+		ProvidedDiff:        "diff --git a/main.go b/main.go\n@@\n-func main() {}\n+func main() { println(\"ok\") }\n",
+		ImplementationReply: "Changed main.go.",
+		Paths:               []string{"main.go"},
+		IncludeFileContents: true,
+	})
+	if err != nil {
+		t.Fatalf("runReviewHarness: %v", err)
+	}
+	if run.CrossReviewTriage == nil || run.CrossReviewTriage.TotalCount != 1 {
+		t.Fatalf("expected one cross-review triage item, got %#v", run.CrossReviewTriage)
+	}
+	item := run.CrossReviewTriage.Items[0]
+	if item.TriageStatus != crossReviewTriageNeedsUserDecision || item.FindingID == "" || item.RequiredFix == "" {
+		t.Fatalf("unexpected triage item: %#v", item)
+	}
+	rendered := renderReviewRunMarkdown(run)
+	if !strings.Contains(rendered, "Cross-Review Triage Ledger") || !strings.Contains(rendered, "needs_user_decision") {
+		t.Fatalf("expected markdown triage ledger, got:\n%s", rendered)
+	}
+}
+
+func TestCrossReviewAcceptedFindingRequiresFixEvidence(t *testing.T) {
+	run := ReviewRun{
+		Findings: []ReviewFinding{{
+			ID:               "RF-X",
+			Source:           "model",
+			ReviewerRole:     "cross_reviewer",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "Accepted finding without fix refs",
+			RequiredFix:      "Update the changed path.",
+			ResolutionStatus: crossReviewTriageAcceptedFixed,
+		}},
+	}
+	run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
+	if run.CrossReviewTriage == nil || run.CrossReviewTriage.IncompleteCount != 1 {
+		t.Fatalf("expected incomplete accepted_fixed triage, got %#v", run.CrossReviewTriage)
+	}
+	findings := crossReviewTriageConsistencyFindings(run)
+	if len(findings) != 1 || findings[0].ID != "RF-CROSS-TRIAGE-001" {
+		t.Fatalf("expected deterministic triage blocker, got %#v", findings)
+	}
+}
+
+func TestCrossReviewRejectedFindingRequiresTechnicalReason(t *testing.T) {
+	run := ReviewRun{
+		Findings: []ReviewFinding{{
+			ID:               "RF-X",
+			Source:           "model",
+			ReviewerRole:     "cross_reviewer",
+			Severity:         reviewSeverityMedium,
+			Category:         "correctness",
+			Title:            "Rejected finding without evidence",
+			ResolutionStatus: crossReviewTriageRejectedWithReason,
+		}},
+	}
+	run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
+	if run.CrossReviewTriage == nil || run.CrossReviewTriage.IncompleteCount != 1 {
+		t.Fatalf("expected incomplete rejected triage, got %#v", run.CrossReviewTriage)
+	}
+	if !strings.Contains(strings.Join(run.CrossReviewTriage.Blockers, " "), "technical evidence-based reason") {
+		t.Fatalf("expected technical reason blocker, got %#v", run.CrossReviewTriage.Blockers)
 	}
 }
 

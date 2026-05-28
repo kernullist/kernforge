@@ -35,6 +35,9 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if run.SingleModelPolicy.Enabled {
 		fmt.Fprintf(&b, "- Independence: `%s` (%s)\n", run.SingleModelPolicy.IndependenceLevel, run.SingleModelPolicy.NoCrossReviewReason)
 	}
+	if run.SingleModelSecondPass != nil && run.SingleModelSecondPass.Enabled {
+		fmt.Fprintf(&b, "- Single-model second pass: `%s` fingerprint=`%s` cache_hit=`%t`\n", run.SingleModelSecondPass.Status, run.SingleModelSecondPass.Fingerprint, run.SingleModelSecondPass.CacheHit)
+	}
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
 	b.WriteString("\n\n")
@@ -49,6 +52,58 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 			if strings.TrimSpace(obligation.RequiredAction) != "" {
 				fmt.Fprintf(&b, "  - Action: %s\n", obligation.RequiredAction)
 			}
+		}
+		b.WriteString("\n")
+	}
+	if run.CrossReviewTriage != nil && len(run.CrossReviewTriage.Items) > 0 {
+		b.WriteString("## Cross-Review Triage Ledger\n\n")
+		fmt.Fprintf(&b, "- total: `%d` incomplete: `%d`\n", run.CrossReviewTriage.TotalCount, run.CrossReviewTriage.IncompleteCount)
+		if len(run.CrossReviewTriage.StatusCounts) > 0 {
+			parts := make([]string, 0, len(run.CrossReviewTriage.StatusCounts))
+			for _, status := range []string{
+				crossReviewTriageAcceptedFixed,
+				crossReviewTriageAcceptedDeferred,
+				crossReviewTriageRejectedWithReason,
+				crossReviewTriageNeedsUserDecision,
+			} {
+				if count := run.CrossReviewTriage.StatusCounts[status]; count > 0 {
+					parts = append(parts, fmt.Sprintf("%s=%d", status, count))
+				}
+			}
+			if len(parts) > 0 {
+				fmt.Fprintf(&b, "- status_counts: `%s`\n", strings.Join(parts, ", "))
+			}
+		}
+		for _, item := range run.CrossReviewTriage.Items {
+			fmt.Fprintf(&b, "- `%s` status=`%s` reviewer=`%s` severity=`%s` category=`%s`: %s\n", item.FindingID, item.TriageStatus, item.ReviewerRole, item.Severity, item.Category, item.Title)
+			if strings.TrimSpace(item.Path) != "" {
+				if item.Line > 0 {
+					fmt.Fprintf(&b, "  - Location: `%s:%d`\n", filepath.ToSlash(item.Path), item.Line)
+				} else {
+					fmt.Fprintf(&b, "  - Location: `%s`\n", filepath.ToSlash(item.Path))
+				}
+			}
+			if strings.TrimSpace(item.Symbol) != "" {
+				fmt.Fprintf(&b, "  - Symbol: `%s`\n", item.Symbol)
+			}
+			if strings.TrimSpace(item.RequiredFix) != "" {
+				fmt.Fprintf(&b, "  - Required fix: %s\n", item.RequiredFix)
+			}
+			if strings.TrimSpace(item.TechnicalReason) != "" {
+				fmt.Fprintf(&b, "  - Reason: %s\n", item.TechnicalReason)
+			}
+			if len(item.FixRefs) > 0 {
+				fmt.Fprintf(&b, "  - Fix refs: `%s`\n", strings.Join(item.FixRefs, "`, `"))
+			}
+			if len(item.ChangedPaths) > 0 {
+				fmt.Fprintf(&b, "  - Changed paths: `%s`\n", strings.Join(item.ChangedPaths, "`, `"))
+			}
+			if len(item.VerificationRefs) > 0 {
+				fmt.Fprintf(&b, "  - Verification refs: `%s`\n", strings.Join(item.VerificationRefs, "`, `"))
+			}
+		}
+		if len(run.CrossReviewTriage.Blockers) > 0 {
+			fmt.Fprintf(&b, "- blockers: %s\n", strings.Join(run.CrossReviewTriage.Blockers, " | "))
 		}
 		b.WriteString("\n")
 	}
@@ -267,6 +322,12 @@ func renderReviewFindingMarkdown(b *strings.Builder, finding ReviewFinding) {
 	}
 	if strings.TrimSpace(finding.TestRecommendation) != "" {
 		fmt.Fprintf(b, "- Test: `%s`\n", finding.TestRecommendation)
+	}
+	if len(finding.FixRefs) > 0 {
+		fmt.Fprintf(b, "- Fix refs: `%s`\n", strings.Join(finding.FixRefs, "`, `"))
+	}
+	if len(finding.VerificationRefs) > 0 {
+		fmt.Fprintf(b, "- Verification refs: `%s`\n", strings.Join(finding.VerificationRefs, "`, `"))
 	}
 	b.WriteString("\n")
 }

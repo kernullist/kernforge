@@ -662,6 +662,9 @@ func mergeReviewFindingText(primary ReviewFinding, secondary ReviewFinding) Revi
 	if len(primary.FixRefs) == 0 {
 		primary.FixRefs = append([]string(nil), secondary.FixRefs...)
 	}
+	if len(primary.VerificationRefs) == 0 {
+		primary.VerificationRefs = append([]string(nil), secondary.VerificationRefs...)
+	}
 	return primary
 }
 
@@ -690,6 +693,9 @@ func (f *ReviewFinding) Normalize() {
 	}
 	f.Severity = normalizeReviewSeverity(f.Severity)
 	f.ResolutionStatus = normalizeReviewRepairResolutionStatus(f.ResolutionStatus)
+	f.EvidenceRefs = normalizeTaskStateList(f.EvidenceRefs, 12)
+	f.FixRefs = normalizeTaskStateList(f.FixRefs, 12)
+	f.VerificationRefs = normalizeTaskStateList(f.VerificationRefs, 12)
 	if strings.TrimSpace(f.Category) == "" {
 		f.Category = "correctness"
 	}
@@ -2173,6 +2179,22 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 			current.TestRecommendation = cleanReviewModelFieldValue(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":")))
 			continue
 		}
+		if strings.HasPrefix(lower, "resolution_status:") || strings.HasPrefix(lower, "status:") {
+			current.ResolutionStatus = strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":"))
+			continue
+		}
+		if strings.HasPrefix(lower, "evidence_refs:") {
+			current.EvidenceRefs = parseReviewModelListField(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":")))
+			continue
+		}
+		if strings.HasPrefix(lower, "fix_refs:") || strings.HasPrefix(lower, "changed_paths:") {
+			current.FixRefs = parseReviewModelListField(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":")))
+			continue
+		}
+		if strings.HasPrefix(lower, "verification_refs:") {
+			current.VerificationRefs = parseReviewModelListField(strings.TrimSpace(strings.TrimPrefix(trimmed, strings.SplitN(trimmed, ":", 2)[0]+":")))
+			continue
+		}
 		if severityRe.MatchString(trimmed) && (strings.Contains(trimmed, ":") || strings.Contains(trimmed, "]")) {
 			flush()
 			current.Severity = normalizeReviewSeverity(severityRe.FindString(trimmed))
@@ -2211,6 +2233,25 @@ func parseModelReviewFindingsForLanguage(raw string, role string, korean bool) (
 		return findings, reviewModelQualityWeak
 	}
 	return findings, reviewModelQualityUsable
+}
+
+func parseReviewModelListField(raw string) []string {
+	raw = strings.TrimSpace(cleanReviewModelFieldValue(raw))
+	raw = strings.Trim(raw, "[]")
+	if raw == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(strings.Trim(part, "`\"'"))
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return normalizeTaskStateList(out, 12)
 }
 
 func reviewPathAndOptionalLine(raw string) (string, int) {

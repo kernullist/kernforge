@@ -56,6 +56,7 @@ type Session struct {
 	LastReviewRun                   *ReviewRun                     `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState `json:"pending_review_repair_confirmation,omitempty"`
 	ReviewRouteHealth               []ReviewRouteHealth            `json:"review_route_health,omitempty"`
+	SecondPassReviewCache           []SecondPassReviewCacheEntry   `json:"second_pass_review_cache,omitempty"`
 	ExternalLookupIntents           []ReviewExternalLookupIntent   `json:"external_lookup_intents,omitempty"`
 	RuntimeGateLedger               *RuntimeGateLedger             `json:"runtime_gate_ledger,omitempty"`
 	ActiveFailureRepair             *FailureRepairAttempt          `json:"active_failure_repair,omitempty"`

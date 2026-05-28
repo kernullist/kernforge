@@ -16,7 +16,7 @@ func TestPatchTransactionRecordsWriteFileAndFinalizes(t *testing.T) {
 				"path":    "main.go",
 				"content": "package main\n",
 			}),
-			{Message: Message{Role: "assistant", Text: "Implemented the change. Verification not run."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no code blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."}},
 		},
 	}
 	cfg := DefaultConfig(root)
@@ -842,7 +842,7 @@ func TestPreFinalHarnessBlocksMissingClaimedArtifact(t *testing.T) {
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			{Message: Message{Role: "assistant", Text: "Created docs/missing.md."}},
-			{Message: Message{Role: "assistant", Text: "I did not create the requested file."}},
+			{Message: Message{Role: "assistant", Text: "I did not create the requested file. No files were changed. Self-review: artifact claim corrected. Validation: verification not run. Remaining risk: requested artifact is still missing."}},
 		},
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -881,7 +881,7 @@ func TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence(t *testing.T) {
 				"content": "package main\n",
 			}),
 			{Message: Message{Role: "assistant", Text: "Implemented and verified the change."}},
-			{Message: Message{Role: "assistant", Text: "Implemented the change. Verification not run."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no code blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."}},
 		},
 	}
 	cfg := DefaultConfig(root)
@@ -902,7 +902,7 @@ func TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Verification not run") {
+	if !strings.Contains(reply, "verification not run") {
 		t.Fatalf("expected revised verification wording, got %q", reply)
 	}
 	if len(provider.requests) != 3 {
@@ -911,6 +911,112 @@ func TestPreFinalHarnessBlocksVerificationClaimWithoutEvidence(t *testing.T) {
 	last := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
 	if last.Role != "user" || !strings.Contains(last.Text, "Verification claim has no recorded evidence") {
 		t.Fatalf("expected verification-claim harness feedback, got %#v", last)
+	}
+}
+
+func TestPreFinalHarnessCorrectsMissingChangedFileSummary(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.go",
+				"content": "package main\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "Implemented. Self-review: no blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoVerify = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "make the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "main.go") {
+		t.Fatalf("expected corrected changed-file summary, got %q", reply)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("expected one final-answer correction, got %d requests", len(provider.requests))
+	}
+	last := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if last.Role != "user" || !strings.Contains(last.Text, "Changed-file summary is missing") {
+		t.Fatalf("expected changed-file completeness feedback, got %#v", last)
+	}
+}
+
+func TestPreFinalHarnessCorrectsMissingValidationDisclosure(t *testing.T) {
+	root := t.TempDir()
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{
+				"path":    "main.go",
+				"content": "package main\n",
+			}),
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no blocker found. Remaining risk: no known remaining blocker."}},
+			{Message: Message{Role: "assistant", Text: "Changed files: main.go. Self-review: no blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."}},
+		},
+	}
+	cfg := DefaultConfig(root)
+	cfg.AutoVerify = boolPtr(false)
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Tools:     NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "make the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "verification not run") {
+		t.Fatalf("expected corrected validation disclosure, got %q", reply)
+	}
+	last := provider.requests[2].Messages[len(provider.requests[2].Messages)-1]
+	if last.Role != "user" || !strings.Contains(last.Text, "Validation result is missing") {
+		t.Fatalf("expected validation completeness feedback, got %#v", last)
+	}
+}
+
+func TestReviewOnlyFinalAnswerRemainsReadOnlyAndFindingsFirst(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	contract := buildAcceptanceContract("review main.go", TurnIntentReviewCode, true, false, false)
+	session.AcceptanceContract = &contract
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	report := agent.buildCodingHarnessReport("Summary: looks okay.", false, false)
+	if report.Approved {
+		t.Fatalf("expected review-only completeness blockers")
+	}
+	if !codingHarnessReportHasFinding(report.Outcome.Findings, "Review-only answer is not findings-first") ||
+		!codingHarnessReportHasFinding(report.Outcome.Findings, "Review-only no-edit statement is missing") {
+		t.Fatalf("expected review-only final answer blockers, got %#v", report.Outcome.Findings)
+	}
+	report = agent.buildCodingHarnessReport("Findings: no actionable findings. No files were changed. Residual risk: tests were not run.", false, false)
+	if !report.Approved {
+		t.Fatalf("expected findings-first no-edit review answer to pass, got %#v", report.Outcome.Findings)
 	}
 }
 
@@ -926,7 +1032,7 @@ func TestPreFinalHarnessAnswerOnlyRevisionDisablesTools(t *testing.T) {
 		"| Low | 6 |",
 		"| Total | 27 |",
 	}, "\n")
-	goodReply := strings.ReplaceAll(badReply, "| Total | 27 |", "| Total | 26 |") + "\nVerification not run."
+	goodReply := strings.ReplaceAll(badReply, "| Total | 27 |", "| Total | 26 |") + "\nChanged files: main.go. Self-review: no code blocker found. Validation: verification not run. Remaining risk: no known remaining blocker."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{

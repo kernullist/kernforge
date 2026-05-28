@@ -125,7 +125,7 @@ func TestPreFinalHarnessStoresTestImpactReport(t *testing.T) {
 				"path":    "main.go",
 				"content": "package main\n",
 			}),
-			{Message: Message{Role: "assistant", Text: "Implemented the change. Verification not run."}},
+			{Message: Message{Role: "assistant", Text: "Implemented the change. Changed files: main.go. Self-review: no code blocker found. Validation: Verification not run. Remaining risk: no known remaining blocker."}},
 		},
 	}
 	cfg := DefaultConfig(root)

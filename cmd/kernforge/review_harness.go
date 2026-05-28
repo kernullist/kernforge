@@ -123,6 +123,7 @@ type ReviewRun struct {
 	MachineStatus         string                       `json:"machine_status,omitempty"`
 	ExitCode              int                          `json:"exit_code,omitempty"`
 	Objective             string                       `json:"objective,omitempty"`
+	ImplementationReply   string                       `json:"implementation_reply,omitempty"`
 	CreatedAt             time.Time                    `json:"created_at"`
 	Workspace             string                       `json:"workspace,omitempty"`
 	Branch                string                       `json:"branch,omitempty"`
@@ -140,12 +141,14 @@ type ReviewRun struct {
 	ApprovalLedger        ReviewApprovalLedger         `json:"approval_ledger,omitempty"`
 	CapabilityManifest    ReviewCapabilityManifest     `json:"capability_manifest,omitempty"`
 	SingleModelPolicy     SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
+	SingleModelSecondPass *SingleModelSecondPassReview `json:"single_model_second_pass,omitempty"`
 	ExternalLookupIntents []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
 	ArtifactIntegrity     ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
 	LedgerConsistency     ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
 	ResumeSanity          ReviewResumeSanityCheck      `json:"resume_sanity,omitempty"`
 	PolicyPacks           []string                     `json:"policy_packs,omitempty"`
 	ReviewerRuns          []ReviewReviewerRun          `json:"reviewer_runs,omitempty"`
+	CrossReviewTriage     *CrossReviewTriageLedger     `json:"cross_review_triage,omitempty"`
 	ReviewerGatePolicy    string                       `json:"reviewer_gate_policy,omitempty"`
 	MergeResult           ReviewMergeResult            `json:"merge_result,omitempty"`
 	Result                ReviewResult                 `json:"result,omitempty"`
@@ -306,6 +309,7 @@ type ReviewFinding struct {
 	RelatedPolicy      string   `json:"related_policy,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
 	FixRefs            []string `json:"fix_refs,omitempty"`
+	VerificationRefs   []string `json:"verification_refs,omitempty"`
 	RawExcerpt         string   `json:"raw_excerpt,omitempty"`
 }
 
@@ -430,6 +434,7 @@ type ReviewHarnessOptions struct {
 	Paths               []string
 	ProvidedDiff        string
 	ProvidedCode        string
+	ImplementationReply string
 	IncludeGitDiff      bool
 	IncludeFileContents bool
 	NoModel             bool
@@ -765,6 +770,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Mode = analysis.InferredMode
 	run.Flow = analysis.SelectedFlow
 	run.RequestAnalysis = analysis
+	run.ImplementationReply = strings.TrimSpace(opts.ImplementationReply)
 	run.EditProposals = normalizeEditProposals(opts.EditProposals)
 	run.RepairFindings = normalizeReviewFindingCopies(opts.RepairFindings)
 	run.ReviewerGatePolicy = normalizeReviewReviewerGatePolicy(opts.ReviewerGatePolicy)
@@ -792,6 +798,8 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		}
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
+		run.CrossReviewTriage = buildCrossReviewTriageLedger(run)
+		run.Findings = append(run.Findings, crossReviewTriageConsistencyFindings(run)...)
 		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
 	} else if opts.NoModel {
 		run.Result.Degraded = true
@@ -830,6 +838,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.finalizeStatus(false)
 	run.RuntimeGateLedger = buildRuntimeGateLedgerWithReview(root, rt.session, runtimeGateActionReview, &run, "")
 	finalizeReviewRunProtocol(root, rt, &run)
+	if run.SingleModelSecondPass != nil {
+		recordAcceptedSecondPassCache(rt, run, *run.SingleModelSecondPass)
+	}
 	emitDistinctReviewGateResultProgress(rt, run)
 	emitReviewPipelineProgress(rt, run, 6, "next action", "다음 조치", reviewPipelineNextActionDetail(run, false), reviewPipelineNextActionDetail(run, true))
 	if err := writeReviewRunArtifacts(root, &run); err != nil {

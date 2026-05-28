@@ -148,6 +148,7 @@ ReviewRun
   machine_status
   exit_code
   objective
+  implementation_reply
   created_at
   workspace
   branch
@@ -159,9 +160,11 @@ ReviewRun
   redaction
   policy_packs
   reviewer_runs
+  single_model_second_pass
   merge_result
   result
   findings
+  cross_review_triage
   gate
   waivers
   repair_plan
@@ -324,6 +327,7 @@ ReviewFinding
   related_policy
   evidence_refs
   fix_refs
+  verification_refs
   raw_excerpt
 ```
 
@@ -367,6 +371,78 @@ Finding quality rule:
 4. quality가 `weak`이면 gate blocker로 승격하지 않고 warning 또는 reviewer quality issue로 남긴다.
 5. quality가 `invalid`이면 사용자에게 bug finding처럼 보여주지 않는다.
 
+### 5.4.1 CrossReviewTriageLedger
+
+optional cross-review route가 actionable finding을 만들면 primary repair loop가 이를 조용히 무시할 수 없어야 한다. 따라서 cross reviewer의 actionable finding은 별도 triage ledger에 복사되고, 각 항목은 정확히 하나의 상태를 가져야 한다.
+
+```text
+CrossReviewTriageLedger
+  items
+  total_count
+  status_counts
+  incomplete_count
+  blockers
+  warnings
+
+CrossReviewTriageEntry
+  finding_id
+  reviewer_role
+  severity
+  category
+  path
+  line
+  symbol
+  title
+  required_fix
+  triage_status
+  technical_reason
+  fix_refs
+  changed_paths
+  verification_refs
+  evidence_refs
+```
+
+`triage_status` 값:
+
+1. `accepted_fixed`: finding을 수용했고 이미 수정 근거가 있다.
+2. `accepted_deferred`: finding을 수용했지만 현재 턴에서 고치지 않고 명확한 이유로 보류한다.
+3. `rejected_with_reason`: finding을 기각하되 코드, diff, path, symbol, evidence 같은 기술 근거가 있어야 한다.
+4. `needs_user_decision`: primary loop가 자동으로 결정할 수 없어 사용자 결정이 필요하다.
+
+일관성 규칙:
+
+1. `accepted_fixed`는 `fix_refs` 또는 `changed_paths` 중 하나 이상을 가져야 한다.
+2. `accepted_deferred`는 `technical_reason`에 보류 이유를 남겨야 한다.
+3. `rejected_with_reason`은 단순 선호가 아니라 evidence 기반 기술 이유가 있어야 한다.
+4. 위 조건을 만족하지 못하면 deterministic `RF-CROSS-TRIAGE-001` blocker가 추가되어 review gate를 통과하지 못한다.
+5. ledger는 `ReviewRun` JSON과 markdown report 모두에 기록되어 나중에 어떤 cross-review finding이 수용, 보류, 기각, 사용자 결정으로 갔는지 감사할 수 있어야 한다.
+
+### 5.4.2 SingleModelSecondPassReview
+
+distinct cross-review route가 없다는 이유로 첫 primary review 응답을 그대로 신뢰하면 안 된다. single-model mode는 degraded fallback이 아니라 primary route를 한 번 더 호출하는 별도 runtime phase다.
+
+```text
+SingleModelSecondPassReview
+  enabled
+  fingerprint
+  status
+  cache_hit
+  model
+  reviewed_at
+  reviewed_paths
+  finding_count
+  prompt_path
+  raw_output_path
+```
+
+실행 규칙:
+
+1. cross reviewer가 없고 main first-pass review가 usable 이상이면 `single_model_second_pass` phase를 별도 model call로 실행한다.
+2. second-pass prompt는 원 요청, touched files, relevant diff, implementation reply, 최신 verification summary, 1차 structured/raw review를 함께 받는다.
+3. focus checklist는 touched function, call site, ABI/data contract, default initialization, buffer/length, error path, cancellation/timeout, logging/output compatibility, stale docs, missing focused validation을 포함한다.
+4. 결과 finding은 기존 `ReviewFinding`과 같은 parser/gate/repair loop로 들어간다. concrete blocker가 나오면 일반 repair path가 소비한다.
+5. 같은 diff와 review evidence를 반복 검토해 loop가 무한 반복되지 않도록 fingerprint를 저장하고, approved 또는 approved_with_warnings second-pass는 `second_pass_review_cache`에 기록해 재사용한다.
+
 ### 5.5 GateDecision
 
 ```text
@@ -400,8 +476,8 @@ Gate rule:
 6. pre-write review의 "build/test verification was not run" 류 순수 검증 gap은 edit preview를 막지 않고 post-edit verification obligation으로 남긴다.
 7. pre-write review에서 "함수 후반부가 보이지 않는다", "complete function body is not visible", "제공된 preview/evidence가 부족하다"처럼 하네스 증거 패키지 부족을 지적한 `evidence_gap`은 코드 수리 루프로 넘기지 않는다. 먼저 하네스가 current file context, selection 후반부, cleanup/success 경로를 증거에 보강해야 한다.
 8. 하네스 증거 부족 경고는 implementation model에게 패치를 다시 쓰게 할 근거가 아니다. 실제 코드 누락, header/API surface 누락, member declaration 누락, requested scope 미구현처럼 patch 자체의 결함을 가리키는 `evidence_gap`만 actionable warning으로 차단한다.
-9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, optional cross route가 있으면 같은 evidence와 primary draft를 받아 second-pass로 확인한다. domain 전문성은 review lens로 주입한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
-10. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
+9. `/review`, 자연어 리뷰, pre-fix repair check는 main-first로 동작한다. active main model이 먼저 구조화 리뷰를 만들고, optional cross route가 있으면 같은 evidence와 primary draft를 받아 cross-check로 확인한다. cross route가 없으면 primary route로 별도 `single_model_second_pass` review를 실행한다. domain 전문성은 review lens로 주입한다. pre-fix의 cross reviewer 실패, 빈 응답, `weak` 품질은 degraded/warning으로 남기되 main review finding 보고와 repair loop 시작을 막지 않는다.
+10. pre-write review는 hard edit gate다. 실제 edit preview가 있는 상태에서 필수 main/cross/second-pass reviewer가 실패하거나 `weak` 품질이면 `insufficient_evidence`로 write를 막고 edit 루프를 중단한다. 이 상태는 코드 수정 지침이 아니라 reviewer route 장애로 보고해야 하며, implementation model에게 웹 검색이나 반복 패치를 시키지 않는다.
 11. build/test 검증 명령이 사용자에게 거절되어 `skipped`/`declined`로 기록된 뒤에는 같은 턴에서 동일 검증 재실행이나 `latest` background poll을 실행하지 않는다. 하네스는 tool progress를 emit하기 전에 `NOT_EXECUTED` tool result와 guidance로 접고, 미검증 gap만 final/status에 남긴다.
 12. security pack에서 high severity가 있으면 기본적으로 `needs_revision`.
 13. docs-only change는 test gap을 warning으로 낮출 수 있다.
@@ -3489,14 +3565,26 @@ P2:
 
 92. Codex-grade 자연어 검토/수정 요청 처리 계약
    - 발견: Kernforge가 review harness와 goal loop를 갖고 있어도, 일반 자연어 턴에서는 사용자가 "검토", "버그 찾기", "수정", "수정 후 리뷰", "문서/status", "커밋 준비" 중 무엇을 원하는지 명확히 분류하지 않으면 단순 chat wrapper처럼 첫 답변을 신뢰하거나, 단일 모델 구성에서 독립 리뷰가 없는 상태를 약한 fallback처럼 다룰 수 있었다.
-   - 원칙: 단일 모델 구성은 degraded mode가 아니라 explicit staged mode다. cross reviewer가 있을 때는 독립 reviewer feedback을 단순 요약으로 취급하지 않고, primary implementation flow가 수용/보류/기각/사용자 결정 필요로 판단해야 한다. 다만 이번 단계는 prompt와 harness contract를 강화한 것이며, 모든 cross-review 항목을 persistent triage ledger로 강제하는 runtime enforcement는 별도 후속 과제다.
+   - 원칙: 단일 모델 구성은 degraded mode가 아니라 explicit staged mode다. cross reviewer가 있을 때는 독립 reviewer feedback을 단순 요약으로 취급하지 않고, primary implementation flow가 수용/보류/기각/사용자 결정 필요로 판단해야 한다.
    - 수정: Agent prompt에 `codexGradeRequestHandlingPrompt`를 추가해 fresh execution, review, edit, command, active goal/task state에서 Codex-grade request handling block을 주입한다. 이 block은 최신 외부 요청을 code review, bug finding, targeted modification, implementation plus verification, review-after-modification, documentation/status update, explicit git cleanup 중 하나로 분류하게 하고, repository inspection, unrelated user change preservation, review-only findings-first 출력, 수정 후 touched function/call-site/ABI/default/buffer/error/cancel/logging/docs self-review, focused validation disclosure를 요구한다.
    - 단일 모델 모드: distinct cross-review route가 없으면 `single_model` route mode를 명시하고 intent classification, context discovery, implementation/review, self-review, validation, final response 순서의 staged loop를 요구한다. 같은 모델의 첫 응답을 그대로 신뢰하지 말고, touched code와 stale docs를 다시 확인하도록 prompt contract를 둔다.
    - cross-review 모드: distinct reviewer route가 감지되면 `cross_review` route mode를 명시하고, cross-review finding을 independent feedback으로 취급해 accepted and fixed, accepted but deferred, rejected with technical reason, needs user decision 중 하나로 triage하도록 요구한다. repair plan에도 cross-review finding이 포함된 경우 같은 triage 의무를 implementation handoff에 넣는다.
    - goal/coding harness 반영: `/goal`, `-goal`, `-goal-file` iteration prompt에는 같은 staged loop를 추가하고, coding harness acceptance contract는 edit request에서 repository context inspection, second-pass regression review, validation/reporting을 expected behavior로 기록한다.
    - 리뷰 모델 prompt 반영: natural review trigger는 read-only code review stance를 명시하고, patch text나 tool request 없이 concrete finding을 먼저 반환하게 한다. issue가 없으면 finding 없이 approve하되 residual test/evidence risk만 summary에 남기게 한다.
    - 회귀 테스트: `TestAgentPromptIncludesCodexGradeRequestHandlingForEditRequests`, `TestAgentPromptUsesSingleModelCodexGradeContractWithoutCrossReviewer`, `TestAgentPromptUsesCrossReviewCodexGradeContractWhenReviewerConfigured`, `TestAgentPromptOmitsCodexGradeContractForTrivialChat`, goal staged-loop prompt tests, review repair handoff cross-review triage tests, natural review-mode read-only prompt tests.
-   - 남은 런타임 과제: cross-review triage ledger persistence, 단일 모델 second-pass를 별도 runtime phase/model call로 강제하는 구조, 최종 답변 completeness gate는 아직 prompt-contract 수준을 넘어 runtime-enforced invariant로 올려야 한다.
+
+93. Codex App-grade runtime review enforcement
+   - 발견: 92번 계약은 prompt 수준에서는 Codex식 행동을 요구했지만, 실제 runtime은 여전히 cross-review finding 누락, single-model 2차 검토 생략, 최종 답변의 변경/검증/리스크 누락을 완전히 막지는 못했다.
+   - 원칙: review/repair/final answer 품질은 모델이 기억해야 하는 예절이 아니라 runtime invariant여야 한다. cross-review finding은 audit 가능한 ledger로 남기고, single-model review는 별도 phase/call로 강제하며, 최종 답변은 사용자에게 보이기 전에 완료 사실을 검증해야 한다.
+   - 수정:
+     1. `CrossReviewTriageLedger`와 `CrossReviewTriageEntry`를 `ReviewRun`에 추가했다. cross reviewer의 actionable finding은 `accepted_fixed`, `accepted_deferred`, `rejected_with_reason`, `needs_user_decision` 중 하나로 기록된다.
+     2. `accepted_fixed`에 fix ref 또는 changed path가 없거나, `accepted_deferred`에 이유가 없거나, `rejected_with_reason`에 기술 근거가 없으면 `RF-CROSS-TRIAGE-001` deterministic blocker가 gate를 막는다.
+     3. distinct cross reviewer가 없으면 primary route로 `single_model_second_pass` model call을 별도 실행한다. prompt는 원 요청, touched files, diff, implementation reply, verification summary, 1차 review를 포함하고, finding은 기존 `ReviewFinding`/repair gate가 그대로 소비한다.
+     4. second-pass fingerprint와 accepted cache를 session에 저장해 같은 diff에 대한 무한 review loop를 피한다.
+     5. final answer completeness gate를 coding harness에 연결해 수정 흐름은 changed files/no-change, review/self-review result, validation result 또는 미실행 이유, remaining risk를 요구한다. review-only 흐름은 findings-first, no-edit statement, no-finding residual evidence risk를 요구한다.
+     6. generated document artifact, trivial command/status, 순수 document artifact flow는 과차단하지 않도록 skip rule을 유지한다.
+   - artifact 반영: `ReviewRun` JSON에는 `implementation_reply`, `single_model_second_pass`, `cross_review_triage`가 추가되고 markdown review report에도 second-pass 상태와 cross-review triage ledger가 렌더링된다. 기존 reader는 omitempty/additive field로 하위 호환된다.
+   - 회귀 테스트: `TestSingleModelEditRequestRunsEnforcedSecondPass`, `TestSingleModelSecondPassFindingBlocksReviewGate`, `TestSingleModelSecondPassUsesAcceptedFingerprintCache`, `TestCrossReviewFindingCreatesTriageLedgerEntry`, `TestCrossReviewAcceptedFindingRequiresFixEvidence`, `TestCrossReviewRejectedFindingRequiresTechnicalReason`, `TestPreFinalHarnessCorrectsMissingChangedFileSummary`, `TestPreFinalHarnessCorrectsMissingValidationDisclosure`, `TestReviewOnlyFinalAnswerRemainsReadOnlyAndFindingsFirst`, generated document artifact skip tests, pre-write review gate tests.
 
 남은 항목:
 

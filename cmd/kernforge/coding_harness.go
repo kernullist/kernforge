@@ -787,7 +787,15 @@ func codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding CodingHarnessFi
 		"Final answer contradicts the patch transaction",
 		"Verification claim has no recorded evidence",
 		"Edit loop verification failure is unstated",
-		"Final answer contradicts remaining edit-loop risk":
+		"Final answer contradicts remaining edit-loop risk",
+		"Changed-file summary is missing",
+		"Review result is missing",
+		"Validation result is missing",
+		"Remaining-risk statement is missing",
+		"Review-only answer is not findings-first",
+		"Review-only no-edit statement is missing",
+		"No-finding review omits residual risk",
+		"Cross-review residual risk is undisclosed":
 		return true
 	default:
 		return false
@@ -1125,7 +1133,7 @@ func (a *Agent) buildCodingHarnessReport(reply string, attemptedEditTool bool, u
 	report.TestImpact = a.buildTestImpactReport()
 	report.JobSupervisor = a.buildJobSupervisorReport(reply)
 	report.DiffReview = a.buildDiffAwareSelfReviewReport(reply, attemptedEditTool)
-	report.Outcome = a.buildOutcomeInvariantReport(reply, unresolvedVerification)
+	report.Outcome = a.buildOutcomeInvariantReport(reply, attemptedEditTool, unresolvedVerification)
 	report.Normalize()
 	return report
 }
@@ -1247,12 +1255,21 @@ func (a *Agent) generatedDocumentArtifactScopeResolvedChangedPaths() []string {
 	return normalizeTaskStateList(changed, 64)
 }
 
-func (a *Agent) buildOutcomeInvariantReport(reply string, unresolvedVerification bool) OutcomeInvariantReport {
+func (a *Agent) buildOutcomeInvariantReport(reply string, flags ...bool) OutcomeInvariantReport {
+	attemptedEditTool := false
+	unresolvedVerification := false
+	if len(flags) == 1 {
+		unresolvedVerification = flags[0]
+	} else if len(flags) >= 2 {
+		attemptedEditTool = flags[0]
+		unresolvedVerification = flags[1]
+	}
 	report := OutcomeInvariantReport{}
 	if a == nil || a.Session == nil {
 		return report
 	}
 	report.Findings = append(report.Findings, finalAnswerBugCountFindings(reply)...)
+	report.Findings = append(report.Findings, a.finalAnswerCompletenessFindings(reply, attemptedEditTool)...)
 	a.refreshBackgroundJobs()
 	if a.hasRunningBackgroundJobs() {
 		severity := "blocker"

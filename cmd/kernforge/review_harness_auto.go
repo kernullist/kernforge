@@ -10,7 +10,15 @@ import (
 
 const generatedDocumentArtifactQualityFingerprint = "generated-document-artifact-quality"
 
-func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, lastFingerprint string) (bool, bool, string, string, error) {
+func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, finalReplyOrLastFingerprint ...string) (bool, bool, string, string, error) {
+	finalReply := ""
+	lastFingerprint := ""
+	if len(finalReplyOrLastFingerprint) == 1 {
+		lastFingerprint = finalReplyOrLastFingerprint[0]
+	} else if len(finalReplyOrLastFingerprint) >= 2 {
+		finalReply = finalReplyOrLastFingerprint[0]
+		lastFingerprint = finalReplyOrLastFingerprint[1]
+	}
 	if a == nil || a.Session == nil {
 		return false, false, "", "", nil
 	}
@@ -70,15 +78,16 @@ func (a *Agent) maybeRunPostChangeReview(ctx context.Context, request string, la
 	}
 	rt := a.reviewHarnessRuntime(root)
 	run, err := runReviewHarness(ctx, rt, ReviewHarnessOptions{
-		Trigger:         "post_change",
-		Target:          reviewTargetChange,
-		Request:         request,
-		Paths:           append([]string(nil), changedPaths...),
-		IncludeGitDiff:  true,
-		NoModel:         !reviewHarnessHasConfiguredModelRoute(a),
-		AutoTriggered:   true,
-		AutoFollowUp:    reviewCfg.AutoFollowUp,
-		MaxContextChars: reviewFocusedMaxContextChars,
+		Trigger:             "post_change",
+		Target:              reviewTargetChange,
+		Request:             request,
+		ImplementationReply: finalReply,
+		Paths:               append([]string(nil), changedPaths...),
+		IncludeGitDiff:      true,
+		NoModel:             !reviewHarnessHasConfiguredModelRoute(a),
+		AutoTriggered:       true,
+		AutoFollowUp:        reviewCfg.AutoFollowUp,
+		MaxContextChars:     reviewFocusedMaxContextChars,
 	})
 	if err != nil {
 		return true, false, "", "", err
@@ -1049,7 +1058,7 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	if a.shouldSkipPostChangeReviewForKnownFinalBlocker(finalReply, true) {
 		return false, nil
 	}
-	reviewed, needsRevision, reviewFeedback, fingerprint, err := a.maybeRunPostChangeReview(ctx, request, *lastFingerprint)
+	reviewed, needsRevision, reviewFeedback, fingerprint, err := a.maybeRunPostChangeReview(ctx, request, finalReply, *lastFingerprint)
 	if err != nil {
 		if a.EmitProgress != nil {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review failed: ", "자동 변경 후 리뷰 실패: ") + err.Error())

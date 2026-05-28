@@ -463,6 +463,10 @@ func collectReviewEvidence(ctx context.Context, rt *runtimeState, root string, r
 			evidence.Sources = append(evidence.Sources, "provided_code")
 		}
 	}
+	if strings.TrimSpace(opts.ImplementationReply) != "" {
+		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Implementation reply", compactPromptSection(opts.ImplementationReply, 6000))
+		evidence.Sources = append(evidence.Sources, "implementation_reply")
+	}
 	if includePreWriteFileContext {
 		collectPreWriteCurrentFileContextEvidence(rt, root, run, opts, focusPaths, &changeSet, &evidence, reviewRemainingContextChars(opts.MaxContextChars, evidence.Text))
 		collectedSourceFirst = true

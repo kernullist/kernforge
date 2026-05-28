@@ -8176,7 +8176,7 @@ func TestAgentBlocksWebResearchAfterPreWriteReviewFeedback(t *testing.T) {
 		replies: []ChatResponse{
 			toolCallResponse("mcp__web_research__search_web", map[string]any{"query": "C++ loop bug fix"}),
 			toolCallResponse("read_file", map[string]any{"path": "SampleApp/SampleWorker/PathConverter.cpp"}),
-			{Message: Message{Role: "assistant", Text: "pre-write review 경고를 로컬 소스 기준으로 다시 수정했습니다."}},
+			{Message: Message{Role: "assistant", Text: "pre-write review 경고를 로컬 소스 기준으로 다시 수정했습니다. No files were changed. Self-review: local-source repair path checked. Validation: verification not run. Remaining risk: no known remaining blocker for the reported guidance path."}},
 		},
 	}
 	reviewer := &scriptedProviderClient{
@@ -8636,7 +8636,7 @@ func TestAgentContinuesAfterDistinctPreWriteCodeFinding(t *testing.T) {
 			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// second proposal\n*** End Patch\n"}),
 			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
 			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
-			{Message: Message{Role: "assistant", Text: "Distinct pre-write findings were repaired."}},
+			{Message: Message{Role: "assistant", Text: "Distinct pre-write findings were repaired. No files were changed by the scripted recovery. Self-review: pre-write repair path completed. Validation: verification not run. Remaining risk: no known remaining blocker for the recovery flow."}},
 		},
 	}
 	agent := &Agent{
@@ -8700,7 +8700,7 @@ func TestAgentBlocksImmediateEditAfterPreWriteBlockUntilReanchor(t *testing.T) {
 				Name:      "apply_patch",
 				Arguments: `{"patch":"*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// repaired\n*** End Patch\n"}`,
 			}),
-			{Message: Message{Role: "assistant", Text: "reanchored and repaired"}},
+			{Message: Message{Role: "assistant", Text: "reanchored and repaired. No files were changed by the scripted recovery. Self-review: pre-write repair path completed. Validation: verification not run. Remaining risk: no known remaining blocker for the recovery flow."}},
 		},
 	}
 	agent := &Agent{
@@ -8716,7 +8716,7 @@ func TestAgentBlocksImmediateEditAfterPreWriteBlockUntilReanchor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != "reanchored and repaired" {
+	if !strings.Contains(reply, "reanchored and repaired") {
 		t.Fatalf("unexpected reply: %q", reply)
 	}
 	if patchTool.calls != 2 {
@@ -8761,7 +8761,7 @@ func TestAgentForcesEditAfterPreWriteRepairInspectionBudget(t *testing.T) {
 	}
 	replies = append(replies,
 		toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
-		ChatResponse{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair."}},
+		ChatResponse{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair. No files were changed by the scripted recovery. Self-review: pre-write repair path completed. Validation: verification not run. Remaining risk: no known remaining blocker for the recovery flow."}},
 	)
 	provider := &scriptedProviderClient{
 		replies: replies,
@@ -8827,7 +8827,7 @@ func TestAgentStopsCurrentBatchAfterPreWriteRepairInspectionBudget(t *testing.T)
 			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
 			multiToolCallResponse(readCalls...),
 			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// fixed\n*** End Patch\n"}),
-			{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair."}},
+			{Message: Message{Role: "assistant", Text: "Applied the narrow pre-write repair. No files were changed by the scripted recovery. Self-review: pre-write repair path completed. Validation: verification not run. Remaining risk: no known remaining blocker for the recovery flow."}},
 		},
 	}
 	agent := &Agent{
@@ -9997,7 +9997,7 @@ func TestPreWriteReviewBlockDisablesReplaceForNextRetry(t *testing.T) {
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
-			{Message: Message{Role: "assistant", Text: "ready to retry with apply_patch only"}},
+			{Message: Message{Role: "assistant", Text: "ready to retry with apply_patch only. No files were changed. Self-review: pre-write retry path checked. Validation: verification not run. Remaining risk: edit still pending."}},
 		},
 	}
 	agent := &Agent{

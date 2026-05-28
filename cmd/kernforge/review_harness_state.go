@@ -13,6 +13,7 @@ import (
 const (
 	reviewStateCollectEvidence      = "collect_evidence"
 	reviewStateMainReview           = "main_review"
+	reviewStateSingleModelSecond    = "single_model_second_pass"
 	reviewStateOptionalCrossReview  = "optional_cross_review"
 	reviewStateRequiredCrossReview  = "required_cross_review"
 	reviewStateNoCrossReview        = "no_cross_review"
@@ -346,8 +347,14 @@ func buildReviewStateTransitions(run ReviewRun) []ReviewStateTransition {
 			}
 		}
 		if !hasCross {
-			add(reviewStateMainReview, reviewStateNoCrossReview, "reason=single_model_mode", "harness", false, true)
-			modelTransition = reviewStateNoCrossReview
+			if run.SingleModelSecondPass != nil && run.SingleModelSecondPass.Enabled {
+				add(reviewStateMainReview, reviewStateSingleModelSecond, "single-model mode enforces a separate second-pass review", "primary_model", false, true)
+				add(reviewStateSingleModelSecond, reviewStateNoCrossReview, "reason=single_model_mode", "harness", false, true)
+				modelTransition = reviewStateNoCrossReview
+			} else {
+				add(reviewStateMainReview, reviewStateNoCrossReview, "reason=single_model_mode", "harness", false, true)
+				modelTransition = reviewStateNoCrossReview
+			}
 		}
 		add(modelTransition, reviewStateMergeReviews, "findings are normalized, deduplicated, and merged", "harness", false, false)
 	}

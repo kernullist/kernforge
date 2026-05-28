@@ -323,7 +323,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles, mainClient, mainModel)
 	run.SingleModelPolicy = buildSingleModelReviewPolicy(*run, hasCrossReviewer)
 	phaseTotal := 1
-	if hasCrossReviewer {
+	if hasCrossReviewer || run.SingleModelPolicy.Enabled {
 		phaseTotal = 2
 	}
 	prepareMainFirstReviewModelPlan(run, mainRole, mainLabel)
@@ -353,6 +353,41 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 			run.ModelPlan.UserGuidance = []string{}
 		}
 		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
+		if shouldRunSingleModelSecondPass(run, mainRun, mainRaw) {
+			secondPassFingerprint := singleModelSecondPassFingerprint(*run, mainRaw, findings)
+			run.SingleModelSecondPass = &SingleModelSecondPassReview{
+				Enabled:       true,
+				Fingerprint:   secondPassFingerprint,
+				Status:        "pending",
+				Model:         mainLabel,
+				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
+			}
+			prepareSingleModelSecondPassPlan(run, mainLabel)
+			if cached, ok := lookupAcceptedSecondPassCache(rt, secondPassFingerprint); ok {
+				cachedRun := cachedSingleModelSecondPassRun(cached)
+				reviewerRuns = append(reviewerRuns, cachedRun)
+				run.SingleModelSecondPass.Status = "cached"
+				run.SingleModelSecondPass.CacheHit = true
+				run.SingleModelSecondPass.ReviewedAt = cached.AcceptedAt
+				run.SingleModelSecondPass.Model = cached.Model
+				emitReviewModelResultProgress(rt, cachedRun, 0)
+			} else {
+				secondPrompt := buildSingleModelSecondPassReviewPrompt(rt.cfg, *run, mainRaw, findings)
+				emitReviewModelPhaseBudgetProgress(rt, *run, "second_pass", 2, phaseTotal, singleModelSecondPassRole, mainLabel)
+				secondFindings, secondRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, singleModelSecondPassRole, "second_pass", secondPrompt, nil, reviewModelRunPeerContext{
+					PriorFindings:     append([]ReviewFinding(nil), findings...),
+					PriorReviewerRuns: append([]ReviewReviewerRun(nil), reviewerRuns...),
+				})
+				reviewerRuns = append(reviewerRuns, secondRun)
+				findings = append(findings, secondFindings...)
+				run.SingleModelSecondPass.Status = secondRun.Status
+				run.SingleModelSecondPass.Model = secondRun.Model
+				run.SingleModelSecondPass.ReviewedAt = secondRun.FinishedAt
+				run.SingleModelSecondPass.FindingCount = len(secondFindings)
+				run.SingleModelSecondPass.PromptPath = secondRun.PromptPath
+				run.SingleModelSecondPass.RawOutputPath = secondRun.RawOutputPath
+			}
+		}
 	}
 	assignReviewFindingIDs(findings)
 	return findings, reviewerRuns
@@ -2521,6 +2556,10 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
 	b.WriteString("  test_recommendation: <specific validation>\n")
+	b.WriteString("  resolution_status: <empty unless this review is reconciling an existing finding>\n")
+	b.WriteString("  evidence_refs: <comma-separated evidence refs when available>\n")
+	b.WriteString("  fix_refs: <comma-separated changed paths or commits when available>\n")
+	b.WriteString("  verification_refs: <comma-separated verification refs when available>\n")
 	return b.String()
 }
 
@@ -2763,6 +2802,10 @@ func buildReviewModelLocalCompactReviewPrompt(cfg Config, run ReviewRun, role st
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
 	b.WriteString("  test_recommendation: <specific validation>\n")
+	b.WriteString("  resolution_status: <empty unless this review is reconciling an existing finding>\n")
+	b.WriteString("  evidence_refs: <comma-separated evidence refs when available>\n")
+	b.WriteString("  fix_refs: <comma-separated changed paths or commits when available>\n")
+	b.WriteString("  verification_refs: <comma-separated verification refs when available>\n")
 	b.WriteString("\nReview evidence:\n")
 	b.WriteString(compactReviewPromptSection(run.Evidence.Text, reviewLocalCompactReviewEvidenceLimit(run)))
 	return b.String()
@@ -2833,6 +2876,10 @@ func buildReviewModelCrossCheckPrompt(cfg Config, run ReviewRun, role string, pr
 	b.WriteString("  impact: <why it matters>\n")
 	b.WriteString("  required_fix: <concrete fix>\n")
 	b.WriteString("  test_recommendation: <specific validation>\n")
+	b.WriteString("  resolution_status: <empty unless this review is reconciling an existing finding>\n")
+	b.WriteString("  evidence_refs: <comma-separated evidence refs when available>\n")
+	b.WriteString("  fix_refs: <comma-separated changed paths or commits when available>\n")
+	b.WriteString("  verification_refs: <comma-separated verification refs when available>\n")
 	evidenceLimit := reviewModelCrossEvidenceLimit(run)
 	b.WriteString("\nReview evidence:\n")
 	b.WriteString(compactReviewPromptSection(run.Evidence.Text, evidenceLimit))

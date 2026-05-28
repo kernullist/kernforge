@@ -93,7 +93,10 @@ func TestSingleModelPreWriteRecordsRFObligationStatus(t *testing.T) {
 	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	provider := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("single model review approved the frozen diff")}}
+	provider := &scriptedProviderClient{replies: []ChatResponse{
+		approvedReviewResponse("single model review approved the frozen diff"),
+		approvedReviewResponse("single model second pass approved the frozen diff"),
+	}}
 	rt := reviewStateTestRuntime(root, provider)
 
 	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
@@ -350,7 +353,10 @@ func TestSingleModelReviewModeDoesNotRequireCrossReviewer(t *testing.T) {
 	if err := os.WriteFile(path, []byte("int main(){return 0;}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	provider := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("single model review approved the frozen diff")}}
+	provider := &scriptedProviderClient{replies: []ChatResponse{
+		approvedReviewResponse("single model review approved the frozen diff"),
+		approvedReviewResponse("single model second pass approved the frozen diff"),
+	}}
 	rt := reviewStateTestRuntime(root, provider)
 
 	run, err := runReviewHarness(context.Background(), rt, ReviewHarnessOptions{
