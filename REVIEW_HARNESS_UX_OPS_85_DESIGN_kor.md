@@ -2,13 +2,15 @@
 
 작성일: 2026-05-13
 
+최근 구현 반영: 2026-05-30
+
 기준: Codex App을 100점으로 둔 상대 평가
 
 대상: KernForge review harness, `/review`, pre-fix/pre-write gate, MCP `kernforge_review`, review artifact/runtime state
 
 ## 1. 목표
 
-현재 16.10 구현은 typed review harness, state transition, approval ledger, capability manifest, route health, loop signature, replay fixture를 갖춘 상태다. 스펙 구현체로는 강하지만, Codex App과 비교하면 사용자가 체감하는 제품 UX와 장기 운영 안정성에서 아직 차이가 있다.
+현재 구현은 typed review harness, request-class lifecycle, state transition, approval ledger, capability manifest, route health, loop signature, compact operator output, replay fixture를 갖춘 상태다. 스펙 구현체와 기본 CLI/MCP operator view는 강해졌지만, Codex App과 비교하면 전용 review status command, doctor/resume, dashboard, circuit breaker 같은 장기 운영 UX는 아직 backlog가 남아 있다.
 
 이 문서의 목표는 다음 두 항목을 각각 85점 수준으로 끌어올리는 것이다.
 
@@ -23,6 +25,28 @@
 2. 왜 멈췄는지, 다음 선택지가 무엇인지 보인다.
 3. 장시간 작업, provider 실패, patch 실패, 재개 상황에서도 상태가 깨지지 않는다.
 4. artifact를 열지 않아도 핵심 판단에 필요한 정보가 transcript/MCP 응답에 남는다.
+
+## 1.1 현재 구현 상태 요약
+
+2026-05-30 기준 KernForge review harness는 이 문서의 P0 중 operator-facing compact UX와 상태 parity 축을 상당 부분 구현했다. 아직 `/review status`, `/review timeline`, `/review artifacts`, `/review doctor`, static dashboard 같은 전용 slash command는 별도 backlog지만, 기본 review 출력, `/status`, artifact, MCP, runtime ledger는 같은 lifecycle 상태를 공유한다.
+
+구현된 항목:
+
+1. `progress_display` 기본값은 `compact`이다. 일반 interactive review는 반복적인 전체 1->6 flow 설명을 출력하지 않고 `review 1/6 scope`, `review 2/6 evidence`, `main ... done`, `cross ... done`, `gate ...`, `next ...` 같은 짧은 operator line을 우선한다.
+2. `/progress-display stream`은 기존 verbose/detail 역할을 유지한다. stream 모드에서는 phase, lifecycle, waiting target, next transition, 전체 flow text가 transcript에 남는다. 기존 `verbose` alias는 계속 `stream`으로 정규화된다.
+3. compact 최종 review CLI 출력은 result-first다. verdict, blocker/warning/note count, gate action, target/mode/request class, severity별 finding, report path, single next recommended command 순서로 렌더링된다.
+4. compact terminal output에서는 같은 command를 가진 next command를 하나로 접는다. JSON, Markdown, MCP response, runtime gate ledger, cross-review triage ledger에는 전체 next-command record가 유지된다.
+5. 특정 RF id를 지정한 후속 수리 요청, 예를 들어 `RF-004 수정해줘`, 는 repair handoff를 해당 RF로 좁힌다. 선택 RF만 `RepairFindings`와 pre-fix repair obligation으로 carry되며, 나열되지 않은 RF는 고치거나 해결했다고 보고하지 않는다. 선택 RF가 다른 RF와 분리 불가능하면 범위를 넓히기 전에 사용자 결정을 요구한다.
+6. `/status`, `/hooks`, review Markdown/JSON, MCP review/status, runtime gate ledger는 request class, lifecycle phase, route mode/quality, gate status, second-pass state, cross-review triage count, blocker class, remaining obligation, next recommended command를 같은 의미로 노출한다.
+7. single-model mode, cross-model mode, reviewer-only post-change route, document artifact lifecycle, final-answer correction contract는 artifact와 status/MCP에 additive field로 남는다.
+
+아직 설계 backlog로 남은 항목:
+
+1. `/review status`, `/review timeline`, `/review artifacts` 같은 전용 review status command.
+2. `/review resume`, `/review doctor`, diagnostic bundle, corrupt latest pointer 복구.
+3. route circuit breaker와 장기 route health trend.
+4. review artifact directory의 별도 `index.md/index.json`.
+5. read-only static review dashboard.
 
 ## 2. Codex App 기준 관찰 포인트
 

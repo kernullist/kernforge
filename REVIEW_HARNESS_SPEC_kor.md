@@ -3703,6 +3703,34 @@ P2:
      3. generated document-only skip rule은 code modification과 섞이는 순간 해제되며, 그 경우 modification review/verification obligation이 다시 우선한다.
    - 회귀 테스트: compact `/status`, detail timeline/evidence refs, phase-aware progress spam suppression, blocker priority, actionable `needs_user_decision` Markdown/MCP, single-model state labels, document-artifact status/skip reason, generic final-answer rejection, MCP operator-card field, 기존 request-class/pre-write/post-change/final-answer/runtime-gate 테스트.
 
+98. compact-first review output과 RF-scoped repair handoff
+
+   - 발견: 실제 OpenRouter Qwen + GPT-5.5 cross review smoke에서 review progress가 매 단계마다 긴 "전체 흐름(현재 단계는 대괄호)" 문장과 `phase/waiting_on/next` 진단 suffix를 반복해, Codex CLI보다 답답하고 느리게 체감됐다. 또 사용자가 `RF-004 수정해줘`처럼 특정 finding만 요청했는데 repair handoff가 최신 review의 모든 blocker를 다시 수리 범위로 전달해 RF-001까지 함께 수정하는 scope expansion이 발생했다.
+   - 원칙:
+     1. 기본 terminal 출력은 operator가 바로 판단할 수 있는 compact view여야 한다.
+     2. stream/detail observability는 유지하되 기본 review 진행과 최종 결과를 lifecycle/debug dump로 채우지 않는다.
+     3. CLI compact 출력에서 next command 중복은 접어도 JSON/Markdown/MCP/runtime ledger의 전체 command record는 보존한다.
+     4. 사용자가 특정 RF id를 지정하면 하네스는 해당 RF만 repair obligation으로 전달해야 한다. 다른 RF가 같은 코드 근방에 있더라도 의도적으로 함께 고치거나 해결했다고 보고하면 안 된다.
+   - 수정:
+     1. `DefaultConfig`와 workspace config template의 `progress_display` 기본값을 `compact`로 바꿨다. `/progress-display stream`은 기존 verbose/detail 모드로 유지하고, `verbose` alias도 계속 `stream`으로 정규화한다.
+     2. review pipeline progress renderer를 display mode별로 분기했다. compact/auto는 `review 1/6 scope`, `review 2/6 evidence`, `gate needs_revision`, `next: /continuity continue from review` 같은 짧은 action line을 출력하고, stream은 기존 long flow와 phase/waiting_on/next 진단을 보존한다.
+     3. compact final review CLI renderer를 별도로 추가해 verdict, blocker/warning/note count, gate action, target/mode/request class, severity별 finding, report path, 하나의 next command 순서로 렌더링한다. stream renderer는 기존 detailed layout을 유지한다.
+     4. compact CLI next command는 command string 기준으로 dedupe하고 confirmation 필요 여부와 reason을 병합한다. review JSON/Markdown/latest artifact/MCP/runtime ledger/cross-review triage ledger의 원본 next-command detail은 삭제하지 않는다.
+     5. `RF-004 수정해줘` 같은 후속 repair turn에서 RF id를 추출해 `ReviewRun`을 선택된 finding으로 좁힌다. 선택된 RF만 `RepairFindings`, gate finding id, `buildReviewRepairPlan`, pre-fix repair obligation, `TaskState` reviewer guidance에 남긴다.
+     6. scoped repair guidance는 "나열되지 않은 RF를 의도적으로 고치거나 해결했다고 보고하지 말 것"과 "선택 RF가 다른 RF와 분리 불가능하면 사용자 결정을 기다릴 것"을 명시한다.
+   - 회귀 테스트:
+     1. compact review progress가 반복 full-flow text와 phase diagnostics를 포함하지 않는지 검증.
+     2. stream review progress가 phase/waiting_on/next diagnostics를 계속 포함하는지 검증.
+     3. auto review progress가 정상 interactive review에서 full-flow spam을 피하는지 검증.
+     4. compact final review output이 verdict/counts/findings/report/next command 순서를 지키는지 검증.
+     5. duplicate next command가 compact CLI에서만 접히고 artifact/MCP detail은 보존되는지 검증.
+     6. `RF-004 수정해줘`가 RF-001/RF-004 중 RF-004만 repair guidance, `RepairFindings`, pre-fix obligation, task-state guidance에 남기는지 검증.
+   - 검증:
+     1. `go test ./cmd/kernforge -run "TestReviewRepairFollowUp" -count=1 -timeout 2m`
+     2. focused review/pre-fix/pre-write/progress-display/cross-review triage tests
+     3. `go test ./cmd/kernforge -count=1 -timeout 10m`
+     4. `git diff --check`
+
 남은 항목:
 
 1. 수동 smoke 검증
