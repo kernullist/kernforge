@@ -52,7 +52,7 @@ Project analysis:
 - `/analyze-performance [focus]`
 - `/set-analysis-models`
 - If you omit `--mode`, the default mode is `map`
-- Long `/analyze-project` runs show shard waves, completed/failed shard counts, worker/reviewer model wait events, and final artifact write steps. `progress_display` now defaults to `stream`, so every update is persisted unless you switch to `/progress-display auto` or `/progress-display compact`.
+- Long `/analyze-project` runs show shard waves, completed/failed shard counts, worker/reviewer model wait events, and final artifact write steps. `progress_display` now defaults to `compact`, so routine progress stays quiet; switch to `/progress-display stream` when you want every update persisted.
 - Use `/set-analysis-models clear` when project analysis should follow the current main model instead of a previously configured worker/reviewer route
 
 Investigation:

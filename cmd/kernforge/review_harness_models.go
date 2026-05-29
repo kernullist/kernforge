@@ -1294,6 +1294,10 @@ func emitReviewPipelineProgress(rt *runtimeState, run ReviewRun, step int, engli
 	if koreanDetail == "" {
 		koreanDetail = koreanStage
 	}
+	if configProgressDisplay(rt.cfg) != "stream" {
+		rt.agent.EmitProgress(compactReviewPipelineProgress(rt.cfg, run, step, total, englishStage, englishDetail, koreanDetail))
+		return
+	}
 	flowEnglish := reviewProgressFlow([]string{"scope discovery", "evidence pack", "model review", "merge/check", "gate decision", "next action"}, step)
 	flowKorean := reviewProgressFlow([]string{"범위 확인", "증거 준비", "모델 검토", "병합/검산", "게이트 판정", "다음 조치"}, step)
 	message := fmt.Sprintf(
@@ -1314,6 +1318,47 @@ func emitReviewPipelineProgress(rt *runtimeState, run ReviewRun, step int, engli
 		reviewPipelinePhaseForStep(step+1),
 	))
 	rt.agent.EmitProgress(message)
+}
+
+func compactReviewPipelineProgress(cfg Config, run ReviewRun, step int, total int, englishStage string, englishDetail string, koreanDetail string) string {
+	stage := compactReviewPipelineStageName(step, englishStage)
+	detail := localizedText(cfg, englishDetail, koreanDetail)
+	detail = reviewProgressSentence(detail)
+	if step == 5 {
+		verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict)
+		if verdict != "" {
+			detail = fmt.Sprintf("%s blockers=%d warnings=%d", verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings))
+		}
+	}
+	if step == 6 && len(run.Gate.NextCommands) > 0 {
+		if command := strings.TrimSpace(run.Gate.NextCommands[0].Command); command != "" {
+			detail = command
+		}
+	}
+	detail = compactPromptSection(detail, 120)
+	if detail == "" {
+		return fmt.Sprintf("review %d/%d %s", step, total, stage)
+	}
+	return fmt.Sprintf("review %d/%d %s: %s", step, total, stage, detail)
+}
+
+func compactReviewPipelineStageName(step int, fallback string) string {
+	switch step {
+	case 1:
+		return "scope"
+	case 2:
+		return "evidence"
+	case 3:
+		return "models"
+	case 4:
+		return "merge"
+	case 5:
+		return "gate"
+	case 6:
+		return "next"
+	default:
+		return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(fallback)), " ", "_")
+	}
 }
 
 func reviewProgressSentence(text string) string {

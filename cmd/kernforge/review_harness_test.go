@@ -2012,7 +2012,7 @@ func TestPreWriteCrossReviewerUsesLongerSoftTimeoutForLocalModel(t *testing.T) {
 }
 
 func TestReviewProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
-	cfg := Config{AutoLocale: boolPtr(false)}
+	cfg := Config{AutoLocale: boolPtr(false), ProgressDisplay: "stream"}
 	var progress []string
 	rt := &runtimeState{
 		cfg: cfg,
@@ -2038,6 +2038,42 @@ func TestReviewProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
 	}
 	if strings.Contains(progress[0], "..") || strings.Contains(progress[1], "..") {
 		t.Fatalf("progress lines should not contain doubled sentence punctuation: %#v", progress)
+	}
+}
+
+func TestReviewProgressCompactOmitsFullFlowDiagnostics(t *testing.T) {
+	for _, mode := range []string{"compact", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := Config{AutoLocale: boolPtr(false), ProgressDisplay: mode}
+			var progress []string
+			rt := &runtimeState{
+				cfg: cfg,
+				agent: &Agent{
+					Config: cfg,
+					EmitProgress: func(message string) {
+						progress = append(progress, message)
+					},
+				},
+			}
+
+			emitReviewPipelineProgress(rt, ReviewRun{}, 1, "scope discovery", "범위 확인", "Find the files.", "파일을 찾습니다.")
+			emitReviewPipelineProgress(rt, ReviewRun{}, 2, "evidence pack", "증거 준비", "Collect evidence.", "증거를 모읍니다.")
+
+			if len(progress) != 2 {
+				t.Fatalf("expected two progress lines, got %#v", progress)
+			}
+			for _, line := range progress {
+				if strings.Contains(line, "Full flow") || strings.Contains(line, "전체 흐름") || strings.Contains(line, "phase=") {
+					t.Fatalf("compact progress should omit full-flow diagnostics, got %#v", progress)
+				}
+				if !strings.HasPrefix(line, "review ") {
+					t.Fatalf("compact progress should use short review prefix, got %q", line)
+				}
+			}
+			if !strings.Contains(progress[0], "review 1/6 scope") || !strings.Contains(progress[1], "review 2/6 evidence") {
+				t.Fatalf("unexpected compact progress lines: %#v", progress)
+			}
+		})
 	}
 }
 
@@ -2474,6 +2510,7 @@ func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
 	cfg.Provider = "lmstudio"
 	cfg.Model = "qwen-local"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.ProgressDisplay = "stream"
 	agent := &Agent{
 		Config:    cfg,
 		Client:    localClient,
@@ -2608,6 +2645,7 @@ func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 	cfg.Provider = "lmstudio"
 	cfg.Model = "qwen-local"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.ProgressDisplay = "stream"
 	agent := &Agent{
 		Config:    cfg,
 		Client:    localClient,
@@ -2734,6 +2772,7 @@ func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 	cfg.Provider = "lmstudio"
 	cfg.Model = "qwen-local"
 	cfg.AutoLocale = boolPtr(false)
+	cfg.ProgressDisplay = "stream"
 	agent := &Agent{
 		Config:    cfg,
 		Client:    localClient,
@@ -11480,7 +11519,7 @@ func TestPrintReviewRunExplainsNextCommands(t *testing.T) {
 		},
 	}
 
-	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
+	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false), ProgressDisplay: "stream"}, run)
 	for _, needle := range []string{
 		"다음 명령:",
 		"- /verify --full\n  이유: 변경된 파일에 대한 최신 빌드/테스트 근거가 없습니다.",
@@ -11496,6 +11535,92 @@ func TestPrintReviewRunExplainsNextCommands(t *testing.T) {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected next-command output to contain %q, got %q", needle, rendered)
 		}
+	}
+}
+
+func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
+	run := ReviewRun{
+		ID:        "review-next",
+		Objective: "@SampleApp/SampleMaster/CaptureHelper.cpp:45-145 리뷰해줘",
+		Target:    reviewTargetSelection,
+		Mode:      reviewModeGeneralChange,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+			NextCommands: []ReviewNextCommand{
+				{
+					ID:         "repair",
+					Command:    "/continuity continue from review",
+					Reason:     "blocking findings need a focused repair pass",
+					Safety:     "safe_local",
+					ClientHint: "Use the repair prompt in the review artifact.",
+				},
+				{
+					ID:                   "cross-review-triage",
+					Command:              "/continuity continue from review",
+					Reason:               "cross-review triage has findings that need a user or primary repair decision",
+					Safety:               "safe_local",
+					RequiresConfirmation: true,
+					ClientHint:           "Repair or triage the cross-review finding.",
+				},
+			},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-001",
+			Severity:    reviewSeverityHigh,
+			Title:       "범위 검사가 누락됨",
+			RequiredFix: "읽기 전에 버퍼 크기를 검증하세요.",
+			BlocksGate:  true,
+		}},
+		ArtifactRefs: []string{"C:/tmp/review.md"},
+	}
+	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false), ProgressDisplay: "compact"}, run)
+	if strings.Count(rendered, "/continuity continue from review") != 1 {
+		t.Fatalf("compact output should show duplicate next command once, got:\n%s", rendered)
+	}
+	for _, want := range []string{
+		"리뷰 review-next: needs_revision",
+		"- 발견: 1 blocker=1 warning=0 note=0",
+		"[RF-001] high: 범위 검사가 누락됨",
+		"보고서: C:/tmp/review.md",
+		"다음 명령:",
+		"확인 필요=true",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected compact review output to contain %q, got:\n%s", want, rendered)
+		}
+	}
+	if strings.Contains(rendered, "라이프사이클") || strings.Contains(rendered, "리뷰어 경로") || strings.Contains(rendered, "자동 실행") {
+		t.Fatalf("compact output should omit verbose lifecycle/route/next-command fields, got:\n%s", rendered)
+	}
+	assertStringOrder(t, rendered,
+		"리뷰 review-next: needs_revision",
+		"- 발견: 1 blocker=1 warning=0 note=0",
+		"[RF-001] high: 범위 검사가 누락됨",
+		"보고서: C:/tmp/review.md",
+		"다음 명령:")
+	md := renderReviewRunMarkdown(run)
+	if strings.Count(md, "/continuity continue from review") < 2 {
+		t.Fatalf("markdown artifact should preserve full duplicate next-command detail, got:\n%s", md)
+	}
+	mcp := renderReviewMCPResponse(run, 20000)
+	if strings.Count(mcp, "/continuity continue from review") < 2 {
+		t.Fatalf("MCP response should preserve full duplicate next-command detail, got:\n%s", mcp)
+	}
+}
+
+func assertStringOrder(t *testing.T, text string, needles ...string) {
+	t.Helper()
+	last := -1
+	for _, needle := range needles {
+		idx := strings.Index(text, needle)
+		if idx < 0 {
+			t.Fatalf("expected output to contain %q, got:\n%s", needle, text)
+		}
+		if idx < last {
+			t.Fatalf("expected %q to appear after previous needle in:\n%s", needle, text)
+		}
+		last = idx
 	}
 }
 

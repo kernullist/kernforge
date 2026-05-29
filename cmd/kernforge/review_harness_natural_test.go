@@ -921,6 +921,68 @@ func TestReviewRepairFollowUpUsesLatestBlockingReview(t *testing.T) {
 	}
 }
 
+func TestReviewRepairFollowUpWithExplicitRFIDScopesRepairGuidance(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:        "review-1",
+		Trigger:   reviewBeforeFixTrigger,
+		Objective: "@Tavern/TavernMaster/TaverDartManager.cpp CreateDartProcess 함수에 버그가 있는지 검토해줘",
+		Target:    reviewTargetChange,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001", "RF-004"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          "RF-001",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Title:       "CreateProcessW lpCommandLine const pointer",
+				RequiredFix: "수정 가능한 command line 버퍼를 전달하세요.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-004",
+				Severity:    reviewSeverityHigh,
+				Category:    "correctness",
+				Title:       "따옴표 없는 경로와 nullptr lpApplicationName",
+				RequiredFix: "lpApplicationName에 실행 파일 경로를 명시하세요.",
+				BlocksGate:  true,
+			},
+		},
+	}
+	agent := &Agent{
+		Config:  DefaultConfig(root),
+		Session: session,
+		Store:   NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	if !agent.maybePrimeRepairFromLastReview("RF-004 수정해줘", nil, false, true) {
+		t.Fatalf("expected latest review to be injected as scoped repair guidance")
+	}
+	latest := latestUserMessageText(session.Messages)
+	if !strings.Contains(latest, "RF-004") || !strings.Contains(latest, "따옴표 없는 경로") {
+		t.Fatalf("expected requested RF in scoped repair guidance, got %q", latest)
+	}
+	if strings.Contains(latest, "RF-001") || strings.Contains(latest, "const pointer") {
+		t.Fatalf("did not expect unrequested RF in scoped repair guidance, got %q", latest)
+	}
+	if !strings.Contains(latest, "나열되지 않은 RF") {
+		t.Fatalf("expected explicit no-broaden guidance, got %q", latest)
+	}
+	if len(session.LastReviewRun.RepairFindings) != 1 || session.LastReviewRun.RepairFindings[0].ID != "RF-004" {
+		t.Fatalf("expected carried repair findings to be scoped to RF-004, got %#v", session.LastReviewRun.RepairFindings)
+	}
+	obligations := preFixRepairObligationFindings(*session.LastReviewRun)
+	if len(obligations) != 1 || obligations[0].ID != "RF-004" {
+		t.Fatalf("expected pre-fix obligations to stay scoped to RF-004, got %#v", obligations)
+	}
+	if session.TaskState == nil || strings.Contains(session.TaskState.ReviewerGuidance, "RF-001") {
+		t.Fatalf("expected task state reviewer guidance to stay scoped, got %#v", session.TaskState)
+	}
+}
+
 func TestReviewBeforeFixUsesFileMentionAsFileEvidence(t *testing.T) {
 	root := t.TempDir()
 	rt := &runtimeState{

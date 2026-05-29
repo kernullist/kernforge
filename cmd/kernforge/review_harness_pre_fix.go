@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
 const reviewBeforeFixTrigger = "pre_fix"
+
+var reviewFindingIDReferencePattern = regexp.MustCompile(`(?i)\bRF[\s_-]*(?:[A-Z]+[\s_-]*)?\d{1,6}\b`)
 
 func reviewNarrowPatchGuidance(korean bool) string {
 	if korean {
@@ -248,12 +251,17 @@ func (a *Agent) maybePrimeRepairFromLastReview(userText string, images []Message
 	if run == nil || !reviewRunNeedsRepair(*run) {
 		return false
 	}
-	feedback := formatReviewRepairFollowUpFeedback(*run)
+	repairRun := *run
+	if scoped, ok := scopeReviewRunToRequestedRepairFindings(*run, userText); ok {
+		repairRun = scoped
+		a.Session.LastReviewRun.RepairFindings = normalizeReviewFindingCopies(scoped.RepairFindings)
+	}
+	feedback := formatReviewRepairFollowUpFeedback(repairRun)
 	if proposal := formatLatestEditProposalForUserDecision(a.Config, a.Session); proposal != "" {
 		feedback += "\n\n" + proposal
 	}
 	a.Session.AddMessage(internalUserMessage(feedback))
-	a.primeTaskStateFromReviewBeforeFix(*run)
+	a.primeTaskStateFromReviewBeforeFix(repairRun)
 	if a.EmitProgress != nil {
 		a.EmitProgress(localizedTextForReviewRequest(a.Config, userText, "Continuing from latest review findings...", "최신 리뷰 결과를 기준으로 수정 흐름을 이어갑니다..."))
 	}
@@ -298,6 +306,119 @@ func looksLikeReviewRepairFollowUpIntent(input string) bool {
 	return containsAny(lower,
 		"수정", "고쳐", "고치", "해결", "반영", "패치", "진행", "이어",
 		"fix", "repair", "patch", "address", "apply", "continue")
+}
+
+func scopeReviewRunToRequestedRepairFindings(run ReviewRun, userText string) (ReviewRun, bool) {
+	requestedIDs := reviewFindingIDsReferencedByText(userText)
+	if len(requestedIDs) == 0 {
+		return ReviewRun{}, false
+	}
+	requestedSet := reviewFindingIDSet(requestedIDs)
+	selected := make([]ReviewFinding, 0, len(requestedSet))
+	for _, finding := range run.Findings {
+		finding.Normalize()
+		findingID := canonicalReviewFindingIDReference(finding.ID)
+		if findingID == "" {
+			findingID = strings.ToUpper(strings.TrimSpace(finding.ID))
+		}
+		if findingID == "" || !requestedSet[findingID] {
+			continue
+		}
+		finding.ID = findingID
+		selected = append(selected, finding)
+	}
+	if len(selected) == 0 {
+		return ReviewRun{}, false
+	}
+	scoped := run
+	scoped.Findings = normalizeReviewFindingCopies(selected)
+	scoped.RepairFindings = normalizeReviewFindingCopies(selected)
+	scoped.Gate.BlockingFindings = filterReviewFindingIDs(run.Gate.BlockingFindings, requestedSet)
+	scoped.Gate.WarningFindings = filterReviewFindingIDs(run.Gate.WarningFindings, requestedSet)
+	if len(scoped.Gate.BlockingFindings) == 0 && len(scoped.Gate.WarningFindings) == 0 {
+		for _, finding := range selected {
+			finding.Normalize()
+			if strings.TrimSpace(finding.ID) != "" {
+				scoped.Gate.BlockingFindings = append(scoped.Gate.BlockingFindings, finding.ID)
+			}
+		}
+	}
+	scoped.Gate.BlockingFindings = normalizeTaskStateList(scoped.Gate.BlockingFindings, 64)
+	scoped.Gate.WarningFindings = normalizeTaskStateList(scoped.Gate.WarningFindings, 64)
+	scoped.RepairPlan = buildReviewRepairPlan(scoped)
+	return scoped, true
+}
+
+func reviewFindingIDsReferencedByText(text string) []string {
+	matches := reviewFindingIDReferencePattern.FindAllString(strings.TrimSpace(text), -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	seen := map[string]bool{}
+	for _, match := range matches {
+		id := canonicalReviewFindingIDReference(match)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func canonicalReviewFindingIDReference(value string) string {
+	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	if trimmed == "" {
+		return ""
+	}
+	fields := strings.FieldsFunc(trimmed, func(r rune) bool {
+		return r == '-' || r == '_' || r == ' ' || r == '\t' || r == '\r' || r == '\n'
+	})
+	if len(fields) < 2 {
+		if !strings.HasPrefix(trimmed, "RF") {
+			return ""
+		}
+		suffix := strings.TrimSpace(strings.TrimPrefix(trimmed, "RF"))
+		if suffix == "" {
+			return ""
+		}
+		fields = []string{"RF", suffix}
+	}
+	if fields[0] != "RF" {
+		return ""
+	}
+	last := fields[len(fields)-1]
+	if last == "" {
+		return ""
+	}
+	for _, r := range last {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	if len(last) < 3 {
+		last = strings.Repeat("0", 3-len(last)) + last
+	}
+	fields[len(fields)-1] = last
+	return strings.Join(fields, "-")
+}
+
+func filterReviewFindingIDs(ids []string, allowed map[string]bool) []string {
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		normalized := canonicalReviewFindingIDReference(id)
+		if normalized == "" {
+			normalized = strings.ToUpper(strings.TrimSpace(id))
+		}
+		if normalized == "" || !allowed[normalized] || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+	}
+	return out
 }
 
 func reviewRunNeedsRepair(run ReviewRun) bool {
@@ -872,8 +993,16 @@ func formatReviewRepairFollowUpFeedback(run ReviewRun) string {
 	var b strings.Builder
 	if korean {
 		b.WriteString("직전 리뷰의 차단 finding을 수정하는 후속 요청입니다. 아래 리뷰 결과를 수리 지침으로 사용해서 바로 수정하세요.")
+		if len(run.RepairFindings) > 0 {
+			b.WriteString("\n- 이번 수리 범위는 아래에 나열된 RF 항목으로 제한됩니다. 나열되지 않은 RF를 의도적으로 고치거나 해결했다고 보고하지 마세요.")
+			b.WriteString("\n- 선택된 RF가 다른 RF와 분리 불가능하게 결합되어 있다면, 편집을 넓히기 전에 결합 사유를 보고하고 사용자의 결정을 기다리세요.")
+		}
 	} else {
 		b.WriteString("This is a follow-up repair request for the latest blocking review findings. Use the review below as the repair guide and proceed directly.")
+		if len(run.RepairFindings) > 0 {
+			b.WriteString("\n- The repair scope is limited to the RF items listed below. Do not intentionally fix or report unlisted RFs as resolved.")
+			b.WriteString("\n- If a selected RF is inseparably coupled to another RF, report the coupling and wait for the user's decision before broadening the edit.")
+		}
 	}
 	b.WriteString("\n\n")
 	b.WriteString(formatReviewBeforeFixFeedback(run))

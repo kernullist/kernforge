@@ -959,6 +959,9 @@ func preFixRepairObligationFindings(run ReviewRun) []ReviewFinding {
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		return nil
 	}
+	if len(run.RepairFindings) > 0 {
+		return preWriteCarriedRepairObligations(run.RepairFindings)
+	}
 	blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
 	warningIDs := reviewFindingIDSet(run.Gate.WarningFindings)
 	out := make([]ReviewFinding, 0, len(run.Findings))

@@ -164,12 +164,13 @@ func TestOperatorStatusDetailIncludesLifecycleTimelineAndEvidenceRefs(t *testing
 
 func TestOperatorProgressLinesArePhaseAwareAndNonRepeated(t *testing.T) {
 	var progress []string
+	cfg := Config{AutoLocale: boolPtr(false), ProgressDisplay: "stream"}
 	agent := &Agent{
-		Config:       Config{AutoLocale: boolPtr(false)},
+		Config:       cfg,
 		EmitProgress: func(message string) { progress = append(progress, message) },
 	}
 	rt := &runtimeState{
-		cfg:   Config{AutoLocale: boolPtr(false)},
+		cfg:   cfg,
 		agent: agent,
 	}
 

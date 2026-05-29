@@ -674,6 +674,13 @@ func reviewRunLocalizedText(cfg Config, run ReviewRun, english string, korean st
 }
 
 func renderReviewCLIResult(cfg Config, run ReviewRun) string {
+	if configProgressDisplay(cfg) == "stream" {
+		return renderReviewCLIResultDetailed(cfg, run)
+	}
+	return renderReviewCLIResultCompact(cfg, run)
+}
+
+func renderReviewCLIResultDetailed(cfg Config, run ReviewRun) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, run.Gate.Verdict)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
@@ -748,6 +755,73 @@ func renderReviewCLIResult(cfg Config, run ReviewRun) string {
 		for _, cmd := range run.Gate.NextCommands {
 			renderReviewCLINextCommand(&b, cfg, run, cmd)
 		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func renderReviewCLIResultCompact(cfg Config, run ReviewRun) string {
+	var b strings.Builder
+	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
+	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, verdict)
+	noteCount := reviewCLINoteFindingCount(run)
+	fmt.Fprintf(&b, "- %s: %d blocker=%d warning=%d note=%d\n",
+		reviewRunLocalizedText(cfg, run, "Findings", "발견"),
+		len(run.Findings),
+		len(run.Gate.BlockingFindings),
+		len(run.Gate.WarningFindings),
+		noteCount)
+	if strings.TrimSpace(run.Gate.Action) != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 액션"), run.Gate.Action)
+	}
+	if strings.TrimSpace(run.Target) != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
+	}
+	if strings.TrimSpace(run.Mode) != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "모드"), run.Mode)
+	}
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Request class", "요청 class"), class)
+	}
+	rendered := map[string]bool{}
+	for _, finding := range run.Findings {
+		if reviewFindingBlocksGate(run, finding) {
+			renderReviewCLIFinding(&b, cfg, run, finding, reviewRunLocalizedText(cfg, run, "Fix", "수정"))
+			rendered[finding.ID] = true
+		}
+	}
+	warnings := reviewCLIWarningFindings(run)
+	if len(warnings) > 0 {
+		fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Warnings", "경고"))
+		for _, finding := range warnings {
+			if rendered[finding.ID] {
+				continue
+			}
+			renderReviewCLIFinding(&b, cfg, run, finding, reviewRunLocalizedText(cfg, run, "Suggested fix", "권장 조치"))
+			rendered[finding.ID] = true
+		}
+	}
+	if len(run.Gate.BlockingFindings) == 0 && len(warnings) == 0 {
+		infoFindings := reviewCLIInfoFindings(run)
+		if len(infoFindings) > 0 {
+			fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Notes", "참고"))
+			for _, finding := range infoFindings {
+				if rendered[finding.ID] {
+					continue
+				}
+				renderReviewCLIFinding(&b, cfg, run, finding, reviewRunLocalizedText(cfg, run, "Note", "참고"))
+				rendered[finding.ID] = true
+			}
+		}
+	}
+	if line := renderReviewCLITriageResidualRisk(cfg, run); line != "" {
+		fmt.Fprintf(&b, "\n%s\n", line)
+	}
+	if len(run.ArtifactRefs) > 0 {
+		fmt.Fprintf(&b, "\n%s: %s\n", reviewRunLocalizedText(cfg, run, "Report", "보고서"), run.ArtifactRefs[0])
+	}
+	if cmd, ok := compactReviewCLIRecommendedNextCommand(cfg, run); ok {
+		fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Next command", "다음 명령"))
+		renderReviewCLICompactNextCommand(&b, cfg, run, cmd)
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -854,6 +928,65 @@ func renderReviewCLINextCommand(b *strings.Builder, cfg Config, run ReviewRun, c
 		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Action", "실행 방법"), hint)
 	}
 	if expected := reviewNextCommandExpectedResultText(cfg, run, cmd); strings.TrimSpace(expected) != "" {
+		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Expected result", "예상 결과"), expected)
+	}
+}
+
+func compactReviewCLIRecommendedNextCommand(cfg Config, run ReviewRun) (ReviewNextCommand, bool) {
+	commands := compactReviewCLINextCommands(cfg, run)
+	if len(commands) == 0 {
+		return ReviewNextCommand{}, false
+	}
+	return commands[0], true
+}
+
+func compactReviewCLINextCommands(cfg Config, run ReviewRun) []ReviewNextCommand {
+	seen := map[string]int{}
+	var out []ReviewNextCommand
+	for _, cmd := range run.Gate.NextCommands {
+		command := strings.TrimSpace(cmd.Command)
+		if command == "" {
+			continue
+		}
+		key := strings.ToLower(command)
+		if idx, ok := seen[key]; ok {
+			merged := out[idx]
+			merged.RequiresConfirmation = merged.RequiresConfirmation || cmd.RequiresConfirmation
+			merged.AutoRun = merged.AutoRun || cmd.AutoRun
+			if strings.TrimSpace(merged.Reason) != "" && strings.TrimSpace(cmd.Reason) != "" && !strings.Contains(merged.Reason, cmd.Reason) {
+				merged.Reason = compactPromptSection(merged.Reason+"; "+cmd.Reason, 240)
+			} else if strings.TrimSpace(merged.Reason) == "" {
+				merged.Reason = cmd.Reason
+			}
+			if strings.TrimSpace(merged.ClientHint) == "" {
+				merged.ClientHint = cmd.ClientHint
+			}
+			if strings.TrimSpace(merged.ExpectedResult) == "" {
+				merged.ExpectedResult = cmd.ExpectedResult
+			}
+			out[idx] = merged
+			continue
+		}
+		seen[key] = len(out)
+		out = append(out, cmd)
+	}
+	return out
+}
+
+func renderReviewCLICompactNextCommand(b *strings.Builder, cfg Config, run ReviewRun, cmd ReviewNextCommand) {
+	fmt.Fprintf(b, "- %s", cmd.Command)
+	fmt.Fprintf(b, " (%s=%t)", reviewRunLocalizedText(cfg, run, "requires_confirmation", "확인 필요"), cmd.RequiresConfirmation)
+	b.WriteString("\n")
+	if reason := compactPromptSection(reviewNextCommandReasonText(cfg, run, cmd), 180); strings.TrimSpace(reason) != "" {
+		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Reason", "이유"), reason)
+	}
+	if when := compactPromptSection(reviewNextCommandWhenText(cfg, run, cmd), 180); strings.TrimSpace(when) != "" {
+		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "When", "시점"), when)
+	}
+	if hint := compactPromptSection(reviewNextCommandHintText(cfg, run, cmd), 220); strings.TrimSpace(hint) != "" {
+		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Action", "실행 방법"), hint)
+	}
+	if expected := compactPromptSection(reviewNextCommandExpectedResultText(cfg, run, cmd), 220); strings.TrimSpace(expected) != "" {
 		fmt.Fprintf(b, "  %s: %s\n", reviewRunLocalizedText(cfg, run, "Expected result", "예상 결과"), expected)
 	}
 }

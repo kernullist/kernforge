@@ -3131,10 +3131,10 @@ func TestDefaultConfigEnablesAutoVerify(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigUsesStreamProgressDisplay(t *testing.T) {
+func TestDefaultConfigUsesCompactProgressDisplay(t *testing.T) {
 	cfg := DefaultConfig(filepath.Join("workspace", "repo"))
-	if got := configProgressDisplay(cfg); got != "stream" {
-		t.Fatalf("expected progress display stream, got %q", got)
+	if got := configProgressDisplay(cfg); got != "compact" {
+		t.Fatalf("expected progress display compact, got %q", got)
 	}
 }
 

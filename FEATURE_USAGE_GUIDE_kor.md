@@ -65,7 +65,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 8. 반복 blank streamed chunk는 빈 줄 대신 compact working 상태로 바꿔 보여준다.
 9. 최종 streamed 답변이 문장 중간에서 끊겨 보이면 모델에게 한 번 continuation을 요청하고, 이어진 답을 합쳐서 프롬프트로 복귀한다.
 10. 메인 프롬프트에서 빈 상태로 `Enter`를 눌러도 빈 턴을 만들지 않고 무시한다.
-11. `progress_display`가 진행 표시 방식을 제어하며 기본값은 긴 작업의 진행 이력을 남기기 위한 `stream`이다. `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있고, config key를 그대로 친 `/progress_display ...`도 같은 명령으로 처리된다. `auto`는 tool/model/route와 project analysis ledger를 transcript에 남기고 고빈도 shell tail 출력은 transient로 유지하며, `compact`는 footer 중심, `stream`은 모든 update 지속 기록 방식이다.
+11. `progress_display`가 진행 표시 방식을 제어하며 기본값은 일반 review/coding 작업을 읽기 쉽게 유지하는 `compact`이다. `/progress-display auto|compact|stream`으로 REPL에서 바로 바꿀 수 있고, config key를 그대로 친 `/progress_display ...`도 같은 명령으로 처리된다. `compact`는 짧은 progress를 footer 중심으로 보여주고, `auto`는 반복적인 상세 review flow text 없이 durable tool/model/route와 project analysis event를 남기며, `stream`은 상세 디버깅용으로 모든 update를 지속 기록한다.
 12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
 13. DeepSeek와 OpenAI-compatible follow-up request는 저장된 tool transcript를 replay 전에 정규화한다. 고아 `tool` result는 일반 context로 바꾸고 빠진 tool-call response는 synthetic result로 채워서 복구된 세션이 provider의 message validation에서 거부되지 않게 한다.
 14. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.

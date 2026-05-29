@@ -3494,7 +3494,7 @@ func TestProgressDisplayCommandShowsAndSetsMode(t *testing.T) {
 	if _, err := rt.handleCommand(Command{Name: "progress-display"}); err != nil {
 		t.Fatalf("handleCommand(progress-display): %v", err)
 	}
-	if !strings.Contains(out.String(), "progress_display: stream") {
+	if !strings.Contains(out.String(), "progress_display: compact") {
 		t.Fatalf("expected current progress display, got %q", out.String())
 	}
 
