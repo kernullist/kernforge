@@ -1222,6 +1222,8 @@ Explain the structure of this repository
 /docs-refresh
 /analyze-performance [focus]
 /review plan <task>
+/review-soak --mode scripted
+/review-soak --mode real-provider --turns <N> --timeout <duration>
 /new-feature <task>
 /specialists
 /worktree [status|list|create [name]|enter|attach <path>|leave|cleanup]
@@ -1240,6 +1242,7 @@ Explain the structure of this repository
 - `/profile` lists saved profiles without changing anything in one-shot mode. If no main profile exists but a provider/model is already selected, Kernforge saves the current settings as the first profile and then shows the list. Main profiles also store their own analysis worker/reviewer and optional task-owner model override set. Changing those route models through `/model` updates the active main profile, and activating that profile restores the full set. Pass a number or action explicitly to activate, rename, delete, pin, or unpin.
 - User and workspace profile lists are merged on load, and saving unrelated settings preserves existing main profiles instead of dropping them when a save payload omits profile arrays.
 - `/model cross-review` is the single supported path for the optional `cross` review route. `design`, `security`, `false_positive`, `regression`, `test`, and `final_gate` are review lenses selected by the planner, not model routes.
+- `/review-soak --mode scripted` writes `.kernforge/soak/<timestamp>/` artifacts that exercise `document_artifact`, `review_only`, `implementation`, `modify_then_review`, `fix_from_review`, `analysis`, and `mixed_flow` across single-model and cross-model routes. `/review-soak --mode real-provider` only runs when `KERNFORGE_REAL_PROVIDER_SOAK=1` and uses `KERNFORGE_REAL_PROVIDER`, `KERNFORGE_REAL_MODEL`, `KERNFORGE_REAL_BASE_URL`, and `KERNFORGE_REAL_API_KEY`; missing config writes an explicit skipped report instead of failing the suite.
 - `/hooks` also prints the compact runtime gate summary, so hook/policy inspection and `/status` use the same freshness and next-command vocabulary.
 - `/set-analysis-models` configures dedicated worker and reviewer profiles for project analysis.
 - `/set-specialist-model ...` applies a workspace-scoped optional model override to one task owner profile.

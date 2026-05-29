@@ -909,6 +909,18 @@ func runtimeGateAttachRouteHealth(session *Session, ledger *RuntimeGateLedger, r
 			drill.Normalize()
 			ledger.LiveProviderDrill = &drill
 			ledger.RouteHealthEvents = append(ledger.RouteHealthEvents, drill.RouteHealthEvents...)
+			if liveProviderDrillBlocksFinalization(&drill) {
+				ledger.Blockers = appendTaskStateItem(ledger.Blockers, "live-provider soak blocks finalization: invalid reviewer evidence cannot approve final output", 32)
+				ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+					ID:             "live-provider-soak",
+					Command:        firstNonBlankString(drill.NextRecommendedCommand, "/status detail"),
+					Reason:         "live-provider soak final gate is blocked by reviewer route health or invalid evidence",
+					Safety:         "read_only",
+					When:           "before final answer or git write",
+					ClientHint:     "Inspect the soak report and rerun a scripted or real-provider soak after fixing the route.",
+					ExpectedResult: "The soak final gate is ready or the final answer explicitly discloses the remaining route limitation.",
+				})
+			}
 		}
 	}
 	ledger.RouteHealthEvents = dedupeReviewRouteHealthEvents(ledger.RouteHealthEvents, 32)

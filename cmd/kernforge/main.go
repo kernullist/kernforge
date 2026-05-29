@@ -6586,6 +6586,13 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err != nil {
 			return false, err
 		}
+	case "review-soak":
+		err := rt.runWithRequestCancelWatcher(context.Background(), func(ctx context.Context) error {
+			return rt.handleReviewSoakCommandWithContext(ctx, cmd.Args)
+		})
+		if err != nil {
+			return false, err
+		}
 	case "recover":
 		if err := rt.handleRecoverCommand(cmd.Args); err != nil {
 			return false, err

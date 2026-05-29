@@ -3233,6 +3233,7 @@ Conversation And Sessions:
 /jobs [status|check|bundle|cancel|cancel-bundle] Inspect or cancel persistent background shell work
 /automation [status|due|digest|monitor|watch|daemon-start|notify|run-due] Show or manage local verification and PR review automations
 /review [change|plan|selection|pr|final|goal|analysis] Run the common review harness and write .kernforge/reviews/latest.*
+/review-soak --mode scripted|real-provider [--turns N] [--timeout 2m] Run the bounded live-provider endurance soak and write .kernforge/soak artifacts
 /review pr [--draft-comments|--post-comments|--resolve-thread <id>|--create-issue] [--label <name>] [--assignee <login>] [--milestone <name>] Review a PR target, optionally with explicit GitHub writes
 /goal [start|run|status|audit|complete|cancel] Run a Codex-style autonomous goal loop from a prompt or markdown file
 /tasks                 Show the current task list

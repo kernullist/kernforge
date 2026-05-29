@@ -25,6 +25,7 @@ var slashCommands = []string{
 	"continuity",
 	"completion-audit",
 	"review",
+	"review-soak",
 	"recover",
 	"jobs",
 	"automation",
@@ -146,6 +147,7 @@ var slashCommandDescriptions = map[string]string{
 	"continuity":                 "Write a long-task continuity packet with recovery actions, worktrees, jobs, changed files, and next commands.",
 	"completion-audit":           "Write a completion readiness audit with blockers, warnings, verification, tasks, jobs, and artifact evidence.",
 	"review":                     "Run the common review harness for changes, plans, selections, PRs, goals, final answers, or analysis reports.",
+	"review-soak":                "Run the bounded live-provider soak and write status, MCP, Markdown, and runtime-gate artifacts.",
 	"recover":                    "Write a failure recovery brief with recent errors, verification failure, jobs, actions, and next commands.",
 	"jobs":                       "Inspect or cancel persistent background shell jobs and bundles from the terminal.",
 	"automation":                 "Manage reusable scheduled verification and PR review automation slots.",
@@ -786,6 +788,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"verify-dashboard-html": {"all"},
 		"model":                 {"status", "main", "analysis-worker", "analysis-reviewer", "cross-review", "clear", "task-owner"},
 		"review":                {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
+		"review-soak":           {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
 		"handoff":               {"import"},
 		"mem-prune":             {"all"},
 		"set-analysis-models":   {"status", "worker", "reviewer", "clear"},
@@ -952,6 +955,17 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		if strings.EqualFold(fields[0], "--mode") {
 			if len(fields) == 2 {
 				return reviewModes, 1, true
+			}
+			return nil, 0, false
+		}
+		return nil, 0, false
+	case "review-soak":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if strings.EqualFold(fields[0], "--mode") {
+			if len(fields) == 2 {
+				return []string{"scripted", "real-provider"}, 1, true
 			}
 			return nil, 0, false
 		}
