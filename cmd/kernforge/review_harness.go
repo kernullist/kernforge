@@ -166,24 +166,27 @@ type ReviewRun struct {
 }
 
 type ReviewRequestAnalysis struct {
-	OriginalRequest        string               `json:"original_request,omitempty"`
-	InferredTarget         string               `json:"inferred_target,omitempty"`
-	InferredMode           string               `json:"inferred_mode,omitempty"`
-	SelectedFlow           string               `json:"selected_flow,omitempty"`
-	RequestClass           string               `json:"request_class,omitempty"`
-	RequestClassReason     string               `json:"request_class_reason,omitempty"`
-	RequestClassConfidence float64              `json:"request_class_confidence,omitempty"`
-	RequestClassAmbiguous  bool                 `json:"request_class_ambiguous,omitempty"`
-	RequestClassSignals    []string             `json:"request_class_signals,omitempty"`
-	Confidence             float64              `json:"confidence,omitempty"`
-	EvidenceNeeds          []string             `json:"evidence_needs,omitempty"`
-	PolicyPacks            []string             `json:"policy_packs,omitempty"`
-	CandidateFlows         []string             `json:"candidate_flows,omitempty"`
-	DomainSignals          []ReviewDomainSignal `json:"domain_signals,omitempty"`
-	RiskSignals            []ReviewRiskSignal   `json:"risk_signals,omitempty"`
-	ScopeDiscovery         ReviewScopeDiscovery `json:"scope_discovery,omitempty"`
-	Reason                 string               `json:"reason,omitempty"`
-	AmbiguityWarnings      []string             `json:"ambiguity_warnings,omitempty"`
+	OriginalRequest         string               `json:"original_request,omitempty"`
+	InferredTarget          string               `json:"inferred_target,omitempty"`
+	InferredMode            string               `json:"inferred_mode,omitempty"`
+	SelectedFlow            string               `json:"selected_flow,omitempty"`
+	RequestClass            string               `json:"request_class,omitempty"`
+	LifecycleKind           string               `json:"lifecycle_kind,omitempty"`
+	MixedFlow               bool                 `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses []string             `json:"secondary_request_classes,omitempty"`
+	RequestClassReason      string               `json:"request_class_reason,omitempty"`
+	RequestClassConfidence  float64              `json:"request_class_confidence,omitempty"`
+	RequestClassAmbiguous   bool                 `json:"request_class_ambiguous,omitempty"`
+	RequestClassSignals     []string             `json:"request_class_signals,omitempty"`
+	Confidence              float64              `json:"confidence,omitempty"`
+	EvidenceNeeds           []string             `json:"evidence_needs,omitempty"`
+	PolicyPacks             []string             `json:"policy_packs,omitempty"`
+	CandidateFlows          []string             `json:"candidate_flows,omitempty"`
+	DomainSignals           []ReviewDomainSignal `json:"domain_signals,omitempty"`
+	RiskSignals             []ReviewRiskSignal   `json:"risk_signals,omitempty"`
+	ScopeDiscovery          ReviewScopeDiscovery `json:"scope_discovery,omitempty"`
+	Reason                  string               `json:"reason,omitempty"`
+	AmbiguityWarnings       []string             `json:"ambiguity_warnings,omitempty"`
 }
 
 type ReviewScopeDiscovery struct {

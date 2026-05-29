@@ -17,6 +17,9 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
 		fmt.Fprintf(&b, "- Request class: `%s`\n", class)
 	}
+	if kind := normalizeReviewLifecycleKind(firstNonBlankString(run.RequestAnalysis.LifecycleKind, reviewLifecycleKindForRun(&run))); kind != "" && kind != reviewLifecycleKindGeneral {
+		fmt.Fprintf(&b, "- Lifecycle kind: `%s`\n", kind)
+	}
 	if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
 		fmt.Fprintf(&b, "- Request class reason: %s\n", run.RequestAnalysis.RequestClassReason)
 	}
@@ -98,6 +101,15 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	if run.Lifecycle != nil {
 		b.WriteString("## Request Lifecycle\n\n")
 		fmt.Fprintf(&b, "- request_class: `%s`\n", run.Lifecycle.RequestClass)
+		if strings.TrimSpace(run.Lifecycle.LifecycleKind) != "" {
+			fmt.Fprintf(&b, "- lifecycle_kind: `%s`\n", run.Lifecycle.LifecycleKind)
+		}
+		if run.Lifecycle.MixedFlow {
+			fmt.Fprintf(&b, "- mixed_flow: `%t`\n", run.Lifecycle.MixedFlow)
+		}
+		if len(run.Lifecycle.SecondaryRequestClasses) > 0 {
+			fmt.Fprintf(&b, "- secondary_request_classes: `%s`\n", strings.Join(run.Lifecycle.SecondaryRequestClasses, "`, `"))
+		}
 		fmt.Fprintf(&b, "- phase: `%s`\n", run.Lifecycle.Phase)
 		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
 			fmt.Fprintf(&b, "- route_mode: `%s`\n", run.Lifecycle.RouteMode)
@@ -209,6 +221,9 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		b.WriteString("## Final Answer Contract\n\n")
 		fmt.Fprintf(&b, "- status: `%s`\n", finalContract.Status)
 		fmt.Fprintf(&b, "- request_class: `%s`\n", finalContract.RequestClass)
+		if strings.TrimSpace(finalContract.LifecycleKind) != "" {
+			fmt.Fprintf(&b, "- lifecycle_kind: `%s`\n", finalContract.LifecycleKind)
+		}
 		if strings.TrimSpace(finalContract.Reason) != "" {
 			fmt.Fprintf(&b, "- reason: %s\n", finalContract.Reason)
 		}

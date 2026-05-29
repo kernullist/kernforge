@@ -9027,15 +9027,17 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 	}
 	intent := classifyTurnIntent(latestUser)
 	classDecision := classifyAcceptanceContractRequestClassDecision(latestUser, intent, prefersReadOnlyAnalysisIntent(latestUser) || looksLikeReviewInspectionOnlyRequest(latestUser), looksLikeExplicitEditIntent(latestUser))
+	classDecision = applyReviewLifecycleKindToDecision(classDecision, latestUser, intent, "", "system_prompt")
 	requestClass, requestClassReason := classDecision.RequestClass, classDecision.Reason
 	var b strings.Builder
 	b.WriteString("Codex-grade request handling:\n")
 	fmt.Fprintf(&b, "- Review route mode: %s.\n", routeMode)
 	fmt.Fprintf(&b, "- Request class: %s (%s; confidence=%.2f; ambiguous=%t).\n", requestClass, requestClassReason, classDecision.Confidence, classDecision.Ambiguous)
+	fmt.Fprintf(&b, "- Lifecycle kind: %s.\n", classDecision.LifecycleKind)
 	if len(classDecision.AmbiguityWarnings) > 0 {
 		fmt.Fprintf(&b, "- Classification ambiguity: %s.\n", strings.Join(classDecision.AmbiguityWarnings, " | "))
 	}
-	b.WriteString("- Classify the latest external request before acting as review_only, document_artifact, review_then_modify, modify_then_review, verification_only, or validation_only.\n")
+	b.WriteString("- Classify the latest external request before acting with request_class review_only, document_artifact, review_then_modify, modify_then_review, verification_only, or validation_only, plus lifecycle_kind such as implementation, fix_from_review, analysis, or mixed_flow.\n")
 	b.WriteString("- Inspect current repository state before making assumptions, and preserve unrelated user changes in a dirty worktree.\n")
 	b.WriteString("- For review-only requests, use a code-review stance: findings first, ordered by severity, with concrete file/function/line evidence when available; do not edit files unless the user asks for a fix.\n")
 	b.WriteString("- For document_artifact requests, use artifact-quality checks as the primary gate: artifact exists, requested topic is covered, content is not placeholder/TODO-only, and verification claims are not unsupported.\n")

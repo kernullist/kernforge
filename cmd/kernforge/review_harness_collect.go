@@ -47,6 +47,7 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		flow = reviewFlowForTargetMode(target, mode)
 	}
 	requestClassDecision := classifyReviewRequestClassDecision(rt, root, opts, target, mode, discovery)
+	requestClassDecision = applyReviewLifecycleKindToDecision(requestClassDecision, request, classifyTurnIntent(request), target, firstNonBlankString(opts.Trigger, mode))
 	requestClass, requestClassReason := requestClassDecision.RequestClass, requestClassDecision.Reason
 	packs := reviewPolicyPacksFor(target, mode, append([]string(nil), opts.Paths...), request)
 	packs = analysisUniqueStrings(append(packs, reviewPolicyPacksForScopeDiscovery(discovery, domainSignals)...))
@@ -69,24 +70,27 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		confidence = requestClassDecision.Confidence
 	}
 	return ReviewRequestAnalysis{
-		OriginalRequest:        request,
-		InferredTarget:         target,
-		InferredMode:           mode,
-		SelectedFlow:           flow,
-		RequestClass:           requestClass,
-		RequestClassReason:     requestClassReason,
-		RequestClassConfidence: requestClassDecision.Confidence,
-		RequestClassAmbiguous:  requestClassDecision.Ambiguous,
-		RequestClassSignals:    requestClassDecision.Signals,
-		Confidence:             confidence,
-		EvidenceNeeds:          reviewEvidenceNeeds(target, mode),
-		PolicyPacks:            packs,
-		CandidateFlows:         reviewCandidateFlows(target, mode),
-		DomainSignals:          domainSignals,
-		RiskSignals:            riskSignals,
-		ScopeDiscovery:         discovery,
-		Reason:                 reason,
-		AmbiguityWarnings:      warnings,
+		OriginalRequest:         request,
+		InferredTarget:          target,
+		InferredMode:            mode,
+		SelectedFlow:            flow,
+		RequestClass:            requestClass,
+		LifecycleKind:           requestClassDecision.LifecycleKind,
+		MixedFlow:               requestClassDecision.MixedFlow,
+		SecondaryRequestClasses: requestClassDecision.SecondaryRequestClasses,
+		RequestClassReason:      requestClassReason,
+		RequestClassConfidence:  requestClassDecision.Confidence,
+		RequestClassAmbiguous:   requestClassDecision.Ambiguous,
+		RequestClassSignals:     requestClassDecision.Signals,
+		Confidence:              confidence,
+		EvidenceNeeds:           reviewEvidenceNeeds(target, mode),
+		PolicyPacks:             packs,
+		CandidateFlows:          reviewCandidateFlows(target, mode),
+		DomainSignals:           domainSignals,
+		RiskSignals:             riskSignals,
+		ScopeDiscovery:          discovery,
+		Reason:                  reason,
+		AmbiguityWarnings:       warnings,
 	}
 }
 

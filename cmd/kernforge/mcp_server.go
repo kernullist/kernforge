@@ -1743,6 +1743,7 @@ func (s *kernforgeMCPServer) toolStatus(ctx context.Context, args map[string]any
 		"function_fuzz_runs":           functionFuzzRuns,
 		"fuzz_campaigns":               fuzzCampaigns,
 		"latest_analysis":              latest,
+		"lifecycle_kind":               reviewCompactLifecycleKind(compact),
 		"lifecycle_timeline":           timeline,
 		"compact_status":               compact,
 		"blocker_summary":              blockers,

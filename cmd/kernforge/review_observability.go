@@ -13,6 +13,9 @@ type ReviewDecisionObservability struct {
 	Mode                     string                            `json:"mode,omitempty"`
 	Flow                     string                            `json:"flow,omitempty"`
 	RequestClass             string                            `json:"request_class,omitempty"`
+	LifecycleKind            string                            `json:"lifecycle_kind,omitempty"`
+	MixedFlow                bool                              `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses  []string                          `json:"secondary_request_classes,omitempty"`
 	Lifecycle                *ReviewRequestLifecycle           `json:"lifecycle,omitempty"`
 	LifecycleTimeline        []ReviewLifecyclePhase            `json:"lifecycle_timeline,omitempty"`
 	CompactStatus            *ReviewCompactStatus              `json:"compact_status,omitempty"`
@@ -98,13 +101,16 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 		copyRun.ObligationLedger = buildReviewObligationLedger(copyRun)
 	}
 	summary := &ReviewDecisionObservability{
-		ReviewID:     copyRun.ID,
-		Trigger:      strings.TrimSpace(copyRun.Trigger),
-		Target:       strings.TrimSpace(copyRun.Target),
-		Mode:         strings.TrimSpace(copyRun.Mode),
-		Flow:         strings.TrimSpace(copyRun.Flow),
-		RequestClass: normalizeReviewRequestClass(firstNonBlankString(copyRun.RequestClass, copyRun.RequestAnalysis.RequestClass)),
-		Lifecycle:    copyRun.Lifecycle,
+		ReviewID:                copyRun.ID,
+		Trigger:                 strings.TrimSpace(copyRun.Trigger),
+		Target:                  strings.TrimSpace(copyRun.Target),
+		Mode:                    strings.TrimSpace(copyRun.Mode),
+		Flow:                    strings.TrimSpace(copyRun.Flow),
+		RequestClass:            normalizeReviewRequestClass(firstNonBlankString(copyRun.RequestClass, copyRun.RequestAnalysis.RequestClass)),
+		LifecycleKind:           reviewLifecycleKindForRun(&copyRun),
+		MixedFlow:               reviewMixedFlowForRun(&copyRun),
+		SecondaryRequestClasses: reviewSecondaryRequestClassesForRun(&copyRun),
+		Lifecycle:               copyRun.Lifecycle,
 		Gate: ReviewGateObservability{
 			Verdict: firstNonBlankString(copyRun.Gate.Verdict, copyRun.Result.Verdict),
 			Action:  strings.TrimSpace(copyRun.Gate.Action),
@@ -127,6 +133,15 @@ func buildReviewDecisionObservability(run *ReviewRun, ledger *RuntimeGateLedger,
 	}
 	if summary.Lifecycle != nil {
 		summary.Lifecycle.Normalize()
+		if summary.LifecycleKind == "" || summary.LifecycleKind == reviewLifecycleKindGeneral {
+			summary.LifecycleKind = summary.Lifecycle.LifecycleKind
+		}
+		if !summary.MixedFlow {
+			summary.MixedFlow = summary.Lifecycle.MixedFlow
+		}
+		if len(summary.SecondaryRequestClasses) == 0 {
+			summary.SecondaryRequestClasses = normalizeReviewRequestClasses(summary.Lifecycle.SecondaryRequestClasses, 6)
+		}
 	}
 	summary.LifecycleTimeline = reviewLifecycleTimelineForRun(&copyRun, nil, ledger, report)
 	summary.BlockerSummary = buildReviewBlockerSummary(&copyRun, ledger, report)

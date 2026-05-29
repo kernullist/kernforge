@@ -1112,6 +1112,15 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
 	if ledger.Lifecycle != nil {
+		if ledger.Lifecycle.LifecycleKind != "" {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_kind", ledger.Lifecycle.LifecycleKind))
+		}
+		if ledger.Lifecycle.MixedFlow {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("mixed_flow", "true"))
+		}
+		if len(ledger.Lifecycle.SecondaryRequestClasses) > 0 {
+			fmt.Fprintln(rt.writer, rt.ui.statusKV("secondary_request_classes", strings.Join(ledger.Lifecycle.SecondaryRequestClasses, ", ")))
+		}
 		if ledger.Lifecycle.Phase != "" {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_phase", ledger.Lifecycle.Phase))
 		}

@@ -108,6 +108,7 @@ func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand
 	for _, want := range []string{
 		"operator_status",
 		"class=modify_then_review",
+		"kind=modify_then_review",
 		"confidence=0.91",
 		"phase=blocked",
 		"route=single_model",
@@ -317,6 +318,7 @@ func TestDocumentArtifactStatusShowsQualityAndVerificationSkipWithoutCodeReviewO
 	text := output.String()
 	for _, want := range []string{
 		"class=document_artifact",
+		"kind=document_artifact",
 		"document=accepted",
 		"verification=skipped_document_artifact_only",
 		"document_artifact",
@@ -367,6 +369,7 @@ func TestMCPReviewResponseExposesOperatorCardFieldsWithoutRawModelDump(t *testin
 
 	for _, want := range []string{
 		`"lifecycle_timeline"`,
+		`"lifecycle_kind"`,
 		`"compact_status"`,
 		`"blocker_summary"`,
 		`"route_quality"`,
@@ -404,6 +407,30 @@ func TestMCPStatusResponseAddsCompactOperatorFields(t *testing.T) {
 	for _, want := range []string{`"compact_status"`, `"lifecycle_timeline"`, `"blocker_summary"`, `"next_recommended_command"`} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected MCP status to include %s, got:\n%s", want, rendered)
+		}
+	}
+}
+
+func TestMCPReviewAutoOffExposesLifecycleKindWithoutModelRun(t *testing.T) {
+	server := &kernforgeMCPServer{}
+	rendered, err := server.toolReview(context.Background(), map[string]any{
+		"auto_review": "off",
+		"request":     "fix main.go and write docs/review_report.md with the review notes",
+	})
+	if err != nil {
+		t.Fatalf("toolReview: %v", err)
+	}
+	for _, want := range []string{
+		`"request_class": "modify_then_review"`,
+		`"lifecycle_kind": "mixed_flow"`,
+		`"mixed_flow": true`,
+		`"secondary_request_classes"`,
+		`"compact_status"`,
+		`"lifecycle_timeline"`,
+		`"next_recommended_command"`,
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected MCP auto_review=off response to contain %q, got:\n%s", want, rendered)
 		}
 	}
 }

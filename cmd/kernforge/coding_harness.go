@@ -110,23 +110,26 @@ type OutcomeInvariantReport struct {
 }
 
 type AcceptanceContract struct {
-	ID                     string    `json:"id,omitempty"`
-	SourcePrompt           string    `json:"source_prompt,omitempty"`
-	Mode                   string    `json:"mode,omitempty"`
-	RequestClass           string    `json:"request_class,omitempty"`
-	RequestClassReason     string    `json:"request_class_reason,omitempty"`
-	RequestClassConfidence float64   `json:"request_class_confidence,omitempty"`
-	RequestClassAmbiguous  bool      `json:"request_class_ambiguous,omitempty"`
-	RequestClassSignals    []string  `json:"request_class_signals,omitempty"`
-	AmbiguityWarnings      []string  `json:"ambiguity_warnings,omitempty"`
-	ExpectedBehaviors      []string  `json:"expected_behaviors,omitempty"`
-	NonGoals               []string  `json:"non_goals,omitempty"`
-	ChangedSurfaces        []string  `json:"changed_surfaces,omitempty"`
-	RequiredArtifacts      []string  `json:"required_artifacts,omitempty"`
-	VerificationRequired   bool      `json:"verification_required,omitempty"`
-	VerificationNotes      []string  `json:"verification_notes,omitempty"`
-	CreatedAt              time.Time `json:"created_at,omitempty"`
-	UpdatedAt              time.Time `json:"updated_at,omitempty"`
+	ID                      string    `json:"id,omitempty"`
+	SourcePrompt            string    `json:"source_prompt,omitempty"`
+	Mode                    string    `json:"mode,omitempty"`
+	RequestClass            string    `json:"request_class,omitempty"`
+	LifecycleKind           string    `json:"lifecycle_kind,omitempty"`
+	MixedFlow               bool      `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses []string  `json:"secondary_request_classes,omitempty"`
+	RequestClassReason      string    `json:"request_class_reason,omitempty"`
+	RequestClassConfidence  float64   `json:"request_class_confidence,omitempty"`
+	RequestClassAmbiguous   bool      `json:"request_class_ambiguous,omitempty"`
+	RequestClassSignals     []string  `json:"request_class_signals,omitempty"`
+	AmbiguityWarnings       []string  `json:"ambiguity_warnings,omitempty"`
+	ExpectedBehaviors       []string  `json:"expected_behaviors,omitempty"`
+	NonGoals                []string  `json:"non_goals,omitempty"`
+	ChangedSurfaces         []string  `json:"changed_surfaces,omitempty"`
+	RequiredArtifacts       []string  `json:"required_artifacts,omitempty"`
+	VerificationRequired    bool      `json:"verification_required,omitempty"`
+	VerificationNotes       []string  `json:"verification_notes,omitempty"`
+	CreatedAt               time.Time `json:"created_at,omitempty"`
+	UpdatedAt               time.Time `json:"updated_at,omitempty"`
 }
 
 type AcceptanceContractReport struct {
@@ -269,7 +272,11 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 		UpdatedAt:    now,
 	}
 	classDecision := classifyAcceptanceContractRequestClassDecision(base, intent, readOnlyAnalysis, explicitEditRequest)
+	classDecision = applyReviewLifecycleKindToDecision(classDecision, base, intent, "", contract.Mode)
 	contract.RequestClass = classDecision.RequestClass
+	contract.LifecycleKind = classDecision.LifecycleKind
+	contract.MixedFlow = classDecision.MixedFlow
+	contract.SecondaryRequestClasses = classDecision.SecondaryRequestClasses
 	contract.RequestClassReason = classDecision.Reason
 	contract.RequestClassConfidence = classDecision.Confidence
 	contract.RequestClassAmbiguous = classDecision.Ambiguous
@@ -451,6 +458,16 @@ func (c AcceptanceContract) RenderPromptSection() string {
 		}
 		lines = append(lines, line)
 	}
+	if c.LifecycleKind != "" {
+		line := "- Lifecycle kind: " + c.LifecycleKind
+		if c.MixedFlow {
+			line += " mixed_flow=true"
+		}
+		if len(c.SecondaryRequestClasses) > 0 {
+			line += " secondary=" + strings.Join(c.SecondaryRequestClasses, ",")
+		}
+		lines = append(lines, line)
+	}
 	if len(c.AmbiguityWarnings) > 0 {
 		lines = append(lines, "- Classification ambiguity: "+strings.Join(c.AmbiguityWarnings, " | "))
 	}
@@ -582,6 +599,14 @@ func (c *AcceptanceContract) Normalize() {
 	c.RequestClass = normalizeReviewRequestClass(c.RequestClass)
 	if c.RequestClass == reviewRequestClassGeneral {
 		c.RequestClass = ""
+	}
+	c.LifecycleKind = normalizeReviewLifecycleKind(c.LifecycleKind)
+	if c.LifecycleKind == reviewLifecycleKindGeneral && c.RequestClass != "" {
+		c.LifecycleKind = reviewLifecycleKindForRequestClass(c.RequestClass)
+	}
+	c.SecondaryRequestClasses = normalizeReviewRequestClasses(c.SecondaryRequestClasses, 6)
+	if len(c.SecondaryRequestClasses) > 0 || c.LifecycleKind == reviewLifecycleKindMixedFlow {
+		c.MixedFlow = true
 	}
 	c.RequestClassReason = strings.TrimSpace(c.RequestClassReason)
 	if c.RequestClassConfidence < 0 {

@@ -16,10 +16,24 @@ const (
 	reviewRouteModeSingleModel       = "single_model"
 	reviewRouteModeCrossModel        = "cross_model"
 	reviewRouteModeDeterministicOnly = "deterministic_only"
+
+	reviewLifecycleKindGeneral          = "general"
+	reviewLifecycleKindReviewOnly       = "review_only"
+	reviewLifecycleKindDocumentArtifact = "document_artifact"
+	reviewLifecycleKindImplementation   = "implementation"
+	reviewLifecycleKindModifyThenReview = "modify_then_review"
+	reviewLifecycleKindFixFromReview    = "fix_from_review"
+	reviewLifecycleKindAnalysis         = "analysis"
+	reviewLifecycleKindMixedFlow        = "mixed_flow"
+	reviewLifecycleKindVerificationOnly = "verification_only"
+	reviewLifecycleKindValidationOnly   = "validation_only"
 )
 
 type ReviewRequestLifecycle struct {
 	RequestClass             string                   `json:"request_class,omitempty"`
+	LifecycleKind            string                   `json:"lifecycle_kind,omitempty"`
+	MixedFlow                bool                     `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses  []string                 `json:"secondary_request_classes,omitempty"`
 	Phase                    string                   `json:"phase,omitempty"`
 	RouteMode                string                   `json:"route_mode,omitempty"`
 	Reason                   string                   `json:"reason,omitempty"`
@@ -53,12 +67,15 @@ type ReviewLifecycleContract struct {
 }
 
 type ReviewRequestClassDecision struct {
-	RequestClass      string   `json:"request_class,omitempty"`
-	Reason            string   `json:"reason,omitempty"`
-	Confidence        float64  `json:"confidence,omitempty"`
-	Ambiguous         bool     `json:"ambiguous,omitempty"`
-	AmbiguityWarnings []string `json:"ambiguity_warnings,omitempty"`
-	Signals           []string `json:"signals,omitempty"`
+	RequestClass            string   `json:"request_class,omitempty"`
+	LifecycleKind           string   `json:"lifecycle_kind,omitempty"`
+	MixedFlow               bool     `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses []string `json:"secondary_request_classes,omitempty"`
+	Reason                  string   `json:"reason,omitempty"`
+	Confidence              float64  `json:"confidence,omitempty"`
+	Ambiguous               bool     `json:"ambiguous,omitempty"`
+	AmbiguityWarnings       []string `json:"ambiguity_warnings,omitempty"`
+	Signals                 []string `json:"signals,omitempty"`
 }
 
 func (d *ReviewRequestClassDecision) Normalize() {
@@ -66,6 +83,14 @@ func (d *ReviewRequestClassDecision) Normalize() {
 		return
 	}
 	d.RequestClass = normalizeReviewRequestClass(d.RequestClass)
+	d.LifecycleKind = normalizeReviewLifecycleKind(d.LifecycleKind)
+	if d.LifecycleKind == reviewLifecycleKindGeneral {
+		d.LifecycleKind = reviewLifecycleKindForRequestClass(d.RequestClass)
+	}
+	d.SecondaryRequestClasses = normalizeReviewRequestClasses(d.SecondaryRequestClasses, 6)
+	if len(d.SecondaryRequestClasses) > 0 || d.LifecycleKind == reviewLifecycleKindMixedFlow {
+		d.MixedFlow = true
+	}
 	d.Reason = strings.TrimSpace(d.Reason)
 	if d.Confidence < 0 {
 		d.Confidence = 0
@@ -85,6 +110,14 @@ func (l *ReviewRequestLifecycle) Normalize() {
 		return
 	}
 	l.RequestClass = normalizeReviewRequestClass(l.RequestClass)
+	l.LifecycleKind = normalizeReviewLifecycleKind(l.LifecycleKind)
+	if l.LifecycleKind == reviewLifecycleKindGeneral {
+		l.LifecycleKind = reviewLifecycleKindForRequestClass(l.RequestClass)
+	}
+	l.SecondaryRequestClasses = normalizeReviewRequestClasses(l.SecondaryRequestClasses, 6)
+	if len(l.SecondaryRequestClasses) > 0 || l.LifecycleKind == reviewLifecycleKindMixedFlow {
+		l.MixedFlow = true
+	}
 	l.Phase = strings.TrimSpace(l.Phase)
 	l.RouteMode = strings.TrimSpace(l.RouteMode)
 	l.Reason = strings.TrimSpace(l.Reason)
@@ -123,6 +156,217 @@ func (c *ReviewLifecycleContract) Normalize() {
 	c.SkipRules = normalizeTaskStateList(c.SkipRules, 8)
 }
 
+func normalizeReviewLifecycleKind(value string) string {
+	value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "-", "_")))
+	switch value {
+	case reviewLifecycleKindReviewOnly, "review", "code_review", "read_only_review":
+		return reviewLifecycleKindReviewOnly
+	case reviewLifecycleKindDocumentArtifact, "document", "document_generation", "generated_document", "report_artifact":
+		return reviewLifecycleKindDocumentArtifact
+	case reviewLifecycleKindImplementation, "implement", "code_development", "development", "edit_code":
+		return reviewLifecycleKindImplementation
+	case reviewLifecycleKindModifyThenReview, "edit_then_review", "post_change", "pre_write":
+		return reviewLifecycleKindModifyThenReview
+	case reviewLifecycleKindFixFromReview, "review_then_fix", "review_before_fix", "review_then_modify", "pre_fix":
+		return reviewLifecycleKindFixFromReview
+	case reviewLifecycleKindAnalysis, "analysis_only", "project_knowledge", "diagnosis", "diagnose":
+		return reviewLifecycleKindAnalysis
+	case reviewLifecycleKindMixedFlow, "mixed", "mixed_request":
+		return reviewLifecycleKindMixedFlow
+	case reviewLifecycleKindVerificationOnly, "verify_only", "verification":
+		return reviewLifecycleKindVerificationOnly
+	case reviewLifecycleKindValidationOnly, "validate_only", "validation":
+		return reviewLifecycleKindValidationOnly
+	case "", reviewLifecycleKindGeneral:
+		return reviewLifecycleKindGeneral
+	default:
+		return value
+	}
+}
+
+func reviewLifecycleKindForRequestClass(class string) string {
+	switch normalizeReviewRequestClass(class) {
+	case reviewRequestClassReviewOnly:
+		return reviewLifecycleKindReviewOnly
+	case reviewRequestClassDocumentArtifact:
+		return reviewLifecycleKindDocumentArtifact
+	case reviewRequestClassReviewThenModify:
+		return reviewLifecycleKindFixFromReview
+	case reviewRequestClassModifyThenReview:
+		return reviewLifecycleKindModifyThenReview
+	case reviewRequestClassVerificationOnly:
+		return reviewLifecycleKindVerificationOnly
+	case reviewRequestClassValidationOnly:
+		return reviewLifecycleKindValidationOnly
+	default:
+		return reviewLifecycleKindGeneral
+	}
+}
+
+func normalizeReviewRequestClasses(values []string, limit int) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		normalized := normalizeReviewRequestClass(value)
+		if normalized == "" || normalized == reviewRequestClassGeneral || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		out = append(out, normalized)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func reviewDecisionHasSignal(decision ReviewRequestClassDecision, signal string) bool {
+	for _, item := range decision.Signals {
+		if strings.EqualFold(strings.TrimSpace(item), signal) {
+			return true
+		}
+	}
+	return false
+}
+
+func reviewDecisionMixedSourceDocument(decision ReviewRequestClassDecision) bool {
+	if !reviewDecisionHasSignal(decision, "document_artifact_intent") {
+		return false
+	}
+	return reviewDecisionHasSignal(decision, "source_modification_intent") ||
+		reviewDecisionHasSignal(decision, "review_intent") ||
+		reviewDecisionHasSignal(decision, "read_only_analysis")
+}
+
+func reviewSecondaryRequestClassesForDecision(decision ReviewRequestClassDecision) []string {
+	classes := []string{}
+	if reviewDecisionHasSignal(decision, "document_artifact_intent") {
+		classes = append(classes, reviewRequestClassDocumentArtifact)
+	}
+	if reviewDecisionHasSignal(decision, "source_modification_intent") {
+		classes = append(classes, reviewRequestClassModifyThenReview)
+	}
+	if reviewDecisionHasSignal(decision, "review_intent") || reviewDecisionHasSignal(decision, "read_only_analysis") {
+		classes = append(classes, reviewRequestClassReviewOnly)
+	}
+	return normalizeReviewRequestClasses(classes, 6)
+}
+
+func reviewLifecycleKindFromDecision(decision ReviewRequestClassDecision, request string, intent TurnIntent, target string, mode string) string {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(request)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(request))
+	}
+	if reviewDecisionMixedSourceDocument(decision) {
+		return reviewLifecycleKindMixedFlow
+	}
+	switch normalizeReviewRequestClass(decision.RequestClass) {
+	case reviewRequestClassReviewOnly:
+		if intent == TurnIntentAskProjectKnowledge ||
+			intent == TurnIntentDiagnoseRecentError ||
+			(prefersReadOnlyAnalysisIntent(lower) && !hasTurnReviewIntent(lower)) {
+			return reviewLifecycleKindAnalysis
+		}
+		return reviewLifecycleKindReviewOnly
+	case reviewRequestClassDocumentArtifact:
+		return reviewLifecycleKindDocumentArtifact
+	case reviewRequestClassReviewThenModify:
+		return reviewLifecycleKindFixFromReview
+	case reviewRequestClassModifyThenReview:
+		if requestExplicitlyAsksReviewAfterModify(lower) ||
+			strings.EqualFold(strings.TrimSpace(mode), "post_change") ||
+			strings.EqualFold(strings.TrimSpace(mode), "pre_write") {
+			return reviewLifecycleKindModifyThenReview
+		}
+		return reviewLifecycleKindImplementation
+	case reviewRequestClassVerificationOnly:
+		return reviewLifecycleKindVerificationOnly
+	case reviewRequestClassValidationOnly:
+		return reviewLifecycleKindValidationOnly
+	default:
+		if intent == TurnIntentAskProjectKnowledge ||
+			intent == TurnIntentDiagnoseRecentError ||
+			prefersReadOnlyAnalysisIntent(lower) ||
+			strings.EqualFold(strings.TrimSpace(target), reviewTargetSourceAnalysis) ||
+			strings.EqualFold(strings.TrimSpace(target), reviewTargetAnalysis) ||
+			strings.EqualFold(strings.TrimSpace(target), reviewTargetAnalysisAlias) {
+			return reviewLifecycleKindAnalysis
+		}
+		return reviewLifecycleKindGeneral
+	}
+}
+
+func applyReviewLifecycleKindToDecision(decision ReviewRequestClassDecision, request string, intent TurnIntent, target string, mode string) ReviewRequestClassDecision {
+	lifecycleKind := normalizeReviewLifecycleKind(decision.LifecycleKind)
+	defaultKind := reviewLifecycleKindForRequestClass(decision.RequestClass)
+	if lifecycleKind == reviewLifecycleKindGeneral || lifecycleKind == defaultKind {
+		decision.LifecycleKind = reviewLifecycleKindFromDecision(decision, request, intent, target, mode)
+	}
+	if reviewDecisionMixedSourceDocument(decision) {
+		decision.MixedFlow = true
+		if len(decision.SecondaryRequestClasses) == 0 {
+			decision.SecondaryRequestClasses = reviewSecondaryRequestClassesForDecision(decision)
+		}
+	}
+	decision.Normalize()
+	return decision
+}
+
+func reviewLifecycleKindForRun(run *ReviewRun) string {
+	if run == nil {
+		return reviewLifecycleKindGeneral
+	}
+	if run.Lifecycle != nil {
+		if kind := normalizeReviewLifecycleKind(run.Lifecycle.LifecycleKind); kind != reviewLifecycleKindGeneral {
+			return kind
+		}
+	}
+	if kind := normalizeReviewLifecycleKind(run.RequestAnalysis.LifecycleKind); kind != reviewLifecycleKindGeneral {
+		return kind
+	}
+	class := firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)
+	request := firstNonBlankString(run.RequestAnalysis.OriginalRequest, run.Objective)
+	return reviewLifecycleKindFromDecision(ReviewRequestClassDecision{
+		RequestClass: class,
+		Signals:      run.RequestAnalysis.RequestClassSignals,
+	}, request, classifyTurnIntent(request), run.Target, firstNonBlankString(run.Trigger, run.Mode))
+}
+
+func reviewMixedFlowForRun(run *ReviewRun) bool {
+	if run == nil {
+		return false
+	}
+	if run.RequestAnalysis.MixedFlow {
+		return true
+	}
+	return run.Lifecycle != nil && run.Lifecycle.MixedFlow
+}
+
+func reviewSecondaryRequestClassesForRun(run *ReviewRun) []string {
+	if run == nil {
+		return nil
+	}
+	classes := normalizeReviewRequestClasses(run.RequestAnalysis.SecondaryRequestClasses, 6)
+	if len(classes) > 0 {
+		return classes
+	}
+	if run.Lifecycle != nil {
+		return normalizeReviewRequestClasses(run.Lifecycle.SecondaryRequestClasses, 6)
+	}
+	return nil
+}
+
+func requestExplicitlyAsksReviewAfterModify(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"then review", "review after", "post-change review", "self-review", "self review",
+		"수정 후 검토", "수정하고 검토", "패치 후 리뷰", "변경 후 리뷰", "변경 후 검토",
+	)
+}
+
 func normalizeReviewRequestClass(value string) string {
 	value = strings.ToLower(strings.TrimSpace(strings.ReplaceAll(value, "-", "_")))
 	switch value {
@@ -130,10 +374,12 @@ func normalizeReviewRequestClass(value string) string {
 		return reviewRequestClassReviewOnly
 	case reviewRequestClassDocumentArtifact, "document", "document_generation", "generated_document", "report_artifact":
 		return reviewRequestClassDocumentArtifact
-	case reviewRequestClassReviewThenModify, "review_then_fix", "review_before_fix", "pre_fix":
+	case reviewRequestClassReviewThenModify, "review_then_fix", "review_before_fix", "pre_fix", "fix_from_review":
 		return reviewRequestClassReviewThenModify
-	case reviewRequestClassModifyThenReview, "edit_then_review", "post_change", "pre_write":
+	case reviewRequestClassModifyThenReview, "edit_then_review", "post_change", "pre_write", "implementation", "implement":
 		return reviewRequestClassModifyThenReview
+	case "analysis", "analysis_only", "project_knowledge", "diagnose_recent_error":
+		return reviewRequestClassReviewOnly
 	case reviewRequestClassVerificationOnly, "verify_only", "verification":
 		return reviewRequestClassVerificationOnly
 	case reviewRequestClassValidationOnly, "validate_only", "validation":
@@ -646,6 +892,9 @@ func buildReviewRequestLifecycle(run *ReviewRun, session *Session) *ReviewReques
 	routeQuality := reviewRouteQualityForRun(*run)
 	lifecycle := &ReviewRequestLifecycle{
 		RequestClass:             class,
+		LifecycleKind:            firstNonBlankString(run.RequestAnalysis.LifecycleKind, reviewLifecycleKindForRun(run)),
+		MixedFlow:                run.RequestAnalysis.MixedFlow,
+		SecondaryRequestClasses:  run.RequestAnalysis.SecondaryRequestClasses,
 		Phase:                    reviewLifecyclePhaseForRun(*run),
 		RouteMode:                reviewRouteModeForRun(*run),
 		Reason:                   reason,
@@ -764,6 +1013,9 @@ func buildRuntimeGateLifecycle(session *Session, action string, changedPaths []s
 	class, reason := classifyRuntimeGateRequestClass(session, action, changedPaths)
 	lifecycle := &ReviewRequestLifecycle{
 		RequestClass:             class,
+		LifecycleKind:            runtimeGateLifecycleKind(session, class),
+		MixedFlow:                runtimeGateLifecycleMixedFlow(session),
+		SecondaryRequestClasses:  runtimeGateLifecycleSecondaryClasses(session),
 		Phase:                    "runtime_gate",
 		Reason:                   reason,
 		Timeline:                 reviewLifecycleTimelineForRuntimeGate(session, action, changedPaths, nil, nil),
@@ -805,6 +1057,73 @@ func classifyRuntimeGateRequestClass(session *Session, action string, changedPat
 		return reviewRequestClassGeneral, "final-answer gate has no specialized lifecycle context"
 	}
 	return class, reason
+}
+
+func runtimeGateLifecycleKind(session *Session, class string) string {
+	if session != nil && session.AcceptanceContract != nil {
+		if kind := normalizeReviewLifecycleKind(session.AcceptanceContract.LifecycleKind); kind != reviewLifecycleKindGeneral {
+			return kind
+		}
+		if request := strings.TrimSpace(session.AcceptanceContract.SourcePrompt); request != "" {
+			readOnly := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "analysis_only") ||
+				prefersReadOnlyAnalysisIntent(request) ||
+				looksLikeReviewInspectionOnlyRequest(request)
+			explicitEdit := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "edit") ||
+				looksLikeExplicitEditIntent(request)
+			decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), readOnly, explicitEdit)
+			if normalizedClass := normalizeReviewRequestClass(class); normalizedClass != reviewRequestClassGeneral {
+				decision.RequestClass = normalizedClass
+			}
+			decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", session.AcceptanceContract.Mode)
+			if kind := normalizeReviewLifecycleKind(decision.LifecycleKind); kind != reviewLifecycleKindGeneral {
+				return kind
+			}
+		}
+	}
+	return reviewLifecycleKindForRequestClass(class)
+}
+
+func runtimeGateLifecycleMixedFlow(session *Session) bool {
+	if session == nil || session.AcceptanceContract == nil {
+		return false
+	}
+	if session.AcceptanceContract.MixedFlow {
+		return true
+	}
+	request := strings.TrimSpace(session.AcceptanceContract.SourcePrompt)
+	if request == "" {
+		return false
+	}
+	readOnly := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "analysis_only") ||
+		prefersReadOnlyAnalysisIntent(request) ||
+		looksLikeReviewInspectionOnlyRequest(request)
+	explicitEdit := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "edit") ||
+		looksLikeExplicitEditIntent(request)
+	decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), readOnly, explicitEdit)
+	decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", session.AcceptanceContract.Mode)
+	return decision.MixedFlow
+}
+
+func runtimeGateLifecycleSecondaryClasses(session *Session) []string {
+	if session == nil || session.AcceptanceContract == nil {
+		return nil
+	}
+	classes := normalizeReviewRequestClasses(session.AcceptanceContract.SecondaryRequestClasses, 6)
+	if len(classes) > 0 {
+		return classes
+	}
+	request := strings.TrimSpace(session.AcceptanceContract.SourcePrompt)
+	if request == "" {
+		return nil
+	}
+	readOnly := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "analysis_only") ||
+		prefersReadOnlyAnalysisIntent(request) ||
+		looksLikeReviewInspectionOnlyRequest(request)
+	explicitEdit := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "edit") ||
+		looksLikeExplicitEditIntent(request)
+	decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), readOnly, explicitEdit)
+	decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", session.AcceptanceContract.Mode)
+	return normalizeReviewRequestClasses(decision.SecondaryRequestClasses, 6)
 }
 
 func reviewRuntimeGateDocumentStatus(session *Session, class string) string {

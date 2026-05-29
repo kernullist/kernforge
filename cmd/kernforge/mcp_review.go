@@ -13,9 +13,13 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 	autoReview := strings.ToLower(strings.TrimSpace(stringValue(args, "auto_review")))
 	if autoReview == "off" {
 		decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), prefersReadOnlyAnalysisIntent(request) || looksLikeReviewInspectionOnlyRequest(request), looksLikeExplicitEditIntent(request))
+		decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", "mcp_auto_review_off")
 		requestClass, requestClassReason := decision.RequestClass, decision.Reason
 		lifecycle := ReviewRequestLifecycle{
 			RequestClass:             requestClass,
+			LifecycleKind:            decision.LifecycleKind,
+			MixedFlow:                decision.MixedFlow,
+			SecondaryRequestClasses:  decision.SecondaryRequestClasses,
 			Phase:                    "skipped",
 			Reason:                   requestClassReason,
 			ClassificationConfidence: decision.Confidence,
@@ -41,6 +45,9 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 		lifecycle.Normalize()
 		compact := &ReviewCompactStatus{
 			RequestClass:              requestClass,
+			LifecycleKind:             decision.LifecycleKind,
+			MixedFlow:                 decision.MixedFlow,
+			SecondaryRequestClasses:   decision.SecondaryRequestClasses,
 			ClassificationConfidence:  decision.Confidence,
 			ClassificationAmbiguous:   decision.Ambiguous,
 			ClassificationAmbiguity:   decision.AmbiguityWarnings,
@@ -60,6 +67,9 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 			"status_code":                  0,
 			"retryable":                    false,
 			"request_class":                requestClass,
+			"lifecycle_kind":               decision.LifecycleKind,
+			"mixed_flow":                   decision.MixedFlow,
+			"secondary_request_classes":    decision.SecondaryRequestClasses,
 			"lifecycle":                    lifecycle,
 			"lifecycle_timeline":           lifecycle.Timeline,
 			"compact_status":               compact,

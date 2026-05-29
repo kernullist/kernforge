@@ -142,7 +142,9 @@ func TestSystemPromptIncludesCodexGradeSingleModelRequestHandling(t *testing.T) 
 	for _, want := range []string{
 		"Codex-grade request handling:",
 		"Review route mode: single_model.",
+		"Lifecycle kind:",
 		"Classify the latest external request before acting",
+		"lifecycle_kind such as implementation, fix_from_review, analysis, or mixed_flow",
 		"For review-only requests, use a code-review stance",
 		"In single-model mode, do not trust the first answer",
 	} {

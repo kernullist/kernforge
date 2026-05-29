@@ -50,6 +50,9 @@ type ReviewLifecyclePhase struct {
 
 type ReviewCompactStatus struct {
 	RequestClass              string         `json:"request_class,omitempty"`
+	LifecycleKind             string         `json:"lifecycle_kind,omitempty"`
+	MixedFlow                 bool           `json:"mixed_flow,omitempty"`
+	SecondaryRequestClasses   []string       `json:"secondary_request_classes,omitempty"`
 	ClassificationConfidence  float64        `json:"classification_confidence,omitempty"`
 	ClassificationAmbiguous   bool           `json:"classification_ambiguous,omitempty"`
 	ClassificationAmbiguity   []string       `json:"classification_ambiguity,omitempty"`
@@ -91,6 +94,7 @@ type ReviewOperatorBlocker struct {
 
 type ReviewFinalAnswerContractStatus struct {
 	RequestClass              string                               `json:"request_class,omitempty"`
+	LifecycleKind             string                               `json:"lifecycle_kind,omitempty"`
 	Status                    string                               `json:"status,omitempty"`
 	Reason                    string                               `json:"reason,omitempty"`
 	Requirements              []ReviewFinalAnswerRequirementStatus `json:"requirements,omitempty"`
@@ -329,6 +333,9 @@ func buildReviewCompactStatus(run *ReviewRun, ledger *RuntimeGateLedger, report 
 	if lifecycle != nil {
 		lifecycle.Normalize()
 		status.RequestClass = lifecycle.RequestClass
+		status.LifecycleKind = lifecycle.LifecycleKind
+		status.MixedFlow = lifecycle.MixedFlow
+		status.SecondaryRequestClasses = lifecycle.SecondaryRequestClasses
 		status.ClassificationConfidence = lifecycle.ClassificationConfidence
 		status.ClassificationAmbiguous = lifecycle.ClassificationAmbiguous
 		status.ClassificationAmbiguity = normalizeTaskStateList(lifecycle.AmbiguityWarnings, 4)
@@ -362,6 +369,15 @@ func buildReviewCompactStatus(run *ReviewRun, ledger *RuntimeGateLedger, report 
 	if ledger != nil {
 		if status.RequestClass == "" {
 			status.RequestClass = ledger.RequestClass
+		}
+		if status.LifecycleKind == "" && ledger.Lifecycle != nil {
+			status.LifecycleKind = ledger.Lifecycle.LifecycleKind
+		}
+		if !status.MixedFlow && ledger.Lifecycle != nil {
+			status.MixedFlow = ledger.Lifecycle.MixedFlow
+		}
+		if len(status.SecondaryRequestClasses) == 0 && ledger.Lifecycle != nil {
+			status.SecondaryRequestClasses = ledger.Lifecycle.SecondaryRequestClasses
 		}
 		if status.NextRecommendedCommand == "" {
 			status.NextRecommendedCommand = reviewLifecycleNextCommand(ledger.NextCommands)
@@ -410,6 +426,14 @@ func (s *ReviewCompactStatus) Normalize() {
 	if s.RequestClass == reviewRequestClassGeneral {
 		s.RequestClass = ""
 	}
+	s.LifecycleKind = normalizeReviewLifecycleKind(s.LifecycleKind)
+	if s.LifecycleKind == reviewLifecycleKindGeneral && s.RequestClass != "" {
+		s.LifecycleKind = reviewLifecycleKindForRequestClass(s.RequestClass)
+	}
+	s.SecondaryRequestClasses = normalizeReviewRequestClasses(s.SecondaryRequestClasses, 6)
+	if len(s.SecondaryRequestClasses) > 0 || s.LifecycleKind == reviewLifecycleKindMixedFlow {
+		s.MixedFlow = true
+	}
 	if s.ClassificationConfidence < 0 {
 		s.ClassificationConfidence = 0
 	}
@@ -451,6 +475,15 @@ func reviewCompactStatusLine(status *ReviewCompactStatus) string {
 	parts := []string{}
 	if copyStatus.RequestClass != "" {
 		parts = append(parts, "class="+copyStatus.RequestClass)
+	}
+	if copyStatus.LifecycleKind != "" && copyStatus.LifecycleKind != reviewLifecycleKindGeneral {
+		parts = append(parts, "kind="+copyStatus.LifecycleKind)
+	}
+	if copyStatus.MixedFlow {
+		parts = append(parts, "mixed_flow=true")
+	}
+	if len(copyStatus.SecondaryRequestClasses) > 0 {
+		parts = append(parts, "secondary="+strings.Join(copyStatus.SecondaryRequestClasses, ","))
 	}
 	if copyStatus.ClassificationConfidence > 0 {
 		parts = append(parts, fmt.Sprintf("confidence=%.2f", copyStatus.ClassificationConfidence))
@@ -928,7 +961,11 @@ func reviewFinalAnswerContractStatusForRun(run *ReviewRun, session *Session, rep
 	if class == reviewRequestClassGeneral && session != nil {
 		class = finalAnswerCompletenessRequestClass(session)
 	}
-	return reviewFinalAnswerContractStatusForClass(class, session, report, reply)
+	status := reviewFinalAnswerContractStatusForClass(class, session, report, reply)
+	if status != nil && run != nil {
+		status.LifecycleKind = reviewLifecycleKindForRun(run)
+	}
+	return status
 }
 
 func reviewFinalAnswerContractStatusForClass(class string, session *Session, report *CodingHarnessReport, reply string) *ReviewFinalAnswerContractStatus {
@@ -938,9 +975,10 @@ func reviewFinalAnswerContractStatusForClass(class string, session *Session, rep
 		return nil
 	}
 	status := &ReviewFinalAnswerContractStatus{
-		RequestClass: class,
-		Status:       reviewFinalAnswerContractStatusPending,
-		Reason:       "final answer has not been accepted against the class-specific contract yet",
+		RequestClass:  class,
+		LifecycleKind: reviewFinalAnswerContractLifecycleKindForClass(class, session),
+		Status:        reviewFinalAnswerContractStatusPending,
+		Reason:        "final answer has not been accepted against the class-specific contract yet",
 	}
 	if class == reviewRequestClassGeneral {
 		status.Status = reviewFinalAnswerContractStatusNotApplicable
@@ -1007,6 +1045,30 @@ func reviewFinalAnswerContractStatusForClass(class string, session *Session, rep
 		}
 	}
 	return status
+}
+
+func reviewFinalAnswerContractLifecycleKindForClass(class string, session *Session) string {
+	if session != nil && session.AcceptanceContract != nil {
+		if kind := normalizeReviewLifecycleKind(session.AcceptanceContract.LifecycleKind); kind != reviewLifecycleKindGeneral {
+			return kind
+		}
+		if request := strings.TrimSpace(session.AcceptanceContract.SourcePrompt); request != "" {
+			readOnly := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "analysis_only") ||
+				prefersReadOnlyAnalysisIntent(request) ||
+				looksLikeReviewInspectionOnlyRequest(request)
+			explicitEdit := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "edit") ||
+				looksLikeExplicitEditIntent(request)
+			decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), readOnly, explicitEdit)
+			if normalizedClass := normalizeReviewRequestClass(class); normalizedClass != reviewRequestClassGeneral {
+				decision.RequestClass = normalizedClass
+			}
+			decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", session.AcceptanceContract.Mode)
+			if kind := normalizeReviewLifecycleKind(decision.LifecycleKind); kind != reviewLifecycleKindGeneral {
+				return kind
+			}
+		}
+	}
+	return reviewLifecycleKindForRequestClass(class)
 }
 
 func reviewFinalAnswerContractApplyReply(status *ReviewFinalAnswerContractStatus, class string, session *Session, reply string) {
@@ -1814,6 +1876,13 @@ func compactRequestClass(status *ReviewCompactStatus) string {
 		return ""
 	}
 	return status.RequestClass
+}
+
+func reviewCompactLifecycleKind(status *ReviewCompactStatus) string {
+	if status == nil {
+		return ""
+	}
+	return status.LifecycleKind
 }
 
 func reviewOperatorProgressSuffix(phase string, status string, reason string, waitingOn string, next string) string {

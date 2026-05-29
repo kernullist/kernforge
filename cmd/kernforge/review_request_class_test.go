@@ -18,6 +18,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 		name      string
 		opts      ReviewHarnessOptions
 		want      string
+		wantKind  string
+		wantMixed bool
 		ambiguous bool
 	}{
 		{
@@ -29,7 +31,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Paths:               []string{"main.go"},
 				IncludeFileContents: true,
 			},
-			want: reviewRequestClassReviewOnly,
+			want:     reviewRequestClassReviewOnly,
+			wantKind: reviewLifecycleKindReviewOnly,
 		},
 		{
 			name: "document artifact",
@@ -38,7 +41,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Request: "write docs/report.md as a report about the current bug findings",
 				Paths:   []string{"docs/report.md"},
 			},
-			want: reviewRequestClassDocumentArtifact,
+			want:     reviewRequestClassDocumentArtifact,
+			wantKind: reviewLifecycleKindDocumentArtifact,
 		},
 		{
 			name: "review then modify",
@@ -48,7 +52,18 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Request: "review main.go and fix any problems",
 				Paths:   []string{"main.go"},
 			},
-			want: reviewRequestClassReviewThenModify,
+			want:     reviewRequestClassReviewThenModify,
+			wantKind: reviewLifecycleKindFixFromReview,
+		},
+		{
+			name: "direct implementation",
+			opts: ReviewHarnessOptions{
+				Target:  reviewTargetChange,
+				Request: "implement startup retry in main.go",
+				Paths:   []string{"main.go"},
+			},
+			want:     reviewRequestClassModifyThenReview,
+			wantKind: reviewLifecycleKindImplementation,
 		},
 		{
 			name: "modify then review",
@@ -58,21 +73,33 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Request: "fix main.go startup behavior",
 				Paths:   []string{"main.go"},
 			},
-			want: reviewRequestClassModifyThenReview,
+			want:     reviewRequestClassModifyThenReview,
+			wantKind: reviewLifecycleKindModifyThenReview,
 		},
 		{
 			name: "verification only",
 			opts: ReviewHarnessOptions{
 				Request: "run tests only and report the verification result",
 			},
-			want: reviewRequestClassVerificationOnly,
+			want:     reviewRequestClassVerificationOnly,
+			wantKind: reviewLifecycleKindVerificationOnly,
 		},
 		{
 			name: "validation only",
 			opts: ReviewHarnessOptions{
 				Request: "validate only the saved output against the acceptance criteria",
 			},
-			want: reviewRequestClassValidationOnly,
+			want:     reviewRequestClassValidationOnly,
+			wantKind: reviewLifecycleKindValidationOnly,
+		},
+		{
+			name: "analysis",
+			opts: ReviewHarnessOptions{
+				Target:  reviewTargetAnalysis,
+				Request: "analyze the current project architecture and explain the flow",
+			},
+			want:     reviewRequestClassGeneral,
+			wantKind: reviewLifecycleKindAnalysis,
 		},
 		{
 			name: "mixed review document stays document artifact",
@@ -82,6 +109,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Paths:   []string{"main.go", "docs/review_report.md"},
 			},
 			want:      reviewRequestClassDocumentArtifact,
+			wantKind:  reviewLifecycleKindMixedFlow,
+			wantMixed: true,
 			ambiguous: true,
 		},
 		{
@@ -91,6 +120,7 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Paths:   []string{"main.go"},
 			},
 			want:      reviewRequestClassReviewThenModify,
+			wantKind:  reviewLifecycleKindFixFromReview,
 			ambiguous: true,
 		},
 		{
@@ -99,7 +129,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Request: "review main.go only; do not edit files",
 				Paths:   []string{"main.go"},
 			},
-			want: reviewRequestClassReviewOnly,
+			want:     reviewRequestClassReviewOnly,
+			wantKind: reviewLifecycleKindReviewOnly,
 		},
 		{
 			name: "document request with code change uses modification lifecycle",
@@ -108,6 +139,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				Paths:   []string{"main.go", "docs/review_report.md"},
 			},
 			want:      reviewRequestClassModifyThenReview,
+			wantKind:  reviewLifecycleKindMixedFlow,
+			wantMixed: true,
 			ambiguous: true,
 		},
 		{
@@ -115,7 +148,8 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 			opts: ReviewHarnessOptions{
 				Request: "verify only after the existing changes and report the result",
 			},
-			want: reviewRequestClassVerificationOnly,
+			want:     reviewRequestClassVerificationOnly,
+			wantKind: reviewLifecycleKindVerificationOnly,
 		},
 	}
 	for _, tt := range tests {
@@ -123,6 +157,12 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 			analysis := analyzeReviewRequest(rt, root, tt.opts)
 			if analysis.RequestClass != tt.want {
 				t.Fatalf("request class = %q, want %q; analysis=%#v", analysis.RequestClass, tt.want, analysis)
+			}
+			if analysis.LifecycleKind != tt.wantKind {
+				t.Fatalf("lifecycle kind = %q, want %q; analysis=%#v", analysis.LifecycleKind, tt.wantKind, analysis)
+			}
+			if analysis.MixedFlow != tt.wantMixed {
+				t.Fatalf("mixed flow = %t, want %t; analysis=%#v", analysis.MixedFlow, tt.wantMixed, analysis)
 			}
 			if strings.TrimSpace(analysis.RequestClassReason) == "" {
 				t.Fatalf("expected request class reason")
@@ -160,22 +200,27 @@ func TestReviewRunPersistsRequestClassLifecycleAndMCPResponse(t *testing.T) {
 	if run.Lifecycle == nil || run.Lifecycle.RequestClass != reviewRequestClassReviewOnly || run.Lifecycle.RouteMode == "" {
 		t.Fatalf("expected lifecycle state, got %#v", run.Lifecycle)
 	}
+	if run.RequestAnalysis.LifecycleKind != reviewLifecycleKindReviewOnly ||
+		run.Lifecycle.LifecycleKind != reviewLifecycleKindReviewOnly {
+		t.Fatalf("expected review_only lifecycle kind, got analysis=%q lifecycle=%#v", run.RequestAnalysis.LifecycleKind, run.Lifecycle)
+	}
 	if run.Lifecycle.ClassificationConfidence <= 0 || run.Lifecycle.Contract == nil || len(run.Lifecycle.Contract.FinalAnswerRequirements) == 0 {
 		t.Fatalf("expected lifecycle classification confidence and contract, got %#v", run.Lifecycle)
 	}
 	if run.RuntimeGateLedger.RequestClass != reviewRequestClassReviewOnly ||
 		run.RuntimeGateLedger.Lifecycle == nil ||
-		run.RuntimeGateLedger.Lifecycle.RequestClass != reviewRequestClassReviewOnly {
+		run.RuntimeGateLedger.Lifecycle.RequestClass != reviewRequestClassReviewOnly ||
+		run.RuntimeGateLedger.Lifecycle.LifecycleKind != reviewLifecycleKindReviewOnly {
 		t.Fatalf("expected runtime gate request class lifecycle, got %#v", run.RuntimeGateLedger)
 	}
 	markdown := renderReviewRunMarkdown(run)
-	for _, want := range []string{"Request class: `review_only`", "Request Lifecycle", "route_mode", "classification_confidence", "final_answer_contract"} {
+	for _, want := range []string{"Request class: `review_only`", "Lifecycle kind: `review_only`", "Request Lifecycle", "lifecycle_kind", "route_mode", "classification_confidence", "final_answer_contract"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("expected markdown to contain %q, got:\n%s", want, markdown)
 		}
 	}
 	mcp := renderReviewMCPResponse(run, 40000)
-	for _, want := range []string{`"request_class": "review_only"`, `"lifecycle"`, `"review_gate_status"`, `"classification_confidence"`, `"contract"`, `"route_quality"`} {
+	for _, want := range []string{`"request_class": "review_only"`, `"lifecycle_kind": "review_only"`, `"lifecycle"`, `"review_gate_status"`, `"classification_confidence"`, `"contract"`, `"route_quality"`} {
 		if !strings.Contains(mcp, want) {
 			t.Fatalf("expected MCP response to contain %q, got:\n%s", want, mcp)
 		}
