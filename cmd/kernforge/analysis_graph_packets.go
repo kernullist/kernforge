@@ -72,7 +72,7 @@ func graphRequiredPacketIDs(packets []EvidencePacket) []string {
 
 func graphShardRequiresPrimaryPacket(shard AnalysisShard) bool {
 	name := strings.ToLower(strings.TrimSpace(shard.Name))
-	return containsAny(name, "startup", "ioctl", "callback", "handle", "memory", "rpc", "asset_config", "build_context", "generated_artifact", "security")
+	return containsAny(name, "startup", "ioctl", "callback", "handle", "memory", "rpc", "asset_config", "build_context", "build_graph", "generated_artifact", "security")
 }
 
 func graphPacketMatchesShardClass(packet EvidencePacket, shardName string) bool {
@@ -96,7 +96,7 @@ func graphPacketMatchesShardClass(packet EvidencePacket, shardName string) bool 
 		return containsAny(corpus, "rpc", "ipc", "pipe", "alpc", "socket", "server", "client", "command")
 	case containsAny(name, "asset_config"):
 		return containsAny(corpus, "asset", "config", "loadobject", "loadclass", "tsoftobjectptr", ".ini", "defaultgame", "defaultengine")
-	case containsAny(name, "build_context", "generated_artifact"):
+	case containsAny(name, "build_context", "build_graph", "generated_artifact"):
 		return containsAny(corpus, "build", "generated", "include", "target", "module", "project")
 	case containsAny(name, "startup"):
 		return containsAny(corpus, "main", "startup", "entry", "driverentry", "initialize", "bootstrap")
@@ -119,7 +119,7 @@ func graphEvidenceClassForPacket(snapshot ProjectSnapshot, shard AnalysisShard, 
 		return "rpc_authority"
 	case graphPacketMatchesShardClass(packet, shard.Name) && containsAny(name, "asset_config"):
 		return "asset_config_boundary"
-	case graphPacketMatchesShardClass(packet, shard.Name) && containsAny(name, "build_context"):
+	case graphPacketMatchesShardClass(packet, shard.Name) && containsAny(name, "build_context", "build_graph"):
 		return "build_context"
 	case graphPacketMatchesShardClass(packet, shard.Name) && containsAny(name, "generated_artifact"):
 		return "generated_artifact"
@@ -138,6 +138,9 @@ func evidenceAnchorMatchesShardSeed(anchor sourceFunctionAnchor, shard AnalysisS
 		return true
 	}
 	name := strings.ToLower(firstNonBlankAnalysisString(anchor.Symbol.CanonicalName, anchor.Symbol.Name))
+	if name == "" {
+		return false
+	}
 	for _, seed := range shard.SeedSymbols {
 		if seed == "" {
 			continue

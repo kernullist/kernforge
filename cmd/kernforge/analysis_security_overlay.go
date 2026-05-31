@@ -455,7 +455,7 @@ func securityOverlayTouchesClaim(overlay SecurityOverlaySummary, claim AnalysisC
 
 func securityOverlayClaimContradictsBoundary(overlay SecurityOverlaySummary, claim AnalysisClaim, packets []EvidencePacket) (bool, []string) {
 	text := strings.ToLower(strings.Join([]string{claim.Kind, claim.Claim, claim.VerificationHint}, " "))
-	if !containsAny(text, "safe", "validated", "validation", "checked", "sanitized", "authorized") {
+	if !securityOverlayClaimAssertsBoundarySafe(text) {
 		return false, nil
 	}
 	packetPaths := map[string]struct{}{}
@@ -472,4 +472,44 @@ func securityOverlayClaimContradictsBoundary(overlay SecurityOverlaySummary, cla
 		}
 	}
 	return len(evidence) > 0, analysisUniqueStrings(evidence)
+}
+
+func securityOverlayClaimAssertsBoundarySafe(text string) bool {
+	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if text == "" {
+		return false
+	}
+	if containsAny(text,
+		"missing validation",
+		"validation missing",
+		"lacks validation",
+		"lack validation",
+		"without validation",
+		"without validating",
+		"unvalidated",
+		"not validated",
+		"no validation",
+		"no validator",
+		"missing_candidate",
+		"requires review",
+		"requires validation",
+		"unsafe",
+		"risk",
+		"gap",
+	) {
+		return false
+	}
+	return containsAny(text,
+		"safe",
+		"validated",
+		"validation present",
+		"validation gate",
+		"checked",
+		"sanitized",
+		"authorized",
+		"access checked",
+		"guards",
+		"guarded",
+		"enforces validation",
+	)
 }

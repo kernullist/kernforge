@@ -129,6 +129,46 @@ func TestEvidencePacketsClassifyRequiredSupportingAmbiguousAndGap(t *testing.T) 
 	}
 }
 
+func TestBuildGraphEvidencePacketsAreRequiredBuildContext(t *testing.T) {
+	root := t.TempDir()
+	writePhase56TestFile(t, root, "build/CompileContext.cpp", strings.Join([]string{
+		"int BuildIncludeOwner()",
+		"{",
+		"    return 0;",
+		"}",
+	}, "\n"))
+	snapshot := phase56Snapshot(root, []ScannedFile{
+		{Path: "build/CompileContext.cpp", Directory: "build", Extension: ".cpp", LineCount: 4, ImportanceScore: 100},
+	})
+	snapshot.StructuralIndex = StructuralIndex{
+		Symbols: []SymbolRecord{{
+			ID:            "sym:BuildIncludeOwner",
+			Name:          "BuildIncludeOwner",
+			CanonicalName: "BuildIncludeOwner",
+			Kind:          "function",
+			File:          "build/CompileContext.cpp",
+			StartLine:     1,
+			EndLine:       4,
+			Tags:          []string{"build"},
+		}},
+	}
+	shard := AnalysisShard{
+		ID:           "shard-build",
+		Name:         "build_graph",
+		PrimaryFiles: []string{"build/CompileContext.cpp"},
+	}
+	packets := buildEvidencePacketsForShard(snapshot, shard, 2)
+	if len(packets) == 0 {
+		t.Fatalf("expected build graph evidence packet")
+	}
+	if !packets[0].Required || packets[0].Category != analysisEvidencePacketCategoryRequired {
+		t.Fatalf("expected build graph packet to be required, got %#v", packets[0])
+	}
+	if packets[0].EvidenceClass != "build_context" {
+		t.Fatalf("expected build_context evidence class, got %#v", packets[0])
+	}
+}
+
 func TestClaimVerifierBlocksUnsupportedHighConfidenceClaim(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Shards: []AnalysisShard{{
@@ -157,6 +197,79 @@ func TestClaimVerifierBlocksUnsupportedHighConfidenceClaim(t *testing.T) {
 	}
 	if len(run.UnsupportedClaims) != 1 {
 		t.Fatalf("expected unsupported claim artifact entry")
+	}
+}
+
+func TestSecurityOverlayContradictsOnlyPositiveValidationClaims(t *testing.T) {
+	root := t.TempDir()
+	writePhase56TestFile(t, root, "driver/ioctl.cpp", strings.Join([]string{
+		"NTSTATUS DeviceControl()",
+		"{",
+		"    return MmCopyVirtualMemory();",
+		"}",
+	}, "\n"))
+	snapshot := phase56Snapshot(root, []ScannedFile{
+		{Path: "driver/ioctl.cpp", Directory: "driver", Extension: ".cpp", LineCount: 4, ImportanceScore: 100},
+	})
+	packet := EvidencePacket{
+		ID:        "shard-01-packet-01",
+		ShardID:   "shard-01",
+		Path:      "driver/ioctl.cpp",
+		StartLine: 1,
+		EndLine:   4,
+		Category:  analysisEvidencePacketCategoryRequired,
+		Required:  true,
+	}
+	overlay := buildSecurityAntiCheatOverlay(snapshot, SemanticIndexV2{})
+	graph := buildAnalysisEvidenceGraph(snapshot, SemanticIndexV2{}, UnrealSemanticGraph{}, overlay, []EvidencePacket{packet})
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{{
+			ID:           "shard-01",
+			Name:         "security_ioctl",
+			PrimaryFiles: []string{"driver/ioctl.cpp"},
+		}},
+		EvidencePackets: []EvidencePacket{packet},
+		EvidenceGraph:   graph,
+		SecurityOverlay: overlay,
+		Reports: []WorkerReport{{
+			ShardID: "shard-01",
+			Claims: []AnalysisClaim{
+				{
+					ID:                "claim-missing",
+					Kind:              "risk",
+					Claim:             "The IOCTL path lacks validation before the privileged sink.",
+					SourceAnchors:     []string{"driver/ioctl.cpp:2"},
+					EvidencePacketIDs: []string{"shard-01-packet-01"},
+					Confidence:        "high",
+				},
+				{
+					ID:                "claim-safe",
+					Kind:              "fact",
+					Claim:             "The IOCTL path is validated and safe before the privileged sink.",
+					SourceAnchors:     []string{"driver/ioctl.cpp:2"},
+					EvidencePacketIDs: []string{"shard-01-packet-01"},
+					Confidence:        "high",
+				},
+			},
+		}},
+	}
+	report := verifyAnalysisClaims(snapshot, run)
+	if report.BlockingCount != 1 {
+		t.Fatalf("expected only positive safety claim to block, got %#v", report)
+	}
+	for _, result := range report.Results {
+		hasBoundaryIssue := false
+		for _, issue := range result.Issues {
+			if issue.Code == "security_boundary_invariant_violation" {
+				hasBoundaryIssue = true
+			}
+		}
+		if result.ClaimID == "claim-missing" && hasBoundaryIssue {
+			t.Fatalf("missing-validation risk claim should not be treated as a positive safety contradiction: %#v", result)
+		}
+		if result.ClaimID == "claim-safe" && !hasBoundaryIssue {
+			t.Fatalf("positive safety claim should be contradicted by missing validation candidate: %#v", result)
+		}
 	}
 }
 
