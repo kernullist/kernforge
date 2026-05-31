@@ -1737,6 +1737,129 @@ int main()
 	}
 }
 
+func TestMSBuildHintsRejectOutOfWorkspacePaths(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("App/App.vcxproj", `<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="..\..\Outside.props" />
+  <ItemGroup>
+    <ClCompile Include="src/main.cpp" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>..\..\ExternalInclude;include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>`)
+	mustWrite("App/src/main.cpp", `#include "App.h"
+int main()
+{
+    return 0;
+}
+`)
+	mustWrite("App/include/App.h", "#pragma once\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	var ctx BuildContextRecord
+	for _, candidate := range snapshot.BuildContexts {
+		if candidate.Kind == "msbuild_project" && candidate.Source == "App/App.vcxproj" {
+			ctx = candidate
+			break
+		}
+	}
+	if ctx.ID == "" {
+		t.Fatalf("expected msbuild project context, got %+v", snapshot.BuildContexts)
+	}
+	if !containsString(ctx.IncludePaths, "App/include") {
+		t.Fatalf("expected in-workspace include path, got %+v", ctx.IncludePaths)
+	}
+	for _, includePath := range ctx.IncludePaths {
+		if includePath == ".." || strings.HasPrefix(includePath, "../") || filepath.IsAbs(includePath) {
+			t.Fatalf("expected out-of-workspace include path to be rejected, got %+v", ctx.IncludePaths)
+		}
+	}
+
+	foundRejectedImport := false
+	for _, diagnostic := range snapshot.BuildDiagnostics {
+		if diagnostic.Path == "App/App.vcxproj" && diagnostic.Reason == "unresolved_import" && diagnostic.Detail == `..\..\Outside.props` {
+			foundRejectedImport = true
+			break
+		}
+	}
+	if !foundRejectedImport {
+		t.Fatalf("expected out-of-workspace import diagnostic, got %+v", snapshot.BuildDiagnostics)
+	}
+}
+
+func TestMSBuildContextIDsUsePathToAvoidCollisions(t *testing.T) {
+	root := t.TempDir()
+	mustWrite := func(rel string, body string) {
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), body)
+	}
+
+	mustWrite("App/App.vcxproj", `<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="src/app.cpp" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>include_app;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>`)
+	mustWrite("Tools/App.vcxproj", `<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="src/tool.cpp" />
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>include_tool;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>`)
+	mustWrite("App/src/app.cpp", "int AppMain() { return 0; }\n")
+	mustWrite("Tools/src/tool.cpp", "int ToolMain() { return 0; }\n")
+
+	cfg := DefaultConfig(root)
+	ws := Workspace{BaseRoot: root, Root: root}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+
+	contextBySource := map[string]BuildContextRecord{}
+	for _, candidate := range snapshot.BuildContexts {
+		if candidate.Kind == "msbuild_project" {
+			contextBySource[candidate.Source] = candidate
+		}
+	}
+	appCtx, appOK := contextBySource["App/App.vcxproj"]
+	toolCtx, toolOK := contextBySource["Tools/App.vcxproj"]
+	if !appOK || !toolOK {
+		t.Fatalf("expected separate msbuild contexts, got %+v", snapshot.BuildContexts)
+	}
+	if appCtx.ID == toolCtx.ID {
+		t.Fatalf("expected path-based msbuild context IDs, both were %q", appCtx.ID)
+	}
+	if !containsString(appCtx.IncludePaths, "App/include_app") || containsString(appCtx.IncludePaths, "Tools/include_tool") {
+		t.Fatalf("expected App include paths to stay isolated, got %+v", appCtx.IncludePaths)
+	}
+	if !containsString(toolCtx.IncludePaths, "Tools/include_tool") || containsString(toolCtx.IncludePaths, "App/include_app") {
+		t.Fatalf("expected Tools include paths to stay isolated, got %+v", toolCtx.IncludePaths)
+	}
+}
+
 func TestBuildAwareIncludeResolutionPrefersCompileContextOverBasenameFallback(t *testing.T) {
 	root := t.TempDir()
 	mustWrite := func(rel string, body string) {

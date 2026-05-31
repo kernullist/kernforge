@@ -277,7 +277,7 @@ func buildMSBuildContext(snapshot ProjectSnapshot, relPath string, project Solut
 		confidence = "high"
 	}
 	ctx := BuildContextRecord{
-		ID:            "buildctx:msbuild:" + sanitizeFileName(name),
+		ID:            msbuildContextID(relPath, name),
 		Name:          name + " MSBuild context",
 		Kind:          kind,
 		Directory:     filepath.ToSlash(filepath.Dir(relPath)),
@@ -295,6 +295,18 @@ func buildMSBuildContext(snapshot ProjectSnapshot, relPath string, project Solut
 		ctx.Directory = ""
 	}
 	return ctx, diagnostics, true
+}
+
+func msbuildContextID(relPath string, name string) string {
+	stem := strings.TrimSuffix(filepath.ToSlash(strings.TrimSpace(relPath)), filepath.Ext(relPath))
+	id := sanitizeFileName(stem)
+	if id == "" {
+		id = sanitizeFileName(name)
+	}
+	if id == "" {
+		id = "unknown"
+	}
+	return "buildctx:msbuild:" + id
 }
 
 func extractMSBuildMetadata(root string, relPath string) (msbuildExtraction, bool) {
@@ -530,11 +542,11 @@ func normalizeMSBuildPath(root string, ownerRelPath string, raw string, allowDir
 	}
 	cleaned = filepath.Clean(cleaned)
 	rel := filepath.ToSlash(relOrAbs(root, cleaned))
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
 	if !allowDirectories {
 		if strings.TrimSpace(filepath.Ext(rel)) == "" {
-			return "", false
-		}
-		if strings.HasPrefix(rel, "..") {
 			return "", false
 		}
 	}
