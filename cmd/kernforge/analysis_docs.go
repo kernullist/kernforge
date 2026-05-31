@@ -104,6 +104,7 @@ func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 		"API_AND_ENTRYPOINTS.md":      buildAnalysisAPIEntrypointsDoc(run),
 		"BUILD_AND_ARTIFACTS.md":      buildAnalysisBuildArtifactsDoc(run),
 		"COVERAGE_LEDGER.md":          buildAnalysisCoverageLedgerDoc(run),
+		"STRUCTURAL_INDEX.md":         buildAnalysisStructuralIndexDoc(run),
 		"EVIDENCE_PACKETS.md":         buildAnalysisEvidencePacketsDoc(run),
 		"VERIFICATION_MATRIX.md":      buildAnalysisVerificationMatrixDoc(run),
 		"FUZZ_TARGETS.md":             buildAnalysisFuzzTargetsDoc(run),
@@ -132,6 +133,7 @@ func analysisGeneratedDocNames() []string {
 		"API_AND_ENTRYPOINTS.md",
 		"BUILD_AND_ARTIFACTS.md",
 		"COVERAGE_LEDGER.md",
+		"STRUCTURAL_INDEX.md",
 		"EVIDENCE_PACKETS.md",
 		"VERIFICATION_MATRIX.md",
 		"FUZZ_TARGETS.md",
@@ -499,6 +501,66 @@ func buildAnalysisCoverageLedgerDoc(run ProjectAnalysisRun) string {
 	return b.String()
 }
 
+func buildAnalysisStructuralIndexDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Structural Index\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "STRUCTURAL_INDEX.md")
+	index := normalizeStructuralIndex(run.StructuralIndex)
+	fmt.Fprintf(&b, "\n## Parser Coverage\n\n")
+	fmt.Fprintf(&b, "- Indexed files: %d\n", index.Metrics.IndexedFiles)
+	fmt.Fprintf(&b, "- Indexed symbols: %d\n", index.Metrics.IndexedSymbols)
+	fmt.Fprintf(&b, "- Indexed references: %d\n", index.Metrics.IndexedReferences)
+	fmt.Fprintf(&b, "- Parser failures: %d\n", index.Metrics.ParserFailures)
+	fmt.Fprintf(&b, "- Fallback files: %d\n", index.Metrics.FallbackFiles)
+	fmt.Fprintf(&b, "- Unsupported files: %d\n", index.Metrics.UnsupportedFiles)
+	fmt.Fprintf(&b, "- Tree-sitter files: %d\n", index.Metrics.TreeSitterFiles)
+	fmt.Fprintf(&b, "- Symbol anchored files: %d\n", index.Metrics.SymbolAnchoredFiles)
+	if len(index.AdapterNotes) > 0 {
+		fmt.Fprintf(&b, "\n## Adapter Notes\n\n")
+		for _, note := range index.AdapterNotes {
+			fmt.Fprintf(&b, "- %s\n", note)
+		}
+	}
+	if index.PacketCoverage.TotalPackets > 0 || index.PacketCoverage.TotalClaims > 0 {
+		fmt.Fprintf(&b, "\n## Evidence Packet Coverage\n\n")
+		fmt.Fprintf(&b, "- Claims with packets: %d / %d (%.2f)\n", index.PacketCoverage.ClaimsWithPackets, index.PacketCoverage.TotalClaims, index.PacketCoverage.ClaimPacketCoverageRatio)
+		fmt.Fprintf(&b, "- Packets with symbol anchors: %d / %d (%.2f)\n", index.PacketCoverage.PacketsWithSymbolAnchor, index.PacketCoverage.TotalPackets, index.PacketCoverage.PacketSymbolAnchorCoverageRatio)
+	}
+	if len(index.Symbols) > 0 {
+		fmt.Fprintf(&b, "\n## Top Symbols\n\n")
+		fmt.Fprintf(&b, "| Symbol | Kind | Source | Parser |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- |\n")
+		for _, symbol := range limitStructuralSymbols(index.Symbols, 120) {
+			source := symbol.File
+			if symbol.StartLine > 0 {
+				source = fmt.Sprintf("%s:%d-%d", symbol.File, symbol.StartLine, symbol.EndLine)
+			}
+			fmt.Fprintf(&b, "| `%s` | %s | `%s` | %s |\n",
+				strings.ReplaceAll(firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name), "|", "/"),
+				strings.ReplaceAll(symbol.Kind, "|", "/"),
+				strings.ReplaceAll(source, "|", "/"),
+				strings.ReplaceAll(firstNonBlankAnalysisString(symbol.ExtractionMethod, "unknown"), "|", "/"),
+			)
+		}
+	}
+	if len(index.Diagnostics) > 0 {
+		fmt.Fprintf(&b, "\n## Diagnostics\n\n")
+		fmt.Fprintf(&b, "| Severity | Parser | Path | Reason | Detail |\n")
+		fmt.Fprintf(&b, "| --- | --- | --- | --- | --- |\n")
+		for _, diagnostic := range limitStructuralDiagnostics(index.Diagnostics, 80) {
+			fmt.Fprintf(&b, "| %s | %s | `%s` | %s | %s |\n",
+				strings.ReplaceAll(diagnostic.Severity, "|", "/"),
+				strings.ReplaceAll(diagnostic.Parser, "|", "/"),
+				strings.ReplaceAll(diagnostic.Path, "|", "/"),
+				strings.ReplaceAll(diagnostic.Reason, "|", "/"),
+				strings.ReplaceAll(diagnostic.Detail, "|", "/"),
+			)
+		}
+	}
+	return b.String()
+}
+
 func buildAnalysisEvidencePacketsDoc(run ProjectAnalysisRun) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Evidence Packets\n\n")
@@ -526,6 +588,12 @@ func buildAnalysisEvidencePacketsDoc(run ProjectAnalysisRun) string {
 		)
 	}
 	fmt.Fprintf(&b, "\n## Claim Packet Coverage\n\n")
+	coverage := run.PacketCoverage
+	if coverage.TotalPackets == 0 && len(run.EvidencePackets) > 0 {
+		coverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
+	}
+	fmt.Fprintf(&b, "- Claims with packets: %d / %d (%.2f)\n", coverage.ClaimsWithPackets, coverage.TotalClaims, coverage.ClaimPacketCoverageRatio)
+	fmt.Fprintf(&b, "- Packets with symbol anchors: %d / %d (%.2f)\n\n", coverage.PacketsWithSymbolAnchor, coverage.TotalPackets, coverage.PacketSymbolAnchorCoverageRatio)
 	fmt.Fprintf(&b, "| Shard | Claim | Packets | Confidence |\n")
 	fmt.Fprintf(&b, "| --- | --- | --- | --- |\n")
 	for _, row := range analysisClaimEvidencePacketRows(run, 120) {
@@ -1125,6 +1193,9 @@ func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 	if len(run.EvidencePackets) > 0 {
 		items = append(items, "evidence_packets")
 	}
+	if hasStructuralIndexData(run.StructuralIndex) {
+		items = append(items, "structural_index")
+	}
 	if hasSemanticIndexV2Data(run.SemanticIndexV2) {
 		items = append(items, "structural_index_v2")
 	}
@@ -1154,6 +1225,20 @@ func limitSkippedFiles(items []AnalysisSkippedFile, limit int) []AnalysisSkipped
 }
 
 func limitEvidencePackets(items []EvidencePacket, limit int) []EvidencePacket {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitStructuralSymbols(items []SymbolRecord, limit int) []SymbolRecord {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitStructuralDiagnostics(items []StructuralIndexDiagnostic, limit int) []StructuralIndexDiagnostic {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}
@@ -1245,6 +1330,8 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 		return analysisUniqueStrings(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...))
 	case "COVERAGE_LEDGER.md":
 		return analysisCoverageLedgerSourceAnchors(run)
+	case "STRUCTURAL_INDEX.md":
+		return analysisStructuralIndexSourceAnchors(run)
 	case "EVIDENCE_PACKETS.md":
 		return analysisEvidencePacketSourceAnchors(run)
 	case "VERIFICATION_MATRIX.md":
@@ -1600,6 +1687,13 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 			{"coverage.skip_reasons", "Skip Reasons"},
 			{"coverage.skipped_files", "Skipped Files"},
 		},
+		"STRUCTURAL_INDEX.md": {
+			{"structural.parser_coverage", "Parser Coverage"},
+			{"structural.adapter_notes", "Adapter Notes"},
+			{"structural.evidence_packet_coverage", "Evidence Packet Coverage"},
+			{"structural.top_symbols", "Top Symbols"},
+			{"structural.diagnostics", "Diagnostics"},
+		},
 		"EVIDENCE_PACKETS.md": {
 			{"evidence.packet_index", "Packet Index"},
 			{"evidence.claim_packet_coverage", "Claim Packet Coverage"},
@@ -1716,6 +1810,21 @@ func analysisCoverageLedgerSourceAnchors(run ProjectAnalysisRun) []string {
 	return analysisUniqueStrings(items)
 }
 
+func analysisStructuralIndexSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, symbol := range limitStructuralSymbols(run.StructuralIndex.Symbols, 80) {
+		if strings.TrimSpace(symbol.File) == "" {
+			continue
+		}
+		if symbol.StartLine > 0 {
+			items = append(items, fmt.Sprintf("%s:%d", symbol.File, symbol.StartLine))
+		} else {
+			items = append(items, symbol.File)
+		}
+	}
+	return analysisUniqueStrings(items)
+}
+
 func analysisEvidencePacketSourceAnchors(run ProjectAnalysisRun) []string {
 	items := []string{}
 	for _, packet := range limitEvidencePackets(run.EvidencePackets, 60) {
@@ -1757,6 +1866,8 @@ func analysisDocTitle(name string) string {
 		return "Build And Artifacts"
 	case "COVERAGE_LEDGER.md":
 		return "Coverage Ledger"
+	case "STRUCTURAL_INDEX.md":
+		return "Structural Index"
 	case "EVIDENCE_PACKETS.md":
 		return "Evidence Packets"
 	case "VERIFICATION_MATRIX.md":
@@ -1798,6 +1909,8 @@ func analysisDocPurpose(name string) string {
 		return "build contexts, manifests, compile command coverage, and artifacts"
 	case "COVERAGE_LEDGER.md":
 		return "scan coverage, skipped files, size limits, binary/unreadable exclusions, and source coverage caveats"
+	case "STRUCTURAL_INDEX.md":
+		return "Tree-sitter/fallback parser coverage, symbol anchors, references, diagnostics, and packet coverage"
 	case "EVIDENCE_PACKETS.md":
 		return "symbol-aware source slices used by worker claims and deterministic claim evidence coverage"
 	case "VERIFICATION_MATRIX.md":

@@ -128,6 +128,12 @@ func renderEvidencePacketsForPrompt(snapshot ProjectSnapshot, shard AnalysisShar
 
 func collectSourceFunctionAnchorsForPaths(snapshot ProjectSnapshot, paths []string) []sourceFunctionAnchor {
 	out := []sourceFunctionAnchor{}
+	if len(snapshot.StructuralIndex.Symbols) > 0 {
+		out = append(out, sourceFunctionAnchorsFromStructuralIndex(snapshot, paths)...)
+	}
+	if len(out) > 0 {
+		return out
+	}
 	for _, path := range analysisUniqueStrings(paths) {
 		file, ok := snapshot.FilesByPath[path]
 		if !ok || !analysisSupportsSourceAnchors(file.Extension) {
@@ -169,7 +175,7 @@ func evidencePacketFromAnchor(snapshot ProjectSnapshot, shard AnalysisShard, anc
 		SymbolName:       firstNonBlankAnalysisString(anchor.Symbol.CanonicalName, anchor.Symbol.Name),
 		StartLine:        startLine,
 		EndLine:          endLine,
-		ExtractionMethod: "source_anchor",
+		ExtractionMethod: "structural_symbol",
 		Confidence:       "high",
 		Tags:             analysisUniqueStrings(tags),
 		Text:             text,

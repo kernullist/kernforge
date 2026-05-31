@@ -147,6 +147,7 @@ Its current differentiators are:
 - Each shard now carries a contract (`type`, `objective`, `required_evidence`, and `success_criteria`), and worker reports include source-anchored `claims` so reviewer and synthesis steps can distinguish direct facts, inferences, risks, and unknowns.
 - Worker prompts now receive symbol-aware evidence packets instead of only file prefixes. Claims are expected to cite `evidence_packet_ids`; high-confidence claims without packet support are downgraded or left as unknowns instead of being promoted as direct facts.
 - Each run writes `coverage_ledger.json` and `evidence_packets.json`, mirrored under `latest/`, so skipped large/binary/unreadable files and the exact source slices used by workers remain auditable.
+- Each run writes a Phase 2 `structural_index.json` with parser coverage, fallback diagnostics, symbol/reference/call-edge candidates, and packet coverage metrics; Tree-sitter is an optional cgo/tagged adapter while default Windows builds keep the heuristic fallback parser.
 - When no dedicated reviewer profile is configured, non-root-cause runs are marked as `model_review_skipped` instead of counting those shards as reviewer-approved.
 - After worker/reviewer passes, `mode_scorecard.json` records mode-specific coverage, claim/evidence support, review approval, and any deterministic coverage gaps. When useful, Kernforge runs a bounded gap-filling shard pass before final synthesis.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
@@ -161,9 +162,9 @@ Its current differentiators are:
 - `trace`, `impact`, and `security` retrieval now expand graph neighborhoods and emit `build_context_v2` plus `path_v2` evidence
 - Unreal project, module, target, type, network, asset, system, and config signals are lifted into structured analysis artifacts
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
-- In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
+- In addition to a knowledge pack, the pipeline now emits a parser-backed `structural_index.json`, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
 - The pipeline also emits `architecture_facts.json`, a deterministic fact pack with top-level directory facts, domain hints, source anchors, registration/dispatch flow facts, boundary facts, and invariants used by cached architecture Q&A
-- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report, generated docs, source anchors, coverage ledger, evidence packet index, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report, generated docs, source anchors, coverage ledger, structural index health, evidence packet index, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
 - The dashboard includes an inline Markdown viewer and full-window reader mode so long outputs such as `FINAL_REPORT.md` can be read without leaving the dashboard
 - Explicit language requests such as "write the report in English" override the detected conversation language for analysis worker and synthesis prompts, and live progress truncation is UTF-8 safe
 - Before the final handoff, Kernforge prints a highlighted `Analysis artifacts:` block with the report, JSON, dashboard, docs, and manifest paths so users do not need to scroll back through a long run
@@ -1514,11 +1515,11 @@ What it does:
 - Uses semantic shard planning to prioritize startup, network, UI, GAS, asset/config, and integrity slices in large or Unreal-heavy workspaces
 - Uses a conductor plus multiple worker/reviewer passes
 - Prints live shard progress, including worker slot count, wave start/completion, shard completion/failure state, and stage/shard-prefixed model wait events
-- Builds a structural index and an Unreal semantic graph
+- Builds a parser-backed structural index and an Unreal semantic graph
 - Builds a deterministic `architecture_facts.json` fact pack for cached deep-structure Q&A, with current-source anchors, closed top-level directory facts, driver/control-flow hints, and answer invariants
 - Tracks semantic fingerprints plus structured invalidation diffs to explain why shards were recomputed
 - Writes Markdown and JSON analysis artifacts
-- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
+- Generates an operational documentation set with `FINAL_REPORT.md`, `ARCHITECTURE.md`, `SECURITY_SURFACE.md`, `API_AND_ENTRYPOINTS.md`, `BUILD_AND_ARTIFACTS.md`, `COVERAGE_LEDGER.md`, `STRUCTURAL_INDEX.md`, `EVIDENCE_PACKETS.md`, `VERIFICATION_MATRIX.md`, `FUZZ_TARGETS.md`, and `OPERATIONS_RUNBOOK.md`
 - Writes a schema-versioned `docs_manifest.json`; readers treat missing `schema_version` as legacy and ignore unknown fields for additive compatibility
 - Writes `dashboard.html` so run summary, module/function structure, the assistant-facing final report, generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory follow-ups, subsystem map, security surface, fuzz target candidates, and verification matrix are visible in a browser
 - Provides an inline Markdown viewer with a full-window reader mode for long generated documents, while keeping generated-doc links inside the dashboard instead of opening separate tabs
@@ -1560,6 +1561,9 @@ Typical outputs:
 - `.kernforge/analysis/latest/run.json`
 - `.kernforge/analysis/latest/coverage_ledger.json`
 - `.kernforge/analysis/latest/evidence_packets.json`
+- `.kernforge/analysis/latest/structural_index.json`
+- `.kernforge/analysis/latest/semantic_index.json`
+- `.kernforge/analysis/latest/structural_index_v2.json`
 - `.kernforge/analysis/latest/architecture_facts.json`
 - `.kernforge/analysis/latest/docs/`
 - `.kernforge/analysis/latest/docs_index.md`

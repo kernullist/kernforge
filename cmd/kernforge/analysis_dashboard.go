@@ -955,7 +955,7 @@ if (markdownDocs && markdownDocs.length > 0) {
 		htmlEscape(labels.Shards),
 		run.Summary.TotalShards,
 		htmlEscape(labels.Symbols),
-		len(run.SemanticIndexV2.Symbols),
+		analysisMaxInt(len(run.StructuralIndex.Symbols), len(run.SemanticIndexV2.Symbols)),
 		htmlEscape(labels.Subsystems),
 		len(run.KnowledgePack.Subsystems),
 		htmlEscape(labels.SecuritySurfaces),
@@ -1524,6 +1524,7 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 	rows := []string{
 		analysisDashboardDrilldownRow("analysis docs evidence", manifestPath, "/evidence-search kind:analysis_docs"),
 		analysisDashboardDrilldownRow("coverage ledger", docsHref+"/COVERAGE_LEDGER.md", "/analyze-dashboard latest"),
+		analysisDashboardDrilldownRow("structural index", docsHref+"/STRUCTURAL_INDEX.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("evidence packets", docsHref+"/EVIDENCE_PACKETS.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/mem-search analyze-project"),
 		analysisDashboardDrilldownRow("verification matrix", docsHref+"/VERIFICATION_MATRIX.md", "/verify"),

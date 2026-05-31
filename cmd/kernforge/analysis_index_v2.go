@@ -8,17 +8,22 @@ import (
 )
 
 type FileRecord struct {
-	Path            string   `json:"path"`
-	Directory       string   `json:"directory,omitempty"`
-	Extension       string   `json:"extension,omitempty"`
-	Language        string   `json:"language,omitempty"`
-	LineCount       int      `json:"line_count,omitempty"`
-	IsManifest      bool     `json:"is_manifest,omitempty"`
-	IsEntrypoint    bool     `json:"is_entrypoint,omitempty"`
-	ImportanceScore int      `json:"importance_score,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	ModuleHints     []string `json:"module_hints,omitempty"`
-	BuildContextIDs []string `json:"build_context_ids,omitempty"`
+	Path             string   `json:"path"`
+	Directory        string   `json:"directory,omitempty"`
+	Extension        string   `json:"extension,omitempty"`
+	Language         string   `json:"language,omitempty"`
+	LineCount        int      `json:"line_count,omitempty"`
+	IsManifest       bool     `json:"is_manifest,omitempty"`
+	IsEntrypoint     bool     `json:"is_entrypoint,omitempty"`
+	ImportanceScore  int      `json:"importance_score,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	ModuleHints      []string `json:"module_hints,omitempty"`
+	BuildContextIDs  []string `json:"build_context_ids,omitempty"`
+	Parser           string   `json:"parser,omitempty"`
+	ParserStatus     string   `json:"parser_status,omitempty"`
+	ParserDiagnostic string   `json:"parser_diagnostic,omitempty"`
+	SymbolCount      int      `json:"symbol_count,omitempty"`
+	ReferenceCount   int      `json:"reference_count,omitempty"`
 }
 
 type SymbolRecord struct {
@@ -35,6 +40,9 @@ type SymbolRecord struct {
 	Signature         string            `json:"signature,omitempty"`
 	StartLine         int               `json:"start_line,omitempty"`
 	EndLine           int               `json:"end_line,omitempty"`
+	StartByte         int               `json:"start_byte,omitempty"`
+	EndByte           int               `json:"end_byte,omitempty"`
+	ExtractionMethod  string            `json:"extraction_method,omitempty"`
 	Tags              []string          `json:"tags,omitempty"`
 	Attributes        map[string]string `json:"attributes,omitempty"`
 }
@@ -982,6 +990,26 @@ func buildSemanticIndexV2(snapshot ProjectSnapshot, goal string, runID string, u
 			Type:       "uht_generated_header",
 			Evidence:   []string{item.File},
 		})
+	}
+	for _, symbol := range snapshot.StructuralIndex.Symbols {
+		addSymbol(symbol)
+		if strings.TrimSpace(symbol.File) != "" {
+			addOccurrence(symbol.ID, symbol.File, "definition")
+		}
+		for _, ctxID := range buildContextIDsForFile(snapshot, symbol.File) {
+			addBuildEdge(BuildOwnershipEdge{
+				SourceID: ctxID,
+				TargetID: symbol.ID,
+				Type:     "compiles_symbol",
+				Evidence: []string{symbol.File},
+			})
+		}
+	}
+	for _, ref := range snapshot.StructuralIndex.References {
+		addReference(ref)
+	}
+	for _, edge := range snapshot.StructuralIndex.CallEdges {
+		addCallEdge(edge)
 	}
 	sourceExtraction := collectSourceAnchorsV2(snapshot, symbolByID)
 	for _, symbol := range sourceExtraction.Symbols {

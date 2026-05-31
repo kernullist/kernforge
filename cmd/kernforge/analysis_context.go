@@ -23,6 +23,7 @@ type latestAnalysisArtifacts struct {
 	Pack         KnowledgePack
 	Snapshot     ProjectSnapshot
 	Corpus       VectorCorpus
+	Structural   StructuralIndex
 	Index        SemanticIndex
 	IndexV2      SemanticIndexV2
 	UnrealGraph  UnrealSemanticGraph
@@ -95,6 +96,12 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 		_ = json.Unmarshal(corpusData, &artifacts.Corpus)
 	}
 	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index.json")); err == nil {
+		_ = json.Unmarshal(indexData, &artifacts.Structural)
+		if strings.TrimSpace(artifacts.Structural.SchemaVersion) == "" {
+			_ = json.Unmarshal(indexData, &artifacts.Index)
+		}
+	}
+	if indexData, err := os.ReadFile(filepath.Join(latestDir, "semantic_index.json")); err == nil {
 		_ = json.Unmarshal(indexData, &artifacts.Index)
 	}
 	if indexData, err := os.ReadFile(filepath.Join(latestDir, "structural_index_v2.json")); err == nil {
@@ -157,6 +164,9 @@ func latestAnalysisArtifactsRunID(artifacts latestAnalysisArtifacts) string {
 	}
 	if strings.TrimSpace(artifacts.Corpus.RunID) != "" {
 		return strings.TrimSpace(artifacts.Corpus.RunID)
+	}
+	if strings.TrimSpace(artifacts.Structural.RunID) != "" {
+		return strings.TrimSpace(artifacts.Structural.RunID)
 	}
 	if strings.TrimSpace(artifacts.Index.RunID) != "" {
 		return strings.TrimSpace(artifacts.Index.RunID)
@@ -304,6 +314,7 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 	if strings.TrimSpace(artifacts.Pack.ProjectSummary) == "" &&
 		len(artifacts.Pack.Subsystems) == 0 &&
 		len(artifacts.Corpus.Documents) == 0 &&
+		!hasStructuralIndexData(artifacts.Structural) &&
 		len(artifacts.Index.Files) == 0 &&
 		len(artifacts.Index.Symbols) == 0 &&
 		!hasSemanticIndexV2Data(artifacts.IndexV2) &&
@@ -370,6 +381,7 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 
 	files := selectRelevantIndexedFiles(artifacts.Index, query, 3)
 	symbols := selectRelevantSemanticSymbols(artifacts.Index, query, 4)
+	structuralSymbols := selectRelevantStructuralSymbols(artifacts.Structural, query, 4)
 	if len(files) > 0 || len(symbols) > 0 {
 		b.WriteString("\nRelevant structural index hits:\n")
 		for _, file := range files {
@@ -389,6 +401,22 @@ func renderRelevantProjectAnalysisContext(artifacts latestAnalysisArtifacts, que
 			}
 			if strings.TrimSpace(symbol.Module) != "" {
 				line += " module=" + strings.TrimSpace(symbol.Module)
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	if len(structuralSymbols) > 0 {
+		b.WriteString("\nRelevant Phase 2 structural symbols:\n")
+		for _, symbol := range structuralSymbols {
+			line := fmt.Sprintf("- symbol: %s (%s)", firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name), strings.TrimSpace(symbol.Kind))
+			if strings.TrimSpace(symbol.File) != "" {
+				line += " file=" + strings.TrimSpace(symbol.File)
+				if symbol.StartLine > 0 {
+					line += fmt.Sprintf(":%d", symbol.StartLine)
+				}
+			}
+			if strings.TrimSpace(symbol.ExtractionMethod) != "" {
+				line += " parser=" + strings.TrimSpace(symbol.ExtractionMethod)
 			}
 			b.WriteString(line + "\n")
 		}
@@ -794,6 +822,80 @@ func scoreSemanticSymbol(item SemanticSymbol, loweredQuery string, queryTokens [
 	return score
 }
 
+func selectRelevantStructuralSymbols(index StructuralIndex, query string, limit int) []SymbolRecord {
+	if len(index.Symbols) == 0 {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 4
+	}
+	type scoredSymbol struct {
+		Item  SymbolRecord
+		Score int
+		Name  string
+	}
+	loweredQuery := strings.ToLower(strings.TrimSpace(query))
+	queryTokens := filterAnalysisQueryTokens(extractPersistentMemoryTokens(loweredQuery))
+	queryRefs := normalizeAnalysisRefs(extractPersistentMemoryReferences(query))
+	scored := []scoredSymbol{}
+	for _, item := range index.Symbols {
+		score := scoreStructuralSymbolForQuery(item, loweredQuery, queryTokens, queryRefs)
+		if score <= 0 {
+			continue
+		}
+		scored = append(scored, scoredSymbol{Item: item, Score: score, Name: firstNonBlankAnalysisString(item.CanonicalName, item.Name)})
+	}
+	sort.Slice(scored, func(i int, j int) bool {
+		if scored[i].Score == scored[j].Score {
+			return scored[i].Name < scored[j].Name
+		}
+		return scored[i].Score > scored[j].Score
+	})
+	out := make([]SymbolRecord, 0, analysisMinInt(limit, len(scored)))
+	for _, item := range scored {
+		out = append(out, item.Item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func scoreStructuralSymbolForQuery(item SymbolRecord, loweredQuery string, queryTokens []string, queryRefs []string) int {
+	haystacks := []string{
+		strings.ToLower(strings.TrimSpace(item.Name)),
+		strings.ToLower(strings.TrimSpace(item.CanonicalName)),
+		strings.ToLower(strings.TrimSpace(item.Kind)),
+		strings.ToLower(strings.TrimSpace(item.File)),
+		strings.ToLower(strings.TrimSpace(item.Module)),
+		strings.ToLower(strings.TrimSpace(item.Signature)),
+		strings.ToLower(strings.Join(item.Tags, " ")),
+	}
+	score := structuralSymbolPriority(item) / 20
+	if loweredQuery != "" {
+		for _, hay := range haystacks {
+			if hay != "" && strings.Contains(hay, loweredQuery) {
+				score += 5
+			}
+		}
+	}
+	for _, token := range queryTokens {
+		for _, hay := range haystacks {
+			if hay != "" && token != "" && strings.Contains(hay, token) {
+				score++
+			}
+		}
+	}
+	for _, ref := range queryRefs {
+		for _, hay := range haystacks {
+			if hay != "" && ref != "" && strings.Contains(hay, ref) {
+				score += 4
+			}
+		}
+	}
+	return score
+}
+
 func limitKnowledgeSubsystems(items []KnowledgeSubsystem, limit int) []KnowledgeSubsystem {
 	if limit <= 0 || len(items) <= limit {
 		return append([]KnowledgeSubsystem(nil), items...)
@@ -872,6 +974,9 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 		if hasSemanticIndexV2Data(artifacts.IndexV2) {
 			sources = append(sources, "structural_index_v2")
 		}
+		if hasStructuralIndexData(artifacts.Structural) {
+			sources = append(sources, "structural_index")
+		}
 		if len(pack.SecurityOverlays) > 0 {
 			sources = append(sources, "security_overlay")
 		}
@@ -890,6 +995,7 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 	vectorDocs := selectRelevantVectorDocuments(artifacts.Corpus, query, 2)
 	files := selectRelevantIndexedFiles(artifacts.Index, query, 3)
 	symbols := selectRelevantSemanticSymbols(artifacts.Index, query, 4)
+	structuralSymbols := selectRelevantStructuralSymbols(artifacts.Structural, query, 4)
 	v2Hits := collectRelevantSemanticIndexV2Hits(artifacts.IndexV2, query)
 	sources := []string{}
 	if len(subsystems) > 0 {
@@ -898,7 +1004,7 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 	if len(vectorDocs) > 0 {
 		sources = append(sources, "vector_corpus")
 	}
-	if len(files) > 0 || len(symbols) > 0 {
+	if len(files) > 0 || len(symbols) > 0 || len(structuralSymbols) > 0 {
 		sources = append(sources, "structural_index")
 	}
 	if len(v2Hits.Files) > 0 ||
@@ -913,9 +1019,9 @@ func buildCachedAnalysisFastPathMetadata(artifacts latestAnalysisArtifacts, quer
 	}
 	confidence := "low"
 	switch {
-	case len(subsystems) > 0 && len(vectorDocs) > 0 && (len(files) > 0 || len(symbols) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0):
+	case len(subsystems) > 0 && len(vectorDocs) > 0 && (len(files) > 0 || len(symbols) > 0 || len(structuralSymbols) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0):
 		confidence = "high"
-	case len(subsystems) > 0 || len(vectorDocs) > 0 || len(files) > 0 || len(symbols) > 0 || len(v2Hits.Files) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0:
+	case len(subsystems) > 0 || len(vectorDocs) > 0 || len(files) > 0 || len(symbols) > 0 || len(structuralSymbols) > 0 || len(v2Hits.Files) > 0 || len(v2Hits.Symbols) > 0 || len(v2Hits.Calls) > 0 || len(v2Hits.Overlays) > 0:
 		confidence = "medium"
 	case strings.TrimSpace(artifacts.Pack.ProjectSummary) != "":
 		confidence = "low"

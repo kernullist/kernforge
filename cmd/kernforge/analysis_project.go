@@ -110,6 +110,7 @@ type ProjectSnapshot struct {
 	ProjectEdges        []ProjectEdge              `json:"project_edges,omitempty"`
 	ArchitectureFacts   ArchitectureFactPack       `json:"architecture_facts,omitempty"`
 	CoverageLedger      AnalysisCoverageLedger     `json:"coverage_ledger,omitempty"`
+	StructuralIndex     StructuralIndex            `json:"structural_index,omitempty"`
 	TotalFiles          int                        `json:"total_files"`
 	TotalLines          int                        `json:"total_lines"`
 	ImportGraph         map[string][]string        `json:"import_graph"`
@@ -282,6 +283,7 @@ type AnalysisShard struct {
 	RequiredEvidence             []string             `json:"required_evidence,omitempty"`
 	SuccessCriteria              []string             `json:"success_criteria,omitempty"`
 	PrimaryFiles                 []string             `json:"primary_files"`
+	PrimarySymbols               []string             `json:"primary_symbols,omitempty"`
 	ReferenceFiles               []string             `json:"reference_files,omitempty"`
 	EstimatedFiles               int                  `json:"estimated_files"`
 	EstimatedLines               int                  `json:"estimated_lines"`
@@ -673,28 +675,30 @@ type ReviewDecision struct {
 }
 
 type ProjectAnalysisRun struct {
-	Summary          ProjectAnalysisSummary  `json:"summary"`
-	Preflight        AnalysisPreflight       `json:"preflight,omitempty"`
-	Snapshot         ProjectSnapshot         `json:"snapshot"`
-	Shards           []AnalysisShard         `json:"shards"`
-	Reports          []WorkerReport          `json:"reports"`
-	Reviews          []ReviewDecision        `json:"reviews"`
-	CoverageLedger   AnalysisCoverageLedger  `json:"coverage_ledger,omitempty"`
-	EvidencePackets  []EvidencePacket        `json:"evidence_packets,omitempty"`
-	ModeScorecard    AnalysisModeScorecard   `json:"mode_scorecard,omitempty"`
-	FinalDocument    string                  `json:"final_document"`
-	ConductorProfile string                  `json:"conductor_profile,omitempty"`
-	WorkerProfile    string                  `json:"worker_profile,omitempty"`
-	ReviewerProfile  string                  `json:"reviewer_profile,omitempty"`
-	RootCause        RootCauseInvestigation  `json:"root_cause,omitempty"`
-	KnowledgePack    KnowledgePack           `json:"knowledge_pack,omitempty"`
-	SemanticIndex    SemanticIndex           `json:"semantic_index,omitempty"`
-	SemanticIndexV2  SemanticIndexV2         `json:"semantic_index_v2,omitempty"`
-	UnrealGraph      UnrealSemanticGraph     `json:"unreal_graph,omitempty"`
-	VectorCorpus     VectorCorpus            `json:"vector_corpus,omitempty"`
-	VectorIngestion  VectorIngestionManifest `json:"vector_ingestion,omitempty"`
-	DebugEvents      []string                `json:"debug_events,omitempty"`
-	ShardDocuments   map[string]string       `json:"shard_documents,omitempty"`
+	Summary          ProjectAnalysisSummary        `json:"summary"`
+	Preflight        AnalysisPreflight             `json:"preflight,omitempty"`
+	Snapshot         ProjectSnapshot               `json:"snapshot"`
+	Shards           []AnalysisShard               `json:"shards"`
+	Reports          []WorkerReport                `json:"reports"`
+	Reviews          []ReviewDecision              `json:"reviews"`
+	CoverageLedger   AnalysisCoverageLedger        `json:"coverage_ledger,omitempty"`
+	StructuralIndex  StructuralIndex               `json:"structural_index,omitempty"`
+	EvidencePackets  []EvidencePacket              `json:"evidence_packets,omitempty"`
+	PacketCoverage   AnalysisPacketCoverageMetrics `json:"packet_coverage,omitempty"`
+	ModeScorecard    AnalysisModeScorecard         `json:"mode_scorecard,omitempty"`
+	FinalDocument    string                        `json:"final_document"`
+	ConductorProfile string                        `json:"conductor_profile,omitempty"`
+	WorkerProfile    string                        `json:"worker_profile,omitempty"`
+	ReviewerProfile  string                        `json:"reviewer_profile,omitempty"`
+	RootCause        RootCauseInvestigation        `json:"root_cause,omitempty"`
+	KnowledgePack    KnowledgePack                 `json:"knowledge_pack,omitempty"`
+	SemanticIndex    SemanticIndex                 `json:"semantic_index,omitempty"`
+	SemanticIndexV2  SemanticIndexV2               `json:"semantic_index_v2,omitempty"`
+	UnrealGraph      UnrealSemanticGraph           `json:"unreal_graph,omitempty"`
+	VectorCorpus     VectorCorpus                  `json:"vector_corpus,omitempty"`
+	VectorIngestion  VectorIngestionManifest       `json:"vector_ingestion,omitempty"`
+	DebugEvents      []string                      `json:"debug_events,omitempty"`
+	ShardDocuments   map[string]string             `json:"shard_documents,omitempty"`
 }
 
 const (
@@ -3005,6 +3009,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		a.debug(fmt.Sprintf("root-cause plan prepared: hypotheses=%d symptom=%q", len(rootCausePlan.Hypotheses), rootCausePlan.Symptom.Symptom))
 	}
 	snapshot.ProjectEdges = buildProjectEdges(snapshot)
+	a.status("Building structural index...")
+	snapshot.StructuralIndex = buildStructuralIndex(snapshot, goal, run.Summary.RunID)
+	a.debug(fmt.Sprintf("structural index built: files=%d symbols=%d refs=%d fallback=%d failures=%d", snapshot.StructuralIndex.Metrics.IndexedFiles, snapshot.StructuralIndex.Metrics.IndexedSymbols, snapshot.StructuralIndex.Metrics.IndexedReferences, snapshot.StructuralIndex.Metrics.FallbackFiles, snapshot.StructuralIndex.Metrics.ParserFailures))
 	a.cachedUnrealGraph = buildUnrealSemanticGraph(snapshot, goal, run.Summary.RunID)
 	a.cachedSemanticIndexV2 = buildSemanticIndexV2(snapshot, goal, run.Summary.RunID, a.cachedUnrealGraph)
 	if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" {
@@ -3212,7 +3219,12 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
 	run.CoverageLedger = normalizeAnalysisCoverageLedger(run.Snapshot.CoverageLedger)
 	run.Snapshot.CoverageLedger = run.CoverageLedger
+	run.StructuralIndex = normalizeStructuralIndex(run.Snapshot.StructuralIndex)
+	run.Snapshot.StructuralIndex = run.StructuralIndex
 	run.EvidencePackets = buildAnalysisRunEvidencePackets(run.Snapshot, run.Shards)
+	run.PacketCoverage = computeAnalysisPacketCoverage(run.Reports, run.EvidencePackets)
+	run.StructuralIndex.PacketCoverage = run.PacketCoverage
+	run.Snapshot.StructuralIndex = run.StructuralIndex
 	run.KnowledgePack = buildKnowledgePack(run.Snapshot, run.Shards, run.Reports, goal, run.Summary.RunID)
 	run.UnrealGraph = a.cachedUnrealGraph
 	run.SemanticIndex = buildSemanticIndex(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
@@ -10487,6 +10499,7 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	performanceDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_performance_lens.md")
 	snapshotJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_snapshot.json")
 	structuralIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index.json")
+	semanticIndexJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_semantic_index.json")
 	structuralIndexV2JSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_structural_index_v2.json")
 	unrealGraphJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_unreal_graph.json")
 	vectorCorpusJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_vector_corpus.json")
@@ -10567,6 +10580,24 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	if err := os.WriteFile(evidencePacketsJSONPath, evidencePacketData, 0o644); err != nil {
 		return "", err
 	}
+	hasLegacySemanticIndex := len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0
+	structuralIndexData, err := json.MarshalIndent(run.StructuralIndex, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	writeStructuralIndexArtifact := hasStructuralIndexData(run.StructuralIndex)
+	if !writeStructuralIndexArtifact && hasLegacySemanticIndex {
+		structuralIndexData, err = json.MarshalIndent(run.SemanticIndex, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		writeStructuralIndexArtifact = true
+	}
+	if writeStructuralIndexArtifact {
+		if err := os.WriteFile(structuralIndexJSONPath, structuralIndexData, 0o644); err != nil {
+			return "", err
+		}
+	}
 	snapshotData, err := json.MarshalIndent(run.Snapshot, "", "  ")
 	if err != nil {
 		return "", err
@@ -10574,12 +10605,12 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	if err := os.WriteFile(snapshotJSONPath, snapshotData, 0o644); err != nil {
 		return "", err
 	}
-	if len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0 {
+	if hasLegacySemanticIndex {
 		indexData, err := json.MarshalIndent(run.SemanticIndex, "", "  ")
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(structuralIndexJSONPath, indexData, 0o644); err != nil {
+		if err := os.WriteFile(semanticIndexJSONPath, indexData, 0o644); err != nil {
 			return "", err
 		}
 	}
@@ -10740,6 +10771,11 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 		if err := os.WriteFile(filepath.Join(latestDir, "evidence_packets.json"), evidencePacketData, 0o644); err != nil {
 			return "", err
 		}
+		if writeStructuralIndexArtifact {
+			if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), structuralIndexData, 0o644); err != nil {
+				return "", err
+			}
+		}
 		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
 			return "", err
 		}
@@ -10785,12 +10821,12 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 		if err := os.WriteFile(filepath.Join(latestDir, "performance_digest.md"), []byte(perfDigest), 0o644); err != nil {
 			return "", err
 		}
-		if len(run.SemanticIndex.Files) > 0 || len(run.SemanticIndex.Symbols) > 0 || len(run.SemanticIndex.BuildEdges) > 0 {
+		if hasLegacySemanticIndex {
 			indexData, err := json.MarshalIndent(run.SemanticIndex, "", "  ")
 			if err != nil {
 				return "", err
 			}
-			if err := os.WriteFile(filepath.Join(latestDir, "structural_index.json"), indexData, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(latestDir, "semantic_index.json"), indexData, 0o644); err != nil {
 				return "", err
 			}
 		}
@@ -11231,11 +11267,34 @@ func semanticV2EdgeTouchesNodeSet(sourceID string, targetID string, fileSet map[
 
 func (a *projectAnalyzer) finalizeShard(snapshot ProjectSnapshot, shard *AnalysisShard, referenceLimit int) {
 	shard.ReferenceFiles = a.relatedFiles(snapshot, shard.PrimaryFiles, referenceLimit)
+	shard.PrimarySymbols = analysisShardPrimarySymbols(snapshot, *shard, 12)
 	shard.PrimaryFingerprint = a.computeFileSetFingerprint(snapshot, shard.PrimaryFiles)
 	shard.ReferenceFingerprint = a.computeFileSetFingerprint(snapshot, shard.ReferenceFiles)
 	shard.PrimarySemanticFingerprint = a.computeSemanticFingerprint(snapshot, shard.PrimaryFiles)
 	shard.ReferenceSemanticFingerprint = a.computeSemanticFingerprint(snapshot, shard.ReferenceFiles)
 	shard.Fingerprint = a.computeShardFingerprint(snapshot, *shard)
+}
+
+func analysisShardPrimarySymbols(snapshot ProjectSnapshot, shard AnalysisShard, limit int) []string {
+	symbols := structuralSymbolsForPaths(snapshot.StructuralIndex, shard.PrimaryFiles, limit)
+	out := []string{}
+	for _, symbol := range symbols {
+		label := firstNonBlankAnalysisString(symbol.CanonicalName, symbol.Name)
+		if label == "" {
+			continue
+		}
+		if strings.TrimSpace(symbol.Kind) != "" {
+			label += " [" + strings.TrimSpace(symbol.Kind) + "]"
+		}
+		if strings.TrimSpace(symbol.File) != "" {
+			label += " @ " + strings.TrimSpace(symbol.File)
+			if symbol.StartLine > 0 {
+				label += ":" + strconv.Itoa(symbol.StartLine)
+			}
+		}
+		out = append(out, label)
+	}
+	return analysisUniqueStrings(out)
 }
 
 func (a *projectAnalyzer) initializeClients() error {
@@ -12971,6 +13030,12 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 		b.WriteString("\n\n")
 	}
 	fmt.Fprintf(&b, "Primary files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
+	if len(shard.PrimarySymbols) > 0 {
+		fmt.Fprintf(&b, "Primary structural symbols:\n%s\n\n", joinListForPrompt(shard.PrimarySymbols))
+	} else if symbols := renderStructuralIndexPromptSummary(snapshot, shard, 12); strings.TrimSpace(symbols) != "" {
+		b.WriteString(symbols)
+		b.WriteString("\n\n")
+	}
 	if len(shard.ReferenceFiles) > 0 {
 		fmt.Fprintf(&b, "Reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
 	}
@@ -13382,6 +13447,12 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	}
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "Assigned files:\n%s\n\n", joinListForPrompt(shard.PrimaryFiles))
+	if len(shard.PrimarySymbols) > 0 {
+		fmt.Fprintf(&b, "Assigned structural symbols:\n%s\n\n", joinListForPrompt(shard.PrimarySymbols))
+	} else if symbols := renderStructuralIndexPromptSummary(snapshot, shard, 8); strings.TrimSpace(symbols) != "" {
+		b.WriteString(symbols)
+		b.WriteString("\n\n")
+	}
 	if len(shard.ReferenceFiles) > 0 {
 		fmt.Fprintf(&b, "Allowed reference files:\n%s\n\n", joinListForPrompt(shard.ReferenceFiles))
 	}

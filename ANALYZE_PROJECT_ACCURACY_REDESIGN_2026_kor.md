@@ -719,7 +719,7 @@ edge마다 `source_adapter`, `confidence`, `evidence_packet_ids`, `invalidation_
 
 이 순서가 가장 현실적이다. 외부 indexer 연동은 정확도 기반을 먼저 세운 뒤 붙여야 regression 원인을 분리하기 쉽다.
 
-## 9. Phase 1 구현 상태
+## 9. 구현 상태
 
 2026-05-31 기준으로 Phase 1의 내부 parser 기반 정확도 개선은 다음 항목까지 반영했다.
 
@@ -732,4 +732,15 @@ edge마다 `source_adapter`, `confidence`, `evidence_packet_ids`, `invalidation_
 7. `COVERAGE_LEDGER.md`, `EVIDENCE_PACKETS.md`, dashboard skipped-file/evidence-packet metric을 추가했다.
 8. long C++ file 후반 handler, oversized file ledger, security shard 분해, unsupported high-confidence claim downgrade 회귀 테스트를 추가했다.
 
-남은 범위는 external adapter 계층(Tree-sitter/SCIP/clangd/CodeQL/Semgrep/Joern), packet coverage ratio score, graph-edge-level verifier, cross-tool failure dashboard를 Phase 2로 붙이는 일이다.
+2026-05-31 기준으로 Phase 2의 structural index 개선은 다음 항목까지 반영했다.
+
+1. `StructuralIndex` artifact를 추가하고 run별 `_structural_index.json` 및 `latest/structural_index.json`로 저장한다.
+2. Go/C/C++/header/C# 대상 symbol, reference, call-edge 후보를 structural index에 올리고 기존 `structural_index_v2`와 병합한다.
+3. optional Tree-sitter adapter 계층을 추가했다. `kernforge_treesitter` build tag와 cgo가 있을 때 활성화되며, 기본 Windows/CGO-off 빌드는 heuristic fallback parser로 동일 기능을 graceful degradation한다.
+4. adapter 실패, 빈 Tree-sitter 결과, read failure, unsupported file을 diagnostics와 metrics로 남긴다.
+5. evidence packet은 structural symbol line range를 우선 사용하고, packet coverage metric으로 `claims_with_packets / total_claims`, `packets_with_symbol_anchor / total_packets`을 계산한다.
+6. shard prompt에는 primary structural symbols와 structural anchor summary가 들어가며, cached analysis context도 Phase 2 symbol hit를 재사용한다.
+7. generated docs에 `STRUCTURAL_INDEX.md`를 추가하고 parser coverage, adapter note, packet coverage, top symbols, diagnostics를 표시한다.
+8. dashboard drilldown에서 structural index 문서를 열 수 있고, symbol count metric은 Phase 2 structural symbols와 v2 symbols를 함께 반영한다.
+
+남은 범위는 SCIP/clangd/CodeQL/Semgrep/Joern 같은 external precise adapter, graph-edge-level verifier, cross-tool failure dashboard, cross-process provider lease를 다음 단계로 붙이는 일이다.
