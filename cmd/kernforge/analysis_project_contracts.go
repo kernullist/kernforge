@@ -12,14 +12,54 @@ import (
 )
 
 type AnalysisClaim struct {
-	ID               string   `json:"id,omitempty"`
-	Kind             string   `json:"kind,omitempty"`
-	Claim            string   `json:"claim"`
-	SourceAnchors    []string `json:"source_anchors,omitempty"`
+	ID                string   `json:"id,omitempty"`
+	Kind              string   `json:"kind,omitempty"`
+	Claim             string   `json:"claim"`
+	SourceAnchors     []string `json:"source_anchors,omitempty"`
+	EvidencePacketIDs []string `json:"evidence_packet_ids,omitempty"`
+	Confidence        string   `json:"confidence,omitempty"`
+	DependsOn         []string `json:"depends_on,omitempty"`
+	DisprovesWhen     string   `json:"disproves_when,omitempty"`
+	VerificationHint  string   `json:"verification_hint,omitempty"`
+}
+
+type AnalysisSkippedFile struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size,omitempty"`
+	Reason string `json:"reason"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type AnalysisCoverageLedger struct {
+	GeneratedAt      time.Time             `json:"generated_at,omitempty"`
+	Root             string                `json:"root,omitempty"`
+	MaxFileBytes     int64                 `json:"max_file_bytes,omitempty"`
+	VisitedFiles     int                   `json:"visited_files,omitempty"`
+	IncludedFiles    int                   `json:"included_files,omitempty"`
+	SkippedFileCount int                   `json:"skipped_file_count,omitempty"`
+	SkippedBytes     int64                 `json:"skipped_bytes,omitempty"`
+	OversizedFiles   int                   `json:"oversized_files,omitempty"`
+	UnreadableFiles  int                   `json:"unreadable_files,omitempty"`
+	NonTextFiles     int                   `json:"non_text_files,omitempty"`
+	ExcludedFiles    int                   `json:"excluded_files,omitempty"`
+	ExcludedDirs     int                   `json:"excluded_dirs,omitempty"`
+	SkippedFiles     []AnalysisSkippedFile `json:"skipped_files,omitempty"`
+}
+
+type EvidencePacket struct {
+	ID               string   `json:"id"`
+	ShardID          string   `json:"shard_id,omitempty"`
+	Kind             string   `json:"kind"`
+	Path             string   `json:"path"`
+	SymbolID         string   `json:"symbol_id,omitempty"`
+	SymbolName       string   `json:"symbol_name,omitempty"`
+	StartLine        int      `json:"start_line,omitempty"`
+	EndLine          int      `json:"end_line,omitempty"`
+	ExtractionMethod string   `json:"extraction_method,omitempty"`
 	Confidence       string   `json:"confidence,omitempty"`
-	DependsOn        []string `json:"depends_on,omitempty"`
-	DisprovesWhen    string   `json:"disproves_when,omitempty"`
-	VerificationHint string   `json:"verification_hint,omitempty"`
+	ContentHash      string   `json:"content_hash,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Text             string   `json:"text,omitempty"`
 }
 
 type AnalysisRuntimeFeedback struct {
@@ -497,6 +537,7 @@ func normalizeAnalysisClaims(claims []AnalysisClaim, report WorkerReport, shard 
 		if len(claim.SourceAnchors) == 0 && hadSourceAnchors {
 			claim.Confidence = "low"
 		}
+		claim.EvidencePacketIDs = analysisUniqueStrings(claim.EvidencePacketIDs)
 		claim.DependsOn = analysisUniqueStrings(claim.DependsOn)
 		claim.DisprovesWhen = strings.TrimSpace(claim.DisprovesWhen)
 		claim.VerificationHint = strings.TrimSpace(claim.VerificationHint)
@@ -531,12 +572,13 @@ func deriveAnalysisClaimsFromReport(report WorkerReport, shard AnalysisShard, de
 				continue
 			}
 			out = append(out, AnalysisClaim{
-				Kind:             normalizeAnalysisClaimKind(kind),
-				Claim:            value,
-				SourceAnchors:    append([]string(nil), defaultAnchors...),
-				Confidence:       normalizeAnalysisClaimConfidence(confidence),
-				DisprovesWhen:    defaultAnalysisClaimDisproof(kind),
-				VerificationHint: "Re-check the cited source anchors and dependency context.",
+				Kind:              normalizeAnalysisClaimKind(kind),
+				Claim:             value,
+				SourceAnchors:     append([]string(nil), defaultAnchors...),
+				EvidencePacketIDs: nil,
+				Confidence:        normalizeAnalysisClaimConfidence(confidence),
+				DisprovesWhen:     defaultAnalysisClaimDisproof(kind),
+				VerificationHint:  "Re-check the cited source anchors and dependency context.",
 			})
 			if len(out) >= 8 {
 				return
@@ -549,12 +591,13 @@ func deriveAnalysisClaimsFromReport(report WorkerReport, shard AnalysisShard, de
 	add("unknown", "low", report.Unknowns)
 	if len(out) == 0 && strings.TrimSpace(report.ScopeSummary) != "" {
 		out = append(out, AnalysisClaim{
-			Kind:             "summary",
-			Claim:            strings.TrimSpace(report.ScopeSummary),
-			SourceAnchors:    append([]string(nil), defaultAnchors...),
-			Confidence:       "medium",
-			DisprovesWhen:    "The assigned files show different ownership, flow, or evidence boundaries.",
-			VerificationHint: "Re-check the shard scope summary against cited source anchors.",
+			Kind:              "summary",
+			Claim:             strings.TrimSpace(report.ScopeSummary),
+			SourceAnchors:     append([]string(nil), defaultAnchors...),
+			EvidencePacketIDs: nil,
+			Confidence:        "medium",
+			DisprovesWhen:     "The assigned files show different ownership, flow, or evidence boundaries.",
+			VerificationHint:  "Re-check the shard scope summary against cited source anchors.",
 		})
 	}
 	return out

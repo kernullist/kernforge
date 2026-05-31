@@ -8,7 +8,7 @@
 
 The first five capabilities to understand are:
 
-- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
+- `/analyze-project [--path <dir>] [--mode map|trace|impact|surface|security|performance] [goal]` builds reusable project intelligence: an architecture map, knowledge pack, coverage ledger, evidence packets, performance lens, structural index, vector-ready analysis set, operational docs, and an HTML dashboard.
 - `/review` is the common evidence-backed review harness for plans, code, selections, PRs, goals, final answers, analysis reports, pre-fix checks, pre-write checks, post-change checks, and MCP review. It tracks structured findings, request class, classification confidence and ambiguity warnings, lifecycle phase, route mode and route quality, typed state transitions, action envelopes, approval ledgers, capability manifests, freshness, next commands, repair guidance, read-only review mode, document-artifact gates, and write-isolated edit proposals. Natural-language review and edit requests now get runtime-enforced Codex-grade handling: simple reviews stay read-only and findings-first, ambiguous mixed requests choose the safest lifecycle with an explanation, document-artifact requests use artifact-quality gates instead of irrelevant code-review loops, single-model runs execute or explicitly record a separate second-pass review phase, optional cross-review findings are persisted in an actionable triage ledger, and final answers are corrected before display when they omit changed files, review result, validation result, artifact quality, limitations, or remaining risk. The default terminal experience is compact-first: verdict, counts, key findings, report path, and a single next command come first, while detailed lifecycle and route diagnostics stay in `/progress-display stream` and artifacts.
 - Fuzzing starts with `/fuzz-func` source-level triage and continues through `/fuzz-campaign` for campaign manifests, corpus/crash/coverage artifacts, sanitizer or verifier evidence, and verification gate lifecycle management.
 - `/goal`, `-goal`, and `-goal-file` add the long-horizon autonomous execution layer: Kernforge persists an objective from a prompt or markdown file, then loops through implementation, independent review, repair, full verification, completion audit, final semantic review, and recovery until the goal is complete or concretely blocked
@@ -99,7 +99,7 @@ Its current differentiators are:
 
 ## What It Currently Supports
 
-- Multi-agent project analysis with reusable knowledge packs, a performance lens, operational docs, and an HTML dashboard
+- Multi-agent project analysis with reusable knowledge packs, symbol-aware evidence packets, scan coverage ledgers, a performance lens, operational docs, and an HTML dashboard
 - Symptom-driven `/find-root-cause` plus built-in `/root-cause-patterns` knowledge packs
 - Pre-final coding harnesses for acceptance, artifact quality, scenario replay, subagent evidence, test impact, and background job state
 - Evidence-backed apply/verify/retry edit-loop ledger that carries worker edits, patch evidence, background verification bundles, retry decisions, final review, and remaining risk into the final answer
@@ -145,6 +145,9 @@ Its current differentiators are:
 - During execution, the transcript shows shard waves, completed/failed shard counts, cache/review state, and model progress lines labeled with the active analysis stage and shard, for example `worker runtime: ...` or `reviewer security_rpc: ...`.
 - Each run writes `analysis_preflight.json`, which records the inferred intent, effective mode, scope, required indexes, provider/runtime feedback, shard contracts, and success criteria before worker execution starts.
 - Each shard now carries a contract (`type`, `objective`, `required_evidence`, and `success_criteria`), and worker reports include source-anchored `claims` so reviewer and synthesis steps can distinguish direct facts, inferences, risks, and unknowns.
+- Worker prompts now receive symbol-aware evidence packets instead of only file prefixes. Claims are expected to cite `evidence_packet_ids`; high-confidence claims without packet support are downgraded or left as unknowns instead of being promoted as direct facts.
+- Each run writes `coverage_ledger.json` and `evidence_packets.json`, mirrored under `latest/`, so skipped large/binary/unreadable files and the exact source slices used by workers remain auditable.
+- When no dedicated reviewer profile is configured, non-root-cause runs are marked as `model_review_skipped` instead of counting those shards as reviewer-approved.
 - After worker/reviewer passes, `mode_scorecard.json` records mode-specific coverage, claim/evidence support, review approval, and any deterministic coverage gaps. When useful, Kernforge runs a bounded gap-filling shard pass before final synthesis.
 - `surface` mode makes IOCTL, RPC, parser, handle, memory-copy, telemetry decoder, and network entry points first-class analysis targets
 - In `security` mode, the analysis now decomposes results into dedicated `driver`, `IOCTL`, `handle`, `memory`, and `RPC` surfaces when those paths are present
@@ -160,7 +163,7 @@ Its current differentiators are:
 - A semantic shard planner plus semantic-aware worker and reviewer prompts prioritize startup, network, UI, GAS, asset/config, and integrity surfaces
 - In addition to a knowledge pack, the pipeline now emits a structural index, `structural_index_v2`, Unreal semantic graph, vector corpus, and vector ingestion exports
 - The pipeline also emits `architecture_facts.json`, a deterministic fact pack with top-level directory facts, domain hints, source anchors, registration/dispatch flow facts, boundary facts, and invariants used by cached architecture Q&A
-- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report and generated docs, source anchors, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
+- Generated docs and `dashboard.html` make the latest project knowledge base browsable as a module/function structure map plus a dark static document portal with search across the final report, generated docs, source anchors, coverage ledger, evidence packet index, graph-linked stale section diff, trust-boundary/attack-flow views, evidence/memory drilldowns, and docs-backed vector corpus reuse
 - The dashboard includes an inline Markdown viewer and full-window reader mode so long outputs such as `FINAL_REPORT.md` can be read without leaving the dashboard
 - Explicit language requests such as "write the report in English" override the detected conversation language for analysis worker and synthesis prompts, and live progress truncation is UTF-8 safe
 - Before the final handoff, Kernforge prints a highlighted `Analysis artifacts:` block with the report, JSON, dashboard, docs, and manifest paths so users do not need to scroll back through a long run
@@ -1533,6 +1536,8 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>.md`
 - `.kernforge/analysis/<timestamp>_<goal>.json`
 - `.kernforge/analysis/<timestamp>_<goal>_snapshot.json`
+- `.kernforge/analysis/<timestamp>_<goal>_coverage_ledger.json`
+- `.kernforge/analysis/<timestamp>_<goal>_evidence_packets.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index.json`
 - `.kernforge/analysis/<timestamp>_<goal>_structural_index_v2.json`
 - `.kernforge/analysis/<timestamp>_<goal>_unreal_graph.json`
@@ -1553,6 +1558,8 @@ Typical outputs:
 - `.kernforge/analysis/<timestamp>_<goal>_dashboard.html`
 - `.kernforge/analysis/latest/`
 - `.kernforge/analysis/latest/run.json`
+- `.kernforge/analysis/latest/coverage_ledger.json`
+- `.kernforge/analysis/latest/evidence_packets.json`
 - `.kernforge/analysis/latest/architecture_facts.json`
 - `.kernforge/analysis/latest/docs/`
 - `.kernforge/analysis/latest/docs_index.md`

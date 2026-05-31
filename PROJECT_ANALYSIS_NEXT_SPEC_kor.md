@@ -55,6 +55,10 @@
 8. `/analyze-project`는 docs를 기본 생성하며, 예전 `--docs` 플래그는 하위 호환용 hidden parser input으로만 유지한다. 문서 재생성은 `/docs-refresh`가 담당한다.
 9. local provider에서는 `max_files_per_shard` / `max_lines_per_shard`를 명시하지 않았을 때 provider, 모델 크기, max token, request timeout 신호로 shard 크기를 자동 조정한다.
 10. provider timeout, 5xx, overload, empty response, connection reset 같은 최종 provider-pressure 실패가 남으면 `/analyze-project`가 사용자에게 `adaptive_retry_shards`를 보여 주고 더 작은 shard로 한 번 자동 재실행한다. rate limit은 요청 수를 더 늘릴 수 있으므로 이 경로에서 제외한다.
+11. `coverage_ledger.json`과 `evidence_packets.json`를 run별 artifact와 `latest/` mirror에 저장한다.
+12. worker prompt는 file prefix context보다 symbol-aware evidence packet을 우선 사용하며, claim은 `evidence_packet_ids`를 요구한다.
+13. dedicated reviewer가 없는 single-model run은 `approved`가 아니라 `model_review_skipped`로 집계한다.
+14. non-Unreal Windows/security 프로젝트도 `security_driver`, `security_ioctl`, `security_handles`, `security_memory`, `security_rpc` semantic shard를 탈 수 있다.
 
 아직 남아 있는 대표 항목은 다음과 같다.
 
@@ -504,6 +508,8 @@ UE 대응을 위해 다음 shard 클래스를 추가한다.
 
 1. 기존 `/analyze-project` 산출물과 호환 유지
 2. `latest/structural_index.json` 생성
+3. `latest/coverage_ledger.json`과 `latest/evidence_packets.json` 생성
+4. worker claim이 evidence packet id와 source anchor를 함께 남김
 
 ### Phase 2: UE semantic indexing
 

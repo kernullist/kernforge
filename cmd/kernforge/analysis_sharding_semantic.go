@@ -71,7 +71,10 @@ func (a *projectAnalyzer) planSemanticShards(snapshot ProjectSnapshot, desiredSh
 		}
 	}
 	if nonEmptyBuckets < 2 || assignedFiles < 4 {
-		return nil
+		mode := normalizeProjectAnalysisMode(snapshot.AnalysisMode)
+		if (mode != "security" && mode != "surface") || nonEmptyBuckets < 1 || assignedFiles < 1 {
+			return nil
+		}
 	}
 
 	shards := []AnalysisShard{}
@@ -151,7 +154,7 @@ func orderedSemanticShardBuckets(mode string) []string {
 			"unreal_ui",
 			"unreal_ability",
 		}
-	case "security":
+	case "security", "surface":
 		return []string{
 			"security_driver",
 			"security_ioctl",
@@ -235,7 +238,7 @@ func mergeSemanticShardsByPriority(shards []AnalysisShard, target int, mode stri
 }
 
 func hasSemanticShardSignals(snapshot ProjectSnapshot) bool {
-	return len(snapshot.UnrealProjects) > 0 ||
+	if len(snapshot.UnrealProjects) > 0 ||
 		len(snapshot.UnrealPlugins) > 0 ||
 		len(snapshot.UnrealTargets) > 0 ||
 		len(snapshot.UnrealModules) > 0 ||
@@ -243,7 +246,21 @@ func hasSemanticShardSignals(snapshot ProjectSnapshot) bool {
 		len(snapshot.UnrealNetwork) > 0 ||
 		len(snapshot.UnrealAssets) > 0 ||
 		len(snapshot.UnrealSystems) > 0 ||
-		len(snapshot.UnrealSettings) > 0
+		len(snapshot.UnrealSettings) > 0 {
+		return true
+	}
+	signals := collectSemanticShardSignals(snapshot)
+	securitySignalCount := len(signals.SecurityPaths) +
+		len(signals.DriverPaths) +
+		len(signals.IoctlPaths) +
+		len(signals.HandlePaths) +
+		len(signals.MemoryPaths) +
+		len(signals.RPCPaths)
+	structuralSignalCount := len(signals.StartupPaths) + len(signals.BuildPaths)
+	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "security" || normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "surface" {
+		return securitySignalCount >= 1
+	}
+	return securitySignalCount+structuralSignalCount >= 2
 }
 
 func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals {
@@ -361,6 +378,13 @@ func collectSemanticShardSignals(snapshot ProjectSnapshot) semanticShardSignals 
 					addSecurityShardSignalsForPath(file.Path, &signals)
 				}
 			}
+		}
+	}
+	for _, file := range snapshot.Files {
+		lower := strings.ToLower(file.Path)
+		if containsAny(lower, "driver", "kernel", "minifilter", "wdf", "flt", "ioctl", "devicecontrol", "device_control", "ctl_code", "irp", "handle", "openprocess", "duplicatehandle", "accessmask", "memory", "vm", "mdl", "readprocessmemory", "writeprocessmemory", "scan", "rpc", "pipe", "ipc", "alpc", "dispatch", "command", "anti", "cheat", "guard", "integrity", "tamper", "telemetry") {
+			signals.SecurityPaths[file.Path] = struct{}{}
+			addSecurityShardSignalsForPath(file.Path, &signals)
 		}
 	}
 	return signals

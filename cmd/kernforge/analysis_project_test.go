@@ -435,8 +435,14 @@ func TestProjectAnalyzerSkipsImplicitReviewerInSingleModelMode(t *testing.T) {
 	if client.reviewerCalls != 0 {
 		t.Fatalf("expected implicit reviewer to be skipped, got %d calls", client.reviewerCalls)
 	}
-	if len(run.Reviews) == 0 || run.Reviews[0].ClaimCoverageStatus != "review_skipped_single_model" {
+	if len(run.Reviews) == 0 || run.Reviews[0].Status != "model_review_skipped" || run.Reviews[0].ClaimCoverageStatus != "model_review_skipped_single_model" {
 		t.Fatalf("expected skipped review decision, got %#v", run.Reviews)
+	}
+	if run.Summary.ApprovedShards != 0 {
+		t.Fatalf("skipped model review must not count as approved, got %d", run.Summary.ApprovedShards)
+	}
+	if run.Summary.ModelReviewSkippedShards == 0 {
+		t.Fatalf("expected model-review skipped summary count, got %#v", run.Summary)
 	}
 	if !strings.Contains(run.ReviewerProfile, "skipped in single-model mode") {
 		t.Fatalf("expected reviewer profile to disclose skip, got %q", run.ReviewerProfile)
@@ -2284,6 +2290,161 @@ func TestBuildWorkerPromptMentionsTruncatedContextHandling(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "may include only the first part of the file") {
 		t.Fatalf("expected file excerpt note in worker prompt\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "evidence_packet_ids") {
+		t.Fatalf("expected worker prompt to require evidence packet ids\n%s", prompt)
+	}
+}
+
+func TestEvidencePacketsIncludeLateCStyleFunction(t *testing.T) {
+	root := t.TempDir()
+	var source strings.Builder
+	source.WriteString("#include <ntddk.h>\n\n")
+	for i := 0; i < 95; i++ {
+		fmt.Fprintf(&source, "// filler line %03d\n", i)
+	}
+	source.WriteString("NTSTATUS DispatchIoctl(PDEVICE_OBJECT DeviceObject, PIRP Irp)\n")
+	source.WriteString("{\n")
+	source.WriteString("    UNREFERENCED_PARAMETER(DeviceObject);\n")
+	source.WriteString("    return IoValidateCommand(Irp);\n")
+	source.WriteString("}\n")
+	if err := os.WriteFile(filepath.Join(root, "Ioctl.cpp"), []byte(source.String()), 0o644); err != nil {
+		t.Fatalf("write Ioctl.cpp: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shard := AnalysisShard{
+		ID:           "shard-ioctl",
+		Name:         "security_ioctl",
+		PrimaryFiles: []string{"Ioctl.cpp"},
+	}
+	packets := buildEvidencePacketsForShard(snapshot, shard, 4)
+	if len(packets) == 0 {
+		t.Fatalf("expected evidence packets")
+	}
+	found := false
+	for _, packet := range packets {
+		if strings.Contains(packet.Text, "IoValidateCommand") && packet.StartLine > 80 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected late DispatchIoctl body in evidence packets: %#v", packets)
+	}
+	prompt := buildWorkerPrompt(snapshot, shard, "map driver ioctl flow", "")
+	if !strings.Contains(prompt, "PACKET shard-ioctl-packet-") || !strings.Contains(prompt, "IoValidateCommand") {
+		t.Fatalf("expected worker prompt to include late evidence packet\n%s", prompt)
+	}
+}
+
+func TestScanProjectRecordsCoverageLedgerSkippedLargeFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(strings.Repeat("x", 128)), 0o644); err != nil {
+		t.Fatalf("write large.txt: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	cfg.ProjectAnalysis.MaxFileBytes = 64
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	if snapshot.CoverageLedger.IncludedFiles != 1 {
+		t.Fatalf("expected one included file, got %#v", snapshot.CoverageLedger)
+	}
+	if snapshot.CoverageLedger.OversizedFiles != 1 || snapshot.CoverageLedger.SkippedFileCount != 1 {
+		t.Fatalf("expected one oversized skipped file, got %#v", snapshot.CoverageLedger)
+	}
+	if len(snapshot.CoverageLedger.SkippedFiles) == 0 || snapshot.CoverageLedger.SkippedFiles[0].Path != "large.txt" {
+		t.Fatalf("expected large.txt skip entry, got %#v", snapshot.CoverageLedger.SkippedFiles)
+	}
+}
+
+func TestSecuritySemanticShardsForNonUnrealDriverProject(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	files := []ScannedFile{
+		{Path: "kernel/DriverEntry.cpp", Directory: "kernel", Extension: ".cpp", LineCount: 40, ImportanceScore: 90},
+		{Path: "ioctl/DeviceControl.cpp", Directory: "ioctl", Extension: ".cpp", LineCount: 80, ImportanceScore: 90},
+		{Path: "handles/ObjectAccess.cpp", Directory: "handles", Extension: ".cpp", LineCount: 60, ImportanceScore: 80},
+		{Path: "memory/ScanMemory.cpp", Directory: "memory", Extension: ".cpp", LineCount: 70, ImportanceScore: 80},
+	}
+	snapshot := ProjectSnapshot{
+		Root:             root,
+		AnalysisMode:     "security",
+		Files:            files,
+		FilesByPath:      map[string]ScannedFile{},
+		FilesByDirectory: map[string][]ScannedFile{},
+	}
+	for _, file := range files {
+		snapshot.FilesByPath[file.Path] = file
+		snapshot.FilesByDirectory[file.Directory] = append(snapshot.FilesByDirectory[file.Directory], file)
+		snapshot.TotalFiles++
+		snapshot.TotalLines += file.LineCount
+	}
+	shards := analyzer.planSemanticShards(snapshot, 4)
+	names := []string{}
+	for _, shard := range shards {
+		names = append(names, shard.Name)
+	}
+	joined := strings.Join(names, "\n")
+	for _, expected := range []string{"security_driver", "security_ioctl", "security_handles", "security_memory"} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expected specialized security shard %q in %v", expected, names)
+		}
+	}
+}
+
+func TestAttachEvidencePacketsDowngradesUnsupportedHighConfidenceClaim(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "core.cpp"), []byte("void CoreEntry()\n{\n    RunCore();\n}\n"), 0o644); err != nil {
+		t.Fatalf("write core.cpp: %v", err)
+	}
+	cfg := DefaultConfig(root)
+	ws := Workspace{
+		BaseRoot: root,
+		Root:     root,
+	}
+	analyzer := newProjectAnalyzer(cfg, &stubAnalysisClient{}, ws, nil, nil)
+	snapshot, err := analyzer.scanProject()
+	if err != nil {
+		t.Fatalf("scanProject returned error: %v", err)
+	}
+	shard := AnalysisShard{ID: "shard-core", Name: "core", PrimaryFiles: []string{"core.cpp"}}
+	report := WorkerReport{
+		ShardID:       "shard-core",
+		Title:         "Core",
+		EvidenceFiles: []string{"core.cpp"},
+		Claims: []AnalysisClaim{
+			{ID: "claim-01", Kind: "fact", Claim: "Core owns startup.", Confidence: "high"},
+		},
+	}
+	attachEvidencePacketsToWorkerReport(snapshot, shard, &report)
+	if report.Claims[0].Confidence != "medium" {
+		t.Fatalf("expected unsupported high-confidence claim to be downgraded, got %#v", report.Claims[0])
+	}
+	if len(report.Unknowns) == 0 || !strings.Contains(report.Unknowns[0], "lacks an evidence_packet_id") {
+		t.Fatalf("expected missing evidence packet unknown, got %#v", report.Unknowns)
 	}
 }
 

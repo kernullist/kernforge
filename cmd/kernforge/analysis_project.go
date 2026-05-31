@@ -46,22 +46,23 @@ type ProjectAnalysisConfig struct {
 }
 
 type ProjectAnalysisSummary struct {
-	RunID                  string    `json:"run_id"`
-	Goal                   string    `json:"goal"`
-	Mode                   string    `json:"mode,omitempty"`
-	Status                 string    `json:"status"`
-	AgentCount             int       `json:"agent_count"`
-	OutputPath             string    `json:"output_path"`
-	StartedAt              time.Time `json:"started_at"`
-	CompletedAt            time.Time `json:"completed_at"`
-	ApprovedShards         int       `json:"approved_shards"`
-	ReviewFailures         int       `json:"review_failures,omitempty"`
-	ReviewProviderFailures int       `json:"review_provider_failures,omitempty"`
-	ReviewQualityIssues    int       `json:"review_quality_issues,omitempty"`
-	RefinedShards          int       `json:"refined_shards,omitempty"`
-	EvidenceShards         int       `json:"evidence_shards,omitempty"`
-	GapShards              int       `json:"gap_shards,omitempty"`
-	TotalShards            int       `json:"total_shards"`
+	RunID                    string    `json:"run_id"`
+	Goal                     string    `json:"goal"`
+	Mode                     string    `json:"mode,omitempty"`
+	Status                   string    `json:"status"`
+	AgentCount               int       `json:"agent_count"`
+	OutputPath               string    `json:"output_path"`
+	StartedAt                time.Time `json:"started_at"`
+	CompletedAt              time.Time `json:"completed_at"`
+	ApprovedShards           int       `json:"approved_shards"`
+	ReviewFailures           int       `json:"review_failures,omitempty"`
+	ReviewProviderFailures   int       `json:"review_provider_failures,omitempty"`
+	ReviewQualityIssues      int       `json:"review_quality_issues,omitempty"`
+	ModelReviewSkippedShards int       `json:"model_review_skipped_shards,omitempty"`
+	RefinedShards            int       `json:"refined_shards,omitempty"`
+	EvidenceShards           int       `json:"evidence_shards,omitempty"`
+	GapShards                int       `json:"gap_shards,omitempty"`
+	TotalShards              int       `json:"total_shards"`
 }
 
 type ScannedFile struct {
@@ -108,6 +109,7 @@ type ProjectSnapshot struct {
 	RuntimeEdges        []RuntimeEdge              `json:"runtime_edges,omitempty"`
 	ProjectEdges        []ProjectEdge              `json:"project_edges,omitempty"`
 	ArchitectureFacts   ArchitectureFactPack       `json:"architecture_facts,omitempty"`
+	CoverageLedger      AnalysisCoverageLedger     `json:"coverage_ledger,omitempty"`
 	TotalFiles          int                        `json:"total_files"`
 	TotalLines          int                        `json:"total_lines"`
 	ImportGraph         map[string][]string        `json:"import_graph"`
@@ -677,6 +679,8 @@ type ProjectAnalysisRun struct {
 	Shards           []AnalysisShard         `json:"shards"`
 	Reports          []WorkerReport          `json:"reports"`
 	Reviews          []ReviewDecision        `json:"reviews"`
+	CoverageLedger   AnalysisCoverageLedger  `json:"coverage_ledger,omitempty"`
+	EvidencePackets  []EvidencePacket        `json:"evidence_packets,omitempty"`
 	ModeScorecard    AnalysisModeScorecard   `json:"mode_scorecard,omitempty"`
 	FinalDocument    string                  `json:"final_document"`
 	ConductorProfile string                  `json:"conductor_profile,omitempty"`
@@ -706,9 +710,14 @@ func summarizeReviewDecisions(summary *ProjectAnalysisSummary, reviews []ReviewD
 	summary.ReviewFailures = 0
 	summary.ReviewProviderFailures = 0
 	summary.ReviewQualityIssues = 0
+	summary.ModelReviewSkippedShards = 0
 	for _, review := range reviews {
 		if strings.EqualFold(review.Status, "approved") {
 			summary.ApprovedShards++
+			continue
+		}
+		if strings.EqualFold(review.Status, "model_review_skipped") {
+			summary.ModelReviewSkippedShards++
 			continue
 		}
 		switch classifyReviewIssueKind(review) {
@@ -1201,7 +1210,7 @@ func classifyReviewIssueKind(review ReviewDecision) string {
 	}
 	status := strings.ToLower(strings.TrimSpace(review.Status))
 	switch status {
-	case "", "approved":
+	case "", "approved", "model_review_skipped":
 		return ""
 	case "needs_revision":
 		return analysisReviewIssueQuality
@@ -3181,7 +3190,7 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if err != nil {
 		return run, err
 	}
-	if run.Summary.ApprovedShards == 0 {
+	if run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards == 0 {
 		draftNotice := "# Draft Analysis\n\nNo shard report was approved by the reviewer. The generated analysis should be treated as low confidence and rerun after fixing worker/reviewer issues."
 		if details := renderAnalysisReviewIssueDetailsForReviews(run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues, run.Reviews); strings.TrimSpace(details) != "" {
 			draftNotice += "\n\n" + details
@@ -3189,6 +3198,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		document = draftNotice + "\n\n" + document
 		run.Summary.Status = "draft"
 		a.debug("analysis downgraded to draft because no shard was approved")
+	} else if run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards > 0 {
+		run.Summary.Status = "completed_with_model_review_skipped"
+		a.debug(fmt.Sprintf("analysis completed without model reviewer approval: skipped=%d", run.Summary.ModelReviewSkippedShards))
 	} else if run.Summary.ReviewFailures > 0 {
 		run.Summary.Status = "completed_with_review_failures"
 		if banner := renderAnalysisReviewIssueBannerForReviews(run.Summary, run.Reviews); strings.TrimSpace(banner) != "" {
@@ -3198,6 +3210,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	}
 	run.FinalDocument = document
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
+	run.CoverageLedger = normalizeAnalysisCoverageLedger(run.Snapshot.CoverageLedger)
+	run.Snapshot.CoverageLedger = run.CoverageLedger
+	run.EvidencePackets = buildAnalysisRunEvidencePackets(run.Snapshot, run.Shards)
 	run.KnowledgePack = buildKnowledgePack(run.Snapshot, run.Shards, run.Reports, goal, run.Summary.RunID)
 	run.UnrealGraph = a.cachedUnrealGraph
 	run.SemanticIndex = buildSemanticIndex(run.Snapshot, goal, run.Summary.RunID, run.UnrealGraph)
@@ -3233,6 +3248,23 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 		FilesByPath:        map[string]ScannedFile{},
 		FilesByDirectory:   map[string][]ScannedFile{},
 	}
+	ledger := AnalysisCoverageLedger{
+		GeneratedAt:  snapshot.GeneratedAt,
+		Root:         snapshot.Root,
+		MaxFileBytes: a.analysisCfg.MaxFileBytes,
+	}
+	recordSkip := func(path string, size int64, reason string, detail string) {
+		relPath := filepath.ToSlash(relOrAbs(a.workspace.Root, path))
+		if relPath == "" {
+			relPath = filepath.ToSlash(path)
+		}
+		ledger.SkippedFiles = append(ledger.SkippedFiles, AnalysisSkippedFile{
+			Path:   relPath,
+			Size:   analysisMaxInt64(size, 0),
+			Reason: strings.TrimSpace(reason),
+			Detail: strings.TrimSpace(detail),
+		})
+	}
 	excluded := analysisExcludedDirNameSet(a.analysisCfg)
 	excludedAbs := analysisExcludedAbsolutePathSet(a.workspace.Root, a.analysisCfg)
 
@@ -3245,32 +3277,45 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 		}
 		if analysisShouldSkipPath(a.workspace.Root, path, d) {
 			if d.IsDir() {
+				ledger.ExcludedDirs++
 				return filepath.SkipDir
+			}
+			if info, err := d.Info(); err == nil {
+				recordSkip(path, info.Size(), "excluded", "analysis default skip rule")
+			} else {
+				recordSkip(path, 0, "excluded", "analysis default skip rule")
 			}
 			return nil
 		}
 		if d.IsDir() {
 			if _, ok := excludedAbs[strings.ToLower(filepath.Clean(path))]; ok {
+				ledger.ExcludedDirs++
 				return filepath.SkipDir
 			}
 			if _, ok := excluded[strings.ToLower(d.Name())]; ok {
+				ledger.ExcludedDirs++
 				return filepath.SkipDir
 			}
 			snapshot.Directories = append(snapshot.Directories, filepath.ToSlash(relOrAbs(a.workspace.Root, path)))
 			return nil
 		}
+		ledger.VisitedFiles++
 		info, err := d.Info()
 		if err != nil {
+			recordSkip(path, 0, "unreadable", err.Error())
 			return nil
 		}
 		if info.Size() > a.analysisCfg.MaxFileBytes {
+			recordSkip(path, info.Size(), "max_file_bytes", fmt.Sprintf("file exceeds max_file_bytes=%d", a.analysisCfg.MaxFileBytes))
 			return nil
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
+			recordSkip(path, info.Size(), "unreadable", err.Error())
 			return nil
 		}
 		if !isText(data) {
+			recordSkip(path, info.Size(), "non_text", "binary or non UTF-8 text detection")
 			return nil
 		}
 		relPath := filepath.ToSlash(relOrAbs(a.workspace.Root, path))
@@ -3291,6 +3336,7 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 		snapshot.FilesByPath[file.Path] = file
 		snapshot.FilesByDirectory[file.Directory] = append(snapshot.FilesByDirectory[file.Directory], file)
 		snapshot.TotalFiles++
+		ledger.IncludedFiles++
 		snapshot.TotalLines += file.LineCount
 		if file.IsManifest {
 			snapshot.ManifestFiles = append(snapshot.ManifestFiles, file.Path)
@@ -3315,7 +3361,57 @@ func (a *projectAnalyzer) scanProject() (ProjectSnapshot, error) {
 	sort.Strings(snapshot.ManifestFiles)
 	sort.Strings(snapshot.EntrypointFiles)
 	sort.Strings(snapshot.StartupProjects)
+	snapshot.CoverageLedger = normalizeAnalysisCoverageLedger(ledger)
 	return snapshot, nil
+}
+
+func normalizeAnalysisCoverageLedger(ledger AnalysisCoverageLedger) AnalysisCoverageLedger {
+	out := ledger
+	out.SkippedFileCount = 0
+	out.SkippedBytes = 0
+	out.OversizedFiles = 0
+	out.UnreadableFiles = 0
+	out.NonTextFiles = 0
+	out.ExcludedFiles = 0
+	seen := map[string]struct{}{}
+	filtered := []AnalysisSkippedFile{}
+	for _, item := range out.SkippedFiles {
+		item.Path = strings.TrimSpace(filepath.ToSlash(item.Path))
+		item.Reason = strings.TrimSpace(item.Reason)
+		item.Detail = strings.TrimSpace(item.Detail)
+		if item.Path == "" || item.Reason == "" {
+			continue
+		}
+		if item.Size < 0 {
+			item.Size = 0
+		}
+		key := strings.ToLower(item.Path + "|" + item.Reason)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		filtered = append(filtered, item)
+		out.SkippedFileCount++
+		out.SkippedBytes += item.Size
+		switch item.Reason {
+		case "max_file_bytes":
+			out.OversizedFiles++
+		case "unreadable":
+			out.UnreadableFiles++
+		case "non_text":
+			out.NonTextFiles++
+		case "excluded":
+			out.ExcludedFiles++
+		}
+	}
+	sort.Slice(filtered, func(i int, j int) bool {
+		if filtered[i].Reason == filtered[j].Reason {
+			return filtered[i].Path < filtered[j].Path
+		}
+		return filtered[i].Reason < filtered[j].Reason
+	})
+	out.SkippedFiles = filtered
+	return out
 }
 
 func analysisShouldSkipPath(root string, path string, d os.DirEntry) bool {
@@ -6393,6 +6489,7 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 	if ok {
 		shard.CacheStatus = "reused"
 		shard.InvalidationReason = reason
+		attachEvidencePacketsToWorkerReport(snapshot, shard, &report)
 		a.debug(fmt.Sprintf("shard %s cache hit: reason=%s", shard.Name, reason))
 		return report, review, shard, nil
 	}
@@ -6444,6 +6541,7 @@ func (a *projectAnalyzer) executeShard(ctx context.Context, snapshot ProjectSnap
 			a.debug(fmt.Sprintf("worker soft-failed: shard=%s status=%s", shard.Name, failedReview.Status))
 			return failedReport, failedReview, shard, nil
 		}
+		attachEvidencePacketsToWorkerReport(snapshot, shard, &report)
 		a.debug(fmt.Sprintf("worker done: shard=%s attempt=%d evidence=%d responsibilities=%d", shard.Name, attempt+1, len(report.EvidenceFiles), len(report.Responsibilities)))
 		if lintIssues := lintWorkerReportForRootCause(snapshot, shard, report); len(lintIssues) > 0 {
 			if attempt < a.analysisCfg.MaxRevisionRounds {
@@ -6506,8 +6604,9 @@ func (a *projectAnalyzer) shouldSkipModelReviewerForMode(mode string) bool {
 
 func skippedModelReviewDecision(shard AnalysisShard, report WorkerReport) ReviewDecision {
 	return ReviewDecision{
-		Status:              "approved",
-		ClaimCoverageStatus: "review_skipped_single_model",
+		Status:              "model_review_skipped",
+		ClaimCoverageStatus: "model_review_skipped_single_model",
+		Issues:              []string{"Dedicated model reviewer is not configured; deterministic claim checks were applied but this shard is not reviewer-approved."},
 		Raw:                 fmt.Sprintf("Model reviewer skipped for shard %s because no dedicated analysis reviewer is configured.", firstNonBlankString(shard.Name, report.Title, "unknown")),
 	}
 }
@@ -10377,6 +10476,8 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 	jsonPath := filepath.Join(a.analysisCfg.OutputDir, base+".json")
 	preflightJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_analysis_preflight.json")
 	modeScorecardJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_mode_scorecard.json")
+	coverageLedgerJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_coverage_ledger.json")
+	evidencePacketsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_evidence_packets.json")
 	knowledgeJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.json")
 	knowledgeDigestPath := filepath.Join(a.analysisCfg.OutputDir, base+"_knowledge.md")
 	architectureFactsJSONPath := filepath.Join(a.analysisCfg.OutputDir, base+"_architecture_facts.json")
@@ -10450,6 +10551,20 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 		return "", err
 	}
 	if err := os.WriteFile(modeScorecardJSONPath, scorecardData, 0o644); err != nil {
+		return "", err
+	}
+	coverageData, err := json.MarshalIndent(run.CoverageLedger, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(coverageLedgerJSONPath, coverageData, 0o644); err != nil {
+		return "", err
+	}
+	evidencePacketData, err := json.MarshalIndent(run.EvidencePackets, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(evidencePacketsJSONPath, evidencePacketData, 0o644); err != nil {
 		return "", err
 	}
 	snapshotData, err := json.MarshalIndent(run.Snapshot, "", "  ")
@@ -10617,6 +10732,12 @@ func (a *projectAnalyzer) persistRun(run ProjectAnalysisRun, ctxs ...context.Con
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "mode_scorecard.json"), scorecardData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "coverage_ledger.json"), coverageData, 0o644); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(latestDir, "evidence_packets.json"), evidencePacketData, 0o644); err != nil {
 			return "", err
 		}
 		if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
@@ -12523,6 +12644,7 @@ Return strict JSON in this exact shape:
         "kind": "fact|inference|risk|unknown|security|performance",
         "claim": "string",
         "source_anchors": ["relative source path"],
+        "evidence_packet_ids": ["packet id from prompt"],
         "confidence": "low|medium|high",
         "depends_on": ["string"],
         "disproves_when": "string",
@@ -12591,12 +12713,12 @@ Rules:
 - If a field is unknown or not applicable, keep the JSON key and use [] or "" instead of explanatory prose outside JSON.
 - Keep the JSON compact enough to finish in one response: 3-7 high-value items per list, short strings, and a narrative under 900 characters.
 - Do not include raw source excerpts, project GUIDs, or low-value build metadata unless they change architecture understanding.
-- Every important claim must be grounded in evidence_files.
-- Every important claim must also appear in claims with source_anchors, confidence, and a falsifiable disproves_when condition.
+- Every important claim must be grounded in evidence_files and evidence_packet_ids.
+- Every important claim must also appear in claims with source_anchors, evidence_packet_ids, confidence, and a falsifiable disproves_when condition.
 - responsibilities should answer what this shard owns.
 - facts should contain direct file-grounded observations.
 - inferences should contain higher-level interpretations derived from those facts.
-- claims must restate the important facts, inferences, risks, and unknowns as falsifiable claim objects.
+- claims must restate the important facts, inferences, risks, and unknowns as falsifiable claim objects backed by provided evidence packet IDs.
 - key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.
 - If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.
 - internal_flow should describe control flow or data flow inside the shard.
@@ -12863,7 +12985,8 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 	b.WriteString("- facts should be direct observations grounded in the provided files.\n")
 	b.WriteString("- inferences should be clearly labeled interpretations derived from those facts.\n")
 	b.WriteString("- claims must contain the important facts, inferences, risks, and unknowns as source-anchored, falsifiable claim objects.\n")
-	b.WriteString("- Each claim must include source_anchors from the assigned files, confidence, disproves_when, and verification_hint.\n")
+	b.WriteString("- Each claim must include source_anchors from the assigned files, evidence_packet_ids from the Evidence packets section, confidence, disproves_when, and verification_hint.\n")
+	b.WriteString("- A high-confidence claim must cite at least one evidence_packet_id; otherwise downgrade it to medium or low and name the missing evidence in unknowns.\n")
 	b.WriteString("- key_files and evidence_files must use exact relative paths from the Primary files or Reference files lists. Do not use basenames only.\n")
 	b.WriteString("- If a metadata file mentions other filenames that were not provided as primary/reference files, mention them as metadata item names in facts only; do not put them in key_files, evidence_files, or entry_points as inspected files.\n")
 	b.WriteString("- entry_points should name files/functions when visible.\n")
@@ -12907,11 +13030,17 @@ func buildWorkerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, goal strin
 		b.WriteString("- For integrity/security shards, identify trust boundaries, tamper-sensitive state, and anti-cheat enforcement paths.\n")
 	}
 	b.WriteString("\n")
-	b.WriteString("Note: each file excerpt below may include only the first part of the file, not the full file.\n\n")
-	b.WriteString("File context:\n")
-	for _, section := range buildFileContext(snapshot, append(append([]string(nil), shard.PrimaryFiles...), shard.ReferenceFiles...), 10) {
-		b.WriteString(section)
+	if packets := renderEvidencePacketsForPrompt(snapshot, shard, analysisEvidencePacketDefaultLimit); strings.TrimSpace(packets) != "" {
+		b.WriteString("Note: evidence packets are selected source slices and may include only the first part of the file, not the full file. If a packet is marked truncated or a path has only fallback file_excerpt evidence, say the analysis is context-truncated/source-limited instead of using informal snippet wording.\n\n")
+		b.WriteString(packets)
 		b.WriteString("\n")
+	} else {
+		b.WriteString("Note: each file excerpt below may include only the first part of the file, not the full file.\n\n")
+		b.WriteString("File context:\n")
+		for _, section := range buildFileContext(snapshot, append(append([]string(nil), shard.PrimaryFiles...), shard.ReferenceFiles...), 10) {
+			b.WriteString(section)
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -13230,6 +13359,7 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	b.WriteString("Claim review checklist:\n")
 	b.WriteString("- Every high-value fact, inference, risk, or unknown should be represented in claims.\n")
 	b.WriteString("- claim.source_anchors must stay inside assigned primary or reference files.\n")
+	b.WriteString("- claim.evidence_packet_ids must refer to packet IDs from the Evidence packets section when packets are provided.\n")
 	b.WriteString("- claim.confidence must match the evidence strength; unsupported assertions should be low confidence or unknowns.\n")
 	b.WriteString("- claim.disproves_when must be concrete enough for a later worker or human reviewer to falsify the claim.\n\n")
 	if strings.TrimSpace(shard.InvalidationReason) != "" {
@@ -13265,10 +13395,16 @@ func buildReviewerPrompt(snapshot ProjectSnapshot, shard AnalysisShard, report W
 	}
 	b.WriteString("Report JSON:\n")
 	b.Write(data)
-	b.WriteString("\n\nFile context:\n")
-	for _, section := range buildFileContext(snapshot, shard.PrimaryFiles, 6) {
-		b.WriteString(section)
+	if packets := renderEvidencePacketsForPrompt(snapshot, shard, 8); strings.TrimSpace(packets) != "" {
+		b.WriteString("\n\n")
+		b.WriteString(packets)
 		b.WriteString("\n")
+	} else {
+		b.WriteString("\n\nFile context:\n")
+		for _, section := range buildFileContext(snapshot, shard.PrimaryFiles, 6) {
+			b.WriteString(section)
+			b.WriteString("\n")
+		}
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -13347,6 +13483,20 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 		}
 	}
 	fmt.Fprintf(&b, "Files: %d\nLines: %d\n\n", snapshot.TotalFiles, snapshot.TotalLines)
+	if snapshot.CoverageLedger.SkippedFileCount > 0 {
+		fmt.Fprintf(&b, "Coverage ledger caveats: skipped_files=%d oversized=%d non_text=%d unreadable=%d excluded=%d max_file_bytes=%d\n",
+			snapshot.CoverageLedger.SkippedFileCount,
+			snapshot.CoverageLedger.OversizedFiles,
+			snapshot.CoverageLedger.NonTextFiles,
+			snapshot.CoverageLedger.UnreadableFiles,
+			snapshot.CoverageLedger.ExcludedFiles,
+			snapshot.CoverageLedger.MaxFileBytes,
+		)
+		for _, item := range limitSkippedFiles(snapshot.CoverageLedger.SkippedFiles, 8) {
+			fmt.Fprintf(&b, "- skipped %s: %s size=%d\n", item.Reason, item.Path, item.Size)
+		}
+		b.WriteString("- Do not claim full-source coverage for skipped files; mention coverage limitations when they affect the analysis.\n\n")
+	}
 	if len(snapshot.Files) > 0 {
 		b.WriteString("Top important files:\n")
 		for _, file := range topImportantFiles(snapshot, 12) {
@@ -13571,6 +13721,7 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	b.WriteString("- Turn internal_flow bullets into a coherent execution-flow section.\n")
 	b.WriteString("- Turn collaboration bullets into explicit subsystem integration descriptions.\n")
 	b.WriteString("- Preserve uncertainty by collecting unknowns under Risks And Unknowns.\n")
+	b.WriteString("- Do not promote claims without evidence_packet_ids, source_anchors, or reviewer approval into direct fact wording; keep them as medium/low-confidence inference, risk, or unknown.\n")
 	b.WriteString("- Expand subsystem sections instead of collapsing them into short bullets only.\n")
 	b.WriteString("- For each subsystem, include explicit Facts and Inferences subsections when that data is available.\n")
 	b.WriteString("- Tiny metadata or script shards may be merged into a higher-level operational subsystem for readability.\n")
@@ -13696,6 +13847,15 @@ func renderCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSec
 	}
 	fmt.Fprintf(&b, "Workspace: %s\n", snapshot.Root)
 	fmt.Fprintf(&b, "Files: %d\nLines: %d\n", snapshot.TotalFiles, snapshot.TotalLines)
+	if snapshot.CoverageLedger.SkippedFileCount > 0 {
+		fmt.Fprintf(&b, "Coverage ledger caveats: skipped_files=%d oversized=%d non_text=%d unreadable=%d max_file_bytes=%d\n",
+			snapshot.CoverageLedger.SkippedFileCount,
+			snapshot.CoverageLedger.OversizedFiles,
+			snapshot.CoverageLedger.NonTextFiles,
+			snapshot.CoverageLedger.UnreadableFiles,
+			snapshot.CoverageLedger.MaxFileBytes,
+		)
+	}
 	if originalSectionCount > len(items) {
 		fmt.Fprintf(&b, "Prompt budget note: model synthesis received %d compacted section(s) out of %d; omitted sections remain in local artifacts and deterministic appendices.\n", len(items), originalSectionCount)
 	}
@@ -13727,6 +13887,8 @@ func renderCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSec
 	b.WriteString("- Prioritize high-confidence responsibilities, facts, execution flow, integration points, risks, and unknowns.\n")
 	b.WriteString("- Mention that the synthesis input was compacted when important detail may live in local shard artifacts.\n")
 	b.WriteString("- Do not invent evidence for omitted or compacted sections.\n")
+	b.WriteString("- Do not promote claims without evidence_packet_ids, source_anchors, or reviewer approval into direct fact wording.\n")
+	b.WriteString("- Do not claim full-source coverage for files listed in the coverage ledger caveats.\n")
 	return strings.TrimSpace(b.String())
 }
 
@@ -14139,6 +14301,7 @@ func workerReportLooksLikeSchemaPlaceholder(report WorkerReport) bool {
 		checkString(claim.Kind)
 		checkString(claim.Claim)
 		checkList(claim.SourceAnchors)
+		checkList(claim.EvidencePacketIDs)
 		checkString(claim.Confidence)
 		checkList(claim.DependsOn)
 		checkString(claim.DisprovesWhen)
@@ -16984,6 +17147,13 @@ func analysisMinInt(a int, b int) int {
 }
 
 func analysisMaxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func analysisMaxInt64(a int64, b int64) int64 {
 	if a > b {
 		return a
 	}

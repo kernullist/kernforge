@@ -548,6 +548,8 @@ code { color: var(--code); background: var(--code-bg); border: 1px solid rgba(12
 		<div class="metric"><span>%s</span><strong>%d</strong></div>
 		<div class="metric"><span>%s</span><strong>%d</strong></div>
 		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
+		<div class="metric"><span>%s</span><strong>%d</strong></div>
 	</section>
 	%s
 	%s
@@ -966,6 +968,10 @@ if (markdownDocs && markdownDocs.length > 0) {
 		reused,
 		htmlEscape(labels.CacheMiss),
 		missed,
+		htmlEscape(labels.SkippedFiles),
+		run.CoverageLedger.SkippedFileCount,
+		htmlEscape(labels.EvidencePackets),
+		len(run.EvidencePackets),
 		runtimeLens,
 		structureOverview,
 		htmlEscape(labels.GeneratedDocuments),
@@ -1038,6 +1044,8 @@ type analysisDashboardLabels struct {
 	Entrypoints        string
 	CacheReused        string
 	CacheMiss          string
+	SkippedFiles       string
+	EvidencePackets    string
 	GeneratedDocuments string
 	MarkdownViewer     string
 	ViewerEmpty        string
@@ -1097,6 +1105,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 			Entrypoints:        "엔트리포인트",
 			CacheReused:        "캐시 재사용",
 			CacheMiss:          "캐시 미스",
+			SkippedFiles:       "스킵 파일",
+			EvidencePackets:    "근거 패킷",
 			GeneratedDocuments: "생성 문서",
 			MarkdownViewer:     "마크다운 뷰어",
 			ViewerEmpty:        "생성 문서를 선택하면 여기에서 열립니다.",
@@ -1154,6 +1164,8 @@ func analysisDashboardLabelsForRun(run ProjectAnalysisRun) analysisDashboardLabe
 		Entrypoints:        "Entrypoints",
 		CacheReused:        "Cache Reused",
 		CacheMiss:          "Cache Miss",
+		SkippedFiles:       "Skipped Files",
+		EvidencePackets:    "Evidence Packets",
 		GeneratedDocuments: "Generated Documents",
 		MarkdownViewer:     "Markdown Viewer",
 		ViewerEmpty:        "Select a generated document to preview it here.",
@@ -1511,6 +1523,8 @@ func analysisDashboardEvidenceMemoryRows(run ProjectAnalysisRun, docsHref string
 	}
 	rows := []string{
 		analysisDashboardDrilldownRow("analysis docs evidence", manifestPath, "/evidence-search kind:analysis_docs"),
+		analysisDashboardDrilldownRow("coverage ledger", docsHref+"/COVERAGE_LEDGER.md", "/analyze-dashboard latest"),
+		analysisDashboardDrilldownRow("evidence packets", docsHref+"/EVIDENCE_PACKETS.md", "/analyze-dashboard latest"),
 		analysisDashboardDrilldownRow("project memory", docsHref+"/INDEX.md", "/mem-search analyze-project"),
 		analysisDashboardDrilldownRow("verification matrix", docsHref+"/VERIFICATION_MATRIX.md", "/verify"),
 		analysisDashboardDrilldownRow("fuzz targets", docsHref+"/FUZZ_TARGETS.md", "/fuzz-campaign run"),

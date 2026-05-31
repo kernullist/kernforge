@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"strings"
 	"time"
 )
@@ -1171,6 +1172,16 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 	if rt == nil {
 		return
 	}
+	rt.writeRuntimeGateStatusWithDetail(rt.writer, action, detail)
+}
+
+func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, action string, detail bool) {
+	if rt == nil {
+		return
+	}
+	if writer == nil {
+		return
+	}
 	ledger := rt.runtimeGateLedgerForStatus(action)
 	ledger.Normalize()
 	var report *CodingHarnessReport
@@ -1191,17 +1202,17 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 			timeline = ledger.ReviewObservability.LifecycleTimeline
 		}
 	}
-	fmt.Fprintln(rt.writer)
-	fmt.Fprintln(rt.writer, rt.ui.subsection("Runtime Gate"))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("operator_status", reviewCompactStatusLine(compact)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("gates", reviewGateCompactLine(compact)))
+	fmt.Fprintln(writer)
+	fmt.Fprintln(writer, rt.ui.subsection("Runtime Gate"))
+	fmt.Fprintln(writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
+	fmt.Fprintln(writer, rt.ui.statusKV("operator_status", reviewCompactStatusLine(compact)))
+	fmt.Fprintln(writer, rt.ui.statusKV("gates", reviewGateCompactLine(compact)))
 	if compact != nil {
 		if compact.SecondPassState != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("second_pass_state", compact.SecondPassState))
+			fmt.Fprintln(writer, rt.ui.statusKV("second_pass_state", compact.SecondPassState))
 		}
 		if len(compact.CrossReviewTriageCounts) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review_triage_counts", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{
+			fmt.Fprintln(writer, rt.ui.statusKV("cross_review_triage_counts", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{
 				crossReviewTriageAcceptedFixed,
 				crossReviewTriageAcceptedDeferred,
 				crossReviewTriageRejectedWithReason,
@@ -1210,10 +1221,10 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 			})))
 		}
 		if len(compact.BlockersByClass) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("blockers_by_class", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder())))
+			fmt.Fprintln(writer, rt.ui.statusKV("blockers_by_class", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder())))
 		}
 		if len(compact.RemainingObligations) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_obligations", strings.Join(compact.RemainingObligations, ", ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("remaining_obligations", strings.Join(compact.RemainingObligations, ", ")))
 		}
 		if compact.DocumentArtifactPath != "" || compact.ArtifactQualityStatus != "" || compact.VerificationSkipReason != "" {
 			parts := []string{}
@@ -1226,119 +1237,119 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 			if compact.VerificationSkipReason != "" {
 				parts = append(parts, "verification="+compact.VerificationSkipReason)
 			}
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("document_artifact", strings.Join(parts, " ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("document_artifact", strings.Join(parts, " ")))
 		}
 	}
 	if blockers != nil && blockers.HasBlockers {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("blocker_summary", reviewBlockerSummaryStatusLine(blockers)))
+		fmt.Fprintln(writer, rt.ui.statusKV("blocker_summary", reviewBlockerSummaryStatusLine(blockers)))
 		if len(blockers.Primary) > 0 {
 			primary := blockers.Primary[0]
-			fmt.Fprintln(rt.writer, rt.ui.warnLine(primary.Class+": "+primary.WhyBlocks))
+			fmt.Fprintln(writer, rt.ui.warnLine(primary.Class+": "+primary.WhyBlocks))
 			if primary.NextCommand != "" {
-				fmt.Fprintln(rt.writer, rt.ui.statusKV("primary_blocker_next", primary.NextCommand))
+				fmt.Fprintln(writer, rt.ui.statusKV("primary_blocker_next", primary.NextCommand))
 			}
 		}
 	}
 	if ledger.StaleContextSummary != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context", staleContextSummaryStatusLine(ledger.StaleContextSummary)))
+		fmt.Fprintln(writer, rt.ui.statusKV("stale_context", staleContextSummaryStatusLine(ledger.StaleContextSummary)))
 	}
 	if ledger.FinalAnswerCorrection != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_status", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
+		fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_status", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
 	}
 	if len(ledger.RouteHealthEvents) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("route_health_events", strings.Join(reviewRouteHealthEventClasses(ledger.RouteHealthEvents), ", ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("route_health_events", strings.Join(reviewRouteHealthEventClasses(ledger.RouteHealthEvents), ", ")))
 	}
 	if ledger.LiveProviderDrill != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("live_provider_drill", liveProviderDrillStatusLine(ledger.LiveProviderDrill)))
+		fmt.Fprintln(writer, rt.ui.statusKV("live_provider_drill", liveProviderDrillStatusLine(ledger.LiveProviderDrill)))
 	}
 	if ledger.RequestClass != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("request_class", ledger.RequestClass))
+		fmt.Fprintln(writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
 	if ledger.Lifecycle != nil {
 		if ledger.Lifecycle.LifecycleKind != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_kind", ledger.Lifecycle.LifecycleKind))
+			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_kind", ledger.Lifecycle.LifecycleKind))
 		}
 		if ledger.Lifecycle.MixedFlow {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("mixed_flow", "true"))
+			fmt.Fprintln(writer, rt.ui.statusKV("mixed_flow", "true"))
 		}
 		if len(ledger.Lifecycle.SecondaryRequestClasses) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("secondary_request_classes", strings.Join(ledger.Lifecycle.SecondaryRequestClasses, ", ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("secondary_request_classes", strings.Join(ledger.Lifecycle.SecondaryRequestClasses, ", ")))
 		}
 		if ledger.Lifecycle.Phase != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_phase", ledger.Lifecycle.Phase))
+			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_phase", ledger.Lifecycle.Phase))
 		}
 		if ledger.Lifecycle.RouteMode != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_mode", ledger.Lifecycle.RouteMode))
+			fmt.Fprintln(writer, rt.ui.statusKV("route_mode", ledger.Lifecycle.RouteMode))
 		}
 		if ledger.Lifecycle.ClassificationConfidence > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_confidence", fmt.Sprintf("%.2f", ledger.Lifecycle.ClassificationConfidence)))
+			fmt.Fprintln(writer, rt.ui.statusKV("classification_confidence", fmt.Sprintf("%.2f", ledger.Lifecycle.ClassificationConfidence)))
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_ambiguous", fmt.Sprintf("%t", ledger.Lifecycle.ClassificationAmbiguous)))
+		fmt.Fprintln(writer, rt.ui.statusKV("classification_ambiguous", fmt.Sprintf("%t", ledger.Lifecycle.ClassificationAmbiguous)))
 		if len(ledger.Lifecycle.AmbiguityWarnings) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("classification_ambiguity", strings.Join(limitStrings(ledger.Lifecycle.AmbiguityWarnings, 2), " | ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("classification_ambiguity", strings.Join(limitStrings(ledger.Lifecycle.AmbiguityWarnings, 2), " | ")))
 		}
 		if ledger.Lifecycle.RouteQuality != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_quality", ledger.Lifecycle.RouteQuality))
+			fmt.Fprintln(writer, rt.ui.statusKV("route_quality", ledger.Lifecycle.RouteQuality))
 		}
 		if len(ledger.Lifecycle.RouteDegradedReasons) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("route_degraded", strings.Join(limitStrings(ledger.Lifecycle.RouteDegradedReasons, 2), " | ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("route_degraded", strings.Join(limitStrings(ledger.Lifecycle.RouteDegradedReasons, 2), " | ")))
 		}
 		if ledger.Lifecycle.ReviewGateStatus != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("review_gate", ledger.Lifecycle.ReviewGateStatus))
+			fmt.Fprintln(writer, rt.ui.statusKV("review_gate", ledger.Lifecycle.ReviewGateStatus))
 		}
 		if ledger.Lifecycle.RepairGateStatus != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("repair_gate", ledger.Lifecycle.RepairGateStatus))
+			fmt.Fprintln(writer, rt.ui.statusKV("repair_gate", ledger.Lifecycle.RepairGateStatus))
 		}
 		if ledger.Lifecycle.DocumentGateStatus != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("document_gate", ledger.Lifecycle.DocumentGateStatus))
+			fmt.Fprintln(writer, rt.ui.statusKV("document_gate", ledger.Lifecycle.DocumentGateStatus))
 		}
 		if ledger.Lifecycle.VerificationGateStatus != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_gate", ledger.Lifecycle.VerificationGateStatus))
+			fmt.Fprintln(writer, rt.ui.statusKV("verification_gate", ledger.Lifecycle.VerificationGateStatus))
 		}
 		if ledger.Lifecycle.SecondPassStatus != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_second_pass", ledger.Lifecycle.SecondPassStatus))
+			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_second_pass", ledger.Lifecycle.SecondPassStatus))
 		}
 		if ledger.Lifecycle.CrossReviewTriage != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_cross_review_triage", ledger.Lifecycle.CrossReviewTriage))
+			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_cross_review_triage", ledger.Lifecycle.CrossReviewTriage))
 		}
 		if len(ledger.Lifecycle.RemainingObligations) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("lifecycle_obligations", strings.Join(ledger.Lifecycle.RemainingObligations, ", ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_obligations", strings.Join(ledger.Lifecycle.RemainingObligations, ", ")))
 		}
 	}
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("review_freshness", runtimeGateReviewFreshnessLabel(ledger)))
-	fmt.Fprintln(rt.writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(ledger.ChangedPaths))))
+	fmt.Fprintln(writer, rt.ui.statusKV("review_freshness", runtimeGateReviewFreshnessLabel(ledger)))
+	fmt.Fprintln(writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(ledger.ChangedPaths))))
 	if len(ledger.ChangedPaths) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_changed", strings.Join(limitStrings(ledger.ChangedPaths, 4), ", ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("latest_changed", strings.Join(limitStrings(ledger.ChangedPaths, 4), ", ")))
 	}
 	if ledger.ReviewRunID != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("latest_review", ledger.ReviewRunID))
+		fmt.Fprintln(writer, rt.ui.statusKV("latest_review", ledger.ReviewRunID))
 	}
 	if ledger.ReviewObservability != nil {
 		obs := ledger.ReviewObservability
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("review_decision", reviewDecisionObservabilityStatusLine(obs)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("gate_decision", reviewGateObservabilityStatusLine(obs)))
+		fmt.Fprintln(writer, rt.ui.statusKV("review_decision", reviewDecisionObservabilityStatusLine(obs)))
+		fmt.Fprintln(writer, rt.ui.statusKV("gate_decision", reviewGateObservabilityStatusLine(obs)))
 		if obs.RouteQuality != nil {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("review_route_quality", reviewRouteQualityStatusLine(obs.RouteQuality)))
+			fmt.Fprintln(writer, rt.ui.statusKV("review_route_quality", reviewRouteQualityStatusLine(obs.RouteQuality)))
 		}
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("second_pass", reviewSecondPassStatusLine(obs.SingleModelSecondPass)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("cross_review_triage", reviewCrossReviewTriageStatusLine(obs.CrossReviewTriage)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("remaining_obligations", reviewRemainingObligationsStatusLine(obs.RemainingObligations)))
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("blocker_classes", reviewBlockerClassesStatusLine(obs.BlockerClasses)))
+		fmt.Fprintln(writer, rt.ui.statusKV("second_pass", reviewSecondPassStatusLine(obs.SingleModelSecondPass)))
+		fmt.Fprintln(writer, rt.ui.statusKV("cross_review_triage", reviewCrossReviewTriageStatusLine(obs.CrossReviewTriage)))
+		fmt.Fprintln(writer, rt.ui.statusKV("remaining_obligations", reviewRemainingObligationsStatusLine(obs.RemainingObligations)))
+		fmt.Fprintln(writer, rt.ui.statusKV("blocker_classes", reviewBlockerClassesStatusLine(obs.BlockerClasses)))
 		if len(obs.IncompleteTriageBlockers) > 0 {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("triage_blockers", strings.Join(limitStrings(obs.IncompleteTriageBlockers, 2), " | ")))
+			fmt.Fprintln(writer, rt.ui.statusKV("triage_blockers", strings.Join(limitStrings(obs.IncompleteTriageBlockers, 2), " | ")))
 		}
 		if strings.TrimSpace(obs.ResidualRiskSummary) != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("triage_residual", obs.ResidualRiskSummary))
+			fmt.Fprintln(writer, rt.ui.statusKV("triage_residual", obs.ResidualRiskSummary))
 		}
 	}
 	if ledger.FinalAnswerCorrection != nil {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
+		fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
 		if detail := finalAnswerCorrectionDetailedLine(ledger.FinalAnswerCorrection); detail != "" {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_detail", detail))
+			fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_detail", detail))
 		}
 		if ledger.FinalAnswerCorrection.Contract != nil && detail {
 			contract := ledger.FinalAnswerCorrection.Contract
-			fmt.Fprintln(rt.writer, rt.ui.statusKV("final_answer_correction_contract", strings.Join([]string{
+			fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_contract", strings.Join([]string{
 				"state=" + valueOrDefault(contract.State, ledger.FinalAnswerCorrection.Status),
 				fmt.Sprintf("edits_prohibited=%t", contract.EditsProhibited),
 				"verification=" + valueOrDefault(contract.VerificationMode, "not_required"),
@@ -1347,44 +1358,44 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 		}
 	}
 	if ledger.PatchTransactionID != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("patch_transaction", ledger.PatchTransactionID))
+		fmt.Fprintln(writer, rt.ui.statusKV("patch_transaction", ledger.PatchTransactionID))
 	}
 	if ledger.VerificationReportID != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("verification_report", ledger.VerificationReportID))
+		fmt.Fprintln(writer, rt.ui.statusKV("verification_report", ledger.VerificationReportID))
 	}
 	if ledger.CompletionAuditID != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("completion_audit", ledger.CompletionAuditID))
+		fmt.Fprintln(writer, rt.ui.statusKV("completion_audit", ledger.CompletionAuditID))
 	}
 	if len(ledger.Blockers) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("blockers", fmt.Sprintf("%d", len(ledger.Blockers))))
-		fmt.Fprintln(rt.writer, rt.ui.warnLine(strings.Join(limitStrings(ledger.Blockers, 2), " | ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("blockers", fmt.Sprintf("%d", len(ledger.Blockers))))
+		fmt.Fprintln(writer, rt.ui.warnLine(strings.Join(limitStrings(ledger.Blockers, 2), " | ")))
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("blockers", "0"))
+		fmt.Fprintln(writer, rt.ui.statusKV("blockers", "0"))
 	}
 	if len(ledger.Warnings) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("warnings", fmt.Sprintf("%d", len(ledger.Warnings))))
-		fmt.Fprintln(rt.writer, rt.ui.warnLine(strings.Join(limitStrings(ledger.Warnings, 2), " | ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("warnings", fmt.Sprintf("%d", len(ledger.Warnings))))
+		fmt.Fprintln(writer, rt.ui.warnLine(strings.Join(limitStrings(ledger.Warnings, 2), " | ")))
 	} else {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("warnings", "0"))
+		fmt.Fprintln(writer, rt.ui.statusKV("warnings", "0"))
 	}
 	if len(ledger.Waivers) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("waivers", strings.Join(limitStrings(ledger.Waivers, 4), ", ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("waivers", strings.Join(limitStrings(ledger.Waivers, 4), ", ")))
 	}
 	if len(ledger.StaleReasons) > 0 {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_reason", strings.Join(limitStrings(ledger.StaleReasons, 2), " | ")))
+		fmt.Fprintln(writer, rt.ui.statusKV("stale_reason", strings.Join(limitStrings(ledger.StaleReasons, 2), " | ")))
 	}
 	if line := runtimeGatePrimaryNextCommandLine(ledger); line != "" {
-		fmt.Fprintln(rt.writer, rt.ui.statusKV("next_command", line))
+		fmt.Fprintln(writer, rt.ui.statusKV("next_command", line))
 	}
 	if detail {
-		fmt.Fprintln(rt.writer)
-		fmt.Fprintln(rt.writer, rt.ui.subsection("Lifecycle Timeline"))
+		fmt.Fprintln(writer)
+		fmt.Fprintln(writer, rt.ui.subsection("Lifecycle Timeline"))
 		for _, item := range timeline {
-			fmt.Fprintln(rt.writer, rt.ui.statusKV(item.Phase, reviewLifecyclePhaseLine(item)))
+			fmt.Fprintln(writer, rt.ui.statusKV(item.Phase, reviewLifecyclePhaseLine(item)))
 		}
 		if blockers != nil && len(blockers.Primary) > 0 {
-			fmt.Fprintln(rt.writer)
-			fmt.Fprintln(rt.writer, rt.ui.subsection("Blocker Details"))
+			fmt.Fprintln(writer)
+			fmt.Fprintln(writer, rt.ui.subsection("Blocker Details"))
 			for _, item := range blockers.Primary {
 				line := item.Class + ": " + item.WhyBlocks
 				if item.AlreadyChecked != "" {
@@ -1399,12 +1410,12 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 				if item.NextCommand != "" {
 					line += " next_command=" + item.NextCommand
 				}
-				fmt.Fprintln(rt.writer, rt.ui.warnLine(line))
+				fmt.Fprintln(writer, rt.ui.warnLine(line))
 			}
 		}
 		if ledger.StaleContextSummary != nil && ledger.StaleContextSummary.HasStaleContext {
-			fmt.Fprintln(rt.writer)
-			fmt.Fprintln(rt.writer, rt.ui.subsection("Stale Context"))
+			fmt.Fprintln(writer)
+			fmt.Fprintln(writer, rt.ui.subsection("Stale Context"))
 			for _, item := range ledger.StaleContextSummary.Items {
 				line := fmt.Sprintf("%s status=%s severity=%s", item.Kind, item.Status, item.Severity)
 				if item.Reason != "" {
@@ -1420,12 +1431,12 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 					line += " next_command=" + item.NextCommand
 				}
 				line += fmt.Sprintf(" finalization_blocked=%t allowed_with_disclosure=%t", item.FinalizationBlocked, item.AllowedWithDisclosure)
-				fmt.Fprintln(rt.writer, rt.ui.statusKV("stale_context_item", line))
+				fmt.Fprintln(writer, rt.ui.statusKV("stale_context_item", line))
 			}
 		}
 		if len(ledger.RouteHealthEvents) > 0 {
-			fmt.Fprintln(rt.writer)
-			fmt.Fprintln(rt.writer, rt.ui.subsection("Route Health Events"))
+			fmt.Fprintln(writer)
+			fmt.Fprintln(writer, rt.ui.subsection("Route Health Events"))
 			for _, event := range ledger.RouteHealthEvents {
 				line := fmt.Sprintf("role=%s class=%s status=%s provider=%s model=%s latency_ms=%d retries=%d malformed=%d",
 					event.Role,
@@ -1440,7 +1451,7 @@ func (rt *runtimeState) printRuntimeGateStatusWithDetail(action string, detail b
 				if event.Recommendation != "" {
 					line += " recommendation=" + compactPromptSection(event.Recommendation, 160)
 				}
-				fmt.Fprintln(rt.writer, rt.ui.statusKV("route_health_event", line))
+				fmt.Fprintln(writer, rt.ui.statusKV("route_health_event", line))
 			}
 		}
 	}

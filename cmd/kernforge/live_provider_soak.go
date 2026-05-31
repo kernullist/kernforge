@@ -1090,13 +1090,7 @@ func (rt *runtimeState) renderLiveProviderSoakStatusCommand(detail bool) string 
 		return ""
 	}
 	var out bytes.Buffer
-	copyRT := *rt
-	copyRT.writer = &out
-	if detail {
-		copyRT.printRuntimeGateStatusDetail(runtimeGateActionFinalAnswer)
-	} else {
-		copyRT.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
-	}
+	rt.writeRuntimeGateStatusWithDetail(&out, runtimeGateActionFinalAnswer, detail)
 	return out.String()
 }
 

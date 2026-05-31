@@ -103,6 +103,8 @@ func buildAnalysisDocs(run ProjectAnalysisRun) map[string]string {
 		"SECURITY_SURFACE.md":         buildAnalysisSecuritySurfaceDoc(run),
 		"API_AND_ENTRYPOINTS.md":      buildAnalysisAPIEntrypointsDoc(run),
 		"BUILD_AND_ARTIFACTS.md":      buildAnalysisBuildArtifactsDoc(run),
+		"COVERAGE_LEDGER.md":          buildAnalysisCoverageLedgerDoc(run),
+		"EVIDENCE_PACKETS.md":         buildAnalysisEvidencePacketsDoc(run),
 		"VERIFICATION_MATRIX.md":      buildAnalysisVerificationMatrixDoc(run),
 		"FUZZ_TARGETS.md":             buildAnalysisFuzzTargetsDoc(run),
 		"OPERATIONS_RUNBOOK.md":       buildAnalysisOperationsRunbookDoc(run),
@@ -129,6 +131,8 @@ func analysisGeneratedDocNames() []string {
 		"SECURITY_SURFACE.md",
 		"API_AND_ENTRYPOINTS.md",
 		"BUILD_AND_ARTIFACTS.md",
+		"COVERAGE_LEDGER.md",
+		"EVIDENCE_PACKETS.md",
 		"VERIFICATION_MATRIX.md",
 		"FUZZ_TARGETS.md",
 		"OPERATIONS_RUNBOOK.md",
@@ -272,6 +276,12 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 	fmt.Fprintf(&b, "- Lines scanned: %d\n", run.Snapshot.TotalLines)
 	fmt.Fprintf(&b, "- Shards: %d\n", run.Summary.TotalShards)
 	fmt.Fprintf(&b, "- Approved shards: %d\n", run.Summary.ApprovedShards)
+	if run.Summary.ModelReviewSkippedShards > 0 {
+		fmt.Fprintf(&b, "- Model-review skipped shards: %d\n", run.Summary.ModelReviewSkippedShards)
+	}
+	if run.CoverageLedger.SkippedFileCount > 0 {
+		fmt.Fprintf(&b, "- Skipped files in coverage ledger: %d\n", run.CoverageLedger.SkippedFileCount)
+	}
 	if run.KnowledgePack.AnalysisExecution.ReusedShards > 0 || run.KnowledgePack.AnalysisExecution.MissedShards > 0 {
 		fmt.Fprintf(&b, "- Reused shards: %d\n", run.KnowledgePack.AnalysisExecution.ReusedShards)
 		fmt.Fprintf(&b, "- Recomputed shards: %d\n", run.KnowledgePack.AnalysisExecution.MissedShards)
@@ -451,6 +461,75 @@ func buildAnalysisBuildArtifactsDoc(run ProjectAnalysisRun) string {
 		for _, cmd := range limitCompileCommands(run.Snapshot.CompileCommands, 20) {
 			fmt.Fprintf(&b, "- `%s` compiler=%s source=%s\n", cmd.File, firstNonBlankAnalysisString(cmd.Compiler, "unknown"), firstNonBlankAnalysisString(cmd.Source, "compile_commands"))
 		}
+	}
+	return b.String()
+}
+
+func buildAnalysisCoverageLedgerDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Coverage Ledger\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "COVERAGE_LEDGER.md")
+	ledger := normalizeAnalysisCoverageLedger(run.CoverageLedger)
+	if ledger.IncludedFiles == 0 && run.Snapshot.TotalFiles > 0 {
+		ledger.IncludedFiles = run.Snapshot.TotalFiles
+	}
+	fmt.Fprintf(&b, "\n## Scan Summary\n\n")
+	fmt.Fprintf(&b, "- Visited files: %d\n", ledger.VisitedFiles)
+	fmt.Fprintf(&b, "- Included files: %d\n", ledger.IncludedFiles)
+	fmt.Fprintf(&b, "- Included lines: %d\n", run.Snapshot.TotalLines)
+	fmt.Fprintf(&b, "- Skipped files: %d\n", ledger.SkippedFileCount)
+	fmt.Fprintf(&b, "- Skipped bytes: %d\n", ledger.SkippedBytes)
+	fmt.Fprintf(&b, "- Max file bytes: %d\n", ledger.MaxFileBytes)
+	fmt.Fprintf(&b, "- Excluded dirs: %d\n", ledger.ExcludedDirs)
+	fmt.Fprintf(&b, "\n## Skip Reasons\n\n")
+	fmt.Fprintf(&b, "| Reason | Count |\n")
+	fmt.Fprintf(&b, "| --- | ---: |\n")
+	for _, row := range analysisCoverageLedgerReasonRows(ledger) {
+		fmt.Fprintf(&b, "| %s | %s |\n", row[0], row[1])
+	}
+	if len(ledger.SkippedFiles) > 0 {
+		fmt.Fprintf(&b, "\n## Skipped Files\n\n")
+		fmt.Fprintf(&b, "| Reason | Size | Path | Detail |\n")
+		fmt.Fprintf(&b, "| --- | ---: | --- | --- |\n")
+		for _, item := range limitSkippedFiles(ledger.SkippedFiles, 80) {
+			fmt.Fprintf(&b, "| %s | %d | `%s` | %s |\n", strings.ReplaceAll(item.Reason, "|", "/"), item.Size, strings.ReplaceAll(item.Path, "|", "/"), strings.ReplaceAll(item.Detail, "|", "/"))
+		}
+	}
+	return b.String()
+}
+
+func buildAnalysisEvidencePacketsDoc(run ProjectAnalysisRun) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Evidence Packets\n\n")
+	analysisDocsWriteHeader(&b, run)
+	analysisDocsWriteDocMetadata(&b, run, "EVIDENCE_PACKETS.md")
+	if len(run.EvidencePackets) == 0 {
+		fmt.Fprintf(&b, "\nNo evidence packets were generated for this run.\n")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\n## Packet Index\n\n")
+	fmt.Fprintf(&b, "| Packet | Shard | Kind | Source | Method | Confidence |\n")
+	fmt.Fprintf(&b, "| --- | --- | --- | --- | --- | --- |\n")
+	for _, packet := range limitEvidencePackets(run.EvidencePackets, 120) {
+		source := packet.Path
+		if packet.StartLine > 0 {
+			source = fmt.Sprintf("%s:%d-%d", packet.Path, packet.StartLine, packet.EndLine)
+		}
+		fmt.Fprintf(&b, "| `%s` | `%s` | %s | `%s` | %s | %s |\n",
+			strings.ReplaceAll(packet.ID, "|", "/"),
+			strings.ReplaceAll(packet.ShardID, "|", "/"),
+			strings.ReplaceAll(packet.Kind, "|", "/"),
+			strings.ReplaceAll(source, "|", "/"),
+			strings.ReplaceAll(packet.ExtractionMethod, "|", "/"),
+			strings.ReplaceAll(firstNonBlankAnalysisString(packet.Confidence, "medium"), "|", "/"),
+		)
+	}
+	fmt.Fprintf(&b, "\n## Claim Packet Coverage\n\n")
+	fmt.Fprintf(&b, "| Shard | Claim | Packets | Confidence |\n")
+	fmt.Fprintf(&b, "| --- | --- | --- | --- |\n")
+	for _, row := range analysisClaimEvidencePacketRows(run, 120) {
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", strings.ReplaceAll(row[0], "|", "/"), strings.ReplaceAll(row[1], "|", "/"), strings.ReplaceAll(row[2], "|", "/"), strings.ReplaceAll(row[3], "|", "/"))
 	}
 	return b.String()
 }
@@ -1040,6 +1119,12 @@ func hasSecuritySignals(run ProjectAnalysisRun) bool {
 
 func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 	items := []string{"final_document", "snapshot", "knowledge_pack"}
+	if run.CoverageLedger.SkippedFileCount > 0 || run.CoverageLedger.IncludedFiles > 0 {
+		items = append(items, "coverage_ledger")
+	}
+	if len(run.EvidencePackets) > 0 {
+		items = append(items, "evidence_packets")
+	}
 	if hasSemanticIndexV2Data(run.SemanticIndexV2) {
 		items = append(items, "structural_index_v2")
 	}
@@ -1050,6 +1135,48 @@ func analysisDocsSourceArtifacts(run ProjectAnalysisRun) []string {
 		items = append(items, "vector_corpus")
 	}
 	return items
+}
+
+func analysisCoverageLedgerReasonRows(ledger AnalysisCoverageLedger) [][2]string {
+	return [][2]string{
+		{"max_file_bytes", fmt.Sprintf("%d", ledger.OversizedFiles)},
+		{"unreadable", fmt.Sprintf("%d", ledger.UnreadableFiles)},
+		{"non_text", fmt.Sprintf("%d", ledger.NonTextFiles)},
+		{"excluded", fmt.Sprintf("%d", ledger.ExcludedFiles)},
+	}
+}
+
+func limitSkippedFiles(items []AnalysisSkippedFile, limit int) []AnalysisSkippedFile {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func limitEvidencePackets(items []EvidencePacket, limit int) []EvidencePacket {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[:limit]
+}
+
+func analysisClaimEvidencePacketRows(run ProjectAnalysisRun, limit int) [][4]string {
+	rows := [][4]string{}
+	for _, report := range run.Reports {
+		for _, claim := range report.Claims {
+			label := firstNonBlankAnalysisString(claim.ID, claim.Claim)
+			rows = append(rows, [4]string{
+				firstNonBlankAnalysisString(report.ShardID, report.Title),
+				label,
+				strings.Join(claim.EvidencePacketIDs, ", "),
+				firstNonBlankAnalysisString(claim.Confidence, "medium"),
+			})
+			if limit > 0 && len(rows) >= limit {
+				return rows
+			}
+		}
+	}
+	return rows
 }
 
 func analysisDocsGeneratedAt(run ProjectAnalysisRun) time.Time {
@@ -1070,6 +1197,8 @@ func analysisDocsGeneratedAt(run ProjectAnalysisRun) time.Time {
 
 func analysisRunConfidence(run ProjectAnalysisRun) string {
 	switch {
+	case run.Summary.ApprovedShards == 0 && run.Summary.ModelReviewSkippedShards > 0:
+		return "medium"
 	case run.Summary.ApprovedShards == 0 && run.Summary.TotalShards > 0:
 		return "low"
 	case run.Summary.ReviewFailures > 0:
@@ -1114,6 +1243,10 @@ func analysisDocSourceAnchors(run ProjectAnalysisRun, name string) []string {
 		return analysisUniqueStrings(append(run.Snapshot.EntrypointFiles, symbolFiles(analysisEntrypointSymbols(run))...))
 	case "BUILD_AND_ARTIFACTS.md":
 		return analysisUniqueStrings(append(run.Snapshot.ManifestFiles, compileCommandFiles(run.Snapshot.CompileCommands)...))
+	case "COVERAGE_LEDGER.md":
+		return analysisCoverageLedgerSourceAnchors(run)
+	case "EVIDENCE_PACKETS.md":
+		return analysisEvidencePacketSourceAnchors(run)
 	case "VERIFICATION_MATRIX.md":
 		return analysisUniqueStrings(append(run.KnowledgePack.HighRiskFiles, run.KnowledgePack.AnalysisExecution.TopChangeExamples...))
 	case "FUZZ_TARGETS.md":
@@ -1229,6 +1362,8 @@ func analysisDocReuseTargets(name string) []string {
 		return []string{"analysis_context", "evidence", "memory", "verification_planner", "fuzz_target_discovery"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification_planner", "evidence"}
+	case "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md":
+		return []string{"analysis_context", "evidence", "verification_planner"}
 	case "FUZZ_TARGETS.md":
 		return []string{"fuzz_target_discovery", "verification_planner"}
 	default:
@@ -1258,6 +1393,10 @@ func analysisDocQueryIntents(name string) []string {
 		return []string{"flow_trace", "security_surface"}
 	case "BUILD_AND_ARTIFACTS.md":
 		return []string{"build_artifact", "impact", "unreal_structure"}
+	case "COVERAGE_LEDGER.md":
+		return []string{"deep_map", "impact", "verification"}
+	case "EVIDENCE_PACKETS.md":
+		return []string{"deep_map", "flow_trace", "security_surface", "verification"}
 	case "VERIFICATION_MATRIX.md":
 		return []string{"verification", "impact", "security_surface"}
 	case "FUZZ_TARGETS.md":
@@ -1277,7 +1416,7 @@ func analysisDocPriority(name string) int {
 		return 9
 	case "MODULES.md", "STRUCTURE_DIAGRAMS.md", "CODE_STRUCTURE_REFERENCE.md":
 		return 8
-	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md":
+	case "ARCHITECTURE.md", "SECURITY_SURFACE.md", "BUILD_AND_ARTIFACTS.md", "VERIFICATION_MATRIX.md", "COVERAGE_LEDGER.md", "EVIDENCE_PACKETS.md":
 		return 7
 	case "FOLDER_MAP.md", "API_AND_ENTRYPOINTS.md", "FUZZ_TARGETS.md":
 		return 6
@@ -1456,6 +1595,15 @@ func analysisDocSections(run ProjectAnalysisRun, name string) []AnalysisDocSecti
 			{"build.contexts", "Build Contexts"},
 			{"build.compile_commands", "Compile Command Coverage"},
 		},
+		"COVERAGE_LEDGER.md": {
+			{"coverage.scan_summary", "Scan Summary"},
+			{"coverage.skip_reasons", "Skip Reasons"},
+			{"coverage.skipped_files", "Skipped Files"},
+		},
+		"EVIDENCE_PACKETS.md": {
+			{"evidence.packet_index", "Packet Index"},
+			{"evidence.claim_packet_coverage", "Claim Packet Coverage"},
+		},
 		"VERIFICATION_MATRIX.md": {
 			{"verification.matrix", "Verification Matrix"},
 			{"verification.change_classes", "Recent Change Classes"},
@@ -1557,6 +1705,32 @@ func compileCommandFiles(commands []CompilationCommandRecord) []string {
 	return items
 }
 
+func analysisCoverageLedgerSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, item := range limitSkippedFiles(run.CoverageLedger.SkippedFiles, 30) {
+		items = append(items, item.Path)
+	}
+	if len(items) == 0 {
+		items = append(items, run.KnowledgePack.TopImportantFiles...)
+	}
+	return analysisUniqueStrings(items)
+}
+
+func analysisEvidencePacketSourceAnchors(run ProjectAnalysisRun) []string {
+	items := []string{}
+	for _, packet := range limitEvidencePackets(run.EvidencePackets, 60) {
+		if packet.Path == "" {
+			continue
+		}
+		if packet.StartLine > 0 {
+			items = append(items, fmt.Sprintf("%s:%d-%d", packet.Path, packet.StartLine, packet.EndLine))
+		} else {
+			items = append(items, packet.Path)
+		}
+	}
+	return analysisUniqueStrings(items)
+}
+
 func analysisDocTitle(name string) string {
 	switch name {
 	case "INDEX.md":
@@ -1581,6 +1755,10 @@ func analysisDocTitle(name string) string {
 		return "API And Entrypoints"
 	case "BUILD_AND_ARTIFACTS.md":
 		return "Build And Artifacts"
+	case "COVERAGE_LEDGER.md":
+		return "Coverage Ledger"
+	case "EVIDENCE_PACKETS.md":
+		return "Evidence Packets"
 	case "VERIFICATION_MATRIX.md":
 		return "Verification Matrix"
 	case "FUZZ_TARGETS.md":
@@ -1618,6 +1796,10 @@ func analysisDocPurpose(name string) string {
 		return "entrypoint files, indexed symbols, and representative call edges"
 	case "BUILD_AND_ARTIFACTS.md":
 		return "build contexts, manifests, compile command coverage, and artifacts"
+	case "COVERAGE_LEDGER.md":
+		return "scan coverage, skipped files, size limits, binary/unreadable exclusions, and source coverage caveats"
+	case "EVIDENCE_PACKETS.md":
+		return "symbol-aware source slices used by worker claims and deterministic claim evidence coverage"
 	case "VERIFICATION_MATRIX.md":
 		return "required and optional verification by change area"
 	case "FUZZ_TARGETS.md":
