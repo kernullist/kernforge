@@ -815,6 +815,107 @@ func analysisRunStatusNotice(run ProjectAnalysisRun) string {
 	return strings.TrimSpace(b.String())
 }
 
+func addAnalysisRunNoticesToDocument(document string, run ProjectAnalysisRun) string {
+	frontMatter := []string{}
+	if statusNotice := analysisRunStatusNotice(run); strings.TrimSpace(statusNotice) != "" {
+		frontMatter = append(frontMatter, statusNotice)
+	}
+	if parseImpact := analysisRunParseFailureImpactSection(run); strings.TrimSpace(parseImpact) != "" {
+		frontMatter = append(frontMatter, parseImpact)
+	}
+	if len(frontMatter) > 0 {
+		document = strings.Join(frontMatter, "\n\n") + "\n\n" + strings.TrimSpace(document)
+	}
+	if scopeNotice := analysisRunScopeDisclosureSection(run); strings.TrimSpace(scopeNotice) != "" {
+		document = addAnalysisScopeDisclosureToDocument(document, scopeNotice)
+	}
+	return strings.TrimSpace(document)
+}
+
+func analysisRunParseFailureImpactSection(run ProjectAnalysisRun) string {
+	if run.Summary.ParseFailedShards == 0 && run.Summary.ProviderFailedShards == 0 {
+		return ""
+	}
+	rows := []string{}
+	for _, report := range run.Reports {
+		status := normalizeWorkerReportStatus(report.Status)
+		if status != "parse_failed" && status != "provider_failed" && status != "failed" {
+			continue
+		}
+		shardID := firstNonBlankAnalysisString(report.ShardID, "unknown-shard")
+		title := firstNonBlankAnalysisString(report.Title, shardID)
+		reason := firstNonBlankAnalysisString(report.FailureReason, status)
+		rows = append(rows, fmt.Sprintf("- `%s` (%s): %s", shardID, title, reason))
+	}
+	if len(rows) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("# Parse-Failure Impact\n\n")
+	b.WriteString("The following shards were excluded from verified facts and claim verification. Treat related synthesis sections as confidence-reducing gaps until a focused rerun repairs these shards.\n\n")
+	for _, row := range rows {
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nRecommended recovery: rerun `/analyze-project` with a narrower goal or focused shard scope for the listed files, then compare the repaired shard reports against this run before promoting findings to high confidence.")
+	return strings.TrimSpace(b.String())
+}
+
+func enforceAnalysisTrustWording(document string, run ProjectAnalysisRun) string {
+	if run.Summary.ApprovedShards > 0 {
+		return document
+	}
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{
+			old: "The final document was synthesized from approved shard reports.",
+			new: "The final document was synthesized from structured worker shard reports and deterministic verification results; no shard report was reviewer-approved.",
+		},
+		{
+			old: "This analysis was synthesized from approved shard reports.",
+			new: "This analysis was synthesized from structured worker shard reports and deterministic verification results; no shard report was reviewer-approved.",
+		},
+		{
+			old: "Approved shard reports were used for synthesis.",
+			new: "Structured worker shard reports and deterministic verification results were used for synthesis; no shard report was reviewer-approved.",
+		},
+		{
+			old: "Approved shard reports:",
+			new: "Structured worker shard reports:",
+		},
+		{
+			old: "Compacted approved shard reports:",
+			new: "Compacted structured worker shard reports:",
+		},
+		{
+			old: "Reviewer-approved shard reports were used for synthesis.",
+			new: "Structured worker shard reports and deterministic verification results were used for synthesis; no shard report was reviewer-approved.",
+		},
+		{
+			old: "The final document was synthesized from reviewer-approved shard reports.",
+			new: "The final document was synthesized from structured worker shard reports and deterministic verification results; no shard report was reviewer-approved.",
+		},
+		{
+			old: "This analysis was synthesized from reviewer-approved shard reports.",
+			new: "This analysis was synthesized from structured worker shard reports and deterministic verification results; no shard report was reviewer-approved.",
+		},
+		{
+			old: "사전 승인된 샤드(shard) 보고서들을 종합하여 작성되었습니다.",
+			new: "구조화된 워커 shard 보고서와 결정론적 검증 결과를 종합하여 작성되었으며, shard 보고서가 모델 리뷰어에게 승인된 것은 아닙니다.",
+		},
+		{
+			old: "사전 승인된 샤드 보고서들을 종합하여 작성되었습니다.",
+			new: "구조화된 워커 shard 보고서와 결정론적 검증 결과를 종합하여 작성되었으며, shard 보고서가 모델 리뷰어에게 승인된 것은 아닙니다.",
+		},
+	}
+	for _, replacement := range replacements {
+		document = strings.ReplaceAll(document, replacement.old, replacement.new)
+	}
+	return document
+}
+
 func analysisRunScopeDisclosureSection(run ProjectAnalysisRun) string {
 	requested := firstNonBlankAnalysisString(run.Preflight.RequestedRoot, run.Summary.RequestedRoot)
 	effective := firstNonBlankString(run.Preflight.EffectiveRoot, run.Summary.EffectiveRoot, run.Snapshot.Root)
@@ -1466,7 +1567,7 @@ func renderAnalysisReviewIssueDetails(providerFailures int, qualityIssues int) s
 func renderAnalysisReviewIssueDetailsForReviews(providerFailures int, qualityIssues int, reviews []ReviewDecision) string {
 	lines := []string{}
 	if providerFailures > 0 {
-		lines = append(lines, fmt.Sprintf("Provider failures: %d shard(s) could not be completed because a worker or reviewer model/provider request failed. The final document was synthesized from available worker reports and approved shards, so affected sections have reduced review confidence.", providerFailures))
+		lines = append(lines, fmt.Sprintf("Provider failures: %d shard(s) could not be completed because a worker or reviewer model/provider request failed. The final document was synthesized from available structured worker reports; only shards with explicit reviewer approval should be treated as reviewer-approved, so affected sections have reduced review confidence.", providerFailures))
 		if split := renderAnalysisProviderFailureSplit(reviews); strings.TrimSpace(split) != "" {
 			lines = append(lines, split)
 		}
@@ -3361,7 +3462,6 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	if err != nil {
 		return run, err
 	}
-	statusNotice := analysisRunStatusNotice(run)
 	if run.ClaimVerification.BlockingCount > 0 {
 		run.Summary.Status = "completed_with_verifier_blockers"
 		a.debug(fmt.Sprintf("analysis completed with verifier blockers: blocking=%d unsupported_high=%d", run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount))
@@ -3386,12 +3486,8 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		}
 		a.debug(fmt.Sprintf("analysis completed with review issues: provider_failures=%d quality_issues=%d", run.Summary.ReviewProviderFailures, run.Summary.ReviewQualityIssues))
 	}
-	if strings.TrimSpace(statusNotice) != "" {
-		document = statusNotice + "\n\n" + document
-	}
-	if scopeNotice := analysisRunScopeDisclosureSection(run); strings.TrimSpace(scopeNotice) != "" {
-		document = addAnalysisScopeDisclosureToDocument(document, scopeNotice)
-	}
+	document = enforceAnalysisTrustWording(document, run)
+	document = addAnalysisRunNoticesToDocument(document, run)
 	document = appendClaimVerificationFinalSections(document, run.ClaimVerification, run.SecurityOverlay)
 	run.FinalDocument = document
 	run.ShardDocuments = buildShardDocuments(run.Snapshot, run.Shards, run.Reports, goal)
@@ -13565,7 +13661,7 @@ For root-cause investigations, replace the default structure with:
 8. Verification And Falsification Steps
 9. Remaining Unknowns
 Requirements:
-- Treat the deterministic architecture fact pack as authoritative. If approved shard reports conflict with it, prefer the fact pack and mention the conflict as an uncertainty instead of synthesizing the conflicting claim.
+- Treat the deterministic architecture fact pack as authoritative. If structured worker shard reports conflict with it, prefer the fact pack and mention the conflict as an uncertainty instead of synthesizing the conflicting claim.
 - Use responsibilities to explain ownership boundaries.
 - Keep direct facts distinct from higher-level inferences when the reports provide both.
 - Use claim confidence and source anchors to decide which assertions are strong enough for the final document.
@@ -14480,7 +14576,7 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	if len(snapshot.EntrypointFiles) > 0 {
 		fmt.Fprintf(&b, "Entrypoint files:\n%s\n\n", joinListForPrompt(snapshot.EntrypointFiles))
 	}
-	b.WriteString("Approved shard reports:\n")
+	b.WriteString("Structured worker shard reports:\n")
 	b.Write(data)
 	b.WriteString("\n\nSynthesis requirements:\n")
 	switch projectAnalysisOutputLanguageForGoal(goal) {
@@ -14491,6 +14587,7 @@ func buildSynthesisPrompt(snapshot ProjectSnapshot, shards []AnalysisShard, repo
 	}
 	b.WriteString("- Turn internal_flow bullets into a coherent execution-flow section.\n")
 	b.WriteString("- Turn collaboration bullets into explicit subsystem integration descriptions.\n")
+	b.WriteString("- Treat the report corpus above as structured worker output; do not call it reviewer-approved unless a review decision explicitly approved the shard.\n")
 	b.WriteString("- Preserve uncertainty by collecting unknowns under Risks And Unknowns.\n")
 	b.WriteString("- Do not promote claims without evidence_packet_ids, source_anchors, or reviewer approval into direct fact wording; keep them as medium/low-confidence inference, risk, or unknown.\n")
 	b.WriteString("- Expand subsystem sections instead of collapsing them into short bullets only.\n")
@@ -14646,7 +14743,7 @@ func renderCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSec
 			fmt.Fprintf(&b, "- %s\n", fact)
 		}
 	}
-	b.WriteString("\nCompacted approved shard reports:\n")
+	b.WriteString("\nCompacted structured worker shard reports:\n")
 	b.Write(data)
 	b.WriteString("\n\nSynthesis requirements:\n")
 	switch projectAnalysisOutputLanguageForGoal(goal) {
@@ -14657,6 +14754,7 @@ func renderCompactSynthesisPrompt(snapshot ProjectSnapshot, items []synthesisSec
 	}
 	b.WriteString("- Prioritize high-confidence responsibilities, facts, execution flow, integration points, risks, and unknowns.\n")
 	b.WriteString("- Mention that the synthesis input was compacted when important detail may live in local shard artifacts.\n")
+	b.WriteString("- Treat the compacted corpus above as structured worker output; do not call it reviewer-approved unless a review decision explicitly approved the shard.\n")
 	b.WriteString("- Do not invent evidence for omitted or compacted sections.\n")
 	b.WriteString("- Do not promote claims without evidence_packet_ids, source_anchors, or reviewer approval into direct fact wording.\n")
 	b.WriteString("- Do not claim full-source coverage for files listed in the coverage ledger caveats.\n")
@@ -14851,8 +14949,117 @@ func synthesisDriverArchitectureFacts(snapshot ProjectSnapshot) []string {
 	if len(driverEntries) > 0 {
 		facts = append(facts, "Kernel/runtime driver entry files: "+strings.Join(driverEntries, ", ")+". Keep these separate from user-mode startup files.")
 	}
+	sourceCorpus := synthesisDriverSourceCorpus(snapshot, 96, 65536)
+	lowerCorpus := strings.ToLower(sourceCorpus)
+	if containsAny(lowerCorpus, "driverentry") && containsAny(lowerCorpus, "majorfunction[irp_mj_device_control]", "irp_mj_device_control") {
+		facts = append(facts, "DriverEntry/dispatch guardrail: describe IRP major-function table setup separately from IOCTL decrypt/validate/dispatch handling; do not collapse initialization order and request dispatch into one step.")
+	}
+	hasCBCDecrypt := containsAny(lowerCorpus, "cbc_decrypt", "lea_cbc_decrypt")
+	hasKeyMaterial := containsAny(lowerCorpus, "masterkey", "master_key", "key[]", " key[", " key =")
+	hasIVMaterial := containsAny(lowerCorpus, "iv[]", " iv[", " iv =", "initialization vector")
+	if hasCBCDecrypt && hasKeyMaterial && hasIVMaterial {
+		facts = append(facts, "Crypto evidence guardrail: hardcoded key/IV claims must cite the init/decrypt function or concrete key/IV definition lines, not only a generic crypto primitive header.")
+	}
+	if containsAny(lowerCorpus, "fltregisterfilter") &&
+		containsAny(lowerCorpus, "irp_mj_create") &&
+		containsAny(lowerCorpus, "preoperation = nullptr", "preoperation=nullptr", "preoperation = null") &&
+		containsAny(lowerCorpus, "postoperation = nullptr", "postoperation=nullptr", "postoperation = null") {
+		facts = append(facts, "Minifilter guardrail: an operation slot with null PreOperation/PostOperation is a declared slot, not an effective filtering callback.")
+	}
+	if containsAny(lowerCorpus, "status_flt_do_not_attach") {
+		facts = append(facts, "Minifilter attach guardrail: InstanceSetup returning STATUS_FLT_DO_NOT_ATTACH means the filter should be described as non-attaching unless another runtime path proves attachment.")
+	}
+	if containsAny(lowerCorpus, "obregistercallbacks") {
+		facts = append(facts, "Object callback guardrail: describe object callbacks as registered only on a visible Start/Register/activation call path that reaches ObRegisterCallbacks; initialization helpers alone are setup evidence.")
+	}
+	if containsAny(lowerCorpus, "pimage_export_directory", "addressofnames", "addressoffunctions") &&
+		containsAny(lowerCorpus, "mmgetsystemroutineaddress") {
+		facts = append(facts, "API resolution guardrail: distinguish export-table parsing from wrappers around MmGetSystemRoutineAddress; do not describe both mechanisms as the same resolver path.")
+	}
 	facts = append(facts, "If a file/minifilter subsystem exists, describe it as a subsystem unless build evidence says the whole driver is minifilter-only.")
 	return facts
+}
+
+func synthesisDriverSourceCorpus(snapshot ProjectSnapshot, maxFiles int, maxBytesPerFile int64) string {
+	if maxFiles <= 0 || maxBytesPerFile <= 0 || strings.TrimSpace(snapshot.Root) == "" {
+		return ""
+	}
+	candidates := []ScannedFile{}
+	for _, file := range snapshot.Files {
+		if !analysisDriverSourceExtension(file) {
+			continue
+		}
+		candidates = append(candidates, file)
+	}
+	sort.SliceStable(candidates, func(i int, j int) bool {
+		left := synthesisDriverSourceFilePriority(candidates[i])
+		right := synthesisDriverSourceFilePriority(candidates[j])
+		if left != right {
+			return left > right
+		}
+		return candidates[i].Path < candidates[j].Path
+	})
+	parts := []string{}
+	for _, file := range candidates {
+		if len(parts) >= maxFiles {
+			break
+		}
+		relPath := cleanEvidencePath(file.Path)
+		if relPath == "" {
+			continue
+		}
+		absPath := filepath.Join(snapshot.Root, filepath.FromSlash(relPath))
+		info, err := os.Stat(absPath)
+		if err != nil || info.IsDir() || info.Size() > maxBytesPerFile {
+			continue
+		}
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			continue
+		}
+		parts = append(parts, relPath+"\n"+string(data))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func analysisDriverSourceExtension(file ScannedFile) bool {
+	extension := strings.ToLower(strings.TrimSpace(file.Extension))
+	if extension == "" {
+		extension = strings.ToLower(filepath.Ext(file.Path))
+	}
+	switch extension {
+	case ".c", ".cc", ".cpp", ".cxx", ".h", ".hpp", ".hh", ".inl":
+		return true
+	default:
+		return false
+	}
+}
+
+func synthesisDriverSourceFilePriority(file ScannedFile) int {
+	score := file.ImportanceScore
+	if file.IsEntrypoint {
+		score += 1000
+	}
+	path := strings.ToLower(filepath.ToSlash(file.Path))
+	for _, signal := range []string{
+		"driver",
+		"kernel",
+		"core",
+		"ioctl",
+		"device",
+		"dispatch",
+		"filter",
+		"callback",
+		"object",
+		"crypto",
+		"api",
+		"entry",
+	} {
+		if strings.Contains(path, signal) {
+			score += 40
+		}
+	}
+	return score
 }
 
 func synthesisReportGuardrailFacts(reports []WorkerReport) []string {
@@ -14971,45 +15178,202 @@ func fallbackWorkerReport(shard AnalysisShard, raw string) WorkerReport {
 	}
 }
 
+type analysisFlexibleStringList []string
+
+func (list *analysisFlexibleStringList) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*list = nil
+		return nil
+	}
+	values := []string{}
+	if err := json.Unmarshal(data, &values); err == nil {
+		*list = analysisUniqueStrings(values)
+		return nil
+	}
+	single := ""
+	if err := json.Unmarshal(data, &single); err == nil {
+		*list = analysisUniqueStrings([]string{single})
+		return nil
+	}
+	var generic any
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return err
+	}
+	*list = analysisUniqueStrings(analysisFlexibleValuesToStrings(generic))
+	return nil
+}
+
+func analysisFlexibleValuesToStrings(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return analysisUniqueStrings([]string{typed})
+	case bool:
+		return []string{fmt.Sprintf("%t", typed)}
+	case float64:
+		return []string{strconv.FormatFloat(typed, 'f', -1, 64)}
+	case []any:
+		out := []string{}
+		for _, item := range typed {
+			out = append(out, analysisFlexibleValuesToStrings(item)...)
+		}
+		return analysisUniqueStrings(out)
+	case map[string]any:
+		if len(typed) == 0 {
+			return nil
+		}
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return nil
+		}
+		return []string{string(data)}
+	default:
+		return analysisUniqueStrings([]string{fmt.Sprint(typed)})
+	}
+}
+
+type analysisFlexibleClaims []flexibleAnalysisClaim
+
+func (claims *analysisFlexibleClaims) UnmarshalJSON(data []byte) error {
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" {
+		*claims = nil
+		return nil
+	}
+	items := []flexibleAnalysisClaim{}
+	if err := json.Unmarshal(data, &items); err == nil {
+		*claims = items
+		return nil
+	}
+	item := flexibleAnalysisClaim{}
+	if err := json.Unmarshal(data, &item); err == nil {
+		if strings.TrimSpace(item.Claim) != "" {
+			*claims = []flexibleAnalysisClaim{item}
+		}
+		return nil
+	}
+	return nil
+}
+
+type flexibleAnalysisClaim struct {
+	ID                string                     `json:"id,omitempty"`
+	Kind              string                     `json:"kind,omitempty"`
+	Claim             string                     `json:"claim"`
+	SourceAnchors     analysisFlexibleStringList `json:"source_anchors,omitempty"`
+	EvidencePacketIDs analysisFlexibleStringList `json:"evidence_packet_ids,omitempty"`
+	Confidence        string                     `json:"confidence,omitempty"`
+	DependsOn         analysisFlexibleStringList `json:"depends_on,omitempty"`
+	DisprovesWhen     string                     `json:"disproves_when,omitempty"`
+	VerificationHint  string                     `json:"verification_hint,omitempty"`
+}
+
+type flexibleWorkerReport struct {
+	ShardID             string                     `json:"shard_id,omitempty"`
+	Status              string                     `json:"status,omitempty"`
+	FailureReason       string                     `json:"failure_reason,omitempty"`
+	Title               string                     `json:"title"`
+	ScopeSummary        string                     `json:"scope_summary"`
+	Responsibilities    analysisFlexibleStringList `json:"responsibilities"`
+	Facts               analysisFlexibleStringList `json:"facts,omitempty"`
+	Inferences          analysisFlexibleStringList `json:"inferences,omitempty"`
+	Claims              analysisFlexibleClaims     `json:"claims,omitempty"`
+	KeyFiles            analysisFlexibleStringList `json:"key_files"`
+	EntryPoints         analysisFlexibleStringList `json:"entry_points"`
+	InternalFlow        analysisFlexibleStringList `json:"internal_flow"`
+	Dependencies        analysisFlexibleStringList `json:"dependencies"`
+	Collaboration       analysisFlexibleStringList `json:"collaboration"`
+	Risks               analysisFlexibleStringList `json:"risks"`
+	Unknowns            analysisFlexibleStringList `json:"unknowns"`
+	EvidenceFiles       analysisFlexibleStringList `json:"evidence_files"`
+	RootCauseCandidates []RootCauseCandidate       `json:"root_cause_candidates,omitempty"`
+	Narrative           string                     `json:"narrative"`
+}
+
+func decodeWorkerReportCandidateJSON(data []byte) (WorkerReport, bool) {
+	report := WorkerReport{}
+	if err := json.Unmarshal(data, &report); err == nil {
+		return report, true
+	}
+	flexible := flexibleWorkerReport{}
+	if err := json.Unmarshal(data, &flexible); err != nil {
+		return WorkerReport{}, false
+	}
+	report = WorkerReport{
+		ShardID:             flexible.ShardID,
+		Status:              flexible.Status,
+		FailureReason:       flexible.FailureReason,
+		Title:               flexible.Title,
+		ScopeSummary:        flexible.ScopeSummary,
+		Responsibilities:    []string(flexible.Responsibilities),
+		Facts:               []string(flexible.Facts),
+		Inferences:          []string(flexible.Inferences),
+		KeyFiles:            []string(flexible.KeyFiles),
+		EntryPoints:         []string(flexible.EntryPoints),
+		InternalFlow:        []string(flexible.InternalFlow),
+		Dependencies:        []string(flexible.Dependencies),
+		Collaboration:       []string(flexible.Collaboration),
+		Risks:               []string(flexible.Risks),
+		Unknowns:            []string(flexible.Unknowns),
+		EvidenceFiles:       []string(flexible.EvidenceFiles),
+		RootCauseCandidates: flexible.RootCauseCandidates,
+		Narrative:           flexible.Narrative,
+	}
+	for _, claim := range flexible.Claims {
+		report.Claims = append(report.Claims, AnalysisClaim{
+			ID:                claim.ID,
+			Kind:              claim.Kind,
+			Claim:             claim.Claim,
+			SourceAnchors:     []string(claim.SourceAnchors),
+			EvidencePacketIDs: []string(claim.EvidencePacketIDs),
+			Confidence:        claim.Confidence,
+			DependsOn:         []string(claim.DependsOn),
+			DisprovesWhen:     claim.DisprovesWhen,
+			VerificationHint:  claim.VerificationHint,
+		})
+	}
+	return report, true
+}
+
+func acceptWorkerReportCandidate(report WorkerReport, shard AnalysisShard, raw string) (WorkerReport, bool) {
+	if !workerReportPayloadHasContent(report) {
+		return WorkerReport{}, false
+	}
+	if workerReportLooksLikeSchemaPlaceholder(report) {
+		return WorkerReport{}, false
+	}
+	report.ShardID = shard.ID
+	report.Raw = strings.TrimSpace(raw)
+	normalizeWorkerReport(&report, shard)
+	if workerReportLooksLikeSchemaPlaceholder(report) {
+		return WorkerReport{}, false
+	}
+	return report, true
+}
+
 func parseWorkerReportPayload(raw string, shard AnalysisShard) (WorkerReport, bool) {
 	type workerEnvelope struct {
-		Report WorkerReport `json:"report"`
+		Report json.RawMessage `json:"report"`
 	}
 
 	candidates := analysisJSONCandidates(raw)
 	for _, candidate := range candidates {
 		envelope := workerEnvelope{}
 		if err := json.Unmarshal([]byte(candidate), &envelope); err == nil {
-			if !workerReportPayloadHasContent(envelope.Report) {
-				continue
+			if len(envelope.Report) > 0 {
+				if report, ok := decodeWorkerReportCandidateJSON(envelope.Report); ok {
+					if accepted, ok := acceptWorkerReportCandidate(report, shard, raw); ok {
+						return accepted, true
+					}
+				}
 			}
-			if workerReportLooksLikeSchemaPlaceholder(envelope.Report) {
-				continue
-			}
-			envelope.Report.ShardID = shard.ID
-			envelope.Report.Raw = strings.TrimSpace(raw)
-			normalizeWorkerReport(&envelope.Report, shard)
-			if workerReportLooksLikeSchemaPlaceholder(envelope.Report) {
-				continue
-			}
-			return envelope.Report, true
 		}
 
-		report := WorkerReport{}
-		if err := json.Unmarshal([]byte(candidate), &report); err == nil {
-			if !workerReportPayloadHasContent(report) {
-				continue
+		if report, ok := decodeWorkerReportCandidateJSON([]byte(candidate)); ok {
+			if accepted, ok := acceptWorkerReportCandidate(report, shard, raw); ok {
+				return accepted, true
 			}
-			if workerReportLooksLikeSchemaPlaceholder(report) {
-				continue
-			}
-			report.ShardID = shard.ID
-			report.Raw = strings.TrimSpace(raw)
-			normalizeWorkerReport(&report, shard)
-			if workerReportLooksLikeSchemaPlaceholder(report) {
-				continue
-			}
-			return report, true
 		}
 	}
 
@@ -17741,6 +18105,47 @@ func filterEvidence(items []string, shard AnalysisShard) []string {
 		}
 	}
 	return out
+}
+
+func filterSourceAnchors(items []string, shard AnalysisShard) []string {
+	allowed := map[string]string{}
+	for _, item := range shard.PrimaryFiles {
+		rememberAllowedEvidencePath(allowed, item)
+	}
+	for _, item := range shard.ReferenceFiles {
+		rememberAllowedEvidencePath(allowed, item)
+	}
+	out := []string{}
+	for _, item := range items {
+		path, line, ok := parseAnalysisClaimSourceAnchor(item)
+		if !ok {
+			continue
+		}
+		canonical := canonicalEvidencePath(path, allowed)
+		if canonical == "" {
+			continue
+		}
+		if line > 0 {
+			canonical = fmt.Sprintf("%s:%d", canonical, line)
+		}
+		if symbol := sourceAnchorSymbolSuffix(item); symbol != "" {
+			canonical += "#" + symbol
+		}
+		out = append(out, canonical)
+	}
+	return out
+}
+
+func sourceAnchorSymbolSuffix(anchor string) string {
+	clean := cleanEvidencePath(anchor)
+	if clean == "" {
+		return ""
+	}
+	index := strings.Index(clean, "#")
+	if index < 0 {
+		return ""
+	}
+	return strings.TrimSpace(clean[index+1:])
 }
 
 func rememberAllowedEvidencePath(allowed map[string]string, path string) {

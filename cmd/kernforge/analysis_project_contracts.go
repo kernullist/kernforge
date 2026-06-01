@@ -690,7 +690,7 @@ func normalizeAnalysisClaims(claims []AnalysisClaim, report WorkerReport, shard 
 		hadSourceAnchors := len(analysisUniqueStrings(claim.SourceAnchors)) > 0
 		claim.ID = strings.TrimSpace(claim.ID)
 		claim.Kind = normalizeAnalysisClaimKind(claim.Kind)
-		claim.SourceAnchors = analysisUniqueStrings(filterEvidence(claim.SourceAnchors, shard))
+		claim.SourceAnchors = analysisUniqueStrings(filterSourceAnchors(claim.SourceAnchors, shard))
 		if len(claim.SourceAnchors) == 0 && !hadSourceAnchors {
 			claim.SourceAnchors = append([]string(nil), defaultAnchors...)
 		}

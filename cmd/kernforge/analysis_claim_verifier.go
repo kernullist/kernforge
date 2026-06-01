@@ -264,8 +264,8 @@ func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, sha
 		if !pathMatched {
 			issues = append(issues, ClaimVerificationIssue{
 				Code:     "source_packet_mismatch",
-				Severity: severityForConfidence(claim.Confidence, "error"),
-				Message:  "Claim source anchor path does not match any cited packet path.",
+				Severity: "warning",
+				Message:  "Claim source anchor path does not match any cited packet path; treat the claim as a citation precision issue until the correct packet is attached.",
 				Evidence: []string{anchor},
 			})
 		} else if !lineMatched {
@@ -517,6 +517,16 @@ func appendClaimVerificationFinalSections(document string, report ClaimVerificat
 		b.WriteString(document)
 		b.WriteString("\n\n")
 	}
+	b.WriteString("## Deterministic Claim Verification\n\n")
+	fmt.Fprintf(&b, "- Status: %s\n", firstNonBlankAnalysisString(report.Status, "unknown"))
+	fmt.Fprintf(&b, "- Total claims: %d\n", report.TotalClaims)
+	fmt.Fprintf(&b, "- Verified: %d\n", report.VerifiedCount)
+	fmt.Fprintf(&b, "- Inferences: %d\n", report.InferenceCount)
+	fmt.Fprintf(&b, "- Downgraded: %d\n", report.DowngradedCount)
+	fmt.Fprintf(&b, "- Unsupported: %d\n", report.UnsupportedCount)
+	fmt.Fprintf(&b, "- Blocking: %d\n", report.BlockingCount)
+	fmt.Fprintf(&b, "- Unsupported high-confidence: %d\n", report.UnsupportedHighConfidenceCount)
+	b.WriteString("\n")
 	b.WriteString("## Verified Facts\n\n")
 	if len(report.RunIssues) > 0 {
 		b.WriteString("Run-level verifier issues:\n")

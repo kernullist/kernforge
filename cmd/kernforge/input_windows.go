@@ -16,17 +16,17 @@ const (
 	enableLineInput      = 0x0002
 	enableEchoInput      = 0x0004
 	keyEventType         = 0x0001
-	inputVKBack          = 0x08
-	inputVKTab           = 0x09
-	inputVKReturn        = 0x0D
-	inputVKEscape        = 0x1B
-	inputVKLeft          = 0x25
-	inputVKUp            = 0x26
-	inputVKRight         = 0x27
-	inputVKDown          = 0x28
-	inputVKDelete        = 0x2E
-	inputVKHome          = 0x24
-	inputVKEnd           = 0x23
+	inputVirtualKeyBack  = 0x08
+	inputVirtualKeyTab   = 0x09
+	inputVirtualKeyEnter = 0x0D
+	inputVirtualKeyEsc   = 0x1B
+	inputVirtualKeyLeft  = 0x25
+	inputVirtualKeyUp    = 0x26
+	inputVirtualKeyRight = 0x27
+	inputVirtualKeyDown  = 0x28
+	inputVirtualKeyDel   = 0x2E
+	inputVirtualKeyHome  = 0x24
+	inputVirtualKeyEnd   = 0x23
 )
 
 var (
@@ -198,20 +198,20 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			repeatCount = 1
 		}
 		switch event.VirtualKeyCode {
-		case inputVKReturn:
+		case inputVirtualKeyEnter:
 			if !allowEmptySubmit && len(buffer) == 0 {
 				continue
 			}
 			fmt.Fprint(rt.writer, "\n")
 			return string(buffer), true, nil
-		case inputVKEscape:
+		case inputVirtualKeyEsc:
 			if rt.shouldIgnorePromptEscape() {
 				continue
 			}
 			ensureVirtualTerminalProcessing()
 			fmt.Fprint(rt.writer, cancelInteractiveLine(prevLines))
 			return "", true, ErrPromptCanceled
-		case inputVKBack:
+		case inputVirtualKeyBack:
 			beforeLines := currentLineCount()
 			removed := 0
 			wasAtEnd := cursorPos == len(buffer)
@@ -239,7 +239,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			} else {
 				redraw()
 			}
-		case inputVKDelete:
+		case inputVirtualKeyDel:
 			beforeLines := currentLineCount()
 			removed := 0
 			deletingTrailing := false
@@ -272,7 +272,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			} else {
 				redraw()
 			}
-		case inputVKLeft:
+		case inputVirtualKeyLeft:
 			moved := 0
 			movedWidth := 0
 			for i := 0; i < repeatCount && cursorPos > 0; i++ {
@@ -282,20 +282,20 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			}
 			_ = moved
 			moveCursorLeft(movedWidth)
-		case inputVKRight:
+		case inputVirtualKeyRight:
 			movedWidth := 0
 			for i := 0; i < repeatCount && cursorPos < len(buffer); i++ {
 				movedWidth += runeWidth(buffer[cursorPos])
 				cursorPos++
 			}
 			moveCursorRight(movedWidth)
-		case inputVKHome:
+		case inputVirtualKeyHome:
 			moveCursorLeft(runeSliceWidth(buffer[:cursorPos]))
 			cursorPos = 0
-		case inputVKEnd:
+		case inputVirtualKeyEnd:
 			moveCursorRight(widthAfterCursor())
 			cursorPos = len(buffer)
-		case inputVKTab:
+		case inputVirtualKeyTab:
 			updated, suggestions, handled := rt.completeLine(string(buffer))
 			if !handled {
 				continue
@@ -308,7 +308,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 				fmt.Fprint(rt.writer, "\n"+rendered+"\n")
 			}
 			redraw()
-		case inputVKUp:
+		case inputVirtualKeyUp:
 			updated := string(buffer)
 			for i := 0; i < repeatCount; i++ {
 				next, ok := historyNav.Previous(updated)
@@ -320,7 +320,7 @@ func (rt *runtimeState) readInteractiveLine(prompt string, initial string, histo
 			buffer = []rune(updated)
 			cursorPos = len(buffer)
 			redraw()
-		case inputVKDown:
+		case inputVirtualKeyDown:
 			updated := string(buffer)
 			for i := 0; i < repeatCount; i++ {
 				next, ok := historyNav.Next(updated)

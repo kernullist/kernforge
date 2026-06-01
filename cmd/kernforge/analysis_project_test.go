@@ -3125,6 +3125,84 @@ func TestParseWorkerReportRejectsSchemaPlaceholder(t *testing.T) {
 	}
 }
 
+func TestParseWorkerReportAcceptsWrappedReportWithStringLists(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "security_driver",
+		PrimaryFiles: []string{"driver/core.cpp"},
+	}
+	report, ok := parseWorkerReportPayload(`{
+  "report": {
+    "title": "Driver core",
+    "scope_summary": "Maps the driver initialization and command handling path.",
+    "responsibilities": ["Initialize the runtime"],
+    "facts": ["DriverEntry assigns a device-control dispatch routine."],
+    "internal_flow": "DriverEntry initializes state before dispatching IOCTL requests.",
+    "collaboration": "The user-mode client sends encrypted IOCTL payloads to the driver.",
+    "claims": [
+      {
+        "id": "claim-crypto",
+        "kind": "risk",
+        "claim": "The decrypt path uses a static key and IV.",
+        "source_anchors": "driver/core.cpp:42",
+        "evidence_packet_ids": "shard-01-packet-01",
+        "confidence": "high",
+        "depends_on": "claim-init"
+      }
+    ],
+    "key_files": ["driver/core.cpp"],
+    "entry_points": ["DriverEntry"],
+    "dependencies": [],
+    "risks": "Static crypto material needs manual review.",
+    "unknowns": [],
+    "evidence_files": ["driver/core.cpp"],
+    "root_cause_candidates": [
+      {
+        "title": "Invalid command shape reaches dispatch",
+        "candidate_chain": ["decrypt", "validate", "dispatch"],
+        "confidence": "medium"
+      }
+    ],
+    "narrative": "Structured report."
+  }
+}`, shard)
+	if !ok {
+		t.Fatalf("expected wrapped worker report with string list drift to parse")
+	}
+	if report.ShardID != shard.ID {
+		t.Fatalf("expected shard id to be normalized, got %q", report.ShardID)
+	}
+	if !strings.Contains(report.Raw, `"report"`) {
+		t.Fatalf("expected raw output to be preserved, got %q", report.Raw)
+	}
+	if len(report.InternalFlow) != 1 || !strings.Contains(report.InternalFlow[0], "DriverEntry") {
+		t.Fatalf("expected string internal_flow to become a one-item list, got %#v", report.InternalFlow)
+	}
+	if len(report.Collaboration) != 1 || !strings.Contains(report.Collaboration[0], "IOCTL") {
+		t.Fatalf("expected string collaboration to become a one-item list, got %#v", report.Collaboration)
+	}
+	if len(report.Claims) != 1 || len(report.Claims[0].SourceAnchors) != 1 || len(report.Claims[0].EvidencePacketIDs) != 1 {
+		t.Fatalf("expected flexible claim anchors and packet ids, got %#v", report.Claims)
+	}
+	if len(report.Risks) != 1 {
+		t.Fatalf("expected string risks to become a one-item list, got %#v", report.Risks)
+	}
+	if len(report.RootCauseCandidates) != 1 || report.RootCauseCandidates[0].Title == "" {
+		t.Fatalf("expected root-cause candidates to survive flexible decode, got %#v", report.RootCauseCandidates)
+	}
+}
+
+func TestParseWorkerReportRejectsTruncatedWrappedReport(t *testing.T) {
+	shard := AnalysisShard{
+		ID:           "shard-01",
+		Name:         "security_driver",
+		PrimaryFiles: []string{"driver/core.cpp"},
+	}
+	if report, ok := parseWorkerReportPayload(`{"report":{"title":"Driver core","scope_summary":"truncated"`, shard); ok {
+		t.Fatalf("expected truncated wrapped report to be rejected, got %+v", report)
+	}
+}
+
 func TestParseWorkerReportRejectsEmptyJSONPayload(t *testing.T) {
 	shard := AnalysisShard{
 		ID:           "shard-01",
@@ -3135,6 +3213,23 @@ func TestParseWorkerReportRejectsEmptyJSONPayload(t *testing.T) {
 		if report, ok := parseWorkerReportPayload(raw, shard); ok {
 			t.Fatalf("expected empty worker report %s to be rejected, got %+v", raw, report)
 		}
+	}
+}
+
+func TestSoftFailWorkerReportProducesProviderFailureWithoutClaims(t *testing.T) {
+	report := softFailWorkerReport(AnalysisShard{
+		ID:           "shard-01",
+		Name:         "security_driver",
+		PrimaryFiles: []string{"driver/core.cpp"},
+	}, errors.New("provider unavailable"))
+	if normalizeWorkerReportStatus(report.Status) != "provider_failed" {
+		t.Fatalf("expected provider_failed status, got %#v", report)
+	}
+	if len(report.Claims) != 0 {
+		t.Fatalf("provider failure placeholder must not emit claims: %#v", report.Claims)
+	}
+	if strings.TrimSpace(report.Raw) == "" {
+		t.Fatalf("expected provider failure raw error to be preserved")
 	}
 }
 
@@ -5608,6 +5703,227 @@ func TestSynthesisPromptIncludesClosedTopLevelAndDriverFacts(t *testing.T) {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("expected synthesis prompt to include %q\n%s", needle, prompt)
 		}
+	}
+}
+
+func TestSynthesisPromptDoesNotLabelWorkerReportsApproved(t *testing.T) {
+	snapshot := ProjectSnapshot{Root: "C:\\repo"}
+	report := WorkerReport{
+		ShardID:          "shard-01",
+		Title:            "Driver core",
+		ScopeSummary:     "summary",
+		Responsibilities: []string{"driver"},
+		Facts:            []string{"DriverEntry assigns dispatch."},
+		EvidenceFiles:    []string{"driver/core.cpp"},
+	}
+	prompt := buildSynthesisPrompt(snapshot, []AnalysisShard{{ID: "shard-01", Name: "security_driver"}}, []WorkerReport{report}, "map")
+	if strings.Contains(prompt, "Approved shard reports:") || strings.Contains(prompt, "Compacted approved shard reports:") {
+		t.Fatalf("synthesis prompt must not label worker corpus as approved\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Structured worker shard reports:") {
+		t.Fatalf("expected neutral worker corpus label\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "do not call it reviewer-approved unless a review decision explicitly approved the shard") {
+		t.Fatalf("expected explicit reviewer approval guardrail\n%s", prompt)
+	}
+}
+
+func TestEnforceAnalysisTrustWordingRemovesApprovedShardClaim(t *testing.T) {
+	document := "이 분석 문서는 사전 승인된 샤드(shard) 보고서들을 종합하여 작성되었습니다.\n\nThe final document was synthesized from approved shard reports."
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			ApprovedShards:           0,
+			ModelReviewSkippedShards: 2,
+		},
+	}
+	got := enforceAnalysisTrustWording(document, run)
+	if strings.Contains(strings.ToLower(got), "approved shard report") {
+		t.Fatalf("expected approved shard wording to be removed, got %s", got)
+	}
+	if strings.Contains(got, "사전 승인된 샤드") {
+		t.Fatalf("expected Korean approved shard wording to be removed, got %s", got)
+	}
+	if !strings.Contains(got, "구조화된 워커 shard 보고서") {
+		t.Fatalf("expected deterministic-only replacement wording, got %s", got)
+	}
+	negated := "The synthesis is not reviewer-approved; deterministic checks ran."
+	if got := enforceAnalysisTrustWording(negated, run); got != negated {
+		t.Fatalf("negated reviewer approval wording should not be rewritten, got %s", got)
+	}
+}
+
+func TestAnalysisRunParseFailureImpactSectionListsExcludedShards(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			ParseFailedShards:    1,
+			ProviderFailedShards: 1,
+		},
+		Reports: []WorkerReport{
+			{
+				ShardID:       "shard-parse",
+				Status:        "parse_failed",
+				FailureReason: "worker_non_json_output",
+				Title:         "Driver parser",
+			},
+			{
+				ShardID:       "shard-provider",
+				Status:        "provider_failed",
+				FailureReason: "provider_unavailable",
+				Title:         "Driver provider",
+			},
+		},
+	}
+	section := analysisRunParseFailureImpactSection(run)
+	for _, needle := range []string{
+		"# Parse-Failure Impact",
+		"`shard-parse`",
+		"`shard-provider`",
+		"excluded from verified facts",
+		"focused shard scope",
+	} {
+		if !strings.Contains(section, needle) {
+			t.Fatalf("expected parse-failure impact section to include %q\n%s", needle, section)
+		}
+	}
+}
+
+func TestAddAnalysisRunNoticesKeepsScopeConfidenceThenParseOrder(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Summary: ProjectAnalysisSummary{
+			RequestedRoot:            "C:\\repo",
+			EffectiveRoot:            "C:\\repo\\driver",
+			RepositoryRoot:           "C:\\repo",
+			ApprovedShards:           0,
+			ModelReviewSkippedShards: 2,
+			ParseFailedShards:        1,
+			VerifierBlockingIssues:   1,
+			TotalShards:              2,
+		},
+		ClaimVerification: ClaimVerificationReport{
+			BlockingCount: 1,
+		},
+		Reports: []WorkerReport{{
+			ShardID:       "shard-parse",
+			Status:        "parse_failed",
+			FailureReason: "worker_non_json_output",
+			Title:         "Driver parser",
+		}},
+	}
+	document := addAnalysisRunNoticesToDocument("# Project Overview\n\nBody", run)
+	scopeIndex := strings.Index(document, "# Analysis Scope Disclosure")
+	confidenceIndex := strings.Index(document, "# Analysis Confidence Notice")
+	parseIndex := strings.Index(document, "# Parse-Failure Impact")
+	bodyIndex := strings.Index(document, "# Project Overview")
+	if scopeIndex < 0 || confidenceIndex < 0 || parseIndex < 0 || bodyIndex < 0 {
+		t.Fatalf("expected all front matter sections\n%s", document)
+	}
+	if !(scopeIndex < confidenceIndex && confidenceIndex < parseIndex && parseIndex < bodyIndex) {
+		t.Fatalf("unexpected front matter order\n%s", document)
+	}
+}
+
+func TestSynthesisPromptIncludesKernelSourceFactGuardrails(t *testing.T) {
+	root := t.TempDir()
+	writeAnalysisTestFile(t, filepath.Join(root, "driver", "core.cpp"), strings.Join([]string{
+		"NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject)",
+		"{",
+		"    DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DeviceControl;",
+		"    return STATUS_SUCCESS;",
+		"}",
+		"void DeviceControl()",
+		"{",
+		"    static unsigned char key[] = {1, 2, 3};",
+		"    static unsigned char iv[] = {4, 5, 6};",
+		"    LEA_CBC_Decrypt(nullptr, key, iv, 0);",
+		"}",
+		"void StartObjectFilter()",
+		"{",
+		"    ObRegisterCallbacks(nullptr, nullptr);",
+		"}",
+	}, "\n"))
+	writeAnalysisTestFile(t, filepath.Join(root, "driver", "filter.cpp"), strings.Join([]string{
+		"void RegisterFilter()",
+		"{",
+		"    callback.MajorFunction = IRP_MJ_CREATE;",
+		"    callback.PreOperation = nullptr;",
+		"    callback.PostOperation = nullptr;",
+		"    FltRegisterFilter(nullptr, nullptr, nullptr);",
+		"}",
+		"NTSTATUS InstanceSetup()",
+		"{",
+		"    return STATUS_FLT_DO_NOT_ATTACH;",
+		"}",
+		"void ResolveApi()",
+		"{",
+		"    PIMAGE_EXPORT_DIRECTORY exports = nullptr;",
+		"    auto fn = MmGetSystemRoutineAddress(nullptr);",
+		"    (void)exports;",
+		"    (void)fn;",
+		"}",
+	}, "\n"))
+	snapshot := ProjectSnapshot{
+		Root: root,
+		Files: []ScannedFile{
+			{Path: "driver/core.cpp", Directory: "driver", Extension: ".cpp", IsEntrypoint: true, LineCount: 15},
+			{Path: "driver/filter.cpp", Directory: "driver", Extension: ".cpp", LineCount: 18},
+		},
+		SolutionProjects: []SolutionProject{
+			{Name: "SampleDriver", Path: "driver/SampleDriver.vcxproj", Directory: "driver", OutputType: "driver", EntryFiles: []string{"driver/core.cpp"}},
+		},
+	}
+	prompt := buildSynthesisPrompt(snapshot, nil, []WorkerReport{{Title: "Driver", ScopeSummary: "summary", Responsibilities: []string{"driver"}}}, "map")
+	for _, needle := range []string{
+		"DriverEntry/dispatch guardrail",
+		"Crypto evidence guardrail",
+		"operation slot with null PreOperation/PostOperation is a declared slot",
+		"STATUS_FLT_DO_NOT_ATTACH",
+		"Object callback guardrail",
+		"distinguish export-table parsing from wrappers around MmGetSystemRoutineAddress",
+	} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("expected kernel source guardrail %q\n%s", needle, prompt)
+		}
+	}
+}
+
+func TestSynthesisDriverSourceCorpusPrioritizesDriverSignalsPastLimit(t *testing.T) {
+	root := t.TempDir()
+	files := []ScannedFile{}
+	for i := 0; i < 110; i++ {
+		rel := fmt.Sprintf("util/file%03d.cpp", i)
+		writeAnalysisTestFile(t, filepath.Join(root, filepath.FromSlash(rel)), "int Utility()\n{\n    return 0;\n}\n")
+		files = append(files, ScannedFile{
+			Path:      rel,
+			Directory: "util",
+			Extension: ".cpp",
+			LineCount: 4,
+		})
+	}
+	writeAnalysisTestFile(t, filepath.Join(root, "driver", "crypto_core.cpp"), strings.Join([]string{
+		"void DeviceControl()",
+		"{",
+		"    static unsigned char key[] = {1, 2, 3};",
+		"    static unsigned char iv[] = {4, 5, 6};",
+		"    LEA_CBC_Decrypt(nullptr, key, iv, 0);",
+		"}",
+	}, "\n"))
+	files = append(files, ScannedFile{
+		Path:            "driver/crypto_core.cpp",
+		Directory:       "driver",
+		Extension:       ".cpp",
+		LineCount:       6,
+		ImportanceScore: 100,
+	})
+	snapshot := ProjectSnapshot{
+		Root:  root,
+		Files: files,
+		SolutionProjects: []SolutionProject{
+			{Name: "SampleDriver", Path: "driver/SampleDriver.vcxproj", Directory: "driver", OutputType: "driver"},
+		},
+	}
+	prompt := buildSynthesisPrompt(snapshot, nil, []WorkerReport{{Title: "Driver", ScopeSummary: "summary", Responsibilities: []string{"driver"}}}, "map")
+	if !strings.Contains(prompt, "Crypto evidence guardrail") {
+		t.Fatalf("expected prioritized driver source corpus to include late crypto driver file\n%s", prompt)
 	}
 }
 

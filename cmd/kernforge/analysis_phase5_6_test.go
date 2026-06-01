@@ -331,6 +331,61 @@ func TestClaimVerifierBlocksLineSymbolAndGraphMismatches(t *testing.T) {
 	}
 }
 
+func TestClaimVerifierDowngradesTrueClaimWithWrongPacketPath(t *testing.T) {
+	run := ProjectAnalysisRun{
+		Shards: []AnalysisShard{{
+			ID:             "shard-01",
+			Name:           "security_crypto",
+			PrimaryFiles:   []string{"driver/core.cpp"},
+			ReferenceFiles: []string{"driver/list.hpp"},
+		}},
+		EvidencePackets: []EvidencePacket{{
+			ID:        "shard-01-packet-01",
+			ShardID:   "shard-01",
+			Kind:      "function",
+			Path:      "driver/list.hpp",
+			StartLine: 1,
+			EndLine:   20,
+			Category:  analysisEvidencePacketCategoryRequired,
+			Required:  true,
+		}},
+		Reports: []WorkerReport{{
+			ShardID: "shard-01",
+			Claims: []AnalysisClaim{{
+				ID:                "claim-static-crypto",
+				Kind:              "risk",
+				Claim:             "The LEA-CBC decrypt path uses a static key and IV.",
+				SourceAnchors:     []string{"driver/core.cpp:12"},
+				EvidencePacketIDs: []string{"shard-01-packet-01"},
+				Confidence:        "high",
+			}},
+		}},
+	}
+	report := verifyAnalysisClaims(ProjectSnapshot{}, run)
+	if report.BlockingCount != 0 {
+		t.Fatalf("wrong packet path should not be a domain blocker for an otherwise scoped claim: %#v", report)
+	}
+	if report.DowngradedCount != 1 || report.UnsupportedHighConfidenceCount != 1 {
+		t.Fatalf("expected high-confidence claim to be downgraded as unsupported until citation repair: %#v", report)
+	}
+	result := report.Results[0]
+	if result.Status != "downgraded" || result.FinalConfidence != "medium" {
+		t.Fatalf("expected downgraded medium-confidence result, got %#v", result)
+	}
+	found := false
+	for _, issue := range result.Issues {
+		if issue.Code == "source_packet_mismatch" {
+			found = true
+			if issue.Severity != "warning" {
+				t.Fatalf("expected citation mismatch warning, got %#v", issue)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected source_packet_mismatch issue: %#v", result.Issues)
+	}
+}
+
 func TestClaimVerifierDowngradesFlowClaimWithoutGraphEdge(t *testing.T) {
 	run := ProjectAnalysisRun{
 		Shards: []AnalysisShard{{

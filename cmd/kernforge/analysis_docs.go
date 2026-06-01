@@ -307,7 +307,7 @@ func buildAnalysisDocsIndex(run ProjectAnalysisRun, docs map[string]string) stri
 		fmt.Fprintf(&b, "- Recomputed shards: %d\n", run.KnowledgePack.AnalysisExecution.MissedShards)
 	}
 	if run.ClaimVerification.TotalClaims > 0 {
-		fmt.Fprintf(&b, "- Claim verifier: %s (blocking=%d unsupported_high=%d)\n", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount)
+		fmt.Fprintf(&b, "- Claim verifier: %s (downgraded=%d unsupported=%d blocking=%d unsupported_high=%d)\n", firstNonBlankAnalysisString(run.ClaimVerification.Status, "unknown"), run.ClaimVerification.DowngradedCount, run.ClaimVerification.UnsupportedCount, run.ClaimVerification.BlockingCount, run.ClaimVerification.UnsupportedHighConfidenceCount)
 	}
 	if len(run.SecurityOverlay.Nodes) > 0 || len(run.SecurityOverlay.Edges) > 0 {
 		fmt.Fprintf(&b, "- Security overlay: nodes=%d edges=%d surfaces=%s\n", run.SecurityOverlay.Metrics.NodeCount, run.SecurityOverlay.Metrics.EdgeCount, strings.Join(limitStrings(run.SecurityOverlay.Metrics.Surfaces, 8), ", "))
