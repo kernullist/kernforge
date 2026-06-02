@@ -31,6 +31,10 @@ type ProjectAnalysisConfig struct {
 	ProviderRetryDelayMs       int      `json:"provider_retry_delay_ms,omitempty"`
 	MaxFilesPerShard           int      `json:"max_files_per_shard,omitempty"`
 	MaxLinesPerShard           int      `json:"max_lines_per_shard,omitempty"`
+	FreshnessFreshHours        int      `json:"freshness_fresh_hours,omitempty"`
+	FreshnessStaleHours        int      `json:"freshness_stale_hours,omitempty"`
+	FreshnessMaxChangedFiles   int      `json:"freshness_max_changed_files,omitempty"`
+	FreshnessMaxOverlapFiles   int      `json:"freshness_max_overlap_files,omitempty"`
 	ExcludeDirs                []string `json:"exclude_dirs,omitempty"`
 	ExcludePaths               []string `json:"exclude_paths,omitempty"`
 	OutputDir                  string   `json:"output_dir,omitempty"`
@@ -1689,20 +1693,24 @@ type analysisReuseState struct {
 
 func defaultProjectAnalysisConfig(cwd string) ProjectAnalysisConfig {
 	return ProjectAnalysisConfig{
-		Enabled:              boolPtr(true),
-		MinAgents:            2,
-		MaxAgents:            16,
-		MaxTotalShards:       64,
-		MaxRefinementShards:  12,
-		MaxRevisionRounds:    2,
-		MaxProviderRetries:   2,
-		ProviderRetryDelayMs: 1500,
-		MaxFilesPerShard:     250,
-		MaxLinesPerShard:     40000,
-		ExcludeDirs:          []string{".git", ".svn", ".hg", ".claude", ".kernforge", ".vs", ".gradle", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".venv", "venv", "__pycache__", "ipch", "node_modules", "vendor", "third_party", "dist", "build", "out", "bin", "obj", "target", "tmp", "temp", "coverage", "CMakeFiles"},
-		OutputDir:            filepath.Join(cwd, ".kernforge", "analysis"),
-		MaxFileBytes:         512 * 1024,
-		Incremental:          boolPtr(true),
+		Enabled:                  boolPtr(true),
+		MinAgents:                2,
+		MaxAgents:                16,
+		MaxTotalShards:           64,
+		MaxRefinementShards:      12,
+		MaxRevisionRounds:        2,
+		MaxProviderRetries:       2,
+		ProviderRetryDelayMs:     1500,
+		MaxFilesPerShard:         250,
+		MaxLinesPerShard:         40000,
+		FreshnessFreshHours:      48,
+		FreshnessStaleHours:      168,
+		FreshnessMaxChangedFiles: 200,
+		FreshnessMaxOverlapFiles: 0,
+		ExcludeDirs:              []string{".git", ".svn", ".hg", ".claude", ".kernforge", ".vs", ".gradle", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".venv", "venv", "__pycache__", "ipch", "node_modules", "vendor", "third_party", "dist", "build", "out", "bin", "obj", "target", "tmp", "temp", "coverage", "CMakeFiles"},
+		OutputDir:                filepath.Join(cwd, ".kernforge", "analysis"),
+		MaxFileBytes:             512 * 1024,
+		Incremental:              boolPtr(true),
 	}
 }
 
@@ -1743,6 +1751,18 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	}
 	if cfg.ProjectAnalysis.MaxLinesPerShard > 0 {
 		out.MaxLinesPerShard = cfg.ProjectAnalysis.MaxLinesPerShard
+	}
+	if cfg.ProjectAnalysis.FreshnessFreshHours > 0 {
+		out.FreshnessFreshHours = cfg.ProjectAnalysis.FreshnessFreshHours
+	}
+	if cfg.ProjectAnalysis.FreshnessStaleHours > 0 {
+		out.FreshnessStaleHours = cfg.ProjectAnalysis.FreshnessStaleHours
+	}
+	if cfg.ProjectAnalysis.FreshnessMaxChangedFiles > 0 {
+		out.FreshnessMaxChangedFiles = cfg.ProjectAnalysis.FreshnessMaxChangedFiles
+	}
+	if cfg.ProjectAnalysis.FreshnessMaxOverlapFiles > 0 {
+		out.FreshnessMaxOverlapFiles = cfg.ProjectAnalysis.FreshnessMaxOverlapFiles
 	}
 	if len(cfg.ProjectAnalysis.ExcludeDirs) > 0 {
 		out.ExcludeDirs = append([]string(nil), cfg.ProjectAnalysis.ExcludeDirs...)
@@ -1798,7 +1818,29 @@ func configProjectAnalysis(cfg Config, cwd string) ProjectAnalysisConfig {
 	if !filepath.IsAbs(out.OutputDir) {
 		out.OutputDir = filepath.Clean(filepath.Join(cwd, out.OutputDir))
 	}
+	normalizeProjectAnalysisFreshnessConfig(&out)
 	return out
+}
+
+func normalizeProjectAnalysisFreshnessConfig(cfg *ProjectAnalysisConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.FreshnessFreshHours <= 0 {
+		cfg.FreshnessFreshHours = 48
+	}
+	if cfg.FreshnessStaleHours <= 0 {
+		cfg.FreshnessStaleHours = 168
+	}
+	if cfg.FreshnessStaleHours < cfg.FreshnessFreshHours {
+		cfg.FreshnessStaleHours = cfg.FreshnessFreshHours
+	}
+	if cfg.FreshnessMaxChangedFiles <= 0 {
+		cfg.FreshnessMaxChangedFiles = 200
+	}
+	if cfg.FreshnessMaxOverlapFiles < 0 {
+		cfg.FreshnessMaxOverlapFiles = 0
+	}
 }
 
 func (a *projectAnalyzer) applyAdaptiveAnalysisShardSizing(snapshot ProjectSnapshot) []string {

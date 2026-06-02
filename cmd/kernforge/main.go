@@ -1474,6 +1474,8 @@ func progressEventActivityKind(event ProgressEvent, text string) string {
 	switch strings.TrimSpace(event.Kind) {
 	case progressKindMemoryContext:
 		return "memory"
+	case progressKindAnalysisContext:
+		return "analysis"
 	case progressKindModelRequestStart, progressKindModelRequestWait, progressKindModelRequestDone,
 		progressKindModelRouteWait, progressKindModelRouteAcquired,
 		progressKindModelStreamToolCall, progressKindModelStreamToolArgs, progressKindModelStreamToolReady,
@@ -1511,7 +1513,8 @@ func (rt *runtimeState) shouldPersistProgressEvent(event ProgressEvent, text str
 		progressKindModelStreamToolCall, progressKindModelStreamToolReady,
 		progressKindModelReroute, progressKindModelVerification,
 		progressKindProviderRetry,
-		progressKindMemoryContext:
+		progressKindMemoryContext,
+		progressKindAnalysisContext:
 		return true
 	case progressKindModelRouteAcquired:
 		return event.Elapsed >= time.Second

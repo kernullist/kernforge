@@ -20,14 +20,16 @@ const (
 )
 
 type latestAnalysisArtifacts struct {
-	Pack         KnowledgePack
-	Snapshot     ProjectSnapshot
-	Corpus       VectorCorpus
-	Structural   StructuralIndex
-	Index        SemanticIndex
-	IndexV2      SemanticIndexV2
-	UnrealGraph  UnrealSemanticGraph
-	DocsManifest AnalysisDocsManifest
+	Pack              KnowledgePack
+	Snapshot          ProjectSnapshot
+	RunSummary        ProjectAnalysisSummary
+	ClaimVerification ClaimVerificationReport
+	Corpus            VectorCorpus
+	Structural        StructuralIndex
+	Index             SemanticIndex
+	IndexV2           SemanticIndexV2
+	UnrealGraph       UnrealSemanticGraph
+	DocsManifest      AnalysisDocsManifest
 }
 
 type cachedAnalysisFastPathMetadata struct {
@@ -36,23 +38,40 @@ type cachedAnalysisFastPathMetadata struct {
 }
 
 func (a *Agent) latestProjectAnalysisContext(query string) string {
+	context, _ := a.latestProjectAnalysisContextWithProgress(query)
+	return context
+}
+
+func (a *Agent) latestProjectAnalysisContextWithProgress(query string) (string, string) {
 	if a == nil || a.Session == nil {
-		return ""
+		return "", ""
 	}
 	artifacts, ok := a.loadLatestProjectAnalysisArtifacts()
 	if !ok {
-		return ""
+		return "", ""
 	}
 	if !a.shouldInjectLatestProjectAnalysisContext(artifacts, query) {
-		return ""
+		return "", ""
+	}
+	root := strings.TrimSpace(a.Workspace.BaseRoot)
+	if root == "" {
+		root = strings.TrimSpace(a.Session.WorkingDir)
+	}
+	freshness := evaluateLatestAnalysisFreshness(a.Config, root, artifacts, query)
+	progress := formatProjectAnalysisContextProgressMessage(a.Config, artifacts, query, freshness)
+	if !analysisFreshnessAllowsContext(freshness) {
+		return "", progress
 	}
 	context := renderRelevantProjectAnalysisContext(artifacts, query)
 	if strings.TrimSpace(context) == "" {
-		return ""
+		return "", ""
+	}
+	if freshnessBlock := analysisFreshnessPromptBlock(freshness); freshnessBlock != "" {
+		context = freshnessBlock + "\n\n" + context
 	}
 	a.Session.LastAnalysisContextQuery = strings.TrimSpace(query)
 	a.Session.LastAnalysisContextRunID = latestAnalysisArtifactsRunID(artifacts)
-	return context
+	return context, progress
 }
 
 func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, bool) {
@@ -79,6 +98,16 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 	}
 
 	artifacts := latestAnalysisArtifacts{Pack: pack}
+	if runData, err := os.ReadFile(filepath.Join(latestDir, "run.json")); err == nil {
+		var runMeta struct {
+			Summary           ProjectAnalysisSummary  `json:"summary"`
+			ClaimVerification ClaimVerificationReport `json:"claim_verification,omitempty"`
+		}
+		if json.Unmarshal(runData, &runMeta) == nil {
+			artifacts.RunSummary = runMeta.Summary
+			artifacts.ClaimVerification = runMeta.ClaimVerification
+		}
+	}
 
 	if snapshotData, err := os.ReadFile(filepath.Join(latestDir, "snapshot.json")); err == nil {
 		_ = json.Unmarshal(snapshotData, &artifacts.Snapshot)
@@ -120,6 +149,125 @@ func (a *Agent) loadLatestProjectAnalysisArtifacts() (latestAnalysisArtifacts, b
 		}
 	}
 	return artifacts, true
+}
+
+func formatProjectAnalysisContextProgressMessage(cfg Config, artifacts latestAnalysisArtifacts, query string, freshness analysisFreshnessReport) string {
+	runID := latestAnalysisArtifactsRunID(artifacts)
+	meta := buildCachedAnalysisFastPathMetadata(artifacts, query)
+	sources := limitStrings(meta.Sources, 4)
+	files := analysisContextProgressFiles(artifacts, query, 3)
+	parts := []string{}
+	parts = append(parts, formatAnalysisFreshnessProgressParts(freshness)...)
+	if strings.TrimSpace(runID) != "" {
+		parts = append(parts, "run="+strings.TrimSpace(runID))
+	}
+	if strings.TrimSpace(meta.Confidence) != "" {
+		parts = append(parts, "confidence="+strings.TrimSpace(meta.Confidence))
+	}
+	if len(sources) > 0 {
+		parts = append(parts, "sources="+strings.Join(sources, ","))
+	}
+	if len(files) > 0 {
+		parts = append(parts, "files="+strings.Join(files, "; "))
+	}
+	if len(parts) == 0 {
+		return localizedText(cfg, "Using latest analyze-project artifacts.", "최신 analyze-project 산출물을 참고합니다.")
+	}
+	return fmt.Sprintf(
+		localizedText(cfg, "Using latest analyze-project artifacts: %s", "최신 analyze-project 산출물 참고: %s"),
+		strings.Join(parts, " | "),
+	)
+}
+
+func analysisContextProgressFiles(artifacts latestAnalysisArtifacts, query string, limit int) []string {
+	if limit <= 0 {
+		limit = 3
+	}
+	out := []string{}
+	for _, subsystem := range selectRelevantKnowledgeSubsystems(artifacts.Pack, query, 3) {
+		out = append(out, subsystem.KeyFiles...)
+		out = append(out, subsystem.EvidenceFiles...)
+	}
+	for _, doc := range selectRelevantVectorDocuments(artifacts.Corpus, query, 2) {
+		if strings.TrimSpace(doc.PathHint) != "" {
+			out = append(out, doc.PathHint)
+		}
+	}
+	for _, file := range selectRelevantIndexedFiles(artifacts.Index, query, 3) {
+		out = append(out, file.Path)
+	}
+	for _, symbol := range selectRelevantSemanticSymbols(artifacts.Index, query, 4) {
+		out = append(out, symbol.File)
+	}
+	for _, symbol := range selectRelevantStructuralSymbols(artifacts.Structural, query, 4) {
+		out = append(out, symbol.File)
+	}
+	v2Hits := collectRelevantSemanticIndexV2Hits(artifacts.IndexV2, query)
+	for _, file := range v2Hits.Files {
+		out = append(out, file.Path)
+	}
+	for _, symbol := range v2Hits.Symbols {
+		out = append(out, symbol.File)
+	}
+	for _, edge := range v2Hits.Overlays {
+		out = append(out, edge.Evidence...)
+	}
+	for _, doc := range limitScoredAnalysisDocs(scoreRelevantAnalysisDocs(artifacts.DocsManifest, query), 2) {
+		out = append(out, doc.doc.SourceAnchors...)
+	}
+	cleaned := []string{}
+	for _, item := range out {
+		clean := analysisContextProgressFilePath(item)
+		if clean == "" {
+			continue
+		}
+		cleaned = append(cleaned, clean)
+	}
+	return limitStrings(analysisUniqueStrings(cleaned), limit)
+}
+
+func analysisContextProgressFilePath(item string) string {
+	path, _, ok := parseAnalysisClaimSourceAnchor(item)
+	if ok {
+		item = path
+	}
+	clean := cleanEvidencePath(item)
+	if clean == "" || !analysisDocPathLooksLikeFile(clean) {
+		return ""
+	}
+	return clean
+}
+
+func scoreRelevantAnalysisDocs(manifest AnalysisDocsManifest, query string) []scoredDoc {
+	if len(manifest.Documents) == 0 {
+		return nil
+	}
+	lowerQuery := strings.ToLower(strings.TrimSpace(query))
+	tokens := filterAnalysisQueryTokens(extractPersistentMemoryTokens(lowerQuery))
+	items := []scoredDoc{}
+	for _, doc := range manifest.Documents {
+		corpus := strings.ToLower(strings.Join(append(append([]string{doc.Name, doc.Title, doc.Kind, doc.Confidence}, doc.SourceAnchors...), append(doc.StaleMarkers, doc.ReuseTargets...)...), " "))
+		score := 1
+		if lowerQuery != "" && strings.Contains(corpus, lowerQuery) {
+			score += 20
+		}
+		for _, token := range tokens {
+			if strings.Contains(corpus, token) {
+				score += 4
+			}
+		}
+		if containsAny(corpus, "security", "surface", "fuzz", "verification") {
+			score += 2
+		}
+		items = append(items, scoredDoc{doc: doc, score: score})
+	}
+	sort.Slice(items, func(i int, j int) bool {
+		if items[i].score == items[j].score {
+			return items[i].doc.Name < items[j].doc.Name
+		}
+		return items[i].score > items[j].score
+	})
+	return items
 }
 
 func (a *Agent) shouldInjectLatestProjectAnalysisContext(artifacts latestAnalysisArtifacts, query string) bool {
@@ -444,30 +592,7 @@ func renderRelevantAnalysisDocsContext(manifest AnalysisDocsManifest, query stri
 	if len(manifest.Documents) == 0 {
 		return ""
 	}
-	lowerQuery := strings.ToLower(strings.TrimSpace(query))
-	items := []scoredDoc{}
-	for _, doc := range manifest.Documents {
-		corpus := strings.ToLower(strings.Join(append(append([]string{doc.Name, doc.Title, doc.Kind, doc.Confidence}, doc.SourceAnchors...), append(doc.StaleMarkers, doc.ReuseTargets...)...), " "))
-		score := 1
-		if lowerQuery != "" && strings.Contains(corpus, lowerQuery) {
-			score += 20
-		}
-		for _, token := range filterAnalysisQueryTokens(extractPersistentMemoryTokens(lowerQuery)) {
-			if strings.Contains(corpus, token) {
-				score += 4
-			}
-		}
-		if containsAny(corpus, "security", "surface", "fuzz", "verification") {
-			score += 2
-		}
-		items = append(items, scoredDoc{doc: doc, score: score})
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].score == items[j].score {
-			return items[i].doc.Name < items[j].doc.Name
-		}
-		return items[i].score > items[j].score
-	})
+	items := scoreRelevantAnalysisDocs(manifest, query)
 	var b strings.Builder
 	b.WriteString("Reusable generated docs:\n")
 	for _, item := range limitScoredAnalysisDocs(items, 4) {
@@ -1053,6 +1178,14 @@ func (a *Agent) maybeAnswerFromCachedProjectAnalysis(ctx context.Context) (strin
 		return "", false, nil
 	}
 	query := baseUserQueryText(latestExternalOrUserMessageText(a.Session.Messages))
+	root := strings.TrimSpace(a.Workspace.BaseRoot)
+	if root == "" {
+		root = strings.TrimSpace(a.Session.WorkingDir)
+	}
+	freshness := evaluateLatestAnalysisFreshness(a.Config, root, artifacts, query)
+	if !strings.EqualFold(strings.TrimSpace(freshness.Status), analysisFreshnessFresh) {
+		return "", false, nil
+	}
 	meta := buildCachedAnalysisFastPathMetadata(artifacts, query)
 	messages := append([]Message(nil), a.Session.Messages...)
 	fastPathInstruction := "Fast-path check: Use only the cached project analysis already present in this conversation. Do not use tools and do not assume unseen code. If the cached analysis is sufficient to fully answer the user's latest request, answer now. Otherwise reply exactly NEEDS_TOOLS."

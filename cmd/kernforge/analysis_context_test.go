@@ -1,6 +1,9 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -141,6 +144,250 @@ func TestBuildCachedAnalysisFastPathMetadataIncludesStructuralIndexV2Source(t *t
 	}
 	if meta.Confidence != "medium" {
 		t.Fatalf("expected medium confidence from v2 hits, got %+v", meta)
+	}
+}
+
+func TestAnalysisContextProgressMessageIncludesReuseEvidence(t *testing.T) {
+	cfg := Config{AutoLocale: boolPtr(false)}
+	artifacts := latestAnalysisArtifacts{
+		Pack: KnowledgePack{
+			RunID:          "run-progress",
+			ProjectSummary: "SampleWorker owns telemetry startup.",
+			Subsystems: []KnowledgeSubsystem{
+				{
+					Title:         "SampleWorker Runtime",
+					Group:         "Forensic Analysis",
+					KeyFiles:      []string{"SampleWorker/main.cpp"},
+					EvidenceFiles: []string{"SampleWorker/collector.cpp"},
+				},
+			},
+		},
+		Corpus: VectorCorpus{
+			RunID: "run-progress",
+			Documents: []VectorCorpusDocument{
+				{
+					ID:       "subsystem:sampleworker-runtime",
+					Kind:     "subsystem",
+					Title:    "SampleWorker Runtime",
+					Text:     "Startup initializes telemetry collectors.",
+					PathHint: "SampleWorker/main.cpp",
+				},
+			},
+		},
+		Index: SemanticIndex{
+			RunID: "run-progress",
+			Files: []SemanticIndexedFile{
+				{Path: "SampleWorker/main.cpp", ImportanceScore: 95, Tags: []string{"startup"}},
+			},
+		},
+	}
+
+	freshness := analysisFreshnessReport{
+		Status:      analysisFreshnessFresh,
+		Action:      "use",
+		GeneratedAt: time.Now().Add(-time.Hour),
+		Age:         time.Hour,
+		RunID:       "run-progress",
+	}
+	message := formatProjectAnalysisContextProgressMessage(cfg, artifacts, "SampleWorker collector", freshness)
+	if !strings.Contains(message, "Using latest analyze-project artifacts:") {
+		t.Fatalf("expected English progress prefix, got %q", message)
+	}
+	if !strings.Contains(message, "freshness=fresh") ||
+		!strings.Contains(message, "action=use") {
+		t.Fatalf("expected freshness in progress message, got %q", message)
+	}
+	if !strings.Contains(message, "run=run-progress") ||
+		!strings.Contains(message, "confidence=high") {
+		t.Fatalf("expected run id and confidence in progress message, got %q", message)
+	}
+	if !strings.Contains(message, "knowledge_pack") ||
+		!strings.Contains(message, "vector_corpus") ||
+		!strings.Contains(message, "structural_index") {
+		t.Fatalf("expected source names in progress message, got %q", message)
+	}
+	if !strings.Contains(message, "files=SampleWorker/main.cpp") {
+		t.Fatalf("expected file hint in progress message, got %q", message)
+	}
+}
+
+func TestAnalysisContextProgressFilePathStripsAnchorDecorations(t *testing.T) {
+	if got := analysisContextProgressFilePath("driver/dispatch.cpp:42#DispatchIoctl"); got != "driver/dispatch.cpp" {
+		t.Fatalf("expected stripped source anchor path, got %q", got)
+	}
+	if got := analysisContextProgressFilePath("driver/dispatch.cpp:42-48"); got != "driver/dispatch.cpp" {
+		t.Fatalf("expected stripped source range path, got %q", got)
+	}
+	if got := analysisContextProgressFilePath("driver/dispatch"); got != "" {
+		t.Fatalf("expected non-file evidence to be ignored, got %q", got)
+	}
+}
+
+func TestLatestProjectAnalysisContextSkipsStaleArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	writeLatestAnalysisKnowledgePack(t, cfg, root, KnowledgePack{
+		RunID:          "run-stale",
+		Root:           root,
+		GeneratedAt:    time.Now().Add(-10 * 24 * time.Hour),
+		ProjectSummary: "SampleWorker owns telemetry collection.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "SampleWorker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/collector.cpp"},
+			},
+		},
+	})
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	context, progress := agent.latestProjectAnalysisContextWithProgress("SampleWorker collector")
+	if strings.TrimSpace(context) != "" {
+		t.Fatalf("expected stale analysis context to be skipped, got %q", context)
+	}
+	if !strings.Contains(progress, "freshness=stale") ||
+		!strings.Contains(progress, "action=refresh_recommended") ||
+		!strings.Contains(progress, "age_exceeds_stale_ttl") {
+		t.Fatalf("expected stale freshness progress, got %q", progress)
+	}
+	if strings.TrimSpace(session.LastAnalysisContextRunID) != "" {
+		t.Fatalf("stale context should not update last analysis context run id")
+	}
+}
+
+func TestLatestProjectAnalysisContextMarksSuspectArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	writeLatestAnalysisKnowledgePack(t, cfg, root, KnowledgePack{
+		RunID:          "run-suspect",
+		Root:           root,
+		GeneratedAt:    time.Now().Add(-72 * time.Hour),
+		ProjectSummary: "SampleWorker owns telemetry collection.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "SampleWorker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/collector.cpp"},
+			},
+		},
+	})
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	context, progress := agent.latestProjectAnalysisContextWithProgress("SampleWorker collector")
+	if !strings.Contains(context, "Analysis cache freshness: suspect") {
+		t.Fatalf("expected suspect freshness caveat in context, got %q", context)
+	}
+	if !strings.Contains(progress, "freshness=suspect") ||
+		!strings.Contains(progress, "action=use_with_verification") ||
+		!strings.Contains(progress, "age_exceeds_fresh_ttl") {
+		t.Fatalf("expected suspect freshness progress, got %q", progress)
+	}
+	if session.LastAnalysisContextRunID != "run-suspect" {
+		t.Fatalf("expected suspect context to update run id, got %q", session.LastAnalysisContextRunID)
+	}
+}
+
+func TestLatestProjectAnalysisContextSkipsVerifierBlockedArtifacts(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	pack := KnowledgePack{
+		RunID:          "run-blocked",
+		Root:           root,
+		GeneratedAt:    time.Now(),
+		ProjectSummary: "SampleWorker owns telemetry collection.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "SampleWorker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/collector.cpp"},
+			},
+		},
+	}
+	latestDir := writeLatestAnalysisKnowledgePack(t, cfg, root, pack)
+	writeLatestAnalysisRunMetadata(t, latestDir, ProjectAnalysisSummary{
+		RunID:                  "run-blocked",
+		Status:                 "completed_with_verifier_blockers",
+		CompletedAt:            time.Now(),
+		VerifierBlockingIssues: 1,
+	}, ClaimVerificationReport{
+		BlockingCount: 1,
+	})
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	context, progress := agent.latestProjectAnalysisContextWithProgress("SampleWorker collector")
+	if strings.TrimSpace(context) != "" {
+		t.Fatalf("expected verifier-blocked analysis context to be skipped, got %q", context)
+	}
+	if !strings.Contains(progress, "freshness=unusable") ||
+		!strings.Contains(progress, "action=refresh_required") ||
+		!strings.Contains(progress, "verifier_blockers") {
+		t.Fatalf("expected unusable freshness progress, got %q", progress)
+	}
+}
+
+func TestAnalysisFreshnessFileOverlapAndCriticalChanges(t *testing.T) {
+	overlap := overlapAnalysisFreshnessFiles(
+		[]string{"Source/Worker/main.cpp", "README.md"},
+		[]string{"Source/Worker/main.cpp:42", "Source/Worker/collector.cpp"},
+	)
+	if len(overlap) != 1 || overlap[0] != "Source/Worker/main.cpp" {
+		t.Fatalf("unexpected overlap: %#v", overlap)
+	}
+	critical := criticalAnalysisFreshnessChangedFiles([]string{"go.mod", "src/runtime.cpp", "Game/Guard.Build.cs"})
+	if len(critical) != 2 || critical[0] != "go.mod" || critical[1] != "Game/Guard.Build.cs" {
+		t.Fatalf("unexpected critical changed files: %#v", critical)
+	}
+}
+
+func writeLatestAnalysisKnowledgePack(t *testing.T, cfg Config, root string, pack KnowledgePack) string {
+	t.Helper()
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis dir: %v", err)
+	}
+	data, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatalf("marshal knowledge pack: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "knowledge_pack.json"), data, 0o644); err != nil {
+		t.Fatalf("write knowledge pack: %v", err)
+	}
+	return latestDir
+}
+
+func writeLatestAnalysisRunMetadata(t *testing.T, latestDir string, summary ProjectAnalysisSummary, report ClaimVerificationReport) {
+	t.Helper()
+	data, err := json.Marshal(struct {
+		Summary           ProjectAnalysisSummary  `json:"summary"`
+		ClaimVerification ClaimVerificationReport `json:"claim_verification,omitempty"`
+	}{
+		Summary:           summary,
+		ClaimVerification: report,
+	})
+	if err != nil {
+		t.Fatalf("marshal run metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "run.json"), data, 0o644); err != nil {
+		t.Fatalf("write run metadata: %v", err)
 	}
 }
 

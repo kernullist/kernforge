@@ -1469,6 +1469,18 @@ func mergeConfig(dst *Config, src Config) {
 	if src.ProjectAnalysis.MaxLinesPerShard != 0 {
 		dst.ProjectAnalysis.MaxLinesPerShard = src.ProjectAnalysis.MaxLinesPerShard
 	}
+	if src.ProjectAnalysis.FreshnessFreshHours != 0 {
+		dst.ProjectAnalysis.FreshnessFreshHours = src.ProjectAnalysis.FreshnessFreshHours
+	}
+	if src.ProjectAnalysis.FreshnessStaleHours != 0 {
+		dst.ProjectAnalysis.FreshnessStaleHours = src.ProjectAnalysis.FreshnessStaleHours
+	}
+	if src.ProjectAnalysis.FreshnessMaxChangedFiles != 0 {
+		dst.ProjectAnalysis.FreshnessMaxChangedFiles = src.ProjectAnalysis.FreshnessMaxChangedFiles
+	}
+	if src.ProjectAnalysis.FreshnessMaxOverlapFiles != 0 {
+		dst.ProjectAnalysis.FreshnessMaxOverlapFiles = src.ProjectAnalysis.FreshnessMaxOverlapFiles
+	}
 	if len(src.ProjectAnalysis.ExcludeDirs) > 0 {
 		dst.ProjectAnalysis.ExcludeDirs = append([]string(nil), src.ProjectAnalysis.ExcludeDirs...)
 	}

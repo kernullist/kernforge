@@ -174,8 +174,16 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 	}
 	analysisContext := ""
+	analysisContextProgress := ""
 	if !shouldSuppressProjectAnalysisFastPathForIntent(intent) {
-		analysisContext = strings.TrimSpace(a.latestProjectAnalysisContext(userText))
+		analysisContext, analysisContextProgress = a.latestProjectAnalysisContextWithProgress(userText)
+		analysisContext = strings.TrimSpace(analysisContext)
+	}
+	if message := strings.TrimSpace(analysisContextProgress); message != "" {
+		a.emitProgressEvent(ProgressEvent{
+			Kind:    progressKindAnalysisContext,
+			Message: message,
+		})
 	}
 	if analysisContext != "" {
 		enriched += "\n\nRelevant project analysis from past analyze-project runs:\n" + analysisContext

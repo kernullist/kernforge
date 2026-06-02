@@ -2831,16 +2831,20 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
+	events := []ProgressEvent{}
 	agent := &Agent{
-		Config:    cfg,
-		Client:    provider,
-		Tools:     NewToolRegistry(),
+		Config: cfg,
+		Client: provider,
+		Tools:  NewToolRegistry(),
+		EmitProgressEvent: func(event ProgressEvent) {
+			events = append(events, event)
+		},
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
 	}
 
-	reply, err := agent.Reply(context.Background(), "Explain SampleWorker startup flow.")
+	reply, err := agent.Reply(context.Background(), "SampleWorker collector")
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
@@ -2868,6 +2872,77 @@ func TestAgentInjectsLatestProjectAnalysisContextOnFirstTurn(t *testing.T) {
 	}
 	if !strings.Contains(userText, "Relevant structural index hits") {
 		t.Fatalf("expected structural index hits in injected analysis context, got %q", userText)
+	}
+	progressMessage := progressEventMessageForKind(events, progressKindAnalysisContext)
+	if !strings.Contains(progressMessage, "run=run-1") {
+		t.Fatalf("expected analysis context progress run id, got events %#v", events)
+	}
+	if !strings.Contains(progressMessage, "knowledge_pack") ||
+		!strings.Contains(progressMessage, "vector_corpus") ||
+		!strings.Contains(progressMessage, "structural_index") {
+		t.Fatalf("expected analysis context progress sources, got %q", progressMessage)
+	}
+	if !strings.Contains(progressMessage, "SampleWorker/main.cpp") {
+		t.Fatalf("expected analysis context progress file hint, got %q", progressMessage)
+	}
+}
+
+func TestAgentEmitsAnalysisProgressWhenLatestProjectAnalysisIsStale(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: "used normal tool loop"}},
+		},
+	}
+	writeLatestAnalysisKnowledgePack(t, cfg, root, KnowledgePack{
+		RunID:          "run-stale",
+		Root:           root,
+		GeneratedAt:    time.Now().Add(-10 * 24 * time.Hour),
+		ProjectSummary: "SampleWorker owns telemetry collection.",
+		Subsystems: []KnowledgeSubsystem{
+			{
+				Title:         "SampleWorker Runtime",
+				Group:         "Forensic Analysis",
+				KeyFiles:      []string{"SampleWorker/main.cpp"},
+				EvidenceFiles: []string{"SampleWorker/collector.cpp"},
+			},
+		},
+	})
+
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	events := []ProgressEvent{}
+	agent := &Agent{
+		Config: cfg,
+		Client: provider,
+		Tools:  NewToolRegistry(),
+		EmitProgressEvent: func(event ProgressEvent) {
+			events = append(events, event)
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "SampleWorker collector")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "used normal tool loop") {
+		t.Fatalf("unexpected reply: %q", reply)
+	}
+	progressMessage := progressEventMessageForKind(events, progressKindAnalysisContext)
+	if !strings.Contains(progressMessage, "freshness=stale") ||
+		!strings.Contains(progressMessage, "action=refresh_recommended") {
+		t.Fatalf("expected stale analysis progress event, got events %#v", events)
+	}
+	for _, request := range provider.requests {
+		for _, msg := range request.Messages {
+			if strings.Contains(msg.Text, "Relevant project analysis from past analyze-project runs") {
+				t.Fatalf("stale analysis context should not be injected, got message %q", msg.Text)
+			}
+		}
 	}
 }
 
@@ -3056,6 +3131,7 @@ func TestAgentUsesCachedProjectAnalysisFastPathWithoutTools(t *testing.T) {
 		RunID:          "run-fastpath",
 		Goal:           "map worker architecture",
 		Root:           root,
+		GeneratedAt:    time.Now(),
 		ProjectSummary: "SampleWorker owns startup and telemetry collection.",
 		Subsystems: []KnowledgeSubsystem{
 			{
@@ -3197,6 +3273,7 @@ func TestAgentFallsBackToNormalToolLoopWhenCachedProjectAnalysisFastPathNeedsToo
 		RunID:          "run-fastpath-2",
 		Goal:           "map worker architecture",
 		Root:           root,
+		GeneratedAt:    time.Now(),
 		ProjectSummary: "SampleWorker summary.",
 		Subsystems: []KnowledgeSubsystem{
 			{
@@ -4118,6 +4195,15 @@ func progressEventsContainKind(events []ProgressEvent, kind string) bool {
 		}
 	}
 	return false
+}
+
+func progressEventMessageForKind(events []ProgressEvent, kind string) string {
+	for _, event := range events {
+		if strings.TrimSpace(event.Kind) == kind {
+			return event.Message
+		}
+	}
+	return ""
 }
 
 func TestAgentFinalizesFinalLookingReplyWhenProviderEndTurnFalse(t *testing.T) {

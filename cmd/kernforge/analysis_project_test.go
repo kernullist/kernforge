@@ -739,6 +739,24 @@ func TestFormatProgressEventMessageDoesNotPrefixToolMessageWithStage(t *testing.
 	}
 }
 
+func TestAnalysisContextProgressEventIsAnalysisActivityAndPersistent(t *testing.T) {
+	event := ProgressEvent{
+		Kind:    progressKindAnalysisContext,
+		Message: "Using latest analyze-project artifacts: run=run-1",
+	}
+	message := formatProgressEventMessage(Config{AutoLocale: boolPtr(false)}, event)
+	if !strings.Contains(message, "run=run-1") {
+		t.Fatalf("expected analysis context progress message, got %q", message)
+	}
+	if got := progressEventActivityKind(event, message); got != "analysis" {
+		t.Fatalf("expected analysis activity kind, got %q", got)
+	}
+	rt := &runtimeState{}
+	if !rt.shouldPersistProgressEvent(event, message) {
+		t.Fatalf("expected analysis context progress event to be persisted")
+	}
+}
+
 func TestProjectAnalyzerSerializesDefaultLocalModelRoute(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 6; i++ {

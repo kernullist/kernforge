@@ -23,6 +23,7 @@ const (
 	progressKindToolFailed           = "tool_failed"
 	progressKindProviderRetry        = "provider_retry"
 	progressKindMemoryContext        = "memory_context"
+	progressKindAnalysisContext      = "analysis_context"
 )
 
 func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
