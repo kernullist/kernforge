@@ -171,19 +171,20 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 		return rt.printGoalStatus("")
 	}
 	action := strings.ToLower(strings.TrimSpace(fields[0]))
+	if isRemovedGoalCommandAction(action) {
+		return removedGoalCommandActionError(action)
+	}
 	if !isGoalCommandAction(action) {
 		return rt.handleGoalStart(fields)
 	}
 	switch action {
-	case "start", "create", "new":
-		return rt.handleGoalStart(fields[1:])
-	case "run", "resume", "continue":
+	case "run":
 		selector := ""
 		if len(fields) > 1 {
 			selector = fields[1]
 		}
 		return rt.runGoalBySelector(selector, 0)
-	case "status", "show", "list":
+	case "status":
 		selector := ""
 		if len(fields) > 1 {
 			selector = fields[1]
@@ -195,13 +196,13 @@ func (rt *runtimeState) handleGoalCommand(args string) error {
 			selector = fields[1]
 		}
 		return rt.auditGoalBySelector(selector)
-	case "complete", "done":
+	case "complete":
 		selector := ""
 		if len(fields) > 1 {
 			selector = fields[1]
 		}
 		return rt.completeGoalBySelector(selector)
-	case "cancel", "stop":
+	case "cancel":
 		selector := ""
 		if len(fields) > 1 {
 			selector = fields[1]
@@ -228,10 +229,38 @@ func (rt *runtimeState) requirePersistedGoalState() error {
 
 func isGoalCommandAction(action string) bool {
 	switch strings.TrimSpace(strings.ToLower(action)) {
-	case "start", "create", "new", "run", "resume", "continue", "status", "show", "list", "audit", "complete", "done", "cancel", "stop":
+	case "run", "status", "audit", "complete", "cancel":
 		return true
 	default:
 		return false
+	}
+}
+
+func isRemovedGoalCommandAction(action string) bool {
+	switch strings.TrimSpace(strings.ToLower(action)) {
+	case "start", "create", "new", "resume", "continue", "show", "list", "done", "stop":
+		return true
+	default:
+		return false
+	}
+}
+
+func removedGoalCommandActionError(action string) error {
+	action = strings.TrimSpace(strings.ToLower(action))
+	objectiveHint := fmt.Sprintf(" If %q is objective text, quote the objective: /goal %q", action, action+" ...")
+	switch action {
+	case "start", "create", "new":
+		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal <objective> to record, /goal --run <objective> to create and run, or /goal @GOAL.md to load a file.%s", action, objectiveHint)
+	case "resume", "continue":
+		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal run [id|latest] to execute or resume a recorded goal.%s", action, objectiveHint)
+	case "show", "list":
+		return fmt.Errorf("/goal %s was removed to keep goal commands unambiguous; use /goal status [id|latest] to inspect recorded goals.%s", action, objectiveHint)
+	case "done":
+		return fmt.Errorf("/goal done was removed to keep goal commands unambiguous; use /goal complete [id|latest].%s", objectiveHint)
+	case "stop":
+		return fmt.Errorf("/goal stop was removed to keep goal commands unambiguous; use /goal cancel [id|latest].%s", objectiveHint)
+	default:
+		return fmt.Errorf("unsupported /goal action: %s", action)
 	}
 }
 
@@ -241,7 +270,7 @@ func (rt *runtimeState) handleGoalStart(fields []string) error {
 		return err
 	}
 	if strings.TrimSpace(options.Objective) == "" {
-		return fmt.Errorf("usage: /goal start [--file GOAL.md|@GOAL.md] [--run|--no-run] [--max-iterations N] <objective>")
+		return fmt.Errorf("usage: /goal [--file GOAL.md|@GOAL.md] [--run|--no-run] [--max-iterations N] <objective>")
 	}
 	if existing, ok := rt.session.ActiveGoal(); ok && shouldConfirmBeforeReplacingGoal(existing) {
 		if err := rt.confirmGoalReplacement(existing); err != nil {
@@ -312,7 +341,7 @@ func (rt *runtimeState) printGoalCreatedSummary(goal GoalState, run bool) {
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("Starting autonomous loop now. Use /goal status to inspect progress."))
 		return
 	}
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Start it with /goal run latest, or create-and-run with /goal start --run <objective>."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Goal recorded without starting an autonomous loop. Start it with /goal run latest, or create-and-run with /goal --run <objective>."))
 }
 
 func (rt *runtimeState) parseGoalStartOptions(fields []string) (goalStartOptions, error) {
@@ -751,7 +780,7 @@ func buildGoalImplementationPrompt(goal GoalState, iteration int) string {
 	fmt.Fprintf(&b, "<objective>\n%s\n</objective>\n\n", escapeGoalObjectiveText(goal.Objective))
 	b.WriteString("Run this as a Codex-style goal loop without asking the user for intervention.\n")
 	b.WriteString("If this goal was loaded from a prompt file, the file contents are already the active objective to execute.\n")
-	b.WriteString("Do not satisfy an active /goal run by creating another goal-prompt document, TODO-only plan, or command suggestion such as /goal start @file unless the recorded objective explicitly asks only to draft a prompt.\n")
+	b.WriteString("Do not satisfy an active /goal run by creating another goal-prompt document, TODO-only plan, or command suggestion such as /goal @file or /goal run latest unless the recorded objective explicitly asks only to draft a prompt.\n")
 	b.WriteString("If the objective asks to implement behavior described by a goal prompt, implement that behavior directly.\n")
 	b.WriteString("Continuation behavior:\n")
 	b.WriteString("- The goal persists across turns and iterations; keep the full objective intact.\n")
@@ -1414,8 +1443,8 @@ func (rt *runtimeState) printNoGoalsHint() {
 	if rt == nil || rt.writer == nil {
 		return
 	}
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Record one with /goal <objective>, or load a file with /goal start @GOAL.md."))
-	fmt.Fprintln(rt.writer, rt.ui.hintLine("To create and run immediately, use /goal start --run <objective>."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("No goals recorded. Record one with /goal <objective>, or load a file with /goal @GOAL.md."))
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("To create and run immediately, use /goal --run <objective>."))
 }
 
 func goalMaxIterationsLabel(max int) string {

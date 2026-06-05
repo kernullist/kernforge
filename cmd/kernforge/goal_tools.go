@@ -80,7 +80,7 @@ func (t CreateGoalTool) Definition() ToolDefinition {
 		Name: "create_goal",
 		Description: "Create an internal active thread goal only when the user or system/developer instructions explicitly ask to start, activate, or use built-in goal tracking.\n" +
 			"Do not call this tool when the user asks to draft, write, create, or prepare a goal prompt; in that case, provide visible prompt text or write the requested markdown file instead.\n" +
-			"For the user-facing Kernforge command flow, tell the user to use /goal <objective> to record a goal, /goal start --run <objective> to create and run one, /goal start @GOAL.md to load a file, or /goal run latest to execute a recorded goal.\n" +
+			"For the user-facing Kernforge command flow, tell the user to use /goal <objective> to record a goal, /goal --run <objective> to create and run one, /goal @GOAL.md to load a file, or /goal run latest to execute a recorded goal.\n" +
 			"Set token_budget only when an explicit token budget is requested. Fails if a goal exists; use update_goal only for status.",
 		InputSchema: map[string]any{
 			"type":                 "object",

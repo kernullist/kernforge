@@ -201,9 +201,9 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 
 ### Autonomous Goals
 
-- `/goal <objective>` 또는 `/goal start <objective>`는 persistent goal을 기록하고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. 이 단계는 추가 model turn을 시작하지 않는다.
-- `/goal start --run <objective>`는 goal을 만들고 즉시 autonomous loop를 시작한다. 이미 기록한 goal은 `/goal run latest`로 시작하거나 재개한다.
-- `/goal start @GOAL.md`는 markdown 파일에서 목표를 읽어 기록한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 파일 goal을 읽고 바로 실행한다.
+- `/goal <objective>`는 persistent goal을 기록하고 `.kernforge/goals/latest.md`와 `.kernforge/goals/latest.json`을 쓴다. 이 단계는 추가 model turn을 시작하지 않는다.
+- `/goal --run <objective>`는 goal을 만들고 즉시 autonomous loop를 시작한다. 이미 기록한 goal은 `/goal run latest`로 시작하거나 재개한다.
+- `/goal @GOAL.md`는 markdown 파일에서 목표를 읽어 기록한다. `kernforge -goal-file GOAL.md`는 비대화형 단발 모드에서 파일 goal을 읽고 바로 실행한다.
 - `kernforge -goal "..."`는 REPL에 들어가지 않고 같은 루프를 실행하며, `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, `-goal-until-complete`, `-goal-rollback-on-regression` 제어도 지원한다.
 - assistant에게 goal prompt 작성을 요청하는 것은 draft 요청이며 active goal이 아니다. 준비된 prompt를 markdown으로 저장하거나 `/goal`에 넘길 때 goal이 기록 또는 실행된다.
 - "goal prompt 작성"처럼 draft만 요청한 문장은 본문에 구현 내용이 있어도 일반 chat/review 라우팅으로 남는다. `/goal`, `-goal`, `--run`, 파일 입력, 또는 파일 저장 요청이 있을 때만 goal을 기록하거나 실행한다.
@@ -217,7 +217,7 @@ Kernforge는 큰 보안 민감 코드베이스를 먼저 정확히 이해한 다
 - goal recovery는 continuity와 completion-audit artifact를 갱신하되 중첩된 내부 명령 출력을 terminal에 반복하지 않고, 현재 recovery summary와 artifact ref만 읽기 쉽게 남긴다.
 - completion audit이 ready이고 최종 semantic review가 승인하거나, 목표가 cancel되거나, provider failure/token/time/iteration cap/반복 failure signature/no-progress loop 같은 회복 불가능 blocker가 기록될 때만 루프가 멈춘다.
 - 목표 상태와 이력은 `.kernforge/goals/latest.md`, `.kernforge/goals/latest.json` 및 goal별 사본으로 남는다.
-- interactive goal은 `--run`, `--until-complete`, `/goal run` 중 하나를 명시할 때만 실행된다. 비대화형 `-goal`과 `-goal-file`은 바로 실행한다. `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
+- interactive goal은 `--run`, `--until-complete`, `/goal run` 중 하나를 명시할 때만 실행된다. 비대화형 `-goal`과 `-goal-file`은 바로 실행한다. 예전 `start` 서브커맨드는 생성과 실행 역할을 명확히 나누기 위해 제거했다. `--time-budget 10m`, `--token-budget N`, `--until-complete`, `--rollback-on-regression`, `--no-rollback`으로 autonomous stop/recovery 정책을 조정할 수 있다.
 - `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, `/goal cancel`로 active goal을 확인, 재감사, 명시적 완료, 재개, 중단할 수 있다.
 
 ### 소스 레벨 Function Fuzzing

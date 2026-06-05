@@ -1436,7 +1436,7 @@ func looksLikeGoalPromptAuthoringRequest(lower string) bool {
 
 func looksLikeExplicitGoalActivationOrArtifactRequest(lower string) bool {
 	return containsAny(lower,
-		"/goal", "goal start", "goal run", "start goal", "run goal",
+		"/goal", "goal run", "run goal",
 		"-goal", "-goal-file", "--run", "--until-complete", "--file", "@goal", "@ goal",
 		"active goal", "activate goal", "execute goal", "save to file", "save as", "write to file", "create file",
 		"goal을 실행", "goal 실행", "goal을 시작", "goal 시작", "goal로 실행", "내장 goal", "goal 기능을 켜",

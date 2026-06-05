@@ -207,9 +207,9 @@ Its current differentiators are:
 
 ### Autonomous Goals
 
-- `/goal <objective>` or `/goal start <objective>` records a persistent goal and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting another model turn
-- `/goal start --run <objective>` creates the goal and immediately starts the autonomous loop; `/goal run latest` starts or resumes a goal that was only recorded
-- `/goal start @GOAL.md` records an objective from a markdown file; `kernforge -goal-file GOAL.md` loads and runs it in one-shot CLI mode
+- `/goal <objective>` records a persistent goal and writes `.kernforge/goals/latest.md` plus `.kernforge/goals/latest.json` without starting another model turn
+- `/goal --run <objective>` creates the goal and immediately starts the autonomous loop; `/goal run latest` starts or resumes a goal that was only recorded
+- `/goal @GOAL.md` records an objective from a markdown file; `kernforge -goal-file GOAL.md` loads and runs it in one-shot CLI mode
 - `kernforge -goal "..."` runs the same loop without entering the REPL, with matching `-goal-max-iterations`, `-goal-time-budget`, `-goal-token-budget`, and `-goal-rollback-on-regression` controls
 - Asking the assistant to write a goal prompt is a drafting request, not an active goal. Save the prompt as markdown or pass it to `/goal` when you are ready to record or run it.
 - Draft-only goal prompt requests such as "write a goal prompt" stay in normal chat/review routing even if the draft mentions implementation; only `/goal`, `-goal`, `--run`, file input, or an explicit save-to-file request records or runs a goal.
@@ -223,7 +223,7 @@ Its current differentiators are:
 - Goal recovery refreshes continuity and completion-audit artifacts while suppressing nested duplicate terminal output, so the visible stream stays focused on the current recovery summary and artifact refs.
 - The loop stops only when the completion audit is ready and final semantic review approves, the goal is canceled, or an unrecoverable blocker such as provider failure, explicit token/time/iteration cap, repeated failure signature, or no-progress loop is recorded
 - Goal state and history are written under `.kernforge/goals/latest.md` and `.kernforge/goals/latest.json`, with per-goal copies for later audit
-- Interactive goals run only after `--run`, `--until-complete`, or `/goal run`; one-shot `-goal` and `-goal-file` run immediately. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
+- Interactive goals run only after `--run`, `--until-complete`, or `/goal run`; one-shot `-goal` and `-goal-file` run immediately. The old `start` subcommand was removed so create and run roles stay distinct. Use `--max-iterations N`, `--time-budget 10m`, `--token-budget N`, `--rollback-on-regression`, or `--no-rollback` to tune autonomous stop and recovery policy
 - `/goal status`, `/goal audit`, `/goal complete`, `/goal run`, and `/goal cancel` inspect, re-audit, explicitly complete, resume, or stop the active goal
 
 ### Source-Level Function Fuzzing

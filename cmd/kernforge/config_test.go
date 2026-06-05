@@ -2908,7 +2908,7 @@ func TestHelpDetailClarifiesGoalRecordAndRunBoundary(t *testing.T) {
 		"no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run",
 		".kernforge/goals/latest.md",
 		"/goal run latest",
-		"/goal start --run <objective>",
+		"/goal --run <objective>",
 		"Create the goal and immediately start the autonomous loop",
 		"adaptive verification with scheduled full cadence",
 		"repeated failing verification without new patch-scope edits",

@@ -3471,34 +3471,33 @@ func HelpDetail(topic string) (string, bool) {
 	case "goal", "goals":
 		return strings.TrimSpace(`
 /goal <objective>
-/goal start <objective>
-/goal start @GOAL.md
-/goal start --file GOAL.md
+/goal @GOAL.md
+/goal --file GOAL.md
 - Record a Codex-style goal from inline text or a markdown file without submitting another model turn.
 - Kernforge records the acceptance contract, task graph, completion criteria, and progress ledger so the goal can guide later turns.
 - This is the visible product flow. If you only want a goal prompt drafted, ask for prompt text or save it as markdown first; no autonomous loop starts until you pass --run, pass --until-complete, or use /goal run.
 - Kernforge writes .kernforge/goals/latest.md and .kernforge/goals/latest.json plus per-goal copies and prints those paths after creation.
 - Start the recorded goal with /goal run latest when you explicitly want automation.
 
-/goal start --run <objective>
+/goal --run <objective>
 - Create the goal and immediately start the autonomous loop.
 
-/goal start --until-complete <objective>
-- Explicitly start Kernforge's autonomous goal loop after creating the goal.
+/goal --until-complete <objective>
+- Create the goal and keep running Kernforge's autonomous goal loop until completion or a concrete blocker.
 - Kernforge asks the agent to inspect, implement, review, repair concrete review findings, verify, run final semantic review, and fix bugs without write, diff preview, shell, or git confirmation prompts.
 - Implicit model-backed review gates still follow review.model_review_consent and may ask Run model review now? [y/N/a=auto-review for this session].
 - Each loop iteration runs the agent, adaptive verification with scheduled full cadence, /session audit, final semantic review, and when needed /session recover execute-safe.
 - Generated/runtime/build artifacts are filtered out of goal patch scope; repeated failing verification without new patch-scope edits records a blocker instead of rerunning the same command.
 - Verification summaries show the first actionable compiler/linker/test error in the terminal and keep full raw output in artifacts.
 
-/goal start --max-iterations N <objective>
-/goal start --time-budget 10m <objective>
-/goal start --token-budget N <objective>
-/goal start --rollback-on-regression <objective>
+/goal --max-iterations N <objective>
+/goal --time-budget 10m <objective>
+/goal --token-budget N <objective>
+/goal --rollback-on-regression <objective>
 - These options are persisted with the goal. Add --run, or use /goal run later, when you explicitly want the autonomous loop to execute.
-- /goal start --until-complete is the explicit convenience form that creates the goal and runs until completion. The loop also stops on repeated no-progress or repeated failure signatures.
+- /goal --until-complete is the explicit convenience form that creates the goal and runs until completion. The loop also stops on repeated no-progress or repeated failure signatures.
 
-/goal start --no-run <objective>
+/goal --no-run <objective>
 - Persist the goal and write .kernforge/goals/latest.md/json without starting the autonomous loop.
 
 /goal run [id|latest]

@@ -65,6 +65,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/model clear task-owner al", wantBuffer: "/model clear task-owner all "},
 		{input: "/review ", wantSuggest: []string{"/review change", "/review plan", "/review selection", "/review pr", "/review final", "/review goal", "/review analysis", "/review --no-model", "/review --mode", "/review --follow-up", "/review --no-follow-up"}},
 		{input: "/review --mode ", wantSuggest: []string{"/review --mode general-change", "/review --mode security-hardening", "/review --mode core-build", "/review --mode live-fix", "/review --mode refactor", "/review --mode research", "/review --mode ui-polish"}},
+		{input: "/goal ", wantSuggest: []string{"/goal --run", "/goal --no-run", "/goal --file GOAL.md", "/goal @GOAL.md", "/goal run latest", "/goal status", "/goal audit latest", "/goal complete latest", "/goal cancel latest"}},
 		{input: "/memory ", wantSuggest: []string{"/memory loaded", "/memory recent", "/memory search", "/memory show", "/memory promote", "/memory demote", "/memory confirm", "/memory tentative", "/memory dashboard", "/memory dashboard --html", "/memory prune", "/memory stats"}},
 		{input: "/memory prune a", wantBuffer: "/memory prune all "},
 		{input: "/evidence ", wantSuggest: []string{"/evidence recent", "/evidence search", "/evidence show", "/evidence dashboard", "/evidence dashboard --html"}},
@@ -365,8 +366,8 @@ func TestCommandCompletionDescriptionCoversCommandsAndSubcommands(t *testing.T) 
 	cases := map[string]string{
 		"/status":                                                "Show current session state, approvals, and extension status.",
 		"/goal":                                                  "Record a persistent goal, then explicitly run the autonomous Codex-style loop when ready.",
-		"/goal start":                                            "Record a persistent goal from inline text or a markdown file without running automation.",
-		"/goal start --run":                                      "Record a goal and immediately start the autonomous loop.",
+		"/goal --run":                                            "Record a goal and immediately start the autonomous loop.",
+		"/goal --no-run":                                         "Record a goal and write .kernforge/goals/latest artifacts without running automation.",
 		"/goal run latest":                                       "Run or resume the latest recorded goal.",
 		"/effort high":                                           "Favor deeper reasoning.",
 		"/provider status":                                       "Show the current provider, base URL, key state, and billing visibility.",

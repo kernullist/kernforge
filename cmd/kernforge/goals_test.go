@@ -250,7 +250,7 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	if session.LastVerification == nil {
@@ -289,7 +289,7 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 	}
 }
 
-func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
+func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	root := initTestGitRepo(t)
 	goalPath := filepath.Join(root, "GOAL.md")
 	if err := os.WriteFile(goalPath, []byte("# Goal\n\nImplement autonomous loop.\n"), 0o644); err != nil {
@@ -308,7 +308,7 @@ func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run @GOAL.md"); err != nil {
+	if err := rt.handleGoalCommand("--no-run @GOAL.md"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -368,7 +368,7 @@ func TestGoalStartFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
 	}
 }
 
-func TestGoalStartDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
+func TestGoalRecordDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -401,7 +401,7 @@ func TestGoalStartDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	for _, want := range []string{
 		"Goal recorded without starting an autonomous loop",
 		"/goal run latest",
-		"/goal start --run <objective>",
+		"/goal --run <objective>",
 		"latest_markdown",
 	} {
 		if !strings.Contains(output.String(), want) {
@@ -413,7 +413,56 @@ func TestGoalStartDefaultsToRecordedGoalWithoutAutonomousRun(t *testing.T) {
 	}
 }
 
-func TestGoalStartRunPrintsExplicitAutomationHint(t *testing.T) {
+func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
+	cases := []struct {
+		action string
+		want   []string
+	}{
+		{action: "start", want: []string{"/goal start was removed", "/goal <objective>", "/goal --run <objective>"}},
+		{action: "create", want: []string{"/goal create was removed", "/goal <objective>", "/goal --run <objective>"}},
+		{action: "new", want: []string{"/goal new was removed", "/goal <objective>", "/goal --run <objective>"}},
+		{action: "resume", want: []string{"/goal resume was removed", "/goal run [id|latest]"}},
+		{action: "continue", want: []string{"/goal continue was removed", "/goal run [id|latest]"}},
+		{action: "show", want: []string{"/goal show was removed", "/goal status [id|latest]"}},
+		{action: "list", want: []string{"/goal list was removed", "/goal status [id|latest]"}},
+		{action: "done", want: []string{"/goal done was removed", "/goal complete [id|latest]"}},
+		{action: "stop", want: []string{"/goal stop was removed", "/goal cancel [id|latest]"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.action, func(t *testing.T) {
+			root := initTestGitRepo(t)
+			session := NewSession(root, "provider", "model", "", "default")
+			rt := &runtimeState{
+				writer:  &bytes.Buffer{},
+				ui:      NewUI(),
+				session: session,
+				store:   NewSessionStore(filepath.Join(root, "sessions")),
+				workspace: Workspace{
+					BaseRoot: root,
+					Root:     root,
+				},
+			}
+
+			err := rt.handleGoalCommand(tc.action + " finish sample objective")
+			if err == nil {
+				t.Fatalf("expected removed /goal %s subcommand to fail", tc.action)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("expected removed %s error to contain %q, got %q", tc.action, want, err.Error())
+				}
+			}
+			if !strings.Contains(err.Error(), "quote the objective") {
+				t.Fatalf("expected removed %s error to explain quoted objective fallback, got %q", tc.action, err.Error())
+			}
+			if _, ok := session.ActiveGoal(); ok {
+				t.Fatalf("removed /goal %s must not create a goal", tc.action)
+			}
+		})
+	}
+}
+
+func TestGoalRunFlagPrintsExplicitAutomationHint(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
@@ -433,7 +482,7 @@ func TestGoalStartRunPrintsExplicitAutomationHint(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	out := output.String()
@@ -530,7 +579,7 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -618,7 +667,7 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 1 " + request); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -701,7 +750,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 1 " + request); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -752,7 +801,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 2 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -966,7 +1015,7 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --max-iterations 1 create generated review artifact"); err != nil {
+	if err := rt.handleGoalCommand("--run --max-iterations 1 create generated review artifact"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 	if len(prompts) != 3 {
@@ -1080,7 +1129,7 @@ func TestGoalTokenBudgetLimitsBeforeAgentPrompt(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --run --token-budget 1 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--run --token-budget 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
 	}
 
@@ -1202,7 +1251,7 @@ func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
 		},
 	}
 
-	err := rt.handleGoalCommand("start --run finish sample objective")
+	err := rt.handleGoalCommand("--run finish sample objective")
 	if err == nil || !strings.Contains(err.Error(), "Usage limit reached") {
 		t.Fatalf("expected usage limit error, got %v", err)
 	}
@@ -1221,7 +1270,7 @@ func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
 	}
 }
 
-func TestGoalResumeResetsBlockedAuditCounters(t *testing.T) {
+func TestGoalRunResetsBlockedAuditCounters(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	goal := GoalState{
@@ -1249,8 +1298,8 @@ func TestGoalResumeResetsBlockedAuditCounters(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("resume " + goal.ID); err == nil || !strings.Contains(err.Error(), "provider offline") {
-		t.Fatalf("expected provider error after resume setup, got %v", err)
+	if err := rt.handleGoalCommand("run " + goal.ID); err == nil || !strings.Contains(err.Error(), "provider offline") {
+		t.Fatalf("expected provider error after run setup, got %v", err)
 	}
 	current, ok := session.ActiveGoal()
 	if !ok {
@@ -1284,7 +1333,7 @@ func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	goal, ok := session.ActiveGoal()
@@ -1335,7 +1384,7 @@ func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	goal, ok := session.ActiveGoal()
@@ -1392,7 +1441,7 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	goal, ok := session.ActiveGoal()
@@ -1446,7 +1495,7 @@ func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	if err := rt.handleVerifyCommand("--full"); err != nil {
@@ -1494,7 +1543,7 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run --token-budget 1000000 finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run --token-budget 1000000 finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	createdGoal, ok := session.ActiveGoal()
@@ -1600,7 +1649,7 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run " + request); err != nil {
+	if err := rt.handleGoalCommand("--no-run " + request); err != nil {
 		t.Fatalf("start goal: %v", err)
 	}
 	checkpoint, err := checkpoints.Create(root, "before-document-artifact")
@@ -1688,7 +1737,7 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
 	if err := rt.handleVerifyCommand("--full"); err != nil {
@@ -1713,7 +1762,7 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 	}
 }
 
-func TestGoalStartRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T) {
+func TestGoalRecordRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T) {
 	root := initTestGitRepo(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -1729,14 +1778,14 @@ func TestGoalStartRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish first objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish first objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected first goal")
 	}
-	err := rt.handleGoalCommand("start --no-run finish second objective")
+	err := rt.handleGoalCommand("--no-run finish second objective")
 	if err == nil || !strings.Contains(err.Error(), "goal replacement canceled") {
 		t.Fatalf("expected replacement cancellation, got %v", err)
 	}
@@ -1746,7 +1795,7 @@ func TestGoalStartRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T
 	}
 
 	rt.reader = bufio.NewReader(strings.NewReader("y\n"))
-	if err := rt.handleGoalCommand("start --no-run finish second objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish second objective"); err != nil {
 		t.Fatalf("confirmed replacement should create second goal: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -1755,7 +1804,7 @@ func TestGoalStartRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T
 	}
 }
 
-func TestGoalStartSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
+func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 	root := initTestGitRepo(t)
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
@@ -1781,7 +1830,7 @@ func TestGoalStartSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish first objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish first objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
@@ -1799,7 +1848,7 @@ func TestGoalStartSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 		t.Fatalf("expected completed first goal, got ok=%t goal=%#v first=%s", ok, completed, first.ID)
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish second objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish second objective"); err != nil {
 		t.Fatalf("completed goal replacement should not require prompt: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -1851,14 +1900,14 @@ func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 		},
 	}
 
-	if err := rt.handleGoalCommand("start --no-run finish first sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish first sample objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
 	}
 	first, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected first goal")
 	}
-	if err := rt.handleGoalCommand("start --no-run finish second sample objective"); err != nil {
+	if err := rt.handleGoalCommand("--no-run finish second sample objective"); err != nil {
 		t.Fatalf("create second goal: %v", err)
 	}
 	second, ok := session.ActiveGoal()
@@ -2012,7 +2061,7 @@ func TestGoalToolsExposeCodexCompatibleSchemas(t *testing.T) {
 		"internal active thread goal",
 		"Do not call this tool when the user asks to draft, write, create, or prepare a goal prompt",
 		"/goal <objective>",
-		"/goal start --run <objective>",
+		"/goal --run <objective>",
 		"/goal run latest",
 	} {
 		if !strings.Contains(createDef.Description, want) {
@@ -2472,8 +2521,8 @@ func TestRunSingleGoalDefaultsToUntilComplete(t *testing.T) {
 }
 
 func TestGoalFieldsSupportQuotedFilePaths(t *testing.T) {
-	fields := splitGoalFields(`start --file "docs/My Goal.md" --max-iterations 2 finish it`)
-	want := []string{"start", "--file", "docs/My Goal.md", "--max-iterations", "2", "finish", "it"}
+	fields := splitGoalFields(`--file "docs/My Goal.md" --max-iterations 2 finish it`)
+	want := []string{"--file", "docs/My Goal.md", "--max-iterations", "2", "finish", "it"}
 	if len(fields) != len(want) {
 		t.Fatalf("fields length = %d, want %d: %#v", len(fields), len(want), fields)
 	}
