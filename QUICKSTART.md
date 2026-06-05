@@ -211,7 +211,7 @@ Use `/new-feature` when you want persisted spec, plan, and task artifacts under 
 6. `/hooks`
 
 Quick interpretation:
-1. `/status` is the fast view for current session and runtime state. It starts with an operator overview for gate, provider, permission mode, progress display, MCP, skills, verification, memory, and the recommended next command. The same compact status vocabulary is printed before each prompt as an operator footer, while `/status` keeps the detailed `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` fields for final answers or git/MCP write-side actions.
+1. `/status` is the fast view for current session and runtime state. It starts with the same compact operator summary printed before each prompt: cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and route errors. `/status` keeps the detailed `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` fields for final answers or git/MCP write-side actions.
 2. `/config` is the fast view for effective settings such as provider defaults, hooks, locale, and verification toggles.
 3. `/provider status` is the fast view for provider wiring. It shows the normalized endpoint, whether an API key is configured, and what budget visibility is actually available for the current provider.
 

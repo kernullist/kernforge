@@ -3546,8 +3546,9 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	for _, want := range []string{
 		"-- Overview ",
 		"[gate:ready]",
+		"[cwd:",
 		"[provider:openrouter/google/gemini-2.5-pro]",
-		"[permission:danger-full-access]",
+		"[perm:danger-full-access]",
 		"[progress:compact]",
 		"[mcp:0]",
 		"/status detail for lifecycle evidence",
@@ -3592,12 +3593,40 @@ func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
 		"[provider:openrouter/google/gemini-2.5-pro]",
 		"[gate:ready]",
 		"[perm:danger-full-access]",
+		"[progress:compact]",
 		"[mcp:0]",
 		"[verify:none]",
 		"[memory:0]",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("expected operator footer to contain %q, got %q", want, line)
+		}
+	}
+}
+
+func TestOperatorFooterLineSplitsOnNarrowTerminal(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	rt := &runtimeState{
+		ui:        UI{},
+		cfg:       DefaultConfig(root),
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		perms:     NewPermissionManager(ModeBypass, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	line := rt.operatorFooterLineForWidth(78)
+	if !strings.Contains(line, "\n") {
+		t.Fatalf("expected narrow operator footer to split, got %q", line)
+	}
+	for _, want := range []string{
+		"[provider:openrouter/google/gemini-2.5-pro]",
+		"[progress:compact]",
+		"[memory:0]",
+	} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected split operator footer to contain %q, got %q", want, line)
 		}
 	}
 }
@@ -3638,10 +3667,32 @@ func TestDirectShellResultSummaryMarksNonZeroExitAsFailed(t *testing.T) {
 		"wall_time_seconds": 0.25,
 	}, nil)
 
-	for _, want := range []string{"failed", "exit=1", "250ms", "1 line(s)"} {
+	for _, want := range []string{"failed", "exit=1", "250ms", "1 line(s)", "error=FAIL", "next=inspect output, fix command, rerun"} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("expected failed direct shell summary to contain %q, got %q", want, summary)
 		}
+	}
+}
+
+func TestDirectShellResultSummaryUsesShellSetupNextActionWhenExitUnknown(t *testing.T) {
+	summary := directShellResultSummary("missing-tool", "", nil, errors.New("shell unavailable"))
+	for _, want := range []string{"failed", "!missing-tool", "error=shell unavailable", "next=check shell setup or permissions"} {
+		if !strings.Contains(summary, want) {
+			t.Fatalf("expected setup failure shell summary to contain %q, got %q", want, summary)
+		}
+	}
+}
+
+func TestDirectShellResultSummaryPrefersActionableErrorLine(t *testing.T) {
+	summary := directShellResultSummary("go test ./...", "starting test run\nok package\nerror: missing fixture\n", map[string]any{
+		"exit_code":         1,
+		"wall_time_seconds": 1.0,
+	}, nil)
+	if !strings.Contains(summary, "error=error: missing fixture") {
+		t.Fatalf("expected actionable error line in failed shell summary, got %q", summary)
+	}
+	if strings.Contains(summary, "error=starting test run") {
+		t.Fatalf("expected summary to avoid non-actionable first line, got %q", summary)
 	}
 }
 

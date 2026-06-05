@@ -211,7 +211,7 @@ provider 및 런타임 확인:
 6. `/hooks`
 
 빠른 해석:
-1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. 상단에는 gate, provider, permission mode, progress display, MCP, skills, verification, memory, 추천 next command를 한눈에 보는 operator overview가 먼저 나온다. 같은 compact 상태 용어는 매 프롬프트 직전 operator footer에도 표시되며, `/status`에는 final answer나 git/MCP write-side action 전에 확인할 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command` 상세값이 유지된다.
+1. `/status`는 현재 세션과 런타임 상태를 빠르게 보는 용도다. 상단에는 매 프롬프트 직전 footer와 같은 compact operator summary가 먼저 나온다. 여기에는 cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warning, route error가 들어가며, `/status`에는 final answer나 git/MCP write-side action 전에 확인할 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command` 상세값이 유지된다.
 2. `/config`는 provider 기본값, hooks, locale, verification toggle 같은 현재 적용 설정을 빠르게 보는 용도다.
 3. `/provider status`는 현재 provider 연결 상태를 빠르게 보는 용도다. 정규화된 endpoint, API key 설정 여부, provider별로 실제 확인 가능한 budget visibility 범위를 보여준다.
 

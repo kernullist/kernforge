@@ -72,11 +72,11 @@ Current behavior:
 13. DeepSeek and other OpenAI-compatible follow-up requests normalize saved tool transcripts before replay. Orphaned `tool` results are dropped, and missing tool-call responses are synthesized as `aborted` outputs so provider-side message validation does not reject recovered sessions. Runtime guidance paths that supersede a tool-call batch persist explicit `NOT_EXECUTED` outputs before the guidance message instead of recovering internal tool output as user context.
 14. Post-change diff review does not import final-answer coding-harness state. Worker/causal-evidence blockers remain visible for final/completion-audit gates, but they do not become post-change code-review blockers.
 15. The REPL opens with a compact branded banner and keeps assistant output separate from tool and verification activity lines.
-16. Before each new prompt, Kernforge prints a compact operator footer with `cwd`, provider/model, runtime gate, permission profile, MCP, skills, verification, memory, warnings, and provider-route errors.
+16. Before each new prompt, Kernforge prints a compact operator footer with `cwd`, provider/model, runtime gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and provider-route errors. The footer uses the same renderer and compact status vocabulary as `/status`, and it splits into two lines on narrow terminals.
 17. `!cd` and directory-listing shortcuts resolve from the REPL current directory while keeping the workspace boundary fixed. `!cd ..` can move upward inside the workspace or active worktree, but cannot cross above that boundary.
-18. Direct `!` shell commands print a one-line result summary before output with ok/failed state, exit code when available, elapsed time, output line count, and command preview.
+18. Direct `!` shell commands print a one-line result summary before output with ok/failed state, exit code when available, elapsed time, output line count, and command preview. Failed commands also include the first useful error line and a short next action.
 19. Model-driven `run_shell` completion summaries include the output line count before the first meaningful output line.
-20. Direct `!` shell output uses a compact preview when output is long. The transcript keeps the first 80 and last 20 lines, or applies a character budget for very long single-line output, then marks the header as `collapsed` and prints the omitted line or character count.
+20. Direct `!` shell output uses a compact preview when output is long. The transcript keeps the first 80 and last 20 lines, or applies a character budget for very long single-line output, then marks the header as `collapsed` and prints the omitted line or character count. Korean locales use Korean collapse markers.
 
 ### Runtime Inspection And Approval State
 
@@ -91,7 +91,7 @@ Useful commands:
 - `/provider status`
 
 Current behavior:
-1. `/status` shows session and runtime state. It now starts with an operator overview for gate, provider, permission mode, progress display, MCP, skills, verification, memory, and the recommended next command. The same compact status vocabulary appears before each prompt as an operator footer. Detailed session id, approvals, selection state, verification state, MCP counts, and runtime gate ledger remain below. Use `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` to decide whether review, verification, or completion audit needs repair before final answers or write-side actions.
+1. `/status` shows session and runtime state. It starts with the same compact operator summary used by the prompt footer: cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and route errors. Detailed session id, approvals, selection state, verification state, MCP counts, and runtime gate ledger remain below. Use `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` to decide whether review, verification, or completion audit needs repair before final answers or write-side actions.
 2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
 3. `/provider status` shows the active provider, normalized endpoint, API key presence, and provider-specific budget visibility.
 4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.

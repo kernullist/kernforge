@@ -69,11 +69,11 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 12. OpenAI-compatible 및 OpenAI Codex streaming provider는 tool-call 구성 event를 emit해서 모델이 tool call을 준비 중인지, 인자가 언제 완성됐는지 사용자가 볼 수 있다.
 13. DeepSeek와 OpenAI-compatible follow-up request는 저장된 tool transcript를 replay 전에 정규화한다. 고아 `tool` result는 일반 context로 바꾸고 빠진 tool-call response는 synthetic result로 채워서 복구된 세션이 provider의 message validation에서 거부되지 않게 한다.
 14. REPL은 compact branded banner로 시작하고, assistant 본문과 tool/verification activity line을 분리해서 보여준다.
-15. 새 프롬프트 직전에는 `cwd`, provider/model, runtime gate, permission profile, MCP, skills, verification, memory, warning, provider route error를 compact operator footer로 보여준다.
+15. 새 프롬프트 직전에는 `cwd`, provider/model, runtime gate, permission profile, progress display, MCP, skills, verification, memory, warning, provider route error를 compact operator footer로 보여준다. footer는 `/status`와 같은 renderer 및 compact 상태 용어를 쓰며, 좁은 터미널에서는 2줄로 나뉜다.
 16. `!cd`와 directory listing shortcut은 REPL current directory 기준으로 경로를 해석하되 workspace 경계를 고정한다. `!cd ..`는 workspace 또는 active worktree 내부에서는 상위 이동을 허용하지만 그 경계 밖으로는 나갈 수 없다.
-17. 직접 `!` shell 명령은 출력 전에 ok/failed 상태, 가능하면 exit code, elapsed time, 출력 줄 수, command preview를 한 줄 요약으로 보여준다.
+17. 직접 `!` shell 명령은 출력 전에 ok/failed 상태, 가능하면 exit code, elapsed time, 출력 줄 수, command preview를 한 줄 요약으로 보여준다. 실패한 명령은 첫 유효 error 줄과 짧은 next action도 함께 보여준다.
 18. 모델이 실행한 `run_shell` 완료 요약도 첫 의미 있는 출력 줄 앞에 전체 출력 줄 수를 표시한다.
-19. 직접 `!` shell output은 긴 출력일 때 compact preview를 사용한다. transcript에는 처음 80줄과 마지막 20줄을 남기고, 매우 긴 단일 라인은 문자 budget 기준으로 접은 뒤 header에 `collapsed`를 표시하며 생략된 줄 또는 문자 수를 marker로 보여준다.
+19. 직접 `!` shell output은 긴 출력일 때 compact preview를 사용한다. transcript에는 처음 80줄과 마지막 20줄을 남기고, 매우 긴 단일 라인은 문자 budget 기준으로 접은 뒤 header에 `collapsed`를 표시하며 생략된 줄 또는 문자 수를 marker로 보여준다. 한국어 locale에서는 collapse marker도 한국어로 출력된다.
 
 ### 런타임 상태 확인과 승인 상태
 
@@ -88,7 +88,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 - `/provider status`
 
 현재 동작:
-1. `/status`는 현재 세션과 런타임 상태를 보여준다. 상단에는 gate, provider, permission mode, progress display, MCP, skills, verification, memory, 추천 next command를 한눈에 보는 operator overview가 먼저 나온다. 같은 compact 상태 용어는 매 프롬프트 직전 operator footer에도 표시된다. 그 아래에 세션 id, approval 상태, selection, verification, MCP 카운트, runtime gate ledger 상세가 유지된다. final answer나 write-side action 전에 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command`를 보면 review/verification/completion audit 수리가 필요한지 판단할 수 있다.
+1. `/status`는 현재 세션과 런타임 상태를 보여준다. 상단에는 prompt footer와 같은 compact operator summary가 먼저 나온다. 여기에는 cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warning, route error가 들어간다. 그 아래에 세션 id, approval 상태, selection, verification, MCP 카운트, runtime gate ledger 상세가 유지된다. final answer나 write-side action 전에 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command`를 보면 review/verification/completion audit 수리가 필요한지 판단할 수 있다.
 2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
 3. `/provider status`는 active provider, 정규화된 endpoint, API key 존재 여부, provider별 budget visibility를 보여준다.
 4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.

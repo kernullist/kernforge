@@ -28,6 +28,12 @@ type shellOutputPreview struct {
 	Collapsed bool
 }
 
+type statusSummaryItem struct {
+	Label string
+	Value string
+	Tone  string
+}
+
 func NewUI() UI {
 	color := colorsEnabled()
 	if color {
@@ -182,10 +188,18 @@ func (ui UI) shell(text string) string {
 }
 
 func (ui UI) shellWithMeta(text string, extraMeta ...string) string {
+	return ui.shellWithMetaForLocale(false, text, extraMeta...)
+}
+
+func (ui UI) shellWithMetaLocalized(cfg Config, text string, extraMeta ...string) string {
+	return ui.shellWithMetaForLocale(localePrefersKorean(cfg), text, extraMeta...)
+}
+
+func (ui UI) shellWithMetaForLocale(korean bool, text string, extraMeta ...string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	preview := shellOutputPreviewFor(text)
+	preview := shellOutputPreviewForLocale(text, korean)
 	metaItems := []string{fmt.Sprintf("%d line(s)", preview.LineCount)}
 	if preview.Collapsed {
 		metaItems = append(metaItems, "collapsed")
@@ -208,6 +222,10 @@ func cleanShellOutputMetaItems(items []string) []string {
 }
 
 func shellOutputPreviewFor(text string) shellOutputPreview {
+	return shellOutputPreviewForLocale(text, false)
+}
+
+func shellOutputPreviewForLocale(text string, korean bool) shellOutputPreview {
 	body := normalizeBlockLineEndings(strings.TrimRight(text, "\r\n"))
 	preview := shellOutputPreview{
 		Text:      body,
@@ -219,19 +237,19 @@ func shellOutputPreviewFor(text string) shellOutputPreview {
 
 	if preview.LineCount > shellOutputPreviewHeadLines+shellOutputPreviewTailLines {
 		lines := strings.Split(normalizeBlockLineEndings(body), "\n")
-		preview.Text = collapseShellOutputLines(lines)
+		preview.Text = collapseShellOutputLines(lines, korean)
 		preview.Collapsed = true
 	}
 
 	if utf8.RuneCountInString(preview.Text) > shellOutputPreviewMaxChars {
-		preview.Text = collapseShellOutputChars(preview.Text)
+		preview.Text = collapseShellOutputChars(preview.Text, korean)
 		preview.Collapsed = true
 	}
 
 	return preview
 }
 
-func collapseShellOutputLines(lines []string) string {
+func collapseShellOutputLines(lines []string, korean bool) string {
 	maxLines := shellOutputPreviewHeadLines + shellOutputPreviewTailLines
 	if len(lines) <= maxLines {
 		return strings.Join(lines, "\n")
@@ -244,17 +262,29 @@ func collapseShellOutputLines(lines []string) string {
 
 	out := make([]string, 0, maxLines+1)
 	out = append(out, lines[:shellOutputPreviewHeadLines]...)
-	out = append(out, fmt.Sprintf(
-		"[output collapsed: %d line(s) omitted; showing first %d and last %d line(s)]",
-		omitted,
-		shellOutputPreviewHeadLines,
-		shellOutputPreviewTailLines,
-	))
+	out = append(out, shellOutputLinesCollapsedMarker(omitted, shellOutputPreviewHeadLines, shellOutputPreviewTailLines, korean))
 	out = append(out, lines[len(lines)-shellOutputPreviewTailLines:]...)
 	return strings.Join(out, "\n")
 }
 
-func collapseShellOutputChars(text string) string {
+func shellOutputLinesCollapsedMarker(omitted int, headLines int, tailLines int, korean bool) string {
+	if korean {
+		return fmt.Sprintf(
+			"[출력 접힘: %d줄 생략; 처음 %d줄과 마지막 %d줄 표시]",
+			omitted,
+			headLines,
+			tailLines,
+		)
+	}
+	return fmt.Sprintf(
+		"[output collapsed: %d line(s) omitted; showing first %d and last %d line(s)]",
+		omitted,
+		headLines,
+		tailLines,
+	)
+}
+
+func collapseShellOutputChars(text string, korean bool) string {
 	runes := []rune(text)
 	if len(runes) <= shellOutputPreviewMaxChars {
 		return text
@@ -270,13 +300,25 @@ func collapseShellOutputChars(text string) string {
 	}
 
 	omitted := len(runes) - headChars - tailChars
-	marker := fmt.Sprintf(
+	marker := shellOutputCharsCollapsedMarker(omitted, headChars, tailChars, korean)
+	return string(runes[:headChars]) + "\n" + marker + "\n" + string(runes[len(runes)-tailChars:])
+}
+
+func shellOutputCharsCollapsedMarker(omitted int, headChars int, tailChars int, korean bool) string {
+	if korean {
+		return fmt.Sprintf(
+			"[출력 접힘: %d자 생략; 처음 %d자와 마지막 %d자 표시]",
+			omitted,
+			headChars,
+			tailChars,
+		)
+	}
+	return fmt.Sprintf(
 		"[output collapsed: %d char(s) omitted; showing first %d and last %d char(s)]",
 		omitted,
 		headChars,
 		tailChars,
 	)
-	return string(runes[:headChars]) + "\n" + marker + "\n" + string(runes[len(runes)-tailChars:])
 }
 
 func normalizeBlockLineEndings(text string) string {
@@ -343,6 +385,91 @@ func (ui UI) summaryLine(items ...string) string {
 		return ""
 	}
 	return strings.Join(cleaned, "  ")
+}
+
+func (ui UI) statusSummaryBlock(prefix string, items []statusSummaryItem, width int) string {
+	rendered := ui.renderStatusSummaryItems(items)
+	if len(rendered) == 0 {
+		return ""
+	}
+	if width <= 0 {
+		width = terminalWidth()
+	}
+	prefix = strings.TrimSpace(prefix)
+	if prefix != "" {
+		prefix += " "
+	}
+	prefixText := ui.dim(prefix)
+	oneLine := prefixText + ui.summaryLine(rendered...)
+	if visibleLen(oneLine) <= width || len(rendered) == 1 {
+		return oneLine
+	}
+
+	contentWidth := width - visibleLen(prefix)
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	rows := splitStatusSummaryRows(rendered, contentWidth)
+	if len(rows) == 1 {
+		return oneLine
+	}
+	lines := make([]string, 0, len(rows))
+	for i, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		if i == 0 {
+			lines = append(lines, prefixText+ui.summaryLine(row...))
+			continue
+		}
+		lines = append(lines, ui.dim(strings.Repeat(" ", visibleLen(prefix)))+ui.summaryLine(row...))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (ui UI) renderStatusSummaryItems(items []statusSummaryItem) []string {
+	rendered := make([]string, 0, len(items))
+	for _, item := range items {
+		if strings.TrimSpace(item.Label) == "" && strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		rendered = append(rendered, ui.statusPill(item.Label, item.Value, item.Tone))
+	}
+	return rendered
+}
+
+func splitStatusSummaryRows(items []string, width int) [][]string {
+	if len(items) == 0 {
+		return nil
+	}
+	if width <= 0 {
+		width = 1
+	}
+	if visibleLen(strings.Join(items, "  ")) <= width {
+		return [][]string{items}
+	}
+	if len(items) == 1 {
+		return [][]string{items}
+	}
+
+	bestSplit := 1
+	bestScore := int(^uint(0) >> 1)
+	for split := 1; split < len(items); split++ {
+		leftWidth := visibleLen(strings.Join(items[:split], "  "))
+		rightWidth := visibleLen(strings.Join(items[split:], "  "))
+		score := maxInt(leftWidth, rightWidth)
+		if leftWidth > width {
+			score += (leftWidth - width) * 4
+		}
+		if rightWidth > width {
+			score += (rightWidth - width) * 2
+		}
+		if score < bestScore {
+			bestScore = score
+			bestSplit = split
+		}
+	}
+	return [][]string{items[:bestSplit], items[bestSplit:]}
 }
 
 func (ui UI) section(title string) string {

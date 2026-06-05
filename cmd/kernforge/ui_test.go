@@ -320,6 +320,65 @@ func TestShellWithMetaAppendsExecutionSummary(t *testing.T) {
 	}
 }
 
+func TestStatusSummaryBlockSplitsWhenTerminalIsNarrow(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.statusSummaryBlock("status", []statusSummaryItem{
+		{Label: "cwd", Value: "kernforge", Tone: "info"},
+		{Label: "provider", Value: "openrouter/google/gemini-2.5-pro", Tone: "info"},
+		{Label: "gate", Value: "ready", Tone: "ready"},
+		{Label: "perm", Value: "danger-full-access", Tone: "warn"},
+		{Label: "progress", Value: "compact", Tone: "info"},
+	}, 76)
+
+	if !strings.Contains(rendered, "\n") {
+		t.Fatalf("expected narrow status summary to split, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[provider:openrouter/google/gemini-2.5-pro]") ||
+		!strings.Contains(rendered, "[progress:compact]") {
+		t.Fatalf("expected split summary to retain all status pills, got %q", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if visibleLen(line) > 76 {
+			t.Fatalf("expected split summary line to fit width, got width=%d line=%q", visibleLen(line), line)
+		}
+	}
+}
+
+func TestStatusSummaryBlockUsesActualNarrowWidth(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.statusSummaryBlock("status", []statusSummaryItem{
+		{Label: "cwd", Value: "kernforge", Tone: "info"},
+		{Label: "gate", Value: "ready", Tone: "ready"},
+		{Label: "memory", Value: "0", Tone: "info"},
+	}, 44)
+
+	if !strings.Contains(rendered, "\n") {
+		t.Fatalf("expected status summary to split at actual width, got %q", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if visibleLen(line) > 44 {
+			t.Fatalf("expected split summary line to fit actual width, got width=%d line=%q", visibleLen(line), line)
+		}
+	}
+}
+
+func TestStatusSummaryBlockSplitsTwoItemsWhenNeeded(t *testing.T) {
+	ui := UI{color: false}
+	rendered := ui.statusSummaryBlock("status", []statusSummaryItem{
+		{Label: "provider", Value: "openrouter/google/gemini-2.5-pro", Tone: "info"},
+		{Label: "perm", Value: "danger-full-access", Tone: "warn"},
+	}, 62)
+
+	if !strings.Contains(rendered, "\n") {
+		t.Fatalf("expected two-item summary to split when it exceeds width, got %q", rendered)
+	}
+	for _, line := range strings.Split(rendered, "\n") {
+		if visibleLen(line) > 62 {
+			t.Fatalf("expected two-item split line to fit width, got width=%d line=%q", visibleLen(line), line)
+		}
+	}
+}
+
 func TestShellNormalizesCarriageReturnOnlyLineEndings(t *testing.T) {
 	ui := UI{color: false}
 	rendered := ui.shell("line1\rline2\rline3\r")
@@ -372,6 +431,21 @@ func TestShellCollapsesLongOutputWithHeadAndTail(t *testing.T) {
 	}
 	if strings.Contains(rendered, "line090") {
 		t.Fatalf("expected middle shell output to be omitted, got %q", rendered)
+	}
+}
+
+func TestShellCollapseMarkerUsesKoreanLocale(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	ui := UI{color: false}
+	totalLines := shellOutputPreviewHeadLines + shellOutputPreviewTailLines + 1
+	lines := make([]string, 0, totalLines)
+	for i := 0; i < totalLines; i++ {
+		lines = append(lines, fmt.Sprintf("line%03d", i+1))
+	}
+
+	rendered := ui.shellWithMetaLocalized(Config{}, strings.Join(lines, "\n"))
+	if !strings.Contains(rendered, "[출력 접힘: 1줄 생략; 처음 80줄과 마지막 20줄 표시]") {
+		t.Fatalf("expected Korean collapse marker, got %q", rendered)
 	}
 }
 

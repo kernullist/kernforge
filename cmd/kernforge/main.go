@@ -892,28 +892,14 @@ func (rt *runtimeState) printOperatorFooter() {
 }
 
 func (rt *runtimeState) operatorFooterLine() string {
+	return rt.operatorFooterLineForWidth(terminalWidth())
+}
+
+func (rt *runtimeState) operatorFooterLineForWidth(width int) string {
 	if rt == nil {
 		return ""
 	}
-	ledger := rt.runtimeGateLedgerForStatus(runtimeGateActionFinalAnswer)
-	ledger.Normalize()
-	items := []string{
-		rt.ui.statusPill("cwd", statusOverviewCWD(rt), "info"),
-		rt.ui.statusPill("provider", statusOverviewProvider(rt), "info"),
-		rt.ui.statusPill("gate", statusOverviewGateLabel(ledger), statusOverviewGateTone(ledger.Status)),
-		rt.ui.statusPill("perm", statusOverviewPermission(rt), statusOverviewPermissionTone(rt)),
-		rt.ui.statusPill("mcp", statusOverviewMCP(rt), statusOverviewMCPTone(rt)),
-		rt.ui.statusPill("skills", fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), "info"),
-		rt.ui.statusPill("verify", statusOverviewVerification(rt), statusOverviewVerificationTone(rt)),
-		rt.ui.statusPill("memory", fmt.Sprintf("%d", rt.persistentMemoryCount()), "info"),
-	}
-	if warnings := statusOverviewWarningCount(rt); warnings > 0 {
-		items = append(items, rt.ui.statusPill("warn", fmt.Sprintf("%d", warnings), "warn"))
-	}
-	if rt.clientErr != nil {
-		items = append(items, rt.ui.statusPill("route", "provider_error", "error"))
-	}
-	return rt.ui.dim("status ") + rt.ui.summaryLine(items...)
+	return rt.ui.statusSummaryBlock("status", rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items, width)
 }
 
 func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
@@ -2274,7 +2260,7 @@ func (rt *runtimeState) runShell(command string) error {
 	out := result.DisplayText
 	rt.printDirectShellSummary(trimmed, out, result.Meta, err)
 	if strings.TrimSpace(out) != "" {
-		fmt.Fprintln(rt.writer, rt.ui.shellWithMeta(out, directShellOutputMeta(result.Meta, err)...))
+		fmt.Fprintln(rt.writer, rt.ui.shellWithMetaLocalized(rt.cfg, out, directShellOutputMeta(result.Meta, err)...))
 	}
 	rt.noteLocalShellCommand(trimmed, out, err)
 	return err
@@ -2294,7 +2280,7 @@ func (rt *runtimeState) runBuiltinShell(command string) (bool, error) {
 		return true, rt.listDirectory(command, strings.TrimSpace(command[3:]))
 	case lower == "pwd":
 		rt.printDirectShellSummary(command, rt.workspace.Root, nil, nil)
-		fmt.Fprintln(rt.writer, rt.ui.shell(rt.workspace.Root))
+		fmt.Fprintln(rt.writer, rt.ui.shellWithMetaLocalized(rt.cfg, rt.workspace.Root))
 		return true, nil
 	}
 	return false, nil
@@ -2317,11 +2303,15 @@ func directShellResultSummary(command string, output string, meta map[string]any
 		status = "failed"
 	}
 	parts := []string{status}
+	failed := err != nil
+	exitCodeKnown := false
 	if exitCode, ok := directShellMetaExitCode(meta, err); ok {
+		exitCodeKnown = true
 		parts = append(parts, fmt.Sprintf("exit=%d", exitCode))
 		if exitCode != 0 {
 			status = "failed"
 			parts[0] = status
+			failed = true
 		}
 	}
 	if duration := directShellMetaDuration(meta); duration != "" {
@@ -2335,7 +2325,76 @@ func directShellResultSummary(command string, output string, meta map[string]any
 	if command := directShellCommandPreview(command); command != "" {
 		parts = append(parts, command)
 	}
+	if failed {
+		if detail := directShellFailureDetail(output, err); detail != "" {
+			parts = append(parts, "error="+detail)
+		}
+		parts = append(parts, "next="+directShellFailureNextAction(exitCodeKnown))
+	}
 	return strings.Join(parts, "  ")
+}
+
+func directShellFailureDetail(output string, err error) string {
+	for _, candidate := range []string{output, errorString(err)} {
+		if line := firstUsefulShellFailureLine(candidate); line != "" {
+			return truncateStatusSnippet(line, 72)
+		}
+	}
+	return ""
+}
+
+func firstUsefulShellFailureLine(text string) string {
+	if runShellDisplayTextRepresentsNoOutput(text) {
+		return ""
+	}
+	fallback := ""
+	for _, line := range strings.Split(normalizeBlockLineEndings(text), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = trimmed
+		}
+		if shellFailureLineLooksActionable(trimmed) {
+			return trimmed
+		}
+	}
+	return fallback
+}
+
+func shellFailureLineLooksActionable(line string) bool {
+	lower := strings.ToLower(line)
+	for _, marker := range []string{
+		"error",
+		"fail",
+		"fatal",
+		"panic",
+		"exception",
+		"denied",
+		"permission",
+		"not recognized",
+		"not found",
+		"no such",
+		"cannot",
+		"could not",
+		"invalid",
+		"timeout",
+		"timed out",
+		"exit status",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func directShellFailureNextAction(exitCodeKnown bool) string {
+	if exitCodeKnown {
+		return "inspect output, fix command, rerun"
+	}
+	return "check shell setup or permissions"
 }
 
 func directShellOutputMeta(meta map[string]any, err error) []string {
@@ -2489,7 +2548,7 @@ func (rt *runtimeState) listDirectory(command string, pathArg string) error {
 	}
 	out := strings.Join(lines, "\n")
 	rt.printDirectShellSummary(command, out, nil, nil)
-	fmt.Fprintln(rt.writer, rt.ui.shell(out))
+	fmt.Fprintln(rt.writer, rt.ui.shellWithMetaLocalized(rt.cfg, out))
 	return nil
 }
 
@@ -6625,31 +6684,64 @@ func (rt *runtimeState) printStatusOverview(action string) {
 	if rt == nil {
 		return
 	}
-	ledger := rt.runtimeGateLedgerForStatus(action)
-	ledger.Normalize()
+	snapshot := rt.operatorStatusSnapshot(action)
 	fmt.Fprintln(rt.writer, rt.ui.subsection("Overview"))
-	fmt.Fprintln(rt.writer, rt.ui.summaryLine(
-		rt.ui.statusPill("gate", statusOverviewGateLabel(ledger), statusOverviewGateTone(ledger.Status)),
-		rt.ui.statusPill("provider", statusOverviewProvider(rt), "info"),
-		rt.ui.statusPill("permission", statusOverviewPermission(rt), statusOverviewPermissionTone(rt)),
-		rt.ui.statusPill("progress", configProgressDisplay(rt.cfg), "info"),
-	))
-	fmt.Fprintln(rt.writer, rt.ui.summaryLine(
-		rt.ui.statusPill("mcp", statusOverviewMCP(rt), statusOverviewMCPTone(rt)),
-		rt.ui.statusPill("skills", fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), "info"),
-		rt.ui.statusPill("verify", statusOverviewVerification(rt), statusOverviewVerificationTone(rt)),
-		rt.ui.statusPill("memory", fmt.Sprintf("%d", rt.persistentMemoryCount()), "info"),
-	))
-	if next := runtimeGatePrimaryNextCommandLine(ledger); next != "" {
+	if summary := rt.ui.statusSummaryBlock("", snapshot.Items, terminalWidth()); strings.TrimSpace(summary) != "" {
+		fmt.Fprintln(rt.writer, summary)
+	}
+	if next := runtimeGatePrimaryNextCommandLine(snapshot.Ledger); next != "" {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", next))
 	} else {
 		fmt.Fprintln(rt.writer, rt.ui.activityLine("next", "/status detail for lifecycle evidence, /provider status for live provider details."))
 	}
-	if warnings := statusOverviewWarningCount(rt); warnings > 0 {
+	if warnings := snapshot.WarningCount; warnings > 0 {
 		fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf("%d extension warning(s); see Extensions below.", warnings)))
 	}
+	if strings.TrimSpace(snapshot.ProviderError) != "" {
+		fmt.Fprintln(rt.writer, rt.ui.errorLine("provider error: "+snapshot.ProviderError))
+	}
+}
+
+type operatorStatusSnapshot struct {
+	Ledger        RuntimeGateLedger
+	Items         []statusSummaryItem
+	WarningCount  int
+	ProviderError string
+}
+
+func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnapshot {
+	if rt == nil {
+		return operatorStatusSnapshot{}
+	}
+	ledger := rt.runtimeGateLedgerForStatus(action)
+	ledger.Normalize()
+	warningCount := statusOverviewWarningCount(rt)
+	providerError := ""
 	if rt.clientErr != nil {
-		fmt.Fprintln(rt.writer, rt.ui.errorLine("provider error: "+rt.clientErr.Error()))
+		providerError = rt.clientErr.Error()
+	}
+	items := []statusSummaryItem{
+		{Label: "cwd", Value: statusOverviewCWD(rt), Tone: "info"},
+		{Label: "provider", Value: statusOverviewProvider(rt), Tone: "info"},
+		{Label: "gate", Value: statusOverviewGateLabel(ledger), Tone: statusOverviewGateTone(ledger.Status)},
+		{Label: "perm", Value: statusOverviewPermission(rt), Tone: statusOverviewPermissionTone(rt)},
+		{Label: "progress", Value: configProgressDisplay(rt.cfg), Tone: "info"},
+		{Label: "mcp", Value: statusOverviewMCP(rt), Tone: statusOverviewMCPTone(rt)},
+		{Label: "skills", Value: fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), Tone: "info"},
+		{Label: "verify", Value: statusOverviewVerification(rt), Tone: statusOverviewVerificationTone(rt)},
+		{Label: "memory", Value: fmt.Sprintf("%d", rt.persistentMemoryCount()), Tone: "info"},
+	}
+	if warningCount > 0 {
+		items = append(items, statusSummaryItem{Label: "warn", Value: fmt.Sprintf("%d", warningCount), Tone: "warn"})
+	}
+	if providerError != "" {
+		items = append(items, statusSummaryItem{Label: "route", Value: "provider_error", Tone: "error"})
+	}
+	return operatorStatusSnapshot{
+		Ledger:        ledger,
+		Items:         items,
+		WarningCount:  warningCount,
+		ProviderError: providerError,
 	}
 }
 
