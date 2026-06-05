@@ -8753,6 +8753,7 @@ func (a *Agent) systemPrompt() string {
 	b.WriteString("When code changes are needed, prefer the smallest correct diff and verify with tests or builds when practical.\n")
 	b.WriteString("When using edit tools, prefer narrow hunks anchored to current file contents; if a fix would produce a large patch, apply the first independent hunk and continue after rereading instead of generating a large tool-call payload. When a review/pre-write gate explicitly requires all RFs to be addressed, include the required RF hunks as separate narrow hunks instead of one large rewrite.\n")
 	b.WriteString("If the user asks a question, answer directly before suggesting extra work.\n")
+	b.WriteString("For user-visible final replies, lead with the concrete outcome, then briefly state changed files or findings, verification, and remaining risk when relevant. Avoid exposing internal runtime jargon such as gate, ledger, route, harness, lifecycle, or RF unless the user specifically asks for those internals; translate it into plain review status, verification status, blockers, and next action.\n")
 	if prefersReadOnlyAnalysisIntent(latestUser) {
 		b.WriteString("The latest user request is analysis-only. Investigate and explain the issue, but do not modify files or call edit tools unless the user explicitly asks for a fix.\n")
 	} else if looksLikeExplicitEditIntent(latestUser) {
@@ -8860,6 +8861,7 @@ func (a *Agent) systemPrompt() string {
 				b.WriteString("\n")
 			}
 			b.WriteString("Use this ledger before final answers: connect what changed, worker evidence, verification outcome, retry state, final review, and any remaining risk in one coherent summary.\n")
+			b.WriteString("Write that summary in plain user-facing language. Do not copy ledger field names into the answer unless the user asks for diagnostics.\n")
 		}
 	}
 	if a.Session.LastCodingHarnessReport != nil {

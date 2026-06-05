@@ -1797,6 +1797,7 @@ func compactThinkingStatus(cfg Config, text string) string {
 	if trimmed == "" {
 		return ""
 	}
+	trimmed = humanizeProgressMessage(cfg, trimmed)
 
 	lower := strings.ToLower(trimmed)
 	switch {
@@ -1839,22 +1840,37 @@ func compactThinkingStatus(cfg Config, text string) string {
 	case strings.Contains(lower, "main model is reading the code") ||
 		strings.Contains(lower, "main model is still reading code") ||
 		strings.Contains(lower, "main model code review request") ||
+		strings.Contains(lower, "asking the main model to review") ||
 		strings.Contains(lower, "메인 모델이 코드를 읽고") ||
 		strings.Contains(lower, "메인 모델이 아직 코드를 읽고") ||
+		strings.Contains(lower, "메인 모델에 코드 리뷰를 요청") ||
 		strings.Contains(lower, "메인 모델 코드 검토 요청"):
 		return localizedText(cfg, "Main model is reading code...", "메인 모델이 코드 검토 중 ...")
 	case strings.Contains(lower, "main model code review result") ||
+		strings.Contains(lower, "main model review finished") ||
+		strings.Contains(lower, "main model review completed") ||
+		strings.Contains(lower, "main model review is done") ||
+		strings.Contains(lower, "메인 모델 리뷰 완료") ||
+		strings.Contains(lower, "메인 모델 리뷰가 끝났") ||
 		strings.Contains(lower, "메인 모델 검토 결과"):
 		return localizedText(cfg, "Main model review result received.", "메인 모델 검토 결과 수신.")
 	case strings.Contains(lower, "review model is cross-checking") ||
 		strings.Contains(lower, "review model is still cross-checking") ||
+		strings.Contains(lower, "review model is checking") ||
 		strings.Contains(lower, "review model cross-check request") ||
+		strings.Contains(lower, "asking the review model to cross-check") ||
 		strings.Contains(lower, "리뷰 모델이 메인") ||
 		strings.Contains(lower, "리뷰 모델이 아직") ||
+		strings.Contains(lower, "리뷰 모델이 메인 초안을 확인") ||
+		strings.Contains(lower, "리뷰 모델에 교차 검토를 요청") ||
 		strings.Contains(lower, "리뷰 모델 교차 검토 요청"):
 		return localizedText(cfg, "Review model is cross-checking...", "리뷰 모델이 교차 검토 중 ...")
 	case strings.Contains(lower, "review model cross-check result") ||
+		strings.Contains(lower, "review model cross-check finished") ||
+		strings.Contains(lower, "review model returned its cross-check") ||
+		strings.Contains(lower, "review model finished") ||
 		strings.Contains(lower, "리뷰 모델 교차 검토 결과") ||
+		strings.Contains(lower, "리뷰 모델 교차 검토 완료") ||
 		strings.Contains(lower, "리뷰 모델 검토 결과"):
 		return localizedText(cfg, "Review model result received.", "리뷰 모델 검토 결과 수신.")
 	case strings.Contains(lower, "automatic pre-write review found blockers"):
@@ -1918,18 +1934,28 @@ func classifyProgressKind(text string) string {
 		strings.Contains(lower, "메모리"):
 		return "memory"
 	case strings.Contains(lower, "main model code review"),
+		strings.Contains(lower, "asking the main model to review"),
+		strings.Contains(lower, "main model review finished"),
+		strings.Contains(lower, "main model review is done"),
 		strings.Contains(lower, "main model is reading the code"),
 		strings.Contains(lower, "main model is still reading code"),
 		strings.Contains(lower, "main model review result"),
+		strings.Contains(lower, "메인 모델 리뷰"),
+		strings.Contains(lower, "메인 모델에 코드 리뷰"),
 		strings.Contains(lower, "메인 모델 코드 검토"),
 		strings.Contains(lower, "메인 모델이 코드를 읽고"),
 		strings.Contains(lower, "메인 모델이 아직 코드를 읽고"),
 		strings.Contains(lower, "메인 모델 검토 결과"):
 		return "main"
 	case strings.Contains(lower, "review model cross-check"),
+		strings.Contains(lower, "asking the review model to cross-check"),
+		strings.Contains(lower, "review model is checking"),
 		strings.Contains(lower, "review model is cross-checking"),
 		strings.Contains(lower, "review model is still cross-checking"),
 		strings.Contains(lower, "review model result"),
+		strings.Contains(lower, "review model returned its cross-check"),
+		strings.Contains(lower, "리뷰 모델이 메인 초안을 확인"),
+		strings.Contains(lower, "리뷰 모델에 교차 검토"),
 		strings.Contains(lower, "리뷰 모델 교차 검토"),
 		strings.Contains(lower, "리뷰 모델이 메인"),
 		strings.Contains(lower, "리뷰 모델이 아직"),

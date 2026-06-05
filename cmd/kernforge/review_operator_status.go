@@ -1914,24 +1914,31 @@ func reviewCompactLifecycleKind(status *ReviewCompactStatus) string {
 func reviewOperatorProgressSuffix(phase string, status string, reason string, waitingOn string, next string) string {
 	parts := []string{}
 	if phase = strings.TrimSpace(phase); phase != "" {
-		parts = append(parts, "phase="+phase)
+		parts = append(parts, "stage: "+readableProgressToken(phase))
 	}
 	if status = strings.TrimSpace(status); status != "" {
-		parts = append(parts, "status="+status)
+		parts = append(parts, "state: "+readableProgressToken(status))
 	}
 	if reason = strings.TrimSpace(reason); reason != "" {
-		parts = append(parts, "reason="+sanitizeProgressToken(reason, 96))
+		parts = append(parts, "why: "+sanitizeProgressToken(reason, 96))
 	}
 	if waitingOn = strings.TrimSpace(waitingOn); waitingOn != "" {
-		parts = append(parts, "waiting_on="+waitingOn)
+		parts = append(parts, "waiting for: "+readableProgressToken(waitingOn))
 	}
 	if next = strings.TrimSpace(next); next != "" {
-		parts = append(parts, "next="+next)
+		parts = append(parts, "next: "+readableProgressToken(next))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "[" + strings.Join(parts, " ") + "]"
+	return "[" + strings.Join(parts, "; ") + "]"
+}
+
+func readableProgressToken(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	text = strings.ReplaceAll(text, "_", " ")
+	text = strings.ReplaceAll(text, "-", " ")
+	return text
 }
 
 func sanitizeProgressToken(text string, limit int) string {

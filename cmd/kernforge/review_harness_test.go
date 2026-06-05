@@ -1764,18 +1764,18 @@ func TestDistinctReviewModelProgressIsExplicit(t *testing.T) {
 		t.Fatalf("expected cross reviewer prompt to include primary draft, got %q", crossPrompt)
 	}
 	for _, needle := range []string{
-		"Review phase 1/2: main model code review",
+		"Review request 1/2: main model code review",
 		"Main model is reading the code and checking the repair direction from the collected local evidence.",
-		"Main model code review request: scripted / main-model.",
-		"Model-call budget: main model code review",
-		"Main model code review result: completed",
-		"Main model code review completed. Sending its draft and the same evidence to the review model.",
-		"Review phase 2/2: review model cross-check",
-		"Review model is cross-checking the main model draft and the same evidence before the final gate is decided.",
-		"Review model cross-check request: cross -> scripted / reviewer-model (main: scripted / main-model).",
-		"Model-call budget: review model cross-check",
-		"Review model cross-check result: cross completed",
-		"Review model returned its cross-check. Kernforge is merging both reviews for the final gate.",
+		"Asking the main model to review the code: scripted / main-model.",
+		"Review call budget: main model code review",
+		"Main model review finished: completed",
+		"Main model review is done. Sending its draft and the same evidence to the review model.",
+		"Review request 2/2: review model cross-check",
+		"Review model is checking the main draft against the same evidence.",
+		"Asking the review model to cross-check: cross uses scripted / reviewer-model (main: scripted / main-model).",
+		"Review call budget: review model cross-check",
+		"Review model cross-check finished for cross: completed",
+		"Review model returned its cross-check. Merging both review results now.",
 		"Review gate result:",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
@@ -1822,7 +1822,7 @@ func TestFocusedLineRangeReviewUsesFastContextBudget(t *testing.T) {
 	if len(run.Evidence.Text) > reviewSourceAnalysisMaxContextChars {
 		t.Fatalf("focused evidence should be capped, got %d > %d", len(run.Evidence.Text), reviewSourceAnalysisMaxContextChars)
 	}
-	if indexStringContaining(progress, fmt.Sprintf("max_context=%d", reviewSourceAnalysisMaxContextChars)) < 0 {
+	if indexStringContaining(progress, fmt.Sprintf("Context limit %d chars", reviewSourceAnalysisMaxContextChars)) < 0 {
 		t.Fatalf("expected focused max_context progress, got %#v", progress)
 	}
 }
@@ -1882,7 +1882,7 @@ func TestPreFixLineRangeKeepsExplicitLargeEvidenceBudget(t *testing.T) {
 	if len(run.Evidence.Text) < reviewSourceAnalysisMaxContextChars-8192 {
 		t.Fatalf("explicit pre-fix line-range evidence should use the source-analysis budget: chars=%d max=%d", len(run.Evidence.Text), reviewSourceAnalysisMaxContextChars)
 	}
-	if indexStringContaining(progress, fmt.Sprintf("max_context=%d", reviewSourceAnalysisMaxContextChars)) < 0 {
+	if indexStringContaining(progress, fmt.Sprintf("Context limit %d chars", reviewSourceAnalysisMaxContextChars)) < 0 {
 		t.Fatalf("expected explicit pre-fix max_context=%d progress, got %#v", reviewSourceAnalysisMaxContextChars, progress)
 	}
 	for _, want := range []string{
@@ -2302,10 +2302,10 @@ func TestReviewProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
 	if len(progress) != 2 {
 		t.Fatalf("expected two progress lines, got %#v", progress)
 	}
-	if !strings.Contains(progress[0], "Full flow (current stage in brackets): [1 scope discovery] -> 2 evidence pack") {
+	if !strings.Contains(progress[0], "Flow: [1 scope discovery] -> 2 evidence pack") {
 		t.Fatalf("first progress line should highlight stage 1 in full flow, got %q", progress[0])
 	}
-	if !strings.Contains(progress[1], "Full flow (current stage in brackets): 1 scope discovery -> [2 evidence pack] -> 3 model review") {
+	if !strings.Contains(progress[1], "Flow: 1 scope discovery -> [2 evidence pack] -> 3 model review") {
 		t.Fatalf("second progress line should highlight stage 2 in full flow, got %q", progress[1])
 	}
 	if strings.Contains(progress[0], "..") || strings.Contains(progress[1], "..") {
@@ -2335,7 +2335,7 @@ func TestReviewProgressCompactOmitsFullFlowDiagnostics(t *testing.T) {
 				t.Fatalf("expected two progress lines, got %#v", progress)
 			}
 			for _, line := range progress {
-				if strings.Contains(line, "Full flow") || strings.Contains(line, "전체 흐름") || strings.Contains(line, "phase=") {
+				if strings.Contains(line, "Flow:") || strings.Contains(line, "흐름:") || strings.Contains(line, "phase=") {
 					t.Fatalf("compact progress should omit full-flow diagnostics, got %#v", progress)
 				}
 				if !strings.HasPrefix(line, "review ") {
@@ -2364,7 +2364,7 @@ func TestRepairWorkflowProgressHighlightsCurrentStageInFullFlow(t *testing.T) {
 	if len(progress) != 1 {
 		t.Fatalf("expected one progress line, got %#v", progress)
 	}
-	if !strings.Contains(progress[0], "Full flow (current stage in brackets): 1 review before fix -> [2 write/revise patch] -> 3 pre-write review") {
+	if !strings.Contains(progress[0], "Flow: 1 review before fix -> [2 write/revise patch] -> 3 pre-write review") {
 		t.Fatalf("repair workflow should highlight the current full-flow stage, got %q", progress[0])
 	}
 	if strings.Contains(progress[0], "..") {
@@ -2380,9 +2380,9 @@ func TestReviewModelLongWaitProgressExplainsCrossHandoff(t *testing.T) {
 	}, 2*time.Minute+5*time.Second)
 
 	for _, want := range []string{
-		"Review model is still cross-checking the main draft",
-		"merge it with the main model review",
-		"final gate",
+		"Review model is still checking the main draft",
+		"merge its result with the main review",
+		"will be recorded",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("expected %q in long-wait progress, got %q", want, message)
@@ -2408,7 +2408,7 @@ func TestReviewModelRetryProgressIncludesAttemptBudget(t *testing.T) {
 	if len(progress) != 1 {
 		t.Fatalf("expected one progress line, got %#v", progress)
 	}
-	for _, want := range []string{"strict review (2/3)", "cross", "DeepSeek / deepseek-v4-pro"} {
+	for _, want := range []string{"stricter instructions (2/3)", "cross", "DeepSeek / deepseek-v4-pro"} {
 		if !strings.Contains(progress[0], want) {
 			t.Fatalf("expected %q in retry progress, got %q", want, progress[0])
 		}
@@ -2822,7 +2822,7 @@ func TestLocalReviewEmptyResponseRetriesWithCompactPrompt(t *testing.T) {
 	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
 		t.Fatalf("expected compact retry to salvage the local review run, got %#v", run.ReviewerRuns)
 	}
-	if indexStringContaining(progress, "empty response") < 0 {
+	if indexStringContaining(progress, "empty answer") < 0 {
 		t.Fatalf("expected empty-response retry progress, got %#v", progress)
 	}
 }
@@ -2889,7 +2889,7 @@ func TestLocalRouteHealthUsesCompactRecoveryInsteadOfInitialSkip(t *testing.T) {
 	if len(run.ReviewerRuns) != 1 || run.ReviewerRuns[0].Status != "completed" || run.ReviewerRuns[0].ModelQuality != reviewModelQualityUsable {
 		t.Fatalf("expected compact health recovery to complete the local review run, got %#v", run.ReviewerRuns)
 	}
-	if indexStringContaining(progress, "compact recovery") < 0 {
+	if indexStringContaining(progress, "shorter recovery prompt") < 0 {
 		t.Fatalf("expected compact recovery progress, got %#v", progress)
 	}
 }
@@ -2956,7 +2956,7 @@ func TestLargeLocalReviewUsesCompactInitialPrompt(t *testing.T) {
 	if len(localClient.requests[0].Messages[0].Text) >= len(run.Evidence.Text) {
 		t.Fatalf("expected compact prompt to be smaller than full evidence")
 	}
-	if indexStringContaining(progress, "compact initial prompt") < 0 {
+	if indexStringContaining(progress, "shorter first review prompt") < 0 {
 		t.Fatalf("expected compact initial progress, got %#v", progress)
 	}
 }
@@ -3088,7 +3088,7 @@ func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 	if !strings.Contains(rendered, "provider_raw=") {
 		t.Fatalf("expected CLI review output to expose provider raw artifact path, got %q", rendered)
 	}
-	if indexStringContaining(progress, "reasoning content") < 0 && indexStringContaining(progress, "reasoning channel") < 0 {
+	if indexStringContaining(progress, "hidden reasoning") < 0 && indexStringContaining(progress, "visible review result") < 0 {
 		t.Fatalf("expected reasoning-channel retry progress, got %#v", progress)
 	}
 }
@@ -3153,7 +3153,7 @@ func TestLocalReviewUsesReasoningRecoveryOnlyAfterFinalBlockRetryFails(t *testin
 	if !run.Result.Degraded || !strings.Contains(run.Result.DegradedReason, "reasoning_content") {
 		t.Fatalf("expected degraded reasoning fallback marker, got %#v", run.Result)
 	}
-	if indexStringContaining(progress, "reasoning channel") < 0 {
+	if indexStringContaining(progress, "hidden reasoning field") < 0 {
 		t.Fatalf("expected reasoning recovery progress, got %#v", progress)
 	}
 }
@@ -3258,7 +3258,7 @@ func TestLocalReasoningOnlyCompactInitialPromptRetriesForFinalBlock(t *testing.T
 	if !strings.Contains(provider.scriptedProviderClient.requests[1].Messages[0].Text, "provider reasoning channel") {
 		t.Fatalf("expected reasoning-only retry prompt, got %q", provider.scriptedProviderClient.requests[1].Messages[0].Text)
 	}
-	if indexStringContaining(progress, "reasoning content") < 0 && indexStringContaining(progress, "reasoning channel") < 0 {
+	if indexStringContaining(progress, "숨은 reasoning") < 0 && indexStringContaining(progress, "보이는 리뷰 결과") < 0 {
 		t.Fatalf("expected reasoning-only retry progress, got %#v", progress)
 	}
 }
@@ -3855,11 +3855,11 @@ func TestSameModelReviewProgressShowsScopeEvidenceAndRequest(t *testing.T) {
 	}
 
 	for _, needle := range []string{
-		"Review scope discovery:",
-		"Review evidence prepared:",
-		"max_context=180000",
-		"Main model code review request: scripted / main-model.",
-		"Main model code review result: completed",
+		"Review scope selected:",
+		"Review evidence ready:",
+		"Context limit 180000 chars",
+		"Asking the main model to review the code: scripted / main-model.",
+		"Main model review finished: completed",
 	} {
 		if indexStringContaining(progress, needle) < 0 {
 			t.Fatalf("expected progress to contain %q, got %#v", needle, progress)
@@ -3955,7 +3955,7 @@ func TestReviewModelRetriesOmittedFindingOutput(t *testing.T) {
 	if !strings.Contains(reviewer.requests[1].Messages[0].Text, "이전 리뷰 출력은") {
 		t.Fatalf("retry prompt should explain the rejected output, got %q", reviewer.requests[1].Messages[0].Text)
 	}
-	if indexStringContaining(progress, "엄격 리뷰로 재시도합니다") < 0 {
+	if indexStringContaining(progress, "더 엄격한 지시로 재시도합니다") < 0 {
 		t.Fatalf("expected retry progress message, got %#v", progress)
 	}
 }
@@ -4030,7 +4030,7 @@ func TestReviewModelDoesNotRetryUsableFindingsForRawOmissionMarker(t *testing.T)
 	if run.Result.ModelQuality != reviewModelQualityUsable {
 		t.Fatalf("expected usable quality, got %#v", run.Result)
 	}
-	if indexStringContaining(progress, "strict review") >= 0 || indexStringContaining(progress, "엄격 리뷰") >= 0 {
+	if indexStringContaining(progress, "stricter instructions") >= 0 || indexStringContaining(progress, "더 엄격한 지시") >= 0 {
 		t.Fatalf("did not expect strict retry progress, got %#v", progress)
 	}
 	var modelFindings []ReviewFinding
@@ -4119,10 +4119,10 @@ func TestDeepSeekOptionalCrossSkipsOmissionRetryWhenMainReviewIsActionable(t *te
 	if len(crossReviewer.requests) != 1 {
 		t.Fatalf("optional DeepSeek cross-check should not strict-retry when main review is actionable, got %d requests result=%#v progress=%#v", len(crossReviewer.requests), run.Result, progress)
 	}
-	if indexStringContaining(progress, "strict retry is skipped") < 0 {
+	if indexStringContaining(progress, "skipping optional retry") < 0 {
 		t.Fatalf("expected skipped strict retry progress, got %#v", progress)
 	}
-	if indexStringContaining(progress, "retrying strict review") >= 0 {
+	if indexStringContaining(progress, "retrying with stricter instructions") >= 0 {
 		t.Fatalf("did not expect strict retry progress, got %#v", progress)
 	}
 }
@@ -4224,10 +4224,10 @@ func TestDeepSeekOptionalCrossRetriesExplicitTokenLimitStop(t *testing.T) {
 	if len(crossReviewer.requests) != 2 {
 		t.Fatalf("explicit token-limit stop should still strict-retry, got %d requests result=%#v progress=%#v", len(crossReviewer.requests), run.Result, progress)
 	}
-	if indexStringContaining(progress, "retrying strict review") < 0 {
+	if indexStringContaining(progress, "retrying with stricter instructions") < 0 {
 		t.Fatalf("expected strict retry progress, got %#v", progress)
 	}
-	if indexStringContaining(progress, "strict retry is skipped") >= 0 {
+	if indexStringContaining(progress, "skipping optional retry") >= 0 {
 		t.Fatalf("did not expect skipped retry progress, got %#v", progress)
 	}
 }
@@ -4317,7 +4317,7 @@ func TestReviewModelRetriesCutOffFindingOutput(t *testing.T) {
 	if len(crossFindings) != 1 || !strings.Contains(crossFindings[0].TestRecommendation, "preserve final logs") {
 		t.Fatalf("expected retry cross-reviewer finding to replace cut-off test recommendation, got %#v", run.Findings)
 	}
-	if indexStringContaining(progress, "생략/잘림 징후") < 0 {
+	if indexStringContaining(progress, "더 엄격한 지시로 재시도합니다") < 0 {
 		t.Fatalf("expected cut-off retry progress message, got %#v", progress)
 	}
 }
@@ -5550,7 +5550,8 @@ func TestReviewProposedEditKeepsKoreanAfterWrappedInternalFeedback(t *testing.T)
 		}
 	}
 	joinedPersistent := strings.Join(persistent, "\n")
-	if !strings.Contains(joinedPersistent, "최종 검토 결과:") {
+	if !strings.Contains(joinedPersistent, "최종 검토 결과:") &&
+		!strings.Contains(joinedPersistent, "모델 리뷰 생략 결과:") {
 		t.Fatalf("expected Korean visible final summary, got %#v", persistent)
 	}
 	if strings.Contains(joinedPersistent, "Final review result:") {

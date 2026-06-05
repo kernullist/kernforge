@@ -46,84 +46,83 @@ func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
 
 func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 	if strings.TrimSpace(event.Message) != "" {
-		return formatProgressEventMessageWithContext(event, strings.TrimSpace(event.Message))
+		return formatProgressEventMessageWithContext(event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 	}
 	target := formatProgressEventTarget(event)
 	switch strings.TrimSpace(event.Kind) {
 	case progressKindModelRequestStart:
 		if target == "" {
-			return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model request started.", "모델 요청 시작."))
+			return formatProgressEventMessageWithContext(event, localizedText(cfg, "Sent the request to the model.", "모델에 요청을 보냈습니다."))
 		}
-		return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model request started: %s", "모델 요청 시작: %s"), target))
+		return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Sent the request to %s.", "%s에 요청을 보냈습니다."), target))
 	case progressKindModelRequestWait:
 		if target == "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for model response (%s)...", "모델 응답 대기 중 (%s) ..."), formatProgressElapsed(event.Elapsed)))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for the model answer (%s elapsed).", "모델 답변을 기다리는 중입니다(%s 경과)."), formatProgressElapsed(event.Elapsed)))
 		}
-		return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for model response from %s (%s)...", "%s 모델 응답 대기 중 (%s) ..."), target, formatProgressElapsed(event.Elapsed)))
+		return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for %s to answer (%s elapsed).", "%s 답변을 기다리는 중입니다(%s 경과)."), target, formatProgressElapsed(event.Elapsed)))
 	case progressKindModelRequestDone:
-		status := firstNonBlankString(event.Status, "completed")
-		if event.Elapsed > 0 {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model request %s in %s.", "모델 요청 %s (%s)."), status, formatProgressElapsed(event.Elapsed)))
-		}
-		return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model request %s.", "모델 요청 %s."), status))
+		return formatProgressEventMessageWithContext(event, formatProgressModelDoneMessage(cfg, event.Status, event.Elapsed))
 	case progressKindModelRouteWait:
 		if strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for model route: %s", "모델 route 대기 중: %s"), event.RouteLabel))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Waiting for this model slot: %s.", "이 모델의 실행 순서를 기다리는 중입니다: %s."), event.RouteLabel))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Waiting for model route permit...", "모델 route permit 대기 중 ..."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Waiting for an available model slot.", "사용 가능한 모델 실행 순서를 기다리는 중입니다."))
 	case progressKindModelRouteAcquired:
 		if event.Elapsed > 0 && strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model route ready: %s (waited %s)", "모델 route 준비됨: %s (%s 대기)"), event.RouteLabel, formatProgressElapsed(event.Elapsed)))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model slot is ready: %s (waited %s).", "모델 실행 순서가 준비되었습니다: %s(%s 대기)."), event.RouteLabel, formatProgressElapsed(event.Elapsed)))
 		}
 		if strings.TrimSpace(event.RouteLabel) != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model route ready: %s", "모델 route 준비됨: %s"), event.RouteLabel))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model slot is ready: %s.", "모델 실행 순서가 준비되었습니다: %s."), event.RouteLabel))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model route ready.", "모델 route 준비됨."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model slot is ready.", "모델 실행 순서가 준비되었습니다."))
 	case progressKindModelStreamToolCall:
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model is preparing tool call: %s", "모델이 tool call 준비 중: %s"), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model is choosing a tool: %s.", "모델이 사용할 도구를 고르는 중입니다: %s."), event.ToolName))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model is preparing a tool call.", "모델이 tool call 준비 중."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model is choosing a tool.", "모델이 사용할 도구를 고르는 중입니다."))
 	case progressKindModelStreamToolArgs:
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model is filling tool arguments for %s...", "모델이 %s 인자를 작성 중 ..."), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model is preparing inputs for %s.", "모델이 %s 입력값을 준비 중입니다."), event.ToolName))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model is filling tool arguments...", "모델이 tool 인자를 작성 중 ..."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model is preparing tool inputs.", "모델이 도구 입력값을 준비 중입니다."))
 	case progressKindModelStreamToolReady:
 		if event.ToolName != "" && event.ArgumentsPreview != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model prepared tool call: %s %s", "모델 tool call 준비 완료: %s %s"), event.ToolName, event.ArgumentsPreview))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool request is ready: %s (%s).", "도구 요청이 준비되었습니다: %s(%s)."), event.ToolName, event.ArgumentsPreview))
 		}
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model prepared tool call: %s", "모델 tool call 준비 완료: %s"), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool request is ready: %s.", "도구 요청이 준비되었습니다: %s."), event.ToolName))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model prepared a tool call.", "모델 tool call 준비 완료."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Tool request is ready.", "도구 요청이 준비되었습니다."))
 	case progressKindModelReroute:
 		if event.Model != "" && event.Status != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Server routed request to %s instead of %s.", "서버가 요청을 %s로 라우팅했습니다(요청 모델: %s)."), event.Status, event.Model))
+			if localePrefersKorean(cfg) {
+				return formatProgressEventMessageWithContext(event, fmt.Sprintf("서버가 요청 모델 %s 대신 %s를 사용했습니다.", event.Model, event.Status))
+			}
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf("Server used %s instead of the requested model %s.", event.Status, event.Model))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Server reported a different model route.", "서버가 다른 모델 route를 보고했습니다."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Server reported that a different model was used.", "서버가 다른 모델을 사용했다고 보고했습니다."))
 	case progressKindModelVerification:
 		if event.Status != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model verification received: %s", "모델 verification 수신: %s"), event.Status))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Model identity check received: %s.", "모델 확인 정보를 받았습니다: %s."), event.Status))
 		}
-		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model verification received.", "모델 verification 수신."))
+		return formatProgressEventMessageWithContext(event, localizedText(cfg, "Model identity check received.", "모델 확인 정보를 받았습니다."))
 	case progressKindToolStarted:
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Using %s...", "%s 실행 중 ..."), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Running tool: %s.", "도구 실행 중: %s."), event.ToolName))
 		}
 	case progressKindToolCompleted:
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "%s completed.", "%s 완료."), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool finished: %s.", "도구 완료: %s."), event.ToolName))
 		}
 	case progressKindToolFailed:
 		if event.ToolName != "" && event.Status != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "%s failed: %s", "%s 실패: %s"), event.ToolName, event.Status))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool failed: %s (%s).", "도구 실패: %s(%s)."), event.ToolName, event.Status))
 		}
 		if event.ToolName != "" {
-			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "%s failed.", "%s 실패."), event.ToolName))
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool failed: %s.", "도구 실패: %s."), event.ToolName))
 		}
 	}
-	return formatProgressEventMessageWithContext(event, strings.TrimSpace(event.Message))
+	return formatProgressEventMessageWithContext(event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 }
 
 func formatProgressEventTarget(event ProgressEvent) string {
@@ -186,6 +185,90 @@ func formatProgressElapsed(elapsed time.Duration) string {
 		return "0s"
 	}
 	return elapsed.Round(time.Second).String()
+}
+
+func formatProgressModelDoneMessage(cfg Config, status string, elapsed time.Duration) string {
+	status = strings.ToLower(strings.TrimSpace(status))
+	if elapsed > 0 {
+		elapsedText := formatProgressElapsed(elapsed)
+		switch status {
+		case "failed", "failure", "error":
+			return fmt.Sprintf(localizedText(cfg, "Model answer failed after %s.", "모델 답변이 실패했습니다(%s)."), elapsedText)
+		case "cancelled", "canceled", "cancel":
+			return fmt.Sprintf(localizedText(cfg, "Model answer was canceled after %s.", "모델 답변이 취소되었습니다(%s)."), elapsedText)
+		default:
+			return fmt.Sprintf(localizedText(cfg, "Model answer completed after %s.", "모델 답변이 완료되었습니다(%s)."), elapsedText)
+		}
+	}
+	switch status {
+	case "failed", "failure", "error":
+		return localizedText(cfg, "Model answer failed.", "모델 답변이 실패했습니다.")
+	case "cancelled", "canceled", "cancel":
+		return localizedText(cfg, "Model answer was canceled.", "모델 답변이 취소되었습니다.")
+	default:
+		return localizedText(cfg, "Model answer completed.", "모델 답변이 완료되었습니다.")
+	}
+}
+
+func humanizeProgressMessage(cfg Config, text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.Contains(trimmed, "\n") {
+		return trimmed
+	}
+
+	trimmed = stripProgressDiagnosticSuffix(trimmed)
+	lower := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(lower, "running automatic pre-write review"):
+		return localizedText(cfg, "Reviewing the proposed edit before writing files.", "파일에 쓰기 전에 제안된 수정안을 리뷰하는 중입니다.")
+	case strings.Contains(lower, "main model prepared an edit proposal"):
+		return localizedText(cfg, "Proposed edit is ready; sending it to review before writing.", "수정안이 준비되어, 파일에 쓰기 전에 리뷰로 보냅니다.")
+	case strings.Contains(lower, "running automatic post-change review"):
+		return localizedText(cfg, "Reviewing the applied change.", "적용된 변경을 리뷰하는 중입니다.")
+	case strings.Contains(lower, "automatic post-change review found blockers"):
+		return localizedText(cfg, "Review found blockers; asking the model to revise.", "리뷰에서 차단 항목을 발견해 모델에 수정을 요청합니다.")
+	case strings.Contains(lower, "automatic post-change review completed"):
+		return localizedText(cfg, "Review completed.", "리뷰가 완료되었습니다.")
+	case strings.Contains(lower, "automatic pre-write review found blockers"):
+		return localizedText(cfg, "Review blocked the proposed edit; asking for a corrected patch.", "리뷰가 수정안을 차단했습니다. 수정된 패치를 다시 요청합니다.")
+	case strings.Contains(lower, "review model returned required changes"):
+		return localizedText(cfg, "Review requested code changes; sending them back to the model.", "리뷰가 코드 수정을 요구해 모델에 다시 전달합니다.")
+	case strings.Contains(lower, "review model returned actionable warnings"):
+		return localizedText(cfg, "Review found warnings that need a patch update.", "리뷰에서 패치 수정이 필요한 경고를 발견했습니다.")
+	case strings.Contains(lower, "waiting for the model to summarize"):
+		return localizedText(cfg, "Preparing the final answer.", "최종 답변을 정리하는 중입니다.")
+	case strings.Contains(lower, "tool loop limit reached"):
+		return localizedText(cfg, "Tool-use limit reached; asking the model to finish or choose a clearer next step.", "도구 사용 한도에 도달해, 모델에 마무리하거나 다음 단계를 다시 정하게 합니다.")
+	case strings.Contains(lower, "current model does not support tool use"):
+		return localizedText(cfg, "Current model cannot use tools; retrying without tools.", "현재 모델이 도구를 사용할 수 없어 도구 없이 다시 요청합니다.")
+	}
+	return trimmed
+}
+
+func stripProgressDiagnosticSuffix(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return ""
+	}
+	if idx := strings.Index(trimmed, " actor="); idx >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:idx])
+	}
+	for {
+		end := strings.LastIndex(trimmed, "]")
+		start := strings.LastIndex(trimmed, "[")
+		if end != len(trimmed)-1 || start < 0 || start >= end {
+			break
+		}
+		suffix := strings.ToLower(trimmed[start+1 : end])
+		if !containsAny(suffix, "phase=", "status=", "reason=", "waiting_on=", "next=", "actor=", "next_transition=") {
+			break
+		}
+		trimmed = strings.TrimSpace(trimmed[:start])
+	}
+	return trimmed
 }
 
 func summarizeToolArgumentsPreview(raw string) string {

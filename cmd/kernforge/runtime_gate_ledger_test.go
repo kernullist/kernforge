@@ -1107,7 +1107,7 @@ func TestCompletionAuditIncludesRuntimeGateLedger(t *testing.T) {
 	if artifact.RuntimeGateLedger.Status != runtimeGateStatusBlocked {
 		t.Fatalf("expected blocked runtime gate ledger, got %#v", artifact.RuntimeGateLedger)
 	}
-	item, ok := completionAuditChecklistItem(artifact, "Runtime gate ledger is blocker-free")
+	item, ok := completionAuditChecklistItem(artifact, "No runtime blockers remain")
 	if !ok || item.Status != completionAuditStatusBlocked {
 		t.Fatalf("expected blocked runtime gate checklist item, got %#v ok=%t", item, ok)
 	}

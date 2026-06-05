@@ -328,30 +328,32 @@ func renderFinalAnswerContractPrompt(session *Session) string {
 	contract.Normalize()
 	lines := []string{
 		"- Request class: " + contract.RequestClass,
+		"- Style: lead with the outcome in one sentence, then use short sections only when they help.",
+		"- Style: avoid internal lifecycle terms in the user answer; explain them as review status, verification status, blockers, and next action.",
 	}
 	if contract.ReadOnly {
-		lines = append(lines, "- Read-only: true")
+		lines = append(lines, "- Required fact: this was read-only; no files were edited.")
 	}
 	if contract.RequiresReviewBeforeModify {
-		lines = append(lines, "- Requires review before modification: true")
+		lines = append(lines, "- Required fact: whether review happened before file writes.")
 	}
 	if contract.RequiresPostChangeReview {
-		lines = append(lines, "- Requires post-change review or explicit self-review state: true")
+		lines = append(lines, "- Required fact: post-change review or self-review result.")
 	}
 	if contract.RequiresDocumentGate {
-		lines = append(lines, "- Requires document artifact-quality gate: true")
+		lines = append(lines, "- Required fact: document quality check status.")
 	}
 	if contract.RequiresVerificationDisclosure {
-		lines = append(lines, "- Requires verification disclosure: true")
+		lines = append(lines, "- Required fact: verification ran, did not run, failed, or is blocked.")
 	}
 	if contract.RequiresValidationDisclosure {
-		lines = append(lines, "- Requires validation disclosure: true")
+		lines = append(lines, "- Required fact: validation result or explicit validation gap.")
 	}
 	if len(contract.FinalAnswerRequirements) > 0 {
-		lines = append(lines, "- Final answer must disclose: "+strings.Join(contract.FinalAnswerRequirements, ", "))
+		lines = append(lines, "- Required facts: "+strings.Join(contract.FinalAnswerRequirements, ", "))
 	}
 	if len(contract.SkipRules) > 0 {
-		lines = append(lines, "- Skip rules: "+strings.Join(contract.SkipRules, " | "))
+		lines = append(lines, "- Do not claim skipped work as completed: "+strings.Join(contract.SkipRules, " | "))
 	}
 	return strings.Join(lines, "\n")
 }

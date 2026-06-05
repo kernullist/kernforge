@@ -878,16 +878,14 @@ func completionAuditRuntimeGate(root string, session *Session, artifact *Complet
 	ledger := buildRuntimeGateLedgerWithCompletionAudit(root, session, runtimeGateActionCompletionAudit, artifact.ID)
 	artifact.RuntimeGateLedger = &ledger
 	status := completionAuditStatusPassed
-	requirement := "Runtime gate ledger is blocker-free"
-	evidence := fmt.Sprintf("%s status=%s", ledger.ID, ledger.Status)
+	requirement := "No runtime blockers remain"
+	evidence := fmt.Sprintf("Runtime check %s: %s", ledger.ID, ledger.Status)
 	if len(ledger.Blockers) > 0 {
 		status = completionAuditStatusBlocked
-		requirement = "Runtime gate has blockers"
-		evidence = "Runtime gate blockers: " + strings.Join(limitStrings(ledger.Blockers, 4), " | ")
+		evidence = "Blocked by: " + strings.Join(limitStrings(ledger.Blockers, 4), " | ")
 	} else if len(ledger.Warnings) > 0 {
 		status = completionAuditStatusWarning
-		requirement = "Runtime gate has warnings"
-		evidence = "Runtime gate warnings: " + strings.Join(limitStrings(ledger.Warnings, 4), " | ")
+		evidence = "Warnings: " + strings.Join(limitStrings(ledger.Warnings, 4), " | ")
 	}
 	completionAuditAddItem(artifact, CompletionAuditItem{
 		Requirement: requirement,

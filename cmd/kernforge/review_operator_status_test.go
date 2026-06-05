@@ -186,7 +186,7 @@ func TestOperatorProgressLinesArePhaseAwareAndNonRepeated(t *testing.T) {
 			t.Fatalf("progress line repeated: %#v", progress)
 		}
 		seen[line] = true
-		for _, want := range []string{"phase=", "status=running", "reason=", "waiting_on=", "next="} {
+		for _, want := range []string{"stage:", "state: running", "why:", "waiting for:", "next:"} {
 			if !strings.Contains(line, want) {
 				t.Fatalf("expected phase-aware progress token %q in %q", want, line)
 			}

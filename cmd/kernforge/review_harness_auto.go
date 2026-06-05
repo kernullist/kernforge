@@ -319,8 +319,8 @@ func (a *Agent) emitRepairWorkflowProgress(request string, step int, englishStag
 	flowKorean := reviewProgressFlow([]string{"수정 전 리뷰", "수정안 작성/재작성", "쓰기 전 리뷰", "diff preview/쓰기", "검증", "최종 요약"}, step)
 	message := fmt.Sprintf(
 		localizedTextForReviewRequest(a.Config, request,
-			"Repair workflow %d/%d [%s]: %s. Full flow (current stage in brackets): %s.",
-			"수정 흐름 %d/%d [%s]: %s. 전체 흐름(현재 단계는 대괄호): %s."),
+			"Repair %d/%d - %s: %s. Flow: %s.",
+			"수정 %d/%d - %s: %s. 흐름: %s."),
 		step,
 		total,
 		localizedTextForReviewRequest(a.Config, request, englishStage, koreanStage),
@@ -2054,8 +2054,8 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 	warningCount := len(run.Gate.WarningFindings)
 	content := preWriteReviewFinalContentProgress(cfg, run)
 	report := preWriteReviewReportProgressSuffix(cfg, run)
-	prefixEnglish := "Automatic pre-write review gate evaluated."
-	prefixKorean := "자동 쓰기 전 리뷰 게이트를 판정했습니다."
+	prefixEnglish := "Automatic pre-write review was evaluated."
+	prefixKorean := "자동 쓰기 전 리뷰 판정이 끝났습니다."
 	if proceedToPreview {
 		prefixEnglish = "Automatic pre-write review completed."
 		prefixKorean = "자동 쓰기 전 리뷰가 완료되었습니다."
@@ -2068,7 +2068,7 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 				action += " 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence 확인 부족입니다."
 			}
 		}
-		return strings.TrimSpace(fmt.Sprintf("%s 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s %s", prefixKorean, verdict, blockerCount, warningCount, content, action, report, reviewOperatorProgressSuffix(reviewLifecyclePhasePreWriteReview, reviewTimelineStatusFromVerdict(verdict), "pre-write gate evaluated", "reviewer", reviewLifecyclePhaseApplyingChange)))
+		return strings.TrimSpace(fmt.Sprintf("%s 최종 검토 결과: %s (차단=%d, 경고=%d). %s %s%s", prefixKorean, verdict, blockerCount, warningCount, content, action, report))
 	}
 	action := "Not proceeding to diff preview."
 	if proceedToPreview {
@@ -2077,7 +2077,7 @@ func formatPreWriteFinalReviewProgress(cfg Config, run ReviewRun, proceedToPrevi
 			action += " Remaining warnings are review-evidence visibility gaps, not confirmed unresolved code blockers."
 		}
 	}
-	return strings.TrimSpace(fmt.Sprintf("%s Final review result: %s (blockers=%d, warnings=%d). %s %s%s %s", prefixEnglish, verdict, blockerCount, warningCount, content, action, report, reviewOperatorProgressSuffix(reviewLifecyclePhasePreWriteReview, reviewTimelineStatusFromVerdict(verdict), "pre-write gate evaluated", "reviewer", reviewLifecyclePhaseApplyingChange)))
+	return strings.TrimSpace(fmt.Sprintf("%s Final review result: %s (blockers=%d, warnings=%d). %s %s%s", prefixEnglish, verdict, blockerCount, warningCount, content, action, report))
 }
 
 func preWriteReviewFinalContentProgress(cfg Config, run ReviewRun) string {

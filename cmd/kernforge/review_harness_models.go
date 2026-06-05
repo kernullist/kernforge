@@ -1302,8 +1302,8 @@ func emitReviewPipelineProgress(rt *runtimeState, run ReviewRun, step int, engli
 	flowKorean := reviewProgressFlow([]string{"범위 확인", "증거 준비", "모델 검토", "병합/검산", "게이트 판정", "다음 조치"}, step)
 	message := fmt.Sprintf(
 		localizedText(rt.cfg,
-			"Review progress %d/%d [%s]: %s. Full flow (current stage in brackets): %s.",
-			"리뷰 진행 %d/%d [%s]: %s. 전체 흐름(현재 단계는 대괄호): %s."),
+			"Review %d/%d - %s: %s. Flow: %s.",
+			"리뷰 %d/%d - %s: %s. 흐름: %s."),
 		step,
 		total,
 		localizedText(rt.cfg, englishStage, koreanStage),
@@ -1429,10 +1429,10 @@ func emitReviewScopeDiscoveryProgress(rt *runtimeState, run ReviewRun) {
 	scope := firstNonBlankString(discovery.ScopeWidth, "unknown")
 	preview := reviewProgressPathPreview(discovery.CandidateFiles, 3)
 	if preview != "" {
-		preview = " " + fmt.Sprintf(localizedText(rt.cfg, "candidates=%s", "후보=%s"), preview)
+		preview = " " + fmt.Sprintf(localizedText(rt.cfg, "Candidates: %s", "후보: %s"), preview)
 	}
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review scope discovery: scope=%s confidence=%.2f files=%d symbols=%d terms=%d.%s", "리뷰 scope discovery: 범위=%s 신뢰도=%.2f 파일 후보=%d 심볼=%d 검색어=%d.%s"),
+		localizedText(rt.cfg, "Review scope selected: width=%s confidence=%.2f files=%d symbols=%d search terms=%d.%s", "리뷰 범위를 정했습니다: 폭=%s 신뢰도=%.2f 파일=%d 심볼=%d 검색어=%d.%s"),
 		scope,
 		discovery.Confidence,
 		len(discovery.CandidateFiles),
@@ -1452,10 +1452,10 @@ func emitReviewEvidenceProgress(rt *runtimeState, run ReviewRun, opts ReviewHarn
 		sourceText = strings.Join(run.Evidence.Sources, ",")
 	}
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review evidence prepared: sources=%s paths=%d chars=%d max_context=%d.", "리뷰 evidence 준비: sources=%s paths=%d chars=%d max_context=%d."),
-		sourceText,
+		localizedText(rt.cfg, "Review evidence ready: %d changed paths and %d chars from %s. Context limit %d chars.", "리뷰 근거를 준비했습니다: 변경 경로 %d개, 근거 %d자, 소스 %s. 컨텍스트 한도 %d자."),
 		len(run.ChangeSet.ChangedPaths),
 		len(run.Evidence.Text),
+		sourceText,
 		opts.MaxContextChars,
 	)
 	rt.agent.EmitProgress(message)
@@ -1494,14 +1494,14 @@ func emitReviewModelRequestProgress(rt *runtimeState, role string, label string,
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "main":
 		message := fmt.Sprintf(
-			localizedText(rt.cfg, "Main model code review request: %s.", "메인 모델 코드 검토 요청: %s."),
+			localizedText(rt.cfg, "Asking the main model to review the code: %s.", "메인 모델에 코드 리뷰를 요청합니다: %s."),
 			label,
 		)
 		rt.agent.EmitProgress(message)
 		return
 	case "cross":
 		message := fmt.Sprintf(
-			localizedText(rt.cfg, "Review model cross-check request: %s -> %s (main: %s).", "리뷰 모델 교차 검토 요청: %s -> %s (메인: %s)."),
+			localizedText(rt.cfg, "Asking the review model to cross-check: %s uses %s (main: %s).", "리뷰 모델에 교차 검토를 요청합니다: %s는 %s 사용(메인: %s)."),
 			roleName,
 			label,
 			mainLabel,
@@ -1510,7 +1510,7 @@ func emitReviewModelRequestProgress(rt *runtimeState, role string, label string,
 		return
 	}
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model request: %s -> %s (main: %s).", "리뷰 모델 요청: %s -> %s (메인: %s)."),
+		localizedText(rt.cfg, "Asking review model %s to run on %s (main: %s).", "리뷰 모델 %s에 요청합니다: %s 사용(메인: %s)."),
 		roleName,
 		label,
 		mainLabel,
@@ -1529,7 +1529,7 @@ func emitReviewModelHealthCallSkippedProgress(rt *runtimeState, reviewerRun Revi
 	}
 	reason := firstNonBlankString(strings.TrimSpace(health.Recommendation), "recent reviewer route health is weak")
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review route health skipped repeated reviewer call: %s -> %s (%s).", "리뷰 route health가 반복 리뷰 모델 호출을 건너뜁니다: %s -> %s (%s)."),
+		localizedText(rt.cfg, "Skipping a repeated review call because this route is unhealthy: %s uses %s (%s).", "리뷰 경로 상태가 좋지 않아 반복 호출을 건너뜁니다: %s는 %s 사용(%s)."),
 		roleName,
 		valueOrUnset(model),
 		reason,
@@ -1548,7 +1548,7 @@ func emitReviewModelLocalCompactRecoveryProgress(rt *runtimeState, reviewerRun R
 	}
 	reason := firstNonBlankString(strings.TrimSpace(health.Recommendation), "recent local reviewer output was weak")
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Local-model review route health is weak; using a compact recovery prompt instead of skipping: %s -> %s (%s).", "로컬 모델 리뷰 route 상태가 약해서 스킵하지 않고 compact recovery prompt로 재시도합니다: %s -> %s (%s)."),
+		localizedText(rt.cfg, "Local review model looked weak; retrying with a shorter recovery prompt: %s uses %s (%s).", "로컬 리뷰 모델 응답 품질이 약해 짧은 복구 프롬프트로 재시도합니다: %s는 %s 사용(%s)."),
 		roleName,
 		valueOrUnset(model),
 		reason,
@@ -1562,7 +1562,7 @@ func emitReviewModelEmptyResponseRetryProgress(rt *runtimeState, reviewerRun Rev
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Local-model review returned an empty response; retrying once with a compact structured prompt: %s -> %s.", "로컬 모델 리뷰 응답이 비어 있어 compact structured prompt로 한 번 재시도합니다: %s -> %s."),
+		localizedText(rt.cfg, "Local review model returned an empty answer; retrying once with a shorter prompt: %s uses %s.", "로컬 리뷰 모델 답변이 비어 있어 짧은 프롬프트로 한 번 재시도합니다: %s는 %s 사용."),
 		roleName,
 		valueOrUnset(label),
 	)
@@ -1575,7 +1575,7 @@ func emitReviewModelReasoningOnlyRetryProgress(rt *runtimeState, reviewerRun Rev
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Local-model review wrote only provider reasoning content; retrying once and requiring a final REVIEW_RESULT block: %s -> %s.", "로컬 모델 리뷰가 provider reasoning content에만 응답해, final REVIEW_RESULT 블록을 요구하며 한 번 재시도합니다: %s -> %s."),
+		localizedText(rt.cfg, "Local review model only produced hidden reasoning; retrying once and asking for the visible review result: %s uses %s.", "로컬 리뷰 모델이 숨은 reasoning만 반환해, 보이는 리뷰 결과를 요구하며 한 번 재시도합니다: %s는 %s 사용."),
 		roleName,
 		valueOrUnset(label),
 	)
@@ -1588,7 +1588,7 @@ func emitReviewModelLocalInitialCompactProgress(rt *runtimeState, reviewerRun Re
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Local/degraded review route is using a compact initial prompt: %s prompt_limit=%d.", "로컬/degraded 리뷰 route라 compact initial prompt를 사용합니다: %s prompt_limit=%d."),
+		localizedText(rt.cfg, "Using a shorter first review prompt because this local review model may struggle with very large context: %s, limit %d chars.", "로컬 리뷰 모델이 큰 컨텍스트에서 불안정할 수 있어 더 짧은 첫 프롬프트를 사용합니다: %s, 한도 %d자."),
 		roleName,
 		evidenceLimit,
 	)
@@ -1601,7 +1601,7 @@ func emitReviewModelReasoningContentRecoveryProgress(rt *runtimeState, reviewerR
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Recovered a structured review block from the provider reasoning channel for %s.", "%s의 provider reasoning channel에서 구조화 리뷰 블록을 복구했습니다."),
+		localizedText(rt.cfg, "Recovered the visible review result from the model's hidden reasoning field for %s.", "%s의 숨은 reasoning 영역에서 보이는 리뷰 결과를 복구했습니다."),
 		roleName,
 	)
 	rt.agent.EmitProgress(message)
@@ -1625,7 +1625,7 @@ func emitReviewModelPhaseBudgetProgress(rt *runtimeState, run ReviewRun, kind st
 		contextMode = "diff-first"
 	}
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review phase %d/%d: %s. model=%s context=%s evidence_chars=%d prompt_limit=%d retry_budget=%d soft_timeout=%s.", "리뷰 단계 %d/%d: %s. 모델=%s context=%s evidence_chars=%d prompt_limit=%d retry_budget=%d soft_timeout=%s."),
+		localizedText(rt.cfg, "Review request %d/%d: %s using %s. It will review %s context with %d chars of evidence, prompt limit %d chars, retry up to %d times, and wait up to %s.", "리뷰 요청 %d/%d: %s, 모델 %s 사용. %s 컨텍스트와 근거 %d자를 검토하고, 프롬프트 한도 %d자, 최대 %d회 재시도, 최대 %s 대기합니다."),
 		phase,
 		total,
 		reviewModelPhaseName(rt.cfg, kind),
@@ -1645,7 +1645,7 @@ func emitReviewModelCallBudgetProgress(rt *runtimeState, run ReviewRun, reviewer
 	}
 	retryBudget := reviewRoleOmissionRetryBudgetForReviewRun(rt.cfg, reviewerRun.Role, run, reviewerRun.Kind)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Model-call budget: %s retry_budget=%d soft_timeout=%s.", "모델 호출 예산: %s retry_budget=%d soft_timeout=%s."),
+		localizedText(rt.cfg, "Review call budget: %s, retries=%d, wait up to=%s.", "리뷰 호출 한도: %s, 재시도=%d, 최대 대기=%s."),
 		reviewModelPhaseName(rt.cfg, reviewerRun.Kind),
 		retryBudget,
 		reviewSoftTimeoutProgressText(softTimeout),
@@ -1705,7 +1705,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 	if strings.TrimSpace(run.Error) != "" {
 		if kind == "main" {
 			message := fmt.Sprintf(
-				localizedText(rt.cfg, "Main model code review result: %s (%s).", "메인 모델 검토 결과: %s (%s)."),
+				localizedText(rt.cfg, "Main model review finished with status %s: %s.", "메인 모델 리뷰가 %s 상태로 끝났습니다: %s."),
 				status,
 				firstNonEmptyLine(run.Error),
 			)
@@ -1714,7 +1714,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 		}
 		if kind == "cross" {
 			message := fmt.Sprintf(
-				localizedText(rt.cfg, "Review model cross-check result: %s %s (%s).", "리뷰 모델 교차 검토 결과: %s %s (%s)."),
+				localizedText(rt.cfg, "Review model cross-check finished for %s with status %s: %s.", "리뷰 모델 교차 검토가 끝났습니다: %s, 상태 %s: %s."),
 				roleName,
 				status,
 				firstNonEmptyLine(run.Error),
@@ -1723,7 +1723,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 			return
 		}
 		message := fmt.Sprintf(
-			localizedText(rt.cfg, "Review model result: %s %s (%s).", "리뷰 모델 결과: %s %s (%s)."),
+			localizedText(rt.cfg, "Review model finished for %s with status %s: %s.", "리뷰 모델이 끝났습니다: %s, 상태 %s: %s."),
 			roleName,
 			status,
 			firstNonEmptyLine(run.Error),
@@ -1734,7 +1734,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 	quality := firstNonBlankString(run.ModelQuality, "unknown")
 	if kind == "main" {
 		message := fmt.Sprintf(
-			localizedText(rt.cfg, "Main model code review result: %s (quality=%s, findings=%d).", "메인 모델 검토 결과: %s (품질=%s, 발견=%d)."),
+			localizedText(rt.cfg, "Main model review finished: %s, quality %s, findings %d.", "메인 모델 리뷰 완료: 상태 %s, 품질 %s, 발견 %d개."),
 			status,
 			quality,
 			findingCount,
@@ -1744,7 +1744,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 	}
 	if kind == "cross" {
 		message := fmt.Sprintf(
-			localizedText(rt.cfg, "Review model cross-check result: %s %s (quality=%s, findings=%d).", "리뷰 모델 교차 검토 결과: %s %s (품질=%s, 발견=%d)."),
+			localizedText(rt.cfg, "Review model cross-check finished for %s: %s, quality %s, findings %d.", "리뷰 모델 교차 검토 완료: %s, 상태 %s, 품질 %s, 발견 %d개."),
 			roleName,
 			status,
 			quality,
@@ -1754,7 +1754,7 @@ func emitReviewModelResultProgress(rt *runtimeState, run ReviewReviewerRun, find
 		return
 	}
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model result: %s %s (quality=%s, findings=%d).", "리뷰 모델 결과: %s %s (품질=%s, 발견=%d)."),
+		localizedText(rt.cfg, "Review model finished for %s: %s, quality %s, findings %d.", "리뷰 모델 완료: %s, 상태 %s, 품질 %s, 발견 %d개."),
 		roleName,
 		status,
 		quality,
@@ -1777,23 +1777,23 @@ func emitReviewModelCrossHandoffProgress(rt *runtimeState, mainRun ReviewReviewe
 		strings.TrimSpace(mainRun.Error) != "" {
 		emitReviewModelFlowProgress(
 			rt,
-			"Main model code review did not produce a usable draft. The review model will use the same evidence for an independent cross-check.",
-			"메인 모델 검토가 usable 초안을 만들지 못했습니다. 리뷰 모델이 동일 증거로 독립 교차 검토합니다.",
+			"Main model review did not produce a reliable draft. The review model will check the same evidence independently.",
+			"메인 모델 리뷰가 신뢰 가능한 초안을 만들지 못했습니다. 리뷰 모델이 같은 근거를 독립적으로 확인합니다.",
 		)
 		return
 	}
 	emitReviewModelFlowProgress(
 		rt,
-		"Main model code review completed. Sending its draft and the same evidence to the review model.",
-		"메인 모델 검토 결과가 나왔습니다. 리뷰 모델에 초안과 동일 증거를 전달합니다.",
+		"Main model review is done. Sending its draft and the same evidence to the review model.",
+		"메인 모델 리뷰가 끝났습니다. 초안과 같은 근거를 리뷰 모델에 전달합니다.",
 	)
 }
 
 func emitReviewModelCrossCheckProgress(rt *runtimeState) {
 	emitReviewModelFlowProgress(
 		rt,
-		"Review model is cross-checking the main model draft and the same evidence before the final gate is decided.",
-		"리뷰 모델이 메인 모델 초안과 동일 증거를 교차 검토합니다.",
+		"Review model is checking the main draft against the same evidence.",
+		"리뷰 모델이 메인 초안을 같은 근거와 대조하고 있습니다.",
 	)
 }
 
@@ -1805,23 +1805,23 @@ func emitReviewModelCrossResultHandoffProgress(rt *runtimeState, run ReviewRevie
 		reason := firstNonBlankString(firstNonEmptyLine(run.Error), run.ModelQuality, run.Status, "unusable")
 		emitReviewModelFlowProgress(
 			rt,
-			fmt.Sprintf("Review model cross-check did not produce a usable result (%s). Kernforge is merging the main review and reviewer failure state for the final gate.", reason),
-			fmt.Sprintf("리뷰 모델 교차 검토가 신뢰 가능한 결과를 만들지 못했습니다(%s). Kernforge가 메인 모델 리뷰와 리뷰어 실패 상태를 병합해 최종 게이트를 계산합니다.", reason),
+			fmt.Sprintf("Review model did not return a reliable result (%s). Kernforge will decide from the main review plus this reviewer failure.", reason),
+			fmt.Sprintf("리뷰 모델이 신뢰 가능한 결과를 반환하지 못했습니다(%s). 메인 리뷰와 이 실패 상태를 함께 보고 판정합니다.", reason),
 		)
 		return
 	}
 	emitReviewModelFlowProgress(
 		rt,
-		"Review model returned its cross-check. Kernforge is merging both reviews for the final gate.",
-		"리뷰 모델 검토 결과가 나왔습니다. Kernforge가 두 리뷰 결과를 병합해 최종 게이트를 계산합니다.",
+		"Review model returned its cross-check. Merging both review results now.",
+		"리뷰 모델 검토 결과가 나왔습니다. 두 리뷰 결과를 병합합니다.",
 	)
 }
 
 func emitReviewModelNoCrossReviewerProgress(rt *runtimeState) {
 	emitReviewModelFlowProgress(
 		rt,
-		"No distinct review model is configured, so the main model review will be used for the final gate.",
-		"별도 리뷰 모델이 없거나 메인 모델과 동일하여 메인 모델 리뷰 결과로 최종 게이트를 계산합니다.",
+		"No separate review model is configured, so Kernforge will use the main model review result.",
+		"별도 리뷰 모델이 없어 메인 모델 리뷰 결과를 사용합니다.",
 	)
 }
 
@@ -2039,21 +2039,21 @@ func formatReviewModelLongWaitProgress(cfg Config, reviewerRun ReviewReviewerRun
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	switch strings.ToLower(strings.TrimSpace(reviewerRun.Kind)) {
 	case "main":
-		return strings.TrimSpace(fmt.Sprintf(
-			localizedText(cfg, "Main model is still reading code and checking the repair direction (%s elapsed). actor=main_model next_transition=cross_review_or_gate_decision. When it returns, Kernforge will pass the draft to the review model or compute the gate if no separate reviewer is configured.", "메인 모델이 아직 코드를 읽고 수정 방향을 검토 중입니다(경과 %s). actor=main_model next_transition=cross_review_or_gate_decision. 결과가 오면 리뷰 모델에 초안을 전달하거나, 별도 리뷰 모델이 없으면 바로 게이트를 계산합니다."),
+		return fmt.Sprintf(
+			localizedText(cfg, "Main model is still reviewing code (%s elapsed). Next: send the draft to the review model, or decide from the main review if no separate reviewer is configured.", "메인 모델이 아직 코드를 리뷰 중입니다(%s 경과). 다음 단계: 별도 리뷰 모델이 있으면 초안을 전달하고, 없으면 메인 리뷰 결과로 판정합니다."),
 			elapsedText,
-		) + " " + reviewOperatorProgressSuffix("model_review", reviewTimelineStatusRunning, "reading code and checking repair direction", "primary_model", "cross_review_or_gate_decision"))
+		)
 	case "cross":
-		return strings.TrimSpace(fmt.Sprintf(
-			localizedText(cfg, "Review model is still cross-checking the main draft (%s elapsed). actor=reviewer_model next_transition=merge_reviews. When it returns, Kernforge will merge it with the main model review; timeout, cancellation, or an empty response will be recorded in the final gate.", "리뷰 모델이 아직 메인 초안을 교차 검토 중입니다(경과 %s). actor=reviewer_model next_transition=merge_reviews. 결과가 오면 메인 모델 리뷰와 병합하고, timeout/취소/빈 응답은 최종 게이트에 실패 상태로 기록합니다."),
+		return fmt.Sprintf(
+			localizedText(cfg, "Review model is still checking the main draft (%s elapsed). Next: merge its result with the main review; timeout, cancellation, or an empty answer will be recorded.", "리뷰 모델이 아직 메인 초안을 확인 중입니다(%s 경과). 다음 단계: 결과가 오면 메인 리뷰와 병합하고, timeout/취소/빈 답변은 기록합니다."),
 			elapsedText,
-		) + " " + reviewOperatorProgressSuffix("cross_review", reviewTimelineStatusRunning, "cross-checking main draft", "cross_reviewer", "merge_reviews"))
+		)
 	default:
-		return strings.TrimSpace(fmt.Sprintf(
-			localizedText(cfg, "Review model %s is still running (%s elapsed). actor=reviewer_model next_transition=gate_decision. Kernforge will use the result in the final gate when it returns.", "리뷰 모델 %s가 아직 실행 중입니다(경과 %s). actor=reviewer_model next_transition=gate_decision. 결과가 오면 최종 게이트에 반영합니다."),
+		return fmt.Sprintf(
+			localizedText(cfg, "Review model %s is still running (%s elapsed). Next: use the result in the review decision.", "리뷰 모델 %s가 아직 실행 중입니다(%s 경과). 다음 단계: 결과를 리뷰 판정에 반영합니다."),
 			roleName,
 			elapsedText,
-		) + " " + reviewOperatorProgressSuffix("review_model", reviewTimelineStatusRunning, "review model still running", "reviewer", "gate_decision"))
+		)
 	}
 }
 
@@ -2063,7 +2063,7 @@ func emitReviewModelRetryProgress(rt *runtimeState, role string, label string, a
 	}
 	roleName := reviewRoleProgressName(role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model output looked omitted or cut off; retrying strict review (%d/%d): %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있어 엄격 리뷰로 재시도합니다(%d/%d): %s -> %s."),
+		localizedText(rt.cfg, "Review model output looked incomplete; retrying with stricter instructions (%d/%d): %s uses %s.", "리뷰 모델 출력이 불완전해 보여 더 엄격한 지시로 재시도합니다(%d/%d): %s는 %s 사용."),
 		attempt,
 		budget,
 		roleName,
@@ -2078,7 +2078,7 @@ func emitReviewModelRetrySkippedProgress(rt *runtimeState, reviewerRun ReviewRev
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review model output looked omitted or cut off, but strict retry is skipped for optional cross-check: the main model code review already has actionable findings and the reviewer did not report an explicit token-limit stop. %s -> %s.", "리뷰 모델 출력에 생략/잘림 징후가 있지만 선택적 교차 검토 strict retry를 생략합니다. 메인 모델 코드 검토가 이미 실행 가능한 finding을 제공했고, 리뷰어가 명시적인 token-limit stop을 보고하지 않았습니다. %s -> %s."),
+		localizedText(rt.cfg, "Review model output looked incomplete, but skipping optional retry because the main review already has actionable findings: %s uses %s.", "리뷰 모델 출력이 불완전해 보이지만, 메인 리뷰에 실행 가능한 finding이 있어 선택적 재시도는 생략합니다: %s는 %s 사용."),
 		roleName,
 		label,
 	)
@@ -2091,7 +2091,7 @@ func emitReviewModelHealthRetrySuppressedProgress(rt *runtimeState, reviewerRun 
 	}
 	roleName := reviewRoleProgressName(reviewerRun.Role)
 	message := fmt.Sprintf(
-		localizedText(rt.cfg, "Review route health suppresses strict retry for %s -> %s. Recent route failures make another same-route retry low value.", "최근 리뷰 경로 상태 때문에 %s -> %s strict retry를 생략합니다. 같은 경로 재시도는 가치가 낮습니다."),
+		localizedText(rt.cfg, "Skipping strict retry for %s using %s because recent calls on that route failed.", "최근 같은 경로 호출이 실패해 %s의 %s 엄격 재시도를 생략합니다."),
 		roleName,
 		label,
 	)
