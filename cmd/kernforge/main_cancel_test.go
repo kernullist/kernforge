@@ -3620,6 +3620,11 @@ func TestOperatorFooterLineSplitsOnNarrowTerminal(t *testing.T) {
 	if !strings.Contains(line, "\n") {
 		t.Fatalf("expected narrow operator footer to split, got %q", line)
 	}
+	for _, row := range strings.Split(line, "\n") {
+		if visibleLen(row) > operatorFooterDisplayWidth(78) {
+			t.Fatalf("expected operator footer row to fit display width, got width=%d row=%q", visibleLen(row), row)
+		}
+	}
 	for _, want := range []string{
 		"[provider:openrouter/google/gemini-2.5-pro]",
 		"[progress:compact]",

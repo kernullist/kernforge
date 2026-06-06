@@ -106,11 +106,37 @@ func TestCompactThinkingStatusDoesNotSplitKoreanUTF8(t *testing.T) {
 	if strings.Contains(got, "\uFFFD") {
 		t.Fatalf("expected status truncation to avoid replacement characters, got %q", got)
 	}
-	if !strings.HasSuffix(got, "...") {
-		t.Fatalf("expected long status to be truncated with ellipsis, got %q", got)
+	if got != "worker root: 모델 답변 대기 중 ..." {
+		t.Fatalf("expected model-wait status to remain readable, got %q", got)
 	}
-	if visibleLen(got) > 48 {
+	if visibleLen(got) > 72 {
 		t.Fatalf("expected compact status to fit display width, width=%d status=%q", visibleLen(got), got)
+	}
+}
+
+func TestCompactThinkingStatusKeepsSynthesisModelWaitReadable(t *testing.T) {
+	t.Setenv("LANG", "ko_KR.UTF-8")
+	got := compactThinkingStatus(Config{AutoLocale: boolPtr(true)}, "synthesis: anthropic-claude-cli / default 답변을 기다리는 중입니다(1m31s 경과).")
+
+	if got != "synthesis: 모델 답변 대기 중 ..." {
+		t.Fatalf("expected readable synthesis wait status, got %q", got)
+	}
+	if strings.Contains(got, "답...") {
+		t.Fatalf("expected status not to cut the Korean answer word, got %q", got)
+	}
+}
+
+func TestThinkingLineFitsWidthAndKeepsCancelHint(t *testing.T) {
+	ui := UI{color: false}
+	line := ui.thinkingLineForWidth("-", 5493*time.Second, "synthesis: 모델 답변 대기 중 ...", 72)
+
+	if visibleLen(line) > 71 {
+		t.Fatalf("expected thinking line to fit terminal width, width=%d line=%q", visibleLen(line), line)
+	}
+	for _, want := range []string{"[thinking]", "synthesis: 모델 답변 대기 중 ...", "[5493s | Esc]"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("expected thinking line to contain %q, got %q", want, line)
+		}
 	}
 }
 
@@ -375,6 +401,38 @@ func TestStatusSummaryBlockSplitsTwoItemsWhenNeeded(t *testing.T) {
 	for _, line := range strings.Split(rendered, "\n") {
 		if visibleLen(line) > 62 {
 			t.Fatalf("expected two-item split line to fit width, got width=%d line=%q", visibleLen(line), line)
+		}
+	}
+}
+
+func TestStatusSummaryBlockAlignsLongWelcomeFooterRows(t *testing.T) {
+	ui := UI{color: false}
+	width := operatorFooterDisplayWidth(120)
+	rendered := ui.statusSummaryBlock("status", []statusSummaryItem{
+		{Label: "cwd", Value: "im-tavern-client", Tone: "info"},
+		{Label: "provider", Value: "LM Studio/qwen3.6-35b-a3b...ucs-aggressive", Tone: "info"},
+		{Label: "gate", Value: "needs_review/2 warnings", Tone: "warn"},
+		{Label: "perm", Value: "workspace", Tone: "info"},
+		{Label: "progress", Value: "compact", Tone: "info"},
+		{Label: "mcp", Value: "0", Tone: "info"},
+		{Label: "skills", Value: "0/0", Tone: "info"},
+		{Label: "verify", Value: "none", Tone: "info"},
+		{Label: "memory", Value: "174", Tone: "info"},
+	}, width)
+
+	if !strings.Contains(rendered, "\n") {
+		t.Fatalf("expected long welcome footer status to split, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "[gate:needs_review/2 warnings]") {
+		t.Fatalf("expected gate pill to remain intact, got %q", rendered)
+	}
+	lines := strings.Split(rendered, "\n")
+	for index, line := range lines {
+		if visibleLen(line) > width {
+			t.Fatalf("expected line %d to fit footer width=%d, got width=%d line=%q", index, width, visibleLen(line), line)
+		}
+		if index > 0 && !strings.HasPrefix(line, "       [") {
+			t.Fatalf("expected continuation line %d to align under status items, got %q", index, line)
 		}
 	}
 }

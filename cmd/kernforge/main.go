@@ -899,7 +899,18 @@ func (rt *runtimeState) operatorFooterLineForWidth(width int) string {
 	if rt == nil {
 		return ""
 	}
-	return rt.ui.statusSummaryBlock("status", rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items, width)
+	return rt.ui.statusSummaryBlock("status", rt.operatorStatusSnapshot(runtimeGateActionFinalAnswer).Items, operatorFooterDisplayWidth(width))
+}
+
+func operatorFooterDisplayWidth(width int) int {
+	if width <= 0 {
+		width = terminalWidth()
+	}
+	width = bannerFrameWidth(width)
+	if width > 1 {
+		width--
+	}
+	return width
 }
 
 func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
@@ -1823,6 +1834,9 @@ func compactThinkingStatus(cfg Config, text string) string {
 	trimmed = humanizeProgressMessage(cfg, trimmed)
 
 	lower := strings.ToLower(trimmed)
+	if status := compactModelAnswerWaitStatus(cfg, trimmed, lower); status != "" {
+		return status
+	}
 	switch {
 	case strings.Contains(lower, "cancel"):
 		return localizedText(cfg, "Canceling current request...", "취소하는 중 ...")
@@ -1918,7 +1932,51 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Finalizing reply...", "답변 정리 중 ...")
 	}
 
-	return truncateDisplayText(trimmed, 48)
+	return truncateDisplayText(trimmed, 72)
+}
+
+func compactModelAnswerWaitStatus(cfg Config, text string, lower string) string {
+	if !thinkingStatusLooksLikeModelAnswerWait(text, lower) {
+		return ""
+	}
+	message := "waiting for model answer..."
+	if localePrefersKorean(cfg) || containsKoreanText(text) {
+		message = "모델 답변 대기 중 ..."
+	}
+	if prefix := compactThinkingContextPrefix(text); prefix != "" {
+		return prefix + ": " + message
+	}
+	return message
+}
+
+func thinkingStatusLooksLikeModelAnswerWait(text string, lower string) bool {
+	if containsAny(text, "답변을 기다리는 중", "모델 응답 대기 중", "모델 답변 대기 중", "답변 대기 중") {
+		return true
+	}
+	return strings.Contains(lower, "waiting for the model answer") ||
+		(strings.Contains(lower, "waiting for") && strings.Contains(lower, "to answer")) ||
+		(strings.Contains(lower, "waiting for") && strings.Contains(lower, "model response"))
+}
+
+func compactThinkingContextPrefix(text string) string {
+	idx := strings.Index(text, ":")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := strings.Join(strings.Fields(strings.TrimSpace(text[:idx])), " ")
+	if prefix == "" || visibleLen(prefix) > 18 || strings.Contains(prefix, "/") {
+		return ""
+	}
+	return prefix
+}
+
+func containsKoreanText(text string) bool {
+	for _, r := range text {
+		if r >= 0xAC00 && r <= 0xD7AF {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyProgressKind(text string) string {
@@ -6194,7 +6252,7 @@ func (rt *runtimeState) chooseCodexCLIModel(currentModel string) (string, error)
 var claudeCLIModels = []codexCLIModelOption{
 	{ID: claudeCLIDefaultModel, Name: "Claude Code CLI default"},
 	{ID: "sonnet", Name: "Claude Sonnet 4.7 (CLI alias)"},
-	{ID: "opus", Name: "Claude Opus 4.7 (CLI alias)"},
+	{ID: "opus", Name: "Claude Opus 4.8 (CLI alias)"},
 	{ID: "haiku", Name: "Claude Haiku (CLI alias)"},
 }
 

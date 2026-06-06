@@ -20,6 +20,8 @@ const (
 	shellOutputPreviewTailLines = 20
 	shellOutputPreviewMaxChars  = 12000
 	shellOutputPreviewTailChars = 4000
+	bannerFrameMinWidth         = 72
+	bannerFrameMaxWidth         = 108
 )
 
 type shellOutputPreview struct {
@@ -93,13 +95,7 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 	if strings.TrimSpace(model) == "" {
 		model = "(unset)"
 	}
-	width := terminalWidth()
-	if width < 72 {
-		width = 72
-	}
-	if width > 108 {
-		width = 108
-	}
+	width := bannerFrameWidth(terminalWidth())
 
 	divider := ui.dim(strings.Repeat("-", width))
 	meta := ui.bannerMeta("provider", ui.info(provider)) +
@@ -141,6 +137,19 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 		divider,
 	}
 	return strings.Join(lines, "\n")
+}
+
+func bannerFrameWidth(width int) int {
+	if width <= 0 {
+		width = terminalWidth()
+	}
+	if width < bannerFrameMinWidth {
+		return bannerFrameMinWidth
+	}
+	if width > bannerFrameMaxWidth {
+		return bannerFrameMaxWidth
+	}
+	return width
 }
 
 func (ui UI) prompt(provider, model string, effort string) string {
@@ -448,28 +457,29 @@ func splitStatusSummaryRows(items []string, width int) [][]string {
 	if visibleLen(strings.Join(items, "  ")) <= width {
 		return [][]string{items}
 	}
-	if len(items) == 1 {
-		return [][]string{items}
-	}
 
-	bestSplit := 1
-	bestScore := int(^uint(0) >> 1)
-	for split := 1; split < len(items); split++ {
-		leftWidth := visibleLen(strings.Join(items[:split], "  "))
-		rightWidth := visibleLen(strings.Join(items[split:], "  "))
-		score := maxInt(leftWidth, rightWidth)
-		if leftWidth > width {
-			score += (leftWidth - width) * 4
+	rows := make([][]string, 0, 2)
+	row := make([]string, 0, len(items))
+	rowWidth := 0
+	for _, item := range items {
+		itemWidth := visibleLen(item)
+		nextWidth := itemWidth
+		if len(row) > 0 {
+			nextWidth = rowWidth + 2 + itemWidth
 		}
-		if rightWidth > width {
-			score += (rightWidth - width) * 2
+		if len(row) > 0 && nextWidth > width {
+			rows = append(rows, row)
+			row = []string{item}
+			rowWidth = itemWidth
+			continue
 		}
-		if score < bestScore {
-			bestScore = score
-			bestSplit = split
-		}
+		row = append(row, item)
+		rowWidth = nextWidth
 	}
-	return [][]string{items[:bestSplit], items[bestSplit:]}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func (ui UI) section(title string) string {
@@ -558,6 +568,10 @@ func (ui UI) errorLine(text string) string {
 const maxThinkingElapsedDisplay = 2 * time.Hour
 
 func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) string {
+	return ui.thinkingLineForWidth(frame, elapsed, status, terminalWidth())
+}
+
+func (ui UI) thinkingLineForWidth(frame string, elapsed time.Duration, status string, width int) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
@@ -573,16 +587,41 @@ func (ui UI) thinkingLine(frame string, elapsed time.Duration, status string) st
 			status = "Still waiting for the model response..."
 		}
 	}
-	line := ui.bold(ui.accent("[thinking]")) + " " + ui.dim("["+frame+"]")
-	if !isRedundantThinkingStatus(status) {
-		line += " " + ui.info(status)
-	}
+	prefix := ui.bold(ui.accent("[thinking]")) + " " + ui.dim("["+frame+"]")
+	suffix := ""
 	if clampedDisplay {
-		line += " " + ui.dim(fmt.Sprintf("[%ds+ | Esc]", seconds))
+		suffix = ui.dim(fmt.Sprintf("[%ds+ | Esc]", seconds))
 	} else {
-		line += " " + ui.dim(fmt.Sprintf("[%ds | Esc]", seconds))
+		suffix = ui.dim(fmt.Sprintf("[%ds | Esc]", seconds))
 	}
+	line := prefix
+	if !isRedundantThinkingStatus(status) {
+		status = fitThinkingStatusToWidth(status, width, prefix, suffix)
+		if strings.TrimSpace(status) != "" {
+			line += " " + ui.info(status)
+		}
+	}
+	line += " " + suffix
 	return line
+}
+
+func fitThinkingStatusToWidth(status string, width int, prefix string, suffix string) string {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		return ""
+	}
+	if width <= 0 {
+		width = 120
+	}
+	if width > 1 {
+		width--
+	}
+	reserved := visibleLen(prefix) + visibleLen(suffix) + 2
+	limit := width - reserved
+	if limit <= 0 {
+		return ""
+	}
+	return truncateDisplayText(status, limit)
 }
 
 func (ui UI) hintLine(text string) string {

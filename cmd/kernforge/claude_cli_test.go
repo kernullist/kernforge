@@ -40,6 +40,7 @@ func TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases(t *testing.T) {
 		want  string
 	}{
 		{name: "sonnet 4.7", model: "claude-sonnet-4-7", want: "sonnet"},
+		{name: "opus 4.8", model: "claude-opus-4-8", want: "opus"},
 		{name: "opus 4.7", model: "claude-opus-4-7", want: "opus"},
 		{name: "haiku 3.5", model: "claude-haiku-3-5", want: "haiku"},
 	}
@@ -142,7 +143,7 @@ func TestClaudeCLIModelChoicesIncludeCurrentCustomModel(t *testing.T) {
 }
 
 func TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases(t *testing.T) {
-	choices := claudeCLIModelChoices("claude-sonnet-4-7")
+	choices := claudeCLIModelChoices("claude-opus-4-8")
 	wantPrefix := []string{
 		claudeCLIDefaultModel,
 		"sonnet",
@@ -158,17 +159,24 @@ func TestClaudeCLIModelChoicesShowCurrentVersionsWithSafeAliases(t *testing.T) {
 		t.Fatalf("versioned current model should be represented by built-in alias choices, got %#v", choices)
 	}
 	sonnetSeen := false
+	opusSeen := false
 	legacyIDSeen := false
 	for _, choice := range choices {
 		if choice.ID == "sonnet" && strings.Contains(choice.Name, "4.7") && strings.Contains(choice.Name, "CLI alias") {
 			sonnetSeen = true
 		}
-		if strings.Contains(choice.ID, "4-6") || strings.Contains(choice.ID, "4-7") {
+		if choice.ID == "opus" && strings.Contains(choice.Name, "4.8") && strings.Contains(choice.Name, "CLI alias") {
+			opusSeen = true
+		}
+		if strings.Contains(choice.ID, "4-6") || strings.Contains(choice.ID, "4-7") || strings.Contains(choice.ID, "4-8") {
 			legacyIDSeen = true
 		}
 	}
 	if !sonnetSeen {
 		t.Fatalf("expected sonnet alias to display the current family version, got %#v", choices)
+	}
+	if !opusSeen {
+		t.Fatalf("expected opus alias to display the current family version, got %#v", choices)
 	}
 	if legacyIDSeen {
 		t.Fatalf("built-in Claude CLI choices must not pass versioned IDs directly, got %#v", choices)
