@@ -10,9 +10,6 @@ import (
 
 func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
 	rt := requestClassTestRuntime(root, &scriptedProviderClient{})
 	tests := []struct {
 		name      string
@@ -193,7 +190,7 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			analysis := analyzeReviewRequest(rt, root, tt.opts)
+			analysis := reviewRequestClassDecisionForUnitTest(rt, root, tt.opts)
 			if analysis.RequestClass != tt.want {
 				t.Fatalf("request class = %q, want %q; analysis=%#v", analysis.RequestClass, tt.want, analysis)
 			}
@@ -213,6 +210,38 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 				t.Fatalf("expected ambiguous request class decision, got %#v", analysis)
 			}
 		})
+	}
+}
+
+func reviewRequestClassDecisionForUnitTest(rt *runtimeState, root string, opts ReviewHarnessOptions) ReviewRequestAnalysis {
+	target := normalizeReviewTarget(opts.Target)
+	if target == reviewTargetAuto {
+		target = reviewTargetChange
+	}
+	mode := normalizeReviewMode(opts.Mode)
+	if mode == reviewModeGeneralChange {
+		mode = inferReviewMode(opts.Request, opts.Paths, target, rt)
+	}
+	discovery := ReviewScopeDiscovery{
+		CandidateFiles: mcpReviewCleanPaths(opts.Paths),
+		ScopeWidth:     "focused",
+		Confidence:     0.9,
+	}
+	decision := classifyReviewRequestClassDecision(rt, root, opts, target, mode, discovery)
+	decision = applyReviewLifecycleKindToDecision(decision, opts.Request, classifyTurnIntent(opts.Request), target, firstNonBlankString(opts.Trigger, mode))
+	return ReviewRequestAnalysis{
+		OriginalRequest:         strings.TrimSpace(opts.Request),
+		InferredTarget:          target,
+		InferredMode:            mode,
+		RequestClass:            decision.RequestClass,
+		LifecycleKind:           decision.LifecycleKind,
+		MixedFlow:               decision.MixedFlow,
+		SecondaryRequestClasses: decision.SecondaryRequestClasses,
+		RequestClassReason:      decision.Reason,
+		RequestClassConfidence:  decision.Confidence,
+		RequestClassAmbiguous:   decision.Ambiguous,
+		RequestClassSignals:     decision.Signals,
+		ScopeDiscovery:          discovery,
 	}
 }
 

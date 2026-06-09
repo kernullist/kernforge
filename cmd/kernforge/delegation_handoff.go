@@ -283,7 +283,16 @@ func delegationGitBranch(root string) string {
 	return branch
 }
 
+var delegationChangedFilesProvider = delegationChangedFilesFromGit
+
 func delegationChangedFiles(root string) []string {
+	if delegationChangedFilesProvider == nil {
+		return delegationChangedFilesFromGit(root)
+	}
+	return delegationChangedFilesProvider(root)
+}
+
+func delegationChangedFilesFromGit(root string) []string {
 	status := runGitText(root, "status", "--short")
 	diffName := runGitText(root, "diff", "--name-only")
 	files := prReviewChangedFiles(status + "\n" + diffName)

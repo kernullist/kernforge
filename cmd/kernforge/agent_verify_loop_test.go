@@ -2479,15 +2479,6 @@ func TestAgentCanRepairAfterFailedVerificationAndReturnAfterPass(t *testing.T) {
 
 func TestAgentDoesNotTreatGitStatusChangedPathsAsAnEdit(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("int old_value = 0;\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	runTestGit(t, root, "add", "driver.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("int old_value = 1;\n"), 0o644); err != nil {
-		t.Fatalf("dirty file: %v", err)
-	}
 
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
@@ -2498,11 +2489,22 @@ func TestAgentDoesNotTreatGitStatusChangedPathsAsAnEdit(t *testing.T) {
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
+	gitStatusTool := &metadataEditTool{
+		name:   "git_status",
+		output: "## main\n M driver.cpp",
+		meta: map[string]any{
+			"branch":        "main",
+			"changed_paths": []string{"driver.cpp"},
+			"changed_count": 1,
+			"clean":         false,
+			"effect":        "inspect",
+		},
+	}
 	verifyCount := 0
 	agent := &Agent{
 		Config:    Config{},
 		Client:    provider,
-		Tools:     NewToolRegistry(NewGitStatusTool(ws)),
+		Tools:     NewToolRegistry(gitStatusTool),
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
@@ -6295,7 +6297,19 @@ func TestAgentBlocksDisabledToolEvenIfModelCallsIt(t *testing.T) {
 	}
 }
 
+func useCompleteModelTurnTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := completeModelTurnRequestTimeout
+	completeModelTurnRequestTimeout = func(Config) time.Duration {
+		return timeout
+	}
+	t.Cleanup(func() {
+		completeModelTurnRequestTimeout = previous
+	})
+}
+
 func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
+	useCompleteModelTurnTimeout(t, 20*time.Millisecond)
 	provider := &timeoutThenSuccessProviderClient{}
 	var progress []string
 	agent := &Agent{
@@ -6328,6 +6342,7 @@ func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
 }
 
 func TestCompleteModelTurnReturnsTimeoutAfterRetryExhausted(t *testing.T) {
+	useCompleteModelTurnTimeout(t, 20*time.Millisecond)
 	provider := &timeoutProviderClient{}
 	agent := &Agent{
 		Config: Config{
@@ -8475,15 +8490,12 @@ func TestAgentContinuesAfterWeakPreFixCrossReviewerAndStillBlocksWebResearch(t *
 
 func TestAgentStopsAfterPreWriteReviewerFailureWithoutWebResearchRetry(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
 	path := filepath.Join(root, "main.cpp")
 	before := "int main()\n{\n    return 0;\n}\n"
 	after := "int main()\n{\n    return 1;\n}\n"
 	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	runTestGit(t, root, "add", "main.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	cfg := Config{AutoLocale: boolPtr(false)}
 	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	session := NewSession(root, "scripted", "main-model", "", "default")
@@ -11690,30 +11702,11 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkip(t *testing.T)
 
 func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPatchTransaction(t *testing.T) {
 	root := t.TempDir()
-	ctx := context.Background()
-	if _, err := runGitCommand(ctx, root, "init"); err != nil {
-		t.Fatalf("git init: %v", err)
-	}
-	if _, err := runGitCommand(ctx, root, "config", "user.email", "kernforge-test@example.com"); err != nil {
-		t.Fatalf("git config email: %v", err)
-	}
-	if _, err := runGitCommand(ctx, root, "config", "user.name", "Kernforge Test"); err != nil {
-		t.Fatalf("git config name: %v", err)
-	}
 	reportDir := filepath.Join(root, "SampleGame")
 	if err := os.MkdirAll(reportDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	reportPath := filepath.Join(reportDir, "BugReport.md")
-	if err := os.WriteFile(reportPath, []byte("# Initial Report\n\nPlaceholder before generated artifact.\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile initial report: %v", err)
-	}
-	if _, err := runGitCommand(ctx, root, "add", "SampleGame/BugReport.md"); err != nil {
-		t.Fatalf("git add: %v", err)
-	}
-	if _, err := runGitCommand(ctx, root, "commit", "-m", "init"); err != nil {
-		t.Fatalf("git commit: %v", err)
-	}
 	reportContent := strings.Join([]string{
 		"# SampleGame Bug Report",
 		"",
@@ -11731,6 +11724,16 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 	if err := os.WriteFile(reportPath, []byte(reportContent), 0o644); err != nil {
 		t.Fatalf("WriteFile report: %v", err)
 	}
+	previousChangedFiles := autoReviewDelegationChangedFiles
+	autoReviewDelegationChangedFiles = func(gotRoot string) []string {
+		if !sameFilePath(gotRoot, root) {
+			t.Fatalf("expected changed-file fallback root %q, got %q", root, gotRoot)
+		}
+		return []string{"SampleGame/BugReport.md"}
+	}
+	t.Cleanup(func() {
+		autoReviewDelegationChangedFiles = previousChangedFiles
+	})
 
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해"
 	reply := "SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다."
@@ -11761,7 +11764,7 @@ func TestAgentFinalizesGeneratedDocumentAfterPostChangeQualitySkipWithUnscopedPa
 	}
 
 	lastFingerprint := ""
-	reviewed, needsRevision, reviewFeedback, fingerprint, err := agent.maybeRunPostChangeReview(ctx, request, lastFingerprint)
+	reviewed, needsRevision, reviewFeedback, fingerprint, err := agent.maybeRunPostChangeReview(context.Background(), request, lastFingerprint)
 	if err != nil {
 		t.Fatalf("maybeRunPostChangeReview: %v", err)
 	}
@@ -16401,18 +16404,22 @@ func TestAgentSkipsInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(t *t
 
 func TestAgentFinalizesGeneratedDocumentArtifactFromGitChangedPathFallback(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
 	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "SampleGame", "README.md"), []byte("seed\n"), 0o644); err != nil {
-		t.Fatalf("write seed: %v", err)
-	}
-	runTestGit(t, root, "add", "SampleGame/README.md")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "seed")
 	if err := os.WriteFile(filepath.Join(root, "SampleGame", "BugReport.md"), []byte("# SampleGame Bug Report\n\n## BUG-001\n- File: SampleGame/SampleGame.cpp\n"), 0o644); err != nil {
 		t.Fatalf("write report: %v", err)
 	}
+	previousChangedFiles := autoReviewDelegationChangedFiles
+	autoReviewDelegationChangedFiles = func(gotRoot string) []string {
+		if !sameFilePath(gotRoot, root) {
+			t.Fatalf("expected changed-file fallback root %q, got %q", root, gotRoot)
+		}
+		return []string{"SampleGame/BugReport.md"}
+	}
+	t.Cleanup(func() {
+		autoReviewDelegationChangedFiles = previousChangedFiles
+	})
 
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.Messages = []Message{{

@@ -12,8 +12,138 @@ import (
 	"time"
 )
 
+func useRecoveryShellActionFixture(t *testing.T, status string, output string) {
+	t.Helper()
+	previous := recoveryShellActionExecutor
+	recoveryShellActionExecutor = func(rt *runtimeState, ctx context.Context, action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		record := RecoveryExecutionRecord{
+			ActionID:  strings.TrimSpace(action.ID),
+			Command:   "!" + strings.TrimSpace(command),
+			Status:    status,
+			Output:    output,
+			StartedAt: time.Now(),
+		}
+		if ctx.Err() != nil {
+			record.Status = recoveryActionStatusFailed
+			record.Output = "command canceled"
+		}
+		exitCode := 0
+		if record.Status != recoveryActionStatusExecuted {
+			exitCode = 1
+		}
+		record.ExitCode = &exitCode
+		record.FinishedAt = time.Now()
+		if strings.TrimSpace(record.Output) == "" {
+			record.Output = "(no output)"
+		}
+		if rt != nil {
+			rt.recordRecoveryVerification(action, command, record)
+		}
+		return record
+	}
+	t.Cleanup(func() {
+		recoveryShellActionExecutor = previous
+	})
+}
+
+func useRecoverySlashVerifyFailureFixture(t *testing.T, output string) {
+	t.Helper()
+	previous := recoverySlashActionExecutor
+	recoverySlashActionExecutor = func(rt *runtimeState, ctx context.Context, command string) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		parsed, ok := ParseCommand(command)
+		if ok && parsed.Name == "verify" {
+			report := VerificationReport{
+				GeneratedAt: time.Now(),
+				Trigger:     "recovery",
+				Mode:        VerificationAdaptive,
+				Workspace:   rt.workspace.Root,
+				ChangedPaths: []string{
+					"broken_test.go",
+				},
+				Steps: []VerificationStep{{
+					Label:   "go test",
+					Command: "go test ./...",
+					Status:  VerificationFailed,
+					Output:  output,
+				}},
+			}
+			rt.session.LastVerification = &report
+			if rt.verifyHistory != nil {
+				_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
+			}
+			return nil
+		}
+		return defaultRecoverySlashActionExecutor(rt, ctx, command)
+	}
+	t.Cleanup(func() {
+		recoverySlashActionExecutor = previous
+	})
+}
+
+func useRecoveryNestedArtifactSlashFixture(t *testing.T) {
+	t.Helper()
+	previous := recoverySlashActionExecutor
+	recoverySlashActionExecutor = func(rt *runtimeState, ctx context.Context, command string) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		root := rt.workspace.Root
+		if strings.Contains(command, "continuity") {
+			dir := filepath.Join(root, ".kernforge", "continuity")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+			path := filepath.Join(dir, "latest.md")
+			if err := os.WriteFile(path, []byte("# Continuity\n"), 0o644); err != nil {
+				return err
+			}
+			rt.session.AppendConversationEvent(ConversationEvent{
+				Kind:         conversationEventKindContinuity,
+				ArtifactRefs: []string{path},
+			})
+			return nil
+		}
+		if strings.Contains(command, "audit") {
+			dir := filepath.Join(root, ".kernforge", "completion_audit")
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+			path := filepath.Join(dir, "latest.md")
+			if err := os.WriteFile(path, []byte("# Completion Audit\n"), 0o644); err != nil {
+				return err
+			}
+			rt.session.AppendConversationEvent(ConversationEvent{
+				Kind:         conversationEventKindCompletionAudit,
+				ArtifactRefs: []string{path},
+				Entities: map[string]string{
+					"ready":  "true",
+					"status": "ready",
+				},
+			})
+			return nil
+		}
+		return defaultRecoverySlashActionExecutor(rt, ctx, command)
+	}
+	t.Cleanup(func() {
+		recoverySlashActionExecutor = previous
+	})
+}
+
 func TestRecoverCommandWritesRecoveryBrief(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"agent.go"})
 	now := time.Now()
 	exitCode := 1
 	session := NewSession(root, "provider", "model", "", "default")
@@ -131,7 +261,9 @@ func TestRecoverCommandWritesRecoveryBrief(t *testing.T) {
 }
 
 func TestRecoverExecuteSafeRunsWhitelistedActionAndLogsStatus(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, nil)
+	useRecoveryShellActionFixture(t, recoveryActionStatusExecuted, "## main")
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindCommandError,
@@ -191,7 +323,9 @@ func TestRecoverExecuteSafeRunsWhitelistedActionAndLogsStatus(t *testing.T) {
 }
 
 func TestRecoverExecuteSafeGoalSuppressesNestedArtifactOutput(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"Tavern/TavernUpd/ProcessEventMonitor.cpp"})
+	useRecoveryNestedArtifactSlashFixture(t)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastVerification = &VerificationReport{
 		GeneratedAt:  time.Now(),
@@ -252,7 +386,8 @@ func TestRecoverExecuteSafeGoalSuppressesNestedArtifactOutput(t *testing.T) {
 }
 
 func TestRecoverExecuteSafeHonorsCanceledContext(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindCommandError,
@@ -308,14 +443,9 @@ func TestRecoverExecuteSafeHonorsCanceledContext(t *testing.T) {
 }
 
 func TestRecoverExecuteSafeMarksFailedSlashVerifyActionFailed(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/recoveryfail\n\ngo 1.21\n"), 0o644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	testSource := "package recoveryfail\n\nimport \"testing\"\n\nfunc TestBroken(t *testing.T) {\n\tt.Fatal(\"broken\")\n}\n"
-	if err := os.WriteFile(filepath.Join(root, "broken_test.go"), []byte(testSource), 0o644); err != nil {
-		t.Fatalf("write broken test: %v", err)
-	}
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"broken_test.go"})
+	useRecoverySlashVerifyFailureFixture(t, "FAIL broken_test.go\ngo test ./...")
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -373,7 +503,8 @@ func TestRecoverExecuteSafeMarksFailedSlashVerifyActionFailed(t *testing.T) {
 }
 
 func TestRecoveryActionPlanMarksUnsafeCommandManualOnly(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindCommandError,
@@ -437,10 +568,8 @@ func TestRecoveryCommandAutoRunnableRejectsUnsafeExecutionFlags(t *testing.T) {
 }
 
 func TestRecoveryNextCommandsDropVerifyAfterSuccessfulVerification(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "agent.go"), []byte("package main\n\nfunc changed() {}\n"), 0o644); err != nil {
-		t.Fatalf("write changed file: %v", err)
-	}
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"agent.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastVerification = &VerificationReport{
 		GeneratedAt: time.Now(),

@@ -10,7 +10,8 @@ import (
 )
 
 func TestDelegationHandoffWritesCompactArtifacts(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"agent.go"})
 	if err := os.WriteFile(filepath.Join(root, "agent.go"), []byte("package main\n\nfunc delegated() {}\n"), 0o644); err != nil {
 		t.Fatalf("write changed file: %v", err)
 	}
@@ -73,6 +74,17 @@ func TestDelegationHandoffWritesCompactArtifacts(t *testing.T) {
 	if !strings.Contains(output.String(), "Generated delegation handoff") {
 		t.Fatalf("expected handoff output, got %q", output.String())
 	}
+}
+
+func useDelegationChangedFilesFixture(t *testing.T, changed []string) {
+	t.Helper()
+	previous := delegationChangedFilesProvider
+	delegationChangedFilesProvider = func(string) []string {
+		return append([]string(nil), changed...)
+	}
+	t.Cleanup(func() {
+		delegationChangedFilesProvider = previous
+	})
 }
 
 func TestDelegationHandoffImportRecordsResultAndMarksTasks(t *testing.T) {

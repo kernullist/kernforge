@@ -368,6 +368,15 @@ func TestModelRouteProgressStopsAfterCallerContextCancel(t *testing.T) {
 }
 
 func TestModelRouteWaitProgressStopsAfterStreamingOutputStarts(t *testing.T) {
+	oldInitialDelay := modelRequestWaitInitialDelay
+	oldRepeatDelay := modelRequestWaitRepeatDelay
+	modelRequestWaitInitialDelay = 20 * time.Millisecond
+	modelRequestWaitRepeatDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		modelRequestWaitInitialDelay = oldInitialDelay
+		modelRequestWaitRepeatDelay = oldRepeatDelay
+	})
+
 	scheduler := NewModelRouteScheduler()
 	client := &streamingSlowProviderClient{
 		name:    "ollama",
@@ -411,7 +420,7 @@ func TestModelRouteWaitProgressStopsAfterStreamingOutputStarts(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("provider call did not start")
 	}
-	time.Sleep(5200 * time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
 	client.closeRelease()
 
 	select {

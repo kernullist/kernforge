@@ -1448,12 +1448,14 @@ func reviewHarnessCanUseAnyModel(a *Agent) bool {
 	return postChangeReviewHasDedicatedModel(a)
 }
 
+var autoReviewDelegationChangedFiles = delegationChangedFiles
+
 func autoReviewChangedPaths(session *Session, root string) []string {
 	paths := currentTurnPatchTransactionChangedPaths(session)
 	if len(paths) > 0 {
 		return normalizeTaskStateList(paths, 128)
 	}
-	return normalizeTaskStateList(filterReviewablePaths(delegationChangedFiles(root)), 128)
+	return normalizeTaskStateList(filterReviewablePaths(autoReviewDelegationChangedFiles(root)), 128)
 }
 
 func formatPostChangeReviewFeedback(cfg Config, run ReviewRun, needsRevision bool) string {

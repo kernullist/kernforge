@@ -167,7 +167,7 @@ func TestStaleContextRecoveryItemsExposeActionAndFinalizationPolicy(t *testing.T
 	now := time.Now()
 
 	t.Run("artifact quality changed after gate", func(t *testing.T) {
-		root := initTestGitRepo(t)
+		root := t.TempDir()
 		session := NewSession(root, "provider", "model", "", "default")
 		session.AcceptanceContract = &AcceptanceContract{RequestClass: reviewRequestClassDocumentArtifact, RequiredArtifacts: []string{"report.md"}}
 		session.LastCodingHarnessReport = &CodingHarnessReport{
@@ -205,7 +205,7 @@ func TestStaleContextRecoveryItemsExposeActionAndFinalizationPolicy(t *testing.T
 	})
 
 	t.Run("verification passed then patch changed", func(t *testing.T) {
-		root := initTestGitRepo(t)
+		root := t.TempDir()
 		session := NewSession(root, "provider", "model", "", "default")
 		session.Messages = []Message{{Role: "user", Text: "modify main.go"}}
 		session.LastVerification = &VerificationReport{
@@ -241,7 +241,7 @@ func TestStaleContextRecoveryItemsExposeActionAndFinalizationPolicy(t *testing.T
 	})
 
 	t.Run("pending correction interrupted by new request", func(t *testing.T) {
-		root := initTestGitRepo(t)
+		root := t.TempDir()
 		session := NewSession(root, "provider", "model", "", "default")
 		session.Messages = []Message{
 			{Role: "user", Text: "fix main.go"},
@@ -341,7 +341,7 @@ func TestRealProviderDrillSkippedReportIsExplicitWhenConfigMissing(t *testing.T)
 }
 
 func TestStatusAndMCPPreserveRouteHealthCorrectionAndDrillAfterReload(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, ".kernforge", "sessions-test"))
 	session := NewSession(root, "provider", "model", "", "default")
 	session.ID = "session-reload-operational"
@@ -407,7 +407,7 @@ func TestStatusAndMCPPreserveRouteHealthCorrectionAndDrillAfterReload(t *testing
 }
 
 func TestMCPStatusJSONExposesStructuredFieldsWithoutProseParsing(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastLiveProviderDrill = func() *LiveProviderDrillReport {
 		report := buildRealProviderSkippedDrillReport("missing config")

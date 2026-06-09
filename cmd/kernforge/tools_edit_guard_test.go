@@ -15,6 +15,92 @@ import (
 	"time"
 )
 
+func testFastShellCommand(output string) string {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		output = "ready"
+	}
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf("Write-Output %s", output)
+	}
+	return fmt.Sprintf("echo %s", output)
+}
+
+func testRunningShellCommand(duration time.Duration, output string) string {
+	if duration < 250*time.Millisecond {
+		duration = 250 * time.Millisecond
+	}
+	output = strings.TrimSpace(output)
+	if runtime.GOOS == "windows" {
+		command := fmt.Sprintf("Start-Sleep -Milliseconds %d", duration.Milliseconds())
+		if output != "" {
+			command += fmt.Sprintf("; Write-Output %s", output)
+		}
+		return command
+	}
+	seconds := fmt.Sprintf("%.3f", duration.Seconds())
+	if output != "" {
+		return fmt.Sprintf("sleep %s; echo %s", seconds, output)
+	}
+	return fmt.Sprintf("sleep %s", seconds)
+}
+
+func registerBackgroundJobCleanup(t *testing.T, jobs *BackgroundJobManager) {
+	t.Helper()
+	t.Cleanup(func() {
+		if jobs == nil {
+			return
+		}
+		for _, bundle := range jobs.SnapshotBundles() {
+			_, _, _ = jobs.CancelBundle(bundle.ID, "canceled", "test cleanup", "")
+		}
+		for _, job := range jobs.Snapshot() {
+			_, _ = jobs.CancelJob(job.ID, "test cleanup", "")
+		}
+	})
+}
+
+func seedRunningBackgroundJob(session *Session, id string, command string, workDir string, ownerNodeID string) BackgroundShellJob {
+	now := shellJobNow()
+	job := BackgroundShellJob{
+		ID:             id,
+		Command:        command,
+		CommandSummary: summarizeShellCommand(command),
+		OwnerNodeID:    strings.TrimSpace(ownerNodeID),
+		WorkDir:        workDir,
+		Status:         "running",
+		StartedAt:      now,
+		UpdatedAt:      now,
+	}
+	job.Normalize()
+	session.UpsertBackgroundJob(job)
+	return job
+}
+
+func seedRunningBackgroundBundle(session *Session, id string, jobs []BackgroundShellJob, ownerNodeID string) BackgroundShellBundle {
+	now := shellJobNow()
+	jobIDs := make([]string, 0, len(jobs))
+	commandSummaries := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		jobIDs = append(jobIDs, job.ID)
+		commandSummaries = append(commandSummaries, job.CommandSummary)
+	}
+	bundle := BackgroundShellBundle{
+		ID:               id,
+		Summary:          summarizeBackgroundBundleCommands(commandSummaries),
+		CommandSummaries: commandSummaries,
+		JobIDs:           jobIDs,
+		OwnerNodeID:      strings.TrimSpace(ownerNodeID),
+		Status:           "running",
+		LastSummary:      fmt.Sprintf("completed=0 running=%d failed=0 canceled=0 total=%d", len(jobs), len(jobs)),
+		StartedAt:        now,
+		UpdatedAt:        now,
+	}
+	bundle.Normalize()
+	session.UpsertBackgroundBundle(bundle)
+	return bundle
+}
+
 func TestWorkspaceEnsureWriteRejectsNestedClaudeWorktreeOutsideActiveRoot(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, ".claude", "worktrees", "compassionate-goldberg", "completion.go")
@@ -3326,6 +3412,7 @@ func TestRunBackgroundShellStartsAndCanBePolled(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3335,10 +3422,7 @@ func TestRunBackgroundShellStartsAndCanBePolled(t *testing.T) {
 	runTool := NewRunBackgroundShellTool(ws)
 	checkTool := NewCheckShellJobTool(ws)
 
-	command := "sleep 0.1; echo ready"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Milliseconds 100; Write-Output ready"
-	}
+	command := testFastShellCommand("ready")
 	if _, err := runTool.Execute(context.Background(), map[string]any{
 		"command": command,
 	}); err != nil {
@@ -3387,6 +3471,7 @@ func TestRunBackgroundShellWorkdirIsRecordedAndUsedForReuse(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3394,42 +3479,31 @@ func TestRunBackgroundShellWorkdirIsRecordedAndUsedForReuse(t *testing.T) {
 		BackgroundJobs: jobs,
 	}
 	runTool := NewRunBackgroundShellTool(ws)
-	command := "sleep 1"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 1"
+	command := testFastShellCommand("ready")
+	seededJob := seedRunningBackgroundJob(session, "job-workdir", command, subdir, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded job: %v", err)
 	}
 
-	first, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
+	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
 		"command": command,
 		"workdir": "subdir",
 	})
 	if err != nil {
-		t.Fatalf("first run: %v", err)
+		t.Fatalf("reuse run: %v", err)
 	}
-	if got := toolMetaString(first.Meta, "work_dir"); !sameFilePath(got, subdir) {
-		t.Fatalf("expected first work_dir meta to resolve subdir, got %#v", first.Meta)
+	if got := toolMetaString(result.Meta, "work_dir"); !sameFilePath(got, subdir) {
+		t.Fatalf("expected work_dir meta to resolve subdir, got %#v", result.Meta)
 	}
-	jobID := jobs.LatestJobID()
-	if jobID == "" {
-		t.Fatalf("expected background job")
-	}
-	job, ok := session.BackgroundJob(jobID)
+	job, ok := session.BackgroundJob(seededJob.ID)
 	if !ok {
-		t.Fatalf("expected recorded job %s", jobID)
+		t.Fatalf("expected recorded job %s", seededJob.ID)
 	}
 	if !sameFilePath(job.WorkDir, subdir) {
 		t.Fatalf("expected job workdir %q, got %q", subdir, job.WorkDir)
 	}
-
-	second, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
-		"command": command,
-		"workdir": "subdir",
-	})
-	if err != nil {
-		t.Fatalf("second run: %v", err)
-	}
-	if reused, _ := second.Meta["reused"].(bool); !reused {
-		t.Fatalf("expected matching workdir command to reuse background job, meta=%#v", second.Meta)
+	if reused, _ := result.Meta["reused"].(bool); !reused {
+		t.Fatalf("expected matching workdir command to reuse background job, meta=%#v", result.Meta)
 	}
 }
 
@@ -3445,6 +3519,7 @@ func TestRunShellBundleBackgroundWorkdirIsRecorded(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3452,10 +3527,7 @@ func TestRunShellBundleBackgroundWorkdirIsRecorded(t *testing.T) {
 		BackgroundJobs: jobs,
 	}
 	runTool := NewRunShellBundleBackgroundTool(ws)
-	command := "sleep 1"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 1"
-	}
+	command := testFastShellCommand("ready")
 
 	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
 		"commands": []string{command},
@@ -3488,6 +3560,7 @@ func TestDeclinedBackgroundVerificationLeavesNoPollableLatestJob(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3550,6 +3623,7 @@ func TestDeclinedBackgroundBundleVerificationPreservesRoutingMeta(t *testing.T) 
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3594,6 +3668,7 @@ func TestRunBackgroundShellReusesMatchingRunningJob(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3602,31 +3677,26 @@ func TestRunBackgroundShellReusesMatchingRunningJob(t *testing.T) {
 	}
 	runTool := NewRunBackgroundShellTool(ws)
 
-	command := "sleep 1; echo ready"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 1; Write-Output ready"
+	command := testFastShellCommand("ready")
+	seededJob := seedRunningBackgroundJob(session, "job-reuse", command, root, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded job: %v", err)
 	}
-	first, err := runTool.Execute(context.Background(), map[string]any{
+	out, err := runTool.Execute(context.Background(), map[string]any{
 		"command": command,
 	})
 	if err != nil {
-		t.Fatalf("first background shell: %v", err)
+		t.Fatalf("reuse background shell: %v", err)
 	}
-	second, err := runTool.Execute(context.Background(), map[string]any{
-		"command": command,
-	})
-	if err != nil {
-		t.Fatalf("second background shell: %v", err)
-	}
-	if !strings.Contains(second, "reusing background shell job") {
-		t.Fatalf("expected reuse message, got %q", second)
+	if !strings.Contains(out, "reusing background shell job") {
+		t.Fatalf("expected reuse message, got %q", out)
 	}
 	snapshot := jobs.Snapshot()
 	if len(snapshot) != 1 {
 		t.Fatalf("expected one reusable background job, got %d", len(snapshot))
 	}
-	if !strings.Contains(first, snapshot[0].ID) || !strings.Contains(second, snapshot[0].ID) {
-		t.Fatalf("expected both outputs to reference the same job id, got first=%q second=%q", first, second)
+	if snapshot[0].ID != seededJob.ID || !strings.Contains(out, seededJob.ID) {
+		t.Fatalf("expected output to reference seeded job %s, got snapshot=%#v out=%q", seededJob.ID, snapshot, out)
 	}
 }
 
@@ -3638,6 +3708,7 @@ func TestRunShellBundleBackgroundStartsParallelJobsAndCheckBundleSummarizes(t *t
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3647,10 +3718,7 @@ func TestRunShellBundleBackgroundStartsParallelJobsAndCheckBundleSummarizes(t *t
 	runTool := NewRunShellBundleBackgroundTool(ws)
 	checkTool := NewCheckShellBundleTool(ws)
 
-	commands := []string{"go version", "go env GOOS"}
-	if runtime.GOOS == "windows" {
-		commands = []string{"Write-Output alpha", "Write-Output beta"}
-	}
+	commands := []string{testFastShellCommand("alpha"), testFastShellCommand("beta")}
 	started, err := runTool.Execute(context.Background(), map[string]any{
 		"commands": commands,
 	})
@@ -3706,6 +3774,7 @@ func TestRunShellBundleBackgroundReusesExistingRunningBundle(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -3713,36 +3782,29 @@ func TestRunShellBundleBackgroundReusesExistingRunningBundle(t *testing.T) {
 		BackgroundJobs: jobs,
 	}
 	runTool := NewRunShellBundleBackgroundTool(ws)
-	defer func() {
-		for _, bundle := range jobs.SnapshotBundles() {
-			_, _, _ = jobs.CancelBundle(bundle.ID, "canceled", "test cleanup", "")
-		}
-	}()
-
-	commands := []string{"sleep 5; echo alpha", "sleep 5; echo beta"}
-	if runtime.GOOS == "windows" {
-		commands = []string{"Start-Sleep -Seconds 5; Write-Output alpha", "Start-Sleep -Seconds 5; Write-Output beta"}
+	commands := []string{testFastShellCommand("alpha"), testFastShellCommand("beta")}
+	seededJobs := []BackgroundShellJob{
+		seedRunningBackgroundJob(session, "job-alpha", commands[0], root, ""),
+		seedRunningBackgroundJob(session, "job-beta", commands[1], root, ""),
+	}
+	seedRunningBackgroundBundle(session, "bundle-existing", seededJobs, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded bundle: %v", err)
 	}
 
-	first, err := runTool.Execute(context.Background(), map[string]any{
+	out, err := runTool.Execute(context.Background(), map[string]any{
 		"commands": commands,
 	})
 	if err != nil {
-		t.Fatalf("first shell bundle: %v", err)
-	}
-	second, err := runTool.Execute(context.Background(), map[string]any{
-		"commands": commands,
-	})
-	if err != nil {
-		t.Fatalf("second shell bundle: %v", err)
+		t.Fatalf("shell bundle reuse: %v", err)
 	}
 
 	bundles := jobs.SnapshotBundles()
 	if len(bundles) != 1 {
 		t.Fatalf("expected one reusable background bundle, got %d", len(bundles))
 	}
-	if !strings.Contains(first, bundles[0].ID) || !strings.Contains(second, bundles[0].ID) {
-		t.Fatalf("expected both outputs to reference the same bundle id, got first=%q second=%q", first, second)
+	if !strings.Contains(out, bundles[0].ID) {
+		t.Fatalf("expected output to reference the existing bundle id, got %q", out)
 	}
 }
 
@@ -3758,6 +3820,7 @@ func TestRunShellBundleBackgroundExecuteDetailedReturnsStructuredMeta(t *testing
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           activeRoot,
@@ -3766,9 +3829,14 @@ func TestRunShellBundleBackgroundExecuteDetailedReturnsStructuredMeta(t *testing
 	}
 	runTool := NewRunShellBundleBackgroundTool(ws)
 
-	commands := []string{"go version", "go env GOOS"}
-	if runtime.GOOS == "windows" {
-		commands = []string{"Write-Output alpha", "Write-Output beta"}
+	commands := []string{testFastShellCommand("alpha"), testFastShellCommand("beta")}
+	seededJobs := []BackgroundShellJob{
+		seedRunningBackgroundJob(session, "job-alpha", commands[0], activeRoot, ""),
+		seedRunningBackgroundJob(session, "job-beta", commands[1], activeRoot, ""),
+	}
+	seedRunningBackgroundBundle(session, "bundle-metadata", seededJobs, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded bundle: %v", err)
 	}
 	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
 		"commands": commands,
@@ -3805,31 +3873,23 @@ func TestCheckShellJobExecuteDetailedIncludesBundleMeta(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
 		Shell:          defaultShell(),
 		BackgroundJobs: jobs,
 	}
-	runTool := NewRunBackgroundShellTool(ws)
 	checkTool := NewCheckShellJobTool(ws)
 
-	command := "go version"
-	if runtime.GOOS == "windows" {
-		command = "Write-Output alpha"
-	}
-	start, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
-		"command": command,
-	})
-	if err != nil {
-		t.Fatalf("run background shell detailed: %v", err)
-	}
-	jobID := toolMetaString(start.Meta, "job_id")
-	if jobID == "" {
-		t.Fatalf("expected job id in start meta, got %#v", start.Meta)
+	command := testFastShellCommand("alpha")
+	seededJob := seedRunningBackgroundJob(session, "job-check", command, root, "")
+	seedRunningBackgroundBundle(session, "bundle-check", []BackgroundShellJob{seededJob}, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded job: %v", err)
 	}
 	result, err := checkTool.ExecuteDetailed(context.Background(), map[string]any{
-		"job_id": jobID,
+		"job_id": seededJob.ID,
 	})
 	if err != nil {
 		t.Fatalf("check shell job detailed: %v", err)
@@ -3837,7 +3897,7 @@ func TestCheckShellJobExecuteDetailedIncludesBundleMeta(t *testing.T) {
 	if toolMetaString(result.Meta, "bundle_id") == "" {
 		t.Fatalf("expected bundle id in check-shell-job meta, got %#v", result.Meta)
 	}
-	if toolMetaString(result.Meta, "job_id") != jobID {
+	if toolMetaString(result.Meta, "job_id") != seededJob.ID {
 		t.Fatalf("expected stable job id in result meta, got %#v", result.Meta)
 	}
 }
@@ -3850,6 +3910,7 @@ func TestRunBackgroundShellReuseRunsPostHookAndReportsActualStatus(t *testing.T)
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	postHooks := 0
 	ws := Workspace{
 		BaseRoot:       root,
@@ -3867,9 +3928,10 @@ func TestRunBackgroundShellReuseRunsPostHookAndReportsActualStatus(t *testing.T)
 	}
 	runTool := NewRunBackgroundShellTool(ws)
 
-	command := "sleep 1; echo ready"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 1; Write-Output ready"
+	command := testFastShellCommand("ready")
+	seedRunningBackgroundJob(session, "job-post-hook", command, root, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded job: %v", err)
 	}
 	first, err := runTool.Execute(context.Background(), map[string]any{
 		"command": command,
@@ -3884,11 +3946,8 @@ func TestRunBackgroundShellReuseRunsPostHookAndReportsActualStatus(t *testing.T)
 		t.Fatalf("second background shell: %v", err)
 	}
 
-	if !strings.Contains(first, "status: running") {
-		t.Fatalf("expected actual running status in first output, got %q", first)
-	}
-	if !strings.Contains(first, "status_file:") {
-		t.Fatalf("expected explicit status file in first output, got %q", first)
+	if !strings.Contains(first, "reusing background shell job") {
+		t.Fatalf("expected first call to reuse seeded running job, got %q", first)
 	}
 	if !strings.Contains(second, "reusing background shell job") {
 		t.Fatalf("expected reuse message, got %q", second)
@@ -3910,6 +3969,7 @@ func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           activeRoot,
@@ -3918,9 +3978,10 @@ func TestRunBackgroundShellExecuteDetailedCarriesOwnerNodeID(t *testing.T) {
 	}
 	runTool := NewRunBackgroundShellTool(ws)
 
-	command := "go version"
-	if runtime.GOOS == "windows" {
-		command = "Write-Output alpha"
+	command := testFastShellCommand("alpha")
+	seedRunningBackgroundJob(session, "job-owner", command, activeRoot, "")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded job: %v", err)
 	}
 	result, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
 		"command":       command,
@@ -3955,6 +4016,7 @@ func TestRunBackgroundShellPreToolUseRewriteStartsUpdatedCommand(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	var observed string
 	ws := Workspace{
 		BaseRoot:       root,
@@ -4005,6 +4067,7 @@ func TestCancelShellBundleStopsRunningJobs(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
@@ -4014,10 +4077,7 @@ func TestCancelShellBundleStopsRunningJobs(t *testing.T) {
 	runTool := NewRunBackgroundShellTool(ws)
 	cancelTool := NewCancelShellBundleTool(ws)
 
-	command := "sleep 5; echo test-ready"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 5; Write-Output test-ready"
-	}
+	command := testRunningShellCommand(750*time.Millisecond, "test-ready")
 	started, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
 		"command": command,
 	})
@@ -4057,28 +4117,18 @@ func TestMarkBackgroundBundlesStalePreemptsRunningBundle(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	jobs := NewBackgroundJobManager(filepath.Join(root, userConfigDirName, "jobs"), session, store)
+	registerBackgroundJobCleanup(t, jobs)
 	ws := Workspace{
 		BaseRoot:       root,
 		Root:           root,
 		Shell:          defaultShell(),
 		BackgroundJobs: jobs,
 	}
-	runTool := NewRunBackgroundShellTool(ws)
-	command := "sleep 5; echo test-ready"
-	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Seconds 5; Write-Output test-ready"
-	}
-	started, err := runTool.ExecuteDetailed(context.Background(), map[string]any{
-		"command":       command,
-		"owner_node_id": "plan-02",
-	})
-	if err != nil {
-		t.Fatalf("run background shell detailed: %v", err)
-	}
-	bundleID := toolMetaString(started.Meta, "bundle_id")
-	jobID := toolMetaString(started.Meta, "job_id")
-	if bundleID == "" || jobID == "" {
-		t.Fatalf("expected bundle/job ids, got %#v", started.Meta)
+	command := testFastShellCommand("test-ready")
+	seededJob := seedRunningBackgroundJob(session, "job-stale", command, root, "plan-02")
+	seededBundle := seedRunningBackgroundBundle(session, "bundle-stale", []BackgroundShellJob{seededJob}, "plan-02")
+	if err := store.Save(session); err != nil {
+		t.Fatalf("Save seeded bundle: %v", err)
 	}
 	agent := &Agent{
 		Config:    Config{},
@@ -4087,11 +4137,11 @@ func TestMarkBackgroundBundlesStalePreemptsRunningBundle(t *testing.T) {
 	}
 	agent.markBackgroundBundlesStale("A newer edit invalidated the previous verification.")
 
-	bundle, ok := session.BackgroundBundle(bundleID)
+	bundle, ok := session.BackgroundBundle(seededBundle.ID)
 	if !ok || bundle.Status != "stale" {
 		t.Fatalf("expected stale bundle after preemption, got %#v", bundle)
 	}
-	job, ok := session.BackgroundJob(jobID)
+	job, ok := session.BackgroundJob(seededJob.ID)
 	if !ok || job.Status != "preempted" {
 		t.Fatalf("expected preempted job after stale invalidation, got %#v", job)
 	}

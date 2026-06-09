@@ -1067,6 +1067,11 @@ func completeModelTurnOnceWithClient(ctx context.Context, client ProviderClient,
 	return completeModelTurnOnceWithModelRoutes(ctx, defaultModelRouteScheduler(), modelRoutePolicyFromConfig(Config{}), Config{}, client, req)
 }
 
+var (
+	modelRequestWaitInitialDelay = 5 * time.Second
+	modelRequestWaitRepeatDelay  = 15 * time.Second
+)
+
 func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
@@ -1172,7 +1177,15 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 
 	waitDone := make(chan struct{})
 	go func() {
-		timer := time.NewTimer(5 * time.Second)
+		initialDelay := modelRequestWaitInitialDelay
+		if initialDelay <= 0 {
+			initialDelay = 5 * time.Second
+		}
+		repeatDelay := modelRequestWaitRepeatDelay
+		if repeatDelay <= 0 {
+			repeatDelay = 15 * time.Second
+		}
+		timer := time.NewTimer(initialDelay)
 		defer timer.Stop()
 		for {
 			select {
@@ -1186,11 +1199,11 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 					Provider:   route.Provider,
 					Model:      firstNonBlankString(req.Model, route.Model),
 					RouteLabel: route.Label,
-					Elapsed:    5 * time.Second,
+					Elapsed:    initialDelay,
 				})
-				ticker := time.NewTicker(15 * time.Second)
+				ticker := time.NewTicker(repeatDelay)
 				defer ticker.Stop()
-				startedAt := time.Now().Add(-5 * time.Second)
+				startedAt := time.Now().Add(-initialDelay)
 				for {
 					select {
 					case <-waitDone:

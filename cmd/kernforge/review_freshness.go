@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+var (
+	reviewFreshnessGitBranchProvider       = delegationGitBranch
+	reviewFreshnessChangedFilesProvider    = delegationChangedFiles
+	reviewFreshnessGitStatusUsableProvider = reviewScopeGitStatusLooksUsable
+)
+
 func reviewLatestFreshnessForRoot(root string, run ReviewRun) ReviewFreshness {
 	var currentChanged []string
 	if strings.TrimSpace(root) != "" {
@@ -29,7 +35,11 @@ func reviewLatestFreshnessAgainstPaths(root string, run ReviewRun, currentChange
 		reasons = append(reasons, "review fingerprint changed")
 	}
 	if strings.TrimSpace(root) != "" {
-		if branch := delegationGitBranch(root); strings.TrimSpace(branch) != "" && strings.TrimSpace(run.Branch) != "" && !strings.EqualFold(branch, run.Branch) {
+		branchProvider := reviewFreshnessGitBranchProvider
+		if branchProvider == nil {
+			branchProvider = delegationGitBranch
+		}
+		if branch := branchProvider(root); strings.TrimSpace(branch) != "" && strings.TrimSpace(run.Branch) != "" && !strings.EqualFold(branch, run.Branch) {
 			invalidated = append(invalidated, "branch")
 			reasons = append(reasons, fmt.Sprintf("branch changed from %s to %s", run.Branch, branch))
 		}
@@ -53,10 +63,18 @@ func reviewLatestFreshnessAgainstPaths(root string, run ReviewRun, currentChange
 }
 
 func reviewCurrentChangedPaths(root string) []string {
-	if !reviewScopeGitStatusLooksUsable(root) {
+	usableProvider := reviewFreshnessGitStatusUsableProvider
+	if usableProvider == nil {
+		usableProvider = reviewScopeGitStatusLooksUsable
+	}
+	if !usableProvider(root) {
 		return nil
 	}
-	return normalizeCompletionAuditReviewPaths(filterReviewablePaths(delegationChangedFiles(root)))
+	changedProvider := reviewFreshnessChangedFilesProvider
+	if changedProvider == nil {
+		changedProvider = delegationChangedFiles
+	}
+	return normalizeCompletionAuditReviewPaths(filterReviewablePaths(changedProvider(root)))
 }
 
 func reviewUnreviewedChangedPaths(reviewed []string, currentChanged []string) []string {

@@ -67,6 +67,9 @@ type runtimeState struct {
 	workspace                       Workspace
 	detectVerificationToolPath      func(string) string
 	goalReply                       func(context.Context, string) (string, error)
+	goalVerify                      func(context.Context, GoalState, int) (VerificationReport, bool, error)
+	goalCompletionAudit             func(GoalState) (CompletionAuditArtifact, bool, error)
+	goalChangedFilesProvider        func(string) []string
 	interactive                     bool
 	strictConfig                    bool
 	configProfile                   string

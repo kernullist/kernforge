@@ -55,6 +55,8 @@ type Agent struct {
 	lastEmittedText                string
 }
 
+var completeModelTurnRequestTimeout = configRequestTimeout
+
 type AutoVerifyFailureResolution string
 
 const (
@@ -4307,7 +4309,7 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 			return ChatResponse{}, err
 		}
 
-		attemptCtx, cancel := context.WithTimeout(ctx, configRequestTimeout(a.Config))
+		attemptCtx, cancel := context.WithTimeout(ctx, completeModelTurnRequestTimeout(a.Config))
 		resp, err := a.completeModelTurnOnce(attemptCtx, req)
 		cancel()
 		if err == nil {

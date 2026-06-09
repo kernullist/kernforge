@@ -12,7 +12,8 @@ import (
 )
 
 func TestContinuityCommandWritesRecoveryPacket(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useDelegationChangedFilesFixture(t, []string{"agent.go"})
 	if err := os.WriteFile(filepath.Join(root, "agent.go"), []byte("package main\n\nfunc changed() {}\n"), 0o644); err != nil {
 		t.Fatalf("write changed file: %v", err)
 	}

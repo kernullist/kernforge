@@ -27,6 +27,116 @@ func writeGoalTestModule(t *testing.T, root string) {
 	}
 }
 
+func useFastGoalVerificationAndAudit(rt *runtimeState) {
+	changed := []string{"go.mod", "main.go", "main_test.go"}
+	rt.goalVerify = func(ctx context.Context, goal GoalState, iteration int) (VerificationReport, bool, error) {
+		_ = ctx
+		mode := VerificationAdaptive
+		decision := goalAdaptiveVerificationCadenceNote(iteration, 1)
+		if goalShouldRunFullVerification(iteration) {
+			mode = VerificationFull
+			decision = "full verification fixture passed."
+		}
+		return VerificationReport{
+			GeneratedAt:  time.Now(),
+			Trigger:      "manual",
+			Mode:         mode,
+			Decision:     decision,
+			Workspace:    rt.workspace.Root,
+			ChangedPaths: append([]string(nil), changed...),
+			Steps: []VerificationStep{{
+				Label:   "fast goal verification fixture",
+				Command: "go test ./cmd/kernforge -run TestGoal",
+				Scope:   strings.Join(changed, ", "),
+				Stage:   "targeted",
+				Status:  VerificationPassed,
+				Output:  "fast goal fixture passed",
+			}},
+		}, true, nil
+	}
+	rt.goalCompletionAudit = func(goal GoalState) (CompletionAuditArtifact, bool, error) {
+		verification := ""
+		if rt.session != nil && rt.session.LastVerification != nil {
+			verification = rt.session.LastVerification.SummaryLine()
+		}
+		sessionID := ""
+		if rt.session != nil {
+			sessionID = rt.session.ID
+		}
+		return CompletionAuditArtifact{
+			ID:           "completion-audit-test",
+			CreatedAt:    time.Now(),
+			SessionID:    sessionID,
+			Workspace:    rt.workspace.Root,
+			BaseRoot:     rt.workspace.BaseRoot,
+			ActiveGoalID: goal.ID,
+			Objective:    goal.Objective,
+			Ready:        true,
+			Status:       "ready",
+			Checklist: []CompletionAuditItem{{
+				Requirement: completionAuditVerificationRequirement,
+				Evidence:    verification,
+				Status:      completionAuditStatusPassed,
+				Source:      "test fixture",
+			}},
+			ChangedFiles: append([]string(nil), changed...),
+			Verification: verification,
+		}, true, nil
+	}
+	rt.goalChangedFilesProvider = func(root string) []string {
+		return append([]string(nil), changed...)
+	}
+}
+
+func seedGoalPassingVerification(t *testing.T, rt *runtimeState, changed []string) {
+	t.Helper()
+	if len(changed) == 0 {
+		changed = []string{"go.mod", "main.go", "main_test.go"}
+	}
+	report := VerificationReport{
+		GeneratedAt:  time.Now(),
+		Trigger:      "manual",
+		Mode:         VerificationFull,
+		Decision:     "full verification fixture passed.",
+		Workspace:    rt.workspace.Root,
+		ChangedPaths: append([]string(nil), changed...),
+		Steps: []VerificationStep{{
+			Label:   "fast goal completion verification fixture",
+			Command: "go test ./cmd/kernforge -run TestGoalComplete",
+			Scope:   strings.Join(changed, ", "),
+			Stage:   "workspace",
+			Status:  VerificationPassed,
+			Output:  "fast goal completion fixture passed",
+		}},
+	}
+	rt.recordGoalVerificationReport(context.Background(), report, changed)
+}
+
+func useFastGoalRuntime(t *testing.T, rt *runtimeState) {
+	t.Helper()
+	useFastGoalVerificationAndAudit(rt)
+	previousEvidenceBuilder := goalIterationReviewEvidenceBuilder
+	goalIterationReviewEvidenceBuilder = func(root string, iteration GoalIteration, checkpoints *CheckpointManager) string {
+		_ = root
+		_ = checkpoints
+		implementationReply := firstNonBlankString(iteration.ImplementReply, "fast goal agent reply")
+		return strings.Join([]string{
+			"Implementation pass reply:",
+			implementationReply,
+			"",
+			"Workspace review context:",
+			"- Changed files:",
+			"  - go.mod",
+			"  - main.go",
+			"- Git status:",
+			"  M go.mod",
+		}, "\n")
+	}
+	t.Cleanup(func() {
+		goalIterationReviewEvidenceBuilder = previousEvidenceBuilder
+	})
+}
+
 func TestGoalVerificationCadenceHelpers(t *testing.T) {
 	for _, iteration := range []int{1, 2, 3, 4} {
 		if goalShouldRunFullVerification(iteration) {
@@ -226,7 +336,7 @@ func TestGoalAgentReplySuppressesAssistantStreaming(t *testing.T) {
 }
 
 func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -249,6 +359,7 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 			return "fake goal agent reply", nil
 		},
 	}
+	useFastGoalRuntime(t, rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -290,7 +401,7 @@ func TestGoalIterationUsesAdaptiveVerificationBeforeFifthCycle(t *testing.T) {
 }
 
 func TestGoalRecordFromMarkdownNoRunPersistsArtifacts(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	goalPath := filepath.Join(root, "GOAL.md")
 	if err := os.WriteFile(goalPath, []byte("# Goal\n\nImplement autonomous loop.\n"), 0o644); err != nil {
 		t.Fatalf("write goal file: %v", err)
@@ -626,7 +737,7 @@ func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.action, func(t *testing.T) {
-			root := initTestGitRepo(t)
+			root := t.TempDir()
 			session := NewSession(root, "provider", "model", "", "default")
 			rt := &runtimeState{
 				writer:  &bytes.Buffer{},
@@ -659,7 +770,7 @@ func TestGoalRemovedSubcommandsDoNotCreateGoals(t *testing.T) {
 }
 
 func TestGoalRunFlagPrintsExplicitAutomationHint(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -677,6 +788,7 @@ func TestGoalRunFlagPrintsExplicitAutomationHint(t *testing.T) {
 			return "APPROVED: goal run smoke", nil
 		},
 	}
+	useFastGoalRuntime(t, rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -749,7 +861,7 @@ func TestBuildGoalReviewPromptUsesBugFindingSecondPassChecklist(t *testing.T) {
 }
 
 func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -774,6 +886,7 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 			return "fake goal agent reply", nil
 		},
 	}
+	useFastGoalRuntime(t, rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -810,7 +923,7 @@ func TestGoalRunWithFakeAgentCompletesAfterAudit(t *testing.T) {
 }
 
 func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
@@ -838,6 +951,19 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 				if err := os.WriteFile(reportPath, []byte("# SampleGame Bug Report\n\n## Summary\n\n- BUG-001: verified issue.\n"), 0o644); err != nil {
 					t.Fatalf("write report: %v", err)
 				}
+				session.ActivePatchTransaction = &PatchTransaction{
+					ID:     "patch-doc",
+					Goal:   request,
+					Status: patchTransactionStatusActive,
+					Entries: []PatchTransactionEntry{{
+						ToolName: "write_file",
+						Status:   "success",
+						Paths: []PatchPathChange{{
+							Path:      "SampleGame/BugReport.md",
+							Operation: "write_file",
+						}},
+					}},
+				}
 				session.LastCodingHarnessReport = &CodingHarnessReport{
 					Approved: true,
 					ArtifactQuality: ArtifactQualityReport{
@@ -862,6 +988,7 @@ func TestGoalDocumentArtifactGateSkipsReviewModels(t *testing.T) {
 			return "", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -945,6 +1072,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 			return "", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 " + request); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -963,7 +1091,7 @@ func TestGoalDocumentArtifactGateUsesCheckpointDiffOverPreexistingDirtyFiles(t *
 }
 
 func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	writeGoalTestModule(t, root)
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
@@ -996,6 +1124,7 @@ func TestGoalReviewNeedsRevisionRunsRepairPass(t *testing.T) {
 			return reply, nil
 		},
 	}
+	useFastGoalRuntime(t, rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 2 finish sample objective"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -1143,7 +1272,7 @@ func TestGoalIterationAutoFlagDisabledDoesNotFallbackToReviewerModel(t *testing.
 }
 
 func TestGoalIterationAutoFlagDisabledSkipsGoalReplyHook(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	cfg := DefaultConfig(root)
 	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
 	cfg.Review.AutoAfterGoalIteration = boolPtr(false)
@@ -1216,6 +1345,7 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 			}
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--run --max-iterations 1 create generated review artifact"); err != nil {
 		t.Fatalf("handleGoalCommand: %v", err)
@@ -1242,25 +1372,28 @@ func TestGoalReviewEvidencePrefersCheckpointDiff(t *testing.T) {
 }
 
 func TestGoalReviewGitTextKeepsFatalTextInDiff(t *testing.T) {
-	root := initTestGitRepo(t)
-	path := filepath.Join(root, "fatal.txt")
-	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
-		t.Fatalf("write fatal.txt: %v", err)
-	}
-	mustRunGit(t, root, "add", "fatal.txt")
-	mustRunGit(t, root, "commit", "-m", "Add fatal text fixture")
-	if err := os.WriteFile(path, []byte("fatal: this is source text, not a git error\n"), 0o644); err != nil {
-		t.Fatalf("modify fatal.txt: %v", err)
-	}
+	root := t.TempDir()
+	useGoalReviewGitTextRunner(t, func(string, ...string) string {
+		return "diff --git a/fatal.txt b/fatal.txt\n+fatal: this is source text, not a git error\n"
+	})
 
 	diff := goalReviewGitText(root, "diff", "--", "fatal.txt")
 	if !strings.Contains(diff, "fatal: this is source text") {
 		t.Fatalf("expected diff text containing fatal marker to be preserved, got:\n%s", diff)
 	}
+	useGoalReviewGitTextRunner(t, func(string, ...string) string {
+		return "fatal: not a git repository"
+	})
+	if got := goalReviewGitText(root, "diff", "--", "fatal.txt"); got != "" {
+		t.Fatalf("expected fatal git error to be suppressed, got %q", got)
+	}
 }
 
 func TestBuildGoalUntrackedFileReviewEvidenceLimitsLargeFiles(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useGoalReviewGitTextRunner(t, func(string, ...string) string {
+		return "huge.log\n"
+	})
 	if err := os.WriteFile(filepath.Join(root, "huge.log"), []byte(strings.Repeat("A", 20000)), 0o644); err != nil {
 		t.Fatalf("write huge.log: %v", err)
 	}
@@ -1275,6 +1408,15 @@ func TestBuildGoalUntrackedFileReviewEvidenceLimitsLargeFiles(t *testing.T) {
 	if len(evidence) > 1800 {
 		t.Fatalf("expected large untracked evidence to stay compact, len=%d", len(evidence))
 	}
+}
+
+func useGoalReviewGitTextRunner(t *testing.T, runner func(string, ...string) string) {
+	t.Helper()
+	previous := goalReviewGitTextRunner
+	goalReviewGitTextRunner = runner
+	t.Cleanup(func() {
+		goalReviewGitTextRunner = previous
+	})
 }
 
 func TestGoalReviewPathWithinRootAllowsDotDotPrefixNames(t *testing.T) {
@@ -1312,7 +1454,7 @@ func TestParseGoalReviewDecisionRecognizesRevisionWording(t *testing.T) {
 }
 
 func TestGoalTokenBudgetLimitsBeforeAgentPrompt(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	replyCount := 0
@@ -1351,7 +1493,7 @@ func TestGoalTokenBudgetLimitsBeforeAgentPrompt(t *testing.T) {
 }
 
 func TestGoalLoopStopsOnBlockedGoalUntilExplicitResume(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	goal := GoalState{
 		ID:        "goal-blocked",
@@ -1390,7 +1532,7 @@ func TestGoalLoopStopsOnBlockedGoalUntilExplicitResume(t *testing.T) {
 }
 
 func TestGoalLoopStopsOnUsageLimitedGoalUntilExplicitResume(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	goal := GoalState{
 		ID:        "goal-usage-limited",
@@ -1429,7 +1571,7 @@ func TestGoalLoopStopsOnUsageLimitedGoalUntilExplicitResume(t *testing.T) {
 }
 
 func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	replyCount := 0
@@ -1473,7 +1615,7 @@ func TestGoalProviderUsageLimitMarksGoalUsageLimited(t *testing.T) {
 }
 
 func TestGoalRunResetsBlockedAuditCounters(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	goal := GoalState{
 		ID:                      "goal-blocked",
@@ -1517,7 +1659,7 @@ func TestGoalRunResetsBlockedAuditCounters(t *testing.T) {
 }
 
 func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -1565,7 +1707,7 @@ func TestGoalRunInterruptBeforeIterationKeepsGoalActive(t *testing.T) {
 }
 
 func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1616,8 +1758,7 @@ func TestGoalRunInterruptDuringAgentPromptKeepsGoalActive(t *testing.T) {
 }
 
 func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1641,10 +1782,11 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 	}
 	rt.goalReply = func(ctx context.Context, prompt string) (string, error) {
 		replyCount++
-		if replyCount == 2 {
-			cancel()
-		}
 		return "fake goal reply", nil
+	}
+	rt.goalVerify = func(ctx context.Context, goal GoalState, iteration int) (VerificationReport, bool, error) {
+		cancel()
+		return VerificationReport{}, true, context.Canceled
 	}
 	goal, ok := session.ActiveGoal()
 	if !ok {
@@ -1673,8 +1815,7 @@ func TestGoalRunInterruptDuringVerificationKeepsGoalActive(t *testing.T) {
 }
 
 func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -1696,13 +1837,12 @@ func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, nil)
 	err := rt.handleGoalCommand("complete latest")
 	if err == nil || !strings.Contains(err.Error(), "cannot be marked complete") {
 		t.Fatalf("expected semantic complete gate error, got %v", err)
@@ -1721,8 +1861,7 @@ func TestGoalCompleteRequiresSemanticApproval(t *testing.T) {
 }
 
 func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -1744,6 +1883,7 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run --token-budget 1000000 finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
@@ -1755,9 +1895,7 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 	createdGoal.CreatedAt = time.Now().Add(-75 * time.Second)
 	createdGoal.UpdatedAt = createdGoal.CreatedAt
 	session.UpsertGoal(createdGoal)
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, nil)
 	if err := rt.handleGoalCommand("complete latest"); err != nil {
 		t.Fatalf("complete goal: %v", err)
 	}
@@ -1818,24 +1956,15 @@ func TestGoalCompleteMarksApprovedGoalComplete(t *testing.T) {
 }
 
 func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
-	mustRunGit(t, root, "add", "go.mod", "main.go", "main_test.go")
-	mustRunGit(t, root, "commit", "-m", "Add goal test module")
-	if err := os.WriteFile(filepath.Join(root, "scratch.txt"), []byte("preexisting dirty file\n"), 0o644); err != nil {
-		t.Fatalf("write dirty file: %v", err)
-	}
-
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	request := "각 소스코드 파일들을 검토해서 버그를 찾아서 별도 문서로 생성해"
-	checkpoints := &CheckpointManager{Root: filepath.Join(t.TempDir(), "checkpoints")}
 	var output bytes.Buffer
 	rt := &runtimeState{
 		writer:        &output,
 		ui:            NewUI(),
 		session:       session,
 		store:         NewSessionStore(filepath.Join(root, "sessions")),
-		checkpoints:   checkpoints,
 		verifyHistory: &VerificationHistoryStore{Path: filepath.Join(root, ".kernforge", "verify-history.json"), MaxEntries: defaultVerificationHistoryMaxEntries},
 		workspace: Workspace{
 			BaseRoot:     root,
@@ -1853,13 +1982,10 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run " + request); err != nil {
 		t.Fatalf("start goal: %v", err)
-	}
-	checkpoint, err := checkpoints.Create(root, "before-document-artifact")
-	if err != nil {
-		t.Fatalf("checkpoint: %v", err)
 	}
 	reportPath := filepath.Join(root, "SampleGame", "BugReport.md")
 	if err := os.MkdirAll(filepath.Dir(reportPath), 0o755); err != nil {
@@ -1882,24 +2008,32 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 			}},
 		},
 	}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:            "patch-document-artifact",
+		Goal:          request,
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusActive,
+		StartedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-document-artifact-entry",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "SampleGame/BugReport.md",
+				Operation: "write",
+			}},
+		}},
+	}
 
 	goal, ok := session.ActiveGoal()
 	if !ok {
 		t.Fatalf("expected active goal")
 	}
 	goal.Iteration = 1
-	goal.CheckpointRefs = append(goal.CheckpointRefs, GoalCheckpointRef{
-		Iteration: 1,
-		ID:        checkpoint.ID,
-		Name:      checkpoint.Name,
-		CreatedAt: checkpoint.CreatedAt,
-		Status:    "created",
-	})
 	session.UpsertGoal(goal)
 
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, []string{"SampleGame/BugReport.md"})
 	if err := rt.handleGoalCommand("complete latest"); err != nil {
 		t.Fatalf("complete goal: %v", err)
 	}
@@ -1918,8 +2052,7 @@ func TestGoalCompleteSkipsSemanticReviewForAcceptedDocumentArtifact(t *testing.T
 }
 
 func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -1941,13 +2074,12 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run finish sample objective"); err != nil {
 		t.Fatalf("create goal: %v", err)
 	}
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, nil)
 	if err := rt.handleGoalCommand("complete latest"); err == nil {
 		t.Fatalf("expected complete to reject semantic review")
 	}
@@ -1968,7 +2100,7 @@ func TestGoalAuditPreservesSemanticRejection(t *testing.T) {
 }
 
 func TestGoalRecordRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -2010,8 +2142,7 @@ func TestGoalRecordRequiresConfirmationBeforeReplacingUnfinishedGoal(t *testing.
 }
 
 func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -2034,6 +2165,7 @@ func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run finish first objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
@@ -2042,9 +2174,7 @@ func TestGoalRecordSkipsReplacementConfirmationForCompletedGoal(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected first goal")
 	}
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, nil)
 	if err := rt.handleGoalCommand("complete latest"); err != nil {
 		t.Fatalf("complete first goal: %v", err)
 	}
@@ -2080,8 +2210,7 @@ func TestShouldConfirmBeforeReplacingGoalMatchesCodexStatuses(t *testing.T) {
 }
 
 func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
-	root := initTestGitRepo(t)
-	writeGoalTestModule(t, root)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{
@@ -2104,6 +2233,7 @@ func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 			return "APPROVED: unused", nil
 		},
 	}
+	useFastGoalVerificationAndAudit(rt)
 
 	if err := rt.handleGoalCommand("--no-run finish first sample objective"); err != nil {
 		t.Fatalf("create first goal: %v", err)
@@ -2119,9 +2249,7 @@ func TestGoalCompleteSpecificIDActivatesSelectedGoal(t *testing.T) {
 	if !ok || second.ID == first.ID {
 		t.Fatalf("expected second active goal, got %#v first=%s", second, first.ID)
 	}
-	if err := rt.handleVerifyCommand("--full"); err != nil {
-		t.Fatalf("verify: %v", err)
-	}
+	seedGoalPassingVerification(t, rt, nil)
 	if err := rt.handleGoalCommand("complete " + first.ID); err != nil {
 		t.Fatalf("complete selected goal: %v", err)
 	}

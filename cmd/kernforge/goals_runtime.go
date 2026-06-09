@@ -309,6 +309,32 @@ func (rt *runtimeState) goalVerificationStepDetail(iteration int) string {
 }
 
 func (rt *runtimeState) handleGoalVerifyCommandContext(ctx context.Context, goal GoalState, iteration int) error {
+	if rt != nil && rt.goalVerify != nil {
+		report, handled, err := rt.goalVerify(ctx, goal, iteration)
+		if handled {
+			if err != nil {
+				return err
+			}
+			if report.GeneratedAt.IsZero() {
+				report.GeneratedAt = time.Now()
+			}
+			if strings.TrimSpace(report.Trigger) == "" {
+				report.Trigger = "manual"
+			}
+			if strings.TrimSpace(string(report.Mode)) == "" {
+				if goalShouldRunFullVerification(iteration) {
+					report.Mode = VerificationFull
+				} else {
+					report.Mode = VerificationAdaptive
+				}
+			}
+			if strings.TrimSpace(report.Workspace) == "" {
+				report.Workspace = rt.workspace.Root
+			}
+			rt.recordGoalVerificationReport(ctx, report, append([]string(nil), report.ChangedPaths...))
+			return nil
+		}
+	}
 	changed := collectVerificationChangedPaths(rt.workspace.Root, rt.session)
 	if report, ok := rt.repeatedGoalVerificationReport(goal, changed); ok {
 		rt.recordGoalVerificationReport(ctx, report, changed)
@@ -1043,7 +1069,7 @@ func buildGoalSemanticReviewPrompt(goal GoalState, audit CompletionAuditArtifact
 			fmt.Fprintf(&b, "- %s [%s] %s\n", valueOrUnset(command.Name), valueOrUnset(command.Status), compactPromptSection(command.Summary, 180))
 		}
 	}
-	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+	if evidence := goalIterationReviewEvidenceBuilder(root, iteration, checkpoints); evidence != "" {
 		b.WriteString("\nWorkspace review evidence:\n")
 		b.WriteString(evidence)
 		b.WriteString("\n")
@@ -1112,7 +1138,7 @@ func buildGoalRepairPrompt(goal GoalState, iteration GoalIteration, decision goa
 		b.WriteString(decision.Feedback)
 		b.WriteString("\n")
 	}
-	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+	if evidence := goalIterationReviewEvidenceBuilder(root, iteration, checkpoints); evidence != "" {
 		b.WriteString("\nImplementation context:\n")
 		b.WriteString(evidence)
 		b.WriteString("\n")
@@ -1194,7 +1220,7 @@ func goalAuditStateFromArtifact(audit CompletionAuditArtifact) *GoalAuditState {
 }
 
 func (rt *runtimeState) evaluateGoalProgress(goal GoalState, audit CompletionAuditArtifact, iteration GoalIteration) GoalProgressState {
-	changed := filterPatchScopeChangedPaths(delegationChangedFiles(workspaceSnapshotRoot(rt.workspace)))
+	changed := filterPatchScopeChangedPaths(rt.goalChangedFiles(workspaceSnapshotRoot(rt.workspace)))
 	verification := strings.TrimSpace(iteration.Verification)
 	signals := []string{}
 	score := 0
@@ -1238,6 +1264,13 @@ func (rt *runtimeState) evaluateGoalProgress(goal GoalState, audit CompletionAud
 	}
 	progress.Normalize()
 	return progress
+}
+
+func (rt *runtimeState) goalChangedFiles(root string) []string {
+	if rt != nil && rt.goalChangedFilesProvider != nil {
+		return rt.goalChangedFilesProvider(root)
+	}
+	return delegationChangedFiles(root)
 }
 
 func (g *GoalState) applyProgress(progress GoalProgressState) {

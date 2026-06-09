@@ -90,7 +90,8 @@ func testOperatorStatusReviewRun() ReviewRun {
 }
 
 func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	run := testOperatorStatusReviewRun()
 	session.LastReviewRun = &run
@@ -131,7 +132,8 @@ func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand
 }
 
 func TestOperatorStatusDetailIncludesLifecycleTimelineAndEvidenceRefs(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	run := testOperatorStatusReviewRun()
 	session.LastReviewRun = &run
@@ -281,7 +283,8 @@ func TestSingleModelSecondPassStatesAreExplicit(t *testing.T) {
 }
 
 func TestDocumentArtifactStatusShowsQualityAndVerificationSkipWithoutCodeReviewOverblocking(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"BugReport.md"})
 	path := filepath.Join(root, "BugReport.md")
 	if err := os.WriteFile(path, []byte("# Bug Report\n\nConcrete finding.\n"), 0o644); err != nil {
 		t.Fatalf("write artifact: %v", err)
@@ -389,7 +392,8 @@ func TestMCPReviewResponseExposesOperatorCardFieldsWithoutRawModelDump(t *testin
 }
 
 func TestMCPStatusResponseAddsCompactOperatorFields(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	run := testOperatorStatusReviewRun()
 	session.LastReviewRun = &run

@@ -1054,13 +1054,15 @@ func buildGoalReviewPrompt(goal GoalState, iteration GoalIteration, root string,
 			fmt.Fprintf(&b, "- %s\n", item)
 		}
 	}
-	if evidence := buildGoalIterationReviewEvidence(root, iteration, checkpoints); evidence != "" {
+	if evidence := goalIterationReviewEvidenceBuilder(root, iteration, checkpoints); evidence != "" {
 		b.WriteString("\nReview evidence:\n")
 		b.WriteString(evidence)
 		b.WriteString("\n")
 	}
 	return b.String()
 }
+
+var goalIterationReviewEvidenceBuilder = buildGoalIterationReviewEvidence
 
 func buildGoalIterationReviewEvidence(root string, iteration GoalIteration, checkpoints *CheckpointManager) string {
 	var b strings.Builder
@@ -1177,8 +1179,14 @@ func checkpointDiffPaths(diffs []CheckpointDiffEntry, limit int) []string {
 	return limitStrings(analysisUniqueStrings(paths), limit)
 }
 
+var goalReviewGitTextRunner = runGitText
+
 func goalReviewGitText(root string, args ...string) string {
-	text := strings.TrimSpace(runGitText(root, args...))
+	runner := goalReviewGitTextRunner
+	if runner == nil {
+		runner = runGitText
+	}
+	text := strings.TrimSpace(runner(root, args...))
 	if text == "" {
 		return ""
 	}
@@ -1346,6 +1354,12 @@ func indentPromptBlock(text string, prefix string) string {
 }
 
 func (rt *runtimeState) runGoalCompletionAudit(goal GoalState) (CompletionAuditArtifact, error) {
+	if rt != nil && rt.goalCompletionAudit != nil {
+		artifact, handled, err := rt.goalCompletionAudit(goal)
+		if handled {
+			return artifact, err
+		}
+	}
 	if err := rt.handleCompletionAuditCommand(goal.Objective); err != nil {
 		return CompletionAuditArtifact{}, err
 	}

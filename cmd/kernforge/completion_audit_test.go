@@ -11,7 +11,7 @@ import (
 )
 
 func TestCompletionAuditCommandBlocksMissingArtifactAndFailedVerification(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	now := time.Now()
 	exitCode := 1
 	session := NewSession(root, "provider", "model", "", "default")
@@ -178,15 +178,13 @@ func completionAuditFindItem(items []CompletionAuditItem, source string) *Comple
 }
 
 func TestCompletionAuditCommandPassesWhenArtifactsAndVerificationPass(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "docs", "report.md"), []byte("# Report\n"), 0o644); err != nil {
 		t.Fatalf("write required artifact: %v", err)
 	}
-	mustRunGit(t, root, "add", "docs/report.md")
-	mustRunGit(t, root, "commit", "-m", "Add required report")
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.TaskState = &TaskState{Goal: "Complete auditable work"}
@@ -252,7 +250,7 @@ func TestCompletionAuditCommandPassesWhenArtifactsAndVerificationPass(t *testing
 }
 
 func TestCompletionAuditWarningsAreNotReady(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastCodingHarnessReport = &CodingHarnessReport{
 		Approved: true,
@@ -294,7 +292,7 @@ func TestCompletionAuditWarningsAreNotReady(t *testing.T) {
 }
 
 func TestCompletionAuditUsesVerificationHistoryForStandaloneAudit(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Updated\n"), 0o644); err != nil {
 		t.Fatalf("write readme change: %v", err)
 	}
@@ -349,7 +347,7 @@ func TestCompletionAuditUsesVerificationHistoryForStandaloneAudit(t *testing.T) 
 }
 
 func TestCompletionAuditDoesNotAcceptSkippedOnlyVerification(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastVerification = &VerificationReport{
 		GeneratedAt: time.Now(),
@@ -494,7 +492,7 @@ func TestCompletionAuditObjectiveEvidenceMapsGoalArtifacts(t *testing.T) {
 }
 
 func TestCompletionAuditObjectiveEvidenceSkipsKernforgeChecksOutsideKernforgeRepo(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	rt := &runtimeState{
 		session: session,

@@ -294,7 +294,8 @@ func TestOptionalRealProviderSoak(t *testing.T) {
 
 func newLiveProviderSoakTestRuntime(t *testing.T) (*runtimeState, string) {
 	t.Helper()
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"SampleGame/BugReport.md"})
 	store := NewSessionStore(filepath.Join(root, ".kernforge", "sessions-test"))
 	session := NewSession(root, "scripted", "model", "", "default")
 	cfg := DefaultConfig(root)

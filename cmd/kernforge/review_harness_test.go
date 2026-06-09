@@ -106,15 +106,7 @@ func (n *namedScriptedProviderClient) Name() string {
 
 func TestReviewHarnessNoModelWritesTypedArtifact(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main(){return 0;}\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	runTestGit(t, root, "add", "main.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main(){return 1;}\n"), 0o644); err != nil {
-		t.Fatalf("modify file: %v", err)
-	}
+	reviewConsentTestGitChange(t, root)
 	rt := &runtimeState{
 		cfg:       DefaultConfig(root),
 		workspace: Workspace{BaseRoot: root, Root: root},
@@ -360,26 +352,17 @@ func TestExplicitReviewRunsWithoutImplicitConsentPrompt(t *testing.T) {
 
 func reviewConsentTestGitChange(t *testing.T, root string) {
 	t.Helper()
-	runTestGit(t, root, "init")
+	useAutoReviewChangedFilesFixture(t, []string{"main.cpp"})
+	useReviewHarnessGitFixture(t, "main.cpp")
 	path := filepath.Join(root, "main.cpp")
-	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	runTestGit(t, root, "add", "main.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	if err := os.WriteFile(path, []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
-		t.Fatalf("modify file: %v", err)
+		t.Fatalf("write file: %v", err)
 	}
 }
 
 func TestReviewHarnessUsesVerificationHistoryForFreshEvidence(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	runTestGit(t, root, "add", "main.go")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
+	useReviewHarnessGitFixture(t, "main.go")
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() { println(\"ok\") }\n"), 0o644); err != nil {
 		t.Fatalf("modify file: %v", err)
 	}
@@ -481,15 +464,7 @@ func TestSelectionReviewEvidenceUsesFullRangeNotPreviewTruncation(t *testing.T) 
 
 func TestPostChangeReviewRunsAfterEditWhenEnabled(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	runTestGit(t, root, "add", "main.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
-		t.Fatalf("modify file: %v", err)
-	}
+	reviewConsentTestGitChange(t, root)
 	session := NewSession(root, "", "", "", "default")
 	agent := &Agent{
 		Config:    DefaultConfig(root),
@@ -1371,13 +1346,11 @@ func TestPostChangeReviewCachedBlockerStillBlocksGate(t *testing.T) {
 
 func TestPostChangeReviewUsesConfiguredReviewerClient(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
+	useAutoReviewChangedFilesFixture(t, []string{"main.cpp"})
 	path := filepath.Join(root, "main.cpp")
 	if err := os.WriteFile(path, []byte("int main()\n{\n    return 0;\n}\n"), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	runTestGit(t, root, "add", "main.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	if err := os.WriteFile(path, []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
 		t.Fatalf("modify file: %v", err)
 	}
@@ -1424,7 +1397,10 @@ func TestPostChangeReviewUsesConfiguredReviewerClient(t *testing.T) {
 
 func TestAgentPostChangeReviewConsentDeclineSkipsReviewerClient(t *testing.T) {
 	root := t.TempDir()
-	reviewConsentTestGitChange(t, root)
+	useAutoReviewChangedFilesFixture(t, []string{"main.cpp"})
+	if err := os.WriteFile(filepath.Join(root, "main.cpp"), []byte("int main()\n{\n    return 1;\n}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
 	cfg := DefaultConfig(root)
 	cfg.Provider = "scripted"
 	cfg.Model = "main-model"
@@ -1463,6 +1439,65 @@ func TestAgentPostChangeReviewConsentDeclineSkipsReviewerClient(t *testing.T) {
 	if session.LastReviewRun == nil || session.LastReviewRun.SkipReason != modelReviewSkipByUser {
 		t.Fatalf("expected skipped review run metadata, got %#v", session.LastReviewRun)
 	}
+}
+
+func useAutoReviewChangedFilesFixture(t *testing.T, changed []string) {
+	t.Helper()
+	previous := autoReviewDelegationChangedFiles
+	autoReviewDelegationChangedFiles = func(string) []string {
+		return append([]string(nil), changed...)
+	}
+	t.Cleanup(func() {
+		autoReviewDelegationChangedFiles = previous
+	})
+}
+
+func useReviewHarnessGitFixture(t *testing.T, path string) {
+	t.Helper()
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		path = "main.cpp"
+	}
+	diff := strings.Join([]string{
+		"diff --git a/" + path + " b/" + path,
+		"--- a/" + path,
+		"+++ b/" + path,
+		"@@ -1,4 +1,4 @@",
+		" int main()",
+		" {",
+		"-    return 0;",
+		"+    return 1;",
+		" }",
+	}, "\n")
+	useReviewHarnessGitDiffFixture(t, path, diff)
+}
+
+func useReviewHarnessGitDiffFixture(t *testing.T, path string, diff string) {
+	t.Helper()
+	path = filepath.ToSlash(strings.TrimSpace(path))
+	if path == "" {
+		path = "main.cpp"
+	}
+	previous := reviewHarnessGitTextRunner
+	reviewHarnessGitTextRunner = func(root string, args ...string) string {
+		_ = root
+		joined := strings.Join(args, " ")
+		switch {
+		case strings.HasPrefix(joined, "status "):
+			return "## main\n M " + path + "\n"
+		case strings.Contains(joined, "--stat"):
+			return " " + path + " | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)"
+		case strings.Contains(joined, "--staged"):
+			return ""
+		case strings.Contains(joined, "diff "):
+			return diff
+		default:
+			return ""
+		}
+	}
+	t.Cleanup(func() {
+		reviewHarnessGitTextRunner = previous
+	})
 }
 
 func TestPreFixRepairObligationsDoNotPromoteStyleWarnings(t *testing.T) {
@@ -4390,15 +4425,15 @@ func TestReviewModelOmissionRetryFailureMarksRunDegraded(t *testing.T) {
 
 func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
+	useAutoReviewChangedFilesFixture(t, []string{"main.go"})
+	useReviewHarnessGitFixture(t, "main.go")
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	path := filepath.Join(root, "main.go")
 	before := "package main\n\nfunc main() {}\n"
 	after := "package main\n\nfunc main() { println(\"ok\") }\n"
 	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
-	runTestGit(t, root, "add", "main.go")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": after}),
@@ -9900,7 +9935,6 @@ func TestReviewScopeDiscoveryClassifiesServiceControlWithoutFalsePositive(t *tes
 
 func TestReviewScopeDiscoverySearchesServiceFilesBeforeDirtyGit(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
 	servicePath := filepath.Join(root, "SampleApp", "SampleWorker", "ServiceInstaller.cpp")
 	if err := os.MkdirAll(filepath.Dir(servicePath), 0o755); err != nil {
 		t.Fatalf("mkdir service dir: %v", err)
@@ -9924,11 +9958,20 @@ func TestReviewScopeDiscoverySearchesServiceFilesBeforeDirtyGit(t *testing.T) {
 	if err := os.WriteFile(unrelatedPath, []byte("int DirtyCapture() { return 1; }\n"), 0o644); err != nil {
 		t.Fatalf("write unrelated source: %v", err)
 	}
-	runTestGit(t, root, "add", ".")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	if err := os.WriteFile(unrelatedPath, []byte("int DirtyCapture() { return 2; }\n"), 0o644); err != nil {
 		t.Fatalf("dirty unrelated source: %v", err)
 	}
+	useReviewHarnessGitDiffFixture(t, "SampleApp/SampleWorker/ServiceInstaller.cpp", strings.Join([]string{
+		"diff --git a/SampleApp/SampleWorker/ServiceInstaller.cpp b/SampleApp/SampleWorker/ServiceInstaller.cpp",
+		"--- a/SampleApp/SampleWorker/ServiceInstaller.cpp",
+		"+++ b/SampleApp/SampleWorker/ServiceInstaller.cpp",
+		"@@ -1,4 +1,4 @@",
+		" bool InstallSampleWorkerService()",
+		" {",
+		"-    return false;",
+		"+    return StartServiceW(service, 0, nullptr) != FALSE;",
+		" }",
+	}, "\n"))
 
 	rt := &runtimeState{
 		workspace: Workspace{BaseRoot: root, Root: root},
@@ -9975,7 +10018,6 @@ func TestReviewScopeDiscoverySearchesServiceFilesBeforeDirtyGit(t *testing.T) {
 
 func TestChangeReviewEvidenceKeepsDiffAndFocusedSourceUnderBudget(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
 	sourcePath := filepath.Join(root, "src", "main.go")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
 		t.Fatalf("mkdir source dir: %v", err)
@@ -9989,12 +10031,21 @@ func TestChangeReviewEvidenceKeepsDiffAndFocusedSourceUnderBudget(t *testing.T) 
 	if err := os.WriteFile(sourcePath, []byte(before.String()), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
-	runTestGit(t, root, "add", ".")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
 	after := strings.Replace(before.String(), "line-0001", "changed-line-0001", 1)
 	if err := os.WriteFile(sourcePath, []byte(after), 0o644); err != nil {
 		t.Fatalf("modify source: %v", err)
 	}
+	useReviewHarnessGitDiffFixture(t, "src/main.go", strings.Join([]string{
+		"diff --git a/src/main.go b/src/main.go",
+		"--- a/src/main.go",
+		"+++ b/src/main.go",
+		"@@ -1,6 +1,6 @@",
+		" package main",
+		" ",
+		" func main() {",
+		"-\tprintln(\"line-0001\")",
+		"+\tprintln(\"changed-line-0001\")",
+	}, "\n"))
 
 	rt := &runtimeState{
 		workspace: Workspace{BaseRoot: root, Root: root},
@@ -10449,9 +10500,6 @@ func TestSourceAnalysisDistributesEvidenceAcrossBoundedFiles(t *testing.T) {
 
 func TestReviewEvidenceOmitsGitDiffWhenContextBudgetIsExhausted(t *testing.T) {
 	root := t.TempDir()
-	runTestGit(t, root, "init")
-	runTestGit(t, root, "config", "user.email", "test@example.com")
-	runTestGit(t, root, "config", "user.name", "Test User")
 	sourcePath := filepath.Join(root, "Source", "SampleServer.cpp")
 	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
 		t.Fatalf("mkdir source dir: %v", err)
@@ -10460,11 +10508,14 @@ func TestReviewEvidenceOmitsGitDiffWhenContextBudgetIsExhausted(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
-	runTestGit(t, root, "add", "Source/SampleServer.cpp")
-	runTestGit(t, root, "commit", "-m", "initial")
-	if err := os.WriteFile(sourcePath, []byte(initial+"\n// DIFF_ONLY_MARKER_SHOULD_NOT_LEAK\n"), 0o644); err != nil {
-		t.Fatalf("update source: %v", err)
-	}
+	useReviewHarnessGitDiffFixture(t, "Source/SampleServer.cpp", strings.Join([]string{
+		"diff --git a/Source/SampleServer.cpp b/Source/SampleServer.cpp",
+		"--- a/Source/SampleServer.cpp",
+		"+++ b/Source/SampleServer.cpp",
+		"@@ -1,3 +1,4 @@",
+		" void SampleServer::Tick() { }",
+		"+// DIFF_ONLY_MARKER_SHOULD_NOT_LEAK",
+	}, "\n"))
 	rt := &runtimeState{
 		workspace: Workspace{BaseRoot: root, Root: root},
 		session:   NewSession(root, "", "", "", "default"),

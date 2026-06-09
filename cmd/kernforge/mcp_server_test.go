@@ -782,15 +782,18 @@ func TestKernforgeMCPReviewCodeCollectsWorkspaceGitDiff(t *testing.T) {
 	defer cleanup()
 
 	root := server.rt.workspace.Root
-	runTestGit(t, root, "init")
-	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("bool Check()\n{\n    return false;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write initial file: %v", err)
-	}
-	runTestGit(t, root, "add", "driver.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filepath.Join(root, "driver.cpp"), []byte("bool Check()\n{\n    return true;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write modified file: %v", err)
-	}
+	_ = root
+	useReviewHarnessGitDiffFixture(t, "driver.cpp", strings.Join([]string{
+		"diff --git a/driver.cpp b/driver.cpp",
+		"--- a/driver.cpp",
+		"+++ b/driver.cpp",
+		"@@ -1,4 +1,4 @@",
+		" bool Check()",
+		" {",
+		"-    return false;",
+		"+    return true;",
+		" }",
+	}, "\n"))
 
 	client := &scriptedProviderClient{
 		replies: []ChatResponse{{
@@ -834,16 +837,18 @@ func TestKernforgeMCPReviewCodeCollectsGitDiffForAbsolutePath(t *testing.T) {
 	defer cleanup()
 
 	root := server.rt.workspace.Root
-	runTestGit(t, root, "init")
 	filePath := filepath.Join(root, "driver.cpp")
-	if err := os.WriteFile(filePath, []byte("bool Check()\n{\n    return false;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write initial file: %v", err)
-	}
-	runTestGit(t, root, "add", "driver.cpp")
-	runTestGit(t, root, "-c", "user.email=test@example.com", "-c", "user.name=Test User", "commit", "-m", "init")
-	if err := os.WriteFile(filePath, []byte("bool Check()\n{\n    return true;\n}\n"), 0o644); err != nil {
-		t.Fatalf("write modified file: %v", err)
-	}
+	useReviewHarnessGitDiffFixture(t, "driver.cpp", strings.Join([]string{
+		"diff --git a/driver.cpp b/driver.cpp",
+		"--- a/driver.cpp",
+		"+++ b/driver.cpp",
+		"@@ -1,4 +1,4 @@",
+		" bool Check()",
+		" {",
+		"-    return false;",
+		"+    return true;",
+		" }",
+	}, "\n"))
 
 	client := &scriptedProviderClient{
 		replies: []ChatResponse{{

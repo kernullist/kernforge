@@ -10,14 +10,39 @@ import (
 	"time"
 )
 
+func useRuntimeGateGitFixture(t *testing.T, branch string, changed []string) {
+	t.Helper()
+	previousBranch := runtimeGateGitBranchProvider
+	previousChanged := runtimeGateChangedFilesProvider
+	previousUsable := runtimeGateGitStatusUsableProvider
+	previousFreshnessBranch := reviewFreshnessGitBranchProvider
+	previousFreshnessChanged := reviewFreshnessChangedFilesProvider
+	previousFreshnessUsable := reviewFreshnessGitStatusUsableProvider
+	runtimeGateGitBranchProvider = func(root string) string {
+		return branch
+	}
+	runtimeGateChangedFilesProvider = func(root string) []string {
+		return append([]string(nil), changed...)
+	}
+	runtimeGateGitStatusUsableProvider = func(root string) bool {
+		return true
+	}
+	reviewFreshnessGitBranchProvider = runtimeGateGitBranchProvider
+	reviewFreshnessChangedFilesProvider = runtimeGateChangedFilesProvider
+	reviewFreshnessGitStatusUsableProvider = runtimeGateGitStatusUsableProvider
+	t.Cleanup(func() {
+		runtimeGateGitBranchProvider = previousBranch
+		runtimeGateChangedFilesProvider = previousChanged
+		runtimeGateGitStatusUsableProvider = previousUsable
+		reviewFreshnessGitBranchProvider = previousFreshnessBranch
+		reviewFreshnessChangedFilesProvider = previousFreshnessChanged
+		reviewFreshnessGitStatusUsableProvider = previousFreshnessUsable
+	})
+}
+
 func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "other.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write other.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go", "other.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -29,7 +54,7 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
 		Trigger:           "pre_write",
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -61,7 +86,8 @@ func TestRuntimeGateLedgerBlocksStaleReviewForFinalAnswer(t *testing.T) {
 }
 
 func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"SampleGame/BugReport.md"})
 	if err := os.MkdirAll(filepath.Join(root, "SampleGame"), 0o755); err != nil {
 		t.Fatalf("mkdir SampleGame: %v", err)
 	}
@@ -92,7 +118,7 @@ func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *t
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
 		Trigger:           "post_change",
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -117,7 +143,8 @@ func TestRuntimeGateFinalAnswerSkipsStaleReviewForGeneratedDocumentArtifact(t *t
 }
 
 func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutRequestContext(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"SampleGame/BugReport.md"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -152,7 +179,7 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
 		Trigger:           "post_change",
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -177,7 +204,8 @@ func TestRuntimeGateApprovedDocumentArtifactHarnessSkipsStaleReviewWithoutReques
 }
 
 func TestRuntimeGateQualityAcceptedDocumentArtifactSkipsStaleReviewWithoutPatchPaths(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"SampleGame/BugReport.md"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -213,7 +241,7 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactSkipsStaleReviewWithoutPatchP
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
 		Trigger:           "post_change",
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -240,7 +268,8 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactSkipsStaleReviewWithoutPatchP
 }
 
 func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{
 		{
@@ -280,7 +309,7 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *t
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
 		Trigger:           "post_change",
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -306,7 +335,7 @@ func TestRuntimeGateQualityAcceptedDocumentArtifactDoesNotSkipUnrelatedTurn(t *t
 }
 
 func TestRuntimeGateBroaderScopeSteeringDoesNotUseDocumentArtifactBypass(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{
 		{
@@ -347,7 +376,8 @@ func TestRuntimeGateBroaderScopeSteeringDoesNotUseDocumentArtifactBypass(t *test
 }
 
 func TestRuntimeGateBlocksUnknownPatchScopeForFinalAnswer(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -381,7 +411,8 @@ func TestRuntimeGateBlocksUnknownPatchScopeForFinalAnswer(t *testing.T) {
 }
 
 func TestRuntimeGateUnknownPatchScopeOverridesDocumentArtifactBypass(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -418,7 +449,8 @@ func TestRuntimeGateUnknownPatchScopeOverridesDocumentArtifactBypass(t *testing.
 }
 
 func TestRuntimeGateReviewBlocksArchivedUnknownPatchScope(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -444,13 +476,8 @@ func TestRuntimeGateReviewBlocksArchivedUnknownPatchScope(t *testing.T) {
 }
 
 func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "unrelated.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write unrelated.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md", "unrelated.go"})
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
@@ -477,7 +504,7 @@ func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"README.md"},
@@ -506,7 +533,8 @@ func TestRuntimeGateFinalAnswerUsesPatchTransactionScopeOverUnrelatedDirtyFiles(
 }
 
 func TestRuntimeGateCompletionAuditSkipsStaleActivePatchTransaction(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -557,10 +585,8 @@ func TestRuntimeGateCompletionAuditSkipsStaleActivePatchTransaction(t *testing.T
 }
 
 func TestRuntimeGateFinalAnswerIgnoresArchivedPatchFromPreviousTurn(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{
 		{
@@ -607,10 +633,8 @@ func TestRuntimeGateFinalAnswerIgnoresArchivedPatchFromPreviousTurn(t *testing.T
 }
 
 func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{
@@ -660,7 +684,7 @@ func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *test
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-main",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -687,10 +711,8 @@ func TestRuntimeGateFinalAnswerDoesNotUseArchivedPatchTimeForGitFallback(t *test
 }
 
 func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	original := "main.go 버그를 수정해"
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AcceptanceContract = &AcceptanceContract{
@@ -720,7 +742,7 @@ func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *te
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-main",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -744,13 +766,8 @@ func TestRuntimeGateFinalAnswerUsesGitFallbackForPreservedCodeContinuation(t *te
 }
 
 func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "unrelated.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write unrelated.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md", "unrelated.go"})
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
@@ -777,7 +794,7 @@ func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *te
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"README.md"},
@@ -802,7 +819,8 @@ func TestRuntimeGateReviewUsesPatchTransactionScopeOverUnrelatedDirtyFiles(t *te
 }
 
 func TestReviewFreshnessDetectsEditedReviewedPathByHash(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	target := filepath.Join(root, "main.go")
 	if err := os.WriteFile(target, []byte("package main\nconst value = 1\n"), 0o644); err != nil {
 		t.Fatalf("write main.go: %v", err)
@@ -812,7 +830,7 @@ func TestReviewFreshnessDetectsEditedReviewedPathByHash(t *testing.T) {
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"main.go"},
@@ -858,10 +876,8 @@ func TestRuntimeGateFinalAnswerRequiresExplicitBlockerDisclosure(t *testing.T) {
 }
 
 func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
@@ -899,7 +915,7 @@ func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"README.md"},
@@ -938,10 +954,8 @@ func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
 }
 
 func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
 	now := time.Now()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
@@ -981,7 +995,7 @@ func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testi
 		SchemaVersion:     reviewSchemaVersion,
 		Target:            reviewTargetChange,
 		Mode:              reviewModeGeneralChange,
-		Branch:            delegationGitBranch(root),
+		Branch:            "main",
 		ReviewFingerprint: "fp-1",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"README.md"},
@@ -1010,7 +1024,8 @@ func TestRuntimeGateTreatsFailedVerificationBeforeCurrentPatchAsWarning(t *testi
 }
 
 func TestRuntimeGateBlocksDocumentArtifactChangedAfterQualityGate(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"docs/report.md"})
 	now := time.Now()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
@@ -1072,14 +1087,14 @@ func TestRuntimeGateBlocksDocumentArtifactChangedAfterQualityGate(t *testing.T) 
 }
 
 func TestCompletionAuditIncludesRuntimeGateLedger(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
 		ID:            "review-blocked",
 		SchemaVersion: reviewSchemaVersion,
 		Target:        reviewTargetChange,
 		Mode:          reviewModeGeneralChange,
-		Branch:        delegationGitBranch(root),
+		Branch:        "main",
 		Gate: GateDecision{
 			Verdict:          reviewVerdictNeedsRevision,
 			BlockingFindings: []string{"RF-001"},
@@ -1114,17 +1129,15 @@ func TestCompletionAuditIncludesRuntimeGateLedger(t *testing.T) {
 }
 
 func TestRuntimeGateFeedbackBlocksGitWriteOnReviewBlocker(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{
 		ID:            "review-blocker",
 		SchemaVersion: reviewSchemaVersion,
 		Target:        reviewTargetChange,
 		Mode:          reviewModeGeneralChange,
-		Branch:        delegationGitBranch(root),
+		Branch:        "main",
 		ChangeSet: ReviewChangeSet{
 			ChangedPaths: []string{"README.md"},
 		},
@@ -1149,10 +1162,8 @@ func TestRuntimeGateFeedbackBlocksGitWriteOnReviewBlocker(t *testing.T) {
 }
 
 func TestGitWriteGateDoesNotAutoRunImplicitModelReview(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("updated\n"), 0o644); err != nil {
-		t.Fatalf("write README.md: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
 	cfg := DefaultConfig(root)
 	cfg.Review.ModelReviewConsent = modelReviewConsentAsk
 	reviewer := &scriptedProviderClient{replies: []ChatResponse{approvedReviewResponse("reviewer should not run")}}
@@ -1179,10 +1190,8 @@ func TestGitWriteGateDoesNotAutoRunImplicitModelReview(t *testing.T) {
 }
 
 func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	session.Messages = []Message{{
 		Role: "user",
@@ -1213,7 +1222,8 @@ func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 }
 
 func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	run := ReviewRun{
 		ID:           "review-ops-1",
@@ -1326,10 +1336,8 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 }
 
 func TestHooksStatusIncludesRuntimeGateSummary(t *testing.T) {
-	root := initTestGitRepo(t)
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
-		t.Fatalf("write main.go: %v", err)
-	}
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"main.go"})
 	session := NewSession(root, "provider", "model", "", "default")
 	var output bytes.Buffer
 	rt := &runtimeState{

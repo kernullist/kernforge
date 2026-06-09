@@ -69,6 +69,12 @@ func buildRuntimeGateLedger(root string, session *Session, action string) Runtim
 	return buildRuntimeGateLedgerWithReview(root, session, action, nil, "")
 }
 
+var (
+	runtimeGateGitBranchProvider       = delegationGitBranch
+	runtimeGateChangedFilesProvider    = delegationChangedFiles
+	runtimeGateGitStatusUsableProvider = reviewScopeGitStatusLooksUsable
+)
+
 func buildRuntimeGateLedgerWithCompletionAudit(root string, session *Session, action string, completionAuditID string) RuntimeGateLedger {
 	return buildRuntimeGateLedgerWithReview(root, session, action, nil, completionAuditID)
 }
@@ -80,7 +86,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 		ID:          fmt.Sprintf("runtime-gate-%s", now.Format("20060102-150405.000")),
 		GeneratedAt: now,
 		Action:      action,
-		Branch:      delegationGitBranch(root),
+		Branch:      runtimeGateGitBranchProvider(root),
 	}
 	ledger.ChangedPaths = runtimeGateChangedPathsForAction(root, session, action)
 	documentArtifactOnly := runtimeGateDocumentArtifactOnly(session, action, ledger.ChangedPaths)
@@ -484,8 +490,8 @@ func runtimeGateChangedPathsForAction(root string, session *Session, action stri
 	} else if strings.EqualFold(action, runtimeGateActionFinalAnswer) {
 		includeGitChanged = runtimeGateFinalAnswerShouldUseGitChangedFallback(session)
 	}
-	if includeGitChanged && strings.TrimSpace(root) != "" && reviewScopeGitStatusLooksUsable(root) {
-		paths = append(paths, filterReviewablePaths(delegationChangedFiles(root))...)
+	if includeGitChanged && strings.TrimSpace(root) != "" && runtimeGateGitStatusUsableProvider(root) {
+		paths = append(paths, filterReviewablePaths(runtimeGateChangedFilesProvider(root))...)
 	}
 	return normalizeCompletionAuditReviewPaths(paths)
 }

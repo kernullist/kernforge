@@ -1713,6 +1713,8 @@ func collectAnalysisReviewEvidence(rt *runtimeState, root string, paths []string
 	collectGitReviewEvidence(context.Background(), root, paths, changeSet, evidence, opts)
 }
 
+var reviewHarnessGitTextRunner = runGitText
+
 func collectGitReviewEvidence(ctx context.Context, root string, paths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
 	if changeSet.Source == "" {
 		changeSet.Source = "git_worktree"
@@ -1724,7 +1726,11 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	}
 	statusArgs := []string{"status", "--short", "--branch"}
 	statusArgs = append(statusArgs, pathArgs...)
-	status := runGitText(root, statusArgs...)
+	gitText := reviewHarnessGitTextRunner
+	if gitText == nil {
+		gitText = runGitText
+	}
+	status := gitText(root, statusArgs...)
 	if reviewGitOutputIsUnavailable(status) {
 		evidence.Warnings = append(evidence.Warnings, "git status unavailable: "+firstNonEmptyLine(status))
 		return
@@ -1743,14 +1749,14 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	}
 	changeSet.ChangedPaths = append(changeSet.ChangedPaths, changed...)
 	changeSet.UntrackedPaths = append(changeSet.UntrackedPaths, untracked...)
-	diffStat := runGitText(root, append([]string{"diff", "--stat"}, pathArgs...)...)
+	diffStat := gitText(root, append([]string{"diff", "--stat"}, pathArgs...)...)
 	if strings.TrimSpace(diffStat) != "" {
 		changeSet.DiffStat = diffStat
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Git diff stat", diffStat)
 		evidence.Sources = append(evidence.Sources, "git_diff_stat")
 	}
-	diff := runGitText(root, append([]string{"diff", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
-	staged := runGitText(root, append([]string{"diff", "--staged", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
+	diff := gitText(root, append([]string{"diff", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
+	staged := gitText(root, append([]string{"diff", "--staged", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
 	combined := strings.TrimSpace(strings.Join([]string{diff, staged}, "\n\n"))
 	if combined != "" {
 		remaining := reviewRemainingContextChars(opts.MaxContextChars, evidence.Text)

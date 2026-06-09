@@ -743,6 +743,11 @@ func (rt *runtimeState) executeRecoveryAction(action RecoveryActionPlanItem) (re
 	return rt.executeRecoveryActionContext(context.Background(), action)
 }
 
+var (
+	recoveryShellActionExecutor func(*runtimeState, context.Context, RecoveryActionPlanItem, string) RecoveryExecutionRecord
+	recoverySlashActionExecutor func(*runtimeState, context.Context, string) error
+)
+
 func (rt *runtimeState) executeRecoveryActionContext(ctx context.Context, action RecoveryActionPlanItem) (record RecoveryExecutionRecord) {
 	command := strings.TrimSpace(action.Command)
 	record = RecoveryExecutionRecord{
@@ -769,11 +774,19 @@ func (rt *runtimeState) executeRecoveryActionContext(ctx context.Context, action
 		return record
 	}
 	if strings.HasPrefix(command, "!") {
-		record = rt.executeRecoveryShellActionContext(ctx, action, strings.TrimSpace(strings.TrimPrefix(command, "!")))
+		executor := recoveryShellActionExecutor
+		if executor == nil {
+			executor = defaultRecoveryShellActionExecutor
+		}
+		record = executor(rt, ctx, action, strings.TrimSpace(strings.TrimPrefix(command, "!")))
 		return record
 	}
 	if strings.HasPrefix(command, "/") {
-		if err := rt.executeRecoverySlashActionContext(ctx, command); err != nil {
+		executor := recoverySlashActionExecutor
+		if executor == nil {
+			executor = defaultRecoverySlashActionExecutor
+		}
+		if err := executor(rt, ctx, command); err != nil {
 			record.Status = recoveryActionStatusFailed
 			record.Output = err.Error()
 			return record
@@ -796,6 +809,14 @@ func (rt *runtimeState) executeRecoverySlashAction(command string) error {
 }
 
 func (rt *runtimeState) executeRecoverySlashActionContext(ctx context.Context, command string) error {
+	executor := recoverySlashActionExecutor
+	if executor == nil {
+		executor = defaultRecoverySlashActionExecutor
+	}
+	return executor(rt, ctx, command)
+}
+
+func defaultRecoverySlashActionExecutor(rt *runtimeState, ctx context.Context, command string) error {
 	cmd, ok := ParseCommand(command)
 	if !ok {
 		return fmt.Errorf("recovery slash command is invalid: %s", command)
@@ -887,6 +908,10 @@ func (rt *runtimeState) printRecoveryTasks() error {
 
 func (rt *runtimeState) executeRecoveryShellAction(action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {
 	return rt.executeRecoveryShellActionContext(context.Background(), action, command)
+}
+
+func defaultRecoveryShellActionExecutor(rt *runtimeState, ctx context.Context, action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {
+	return rt.executeRecoveryShellActionContext(ctx, action, command)
 }
 
 func (rt *runtimeState) executeRecoveryShellActionContext(ctx context.Context, action RecoveryActionPlanItem, command string) RecoveryExecutionRecord {

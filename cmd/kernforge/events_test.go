@@ -10,7 +10,7 @@ import (
 )
 
 func TestEventsExportWritesJSONLAndRecordsEvent(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:     conversationEventKindUserMessage,
@@ -58,7 +58,7 @@ func TestEventsExportWritesJSONLAndRecordsEvent(t *testing.T) {
 }
 
 func TestEventsTailPrintsRecentJSONL(t *testing.T) {
-	root := initTestGitRepo(t)
+	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	session.AppendConversationEvent(ConversationEvent{
 		Kind:    conversationEventKindUserMessage,
