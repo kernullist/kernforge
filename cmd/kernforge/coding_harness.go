@@ -363,13 +363,20 @@ func acceptanceContractMode(intent TurnIntent, readOnlyAnalysis bool, explicitEd
 func extractContractArtifactPaths(text string) []string {
 	paths := make([]string, 0)
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
+	scan := artifactMentionScanState{}
 	for _, line := range strings.Split(normalized, "\n") {
+		if scan.observe(line) {
+			continue
+		}
+		if scan.skipArtifactMentions() {
+			continue
+		}
 		lower := strings.ToLower(strings.TrimSpace(line))
-		if !lineLooksLikeArtifactRequest(lower) {
+		if lineLooksLikeArtifactNonClaimContext(lower) {
 			continue
 		}
 		for _, token := range pathTokensFromLine(line) {
-			if pathTokenLooksVerifiable(token) {
+			if pathTokenLooksVerifiable(token) && pathTokenHasArtifactActionContext(line, token, true) {
 				paths = append(paths, token)
 			}
 		}
@@ -2444,18 +2451,129 @@ func replyMentionsBackgroundStillRunning(reply string) bool {
 func extractClaimedArtifactPaths(reply string) []string {
 	paths := make([]string, 0)
 	normalized := strings.ReplaceAll(reply, "\r\n", "\n")
+	scan := artifactMentionScanState{}
 	for _, line := range strings.Split(normalized, "\n") {
+		if scan.observe(line) {
+			continue
+		}
+		if scan.skipArtifactMentions() {
+			continue
+		}
 		lower := strings.ToLower(strings.TrimSpace(line))
-		if !lineLooksLikeArtifactClaim(lower) {
+		if !lineLooksLikeArtifactClaim(lower) || lineLooksLikeArtifactNonClaimContext(lower) {
 			continue
 		}
 		for _, token := range pathTokensFromLine(line) {
-			if pathTokenLooksVerifiable(token) {
+			if pathTokenLooksVerifiable(token) && pathTokenHasArtifactActionContext(line, token, false) {
 				paths = append(paths, token)
 			}
 		}
 	}
 	return normalizeTaskStateList(paths, 32)
+}
+
+type artifactMentionScanState struct {
+	inFence     bool
+	sectionName string
+}
+
+func (s *artifactMentionScanState) observe(line string) bool {
+	if s == nil {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+		s.inFence = !s.inFence
+		return true
+	}
+	if s.inFence {
+		return true
+	}
+	if section := artifactMentionSectionName(trimmed); section != "" {
+		s.sectionName = section
+	} else if strings.EqualFold(s.sectionName, "examples") && numberedArtifactMentionLineStartsNewItem(trimmed) {
+		s.sectionName = ""
+	}
+	return false
+}
+
+func (s artifactMentionScanState) skipArtifactMentions() bool {
+	if s.inFence {
+		return true
+	}
+	return artifactMentionSectionSuppressesClaims(s.sectionName)
+}
+
+func artifactMentionSectionName(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return ""
+	}
+	trimmed = strings.TrimLeft(trimmed, "#> \t-*")
+	trimmed = strings.Trim(trimmed, "`*_ ")
+	trimmed = strings.TrimSuffix(trimmed, ":")
+	trimmed = strings.TrimSpace(trimmed)
+	if trimmed == "" {
+		return ""
+	}
+	lower := strings.ToLower(strings.Join(strings.Fields(trimmed), " "))
+	if strings.Contains(lower, "examples") && strings.HasSuffix(strings.TrimSpace(line), ":") {
+		return "examples"
+	}
+	if len(trimmed) > 80 {
+		return ""
+	}
+	if strings.HasPrefix(strings.TrimSpace(line), "#") {
+		return lower
+	}
+	if strings.HasSuffix(strings.TrimSpace(line), ":") && !strings.Contains(lower, ".") {
+		return lower
+	}
+	return ""
+}
+
+func artifactMentionSectionSuppressesClaims(section string) bool {
+	section = strings.ToLower(strings.TrimSpace(section))
+	if section == "" {
+		return false
+	}
+	return containsAny(section,
+		"background",
+		"non-goal",
+		"non goal",
+		"example",
+		"examples",
+		"likely file",
+		"candidate file",
+		"planned file",
+		"proposed file",
+		"potential file",
+		"likely surface",
+		"candidate surface",
+		"planned surface",
+		"proposed surface",
+		"likely touch",
+		"future implementation",
+		"implementation slice",
+		"implementation plan",
+		"execution plan",
+		"kernforge execution plan",
+		"suggested test",
+		"suggested tests",
+		"validation",
+	)
+}
+
+func numberedArtifactMentionLineStartsNewItem(line string) bool {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	return index > 0 && index+1 < len(line) && line[index] == '.' && line[index+1] == ' '
 }
 
 func lineLooksLikeArtifactClaim(lower string) bool {
@@ -2465,6 +2583,28 @@ func lineLooksLikeArtifactClaim(lower string) bool {
 	return containsAny(lower,
 		"created", "generated", "wrote", "saved", "added", "updated",
 		"생성", "작성", "저장", "추가", "업데이트", "수정",
+	)
+}
+
+func lineLooksLikeArtifactNonClaimContext(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if strings.HasPrefix(lower, ">") {
+		return true
+	}
+	return containsAny(lower,
+		"claimed artifact is missing",
+		"claimed artifact is empty",
+		"the final answer appears to claim",
+		"appears to claim",
+		"similar false positives",
+		"for example",
+		"for example:",
+		"e.g.",
+		"example:",
+		"examples:",
 	)
 }
 
@@ -2528,6 +2668,153 @@ func pathTokenLooksVerifiable(token string) bool {
 	default:
 		return false
 	}
+}
+
+func pathTokenHasArtifactActionContext(line string, token string, requestMode bool) bool {
+	lowerLine := strings.ToLower(line)
+	lowerToken := strings.ToLower(strings.TrimSpace(token))
+	if lowerLine == "" || lowerToken == "" {
+		return false
+	}
+	index := strings.Index(lowerLine, lowerToken)
+	if index < 0 {
+		alternate := strings.ReplaceAll(lowerToken, "/", "\\")
+		index = strings.Index(lowerLine, alternate)
+		if index < 0 {
+			return false
+		}
+		lowerToken = alternate
+	}
+	before := lowerLine[:index]
+	after := lowerLine[index+len(lowerToken):]
+	if artifactActionVerbBeforePath(before, requestMode) {
+		return true
+	}
+	if artifactActionVerbAfterPath(after, requestMode, lowerToken) {
+		return true
+	}
+	return false
+}
+
+func artifactActionVerbBeforePath(before string, requestMode bool) bool {
+	tail := before
+	if len(tail) > 96 {
+		tail = tail[len(tail)-96:]
+	}
+	verbs := []string{"created", "generated", "wrote", "saved", "added", "updated"}
+	if requestMode {
+		verbs = append(verbs, "create", "generate", "write", "save", "add", "update")
+	}
+	bestIndex := -1
+	bestVerb := ""
+	for _, verb := range verbs {
+		if idx := lastArtifactWordIndex(tail, verb); idx > bestIndex {
+			bestIndex = idx
+			bestVerb = verb
+		}
+	}
+	if bestIndex < 0 {
+		return false
+	}
+	connector := tail[bestIndex+len(bestVerb):]
+	return artifactVerbPathConnectorAllowed(connector)
+}
+
+func artifactActionVerbAfterPath(after string, requestMode bool, token string) bool {
+	head := after
+	if len(head) > 120 {
+		head = head[:120]
+	}
+	head = strings.TrimSpace(strings.TrimLeft(head, "`'\".,:;)-]}> "))
+	if head == "" {
+		return false
+	}
+	passivePhrases := []string{
+		"was created",
+		"was generated",
+		"was written",
+		"was saved",
+		"was added",
+		"was updated",
+		"has been created",
+		"has been generated",
+		"has been written",
+		"has been saved",
+		"has been added",
+		"has been updated",
+	}
+	if requestMode {
+		passivePhrases = append(passivePhrases,
+			"should be created",
+			"should be generated",
+			"should be written",
+			"should be saved",
+			"should be added",
+			"should be updated",
+		)
+	}
+	for _, phrase := range passivePhrases {
+		if strings.HasPrefix(head, phrase) {
+			return true
+		}
+	}
+	if requestMode && pathLooksLikeDocumentArtifact(token) && containsAny(head,
+		"생성", "작성", "저장", "추가", "업데이트", "수정",
+	) {
+		return true
+	}
+	return containsAny(head,
+		"를 생성", "을 생성",
+		"를 작성", "을 작성",
+		"를 저장", "을 저장",
+		"를 추가", "을 추가",
+		"를 업데이트", "을 업데이트",
+		"를 수정", "을 수정",
+	)
+}
+
+func artifactVerbPathConnectorAllowed(connector string) bool {
+	connector = strings.TrimSpace(strings.Trim(connector, "`'\".,:;()[]{}<>-_*/ "))
+	connector = strings.Join(strings.Fields(connector), " ")
+	if connector == "" {
+		return true
+	}
+	switch connector {
+	case "file", "the file", "a file", "new file",
+		"artifact", "the artifact", "an artifact",
+		"document", "the document", "a document",
+		"report", "the report", "a report",
+		"markdown", "markdown file", "the markdown file":
+		return true
+	default:
+		return false
+	}
+}
+
+func lastArtifactWordIndex(text string, word string) int {
+	best := -1
+	offset := 0
+	for {
+		idx := strings.Index(text[offset:], word)
+		if idx < 0 {
+			return best
+		}
+		idx += offset
+		beforeOK := idx == 0 || !artifactWordRune(rune(text[idx-1]))
+		afterIndex := idx + len(word)
+		afterOK := afterIndex >= len(text) || !artifactWordRune(rune(text[afterIndex]))
+		if beforeOK && afterOK {
+			best = idx
+		}
+		offset = idx + len(word)
+		if offset >= len(text) {
+			return best
+		}
+	}
+}
+
+func artifactWordRune(r rune) bool {
+	return r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func resolveClaimedArtifactPath(root string, raw string) (string, string, bool) {

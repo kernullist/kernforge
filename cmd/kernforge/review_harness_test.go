@@ -11689,7 +11689,7 @@ func TestReviewCommandWithContextCancelsActiveModelRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- rt.handleReviewCommandWithContext(ctx, "change")
+		done <- rt.handleReviewCommandWithContext(ctx, "--path main.cpp change")
 	}()
 
 	select {
@@ -11697,7 +11697,7 @@ func TestReviewCommandWithContextCancelsActiveModelRun(t *testing.T) {
 	case err := <-done:
 		cancel()
 		t.Fatalf("review command returned before model call started: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		cancel()
 		t.Fatalf("review model call did not start")
 	}

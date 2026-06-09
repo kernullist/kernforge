@@ -745,6 +745,34 @@ func TestAcceptanceContractExtractsArtifactsAndVerificationIntent(t *testing.T) 
 	}
 }
 
+func TestAcceptanceContractExtractsKoreanDocumentArtifactRequest(t *testing.T) {
+	contract := buildAcceptanceContract(
+		"각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
+		TurnIntentEditCode,
+		false,
+		true,
+		false,
+	)
+
+	if len(contract.RequiredArtifacts) != 1 || contract.RequiredArtifacts[0] != "SampleGame/BugReport.md" {
+		t.Fatalf("expected Korean document artifact path, got %#v", contract.RequiredArtifacts)
+	}
+}
+
+func TestAcceptanceContractDoesNotTreatKoreanCodeFixPathAsArtifact(t *testing.T) {
+	contract := buildAcceptanceContract(
+		"@VAllocAnalyzer.cpp 코드에 버그가 있는지 검토하고 수정해줘",
+		TurnIntentEditCode,
+		false,
+		true,
+		false,
+	)
+
+	if len(contract.RequiredArtifacts) != 0 {
+		t.Fatalf("code fix target should not become a required artifact, got %#v", contract.RequiredArtifacts)
+	}
+}
+
 func TestAcceptanceContractDrivesMissingRequiredArtifactRepair(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
@@ -1629,9 +1657,99 @@ func TestClaimedArtifactExtractionIgnoresNonClaimLines(t *testing.T) {
 	}
 }
 
+func TestClaimedArtifactExtractionIgnoresDraftPlanCandidatePaths(t *testing.T) {
+	reply := strings.Join([]string{
+		"Draft plan only. No files were changed. No artifacts were created.",
+		"",
+		"## Background",
+		"- `Claimed artifact is missing: The final answer appears to claim SKILL.md was created or updated, but it does not exist in the workspace.`",
+		"- Similar false positives for `skill.go`, `completion.go`, and `config.go`.",
+		"",
+		"## Likely files",
+		"- SKILL.md",
+		"- cmd/kernforge/skill.go",
+		"- cmd/kernforge/completion.go",
+		"- cmd/kernforge/config.go",
+		"",
+		"## Validation",
+		"- go test ./cmd/kernforge -run \"ClaimedArtifact|DraftOnly\" -count=1",
+	}, "\n")
+
+	if paths := extractClaimedArtifactPaths(reply); len(paths) != 0 {
+		t.Fatalf("draft-only candidate paths should not be claimed artifacts, got %#v", paths)
+	}
+}
+
+func TestDraftOnlyPlanAnswerDoesNotTriggerMissingArtifactBlocker(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Session:   session,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+	}
+	reply := strings.Join([]string{
+		"Draft plan only. No files were changed. No artifacts were created. Verification was not run.",
+		"",
+		"## Background",
+		"- `Claimed artifact is missing: The final answer appears to claim SKILL.md was created or updated, but it does not exist in the workspace.`",
+		"",
+		"## Likely files",
+		"- SKILL.md",
+		"- cmd/kernforge/skill.go",
+		"- cmd/kernforge/completion.go",
+		"- cmd/kernforge/config.go",
+	}, "\n")
+
+	report := agent.buildCodingHarnessReport(reply, false, false)
+	if codingHarnessReportHasFinding(report.Outcome.Findings, "Claimed artifact is missing") {
+		t.Fatalf("draft-only plan answer should not trigger missing artifact blocker, got %#v", report.Outcome.Findings)
+	}
+	if codingHarnessReportHasFinding(report.ArtifactQuality.Findings, "Artifact contains placeholder content") {
+		t.Fatalf("draft-only plan answer should not run artifact quality on candidate paths, got %#v", report.ArtifactQuality)
+	}
+}
+
 func TestClaimedArtifactExtractionPreservesDotDirectory(t *testing.T) {
 	paths := extractClaimedArtifactPaths("Saved `.kernforge/reviews/bug-analysis-report.md`.")
 	if len(paths) != 1 || paths[0] != ".kernforge/reviews/bug-analysis-report.md" {
 		t.Fatalf("expected dot-prefixed artifact path to be preserved, got %#v", paths)
+	}
+}
+
+func TestClaimedArtifactExtractionRecognizesKoreanDocumentCreationClaim(t *testing.T) {
+	paths := extractClaimedArtifactPaths("SampleGame/BugReport.md 문서를 생성했습니다. 문서 산출물 작업이라 빌드/테스트 검증은 실행하지 않았습니다.")
+	if len(paths) != 1 || paths[0] != "SampleGame/BugReport.md" {
+		t.Fatalf("expected Korean document creation claim path, got %#v", paths)
+	}
+}
+
+func TestAcceptanceContractIgnoresGoalPromptPlanningExamplesAsArtifacts(t *testing.T) {
+	request := strings.Join([]string{
+		"# Goal Prompt: Fix Draft-Only Plan Artifact Claim Misclassification",
+		"",
+		"## Objective",
+		"Fix KernForge so draft-only planning answers that list candidate files are not misclassified as created artifacts.",
+		"",
+		"## Background",
+		"- `Claimed artifact is missing: The final answer appears to claim SKILL.md was created or updated, but it does not exist in the workspace.`",
+		"",
+		"## Likely files",
+		"- SKILL.md",
+		"- cmd/kernforge/skill.go",
+		"- cmd/kernforge/completion.go",
+		"- cmd/kernforge/config.go",
+		"",
+		"## Required Behavior",
+		"3. Real artifact claims must still be blocked when unsupported. Examples:",
+		"- `Created docs/plan.md`",
+		"- `Updated README.md`",
+		"- `Generated report.html`",
+		"4. The runtime should prefer explicit action verbs over bare path mentions.",
+	}, "\n")
+	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+	contract := buildAcceptanceContract(request, classifyTurnIntent(request), mode.ReadOnlyAnalysis, mode.ExplicitEditRequest, false)
+
+	if len(contract.RequiredArtifacts) != 0 {
+		t.Fatalf("goal prompt planning examples should not become required artifacts, got %#v", contract.RequiredArtifacts)
 	}
 }

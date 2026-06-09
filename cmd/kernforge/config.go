@@ -3281,7 +3281,7 @@ Provider And Models:
 /provider              Choose and configure a provider
 /provider status       Show provider connectivity, key state, and budget visibility
 - Permission prompts use the same keys: y allows once, a allows for the current session, n denies, and Esc cancels.
-- Diff preview asks: y opens once, a accepts edits for the current session, n cancels the edit, and Esc cancels. Automatic verification asks: y runs once, a enables session auto-run, n skips, and Esc cancels.
+- Diff preview and automatic verification use the same shape: y runs once, a enables the matching session auto-action, n skips, and Esc cancels.
 - Shell, write, and git approvals are tracked separately for the current session.
 - Kernforge does not allow run_shell to modify workspace files. File edits must go through apply_patch, write_file, or replace_in_file so diff preview and write approval rules can still apply.
 - Use /status to inspect the current session approval state for writes, diff previews, shell access, and git actions.
