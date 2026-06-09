@@ -35,6 +35,7 @@ To keep the GitHub landing page readable, the repository root is reserved for do
 
 - `cmd/kernforge`: Kernforge CLI, MCP server, daemon, analysis, fuzzing, verification implementation, and Go tests
 - `cmd/kernforge/.kernforge/mcp`: embedded web-research MCP script source copy
+- `cmd/kernforge/.kernforge/skills`: embedded opt-in skill source copies
 - `cmd/kernforge/root_cause_patterns`: embedded root-cause pattern packs
 - `docs/assets`: screenshots and documentation assets used by README and MCP guides
 - `branding`, `buildtools`, `release`: product imagery, Windows resource build tooling, and release artifacts
@@ -1110,6 +1111,12 @@ Useful commands:
 ```
 
 Use `$checks` in a prompt to activate a skill for the current request.
+
+Kernforge deploys a bundled opt-in productivity skill named `$goal-to-slice-planner` into the user skill directory on startup. It is not enabled by default, but you can call it explicitly before implementation work:
+
+```text
+$goal-to-slice-planner Split this feature into reviewable implementation slices with validation and docs.
+```
 
 ### MCP
 

@@ -60,6 +60,7 @@ Expected layout:
 Prompt usage:
 
 - Use `$checks` to activate a skill for the current request.
+- Kernforge also ships an opt-in productivity skill named `$goal-to-slice-planner`. Use it before implementation when a broad goal should be split into small, verifiable slices.
 - Use `/skills` to inspect discovered skills.
 - Use `/reload` after editing skill files or config.
 

@@ -15,6 +15,12 @@ Before launching, `kernforge --help` shows the executable version plus standalon
 When Codex uses Kernforge as an MCP server, ask for code review through `kernforge_review`; it returns structured findings, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, and action-oriented `next_commands` instead of the older review-code-only surface.
 If the same MCP entry is reused across repositories, pass the current repo as the tool `workspace` argument or configure `-cwd` per repo; otherwise Kernforge falls back to the server launch directory.
 
+For broad tasks, call the bundled opt-in skill before editing:
+
+```text
+$goal-to-slice-planner Split this feature into reviewable slices with validation and docs.
+```
+
 ## 1. The Core Loop In Five Minutes
 
 Recommended sequence:

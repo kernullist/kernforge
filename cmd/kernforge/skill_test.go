@@ -9,6 +9,7 @@ import (
 
 func TestLoadSkillsFindsWorkspaceSkillsAndEnabledDefaults(t *testing.T) {
 	dir := t.TempDir()
+	isolateUserConfigDir(t)
 	skillDir := filepath.Join(dir, ".kernforge", "skills", "checks")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill dir: %v", err)
@@ -23,8 +24,12 @@ func TestLoadSkillsFindsWorkspaceSkillsAndEnabledDefaults(t *testing.T) {
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}
-	if catalog.Count() != 1 {
-		t.Fatalf("expected 1 skill, got %d", catalog.Count())
+	skill, ok := catalog.Lookup("checks")
+	if !ok {
+		t.Fatalf("expected checks skill in catalog, got %#v", catalog.Items())
+	}
+	if !strings.EqualFold(skill.Path, filepath.Join(skillDir, "SKILL.md")) {
+		t.Fatalf("expected workspace checks skill path, got %q", skill.Path)
 	}
 	if catalog.EnabledCount() != 1 {
 		t.Fatalf("expected 1 enabled skill, got %d", catalog.EnabledCount())
@@ -37,11 +42,12 @@ func TestLoadSkillsFindsWorkspaceSkillsAndEnabledDefaults(t *testing.T) {
 
 func TestSkillCatalogInjectsExplicitSkillContext(t *testing.T) {
 	dir := t.TempDir()
-	skillDir := filepath.Join(dir, "skills", "planner")
+	isolateUserConfigDir(t)
+	skillDir := filepath.Join(dir, "skills", "unit-planner")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatalf("mkdir skill dir: %v", err)
 	}
-	content := "# Planner\n\nBreak the work into ordered steps.\n"
+	content := "# unit-planner\n\nBreak the work into ordered steps.\n"
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write SKILL.md: %v", err)
 	}
@@ -51,9 +57,9 @@ func TestSkillCatalogInjectsExplicitSkillContext(t *testing.T) {
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}
 
-	enriched := catalog.InjectPromptContext("please use $planner for this task")
+	enriched := catalog.InjectPromptContext("please use $unit-planner for this task")
 
-	if strings.Contains(enriched, "$planner") {
+	if strings.Contains(enriched, "$unit-planner") {
 		t.Fatalf("expected explicit skill token to be normalized, got %q", enriched)
 	}
 	if !strings.Contains(enriched, "Activated skills for this request:") {
@@ -82,4 +88,11 @@ func TestDefaultSkillSearchPathsExcludeLegacyLocations(t *testing.T) {
 			t.Fatalf("unexpected legacy skill path: %s", path)
 		}
 	}
+}
+
+func isolateUserConfigDir(t *testing.T) {
+	t.Helper()
+	home := filepath.Join(t.TempDir(), "home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 }

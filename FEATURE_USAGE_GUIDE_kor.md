@@ -935,6 +935,7 @@ review/Ops 테스트 전략:
 7. 기본 `max_tool_iterations`는 `0`(unlimited)이다. 파일 검색/대형 문서화처럼 tool call이 많이 필요한 턴은 더 이상 기본 16회 제한으로 중단되지 않으며, 필요하면 `/set-max-tool-iterations 24`처럼 양수 제한을 다시 걸 수 있다.
 8. project analysis worker/reviewer가 main 모델과 같은 OpenRouter 또는 DeepSeek route를 공유하면 기본 model-route limit은 2다. upstream rate-limit 또는 dynamic-concurrency cascade를 줄이기 위한 값이며, key/provider pool이 충분할 때만 `model_routes.provider_limits.openrouter`나 `model_routes.provider_limits.deepseek`를 더 높인다.
 9. `/analyze-project`는 tool/model streaming과 같은 progress ledger를 사용한다. `auto`는 오래 남겨야 할 shard/wave와 model-wait update를 기록하고, `compact`는 footer 중심으로 보여주며, `stream`은 긴 실행 디버깅을 위해 모든 update를 기록한다.
+10. Kernforge는 시작 시 사용자 skill 디렉터리에 opt-in `$goal-to-slice-planner` 스킬을 seed한다. 큰 구현 작업 전에 검증/문서 단계를 포함한 draft-only slice plan이 필요할 때 명시적으로 호출한다.
 
 ## 3. 가장 추천하는 실전 흐름
 

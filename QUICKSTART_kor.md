@@ -15,6 +15,12 @@
 Codex가 Kernforge를 MCP server로 사용할 때 코드 리뷰는 `kernforge_review`로 처리합니다. 이 tool은 structured finding, `latest_review_freshness`, `edit_proposals`, `runtime_gate_ledger`, action-oriented `next_commands`를 반환하며, 예전 review-code-only surface를 대체합니다.
 같은 MCP entry를 여러 repository에서 재사용한다면 현재 repo를 tool의 `workspace` argument로 넘기거나 repo별로 `-cwd`를 지정하세요. 그렇지 않으면 Kernforge는 server launch directory를 fallback workspace로 사용합니다.
 
+큰 작업은 편집 전에 번들 opt-in 스킬로 먼저 쪼갤 수 있습니다.
+
+```text
+$goal-to-slice-planner 이 기능을 검토 가능한 slice와 검증/문서 작업으로 나눠줘
+```
+
 ## 1. 5분 안에 익히는 핵심 루프
 
 추천 순서:

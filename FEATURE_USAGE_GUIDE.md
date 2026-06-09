@@ -930,6 +930,7 @@ Prompt budget behavior that now matters:
 7. The default `max_tool_iterations` is `0` (unlimited). File search and large documentation turns no longer stop at the old default 16-tool cap unless you explicitly re-pin a positive limit, for example `/set-max-tool-iterations 24`.
 8. When project analysis workers or review routes share the same OpenRouter or DeepSeek route as the main model, the default model-route limit is 2 to reduce upstream rate-limit or dynamic-concurrency cascades. Override `model_routes.provider_limits.openrouter` or `model_routes.provider_limits.deepseek` only when your key/provider pool can sustain more concurrency.
 9. `/analyze-project` now uses the same progress ledger as tool/model streaming: `auto` records durable shard/wave and model-wait updates, `compact` keeps them in the footer, and `stream` records every update for long-run debugging.
+10. Kernforge seeds the opt-in `$goal-to-slice-planner` skill into the user skill directory on startup. Use it explicitly before large implementation work when you want a draft-only slice plan with validation and documentation steps.
 
 ## 3. Recommended Real-World Flows
 

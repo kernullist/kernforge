@@ -1,5 +1,5 @@
 .build/
-.kernforge/
+/.kernforge/
 .claude/
 versioninfo_windows_*.syso
 /kernforge
