@@ -75,6 +75,7 @@ type Session struct {
 	LastRequestEnvelope             *RequestEnvelope                 `json:"last_request_envelope,omitempty"`
 	LastTurnRuntimeState            *TurnRuntimeState                `json:"last_turn_runtime_state,omitempty"`
 	LastFinalGateDecision           *FinalGateDecision               `json:"last_final_gate_decision,omitempty"`
+	LastRequestRuntimeShadow        *RequestRuntimeShadowComparison  `json:"last_request_runtime_shadow,omitempty"`
 	TurnQueue                       []TurnQueueItem                  `json:"turn_queue,omitempty"`
 	LastRecoveryDecision            *RecoveryDecision                `json:"last_recovery_decision,omitempty"`
 	LastContextMaintenanceDecision  *ContextMaintenanceDecision      `json:"last_context_maintenance_decision,omitempty"`

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KernForge request scenario replay matrix",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "name",
+      "user_text",
+      "session_state",
+      "provider_scripted_outputs",
+      "expected_request_envelope",
+      "expected_tool_exposure",
+      "expected_interventions",
+      "expected_final_gate"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "user_text": {
+        "type": "string"
+      },
+      "session_state": {
+        "type": "object"
+      },
+      "provider_scripted_outputs": {
+        "type": "array"
+      },
+      "expected_request_envelope": {
+        "type": "object"
+      },
+      "expected_tool_exposure": {
+        "type": "object"
+      },
+      "expected_interventions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "expected_final_gate": {
+        "type": "object"
+      }
+    }
+  }
+}

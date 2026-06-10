@@ -141,7 +141,7 @@ func ValidateToolCallsAgainstEnvelope(calls []ToolCall, envelope RequestEnvelope
 			})
 			continue
 		}
-		if !envelope.AllowsFileMutation && toolContractCallMutatesWorkspace(call, opts.Registry) {
+		if !envelope.AllowsFileMutation && !toolCallMutatesGitState(call) && toolContractCallMutatesWorkspace(call, opts.Registry) {
 			results = append(results, ToolContractSyntheticResult{
 				Call:     call,
 				Kind:     ToolContractSyntheticBlocked,

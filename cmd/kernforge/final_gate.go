@@ -301,9 +301,7 @@ func finalGateBlockingInterventions(items []RuntimeIntervention) []RuntimeInterv
 		if item.Resolved {
 			continue
 		}
-		if runtimeInterventionBlocksFinalAnswer(item.Kind) {
-			out = append(out, item)
-		}
+		out = append(out, item)
 	}
 	return out
 }

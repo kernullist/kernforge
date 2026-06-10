@@ -1608,11 +1608,37 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
-				a.recordFinalGateDecision(a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, TurnRuntimeFinalContext{
+				finalGateInput := a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, TurnRuntimeFinalContext{
 					AttemptedEditTool:              attemptedEditTool,
 					ExplicitEditRequest:            explicitEditRequest,
 					GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
-				}))
+				})
+				finalGateDecision := a.recordFinalGateDecision(finalGateInput)
+				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+				if requestRuntimeV2EnabledForEnvelope(a.Config, requestEnvelope) && !finalGateDecision.Ready {
+					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
+						markRuntimeBlocked("request_runtime_v2_final_gate")
+						return "", fmt.Errorf("request runtime v2 final gate blocked final answer: %s", strings.Join(finalGateDecision.Reasons, "; "))
+					}
+					turnRuntime.Counters.FinalAnswerNudges++
+					a.discardRecentFinalAnswerCandidate(reply)
+					guidance := strings.TrimSpace(finalGateDecision.Guidance)
+					if guidance == "" {
+						guidance = "Request runtime v2 final gate is not ready. Resolve the listed request boundary, review, recovery, or verification issue before finalizing."
+					}
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionFinalLooksPremature,
+						Reason:    strings.Join(finalGateDecision.Reasons, "; "),
+						Guidance:  guidance,
+						Count:     turnRuntime.Counters.FinalAnswerNudges,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(guidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
 				a.acceptRecentFinalAnswerCandidate(reply)
 				a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 				a.finalizePatchTransactionOnReturn()

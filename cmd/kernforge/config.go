@@ -262,6 +262,7 @@ type Config struct {
 	ProjectRootMarkers          *[]string                     `json:"project_root_markers,omitempty"`
 	ProjectAnalysis             ProjectAnalysisConfig         `json:"project_analysis,omitempty"`
 	Review                      ReviewHarnessConfig           `json:"review,omitempty"`
+	RequestRuntime              RequestRuntimeConfig          `json:"request_runtime,omitempty"`
 	Specialists                 SpecialistSubagentsConfig     `json:"-"`
 	TaskOwnership               *SpecialistSubagentsConfig    `json:"task_ownership,omitempty"`
 	LegacySpecialists           *SpecialistSubagentsConfig    `json:"specialists,omitempty"`
@@ -403,6 +404,9 @@ func DefaultConfig(cwd string) Config {
 			AutoFollowUp:                  "safe",
 			AutoRepairMaxRounds:           2,
 			RepeatedFindingBlockThreshold: 2,
+		},
+		RequestRuntime: RequestRuntimeConfig{
+			Mode: RequestRuntimeModeDisabled,
 		},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled: boolPtr(true),
@@ -1511,6 +1515,7 @@ func mergeConfig(dst *Config, src Config) {
 		dst.ProjectAnalysis.Incremental = &value
 	}
 	mergeReviewHarnessConfig(&dst.Review, src.Review)
+	mergeRequestRuntimeConfig(&dst.RequestRuntime, src.RequestRuntime)
 	if src.Specialists.Enabled != nil {
 		value := *src.Specialists.Enabled
 		dst.Specialists.Enabled = &value
@@ -1698,6 +1703,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.ProjectAnalysis.ReviewerProfile.ServiceTier = normalizeServiceTier(cfg.ProjectAnalysis.ReviewerProfile.ServiceTier)
 	}
 	normalizeReviewHarnessConfig(&cfg.Review)
+	normalizeRequestRuntimeConfig(&cfg.RequestRuntime)
 	if strings.EqualFold(cfg.Provider, "ollama") && strings.TrimSpace(cfg.BaseURL) == "" {
 		cfg.BaseURL = normalizeOllamaBaseURL("")
 	}

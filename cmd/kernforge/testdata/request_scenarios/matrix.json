@@ -1,0 +1,366 @@
+[
+  {
+    "name": "korean_explicit_edit",
+    "user_text": "main.go 버그를 고쳐줘",
+    "session_state": {
+      "changed_files": ["main.go"],
+      "verification_status": "passed"
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "수정 완료했습니다. Validation: passed."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "edit",
+      "allows_file_mutation": true,
+      "allows_git_mutation": false,
+      "requires_verification": true,
+      "explicit_edit_request": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit", "git_push"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "korean_review_only",
+    "user_text": "RuntimeManager.cpp 코드 리뷰해줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "Review findings: no blockers. Files edited: none."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "review",
+      "allows_file_mutation": false,
+      "read_only_analysis": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "plan_only",
+    "user_text": "Codex repo와 비교해서 개선 방향을 먼저 정하자",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "계획만 정리했습니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "plan",
+      "allows_file_mutation": false,
+      "read_only_analysis": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "draft_only_goal_prompt",
+    "user_text": "goal 프롬프트를 작성해줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "아래 goal prompt 초안입니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "plan",
+      "goal_prompt_draft_only": true,
+      "allows_file_mutation": false,
+      "allows_git_mutation": false,
+      "read_only_analysis": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "document_authoring",
+    "user_text": "분석 계획 문서를 docs/request.md로 작성해줘",
+    "session_state": {
+      "changed_files": ["docs/request.md"],
+      "generated_document_harness_owns_it": true
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "문서를 작성했습니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "document",
+      "document_authoring": true,
+      "allows_file_mutation": true,
+      "requires_verification": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "latest_current_research",
+    "user_text": "최신 Windows kernel callback 우회 리서치를 조사해줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "최신 외부 근거를 조사해야 합니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "research",
+      "allows_web_research": true,
+      "requires_fresh_external_info": true,
+      "allows_file_mutation": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["web_search"],
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "explicit_git_commit_push",
+    "user_text": "변경사항 커밋하고 push해",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "tool_calls": [
+          {
+            "id": "call_commit",
+            "name": "git_commit",
+            "arguments": "{\"message\":\"scenario\"}"
+          }
+        ]
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "git",
+      "allows_git_mutation": true,
+      "explicit_git_request": true,
+      "allows_file_mutation": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["git_commit", "git_push"],
+      "disabled": ["apply_patch"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "non_explicit_git",
+    "user_text": "작업 끝내줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "tool_calls": [
+          {
+            "id": "call_git",
+            "name": "git_commit",
+            "arguments": "{\"message\":\"unexpected\"}"
+          }
+        ]
+      }
+    ],
+    "expected_request_envelope": {
+      "allows_git_mutation": false,
+      "explicit_git_request": false
+    },
+    "expected_tool_exposure": {
+      "disabled": ["git_commit", "git_push"]
+    },
+    "expected_interventions": ["BlockedTool"],
+    "expected_final_gate": {
+      "state": "NeedsRecovery",
+      "ready": false
+    }
+  },
+  {
+    "name": "empty_stop",
+    "user_text": "코드를 분석해줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "",
+        "stop_reason": ""
+      }
+    ],
+    "expected_request_envelope": {
+      "allows_file_mutation": false
+    },
+    "expected_tool_exposure": {
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": ["EmptyStop"],
+    "expected_final_gate": {
+      "state": "NeedsRecovery",
+      "ready": false
+    }
+  },
+  {
+    "name": "orphan_tool_call",
+    "user_text": "계속해",
+    "session_state": {
+      "orphan_tool_result": true,
+      "messages": [
+        {
+          "role": "user",
+          "text": "continue"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "orphan",
+          "tool_name": "write_file",
+          "text": "wrote report"
+        }
+      ]
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "orphan tool result was recovered as context."
+      }
+    ],
+    "expected_request_envelope": {
+      "allows_file_mutation": false
+    },
+    "expected_tool_exposure": {
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": ["orphan_tool_result"],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "repeated_read_loop",
+    "user_text": "main.go를 계속 읽어줘",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "tool_calls": [
+          {
+            "id": "call_read_1",
+            "name": "read_file",
+            "arguments": "{\"path\":\"main.go\"}"
+          }
+        ]
+      },
+      {
+        "tool_calls": [
+          {
+            "id": "call_read_2",
+            "name": "read_file",
+            "arguments": "{\"path\":\"main.go\"}"
+          }
+        ]
+      }
+    ],
+    "expected_request_envelope": {
+      "allows_file_mutation": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "git_commit"]
+    },
+    "expected_interventions": ["RepeatedTool"],
+    "expected_final_gate": {
+      "state": "NeedsRecovery",
+      "ready": false
+    }
+  },
+  {
+    "name": "generated_doc_final_only",
+    "user_text": "분석 보고서를 docs/report.md로 작성해줘",
+    "session_state": {
+      "changed_files": ["docs/report.md"],
+      "generated_document_harness_owns_it": true
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "문서 생성 완료. 검증은 문서 하네스가 처리했습니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "document",
+      "document_authoring": true,
+      "allows_file_mutation": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "verification_unavailable",
+    "user_text": "main.go 버그를 고쳐줘",
+    "session_state": {
+      "changed_files": ["main.go"],
+      "verification_status": "skipped",
+      "unresolved_verification": true
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "수정 완료했습니다."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "edit",
+      "allows_file_mutation": true,
+      "requires_verification": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit"]
+    },
+    "expected_interventions": ["VerificationUnresolved"],
+    "expected_final_gate": {
+      "state": "NeedsVerification",
+      "ready": false
+    }
+  }
+]
