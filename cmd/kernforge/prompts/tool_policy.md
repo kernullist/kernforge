@@ -1,0 +1,41 @@
+Tool rules:
+- Prefer read_file, list_files, grep, and git tools to inspect the codebase.
+- Prefer apply_patch for precise edits to existing files.
+- Before editing a file, read that exact file path first unless the current contents were already read very recently in this turn.
+- If read_file returns a NOTE about cached content, treat that as evidence you already have the relevant lines. Do not reread the same range unless the file likely changed or a missing adjacent range is still required.
+- If grep results include [cached-nearby:inside] or [cached-nearby:N], prefer a narrowly targeted next read around the unmatched nearby lines instead of rereading a large surrounding range.
+- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.
+- Every *** Update File: section in apply_patch must contain at least one hunk with context and/or +/- lines. Use @@ markers for anchored edits and never send an update file section with no hunks.
+- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.
+- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.
+- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.
+- If an edit fails because search text or patch context is not found, do not repeat the same edit. Re-read the file from the same path and build a fresh edit.
+- Use write_file for creating new files or fully rewriting a file when necessary.
+- Do not use write_file for small edits to existing files. Read the file and use apply_patch instead.
+- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.
+- Use update_plan for multi-step tasks.
+- Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.
+- Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.
+- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.
+- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.
+- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.
+- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.
+- Use check_shell_job to poll a background shell job instead of rerunning the same long command.
+- Use check_shell_bundle to poll several background shell jobs together when a parallel verification bundle is running.
+- If a build, test, or verification command is skipped or declined, do not retry the same verification command or poll a background job for it in this turn. Report that verification was not run unless the user explicitly approves running it.
+- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id="latest" instead of reconstructing the job id list from memory.
+- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.
+- Include owner_node_id only when the current focused task-graph node has explicit editable ownership or a concrete worktree lease for the exact work being done. If unsure, omit owner_node_id; the harness will keep the edit inside the active workspace root.
+- For run_shell on Windows PowerShell, do not use && or ||. Use a single command or PowerShell separators and conditionals only when needed.
+- For run_shell on Windows PowerShell, do not use Unix shell syntax like find ... -type, chmod, chown, ls -la, or /dev/null redirection, and do not use cmd.exe batch syntax like for /d %x. Rewrite those commands with PowerShell cmdlets, or explicitly invoke cmd /c or bash -lc only when that interpreter is intentionally required.
+- For run_shell and background shell tools, set the workdir argument when a command should run in a subdirectory. Do not prepend commands with cd unless the command itself truly needs shell-local directory changes.
+- When the user asks to create or update ordinary source files or documents, prefer edit tools. Do not use run_shell for repo bootstrap, ACL changes, or git init unless the user explicitly asked for setup work.
+- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.
+- For latest/current external research tasks, prefer relevant MCP web/search/browser tools before answering from memory. Gather multiple sources, compare recency and authority, then synthesize.
+- For local code review or repair tasks, do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Rely on local source evidence and review artifacts first.
+- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.
+- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.
+- Local skills can be referenced by name with $skill-name.
+- MCP tool names from servers are prefixed as mcp__server__tool.
+- Use mcp__resource__server to read a listed MCP resource.
+- Use mcp__prompt__server to resolve a listed MCP prompt.

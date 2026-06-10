@@ -1291,10 +1291,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && turnRuntime.Counters.ManualEditHandoffRetries < 1 {
 					turnRuntime.Counters.ManualEditHandoffRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					manualEditGuidance := "This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error."
+					manualEditReason := "final-looking answer handed an explicit edit request back to the user"
+					manualEditGuidance := RenderManualEditHandoffBlockPrompt(manualEditReason, turnRuntime.Counters.ManualEditHandoffRetries)
 					recordRuntimeIntervention(RuntimeIntervention{
 						Kind:      RuntimeInterventionManualEditHandoff,
-						Reason:    "final-looking answer handed an explicit edit request back to the user",
+						Reason:    manualEditReason,
 						Guidance:  manualEditGuidance,
 						Count:     turnRuntime.Counters.ManualEditHandoffRetries,
 						Iteration: turnCount,
@@ -1327,14 +1328,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if unresolvedVerification && !a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser) && turnRuntime.Counters.FinalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
 					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
-					verificationGuidance := "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."
-					recordRuntimeIntervention(RuntimeIntervention{
+					verificationIntervention := RuntimeIntervention{
 						Kind:      RuntimeInterventionVerificationUnresolved,
 						Reason:    "final-looking answer omitted unresolved verification status",
-						Guidance:  verificationGuidance,
 						Count:     turnRuntime.Counters.FinalAnswerNudges,
 						Iteration: turnCount,
-					})
+					}
+					verificationGuidance := RenderVerificationUnresolvedPrompt(turnRuntime, verificationIntervention, "", a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser))
+					verificationIntervention.Guidance = verificationGuidance
+					recordRuntimeIntervention(verificationIntervention)
 					a.Session.AddMessage(internalUserMessage(verificationGuidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
@@ -1548,6 +1550,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				recordRuntimeIntervention(RuntimeIntervention{
 					Kind:       RuntimeInterventionLengthStop,
 					Reason:     "model stopped before producing a usable response due to token limit",
+					Guidance:   RenderLengthStopContinuePrompt(lastStopReason),
 					StopReason: lastStopReason,
 					Iteration:  turnCount,
 				})
@@ -1566,10 +1569,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				markRuntimeBlocked("empty_stop")
 				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
 			}
-			emptyGuidance := "Please provide the final answer to the user now. Do not return an empty message."
-			if readOnlyAnalysis {
-				emptyGuidance = "Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message."
-			}
+			emptyGuidance := RenderEmptyStopRetryPrompt(readOnlyAnalysis, lastStopReason, turnRuntime.Counters.EmptyFinalReplies)
 			recordRuntimeIntervention(RuntimeIntervention{
 				Kind:       RuntimeInterventionEmptyStop,
 				Reason:     "model returned an empty response",
@@ -3297,7 +3297,10 @@ func generatedDocumentArtifactFinalOnlyPromptGuidance() string {
 }
 
 func verificationSkippedFinalOnlyPromptGuidance() string {
-	return "Verification was skipped or declined in this turn. This turn is final-answer-only. Do not call tools, do not retry verification, do not inspect more files, and do not update plans. Provide the final answer now and explicitly state that verification was not run."
+	return RenderVerificationUnresolvedPrompt(nil, RuntimeIntervention{
+		Kind:   RuntimeInterventionVerificationUnresolved,
+		Reason: "verification was skipped or declined in this turn",
+	}, "Verification was skipped or declined in this turn. This turn is final-answer-only. Do not call tools, do not retry verification, do not inspect more files, and do not update plans. Provide the final answer now and explicitly state that verification was not run.", false)
 }
 
 type turnToolExposurePlan struct {
@@ -5660,46 +5663,62 @@ func applyPatchFormatFailureSignature(arguments string) string {
 }
 
 func repeatedToolCallRecoveryGuidance(summary string, recent string) string {
-	parts := []string{
-		"Recovery mode: the tool loop is still stuck on the same tool call sequence. Do not repeat that sequence again immediately.",
-		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose one materially different next step: inspect a different file or tool, change the tool arguments, or provide the best final answer now.\n3. Only retry the same tool sequence if you can explain exactly what changed.",
-	}
+	reason := "Recovery mode: the tool loop is still stuck on the same tool call sequence. Do not repeat that sequence again immediately."
+	requirements := "Next step requirements:\n1. State the blocker in one sentence.\n2. Choose one materially different next step: inspect a different file or tool, change the tool arguments, or provide the best final answer now.\n3. Only retry the same tool sequence if you can explain exactly what changed."
+	loopSignature := ""
+	parts := []string{reason, requirements}
 	if strings.TrimSpace(summary) != "" {
-		parts = append(parts, "Loop signature: "+renderLoopSignature(LoopSignature{
+		loopSignature = renderLoopSignature(LoopSignature{
 			Kind:          "repeated_tool_calls",
 			Signature:     computeReviewFingerprint("tool_calls", summary),
 			RepeatCount:   repeatedToolCallRecoveryThreshold,
 			RequiredShift: "change tool, arguments, target path, or stop and summarize the blocker",
-		}))
+		})
+		parts = append(parts, "Loop signature: "+loopSignature)
 		parts = append(parts, "Repeated tool sequence:\n"+summary)
 	}
 	if strings.TrimSpace(recent) != "" {
 		parts = append(parts, "Recent tool turns:\n"+recent)
 	}
-	return strings.Join(parts, "\n\n")
+	return RenderRepeatedToolRedirectPrompt(RepeatedToolRedirectPromptData{
+		Reason:               reason,
+		NextStepRequirements: requirements,
+		LoopSignature:        loopSignature,
+		DetailTitle:          "Repeated tool sequence",
+		RepeatedSequence:     summary,
+		RecentToolTurns:      recent,
+	}, strings.Join(parts, "\n\n"))
 }
 
 func repeatedReadFilePathRecoveryGuidance(path string, turns int, recent string) string {
-	parts := []string{
-		fmt.Sprintf("Recovery mode: you have read the same file path across %d tool turns: %s. Treat the existing reads as sufficient unless the file changed.", turns, path),
-		"Do not read the same path again immediately. Either inspect a different file or tool, explain the current findings, or provide the best final answer now. Only reread this path if you can name the exact missing section that is still required.",
-	}
+	reason := fmt.Sprintf("Recovery mode: you have read the same file path across %d tool turns: %s. Treat the existing reads as sufficient unless the file changed.", turns, path)
+	requirements := "Do not read the same path again immediately. Either inspect a different file or tool, explain the current findings, or provide the best final answer now. Only reread this path if you can name the exact missing section that is still required."
+	parts := []string{reason, requirements}
+	loopSignature := ""
 	if signature := renderLoopSignature(loopSignatureForRepeatedRead(path, turns)); signature != "" {
-		parts = append(parts, "Loop signature: "+signature)
+		loopSignature = signature
+		parts = append(parts, "Loop signature: "+loopSignature)
 	}
 	if strings.TrimSpace(recent) != "" {
 		parts = append(parts, "Recent tool turns:\n"+recent)
 	}
-	return strings.Join(parts, "\n\n")
+	return RenderRepeatedToolRedirectPrompt(RepeatedToolRedirectPromptData{
+		Reason:               reason,
+		NextStepRequirements: requirements,
+		LoopSignature:        loopSignature,
+		DetailTitle:          "Repeated file path",
+		RecentToolTurns:      recent,
+	}, strings.Join(parts, "\n\n"))
 }
 
 func repeatedToolFailureRecoveryGuidance(toolErr string, recent string) string {
-	parts := []string{
-		"Recovery mode: the same tool failure has happened multiple times. Do not repeat the same failing tool call again with near-identical inputs.",
-		"Next step requirements:\n1. State the blocker in one sentence.\n2. Choose a materially different action: use another tool, change the target/path/arguments, or provide the best partial final answer with the blocker.\n3. Only retry the failing tool if you can explain what changed.",
-	}
+	reason := "Recovery mode: the same tool failure has happened multiple times. Do not repeat the same failing tool call again with near-identical inputs."
+	requirements := "Next step requirements:\n1. State the blocker in one sentence.\n2. Choose a materially different action: use another tool, change the target/path/arguments, or provide the best partial final answer with the blocker.\n3. Only retry the failing tool if you can explain what changed."
+	parts := []string{reason, requirements}
+	loopSignature := ""
 	if signature := renderLoopSignature(loopSignatureForToolFailure(toolErr, repeatedToolFailureRecoveryThreshold)); signature != "" {
-		parts = append(parts, "Loop signature: "+signature)
+		loopSignature = signature
+		parts = append(parts, "Loop signature: "+loopSignature)
 	}
 	if strings.TrimSpace(toolErr) != "" {
 		parts = append(parts, "Latest tool failure:\n"+sanitizeDiagnosticValue(toolErr))
@@ -5707,7 +5726,14 @@ func repeatedToolFailureRecoveryGuidance(toolErr string, recent string) string {
 	if strings.TrimSpace(recent) != "" {
 		parts = append(parts, "Recent tool turns:\n"+recent)
 	}
-	return strings.Join(parts, "\n\n")
+	return RenderRepeatedToolRedirectPrompt(RepeatedToolRedirectPromptData{
+		Reason:               reason,
+		NextStepRequirements: requirements,
+		LoopSignature:        loopSignature,
+		DetailTitle:          "Latest tool failure",
+		RepeatedSequence:     sanitizeDiagnosticValue(toolErr),
+		RecentToolTurns:      recent,
+	}, strings.Join(parts, "\n\n"))
 }
 
 func toolBudgetExtensionGuidance(extraTurns int, recent string) string {
@@ -5941,6 +5967,10 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 		reason = "NOT_EXECUTED: this tool-call batch was redirected by the runtime before execution."
 	}
 	intervention.Reason = reason
+	if strings.TrimSpace(guidance) == "" {
+		guidance = RenderBlockedToolPromptFromIntervention(intervention)
+	}
+	intervention.Guidance = strings.TrimSpace(guidance)
 	for _, call := range calls {
 		result := notExecutedToolResult(call, reason)
 		a.Session.AddMessage(Message{
@@ -9014,17 +9044,19 @@ func (a *Agent) systemPrompt() string {
 	lowerLatestUser := strings.ToLower(strings.TrimSpace(latestUser))
 	requestEnvelope := a.latestRequestEnvelopeFor(latestUser)
 	webResearchIntent := requestEnvelope.RequiresFreshExternalInfo
-	b.WriteString("You are Kernforge, a terminal-based coding agent inspired by Claude Code.\n")
-	b.WriteString("Work like a careful senior engineer inside the user's repository.\n")
-	b.WriteString("Use tools before making assumptions. Read relevant files before editing them. Keep answers concise and implementation-focused.\n")
-	b.WriteString("When code changes are needed, prefer the smallest correct diff and verify with tests or builds when practical.\n")
-	b.WriteString("When using edit tools, prefer narrow hunks anchored to current file contents; if a fix would produce a large patch, apply the first independent hunk and continue after rereading instead of generating a large tool-call payload. When a review/pre-write gate explicitly requires all RFs to be addressed, include the required RF hunks as separate narrow hunks instead of one large rewrite.\n")
-	b.WriteString("If the user asks a question, answer directly before suggesting extra work.\n")
-	b.WriteString("For user-visible final replies, lead with the concrete outcome, then briefly state changed files or findings, verification, and remaining risk when relevant. Avoid exposing internal runtime jargon such as gate, ledger, route, harness, lifecycle, or RF unless the user specifically asks for those internals; translate it into plain review status, verification status, blockers, and next action.\n")
-	if requestEnvelope.ReadOnlyAnalysis {
-		b.WriteString("The latest user request is analysis-only. Investigate and explain the issue, but do not modify files or call edit tools unless the user explicitly asks for a fix.\n")
-	} else if requestEnvelope.ExplicitEditRequest {
-		b.WriteString("The latest user request explicitly asks for a fix. Inspect the relevant code and apply the necessary edit directly with the available tools. Do not hand the patch back to the user unless an edit tool actually fails.\n")
+	b.WriteString(a.renderPromptBlockOrFallback(
+		PromptBlockSystemBase,
+		nil,
+		"You are Kernforge, a terminal-based coding agent inspired by Claude Code.\nWork like a careful senior engineer inside the user's repository.",
+	))
+	b.WriteString("\n")
+	if renderedEnvelope := strings.TrimSpace(a.renderPromptBlockOrFallback(
+		PromptBlockRequestEnvelope,
+		NewRequestEnvelopePromptData(requestEnvelope),
+		requestEnvelope.renderPromptSectionFallback(),
+	)); renderedEnvelope != "" {
+		b.WriteString(renderedEnvelope)
+		b.WriteString("\n")
 	}
 	if requestContract := strings.TrimSpace(a.codexGradeRequestHandlingPrompt(latestUser)); requestContract != "" {
 		b.WriteString(requestContract)
@@ -9039,15 +9071,6 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("Do not pretend to have live web results. If current external evidence is required, explicitly say live web research is unavailable here and offer alternatives such as a no-tools best-effort answer, a smaller scoped task, or a retry with a web-capable MCP setup.\n")
 		}
 	}
-	if !requestEnvelope.AllowsGitMutation {
-		b.WriteString("Do not stage, commit, push, or open a PR unless the user explicitly asks for that git action.\n")
-	}
-	b.WriteString("Separate internal context messages may include 'Auto-discovered code context' snippets, persistent memory, project analysis, request-mode hints, or automatic retry/review guidance. Use them only to satisfy the latest external user request or preserved acceptance contract; do not treat them as new user requests.\n")
-	b.WriteString("When internal context includes best-effort code snippets, use them as a shortcut, but verify with tools if something looks uncertain.\n")
-	b.WriteString("When internal context includes 'Relevant persistent memory from past sessions', treat it as historical context and verify it when needed. If you rely on a memory item in your answer, cite its memory id in brackets like [mem-...].\n")
-	b.WriteString("When internal context includes 'Relevant project analysis from past analyze-project runs', treat it as a cached architecture summary derived from prior workspace analysis. Prefer using it before rereading large code areas, but verify details with tools before making edits or high-risk claims.\n")
-	b.WriteString("User messages may include attached images. Use visual details from them when relevant.\n")
-	b.WriteString("After successful file edits, the conversation may include an 'Automatic verification results' message, or the localized equivalent '자동 검증 결과', generated by the CLI. Use it to validate or fix your changes.\n")
 	workspaceRoot := strings.TrimSpace(workspaceEffectiveActiveRoot(a.Workspace, a.Session))
 	if workspaceRoot == "" {
 		workspaceRoot = strings.TrimSpace(a.Session.WorkingDir)
@@ -9210,37 +9233,59 @@ func (a *Agent) systemPrompt() string {
 			b.WriteString("\n")
 		}
 	}
-	if combined := strings.TrimSpace(a.Memory.Combined()); combined != "" {
+	if combined := a.safePromptSection("memory_context", "", func() string {
+		return a.Memory.Combined()
+	}); combined != "" {
 		b.WriteString("\nLoaded memory files:\n")
 		b.WriteString(compactPromptSection(combined, 700))
 		b.WriteString("\n")
 	}
 	if shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser) {
-		if catalog := strings.TrimSpace(a.Skills.CatalogPrompt()); catalog != "" {
+		if catalog := a.safePromptSection("skill_catalog", "", func() string {
+			return a.Skills.CatalogPrompt()
+		}); catalog != "" {
 			b.WriteString("\nAvailable local skills:\n")
 			b.WriteString(compactPromptSection(catalog, 1200))
 			b.WriteString("\n")
 		}
 	}
-	if defaults := strings.TrimSpace(renderEnabledSkillSummary(a.Skills)); defaults != "" {
+	if defaults := a.safePromptSection("enabled_skill_summary", "", func() string {
+		return renderEnabledSkillSummary(a.Skills)
+	}); defaults != "" {
 		b.WriteString("\nEnabled local skills:\n")
 		b.WriteString(defaults)
 		b.WriteString("\n")
 	}
 	if shouldIncludeMCPCatalogInSystemPrompt(lowerLatestUser) {
-		if resources := strings.TrimSpace(a.MCP.ResourceCatalogPrompt()); resources != "" {
+		resources := "MCP resource catalog unavailable in this session."
+		prompts := "MCP prompt catalog unavailable in this session."
+		if a.MCP != nil {
+			resources = a.safePromptSection("mcp_resource_catalog", resources, func() string {
+				return a.MCP.ResourceCatalogPrompt()
+			})
+			prompts = a.safePromptSection("mcp_prompt_catalog", prompts, func() string {
+				return a.MCP.PromptCatalogPrompt()
+			})
+		}
+		if strings.TrimSpace(resources) != "" {
 			b.WriteString("\nAvailable MCP resources:\n")
 			b.WriteString(compactPromptSection(resources, 1000))
 			b.WriteString("\n")
 		}
-		if prompts := strings.TrimSpace(a.MCP.PromptCatalogPrompt()); prompts != "" {
+		if strings.TrimSpace(prompts) != "" {
 			b.WriteString("\nAvailable MCP prompts:\n")
 			b.WriteString(compactPromptSection(prompts, 900))
 			b.WriteString("\n")
 		}
 	}
 	if webResearchIntent {
-		if catalog := strings.TrimSpace(a.MCP.WebResearchCatalogPrompt()); catalog != "" {
+		catalog := ""
+		if a.MCP != nil {
+			catalog = a.safePromptSection("mcp_web_research_catalog", "", func() string {
+				return a.MCP.WebResearchCatalogPrompt()
+			})
+		}
+		if catalog != "" {
 			b.WriteString("\nRelevant MCP web/research capabilities:\n")
 			b.WriteString(compactPromptSection(catalog, 1200))
 			b.WriteString("\n")
@@ -9251,47 +9296,13 @@ func (a *Agent) systemPrompt() string {
 		fmt.Fprintf(&b, "\nResponse language policy: %s\n", instruction)
 	}
 
-	b.WriteString("\nTool rules:\n")
-	b.WriteString("- Prefer read_file, list_files, grep, and git tools to inspect the codebase.\n")
-	b.WriteString("- Prefer apply_patch for precise edits to existing files.\n")
-	b.WriteString("- Before editing a file, read that exact file path first unless the current contents were already read very recently in this turn.\n")
-	b.WriteString("- If read_file returns a NOTE about cached content, treat that as evidence you already have the relevant lines. Do not reread the same range unless the file likely changed or a missing adjacent range is still required.\n")
-	b.WriteString("- If grep results include [cached-nearby:inside] or [cached-nearby:N], prefer a narrowly targeted next read around the unmatched nearby lines instead of rereading a large surrounding range.\n")
-	b.WriteString("- When using apply_patch, the patch argument must be raw patch text that starts with *** Begin Patch and ends with *** End Patch.\n")
-	b.WriteString("- Every *** Update File: section in apply_patch must contain at least one hunk with context and/or +/- lines. Use @@ markers for anchored edits and never send an update file section with no hunks.\n")
-	b.WriteString("- Never send JSON, markdown code fences, prose, or pseudo-objects as the apply_patch patch string.\n")
-	b.WriteString("- Use replace_in_file only for very small exact substitutions when you have just read the same file path and the exact search text is present exactly as written.\n")
-	b.WriteString("- If there is any risk that the file changed, the path is ambiguous, or the replacement spans multiple lines or repeated matches, read the file again and use apply_patch instead of replace_in_file.\n")
-	b.WriteString("- If an edit fails because search text or patch context is not found, do not repeat the same edit. Re-read the file from the same path and build a fresh edit.\n")
-	b.WriteString("- Use write_file for creating new files or fully rewriting a file when necessary.\n")
-	b.WriteString("- Do not use write_file for small edits to existing files. Read the file and use apply_patch instead.\n")
-	b.WriteString("- Tool arguments must be complete valid JSON. Never send truncated JSON, partial strings, or unfinished objects.\n")
-	b.WriteString("- Use update_plan for multi-step tasks.\n")
-	b.WriteString("- Use run_shell for build, test, or local inspection commands when no dedicated workspace tool fits.\n")
-	b.WriteString("- Prefer dedicated workspace tools such as read_file, grep, git_diff, git_status, and list_files for code, diff, and git-state inspection. Do not use run_shell with Get-Content or PowerShell pipelines just to print line numbers or file excerpts.\n")
-	b.WriteString("- Do not use run_shell with Set-Content, Out-File, .NET file APIs such as WriteAllText, redirection, or inline scripts to modify existing source files; use apply_patch or replace_in_file so edits stay reviewable and encoding-safe.\n")
-	b.WriteString("- For scoped mutating shell commands, only use run_shell with allow_workspace_writes=true and write_paths when a formatter, code generator, or setup command is clearly safer than a manual patch.\n")
-	b.WriteString("- Use run_shell_background for a single long-running build, test, or verification command that may take multiple minutes.\n")
-	b.WriteString("- Use run_shell_bundle_background when multiple independent build, test, or verification commands can run in parallel.\n")
-	b.WriteString("- Use check_shell_job to poll a background shell job instead of rerunning the same long command.\n")
-	b.WriteString("- Use check_shell_bundle to poll several background shell jobs together when a parallel verification bundle is running.\n")
-	b.WriteString("- If a build, test, or verification command is skipped or declined, do not retry the same verification command or poll a background job for it in this turn. Report that verification was not run unless the user explicitly approves running it.\n")
-	b.WriteString("- When a background shell bundle already exists, prefer check_shell_bundle with bundle_id=\"latest\" instead of reconstructing the job id list from memory.\n")
-	b.WriteString("- When a background job or bundle becomes obsolete after newer edits or a newer verification run, use cancel_shell_job or cancel_shell_bundle instead of leaving stale work running.\n")
-	b.WriteString("- Include owner_node_id only when the current focused task-graph node has explicit editable ownership or a concrete worktree lease for the exact work being done. If unsure, omit owner_node_id; the harness will keep the edit inside the active workspace root.\n")
-	b.WriteString("- For run_shell on Windows PowerShell, do not use && or ||. Use a single command or PowerShell separators and conditionals only when needed.\n")
-	b.WriteString("- For run_shell on Windows PowerShell, do not use Unix shell syntax like find ... -type, chmod, chown, ls -la, or /dev/null redirection, and do not use cmd.exe batch syntax like for /d %x. Rewrite those commands with PowerShell cmdlets, or explicitly invoke cmd /c or bash -lc only when that interpreter is intentionally required.\n")
-	b.WriteString("- For run_shell and background shell tools, set the workdir argument when a command should run in a subdirectory. Do not prepend commands with cd unless the command itself truly needs shell-local directory changes.\n")
-	b.WriteString("- When the user asks to create or update ordinary source files or documents, prefer edit tools. Do not use run_shell for repo bootstrap, ACL changes, or git init unless the user explicitly asked for setup work.\n")
-	b.WriteString("- For document or report authoring tasks, do not assume generated files already exist. Use list_files on the parent directory before read_file. If the directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools.\n")
-	b.WriteString("- For latest/current external research tasks, prefer relevant MCP web/search/browser tools before answering from memory. Gather multiple sources, compare recency and authority, then synthesize.\n")
-	b.WriteString("- For local code review or repair tasks, do not use MCP web/search/browser tools unless the user explicitly asks for external web research. Rely on local source evidence and review artifacts first.\n")
-	b.WriteString("- When a background job is already running for the same command, prefer polling it instead of starting a duplicate.\n")
-	b.WriteString("- Do not use git_add, git_commit, git_push, or git_create_pr unless the user explicitly asks for a git action.\n")
-	b.WriteString("- Local skills can be referenced by name with $skill-name.\n")
-	b.WriteString("- MCP tool names from servers are prefixed as mcp__server__tool.\n")
-	b.WriteString("- Use mcp__resource__server to read a listed MCP resource.\n")
-	b.WriteString("- Use mcp__prompt__server to resolve a listed MCP prompt.\n")
+	b.WriteString("\n")
+	b.WriteString(a.renderPromptBlockOrFallback(
+		PromptBlockToolPolicy,
+		nil,
+		"Tool rules:\n- Prefer read_file, list_files, grep, and git tools to inspect the codebase.\n- Prefer apply_patch for precise edits to existing files.",
+	))
+	b.WriteString("\n")
 	return b.String()
 }
 

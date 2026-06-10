@@ -25,6 +25,7 @@ const (
 	progressKindMemoryContext        = "memory_context"
 	progressKindAnalysisContext      = "analysis_context"
 	progressKindRuntimeIntervention  = "runtime_intervention"
+	progressKindPromptAssembly       = "prompt_assembly"
 )
 
 func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
@@ -44,6 +45,7 @@ func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
 	event.Status = strings.TrimSpace(event.Status)
 	event.RuntimeState = strings.TrimSpace(event.RuntimeState)
 	event.RuntimeIntervention = strings.TrimSpace(event.RuntimeIntervention)
+	event.PromptBlock = strings.TrimSpace(event.PromptBlock)
 	callback(event)
 }
 
@@ -131,6 +133,13 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 		if event.RuntimeIntervention != "" {
 			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Runtime intervention: %s.", "런타임 개입: %s."), event.RuntimeIntervention))
 		}
+	case progressKindPromptAssembly:
+		if event.PromptBlock != "" && event.Status != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Prompt assembly fallback: %s (%s).", "프롬프트 조립 fallback: %s(%s)."), event.PromptBlock, event.Status))
+		}
+		if event.PromptBlock != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Prompt assembly fallback: %s.", "프롬프트 조립 fallback: %s."), event.PromptBlock))
+		}
 	}
 	return formatProgressEventMessageWithContext(event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 }
@@ -184,7 +193,8 @@ func progressEventAllowsContextPrefix(event ProgressEvent) bool {
 		progressKindModelReroute,
 		progressKindModelVerification,
 		progressKindProviderRetry,
-		progressKindRuntimeIntervention:
+		progressKindRuntimeIntervention,
+		progressKindPromptAssembly:
 		return true
 	default:
 		return false

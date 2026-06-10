@@ -347,6 +347,13 @@ func normalizeRequestEvidence(items []RequestEvidence) []RequestEvidence {
 }
 
 func (e RequestEnvelope) RenderPromptSection() string {
+	if rendered, err := RenderRequestEnvelopePromptBlock(e); err == nil && strings.TrimSpace(rendered) != "" {
+		return rendered
+	}
+	return e.renderPromptSectionFallback()
+}
+
+func (e RequestEnvelope) renderPromptSectionFallback() string {
 	e.Normalize()
 	var b strings.Builder
 	b.WriteString("Request envelope:\n")

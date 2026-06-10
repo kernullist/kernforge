@@ -452,6 +452,7 @@ type ProgressEvent struct {
 	Status              string
 	RuntimeState        string
 	RuntimeIntervention string
+	PromptBlock         string
 	Elapsed             time.Duration
 }
 

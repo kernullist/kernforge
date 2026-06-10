@@ -326,7 +326,7 @@ func runtimeFinalReadinessGuidance(items []RuntimeIntervention) string {
 		}
 		switch normalizeRuntimeInterventionKind(item.Kind) {
 		case RuntimeInterventionVerificationUnresolved:
-			return "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."
+			return RenderVerificationUnresolvedPrompt(nil, item, "", false)
 		case RuntimeInterventionManualEditHandoff:
 			return "This request explicitly asks for an edit. Do not hand the patch back to the user unless an edit tool failed and you cite the exact failure."
 		case RuntimeInterventionFinalLooksPremature:
