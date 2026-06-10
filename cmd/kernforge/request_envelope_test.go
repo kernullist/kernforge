@@ -168,6 +168,79 @@ func TestRequestEnvelopeContinuePreservesMutableVerificationContext(t *testing.T
 	}
 }
 
+func TestAgentReplyRendersSessionAwareContinuationEnvelope(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:            "tx",
+		Goal:          "main.go 버그를 고쳐줘",
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "entry",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+	session.LastVerification = &VerificationReport{
+		Workspace:    root,
+		Trigger:      "test",
+		Mode:         VerificationAdaptive,
+		ChangedPaths: []string{"main.go"},
+		Steps: []VerificationStep{{
+			Label:  "go test",
+			Status: VerificationPassed,
+		}},
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			{Message: Message{Role: "assistant", Text: testModificationFinalAnswer("main.go", "passed", "none")}},
+		},
+	}
+	agent := &Agent{
+		Config:    DefaultConfig(root),
+		Client:    provider,
+		Tools:     requestEnvelopeTestRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "계속해"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if session.LastRequestEnvelope == nil || !session.LastRequestEnvelope.RequiresVerification || !session.LastRequestEnvelope.AllowsFileMutation {
+		t.Fatalf("expected stored continuation envelope to preserve mutable verification context, got %#v", session.LastRequestEnvelope)
+	}
+	if len(provider.requests) == 0 {
+		t.Fatalf("expected provider request")
+	}
+	found := false
+	for _, msg := range provider.requests[0].Messages {
+		if !msg.Internal {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		if strings.Contains(text, "Request envelope:") &&
+			strings.Contains(text, "- Allows file mutation: true.") &&
+			strings.Contains(text, "- Requires verification: true.") {
+			found = true
+		}
+		if strings.Contains(text, "Request envelope:") &&
+			strings.Contains(text, "- Requires verification: false.") {
+			t.Fatalf("internal continuation envelope rendered stale verification=false context: %q", text)
+		}
+	}
+	if !found {
+		t.Fatalf("expected session-aware continuation envelope in provider request, got %#v", provider.requests[0].Messages)
+	}
+}
+
 func TestAgentReplyStoresRequestEnvelopeAndSeparatesInternalContext(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

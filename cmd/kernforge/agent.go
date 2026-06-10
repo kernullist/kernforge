@@ -148,7 +148,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 			return reply, err
 		}
 	}
-	requestEnvelope := buildRequestEnvelope(userText)
+	requestEnvelope := a.latestRequestEnvelopeFor(userText)
 	a.rememberRequestEnvelope(requestEnvelope)
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
