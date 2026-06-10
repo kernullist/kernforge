@@ -53,6 +53,7 @@ type TurnRuntimeCounters struct {
 	RepeatedReadFilePathRecoveryCount int `json:"repeated_read_file_path_recovery_count,omitempty"`
 	ManualEditHandoffRetries          int `json:"manual_edit_handoff_retries,omitempty"`
 	CommentaryOnlyReplies             int `json:"commentary_only_replies,omitempty"`
+	LengthStopReplies                 int `json:"length_stop_replies,omitempty"`
 	FinalAnswerReviewRevisions        int `json:"final_answer_review_revisions,omitempty"`
 	RuntimeGateFinalAnswerRevisions   int `json:"runtime_gate_final_answer_revisions,omitempty"`
 }

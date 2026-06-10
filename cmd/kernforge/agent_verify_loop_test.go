@@ -5020,10 +5020,14 @@ func TestAgentDoesNotRetryEditAfterStoredPreFixVisibleReviewSummary(t *testing.T
 	}
 }
 
-func TestAgentReportsTokenLimitWhenModelStopsWithEmptyResponse(t *testing.T) {
+func TestAgentReportsTokenLimitAfterRepeatedLengthStop(t *testing.T) {
 	root := t.TempDir()
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
+			{
+				Message:    Message{Role: "assistant"},
+				StopReason: "length",
+			},
 			{
 				Message:    Message{Role: "assistant"},
 				StopReason: "length",
@@ -5051,6 +5055,9 @@ func TestAgentReportsTokenLimitWhenModelStopsWithEmptyResponse(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stop_reason=length") {
 		t.Fatalf("expected stop_reason in error, got %v", err)
+	}
+	if session.LastRecoveryDecision == nil || session.LastRecoveryDecision.Kind != RecoveryKindBlocked {
+		t.Fatalf("expected blocked recovery decision after repeated length stop, got %#v", session.LastRecoveryDecision)
 	}
 }
 
@@ -15443,9 +15450,10 @@ func TestAgentDropsStaleFinalAnswerCandidateBeforeNewUserTurn(t *testing.T) {
 	}
 }
 
-func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
+func TestRecoveryPolicyCommentaryOnlyDoesNotFinalize(t *testing.T) {
 	root := t.TempDir()
 	commentary := "검토 결과를 정리하는 중입니다."
+	finalReply := "현재 상태를 확인했고 추가 작업은 없습니다."
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			{
@@ -15453,6 +15461,13 @@ func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
 					Role:  "assistant",
 					Phase: messagePhaseCommentary,
 					Text:  commentary,
+				},
+				StopReason: "stop",
+			},
+			{
+				Message: Message{
+					Role: "assistant",
+					Text: finalReply,
 				},
 				StopReason: "stop",
 			},
@@ -15477,14 +15492,17 @@ func TestAgentAcceptsCommentaryOnlyAssistantMessageLikeCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if reply != commentary {
-		t.Fatalf("expected commentary reply to complete the turn, got %q", reply)
+	if reply != finalReply {
+		t.Fatalf("expected final reply after commentary recovery, got %q", reply)
 	}
-	if len(provider.requests) != 1 {
-		t.Fatalf("expected commentary-only reply to complete without another model turn, got %d requests", len(provider.requests))
+	if len(provider.requests) != 2 {
+		t.Fatalf("expected commentary-only reply to request another model turn, got %d requests", len(provider.requests))
 	}
-	if scriptedRequestsContainText(provider.requests, "commentary/progress") {
-		t.Fatalf("commentary-only completion should not inject synthetic commentary guidance: %#v", provider.requests[0].Messages)
+	if !scriptedRequestsContainText(provider.requests[1:2], "commentary/progress") {
+		t.Fatalf("expected commentary-only recovery guidance in second request, got %#v", provider.requests[1].Messages)
+	}
+	if session.LastRecoveryDecision == nil || session.LastRecoveryDecision.Kind != RecoveryKindCommentaryOnly {
+		t.Fatalf("expected commentary-only recovery decision, got %#v", session.LastRecoveryDecision)
 	}
 
 	foundCommentary := false

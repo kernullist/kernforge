@@ -53,6 +53,7 @@ type Agent struct {
 	EmitProgress                   func(string)
 	EmitProgressEvent              func(ProgressEvent)
 	lastEmittedText                string
+	turnMu                         sync.Mutex
 }
 
 var completeModelTurnRequestTimeout = configRequestTimeout
@@ -106,6 +107,14 @@ const (
 )
 
 func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImages []MessageImage) (string, error) {
+	if !a.turnMu.TryLock() {
+		item, err := a.EnqueueUserInputDuringExecution(userText, extraImages)
+		if err != nil {
+			return "", err
+		}
+		return formatQueuedTurnInputReply(a.Config, item), nil
+	}
+	defer a.turnMu.Unlock()
 	a.lastEmittedText = ""
 	a.discardStaleFinalAnswerCandidates()
 	startIndex := len(a.Session.Messages)
@@ -507,6 +516,7 @@ func (a *Agent) CompactWithTrigger(ctx context.Context, instructions string, tri
 	} else {
 		a.Session.Summary = strings.TrimSpace(a.Session.Summary) + "\n\n" + summary
 	}
+	a.resetProviderStateAfterHistoryMutation("compaction:" + firstNonEmptyTrimmed(reason, trigger))
 	afterMessages := len(a.Session.Messages)
 	afterChars := a.Session.ApproxChars()
 	afterSummaryChars := len(a.Session.Summary)
@@ -634,6 +644,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	serverModelWarningEmitted := false
 	modelVerificationEmitted := false
 	providerTurnState := &ProviderTurnState{}
+	providerStateRevision := 0
+	if a.Session != nil {
+		providerStateRevision = a.Session.ProviderStateRevision
+	}
 	attemptedEditTool := false
 	successfulEditTool := false
 	sawToolResultThisTurn := false
@@ -699,6 +713,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		turnRuntime.Transition(TurnRuntimeBlocked, reason)
 		a.Session.LastTurnRuntimeState = turnRuntime
 	}
+	syncProviderTurnStateAfterHistoryMutation := func() {
+		if a.Session == nil || a.Session.ProviderStateRevision == providerStateRevision {
+			return
+		}
+		providerTurnState.Reset(a.Session.LastProviderStateResetReason)
+		providerStateRevision = a.Session.ProviderStateRevision
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -710,6 +731,19 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					toolBudgetExtensions++
 					toolBudgetLimit += extraTurns
 					if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars/2 {
+						a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+							Kind:        RecoveryKindCompaction,
+							ApproxChars: a.Session.ApproxChars(),
+							Threshold:   a.Config.AutoCompactChars,
+							CanCompact:  true,
+						}))
+						a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
+							Trigger:     RecoveryKindCompaction,
+							ApproxChars: a.Session.ApproxChars(),
+							Threshold:   a.Config.AutoCompactChars / 2,
+							CanCompact:  true,
+							Reason:      "tool_budget_extension",
+						}))
 						if _, err := a.CompactWithTrigger(ctx, "Auto-compacted to preserve important context while extending the tool budget after sustained progress.", "auto", "tool_budget_extension"); err != nil {
 							return "", err
 						}
@@ -755,10 +789,24 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		turnCount++
 		lastIteration = turnCount
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
+			a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+				Kind:        RecoveryKindCompaction,
+				ApproxChars: a.Session.ApproxChars(),
+				Threshold:   a.Config.AutoCompactChars,
+				CanCompact:  true,
+			}))
+			a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
+				Trigger:     RecoveryKindCompaction,
+				ApproxChars: a.Session.ApproxChars(),
+				Threshold:   a.Config.AutoCompactChars,
+				CanCompact:  true,
+				Reason:      "context_growth",
+			}))
 			if _, err := a.CompactWithTrigger(ctx, "Auto-compacted due to context growth.", "auto", "context_growth"); err != nil {
 				return "", err
 			}
 		}
+		syncProviderTurnStateAfterHistoryMutation()
 		if err := a.syncTaskExecutorFocus(); err != nil {
 			return "", err
 		}
@@ -806,6 +854,31 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			resp, err = a.completeModelTurn(ctx, turnReq)
 		}
 		if err != nil {
+			decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+				ProviderError:   err,
+				Attempt:         configMaxRequestRetries(a.Config),
+				MaxAttempts:     configMaxRequestRetries(a.Config) + 1,
+				ApproxChars:     a.Session.ApproxChars(),
+				Threshold:       a.Config.AutoCompactChars,
+				CanCompact:      a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12,
+				CanPromoteModel: a.ModelRoutes != nil,
+			}))
+			if decision.Kind == RecoveryKindContextOverflow {
+				contextDecision := a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
+					Trigger:         RecoveryKindContextOverflow,
+					ApproxChars:     a.Session.ApproxChars(),
+					Threshold:       a.Config.AutoCompactChars,
+					CanCompact:      a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12,
+					CanPromoteModel: a.ModelRoutes != nil,
+					Reason:          "provider_context_overflow",
+				}))
+				if contextDecision.Action == ContextMaintenanceCompact {
+					if _, compactErr := a.CompactWithTrigger(ctx, "Auto-compacted after the provider reported context overflow.", "auto", "provider_context_overflow"); compactErr != nil {
+						return "", compactErr
+					}
+					continue
+				}
+			}
 			_ = a.Store.Save(a.Session)
 			if isToolUseUnsupportedError(err) {
 				return "", fmt.Errorf("selected model does not support tool use for inspect/edit requests: provider=%s model=%s", strings.TrimSpace(a.Session.Provider), strings.TrimSpace(a.Session.Model))
@@ -1196,23 +1269,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 				} else {
 					if reply != "" {
-						turnRuntime.Counters.CommentaryOnlyReplies = 0
 						if a.EmitAssistant != nil && reply != a.lastEmittedText {
 							a.EmitAssistant(reply)
 							a.lastEmittedText = reply
 						}
-						a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
-						a.finalizePatchTransactionOnReturn()
-						a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
-						a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
-						if err := a.Store.Save(a.Session); err != nil {
-							return "", err
-						}
-						markRuntimeCompleted("commentary_reply_accepted")
-						return reply, nil
 					}
 					turnRuntime.Counters.CommentaryOnlyReplies++
 					if turnRuntime.Counters.CommentaryOnlyReplies >= 3 {
+						a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+							Kind:        RecoveryKindCommentaryOnly,
+							Attempt:     turnRuntime.Counters.CommentaryOnlyReplies,
+							MaxAttempts: 3,
+						}))
 						recordRuntimeIntervention(RuntimeIntervention{
 							Kind:      RuntimeInterventionCommentaryOnly,
 							Reason:    "model produced repeated commentary-only assistant messages",
@@ -1222,7 +1290,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						markRuntimeBlocked("commentary_only")
 						return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
 					}
-					commentaryGuidance := "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message."
+					decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+						Kind:        RecoveryKindCommentaryOnly,
+						Attempt:     turnRuntime.Counters.CommentaryOnlyReplies,
+						MaxAttempts: 3,
+					}))
+					commentaryGuidance := firstNonEmptyTrimmed(decision.Guidance, "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message.")
 					recordRuntimeIntervention(RuntimeIntervention{
 						Kind:      RuntimeInterventionCommentaryOnly,
 						Reason:    "model produced commentary-only assistant message",
@@ -1547,18 +1620,66 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return reply, nil
 			}
 			if isTokenLimitStopReason(lastStopReason) {
+				turnRuntime.Counters.LengthStopReplies++
+				canCompactForLength := a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12
+				decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+					Kind:        RecoveryKindLengthStop,
+					StopReason:  lastStopReason,
+					Attempt:     turnRuntime.Counters.LengthStopReplies,
+					MaxAttempts: 2,
+					ApproxChars: a.Session.ApproxChars(),
+					Threshold:   a.Config.AutoCompactChars,
+					CanCompact:  canCompactForLength,
+				}))
+				contextDecision := a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
+					Trigger:     RecoveryKindLengthStop,
+					ApproxChars: a.Session.ApproxChars(),
+					Threshold:   a.Config.AutoCompactChars,
+					CanCompact:  canCompactForLength,
+					Reason:      "output_length_stop",
+				}))
 				recordRuntimeIntervention(RuntimeIntervention{
 					Kind:       RuntimeInterventionLengthStop,
 					Reason:     "model stopped before producing a usable response due to token limit",
-					Guidance:   RenderLengthStopContinuePrompt(lastStopReason),
+					Guidance:   firstNonEmptyTrimmed(decision.Guidance, RenderLengthStopContinuePrompt(lastStopReason)),
 					StopReason: lastStopReason,
+					Count:      turnRuntime.Counters.LengthStopReplies,
 					Iteration:  turnCount,
+				})
+				if turnRuntime.Counters.LengthStopReplies < 2 {
+					if contextDecision.Action == ContextMaintenanceCompact {
+						if _, err := a.CompactWithTrigger(ctx, "Auto-compacted before continuing after an output length stop.", "auto", "length_stop"); err != nil {
+							return "", err
+						}
+					}
+					a.Session.AddMessage(internalUserMessage(firstNonEmptyTrimmed(decision.Guidance, RenderLengthStopContinuePrompt(lastStopReason))))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				a.recordRecoveryDecision(RecoveryDecision{
+					Kind:        RecoveryKindBlocked,
+					Action:      RecoveryActionBlock,
+					Reason:      "model repeatedly stopped at output length limit",
+					Guidance:    "The model repeatedly stopped before producing a usable response. Reduce output scope, compact manually, or switch to a model with a larger output budget.",
+					StopReason:  lastStopReason,
+					Attempt:     turnRuntime.Counters.LengthStopReplies,
+					MaxAttempts: 2,
+					CreatedAt:   time.Now(),
 				})
 				markRuntimeBlocked("length_stop")
 				return "", fmt.Errorf("model stopped before producing a usable response due to token limit (stop_reason=%s)", lastStopReason)
 			}
 			turnRuntime.Counters.EmptyFinalReplies++
+			a.cleanupOrphanToolMessagesAfterRecovery("empty_stop_orphan_tool_cleanup")
 			if turnRuntime.Counters.EmptyFinalReplies >= 2 {
+				a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+					Kind:        RecoveryKindEmptyStop,
+					StopReason:  lastStopReason,
+					Attempt:     turnRuntime.Counters.EmptyFinalReplies,
+					MaxAttempts: 2,
+				}))
 				recordRuntimeIntervention(RuntimeIntervention{
 					Kind:       RuntimeInterventionEmptyStop,
 					Reason:     "model returned repeated empty responses",
@@ -1570,6 +1691,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
 			}
 			emptyGuidance := RenderEmptyStopRetryPrompt(readOnlyAnalysis, lastStopReason, turnRuntime.Counters.EmptyFinalReplies)
+			decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
+				Kind:        RecoveryKindEmptyStop,
+				StopReason:  lastStopReason,
+				Attempt:     turnRuntime.Counters.EmptyFinalReplies,
+				MaxAttempts: 2,
+			}))
+			if strings.TrimSpace(decision.Guidance) != "" {
+				emptyGuidance = strings.TrimSpace(emptyGuidance + "\n\nRecovery decision: " + decision.Guidance)
+			}
 			recordRuntimeIntervention(RuntimeIntervention{
 				Kind:       RuntimeInterventionEmptyStop,
 				Reason:     "model returned an empty response",
@@ -2638,6 +2768,7 @@ func (a *Agent) discardRecentFinalAnswerCandidate(reply string) bool {
 		return false
 	}
 	a.Session.Messages = append(a.Session.Messages[:index], a.Session.Messages[index+1:]...)
+	a.resetProviderStateAfterHistoryMutation("discard_final_answer_candidate")
 	return true
 }
 
@@ -2660,8 +2791,54 @@ func (a *Agent) discardStaleFinalAnswerCandidates() bool {
 	}
 	if changed {
 		a.Session.Messages = kept
+		a.resetProviderStateAfterHistoryMutation("discard_stale_final_answer_candidates")
 	}
 	return changed
+}
+
+func (a *Agent) cleanupOrphanToolMessagesAfterRecovery(reason string) bool {
+	if a == nil || a.Session == nil {
+		return false
+	}
+	cleaned, changed := cleanupOrphanToolMessages(a.Session.Messages)
+	if !changed {
+		return false
+	}
+	a.Session.Messages = cleaned
+	a.resetProviderStateAfterHistoryMutation(reason)
+	return true
+}
+
+func cleanupOrphanToolMessages(messages []Message) ([]Message, bool) {
+	if len(messages) == 0 {
+		return messages, false
+	}
+	out := make([]Message, 0, len(messages))
+	expected := map[string]bool{}
+	changed := false
+	for _, msg := range messages {
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			toolCallID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
+			if toolCallID == "" || !expected[toolCallID] {
+				changed = true
+				continue
+			}
+			out = append(out, msg)
+			delete(expected, toolCallID)
+			continue
+		}
+		expected = map[string]bool{}
+		out = append(out, msg)
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "assistant") && len(msg.ToolCalls) > 0 {
+			for _, call := range msg.ToolCalls {
+				callID := firstNonEmptyTrimmed(call.ID, call.Name)
+				if callID != "" {
+					expected[callID] = true
+				}
+			}
+		}
+	}
+	return out, changed
 }
 
 func (a *Agent) findRecentFinalAnswerCandidate(reply string) int {

@@ -332,8 +332,10 @@ const (
 )
 
 type ProviderTurnState struct {
-	mu    sync.Mutex
-	value string
+	mu          sync.Mutex
+	value       string
+	resetReason string
+	resetCount  int
 }
 
 func (s *ProviderTurnState) Value() string {
@@ -358,6 +360,35 @@ func (s *ProviderTurnState) Capture(value string) {
 	if strings.TrimSpace(s.value) == "" {
 		s.value = trimmed
 	}
+}
+
+func (s *ProviderTurnState) Reset(reason string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value = ""
+	s.resetReason = strings.TrimSpace(reason)
+	s.resetCount++
+}
+
+func (s *ProviderTurnState) ResetReason() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetReason
+}
+
+func (s *ProviderTurnState) ResetCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resetCount
 }
 
 func applyProviderTurnStateHeader(httpReq *http.Request, state *ProviderTurnState) {

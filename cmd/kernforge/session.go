@@ -74,6 +74,12 @@ type Session struct {
 	ConversationState               *ConversationState               `json:"conversation_state,omitempty"`
 	LastRequestEnvelope             *RequestEnvelope                 `json:"last_request_envelope,omitempty"`
 	LastTurnRuntimeState            *TurnRuntimeState                `json:"last_turn_runtime_state,omitempty"`
+	TurnQueue                       []TurnQueueItem                  `json:"turn_queue,omitempty"`
+	LastRecoveryDecision            *RecoveryDecision                `json:"last_recovery_decision,omitempty"`
+	LastContextMaintenanceDecision  *ContextMaintenanceDecision      `json:"last_context_maintenance_decision,omitempty"`
+	ProviderStateRevision           int                              `json:"provider_state_revision,omitempty"`
+	LastProviderStateResetReason    string                           `json:"last_provider_state_reset_reason,omitempty"`
+	LastProviderStateResetAt        time.Time                        `json:"last_provider_state_reset_at,omitempty"`
 	SuggestionMemory                *SuggestionMemory                `json:"suggestion_memory,omitempty"`
 	Automations                     []SessionAutomation              `json:"automations,omitempty"`
 	ActiveGoalID                    string                           `json:"active_goal_id,omitempty"`
@@ -103,6 +109,30 @@ func (s *Session) AddMessage(msg Message) {
 	msg = normalizeSessionMessage(msg)
 	s.Messages = append(s.Messages, msg)
 	s.UpdatedAt = time.Now()
+}
+
+func (s *Session) ResetProviderState(reason string) {
+	s.resetProviderState(reason, true)
+}
+
+func (s *Session) ResetProviderStateForReload(reason string) {
+	s.resetProviderState(reason, false)
+}
+
+func (s *Session) resetProviderState(reason string, updateUpdatedAt bool) {
+	if s == nil {
+		return
+	}
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "history_mutation"
+	}
+	s.ProviderStateRevision++
+	s.LastProviderStateResetReason = reason
+	s.LastProviderStateResetAt = time.Now()
+	if updateUpdatedAt {
+		s.UpdatedAt = time.Now()
+	}
 }
 
 func normalizeSessionMessage(msg Message) Message {
@@ -665,6 +695,7 @@ func loadSessionFile(path string) (*Session, []byte, error) {
 	sess.normalizeSuggestionMemory()
 	sess.normalizeAutomations()
 	sess.normalizeGoals()
+	sess.ResetProviderStateForReload("session_load")
 	return &sess, data, nil
 }
 
