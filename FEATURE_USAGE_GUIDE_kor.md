@@ -3,7 +3,7 @@
 이 문서는 현재 Kernforge에 구현된 기능을 실제로 어떤 상황에서 어떻게 쓰면 좋은지, 그리고 각 명령이 어떤 흐름 안에서 가장 빛나는지를 설명하는 상세 운영 문서이다.
 
 기준 시점:
-- 코드베이스 기준: 2026-06-05
+- 코드베이스 기준: 2026-06-10
 
 대상 사용자:
 - Windows security 엔지니어
@@ -89,7 +89,7 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 
 현재 동작:
 1. `/status`는 현재 세션과 런타임 상태를 보여준다. 상단에는 prompt footer와 같은 compact operator summary가 먼저 나온다. 여기에는 cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warning, route error가 들어간다. 그 아래에 세션 id, approval 상태, selection, verification, MCP 카운트, runtime gate ledger 상세가 유지된다. final answer나 write-side action 전에 `runtime_gate`, `review_freshness`, blocker/warning count, `next_command`를 보면 review/verification/completion audit 수리가 필요한지 판단할 수 있다.
-2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값이 여기에 들어간다.
+2. `/config`는 현재 적용된 설정값을 보여준다. 예를 들어 provider 기본값, token limit, locale, hook, verification 기본값, request runtime migration 설정이 여기에 들어간다.
 3. `/provider status`는 active provider, 정규화된 endpoint, API key 존재 여부, provider별 budget visibility를 보여준다.
 4. OpenRouter에서는 `/provider status`가 live lookup으로 key-level `limit_remaining`, `usage`를 조회하고 management key면 account credits도 함께 보여준다.
 5. DeepSeek에서는 API key가 설정되어 있으면 `/provider status`가 live `/user/balance`를 조회하고 provider의 dynamic concurrency 안내를 함께 보여준다.
@@ -113,6 +113,24 @@ Kernforge는 단순히 "질문하고 답받는 코딩 CLI"로 써도 되지만, 
 1. 분석, 설명, 진단, 검토, 문서화 요청은 동시에 수정까지 명시하지 않는 한 기본적으로 read-only investigation 모드로 처리된다.
 2. 명시적으로 수정까지 요청한 프롬프트는 edit tool을 유지하고, 모델이 패치를 사용자에게 넘기려 하면 Kernforge가 한 번 더 직접 수정 도구 사용을 유도한다.
 3. git stage/commit/push/PR 생성은 사용자가 해당 git 작업을 명시적으로 요청하지 않으면 막힌다.
+4. 각 turn은 모델 호출 전에 `RequestEnvelope`로 정규화된다. 여기에는 primary request class, file mutation/git mutation/web research/verification 허용 여부, draft-only goal prompt 여부, document authoring 여부가 들어간다.
+5. 모델에게 노출되는 tool은 이 envelope에서 계산된다. review-only와 plan-only는 read tool만 유지하고 edit/git tool을 숨긴다. explicit edit은 edit tool을 노출하고, latest/current research는 web research tool을 열 수 있으며, explicit git은 git tool을 열되 일반 파일 수정 권한까지 의미하지는 않는다.
+6. tool call은 runtime boundary에서 정규화/검증된다. malformed, incomplete, unsupported, forbidden, skipped, aborted call은 다음 model turn 전에 synthetic `NOT_EXECUTED` 또는 error result로 바뀌므로 provider replay와 recovery prompt가 깨지지 않는다.
+7. draft-only goal prompt 요청은 사용자가 prompt를 저장하거나 `/goal`에 넘기거나 실행을 명시하기 전까지 non-mutating 요청으로 유지된다. document artifact 요청은 요청한 artifact 작성은 허용하되, 불필요한 code-review loop 대신 artifact-quality와 final-answer gate로 닫는다.
+8. compaction 또는 history rewrite 뒤의 "계속해" 같은 continuation turn은 현재 mutable patch context와 verification requirement를 유지한다. provider replay 전에는 orphan tool result를 제거하고 빠진 tool-call result를 synthetic result로 채운다.
+9. 선택적 request runtime migration 설정은 다음 형태다.
+
+```json
+{
+  "request_runtime": {
+    "mode": "disabled",
+    "enabled_classes": ["review_only", "plan_only", "document_authoring", "explicit_edit", "git", "research", "default"]
+  }
+}
+```
+
+`disabled`는 기존 동작, `shadow`는 실제 실행은 기존 동작으로 유지하면서 legacy/v2 결정을 비교, `enabled`는 지정한 class에 v2 결정을 적용한다. shadow divergence log는 `.kernforge/request_runtime_shadow` 아래에만 저장되며, request class, exposed/disabled tool, intervention kind, final-gate 차이만 담고 전체 prompt나 provider transcript는 담지 않는다.
+10. request scenario replay matrix는 `cmd/kernforge/testdata/request_scenarios` 아래에 있다. Korean review/edit, plan-only, draft-only goal prompt, document authoring, latest research, explicit/non-explicit git, empty stop, orphan tool result, repeated read loop, generated-doc final-only, verification unavailable, compaction/history rewrite를 대표 케이스로 검증한다.
 
 ### Self-Driving Work Loop
 

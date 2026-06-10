@@ -12,7 +12,7 @@ func TestRequestScenarioReplayMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRequestScenarios: %v", err)
 	}
-	if len(scenarios) < 13 {
+	if len(scenarios) < 14 {
 		t.Fatalf("expected minimum scenario set, got %d", len(scenarios))
 	}
 	registry := requestScenarioReplayRegistry()
@@ -45,6 +45,7 @@ func TestRequestScenarioReplayMatrix(t *testing.T) {
 		"repeated_read_loop",
 		"generated_doc_final_only",
 		"verification_unavailable",
+		"compaction_history_rewrite",
 	} {
 		if !seen[name] {
 			t.Fatalf("required scenario %q was not loaded", name)

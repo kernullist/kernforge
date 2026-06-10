@@ -139,6 +139,35 @@ func TestRequestEnvelopeKeepsDraftGoalPromptOutOfExecution(t *testing.T) {
 	}
 }
 
+func TestRequestEnvelopeContinuePreservesMutableVerificationContext(t *testing.T) {
+	agent := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry())
+	agent.Session.ActivePatchTransaction = &PatchTransaction{
+		ID:            "tx",
+		Goal:          "main.go 버그를 고쳐줘",
+		WorkspaceRoot: agent.Workspace.Root,
+		Status:        patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "entry",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "modify",
+			}},
+		}},
+	}
+	envelope := agent.latestRequestEnvelopeFor("계속해")
+	if !envelope.AllowsFileMutation {
+		t.Fatalf("continuation should preserve mutable context, got %#v", envelope)
+	}
+	if !envelope.RequiresVerification {
+		t.Fatalf("continuation with mutable context should preserve verification requirement, got %#v", envelope)
+	}
+	if envelope.ReadOnlyAnalysis {
+		t.Fatalf("continuation with mutable context should not stay read-only, got %#v", envelope)
+	}
+}
+
 func TestAgentReplyStoresRequestEnvelopeAndSeparatesInternalContext(t *testing.T) {
 	root := t.TempDir()
 	store := NewSessionStore(filepath.Join(root, "sessions"))

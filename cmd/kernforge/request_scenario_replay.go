@@ -27,6 +27,7 @@ type RequestScenarioSessionState struct {
 	UnresolvedVerification         bool      `json:"unresolved_verification,omitempty"`
 	GeneratedDocumentHarnessOwnsIt bool      `json:"generated_document_harness_owns_it,omitempty"`
 	OrphanToolResult               bool      `json:"orphan_tool_result,omitempty"`
+	CompactionHistoryRewrite       bool      `json:"compaction_history_rewrite,omitempty"`
 }
 
 type RequestScenarioProviderOutput struct {
@@ -166,6 +167,10 @@ func requestScenarioSession(root string, scenario RequestScenario) *Session {
 	} else {
 		session.Messages = []Message{{Role: "user", Text: scenario.UserText}}
 	}
+	if scenario.SessionState.CompactionHistoryRewrite {
+		session.Messages = ValidateConversationToolPairs(session.Messages)
+		session.Messages = compactDropOrphanToolMessages(session.Messages)
+	}
 	if len(scenario.SessionState.ChangedFiles) > 0 {
 		session.ActivePatchTransaction = &PatchTransaction{
 			ID:            "scenario-patch",
@@ -268,7 +273,45 @@ func applyRequestScenarioRuntimeSignals(turnRuntime *TurnRuntimeState, envelope 
 	if scenario.SessionState.OrphanToolResult {
 		extra = append(extra, "orphan_tool_result")
 	}
+	if scenario.SessionState.CompactionHistoryRewrite {
+		if requestScenarioHistoryRewriteSanitized(session.Messages) {
+			extra = append(extra, "history_rewrite_sanitized")
+		} else {
+			extra = append(extra, "history_rewrite_unsanitized")
+		}
+	}
 	return extra
+}
+
+func requestScenarioHistoryRewriteSanitized(messages []Message) bool {
+	expected := map[string]bool{}
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		switch strings.ToLower(strings.TrimSpace(msg.Role)) {
+		case "assistant":
+			for _, call := range msg.ToolCalls {
+				callID := firstNonEmptyTrimmed(call.ID, call.Name)
+				if callID != "" {
+					expected[callID] = true
+				}
+			}
+		case "tool":
+			callID := firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName)
+			if callID == "" || !expected[callID] {
+				return false
+			}
+			delete(expected, callID)
+		case "user", "system", "developer":
+			if len(expected) > 0 {
+				return false
+			}
+		default:
+			if len(expected) > 0 {
+				return false
+			}
+		}
+	}
+	return len(expected) == 0
 }
 
 func requestScenarioInterventionNames(turnRuntime *TurnRuntimeState) []string {

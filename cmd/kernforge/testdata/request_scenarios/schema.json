@@ -22,7 +22,33 @@
         "type": "string"
       },
       "session_state": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "messages": {
+            "type": "array"
+          },
+          "changed_files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "verification_status": {
+            "type": "string"
+          },
+          "unresolved_verification": {
+            "type": "boolean"
+          },
+          "generated_document_harness_owns_it": {
+            "type": "boolean"
+          },
+          "orphan_tool_result": {
+            "type": "boolean"
+          },
+          "compaction_history_rewrite": {
+            "type": "boolean"
+          }
+        }
       },
       "provider_scripted_outputs": {
         "type": "array"

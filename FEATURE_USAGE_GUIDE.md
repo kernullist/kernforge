@@ -3,7 +3,7 @@
 This document explains how to use the currently implemented Kernforge features in real engineering workflows, with concrete examples and recommended command sequences.
 
 Reference point:
-- Codebase snapshot: 2026-06-05
+- Codebase snapshot: 2026-06-10
 
 Intended readers:
 - Windows security engineers
@@ -92,7 +92,7 @@ Useful commands:
 
 Current behavior:
 1. `/status` shows session and runtime state. It starts with the same compact operator summary used by the prompt footer: cwd, provider, gate, permission profile, progress display, MCP, skills, verification, memory, warnings, and route errors. Detailed session id, approvals, selection state, verification state, MCP counts, and runtime gate ledger remain below. Use `runtime_gate`, `review_freshness`, blocker/warning counts, and `next_command` to decide whether review, verification, or completion audit needs repair before final answers or write-side actions.
-2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, and verification defaults.
+2. `/config` shows effective settings such as provider defaults, token limits, locale behavior, hook settings, verification defaults, and request-runtime migration settings.
 3. `/provider status` shows the active provider, normalized endpoint, API key presence, and provider-specific budget visibility.
 4. For OpenRouter, `/provider status` performs a live lookup of key-level `limit_remaining` and `usage`, and it also shows account credits when the key is a management key.
 5. For DeepSeek, `/provider status` performs a live `/user/balance` lookup when an API key is configured and shows the provider's dynamic concurrency guidance.
@@ -116,6 +116,24 @@ Current behavior:
 1. Requests that ask to analyze, explain, diagnose, review, or document default to read-only investigation mode unless they also explicitly ask for a fix.
 2. Requests that explicitly ask to fix code keep edit tools available and Kernforge nudges the model back toward direct tool use if it tries to hand the patch back to the user.
 3. Git staging, commit, push, and PR creation are blocked unless the user explicitly asked for that git action.
+4. Each turn gets a `RequestEnvelope` before the model call. It records the primary request class, whether file mutation, git mutation, web research, and verification are allowed, and whether the request is a draft-only goal prompt or document-authoring turn.
+5. Tool exposure is derived from that envelope. Review-only and plan-only turns keep read tools but hide edit and git tools; explicit edit turns expose edit tools; latest/current research turns can expose web-research tools; explicit git turns expose git tools without implying normal file edits.
+6. Tool calls are normalized and validated at the runtime boundary. Malformed, incomplete, unsupported, forbidden, skipped, or aborted calls are converted into synthetic `NOT_EXECUTED`/error results before the next model turn, so provider replay and recovery prompts remain valid.
+7. Draft-only goal prompt requests stay non-mutating unless the user saves the prompt, passes it to `/goal`, or explicitly asks to run it. Document-artifact requests are allowed to write the requested artifact and use artifact-quality/final-answer gates instead of being forced through unrelated code-review loops.
+8. Continuation turns after compaction or history rewrite preserve the current mutable patch context and verification requirement, while orphan tool results are dropped and missing tool-call results are synthesized before provider replay.
+9. The optional request runtime migration config is:
+
+```json
+{
+  "request_runtime": {
+    "mode": "disabled",
+    "enabled_classes": ["review_only", "plan_only", "document_authoring", "explicit_edit", "git", "research", "default"]
+  }
+}
+```
+
+Use `disabled` for legacy behavior, `shadow` to compare legacy and v2 decisions while still executing legacy behavior, and `enabled` to enforce v2 decisions for the listed classes. Shadow divergence logs are sanitized and constrained to `.kernforge/request_runtime_shadow`; they contain request class, exposed/disabled tools, intervention kinds, and final-gate differences, not full prompts or provider transcripts.
+10. The request scenario replay matrix lives under `cmd/kernforge/testdata/request_scenarios` and covers Korean review/edit requests, plan-only, draft-only goal prompts, document authoring, latest research, explicit/non-explicit git, empty stops, orphan tool results, repeated read loops, generated-doc final-only, unavailable verification, and compaction/history rewrite.
 
 ### Self-Driving Work Loop
 

@@ -459,6 +459,7 @@ func (a *Agent) applySessionRequestEnvelopeContext(envelope *RequestEnvelope) {
 	contract := a.Session.AcceptanceContract
 	if requestEnvelopeContractAllowsFileMutation(contract) {
 		envelope.AllowsFileMutation = true
+		envelope.RequiresVerification = true
 		envelope.ReadOnlyAnalysis = false
 		envelope.Boundary = ActionBoundaryMayEdit
 		envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)
@@ -474,6 +475,7 @@ func (a *Agent) applySessionRequestEnvelopeContext(envelope *RequestEnvelope) {
 	}
 	if requestEnvelopeSessionHasMutablePatchContext(a.Session) {
 		envelope.AllowsFileMutation = true
+		envelope.RequiresVerification = true
 		envelope.ReadOnlyAnalysis = false
 		envelope.Boundary = ActionBoundaryMayEdit
 		envelope.Classes = appendRequestClass(envelope.Classes, RequestClassEdit)

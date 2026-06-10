@@ -104,9 +104,9 @@
   },
   {
     "name": "document_authoring",
-    "user_text": "분석 계획 문서를 docs/request.md로 작성해줘",
+    "user_text": "분석 계획 문서를 .kernforge/plans/request.md로 작성해줘",
     "session_state": {
-      "changed_files": ["docs/request.md"],
+      "changed_files": [".kernforge/plans/request.md"],
       "generated_document_harness_owns_it": true
     },
     "provider_scripted_outputs": [
@@ -361,6 +361,60 @@
     "expected_final_gate": {
       "state": "NeedsVerification",
       "ready": false
+    }
+  },
+  {
+    "name": "compaction_history_rewrite",
+    "user_text": "계속해",
+    "session_state": {
+      "changed_files": ["main.go"],
+      "verification_status": "passed",
+      "compaction_history_rewrite": true,
+      "messages": [
+        {
+          "role": "user",
+          "text": "main.go 버그를 고쳐줘"
+        },
+        {
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "id": "call_write",
+              "name": "write_file",
+              "arguments": "{\"path\":\"main.go\",\"content\":\"package main\"}"
+            }
+          ]
+        },
+        {
+          "role": "user",
+          "text": "continue after compaction"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "orphan",
+          "tool_name": "write_file",
+          "text": "late orphan result"
+        }
+      ]
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "이전 수정 맥락을 이어서 정리했습니다. Verification: passed."
+      }
+    ],
+    "expected_request_envelope": {
+      "allows_file_mutation": true,
+      "requires_verification": true,
+      "read_only_analysis": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit", "git_push"]
+    },
+    "expected_interventions": ["history_rewrite_sanitized"],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
     }
   }
 ]
