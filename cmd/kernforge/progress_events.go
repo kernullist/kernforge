@@ -24,6 +24,7 @@ const (
 	progressKindProviderRetry        = "provider_retry"
 	progressKindMemoryContext        = "memory_context"
 	progressKindAnalysisContext      = "analysis_context"
+	progressKindRuntimeIntervention  = "runtime_intervention"
 )
 
 func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
@@ -41,6 +42,8 @@ func emitProgressEvent(callback func(ProgressEvent), event ProgressEvent) {
 	event.Stage = strings.TrimSpace(event.Stage)
 	event.Shard = strings.TrimSpace(event.Shard)
 	event.Status = strings.TrimSpace(event.Status)
+	event.RuntimeState = strings.TrimSpace(event.RuntimeState)
+	event.RuntimeIntervention = strings.TrimSpace(event.RuntimeIntervention)
 	callback(event)
 }
 
@@ -121,6 +124,13 @@ func formatProgressEventMessage(cfg Config, event ProgressEvent) string {
 		if event.ToolName != "" {
 			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Tool failed: %s.", "도구 실패: %s."), event.ToolName))
 		}
+	case progressKindRuntimeIntervention:
+		if event.RuntimeIntervention != "" && event.Status != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Runtime intervention: %s (%s).", "런타임 개입: %s(%s)."), event.RuntimeIntervention, event.Status))
+		}
+		if event.RuntimeIntervention != "" {
+			return formatProgressEventMessageWithContext(event, fmt.Sprintf(localizedText(cfg, "Runtime intervention: %s.", "런타임 개입: %s."), event.RuntimeIntervention))
+		}
 	}
 	return formatProgressEventMessageWithContext(event, humanizeProgressMessage(cfg, strings.TrimSpace(event.Message)))
 }
@@ -173,7 +183,8 @@ func progressEventAllowsContextPrefix(event ProgressEvent) bool {
 		progressKindModelStreamToolReady,
 		progressKindModelReroute,
 		progressKindModelVerification,
-		progressKindProviderRetry:
+		progressKindProviderRetry,
+		progressKindRuntimeIntervention:
 		return true
 	default:
 		return false

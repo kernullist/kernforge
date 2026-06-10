@@ -584,9 +584,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		return "", err
 	}
 	localCodeToolPolicyForTurn := !latestUserExplicitWebResearch && shouldUseLocalCodeToolPolicy(a.Session)
-	emptyFinalReplies := 0
+	turnRuntime := NewTurnRuntimeState(requestEnvelope)
+	a.Session.LastTurnRuntimeState = turnRuntime
 	unresolvedVerification := false
-	finalAnswerNudges := 0
 	patchFormatRetries := 0
 	lastPatchFormatFailureSignature := ""
 	invalidToolArgsRetries := 0
@@ -607,14 +607,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastToolErrorCount := 0
 	lastToolCallSignature := ""
 	lastToolCallSignatureCount := 0
-	repeatedToolCallNudges := 0
-	repeatedToolCallRecoveryTurns := 0
 	lastToolCallSummary := ""
 	lastReadFilePath := ""
 	lastReadFilePathTurns := 0
-	repeatedReadFilePathNudges := 0
-	repeatedCachedReadFileNudges := 0
-	repeatedReadFilePathRecoveryCount := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -622,18 +617,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	postEditFinalAnswerNudges := 0
 	autoVerifyInfraFailureCount := 0
 	autoVerifyDisablePrompted := false
-	manualEditHandoffRetries := 0
 	internalToolTranscriptFailureReplyRetries := 0
 	toolAvailabilityBlameReplyRetries := 0
 	localCodeToolAvailabilityBlameRetries := 0
 	abruptReplyRetries := 0
 	rawReviewResultReplyRetries := 0
-	commentaryOnlyReplies := 0
-	finalAnswerReviewRevisions := 0
 	stopHookRevisions := 0
 	stopHookActive := false
 	finalHarnessRevisions := 0
-	runtimeGateFinalAnswerRevisions := 0
 	runtimeGateGitWriteNudges := 0
 	postChangeReviewRevisions := 0
 	postChangeReviewExhaustedNudge := false
@@ -684,6 +675,30 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		disabledTools["write_file"] = true
 		disabledTools["replace_in_file"] = true
 	}
+	syncRuntimeFlags := func() {
+		turnRuntime.UnresolvedVerification = unresolvedVerification
+		turnRuntime.FinalAnswerOnlyCorrection = finalAnswerOnlyCorrection
+		a.Session.LastTurnRuntimeState = turnRuntime
+	}
+	recordRuntimeIntervention := func(item RuntimeIntervention) RuntimeIntervention {
+		item = turnRuntime.RecordIntervention(item)
+		syncRuntimeFlags()
+		a.emitRuntimeInterventionProgress(turnRuntime, item)
+		return item
+	}
+	addRedirectGuidance := func(calls []ToolCall, reason string, guidance string) error {
+		intervention, err := a.addToolCallRedirectGuidance(calls, reason, guidance)
+		recordRuntimeIntervention(intervention)
+		return err
+	}
+	markRuntimeCompleted := func(reason string) {
+		turnRuntime.Transition(TurnRuntimeCompleted, reason)
+		a.Session.LastTurnRuntimeState = turnRuntime
+	}
+	markRuntimeBlocked := func(reason string) {
+		turnRuntime.Transition(TurnRuntimeBlocked, reason)
+		a.Session.LastTurnRuntimeState = turnRuntime
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -731,6 +746,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			lastRecentToolTurns = recoveryRecent
 			continue
 		}
+		if turnRuntime.State == TurnRuntimeNeedRecoveryModelTurn {
+			turnRuntime.MarkRecoveryModelTurnStarted()
+		} else {
+			turnRuntime.Transition(TurnRuntimeNeedModelTurn, "model_turn")
+		}
+		syncRuntimeFlags()
 		turnCount++
 		lastIteration = turnCount
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
@@ -845,9 +866,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 		}
 		if len(resp.Message.ToolCalls) > 0 {
-			commentaryOnlyReplies = 0
+			turnRuntime.Transition(TurnRuntimeNeedToolExecution, "assistant_tool_calls")
+			a.Session.LastTurnRuntimeState = turnRuntime
+			turnRuntime.Counters.CommentaryOnlyReplies = 0
 			if finalAnswerOnlyCorrection {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: pre-final coding harness requires a final-answer-only correction; no tools are available for this retry.",
 					finalAnswerOnlyHarnessToolBlockedGuidance(a.Session.LastCodingHarnessReport),
@@ -861,6 +884,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if item.Kind == ToolContractSyntheticInvalid && toolShouldBeDisabledAfterInvalidJSON(item.Call.Name) {
 						disabledTools[strings.TrimSpace(item.Call.Name)] = true
 					}
+					if item.Kind == ToolContractSyntheticIncomplete {
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:       RuntimeInterventionLengthStop,
+							Reason:     item.Reason,
+							Guidance:   item.Guidance,
+							ToolCalls:  []ToolCall{item.Call},
+							StopReason: resp.StopReason,
+						})
+					}
 				}
 				if err := a.addToolContractSyntheticResults(resp.Message.ToolCalls, toolContractSyntheticResults); err != nil {
 					return "", err
@@ -868,7 +900,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if !explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: git write actions require an explicit user request; continue without staging, committing, pushing, or opening a PR.",
 					"Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
@@ -884,7 +916,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if runtimeGateGitWriteNudges > 3 {
 						return "", fmt.Errorf("runtime gate still blocks git write after repeated attempts")
 					}
-					if err := a.addToolCallRedirectGuidance(
+					if err := addRedirectGuidance(
 						resp.Message.ToolCalls,
 						"NOT_EXECUTED: runtime gate blocked this git write action; follow the gate feedback before retrying.",
 						feedback,
@@ -895,7 +927,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			}
 			if replyBlamesInternalToolTranscriptRecovery(resp.Message.Text) {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: assistant text blamed internal transcript recovery; retry using the next guidance instead of executing this batch.",
 					internalToolTranscriptFailureGuidance(explicitEditRequest),
@@ -905,7 +937,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if toolCallsIncludeImplicitShellApplyPatchBody(resp.Message.ToolCalls) {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: apply_patch verification failed: raw patch body was provided to run_shell without an explicit apply_patch invocation.",
 					"The previous shell command was a raw `*** Begin Patch` / `*** End Patch` body. Codex treats this as an implicit apply_patch invocation and does not run it as shell. Re-issue the edit with the `apply_patch` tool, or use a supported `apply_patch <<'PATCH'` heredoc command.",
@@ -917,6 +949,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if reply, finalized, err := a.maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(latestUser, resp.Message.ToolCalls, resp.Message.Text, attemptedEditTool, unresolvedVerification); err != nil {
 				return "", err
 			} else if finalized {
+				markRuntimeCompleted("generated_document_tool_preamble_finalized")
 				return reply, nil
 			}
 			if a.shouldBlockGeneratedDocumentArtifactValidationToolCalls(latestUser, resp.Message.ToolCalls) {
@@ -926,9 +959,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if err != nil {
 						return "", err
 					}
+					markRuntimeCompleted("generated_document_blocked_tool_finalized")
 					return reply, nil
 				}
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					reason,
 					generatedDocumentArtifactValidationToolGuidance(),
@@ -944,7 +978,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if a.EmitProgress != nil {
 					a.EmitProgress(formatBlockedLocalCodeWebResearchProgress(a.Config, resp.Message.ToolCalls))
 				}
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: external research tools are blocked for this local code repair turn unless the user explicitly asks for external research.",
 					localCodeWebResearchBlockGuidance(a.Config, a.Session),
@@ -966,7 +1000,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					guidance += "\n\nRelevant web/research capabilities:\n" + researchCatalog
 				}
 				guidance += "\n\nRecommended flow:\n1. Break the topic into a few focused search facets.\n2. Use MCP web/search/browser tools to gather multiple current sources.\n3. Compare recency and source authority.\n4. Then inspect local files or write the requested document."
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: local tools were deferred until required external research is gathered.",
 					guidance,
@@ -976,7 +1010,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if block, targetPath, parentPath := shouldBlockUnconfirmedDocumentReadToolCalls(resp.Message.ToolCalls, a.Session); block {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: document read was deferred until the target path is confirmed by listing the parent directory.",
 					fmt.Sprintf("This request is document/report authoring work. Do not guess that generated files already exist and call read_file on them immediately. First use list_files on the parent directory %s to confirm whether %s actually exists. If the parent directory is empty or the file is absent, treat the document as not created yet and create or update it with edit tools instead.", parentPath, targetPath),
@@ -986,7 +1020,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if readOnlyAnalysis && allToolCallsAreEditTools(resp.Message.ToolCalls) {
-				if err := a.addToolCallRedirectGuidance(
+				if err := addRedirectGuidance(
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: this is a read-only analysis turn; edit tools are blocked.",
 					"This request is analysis-only. Do not edit files or call edit tools. Investigate the current code and logs, then answer with the root cause or findings.",
@@ -1006,14 +1040,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					lastToolCallSignature = currentSignature
 					lastToolCallSignatureCount = 1
-					repeatedToolCallNudges = 0
-					repeatedToolCallRecoveryTurns = 0
+					turnRuntime.Counters.RepeatedToolCallNudges = 0
+					turnRuntime.Counters.RepeatedToolCallRecoveryTurns = 0
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallAbortThreshold {
 					return "", fmt.Errorf("stopped after repeated identical tool calls")
 				}
-				if lastToolCallSignatureCount >= repeatedToolCallRecoveryThreshold && repeatedToolCallRecoveryTurns < 1 {
-					repeatedToolCallRecoveryTurns++
+				if lastToolCallSignatureCount >= repeatedToolCallRecoveryThreshold && turnRuntime.Counters.RepeatedToolCallRecoveryTurns < 1 {
+					turnRuntime.Counters.RepeatedToolCallRecoveryTurns++
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "repeated identical tool calls reached recovery threshold",
+						Guidance:  repeatedToolCallRecoveryGuidance(lastToolCallSummary, summarizeRecentToolTurns(a.Session.Messages, 3)),
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     lastToolCallSignatureCount,
+						Iteration: turnCount,
+					})
 					a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
 						Summary: lastToolCallSummary,
 						Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
@@ -1026,8 +1068,16 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					continue
 				}
 				if lastToolCallSignatureCount >= repeatedToolCallNudgeThreshold {
-					if repeatedToolCallNudges < 1 {
-						repeatedToolCallNudges++
+					if turnRuntime.Counters.RepeatedToolCallNudges < 1 {
+						turnRuntime.Counters.RepeatedToolCallNudges++
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "repeated identical tool calls reached nudge threshold",
+							Guidance:  "You are repeating the same tool call sequence with the same arguments. Do not repeat it again unless the previous tool result explicitly requires it. Use a different next step or provide the final answer now.",
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     lastToolCallSignatureCount,
+							Iteration: turnCount,
+						})
 						a.Session.AddMessage(internalUserMessage("You are repeating the same tool call sequence with the same arguments. Do not repeat it again unless the previous tool result explicitly requires it. Use a different next step or provide the final answer now."))
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
@@ -1042,15 +1092,23 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				} else {
 					lastReadFilePath = readPath
 					lastReadFilePathTurns = 1
-					repeatedReadFilePathNudges = 0
-					repeatedCachedReadFileNudges = 0
-					repeatedReadFilePathRecoveryCount = 0
+					turnRuntime.Counters.RepeatedReadFilePathNudges = 0
+					turnRuntime.Counters.RepeatedCachedReadFileNudges = 0
+					turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
 				}
 				if lastReadFilePathTurns >= repeatedReadFilePathAbortTurns {
 					return "", fmt.Errorf("stopped after repeatedly reading the same file without making progress: %s", readPath)
 				}
-				if lastReadFilePathTurns >= repeatedReadFilePathRecoveryThreshold && repeatedReadFilePathRecoveryCount < 1 {
-					repeatedReadFilePathRecoveryCount++
+				if lastReadFilePathTurns >= repeatedReadFilePathRecoveryThreshold && turnRuntime.Counters.RepeatedReadFilePathRecoveryCount < 1 {
+					turnRuntime.Counters.RepeatedReadFilePathRecoveryCount++
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file repeated the same path without progress",
+						Guidance:  repeatedReadFilePathRecoveryGuidance(readPath, lastReadFilePathTurns, summarizeRecentToolTurns(a.Session.Messages, 3)),
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     lastReadFilePathTurns,
+						Iteration: turnCount,
+					})
 					a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedReadFile, recoveryInput{
 						Path:   readPath,
 						Turns:  lastReadFilePathTurns,
@@ -1063,9 +1121,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
 					continue
 				}
-				if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns && repeatedReadFilePathNudges < 1 {
-					repeatedReadFilePathNudges++
-					a.Session.AddMessage(internalUserMessage(fmt.Sprintf("You have read the same file repeatedly across multiple tool turns: %s. Do not keep scanning more ranges from the same file unless a specific missing section is still required. Either explain what you found so far, switch to a different tool or file, or provide the final answer now.", readPath)))
+				if lastReadFilePathTurns >= repeatedReadFilePathNudgeTurns && turnRuntime.Counters.RepeatedReadFilePathNudges < 1 {
+					turnRuntime.Counters.RepeatedReadFilePathNudges++
+					repeatedReadGuidance := fmt.Sprintf("You have read the same file repeatedly across multiple tool turns: %s. Do not keep scanning more ranges from the same file unless a specific missing section is still required. Either explain what you found so far, switch to a different tool or file, or provide the final answer now.", readPath)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file repeated the same path",
+						Guidance:  repeatedReadGuidance,
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     lastReadFilePathTurns,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(repeatedReadGuidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1074,9 +1141,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			} else {
 				lastReadFilePath = ""
 				lastReadFilePathTurns = 0
-				repeatedReadFilePathNudges = 0
-				repeatedCachedReadFileNudges = 0
-				repeatedReadFilePathRecoveryCount = 0
+				turnRuntime.Counters.RepeatedReadFilePathNudges = 0
+				turnRuntime.Counters.RepeatedCachedReadFileNudges = 0
+				turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
 			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
@@ -1102,17 +1169,19 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			}
 		}
 		if len(resp.Message.ToolCalls) == 0 {
+			turnRuntime.Transition(TurnRuntimeNeedFinalGate, "assistant_final_candidate")
+			a.Session.LastTurnRuntimeState = turnRuntime
 			lastToolCallSignature = ""
 			lastToolCallSignatureCount = 0
-			repeatedToolCallNudges = 0
-			repeatedToolCallRecoveryTurns = 0
+			turnRuntime.Counters.RepeatedToolCallNudges = 0
+			turnRuntime.Counters.RepeatedToolCallRecoveryTurns = 0
 			lastReadFilePath = ""
 			lastReadFilePathTurns = 0
-			repeatedReadFilePathNudges = 0
-			repeatedCachedReadFileNudges = 0
-			repeatedReadFilePathRecoveryCount = 0
+			turnRuntime.Counters.RepeatedReadFilePathNudges = 0
+			turnRuntime.Counters.RepeatedCachedReadFileNudges = 0
+			turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
 			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !deferEndTurnFollowUpForPostWorkReply && !finalAnswerOnlyCorrection {
-				commentaryOnlyReplies = 0
+				turnRuntime.Counters.CommentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
@@ -1127,7 +1196,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 				} else {
 					if reply != "" {
-						commentaryOnlyReplies = 0
+						turnRuntime.Counters.CommentaryOnlyReplies = 0
 						if a.EmitAssistant != nil && reply != a.lastEmittedText {
 							a.EmitAssistant(reply)
 							a.lastEmittedText = reply
@@ -1139,13 +1208,29 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
 						}
+						markRuntimeCompleted("commentary_reply_accepted")
 						return reply, nil
 					}
-					commentaryOnlyReplies++
-					if commentaryOnlyReplies >= 3 {
+					turnRuntime.Counters.CommentaryOnlyReplies++
+					if turnRuntime.Counters.CommentaryOnlyReplies >= 3 {
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionCommentaryOnly,
+							Reason:    "model produced repeated commentary-only assistant messages",
+							Count:     turnRuntime.Counters.CommentaryOnlyReplies,
+							Iteration: turnCount,
+						})
+						markRuntimeBlocked("commentary_only")
 						return "", fmt.Errorf("model produced commentary-only assistant messages without tool calls or final answer")
 					}
-					a.Session.AddMessage(internalUserMessage("Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message."))
+					commentaryGuidance := "Your last assistant message was commentary/progress, not the final answer. Continue with the next needed tool call, or provide the final answer now. Do not repeat the same commentary-only message."
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionCommentaryOnly,
+						Reason:    "model produced commentary-only assistant message",
+						Guidance:  commentaryGuidance,
+						Count:     turnRuntime.Counters.CommentaryOnlyReplies,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(commentaryGuidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1153,7 +1238,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 			}
 			if reply != "" {
-				commentaryOnlyReplies = 0
+				turnRuntime.Counters.CommentaryOnlyReplies = 0
 				if continuedReplyPrefix != "" {
 					reply = mergeAssistantContinuation(continuedReplyPrefix, reply)
 					continuedReplyPrefix = ""
@@ -1203,10 +1288,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && manualEditHandoffRetries < 1 {
-					manualEditHandoffRetries++
+				if explicitEditRequest && !attemptedEditTool && replySuggestsManualEditHandoff(reply) && turnRuntime.Counters.ManualEditHandoffRetries < 1 {
+					turnRuntime.Counters.ManualEditHandoffRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(internalUserMessage("This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error."))
+					manualEditGuidance := "This request explicitly asks you to inspect and fix the code. Do not hand the patch back to the user. Read the relevant file if needed, then use the available edit tools directly. Only ask the user to edit manually if an edit tool actually failed, and cite that exact tool error."
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionManualEditHandoff,
+						Reason:    "final-looking answer handed an explicit edit request back to the user",
+						Guidance:  manualEditGuidance,
+						Count:     turnRuntime.Counters.ManualEditHandoffRetries,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(manualEditGuidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1231,10 +1324,60 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					continue
 				}
-				if unresolvedVerification && !a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser) && finalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
-					finalAnswerNudges++
+				if unresolvedVerification && !a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser) && turnRuntime.Counters.FinalAnswerNudges < 1 && !replyMentionsVerificationBlocker(reply) && !replyMentionsVerificationNotRun(reply) {
+					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
-					a.Session.AddMessage(internalUserMessage("Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."))
+					verificationGuidance := "Verification is still unresolved. Continue fixing the issue if possible. If verification was skipped or declined, give a final answer that explicitly says verification was not run and do not describe it as completed."
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionVerificationUnresolved,
+						Reason:    "final-looking answer omitted unresolved verification status",
+						Guidance:  verificationGuidance,
+						Count:     turnRuntime.Counters.FinalAnswerNudges,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(verificationGuidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				readiness := turnRuntime.FinalAnswerReadiness(reply, TurnRuntimeFinalContext{
+					AttemptedEditTool:              attemptedEditTool,
+					ExplicitEditRequest:            explicitEditRequest,
+					GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+				})
+				if !readiness.Ready {
+					if turnRuntime.Counters.FinalAnswerNudges >= 2 && readiness.BlockedOnlyBy(RuntimeInterventionVerificationUnresolved) {
+						reply = ensureRuntimeVerificationNotRunDisclosure(reply)
+						if len(a.Session.Messages) > 0 {
+							a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+						}
+						readiness = turnRuntime.FinalAnswerReadiness(reply, TurnRuntimeFinalContext{
+							AttemptedEditTool:              attemptedEditTool,
+							ExplicitEditRequest:            explicitEditRequest,
+							GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+						})
+					}
+				}
+				if !readiness.Ready {
+					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
+						markRuntimeBlocked("final_gate_unresolved_intervention")
+						return "", fmt.Errorf("final gate blocked by unresolved runtime intervention: %s", readiness.Reason)
+					}
+					turnRuntime.Counters.FinalAnswerNudges++
+					a.discardRecentFinalAnswerCandidate(reply)
+					guidance := strings.TrimSpace(readiness.Guidance)
+					if guidance == "" {
+						guidance = "Runtime state still has unresolved interventions. Resolve them before providing the final answer."
+					}
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionFinalLooksPremature,
+						Reason:    readiness.Reason,
+						Guidance:  guidance,
+						Count:     turnRuntime.Counters.FinalAnswerNudges,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(guidance))
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
@@ -1251,6 +1394,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					stopHookRevisions++
 					stopHookActive = true
 					finalAnswerOnlyCorrection = false
+					syncRuntimeFlags()
 					a.discardRecentFinalAnswerCandidate(reply)
 					a.Session.AddMessage(internalUserMessage(stopHookContinuationGuidance(stopVerdict)))
 					if err := a.Store.Save(a.Session); err != nil {
@@ -1273,6 +1417,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
+					markRuntimeCompleted("out_of_scope_verification_final")
 					return reply, nil
 				}
 				harnessApproved, harnessFeedback := a.runPreFinalCodingHarnesses(ctx, reply, attemptedEditTool, unresolvedVerification)
@@ -1295,6 +1440,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
+					markRuntimeCompleted("generated_document_harness_synthesized_final")
 					return reply, nil
 				}
 				if !harnessApproved && finalHarnessRevisions >= 2 {
@@ -1310,12 +1456,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					if err := a.Store.Save(a.Session); err != nil {
 						return "", err
 					}
+					markRuntimeBlocked("pre_final_harness_blocked")
 					return reply, nil
 				}
 				if !harnessApproved && finalHarnessRevisions < 2 {
 					finalHarnessRevisions++
 					a.discardRecentFinalAnswerCandidate(reply)
 					finalAnswerOnlyCorrection = codingHarnessReportRequiresFinalAnswerOnlyRevision(a.Session.LastCodingHarnessReport)
+					syncRuntimeFlags()
 					nextGuidance := harnessFeedback
 					if finalAnswerOnlyCorrection {
 						nextGuidance = finalAnswerOnlyHarnessRevisionGuidance(a.Session.LastCodingHarnessReport, harnessFeedback)
@@ -1336,6 +1484,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					if needsModelTurn {
 						finalAnswerOnlyCorrection = false
+						syncRuntimeFlags()
 						a.discardRecentFinalAnswerCandidate(reply)
 						if err := a.Store.Save(a.Session); err != nil {
 							return "", err
@@ -1346,11 +1495,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return reply, err
 					}
 				}
-				if runtimeGateFinalAnswerRevisions < 2 && a.ReviewerClient == nil {
+				if turnRuntime.Counters.RuntimeGateFinalAnswerRevisions < 2 && a.ReviewerClient == nil {
 					ledger := a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
 					if runtimeGateBlocksFinalAnswer(ledger, reply) {
-						runtimeGateFinalAnswerRevisions++
+						turnRuntime.Counters.RuntimeGateFinalAnswerRevisions++
 						finalAnswerOnlyCorrection = false
+						syncRuntimeFlags()
 						a.discardRecentFinalAnswerCandidate(reply)
 						a.Session.AddMessage(internalUserMessage(renderRuntimeGateBlockedFeedback(ledger, runtimeGateActionFinalAnswer)))
 						if err := a.Store.Save(a.Session); err != nil {
@@ -1363,13 +1513,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if !a.shouldSkipInteractiveFinalAnswerReviewForGeneratedDocumentArtifact(latestUser, unresolvedVerification) &&
 					a.shouldReviewInteractiveFinalAnswer(reply, attemptedEditTool, unresolvedVerification) &&
-					finalAnswerReviewRevisions < 2 &&
+					turnRuntime.Counters.FinalAnswerReviewRevisions < 2 &&
 					!strings.EqualFold(strings.TrimSpace(reply), strings.TrimSpace(lastReviewedFinalAnswer)) {
 					approved, reviewText := a.reviewInteractiveFinalAnswer(ctx, reply, unresolvedVerification)
 					lastReviewedFinalAnswer = reply
 					if !approved {
-						finalAnswerReviewRevisions++
+						turnRuntime.Counters.FinalAnswerReviewRevisions++
 						finalAnswerOnlyCorrection = false
+						syncRuntimeFlags()
 						a.discardRecentFinalAnswerCandidate(reply)
 						nextText := "Reviewer feedback: the proposed final answer is not ready yet. Revise the work or the answer before concluding."
 						if strings.TrimSpace(reviewText) != "" {
@@ -1390,27 +1541,51 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if err := a.Store.Save(a.Session); err != nil {
 					return "", err
 				}
+				markRuntimeCompleted("final_answer_accepted")
 				return reply, nil
 			}
 			if isTokenLimitStopReason(lastStopReason) {
+				recordRuntimeIntervention(RuntimeIntervention{
+					Kind:       RuntimeInterventionLengthStop,
+					Reason:     "model stopped before producing a usable response due to token limit",
+					StopReason: lastStopReason,
+					Iteration:  turnCount,
+				})
+				markRuntimeBlocked("length_stop")
 				return "", fmt.Errorf("model stopped before producing a usable response due to token limit (stop_reason=%s)", lastStopReason)
 			}
-			emptyFinalReplies++
-			if emptyFinalReplies >= 2 {
+			turnRuntime.Counters.EmptyFinalReplies++
+			if turnRuntime.Counters.EmptyFinalReplies >= 2 {
+				recordRuntimeIntervention(RuntimeIntervention{
+					Kind:       RuntimeInterventionEmptyStop,
+					Reason:     "model returned repeated empty responses",
+					StopReason: lastStopReason,
+					Count:      turnRuntime.Counters.EmptyFinalReplies,
+					Iteration:  turnCount,
+				})
+				markRuntimeBlocked("empty_stop")
 				return "", formatEmptyModelResponseError(a.Session, lastStopReason, sawToolResultThisTurn)
 			}
+			emptyGuidance := "Please provide the final answer to the user now. Do not return an empty message."
 			if readOnlyAnalysis {
-				a.Session.AddMessage(internalUserMessage("Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message."))
-			} else {
-				a.Session.AddMessage(internalUserMessage("Please provide the final answer to the user now. Do not return an empty message."))
+				emptyGuidance = "Your last reply was empty. This is a read-only analysis or review request. If you need more evidence, use read_file, grep, or list_files on the referenced code first. Then provide a concrete final answer with findings, likely root causes, and file references. Do not return an empty message."
 			}
+			recordRuntimeIntervention(RuntimeIntervention{
+				Kind:       RuntimeInterventionEmptyStop,
+				Reason:     "model returned an empty response",
+				Guidance:   emptyGuidance,
+				StopReason: lastStopReason,
+				Count:      turnRuntime.Counters.EmptyFinalReplies,
+				Iteration:  turnCount,
+			})
+			a.Session.AddMessage(internalUserMessage(emptyGuidance))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
 			continue
 		}
-		emptyFinalReplies = 0
-		finalAnswerNudges = 0
+		turnRuntime.Counters.EmptyFinalReplies = 0
+		turnRuntime.Counters.FinalAnswerNudges = 0
 		edited := false
 		iterationToolError := ""
 		iterationHadToolSuccess := false
@@ -2116,9 +2291,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					edited = true
 					successfulEditTool = true
 					finalAnswerOnlyCorrection = false
+					syncRuntimeFlags()
 					finalHarnessRevisions = 0
-					runtimeGateFinalAnswerRevisions = 0
-					finalAnswerReviewRevisions = 0
+					turnRuntime.Counters.RuntimeGateFinalAnswerRevisions = 0
+					turnRuntime.Counters.FinalAnswerReviewRevisions = 0
 					lastReviewedFinalAnswer = ""
 					preWriteReviewRepairBlocks = 0
 					preWriteReviewRepairBlockFingerprints = map[string]int{}
@@ -2173,10 +2349,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if preWriteForceEditQueued || preWriteBlockedRetryQueued || editMismatchRetryQueued || toolRetryQueued {
 			continue
 		}
-		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && repeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
-			repeatedCachedReadFileNudges++
-			repeatedReadFilePathNudges++
-			a.Session.AddMessage(internalUserMessage(fmt.Sprintf("Your latest read_file result for %s came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again. Either inspect a different file or tool, or give the final answer now.", lastReadFilePath)))
+		if lastReadFilePath != "" && lastReadFilePathTurns >= 2 && turnRuntime.Counters.RepeatedCachedReadFileNudges < 1 && lastAssistantToolTurnWasCachedReadFile(a.Session.Messages) {
+			turnRuntime.Counters.RepeatedCachedReadFileNudges++
+			turnRuntime.Counters.RepeatedReadFilePathNudges++
+			cachedReadGuidance := fmt.Sprintf("Your latest read_file result for %s came from cached previously-read content. Treat that as confirmation that you already have that context. Do not reread the same chunk again. Either inspect a different file or tool, or give the final answer now.", lastReadFilePath)
+			recordRuntimeIntervention(RuntimeIntervention{
+				Kind:      RuntimeInterventionRepeatedTool,
+				Reason:    "read_file returned cached content for a repeated path",
+				Guidance:  cachedReadGuidance,
+				Count:     lastReadFilePathTurns,
+				Iteration: turnCount,
+			})
+			a.Session.AddMessage(internalUserMessage(cachedReadGuidance))
 			if err := a.Store.Save(a.Session); err != nil {
 				return "", err
 			}
@@ -2249,6 +2433,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				a.Session.AddMessage(internalUserMessage(verificationPrefix + verification))
 				unresolvedVerification = report.HasFailures() || report.WasSkipped()
+				syncRuntimeFlags()
 				if report.WasSkipped() {
 					verificationDeclinedThisTurn = true
 					automaticVerificationSkippedFinalOnly = true
@@ -2279,6 +2464,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								verification = strings.TrimSpace(report.RenderDetailed())
 								a.Session.AddMessage(internalUserMessage(localizedText(a.Config, "Automatic verification results after tool-path update:\n", "도구 경로 업데이트 후 자동 검증 결과:\n") + verification))
 								unresolvedVerification = report.HasFailures() || report.WasSkipped()
+								syncRuntimeFlags()
 								if report.WasSkipped() {
 									verificationDeclinedThisTurn = true
 									automaticVerificationSkippedFinalOnly = true
@@ -2287,6 +2473,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						if resolution == AutoVerifyFailureDisable {
 							unresolvedVerification = false
+							syncRuntimeFlags()
 							autoVerifyInfraFailureCount = 0
 							autoVerifyDisabledAfterPrompt = true
 							a.recordEditLoopRisk("Automatic verification disabled after tool startup failure.", report.FailureSummary())
@@ -2300,6 +2487,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						scopeDecision := a.verificationFailureRepairScope(report)
 						if !scopeDecision.ShouldRepair {
 							unresolvedVerification = false
+							syncRuntimeFlags()
 							verificationOutOfScopeThisTurn = true
 							verificationOutOfScopeFinalOnly = true
 							a.recordEditLoopRisk("Automatic verification failed outside the current patch scope.", strings.Join([]string{scopeDecision.Reason, scopeDecision.Anchor}, "\n"))
@@ -2341,6 +2529,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.emitRepairWorkflowProgress(latestUser, 6, "final summary", "최종 요약", "No automatic verification ran. The model should summarize the change and disclose that verification was not run.", "자동 검증이 실행되지 않았습니다. 모델이 변경 내용을 요약하고 검증 미실행을 밝혀야 합니다.")
 				}
 				unresolvedVerification = false
+				syncRuntimeFlags()
 			}
 			if !unresolvedVerification {
 				consecutiveEditTurns++
@@ -2710,7 +2899,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactFinalReply(request string,
 }
 
 func (a *Agent) finalizeGeneratedDocumentArtifactAfterBlockedToolCalls(calls []ToolCall, attemptedEditTool bool, unresolvedVerification bool, reason string) (string, error) {
-	if err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
+	if _, err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
 		return "", err
 	}
 	reply := a.synthesizeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport)
@@ -2772,7 +2961,7 @@ func (a *Agent) maybeFinalizeGeneratedDocumentArtifactToolCallPreamble(request s
 	}
 
 	reason := "NOT_EXECUTED: generated document artifact turns do not run shell or review validation, planning, or additional inspection after the document is written."
-	if err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
+	if _, err := a.addToolCallRedirectGuidance(calls, reason, ""); err != nil {
 		return "", false, err
 	}
 	a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
@@ -5737,14 +5926,21 @@ func (a *Agent) setRemainingToolCallsNotExecuted(calls []ToolCall, indexes []int
 	}
 }
 
-func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, guidance string) error {
+func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, guidance string) (RuntimeIntervention, error) {
+	intervention := RuntimeIntervention{
+		Kind:      RuntimeInterventionBlockedTool,
+		Reason:    reason,
+		Guidance:  guidance,
+		ToolCalls: calls,
+	}
 	if a == nil || a.Session == nil {
-		return nil
+		return intervention, nil
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		reason = "NOT_EXECUTED: this tool-call batch was redirected by the runtime before execution."
 	}
+	intervention.Reason = reason
 	for _, call := range calls {
 		result := notExecutedToolResult(call, reason)
 		a.Session.AddMessage(Message{
@@ -5761,9 +5957,9 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 		a.Session.AddMessage(internalUserMessage(guidance))
 	}
 	if a.Store != nil {
-		return a.Store.Save(a.Session)
+		return intervention, a.Store.Save(a.Session)
 	}
-	return nil
+	return intervention, nil
 }
 
 func (a *Agent) addToolContractSyntheticResults(calls []ToolCall, results []ToolContractSyntheticResult) error {

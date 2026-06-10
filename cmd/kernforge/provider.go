@@ -439,18 +439,20 @@ func captureProviderTurnStateHeader(resp *http.Response, state *ProviderTurnStat
 }
 
 type ProgressEvent struct {
-	Kind             string
-	Message          string
-	Provider         string
-	Model            string
-	ToolName         string
-	ToolCallID       string
-	ArgumentsPreview string
-	RouteLabel       string
-	Stage            string
-	Shard            string
-	Status           string
-	Elapsed          time.Duration
+	Kind                string
+	Message             string
+	Provider            string
+	Model               string
+	ToolName            string
+	ToolCallID          string
+	ArgumentsPreview    string
+	RouteLabel          string
+	Stage               string
+	Shard               string
+	Status              string
+	RuntimeState        string
+	RuntimeIntervention string
+	Elapsed             time.Duration
 }
 
 type providerErrorBody struct {
