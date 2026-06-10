@@ -1082,6 +1082,7 @@ func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelR
 	policy = policy.normalized()
 	req = requestWithRouteReasoningEffort(cfg, client, req)
 	req = requestWithRouteServiceTier(cfg, client, req)
+	req.Messages = ValidateConversationToolPairs(req.Messages)
 	route := modelRouteForRequest(cfg, client, req)
 	limit := policy.LimitFor(route)
 	progress := req.OnProgressEvent

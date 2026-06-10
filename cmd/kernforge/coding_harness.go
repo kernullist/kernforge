@@ -917,6 +917,7 @@ func finalAnswerOnlyHarnessRevisionGuidance(report *CodingHarnessReport, feedbac
 	}
 	lines := []string{
 		"Pre-final coding harness found issues that require revising only the final answer.",
+		"Mode: final-answer-only correction.",
 		"Do not call tools, run shell commands, inspect more source files, start review, or edit files for this correction pass.",
 		"Use only the already recorded workspace state and evidence. Fix the final answer so it does not overclaim verification, artifact state, bug counts, or remaining risk.",
 	}

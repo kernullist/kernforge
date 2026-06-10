@@ -799,10 +799,18 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		if toolRegistryHasTool(a.Tools, "apply_patch") {
 			resp.Message.ToolCalls = rewriteShellApplyPatchToolCalls(resp.Message.ToolCalls)
 		}
+		toolContractNormalization := NormalizeAssistantToolCalls(resp.Message.ToolCalls, ToolContractNormalizationOptions{
+			Registry:   a.Tools,
+			StopReason: resp.StopReason,
+		})
+		resp.Message.ToolCalls = toolContractNormalization.Calls
+		toolContractSyntheticResults := append([]ToolContractSyntheticResult(nil), toolContractNormalization.SyntheticResults...)
+		toolContractSyntheticResults = mergeToolContractSyntheticResults(toolContractSyntheticResults)
 		if a.shouldPromoteFinalLookingToolPreambleToFinalCandidate(latestUser, resp.Message.ToolCalls, rawAssistantText, attemptedEditTool, successfulEditTool, unresolvedVerification) {
 			if finalText := sanitizeAssistantMessageText(rawAssistantText, false); finalText != "" {
 				resp.Message.Text = finalText
 				resp.Message.ToolCalls = nil
+				toolContractSyntheticResults = nil
 			}
 		}
 		resp.Message.Phase = assistantMessagePhaseForModelResponse(resp.Message)
@@ -844,6 +852,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					"NOT_EXECUTED: pre-final coding harness requires a final-answer-only correction; no tools are available for this retry.",
 					finalAnswerOnlyHarnessToolBlockedGuidance(a.Session.LastCodingHarnessReport),
 				); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if len(toolContractSyntheticResults) > 0 {
+				for _, item := range toolContractSyntheticResults {
+					if item.Kind == ToolContractSyntheticInvalid && toolShouldBeDisabledAfterInvalidJSON(item.Call.Name) {
+						disabledTools[strings.TrimSpace(item.Call.Name)] = true
+					}
+				}
+				if err := a.addToolContractSyntheticResults(resp.Message.ToolCalls, toolContractSyntheticResults); err != nil {
 					return "", err
 				}
 				continue
@@ -5747,6 +5766,54 @@ func (a *Agent) addToolCallRedirectGuidance(calls []ToolCall, reason string, gui
 	return nil
 }
 
+func (a *Agent) addToolContractSyntheticResults(calls []ToolCall, results []ToolContractSyntheticResult) error {
+	if a == nil || a.Session == nil {
+		return nil
+	}
+	byID := map[string]ToolContractSyntheticResult{}
+	guidanceItems := make([]string, 0)
+	for _, item := range results {
+		key := firstNonEmptyTrimmed(item.Call.ID, item.Call.Name)
+		if key == "" {
+			continue
+		}
+		byID[key] = item
+		if guidance := strings.TrimSpace(item.Guidance); guidance != "" {
+			guidanceItems = append(guidanceItems, guidance)
+		}
+	}
+	for _, call := range calls {
+		key := firstNonEmptyTrimmed(call.ID, call.Name)
+		item, ok := byID[key]
+		if !ok {
+			item = ToolContractSyntheticResult{
+				Call:    call,
+				Kind:    ToolContractSyntheticSkipped,
+				Reason:  "NOT_EXECUTED: tool-call batch was interrupted by another tool contract violation; this call was not executed.",
+				IsError: true,
+			}
+		}
+		result := BuildSyntheticToolResult(call, item.Kind, item.Reason)
+		a.Session.AddMessage(Message{
+			Role:             "tool",
+			ToolCallID:       firstNonEmptyTrimmed(call.ID, call.Name),
+			ToolName:         call.Name,
+			Text:             toolExecutionModelText(result),
+			ToolContentItems: toolExecutionModelContentItems(result),
+			IsError:          item.IsError,
+			ToolMeta:         result.Meta,
+		})
+		a.noteToolConversationBlockedResult(call, result, nil)
+	}
+	for _, guidance := range normalizeTaskStateList(guidanceItems, 4) {
+		a.Session.AddMessage(internalUserMessage(guidance))
+	}
+	if a.Store != nil {
+		return a.Store.Save(a.Session)
+	}
+	return nil
+}
+
 func notExecutedToolResult(call ToolCall, reason string) ToolExecutionResult {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
@@ -5759,6 +5826,9 @@ func notExecutedToolResult(call ToolCall, reason string) ToolExecutionResult {
 	meta["changed_workspace"] = false
 	meta["deferred"] = true
 	meta["requires_reissue"] = true
+	kind := toolContractSyntheticKindForReason(reason)
+	meta["tool_contract_result"] = string(kind)
+	meta["synthetic_result"] = true
 	if toolCallIsExecCommandLike(call.Name) {
 		meta["command_execution_status"] = "declined"
 	}
