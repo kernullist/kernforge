@@ -1608,6 +1608,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
+				a.recordFinalGateDecision(a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, TurnRuntimeFinalContext{
+					AttemptedEditTool:              attemptedEditTool,
+					ExplicitEditRequest:            explicitEditRequest,
+					GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+				}))
 				a.acceptRecentFinalAnswerCandidate(reply)
 				a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
 				a.finalizePatchTransactionOnReturn()

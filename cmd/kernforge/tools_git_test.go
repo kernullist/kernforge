@@ -33,6 +33,33 @@ func TestGitAddAndCommitTool(t *testing.T) {
 	}
 }
 
+func TestCommitGateRejectsWrongGitIdentity(t *testing.T) {
+	repo := initTestGitRepo(t)
+	mustRunGit(t, repo, "config", "user.name", "Kernforge Test")
+	mustRunGit(t, repo, "config", "user.email", "kernforge@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "blocked.txt"), []byte("blocked\n"), 0o644); err != nil {
+		t.Fatalf("write blocked file: %v", err)
+	}
+
+	ws := Workspace{Root: repo, BaseRoot: repo}
+	if _, err := NewGitAddTool(ws).Execute(context.Background(), map[string]any{
+		"paths": []any{"blocked.txt"},
+	}); err != nil {
+		t.Fatalf("git_add: %v", err)
+	}
+	_, err := NewGitCommitTool(ws).Execute(context.Background(), map[string]any{
+		"message": "Blocked identity commit",
+	})
+	if err == nil || !strings.Contains(err.Error(), "git commit blocked") || !strings.Contains(err.Error(), allowedGitCommitEmail) {
+		t.Fatalf("expected identity gate error, got %v", err)
+	}
+
+	subject := mustRunGit(t, repo, "log", "-1", "--pretty=%s")
+	if subject == "Blocked identity commit" {
+		t.Fatalf("commit gate allowed a commit with an unapproved identity")
+	}
+}
+
 func TestGitStatusToolDisablesConfiguredHooksPath(t *testing.T) {
 	binDir := filepath.Join(t.TempDir(), "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -265,8 +292,8 @@ func initTestGitRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
 	mustRunGit(t, repo, "init", "-b", "main")
-	mustRunGit(t, repo, "config", "user.name", "Kernforge Test")
-	mustRunGit(t, repo, "config", "user.email", "kernforge@example.com")
+	mustRunGit(t, repo, "config", "user.name", allowedGitCommitName)
+	mustRunGit(t, repo, "config", "user.email", allowedGitCommitEmail)
 	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("seed\n"), 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
 	}

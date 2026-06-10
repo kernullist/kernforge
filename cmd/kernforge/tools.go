@@ -6766,6 +6766,43 @@ func (t GitAddTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecuti
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err
 }
 
+const (
+	allowedGitCommitName  = "kernullist"
+	allowedGitCommitEmail = "gloryo@naver.com"
+)
+
+type GitCommitIdentityCheck struct {
+	Name    string
+	Email   string
+	Allowed bool
+	Reason  string
+}
+
+func checkAllowedGitCommitIdentity(ctx context.Context, root string) GitCommitIdentityCheck {
+	check := GitCommitIdentityCheck{}
+	name, nameErr := runGitHelperCommand(ctx, root, "config", "--get", "user.name")
+	email, emailErr := runGitHelperCommand(ctx, root, "config", "--get", "user.email")
+	check.Name = strings.TrimSpace(name)
+	check.Email = strings.TrimSpace(email)
+	if check.Name == "(no output)" {
+		check.Name = ""
+	}
+	if check.Email == "(no output)" {
+		check.Email = ""
+	}
+	if nameErr != nil || emailErr != nil {
+		check.Reason = "git commit identity is not configured"
+		return check
+	}
+	if check.Name != allowedGitCommitName || check.Email != allowedGitCommitEmail {
+		check.Reason = fmt.Sprintf("git commit identity %s <%s> is not allowed; expected %s <%s>", check.Name, check.Email, allowedGitCommitName, allowedGitCommitEmail)
+		return check
+	}
+	check.Allowed = true
+	check.Reason = "git commit identity approved"
+	return check
+}
+
 type GitCommitTool struct{ ws Workspace }
 
 func NewGitCommitTool(ws Workspace) GitCommitTool { return GitCommitTool{ws: ws} }
@@ -6797,6 +6834,10 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 	if err := t.ws.EnsureGitWithContext(ctx, "create commit: "+firstLine(message)); err != nil {
 		return "", err
 	}
+	identity := checkAllowedGitCommitIdentity(ctx, t.ws.Root)
+	if !identity.Allowed {
+		return "", fmt.Errorf("git commit blocked: %s", identity.Reason)
+	}
 	cmdArgs := []string{"commit", "-m", message}
 	if boolValue(args, "allow_empty", false) {
 		cmdArgs = append(cmdArgs, "--allow-empty")
@@ -6826,6 +6867,7 @@ func (t GitCommitTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 	}
 	message := stringValue(args, "message")
 	allowEmpty := boolValue(args, "allow_empty", false)
+	identity := checkAllowedGitCommitIdentity(ctx, t.ws.Root)
 	text, err := t.Execute(ctx, input)
 	commitSHA := ""
 	commitSubject := strings.TrimSpace(firstLine(message))
@@ -6838,13 +6880,17 @@ func (t GitCommitTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 		branch, _ = gitCurrentBranch(ctx, t.ws.Root)
 	}
 	meta := map[string]any{
-		"effect":         "git_mutation",
-		"message":        message,
-		"allow_empty":    allowEmpty,
-		"created_commit": err == nil,
-		"commit_sha":     commitSHA,
-		"commit_subject": commitSubject,
-		"branch":         branch,
+		"effect":           "git_mutation",
+		"message":          message,
+		"allow_empty":      allowEmpty,
+		"created_commit":   err == nil,
+		"commit_sha":       commitSHA,
+		"commit_subject":   commitSubject,
+		"branch":           branch,
+		"identity_name":    identity.Name,
+		"identity_email":   identity.Email,
+		"identity_allowed": identity.Allowed,
+		"identity_reason":  identity.Reason,
 	}
 	addEffectiveExecutionContextMetadata(meta, t.ws, nil)
 	return ToolExecutionResult{DisplayText: text, Meta: meta}, err

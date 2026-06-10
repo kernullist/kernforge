@@ -532,6 +532,9 @@ func TestSingleModelReviewModeDoesNotRequireCrossReviewer(t *testing.T) {
 	if run.SingleModelPolicy.IndependenceLevel != "single_model" {
 		t.Fatalf("expected single_model independence, got %#v", run.SingleModelPolicy)
 	}
+	if run.SingleModelPolicy.NoCrossReviewReason != "single_model_mode" {
+		t.Fatalf("expected exact no_cross_review reason, got %#v", run.SingleModelPolicy)
+	}
 	if reviewRunHasRequiredReviewerFailure(run) {
 		t.Fatalf("single-model mode must not create required reviewer failure, got %#v", run.Findings)
 	}
