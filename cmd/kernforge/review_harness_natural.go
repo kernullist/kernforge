@@ -410,8 +410,8 @@ func hasRepairActionIntent(lower string) bool {
 func hasRepairActionNegation(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	return containsAny(lower,
-		"수정하지 말", "수정 하지 말", "수정은 하지", "수정 없이", "수정하지마", "수정 하지마",
-		"고치지 말", "고치지는 말", "고치지마", "패치하지 말", "패치 하지 말", "패치 없이",
+		"수정하지 말", "수정 하지 말", "수정하지 마", "수정 하지 마", "수정은 하지", "수정 없이", "수정하지마", "수정 하지마",
+		"고치지 말", "고치지는 말", "고치지 마", "고치지마", "패치하지 말", "패치 하지 말", "패치하지 마", "패치 하지 마", "패치 없이",
 		"do not edit", "don't edit", "dont edit", "no edit", "no edits", "without editing",
 		"do not modify", "don't modify", "dont modify", "without modifying",
 		"do not patch", "don't patch", "dont patch", "without patching")

@@ -1357,6 +1357,7 @@ func looksLikeExplicitEditIntent(text string) bool {
 	}
 	return containsAny(lower,
 		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "draft ", "edit ", "fix ", "generate ", "implement ", "modify ", "patch ", "prepare ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
+		"make the change", "make this change", "make changes",
 		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "생성", "수정", "실행", "적용", "작성", "저장", "추가", "테스트", "패치",
 	)
 }
@@ -1372,9 +1373,10 @@ func looksLikeExplicitGitIntent(text string) bool {
 		"commit these changes", "commit the changes", "commit this", "commit it",
 		"push this branch", "push the branch", "push these changes", "push it",
 		"check in these changes", "check in this",
-		"커밋해", "커밋해줘", "커밋해 줘", "커밋하자", "커밋하죠", "커밋 진행", "커밋할", "커밋해도",
+		"commit해", "commit하고", "push해", "push하고",
+		"커밋해", "커밋해줘", "커밋해 줘", "커밋하자", "커밋하죠", "커밋 진행", "커밋할", "커밋해도", "커밋하고",
 		"스테이징해", "스테이징해줘", "스테이징해 줘", "스테이지해", "스테이지해줘", "스테이지해 줘",
-		"푸시해", "푸시해줘", "푸시해 줘", "브랜치 푸시",
+		"푸시해", "푸시해줘", "푸시해 줘", "푸시하고", "브랜치 푸시",
 		"pr 만들어", "pr 열어", "pull request 만들어", "pull request 열어", "풀 리퀘스트 만들어", "풀 리퀘스트 열어",
 	)
 }
@@ -1449,6 +1451,7 @@ func baseUserQueryText(text string) string {
 	trimmed := strings.TrimSpace(text)
 	markers := []string{
 		"\n\nRequest mode:",
+		"\n\nRequest envelope:",
 		"\n\nGit intent:\n",
 		"\n\nActivated skills for this request:\n",
 		"\n\nAttached context:\n",

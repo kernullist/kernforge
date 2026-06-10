@@ -14663,8 +14663,15 @@ func TestAgentDoesNotCarryGeneratedDocumentArtifactStateIntoFreshFollowupIntent(
 		if plan.GeneratedDocumentFinalOnly || plan.SuppressInteractiveWorkers {
 			t.Fatalf("fresh follow-up %q should keep normal orchestration, got %#v", request, plan)
 		}
-		if plan.DisabledTools["read_file"] || plan.DisabledTools["git_commit"] || plan.DisabledTools["run_shell"] {
+		if plan.DisabledTools["read_file"] || plan.DisabledTools["run_shell"] {
 			t.Fatalf("fresh follow-up %q should not inherit generated-document tool hiding, got %#v", request, plan.DisabledTools)
+		}
+		if looksLikeExplicitGitIntent(request) {
+			if plan.DisabledTools["git_commit"] {
+				t.Fatalf("explicit git follow-up %q should expose git_commit, got %#v", request, plan.DisabledTools)
+			}
+		} else if !plan.DisabledTools["git_commit"] {
+			t.Fatalf("non-git follow-up %q should keep git mutation gated, got %#v", request, plan.DisabledTools)
 		}
 	}
 }

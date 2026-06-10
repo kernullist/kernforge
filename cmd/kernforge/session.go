@@ -72,6 +72,7 @@ type Session struct {
 	BackgroundBundles               []BackgroundShellBundle          `json:"background_bundles,omitempty"`
 	ConversationEvents              []ConversationEvent              `json:"conversation_events,omitempty"`
 	ConversationState               *ConversationState               `json:"conversation_state,omitempty"`
+	LastRequestEnvelope             *RequestEnvelope                 `json:"last_request_envelope,omitempty"`
 	SuggestionMemory                *SuggestionMemory                `json:"suggestion_memory,omitempty"`
 	Automations                     []SessionAutomation              `json:"automations,omitempty"`
 	ActiveGoalID                    string                           `json:"active_goal_id,omitempty"`
