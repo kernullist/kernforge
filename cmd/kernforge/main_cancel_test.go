@@ -3591,11 +3591,127 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	if !strings.Contains(text, "-- Connection ") || !strings.Contains(text, "-- Approvals ") || !strings.Contains(text, "-- Extensions ") {
 		t.Fatalf("expected grouped status output, got %q", text)
 	}
+	if !strings.Contains(text, "-- Request Runtime ") || !strings.Contains(text, "shadow_stats:") {
+		t.Fatalf("expected request runtime status group, got %q", text)
+	}
 	if strings.Contains(text, "auto_checkpoint_edits:") {
 		t.Fatalf("did not expect config-only auto_checkpoint_edits in status, got %q", text)
 	}
 	if strings.Contains(text, "hooks_enabled:") {
 		t.Fatalf("did not expect config-only hooks_enabled in status, got %q", text)
+	}
+}
+
+func TestStatusDetailShowsRequestRuntimeShadowStats(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
+	session.LastRequestEnvelope = &envelope
+	session.RequestRuntimeShadowStats = &RequestRuntimeShadowStats{
+		Total:            2,
+		Diverged:         1,
+		RuntimeDiverged:  0,
+		SemanticObserved: 2,
+		SemanticDiverged: 1,
+		ByRequestClass: []RequestRuntimeShadowClassStat{{
+			RequestClass:     RequestRuntimeClassExplicitEdit,
+			Total:            2,
+			Diverged:         1,
+			SemanticObserved: 2,
+			SemanticDiverged: 1,
+		}},
+		RecentSamples: []RequestRuntimeShadowSample{{
+			Mode:                   RequestRuntimeModeDisabled,
+			EnabledPath:            RequestRuntimeClassExplicitEdit,
+			RequestClass:           RequestRuntimeClassExplicitEdit,
+			SemanticRequestClass:   RequestRuntimeClassReviewOnly,
+			FinalGateState:         string(FinalGateReady),
+			SemanticFinalGateState: string(FinalGateNeedsRecovery),
+			Differences:            []string{"semantic_final_gate"},
+			SemanticDifferences:    []string{"final_gate"},
+			SemanticClassifierMode: RequestSemanticClassifierModeShadow,
+			ShadowLogPath:          filepath.Join(root, userConfigDirName, requestRuntimeShadowDirName, "shadow-test.json"),
+		}},
+	}
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeShadow}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       cfg,
+		session:   session,
+		store:     store,
+		perms:     NewPermissionManager(ModeBypass, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "status", Args: "detail"}); err != nil {
+		t.Fatalf("handleCommand(status detail): %v", err)
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"[req:2 obs/1 semdiff]",
+		"-- Request Runtime ",
+		"semantic_classifier:",
+		"shadow_stats:",
+		"semantic_shadow:",
+		"class explicit_edit total=2 diverged=1 runtime=0 semantic=2/1",
+		"sample class=explicit_edit semantic_class=review_only",
+		"semantic_diff=final_gate",
+		"request_runtime_shadow/shadow-test.json",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected request runtime status to contain %q, got %q", want, text)
+		}
+	}
+	absoluteShadowPath := filepath.Join(root, userConfigDirName, requestRuntimeShadowDirName, "shadow-test.json")
+	if strings.Contains(text, absoluteShadowPath) {
+		t.Fatalf("status output should not leak absolute shadow log path, got %q", text)
+	}
+}
+
+func TestConfigShowsRequestRuntimeSettings(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime = RequestRuntimeConfig{
+		Mode:           RequestRuntimeModeEnabled,
+		EnabledClasses: []string{RequestRuntimeClassExplicitEdit, RequestRuntimeClassDocumentAuthoring},
+		SemanticClassifier: RequestSemanticClassifierConfig{
+			Mode:          RequestSemanticClassifierModeShadow,
+			MinConfidence: 0.8,
+			MaxTokens:     256,
+		},
+	}
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer:    &out,
+		ui:        UI{},
+		cfg:       cfg,
+		session:   NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default"),
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		perms:     NewPermissionManager(ModeBypass, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	if _, err := rt.handleCommand(Command{Name: "config"}); err != nil {
+		t.Fatalf("handleCommand(config): %v", err)
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"request_runtime:",
+		"enabled",
+		"request_runtime_classes:",
+		"document_authoring, explicit_edit",
+		"semantic_classifier:",
+		"shadow min_conf=0.80 max_tokens=256",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected config output to contain %q, got %q", want, text)
+		}
 	}
 }
 

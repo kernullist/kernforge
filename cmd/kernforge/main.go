@@ -6818,6 +6818,9 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 		{Label: "verify", Value: statusOverviewVerification(rt), Tone: statusOverviewVerificationTone(rt)},
 		{Label: "memory", Value: fmt.Sprintf("%d", rt.persistentMemoryCount()), Tone: "info"},
 	}
+	if requestRuntime := statusOverviewRequestRuntime(rt); requestRuntime != "" {
+		items = append(items, statusSummaryItem{Label: "req", Value: requestRuntime, Tone: statusOverviewRequestRuntimeTone(rt)})
+	}
 	if warningCount > 0 {
 		items = append(items, statusSummaryItem{Label: "warn", Value: fmt.Sprintf("%d", warningCount), Tone: "warn"})
 	}
@@ -7058,6 +7061,163 @@ func statusOverviewWarningCount(rt *runtimeState) int {
 	return len(rt.skillWarns) + len(rt.mcpWarns) + len(rt.hookWarns)
 }
 
+func statusOverviewRequestRuntime(rt *runtimeState) string {
+	if rt == nil {
+		return ""
+	}
+	runtimeCfg := rt.cfg.RequestRuntime
+	normalizeRequestRuntimeConfig(&runtimeCfg)
+	var stats *RequestRuntimeShadowStats
+	if rt.session != nil {
+		stats = rt.session.RequestRuntimeShadowStats
+	}
+	if stats != nil && stats.Total > 0 {
+		if stats.SemanticObserved > 0 {
+			return fmt.Sprintf("%d obs/%d semdiff", stats.Total, stats.SemanticDiverged)
+		}
+		return fmt.Sprintf("%d obs/%d diff", stats.Total, stats.Diverged)
+	}
+	if runtimeCfg.SemanticClassifier.Mode != RequestSemanticClassifierModeDisabled {
+		return "semantic:" + runtimeCfg.SemanticClassifier.Mode
+	}
+	if runtimeCfg.Mode != RequestRuntimeModeDisabled {
+		return runtimeCfg.Mode
+	}
+	return ""
+}
+
+func statusOverviewRequestRuntimeTone(rt *runtimeState) string {
+	if rt == nil || rt.session == nil || rt.session.RequestRuntimeShadowStats == nil {
+		return "info"
+	}
+	stats := rt.session.RequestRuntimeShadowStats
+	if stats.RuntimeDiverged > 0 {
+		return "warn"
+	}
+	if stats.SemanticDiverged > 0 {
+		return "info"
+	}
+	return "success"
+}
+
+func (rt *runtimeState) printRequestRuntimeStatus(detail bool) {
+	if rt == nil || rt.writer == nil {
+		return
+	}
+	runtimeCfg := rt.cfg.RequestRuntime
+	normalizeRequestRuntimeConfig(&runtimeCfg)
+	fmt.Fprintln(rt.writer)
+	fmt.Fprintln(rt.writer, rt.ui.subsection("Request Runtime"))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("mode", runtimeCfg.Mode))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("enabled_classes", requestRuntimeEnabledClassesLabel(runtimeCfg.EnabledClasses)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("semantic_classifier", requestSemanticClassifierStatusLine(runtimeCfg.SemanticClassifier)))
+	if rt.session != nil && rt.session.LastRequestEnvelope != nil {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("last_request", requestRuntimeEnvelopeStatusLine(*rt.session.LastRequestEnvelope)))
+	}
+	if rt.session == nil || rt.session.RequestRuntimeShadowStats == nil || rt.session.RequestRuntimeShadowStats.Total == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("shadow_stats", "none"))
+		return
+	}
+	stats := rt.session.RequestRuntimeShadowStats
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("shadow_stats", requestRuntimeShadowStatsStatusLine(*stats)))
+	fmt.Fprintln(rt.writer, rt.ui.statusKV("semantic_shadow", requestRuntimeSemanticShadowStatsStatusLine(*stats)))
+	if !detail {
+		return
+	}
+	for _, item := range stats.ByRequestClass {
+		fmt.Fprintln(rt.writer, rt.ui.dim("  class "+requestRuntimeShadowClassStatLine(item)))
+	}
+	recent := stats.RecentSamples
+	if len(recent) > 5 {
+		recent = recent[len(recent)-5:]
+	}
+	for _, sample := range recent {
+		fmt.Fprintln(rt.writer, rt.ui.dim("  sample "+requestRuntimeShadowSampleLine(sample)))
+	}
+}
+
+func requestRuntimeEnabledClassesLabel(classes []string) string {
+	classes = normalizeRequestRuntimeClasses(classes)
+	if len(classes) == 0 {
+		return "none"
+	}
+	return strings.Join(classes, ", ")
+}
+
+func requestSemanticClassifierStatusLine(cfg RequestSemanticClassifierConfig) string {
+	normalizeRequestSemanticClassifierConfig(&cfg)
+	if cfg.Mode == RequestSemanticClassifierModeDisabled {
+		return cfg.Mode
+	}
+	return fmt.Sprintf("%s min_conf=%.2f max_tokens=%d", cfg.Mode, requestSemanticClassifierMinConfidence(cfg), requestSemanticClassifierMaxTokens(cfg))
+}
+
+func requestRuntimeEnvelopeStatusLine(envelope RequestEnvelope) string {
+	envelope.Normalize()
+	return fmt.Sprintf(
+		"class=%s boundary=%s file=%t git=%t verify=%t",
+		requestRuntimeClassForEnvelope(envelope),
+		envelope.Boundary,
+		envelope.AllowsFileMutation,
+		envelope.AllowsGitMutation,
+		envelope.RequiresVerification,
+	)
+}
+
+func requestRuntimeShadowStatsStatusLine(stats RequestRuntimeShadowStats) string {
+	return fmt.Sprintf(
+		"total=%d diverged=%d runtime=%d",
+		stats.Total,
+		stats.Diverged,
+		stats.RuntimeDiverged,
+	)
+}
+
+func requestRuntimeSemanticShadowStatsStatusLine(stats RequestRuntimeShadowStats) string {
+	return fmt.Sprintf(
+		"observed=%d diverged=%d",
+		stats.SemanticObserved,
+		stats.SemanticDiverged,
+	)
+}
+
+func requestRuntimeShadowClassStatLine(stat RequestRuntimeShadowClassStat) string {
+	class := normalizeRequestRuntimeClass(stat.RequestClass)
+	if class == "" {
+		class = RequestRuntimeClassDefault
+	}
+	return fmt.Sprintf(
+		"%s total=%d diverged=%d runtime=%d semantic=%d/%d",
+		class,
+		stat.Total,
+		stat.Diverged,
+		stat.RuntimeDiverged,
+		stat.SemanticObserved,
+		stat.SemanticDiverged,
+	)
+}
+
+func requestRuntimeShadowSampleLine(sample RequestRuntimeShadowSample) string {
+	class := normalizeRequestRuntimeClass(sample.RequestClass)
+	if class == "" {
+		class = RequestRuntimeClassDefault
+	}
+	semanticClass := normalizeRequestRuntimeClass(sample.SemanticRequestClass)
+	if semanticClass == "" {
+		semanticClass = "none"
+	}
+	differences := strings.Join(normalizeTaskStateList(sample.Differences, 8), ",")
+	if differences == "" {
+		differences = "none"
+	}
+	semanticDifferences := strings.Join(normalizeTaskStateList(sample.SemanticDifferences, 8), ",")
+	if semanticDifferences == "" {
+		semanticDifferences = "none"
+	}
+	logRef := valueOrUnset(requestRuntimeShadowLogRef(sample.ShadowLogPath))
+	return fmt.Sprintf("class=%s semantic_class=%s diff=%s semantic_diff=%s log=%s", class, semanticClass, differences, semanticDifferences, logRef)
+}
+
 var webResearchEnvKeys = []string{
 	"TAVILY_API_KEY",
 	"BRAVE_SEARCH_API_KEY",
@@ -7214,6 +7374,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal", goal.ID+" ["+goal.Status+"]"))
 			fmt.Fprintln(rt.writer, rt.ui.statusKV("active_goal_iteration", fmt.Sprintf("%d", goal.Iteration)))
 		}
+		rt.printRequestRuntimeStatus(detailStatus)
 		if rt.session.ActiveEditLoop != nil {
 			loop := *rt.session.ActiveEditLoop
 			loop.Normalize()
@@ -7757,6 +7918,9 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("active_permission_profile", valueOrUnset(activePermissionProfileIDForMode(rt.perms.Mode()))),
 			kv("session_dir", rt.cfg.SessionDir),
 			kv("progress_display", configProgressDisplay(rt.cfg)),
+			kv("request_runtime", normalizeRequestRuntimeMode(rt.cfg.RequestRuntime.Mode)),
+			kv("request_runtime_classes", requestRuntimeEnabledClassesLabel(rt.cfg.RequestRuntime.EnabledClasses)),
+			kv("semantic_classifier", requestSemanticClassifierStatusLine(rt.cfg.RequestRuntime.SemanticClassifier)),
 			kv("max_tool_iterations", formatMaxToolIterations(configMaxToolIterations(rt.cfg))),
 			kv("auto_compact_chars", fmt.Sprintf("%d", rt.cfg.AutoCompactChars)),
 		)
