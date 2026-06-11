@@ -1699,7 +1699,7 @@ func reviewRunLooksExplicitRepairIntent(run ReviewRun) bool {
 	if strings.EqualFold(strings.TrimSpace(run.Mode), reviewModeLiveFix) {
 		return true
 	}
-	return looksLikeExplicitEditIntent(run.Objective)
+	return requestTextAllowsRepairContinuation(firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest))
 }
 
 func reviewFindingLooksActionableForRepairGate(finding ReviewFinding) bool {

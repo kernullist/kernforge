@@ -35,6 +35,8 @@ func TestRequestScenarioReplayMatrix(t *testing.T) {
 		"korean_explicit_edit",
 		"korean_review_only",
 		"plan_only",
+		"korean_answer_only_comparison_summary",
+		"korean_document_artifact_summary",
 		"draft_only_goal_prompt",
 		"document_authoring",
 		"latest_current_research",

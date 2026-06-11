@@ -3665,15 +3665,16 @@ func generatedDocumentArtifactAcceptedGateCanRecoverRequestContext(request strin
 		return true
 	}
 	lower := strings.ToLower(requestText)
+	envelope := buildRequestEnvelope(requestText)
 	if requestLooksLikeLocalVerificationWork(lower) ||
-		looksLikeExplicitEditIntent(lower) ||
+		envelope.AllowsFileMutation ||
 		looksLikeExecutionFlowQuestion(lower) {
 		return false
 	}
 	if looksLikeFinalAnswerFollowupPrompt(requestText) {
 		return true
 	}
-	return classifyTurnIntent(requestText) == TurnIntentContinueLastTask
+	return envelope.Intent == TurnIntentContinueLastTask
 }
 
 func sessionHasDocumentArtifactContentAcceptedHarness(session *Session) bool {
@@ -6996,7 +6997,7 @@ func documentAuthoringIntentForToolTurn(session *Session) string {
 	}
 	latestUser := strings.TrimSpace(baseUserQueryText(latestExternalOrUserMessageText(session.Messages)))
 	if latestUser != "" {
-		if looksLikeDocumentAuthoringIntent(latestUser) {
+		if buildRequestEnvelope(latestUser).DocumentAuthoring {
 			return latestUser
 		}
 		if !controlRequestContinuesCurrentWorkContext(latestUser) {
@@ -7004,7 +7005,7 @@ func documentAuthoringIntentForToolTurn(session *Session) string {
 		}
 	}
 	effective := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
-	if looksLikeDocumentAuthoringIntent(effective) {
+	if buildRequestEnvelope(effective).DocumentAuthoring {
 		return effective
 	}
 	return ""
@@ -9580,13 +9581,7 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 		routeMode = "cross_review"
 	}
 	envelope := a.latestRequestEnvelopeFor(latestUser)
-	classDecision := ReviewRequestClassDecision{
-		RequestClass:      envelope.ReviewRequestClass,
-		LifecycleKind:     envelope.ReviewLifecycleKind,
-		Reason:            envelope.ReviewRequestClassReason,
-		Confidence:        envelope.Confidence,
-		AmbiguityWarnings: envelope.Warnings,
-	}
+	classDecision := requestEnvelopeReviewDecision(envelope)
 	requestClass, requestClassReason := classDecision.RequestClass, classDecision.Reason
 	var b strings.Builder
 	b.WriteString("Codex-grade request handling:\n")
@@ -9616,10 +9611,11 @@ func shouldIncludeCodexGradeRequestHandlingPrompt(latestUser string, session *Se
 	if lower == "" {
 		return false
 	}
-	if requestLooksLikeFreshExecutionTask(lower) {
+	envelope := buildRequestEnvelope(lower)
+	if envelope.AllowsFileMutation || envelope.AllowsGitMutation || envelope.RequiresFreshExternalInfo || envelope.DocumentAuthoring {
 		return true
 	}
-	intent := classifyTurnIntent(lower)
+	intent := envelope.Intent
 	switch intent {
 	case TurnIntentReviewCode, TurnIntentEditCode, TurnIntentContinueLastTask, TurnIntentRunCommand:
 		return true

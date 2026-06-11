@@ -12,8 +12,8 @@ func (s *kernforgeMCPServer) toolReview(ctx context.Context, args map[string]any
 	request := strings.TrimSpace(stringValue(args, "request"))
 	autoReview := strings.ToLower(strings.TrimSpace(stringValue(args, "auto_review")))
 	if autoReview == "off" {
-		decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), prefersReadOnlyAnalysisIntent(request) || looksLikeReviewInspectionOnlyRequest(request), looksLikeExplicitEditIntent(request))
-		decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", "mcp_auto_review_off")
+		envelope := buildRequestEnvelope(request)
+		decision := requestEnvelopeReviewDecision(envelope)
 		requestClass, requestClassReason := decision.RequestClass, decision.Reason
 		lifecycle := ReviewRequestLifecycle{
 			RequestClass:             requestClass,

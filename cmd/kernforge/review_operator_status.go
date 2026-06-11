@@ -1061,16 +1061,12 @@ func reviewFinalAnswerContractLifecycleKindForClass(class string, session *Sessi
 			return kind
 		}
 		if request := strings.TrimSpace(session.AcceptanceContract.SourcePrompt); request != "" {
-			readOnly := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "analysis_only") ||
-				prefersReadOnlyAnalysisIntent(request) ||
-				looksLikeReviewInspectionOnlyRequest(request)
-			explicitEdit := strings.EqualFold(strings.TrimSpace(session.AcceptanceContract.Mode), "edit") ||
-				looksLikeExplicitEditIntent(request)
-			decision := classifyAcceptanceContractRequestClassDecision(request, classifyTurnIntent(request), readOnly, explicitEdit)
+			envelope := buildRequestEnvelope(request)
+			decision := requestEnvelopeReviewDecision(envelope)
 			if normalizedClass := normalizeReviewRequestClass(class); normalizedClass != reviewRequestClassGeneral {
 				decision.RequestClass = normalizedClass
 			}
-			decision = applyReviewLifecycleKindToDecision(decision, request, classifyTurnIntent(request), "", session.AcceptanceContract.Mode)
+			decision = applyReviewLifecycleKindToDecision(decision, request, envelope.Intent, "", session.AcceptanceContract.Mode)
 			if kind := normalizeReviewLifecycleKind(decision.LifecycleKind); kind != reviewLifecycleKindGeneral {
 				return kind
 			}

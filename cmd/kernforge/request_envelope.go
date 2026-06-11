@@ -222,6 +222,25 @@ func requestEnvelopeReviewClassMutates(class string) bool {
 	}
 }
 
+func requestEnvelopeReviewDecision(envelope RequestEnvelope) ReviewRequestClassDecision {
+	envelope.Normalize()
+	decision := ReviewRequestClassDecision{
+		RequestClass:            envelope.ReviewRequestClass,
+		LifecycleKind:           envelope.ReviewLifecycleKind,
+		Reason:                  envelope.ReviewRequestClassReason,
+		Confidence:              envelope.Confidence,
+		AmbiguityWarnings:       append([]string(nil), envelope.Warnings...),
+		SecondaryRequestClasses: nil,
+	}
+	for _, item := range envelope.Evidence {
+		if strings.EqualFold(strings.TrimSpace(item.Source), "review_request_class") {
+			decision.Signals = append(decision.Signals, strings.TrimSpace(item.Signal))
+		}
+	}
+	decision.Normalize()
+	return decision
+}
+
 func requestEnvelopeAllowsRepairContinuation(envelope RequestEnvelope) bool {
 	envelope.Normalize()
 	if envelope.AllowsFileMutation || envelope.ExplicitEditRequest || envelope.DocumentAuthoring {
@@ -239,7 +258,7 @@ func requestTextAllowsRepairContinuation(text string) bool {
 		base = strings.TrimSpace(text)
 	}
 	if base == "" {
-		return true
+		return false
 	}
 	return requestEnvelopeAllowsRepairContinuation(buildRequestEnvelope(base))
 }

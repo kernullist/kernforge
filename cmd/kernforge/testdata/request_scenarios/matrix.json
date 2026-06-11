@@ -77,6 +77,63 @@
     }
   },
   {
+    "name": "korean_answer_only_comparison_summary",
+    "user_text": "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘.",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "부족한 기능을 답변으로만 정리했습니다. Files edited: none."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "question",
+      "allows_file_mutation": false,
+      "allows_git_mutation": false,
+      "read_only_analysis": true,
+      "explicit_edit_request": false,
+      "document_authoring": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "write_file", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
+    "name": "korean_document_artifact_summary",
+    "user_text": "TavernKernel 부족 기능을 별도 문서로 정리해줘",
+    "session_state": {
+      "changed_files": ["TavernKernel-gap-report.md"],
+      "generated_document_harness_owns_it": true
+    },
+    "provider_scripted_outputs": [
+      {
+        "text": "문서를 작성했습니다. Artifact: TavernKernel-gap-report.md. Verification was not run because this is a document artifact."
+      }
+    ],
+    "expected_request_envelope": {
+      "primary_class": "document",
+      "allows_file_mutation": true,
+      "allows_git_mutation": false,
+      "requires_verification": true,
+      "read_only_analysis": false,
+      "document_authoring": true
+    },
+    "expected_tool_exposure": {
+      "enabled": ["apply_patch"],
+      "disabled": ["git_commit", "git_push"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    }
+  },
+  {
     "name": "draft_only_goal_prompt",
     "user_text": "goal 프롬프트를 작성해줘",
     "session_state": {},
