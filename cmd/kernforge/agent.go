@@ -149,6 +149,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 		}
 	}
 	requestEnvelope := a.latestRequestEnvelopeFor(userText)
+	requestEnvelope = a.maybeRefineRequestEnvelopeWithSemanticClassifier(ctx, requestEnvelope)
 	a.rememberRequestEnvelope(requestEnvelope)
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent

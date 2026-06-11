@@ -28,9 +28,10 @@ const (
 )
 
 type RequestRuntimeConfig struct {
-	Mode           string   `json:"mode,omitempty"`
-	EnabledClasses []string `json:"enabled_classes,omitempty"`
-	LogDir         string   `json:"log_dir,omitempty"`
+	Mode               string                          `json:"mode,omitempty"`
+	EnabledClasses     []string                        `json:"enabled_classes,omitempty"`
+	LogDir             string                          `json:"log_dir,omitempty"`
+	SemanticClassifier RequestSemanticClassifierConfig `json:"semantic_classifier,omitempty"`
 }
 
 type RequestRuntimeDecisionSummary struct {
@@ -69,6 +70,7 @@ func mergeRequestRuntimeConfig(dst *RequestRuntimeConfig, src RequestRuntimeConf
 	if strings.TrimSpace(src.LogDir) != "" {
 		dst.LogDir = strings.TrimSpace(src.LogDir)
 	}
+	mergeRequestSemanticClassifierConfig(&dst.SemanticClassifier, src.SemanticClassifier)
 }
 
 func normalizeRequestRuntimeConfig(cfg *RequestRuntimeConfig) {
@@ -78,6 +80,22 @@ func normalizeRequestRuntimeConfig(cfg *RequestRuntimeConfig) {
 	cfg.Mode = normalizeRequestRuntimeMode(cfg.Mode)
 	cfg.EnabledClasses = normalizeRequestRuntimeClasses(cfg.EnabledClasses)
 	cfg.LogDir = strings.TrimSpace(cfg.LogDir)
+	normalizeRequestSemanticClassifierConfig(&cfg.SemanticClassifier)
+}
+
+func mergeRequestSemanticClassifierConfig(dst *RequestSemanticClassifierConfig, src RequestSemanticClassifierConfig) {
+	if dst == nil {
+		return
+	}
+	if strings.TrimSpace(src.Mode) != "" {
+		dst.Mode = normalizeRequestSemanticClassifierMode(src.Mode)
+	}
+	if src.MinConfidence != 0 {
+		dst.MinConfidence = src.MinConfidence
+	}
+	if src.MaxTokens != 0 {
+		dst.MaxTokens = src.MaxTokens
+	}
 }
 
 func normalizeRequestRuntimeMode(mode string) string {
