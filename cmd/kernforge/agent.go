@@ -516,6 +516,9 @@ func (a *Agent) CompactWithTrigger(ctx context.Context, instructions string, tri
 	} else {
 		a.Session.Summary = strings.TrimSpace(a.Session.Summary) + "\n\n" + summary
 	}
+	if len(a.Session.Messages) == 0 {
+		a.Session.AddMessage(compactedConversationContinuationMessage())
+	}
 	a.resetProviderStateAfterHistoryMutation("compaction:" + firstNonEmptyTrimmed(reason, trigger))
 	afterMessages := len(a.Session.Messages)
 	afterChars := a.Session.ApproxChars()

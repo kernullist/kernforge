@@ -5601,6 +5601,60 @@ func TestCompactWithTriggerSummarizesRetainedMessagesDroppedByBudget(t *testing.
 	}
 }
 
+func TestCompactWithTriggerAddsContinuationWhenRetainedReplayBecomesEmpty(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	for i := 0; i < 13; i++ {
+		session.AddMessage(Message{Role: "user", Text: fmt.Sprintf("old message %02d", i)})
+	}
+	session.AddMessage(Message{
+		Role: "assistant",
+		ToolCalls: []ToolCall{{
+			ID:        "call_read",
+			Name:      "read_file",
+			Arguments: `{"path":"huge.cpp"}`,
+		}},
+	})
+	session.AddMessage(Message{
+		Role:       "tool",
+		ToolCallID: "call_read",
+		ToolName:   "read_file",
+		Text:       strings.Repeat("large-tool-output-", 50),
+	})
+	agent := &Agent{
+		Config: Config{
+			AutoCompactChars: 40,
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	summary, err := agent.CompactWithTrigger(context.Background(), "test compact", "auto", "test")
+	if err != nil {
+		t.Fatalf("CompactWithTrigger: %v", err)
+	}
+	if !strings.Contains(summary, "tool turn: read_file[huge.cpp]") {
+		t.Fatalf("expected compact summary to preserve dropped tool turn evidence, got %q", summary)
+	}
+	if len(agent.Session.Messages) != 1 {
+		t.Fatalf("expected one continuation message after empty replay recovery, got %#v", agent.Session.Messages)
+	}
+	msg := agent.Session.Messages[0]
+	if msg.Role != "user" || !msg.Internal {
+		t.Fatalf("expected internal user continuation message, got %#v", msg)
+	}
+	if !strings.Contains(msg.Text, compactedConversationContinuationText) {
+		t.Fatalf("expected compacted continuation text, got %q", msg.Text)
+	}
+	if latestExternalUserMessageText(agent.Session.Messages) != "" {
+		t.Fatalf("compaction continuation must not replace the latest external user request")
+	}
+	if latestInternalUserGuidanceText(agent.Session.Messages) == "" {
+		t.Fatalf("expected continuation to remain available as internal guidance")
+	}
+}
+
 func TestSummarizeMessagesIncludesCompactToolErrorDetails(t *testing.T) {
 	messages := []Message{
 		{Role: "user", Text: "inspect the failure"},

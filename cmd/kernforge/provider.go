@@ -218,7 +218,12 @@ func internalUserMessage(text string) Message {
 	}
 }
 
+func compactedConversationContinuationMessage() Message {
+	return internalUserMessage(compactedConversationContinuationText)
+}
+
 const internalModelGuidanceHeader = "Kernforge internal guidance (not a user request):"
+const compactedConversationContinuationText = "Conversation history was compacted and no replayable messages remain. Continue the current task from the conversation summary, active state, structured task state, shared plan, and recent runtime/session events already provided in the system instructions. Do not restart the task or ask the user to repeat it unless that compacted context is insufficient."
 
 func modelFacingMessageText(msg Message) string {
 	text := strings.TrimSpace(msg.Text)

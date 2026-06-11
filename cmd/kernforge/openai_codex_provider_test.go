@@ -201,6 +201,44 @@ func TestBuildOpenAICodexRequestBodyPreservesPromptCacheKeyAndMetadata(t *testin
 	}
 }
 
+func TestBuildOpenAICodexRequestBodySynthesizesContinuationWhenReplayIsEmpty(t *testing.T) {
+	body, err := buildOpenAICodexRequestBody(ChatRequest{
+		Model:  "gpt-5.5",
+		System: "Conversation summary:\n- original user request survived compaction",
+		Messages: []Message{{
+			Role: "system",
+			Text: "legacy system-only message that is not replayable input",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildOpenAICodexRequestBody: %v", err)
+	}
+	if strings.Contains(string(body), `"input":[]`) {
+		t.Fatalf("OpenAI Codex request must not send an empty input array: %s", body)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("expected one synthesized continuation input item, got %#v", payload["input"])
+	}
+	item, ok := input[0].(map[string]any)
+	if !ok || item["type"] != "message" || item["role"] != "developer" {
+		t.Fatalf("expected developer continuation message, got %#v", input[0])
+	}
+	content, ok := item["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("expected continuation text content, got %#v", item["content"])
+	}
+	text, ok := content[0].(map[string]any)
+	if !ok || !strings.Contains(fmt.Sprint(text["text"]), compactedConversationContinuationText) {
+		t.Fatalf("expected compacted continuation guidance, got %#v", content[0])
+	}
+}
+
 func TestBuildOpenAICodexRequestBodyUsesAzureStoreSemantics(t *testing.T) {
 	for _, baseURL := range []string{
 		"https://foo.openai.azure.com/openai",

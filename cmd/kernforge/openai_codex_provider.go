@@ -1055,7 +1055,22 @@ func buildOpenAICodexInput(req ChatRequest) ([]any, error) {
 			items = append(items, openAICodexToolCallOutputItem(callID, msg, supportsImages))
 		}
 	}
+	if len(items) == 0 {
+		items = append(items, openAICodexCompactedContinuationInputItem())
+	}
 	return items, nil
+}
+
+func openAICodexCompactedContinuationInputItem() map[string]any {
+	msg := compactedConversationContinuationMessage()
+	return map[string]any{
+		"type": "message",
+		"role": "developer",
+		"content": []map[string]any{{
+			"type": "input_text",
+			"text": modelFacingMessageText(msg),
+		}},
+	}
 }
 
 func openAICodexReasoningInputItem(msg Message) map[string]any {
