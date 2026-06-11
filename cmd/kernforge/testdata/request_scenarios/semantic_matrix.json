@@ -1,0 +1,114 @@
+[
+  {
+    "name": "spanish_answer_only_comparison_semantic",
+    "user_text": "Enumera las carencias de TavernKernel frente a otros anti-cheats globales.",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "Resumen de carencias entregado como respuesta. Files edited: none."
+      }
+    ],
+    "semantic_classification": {
+      "intent": "ask_project_knowledge",
+      "primary_class": "question",
+      "action_boundary": "read_only",
+      "read_only_analysis": true,
+      "explicit_edit_request": false,
+      "explicit_git_request": false,
+      "document_authoring": false,
+      "allows_web_research": false,
+      "requires_fresh_external_info": false,
+      "confidence": 0.95,
+      "reason": "The user asks for an answer-only comparison, not a file artifact.",
+      "signals": ["answer_only", "comparison"]
+    },
+    "expected_request_envelope": {
+      "allows_file_mutation": false,
+      "allows_git_mutation": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "write_file", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    },
+    "expected_semantic": {
+      "request_envelope": {
+        "primary_class": "question",
+        "allows_file_mutation": false,
+        "allows_git_mutation": false,
+        "read_only_analysis": true,
+        "explicit_edit_request": false,
+        "document_authoring": false
+      },
+      "tool_exposure": {
+        "enabled": ["read_file"],
+        "disabled": ["apply_patch", "write_file", "git_commit"]
+      },
+      "final_gate": {
+        "state": "Ready",
+        "ready": true
+      }
+    }
+  },
+  {
+    "name": "japanese_document_artifact_semantic",
+    "user_text": "TavernKernelの不足機能を別のMarkdown文書にまとめてください。",
+    "session_state": {},
+    "provider_scripted_outputs": [
+      {
+        "text": "Markdown document request classified for artifact authoring."
+      }
+    ],
+    "semantic_classification": {
+      "intent": "plan_or_design",
+      "primary_class": "document",
+      "action_boundary": "may_edit",
+      "read_only_analysis": false,
+      "explicit_edit_request": false,
+      "explicit_git_request": false,
+      "document_authoring": true,
+      "allows_web_research": false,
+      "requires_fresh_external_info": false,
+      "confidence": 0.94,
+      "reason": "The user asks to collect the result into a separate Markdown document.",
+      "signals": ["document_artifact", "markdown"]
+    },
+    "expected_request_envelope": {
+      "allows_file_mutation": false,
+      "allows_git_mutation": false
+    },
+    "expected_tool_exposure": {
+      "enabled": ["read_file"],
+      "disabled": ["apply_patch", "write_file", "git_commit"]
+    },
+    "expected_interventions": [],
+    "expected_final_gate": {
+      "state": "Ready",
+      "ready": true
+    },
+    "expected_semantic": {
+      "request_envelope": {
+        "primary_class": "document",
+        "allows_file_mutation": true,
+        "allows_git_mutation": false,
+        "requires_verification": true,
+        "read_only_analysis": false,
+        "explicit_edit_request": false,
+        "document_authoring": true
+      },
+      "tool_exposure": {
+        "enabled": ["apply_patch"],
+        "disabled": ["git_commit", "git_push"]
+      },
+      "final_gate": {
+        "state": "Ready",
+        "ready": true
+      },
+      "differences": ["request_class", "exposed_tools", "disabled_tools"]
+    }
+  }
+]

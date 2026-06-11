@@ -14,10 +14,12 @@ type RequestScenario struct {
 	UserText                string                              `json:"user_text"`
 	SessionState            RequestScenarioSessionState         `json:"session_state,omitempty"`
 	ProviderScriptedOutputs []RequestScenarioProviderOutput     `json:"provider_scripted_outputs,omitempty"`
+	SemanticClassification  *RequestSemanticClassification      `json:"semantic_classification,omitempty"`
 	ExpectedRequestEnvelope RequestScenarioExpectedEnvelope     `json:"expected_request_envelope,omitempty"`
 	ExpectedToolExposure    RequestScenarioExpectedToolExposure `json:"expected_tool_exposure,omitempty"`
 	ExpectedInterventions   []string                            `json:"expected_interventions,omitempty"`
 	ExpectedFinalGate       RequestScenarioExpectedFinalGate    `json:"expected_final_gate,omitempty"`
+	ExpectedSemantic        RequestScenarioExpectedSemantic     `json:"expected_semantic,omitempty"`
 }
 
 type RequestScenarioSessionState struct {
@@ -60,12 +62,27 @@ type RequestScenarioExpectedFinalGate struct {
 	Ready *bool  `json:"ready,omitempty"`
 }
 
+type RequestScenarioExpectedSemantic struct {
+	RequestEnvelope RequestScenarioExpectedEnvelope     `json:"request_envelope,omitempty"`
+	ToolExposure    RequestScenarioExpectedToolExposure `json:"tool_exposure,omitempty"`
+	FinalGate       RequestScenarioExpectedFinalGate    `json:"final_gate,omitempty"`
+	Differences     *[]string                           `json:"differences,omitempty"`
+}
+
 type RequestScenarioReplayResult struct {
-	Name              string                        `json:"name,omitempty"`
+	Name              string                         `json:"name,omitempty"`
+	RequestEnvelope   RequestEnvelope                `json:"request_envelope"`
+	ToolExposure      RequestRuntimeDecisionSummary  `json:"tool_exposure"`
+	Interventions     []string                       `json:"interventions,omitempty"`
+	FinalGateDecision FinalGateDecision              `json:"final_gate_decision"`
+	Semantic          *RequestScenarioSemanticResult `json:"semantic,omitempty"`
+}
+
+type RequestScenarioSemanticResult struct {
 	RequestEnvelope   RequestEnvelope               `json:"request_envelope"`
 	ToolExposure      RequestRuntimeDecisionSummary `json:"tool_exposure"`
-	Interventions     []string                      `json:"interventions,omitempty"`
 	FinalGateDecision FinalGateDecision             `json:"final_gate_decision"`
+	Differences       []string                      `json:"differences,omitempty"`
 }
 
 func LoadRequestScenarios(dir string) ([]RequestScenario, error) {
@@ -122,6 +139,16 @@ func (s *RequestScenario) Normalize() {
 	s.ExpectedToolExposure.Disabled = normalizeTaskStateList(s.ExpectedToolExposure.Disabled, 64)
 	s.ExpectedInterventions = normalizeTaskStateList(s.ExpectedInterventions, 32)
 	s.ExpectedFinalGate.State = strings.TrimSpace(s.ExpectedFinalGate.State)
+	if s.SemanticClassification != nil {
+		s.SemanticClassification.Normalize()
+	}
+	s.ExpectedSemantic.ToolExposure.Enabled = normalizeTaskStateList(s.ExpectedSemantic.ToolExposure.Enabled, 64)
+	s.ExpectedSemantic.ToolExposure.Disabled = normalizeTaskStateList(s.ExpectedSemantic.ToolExposure.Disabled, 64)
+	s.ExpectedSemantic.FinalGate.State = strings.TrimSpace(s.ExpectedSemantic.FinalGate.State)
+	if s.ExpectedSemantic.Differences != nil {
+		differences := normalizeTaskStateList(*s.ExpectedSemantic.Differences, 16)
+		s.ExpectedSemantic.Differences = &differences
+	}
 }
 
 func ReplayRequestScenario(root string, scenario RequestScenario, registry *ToolRegistry) (RequestScenarioReplayResult, error) {
@@ -157,7 +184,32 @@ func ReplayRequestScenario(root string, scenario RequestScenario, registry *Tool
 		Interventions:     normalizeTaskStateList(append(requestScenarioInterventionNames(turnRuntime), extraInterventions...), 32),
 		FinalGateDecision: finalDecision,
 	}
+	if scenario.SemanticClassification != nil {
+		result.Semantic = replayRequestScenarioSemantic(root, agent, scenario, envelope, turnRuntime, decisionSummary, registry)
+	}
 	return result, nil
+}
+
+func replayRequestScenarioSemantic(root string, agent *Agent, scenario RequestScenario, envelope RequestEnvelope, turnRuntime *TurnRuntimeState, baseline RequestRuntimeDecisionSummary, registry *ToolRegistry) *RequestScenarioSemanticResult {
+	if scenario.SemanticClassification == nil {
+		return nil
+	}
+	classification := *scenario.SemanticClassification
+	semanticEnvelope := semanticRequestClassificationCandidate(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
+	semanticPlan := agent.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, scenario.SessionState.UnresolvedVerification, false, false, false, semanticEnvelope.AllowsWebResearch, false)
+	semanticFinalInput := BuildFinalGateInput(root, agent.Session, semanticEnvelope, turnRuntime, requestScenarioLastOutputText(scenario), TurnRuntimeFinalContext{
+		GeneratedDocumentHarnessOwnsIt: scenario.SessionState.GeneratedDocumentHarnessOwnsIt && semanticEnvelope.DocumentAuthoring,
+		ExplicitEditRequest:            semanticEnvelope.ExplicitEditRequest,
+	})
+	semanticFinalDecision := DecideFinalGate(semanticFinalInput)
+	semanticSummary := buildRequestRuntimeDecisionSummary("semantic_classifier", semanticEnvelope, semanticPlan, turnRuntime, semanticFinalDecision, registry)
+	semanticSummary = sanitizeRequestRuntimeDecisionSummary(semanticSummary)
+	return &RequestScenarioSemanticResult{
+		RequestEnvelope:   semanticEnvelope,
+		ToolExposure:      semanticSummary,
+		FinalGateDecision: semanticFinalDecision,
+		Differences:       requestRuntimeDecisionDifferences(baseline, semanticSummary),
+	}
 }
 
 func requestScenarioSession(root string, scenario RequestScenario) *Session {

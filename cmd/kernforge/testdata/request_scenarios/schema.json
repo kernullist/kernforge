@@ -53,6 +53,9 @@
       "provider_scripted_outputs": {
         "type": "array"
       },
+      "semantic_classification": {
+        "type": "object"
+      },
       "expected_request_envelope": {
         "type": "object"
       },
@@ -67,6 +70,26 @@
       },
       "expected_final_gate": {
         "type": "object"
+      },
+      "expected_semantic": {
+        "type": "object",
+        "properties": {
+          "request_envelope": {
+            "type": "object"
+          },
+          "tool_exposure": {
+            "type": "object"
+          },
+          "final_gate": {
+            "type": "object"
+          },
+          "differences": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
       }
     }
   }

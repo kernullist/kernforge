@@ -57,6 +57,44 @@ func TestSemanticClassifierDoesNotWidenMutationBoundary(t *testing.T) {
 	}
 }
 
+func TestSemanticClassifierPromotesLowConfidenceDocumentArtifact(t *testing.T) {
+	envelope := buildRequestEnvelope("TavernKernel no fusoku kino wo betsu no Markdown bunsho ni matomete kudasai")
+	classification := RequestSemanticClassification{
+		Intent:            string(TurnIntentPlanOrDesign),
+		PrimaryClass:      string(RequestClassDocument),
+		ActionBoundary:    string(ActionBoundaryMayEdit),
+		ReadOnlyAnalysis:  boolPtr(false),
+		DocumentAuthoring: boolPtr(true),
+		Confidence:        0.94,
+		Reason:            "The user explicitly asks for a separate Markdown document artifact.",
+	}
+
+	got := applySemanticRequestClassification(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
+	if !got.DocumentAuthoring || !got.AllowsFileMutation || got.ReadOnlyAnalysis {
+		t.Fatalf("expected semantic classifier to promote low-confidence document artifact, got %#v", got)
+	}
+	if got.PrimaryClass != RequestClassDocument || got.ReviewRequestClass != reviewRequestClassDocumentArtifact {
+		t.Fatalf("expected document artifact request class, got %#v", got)
+	}
+}
+
+func TestSemanticClassifierDoesNotPromoteDocumentOverConfidentAnswerOnly(t *testing.T) {
+	envelope := buildRequestEnvelope("TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘.")
+	classification := RequestSemanticClassification{
+		PrimaryClass:      string(RequestClassDocument),
+		ActionBoundary:    string(ActionBoundaryMayEdit),
+		ReadOnlyAnalysis:  boolPtr(false),
+		DocumentAuthoring: boolPtr(true),
+		Confidence:        0.99,
+		Reason:            "Incorrectly treats an answer-only request as an artifact.",
+	}
+
+	got := applySemanticRequestClassification(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
+	if got.DocumentAuthoring || got.AllowsFileMutation || !got.ReadOnlyAnalysis {
+		t.Fatalf("semantic classifier must not promote a confident answer-only request to document authoring, got %#v", got)
+	}
+}
+
 func TestSemanticClassifierShadowDoesNotChangeEnvelope(t *testing.T) {
 	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
 	classification := RequestSemanticClassification{

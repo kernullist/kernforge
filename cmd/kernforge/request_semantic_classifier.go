@@ -251,6 +251,19 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		envelope.ReviewLifecycleKind = reviewLifecycleKindAnalysis
 		envelope.ReviewRequestClassReason = firstNonBlankString(classification.Reason, "semantic classifier narrowed request to read-only analysis")
 	}
+	if semanticClassificationPromotesDocumentAuthoring(classification) && requestEnvelopeAllowsSemanticDocumentPromotion(envelope) {
+		envelope.ReadOnlyAnalysis = false
+		envelope.ExplicitEditRequest = false
+		envelope.DocumentAuthoring = true
+		if intent := normalizeSemanticTurnIntent(classification.Intent); intent != "" {
+			envelope.Intent = intent
+		}
+		envelope.PrimaryClass = RequestClassDocument
+		envelope.Classes = []RequestClass{RequestClassDocument}
+		envelope.ReviewRequestClass = reviewRequestClassDocumentArtifact
+		envelope.ReviewLifecycleKind = reviewLifecycleKindDocumentArtifact
+		envelope.ReviewRequestClassReason = firstNonBlankString(classification.Reason, "semantic classifier promoted low-confidence request to document artifact authoring")
+	}
 	if semanticBoolTrue(classification.RequiresFreshExternalInfo) && !requestEnvelopeLooksLikeLocalMutation(envelope) {
 		envelope.RequiresFreshExternalInfo = true
 		envelope.AllowsWebResearch = true
@@ -307,6 +320,31 @@ func semanticClassificationNarrowsToReadOnly(classification RequestSemanticClass
 	}
 	class := normalizeRequestClassValue(classification.PrimaryClass)
 	return class == RequestClassQuestion || class == RequestClassReview || class == RequestClassPlan
+}
+
+func semanticClassificationPromotesDocumentAuthoring(classification RequestSemanticClassification) bool {
+	classification.Normalize()
+	if semanticBoolTrue(classification.DocumentAuthoring) {
+		return true
+	}
+	return normalizeRequestClassValue(classification.PrimaryClass) == RequestClassDocument
+}
+
+func requestEnvelopeAllowsSemanticDocumentPromotion(envelope RequestEnvelope) bool {
+	envelope.Normalize()
+	if requestEnvelopeHasDeterministicMutation(envelope) {
+		return false
+	}
+	if envelope.GoalPromptDraftOnly || envelope.ReviewOnlyModeRequest {
+		return false
+	}
+	if requestHasExplicitNoEditLanguage(envelope.ExternalUserText) {
+		return false
+	}
+	if envelope.ReadOnlyAnalysis && envelope.Confidence >= 0.55 {
+		return false
+	}
+	return true
 }
 
 func requestEnvelopeHasDeterministicMutation(envelope RequestEnvelope) bool {

@@ -29,6 +29,7 @@ func TestRequestScenarioReplayMatrix(t *testing.T) {
 			assertRequestScenarioToolExposure(t, scenario.ExpectedToolExposure, result.ToolExposure)
 			assertRequestScenarioInterventions(t, scenario.ExpectedInterventions, result.Interventions)
 			assertRequestScenarioFinalGate(t, scenario.ExpectedFinalGate, result.FinalGateDecision)
+			assertRequestScenarioSemantic(t, scenario, result)
 		})
 	}
 	for _, name := range []string{
@@ -48,6 +49,8 @@ func TestRequestScenarioReplayMatrix(t *testing.T) {
 		"generated_doc_final_only",
 		"verification_unavailable",
 		"compaction_history_rewrite",
+		"spanish_answer_only_comparison_semantic",
+		"japanese_document_artifact_semantic",
 	} {
 		if !seen[name] {
 			t.Fatalf("required scenario %q was not loaded", name)
@@ -288,5 +291,32 @@ func assertRequestScenarioFinalGate(t *testing.T, expected RequestScenarioExpect
 	}
 	if expected.Ready != nil && *expected.Ready != actual.Ready {
 		t.Fatalf("final gate ready: expected %t got %t in %#v", *expected.Ready, actual.Ready, actual)
+	}
+}
+
+func assertRequestScenarioSemantic(t *testing.T, scenario RequestScenario, result RequestScenarioReplayResult) {
+	t.Helper()
+	if scenario.SemanticClassification == nil {
+		if result.Semantic != nil {
+			t.Fatalf("scenario without semantic classification produced semantic replay: %#v", result.Semantic)
+		}
+		return
+	}
+	if result.Semantic == nil {
+		t.Fatalf("scenario with semantic classification did not produce semantic replay")
+	}
+	assertRequestScenarioEnvelope(t, scenario.ExpectedSemantic.RequestEnvelope, result.Semantic.RequestEnvelope)
+	assertRequestScenarioToolExposure(t, scenario.ExpectedSemantic.ToolExposure, result.Semantic.ToolExposure)
+	assertRequestScenarioFinalGate(t, scenario.ExpectedSemantic.FinalGate, result.Semantic.FinalGateDecision)
+	if scenario.ExpectedSemantic.Differences == nil {
+		return
+	}
+	for _, want := range *scenario.ExpectedSemantic.Differences {
+		if !sliceContainsFold(result.Semantic.Differences, want) {
+			t.Fatalf("expected semantic difference %q, got %#v", want, result.Semantic.Differences)
+		}
+	}
+	if len(*scenario.ExpectedSemantic.Differences) == 0 && len(result.Semantic.Differences) > 0 {
+		t.Fatalf("expected no semantic differences, got %#v", result.Semantic.Differences)
 	}
 }
