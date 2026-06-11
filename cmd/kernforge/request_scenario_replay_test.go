@@ -205,6 +205,15 @@ func TestSemanticClassifierShadowRecordsCandidateDecision(t *testing.T) {
 	if !sliceContainsFold(comparison.SemanticDifferences, "final_gate") {
 		t.Fatalf("expected semantic final gate difference, got %#v", comparison.SemanticDifferences)
 	}
+	if !sliceContainsFold(comparison.SemanticDeltaLabels, "mutation_narrowing") {
+		t.Fatalf("expected semantic mutation narrowing label, got %#v", comparison.SemanticDeltaLabels)
+	}
+	if !sliceContainsFold(comparison.SemanticDeltaLabels, "stricter_final_gate") {
+		t.Fatalf("expected semantic stricter final gate label, got %#v", comparison.SemanticDeltaLabels)
+	}
+	if requestRuntimeSemanticDeltaRisky(comparison.SemanticDeltaLabels) {
+		t.Fatalf("narrowing semantic delta should not be risky, got %#v", comparison.SemanticDeltaLabels)
+	}
 	if !sliceContainsFold(comparison.Differences, "semantic_final_gate") {
 		t.Fatalf("expected top-level semantic final gate label, got %#v", comparison.Differences)
 	}
@@ -248,7 +257,7 @@ func TestRequestRuntimeShadowStatsAccumulatesSemanticObservations(t *testing.T) 
 	if stats == nil {
 		t.Fatalf("expected shadow stats")
 	}
-	if stats.Total != 2 || stats.SemanticObserved != 2 || stats.SemanticDiverged != 1 {
+	if stats.Total != 2 || stats.SemanticObserved != 2 || stats.SemanticDiverged != 1 || stats.SemanticRiskyDiverged != 0 {
 		t.Fatalf("unexpected aggregate stats: %#v", stats)
 	}
 	if stats.RuntimeDiverged != 0 {
@@ -264,8 +273,55 @@ func TestRequestRuntimeShadowStatsAccumulatesSemanticObservations(t *testing.T) 
 	if !sliceContainsFold(last.SemanticDifferences, "final_gate") {
 		t.Fatalf("expected semantic final gate difference in last sample, got %#v", last)
 	}
+	if !sliceContainsFold(last.SemanticDeltaLabels, "mutation_narrowing") {
+		t.Fatalf("expected semantic delta label in last sample, got %#v", last)
+	}
 	if strings.Contains(fmt.Sprintf("%#v", stats), "main.go를 분석만") {
 		t.Fatalf("shadow stats must not store user text: %#v", stats)
+	}
+}
+
+func TestRequestRuntimeSemanticDeltaLabelsClassifyRiskyExpansion(t *testing.T) {
+	baseline := RequestRuntimeDecisionSummary{
+		Source:         "v2",
+		RequestClass:   RequestRuntimeClassReviewOnly,
+		ExposedTools:   []string{"read_file"},
+		DisabledTools:  []string{"apply_patch", "git_commit"},
+		FinalGateState: string(FinalGateNeedsVerification),
+		FinalGateReady: false,
+	}
+	semantic := RequestRuntimeDecisionSummary{
+		Source:         "semantic_classifier",
+		RequestClass:   RequestRuntimeClassExplicitEdit,
+		ExposedTools:   []string{"read_file", "apply_patch"},
+		DisabledTools:  []string{"git_commit"},
+		FinalGateState: string(FinalGateReady),
+		FinalGateReady: true,
+	}
+	comparison := compareRequestRuntimeDecisions(baseline, baseline)
+	comparison.SemanticClassifierMode = RequestSemanticClassifierModeShadow
+	comparison.SemanticDecision = &semantic
+	comparison.SemanticDifferences = requestRuntimeDecisionDifferences(comparison.V2Decision, semantic)
+	comparison.SemanticDeltaLabels = requestRuntimeSemanticDeltaLabels(comparison.V2Decision, semantic)
+	comparison.Diverged = len(comparison.SemanticDifferences) > 0
+
+	for _, want := range []string{"request_class_delta", "tool_exposure_expansion", "mutation_expansion", "weaker_final_gate"} {
+		if !sliceContainsFold(comparison.SemanticDeltaLabels, want) {
+			t.Fatalf("expected semantic delta %q, got %#v", want, comparison.SemanticDeltaLabels)
+		}
+	}
+	if !requestRuntimeSemanticDeltaRisky(comparison.SemanticDeltaLabels) {
+		t.Fatalf("expected risky semantic expansion, got %#v", comparison.SemanticDeltaLabels)
+	}
+	stats := updateRequestRuntimeShadowStats(nil, comparison)
+	if stats.SemanticRiskyDiverged != 1 || stats.SemanticDiverged != 1 {
+		t.Fatalf("expected risky semantic divergence stats, got %#v", stats)
+	}
+	if len(stats.ByRequestClass) != 1 || stats.ByRequestClass[0].SemanticRiskyDiverged != 1 {
+		t.Fatalf("expected class risky semantic divergence stats, got %#v", stats.ByRequestClass)
+	}
+	if len(stats.RecentSamples) != 1 || !sliceContainsFold(stats.RecentSamples[0].SemanticDeltaLabels, "mutation_expansion") {
+		t.Fatalf("expected sample semantic delta labels, got %#v", stats.RecentSamples)
 	}
 }
 

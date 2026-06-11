@@ -57,29 +57,32 @@ type RequestRuntimeShadowComparison struct {
 	V2Decision             RequestRuntimeDecisionSummary  `json:"v2_decision"`
 	SemanticDecision       *RequestRuntimeDecisionSummary `json:"semantic_decision,omitempty"`
 	SemanticDifferences    []string                       `json:"semantic_differences,omitempty"`
+	SemanticDeltaLabels    []string                       `json:"semantic_delta_labels,omitempty"`
 	ShadowLogPath          string                         `json:"shadow_log_path,omitempty"`
 	WriteError             string                         `json:"write_error,omitempty"`
 }
 
 type RequestRuntimeShadowStats struct {
-	FirstObservedAt  time.Time                       `json:"first_observed_at,omitempty"`
-	LastObservedAt   time.Time                       `json:"last_observed_at,omitempty"`
-	Total            int                             `json:"total"`
-	Diverged         int                             `json:"diverged"`
-	RuntimeDiverged  int                             `json:"runtime_diverged"`
-	SemanticObserved int                             `json:"semantic_observed"`
-	SemanticDiverged int                             `json:"semantic_diverged"`
-	ByRequestClass   []RequestRuntimeShadowClassStat `json:"by_request_class,omitempty"`
-	RecentSamples    []RequestRuntimeShadowSample    `json:"recent_samples,omitempty"`
+	FirstObservedAt       time.Time                       `json:"first_observed_at,omitempty"`
+	LastObservedAt        time.Time                       `json:"last_observed_at,omitempty"`
+	Total                 int                             `json:"total"`
+	Diverged              int                             `json:"diverged"`
+	RuntimeDiverged       int                             `json:"runtime_diverged"`
+	SemanticObserved      int                             `json:"semantic_observed"`
+	SemanticDiverged      int                             `json:"semantic_diverged"`
+	SemanticRiskyDiverged int                             `json:"semantic_risky_diverged"`
+	ByRequestClass        []RequestRuntimeShadowClassStat `json:"by_request_class,omitempty"`
+	RecentSamples         []RequestRuntimeShadowSample    `json:"recent_samples,omitempty"`
 }
 
 type RequestRuntimeShadowClassStat struct {
-	RequestClass     string `json:"request_class,omitempty"`
-	Total            int    `json:"total"`
-	Diverged         int    `json:"diverged"`
-	RuntimeDiverged  int    `json:"runtime_diverged"`
-	SemanticObserved int    `json:"semantic_observed"`
-	SemanticDiverged int    `json:"semantic_diverged"`
+	RequestClass          string `json:"request_class,omitempty"`
+	Total                 int    `json:"total"`
+	Diverged              int    `json:"diverged"`
+	RuntimeDiverged       int    `json:"runtime_diverged"`
+	SemanticObserved      int    `json:"semantic_observed"`
+	SemanticDiverged      int    `json:"semantic_diverged"`
+	SemanticRiskyDiverged int    `json:"semantic_risky_diverged"`
 }
 
 type RequestRuntimeShadowSample struct {
@@ -92,6 +95,7 @@ type RequestRuntimeShadowSample struct {
 	SemanticFinalGateState string    `json:"semantic_final_gate_state,omitempty"`
 	Differences            []string  `json:"differences,omitempty"`
 	SemanticDifferences    []string  `json:"semantic_differences,omitempty"`
+	SemanticDeltaLabels    []string  `json:"semantic_delta_labels,omitempty"`
 	SemanticClassifierMode string    `json:"semantic_classifier_mode,omitempty"`
 	ShadowLogPath          string    `json:"shadow_log_path,omitempty"`
 	WriteError             string    `json:"write_error,omitempty"`
@@ -342,6 +346,85 @@ func semanticRequestRuntimeDifferenceLabels(differences []string) []string {
 	return normalizeTaskStateList(out, 16)
 }
 
+func requestRuntimeSemanticDeltaLabels(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) []string {
+	baseline = sanitizeRequestRuntimeDecisionSummary(baseline)
+	semantic = sanitizeRequestRuntimeDecisionSummary(semantic)
+	var labels []string
+	if baseline.RequestClass != semantic.RequestClass {
+		labels = append(labels, "request_class_delta")
+	}
+	if !stringSlicesEqual(baseline.ExposedTools, semantic.ExposedTools) || !stringSlicesEqual(baseline.DisabledTools, semantic.DisabledTools) {
+		labels = append(labels, "tool_exposure_delta")
+		if requestRuntimeToolExposureExpanded(baseline, semantic) {
+			labels = append(labels, "tool_exposure_expansion")
+		}
+		if requestRuntimeToolExposureNarrowed(baseline, semantic) {
+			labels = append(labels, "tool_exposure_narrowing")
+		}
+	}
+	baselineMutates := requestRuntimeClassAllowsMutation(baseline.RequestClass)
+	semanticMutates := requestRuntimeClassAllowsMutation(semantic.RequestClass)
+	if !baselineMutates && semanticMutates {
+		labels = append(labels, "mutation_expansion")
+	}
+	if baselineMutates && !semanticMutates {
+		labels = append(labels, "mutation_narrowing")
+	}
+	if baseline.RequestClass != RequestRuntimeClassGit && semantic.RequestClass == RequestRuntimeClassGit {
+		labels = append(labels, "git_expansion")
+	}
+	if baseline.FinalGateState != semantic.FinalGateState || baseline.FinalGateReady != semantic.FinalGateReady {
+		labels = append(labels, "final_gate_delta")
+		if !baseline.FinalGateReady && semantic.FinalGateReady {
+			labels = append(labels, "weaker_final_gate")
+		}
+		if baseline.FinalGateReady && !semantic.FinalGateReady {
+			labels = append(labels, "stricter_final_gate")
+		}
+	}
+	return normalizeTaskStateList(labels, 16)
+}
+
+func requestRuntimeClassAllowsMutation(class string) bool {
+	switch normalizeRequestRuntimeClass(class) {
+	case RequestRuntimeClassDocumentAuthoring, RequestRuntimeClassExplicitEdit, RequestRuntimeClassGit:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestRuntimeToolExposureExpanded(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) bool {
+	return requestRuntimeListHasExtra(semantic.ExposedTools, baseline.ExposedTools) || requestRuntimeListHasExtra(baseline.DisabledTools, semantic.DisabledTools)
+}
+
+func requestRuntimeToolExposureNarrowed(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) bool {
+	return requestRuntimeListHasExtra(baseline.ExposedTools, semantic.ExposedTools) || requestRuntimeListHasExtra(semantic.DisabledTools, baseline.DisabledTools)
+}
+
+func requestRuntimeListHasExtra(left []string, right []string) bool {
+	rightSet := make(map[string]struct{})
+	for _, item := range normalizeTaskStateList(right, 128) {
+		rightSet[strings.ToLower(item)] = struct{}{}
+	}
+	for _, item := range normalizeTaskStateList(left, 128) {
+		if _, ok := rightSet[strings.ToLower(item)]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func requestRuntimeSemanticDeltaRisky(labels []string) bool {
+	for _, label := range normalizeTaskStateList(labels, 16) {
+		switch strings.TrimSpace(label) {
+		case "mutation_expansion", "git_expansion", "weaker_final_gate", "tool_exposure_expansion":
+			return true
+		}
+	}
+	return false
+}
+
 func sanitizeRequestRuntimeDecisionSummary(summary RequestRuntimeDecisionSummary) RequestRuntimeDecisionSummary {
 	summary.Source = strings.TrimSpace(summary.Source)
 	summary.RequestClass = normalizeRequestRuntimeClass(summary.RequestClass)
@@ -369,23 +452,42 @@ func updateRequestRuntimeShadowStats(stats *RequestRuntimeShadowStats, compariso
 	}
 	stats.LastObservedAt = comparison.GeneratedAt
 	stats.Total++
-	if comparison.Diverged {
-		stats.Diverged++
-	}
 	runtimeDifferences := requestRuntimeDecisionDifferences(comparison.LegacyDecision, comparison.V2Decision)
 	if len(runtimeDifferences) > 0 {
 		stats.RuntimeDiverged++
 	}
+	if comparison.SemanticDecision != nil {
+		semantic := sanitizeRequestRuntimeDecisionSummary(*comparison.SemanticDecision)
+		comparison.SemanticDecision = &semantic
+		if len(comparison.SemanticDifferences) == 0 {
+			comparison.SemanticDifferences = requestRuntimeDecisionDifferences(comparison.V2Decision, semantic)
+		}
+		if len(comparison.SemanticDeltaLabels) == 0 {
+			comparison.SemanticDeltaLabels = requestRuntimeSemanticDeltaLabels(comparison.V2Decision, semantic)
+		}
+	}
+	comparison.SemanticDifferences = normalizeTaskStateList(comparison.SemanticDifferences, 16)
+	comparison.SemanticDeltaLabels = normalizeTaskStateList(comparison.SemanticDeltaLabels, 16)
 	semanticObserved := comparison.SemanticDecision != nil || strings.TrimSpace(comparison.SemanticClassifierMode) != ""
-	semanticDiverged := len(normalizeTaskStateList(comparison.SemanticDifferences, 16)) > 0
+	semanticDiverged := len(comparison.SemanticDifferences) > 0
+	semanticRiskyDiverged := semanticDiverged && requestRuntimeSemanticDeltaRisky(comparison.SemanticDeltaLabels)
+	if semanticDiverged {
+		comparison.Diverged = true
+	}
+	if comparison.Diverged {
+		stats.Diverged++
+	}
 	if semanticObserved {
 		stats.SemanticObserved++
 	}
 	if semanticDiverged {
 		stats.SemanticDiverged++
 	}
+	if semanticRiskyDiverged {
+		stats.SemanticRiskyDiverged++
+	}
 	class := requestRuntimeShadowStatsClass(comparison)
-	requestRuntimeShadowStatsRecordClass(stats, class, comparison.Diverged, len(runtimeDifferences) > 0, semanticObserved, semanticDiverged)
+	requestRuntimeShadowStatsRecordClass(stats, class, comparison.Diverged, len(runtimeDifferences) > 0, semanticObserved, semanticDiverged, semanticRiskyDiverged)
 	stats.RecentSamples = append(stats.RecentSamples, requestRuntimeShadowSampleFromComparison(comparison))
 	if len(stats.RecentSamples) > requestRuntimeShadowMaxRecentSamples {
 		stats.RecentSamples = stats.RecentSamples[len(stats.RecentSamples)-requestRuntimeShadowMaxRecentSamples:]
@@ -407,7 +509,7 @@ func requestRuntimeShadowStatsClass(comparison RequestRuntimeShadowComparison) s
 	return class
 }
 
-func requestRuntimeShadowStatsRecordClass(stats *RequestRuntimeShadowStats, class string, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool) {
+func requestRuntimeShadowStatsRecordClass(stats *RequestRuntimeShadowStats, class string, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool, semanticRiskyDiverged bool) {
 	if stats == nil {
 		return
 	}
@@ -417,19 +519,19 @@ func requestRuntimeShadowStatsRecordClass(stats *RequestRuntimeShadowStats, clas
 	}
 	for i := range stats.ByRequestClass {
 		if stats.ByRequestClass[i].RequestClass == class {
-			requestRuntimeShadowStatsIncrementClass(&stats.ByRequestClass[i], diverged, runtimeDiverged, semanticObserved, semanticDiverged)
+			requestRuntimeShadowStatsIncrementClass(&stats.ByRequestClass[i], diverged, runtimeDiverged, semanticObserved, semanticDiverged, semanticRiskyDiverged)
 			return
 		}
 	}
 	stat := RequestRuntimeShadowClassStat{RequestClass: class}
-	requestRuntimeShadowStatsIncrementClass(&stat, diverged, runtimeDiverged, semanticObserved, semanticDiverged)
+	requestRuntimeShadowStatsIncrementClass(&stat, diverged, runtimeDiverged, semanticObserved, semanticDiverged, semanticRiskyDiverged)
 	stats.ByRequestClass = append(stats.ByRequestClass, stat)
 	slices.SortFunc(stats.ByRequestClass, func(a RequestRuntimeShadowClassStat, b RequestRuntimeShadowClassStat) int {
 		return strings.Compare(a.RequestClass, b.RequestClass)
 	})
 }
 
-func requestRuntimeShadowStatsIncrementClass(stat *RequestRuntimeShadowClassStat, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool) {
+func requestRuntimeShadowStatsIncrementClass(stat *RequestRuntimeShadowClassStat, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool, semanticRiskyDiverged bool) {
 	if stat == nil {
 		return
 	}
@@ -446,6 +548,9 @@ func requestRuntimeShadowStatsIncrementClass(stat *RequestRuntimeShadowClassStat
 	if semanticDiverged {
 		stat.SemanticDiverged++
 	}
+	if semanticRiskyDiverged {
+		stat.SemanticRiskyDiverged++
+	}
 }
 
 func requestRuntimeShadowSampleFromComparison(comparison RequestRuntimeShadowComparison) RequestRuntimeShadowSample {
@@ -457,6 +562,7 @@ func requestRuntimeShadowSampleFromComparison(comparison RequestRuntimeShadowCom
 		FinalGateState:         strings.TrimSpace(comparison.V2Decision.FinalGateState),
 		Differences:            normalizeTaskStateList(comparison.Differences, 32),
 		SemanticDifferences:    normalizeTaskStateList(comparison.SemanticDifferences, 16),
+		SemanticDeltaLabels:    normalizeTaskStateList(comparison.SemanticDeltaLabels, 16),
 		SemanticClassifierMode: normalizeRequestSemanticClassifierMode(comparison.SemanticClassifierMode),
 		ShadowLogPath:          requestRuntimeShadowLogRef(comparison.ShadowLogPath),
 		WriteError:             compactPromptSection(comparison.WriteError, 180),
@@ -516,6 +622,7 @@ func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntim
 		comparison.SemanticClassifierMode = RequestSemanticClassifierModeShadow
 		comparison.SemanticDecision = &semantic
 		comparison.SemanticDifferences = requestRuntimeDecisionDifferences(comparison.V2Decision, semantic)
+		comparison.SemanticDeltaLabels = requestRuntimeSemanticDeltaLabels(comparison.V2Decision, semantic)
 		if len(comparison.SemanticDifferences) > 0 {
 			comparison.Differences = normalizeTaskStateList(append(comparison.Differences, semanticRequestRuntimeDifferenceLabels(comparison.SemanticDifferences)...), 32)
 			comparison.Diverged = true

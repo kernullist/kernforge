@@ -7073,6 +7073,9 @@ func statusOverviewRequestRuntime(rt *runtimeState) string {
 	}
 	if stats != nil && stats.Total > 0 {
 		if stats.SemanticObserved > 0 {
+			if stats.SemanticRiskyDiverged > 0 {
+				return fmt.Sprintf("%d obs/%d semdiff/%d risky", stats.Total, stats.SemanticDiverged, stats.SemanticRiskyDiverged)
+			}
 			return fmt.Sprintf("%d obs/%d semdiff", stats.Total, stats.SemanticDiverged)
 		}
 		return fmt.Sprintf("%d obs/%d diff", stats.Total, stats.Diverged)
@@ -7091,7 +7094,7 @@ func statusOverviewRequestRuntimeTone(rt *runtimeState) string {
 		return "info"
 	}
 	stats := rt.session.RequestRuntimeShadowStats
-	if stats.RuntimeDiverged > 0 {
+	if stats.RuntimeDiverged > 0 || stats.SemanticRiskyDiverged > 0 {
 		return "warn"
 	}
 	if stats.SemanticDiverged > 0 {
@@ -7175,9 +7178,10 @@ func requestRuntimeShadowStatsStatusLine(stats RequestRuntimeShadowStats) string
 
 func requestRuntimeSemanticShadowStatsStatusLine(stats RequestRuntimeShadowStats) string {
 	return fmt.Sprintf(
-		"observed=%d diverged=%d",
+		"observed=%d diverged=%d risky=%d",
 		stats.SemanticObserved,
 		stats.SemanticDiverged,
+		stats.SemanticRiskyDiverged,
 	)
 }
 
@@ -7187,13 +7191,14 @@ func requestRuntimeShadowClassStatLine(stat RequestRuntimeShadowClassStat) strin
 		class = RequestRuntimeClassDefault
 	}
 	return fmt.Sprintf(
-		"%s total=%d diverged=%d runtime=%d semantic=%d/%d",
+		"%s total=%d diverged=%d runtime=%d semantic=%d/%d risky=%d",
 		class,
 		stat.Total,
 		stat.Diverged,
 		stat.RuntimeDiverged,
 		stat.SemanticObserved,
 		stat.SemanticDiverged,
+		stat.SemanticRiskyDiverged,
 	)
 }
 
@@ -7214,8 +7219,12 @@ func requestRuntimeShadowSampleLine(sample RequestRuntimeShadowSample) string {
 	if semanticDifferences == "" {
 		semanticDifferences = "none"
 	}
+	semanticDeltaLabels := strings.Join(normalizeTaskStateList(sample.SemanticDeltaLabels, 8), ",")
+	if semanticDeltaLabels == "" {
+		semanticDeltaLabels = "none"
+	}
 	logRef := valueOrUnset(requestRuntimeShadowLogRef(sample.ShadowLogPath))
-	return fmt.Sprintf("class=%s semantic_class=%s diff=%s semantic_diff=%s log=%s", class, semanticClass, differences, semanticDifferences, logRef)
+	return fmt.Sprintf("class=%s semantic_class=%s diff=%s semantic_diff=%s semantic_delta=%s log=%s", class, semanticClass, differences, semanticDifferences, semanticDeltaLabels, logRef)
 }
 
 var webResearchEnvKeys = []string{

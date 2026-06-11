@@ -3609,17 +3609,19 @@ func TestStatusDetailShowsRequestRuntimeShadowStats(t *testing.T) {
 	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
 	session.LastRequestEnvelope = &envelope
 	session.RequestRuntimeShadowStats = &RequestRuntimeShadowStats{
-		Total:            2,
-		Diverged:         1,
-		RuntimeDiverged:  0,
-		SemanticObserved: 2,
-		SemanticDiverged: 1,
+		Total:                 2,
+		Diverged:              1,
+		RuntimeDiverged:       0,
+		SemanticObserved:      2,
+		SemanticDiverged:      1,
+		SemanticRiskyDiverged: 0,
 		ByRequestClass: []RequestRuntimeShadowClassStat{{
-			RequestClass:     RequestRuntimeClassExplicitEdit,
-			Total:            2,
-			Diverged:         1,
-			SemanticObserved: 2,
-			SemanticDiverged: 1,
+			RequestClass:          RequestRuntimeClassExplicitEdit,
+			Total:                 2,
+			Diverged:              1,
+			SemanticObserved:      2,
+			SemanticDiverged:      1,
+			SemanticRiskyDiverged: 0,
 		}},
 		RecentSamples: []RequestRuntimeShadowSample{{
 			Mode:                   RequestRuntimeModeDisabled,
@@ -3630,6 +3632,7 @@ func TestStatusDetailShowsRequestRuntimeShadowStats(t *testing.T) {
 			SemanticFinalGateState: string(FinalGateNeedsRecovery),
 			Differences:            []string{"semantic_final_gate"},
 			SemanticDifferences:    []string{"final_gate"},
+			SemanticDeltaLabels:    []string{"mutation_narrowing", "stricter_final_gate"},
 			SemanticClassifierMode: RequestSemanticClassifierModeShadow,
 			ShadowLogPath:          filepath.Join(root, userConfigDirName, requestRuntimeShadowDirName, "shadow-test.json"),
 		}},
@@ -3658,9 +3661,11 @@ func TestStatusDetailShowsRequestRuntimeShadowStats(t *testing.T) {
 		"semantic_classifier:",
 		"shadow_stats:",
 		"semantic_shadow:",
-		"class explicit_edit total=2 diverged=1 runtime=0 semantic=2/1",
+		"observed=2 diverged=1 risky=0",
+		"class explicit_edit total=2 diverged=1 runtime=0 semantic=2/1 risky=0",
 		"sample class=explicit_edit semantic_class=review_only",
 		"semantic_diff=final_gate",
+		"semantic_delta=mutation_narrowing,stricter_final_gate",
 		"request_runtime_shadow/shadow-test.json",
 	} {
 		if !strings.Contains(text, want) {
