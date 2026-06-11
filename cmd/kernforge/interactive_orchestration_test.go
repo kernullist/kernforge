@@ -80,6 +80,21 @@ func TestShouldPrimeInteractivePlanSkipsAnalysisOnlyStructureQuestions(t *testin
 	}
 }
 
+func TestShouldPrimeInteractivePlanSkipsAnswerOnlyComparisonQuestions(t *testing.T) {
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
+	state := &TaskState{
+		Goal: request,
+	}
+
+	if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
+		t.Fatalf("expected read-only comparison request mode, got %#v", mode)
+	}
+	if shouldPrimeInteractivePlan(state, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest, false) {
+		t.Fatalf("expected answer-only comparison question to skip interactive preflight planning")
+	}
+}
+
 func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 	state := &TaskState{
 		Goal: "Fix the duplicated provider retry logic and verify the result",

@@ -2363,12 +2363,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					)
 					if a.Session != nil && a.Session.LastReviewRun != nil {
 						reply = formatReviewerGateUnavailableUserDecisionReply(a.Config, a.Session)
-						if reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) && a.PromptContinueReviewRepair == nil {
+						if sessionAllowsReviewRepairContinuation(a.Session) && reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) && a.PromptContinueReviewRepair == nil {
 							recordPendingReviewerGateRepairConfirmation(a.Session)
 						}
 					}
 					if a.PromptContinueReviewRepair != nil && a.Session != nil && a.Session.LastReviewRun != nil {
-						if !reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) {
+						if !sessionAllowsReviewRepairContinuation(a.Session) || !reviewRunHasActionableNonReviewerFindingsFromSession(a.Session) {
 							a.Session.PendingReviewRepairConfirm = nil
 							a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 							if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -5161,7 +5161,12 @@ func formatPreWriteReviewRepairInspectionLoopLimitReply(cfg Config, session *Ses
 }
 
 func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
-	recordPendingReviewRepairConfirmation(session)
+	canContinueRepair := sessionAllowsReviewRepairContinuation(session)
+	if canContinueRepair {
+		recordPendingReviewRepairConfirmation(session)
+	} else if session != nil {
+		session.PendingReviewRepairConfirm = nil
+	}
 	korean := localePrefersKorean(cfg)
 	var b strings.Builder
 	if korean {
@@ -5193,10 +5198,18 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 		}
 		b.WriteString(proposalText)
 	}
-	if korean {
+	if canContinueRepair && korean {
 		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
-	} else {
+	} else if canContinueRepair {
 		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
+	} else if korean {
+		b.WriteString("\n\n[3] 다음 조치\n원 요청의 action boundary가 읽기 전용이므로 이 리뷰 결과를 코드 수리 confirmation으로 전환하지 않습니다.")
+		b.WriteString("\n- 추가 파일 수정은 진행하지 않습니다.")
+		b.WriteString("\n- 수정이 필요하면 별도의 수정 요청으로 다시 시작하세요.")
+	} else {
+		b.WriteString("\n\n[3] Next step\nThe original request has a read-only action boundary, so this review result will not be converted into a code-repair confirmation.")
+		b.WriteString("\n- No additional file edits will be continued.")
+		b.WriteString("\n- Start a separate fix request if edits are required.")
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -5220,6 +5233,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 	}
 	var b strings.Builder
 	preWriteGate := lastRun != nil && strings.EqualFold(strings.TrimSpace(lastRun.Trigger), "pre_write")
+	repairContinuationAllowed := sessionAllowsReviewRepairContinuation(session)
 	if korean {
 		if preWriteGate {
 			b.WriteString("쓰기 전 리뷰어 게이트: 통과하지 못함")
@@ -5229,8 +5243,10 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n- 결과: 코드 수정은 적용하지 않았습니다.")
 		b.WriteString("\n- 원인: 필수 리뷰 단계의 모델 route가 실패했거나 `weak` 품질로 판정되었습니다. `primary` 실패는 현재 메인 모델 route 문제이고, `cross` 실패는 전용 reviewer route 문제입니다.")
 		b.WriteString("\n- 중요한 점: 이 상태는 쓰기 승인도, 리뷰 우회 승인도 아닙니다.")
-		if preWriteGate {
+		if preWriteGate && repairContinuationAllowed {
 			b.WriteString("\n- 다음 조건: 최신 리뷰 finding과 마지막 수정안을 기준으로 다시 수리한 뒤, 일반 파일 쓰기 경로에서 pre-write review를 다시 통과해야 합니다.")
+		} else if preWriteGate {
+			b.WriteString("\n- 다음 조건: 원 요청이 읽기 전용이므로 이 리뷰 결과를 코드 수리 흐름으로 이어가지 않습니다.")
 		} else {
 			b.WriteString("\n- 다음 조건: 실패한 리뷰 route를 복구하거나 모델을 바꾼 뒤 같은 요청을 다시 실행해야 합니다.")
 		}
@@ -5243,8 +5259,10 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n- Result: no code changes were applied.")
 		b.WriteString("\n- Cause: a required review-stage model route failed or was classified as `weak` quality. A `primary` failure points at the active main model route; a `cross` failure points at the independent cross route.")
 		b.WriteString("\n- Important: this is not write approval and not approval to bypass review.")
-		if preWriteGate {
+		if preWriteGate && repairContinuationAllowed {
 			b.WriteString("\n- Next condition: repair from the latest review findings and last edit proposal below, then pass the normal pre-write review through the edit tool path.")
+		} else if preWriteGate {
+			b.WriteString("\n- Next condition: the original request is read-only, so this review result will not continue into a code-repair flow.")
 		} else {
 			b.WriteString("\n- Next condition: restore the failed review route or change model, then rerun the same request.")
 		}
@@ -5297,7 +5315,7 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 		b.WriteString("\n")
 		b.WriteString(proposalText)
 	}
-	if reviewRunHasActionableNonReviewerFindingsFromSession(session) {
+	if reviewRunHasActionableNonReviewerFindingsFromSession(session) && repairContinuationAllowed {
 		if korean {
 			b.WriteString("\n\n[3] 다음 선택\n위의 코드 finding을 기준으로 계속 수리할 수 있습니다.")
 			if includeInlinePrompt {
@@ -5308,6 +5326,16 @@ func formatReviewerGateUnavailableUserDecisionContent(cfg Config, session *Sessi
 			if includeInlinePrompt {
 				b.WriteString(" Should I keep repairing? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
 			}
+		}
+	} else if !repairContinuationAllowed {
+		if korean {
+			b.WriteString("\n\n[3] 다음 조치\n원 요청은 읽기 전용 답변/분석 boundary로 분류되어 위 finding을 코드 수리 continuation으로 전환하지 않습니다.")
+			b.WriteString("\n- 코드 수정은 적용하지 않았고, 계속 수리 confirmation도 열지 않습니다.")
+			b.WriteString("\n- 실제 수정이 필요하면 별도의 수정 요청으로 다시 시작하세요.")
+		} else {
+			b.WriteString("\n\n[3] Next step\nThe original request is classified with a read-only answer/analysis boundary, so the findings above will not be converted into a code-repair continuation.")
+			b.WriteString("\n- No code changes were applied, and no repair confirmation is being opened.")
+			b.WriteString("\n- Start a separate fix request if edits are required.")
 		}
 	} else if korean {
 		b.WriteString("\n\n[3] 다음 조치\n이번 중단은 코드 finding 때문이 아니라 필수 리뷰 단계의 모델 route 실패/약한 응답 때문입니다.")
@@ -5343,6 +5371,11 @@ func recordPendingReviewRepairConfirmationWithMode(session *Session, mode string
 	if session == nil {
 		return
 	}
+	if !sessionAllowsReviewRepairContinuation(session) {
+		session.PendingReviewRepairConfirm = nil
+		session.UpdatedAt = time.Now()
+		return
+	}
 	state := &ReviewRepairConfirmationState{
 		CreatedAt: time.Now(),
 		Mode:      strings.TrimSpace(mode),
@@ -5353,6 +5386,27 @@ func recordPendingReviewRepairConfirmationWithMode(session *Session, mode string
 	}
 	session.PendingReviewRepairConfirm = state
 	session.UpdatedAt = time.Now()
+}
+
+func sessionAllowsReviewRepairContinuation(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	request := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
+	if request != "" {
+		if controlRequestContinuesCurrentWorkContext(request) &&
+			(requestEnvelopeContractAllowsFileMutation(session.AcceptanceContract) || requestEnvelopeSessionHasMutablePatchContext(session)) {
+			return true
+		}
+		return requestTextAllowsRepairContinuation(request)
+	}
+	if session.LastReviewRun != nil {
+		request = strings.TrimSpace(baseUserQueryText(firstNonBlankString(session.LastReviewRun.Objective, session.LastReviewRun.RequestAnalysis.OriginalRequest)))
+		if request != "" {
+			return requestTextAllowsRepairContinuation(request)
+		}
+	}
+	return true
 }
 
 func formatLatestPreWriteReviewForUserDecision(cfg Config, session *Session) string {
@@ -9525,9 +9579,14 @@ func (a *Agent) codexGradeRequestHandlingPrompt(latestUser string) string {
 	if a.hasDistinctCrossReviewRouteConfig() {
 		routeMode = "cross_review"
 	}
-	intent := classifyTurnIntent(latestUser)
-	classDecision := classifyAcceptanceContractRequestClassDecision(latestUser, intent, prefersReadOnlyAnalysisIntent(latestUser) || looksLikeReviewInspectionOnlyRequest(latestUser), looksLikeExplicitEditIntent(latestUser))
-	classDecision = applyReviewLifecycleKindToDecision(classDecision, latestUser, intent, "", "system_prompt")
+	envelope := a.latestRequestEnvelopeFor(latestUser)
+	classDecision := ReviewRequestClassDecision{
+		RequestClass:      envelope.ReviewRequestClass,
+		LifecycleKind:     envelope.ReviewLifecycleKind,
+		Reason:            envelope.ReviewRequestClassReason,
+		Confidence:        envelope.Confidence,
+		AmbiguityWarnings: envelope.Warnings,
+	}
 	requestClass, requestClassReason := classDecision.RequestClass, classDecision.Reason
 	var b strings.Builder
 	b.WriteString("Codex-grade request handling:\n")

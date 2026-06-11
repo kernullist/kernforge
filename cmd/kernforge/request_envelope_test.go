@@ -40,6 +40,26 @@ func TestRequestEnvelopeClassifiesPlanOnlyAsReadOnly(t *testing.T) {
 	}
 }
 
+func TestRequestEnvelopeClassifiesAnswerOnlyComparisonAsReadOnly(t *testing.T) {
+	envelope := buildRequestEnvelope("TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘.")
+	if envelope.PrimaryClass != RequestClassQuestion {
+		t.Fatalf("expected question primary class, got %#v", envelope)
+	}
+	if !envelope.ReadOnlyAnalysis {
+		t.Fatalf("answer-only comparison request should be read-only, got %#v", envelope)
+	}
+	if envelope.DocumentAuthoring || envelope.AllowsFileMutation || envelope.ExplicitEditRequest {
+		t.Fatalf("answer-only comparison must not allow mutation or document authoring, got %#v", envelope)
+	}
+	if !strings.EqualFold(envelope.ReviewLifecycleKind, reviewLifecycleKindAnalysis) {
+		t.Fatalf("expected analysis lifecycle kind, got %#v", envelope)
+	}
+	plan := requestEnvelopeTestAgent(t, requestEnvelopeTestRegistry()).buildTurnToolExposurePlanForEnvelope(nil, envelope, false, false, false, false, false, false)
+	if !plan.toolDisabled("apply_patch") || !plan.toolDisabled("write_file") {
+		t.Fatalf("answer-only comparison request must disable edit tools, got %#v", plan.DisabledTools)
+	}
+}
+
 func TestRequestEnvelopeTreatsNegatedKoreanEditAsReadOnly(t *testing.T) {
 	envelope := buildRequestEnvelope("main.go를 분석만 해. 파일은 수정하지 마")
 	if !envelope.ReadOnlyAnalysis {
@@ -86,6 +106,19 @@ func TestRequestEnvelopeAllowsDocumentArtifactWrites(t *testing.T) {
 	}
 	if envelope.AllowsGitMutation {
 		t.Fatalf("document authoring should not imply git mutation, got %#v", envelope)
+	}
+}
+
+func TestRequestEnvelopeKeepsDocumentArtifactSummaryWritable(t *testing.T) {
+	envelope := buildRequestEnvelope("TavernKernel 부족 기능을 별도 문서로 정리해줘")
+	if envelope.PrimaryClass != RequestClassDocument {
+		t.Fatalf("expected document primary class, got %#v", envelope)
+	}
+	if !envelope.DocumentAuthoring || !envelope.AllowsFileMutation {
+		t.Fatalf("document artifact summary should allow artifact writes, got %#v", envelope)
+	}
+	if envelope.ReadOnlyAnalysis {
+		t.Fatalf("document artifact summary must not be read-only, got %#v", envelope)
 	}
 }
 

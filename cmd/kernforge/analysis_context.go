@@ -1318,6 +1318,71 @@ func looksLikeExecutionFlowQuestion(text string) bool {
 		containsAny(lower, "설명", "분석", "구조", "어떻게", "trace", "flow", "경로")
 }
 
+func looksLikeAnswerDeliveryRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	return containsAny(lower,
+		"tell me", "explain", "summarize", "summary", "compare", "list ", "list the", "show me", "what ", "which ", "how ",
+		"알려줘", "알려 줘", "말해줘", "말해 줘", "설명해", "설명해줘", "설명해 줘", "정리해", "정리해서", "요약해", "요약해줘", "비교해", "나열해",
+	)
+}
+
+func looksLikeDocumentArtifactOutputRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	if lower == "" {
+		return false
+	}
+	if looksLikeGoalPromptFileArtifactRequest(lower) {
+		return true
+	}
+	if containsAny(lower,
+		".md", ".markdown", "markdown file", "as a file", "save to file", "write to file", "create file", "report document",
+		"파일", "파일로", "파일에", "저장", "별도 문서", "별도 보고서", "문서로", "문서에", "보고서로", "보고서에", "마크다운으로",
+	) {
+		return true
+	}
+	hasArtifactNoun := containsAny(lower,
+		"document", "documents", "markdown", "report", "reports", "write-up", "writeup", "notes", "spec", "specs",
+		"문서", "문서들", "마크다운", "보고서", "명세", "스펙",
+	)
+	hasOutputVerb := containsAny(lower,
+		"author ", "create ", "draft ", "generate ", "prepare ", "save ", "write ",
+		"작성", "만들", "생성", "저장", "초안",
+	)
+	return hasArtifactNoun && hasOutputVerb
+}
+
+func looksLikeAnswerOnlyKnowledgeRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		lower = strings.ToLower(strings.TrimSpace(text))
+	}
+	if lower == "" || strings.HasPrefix(lower, "/") {
+		return false
+	}
+	if looksLikeDocumentArtifactOutputRequest(lower) || looksLikeExplicitGitIntent(lower) {
+		return false
+	}
+	if containsAny(lower,
+		"apply ", "change ", "commit ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "replace ", "update ",
+		"적용", "커밋", "고쳐", "고치", "구현", "변경", "삭제", "수정", "추가", "패치", "반영",
+	) {
+		return false
+	}
+	if !looksLikeAnswerDeliveryRequest(lower) {
+		return false
+	}
+	return containsAny(lower,
+		"architecture", "capability", "capabilities", "compare", "difference", "features", "flow", "gap", "gaps", "limitation", "limitations", "missing", "structure", "weakness",
+		"구조", "기능", "대비", "비교", "부족", "설계", "아키텍처", "역량", "제약", "차이", "한계", "흐름", "무엇", "뭐가", "어떤", "왜",
+	)
+}
+
 func prefersReadOnlyAnalysisIntent(text string) bool {
 	base := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
 	if base == "" {
@@ -1328,6 +1393,9 @@ func prefersReadOnlyAnalysisIntent(text string) bool {
 	}
 	if looksLikeExplicitEditIntent(base) {
 		return false
+	}
+	if looksLikeAnswerOnlyKnowledgeRequest(base) {
+		return true
 	}
 	if strings.Contains(base, "?") {
 		return true
@@ -1394,9 +1462,12 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	}
 	hasDocumentNoun := containsAny(lower,
 		"document", "documents", "doc", "markdown", ".md", "report", "reports", "write-up", "writeup", "research", "paper", "papers", "notes", "spec", "specs",
-		"문서", "문서들", "마크다운", "보고서", "리서치", "연구", "정리", "초안", "명세", "스펙",
+		"문서", "문서들", "마크다운", "보고서", "리서치", "연구", "초안", "명세", "스펙",
 	)
 	if !hasDocumentNoun {
+		return false
+	}
+	if looksLikeAnswerDeliveryRequest(lower) && !looksLikeDocumentArtifactOutputRequest(lower) {
 		return false
 	}
 	return containsAny(lower,

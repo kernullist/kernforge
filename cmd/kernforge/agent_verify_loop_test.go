@@ -9715,6 +9715,67 @@ func TestReviewerGateUnavailableUserDecisionReplyDoesNotMutateSession(t *testing
 	}
 }
 
+func TestReviewerGateUnavailableReadOnlyAnswerDoesNotOfferRepairContinuation(t *testing.T) {
+	root := t.TempDir()
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.LastReviewRun = &ReviewRun{
+		ID:        "reviewer-gate-read-only-answer",
+		Trigger:   "pre_write",
+		Objective: request,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictInsufficientEvidence,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-102"},
+		},
+		Findings: []ReviewFinding{
+			{
+				ID:          requiredReviewerFailureFindingID,
+				Severity:    reviewSeverityBlocker,
+				Category:    "evidence_gap",
+				Title:       "Required review route failed or returned weak output",
+				RequiredFix: "Fix the reviewer route before writing.",
+				BlocksGate:  true,
+			},
+			{
+				ID:          "RF-102",
+				Severity:    reviewSeverityMedium,
+				Category:    "correctness",
+				Title:       "A repairable finding should not override read-only intent",
+				RequiredFix: "Repair the code path.",
+				BlocksGate:  true,
+			},
+		},
+	}
+
+	reply := formatReviewerGateUnavailableUserDecisionReply(Config{AutoLocale: boolPtr(false)}, session)
+	if strings.Contains(reply, "[y=continue, n=stop]") || strings.Contains(reply, "Should I keep repairing") {
+		t.Fatalf("read-only answer request must not offer repair continuation, got %q", reply)
+	}
+	if !strings.Contains(reply, "읽기 전용 답변/분석 boundary") && !strings.Contains(reply, "read-only answer/analysis boundary") {
+		t.Fatalf("expected read-only boundary explanation, got %q", reply)
+	}
+	if strings.Contains(reply, "다시 수리한 뒤") || strings.Contains(reply, "repair from the latest review findings") {
+		t.Fatalf("read-only answer request must not describe a repair continuation condition, got %q", reply)
+	}
+	recordPendingReviewerGateRepairConfirmation(session)
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("read-only answer request must not record pending repair confirmation")
+	}
+}
+
+func TestSessionAllowsReviewRepairContinuationForMutableContinuation(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	contract := buildAcceptanceContract("main.go 버그를 수정해줘", TurnIntentEditCode, false, true, false)
+	session.AcceptanceContract = &contract
+	session.AddMessage(Message{Role: "user", Text: "계속해"})
+
+	if !sessionAllowsReviewRepairContinuation(session) {
+		t.Fatalf("continuation should preserve mutable repair context")
+	}
+}
+
 func TestAgentContinuesReviewerGateRepairOnlyOnY(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "main-model", "", "default")

@@ -1684,7 +1684,7 @@ func reviewRunLooksReadOnlyAnalysis(run ReviewRun) bool {
 	if normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)) == reviewRequestClassReviewOnly {
 		return true
 	}
-	return prefersReadOnlyAnalysisIntent(run.Objective) && !looksLikeExplicitEditIntent(run.Objective)
+	return requestTextIsReadOnlyAnalysisBoundary(firstNonBlankString(run.Objective, run.RequestAnalysis.OriginalRequest))
 }
 
 func reviewRunLooksExplicitRepairIntent(run ReviewRun) bool {

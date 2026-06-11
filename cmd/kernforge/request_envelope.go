@@ -222,6 +222,41 @@ func requestEnvelopeReviewClassMutates(class string) bool {
 	}
 }
 
+func requestEnvelopeAllowsRepairContinuation(envelope RequestEnvelope) bool {
+	envelope.Normalize()
+	if envelope.AllowsFileMutation || envelope.ExplicitEditRequest || envelope.DocumentAuthoring {
+		return true
+	}
+	if requestEnvelopeReviewClassMutates(envelope.ReviewRequestClass) {
+		return true
+	}
+	return false
+}
+
+func requestTextAllowsRepairContinuation(text string) bool {
+	base := strings.TrimSpace(baseUserQueryText(text))
+	if base == "" {
+		base = strings.TrimSpace(text)
+	}
+	if base == "" {
+		return true
+	}
+	return requestEnvelopeAllowsRepairContinuation(buildRequestEnvelope(base))
+}
+
+func requestTextIsReadOnlyAnalysisBoundary(text string) bool {
+	base := strings.TrimSpace(baseUserQueryText(text))
+	if base == "" {
+		base = strings.TrimSpace(text)
+	}
+	if base == "" {
+		return false
+	}
+	envelope := buildRequestEnvelope(base)
+	envelope.Normalize()
+	return envelope.ReadOnlyAnalysis && !requestEnvelopeAllowsRepairContinuation(envelope)
+}
+
 func requestLooksLikeGitOnlyMutation(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
 	if lower == "" || !looksLikeExplicitGitIntent(lower) {

@@ -112,6 +112,23 @@ func TestDriverStructureQuestionIsAnalysisOnlyProjectKnowledge(t *testing.T) {
 	}
 }
 
+func TestKoreanComparisonSummaryAnswerIsReadOnlyProjectKnowledge(t *testing.T) {
+	query := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	if got := classifyTurnIntent(query); got != TurnIntentAskProjectKnowledge {
+		t.Fatalf("expected project knowledge intent, got %s", got)
+	}
+	if !prefersReadOnlyAnalysisIntent(query) {
+		t.Fatalf("expected comparison summary answer to be read-only")
+	}
+	if looksLikeDocumentAuthoringIntent(query) {
+		t.Fatalf("answer-only summary must not be treated as document artifact authoring")
+	}
+	mode := resolveAgentRequestMode(query, classifyTurnIntent(query))
+	if !mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
+		t.Fatalf("expected read-only request mode, got %#v", mode)
+	}
+}
+
 func TestKoreanDocumentGenerationRequestIsWriteIntent(t *testing.T) {
 	query := "각 파일들을 분석해서 문제점을 찾아서 별도 문서로 생성해"
 	if got := classifyTurnIntent(query); got != TurnIntentEditCode {

@@ -114,7 +114,7 @@ func discoverReviewScopeForAnalysis(root string, request string, opts ReviewHarn
 func inferReviewTarget(rt *runtimeState, root string, request string, discovery ReviewScopeDiscovery) string {
 	lower := strings.ToLower(strings.TrimSpace(request))
 	if reviewRequestPrefersSourceEvidence(request, discovery) {
-		if prefersReadOnlyAnalysisIntent(request) && !looksLikeExplicitEditIntent(request) {
+		if requestTextIsReadOnlyAnalysisBoundary(request) {
 			return reviewTargetSourceAnalysis
 		}
 		return reviewTargetChange
