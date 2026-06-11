@@ -1612,13 +1612,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						continue
 					}
 				}
-				finalGateInput := a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, TurnRuntimeFinalContext{
+				finalGateContext := TurnRuntimeFinalContext{
 					AttemptedEditTool:              attemptedEditTool,
 					ExplicitEditRequest:            explicitEditRequest,
 					GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
-				})
+				}
+				finalGateInput := a.buildFinalGateInput(requestEnvelope, turnRuntime, reply, finalGateContext)
 				finalGateDecision := a.recordFinalGateDecision(finalGateInput)
-				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn, reply, finalGateContext)
 				if requestRuntimeV2EnabledForEnvelope(a.Config, requestEnvelope) && !finalGateDecision.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
 						markRuntimeBlocked("request_runtime_v2_final_gate")

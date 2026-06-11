@@ -73,6 +73,7 @@ type Session struct {
 	ConversationEvents              []ConversationEvent              `json:"conversation_events,omitempty"`
 	ConversationState               *ConversationState               `json:"conversation_state,omitempty"`
 	LastRequestEnvelope             *RequestEnvelope                 `json:"last_request_envelope,omitempty"`
+	LastSemanticRequestEnvelope     *RequestEnvelope                 `json:"last_semantic_request_envelope,omitempty"`
 	LastTurnRuntimeState            *TurnRuntimeState                `json:"last_turn_runtime_state,omitempty"`
 	LastFinalGateDecision           *FinalGateDecision               `json:"last_final_gate_decision,omitempty"`
 	LastRequestRuntimeShadow        *RequestRuntimeShadowComparison  `json:"last_request_runtime_shadow,omitempty"`

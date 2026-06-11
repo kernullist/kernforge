@@ -80,6 +80,12 @@ func requestSemanticClassifierMaxTokens(cfg RequestSemanticClassifierConfig) int
 	return defaultRequestSemanticClassifierMaxTokens
 }
 
+func requestSemanticClassifierShadowModeEnabled(cfg Config) bool {
+	runtimeCfg := cfg.RequestRuntime
+	normalizeRequestRuntimeConfig(&runtimeCfg)
+	return runtimeCfg.SemanticClassifier.Mode == RequestSemanticClassifierModeShadow
+}
+
 func (c *RequestSemanticClassification) Normalize() {
 	if c == nil {
 		return
@@ -259,6 +265,39 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 	return envelope
 }
 
+func semanticRequestClassificationCandidate(envelope RequestEnvelope, classification RequestSemanticClassification, cfg RequestSemanticClassifierConfig) RequestEnvelope {
+	cfg.Mode = RequestSemanticClassifierModeEnabled
+	return applySemanticRequestClassification(envelope, classification, cfg)
+}
+
+func sanitizeSemanticRequestEnvelopeCandidate(envelope RequestEnvelope) RequestEnvelope {
+	envelope.Normalize()
+	envelope.ExternalUserText = ""
+	for i := range envelope.Evidence {
+		envelope.Evidence[i].Source = compactPromptSection(envelope.Evidence[i].Source, 80)
+		envelope.Evidence[i].Signal = compactPromptSection(envelope.Evidence[i].Signal, 80)
+		envelope.Evidence[i].Detail = compactPromptSection(envelope.Evidence[i].Detail, 180)
+	}
+	envelope.Warnings = normalizeTaskStateList(envelope.Warnings, 16)
+	envelope.Normalize()
+	return envelope
+}
+
+func (a *Agent) clearSemanticRequestEnvelopeCandidate() {
+	if a == nil || a.Session == nil {
+		return
+	}
+	a.Session.LastSemanticRequestEnvelope = nil
+}
+
+func (a *Agent) rememberSemanticRequestEnvelopeCandidate(envelope RequestEnvelope) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	candidate := sanitizeSemanticRequestEnvelopeCandidate(envelope)
+	a.Session.LastSemanticRequestEnvelope = &candidate
+}
+
 func semanticClassificationNarrowsToReadOnly(classification RequestSemanticClassification) bool {
 	if semanticBoolTrue(classification.ReadOnlyAnalysis) {
 		return true
@@ -329,6 +368,7 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 	if a == nil {
 		return envelope
 	}
+	a.clearSemanticRequestEnvelopeCandidate()
 	cfg := a.Config.RequestRuntime.SemanticClassifier
 	normalizeRequestSemanticClassifierConfig(&cfg)
 	if cfg.Mode == RequestSemanticClassifierModeDisabled {
@@ -363,7 +403,12 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 		envelope.Normalize()
 		return envelope
 	}
-	return applySemanticRequestClassification(envelope, classification, cfg)
+	candidate := semanticRequestClassificationCandidate(envelope, classification, cfg)
+	a.rememberSemanticRequestEnvelopeCandidate(candidate)
+	if cfg.Mode == RequestSemanticClassifierModeShadow {
+		return applySemanticRequestClassification(envelope, classification, cfg)
+	}
+	return candidate
 }
 
 func (a *Agent) SessionIDForRequest() string {

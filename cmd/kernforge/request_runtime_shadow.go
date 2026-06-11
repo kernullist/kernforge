@@ -45,16 +45,19 @@ type RequestRuntimeDecisionSummary struct {
 }
 
 type RequestRuntimeShadowComparison struct {
-	GeneratedAt    time.Time                     `json:"generated_at,omitempty"`
-	SessionID      string                        `json:"session_id,omitempty"`
-	Mode           string                        `json:"mode,omitempty"`
-	EnabledPath    string                        `json:"enabled_path,omitempty"`
-	Diverged       bool                          `json:"diverged"`
-	Differences    []string                      `json:"differences,omitempty"`
-	LegacyDecision RequestRuntimeDecisionSummary `json:"legacy_decision"`
-	V2Decision     RequestRuntimeDecisionSummary `json:"v2_decision"`
-	ShadowLogPath  string                        `json:"shadow_log_path,omitempty"`
-	WriteError     string                        `json:"write_error,omitempty"`
+	GeneratedAt            time.Time                      `json:"generated_at,omitempty"`
+	SessionID              string                         `json:"session_id,omitempty"`
+	Mode                   string                         `json:"mode,omitempty"`
+	EnabledPath            string                         `json:"enabled_path,omitempty"`
+	SemanticClassifierMode string                         `json:"semantic_classifier_mode,omitempty"`
+	Diverged               bool                           `json:"diverged"`
+	Differences            []string                       `json:"differences,omitempty"`
+	LegacyDecision         RequestRuntimeDecisionSummary  `json:"legacy_decision"`
+	V2Decision             RequestRuntimeDecisionSummary  `json:"v2_decision"`
+	SemanticDecision       *RequestRuntimeDecisionSummary `json:"semantic_decision,omitempty"`
+	SemanticDifferences    []string                       `json:"semantic_differences,omitempty"`
+	ShadowLogPath          string                         `json:"shadow_log_path,omitempty"`
+	WriteError             string                         `json:"write_error,omitempty"`
 }
 
 func mergeRequestRuntimeConfig(dst *RequestRuntimeConfig, src RequestRuntimeConfig) {
@@ -256,14 +259,10 @@ func requestRuntimeDisabledTools(plan turnToolExposurePlan, registry *ToolRegist
 	return normalizeTaskStateList(out, 128)
 }
 
-func compareRequestRuntimeDecisions(legacy RequestRuntimeDecisionSummary, v2 RequestRuntimeDecisionSummary) RequestRuntimeShadowComparison {
-	comparison := RequestRuntimeShadowComparison{
-		GeneratedAt:    time.Now(),
-		LegacyDecision: sanitizeRequestRuntimeDecisionSummary(legacy),
-		V2Decision:     sanitizeRequestRuntimeDecisionSummary(v2),
-	}
+func requestRuntimeDecisionDifferences(legacy RequestRuntimeDecisionSummary, v2 RequestRuntimeDecisionSummary) []string {
+	var differences []string
 	add := func(label string) {
-		comparison.Differences = append(comparison.Differences, label)
+		differences = append(differences, label)
 	}
 	if legacy.RequestClass != v2.RequestClass {
 		add("request_class")
@@ -280,9 +279,30 @@ func compareRequestRuntimeDecisions(legacy RequestRuntimeDecisionSummary, v2 Req
 	if legacy.FinalGateState != v2.FinalGateState || legacy.FinalGateReady != v2.FinalGateReady {
 		add("final_gate")
 	}
-	comparison.Differences = normalizeTaskStateList(comparison.Differences, 16)
+	return normalizeTaskStateList(differences, 16)
+}
+
+func compareRequestRuntimeDecisions(legacy RequestRuntimeDecisionSummary, v2 RequestRuntimeDecisionSummary) RequestRuntimeShadowComparison {
+	comparison := RequestRuntimeShadowComparison{
+		GeneratedAt:    time.Now(),
+		LegacyDecision: sanitizeRequestRuntimeDecisionSummary(legacy),
+		V2Decision:     sanitizeRequestRuntimeDecisionSummary(v2),
+	}
+	comparison.Differences = requestRuntimeDecisionDifferences(comparison.LegacyDecision, comparison.V2Decision)
 	comparison.Diverged = len(comparison.Differences) > 0
 	return comparison
+}
+
+func semanticRequestRuntimeDifferenceLabels(differences []string) []string {
+	out := make([]string, 0, len(differences))
+	for _, difference := range differences {
+		difference = strings.TrimSpace(difference)
+		if difference == "" {
+			continue
+		}
+		out = append(out, "semantic_"+difference)
+	}
+	return normalizeTaskStateList(out, 16)
 }
 
 func sanitizeRequestRuntimeDecisionSummary(summary RequestRuntimeDecisionSummary) RequestRuntimeDecisionSummary {
@@ -298,17 +318,43 @@ func sanitizeRequestRuntimeDecisionSummary(summary RequestRuntimeDecisionSummary
 	return summary
 }
 
-func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntime *TurnRuntimeState, finalDecision FinalGateDecision, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool) {
-	if a == nil || a.Session == nil || !requestRuntimeShadowModeEnabled(a.Config) {
+func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntime *TurnRuntimeState, finalDecision FinalGateDecision, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool, reply string, finalCtx TurnRuntimeFinalContext) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	runtimeShadow := requestRuntimeShadowModeEnabled(a.Config)
+	semanticShadow := requestSemanticClassifierShadowModeEnabled(a.Config) && a.Session.LastSemanticRequestEnvelope != nil
+	if !runtimeShadow && !semanticShadow {
 		return
 	}
 	plan := a.buildTurnToolExposurePlanForEnvelope(nil, envelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
 	legacy := buildRequestRuntimeDecisionSummary("legacy", envelope, plan, turnRuntime, finalDecision, a.Tools)
 	v2 := buildRequestRuntimeDecisionSummary("v2", envelope, plan, turnRuntime, finalDecision, a.Tools)
 	comparison := compareRequestRuntimeDecisions(legacy, v2)
-	comparison.Mode = RequestRuntimeModeShadow
+	if runtimeShadow {
+		comparison.Mode = RequestRuntimeModeShadow
+	} else {
+		comparison.Mode = RequestRuntimeModeDisabled
+	}
 	comparison.SessionID = strings.TrimSpace(a.Session.ID)
 	comparison.EnabledPath = requestRuntimeClassForEnvelope(envelope)
+	if semanticShadow {
+		semanticEnvelope := *a.Session.LastSemanticRequestEnvelope
+		semanticPlan := a.buildTurnToolExposurePlanForEnvelope(nil, semanticEnvelope, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, verificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn)
+		semanticFinalCtx := finalCtx
+		semanticFinalCtx.ExplicitEditRequest = semanticEnvelope.ExplicitEditRequest
+		semanticFinalCtx.GeneratedDocumentHarnessOwnsIt = semanticEnvelope.DocumentAuthoring && finalCtx.GeneratedDocumentHarnessOwnsIt
+		semanticFinalDecision := DecideFinalGate(a.buildFinalGateInput(semanticEnvelope, turnRuntime, reply, semanticFinalCtx))
+		semantic := buildRequestRuntimeDecisionSummary("semantic_classifier", semanticEnvelope, semanticPlan, turnRuntime, semanticFinalDecision, a.Tools)
+		semantic = sanitizeRequestRuntimeDecisionSummary(semantic)
+		comparison.SemanticClassifierMode = RequestSemanticClassifierModeShadow
+		comparison.SemanticDecision = &semantic
+		comparison.SemanticDifferences = requestRuntimeDecisionDifferences(comparison.V2Decision, semantic)
+		if len(comparison.SemanticDifferences) > 0 {
+			comparison.Differences = normalizeTaskStateList(append(comparison.Differences, semanticRequestRuntimeDifferenceLabels(comparison.SemanticDifferences)...), 32)
+			comparison.Diverged = true
+		}
+	}
 	if comparison.Diverged {
 		path, err := writeRequestRuntimeShadowDivergence(a.Workspace.Root, a.Config.RequestRuntime, comparison)
 		if err != nil {

@@ -161,12 +161,58 @@ func TestRequestRuntimeDisabledModeHasNoShadowSideEffects(t *testing.T) {
 		Session:   session,
 	}
 	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
-	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false)
+	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "완료했습니다.", TurnRuntimeFinalContext{})
 	if session.LastRequestRuntimeShadow != nil {
 		t.Fatalf("disabled mode should not record shadow comparison, got %#v", session.LastRequestRuntimeShadow)
 	}
 	if _, err := os.Stat(filepath.Join(root, userConfigDirName, requestRuntimeShadowDirName)); !os.IsNotExist(err) {
 		t.Fatalf("disabled mode should not create shadow log directory, err=%v", err)
+	}
+}
+
+func TestSemanticClassifierShadowRecordsCandidateDecision(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeShadow}
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Tools:     requestScenarioReplayRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+	envelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
+	semanticCandidate := sanitizeSemanticRequestEnvelopeCandidate(buildRequestEnvelope("main.go를 분석만 해. 파일은 수정하지 마"))
+	session.LastSemanticRequestEnvelope = &semanticCandidate
+	agent.observeRequestRuntimeShadow(envelope, NewTurnRuntimeState(envelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+		AttemptedEditTool:   true,
+		ExplicitEditRequest: true,
+	})
+	comparison := session.LastRequestRuntimeShadow
+	if comparison == nil {
+		t.Fatalf("semantic shadow mode should record comparison")
+	}
+	if comparison.SemanticDecision == nil {
+		t.Fatalf("expected semantic decision summary, got %#v", comparison)
+	}
+	if comparison.SemanticDecision.RequestClass == comparison.V2Decision.RequestClass {
+		t.Fatalf("expected semantic request class to differ, got %#v", comparison)
+	}
+	if !sliceContainsFold(comparison.SemanticDifferences, "final_gate") {
+		t.Fatalf("expected semantic final gate difference, got %#v", comparison.SemanticDifferences)
+	}
+	if !sliceContainsFold(comparison.Differences, "semantic_final_gate") {
+		t.Fatalf("expected top-level semantic final gate label, got %#v", comparison.Differences)
+	}
+	if strings.TrimSpace(comparison.ShadowLogPath) == "" {
+		t.Fatalf("expected semantic divergence log path, got %#v", comparison)
+	}
+	data, err := os.ReadFile(comparison.ShadowLogPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), "main.go를 분석만") {
+		t.Fatalf("semantic shadow log must not contain candidate user text:\n%s", string(data))
 	}
 }
 
