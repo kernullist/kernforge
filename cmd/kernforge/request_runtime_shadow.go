@@ -24,7 +24,8 @@ const (
 	RequestRuntimeClassDefault           = "default"
 	RequestRuntimeClassAll               = "all"
 
-	requestRuntimeShadowDirName = "request_runtime_shadow"
+	requestRuntimeShadowDirName          = "request_runtime_shadow"
+	requestRuntimeShadowMaxRecentSamples = 12
 )
 
 type RequestRuntimeConfig struct {
@@ -58,6 +59,42 @@ type RequestRuntimeShadowComparison struct {
 	SemanticDifferences    []string                       `json:"semantic_differences,omitempty"`
 	ShadowLogPath          string                         `json:"shadow_log_path,omitempty"`
 	WriteError             string                         `json:"write_error,omitempty"`
+}
+
+type RequestRuntimeShadowStats struct {
+	FirstObservedAt  time.Time                       `json:"first_observed_at,omitempty"`
+	LastObservedAt   time.Time                       `json:"last_observed_at,omitempty"`
+	Total            int                             `json:"total"`
+	Diverged         int                             `json:"diverged"`
+	RuntimeDiverged  int                             `json:"runtime_diverged"`
+	SemanticObserved int                             `json:"semantic_observed"`
+	SemanticDiverged int                             `json:"semantic_diverged"`
+	ByRequestClass   []RequestRuntimeShadowClassStat `json:"by_request_class,omitempty"`
+	RecentSamples    []RequestRuntimeShadowSample    `json:"recent_samples,omitempty"`
+}
+
+type RequestRuntimeShadowClassStat struct {
+	RequestClass     string `json:"request_class,omitempty"`
+	Total            int    `json:"total"`
+	Diverged         int    `json:"diverged"`
+	RuntimeDiverged  int    `json:"runtime_diverged"`
+	SemanticObserved int    `json:"semantic_observed"`
+	SemanticDiverged int    `json:"semantic_diverged"`
+}
+
+type RequestRuntimeShadowSample struct {
+	ObservedAt             time.Time `json:"observed_at,omitempty"`
+	Mode                   string    `json:"mode,omitempty"`
+	EnabledPath            string    `json:"enabled_path,omitempty"`
+	RequestClass           string    `json:"request_class,omitempty"`
+	SemanticRequestClass   string    `json:"semantic_request_class,omitempty"`
+	FinalGateState         string    `json:"final_gate_state,omitempty"`
+	SemanticFinalGateState string    `json:"semantic_final_gate_state,omitempty"`
+	Differences            []string  `json:"differences,omitempty"`
+	SemanticDifferences    []string  `json:"semantic_differences,omitempty"`
+	SemanticClassifierMode string    `json:"semantic_classifier_mode,omitempty"`
+	ShadowLogPath          string    `json:"shadow_log_path,omitempty"`
+	WriteError             string    `json:"write_error,omitempty"`
 }
 
 func mergeRequestRuntimeConfig(dst *RequestRuntimeConfig, src RequestRuntimeConfig) {
@@ -318,6 +355,135 @@ func sanitizeRequestRuntimeDecisionSummary(summary RequestRuntimeDecisionSummary
 	return summary
 }
 
+func updateRequestRuntimeShadowStats(stats *RequestRuntimeShadowStats, comparison RequestRuntimeShadowComparison) *RequestRuntimeShadowStats {
+	if stats == nil {
+		stats = &RequestRuntimeShadowStats{}
+	}
+	comparison.LegacyDecision = sanitizeRequestRuntimeDecisionSummary(comparison.LegacyDecision)
+	comparison.V2Decision = sanitizeRequestRuntimeDecisionSummary(comparison.V2Decision)
+	if comparison.GeneratedAt.IsZero() {
+		comparison.GeneratedAt = time.Now()
+	}
+	if stats.FirstObservedAt.IsZero() {
+		stats.FirstObservedAt = comparison.GeneratedAt
+	}
+	stats.LastObservedAt = comparison.GeneratedAt
+	stats.Total++
+	if comparison.Diverged {
+		stats.Diverged++
+	}
+	runtimeDifferences := requestRuntimeDecisionDifferences(comparison.LegacyDecision, comparison.V2Decision)
+	if len(runtimeDifferences) > 0 {
+		stats.RuntimeDiverged++
+	}
+	semanticObserved := comparison.SemanticDecision != nil || strings.TrimSpace(comparison.SemanticClassifierMode) != ""
+	semanticDiverged := len(normalizeTaskStateList(comparison.SemanticDifferences, 16)) > 0
+	if semanticObserved {
+		stats.SemanticObserved++
+	}
+	if semanticDiverged {
+		stats.SemanticDiverged++
+	}
+	class := requestRuntimeShadowStatsClass(comparison)
+	requestRuntimeShadowStatsRecordClass(stats, class, comparison.Diverged, len(runtimeDifferences) > 0, semanticObserved, semanticDiverged)
+	stats.RecentSamples = append(stats.RecentSamples, requestRuntimeShadowSampleFromComparison(comparison))
+	if len(stats.RecentSamples) > requestRuntimeShadowMaxRecentSamples {
+		stats.RecentSamples = stats.RecentSamples[len(stats.RecentSamples)-requestRuntimeShadowMaxRecentSamples:]
+	}
+	return stats
+}
+
+func requestRuntimeShadowStatsClass(comparison RequestRuntimeShadowComparison) string {
+	class := normalizeRequestRuntimeClass(comparison.EnabledPath)
+	if class == "" {
+		class = normalizeRequestRuntimeClass(comparison.V2Decision.RequestClass)
+	}
+	if class == "" {
+		class = normalizeRequestRuntimeClass(comparison.LegacyDecision.RequestClass)
+	}
+	if class == "" {
+		class = RequestRuntimeClassDefault
+	}
+	return class
+}
+
+func requestRuntimeShadowStatsRecordClass(stats *RequestRuntimeShadowStats, class string, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool) {
+	if stats == nil {
+		return
+	}
+	class = normalizeRequestRuntimeClass(class)
+	if class == "" {
+		class = RequestRuntimeClassDefault
+	}
+	for i := range stats.ByRequestClass {
+		if stats.ByRequestClass[i].RequestClass == class {
+			requestRuntimeShadowStatsIncrementClass(&stats.ByRequestClass[i], diverged, runtimeDiverged, semanticObserved, semanticDiverged)
+			return
+		}
+	}
+	stat := RequestRuntimeShadowClassStat{RequestClass: class}
+	requestRuntimeShadowStatsIncrementClass(&stat, diverged, runtimeDiverged, semanticObserved, semanticDiverged)
+	stats.ByRequestClass = append(stats.ByRequestClass, stat)
+	slices.SortFunc(stats.ByRequestClass, func(a RequestRuntimeShadowClassStat, b RequestRuntimeShadowClassStat) int {
+		return strings.Compare(a.RequestClass, b.RequestClass)
+	})
+}
+
+func requestRuntimeShadowStatsIncrementClass(stat *RequestRuntimeShadowClassStat, diverged bool, runtimeDiverged bool, semanticObserved bool, semanticDiverged bool) {
+	if stat == nil {
+		return
+	}
+	stat.Total++
+	if diverged {
+		stat.Diverged++
+	}
+	if runtimeDiverged {
+		stat.RuntimeDiverged++
+	}
+	if semanticObserved {
+		stat.SemanticObserved++
+	}
+	if semanticDiverged {
+		stat.SemanticDiverged++
+	}
+}
+
+func requestRuntimeShadowSampleFromComparison(comparison RequestRuntimeShadowComparison) RequestRuntimeShadowSample {
+	sample := RequestRuntimeShadowSample{
+		ObservedAt:             comparison.GeneratedAt,
+		Mode:                   normalizeRequestRuntimeMode(comparison.Mode),
+		EnabledPath:            requestRuntimeShadowStatsClass(comparison),
+		RequestClass:           normalizeRequestRuntimeClass(comparison.V2Decision.RequestClass),
+		FinalGateState:         strings.TrimSpace(comparison.V2Decision.FinalGateState),
+		Differences:            normalizeTaskStateList(comparison.Differences, 32),
+		SemanticDifferences:    normalizeTaskStateList(comparison.SemanticDifferences, 16),
+		SemanticClassifierMode: normalizeRequestSemanticClassifierMode(comparison.SemanticClassifierMode),
+		ShadowLogPath:          requestRuntimeShadowLogRef(comparison.ShadowLogPath),
+		WriteError:             compactPromptSection(comparison.WriteError, 180),
+	}
+	if comparison.SemanticDecision != nil {
+		semantic := sanitizeRequestRuntimeDecisionSummary(*comparison.SemanticDecision)
+		sample.SemanticRequestClass = semantic.RequestClass
+		sample.SemanticFinalGateState = strings.TrimSpace(semantic.FinalGateState)
+	}
+	if sample.RequestClass == "" {
+		sample.RequestClass = RequestRuntimeClassDefault
+	}
+	return sample
+}
+
+func requestRuntimeShadowLogRef(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	name := filepath.Base(filepath.Clean(path))
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		return ""
+	}
+	return filepath.ToSlash(filepath.Join(requestRuntimeShadowDirName, name))
+}
+
 func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntime *TurnRuntimeState, finalDecision FinalGateDecision, unresolvedVerification bool, finalAnswerOnlyCorrection bool, verificationOutOfScopeFinalOnly bool, verificationSkippedFinalOnly bool, latestUserExplicitWebResearch bool, localCodeToolPolicyForTurn bool, reply string, finalCtx TurnRuntimeFinalContext) {
 	if a == nil || a.Session == nil {
 		return
@@ -364,6 +530,7 @@ func (a *Agent) observeRequestRuntimeShadow(envelope RequestEnvelope, turnRuntim
 		}
 	}
 	a.Session.LastRequestRuntimeShadow = &comparison
+	a.Session.RequestRuntimeShadowStats = updateRequestRuntimeShadowStats(a.Session.RequestRuntimeShadowStats, comparison)
 }
 
 func writeRequestRuntimeShadowDivergence(root string, cfg RequestRuntimeConfig, comparison RequestRuntimeShadowComparison) (string, error) {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +217,55 @@ func TestSemanticClassifierShadowRecordsCandidateDecision(t *testing.T) {
 	}
 	if strings.Contains(string(data), "main.go를 분석만") {
 		t.Fatalf("semantic shadow log must not contain candidate user text:\n%s", string(data))
+	}
+}
+
+func TestRequestRuntimeShadowStatsAccumulatesSemanticObservations(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeShadow}
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{
+		Config:    cfg,
+		Tools:     requestScenarioReplayRegistry(),
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+	editEnvelope := buildRequestEnvelope("main.go 버그를 고쳐줘")
+	sameCandidate := sanitizeSemanticRequestEnvelopeCandidate(editEnvelope)
+	session.LastSemanticRequestEnvelope = &sameCandidate
+	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+		AttemptedEditTool:   true,
+		ExplicitEditRequest: true,
+	})
+	readOnlyCandidate := sanitizeSemanticRequestEnvelopeCandidate(buildRequestEnvelope("main.go를 분석만 해. 파일은 수정하지 마"))
+	session.LastSemanticRequestEnvelope = &readOnlyCandidate
+	agent.observeRequestRuntimeShadow(editEnvelope, NewTurnRuntimeState(editEnvelope), FinalGateDecision{State: FinalGateReady, Ready: true}, false, false, false, false, false, false, "수정 완료했습니다.", TurnRuntimeFinalContext{
+		AttemptedEditTool:   true,
+		ExplicitEditRequest: true,
+	})
+	stats := session.RequestRuntimeShadowStats
+	if stats == nil {
+		t.Fatalf("expected shadow stats")
+	}
+	if stats.Total != 2 || stats.SemanticObserved != 2 || stats.SemanticDiverged != 1 {
+		t.Fatalf("unexpected aggregate stats: %#v", stats)
+	}
+	if stats.RuntimeDiverged != 0 {
+		t.Fatalf("semantic-only observations must not count as runtime divergence, got %#v", stats)
+	}
+	if len(stats.ByRequestClass) != 1 || stats.ByRequestClass[0].RequestClass != RequestRuntimeClassExplicitEdit || stats.ByRequestClass[0].Total != 2 {
+		t.Fatalf("expected explicit_edit class aggregate, got %#v", stats.ByRequestClass)
+	}
+	if len(stats.RecentSamples) != 2 {
+		t.Fatalf("expected two bounded recent samples, got %#v", stats.RecentSamples)
+	}
+	last := stats.RecentSamples[len(stats.RecentSamples)-1]
+	if !sliceContainsFold(last.SemanticDifferences, "final_gate") {
+		t.Fatalf("expected semantic final gate difference in last sample, got %#v", last)
+	}
+	if strings.Contains(fmt.Sprintf("%#v", stats), "main.go를 분석만") {
+		t.Fatalf("shadow stats must not store user text: %#v", stats)
 	}
 }
 
