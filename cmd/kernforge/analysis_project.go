@@ -7903,7 +7903,7 @@ func (a *projectAnalyzer) confirmImplicitModelReview(trigger string, originalMai
 
 func projectAnalysisReviewerConsentTrigger(snapshot ProjectSnapshot) string {
 	if normalizeProjectAnalysisMode(snapshot.AnalysisMode) == "root-cause" {
-		return "root-cause reviewer"
+		return "analysis root-cause reviewer"
 	}
 	return "analysis reviewer"
 }

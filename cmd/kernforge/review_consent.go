@@ -62,7 +62,7 @@ func (a *Agent) confirmImplicitModelReview(trigger string, originalMainProposal 
 	if a != nil && a.PromptConfirmModelReview != nil {
 		beforeUsed := implicitModelReviewBudgetUsed(sessionForAgent(a))
 		decision := normalizeModelReviewConsentDecision(a.PromptConfirmModelReview(req), a.Config)
-		if decision.Allowed && implicitModelReviewBudgetUsed(sessionForAgent(a)) == beforeUsed {
+		if decision.Allowed && !implicitModelReviewTriggerBypassesBoundaryBudget(req) && implicitModelReviewBudgetUsed(sessionForAgent(a)) == beforeUsed {
 			implicitModelReviewRecordAllowed(sessionForAgent(a), req)
 		}
 		return decision
@@ -110,7 +110,7 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 	if rt != nil && !rt.modelReviewConsentPromptEnabled && rt.agent != nil && rt.agent.PromptConfirmModelReview != nil {
 		beforeUsed := implicitModelReviewBudgetUsed(session)
 		decision := normalizeModelReviewConsentDecision(rt.agent.PromptConfirmModelReview(req), rt.cfg)
-		if decision.Allowed && implicitModelReviewBudgetUsed(session) == beforeUsed {
+		if decision.Allowed && !implicitModelReviewTriggerBypassesBoundaryBudget(req) && implicitModelReviewBudgetUsed(session) == beforeUsed {
 			implicitModelReviewRecordAllowed(session, req)
 		}
 		return decision
@@ -163,6 +163,9 @@ func configForRuntimeState(rt *runtimeState) Config {
 func implicitModelReviewPreConsentDecision(cfg Config, session *Session, req ModelReviewConsentRequest) (ModelReviewConsentDecision, bool) {
 	policy := configModelReviewConsent(cfg)
 	req.Trigger = strings.TrimSpace(req.Trigger)
+	if implicitModelReviewTriggerBypassesBoundaryBudget(req) {
+		return ModelReviewConsentDecision{}, false
+	}
 	if implicitModelReviewReadOnlyBoundary(session, req) {
 		implicitModelReviewRecordSkip(session, req, modelReviewSkipReadOnlyBoundary)
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "request_boundary", SkipReason: modelReviewSkipReadOnlyBoundary}, true
@@ -174,9 +177,14 @@ func implicitModelReviewPreConsentDecision(cfg Config, session *Session, req Mod
 	return ModelReviewConsentDecision{}, false
 }
 
+func implicitModelReviewTriggerBypassesBoundaryBudget(req ModelReviewConsentRequest) bool {
+	trigger := strings.ToLower(strings.TrimSpace(req.Trigger))
+	return strings.Contains(trigger, "analysis") && strings.Contains(trigger, "reviewer")
+}
+
 func implicitModelReviewFinalizeDecision(session *Session, req ModelReviewConsentRequest, decision ModelReviewConsentDecision) ModelReviewConsentDecision {
 	decision = normalizeModelReviewConsentDecision(decision, Config{})
-	if decision.Allowed {
+	if decision.Allowed && !implicitModelReviewTriggerBypassesBoundaryBudget(req) {
 		implicitModelReviewRecordAllowed(session, req)
 	}
 	return decision
@@ -204,12 +212,14 @@ func implicitModelReviewRequestEnvelope(session *Session) (RequestEnvelope, bool
 	if session == nil {
 		return RequestEnvelope{}, false
 	}
+	request := strings.TrimSpace(sessionEffectiveUserRequestText(session))
 	if session.LastRequestEnvelope != nil {
 		envelope := *session.LastRequestEnvelope
 		envelope.Normalize()
-		return envelope, true
+		if request == "" || strings.EqualFold(strings.TrimSpace(baseUserQueryText(envelope.ExternalUserText)), strings.TrimSpace(baseUserQueryText(request))) {
+			return envelope, true
+		}
 	}
-	request := strings.TrimSpace(sessionEffectiveUserRequestText(session))
 	if request == "" {
 		return RequestEnvelope{}, false
 	}

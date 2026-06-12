@@ -53,6 +53,49 @@ func TestImplicitModelReviewPolicyCapsPerTurnReviewerCalls(t *testing.T) {
 	}
 }
 
+func TestImplicitModelReviewPolicyIgnoresStaleReadOnlyEnvelopeForNewEditTurn(t *testing.T) {
+	root := t.TempDir()
+	readOnlyRequest := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	editRequest := "main.go 버그를 고쳐줘"
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	staleEnvelope := buildRequestEnvelope(readOnlyRequest)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: readOnlyRequest})
+	session.LastRequestEnvelope = &staleEnvelope
+	session.AddMessage(Message{Role: "user", Text: editRequest})
+	rt := &runtimeState{cfg: cfg, session: session}
+
+	decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{Trigger: "pre_write review"})
+	if !decision.Allowed {
+		t.Fatalf("stale read-only envelope must not block new edit turn review, got %#v", decision)
+	}
+}
+
+func TestImplicitModelReviewPolicyDoesNotBudgetCapAnalysisReviewer(t *testing.T) {
+	root := t.TempDir()
+	request := "분석 프로젝트를 실행해줘"
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	envelope := buildRequestEnvelope(request)
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.LastRequestEnvelope = &envelope
+	rt := &runtimeState{cfg: cfg, session: session}
+
+	for _, trigger := range []string{"analysis reviewer", "analysis root-cause reviewer"} {
+		for i := 0; i < maxImplicitModelReviewsPerTurn+2; i++ {
+			decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{Trigger: trigger})
+			if !decision.Allowed {
+				t.Fatalf("%s %d should bypass per-turn budget, got %#v", trigger, i, decision)
+			}
+		}
+	}
+	if session.ImplicitModelReviewBudget != nil && session.ImplicitModelReviewBudget.Used != 0 {
+		t.Fatalf("analysis reviewer should not consume turn budget, got %#v", session.ImplicitModelReviewBudget)
+	}
+}
+
 func TestProjectAnalysisReviewerRemainsAvailableForExplicitAnalysis(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
