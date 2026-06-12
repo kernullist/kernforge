@@ -438,12 +438,23 @@ func classifyReviewRequestClassDecision(rt *runtimeState, root string, opts Revi
 		if requestExplicitlyOrdersReviewBeforeModification(lower) || requestLooksLikeInspectBugsThenFixConfirmed(lower) {
 			decision.RequestClass = reviewRequestClassReviewThenModify
 			decision.Reason = "mixed document/report and source-change request; source modification requires review-before-modify lifecycle while document output remains an artifact obligation"
-		} else {
-			decision.RequestClass = reviewRequestClassModifyThenReview
-			decision.Reason = "mixed document/report and source-change request; code behavior is affected so post-change review and verification disclosure are required"
+			decision.Confidence = 0.74
+			decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "mixed document artifact and source modification signals; document_artifact was not selected because code behavior may change")
+			decision.Normalize()
+			return decision
 		}
-		decision.Confidence = 0.74
-		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "mixed document artifact and source modification signals; document_artifact was not selected because code behavior may change")
+		if requestHasImperativeSourceEditCommand(lower) {
+			decision.RequestClass = reviewRequestClassModifyThenReview
+			decision.Reason = "mixed document/report and source-change request; an imperative source-edit command is present so post-change review and verification disclosure are required"
+			decision.Confidence = 0.74
+			decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "mixed document artifact and source modification signals; document_artifact was not selected because code behavior may change")
+			decision.Normalize()
+			return decision
+		}
+		decision.RequestClass = reviewRequestClassDocumentArtifact
+		decision.Reason = "document/report is the deliverable; edit-verb language only describes document content and no imperative source-edit command was issued, so artifact authoring is selected"
+		decision.Confidence = 0.8
+		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "document artifact selected over modification despite edit-verb language; no imperative source-edit command was found")
 		decision.Normalize()
 		return decision
 	}
@@ -588,6 +599,76 @@ func requestLooksLikeDocumentArtifactIntent(rt *runtimeState, request string, op
 	return false
 }
 
+// looksLikeModificationDescribedAsDocumentContent returns true only when an
+// edit term describes what should go INTO a document/report rather than acting
+// as a command to edit source. It guards against phrasing where an edit noun is
+// the document content (sunk into a document via an authoring verb), not a
+// source-edit order. Returns false for genuine mixed flows so those keep their
+// existing routing.
+func looksLikeModificationDescribedAsDocumentContent(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	// Must be a document-authoring request at all.
+	if !looksLikeDocumentAuthoringIntent(lower) && !looksLikeReviewArtifactAuthoringRequest(lower) {
+		return false
+	}
+	// Genuine mixed flows must stay routed by the existing branches.
+	if requestExplicitlyOrdersReviewBeforeModification(lower) || requestLooksLikeInspectBugsThenFixConfirmed(lower) {
+		return false
+	}
+	// An imperative source-edit command means this is not just doc content.
+	if containsAny(lower,
+		"고쳐줘", "고쳐 줘", "고쳐주", "구현해줘", "구현해", "수정해줘", "수정해 줘", "패치해줘", "반영해줘", "적용해줘",
+		"fix it", "fix the bug", "fix this", "implement it", "implement the", "apply the fix", "patch it", "make the change", "make this change",
+	) {
+		return false
+	}
+	// Set 1: the modification is described as a noun/phrase (the content).
+	// Covers descriptive ("수정 사항"), obligation/gerundive ("고쳐야 할",
+	// "수정해야 할"), recommendation ("수정 권고"), and direction ("개선 방향")
+	// forms, since all of these name WHAT the document should describe rather
+	// than ordering a source edit.
+	hasEditNoun := containsAny(lower,
+		"수정이 필요한 부분", "수정이 필요한", "수정 사항", "수정사항", "고칠 부분", "개선이 필요한", "개선 사항", "개선사항",
+		"변경이 필요한", "변경 사항", "변경점", "수정할 부분", "수정점", "보완이 필요한", "수정 방안", "개선 방안", "리팩터링 방안", "리팩토링 방안",
+		"고쳐야 할", "고쳐야 하는", "고쳐야할", "수정해야 할", "수정해야 하는", "수정해야할",
+		"개선해야 할", "개선해야 하는", "개선해야할", "변경해야 할", "변경해야 하는", "보완해야 할", "보완해야 하는", "해결해야 할", "해결해야 하는",
+		"수정 권고", "개선 권고", "보완 권고", "권고 사항", "권고사항",
+		"수정 방향", "개선 방향", "대응 방향", "보강 방향",
+		"what needs to be fixed", "what needs fixing", "parts to fix", "parts that need fixing", "changes needed", "needed changes",
+		"areas to improve", "improvements needed", "things to fix", "fixes needed", "what to change", "areas needing changes", "modifications needed",
+		"what should be fixed", "needs to be fixed", "issues to fix", "problems to fix", "bugs to fix", "what to fix", "what should change",
+		"recommended fixes", "fix recommendations", "suggested fixes", "remediation", "remediations",
+	)
+	if !hasEditNoun {
+		return false
+	}
+	// Set 2a: a strong document sink that names a concrete document target via
+	// an object marker; this alone signals document output even without a verb.
+	hasStrongDocSink := containsAny(lower,
+		"문서로", "보고서로", "md로", ".md로", "마크다운으로", "markdown으로", "문서에", "보고서에", "문서로서", "문건으로",
+		"into a document", "in a document", "as a document", "to a document", "into a report", "in a report", "as a report", "to a report",
+		"in markdown", "as markdown",
+	)
+	// Set 2b: a weak document noun that still needs an authoring verb to count.
+	hasWeakDocSink := containsAny(lower, "document", "report", "markdown")
+	if !hasStrongDocSink && !hasWeakDocSink {
+		return false
+	}
+	// Set 3: a document-authoring verb. A strong sink ("...문서로") makes the
+	// document output explicit, so the verb may be elided in that case.
+	hasDocVerb := containsAny(lower,
+		"정리", "작성", "생성", "만들", "정리해", "작성해", "포함",
+		"write", "document", "summarize", "summarise", "compile", "prepare", "draft", "produce", "include",
+	)
+	if hasStrongDocSink {
+		return true
+	}
+	return hasDocVerb
+}
+
 func requestHasSourceModificationIntent(lower string, paths []string) bool {
 	lower = strings.ToLower(strings.TrimSpace(lower))
 	if lower == "" {
@@ -597,6 +678,11 @@ func requestHasSourceModificationIntent(lower string, paths []string) bool {
 		return false
 	}
 	if requestHasExplicitNoEditLanguage(lower) && !containsAny(lower, "fix only", "fix confirmed", "수정할 항목만", "확정된") {
+		return false
+	}
+	// When the edit term only describes document content, it is not a
+	// source-modification command. This fixes all callers at once.
+	if looksLikeModificationDescribedAsDocumentContent(lower) {
 		return false
 	}
 	hasSourcePath := false
@@ -671,6 +757,23 @@ func requestLooksLikeInspectBugsThenFixConfirmed(lower string) bool {
 		"확인된", "확정된", "검증된", "재현된", "근거 있는", "확인한 것만", "확정한 것만",
 	)
 	return hasInspection && hasBug && hasFix && hasConfirmedOnly
+}
+
+// requestHasImperativeSourceEditCommand returns true only for a non-negated,
+// non-doc-content, command-form source-edit order. It is the gate that decides
+// between the genuine mixed modify path and a document-only deliverable.
+func requestHasImperativeSourceEditCommand(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if hasRepairActionNegation(lower) || requestHasExplicitNoEditLanguage(lower) {
+		return false
+	}
+	if looksLikeModificationDescribedAsDocumentContent(lower) {
+		return false
+	}
+	return looksLikeImperativeSourceEditCommand(lower)
 }
 
 func requestExplicitlyOrdersReviewBeforeModification(lower string) bool {
@@ -822,12 +925,23 @@ func classifyAcceptanceContractRequestClassDecision(userText string, intent Turn
 		if requestExplicitlyOrdersReviewBeforeModification(lower) || requestLooksLikeInspectBugsThenFixConfirmed(lower) {
 			decision.RequestClass = reviewRequestClassReviewThenModify
 			decision.Reason = "acceptance contract saw mixed document and source-change signals; selected review-before-modify because edits must be limited to confirmed findings"
-		} else {
-			decision.RequestClass = reviewRequestClassModifyThenReview
-			decision.Reason = "acceptance contract saw mixed document and source-change signals; selected modify-then-review because code behavior may change"
+			decision.Confidence = 0.74
+			decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "document artifact request also includes source modification signals")
+			decision.Normalize()
+			return decision
 		}
-		decision.Confidence = 0.74
-		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "document artifact request also includes source modification signals")
+		if requestHasImperativeSourceEditCommand(lower) {
+			decision.RequestClass = reviewRequestClassModifyThenReview
+			decision.Reason = "acceptance contract saw mixed document and source-change signals; an imperative source-edit command is present so modify-then-review is selected"
+			decision.Confidence = 0.74
+			decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "document artifact request also includes source modification signals")
+			decision.Normalize()
+			return decision
+		}
+		decision.RequestClass = reviewRequestClassDocumentArtifact
+		decision.Reason = "acceptance contract saw document deliverable with edit-verb language only describing document content; no imperative source-edit command was issued so artifact authoring is selected"
+		decision.Confidence = 0.8
+		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "document artifact selected over modification despite edit-verb language; no imperative source-edit command was found")
 		decision.Normalize()
 		return decision
 	}

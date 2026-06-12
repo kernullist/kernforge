@@ -1341,7 +1341,7 @@ func looksLikeDocumentArtifactOutputRequest(text string) bool {
 		return true
 	}
 	if containsAny(lower,
-		".md", ".markdown", "markdown file", "as a file", "save to file", "write to file", "create file", "report document",
+		".md", ".markdown", "markdown file", "markdown으로", "md로", "in markdown", "as markdown", "as a file", "save to file", "write to file", "create file", "report document",
 		"파일", "파일로", "파일에", "저장", "별도 문서", "별도 보고서", "문서로", "문서에", "보고서로", "보고서에", "마크다운으로",
 	) {
 		return true
@@ -1430,6 +1430,35 @@ func looksLikeExplicitEditIntent(text string) bool {
 	)
 }
 
+// looksLikeImperativeSourceEditCommand returns true only when the request
+// carries a command-form repair/implement directive aimed at SOURCE code, not
+// a document. Bare authoring verbs (write/create/draft/generate and their KO
+// equivalents) are intentionally excluded. This is the single shared notion consulted by the
+// request envelope, the review request class default, and the boundary policy
+// so they all agree on what counts as an imperative source-edit order.
+func looksLikeImperativeSourceEditCommand(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	if hasRepairActionNegation(lower) {
+		return false
+	}
+	// Edit term only describing document content is not an imperative command.
+	if looksLikeModificationDescribedAsDocumentContent(lower) {
+		return false
+	}
+	return containsAny(lower,
+		"fix it", "fix this", "fix the bug", "fix the", "fix main", "fix ", "please fix", "go fix",
+		"implement it", "implement the", "make the change", "make this change", "make changes", "make the fix",
+		"apply the fix", "patch it", "patch the", "modify it", "modify the", "edit the",
+		"refactor it", "refactor the", "replace the", "rename the", "change the", "correct the",
+		"고쳐줘", "고쳐 줘", "고쳐주", "고쳐", "고치", "수정해줘", "수정해 줘", "수정해", "수정하",
+		"구현해줘", "구현해 줘", "구현해", "패치해", "반영해", "변경해", "교체해", "삭제해", "해결해",
+		"리팩터링해줘", "리팩토링해줘",
+	)
+}
+
 func looksLikeExplicitGitIntent(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
 	if lower == "" {
@@ -1469,6 +1498,11 @@ func looksLikeDocumentAuthoringIntent(text string) bool {
 	}
 	if looksLikeAnswerDeliveryRequest(lower) && !looksLikeDocumentArtifactOutputRequest(lower) {
 		return false
+	}
+	// An explicit document-output sink ("...문서로", "...markdown으로", ".md")
+	// makes the document the deliverable even when the authoring verb is elided.
+	if looksLikeDocumentArtifactOutputRequest(lower) {
+		return true
 	}
 	return containsAny(lower,
 		"add ", "author ", "create ", "draft ", "generate ", "prepare ", "revise ", "update ", "write ",

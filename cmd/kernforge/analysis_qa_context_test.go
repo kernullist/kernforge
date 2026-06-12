@@ -138,8 +138,16 @@ func TestKoreanDocumentGenerationRequestIsWriteIntent(t *testing.T) {
 		t.Fatalf("document generation request must not be read-only analysis")
 	}
 	mode := resolveAgentRequestMode(query, classifyTurnIntent(query))
-	if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest {
-		t.Fatalf("expected editable request mode for document generation, got %#v", mode)
+	// Document generation is a writable artifact request, but not an explicit
+	// source-edit request: it authors the document without rendering an
+	// inspect-and-fix code-edit lifecycle.
+	if mode.ReadOnlyAnalysis || mode.ExplicitEditRequest {
+		t.Fatalf("expected writable document-authoring mode without explicit source edit, got %#v", mode)
+	}
+	env := buildRequestEnvelope(query)
+	env.Normalize()
+	if !env.DocumentAuthoring || !env.AllowsFileMutation || env.Boundary == ActionBoundaryMustEdit {
+		t.Fatalf("expected writable document artifact envelope, got %#v", env)
 	}
 }
 

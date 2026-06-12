@@ -163,8 +163,15 @@ func TestNaturalLanguageReviewSkipsSourceBugDocumentGeneration(t *testing.T) {
 		t.Fatalf("source bug document generation should not enter review-only mode")
 	}
 	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
-	if mode.ReadOnlyAnalysis || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
-		t.Fatalf("source bug document generation should be an editable artifact request, got %#v", mode)
+	// Writable document-authoring request: not read-only, intent stays edit_code,
+	// but it is not an explicit source-edit request under document-authoring policy.
+	if mode.ReadOnlyAnalysis || mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
+		t.Fatalf("source bug document generation should be a writable document-authoring request, got %#v", mode)
+	}
+	env := buildRequestEnvelope(request)
+	env.Normalize()
+	if !env.DocumentAuthoring || !env.AllowsFileMutation || env.Boundary == ActionBoundaryMustEdit {
+		t.Fatalf("source bug document generation should yield a writable document artifact envelope, got %#v", env)
 	}
 }
 
@@ -182,8 +189,16 @@ func TestReviewOnlyModeDoesNotSwallowNoSourceEditDocumentGeneration(t *testing.T
 		t.Fatalf("no-source-edit document generation should not be stolen by review-only mode")
 	}
 	mode := resolveAgentRequestMode(request, classifyTurnIntent(request))
-	if mode.ReadOnlyAnalysis || mode.ReviewOnlyModeRequest || !mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
-		t.Fatalf("no-source-edit document generation should remain an editable artifact request, got %#v", mode)
+	// Source edits are negated but the report is still the deliverable: the
+	// request must stay writable (not read-only, not review-only) without being
+	// classified as an explicit source-edit request.
+	if mode.ReadOnlyAnalysis || mode.ReviewOnlyModeRequest || mode.ExplicitEditRequest || mode.Intent != TurnIntentEditCode {
+		t.Fatalf("no-source-edit document generation should remain a writable document-authoring request, got %#v", mode)
+	}
+	env := buildRequestEnvelope(request)
+	env.Normalize()
+	if !env.DocumentAuthoring || !env.AllowsFileMutation || env.Boundary == ActionBoundaryMustEdit {
+		t.Fatalf("no-source-edit document generation should yield a writable document artifact envelope, got %#v", env)
 	}
 }
 

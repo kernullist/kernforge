@@ -85,6 +85,14 @@ func buildRequestEnvelope(userText string) RequestEnvelope {
 	reviewDecision := classifyAcceptanceContractRequestClassDecision(base, intent, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest)
 	reviewDecision = applyReviewLifecycleKindToDecision(reviewDecision, base, intent, "", acceptanceContractMode(intent, mode.ReadOnlyAnalysis, mode.ExplicitEditRequest))
 	reviewDecision.Normalize()
+	// When the review classifier resolves a document deliverable and there is no
+	// imperative source-edit command, treat the request as document authoring so
+	// it never renders as a must_edit code-edit request. This covers document
+	// phrasing the authoring-intent heuristic misses (for example save-to-file).
+	if normalizeReviewRequestClass(reviewDecision.RequestClass) == reviewRequestClassDocumentArtifact && !looksLikeImperativeSourceEditCommand(base) {
+		documentAuthoring = true
+		mode.ExplicitEditRequest = false
+	}
 	envelope := RequestEnvelope{
 		ExternalUserText:          base,
 		Intent:                    intent,
@@ -136,11 +144,19 @@ func buildRequestEnvelope(userText string) RequestEnvelope {
 }
 
 func classifyAgentRequestModeHeuristics(userText string, intent TurnIntent) agentRequestMode {
-	documentArtifactEditRequest := looksLikeDocumentAuthoringIntent(userText) && looksLikeExplicitEditIntent(userText)
+	documentAuthoring := looksLikeDocumentAuthoringIntent(userText) || looksLikeReviewArtifactAuthoringRequest(userText)
+	imperativeSourceEdit := looksLikeImperativeSourceEditCommand(userText)
+	documentArtifactEditRequest := documentAuthoring && imperativeSourceEdit
+	// A document-authoring request without an imperative source-edit command is a
+	// writable artifact request whose deliverable is the document, not a source
+	// edit. Such a request must not be treated as an explicit source-edit request
+	// and must not be swallowed into read-only analysis even when source edits are
+	// negated (the negation targets source, not the document deliverable).
+	documentAuthoringOnly := documentAuthoring && !imperativeSourceEdit
 	repairActionNegated := hasRepairActionNegation(userText) && !documentArtifactEditRequest
-	explicitEditRequest := looksLikeExplicitEditIntent(userText) && !repairActionNegated
-	reviewOnlyModeRequest := looksLikeReviewOnlyModeIntent(userText) && !explicitEditRequest
-	readOnlyAnalysis := repairActionNegated || intent == TurnIntentReviewCode || prefersReadOnlyAnalysisIntent(userText) || reviewOnlyModeRequest || looksLikePlanOrDirectionOnlyRequest(userText)
+	explicitEditRequest := looksLikeExplicitEditIntent(userText) && !repairActionNegated && !documentAuthoringOnly
+	reviewOnlyModeRequest := looksLikeReviewOnlyModeIntent(userText) && !explicitEditRequest && !documentAuthoringOnly
+	readOnlyAnalysis := !documentAuthoringOnly && (repairActionNegated || intent == TurnIntentReviewCode || prefersReadOnlyAnalysisIntent(userText) || reviewOnlyModeRequest || looksLikePlanOrDirectionOnlyRequest(userText))
 	if readOnlyAnalysis && intent == TurnIntentEditCode {
 		intent = TurnIntentGeneral
 	}
@@ -328,7 +344,7 @@ func (e *RequestEnvelope) applyPolicy() {
 	if e.AllowsGitMutation {
 		e.Boundary = ActionBoundaryMayGit
 	} else if e.AllowsFileMutation {
-		if e.ExplicitEditRequest {
+		if e.ExplicitEditRequest && !e.DocumentAuthoring {
 			e.Boundary = ActionBoundaryMustEdit
 		} else {
 			e.Boundary = ActionBoundaryMayEdit
@@ -443,6 +459,11 @@ func (e RequestEnvelope) renderPromptSectionFallback() string {
 		b.WriteString("\nRequest mode: analysis-only.\n")
 		b.WriteString("- Investigate, explain, or document the issue.\n")
 		b.WriteString("- Do not modify files or call edit tools unless the user explicitly asks for a fix.\n")
+	} else if e.DocumentAuthoring {
+		b.WriteString("\nRequest mode: document-authoring.\n")
+		b.WriteString("- Produce the requested document or report as the deliverable.\n")
+		b.WriteString("- You may create or update the target document file (for example a .md file) using the available file tools.\n")
+		b.WriteString("- Do not modify, fix, or refactor source code; describe needed changes in the document instead unless the user gives an explicit source-edit command.\n")
 	} else if e.ExplicitEditRequest {
 		b.WriteString("\nRequest mode: inspect-and-fix.\n")
 		b.WriteString("- Investigate the referenced code and apply the necessary fix directly when needed.\n")

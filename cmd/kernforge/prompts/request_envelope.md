@@ -15,6 +15,13 @@ The latest user request is analysis-only. Investigate and explain the issue, but
 Request mode: analysis-only.
 - Investigate, explain, or document the issue.
 - Do not modify files or call edit tools unless the user explicitly asks for a fix.
+{{else if .DocumentAuthoring}}
+The latest user request is document-authoring. Produce the requested document or report as the deliverable. You may create or update the target document file, but do not modify source code.
+
+Request mode: document-authoring.
+- Produce the requested document or report as the deliverable.
+- You may create or update the target document file (for example a .md file) using the available file tools.
+- Do not modify, fix, or refactor source code; describe needed changes in the document instead unless the user gives an explicit source-edit command.
 {{else if .ExplicitEditRequest}}
 The latest user request explicitly asks for a fix. Inspect the relevant code and apply the necessary edit directly with the available tools. Do not hand the patch back to the user unless an edit tool actually fails.
 
