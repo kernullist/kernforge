@@ -13,7 +13,7 @@ import (
 const backgroundShellJobPendingCheck = "Poll the active background shell job(s) before concluding."
 const verificationPendingCheck = "Run verification or a focused build/test after the latest edits."
 const interactivePlanReviewBudget = 45 * time.Second
-const interactivePlanReviewSkipReadOnlyBoundary = "read-only answer/analysis boundary"
+const interactiveRecoverySkipReadOnlyBoundary = "read-only answer/analysis boundary"
 
 func (a *Agent) initializeTaskState(userText string) {
 	state := a.Session.StartTaskState(userText)
@@ -275,8 +275,15 @@ func (a *Agent) buildRecoveryGuidance(ctx context.Context, reason string, fallba
 }
 
 func (a *Agent) requestReviewerGuidance(ctx context.Context, reason string, recent string, detail string) string {
+	if a == nil || a.Session == nil || a.Session.TaskState == nil {
+		return ""
+	}
+	if skip, skipReason := a.shouldSkipInteractiveRecoveryModelReview(a.Session.TaskState); skip {
+		a.Session.TaskState.SetReviewerGuidance(reason, "Implicit recovery reviewer skipped: "+skipReason)
+		return ""
+	}
 	client, model := a.ensureInteractiveReviewerClient()
-	if client == nil || strings.TrimSpace(model) == "" || a.Session == nil || a.Session.TaskState == nil {
+	if client == nil || strings.TrimSpace(model) == "" {
 		return ""
 	}
 	decision := a.confirmImplicitModelReview("root-cause reviewer", strings.TrimSpace(recent+"\n\n"+detail))
@@ -331,7 +338,7 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	if len(state.FailedAttempts) < 2 && !strings.EqualFold(strings.TrimSpace(reason), string(recoveryTriggerToolBudgetExceeded)) {
 		return ""
 	}
-	if skip, skipReason := a.shouldSkipInteractiveRecoveryPlanRefresh(state); skip {
+	if skip, skipReason := a.shouldSkipInteractiveRecoveryModelReview(state); skip {
 		state.SetReviewerGuidance("plan_refresh_skipped", "Implicit recovery plan model review skipped: "+skipReason)
 		if strings.TrimSpace(state.NextStep) == "" {
 			state.SetNextStep("Answer directly within the read-only boundary using available evidence.")
@@ -381,7 +388,7 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	return plan
 }
 
-func (a *Agent) shouldSkipInteractiveRecoveryPlanRefresh(state *TaskState) (bool, string) {
+func (a *Agent) shouldSkipInteractiveRecoveryModelReview(state *TaskState) (bool, string) {
 	if state == nil {
 		return false, ""
 	}
@@ -400,7 +407,7 @@ func (a *Agent) shouldSkipInteractiveRecoveryPlanRefresh(state *TaskState) (bool
 	}
 	envelope.Normalize()
 	if envelope.ReadOnlyAnalysis && !envelope.ExplicitEditRequest && !envelope.AllowsGitMutation {
-		return true, interactivePlanReviewSkipReadOnlyBoundary
+		return true, interactiveRecoverySkipReadOnlyBoundary
 	}
 	return false, ""
 }

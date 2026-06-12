@@ -132,11 +132,43 @@ func TestRecoveryPlanRefreshSkipsAnswerOnlyComparisonQuestions(t *testing.T) {
 	if session.TaskState.PlanRefreshCount != 0 {
 		t.Fatalf("skipped read-only recovery refresh must not mutate plan refresh count, got %#v", session.TaskState)
 	}
-	if !strings.Contains(session.TaskState.ReviewerGuidance, interactivePlanReviewSkipReadOnlyBoundary) {
+	if !strings.Contains(session.TaskState.ReviewerGuidance, interactiveRecoverySkipReadOnlyBoundary) {
 		t.Fatalf("expected read-only skip guidance, got %#v", session.TaskState)
 	}
 	if len(mainClient.requests) != 0 || len(reviewer.requests) != 0 {
 		t.Fatalf("read-only recovery refresh must not call model clients, main=%d reviewer=%d", len(mainClient.requests), len(reviewer.requests))
+	}
+}
+
+func TestRecoveryReviewerGuidanceSkipsAnswerOnlyComparisonQuestions(t *testing.T) {
+	root := t.TempDir()
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "should not run"},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.TaskState = &TaskState{Goal: request}
+	agent := &Agent{
+		Config:         DefaultConfig(root),
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			t.Fatalf("read-only recovery reviewer must not ask for model review consent: %#v", req)
+			return ModelReviewConsentDecision{}
+		},
+	}
+
+	if guidance := agent.requestReviewerGuidance(context.Background(), "tool_budget_exceeded", "recent", "detail"); guidance != "" {
+		t.Fatalf("read-only recovery reviewer should be skipped, got %q", guidance)
+	}
+	if !strings.Contains(session.TaskState.ReviewerGuidance, interactiveRecoverySkipReadOnlyBoundary) {
+		t.Fatalf("expected read-only reviewer skip guidance, got %#v", session.TaskState)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("read-only recovery reviewer must not call reviewer model, got %d request(s)", len(reviewer.requests))
 	}
 }
 
