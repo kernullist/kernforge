@@ -22,6 +22,15 @@ type ReviewRepairConfirmationState struct {
 	Mode      string    `json:"mode,omitempty"`
 }
 
+type ImplicitModelReviewTurnBudget struct {
+	TurnKey         string `json:"turn_key,omitempty"`
+	Used            int    `json:"used,omitempty"`
+	SkippedReadOnly int    `json:"skipped_read_only,omitempty"`
+	SkippedBudget   int    `json:"skipped_budget,omitempty"`
+	LastTrigger     string `json:"last_trigger,omitempty"`
+	LastSkipReason  string `json:"last_skip_reason,omitempty"`
+}
+
 type Session struct {
 	ID                              string                           `json:"id"`
 	Name                            string                           `json:"name"`
@@ -78,6 +87,7 @@ type Session struct {
 	LastFinalGateDecision           *FinalGateDecision               `json:"last_final_gate_decision,omitempty"`
 	LastRequestRuntimeShadow        *RequestRuntimeShadowComparison  `json:"last_request_runtime_shadow,omitempty"`
 	RequestRuntimeShadowStats       *RequestRuntimeShadowStats       `json:"request_runtime_shadow_stats,omitempty"`
+	ImplicitModelReviewBudget       *ImplicitModelReviewTurnBudget   `json:"implicit_model_review_budget,omitempty"`
 	TurnQueue                       []TurnQueueItem                  `json:"turn_queue,omitempty"`
 	LastRecoveryDecision            *RecoveryDecision                `json:"last_recovery_decision,omitempty"`
 	LastContextMaintenanceDecision  *ContextMaintenanceDecision      `json:"last_context_maintenance_decision,omitempty"`

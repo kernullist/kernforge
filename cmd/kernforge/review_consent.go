@@ -15,6 +15,10 @@ const (
 	modelReviewSkipByUser               = "skipped_by_user"
 	modelReviewSkipNoInteractiveConsent = "skipped_no_interactive_consent"
 	modelReviewSkipConfigNever          = "skipped_by_config_never"
+	modelReviewSkipReadOnlyBoundary     = "skipped_read_only_boundary"
+	modelReviewSkipTurnBudgetExceeded   = "skipped_turn_model_review_budget_exceeded"
+
+	maxImplicitModelReviewsPerTurn = 2
 )
 
 type ModelReviewConsentRequest struct {
@@ -52,8 +56,16 @@ func (a *Agent) confirmImplicitModelReview(trigger string, originalMainProposal 
 		Trigger:              strings.TrimSpace(trigger),
 		OriginalMainProposal: strings.TrimSpace(originalMainProposal),
 	}
+	if decision, blocked := implicitModelReviewPreConsentDecision(configForAgent(a), sessionForAgent(a), req); blocked {
+		return decision
+	}
 	if a != nil && a.PromptConfirmModelReview != nil {
-		return normalizeModelReviewConsentDecision(a.PromptConfirmModelReview(req), a.Config)
+		beforeUsed := implicitModelReviewBudgetUsed(sessionForAgent(a))
+		decision := normalizeModelReviewConsentDecision(a.PromptConfirmModelReview(req), a.Config)
+		if decision.Allowed && implicitModelReviewBudgetUsed(sessionForAgent(a)) == beforeUsed {
+			implicitModelReviewRecordAllowed(sessionForAgent(a), req)
+		}
+		return decision
 	}
 	policy := configModelReviewConsent(Config{})
 	if a != nil {
@@ -61,7 +73,7 @@ func (a *Agent) confirmImplicitModelReview(trigger string, originalMainProposal 
 	}
 	switch policy {
 	case modelReviewConsentAlways:
-		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "config_always"}
+		return implicitModelReviewFinalizeDecision(sessionForAgent(a), req, ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "config_always"})
 	case modelReviewConsentNever:
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "config_never", SkipReason: modelReviewSkipConfigNever}
 	default:
@@ -69,17 +81,43 @@ func (a *Agent) confirmImplicitModelReview(trigger string, originalMainProposal 
 	}
 }
 
+func configForAgent(a *Agent) Config {
+	if a == nil {
+		return Config{}
+	}
+	return a.Config
+}
+
+func sessionForAgent(a *Agent) *Session {
+	if a == nil {
+		return nil
+	}
+	return a.Session
+}
+
 func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest) ModelReviewConsentDecision {
 	policy := modelReviewConsentAsk
 	if rt != nil {
 		policy = configModelReviewConsent(rt.cfg)
 	}
+	var session *Session
+	if rt != nil {
+		session = rt.session
+	}
+	if decision, blocked := implicitModelReviewPreConsentDecision(configForRuntimeState(rt), session, req); blocked {
+		return decision
+	}
 	if rt != nil && !rt.modelReviewConsentPromptEnabled && rt.agent != nil && rt.agent.PromptConfirmModelReview != nil {
-		return normalizeModelReviewConsentDecision(rt.agent.PromptConfirmModelReview(req), rt.cfg)
+		beforeUsed := implicitModelReviewBudgetUsed(session)
+		decision := normalizeModelReviewConsentDecision(rt.agent.PromptConfirmModelReview(req), rt.cfg)
+		if decision.Allowed && implicitModelReviewBudgetUsed(session) == beforeUsed {
+			implicitModelReviewRecordAllowed(session, req)
+		}
+		return decision
 	}
 	switch policy {
 	case modelReviewConsentAlways:
-		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "config_always"}
+		return implicitModelReviewFinalizeDecision(session, req, ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "config_always"})
 	case modelReviewConsentNever:
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "config_never", SkipReason: modelReviewSkipConfigNever}
 	}
@@ -90,7 +128,7 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "runtime_prompt_not_enabled", SkipReason: modelReviewSkipNoInteractiveConsent}
 	}
 	if rt.alwaysApproveModelReview {
-		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "session_auto_review"}
+		return implicitModelReviewFinalizeDecision(session, req, ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: "session_auto_review"})
 	}
 	if !rt.interactive {
 		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "non_interactive", SkipReason: modelReviewSkipNoInteractiveConsent}
@@ -110,9 +148,168 @@ func (rt *runtimeState) confirmImplicitModelReview(req ModelReviewConsentRequest
 		if !beforeAlways && rt.alwaysApproveModelReview {
 			source = "session_auto_review"
 		}
-		return ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: source}
+		return implicitModelReviewFinalizeDecision(session, req, ModelReviewConsentDecision{Allowed: true, Policy: policy, ConsentSource: source})
 	}
 	return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "user", SkipReason: modelReviewSkipByUser}
+}
+
+func configForRuntimeState(rt *runtimeState) Config {
+	if rt == nil {
+		return Config{}
+	}
+	return rt.cfg
+}
+
+func implicitModelReviewPreConsentDecision(cfg Config, session *Session, req ModelReviewConsentRequest) (ModelReviewConsentDecision, bool) {
+	policy := configModelReviewConsent(cfg)
+	req.Trigger = strings.TrimSpace(req.Trigger)
+	if implicitModelReviewReadOnlyBoundary(session, req) {
+		implicitModelReviewRecordSkip(session, req, modelReviewSkipReadOnlyBoundary)
+		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "request_boundary", SkipReason: modelReviewSkipReadOnlyBoundary}, true
+	}
+	if implicitModelReviewBudgetExceeded(session, req) {
+		implicitModelReviewRecordSkip(session, req, modelReviewSkipTurnBudgetExceeded)
+		return ModelReviewConsentDecision{Allowed: false, Policy: policy, ConsentSource: "turn_budget", SkipReason: modelReviewSkipTurnBudgetExceeded}, true
+	}
+	return ModelReviewConsentDecision{}, false
+}
+
+func implicitModelReviewFinalizeDecision(session *Session, req ModelReviewConsentRequest, decision ModelReviewConsentDecision) ModelReviewConsentDecision {
+	decision = normalizeModelReviewConsentDecision(decision, Config{})
+	if decision.Allowed {
+		implicitModelReviewRecordAllowed(session, req)
+	}
+	return decision
+}
+
+func implicitModelReviewReadOnlyBoundary(session *Session, req ModelReviewConsentRequest) bool {
+	envelope, ok := implicitModelReviewRequestEnvelope(session)
+	if !ok {
+		return false
+	}
+	envelope.Normalize()
+	if !envelope.ReadOnlyAnalysis {
+		return false
+	}
+	if envelope.ExplicitEditRequest || envelope.ExplicitGitRequest || envelope.DocumentAuthoring {
+		return false
+	}
+	if envelope.AllowsFileMutation || envelope.AllowsGitMutation {
+		return false
+	}
+	return strings.TrimSpace(req.Trigger) != ""
+}
+
+func implicitModelReviewRequestEnvelope(session *Session) (RequestEnvelope, bool) {
+	if session == nil {
+		return RequestEnvelope{}, false
+	}
+	if session.LastRequestEnvelope != nil {
+		envelope := *session.LastRequestEnvelope
+		envelope.Normalize()
+		return envelope, true
+	}
+	request := strings.TrimSpace(sessionEffectiveUserRequestText(session))
+	if request == "" {
+		return RequestEnvelope{}, false
+	}
+	envelope := buildRequestEnvelope(request)
+	envelope.Normalize()
+	return envelope, true
+}
+
+func implicitModelReviewBudgetExceeded(session *Session, req ModelReviewConsentRequest) bool {
+	budget := implicitModelReviewBudgetForTurn(session)
+	if budget == nil {
+		return false
+	}
+	return budget.Used >= maxImplicitModelReviewsPerTurn
+}
+
+func implicitModelReviewBudgetUsed(session *Session) int {
+	budget := implicitModelReviewBudgetForTurn(session)
+	if budget == nil {
+		return 0
+	}
+	return budget.Used
+}
+
+func implicitModelReviewRecordAllowed(session *Session, req ModelReviewConsentRequest) {
+	budget := implicitModelReviewBudgetForTurn(session)
+	if budget == nil {
+		return
+	}
+	budget.Used++
+	budget.LastTrigger = strings.TrimSpace(req.Trigger)
+	budget.LastSkipReason = ""
+}
+
+func implicitModelReviewRecordSkip(session *Session, req ModelReviewConsentRequest, reason string) {
+	budget := implicitModelReviewBudgetForTurn(session)
+	if budget == nil {
+		return
+	}
+	switch reason {
+	case modelReviewSkipReadOnlyBoundary:
+		budget.SkippedReadOnly++
+	case modelReviewSkipTurnBudgetExceeded:
+		budget.SkippedBudget++
+	}
+	budget.LastTrigger = strings.TrimSpace(req.Trigger)
+	budget.LastSkipReason = strings.TrimSpace(reason)
+}
+
+func implicitModelReviewBudgetForTurn(session *Session) *ImplicitModelReviewTurnBudget {
+	if session == nil {
+		return nil
+	}
+	key := implicitModelReviewTurnKey(session)
+	if key == "" {
+		return nil
+	}
+	if session.ImplicitModelReviewBudget == nil || session.ImplicitModelReviewBudget.TurnKey != key {
+		session.ImplicitModelReviewBudget = &ImplicitModelReviewTurnBudget{TurnKey: key}
+	}
+	return session.ImplicitModelReviewBudget
+}
+
+func implicitModelReviewTurnKey(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	for i := len(session.Messages) - 1; i >= 0; i-- {
+		if !strings.EqualFold(strings.TrimSpace(session.Messages[i].Role), "user") {
+			continue
+		}
+		text := strings.TrimSpace(baseUserQueryText(session.Messages[i].Text))
+		if text == "" {
+			text = strings.TrimSpace(session.Messages[i].Text)
+		}
+		if text == "" {
+			continue
+		}
+		return fmt.Sprintf("%d:%s", i, compactPromptSection(text, 180))
+	}
+	return ""
+}
+
+func implicitModelReviewBudgetStatusLine(session *Session) string {
+	if session == nil || session.ImplicitModelReviewBudget == nil || session.ImplicitModelReviewBudget.TurnKey == "" {
+		return fmt.Sprintf("used=0/%d skipped_read_only=0 skipped_budget=0", maxImplicitModelReviewsPerTurn)
+	}
+	budget := session.ImplicitModelReviewBudget
+	last := valueOrUnset(strings.TrimSpace(budget.LastTrigger))
+	if strings.TrimSpace(budget.LastSkipReason) != "" {
+		last += " skip=" + strings.TrimSpace(budget.LastSkipReason)
+	}
+	return fmt.Sprintf(
+		"used=%d/%d skipped_read_only=%d skipped_budget=%d last=%s",
+		budget.Used,
+		maxImplicitModelReviewsPerTurn,
+		budget.SkippedReadOnly,
+		budget.SkippedBudget,
+		last,
+	)
 }
 
 func (rt *runtimeState) printModelReviewConsentContext(req ModelReviewConsentRequest, trigger string) {

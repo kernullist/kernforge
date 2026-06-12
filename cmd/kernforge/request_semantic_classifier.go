@@ -446,7 +446,58 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 	if cfg.Mode == RequestSemanticClassifierModeShadow {
 		return applySemanticRequestClassification(envelope, classification, cfg)
 	}
+	if !requestSemanticClassifierCandidatePromotionAllowed(envelope, candidate, classification, a.Session) {
+		envelope.Warnings = append(envelope.Warnings, "semantic classifier promotion held in shadow until risky delta-free calibration is available")
+		envelope.Normalize()
+		return envelope
+	}
 	return candidate
+}
+
+func requestSemanticClassifierCandidatePromotionAllowed(baseline RequestEnvelope, candidate RequestEnvelope, classification RequestSemanticClassification, session *Session) bool {
+	baseline.Normalize()
+	candidate.Normalize()
+	classification.Normalize()
+	if requestSemanticClassifierCandidateIsReadOnlyNarrowing(baseline, candidate) {
+		return true
+	}
+	if !requestEnvelopeHasDeterministicMutation(candidate) {
+		return true
+	}
+	if requestSemanticClassifierCandidateIsDocumentPromotion(baseline, candidate, classification) {
+		return requestSemanticClassifierPromotionCalibrated(session)
+	}
+	return false
+}
+
+func requestSemanticClassifierCandidateIsReadOnlyNarrowing(baseline RequestEnvelope, candidate RequestEnvelope) bool {
+	baseline.Normalize()
+	candidate.Normalize()
+	return !requestEnvelopeHasDeterministicMutation(baseline) &&
+		candidate.ReadOnlyAnalysis &&
+		!candidate.ExplicitEditRequest &&
+		!candidate.ExplicitGitRequest &&
+		!candidate.DocumentAuthoring &&
+		!candidate.AllowsFileMutation &&
+		!candidate.AllowsGitMutation
+}
+
+func requestSemanticClassifierCandidateIsDocumentPromotion(baseline RequestEnvelope, candidate RequestEnvelope, classification RequestSemanticClassification) bool {
+	baseline.Normalize()
+	candidate.Normalize()
+	classification.Normalize()
+	return !baseline.DocumentAuthoring &&
+		candidate.DocumentAuthoring &&
+		candidate.AllowsFileMutation &&
+		semanticClassificationPromotesDocumentAuthoring(classification)
+}
+
+func requestSemanticClassifierPromotionCalibrated(session *Session) bool {
+	if session == nil || session.RequestRuntimeShadowStats == nil {
+		return false
+	}
+	stats := session.RequestRuntimeShadowStats
+	return stats.SemanticObserved >= 3 && stats.SemanticRiskyDiverged == 0
 }
 
 func (a *Agent) SessionIDForRequest() string {

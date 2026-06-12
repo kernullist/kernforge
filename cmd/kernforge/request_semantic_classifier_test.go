@@ -155,6 +155,66 @@ func TestAgentSemanticClassifierUsesModelJSONBeforeMainTurn(t *testing.T) {
 	}
 }
 
+func TestAgentSemanticClassifierHoldsDocumentPromotionUntilCalibrated(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
+		Mode:          RequestSemanticClassifierModeEnabled,
+		MinConfidence: 0.7,
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	provider := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: `{"primary_class":"document","action_boundary":"may_edit","read_only_analysis":false,"explicit_edit_request":false,"document_authoring":true,"confidence":0.94,"reason":"asks for a separate Markdown artifact"}`},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	envelope := buildRequestEnvelope("TavernKernel no fusoku kino wo betsu no Markdown bunsho ni matomete kudasai")
+	got := agent.maybeRefineRequestEnvelopeWithSemanticClassifier(context.Background(), envelope)
+	if got.DocumentAuthoring || got.AllowsFileMutation {
+		t.Fatalf("uncalibrated semantic classifier must not promote document mutation, got %#v", got)
+	}
+	if !requestEnvelopeHasWarning(got, "promotion held in shadow") {
+		t.Fatalf("expected promotion-held warning, got %#v", got.Warnings)
+	}
+	if session.LastSemanticRequestEnvelope == nil || !session.LastSemanticRequestEnvelope.DocumentAuthoring {
+		t.Fatalf("expected shadow candidate to be retained for calibration, got %#v", session.LastSemanticRequestEnvelope)
+	}
+}
+
+func TestAgentSemanticClassifierAllowsCalibratedDocumentPromotion(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
+		Mode:          RequestSemanticClassifierModeEnabled,
+		MinConfidence: 0.7,
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.RequestRuntimeShadowStats = &RequestRuntimeShadowStats{
+		SemanticObserved:      3,
+		SemanticRiskyDiverged: 0,
+	}
+	provider := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: `{"primary_class":"document","action_boundary":"may_edit","read_only_analysis":false,"explicit_edit_request":false,"document_authoring":true,"confidence":0.94,"reason":"asks for a separate Markdown artifact"}`},
+	}}}
+	agent := &Agent{
+		Config:    cfg,
+		Client:    provider,
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+	}
+
+	envelope := buildRequestEnvelope("TavernKernel no fusoku kino wo betsu no Markdown bunsho ni matomete kudasai")
+	got := agent.maybeRefineRequestEnvelopeWithSemanticClassifier(context.Background(), envelope)
+	if !got.DocumentAuthoring || !got.AllowsFileMutation || got.ReadOnlyAnalysis {
+		t.Fatalf("calibrated semantic classifier should allow document promotion, got %#v", got)
+	}
+}
+
 func requestEnvelopeHasWarning(envelope RequestEnvelope, needle string) bool {
 	for _, warning := range envelope.Warnings {
 		if strings.Contains(warning, needle) {

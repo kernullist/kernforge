@@ -70,6 +70,40 @@ func TestInteractiveFinalAnswerConsentDeclineSkipsReviewer(t *testing.T) {
 	}
 }
 
+func TestInteractiveFinalAnswerSkipsReadOnlyBoundaryEvenWithStaleEvidence(t *testing.T) {
+	root := t.TempDir()
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "NEEDS_REVISION: should not run"},
+	}}}
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	envelope := buildRequestEnvelope(request)
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.LastRequestEnvelope = &envelope
+	session.TaskState = &TaskState{Goal: request}
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: false}
+	agent := &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+	}
+
+	approved, feedback := agent.reviewInteractiveFinalAnswer(context.Background(), "분석 답변입니다.", false)
+	if !approved {
+		t.Fatalf("read-only final-answer reviewer skip should not start a repair loop: %q", feedback)
+	}
+	if !strings.Contains(feedback, modelReviewSkipReadOnlyBoundary) {
+		t.Fatalf("expected read-only boundary skip in feedback, got %q", feedback)
+	}
+	if len(reviewer.requests) != 0 {
+		t.Fatalf("read-only final-answer reviewer must not call reviewer model, got %d request(s)", len(reviewer.requests))
+	}
+}
+
 func TestShouldPrimeInteractivePlanSkipsAnalysisOnlyStructureQuestions(t *testing.T) {
 	state := &TaskState{
 		Goal: "@SampleKernel/SampleKernel/ 드라이버 프로젝트 전체 구조를 자세히 설명해줘",

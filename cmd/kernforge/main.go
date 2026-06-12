@@ -7460,6 +7460,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("write_approval", sessionApprovalStateLabel(rt.alwaysApproveWrites, "allow")),
 			kv("diff_preview", sessionApprovalStateLabel(rt.alwaysApprovePreview, "accept")),
 			kv("model_review", sessionApprovalStateLabel(rt.alwaysApproveModelReview, "auto-review")+" policy="+configModelReviewConsent(rt.cfg)),
+			kv("model_review_budget", implicitModelReviewBudgetStatusLine(rt.session)),
 			kv("shell_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsShellAllowed(), "allowed")),
 			kv("git_approval", sessionApprovalStateLabel(rt.perms != nil && rt.perms.IsGitAllowed(), "allowed")),
 		)

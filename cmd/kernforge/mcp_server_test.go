@@ -195,6 +195,32 @@ func TestMCPRuntimeAskConsentSkipsImplicitModelReview(t *testing.T) {
 	}
 }
 
+func TestMCPRuntimeAlwaysConsentStillSkipsReadOnlyBoundary(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	cfg.Provider = ""
+	cfg.Model = ""
+	cfg.BaseURL = ""
+	cfg.SessionDir = filepath.Join(root, ".kernforge", "sessions")
+	cfg.HooksEnabled = boolPtr(false)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+
+	rt, err := newRuntimeStateForMCPServer(root, cfg, "", io.Discard)
+	if err != nil {
+		t.Fatalf("newRuntimeStateForMCPServer: %v", err)
+	}
+	defer rt.closeExtensions()
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	envelope := buildRequestEnvelope(request)
+	rt.session.AddMessage(Message{Role: "user", Text: request})
+	rt.session.LastRequestEnvelope = &envelope
+
+	decision := rt.agent.confirmImplicitModelReview("MCP auto review", "implicit MCP analysis reviewer payload")
+	if decision.Allowed || decision.SkipReason != modelReviewSkipReadOnlyBoundary {
+		t.Fatalf("MCP read-only boundary must override always consent, got %#v", decision)
+	}
+}
+
 func TestKernforgeMCPServerRecordsEntrypointTelemetry(t *testing.T) {
 	root := t.TempDir()
 	cfg := DefaultConfig(root)
