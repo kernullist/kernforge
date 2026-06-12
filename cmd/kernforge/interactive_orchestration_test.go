@@ -95,6 +95,51 @@ func TestShouldPrimeInteractivePlanSkipsAnswerOnlyComparisonQuestions(t *testing
 	}
 }
 
+func TestRecoveryPlanRefreshSkipsAnswerOnlyComparisonQuestions(t *testing.T) {
+	root := t.TempDir()
+	request := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	mainClient := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "APPROVED: should not run"},
+	}}}
+	reviewer := &scriptedProviderClient{replies: []ChatResponse{{
+		Message: Message{Role: "assistant", Text: "APPROVED: should not run"},
+	}}}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.TaskState = &TaskState{
+		Goal: request,
+		FailedAttempts: []string{
+			"first stalled attempt",
+			"second stalled attempt",
+		},
+	}
+	agent := &Agent{
+		Config:         DefaultConfig(root),
+		Client:         mainClient,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: reviewer,
+		ReviewerModel:  "reviewer-model",
+		PromptConfirmModelReview: func(req ModelReviewConsentRequest) ModelReviewConsentDecision {
+			t.Fatalf("read-only recovery plan refresh must not ask for model review consent: %#v", req)
+			return ModelReviewConsentDecision{}
+		},
+	}
+
+	if plan := agent.maybeRefreshInteractivePlanForRecovery(context.Background(), string(recoveryTriggerToolBudgetExceeded)); plan != "" {
+		t.Fatalf("read-only recovery plan refresh should be skipped, got %q", plan)
+	}
+	if session.TaskState.PlanRefreshCount != 0 {
+		t.Fatalf("skipped read-only recovery refresh must not mutate plan refresh count, got %#v", session.TaskState)
+	}
+	if !strings.Contains(session.TaskState.ReviewerGuidance, interactivePlanReviewSkipReadOnlyBoundary) {
+		t.Fatalf("expected read-only skip guidance, got %#v", session.TaskState)
+	}
+	if len(mainClient.requests) != 0 || len(reviewer.requests) != 0 {
+		t.Fatalf("read-only recovery refresh must not call model clients, main=%d reviewer=%d", len(mainClient.requests), len(reviewer.requests))
+	}
+}
+
 func TestShouldPrimeInteractivePlanKeepsNormalCodingTasks(t *testing.T) {
 	state := &TaskState{
 		Goal: "Fix the duplicated provider retry logic and verify the result",

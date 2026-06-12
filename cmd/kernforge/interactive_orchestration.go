@@ -13,6 +13,7 @@ import (
 const backgroundShellJobPendingCheck = "Poll the active background shell job(s) before concluding."
 const verificationPendingCheck = "Run verification or a focused build/test after the latest edits."
 const interactivePlanReviewBudget = 45 * time.Second
+const interactivePlanReviewSkipReadOnlyBoundary = "read-only answer/analysis boundary"
 
 func (a *Agent) initializeTaskState(userText string) {
 	state := a.Session.StartTaskState(userText)
@@ -330,6 +331,13 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	if len(state.FailedAttempts) < 2 && !strings.EqualFold(strings.TrimSpace(reason), string(recoveryTriggerToolBudgetExceeded)) {
 		return ""
 	}
+	if skip, skipReason := a.shouldSkipInteractiveRecoveryPlanRefresh(state); skip {
+		state.SetReviewerGuidance("plan_refresh_skipped", "Implicit recovery plan model review skipped: "+skipReason)
+		if strings.TrimSpace(state.NextStep) == "" {
+			state.SetNextStep("Answer directly within the read-only boundary using available evidence.")
+		}
+		return ""
+	}
 	reviewerClient, reviewerModel := a.ensureInteractiveReviewerClient()
 	if a.Client == nil || reviewerClient == nil || strings.TrimSpace(reviewerModel) == "" {
 		return ""
@@ -371,6 +379,30 @@ func (a *Agent) maybeRefreshInteractivePlanForRecovery(ctx context.Context, reas
 	}
 	_ = a.maybeRunInteractiveMicroWorkers(ctx, "replan")
 	return plan
+}
+
+func (a *Agent) shouldSkipInteractiveRecoveryPlanRefresh(state *TaskState) (bool, string) {
+	if state == nil {
+		return false, ""
+	}
+	request := strings.TrimSpace(state.Goal)
+	if a != nil && a.Session != nil {
+		if latest := strings.TrimSpace(sessionEffectiveUserRequestText(a.Session)); latest != "" {
+			request = latest
+		}
+	}
+	if request == "" {
+		return false, ""
+	}
+	envelope := buildRequestEnvelope(request)
+	if a != nil {
+		envelope = a.latestRequestEnvelopeFor(request)
+	}
+	envelope.Normalize()
+	if envelope.ReadOnlyAnalysis && !envelope.ExplicitEditRequest && !envelope.AllowsGitMutation {
+		return true, interactivePlanReviewSkipReadOnlyBoundary
+	}
+	return false, ""
 }
 
 func buildInteractiveRecoveryReviewerPrompt(state *TaskState, reason string, recent string, detail string) string {
