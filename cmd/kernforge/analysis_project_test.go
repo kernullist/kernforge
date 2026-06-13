@@ -750,6 +750,7 @@ func TestExecuteShardsReportsUserVisibleProgress(t *testing.T) {
 	}
 
 	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false) // keep progress wording deterministic (English) for this assertion
 	ws := Workspace{
 		BaseRoot: root,
 		Root:     root,
@@ -787,11 +788,10 @@ func TestExecuteShardsReportsUserVisibleProgress(t *testing.T) {
 	joined := strings.Join(statuses, "\n")
 	mu.Unlock()
 	for _, expected := range []string{
-		"Shard wave 1/2 started",
-		"Shard 1/2 completed: runtime",
-		"Shard wave 1/2 completed",
-		"Shard 2/2 completed: pkg_feature",
-		"Shard wave 2/2 completed",
+		"Analyzing... 0 of 2 part(s) done.",
+		"Part 1/2 done: runtime",
+		"Part 2/2 done: pkg_feature",
+		"Analyzing... 2 of 2 part(s) done.",
 	} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("expected progress status to contain %q\n%s", expected, joined)

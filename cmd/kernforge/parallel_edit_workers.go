@@ -1046,7 +1046,7 @@ func (a *Agent) completeModelTurnWithClient(ctx context.Context, client Provider
 		delay := providerRetryDelay(baseDelay, attempt)
 		a.emitProgressEvent(ProgressEvent{
 			Kind:    progressKindProviderRetry,
-			Message: modelRetryProgressMessage(err, attempt, totalAttempts, delay),
+			Message: modelRetryProgressMessage(a.Config, err, attempt, totalAttempts, delay),
 			Model:   req.Model,
 			Status:  firstNonEmptyLine(err.Error()),
 		})

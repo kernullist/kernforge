@@ -813,9 +813,19 @@ func completionAuditReviewGate(root string, session *Session, artifact *Completi
 			Source:      "review",
 		})
 	case reviewVerdictApprovedWithWarnings:
+		evidence := ""
+		if len(review.Gate.WarningFindings) > 0 {
+			evidence = fmt.Sprintf("%s: %s", review.ID, strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", "))
+		} else {
+			driver := firstNonBlankString(review.Result.DegradedReason, review.Gate.Reason)
+			if strings.TrimSpace(driver) == "" {
+				driver = "표시할 항목 없음; 리뷰 보고서 참조"
+			}
+			evidence = fmt.Sprintf("%s: %s", review.ID, driver)
+		}
 		completionAuditAddItem(artifact, CompletionAuditItem{
 			Requirement: "Latest review has warnings",
-			Evidence:    fmt.Sprintf("%s approved with warnings: %s", review.ID, strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", ")),
+			Evidence:    evidence,
 			Status:      completionAuditStatusWarning,
 			Source:      "review",
 		})

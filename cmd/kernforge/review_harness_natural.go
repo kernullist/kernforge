@@ -93,9 +93,9 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 		b.WriteString("검토 결과:")
 		if len(findings) == 0 {
 			if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
-				b.WriteString("\n\n- 차단 finding 없음.")
+				b.WriteString("\n\n- 차단 항목 없음.")
 			} else {
-				b.WriteString("\n\n- 구조화된 finding 없음.")
+				b.WriteString("\n\n- 구조화된 항목 없음.")
 			}
 		} else {
 			for _, finding := range findings {
@@ -103,10 +103,10 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 			}
 		}
 		b.WriteString("\n\n요약:")
-		fmt.Fprintf(&b, "\n- 판정: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
+		fmt.Fprintf(&b, "\n- 판정: %s", humanizeReviewVerdict(firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"), true))
 		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
 		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
-		fmt.Fprintf(&b, "\n- 요청 class: %s", valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly))
+		fmt.Fprintf(&b, "\n- 요청 유형: %s", humanizeRequestClass(valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly), true))
 		b.WriteString("\n- 파일 수정: 없음.")
 		if strings.TrimSpace(run.Result.Summary) != "" {
 			fmt.Fprintf(&b, "\n- 리뷰 요약: %s", reviewVisibleInlineText(run.Result.Summary))
@@ -129,10 +129,10 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 		}
 	}
 	b.WriteString("\n\nSummary:")
-	fmt.Fprintf(&b, "\n- Verdict: %s", firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"))
+	fmt.Fprintf(&b, "\n- Verdict: %s", humanizeReviewVerdict(firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"), false))
 	fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
 	fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
-	fmt.Fprintf(&b, "\n- Request class: %s", valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly))
+	fmt.Fprintf(&b, "\n- Request type: %s", humanizeRequestClass(valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly), false))
 	b.WriteString("\n- Files edited: none.")
 	if strings.TrimSpace(run.Result.Summary) != "" {
 		fmt.Fprintf(&b, "\n- Review summary: %s", reviewVisibleInlineText(run.Result.Summary))
@@ -163,7 +163,10 @@ func writeCodexAppReviewModeFinding(b *strings.Builder, finding ReviewFinding, k
 	id := valueOrDefault(finding.ID, "RF")
 	severity := valueOrDefault(finding.Severity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
-	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
+	// Localize internal completeness/contract finding titles (keyed on the stable
+	// English title) so they do not leak English vocabulary into a Korean reply.
+	rawTitle := firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding")
+	title := reviewVisibleInlineText(humanizeFinalAnswerCompletenessTitle(rawTitle, korean))
 	fmt.Fprintf(b, "\n\n- %s [%s/%s]: %s", id, severity, category, title)
 	if location := codexAppReviewModeFindingLocation(finding, korean); location != "" {
 		if korean {

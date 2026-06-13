@@ -8,87 +8,125 @@ import (
 
 func renderReviewRunMarkdown(run ReviewRun) string {
 	var b strings.Builder
+	korean := reviewRunPrefersKoreanFromRequest(run)
+	// diag accumulates every lifecycle / ledger / action-envelope / capability /
+	// state-transition / sanity section. It is appended after the human-readable
+	// outcome under a single trailing "## Diagnostics" ("## 진단 상세") heading so
+	// the user sees the outcome first and the machine diagnostics last.
+	var diag strings.Builder
 	b.WriteString("# KernForge Review\n\n")
 	fmt.Fprintf(&b, "- Review ID: `%s`\n", run.ID)
-	fmt.Fprintf(&b, "- Schema: `%s`\n", run.SchemaVersion)
 	if build := kernforgeBuildIdentitySummary(run.KernforgeBuild); strings.TrimSpace(build) != "" {
 		fmt.Fprintf(&b, "- KernForge build: `%s`\n", build)
 	} else if strings.TrimSpace(run.KernforgeVersion) != "" {
 		fmt.Fprintf(&b, "- KernForge version: `%s`\n", run.KernforgeVersion)
 	}
-	fmt.Fprintf(&b, "- Target: `%s`\n", run.Target)
-	fmt.Fprintf(&b, "- Mode: `%s`\n", run.Mode)
-	fmt.Fprintf(&b, "- Flow: `%s`\n", run.Flow)
-	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
-		fmt.Fprintf(&b, "- Request class: `%s`\n", class)
-	}
-	if kind := normalizeReviewLifecycleKind(firstNonBlankString(run.RequestAnalysis.LifecycleKind, reviewLifecycleKindForRun(&run))); kind != "" && kind != reviewLifecycleKindGeneral {
-		fmt.Fprintf(&b, "- Lifecycle kind: `%s`\n", kind)
-	}
-	if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
-		fmt.Fprintf(&b, "- Request class reason: %s\n", run.RequestAnalysis.RequestClassReason)
-	}
-	if run.RequestAnalysis.RequestClassConfidence > 0 {
-		fmt.Fprintf(&b, "- Request class confidence: `%.2f`\n", run.RequestAnalysis.RequestClassConfidence)
-	}
-	if run.RequestAnalysis.RequestClassAmbiguous {
-		fmt.Fprintf(&b, "- Request class ambiguity: `%s`\n", strings.Join(run.RequestAnalysis.AmbiguityWarnings, " | "))
-	}
-	if run.Lifecycle != nil {
-		fmt.Fprintf(&b, "- Lifecycle phase: `%s`\n", run.Lifecycle.Phase)
-		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
-			fmt.Fprintf(&b, "- Route mode: `%s`\n", run.Lifecycle.RouteMode)
-		}
-		if strings.TrimSpace(run.Lifecycle.RouteQuality) != "" {
-			fmt.Fprintf(&b, "- Route quality: `%s`\n", run.Lifecycle.RouteQuality)
-		}
-	}
-	fmt.Fprintf(&b, "- Verdict: `%s`\n", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	// Lead with a plain-language verdict and the kind of change reviewed; the raw
+	// enum tokens are preserved in the Diagnostics block and machine fields.
+	fmt.Fprintf(&b, "- %s: %s\n",
+		localizedReviewText(korean, "Verdict", "결과"),
+		humanizeReviewVerdict(valueOrDefault(run.Gate.Verdict, run.Result.Verdict), korean))
 	if strings.TrimSpace(run.Gate.Action) != "" {
-		fmt.Fprintf(&b, "- Gate action: `%s`\n", run.Gate.Action)
+		fmt.Fprintf(&b, "- %s: %s\n",
+			localizedReviewText(korean, "Next step", "다음 단계"),
+			humanizeGateAction(run.Gate.Action, korean))
 	}
-	fmt.Fprintf(&b, "- Machine status: `%s` exit=%d\n", run.MachineStatus, run.ExitCode)
-	fmt.Fprintf(&b, "- Workspace: `%s`\n", filepath.ToSlash(run.Workspace))
+	fmt.Fprintf(&b, "- %s: %s\n",
+		localizedReviewText(korean, "Reviewed", "검토 대상"),
+		humanizeReviewTarget(run.Target, korean))
+	if strings.TrimSpace(run.Mode) != "" {
+		fmt.Fprintf(&b, "- %s: %s\n",
+			localizedReviewText(korean, "Change kind", "변경 유형"),
+			humanizeReviewMode(run.Mode, korean))
+	}
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&b, "- %s: %s\n",
+			localizedReviewText(korean, "Request type", "요청 유형"),
+			humanizeRequestClass(class, korean))
+	}
+	fmt.Fprintf(&b, "- %s: `%s`\n", localizedReviewText(korean, "Workspace", "작업 공간"), filepath.ToSlash(run.Workspace))
 	if strings.TrimSpace(run.Branch) != "" {
-		fmt.Fprintf(&b, "- Branch: `%s`\n", run.Branch)
+		fmt.Fprintf(&b, "- %s: `%s`\n", localizedReviewText(korean, "Branch", "브랜치"), run.Branch)
 	}
 	if strings.TrimSpace(run.Objective) != "" {
-		fmt.Fprintf(&b, "- Objective: %s\n", run.Objective)
+		fmt.Fprintf(&b, "- %s: %s\n", localizedReviewText(korean, "Objective", "목표"), run.Objective)
 	}
 	if run.Freshness.Stale {
-		fmt.Fprintf(&b, "- Freshness: stale (%s)\n", run.Freshness.StaleReason)
+		if korean {
+			fmt.Fprintf(&b, "- 최신성: 오래됨 (%s)\n", run.Freshness.StaleReason)
+		} else {
+			fmt.Fprintf(&b, "- Freshness: stale (%s)\n", run.Freshness.StaleReason)
+		}
 	}
 	if run.Redaction.Redacted {
-		fmt.Fprintf(&b, "- Redaction: %s\n", strings.Join(run.Redaction.Patterns, ", "))
+		fmt.Fprintf(&b, "- %s: %s\n", localizedReviewText(korean, "Redaction", "민감정보 마스킹"), strings.Join(run.Redaction.Patterns, ", "))
+	}
+	if skip := compactModelReviewSkipLine(run, korean); skip != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", localizedReviewText(korean, "Model review", "모델 리뷰"), skip)
+	}
+
+	// --- Diagnostics: schema/identity and classification internals ---
+	fmt.Fprintf(&diag, "- schema: `%s`\n", run.SchemaVersion)
+	fmt.Fprintf(&diag, "- flow: `%s`\n", run.Flow)
+	fmt.Fprintf(&diag, "- target (raw): `%s`\n", run.Target)
+	fmt.Fprintf(&diag, "- mode (raw): `%s`\n", run.Mode)
+	fmt.Fprintf(&diag, "- verdict (raw): `%s`\n", valueOrDefault(run.Gate.Verdict, run.Result.Verdict))
+	if strings.TrimSpace(run.Gate.Action) != "" {
+		fmt.Fprintf(&diag, "- gate_action (raw): `%s`\n", run.Gate.Action)
+	}
+	fmt.Fprintf(&diag, "- machine_status: `%s` exit=%d\n", run.MachineStatus, run.ExitCode)
+	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
+		fmt.Fprintf(&diag, "- request_class (raw): `%s`\n", class)
+	}
+	if kind := normalizeReviewLifecycleKind(firstNonBlankString(run.RequestAnalysis.LifecycleKind, reviewLifecycleKindForRun(&run))); kind != "" && kind != reviewLifecycleKindGeneral {
+		fmt.Fprintf(&diag, "- lifecycle_kind (raw): `%s`\n", kind)
+	}
+	if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
+		fmt.Fprintf(&diag, "- request_class_reason: %s\n", run.RequestAnalysis.RequestClassReason)
+	}
+	if run.RequestAnalysis.RequestClassConfidence > 0 {
+		fmt.Fprintf(&diag, "- request_class_confidence: `%.2f`\n", run.RequestAnalysis.RequestClassConfidence)
+	}
+	if run.RequestAnalysis.RequestClassAmbiguous {
+		fmt.Fprintf(&diag, "- request_class_ambiguity: `%s`\n", strings.Join(run.RequestAnalysis.AmbiguityWarnings, " | "))
+	}
+	if run.Lifecycle != nil {
+		fmt.Fprintf(&diag, "- lifecycle_phase (raw): `%s`\n", run.Lifecycle.Phase)
+		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
+			fmt.Fprintf(&diag, "- route_mode (raw): `%s`\n", run.Lifecycle.RouteMode)
+		}
+		if strings.TrimSpace(run.Lifecycle.RouteQuality) != "" {
+			fmt.Fprintf(&diag, "- route_quality (raw): `%s`\n", run.Lifecycle.RouteQuality)
+		}
 	}
 	if strings.TrimSpace(run.ModelReviewConsent) != "" {
-		fmt.Fprintf(&b, "- Model review consent: `%s`", run.ModelReviewConsent)
+		fmt.Fprintf(&diag, "- model_review_consent: `%s`", run.ModelReviewConsent)
 		if strings.TrimSpace(run.ConsentSource) != "" {
-			fmt.Fprintf(&b, " source=`%s`", run.ConsentSource)
+			fmt.Fprintf(&diag, " source=`%s`", run.ConsentSource)
 		}
 		if strings.TrimSpace(run.SkipReason) != "" {
-			fmt.Fprintf(&b, " skip_reason=`%s`", run.SkipReason)
+			fmt.Fprintf(&diag, " skip_reason=`%s`", run.SkipReason)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if strings.TrimSpace(run.OriginalMainProposalRef) != "" {
-		fmt.Fprintf(&b, "- Original main proposal: `%s`\n", filepath.ToSlash(run.OriginalMainProposalRef))
+		fmt.Fprintf(&diag, "- original_main_proposal: `%s`\n", filepath.ToSlash(run.OriginalMainProposalRef))
 	}
 	if run.SingleModelPolicy.Enabled {
-		fmt.Fprintf(&b, "- Independence: `%s` (%s)\n", run.SingleModelPolicy.IndependenceLevel, run.SingleModelPolicy.NoCrossReviewReason)
+		fmt.Fprintf(&diag, "- independence: `%s` (%s)\n", run.SingleModelPolicy.IndependenceLevel, run.SingleModelPolicy.NoCrossReviewReason)
 	}
 	if second := buildReviewSecondPassObservability(run); second != nil {
-		fmt.Fprintf(&b, "- Single-model second pass: `%s` ran=`%t` cache_hit=`%t`", second.Status, second.Ran, second.CacheHit)
+		fmt.Fprintf(&diag, "- single_model_second_pass: `%s` ran=`%t` cache_hit=`%t`", second.Status, second.Ran, second.CacheHit)
 		if strings.TrimSpace(second.ModelRoute) != "" {
-			fmt.Fprintf(&b, " route=`%s`", second.ModelRoute)
+			fmt.Fprintf(&diag, " route=`%s`", second.ModelRoute)
 		}
 		if second.FindingCount > 0 {
-			fmt.Fprintf(&b, " findings=`%d`", second.FindingCount)
+			fmt.Fprintf(&diag, " findings=`%d`", second.FindingCount)
 		}
 		if strings.TrimSpace(second.SkippedReason) != "" {
-			fmt.Fprintf(&b, " reason=%s", second.SkippedReason)
+			fmt.Fprintf(&diag, " reason=%s", second.SkippedReason)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
@@ -105,218 +143,226 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(run.ChangeSet.ChangedPaths) > 0 {
+		b.WriteString(reviewChangeSetPathSectionHeading(run))
+		b.WriteString("\n\n")
+		for _, path := range limitStrings(run.ChangeSet.ChangedPaths, 64) {
+			fmt.Fprintf(&b, "- `%s`\n", filepath.ToSlash(path))
+		}
+		b.WriteString("\n")
+	}
 	if second := buildReviewSecondPassObservability(run); second != nil {
-		b.WriteString("## Single-Model Second Pass\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", second.Status)
-		fmt.Fprintf(&b, "- ran: `%t`\n", second.Ran)
-		fmt.Fprintf(&b, "- cache_hit: `%t`\n", second.CacheHit)
+		diag.WriteString("## Single-Model Second Pass\n\n")
+		fmt.Fprintf(&diag, "- status: `%s`\n", second.Status)
+		fmt.Fprintf(&diag, "- ran: `%t`\n", second.Ran)
+		fmt.Fprintf(&diag, "- cache_hit: `%t`\n", second.CacheHit)
 		if strings.TrimSpace(second.ModelRoute) != "" {
-			fmt.Fprintf(&b, "- model_route: `%s`\n", second.ModelRoute)
+			fmt.Fprintf(&diag, "- model_route: `%s`\n", second.ModelRoute)
 		}
 		if len(second.ReviewedPaths) > 0 {
-			fmt.Fprintf(&b, "- reviewed_paths: `%s`\n", strings.Join(second.ReviewedPaths, "`, `"))
+			fmt.Fprintf(&diag, "- reviewed_paths: `%s`\n", strings.Join(second.ReviewedPaths, "`, `"))
 		}
-		fmt.Fprintf(&b, "- finding_count: `%d`\n", second.FindingCount)
+		fmt.Fprintf(&diag, "- finding_count: `%d`\n", second.FindingCount)
 		if strings.TrimSpace(second.PromptRef) != "" {
-			fmt.Fprintf(&b, "- prompt_ref: `%s`\n", second.PromptRef)
+			fmt.Fprintf(&diag, "- prompt_ref: `%s`\n", second.PromptRef)
 		}
 		if strings.TrimSpace(second.RawOutputRef) != "" {
-			fmt.Fprintf(&b, "- raw_output_ref: `%s`\n", second.RawOutputRef)
+			fmt.Fprintf(&diag, "- raw_output_ref: `%s`\n", second.RawOutputRef)
 		}
 		if strings.TrimSpace(second.SkippedReason) != "" {
-			fmt.Fprintf(&b, "- skipped_reason: %s\n", second.SkippedReason)
+			fmt.Fprintf(&diag, "- skipped_reason: %s\n", second.SkippedReason)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if run.Lifecycle != nil {
-		b.WriteString("## Request Lifecycle\n\n")
-		fmt.Fprintf(&b, "- request_class: `%s`\n", run.Lifecycle.RequestClass)
+		diag.WriteString("## Request Lifecycle\n\n")
+		fmt.Fprintf(&diag, "- request_class: `%s`\n", run.Lifecycle.RequestClass)
 		if strings.TrimSpace(run.Lifecycle.LifecycleKind) != "" {
-			fmt.Fprintf(&b, "- lifecycle_kind: `%s`\n", run.Lifecycle.LifecycleKind)
+			fmt.Fprintf(&diag, "- lifecycle_kind: `%s`\n", run.Lifecycle.LifecycleKind)
 		}
 		if run.Lifecycle.MixedFlow {
-			fmt.Fprintf(&b, "- mixed_flow: `%t`\n", run.Lifecycle.MixedFlow)
+			fmt.Fprintf(&diag, "- mixed_flow: `%t`\n", run.Lifecycle.MixedFlow)
 		}
 		if len(run.Lifecycle.SecondaryRequestClasses) > 0 {
-			fmt.Fprintf(&b, "- secondary_request_classes: `%s`\n", strings.Join(run.Lifecycle.SecondaryRequestClasses, "`, `"))
+			fmt.Fprintf(&diag, "- secondary_request_classes: `%s`\n", strings.Join(run.Lifecycle.SecondaryRequestClasses, "`, `"))
 		}
-		fmt.Fprintf(&b, "- phase: `%s`\n", run.Lifecycle.Phase)
+		fmt.Fprintf(&diag, "- phase: `%s`\n", run.Lifecycle.Phase)
 		if strings.TrimSpace(run.Lifecycle.RouteMode) != "" {
-			fmt.Fprintf(&b, "- route_mode: `%s`\n", run.Lifecycle.RouteMode)
+			fmt.Fprintf(&diag, "- route_mode: `%s`\n", run.Lifecycle.RouteMode)
 		}
 		if strings.TrimSpace(run.Lifecycle.Reason) != "" {
-			fmt.Fprintf(&b, "- reason: %s\n", run.Lifecycle.Reason)
+			fmt.Fprintf(&diag, "- reason: %s\n", run.Lifecycle.Reason)
 		}
 		if run.Lifecycle.ClassificationConfidence > 0 {
-			fmt.Fprintf(&b, "- classification_confidence: `%.2f`\n", run.Lifecycle.ClassificationConfidence)
+			fmt.Fprintf(&diag, "- classification_confidence: `%.2f`\n", run.Lifecycle.ClassificationConfidence)
 		}
-		fmt.Fprintf(&b, "- classification_ambiguous: `%t`\n", run.Lifecycle.ClassificationAmbiguous)
+		fmt.Fprintf(&diag, "- classification_ambiguous: `%t`\n", run.Lifecycle.ClassificationAmbiguous)
 		if len(run.Lifecycle.AmbiguityWarnings) > 0 {
-			fmt.Fprintf(&b, "- ambiguity_warnings: `%s`\n", strings.Join(run.Lifecycle.AmbiguityWarnings, "`, `"))
+			fmt.Fprintf(&diag, "- ambiguity_warnings: `%s`\n", strings.Join(run.Lifecycle.AmbiguityWarnings, "`, `"))
 		}
 		if run.Lifecycle.Contract != nil && len(run.Lifecycle.Contract.FinalAnswerRequirements) > 0 {
-			fmt.Fprintf(&b, "- final_answer_contract: `%s`\n", strings.Join(run.Lifecycle.Contract.FinalAnswerRequirements, "`, `"))
+			fmt.Fprintf(&diag, "- final_answer_contract: `%s`\n", strings.Join(run.Lifecycle.Contract.FinalAnswerRequirements, "`, `"))
 		}
 		if strings.TrimSpace(run.Lifecycle.RouteQuality) != "" {
-			fmt.Fprintf(&b, "- route_quality: `%s`\n", run.Lifecycle.RouteQuality)
+			fmt.Fprintf(&diag, "- route_quality: `%s`\n", run.Lifecycle.RouteQuality)
 		}
 		if len(run.Lifecycle.RouteDegradedReasons) > 0 {
-			fmt.Fprintf(&b, "- route_degraded_reasons: `%s`\n", strings.Join(run.Lifecycle.RouteDegradedReasons, "`, `"))
+			fmt.Fprintf(&diag, "- route_degraded_reasons: `%s`\n", strings.Join(run.Lifecycle.RouteDegradedReasons, "`, `"))
 		}
 		if strings.TrimSpace(run.Lifecycle.ReviewGateStatus) != "" {
-			fmt.Fprintf(&b, "- review_gate: `%s`\n", run.Lifecycle.ReviewGateStatus)
+			fmt.Fprintf(&diag, "- review_gate: `%s`\n", run.Lifecycle.ReviewGateStatus)
 		}
 		if strings.TrimSpace(run.Lifecycle.RepairGateStatus) != "" {
-			fmt.Fprintf(&b, "- repair_gate: `%s`\n", run.Lifecycle.RepairGateStatus)
+			fmt.Fprintf(&diag, "- repair_gate: `%s`\n", run.Lifecycle.RepairGateStatus)
 		}
 		if strings.TrimSpace(run.Lifecycle.DocumentGateStatus) != "" {
-			fmt.Fprintf(&b, "- document_gate: `%s`\n", run.Lifecycle.DocumentGateStatus)
+			fmt.Fprintf(&diag, "- document_gate: `%s`\n", run.Lifecycle.DocumentGateStatus)
 		}
 		if strings.TrimSpace(run.Lifecycle.VerificationGateStatus) != "" {
-			fmt.Fprintf(&b, "- verification_gate: `%s`\n", run.Lifecycle.VerificationGateStatus)
+			fmt.Fprintf(&diag, "- verification_gate: `%s`\n", run.Lifecycle.VerificationGateStatus)
 		}
 		if strings.TrimSpace(run.Lifecycle.SecondPassStatus) != "" {
-			fmt.Fprintf(&b, "- second_pass: %s\n", run.Lifecycle.SecondPassStatus)
+			fmt.Fprintf(&diag, "- second_pass: %s\n", run.Lifecycle.SecondPassStatus)
 		}
 		if strings.TrimSpace(run.Lifecycle.CrossReviewTriage) != "" {
-			fmt.Fprintf(&b, "- cross_review_triage: %s\n", run.Lifecycle.CrossReviewTriage)
+			fmt.Fprintf(&diag, "- cross_review_triage: %s\n", run.Lifecycle.CrossReviewTriage)
 		}
 		if len(run.Lifecycle.RemainingObligations) > 0 {
-			fmt.Fprintf(&b, "- remaining_obligations: `%s`\n", strings.Join(run.Lifecycle.RemainingObligations, "`, `"))
+			fmt.Fprintf(&diag, "- remaining_obligations: `%s`\n", strings.Join(run.Lifecycle.RemainingObligations, "`, `"))
 		}
 		if strings.TrimSpace(run.Lifecycle.NextRecommendedCommand) != "" {
-			fmt.Fprintf(&b, "- next_recommended_command: `%s`\n", run.Lifecycle.NextRecommendedCommand)
+			fmt.Fprintf(&diag, "- next_recommended_command: `%s`\n", run.Lifecycle.NextRecommendedCommand)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if compact := buildReviewCompactStatus(&run, &run.RuntimeGateLedger, nil); compact != nil {
-		b.WriteString("## Compact Operator Status\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", reviewCompactStatusLine(compact))
-		fmt.Fprintf(&b, "- gates: `%s`\n", reviewGateCompactLine(compact))
+		diag.WriteString("## Compact Operator Status\n\n")
+		fmt.Fprintf(&diag, "- status: %s\n", reviewCompactStatusLine(compact, korean))
+		fmt.Fprintf(&diag, "- gates: `%s`\n", reviewGateCompactLine(compact))
 		if len(compact.CrossReviewTriageCounts) > 0 {
-			fmt.Fprintf(&b, "- cross_review_triage_counts: `%s`\n", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{crossReviewTriageAcceptedFixed, crossReviewTriageAcceptedDeferred, crossReviewTriageRejectedWithReason, crossReviewTriageNeedsUserDecision, "incomplete_invalid"}))
+			fmt.Fprintf(&diag, "- cross_review_triage_counts: `%s`\n", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{crossReviewTriageAcceptedFixed, crossReviewTriageAcceptedDeferred, crossReviewTriageRejectedWithReason, crossReviewTriageNeedsUserDecision, "incomplete_invalid"}))
 		}
 		if len(compact.BlockersByClass) > 0 {
-			fmt.Fprintf(&b, "- blockers_by_class: `%s`\n", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder()))
+			fmt.Fprintf(&diag, "- blockers_by_class: `%s`\n", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder()))
 		}
 		if compact.NextRecommendedCommand != "" {
-			fmt.Fprintf(&b, "- next_recommended_command: `%s`\n", compact.NextRecommendedCommand)
+			fmt.Fprintf(&diag, "- next_recommended_command: `%s`\n", compact.NextRecommendedCommand)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if timeline := reviewLifecycleTimelineForRun(&run, nil, &run.RuntimeGateLedger, nil); len(timeline) > 0 {
-		b.WriteString("## Lifecycle Timeline\n\n")
+		diag.WriteString("## Lifecycle Timeline\n\n")
 		for _, item := range timeline {
-			fmt.Fprintf(&b, "- `%s` status=`%s`", item.Phase, item.Status)
+			fmt.Fprintf(&diag, "- `%s` status=`%s`", item.Phase, item.Status)
 			if strings.TrimSpace(item.Reason) != "" {
-				fmt.Fprintf(&b, " reason=%s", item.Reason)
+				fmt.Fprintf(&diag, " reason=%s", item.Reason)
 			}
 			if strings.TrimSpace(item.EvidenceRef) != "" {
-				fmt.Fprintf(&b, " evidence=`%s`", item.EvidenceRef)
+				fmt.Fprintf(&diag, " evidence=`%s`", item.EvidenceRef)
 			}
 			if strings.TrimSpace(item.NextSafeAction) != "" {
-				fmt.Fprintf(&b, " next_safe_action=%s", item.NextSafeAction)
+				fmt.Fprintf(&diag, " next_safe_action=%s", item.NextSafeAction)
 			}
 			if strings.TrimSpace(item.NextCommand) != "" {
-				fmt.Fprintf(&b, " next_command=`%s`", item.NextCommand)
+				fmt.Fprintf(&diag, " next_command=`%s`", item.NextCommand)
 			}
-			b.WriteString("\n")
+			diag.WriteString("\n")
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if blockerSummary := buildReviewBlockerSummary(&run, &run.RuntimeGateLedger, nil); blockerSummary != nil && blockerSummary.HasBlockers {
-		b.WriteString("## Blocker Summary\n\n")
-		fmt.Fprintf(&b, "- counts: `%s`\n", reviewBlockerSummaryStatusLine(blockerSummary))
+		diag.WriteString("## Blocker Summary\n\n")
+		fmt.Fprintf(&diag, "- counts: `%s`\n", reviewBlockerSummaryStatusLine(blockerSummary))
 		for _, item := range blockerSummary.Primary {
-			fmt.Fprintf(&b, "- `%s` %s\n", item.Class, item.Title)
+			fmt.Fprintf(&diag, "- `%s` %s\n", item.Class, item.Title)
 			if strings.TrimSpace(item.WhyBlocks) != "" {
-				fmt.Fprintf(&b, "  - why_blocks: %s\n", item.WhyBlocks)
+				fmt.Fprintf(&diag, "  - why_blocks: %s\n", item.WhyBlocks)
 			}
 			if strings.TrimSpace(item.AlreadyChecked) != "" {
-				fmt.Fprintf(&b, "  - already_checked: %s\n", item.AlreadyChecked)
+				fmt.Fprintf(&diag, "  - already_checked: %s\n", item.AlreadyChecked)
 			}
 			if len(item.EvidenceRefs) > 0 {
-				fmt.Fprintf(&b, "  - evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
+				fmt.Fprintf(&diag, "  - evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
 			}
 			if strings.TrimSpace(item.NextSafeAction) != "" {
-				fmt.Fprintf(&b, "  - next_safe_action: %s\n", item.NextSafeAction)
+				fmt.Fprintf(&diag, "  - next_safe_action: %s\n", item.NextSafeAction)
 			}
 			if strings.TrimSpace(item.NextCommand) != "" {
-				fmt.Fprintf(&b, "  - next_command: `%s`\n", item.NextCommand)
+				fmt.Fprintf(&diag, "  - next_command: `%s`\n", item.NextCommand)
 			}
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if staleSummary := buildStaleContextSummary(nil, &run, &run.RuntimeGateLedger, nil); staleSummary != nil {
-		b.WriteString("## Stale Context Summary\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", staleContextSummaryStatusLine(staleSummary))
+		diag.WriteString("## Stale Context Summary\n\n")
+		fmt.Fprintf(&diag, "- status: `%s`\n", staleContextSummaryStatusLine(staleSummary))
 		for _, item := range staleSummary.Items {
-			fmt.Fprintf(&b, "- `%s` status=`%s` severity=`%s`", item.Kind, item.Status, item.Severity)
+			fmt.Fprintf(&diag, "- `%s` status=`%s` severity=`%s`", item.Kind, item.Status, item.Severity)
 			if strings.TrimSpace(item.Reason) != "" {
-				fmt.Fprintf(&b, " reason=%s", item.Reason)
+				fmt.Fprintf(&diag, " reason=%s", item.Reason)
 			}
 			if strings.TrimSpace(item.EvidenceRef) != "" {
-				fmt.Fprintf(&b, " evidence=`%s`", item.EvidenceRef)
+				fmt.Fprintf(&diag, " evidence=`%s`", item.EvidenceRef)
 			}
 			if strings.TrimSpace(item.NextSafeAction) != "" {
-				fmt.Fprintf(&b, " next_safe_action=%s", item.NextSafeAction)
+				fmt.Fprintf(&diag, " next_safe_action=%s", item.NextSafeAction)
 			}
 			if strings.TrimSpace(item.NextCommand) != "" {
-				fmt.Fprintf(&b, " next_command=`%s`", item.NextCommand)
+				fmt.Fprintf(&diag, " next_command=`%s`", item.NextCommand)
 			}
-			fmt.Fprintf(&b, " finalization_blocked=`%t` allowed_with_disclosure=`%t`", item.FinalizationBlocked, item.AllowedWithDisclosure)
-			b.WriteString("\n")
+			fmt.Fprintf(&diag, " finalization_blocked=`%t` allowed_with_disclosure=`%t`", item.FinalizationBlocked, item.AllowedWithDisclosure)
+			diag.WriteString("\n")
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if finalContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, ""); finalContract != nil {
-		b.WriteString("## Final Answer Contract\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", finalContract.Status)
-		fmt.Fprintf(&b, "- request_class: `%s`\n", finalContract.RequestClass)
+		diag.WriteString("## Final Answer Contract\n\n")
+		fmt.Fprintf(&diag, "- status: `%s`\n", finalContract.Status)
+		fmt.Fprintf(&diag, "- request_class: `%s`\n", finalContract.RequestClass)
 		if strings.TrimSpace(finalContract.LifecycleKind) != "" {
-			fmt.Fprintf(&b, "- lifecycle_kind: `%s`\n", finalContract.LifecycleKind)
+			fmt.Fprintf(&diag, "- lifecycle_kind: `%s`\n", finalContract.LifecycleKind)
 		}
 		if strings.TrimSpace(finalContract.Reason) != "" {
-			fmt.Fprintf(&b, "- reason: %s\n", finalContract.Reason)
+			fmt.Fprintf(&diag, "- reason: %s\n", finalContract.Reason)
 		}
 		for _, requirement := range finalContract.Requirements {
-			fmt.Fprintf(&b, "- `%s` status=`%s`", requirement.Requirement, requirement.Status)
+			fmt.Fprintf(&diag, "- `%s` status=`%s`", requirement.Requirement, requirement.Status)
 			if strings.TrimSpace(requirement.Reason) != "" {
-				fmt.Fprintf(&b, " reason=%s", requirement.Reason)
+				fmt.Fprintf(&diag, " reason=%s", requirement.Reason)
 			}
-			b.WriteString("\n")
+			diag.WriteString("\n")
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if run.RuntimeGateLedger.FinalAnswerCorrection != nil {
 		correction := *run.RuntimeGateLedger.FinalAnswerCorrection
 		correction.Normalize()
-		b.WriteString("## Final Answer Correction Contract\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", correction.Status)
-		fmt.Fprintf(&b, "- attempt_count: `%d`\n", correction.AttemptCount)
-		fmt.Fprintf(&b, "- max_attempts: `%d`\n", correction.MaxAttempts)
-		fmt.Fprintf(&b, "- accepted: `%t`\n", correction.Corrected)
-		fmt.Fprintf(&b, "- rejected: `%t`\n", correction.Rejected)
+		diag.WriteString("## Final Answer Correction Contract\n\n")
+		fmt.Fprintf(&diag, "- status: `%s`\n", correction.Status)
+		fmt.Fprintf(&diag, "- attempt_count: `%d`\n", correction.AttemptCount)
+		fmt.Fprintf(&diag, "- max_attempts: `%d`\n", correction.MaxAttempts)
+		fmt.Fprintf(&diag, "- accepted: `%t`\n", correction.Corrected)
+		fmt.Fprintf(&diag, "- rejected: `%t`\n", correction.Rejected)
 		if correction.Contract != nil {
-			fmt.Fprintf(&b, "- edits_prohibited: `%t`\n", correction.Contract.EditsProhibited)
-			fmt.Fprintf(&b, "- verification_mode: `%s`\n", correction.Contract.VerificationMode)
+			fmt.Fprintf(&diag, "- edits_prohibited: `%t`\n", correction.Contract.EditsProhibited)
+			fmt.Fprintf(&diag, "- verification_mode: `%s`\n", correction.Contract.VerificationMode)
 			if len(correction.Contract.MissingDisclosureFields) > 0 {
-				fmt.Fprintf(&b, "- missing_disclosure_fields: `%s`\n", strings.Join(correction.Contract.MissingDisclosureFields, "`, `"))
+				fmt.Fprintf(&diag, "- missing_disclosure_fields: `%s`\n", strings.Join(correction.Contract.MissingDisclosureFields, "`, `"))
 			}
 			if len(correction.Contract.RequiredAnswerShape) > 0 {
-				fmt.Fprintf(&b, "- required_answer_shape: `%s`\n", strings.Join(correction.Contract.RequiredAnswerShape, "`, `"))
+				fmt.Fprintf(&diag, "- required_answer_shape: `%s`\n", strings.Join(correction.Contract.RequiredAnswerShape, "`, `"))
 			}
 			if correction.Contract.NextCommand != "" {
-				fmt.Fprintf(&b, "- next_command: `%s`\n", correction.Contract.NextCommand)
+				fmt.Fprintf(&diag, "- next_command: `%s`\n", correction.Contract.NextCommand)
 			}
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if len(run.RouteHealthEvents) > 0 {
-		b.WriteString("## Route Health Events\n\n")
-		fmt.Fprintf(&b, "- route_health_events: `%s`\n", strings.Join(reviewRouteHealthEventClasses(run.RouteHealthEvents), "`, `"))
+		diag.WriteString("## Route Health Events\n\n")
+		fmt.Fprintf(&diag, "- route_health_events: `%s`\n", strings.Join(reviewRouteHealthEventClasses(run.RouteHealthEvents), "`, `"))
 		for _, event := range dedupeReviewRouteHealthEvents(run.RouteHealthEvents, 16) {
-			fmt.Fprintf(&b, "- `%s` role=`%s` class=`%s` status=`%s` provider=`%s` model=`%s` latency_ms=`%d` retry_count=`%d` malformed=`%d` recommendation=%s\n",
+			fmt.Fprintf(&diag, "- `%s` role=`%s` class=`%s` status=`%s` provider=`%s` model=`%s` latency_ms=`%d` retry_count=`%d` malformed=`%d` recommendation=%s\n",
 				firstNonBlankString(event.TurnID, "turn"),
 				event.Role,
 				event.FailureClass,
@@ -329,28 +375,28 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 				event.Recommendation,
 			)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if run.LiveProviderDrill != nil {
-		b.WriteString(renderLiveProviderDrillMarkdown(run.LiveProviderDrill))
+		diag.WriteString(renderLiveProviderDrillMarkdown(run.LiveProviderDrill))
 	}
 	if len(run.ObligationLedger.Items) > 0 {
-		b.WriteString("## Obligation Ledger\n\n")
-		fmt.Fprintf(&b, "- total: `%d` open: `%d`\n", run.ObligationLedger.TotalCount, run.ObligationLedger.OpenCount)
+		diag.WriteString("## Obligation Ledger\n\n")
+		fmt.Fprintf(&diag, "- total: `%d` open: `%d`\n", run.ObligationLedger.TotalCount, run.ObligationLedger.OpenCount)
 		if len(run.ObligationLedger.Summary) > 0 {
-			fmt.Fprintf(&b, "- open_by_type: `%s`\n", strings.Join(run.ObligationLedger.Summary, ", "))
+			fmt.Fprintf(&diag, "- open_by_type: `%s`\n", strings.Join(run.ObligationLedger.Summary, ", "))
 		}
 		for _, obligation := range run.ObligationLedger.Items {
-			fmt.Fprintf(&b, "- `%s` type=`%s` status=`%s` blocking=`%t`: %s\n", obligation.ID, obligation.Type, obligation.Status, obligation.Blocking, obligation.Title)
+			fmt.Fprintf(&diag, "- `%s` type=`%s` status=`%s` blocking=`%t`: %s\n", obligation.ID, obligation.Type, obligation.Status, obligation.Blocking, obligation.Title)
 			if strings.TrimSpace(obligation.RequiredAction) != "" {
-				fmt.Fprintf(&b, "  - Action: %s\n", obligation.RequiredAction)
+				fmt.Fprintf(&diag, "  - Action: %s\n", obligation.RequiredAction)
 			}
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if triage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage); triage != nil && len(triage.Items) > 0 {
-		b.WriteString("## Cross-Review Triage Ledger\n\n")
-		fmt.Fprintf(&b, "- total: `%d` incomplete: `%d`\n", triage.TotalCount, triage.IncompleteCount)
+		diag.WriteString("## Cross-Review Triage Ledger\n\n")
+		fmt.Fprintf(&diag, "- total: `%d` incomplete: `%d`\n", triage.TotalCount, triage.IncompleteCount)
 		if len(triage.StatusCounts) > 0 {
 			parts := make([]string, 0, len(triage.StatusCounts))
 			for _, status := range []string{
@@ -364,64 +410,64 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 				}
 			}
 			if len(parts) > 0 {
-				fmt.Fprintf(&b, "- status_counts: `%s`\n", strings.Join(parts, ", "))
+				fmt.Fprintf(&diag, "- status_counts: `%s`\n", strings.Join(parts, ", "))
 			}
 		}
 		for _, item := range triage.Items {
-			fmt.Fprintf(&b, "\n### `%s` - %s\n\n", valueOrDefault(item.FindingID, "cross-review-finding"), valueOrDefault(item.Title, "untitled finding"))
-			fmt.Fprintf(&b, "- status: `%s`\n", item.TriageStatus)
-			fmt.Fprintf(&b, "- reviewer: `%s`\n", item.ReviewerRole)
-			fmt.Fprintf(&b, "- severity: `%s`\n", item.Severity)
-			fmt.Fprintf(&b, "- category: `%s`\n", item.Category)
+			fmt.Fprintf(&diag, "\n### `%s` - %s\n\n", valueOrDefault(item.FindingID, "cross-review-finding"), valueOrDefault(item.Title, "untitled finding"))
+			fmt.Fprintf(&diag, "- status: `%s`\n", item.TriageStatus)
+			fmt.Fprintf(&diag, "- reviewer: `%s`\n", item.ReviewerRole)
+			fmt.Fprintf(&diag, "- severity: `%s`\n", item.Severity)
+			fmt.Fprintf(&diag, "- category: `%s`\n", item.Category)
 			if strings.TrimSpace(item.Path) != "" {
 				if item.Line > 0 {
-					fmt.Fprintf(&b, "- location: `%s:%d`\n", filepath.ToSlash(item.Path), item.Line)
+					fmt.Fprintf(&diag, "- location: `%s:%d`\n", filepath.ToSlash(item.Path), item.Line)
 				} else {
-					fmt.Fprintf(&b, "- location: `%s`\n", filepath.ToSlash(item.Path))
+					fmt.Fprintf(&diag, "- location: `%s`\n", filepath.ToSlash(item.Path))
 				}
 			}
 			if strings.TrimSpace(item.Symbol) != "" {
-				fmt.Fprintf(&b, "- symbol: `%s`\n", item.Symbol)
+				fmt.Fprintf(&diag, "- symbol: `%s`\n", item.Symbol)
 			}
 			if strings.TrimSpace(item.TechnicalReason) != "" {
-				fmt.Fprintf(&b, "- reason: %s\n", item.TechnicalReason)
+				fmt.Fprintf(&diag, "- reason: %s\n", item.TechnicalReason)
 			}
 			if strings.TrimSpace(item.RequiredFix) != "" {
-				fmt.Fprintf(&b, "- required_fix: %s\n", item.RequiredFix)
+				fmt.Fprintf(&diag, "- required_fix: %s\n", item.RequiredFix)
 			}
 			if len(item.FixRefs) > 0 {
-				fmt.Fprintf(&b, "- fix_refs: `%s`\n", strings.Join(item.FixRefs, "`, `"))
+				fmt.Fprintf(&diag, "- fix_refs: `%s`\n", strings.Join(item.FixRefs, "`, `"))
 			}
 			if len(item.ChangedPaths) > 0 {
-				fmt.Fprintf(&b, "- changed_paths: `%s`\n", strings.Join(item.ChangedPaths, "`, `"))
+				fmt.Fprintf(&diag, "- changed_paths: `%s`\n", strings.Join(item.ChangedPaths, "`, `"))
 			}
 			if len(item.VerificationRefs) > 0 {
-				fmt.Fprintf(&b, "- verification_refs: `%s`\n", strings.Join(item.VerificationRefs, "`, `"))
+				fmt.Fprintf(&diag, "- verification_refs: `%s`\n", strings.Join(item.VerificationRefs, "`, `"))
 			}
 			if len(item.EvidenceRefs) > 0 {
-				fmt.Fprintf(&b, "- evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
+				fmt.Fprintf(&diag, "- evidence_refs: `%s`\n", strings.Join(item.EvidenceRefs, "`, `"))
 			}
-			fmt.Fprintf(&b, "- user_action_needed: `%t`\n", item.UserActionNeeded)
+			fmt.Fprintf(&diag, "- user_action_needed: `%t`\n", item.UserActionNeeded)
 			if strings.TrimSpace(item.UserActionPrompt) != "" {
-				fmt.Fprintf(&b, "- user_action_prompt: %s\n", item.UserActionPrompt)
+				fmt.Fprintf(&diag, "- user_action_prompt: %s\n", item.UserActionPrompt)
 			}
 			if len(item.InspectTargets) > 0 {
-				fmt.Fprintf(&b, "- inspect_targets: `%s`\n", strings.Join(item.InspectTargets, "`, `"))
+				fmt.Fprintf(&diag, "- inspect_targets: `%s`\n", strings.Join(item.InspectTargets, "`, `"))
 			}
 			if strings.TrimSpace(item.SafeToChange) != "" {
-				fmt.Fprintf(&b, "- safe_to_change: %s\n", item.SafeToChange)
+				fmt.Fprintf(&diag, "- safe_to_change: %s\n", item.SafeToChange)
 			}
 			if strings.TrimSpace(item.DoNotChangeYet) != "" {
-				fmt.Fprintf(&b, "- do_not_change_yet: %s\n", item.DoNotChangeYet)
+				fmt.Fprintf(&diag, "- do_not_change_yet: %s\n", item.DoNotChangeYet)
 			}
 			if strings.TrimSpace(item.NextCommand) != "" {
-				fmt.Fprintf(&b, "- next_command: `%s`\n", item.NextCommand)
+				fmt.Fprintf(&diag, "- next_command: `%s`\n", item.NextCommand)
 			}
 		}
 		if len(triage.Blockers) > 0 {
-			fmt.Fprintf(&b, "- blockers: %s\n", strings.Join(triage.Blockers, " | "))
+			fmt.Fprintf(&diag, "- blockers: %s\n", strings.Join(triage.Blockers, " | "))
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if len(run.Gate.BlockingFindings) > 0 {
 		b.WriteString("## Blocking Findings\n\n")
@@ -486,134 +532,152 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		b.WriteString("\n")
 	}
 	if len(run.StateTransitions) > 0 {
-		b.WriteString("## State Transitions\n\n")
+		diag.WriteString("## State Transitions\n\n")
 		for _, transition := range run.StateTransitions {
-			fmt.Fprintf(&b, "- `%s` `%s` -> `%s` actor=`%s` blocking=`%t`: %s\n", transition.ID, transition.From, transition.To, transition.Actor, transition.Blocking, transition.Reason)
+			fmt.Fprintf(&diag, "- `%s` `%s` -> `%s` actor=`%s` blocking=`%t`: %s\n", transition.ID, transition.From, transition.To, transition.Actor, transition.Blocking, transition.Reason)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if len(run.ActionEnvelopes) > 0 {
-		b.WriteString("## Action Envelopes\n\n")
+		diag.WriteString("## Action Envelopes\n\n")
 		for _, envelope := range run.ActionEnvelopes {
-			fmt.Fprintf(&b, "- `%s` `%s` actor=`%s` status=`%s` approval_required=`%t` approval_granted=`%t`", envelope.ActionID, envelope.ActionType, envelope.Actor, envelope.Status, envelope.ApprovalRequired, envelope.ApprovalGranted)
+			fmt.Fprintf(&diag, "- `%s` `%s` actor=`%s` status=`%s` approval_required=`%t` approval_granted=`%t`", envelope.ActionID, envelope.ActionType, envelope.Actor, envelope.Status, envelope.ApprovalRequired, envelope.ApprovalGranted)
 			if strings.TrimSpace(envelope.FailureClass) != "" {
-				fmt.Fprintf(&b, " failure=`%s`", envelope.FailureClass)
+				fmt.Fprintf(&diag, " failure=`%s`", envelope.FailureClass)
 			}
-			b.WriteString("\n")
+			diag.WriteString("\n")
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if run.ApprovalLedger.ReviewGateApproved || len(run.ApprovalLedger.MissingApprovals) > 0 || strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
-		b.WriteString("## Approval Ledger\n\n")
-		fmt.Fprintf(&b, "- review_gate_approved: `%t`\n", run.ApprovalLedger.ReviewGateApproved)
-		fmt.Fprintf(&b, "- diff_preview_shown: `%t`\n", run.ApprovalLedger.DiffPreviewShown)
-		fmt.Fprintf(&b, "- user_write_approved: `%t`\n", run.ApprovalLedger.UserWriteApproved)
-		fmt.Fprintf(&b, "- write_applied: `%t`\n", run.ApprovalLedger.WriteApplied)
-		fmt.Fprintf(&b, "- verification_passed: `%t`\n", run.ApprovalLedger.VerificationPassed)
+		diag.WriteString("## Approval Ledger\n\n")
+		fmt.Fprintf(&diag, "- review_gate_approved: `%t`\n", run.ApprovalLedger.ReviewGateApproved)
+		fmt.Fprintf(&diag, "- diff_preview_shown: `%t`\n", run.ApprovalLedger.DiffPreviewShown)
+		fmt.Fprintf(&diag, "- user_write_approved: `%t`\n", run.ApprovalLedger.UserWriteApproved)
+		fmt.Fprintf(&diag, "- write_applied: `%t`\n", run.ApprovalLedger.WriteApplied)
+		fmt.Fprintf(&diag, "- verification_passed: `%t`\n", run.ApprovalLedger.VerificationPassed)
 		if len(run.ApprovalLedger.MissingApprovals) > 0 {
-			fmt.Fprintf(&b, "- missing_approvals: `%s`\n", strings.Join(run.ApprovalLedger.MissingApprovals, ", "))
+			fmt.Fprintf(&diag, "- missing_approvals: `%s`\n", strings.Join(run.ApprovalLedger.MissingApprovals, ", "))
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if strings.TrimSpace(run.CapabilityManifest.LocalFileRead) != "" {
-		b.WriteString("## Capability Manifest\n\n")
-		fmt.Fprintf(&b, "- local_file_read: `%s`\n", run.CapabilityManifest.LocalFileRead)
-		fmt.Fprintf(&b, "- patch_apply: `%s`\n", run.CapabilityManifest.PatchApply)
-		fmt.Fprintf(&b, "- diff_preview: `%s`\n", run.CapabilityManifest.DiffPreview)
-		fmt.Fprintf(&b, "- test_runner: `%s`\n", run.CapabilityManifest.TestRunner)
-		fmt.Fprintf(&b, "- web_search: `%s`\n", run.CapabilityManifest.WebSearch)
-		fmt.Fprintf(&b, "- primary_model: `%s`\n", run.CapabilityManifest.PrimaryModel)
-		fmt.Fprintf(&b, "- cross_review_model: `%s`\n", run.CapabilityManifest.CrossReviewModel)
-		fmt.Fprintf(&b, "- single_model_review_mode: `%s`\n", run.CapabilityManifest.SingleModelReviewMode)
-		b.WriteString("\n")
+		diag.WriteString("## Capability Manifest\n\n")
+		fmt.Fprintf(&diag, "- local_file_read: `%s`\n", run.CapabilityManifest.LocalFileRead)
+		fmt.Fprintf(&diag, "- patch_apply: `%s`\n", run.CapabilityManifest.PatchApply)
+		fmt.Fprintf(&diag, "- diff_preview: `%s`\n", run.CapabilityManifest.DiffPreview)
+		fmt.Fprintf(&diag, "- test_runner: `%s`\n", run.CapabilityManifest.TestRunner)
+		fmt.Fprintf(&diag, "- web_search: `%s`\n", run.CapabilityManifest.WebSearch)
+		fmt.Fprintf(&diag, "- primary_model: `%s`\n", run.CapabilityManifest.PrimaryModel)
+		fmt.Fprintf(&diag, "- cross_review_model: `%s`\n", run.CapabilityManifest.CrossReviewModel)
+		fmt.Fprintf(&diag, "- single_model_review_mode: `%s`\n", run.CapabilityManifest.SingleModelReviewMode)
+		diag.WriteString("\n")
 	}
 	if len(run.ExternalLookupIntents) > 0 {
-		b.WriteString("## External Lookup Intents\n\n")
+		diag.WriteString("## External Lookup Intents\n\n")
 		for _, intent := range run.ExternalLookupIntents {
-			fmt.Fprintf(&b, "- `%s` tool=`%s` status=`%s` blocked=`%t`: %s\n", intent.ID, intent.ToolName, intent.Status, intent.Blocked, intent.Intent)
+			fmt.Fprintf(&diag, "- `%s` tool=`%s` status=`%s` blocked=`%t`: %s\n", intent.ID, intent.ToolName, intent.Status, intent.Blocked, intent.Intent)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if strings.TrimSpace(run.ArtifactIntegrity.EvidenceHash) != "" || strings.TrimSpace(run.ArtifactIntegrity.ProposalHash) != "" {
-		b.WriteString("## Artifact Integrity\n\n")
-		fmt.Fprintf(&b, "- hash_algorithm: `%s`\n", valueOrDefault(run.ArtifactIntegrity.HashAlgorithm, "sha256"))
+		diag.WriteString("## Artifact Integrity\n\n")
+		fmt.Fprintf(&diag, "- hash_algorithm: `%s`\n", valueOrDefault(run.ArtifactIntegrity.HashAlgorithm, "sha256"))
 		if strings.TrimSpace(run.ArtifactIntegrity.EvidenceHash) != "" {
-			fmt.Fprintf(&b, "- evidence_hash: `%s`\n", run.ArtifactIntegrity.EvidenceHash)
+			fmt.Fprintf(&diag, "- evidence_hash: `%s`\n", run.ArtifactIntegrity.EvidenceHash)
 		}
 		if strings.TrimSpace(run.ArtifactIntegrity.ProposalHash) != "" {
-			fmt.Fprintf(&b, "- proposal_hash: `%s`\n", run.ArtifactIntegrity.ProposalHash)
+			fmt.Fprintf(&diag, "- proposal_hash: `%s`\n", run.ArtifactIntegrity.ProposalHash)
 		}
 		if len(run.ArtifactIntegrity.CurrentFileHashes) > 0 {
-			fmt.Fprintf(&b, "- current_file_hashes: `%d`\n", len(run.ArtifactIntegrity.CurrentFileHashes))
+			fmt.Fprintf(&diag, "- current_file_hashes: `%d`\n", len(run.ArtifactIntegrity.CurrentFileHashes))
 		}
 		if len(run.ArtifactIntegrity.Warnings) > 0 {
-			fmt.Fprintf(&b, "- warnings: %s\n", strings.Join(run.ArtifactIntegrity.Warnings, " | "))
+			fmt.Fprintf(&diag, "- warnings: %s\n", strings.Join(run.ArtifactIntegrity.Warnings, " | "))
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if strings.TrimSpace(run.LedgerConsistency.Status) != "" {
-		b.WriteString("## Ledger Consistency\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", run.LedgerConsistency.Status)
+		if korean {
+			b.WriteString("## 검토 범위\n\n")
+		} else {
+			b.WriteString("## Coverage\n\n")
+		}
+		fmt.Fprintf(&b, "- %s\n", reviewLedgerCoverageHeadline(run.LedgerConsistency, korean))
 		if len(run.LedgerConsistency.Blockers) > 0 {
-			fmt.Fprintf(&b, "- blockers: %s\n", strings.Join(run.LedgerConsistency.Blockers, " | "))
+			if korean {
+				fmt.Fprintf(&b, "- 확인 필요: %s\n", strings.Join(run.LedgerConsistency.Blockers, " | "))
+			} else {
+				fmt.Fprintf(&b, "- Needs attention: %s\n", strings.Join(run.LedgerConsistency.Blockers, " | "))
+			}
 		}
 		if len(run.LedgerConsistency.Warnings) > 0 {
-			fmt.Fprintf(&b, "- warnings: %s\n", strings.Join(run.LedgerConsistency.Warnings, " | "))
+			if korean {
+				fmt.Fprintf(&b, "- 참고: %s\n", strings.Join(run.LedgerConsistency.Warnings, " | "))
+			} else {
+				fmt.Fprintf(&b, "- Notes: %s\n", strings.Join(run.LedgerConsistency.Warnings, " | "))
+			}
 		}
+		// Keep the raw status token only as a machine/debug field, never as the human line.
+		fmt.Fprintf(&b, "- status (debug): `%s`\n", run.LedgerConsistency.Status)
 		b.WriteString("\n")
 	}
 	if strings.TrimSpace(run.ResumeSanity.Status) != "" {
-		b.WriteString("## Resume Sanity\n\n")
-		fmt.Fprintf(&b, "- status: `%s`\n", run.ResumeSanity.Status)
+		diag.WriteString("## Resume Sanity\n\n")
+		fmt.Fprintf(&diag, "- status: `%s`\n", run.ResumeSanity.Status)
 		if strings.TrimSpace(run.ResumeSanity.LastStableAction) != "" {
-			fmt.Fprintf(&b, "- last_stable_action: `%s`\n", run.ResumeSanity.LastStableAction)
+			fmt.Fprintf(&diag, "- last_stable_action: `%s`\n", run.ResumeSanity.LastStableAction)
 		}
 		if strings.TrimSpace(run.ResumeSanity.NextState) != "" {
-			fmt.Fprintf(&b, "- next_state: `%s`\n", run.ResumeSanity.NextState)
+			fmt.Fprintf(&diag, "- next_state: `%s`\n", run.ResumeSanity.NextState)
 		}
 		if strings.TrimSpace(run.ResumeSanity.ConflictReason) != "" {
-			fmt.Fprintf(&b, "- conflict: %s\n", run.ResumeSanity.ConflictReason)
+			fmt.Fprintf(&diag, "- conflict: %s\n", run.ResumeSanity.ConflictReason)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if len(run.ModelPlan.CapabilityProfiles) > 0 || len(run.ModelPlan.RouteHealth) > 0 {
-		b.WriteString("## Model Route Capability\n\n")
+		diag.WriteString("## Model Route Capability\n\n")
 		for _, profile := range run.ModelPlan.CapabilityProfiles {
-			fmt.Fprintf(&b, "- `%s` provider=`%s` model=`%s` rank=`%d` schema=`%s` latency=`%s` timeout_ms=`%d`\n", profile.Role, profile.Provider, profile.ModelPattern, profile.CapabilityRank, profile.SchemaReliability, profile.LatencyClass, profile.RecommendedTimeoutMS)
+			fmt.Fprintf(&diag, "- `%s` provider=`%s` model=`%s` rank=`%d` schema=`%s` latency=`%s` timeout_ms=`%d`\n", profile.Role, profile.Provider, profile.ModelPattern, profile.CapabilityRank, profile.SchemaReliability, profile.LatencyClass, profile.RecommendedTimeoutMS)
 		}
 		for _, health := range run.ModelPlan.RouteHealth {
-			fmt.Fprintf(&b, "- health `%s` model=`%s` status=`%s` quality=`%s` timeout_rate=`%.2f` weak_rate=`%.2f`: %s\n", health.Role, health.Model, health.LastStatus, health.LastQuality, health.TimeoutRate, health.WeakRate, health.Recommendation)
+			fmt.Fprintf(&diag, "- health `%s` model=`%s` status=`%s` quality=`%s` timeout_rate=`%.2f` weak_rate=`%.2f`: %s\n", health.Role, health.Model, health.LastStatus, health.LastQuality, health.TimeoutRate, health.WeakRate, health.Recommendation)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if len(run.ModelPlan.RequiredLenses) > 0 || len(run.ModelPlan.OptionalLenses) > 0 {
-		b.WriteString("## Review Lenses\n\n")
+		diag.WriteString("## Review Lenses\n\n")
 		if len(run.ModelPlan.RequiredLenses) > 0 {
-			fmt.Fprintf(&b, "- required: `%s`\n", strings.Join(run.ModelPlan.RequiredLenses, "`, `"))
+			fmt.Fprintf(&diag, "- required: `%s`\n", strings.Join(run.ModelPlan.RequiredLenses, "`, `"))
 		}
 		if len(run.ModelPlan.OptionalLenses) > 0 {
-			fmt.Fprintf(&b, "- optional: `%s`\n", strings.Join(run.ModelPlan.OptionalLenses, "`, `"))
+			fmt.Fprintf(&diag, "- optional: `%s`\n", strings.Join(run.ModelPlan.OptionalLenses, "`, `"))
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
 	if rendered := strings.TrimSpace(run.RuntimeGateLedger.RenderPromptSection()); rendered != "" {
-		b.WriteString("## Runtime Gate Ledger\n\n")
-		b.WriteString(rendered)
-		b.WriteString("\n\n")
+		diag.WriteString("## Runtime Gate Ledger\n\n")
+		diag.WriteString(rendered)
+		diag.WriteString("\n\n")
 	}
 	if len(run.ModelPlan.UserGuidance) > 0 {
-		b.WriteString("## Model Guidance\n\n")
+		diag.WriteString("## Model Guidance\n\n")
 		for _, item := range run.ModelPlan.UserGuidance {
-			fmt.Fprintf(&b, "- %s\n", item)
+			fmt.Fprintf(&diag, "- %s\n", item)
 		}
-		b.WriteString("\n")
+		diag.WriteString("\n")
 	}
-	if len(run.ChangeSet.ChangedPaths) > 0 {
-		b.WriteString(reviewChangeSetPathSectionHeading(run))
-		b.WriteString("\n\n")
-		for _, path := range limitStrings(run.ChangeSet.ChangedPaths, 64) {
-			fmt.Fprintf(&b, "- `%s`\n", filepath.ToSlash(path))
+	// Append all lifecycle / ledger / state-transition / capability / sanity
+	// diagnostics under a single trailing heading so the human-readable outcome
+	// above stays uncluttered. Nothing is dropped, only moved to the back.
+	if diagBody := strings.TrimSpace(diag.String()); diagBody != "" {
+		if korean {
+			b.WriteString("## 진단 상세\n\n")
+		} else {
+			b.WriteString("## Diagnostics\n\n")
 		}
+		b.WriteString(diagBody)
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String()) + "\n"
@@ -659,6 +723,35 @@ func renderReviewFindingMarkdown(b *strings.Builder, finding ReviewFinding) {
 	b.WriteString("\n")
 }
 
+// collapseExcerptUnavailableWarnings folds the near-identical "... excerpt
+// unavailable ..." warnings into a single summary line so the evidence artifact
+// is not buried under nine repetitive entries. All other warnings pass through
+// unchanged and in their original order.
+func collapseExcerptUnavailableWarnings(warnings []string) []string {
+	out := make([]string, 0, len(warnings))
+	excerptCount := 0
+	insertedAt := -1
+	for _, warning := range warnings {
+		if strings.Contains(warning, "excerpt unavailable") {
+			excerptCount++
+			if insertedAt < 0 {
+				insertedAt = len(out)
+				out = append(out, "")
+			}
+			continue
+		}
+		out = append(out, warning)
+	}
+	if insertedAt >= 0 {
+		if excerptCount == 1 {
+			out[insertedAt] = "1 source excerpt was unavailable; reviewed from the remaining evidence."
+		} else {
+			out[insertedAt] = fmt.Sprintf("%d source excerpts were unavailable; reviewed from the remaining evidence.", excerptCount)
+		}
+	}
+	return out
+}
+
 func renderReviewEvidenceMarkdown(run ReviewRun) string {
 	var b strings.Builder
 	b.WriteString("# KernForge Review Evidence\n\n")
@@ -669,7 +762,7 @@ func renderReviewEvidenceMarkdown(run ReviewRun) string {
 	}
 	if len(run.Evidence.Warnings) > 0 {
 		b.WriteString("\n## Warnings\n\n")
-		for _, warning := range run.Evidence.Warnings {
+		for _, warning := range collapseExcerptUnavailableWarnings(run.Evidence.Warnings) {
 			fmt.Fprintf(&b, "- %s\n", warning)
 		}
 	}
@@ -679,6 +772,29 @@ func renderReviewEvidenceMarkdown(run ReviewRun) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimSpace(b.String()) + "\n"
+}
+
+// reviewLedgerCoverageHeadline turns the internal ledger-consistency status into a
+// human sentence about review coverage. It deliberately avoids surfacing the raw
+// "blocked" token next to an approved verdict, which reads as a contradiction.
+func reviewLedgerCoverageHeadline(check ReviewLedgerConsistencyCheck, korean bool) string {
+	switch strings.TrimSpace(check.Status) {
+	case reviewLedgerConsistencyBlocked:
+		if korean {
+			return "검증 보고가 아직 연결되지 않아 검토 범위가 일부에 한정됩니다."
+		}
+		return "Coverage is partial: verification evidence is not linked yet."
+	case reviewLedgerConsistencyWarning:
+		if korean {
+			return "검토 범위에 보완이 필요한 부분이 있습니다."
+		}
+		return "Coverage has gaps worth noting."
+	default:
+		if korean {
+			return "변경 내용이 이번 검토 범위 안에서 모두 확인되었습니다."
+		}
+		return "All changes are covered by this review."
+	}
 }
 
 func reviewRunPrefersKorean(cfg Config, run ReviewRun) bool {
@@ -722,7 +838,7 @@ func renderReviewCLIResultDetailed(cfg Config, run ReviewRun) string {
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
 	fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "모드"), run.Mode)
 	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
-		fmt.Fprintf(&b, "- %s: %s", reviewRunLocalizedText(cfg, run, "Request class", "요청 class"), class)
+		fmt.Fprintf(&b, "- %s: %s", reviewRunLocalizedText(cfg, run, "Request type", "요청 유형"), humanizeRequestClass(class, reviewRunPrefersKorean(cfg, run)))
 		if strings.TrimSpace(run.RequestAnalysis.RequestClassReason) != "" {
 			fmt.Fprintf(&b, " (%s)", compactPromptSection(run.RequestAnalysis.RequestClassReason, 120))
 		}
@@ -792,37 +908,38 @@ func renderReviewCLIResultDetailed(cfg Config, run ReviewRun) string {
 			renderReviewCLINextCommand(&b, cfg, run, cmd)
 		}
 	}
+	// Second-pass internals are a key=value diagnostic blob, not a user-facing
+	// sentence; keep them in the trailing Diagnostics section.
+	if second := buildReviewSecondPassObservability(run); second != nil {
+		fmt.Fprintf(&b, "\n%s:\n", reviewRunLocalizedText(cfg, run, "Diagnostics", "진단"))
+		fmt.Fprintf(&b, "- second_pass: %s\n", reviewSecondPassStatusLine(second))
+	}
 	return strings.TrimSpace(b.String())
 }
 
 func renderReviewCLIResultCompact(cfg Config, run ReviewRun) string {
 	var b strings.Builder
+	korean := reviewRunPrefersKorean(cfg, run)
 	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
-	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, verdict)
+	fmt.Fprintf(&b, "%s %s: %s\n", reviewRunLocalizedText(cfg, run, "Review", "리뷰"), run.ID, humanizeReviewVerdict(verdict, korean))
 	noteCount := reviewCLINoteFindingCount(run)
-	fmt.Fprintf(&b, "- %s: %d blocker=%d warning=%d note=%d\n",
-		reviewRunLocalizedText(cfg, run, "Findings", "발견"),
-		len(run.Findings),
-		len(run.Gate.BlockingFindings),
-		len(run.Gate.WarningFindings),
-		noteCount)
-	if strings.TrimSpace(run.SkipReason) != "" {
-		fmt.Fprintf(&b, "- %s: model_review_status=%s; consent_source=%s; deterministic checks only\n",
-			reviewRunLocalizedText(cfg, run, "Model review", "모델 리뷰"),
-			run.SkipReason,
-			valueOrDefault(run.ConsentSource, "unknown"))
+	fmt.Fprintf(&b, "- %s: %s\n",
+		reviewRunLocalizedText(cfg, run, "Findings", "발견 항목"),
+		reviewFindingCountPhrase(len(run.Findings), len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), noteCount, korean))
+	if line := compactModelReviewSkipLine(run, korean); line != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Model review", "모델 리뷰"), line)
 	}
 	if strings.TrimSpace(run.Gate.Action) != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 액션"), run.Gate.Action)
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Gate action", "게이트 처리"), humanizeGateAction(run.Gate.Action, korean))
 	}
 	if strings.TrimSpace(run.Target) != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), run.Target)
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Target", "대상"), humanizeReviewTarget(run.Target, korean))
 	}
 	if strings.TrimSpace(run.Mode) != "" {
-		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "모드"), run.Mode)
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Mode", "유형"), humanizeReviewMode(run.Mode, korean))
 	}
 	if class := normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)); class != "" && class != reviewRequestClassGeneral {
-		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Request class", "요청 class"), class)
+		fmt.Fprintf(&b, "- %s: %s\n", reviewRunLocalizedText(cfg, run, "Request type", "요청 유형"), humanizeRequestClass(class, korean))
 	}
 	rendered := map[string]bool{}
 	for _, finding := range run.Findings {
@@ -866,6 +983,25 @@ func renderReviewCLIResultCompact(cfg Config, run ReviewRun) string {
 		renderReviewCLICompactNextCommand(&b, cfg, run, cmd)
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// compactModelReviewSkipLine renders the localized "only deterministic checks
+// ran" explanation when model review was skipped. consent_source is only shown
+// when it carries information beyond the skip reason itself.
+func compactModelReviewSkipLine(run ReviewRun, korean bool) string {
+	if strings.TrimSpace(run.SkipReason) == "" {
+		return ""
+	}
+	line := humanizeModelReviewSkipReason(run.SkipReason, korean)
+	source := strings.TrimSpace(run.ConsentSource)
+	if source != "" && source != "unknown" && source != "not_applicable" && source != "allowed" {
+		if korean {
+			line += " (동의 경로: " + source + ")"
+		} else {
+			line += " (consent source: " + source + ")"
+		}
+	}
+	return line
 }
 
 func renderReviewCLITriageResidualRisk(cfg Config, run ReviewRun) string {
@@ -913,44 +1049,54 @@ func renderReviewCLIFinding(b *strings.Builder, cfg Config, run ReviewRun, findi
 }
 
 func renderReviewCLIRouteStatus(cfg Config, run ReviewRun) string {
+	korean := reviewRunPrefersKorean(cfg, run)
 	if run.SingleModelPolicy.Enabled {
 		var status string
-		if reviewRunPrefersKorean(cfg, run) {
-			status = "single_model_mode - 별도 cross reviewer 없이 메인 모델 structured review와 deterministic gate를 사용합니다."
+		if korean {
+			status = "메인 모델이 구조화된 리뷰를 수행하고, 별도 교차 리뷰어 없이 자동 점검으로 검증했습니다."
 		} else {
-			status = "single_model_mode - using main-model structured review plus deterministic gate without a separate cross reviewer."
+			status = "The main model ran a structured review and verified it with automated checks, without a separate cross reviewer."
 		}
-		if detail := renderReviewCLIReviewerRunDetails(run); detail != "" {
-			status += "; " + detail
-		}
-		if second := buildReviewSecondPassObservability(run); second != nil {
-			status += "; second_pass=" + reviewSecondPassStatusLine(second)
+		if detail := renderReviewCLIReviewerRunDetails(run, korean); detail != "" {
+			if korean {
+				status += " (" + detail + ")"
+			} else {
+				status += " (" + detail + ")"
+			}
 		}
 		return status
 	}
 	if len(run.ReviewerRuns) == 0 {
-		if reviewRunPrefersKorean(cfg, run) {
-			return "deterministic_only - 모델 리뷰 없이 local deterministic gate만 사용합니다."
+		if korean {
+			return "모델 리뷰 없이 자동 점검만으로 검토했습니다."
 		}
-		return "deterministic_only - using local deterministic gate without model review."
+		return "Reviewed with automated checks only, without a model review."
 	}
-	return renderReviewCLIReviewerRunDetails(run)
+	return renderReviewCLIReviewerRunDetails(run, korean)
 }
 
-func renderReviewCLIReviewerRunDetails(run ReviewRun) string {
+// renderReviewCLIReviewerRunDetails renders each reviewer run as a localized
+// short phrase ("primary reviewer: done, quality strong"). The raw kind/status/
+// quality enums and the provider_raw path are preserved in the Diagnostics
+// section and machine fields, not here.
+func renderReviewCLIReviewerRunDetails(run ReviewRun, korean bool) string {
 	var parts []string
 	for _, reviewerRun := range run.ReviewerRuns {
 		role := valueOrDefault(reviewRoleProgressName(reviewerRun.Role), reviewerRun.Role)
-		kind := valueOrDefault(reviewerRun.Kind, "review")
-		status := valueOrDefault(reviewerRun.Status, "unknown")
-		quality := valueOrDefault(reviewerRun.ModelQuality, "unknown")
-		detail := fmt.Sprintf("%s/%s=%s quality=%s", kind, role, status, quality)
-		if strings.TrimSpace(reviewerRun.RawProviderResponsePath) != "" {
-			detail += " provider_raw=" + reviewerRun.RawProviderResponsePath
+		status := humanizeGateStatus(reviewerRun.Status, korean)
+		quality := humanizeRouteQuality(reviewerRun.ModelQuality, korean)
+		var detail string
+		if korean {
+			detail = role + ": " + status + ", 품질 " + quality
+		} else {
+			detail = role + ": " + status + ", quality " + quality
 		}
 		parts = append(parts, detail)
 	}
-	return strings.Join(parts, "; ")
+	if korean {
+		return strings.Join(parts, " / ")
+	}
+	return strings.Join(parts, " / ")
 }
 
 func renderReviewCLINextCommand(b *strings.Builder, cfg Config, run ReviewRun, cmd ReviewNextCommand) {

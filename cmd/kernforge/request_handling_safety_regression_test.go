@@ -8,12 +8,13 @@ import "testing"
 // never yield AllowsFileMutation / AllowsGitMutation / must_edit.
 //
 // Defect families covered:
-//   F1        run/build/test-only requests are run_command, not source edits.
-//   F2,F16    substring / word-boundary false positives stay read-only.
-//   F3        git negation / git questions never allow git mutation.
-//   F10       no-change negation keeps file mutation off.
-//   F5        git-only English is a git intent, not a source must_edit.
-//   DO-NOT-BREAK invariants stay green.
+//
+//	F1        run/build/test-only requests are run_command, not source edits.
+//	F2,F16    substring / word-boundary false positives stay read-only.
+//	F3        git negation / git questions never allow git mutation.
+//	F10       no-change negation keeps file mutation off.
+//	F5        git-only English is a git intent, not a source must_edit.
+//	DO-NOT-BREAK invariants stay green.
 func TestRequestHandlingSafetyRegression(t *testing.T) {
 	cases := []struct {
 		name             string
@@ -21,8 +22,8 @@ func TestRequestHandlingSafetyRegression(t *testing.T) {
 		wantIntent       TurnIntent
 		wantFileMutation bool
 		wantGitMutation  bool
-		wantReadOnly     bool   // when true, ReadOnlyAnalysis must hold
-		forbidMustEdit   bool   // when true, Boundary must not be must_edit
+		wantReadOnly     bool // when true, ReadOnlyAnalysis must hold
+		forbidMustEdit   bool // when true, Boundary must not be must_edit
 		wantPrimary      RequestClass
 		wantReviewClass  string
 		wantExplicitEdit *bool // optional explicit-edit assertion

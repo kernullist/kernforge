@@ -168,34 +168,40 @@ func buildFinalAnswerCorrectionContract(visibility FinalAnswerCorrectionVisibili
 	return contract
 }
 
+// finalAnswerRequiredShapeInstructions maps each missing-disclosure reason id to
+// the single concrete instruction for that field. Every line in the required
+// shape is derived from an actual missing field; there is no meta/boilerplate
+// "start with the concrete outcome" line and no padding when only one field is
+// missing.
+var finalAnswerRequiredShapeInstructions = map[string]string{
+	"review_only_findings_first_no_edit": "for review-only requests, list findings first and explicitly state that no edits were made",
+	"changed_file_disclosure":            "include the changed file or artifact paths that were actually touched",
+	"document_artifact_disclosure":       "include the document artifact path and artifact-quality gate status",
+	"review_self_review_disclosure":      "include the latest review result or state that review was not run",
+	"validation_disclosure":              "include verification status exactly: passed, failed, skipped, or not run",
+	"remaining_risk_disclosure":          "include unresolved risks, residual risk, or the absence of remaining known blockers",
+}
+
+// finalAnswerRequiredShapeOrder pins a deterministic order so the rendered shape
+// is stable regardless of reason ordering.
+var finalAnswerRequiredShapeOrder = []string{
+	"review_only_findings_first_no_edit",
+	"changed_file_disclosure",
+	"document_artifact_disclosure",
+	"review_self_review_disclosure",
+	"validation_disclosure",
+	"remaining_risk_disclosure",
+}
+
 func finalAnswerRequiredShapeForReasons(reasons []string) []string {
 	shape := []string{}
-	add := func(item string) {
-		if item != "" {
-			shape = append(shape, item)
+	for _, id := range finalAnswerRequiredShapeOrder {
+		if !containsString(reasons, id) {
+			continue
 		}
-	}
-	add("start with the concrete outcome, not a generic completion sentence")
-	if containsString(reasons, "review_only_findings_first_no_edit") {
-		add("for review-only requests, list findings first and explicitly state that no edits were made")
-	}
-	if containsString(reasons, "changed_file_disclosure") {
-		add("include the changed file or artifact paths that were actually touched")
-	}
-	if containsString(reasons, "document_artifact_disclosure") {
-		add("include the document artifact path and artifact-quality gate status")
-	}
-	if containsString(reasons, "review_self_review_disclosure") {
-		add("include the latest review result or state that review was not run")
-	}
-	if containsString(reasons, "validation_disclosure") {
-		add("include verification status exactly: passed, failed, skipped, or not run")
-	}
-	if containsString(reasons, "remaining_risk_disclosure") {
-		add("include unresolved risks, residual risk, or the absence of remaining known blockers")
-	}
-	if len(shape) == 1 {
-		add("include verification and remaining-risk disclosure when they are known")
+		if instruction := finalAnswerRequiredShapeInstructions[id]; instruction != "" {
+			shape = append(shape, instruction)
+		}
 	}
 	return normalizeTaskStateList(shape, 12)
 }
@@ -296,6 +302,86 @@ func finalAnswerCorrectionReasonForFinding(finding CodingHarnessFinding) string 
 		return "validation_disclosure"
 	default:
 		return ""
+	}
+}
+
+// humanizeFinalAnswerCorrectionReason maps a final-answer-correction disclosure
+// reason id to plain, locale-aware language for the user-facing line. The raw id
+// stays in machine fields; this only feeds the human sentence.
+func humanizeFinalAnswerCorrectionReason(value string, korean bool) string {
+	switch strings.TrimSpace(value) {
+	case "changed_file_disclosure":
+		if korean {
+			return "변경된 파일"
+		}
+		return "changed files"
+	case "review_self_review_disclosure":
+		if korean {
+			return "리뷰 결과"
+		}
+		return "review results"
+	case "validation_disclosure":
+		if korean {
+			return "검증 결과"
+		}
+		return "validation results"
+	case "remaining_risk_disclosure":
+		if korean {
+			return "남은 위험"
+		}
+		return "remaining risk"
+	case "document_artifact_disclosure":
+		if korean {
+			return "생성한 문서"
+		}
+		return "generated document"
+	default:
+		return humanizeEnumFallback(value)
+	}
+}
+
+// finalAnswerCorrectionHumanLine renders the final-answer-correction state as a
+// plain sentence (e.g. "Final answer is missing: changed files, remaining risk").
+// It returns "" when there is nothing meaningful to surface so callers can omit
+// the line. The raw key=value form stays available via finalAnswerCorrectionStatusLine
+// for the detail/debug view.
+func finalAnswerCorrectionHumanLine(visibility *FinalAnswerCorrectionVisibility, korean bool) string {
+	if visibility == nil {
+		return ""
+	}
+	copyVisibility := *visibility
+	copyVisibility.Normalize()
+	if !copyVisibility.Required && !copyVisibility.Corrected && !copyVisibility.Rejected {
+		return ""
+	}
+	missing := []string{}
+	for _, reason := range copyVisibility.Reasons {
+		if phrase := humanizeFinalAnswerCorrectionReason(reason, korean); strings.TrimSpace(phrase) != "" {
+			missing = append(missing, phrase)
+		}
+	}
+	switch {
+	case copyVisibility.Corrected:
+		if korean {
+			return "최종 답변에 빠졌던 항목을 보완했습니다."
+		}
+		return "The final answer was corrected to include the required disclosures."
+	case copyVisibility.Rejected:
+		if korean {
+			return "최종 답변 보완이 받아들여지지 않았습니다."
+		}
+		return "The final-answer correction was rejected."
+	default:
+		if len(missing) == 0 {
+			if korean {
+				return "최종 답변에 필요한 설명이 빠져 있습니다."
+			}
+			return "The final answer is missing required disclosures."
+		}
+		if korean {
+			return "최종 답변에 빠진 항목: " + strings.Join(missing, ", ")
+		}
+		return "Final answer is missing: " + strings.Join(missing, ", ")
 	}
 }
 

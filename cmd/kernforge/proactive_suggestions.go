@@ -550,30 +550,102 @@ func renderSuggestionList(snapshot SituationSnapshot, mem *SuggestionMemory, lim
 	return strings.Join(lines, "\n")
 }
 
-func renderSituationSnapshot(snapshot SituationSnapshot) string {
+func renderSituationSnapshot(cfg Config, snapshot SituationSnapshot) string {
+	korean := localePrefersKorean(cfg)
 	lines := []string{
-		"Current situation:",
-		"- goal: " + valueOrDefault(snapshot.CurrentGoal, "unset"),
-		"- phase: " + valueOrDefault(snapshot.WorkflowPhase, "idle"),
-		"- risk: " + valueOrDefault(snapshot.RiskLevel, "unknown"),
-		"- confidence: " + valueOrDefault(snapshot.Confidence, "unknown"),
+		localizedText(cfg, "Current situation:", "현재 상황:"),
+		localizedText(cfg, "- goal: ", "- 목표: ") + valueOrDefault(snapshot.CurrentGoal, localizedText(cfg, "unset", "미설정")),
+		localizedText(cfg, "- phase: ", "- 단계: ") + humanizeSituationPhase(snapshot.WorkflowPhase, korean),
+		localizedText(cfg, "- risk: ", "- 위험도: ") + humanizeSituationRisk(snapshot.RiskLevel, korean),
+		localizedText(cfg, "- confidence: ", "- 신뢰도: ") + humanizeSituationConfidence(snapshot.Confidence, korean),
 	}
 	if strings.TrimSpace(snapshot.BlockingIssue) != "" {
-		lines = append(lines, "- blocking issue: "+compactPromptSection(snapshot.BlockingIssue, 220))
+		lines = append(lines, localizedText(cfg, "- blocking issue: ", "- 막힌 문제: ")+compactPromptSection(snapshot.BlockingIssue, 220))
 	}
 	if len(snapshot.ChangedPaths) > 0 {
-		lines = append(lines, "- changed paths: "+strings.Join(limitStrings(snapshot.ChangedPaths, 8), ", "))
+		lines = append(lines, localizedText(cfg, "- changed paths: ", "- 변경된 파일: ")+strings.Join(limitStrings(snapshot.ChangedPaths, 8), ", "))
 	}
 	if len(snapshot.MissingVerification) > 0 {
-		lines = append(lines, "- missing verification: "+strings.Join(snapshot.MissingVerification, "; "))
+		lines = append(lines, localizedText(cfg, "- missing verification: ", "- 누락된 검증: ")+strings.Join(snapshot.MissingVerification, "; "))
 	}
 	if len(snapshot.StaleDocs) > 0 {
-		lines = append(lines, "- stale docs: "+strings.Join(limitStrings(snapshot.StaleDocs, 5), "; "))
+		lines = append(lines, localizedText(cfg, "- stale docs: ", "- 오래된 문서: ")+strings.Join(limitStrings(snapshot.StaleDocs, 5), "; "))
 	}
 	if len(snapshot.FuzzGaps) > 0 {
-		lines = append(lines, "- fuzz gaps: "+strings.Join(limitStrings(snapshot.FuzzGaps, 5), "; "))
+		lines = append(lines, localizedText(cfg, "- fuzz gaps: ", "- 퍼즈 테스트 공백: ")+strings.Join(limitStrings(snapshot.FuzzGaps, 5), "; "))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// humanizeSituationPhase maps a workflow phase (which may be a review lifecycle
+// phase, a command name, or "idle") to plain language.
+func humanizeSituationPhase(value string, korean bool) string {
+	phase := strings.TrimSpace(value)
+	if phase == "" {
+		if korean {
+			return "대기 중"
+		}
+		return "idle"
+	}
+	// Reuse the lifecycle mapping when the phase is a known lifecycle value.
+	if mapped := humanizeLifecycleKind(phase, korean); mapped != humanizeEnumFallback(phase) {
+		return mapped
+	}
+	return humanizeEnumFallback(phase)
+}
+
+func humanizeSituationRisk(value string, korean bool) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "high":
+		if korean {
+			return "높음"
+		}
+		return "high"
+	case "medium":
+		if korean {
+			return "보통"
+		}
+		return "medium"
+	case "low":
+		if korean {
+			return "낮음"
+		}
+		return "low"
+	case "", "unknown":
+		if korean {
+			return "알 수 없음"
+		}
+		return "unknown"
+	default:
+		return humanizeEnumFallback(value)
+	}
+}
+
+func humanizeSituationConfidence(value string, korean bool) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "high":
+		if korean {
+			return "높음"
+		}
+		return "high"
+	case "medium":
+		if korean {
+			return "보통"
+		}
+		return "medium"
+	case "low":
+		if korean {
+			return "낮음"
+		}
+		return "low"
+	case "", "unknown":
+		if korean {
+			return "알 수 없음"
+		}
+		return "unknown"
+	default:
+		return humanizeEnumFallback(value)
+	}
 }
 
 func suggestionMemoryStatus(item Suggestion, mem *SuggestionMemory) string {
@@ -598,7 +670,7 @@ func (rt *runtimeState) handleSuggestCommand(args string) error {
 		snapshot := BuildSituationSnapshot(rt.proactiveSources())
 		rt.syncSuggestionCandidatesToTaskGraph(snapshot.SuggestionCandidates, mem)
 		fmt.Fprintln(rt.writer, rt.ui.section("Situation"))
-		fmt.Fprintln(rt.writer, renderSituationSnapshot(snapshot))
+		fmt.Fprintln(rt.writer, renderSituationSnapshot(rt.cfg, snapshot))
 		fmt.Fprintln(rt.writer)
 		fmt.Fprintln(rt.writer, rt.ui.section("Suggestions"))
 		fmt.Fprintln(rt.writer, renderSuggestionList(snapshot, mem, 8))
@@ -699,7 +771,7 @@ func (rt *runtimeState) handleSuggestDashboardHTMLCommand(args string) error {
 		return err
 	}
 	path := filepath.Join(reportsDir, "suggestions-"+time.Now().Format("20060102-150405")+".html")
-	if err := os.WriteFile(path, []byte(renderSuggestionDashboardHTML(snapshot, mem)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(renderSuggestionDashboardHTML(rt.cfg, snapshot, mem)), 0o644); err != nil {
 		return err
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine("Suggestion dashboard written: "+path))
@@ -711,7 +783,7 @@ func (rt *runtimeState) handleSuggestDashboardHTMLCommand(args string) error {
 	return nil
 }
 
-func renderSuggestionDashboardHTML(snapshot SituationSnapshot, mem *SuggestionMemory) string {
+func renderSuggestionDashboardHTML(cfg Config, snapshot SituationSnapshot, mem *SuggestionMemory) string {
 	mode := SuggestionModeSuggest
 	if mem != nil {
 		mode = mem.modeOrDefault()
@@ -760,7 +832,7 @@ pre { white-space: pre-wrap; background: #111113; border: 1px solid #3f3f46; bor
 `,
 		htmlEscape(mode),
 		htmlEscape(snapshot.CreatedAt.Format(time.RFC3339)),
-		htmlEscape(renderSituationSnapshot(snapshot)),
+		htmlEscape(renderSituationSnapshot(cfg, snapshot)),
 		renderSuggestionSignalCardsHTML(snapshot),
 		renderSuggestionCardsHTML(snapshot, mem),
 	)

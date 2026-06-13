@@ -1933,9 +1933,49 @@ func compactThinkingStatus(cfg Config, text string) string {
 		return localizedText(cfg, "Verification finished.", "검증 완료.")
 	case strings.Contains(lower, "waiting for the model to summarize"):
 		return localizedText(cfg, "Finalizing reply...", "답변 정리 중 ...")
+	case strings.HasPrefix(lower, "tool request is ready:") ||
+		strings.HasPrefix(trimmed, "도구 요청이 준비되었습니다:"):
+		// Keep the trailing tool identifier; drop the long argument preview that
+		// would otherwise be cut mid-token.
+		if tool := compactThinkingTrailingIdentifier(trimmed); tool != "" {
+			return localizedText(cfg, "Tool request ready: ", "도구 요청 준비: ") + tool
+		}
+		return localizedText(cfg, "Tool request ready.", "도구 요청 준비.")
+	case strings.HasPrefix(lower, "server used ") ||
+		strings.Contains(trimmed, "서버가 요청 모델"):
+		// Model reroute: keep the trailing model name intact via boundary-aware
+		// truncation rather than cutting the sentence mid-name.
+		return truncateDisplayTextAtBoundary(trimmed, 72)
+	case strings.HasPrefix(lower, "a prompt section could not be built") ||
+		strings.HasPrefix(trimmed, "프롬프트 일부를 만들지 못해"):
+		return localizedText(cfg, "Used a safe default for a prompt section.", "프롬프트 일부를 기본값으로 대체했습니다.")
 	}
 
-	return truncateDisplayText(trimmed, 72)
+	// Fall back to a word/token-boundary aware truncation so the live footer does
+	// not cut in the middle of a word.
+	return truncateDisplayTextAtBoundary(trimmed, 72)
+}
+
+// compactThinkingTrailingIdentifier extracts the most useful trailing identifier
+// from a progress message (the tool name or model id) so the compact footer can
+// keep it instead of truncating mid-token. It pulls the first token after the
+// last ":" separator, stripping any trailing argument/parenthetical and
+// punctuation.
+func compactThinkingTrailingIdentifier(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if idx := strings.LastIndex(trimmed, ":"); idx >= 0 && idx+1 < len(trimmed) {
+		trimmed = strings.TrimSpace(trimmed[idx+1:])
+	}
+	// Drop an argument preview in parentheses and trailing punctuation.
+	if paren := strings.IndexByte(trimmed, '('); paren >= 0 {
+		trimmed = strings.TrimSpace(trimmed[:paren])
+	}
+	// Keep only the first whitespace-separated token, which is the identifier.
+	if fields := strings.Fields(trimmed); len(fields) > 0 {
+		trimmed = fields[0]
+	}
+	trimmed = strings.Trim(trimmed, " .,);:")
+	return truncateDisplayTextAtBoundary(trimmed, 56)
 }
 
 func compactModelAnswerWaitStatus(cfg Config, text string, lower string) string {
@@ -6810,7 +6850,7 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 	items := []statusSummaryItem{
 		{Label: "cwd", Value: statusOverviewCWD(rt), Tone: "info"},
 		{Label: "provider", Value: statusOverviewProvider(rt), Tone: "info"},
-		{Label: "gate", Value: statusOverviewGateLabel(ledger), Tone: statusOverviewGateTone(ledger.Status)},
+		{Label: "gate", Value: statusOverviewGateLabel(rt.cfg, ledger), Tone: statusOverviewGateTone(ledger.Status)},
 		{Label: "perm", Value: statusOverviewPermission(rt), Tone: statusOverviewPermissionTone(rt)},
 		{Label: "progress", Value: configProgressDisplay(rt.cfg), Tone: "info"},
 		{Label: "mcp", Value: statusOverviewMCP(rt), Tone: statusOverviewMCPTone(rt)},
@@ -6835,16 +6875,25 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 	}
 }
 
-func statusOverviewGateLabel(ledger RuntimeGateLedger) string {
+func statusOverviewGateLabel(cfg Config, ledger RuntimeGateLedger) string {
+	korean := localePrefersKorean(cfg)
 	if runtimeGateLedgerEmpty(ledger) {
-		return "unknown"
+		return humanizeGateStatus("unknown", korean)
 	}
 	ledger.Normalize()
-	label := valueOrDefault(ledger.Status, runtimeGateStatusReady)
+	label := humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), korean)
 	if len(ledger.Blockers) > 0 {
-		label += fmt.Sprintf("/%d blockers", len(ledger.Blockers))
+		if korean {
+			label += fmt.Sprintf(" (차단 %d)", len(ledger.Blockers))
+		} else {
+			label += fmt.Sprintf(" (%d blockers)", len(ledger.Blockers))
+		}
 	} else if len(ledger.Warnings) > 0 {
-		label += fmt.Sprintf("/%d warnings", len(ledger.Warnings))
+		if korean {
+			label += fmt.Sprintf(" (경고 %d)", len(ledger.Warnings))
+		} else {
+			label += fmt.Sprintf(" (%d warnings)", len(ledger.Warnings))
+		}
 	}
 	return label
 }
@@ -7061,32 +7110,31 @@ func statusOverviewWarningCount(rt *runtimeState) int {
 	return len(rt.skillWarns) + len(rt.mcpWarns) + len(rt.hookWarns)
 }
 
+// statusOverviewRequestRuntime returns the always-on footer note for the
+// request runtime. It deliberately omits the raw shadow-experiment telemetry
+// ("12 obs/3 semdiff/1 risky"): the numeric breakdown lives in
+// `/status detail` (printRequestRuntimeStatus). The footer only surfaces a
+// short, localized note when something actually diverged and warrants
+// attention; otherwise it stays empty so the footer is not cluttered.
 func statusOverviewRequestRuntime(rt *runtimeState) string {
 	if rt == nil {
 		return ""
 	}
-	runtimeCfg := rt.cfg.RequestRuntime
-	normalizeRequestRuntimeConfig(&runtimeCfg)
 	var stats *RequestRuntimeShadowStats
 	if rt.session != nil {
 		stats = rt.session.RequestRuntimeShadowStats
 	}
-	if stats != nil && stats.Total > 0 {
-		if stats.SemanticObserved > 0 {
-			if stats.SemanticRiskyDiverged > 0 {
-				return fmt.Sprintf("%d obs/%d semdiff/%d risky", stats.Total, stats.SemanticDiverged, stats.SemanticRiskyDiverged)
-			}
-			return fmt.Sprintf("%d obs/%d semdiff", stats.Total, stats.SemanticDiverged)
-		}
-		return fmt.Sprintf("%d obs/%d diff", stats.Total, stats.Diverged)
+	if stats == nil {
+		return ""
 	}
-	if runtimeCfg.SemanticClassifier.Mode != RequestSemanticClassifierModeDisabled {
-		return "semantic:" + runtimeCfg.SemanticClassifier.Mode
+	concerns := stats.SemanticRiskyDiverged + stats.RuntimeDiverged
+	if concerns <= 0 {
+		return ""
 	}
-	if runtimeCfg.Mode != RequestRuntimeModeDisabled {
-		return runtimeCfg.Mode
+	if localePrefersKorean(rt.cfg) {
+		return fmt.Sprintf("주의 %d건 (자세히: /status detail)", concerns)
 	}
-	return ""
+	return fmt.Sprintf("%d to review (see /status detail)", concerns)
 }
 
 func statusOverviewRequestRuntimeTone(rt *runtimeState) string {
@@ -9698,8 +9746,13 @@ func (rt *runtimeState) handleAnalyzeProjectCommand(args string) error {
 			initialErr := err
 			recoveryCfg, recoveryNote, ok := analysisProviderFailureRecoveryConfig(analyzer.analysisCfg, previewSnapshot)
 			if ok {
-				rt.printPersistentWhileThinking(rt.ui.warnLine("Project analysis hit a model/provider timeout or transient error; retrying once with smaller shards."))
-				rt.printPersistentWhileThinking(rt.ui.statusKV("adaptive_retry_shards", recoveryNote))
+				if localePrefersKorean(rt.cfg) {
+					rt.printPersistentWhileThinking(rt.ui.warnLine("프로젝트 분석이 모델/제공자 지연 또는 일시 오류로 실패해, 더 작은 단위로 한 번 다시 시도합니다."))
+				} else {
+					rt.printPersistentWhileThinking(rt.ui.warnLine("Project analysis hit a model or provider timeout; retrying once in smaller pieces."))
+				}
+				// Keep the raw shard tuning blob in the debug stream only.
+				analysisDebug("adaptive_retry_shards: " + recoveryNote)
 				analyzer = newProjectAnalyzer(rt.cfg, rt.agent.Client, analysisWorkspace, analysisStatus, analysisDebug)
 				analyzer.confirmModelReview = rt.confirmImplicitModelReview
 				analyzer.analysisCfg = recoveryCfg

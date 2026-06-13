@@ -1208,7 +1208,7 @@ func TestRuntimeGateStatusOutputShowsRecoveryCommand(t *testing.T) {
 		},
 	}
 
-	rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+	rt.printRuntimeGateStatusDetail(runtimeGateActionFinalAnswer)
 
 	text := output.String()
 	for _, want := range []string{"Runtime Gate", "runtime_gate", runtimeGateStatusNeedsReview, "review_freshness", "missing", "next_command", "/review"} {
@@ -1297,7 +1297,7 @@ func TestRuntimeGateStatusShowsReviewDecisionObservability(t *testing.T) {
 		workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+	rt.printRuntimeGateStatusDetail(runtimeGateActionFinalAnswer)
 
 	text := output.String()
 	for _, want := range []string{

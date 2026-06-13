@@ -1013,7 +1013,12 @@ func (rt *runtimeState) simulateLiveProviderSoakReload(root string, report *Live
 	mcpStatus := server.buildMCPStatusPayload(context.Background(), map[string]any{"detail": true})
 	mcpReview := liveProviderSoakMCPReviewPayload(*report, ledger)
 	markdown := renderLiveProviderDrillMarkdown(report)
-	verification.StatusCompact = liveProviderSoakSurfaceHasCoreState(compactStatus)
+	// The runtime gate status leads with the human outcome in compact mode and
+	// keeps the raw soak/ledger codenames (live_provider_drill, stale_context,
+	// final_answer_correction*) behind /status detail. Reload survival is therefore
+	// verified against the detail surface, which is where that recovered state is
+	// now rendered. The compact surface still has to render a non-empty gate line.
+	verification.StatusCompact = strings.TrimSpace(compactStatus) != "" && liveProviderSoakSurfaceHasCoreState(detailStatus)
 	verification.StatusDetail = verification.StatusCompact && strings.Contains(detailStatus, "final_answer_correction_contract")
 	verification.MCPStatusJSON = liveProviderSoakPayloadHasCoreState(mcpStatus)
 	verification.MCPReviewJSON = liveProviderSoakPayloadHasCoreState(mcpReview)

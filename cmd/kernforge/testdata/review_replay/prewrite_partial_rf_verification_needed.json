@@ -46,7 +46,7 @@
     }
   ],
   "expected_progress_contains": [
-    "Gate action: diff_preview_allowed"
+    "Gate action: diff preview allowed"
   ],
   "expected_markdown_contains": [
     "Obligation Ledger",

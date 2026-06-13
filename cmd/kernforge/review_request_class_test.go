@@ -282,7 +282,7 @@ func TestReviewRunPersistsRequestClassLifecycleAndMCPResponse(t *testing.T) {
 		t.Fatalf("expected runtime gate request class lifecycle, got %#v", run.RuntimeGateLedger)
 	}
 	markdown := renderReviewRunMarkdown(run)
-	for _, want := range []string{"Request class: `review_only`", "Lifecycle kind: `review_only`", "Request Lifecycle", "lifecycle_kind", "route_mode", "classification_confidence", "final_answer_contract"} {
+	for _, want := range []string{"Request type: review only (no edits)", "request_class (raw): `review_only`", "lifecycle_kind (raw): `review_only`", "Request Lifecycle", "lifecycle_kind", "route_mode", "classification_confidence", "final_answer_contract"} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("expected markdown to contain %q, got:\n%s", want, markdown)
 		}

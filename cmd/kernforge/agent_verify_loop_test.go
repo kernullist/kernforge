@@ -6378,6 +6378,7 @@ func TestCompleteModelTurnRetriesOnceOnTimeout(t *testing.T) {
 			MaxRequestRetries:   1,
 			RequestRetryDelayMs: 1,
 			RequestTimeoutSecs:  1,
+			AutoLocale:          boolPtr(false),
 		},
 		Client: provider,
 		EmitProgress: func(text string) {
@@ -6478,6 +6479,7 @@ func TestCompleteModelTurnRetriesTransientProviderErrors(t *testing.T) {
 			MaxRequestRetries:   2,
 			RequestRetryDelayMs: 1,
 			RequestTimeoutSecs:  1,
+			AutoLocale:          boolPtr(false),
 		},
 		Client: provider,
 		EmitProgress: func(text string) {

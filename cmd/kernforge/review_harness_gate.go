@@ -2160,17 +2160,17 @@ func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 		switch {
 		case len(run.Gate.BlockingFindings) > 0:
 			if korean {
-				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 finding %d개가 남았습니다.", len(run.Gate.BlockingFindings))
+				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 항목 %d개가 남았습니다.", len(run.Gate.BlockingFindings))
 			}
 			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d blocking finding(s).", len(run.Gate.BlockingFindings))
 		case len(run.Gate.WarningFindings) > 0:
 			if korean {
-				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 경고 finding %d개가 남았고 차단은 없습니다.", len(run.Gate.WarningFindings))
+				return fmt.Sprintf("모델 리뷰는 생략되었습니다. 결정적 검사에서 경고 항목 %d개가 남았고 차단은 없습니다.", len(run.Gate.WarningFindings))
 			}
 			return fmt.Sprintf("Model review was skipped. Deterministic checks found %d warning finding(s) and no blockers.", len(run.Gate.WarningFindings))
 		default:
 			if korean {
-				return "모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 finding은 없습니다."
+				return "모델 리뷰는 생략되었습니다. 결정적 검사에서 차단 항목은 없습니다."
 			}
 			return "Model review was skipped. Deterministic checks found no blocking findings."
 		}
@@ -2178,17 +2178,24 @@ func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 	switch run.Gate.Verdict {
 	case reviewVerdictApproved:
 		if korean {
-			return "차단 finding 없이 리뷰가 승인되었습니다."
+			return "차단 항목 없이 리뷰가 승인되었습니다."
 		}
 		return "Review approved with no blocking findings."
 	case reviewVerdictApprovedWithWarnings:
+		if len(run.Gate.WarningFindings) == 0 {
+			driver := reviewApprovedWithWarningsDriverText(run, korean)
+			if korean {
+				return "차단 항목 없이 승인됨 - " + driver
+			}
+			return "Approved with no blocking findings - " + driver
+		}
 		if korean {
-			return fmt.Sprintf("리뷰가 경고와 함께 승인되었습니다: 경고 finding %d개.", len(run.Gate.WarningFindings))
+			return fmt.Sprintf("리뷰가 경고와 함께 승인되었습니다: 경고 항목 %d개.", len(run.Gate.WarningFindings))
 		}
 		return fmt.Sprintf("Review approved with warnings: %d warning finding(s).", len(run.Gate.WarningFindings))
 	case reviewVerdictNeedsRevision:
 		if korean {
-			return fmt.Sprintf("리뷰가 수정을 요구합니다: 차단 finding %d개.", len(run.Gate.BlockingFindings))
+			return fmt.Sprintf("리뷰가 수정을 요구합니다: 차단 항목 %d개.", len(run.Gate.BlockingFindings))
 		}
 		return fmt.Sprintf("Review needs revision: %d blocking finding(s).", len(run.Gate.BlockingFindings))
 	case reviewVerdictInsufficientEvidence:
@@ -2202,6 +2209,31 @@ func reviewResultSummaryForLanguage(run ReviewRun, korean bool) string {
 		}
 		return "Review is blocked."
 	}
+}
+
+// reviewApprovedWithWarningsDriverText explains why a run is approved_with_warnings
+// when there are zero warning findings. In that case the verdict is driven by
+// degraded reviewer evidence (for example the --no-model / skipped-model path),
+// not by any concrete finding, so describe the real reason instead of printing a
+// self-contradictory "0 warning finding(s)" count.
+func reviewApprovedWithWarningsDriverText(run ReviewRun, korean bool) string {
+	reason := strings.TrimSpace(run.Result.DegradedReason)
+	if reason == "" && len(run.Gate.QualityNotes) > 0 {
+		reason = strings.TrimSpace(run.Gate.QualityNotes[0])
+	}
+	if reason == "" {
+		reason = strings.TrimSpace(run.Gate.Reason)
+	}
+	if korean {
+		if reason != "" {
+			return "다만 모델 리뷰가 생략되어 리뷰어 근거가 제한적입니다 (" + reason + ")."
+		}
+		return "다만 모델 리뷰가 생략되어 리뷰어 근거가 제한적입니다."
+	}
+	if reason != "" {
+		return "reviewer evidence is limited because the model review was skipped (" + reason + ")."
+	}
+	return "reviewer evidence is limited because the model review was skipped."
 }
 
 func reviewKeyRisks(findings []ReviewFinding) []string {

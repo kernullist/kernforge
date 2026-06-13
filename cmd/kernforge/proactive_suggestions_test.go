@@ -210,7 +210,7 @@ func TestSuggestionDashboardHTMLIntegratesRelatedDashboards(t *testing.T) {
 		},
 	}
 
-	html := renderSuggestionDashboardHTML(snapshot, mem)
+	html := renderSuggestionDashboardHTML(Config{}, snapshot, mem)
 	for _, want := range []string{
 		"Integrated Signals",
 		"Dashboard links",

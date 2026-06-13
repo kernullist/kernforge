@@ -45,7 +45,7 @@
     }
   ],
   "expected_progress_contains": [
-    "Gate action: user_decision_required"
+    "Gate action: user decision required"
   ],
   "expected_markdown_contains": [
     "Obligation Ledger",

@@ -37,7 +37,7 @@
     }
   ],
   "expected_progress_contains": [
-    "Gate action: user_decision_required",
+    "Gate action: user decision required",
     "a required review route failed or returned weak output"
   ],
   "expected_reply_contains": [

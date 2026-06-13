@@ -968,18 +968,24 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 			"expected_result":       run.Gate.NextCommands[0].ExpectedResult,
 		}
 	}
-	observability := buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
 	compactStatus := buildReviewCompactStatus(&run, &run.RuntimeGateLedger, nil)
 	blockerSummary := buildReviewBlockerSummary(&run, &run.RuntimeGateLedger, nil)
 	lifecycleTimeline := reviewLifecycleTimelineForRun(&run, nil, &run.RuntimeGateLedger, nil)
 	lifecycle := reviewLifecycleForMCP(run.Lifecycle)
 	routeQuality := reviewRouteQualityForRun(run)
 	finalAnswerContract := reviewFinalAnswerContractStatusForRun(&run, nil, nil, "")
-	crossReviewTriage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
 	staleContext := buildStaleContextSummary(nil, &run, &run.RuntimeGateLedger, nil)
 	if run.RuntimeGateLedger.StaleContextSummary != nil {
 		staleContext = run.RuntimeGateLedger.StaleContextSummary
 	}
+	observability := buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
+	crossReviewTriage := normalizedCrossReviewTriageLedger(run.CrossReviewTriage)
+	// Lead the response body with the same human-readable summary the CLI compact
+	// view shows (verdict, finding counts, key findings, report path, next
+	// command) so an MCP client renders the outcome first instead of parsing the
+	// raw struct dump. The structured JSON follows unchanged so tools that depend
+	// on these field names keep working.
+	human := renderReviewCLIResultCompact(Config{AutoLocale: boolPtr(false)}, run)
 	payload := map[string]any{
 		"kernforge_version":            run.KernforgeVersion,
 		"kernforge_build":              run.KernforgeBuild,
@@ -1037,7 +1043,16 @@ func renderReviewMCPResponseWithLatestFreshness(run ReviewRun, latestFreshness R
 		"follow_up_results":            run.NextCommandResults,
 	}
 	data, _ := json.MarshalIndent(payload, "", "  ")
-	return mcpLimitText("KernForge review\n\n```json\n"+string(data)+"\n```", maxChars)
+	var b strings.Builder
+	b.WriteString("KernForge review\n\n")
+	if strings.TrimSpace(human) != "" {
+		b.WriteString(human)
+		b.WriteString("\n\n")
+	}
+	b.WriteString("```json\n")
+	b.Write(data)
+	b.WriteString("\n```")
+	return mcpLimitText(b.String(), maxChars)
 }
 
 func splitCommandFields(args string) []string {

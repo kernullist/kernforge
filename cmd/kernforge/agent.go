@@ -1522,8 +1522,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				if !readiness.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
+						// Keep the internal codename only in the runtime transition
+						// (debug/log) field; lead the user-facing error with the
+						// localized cause plus the readiness guidance.
 						markRuntimeBlocked("final_gate_unresolved_intervention")
-						return "", fmt.Errorf("final gate blocked by unresolved runtime intervention: %s", readiness.Reason)
+						return "", finalReadinessBlockedUserError(a.Config, readiness)
 					}
 					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
@@ -1704,8 +1707,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				a.observeRequestRuntimeShadow(requestEnvelope, turnRuntime, finalGateDecision, unresolvedVerification, finalAnswerOnlyCorrection, verificationOutOfScopeFinalOnly, automaticVerificationSkippedFinalOnly, latestUserExplicitWebResearch, localCodeToolPolicyForTurn, reply, finalGateContext)
 				if requestRuntimeV2EnabledForEnvelope(a.Config, requestEnvelope) && !finalGateDecision.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 {
+						// Keep the internal codename only in the runtime transition
+						// (debug/log) field; lead the user-facing error with the
+						// plain reason plus the guidance the decision carries.
 						markRuntimeBlocked("request_runtime_v2_final_gate")
-						return "", fmt.Errorf("request runtime v2 final gate blocked final answer: %s", strings.Join(finalGateDecision.Reasons, "; "))
+						return "", finalGateBlockedUserError(a.Config, finalGateDecision)
 					}
 					turnRuntime.Counters.FinalAnswerNudges++
 					a.discardRecentFinalAnswerCandidate(reply)
@@ -4839,7 +4845,7 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 		delay := providerRetryDelay(baseDelay, attempt)
 		a.emitProgressEvent(ProgressEvent{
 			Kind:    progressKindProviderRetry,
-			Message: modelRetryProgressMessage(err, attempt, totalAttempts, delay),
+			Message: modelRetryProgressMessage(a.Config, err, attempt, totalAttempts, delay),
 			Model:   req.Model,
 			Status:  firstNonEmptyLine(err.Error()),
 		})
@@ -4856,16 +4862,26 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 	return ChatResponse{}, context.DeadlineExceeded
 }
 
-func modelRetryProgressMessage(err error, attempt int, totalAttempts int, delay time.Duration) string {
-	base := "Transient provider error during model request."
+func modelRetryProgressMessage(cfg Config, err error, attempt int, totalAttempts int, delay time.Duration) string {
+	korean := localePrefersKorean(cfg)
+	base := localizedText(cfg, "Transient provider error during model request.", "모델 요청 중 일시적인 제공자 오류가 발생했습니다.")
 	if errors.Is(err, context.DeadlineExceeded) {
-		base = "Model request timed out."
+		base = localizedText(cfg, "Model request timed out.", "모델 요청이 시간 초과되었습니다.")
 	}
 	if totalAttempts == 2 && attempt == 0 {
+		if korean {
+			return base + " 한 번 더 시도합니다..."
+		}
 		return base + " Retrying once..."
 	}
 	if delay <= 0 {
+		if korean {
+			return fmt.Sprintf("%s 다시 시도합니다(%d/%d번째)...", base, attempt+2, totalAttempts)
+		}
 		return fmt.Sprintf("%s Retrying (attempt %d/%d)...", base, attempt+2, totalAttempts)
+	}
+	if korean {
+		return fmt.Sprintf("%s %s 후 다시 시도합니다(%d/%d번째)...", base, delay.Round(time.Second), attempt+2, totalAttempts)
 	}
 	return fmt.Sprintf("%s Retrying in %s (attempt %d/%d)...", base, delay.Round(time.Second), attempt+2, totalAttempts)
 }

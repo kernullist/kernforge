@@ -893,14 +893,14 @@ func (a *Agent) formatNonBlockingPreFixReviewReply() string {
 	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
 	if strings.TrimSpace(verdict) != "" {
 		if korean {
-			fmt.Fprintf(&b, "\n\n리뷰 결과: `%s`", verdict)
+			fmt.Fprintf(&b, "\n\n리뷰 결과: %s", humanizeReviewVerdict(verdict, true))
 		} else {
-			fmt.Fprintf(&b, "\n\nReview verdict: `%s`", verdict)
+			fmt.Fprintf(&b, "\n\nReview verdict: %s", humanizeReviewVerdict(verdict, false))
 		}
 	}
 	if len(run.Gate.WarningFindings) > 0 {
 		if korean {
-			fmt.Fprintf(&b, "\n경고 finding: %d개", len(run.Gate.WarningFindings))
+			fmt.Fprintf(&b, "\n경고 항목: %d개", len(run.Gate.WarningFindings))
 		} else {
 			fmt.Fprintf(&b, "\nWarning findings: %d", len(run.Gate.WarningFindings))
 		}

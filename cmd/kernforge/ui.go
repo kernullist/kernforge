@@ -1022,6 +1022,37 @@ func truncateDisplayText(text string, limit int) string {
 	return prefix + "..."
 }
 
+// truncateDisplayTextAtBoundary truncates like truncateDisplayText but prefers a
+// word/token boundary so it does not cut in the middle of a word. If a sensible
+// boundary (space or one of - _ / . , ( :) exists in the latter part of the
+// kept prefix, the cut is made there; otherwise it falls back to the plain
+// truncation. The retained prefix always keeps at least half the budget so a
+// single long token is not collapsed to almost nothing.
+func truncateDisplayTextAtBoundary(text string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if visibleLen(text) <= limit {
+		return text
+	}
+	if limit <= 3 {
+		return truncateDisplayTextWithoutSuffix(text, limit)
+	}
+	prefix := truncateDisplayTextWithoutSuffix(text, limit-3)
+	trimmedPrefix := strings.TrimRight(prefix, " ")
+	if cut := strings.LastIndexAny(trimmedPrefix, " \t-_/.,(:"); cut > 0 && cut >= len(trimmedPrefix)/2 {
+		candidate := strings.TrimRight(strings.TrimSpace(trimmedPrefix[:cut+1]), " \t-_/.,(:")
+		if candidate != "" {
+			return candidate + "..."
+		}
+	}
+	final := strings.TrimSpace(trimmedPrefix)
+	if final == "" {
+		return "..."
+	}
+	return final + "..."
+}
+
 func truncateDisplayTextMiddle(text string, limit int) string {
 	trimmed := strings.TrimSpace(text)
 	if limit <= 0 || trimmed == "" {

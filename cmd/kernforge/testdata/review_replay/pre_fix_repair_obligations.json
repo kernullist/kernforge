@@ -50,7 +50,7 @@
   ],
   "expected_progress_contains": [
     "Prefix match can select the wrong volume",
-    "Gate action: repair_required"
+    "Gate action: repair required"
   ],
   "expected_markdown_contains": [
     "Repair Prompt",

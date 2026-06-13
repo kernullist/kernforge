@@ -3120,8 +3120,17 @@ func TestLocalReviewRecoversStructuredResultFromReasoningContent(t *testing.T) {
 		t.Fatalf("expected raw provider response artifact: %v", err)
 	}
 	rendered := renderReviewCLIResult(cfg, run)
-	if !strings.Contains(rendered, "provider_raw=") {
-		t.Fatalf("expected CLI review output to expose provider raw artifact path, got %q", rendered)
+	// The raw provider artifact path is a machine/debug diagnostic, not a
+	// user-facing outcome, so it no longer leaks into the human reviewer-route
+	// line (the path stays in the machine field RawProviderResponsePath and the
+	// on-disk artifact, both verified above). The user-facing line instead shows
+	// a plain reviewer-route phrase. Guard both: the codename-style key=value is
+	// gone, and the human phrase is present.
+	if strings.Contains(rendered, "provider_raw=") {
+		t.Fatalf("CLI review output must not leak the raw provider artifact path into the user line, got %q", rendered)
+	}
+	if !strings.Contains(rendered, "Reviewer route") {
+		t.Fatalf("expected CLI review output to show the reviewer route summary, got %q", rendered)
 	}
 	if indexStringContaining(progress, "hidden reasoning") < 0 && indexStringContaining(progress, "visible review result") < 0 {
 		t.Fatalf("expected reasoning-channel retry progress, got %#v", progress)
@@ -11930,7 +11939,7 @@ func TestPrintReviewRunNeedsRevisionUsesWarnAndKoreanLabels(t *testing.T) {
 	if strings.Contains(rendered, "ERROR") {
 		t.Fatalf("needs_revision review should not be rendered as ERROR, got %q", rendered)
 	}
-	for _, needle := range []string{"WARN", "리뷰 review-1: needs_revision", "- 대상: selection", "수정: 읽기 전에 버퍼 크기를 검증하세요."} {
+	for _, needle := range []string{"WARN", "리뷰 review-1: 수정 필요", "- 대상: 선택 영역", "수정: 읽기 전에 버퍼 크기를 검증하세요."} {
 		if !strings.Contains(rendered, needle) {
 			t.Fatalf("expected review output to contain %q, got %q", needle, rendered)
 		}
@@ -11979,7 +11988,7 @@ func TestPrintReviewRunApprovedWithWarningsShowsWarningFindings(t *testing.T) {
 	}
 	for _, needle := range []string{
 		"WARN",
-		"리뷰 review-1: approved_with_warnings",
+		"리뷰 review-1: 경고와 함께 승인",
 		"경고:",
 		"[RF-001] medium: 상태 복구 경로가 불명확함",
 		"근거: 실패 분기에서 복구 상태가 기록되지 않습니다.",
@@ -12083,8 +12092,8 @@ func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
 		t.Fatalf("compact output should show duplicate next command once, got:\n%s", rendered)
 	}
 	for _, want := range []string{
-		"리뷰 review-next: needs_revision",
-		"- 발견: 1 blocker=1 warning=0 note=0",
+		"리뷰 review-next: 수정 필요",
+		"- 발견 항목: 총 1건 - 차단 1",
 		"[RF-001] high: 범위 검사가 누락됨",
 		"보고서: C:/tmp/review.md",
 		"다음 명령:",
@@ -12098,8 +12107,8 @@ func TestCompactReviewCLIResultCollapsesDuplicateNextCommands(t *testing.T) {
 		t.Fatalf("compact output should omit verbose lifecycle/route/next-command fields, got:\n%s", rendered)
 	}
 	assertStringOrder(t, rendered,
-		"리뷰 review-next: needs_revision",
-		"- 발견: 1 blocker=1 warning=0 note=0",
+		"리뷰 review-next: 수정 필요",
+		"- 발견 항목: 총 1건 - 차단 1",
 		"[RF-001] high: 범위 검사가 누락됨",
 		"보고서: C:/tmp/review.md",
 		"다음 명령:")
@@ -12356,7 +12365,7 @@ func TestLowSeverityFindingCountsAsGateWarningAndIsRendered(t *testing.T) {
 	}
 	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
 	for _, needle := range []string{
-		"발견: 2 blocker=0 warning=1",
+		"발견 항목: 총 2건 - 경고 1, 참고 1",
 		"경고:",
 		"[RF-001] low: 정리 가능한 중복 검증 경로",
 		"권장 조치: 중복 검증 경로를 하나로 합치십시오.",
@@ -12368,7 +12377,7 @@ func TestLowSeverityFindingCountsAsGateWarningAndIsRendered(t *testing.T) {
 	if strings.Contains(rendered, "참고용 기록") {
 		t.Fatalf("info findings should stay out of concise warning output, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "note=1") {
+	if !strings.Contains(rendered, "참고 1") {
 		t.Fatalf("hidden info finding should be counted in the header, got %q", rendered)
 	}
 }
@@ -12413,7 +12422,7 @@ func TestNeedsRevisionReviewHeaderShowsNoteCount(t *testing.T) {
 	run.Gate = evaluateReviewGate(run)
 	run.finalizeStatus(false)
 	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
-	if !strings.Contains(rendered, "Findings: 4 blocker=1 warning=1 note=2") {
+	if !strings.Contains(rendered, "Findings: 4 total - blockers 1, warnings 1, notes 2") {
 		t.Fatalf("expected header to explain hidden note findings, got %q", rendered)
 	}
 	if strings.Contains(rendered, "Non-blocking reviewer note") {
@@ -12545,8 +12554,8 @@ func TestReadOnlyReviewHighCorrectnessFindingNeedsRevision(t *testing.T) {
 	}
 	rendered := renderReviewCLIResult(Config{AutoLocale: boolPtr(false)}, run)
 	for _, want := range []string{
-		"needs_revision",
-		"blocker=1",
+		"수정 필요",
+		"총 1건 - 차단 1",
 		"[RF-001] high: CreateProcessW command line buffer can crash",
 		"수정은 사용자가 원할 때만 이어갑니다",
 	} {

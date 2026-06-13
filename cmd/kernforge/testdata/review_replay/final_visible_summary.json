@@ -16,7 +16,7 @@
   "expected_action": "final_summary",
   "expected_progress_contains": [
     "Review replay-final_visible_summary: approved",
-    "Gate action: final_summary"
+    "Gate action: final summary"
   ],
   "expected_markdown_contains": [
     "Artifact Integrity",

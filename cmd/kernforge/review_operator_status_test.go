@@ -106,27 +106,29 @@ func TestOperatorStatusCompactOutputIncludesLifecycleGatesBlockersAndNextCommand
 	rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
 
 	text := output.String()
+	// Compact /status leads with the human verdict, the top blocker as a full
+	// sentence, and the next command. Raw enum/codename lines are detail-only.
 	for _, want := range []string{
-		"operator_status",
-		"class=modify_then_review",
-		"kind=modify_then_review",
-		"confidence=0.91",
-		"phase=blocked",
-		"route=single_model",
-		"gates",
-		"review=needs_revision",
-		"repair=required",
-		"verification=gap_recorded",
-		"second_pass_state",
-		"single_model_second_pass_cached",
-		"blocker_summary",
-		"code_repair_blocker=1",
-		"remaining_obligations",
+		"Runtime Gate",
+		"리뷰 필요",
+		"코드 수정 필요: Fix RF-OPS-1 before finalizing.",
 		"next_command",
 		"/session continuity continue from review",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected compact status output to contain %q, got:\n%s", want, text)
+		}
+	}
+	// Codename diagnostics must NOT leak into the compact view.
+	for _, unwanted := range []string{
+		"operator_status",
+		"class=modify_then_review",
+		"gates",
+		"second_pass_state",
+		"blocker_summary",
+	} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("compact status leaked diagnostic codename %q:\n%s", unwanted, text)
 		}
 	}
 }
@@ -317,15 +319,16 @@ func TestDocumentArtifactStatusShowsQualityAndVerificationSkipWithoutCodeReviewO
 		workspace: Workspace{BaseRoot: root, Root: root},
 	}
 
-	rt.printRuntimeGateStatus(runtimeGateActionFinalAnswer)
+	rt.printRuntimeGateStatusDetail(runtimeGateActionFinalAnswer)
 
 	text := output.String()
 	for _, want := range []string{
-		"class=document_artifact",
-		"kind=document_artifact",
+		"문서 작성",
+		"request_class",
+		"lifecycle_kind",
+		"document_artifact",
 		"document=accepted",
 		"verification=skipped_document_artifact_only",
-		"document_artifact",
 		"path=BugReport.md",
 		"artifact_quality=accepted",
 		"document-only artifact flow",

@@ -267,7 +267,7 @@ func completePlanReviewRequest(ctx context.Context, client ProviderClient, req C
 		}
 		delay := providerRetryDelay(baseDelay, attempt)
 		if onStatus != nil {
-			onStatus(modelRetryProgressMessage(err, attempt, totalAttempts, delay))
+			onStatus(modelRetryProgressMessage(policy.ModelRouteConfig, err, attempt, totalAttempts, delay))
 		}
 		if delay > 0 {
 			timer := time.NewTimer(delay)

@@ -1378,8 +1378,8 @@ func (rt *runtimeState) handlePRReviewAutomationCommand(args string) error {
 	}
 	options := parsePRReviewAutomationOptions(args)
 	branch := runGitText(root, "rev-parse", "--abbrev-ref", "HEAD")
-	status := runGitText(root, "status", "--short")
-	diffStat := runGitText(root, "diff", "--stat")
+	status := formatPRReviewPorcelainStatus(runGitText(root, "status", "--porcelain"))
+	diffStat := filterGitCRLFWarnings(runGitText(root, "diff", "--stat"))
 	nameOnly := runGitText(root, "diff", "--name-only")
 	github := PRReviewGitHubContext{}
 	if options.GitHub {
@@ -1850,6 +1850,98 @@ func pathHasGitMetadata(root string) bool {
 		}
 		root = parent
 	}
+}
+
+// prReviewStatusCodeWord maps a single git porcelain XY status code to a plain
+// bilingual word (English/Korean). Unknown codes fall back to the raw letter so
+// no information is lost.
+func prReviewStatusCodeWord(code byte) string {
+	switch code {
+	case 'M':
+		return "modified/수정"
+	case 'A':
+		return "added/추가"
+	case 'D':
+		return "deleted/삭제"
+	case 'R':
+		return "renamed/이름변경"
+	case 'C':
+		return "copied/복사"
+	case 'U':
+		return "conflicted/충돌"
+	case '?':
+		return "untracked/미추적"
+	case '!':
+		return "ignored/무시됨"
+	case ' ':
+		return ""
+	default:
+		return string(code)
+	}
+}
+
+// formatPRReviewPorcelainStatus parses `git status --porcelain` output (XY +
+// space + path) into readable "word: path" lines instead of dumping the raw
+// leading-space porcelain that confuses the reader. The combined XY codes are
+// translated through prReviewStatusCodeWord; a clean tree yields "clean".
+func formatPRReviewPorcelainStatus(porcelain string) string {
+	trimmed := strings.TrimRight(porcelain, "\n")
+	if strings.TrimSpace(trimmed) == "" {
+		return "clean"
+	}
+	var lines []string
+	for _, raw := range strings.Split(trimmed, "\n") {
+		// A valid porcelain entry is "XY <path>"; XY occupies the first two
+		// columns and the path begins at column 3.
+		if len(raw) < 4 {
+			line := strings.TrimSpace(raw)
+			if line != "" {
+				lines = append(lines, line)
+			}
+			continue
+		}
+		x := raw[0]
+		y := raw[1]
+		path := strings.TrimSpace(raw[2:])
+		var words []string
+		if w := prReviewStatusCodeWord(x); w != "" {
+			words = append(words, w)
+		}
+		if w := prReviewStatusCodeWord(y); w != "" && (y != x) {
+			words = append(words, w)
+		}
+		label := strings.Join(words, ", ")
+		if label == "" {
+			label = "changed/변경"
+		}
+		lines = append(lines, label+": "+path)
+	}
+	if len(lines) == 0 {
+		return "clean"
+	}
+	return strings.Join(lines, "\n")
+}
+
+// filterGitCRLFWarnings strips the noisy "warning: ... LF will be replaced by
+// CRLF ..." lines that Git emits on Windows checkouts. These are environment
+// noise, not part of the diff stat, and copying them verbatim misleads the
+// reader. All other lines (including the diff stat itself) pass through.
+func filterGitCRLFWarnings(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	var kept []string
+	for _, line := range strings.Split(text, "\n") {
+		lower := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(lower, "warning:") && strings.Contains(lower, "lf will be replaced by crlf") {
+			continue
+		}
+		if strings.HasPrefix(lower, "warning:") && strings.Contains(lower, "crlf will be replaced by lf") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimRight(strings.Join(kept, "\n"), "\n")
 }
 
 func renderPRReviewAutomationReport(branch string, status string, diffStat string, nameOnly string, github PRReviewGitHubContext) string {

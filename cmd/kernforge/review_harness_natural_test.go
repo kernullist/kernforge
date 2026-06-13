@@ -459,7 +459,7 @@ func TestAgentReplyReviewModeCanUseReviewerWithoutMainChatClient(t *testing.T) {
 	if len(reviewer.requests) != 1 {
 		t.Fatalf("expected reviewer-only review mode to make one review request, got %d", len(reviewer.requests))
 	}
-	if !strings.Contains(reply, "검토 결과") || !strings.Contains(reply, "판정: approved") {
+	if !strings.Contains(reply, "검토 결과") || !strings.Contains(reply, "판정: 승인") {
 		t.Fatalf("expected review-mode reply from reviewer-only route, got %q", reply)
 	}
 

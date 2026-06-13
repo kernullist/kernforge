@@ -467,48 +467,98 @@ func (s *ReviewCompactStatus) Normalize() {
 	}
 }
 
-func reviewCompactStatusLine(status *ReviewCompactStatus) string {
+// reviewCompactStatusLine renders the operator status as localized labeled
+// sentences instead of a raw key=value codename chain. Enum values are
+// translated through the display mapping; "ambiguous=false" is suppressed and
+// not_applicable contract states are omitted. The korean flag reuses the
+// caller's existing locale signal.
+func reviewCompactStatusLine(status *ReviewCompactStatus, korean bool) string {
 	if status == nil {
+		if korean {
+			return "없음"
+		}
 		return "none"
 	}
 	copyStatus := *status
 	copyStatus.Normalize()
 	parts := []string{}
 	if copyStatus.RequestClass != "" {
-		parts = append(parts, "class="+copyStatus.RequestClass)
+		parts = append(parts, localizedReviewText(korean, "Request type", "요청 유형")+": "+humanizeRequestClass(copyStatus.RequestClass, korean))
 	}
 	if copyStatus.LifecycleKind != "" && copyStatus.LifecycleKind != reviewLifecycleKindGeneral {
-		parts = append(parts, "kind="+copyStatus.LifecycleKind)
+		parts = append(parts, localizedReviewText(korean, "Stage", "단계")+": "+humanizeLifecycleKind(copyStatus.LifecycleKind, korean))
 	}
 	if copyStatus.MixedFlow {
-		parts = append(parts, "mixed_flow=true")
+		parts = append(parts, localizedReviewText(korean, "Mixed flow", "혼합 작업")+": "+localizedReviewText(korean, "yes", "예"))
 	}
 	if len(copyStatus.SecondaryRequestClasses) > 0 {
-		parts = append(parts, "secondary="+strings.Join(copyStatus.SecondaryRequestClasses, ","))
+		secondary := make([]string, 0, len(copyStatus.SecondaryRequestClasses))
+		for _, cls := range copyStatus.SecondaryRequestClasses {
+			secondary = append(secondary, humanizeRequestClass(cls, korean))
+		}
+		parts = append(parts, localizedReviewText(korean, "Also", "추가 유형")+": "+strings.Join(secondary, ", "))
 	}
 	if copyStatus.ClassificationConfidence > 0 {
-		parts = append(parts, fmt.Sprintf("confidence=%.2f", copyStatus.ClassificationConfidence))
+		parts = append(parts, fmt.Sprintf("%s: %.2f", localizedReviewText(korean, "Confidence", "신뢰도"), copyStatus.ClassificationConfidence))
 	}
-	parts = append(parts, fmt.Sprintf("ambiguous=%t", copyStatus.ClassificationAmbiguous))
+	// Suppress the noisy "ambiguous=false"; only surface ambiguity when true.
+	if copyStatus.ClassificationAmbiguous {
+		parts = append(parts, localizedReviewText(korean, "Classification ambiguous", "분류 모호")+": "+localizedReviewText(korean, "yes", "예"))
+	}
 	if copyStatus.CurrentLifecyclePhase != "" {
-		parts = append(parts, "phase="+copyStatus.CurrentLifecyclePhase)
+		parts = append(parts, localizedReviewText(korean, "Phase", "진행 단계")+": "+humanizeLifecycleKind(copyStatus.CurrentLifecyclePhase, korean))
 	}
 	if copyStatus.RouteMode != "" {
-		parts = append(parts, "route="+copyStatus.RouteMode)
+		parts = append(parts, localizedReviewText(korean, "Model route", "모델 경로")+": "+humanizeRouteMode(copyStatus.RouteMode, korean))
 	}
 	if copyStatus.ReviewerRouteQuality != "" {
-		parts = append(parts, "route_quality="+copyStatus.ReviewerRouteQuality)
+		parts = append(parts, localizedReviewText(korean, "Route quality", "경로 품질")+": "+humanizeRouteQuality(copyStatus.ReviewerRouteQuality, korean))
 	}
-	if copyStatus.FinalAnswerContractStatus != "" {
-		parts = append(parts, "final_answer_contract="+copyStatus.FinalAnswerContractStatus)
+	if contract := humanizeFinalAnswerContractStatus(copyStatus.FinalAnswerContractStatus, korean); contract != "" {
+		parts = append(parts, localizedReviewText(korean, "Final-answer check", "최종 답변 점검")+": "+contract)
 	}
 	if copyStatus.NextRecommendedCommand != "" {
-		parts = append(parts, "next="+copyStatus.NextRecommendedCommand)
+		parts = append(parts, localizedReviewText(korean, "Next command", "다음 명령")+": "+copyStatus.NextRecommendedCommand)
 	}
 	if len(parts) == 0 {
+		if korean {
+			return "알 수 없음"
+		}
 		return "unknown"
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " | ")
+}
+
+// humanizeFinalAnswerContractStatus maps the final-answer-contract status token
+// to plain language. A not_applicable status returns "" so the caller can omit
+// the line entirely.
+func humanizeFinalAnswerContractStatus(value string, korean bool) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", "not_applicable", "none":
+		return ""
+	case "degraded":
+		if korean {
+			return "저하됨"
+		}
+		return "degraded"
+	case "warned", "warning":
+		if korean {
+			return "경고"
+		}
+		return "warning"
+	case "satisfied", "ok", "ready", "passed":
+		if korean {
+			return "충족됨"
+		}
+		return "satisfied"
+	case "required", "needs_review":
+		if korean {
+			return "확인 필요"
+		}
+		return "needs review"
+	default:
+		return humanizeEnumFallback(value)
+	}
 }
 
 func reviewGateCompactLine(status *ReviewCompactStatus) string {

@@ -1,9 +1,69 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"time"
 )
+
+// finalReadinessBlockedUserError builds the user-facing error returned when the
+// runtime final-answer readiness gate refuses to finalize. It leads with the
+// localized blocking intervention plus the readiness guidance; the raw reason
+// token is kept only as a trailing machine note.
+func finalReadinessBlockedUserError(cfg Config, readiness TurnRuntimeFinalReadiness) error {
+	korean := localePrefersKorean(cfg)
+	var headline string
+	if len(readiness.BlockedBy) > 0 {
+		headline = humanizeInterventionKind(string(readiness.BlockedBy[0].Kind), korean)
+	}
+	if strings.TrimSpace(headline) == "" {
+		if korean {
+			headline = "마무리를 보류했습니다"
+		} else {
+			headline = "Held the final answer"
+		}
+	}
+	guidance := strings.TrimSpace(readiness.Guidance)
+	var b strings.Builder
+	b.WriteString(headline)
+	if guidance != "" {
+		b.WriteString(" - ")
+		b.WriteString(guidance)
+	}
+	if debug := strings.TrimSpace(readiness.Reason); debug != "" {
+		b.WriteString(fmt.Sprintf(" [final_gate intervention: %s]", debug))
+	}
+	return fmt.Errorf("%s", b.String())
+}
+
+// finalGateBlockedUserError builds the user-facing error returned when the final
+// gate refuses to finalize. It leads with a localized state headline plus the
+// human guidance the decision already carries; the internal codename and raw
+// reason tokens are kept only as a trailing machine note, not as the lead.
+func finalGateBlockedUserError(cfg Config, decision FinalGateDecision) error {
+	korean := localePrefersKorean(cfg)
+	headline := humanizeFinalGateState(decision.State, korean)
+	guidance := strings.TrimSpace(decision.Guidance)
+	var b strings.Builder
+	b.WriteString(headline)
+	if guidance != "" {
+		if korean {
+			b.WriteString(" - ")
+		} else {
+			b.WriteString(" - ")
+		}
+		b.WriteString(guidance)
+	}
+	// Machine/debug detail: keep the raw state and reason tokens so logs and
+	// tooling still see the precise cause, without leading the human line.
+	debug := strings.TrimSpace(strings.Join(decision.Reasons, "; "))
+	if debug != "" {
+		b.WriteString(fmt.Sprintf(" [final_gate state=%s: %s]", decision.State, debug))
+	} else {
+		b.WriteString(fmt.Sprintf(" [final_gate state=%s]", decision.State))
+	}
+	return fmt.Errorf("%s", b.String())
+}
 
 type FinalGateState string
 

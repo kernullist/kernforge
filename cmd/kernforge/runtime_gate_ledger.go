@@ -636,7 +636,15 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		})
 	} else if len(review.Gate.WarningFindings) > 0 || strings.EqualFold(review.Gate.Verdict, reviewVerdictApprovedWithWarnings) {
 		tx.Status = "warning"
-		ledger.Warnings = append(ledger.Warnings, "latest review has warnings: "+strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", "))
+		if len(review.Gate.WarningFindings) > 0 {
+			ledger.Warnings = append(ledger.Warnings, "latest review has warnings: "+strings.Join(limitStrings(review.Gate.WarningFindings, 6), ", "))
+		} else {
+			driver := firstNonBlankString(review.Result.DegradedReason, review.Gate.Reason)
+			if strings.TrimSpace(driver) == "" {
+				driver = "model review was skipped, so reviewer evidence is limited"
+			}
+			ledger.Warnings = append(ledger.Warnings, "latest review approved with no blocking findings; "+driver)
+		}
 	} else {
 		tx.Status = "fresh"
 	}
@@ -1237,68 +1245,101 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 	}
 	fmt.Fprintln(writer)
 	fmt.Fprintln(writer, rt.ui.subsection("Runtime Gate"))
-	fmt.Fprintln(writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
-	fmt.Fprintln(writer, rt.ui.statusKV("operator_status", reviewCompactStatusLine(compact)))
-	fmt.Fprintln(writer, rt.ui.statusKV("gates", reviewGateCompactLine(compact)))
-	if compact != nil {
-		if compact.SecondPassState != "" {
-			fmt.Fprintln(writer, rt.ui.statusKV("second_pass_state", compact.SecondPassState))
-		}
-		if len(compact.CrossReviewTriageCounts) > 0 {
-			fmt.Fprintln(writer, rt.ui.statusKV("cross_review_triage_counts", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{
-				crossReviewTriageAcceptedFixed,
-				crossReviewTriageAcceptedDeferred,
-				crossReviewTriageRejectedWithReason,
-				crossReviewTriageNeedsUserDecision,
-				"incomplete_invalid",
-			})))
-		}
-		if len(compact.BlockersByClass) > 0 {
-			fmt.Fprintln(writer, rt.ui.statusKV("blockers_by_class", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder())))
-		}
-		if len(compact.RemainingObligations) > 0 {
-			fmt.Fprintln(writer, rt.ui.statusKV("remaining_obligations", strings.Join(compact.RemainingObligations, ", ")))
-		}
-		if compact.DocumentArtifactPath != "" || compact.ArtifactQualityStatus != "" || compact.VerificationSkipReason != "" {
-			parts := []string{}
-			if compact.DocumentArtifactPath != "" {
-				parts = append(parts, "path="+compact.DocumentArtifactPath)
+	// The plain-language gate status leads (localized human line); the raw enum
+	// summary follows as a machine/debug detail keyed "runtime_gate".
+	korean := localePrefersKorean(rt.cfg)
+	fmt.Fprintln(writer, rt.ui.statusKV(localizedText(rt.cfg, "gate", "게이트"), runtimeGateStatusSummaryLocalized(rt.cfg, ledger)))
+	// Compact mode (default): lead with the human verdict, then the top 1-2
+	// blockers as full sentences and the single next command. All raw enum /
+	// ledger / lifecycle codename lines move behind "/status detail".
+	if !detail && blockers != nil && blockers.HasBlockers {
+		for _, primary := range blockers.Primary {
+			line := humanizeBlockerSentence(primary, korean)
+			if strings.TrimSpace(line) != "" {
+				fmt.Fprintln(writer, rt.ui.warnLine(line))
 			}
-			if compact.ArtifactQualityStatus != "" {
-				parts = append(parts, "artifact_quality="+compact.ArtifactQualityStatus)
+			if strings.TrimSpace(primary.NextCommand) != "" {
+				fmt.Fprintln(writer, rt.ui.statusKV(localizedText(rt.cfg, "next command", "다음 명령"), primary.NextCommand))
 			}
-			if compact.VerificationSkipReason != "" {
-				parts = append(parts, "verification="+compact.VerificationSkipReason)
-			}
-			fmt.Fprintln(writer, rt.ui.statusKV("document_artifact", strings.Join(parts, " ")))
+			break
 		}
-	}
-	if blockers != nil && blockers.HasBlockers {
-		fmt.Fprintln(writer, rt.ui.statusKV("blocker_summary", reviewBlockerSummaryStatusLine(blockers)))
-		if len(blockers.Primary) > 0 {
-			primary := blockers.Primary[0]
-			fmt.Fprintln(writer, rt.ui.warnLine(primary.Class+": "+primary.WhyBlocks))
-			if primary.NextCommand != "" {
-				fmt.Fprintln(writer, rt.ui.statusKV("primary_blocker_next", primary.NextCommand))
+		if len(blockers.Primary) > 1 {
+			second := blockers.Primary[1]
+			if line := humanizeBlockerSentence(second, korean); strings.TrimSpace(line) != "" {
+				fmt.Fprintln(writer, rt.ui.warnLine(line))
 			}
 		}
 	}
-	if ledger.StaleContextSummary != nil {
+	if detail {
+		fmt.Fprintln(writer, rt.ui.statusKV("runtime_gate", runtimeGateStatusSummary(ledger)))
+		fmt.Fprintln(writer, rt.ui.statusKV("operator_status", reviewCompactStatusLine(compact, korean)))
+		fmt.Fprintln(writer, rt.ui.statusKV("gates", reviewGateCompactLine(compact)))
+		if compact != nil {
+			if compact.SecondPassState != "" {
+				fmt.Fprintln(writer, rt.ui.statusKV("second_pass_state", compact.SecondPassState))
+			}
+			if len(compact.CrossReviewTriageCounts) > 0 {
+				fmt.Fprintln(writer, rt.ui.statusKV("cross_review_triage_counts", reviewCompactMapLine(compact.CrossReviewTriageCounts, []string{
+					crossReviewTriageAcceptedFixed,
+					crossReviewTriageAcceptedDeferred,
+					crossReviewTriageRejectedWithReason,
+					crossReviewTriageNeedsUserDecision,
+					"incomplete_invalid",
+				})))
+			}
+			if len(compact.BlockersByClass) > 0 {
+				fmt.Fprintln(writer, rt.ui.statusKV("blockers_by_class", reviewCompactMapLine(compact.BlockersByClass, reviewBlockerClassOrder())))
+			}
+			if len(compact.RemainingObligations) > 0 {
+				fmt.Fprintln(writer, rt.ui.statusKV("remaining_obligations", strings.Join(compact.RemainingObligations, ", ")))
+			}
+			if compact.DocumentArtifactPath != "" || compact.ArtifactQualityStatus != "" || compact.VerificationSkipReason != "" {
+				parts := []string{}
+				if compact.DocumentArtifactPath != "" {
+					parts = append(parts, "path="+compact.DocumentArtifactPath)
+				}
+				if compact.ArtifactQualityStatus != "" {
+					parts = append(parts, "artifact_quality="+compact.ArtifactQualityStatus)
+				}
+				if compact.VerificationSkipReason != "" {
+					parts = append(parts, "verification="+compact.VerificationSkipReason)
+				}
+				fmt.Fprintln(writer, rt.ui.statusKV("document_artifact", strings.Join(parts, " ")))
+			}
+		}
+		if blockers != nil && blockers.HasBlockers {
+			fmt.Fprintln(writer, rt.ui.statusKV("blocker_summary", reviewBlockerSummaryStatusLine(blockers)))
+			if len(blockers.Primary) > 0 {
+				primary := blockers.Primary[0]
+				fmt.Fprintln(writer, rt.ui.warnLine(primary.Class+": "+primary.WhyBlocks))
+				if primary.NextCommand != "" {
+					fmt.Fprintln(writer, rt.ui.statusKV("primary_blocker_next", primary.NextCommand))
+				}
+			}
+		}
+	}
+	// The final-answer-correction state is outcome-relevant, so surface a plain
+	// human sentence in both compact and detail mode; the raw key=value form is
+	// kept for detail/debug below.
+	if line := finalAnswerCorrectionHumanLine(ledger.FinalAnswerCorrection, korean); line != "" {
+		fmt.Fprintln(writer, rt.ui.statusKV(localizedText(rt.cfg, "final answer", "최종 답변"), line))
+	}
+	if detail && ledger.StaleContextSummary != nil {
 		fmt.Fprintln(writer, rt.ui.statusKV("stale_context", staleContextSummaryStatusLine(ledger.StaleContextSummary)))
 	}
-	if ledger.FinalAnswerCorrection != nil {
+	if detail && ledger.FinalAnswerCorrection != nil {
 		fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_status", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
 	}
-	if len(ledger.RouteHealthEvents) > 0 {
+	if detail && len(ledger.RouteHealthEvents) > 0 {
 		fmt.Fprintln(writer, rt.ui.statusKV("route_health_events", strings.Join(reviewRouteHealthEventClasses(ledger.RouteHealthEvents), ", ")))
 	}
-	if ledger.LiveProviderDrill != nil {
+	if detail && ledger.LiveProviderDrill != nil {
 		fmt.Fprintln(writer, rt.ui.statusKV("live_provider_drill", liveProviderDrillStatusLine(ledger.LiveProviderDrill)))
 	}
-	if ledger.RequestClass != "" {
+	if detail && ledger.RequestClass != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("request_class", ledger.RequestClass))
 	}
-	if ledger.Lifecycle != nil {
+	if detail && ledger.Lifecycle != nil {
 		if ledger.Lifecycle.LifecycleKind != "" {
 			fmt.Fprintln(writer, rt.ui.statusKV("lifecycle_kind", ledger.Lifecycle.LifecycleKind))
 		}
@@ -1351,13 +1392,13 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 	}
 	fmt.Fprintln(writer, rt.ui.statusKV("review_freshness", runtimeGateReviewFreshnessLabel(ledger)))
 	fmt.Fprintln(writer, rt.ui.statusKV("changed_paths", fmt.Sprintf("%d", len(ledger.ChangedPaths))))
-	if len(ledger.ChangedPaths) > 0 {
+	if detail && len(ledger.ChangedPaths) > 0 {
 		fmt.Fprintln(writer, rt.ui.statusKV("latest_changed", strings.Join(limitStrings(ledger.ChangedPaths, 4), ", ")))
 	}
 	if ledger.ReviewRunID != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("latest_review", ledger.ReviewRunID))
 	}
-	if ledger.ReviewObservability != nil {
+	if detail && ledger.ReviewObservability != nil {
 		obs := ledger.ReviewObservability
 		fmt.Fprintln(writer, rt.ui.statusKV("review_decision", reviewDecisionObservabilityStatusLine(obs)))
 		fmt.Fprintln(writer, rt.ui.statusKV("gate_decision", reviewGateObservabilityStatusLine(obs)))
@@ -1375,12 +1416,12 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 			fmt.Fprintln(writer, rt.ui.statusKV("triage_residual", obs.ResidualRiskSummary))
 		}
 	}
-	if ledger.FinalAnswerCorrection != nil {
+	if detail && ledger.FinalAnswerCorrection != nil {
 		fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction", finalAnswerCorrectionStatusLine(ledger.FinalAnswerCorrection)))
-		if detail := finalAnswerCorrectionDetailedLine(ledger.FinalAnswerCorrection); detail != "" {
-			fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_detail", detail))
+		if detailLine := finalAnswerCorrectionDetailedLine(ledger.FinalAnswerCorrection); detailLine != "" {
+			fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_detail", detailLine))
 		}
-		if ledger.FinalAnswerCorrection.Contract != nil && detail {
+		if ledger.FinalAnswerCorrection.Contract != nil {
 			contract := ledger.FinalAnswerCorrection.Contract
 			fmt.Fprintln(writer, rt.ui.statusKV("final_answer_correction_contract", strings.Join([]string{
 				"state=" + valueOrDefault(contract.State, ledger.FinalAnswerCorrection.Status),
@@ -1390,13 +1431,13 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 			}, " ")))
 		}
 	}
-	if ledger.PatchTransactionID != "" {
+	if detail && ledger.PatchTransactionID != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("patch_transaction", ledger.PatchTransactionID))
 	}
-	if ledger.VerificationReportID != "" {
+	if detail && ledger.VerificationReportID != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("verification_report", ledger.VerificationReportID))
 	}
-	if ledger.CompletionAuditID != "" {
+	if detail && ledger.CompletionAuditID != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("completion_audit", ledger.CompletionAuditID))
 	}
 	if len(ledger.Blockers) > 0 {
@@ -1506,6 +1547,36 @@ func runtimeGateStatusSummary(ledger RuntimeGateLedger) string {
 		parts = append(parts, fmt.Sprintf("warnings=%d", len(ledger.Warnings)))
 	}
 	return strings.Join(parts, " ")
+}
+
+// runtimeGateStatusSummaryLocalized renders the runtime gate status line with the
+// status word translated to plain language for the human line. The raw enum is
+// still preserved in the machine summary via runtimeGateStatusSummary.
+func runtimeGateStatusSummaryLocalized(cfg Config, ledger RuntimeGateLedger) string {
+	korean := localePrefersKorean(cfg)
+	if runtimeGateLedgerEmpty(ledger) {
+		return humanizeGateStatus("unknown", korean)
+	}
+	ledger.Normalize()
+	parts := []string{humanizeGateStatus(valueOrDefault(ledger.Status, runtimeGateStatusReady), korean)}
+	if ledger.ReviewRunID != "" {
+		parts = append(parts, localizedText(cfg, "review ", "리뷰 ")+ledger.ReviewRunID)
+	}
+	if len(ledger.Blockers) > 0 {
+		if korean {
+			parts = append(parts, fmt.Sprintf("차단 %d", len(ledger.Blockers)))
+		} else {
+			parts = append(parts, fmt.Sprintf("blockers %d", len(ledger.Blockers)))
+		}
+	}
+	if len(ledger.Warnings) > 0 {
+		if korean {
+			parts = append(parts, fmt.Sprintf("경고 %d", len(ledger.Warnings)))
+		} else {
+			parts = append(parts, fmt.Sprintf("warnings %d", len(ledger.Warnings)))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func runtimeGateReviewFreshnessLabel(ledger RuntimeGateLedger) string {

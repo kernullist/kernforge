@@ -55,10 +55,10 @@
   ],
   "expected_progress_contains": [
     "Repeated patch mismatch requires fresh file digest",
-    "Gate action: repair_required"
+    "Gate action: repair required"
   ],
   "expected_markdown_contains": [
     "Artifact Integrity",
-    "Ledger Consistency"
+    "Coverage"
   ]
 }

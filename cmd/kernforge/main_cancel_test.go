@@ -3549,10 +3549,12 @@ func TestStatusCommandFocusesOnRuntimeState(t *testing.T) {
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
 	var out bytes.Buffer
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false) // keep the humanized gate label deterministic (English) for this assertion
 	rt := &runtimeState{
 		writer:    &out,
 		ui:        UI{},
-		cfg:       DefaultConfig(root),
+		cfg:       cfg,
 		session:   session,
 		store:     store,
 		perms:     NewPermissionManager(ModeBypass, nil),
@@ -3655,8 +3657,14 @@ func TestStatusDetailShowsRequestRuntimeShadowStats(t *testing.T) {
 	}
 
 	text := out.String()
+	// The always-on compact footer no longer carries the raw shadow telemetry
+	// blob ("[req:2 obs/1 semdiff]"); that numeric breakdown lives only in the
+	// detailed -- Request Runtime -- section below. With no risky/runtime
+	// divergence here, the footer shows no "req" item at all.
+	if strings.Contains(text, "obs/1 semdiff") {
+		t.Fatalf("compact footer should not carry raw shadow telemetry, got %q", text)
+	}
 	for _, want := range []string{
-		"[req:2 obs/1 semdiff]",
 		"-- Request Runtime ",
 		"semantic_classifier:",
 		"shadow_stats:",
@@ -3723,9 +3731,11 @@ func TestConfigShowsRequestRuntimeSettings(t *testing.T) {
 func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false) // keep the humanized gate label deterministic (English) for this assertion
 	rt := &runtimeState{
 		ui:        UI{},
-		cfg:       DefaultConfig(root),
+		cfg:       cfg,
 		session:   session,
 		store:     NewSessionStore(filepath.Join(root, "sessions")),
 		perms:     NewPermissionManager(ModeBypass, nil),

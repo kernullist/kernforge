@@ -2249,6 +2249,13 @@ func (a *projectAnalyzer) status(text string) {
 	}
 }
 
+// statusLocalized emits a user-facing analysis status line in the user's
+// language. Pipeline internals (shard ids, worker slots, cache state) belong in
+// a.debug, not here.
+func (a *projectAnalyzer) statusLocalized(english string, korean string) {
+	a.status(localizedText(a.cfg, english, korean))
+}
+
 func (a *projectAnalyzer) debug(text string) {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -3339,12 +3346,14 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	run.Shards = shards
 	run.Preflight = a.buildAnalysisPreflight(snapshot, goal, mode, scope, shards, agentCount, runtimeFeedback)
 	applyAnalysisPreflightToSummary(&run.Summary, run.Preflight)
-	a.status(fmt.Sprintf("Analysis preflight ready: mode=%s shards=%d workers=%d depth=%s.", run.Preflight.EffectiveMode, len(shards), agentCount, run.Preflight.RecommendedDepth))
-	a.debug(fmt.Sprintf("analysis preflight prepared: mode=%s shards=%d warnings=%d runtime_errors=%d", run.Preflight.EffectiveMode, len(shards), len(run.Preflight.Warnings), run.Preflight.RuntimeFeedback.RecentProviderErrors))
+	a.statusLocalized(
+		fmt.Sprintf("Preparing to analyze the project in %d part(s).", len(shards)),
+		fmt.Sprintf("프로젝트를 %d개 부분으로 나누어 분석할 준비를 마쳤습니다.", len(shards)))
+	a.debug(fmt.Sprintf("analysis preflight prepared: mode=%s shards=%d workers=%d depth=%s warnings=%d runtime_errors=%d", run.Preflight.EffectiveMode, len(shards), agentCount, run.Preflight.RecommendedDepth, len(run.Preflight.Warnings), run.Preflight.RuntimeFeedback.RecentProviderErrors))
 
 	previousRun, _ := a.loadPreviousRun(goal, run.Summary.Mode)
 	if previousRun != nil {
-		a.status("Loaded previous analysis for incremental reuse.")
+		a.statusLocalized("Reusing the previous analysis where nothing changed.", "변경되지 않은 부분은 이전 분석 결과를 재사용합니다.")
 		a.debug(fmt.Sprintf("loaded previous analysis run: shards=%d approved=%d", len(previousRun.Shards), previousRun.Summary.ApprovedShards))
 		if normalizeProjectAnalysisMode(run.Summary.Mode) == "root-cause" && rootCauseAuditTrailHasContent(previousRun.RootCause.AuditTrail) {
 			snapshot.RootCause.RegressionMemory = previousRun.RootCause.AuditTrail
@@ -3354,7 +3363,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 		}
 	}
 
-	a.status(fmt.Sprintf("Running %d shard(s) with %d worker slot(s)...", len(shards), agentCount))
+	a.statusLocalized(
+		fmt.Sprintf("Analyzing %d part(s)...", len(shards)),
+		fmt.Sprintf("%d개 부분을 분석하는 중입니다...", len(shards)))
 	reuseState := a.buildReuseState(previousRun, shards)
 	reports, reviews, err := a.executeShards(ctx, snapshot, shards, goal, previousRun, reuseState, agentCount)
 	if err != nil {
@@ -3368,7 +3379,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	refinementShards, replacedShardIDs := a.planRefinementShards(snapshot, shards, reports, reviews)
 	if len(refinementShards) > 0 {
 		run.Summary.RefinedShards = len(refinementShards)
-		a.status(fmt.Sprintf("Refining %d high-value sub-agent shard(s)...", len(refinementShards)))
+		a.statusLocalized(
+			fmt.Sprintf("Taking a closer look at %d important area(s)...", len(refinementShards)),
+			fmt.Sprintf("중요한 영역 %d곳을 더 자세히 살펴보는 중입니다...", len(refinementShards)))
 		a.debug(fmt.Sprintf("stage-2 refinement planned: shards=%d parents=%d", len(refinementShards), len(replacedShardIDs)))
 		refinedReports, refinedReviews, err := a.executeShards(ctx, snapshot, refinementShards, goal, previousRun, analysisReuseState{}, agentCount)
 		if err != nil {
@@ -3392,7 +3405,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 			}
 			snapshot.RootCause.EvidenceRequests = markRootCauseEvidenceRequestsRouted(snapshot.RootCause.EvidenceRequests, evidenceShards)
 			run.Summary.EvidenceShards += len(evidenceShards)
-			a.status(fmt.Sprintf("Routing %d root-cause evidence request shard(s)...", len(evidenceShards)))
+			a.statusLocalized(
+				fmt.Sprintf("Gathering more evidence for %d open question(s)...", len(evidenceShards)),
+				fmt.Sprintf("미해결 질문 %d건에 대한 근거를 더 수집하는 중입니다...", len(evidenceShards)))
 			a.debug(fmt.Sprintf("root-cause evidence request round %d planned: shards=%d", round, len(evidenceShards)))
 			evidenceReports, evidenceReviews, err := a.executeShards(ctx, snapshot, evidenceShards, goal, previousRun, analysisReuseState{}, agentCount)
 			if err != nil {
@@ -3419,7 +3434,9 @@ func (a *projectAnalyzer) Run(ctx context.Context, goal string, mode string) (Pr
 	gapShards := a.planCoverageGapShards(snapshot, shards, reports, reviews, run.ModeScorecard, gapShardLimit)
 	if len(gapShards) > 0 {
 		run.Summary.GapShards = len(gapShards)
-		a.status(fmt.Sprintf("Filling %d analysis coverage gap shard(s)...", len(gapShards)))
+		a.statusLocalized(
+			fmt.Sprintf("Covering %d remaining gap(s) in the analysis...", len(gapShards)),
+			fmt.Sprintf("분석에서 빠진 부분 %d곳을 채우는 중입니다...", len(gapShards)))
 		a.debug(fmt.Sprintf("coverage gap fill planned: shards=%d gaps=%d score=%d status=%s", len(gapShards), len(run.ModeScorecard.CoverageGaps), run.ModeScorecard.Score, run.ModeScorecard.Status))
 		gapReports, gapReviews, err := a.executeShards(ctx, snapshot, gapShards, goal, previousRun, analysisReuseState{}, agentCount)
 		if err != nil {
@@ -6797,7 +6814,9 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 	for wave := 0; wave < totalWaves; wave++ {
 		start := wave * concurrency
 		end := analysisMinInt(len(shards), start+concurrency)
-		a.status(fmt.Sprintf("Shard wave %d/%d started: running %d shard(s), progress %d/%d.", wave+1, totalWaves, end-start, completed, len(shards)))
+		a.statusLocalized(
+			fmt.Sprintf("Analyzing... %d of %d part(s) done.", completed, len(shards)),
+			fmt.Sprintf("분석 중... %d/%d개 완료.", completed, len(shards)))
 		a.debug(fmt.Sprintf("starting shard wave %d/%d: shards=%d", wave+1, totalWaves, end-start))
 		errCh := make(chan error, end-start)
 		var wg sync.WaitGroup
@@ -6811,7 +6830,10 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 					completed++
 					done := completed
 					progressMu.Unlock()
-					a.status(fmt.Sprintf("Shard %d/%d failed: %s (%s).", done, len(shards), analysisShardProgressName(shards[i]), summarizeAnalysisProviderFailure(err.Error())))
+					a.statusLocalized(
+						fmt.Sprintf("Part %d/%d failed (%s): %s", done, len(shards), analysisShardProgressName(shards[i]), summarizeAnalysisProviderFailure(err.Error())),
+						fmt.Sprintf("%d/%d번째 부분 분석 실패 (%s): %s", done, len(shards), analysisShardProgressName(shards[i]), summarizeAnalysisProviderFailure(err.Error())))
+					a.debug(fmt.Sprintf("shard failed: name=%s state=%s", analysisShardProgressName(shards[i]), analysisShardProgressState(shards[i], ReviewDecision{})))
 					errCh <- err
 					return
 				}
@@ -6822,7 +6844,10 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 				completed++
 				done := completed
 				progressMu.Unlock()
-				a.status(fmt.Sprintf("Shard %d/%d completed: %s (%s).", done, len(shards), analysisShardProgressName(shard), analysisShardProgressState(shard, review)))
+				a.statusLocalized(
+					fmt.Sprintf("Part %d/%d done: %s (%s).", done, len(shards), analysisShardProgressName(shard), analysisShardProgressStateLocalized(shard, review, false)),
+					fmt.Sprintf("%d/%d번째 부분 완료: %s (%s).", done, len(shards), analysisShardProgressName(shard), analysisShardProgressStateLocalized(shard, review, true)))
+				a.debug(fmt.Sprintf("shard done: name=%s state=%s", analysisShardProgressName(shard), analysisShardProgressState(shard, review)))
 			}(index)
 		}
 		wg.Wait()
@@ -6832,7 +6857,9 @@ func (a *projectAnalyzer) executeShards(ctx context.Context, snapshot ProjectSna
 				return nil, nil, err
 			}
 		}
-		a.status(fmt.Sprintf("Shard wave %d/%d completed: progress %d/%d.", wave+1, totalWaves, completed, len(shards)))
+		a.statusLocalized(
+			fmt.Sprintf("Analyzing... %d of %d part(s) done.", completed, len(shards)),
+			fmt.Sprintf("분석 중... %d/%d개 완료.", completed, len(shards)))
 	}
 	return reports, reviews, nil
 }
@@ -6843,6 +6870,47 @@ func analysisShardProgressName(shard AnalysisShard) string {
 		name = "analysis shard"
 	}
 	return truncateStatusSnippet(name, 96)
+}
+
+// analysisShardProgressStateLocalized renders a plain-language outcome for one
+// analyzed part. The raw cache=/review=/issue= tokens stay in
+// analysisShardProgressState for debug only.
+func analysisShardProgressStateLocalized(shard AnalysisShard, review ReviewDecision, korean bool) string {
+	reused := strings.EqualFold(strings.TrimSpace(shard.CacheStatus), "reused")
+	if strings.TrimSpace(review.FailureKind) != "" {
+		if korean {
+			return "근거 보강 필요"
+		}
+		return "needs more evidence"
+	}
+	switch strings.ToLower(strings.TrimSpace(review.Status)) {
+	case "approved", "ok":
+		if reused {
+			if korean {
+				return "재사용됨"
+			}
+			return "reused"
+		}
+		if korean {
+			return "확인됨"
+		}
+		return "verified"
+	case "rejected", "needs_revision", "blocked":
+		if korean {
+			return "수정 필요"
+		}
+		return "needs revision"
+	}
+	if reused {
+		if korean {
+			return "재사용됨"
+		}
+		return "reused"
+	}
+	if korean {
+		return "완료"
+	}
+	return "done"
 }
 
 func analysisShardProgressState(shard AnalysisShard, review ReviewDecision) string {
