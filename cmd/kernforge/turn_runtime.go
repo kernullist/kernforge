@@ -51,6 +51,8 @@ type TurnRuntimeCounters struct {
 	RepeatedReadFilePathNudges        int `json:"repeated_read_file_path_nudges,omitempty"`
 	RepeatedCachedReadFileNudges      int `json:"repeated_cached_read_file_nudges,omitempty"`
 	RepeatedReadFilePathRecoveryCount int `json:"repeated_read_file_path_recovery_count,omitempty"`
+	RepeatedReadSetNudges             int `json:"repeated_read_set_nudges,omitempty"`
+	RepeatedReadSetRecoveryCount      int `json:"repeated_read_set_recovery_count,omitempty"`
 	ManualEditHandoffRetries          int `json:"manual_edit_handoff_retries,omitempty"`
 	CommentaryOnlyReplies             int `json:"commentary_only_replies,omitempty"`
 	LengthStopReplies                 int `json:"length_stop_replies,omitempty"`

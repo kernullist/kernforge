@@ -686,7 +686,7 @@ func requestEnvelopePatchEntryHasFileMutation(entry PatchTransactionEntry) bool 
 	return false
 }
 
-func disableRequestEnvelopeForbiddenTools(disabled map[string]bool, registry *ToolRegistry, envelope RequestEnvelope) {
+func disableRequestEnvelopeForbiddenTools(disabled map[string]bool, registry *ToolRegistry, envelope RequestEnvelope, mcp *MCPManager) {
 	if disabled == nil {
 		return
 	}
@@ -703,7 +703,14 @@ func disableRequestEnvelopeForbiddenTools(disabled map[string]bool, registry *To
 		disabled["git_push"] = true
 		disabled["git_create_pr"] = true
 	}
+	// A goal-prompt-draft-only turn forces read-only and the prompt instructs the
+	// model not to mutate goals. Match exposure to that policy instead of relying
+	// on a prompt-only guard.
+	if envelope.GoalPromptDraftOnly {
+		disabled["create_goal"] = true
+		disabled["update_goal"] = true
+	}
 	if !envelope.AllowsWebResearch {
-		disableWebResearchToolsForLocalCodeWork(disabled, registry)
+		disableWebResearchToolsForLocalCodeWork(disabled, registry, mcp)
 	}
 }

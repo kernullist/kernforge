@@ -578,15 +578,10 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 				return nil, err
 			}
 			before := ""
-			if info, err := os.Lstat(path); err == nil {
-				if info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
-					return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
-				}
-				existing, err := os.ReadFile(path)
-				if err != nil {
-					return nil, err
-				}
-				before = string(existing)
+			if _, err := os.Lstat(path); err == nil {
+				// Any existing path (regular file, dir, or symlink) must not be
+				// overwritten by an add. The model must use Update to modify it.
+				return nil, fmt.Errorf("cannot add file that already exists: %s", op.path)
 			} else if !os.IsNotExist(err) {
 				return nil, err
 			}
@@ -677,6 +672,9 @@ func planPatchDocument(ws Workspace, doc patchDocument, ownerNodeID string) ([]p
 func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	lineEnding := detectPatchLineEnding(content)
 	content = normalizePatchLineEndings(content)
+	// Capture the original EOF-newline state before trimming so a file that
+	// ended without a trailing newline does not silently gain one.
+	hadTrailingNewline := strings.HasSuffix(content, "\n")
 	content = strings.TrimSuffix(content, "\n")
 	oldLines := []string{}
 	if content != "" {
@@ -700,8 +698,24 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 			if len(newChunk) == 0 {
 				return "", fmt.Errorf("%w: update hunk has no context or addition lines", ErrInvalidPatchFormat)
 			}
-			oldLines = append(oldLines, newChunk...)
-			cursor = len(oldLines)
+			// Pure-insertion hunk: resolve the anchor from the @@ header so the
+			// new lines land at the target location instead of always at EOF.
+			insertIndex := len(oldLines)
+			if oldStart, ok := parsePatchHunkOldStart(hunk.header); ok {
+				insertIndex = oldStart - 1 + lineDelta
+				if insertIndex < cursor {
+					insertIndex = cursor
+				}
+				if insertIndex > len(oldLines) {
+					insertIndex = len(oldLines)
+				}
+			}
+			updated := make([]string, 0, len(oldLines)+len(newChunk))
+			updated = append(updated, oldLines[:insertIndex]...)
+			updated = append(updated, newChunk...)
+			updated = append(updated, oldLines[insertIndex:]...)
+			oldLines = updated
+			cursor = insertIndex + len(newChunk)
 			lineDelta += len(newChunk)
 			continue
 		}
@@ -720,7 +734,7 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 	}
 
 	result := strings.Join(oldLines, lineEnding)
-	if result != "" {
+	if result != "" && hadTrailingNewline {
 		result += lineEnding
 	}
 	return result, nil

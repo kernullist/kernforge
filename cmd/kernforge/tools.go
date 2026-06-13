@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2443,7 +2444,7 @@ func shellInvocation(shell, command string) (string, []string) {
 	base := strings.ToLower(strings.TrimSpace(shell))
 	switch {
 	case strings.Contains(base, "powershell") || strings.Contains(base, "pwsh"):
-		wrapped := "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); $OutputEncoding=[System.Text.UTF8Encoding]::new(); " + command
+		wrapped := powershellCommandWithExitPropagation(command)
 		return shell, []string{"-NoProfile", "-Command", wrapped}
 	case base == "cmd":
 		return "cmd", []string{"/C", command}
@@ -2453,10 +2454,44 @@ func shellInvocation(shell, command string) (string, []string) {
 		return "sh", []string{"-lc", command}
 	default:
 		if runtime.GOOS == "windows" {
-			return "powershell", []string{"-NoProfile", "-Command", command}
+			return "powershell", []string{"-NoProfile", "-Command", powershellCommandWithExitPropagation(command)}
 		}
 		return "sh", []string{"-lc", command}
 	}
+}
+
+// powershellCommandWithExitPropagation wraps a user command so the PowerShell
+// host process exit status reflects a real failure instead of only the last
+// statement. With -Command, the host exit code mirrors the LAST statement, so
+// "build; test" where build fails but test succeeds would otherwise report
+// success. We force a stop on the first error and exit with the genuine native
+// exit code when one is available, preserving real non-zero codes rather than
+// collapsing them to 1.
+func powershellCommandWithExitPropagation(command string) string {
+	var b strings.Builder
+	// Make PowerShell cmdlet errors terminate so an earlier failing command
+	// surfaces instead of being masked by a later success.
+	b.WriteString("$ErrorActionPreference='Stop'; ")
+	// On PowerShell 7+ also make a non-zero native (.exe) exit throw, so a
+	// failing build in "build; test" is not hidden by a passing test. Assigning
+	// the variable directly is harmless on Windows PowerShell 5.1 (it just
+	// creates an ordinary variable there) and avoids a per-command Test-Path
+	// cmdlet call, which is a filesystem-provider probe that adds real startup
+	// latency to every shell invocation.
+	b.WriteString("$PSNativeCommandUseErrorActionPreference=$true; ")
+	b.WriteString("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); ")
+	b.WriteString("$OutputEncoding=[System.Text.UTF8Encoding]::new(); ")
+	// Reset native exit tracking so a stale value cannot mask the real result.
+	b.WriteString("$global:LASTEXITCODE=0; ")
+	// Run the user command inside try/catch. On a terminating error we exit
+	// with the last native exit code when the failing program set one,
+	// otherwise exit 1. On success we propagate $LASTEXITCODE so a native
+	// non-zero code (e.g. a compiler) is preserved instead of reported as 0.
+	b.WriteString("try { ")
+	b.WriteString(command)
+	b.WriteString(" } catch { if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } else { exit 1 } }; ")
+	b.WriteString("exit $LASTEXITCODE")
+	return b.String()
 }
 
 func relOrAbs(root, path string) string {
@@ -3623,6 +3658,9 @@ func (t GrepTool) renderGrepSearchResult(request grepSearchRequest, result grepS
 				"matched_paths": []string{},
 			},
 		}
+	}
+	if truncated {
+		lines = append(lines, fmt.Sprintf("... (truncated at %d matches; narrow the pattern/glob or raise max_results to see the rest)", request.MaxResults))
 	}
 	return ToolExecutionResult{
 		DisplayText: strings.Join(lines, "\n"),
@@ -6803,6 +6841,72 @@ func checkAllowedGitCommitIdentity(ctx context.Context, root string) GitCommitId
 	return check
 }
 
+// gitIdentityEnvScrubbed returns the current environment with the variables git
+// uses to resolve author/committer identity and date removed, so a caller's
+// pre-set GIT_AUTHOR_*/GIT_COMMITTER_* cannot override the pinned -c identity.
+func gitIdentityEnvScrubbed() []string {
+	drop := map[string]struct{}{
+		"GIT_AUTHOR_NAME":     {},
+		"GIT_AUTHOR_EMAIL":    {},
+		"GIT_AUTHOR_DATE":     {},
+		"GIT_COMMITTER_NAME":  {},
+		"GIT_COMMITTER_EMAIL": {},
+		"GIT_COMMITTER_DATE":  {},
+	}
+	src := os.Environ()
+	out := make([]string, 0, len(src)+1)
+	for _, kv := range src {
+		key := kv
+		if idx := strings.IndexByte(kv, '='); idx >= 0 {
+			key = kv[:idx]
+		}
+		if _, skip := drop[strings.ToUpper(key)]; skip {
+			continue
+		}
+		out = append(out, kv)
+	}
+	out = append(out, "GIT_OPTIONAL_LOCKS=0")
+	return out
+}
+
+// runGitCommitCommand runs a git commit with the identity env scrubbed so the
+// pinned -c user.name/user.email cannot be overridden.
+func runGitCommitCommand(ctx context.Context, dir string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", gitHelperArgs(args...)...)
+	cmd.Dir = dir
+	cmd.Env = gitIdentityEnvScrubbed()
+	out, err := cmd.CombinedOutput()
+	text := strings.TrimSpace(string(out))
+	if err != nil {
+		if text == "" {
+			text = err.Error()
+		}
+		return text, fmt.Errorf("git command failed: %w", err)
+	}
+	if text == "" {
+		return "(no output)", nil
+	}
+	return text, nil
+}
+
+// verifyCommittedIdentity confirms the identity git actually recorded on the
+// new HEAD commit matches the allowlist. This is the authoritative check: even
+// if pinning were bypassed, a mismatching author/committer is rejected here.
+func verifyCommittedIdentity(ctx context.Context, dir string) error {
+	authorName, _ := runGitHelperCommand(ctx, dir, "log", "-1", "--pretty=%an")
+	authorEmail, _ := runGitHelperCommand(ctx, dir, "log", "-1", "--pretty=%ae")
+	committerName, _ := runGitHelperCommand(ctx, dir, "log", "-1", "--pretty=%cn")
+	committerEmail, _ := runGitHelperCommand(ctx, dir, "log", "-1", "--pretty=%ce")
+	an := strings.TrimSpace(authorName)
+	ae := strings.TrimSpace(authorEmail)
+	cn := strings.TrimSpace(committerName)
+	ce := strings.TrimSpace(committerEmail)
+	if an != allowedGitCommitName || ae != allowedGitCommitEmail || cn != allowedGitCommitName || ce != allowedGitCommitEmail {
+		return fmt.Errorf("git commit recorded identity author %s <%s> committer %s <%s> is not allowed; expected %s <%s>", an, ae, cn, ce, allowedGitCommitName, allowedGitCommitEmail)
+	}
+	return nil
+}
+
 type GitCommitTool struct{ ws Workspace }
 
 func NewGitCommitTool(ws Workspace) GitCommitTool { return GitCommitTool{ws: ws} }
@@ -6838,13 +6942,25 @@ func (t GitCommitTool) Execute(ctx context.Context, input any) (string, error) {
 	if !identity.Allowed {
 		return "", fmt.Errorf("git commit blocked: %s", identity.Reason)
 	}
-	cmdArgs := []string{"commit", "-m", message}
+	// Pin the identity git will actually use. Without this the author/committer
+	// can be overridden by GIT_AUTHOR_*/GIT_COMMITTER_* env or inherited config,
+	// bypassing the allowlist. We inject -c user.name/user.email (which take
+	// precedence over config) and scrub the GIT_*_NAME/EMAIL/DATE env so they
+	// cannot win, then verify the recorded author after the commit.
+	cmdArgs := []string{
+		"-c", "user.name=" + allowedGitCommitName,
+		"-c", "user.email=" + allowedGitCommitEmail,
+		"commit", "-m", message,
+	}
 	if boolValue(args, "allow_empty", false) {
 		cmdArgs = append(cmdArgs, "--allow-empty")
 	}
-	out, err := runGitCommand(ctx, t.ws.Root, cmdArgs...)
+	out, err := runGitCommitCommand(ctx, t.ws.Root, cmdArgs...)
 	if err != nil {
 		return out, err
+	}
+	if authorErr := verifyCommittedIdentity(ctx, t.ws.Root); authorErr != nil {
+		return out, authorErr
 	}
 	shortSHA, err := runGitHelperCommand(ctx, t.ws.Root, "rev-parse", "--short", "HEAD")
 	if err != nil {
@@ -7160,14 +7276,23 @@ func (t GitStatusTool) Execute(ctx context.Context, input any) (string, error) {
 	if _, err := requireToolInputObject(input, t.Definition().Name); err != nil {
 		return "", err
 	}
-	cmd := newGitHelperCommand(ctx, t.ws.Root, "status", "--short", "--branch")
-	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
+	stdout, stderr, err := runGitHelperSplit(ctx, t.ws.Root, "status", "--short", "--branch")
+	text := strings.TrimSpace(stdout)
 	if err != nil {
-		if text == "" {
-			text = err.Error()
+		detail := filterBenignGitStderr(stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(stderr)
 		}
-		return text, fmt.Errorf("git status failed: %w", err)
+		if detail == "" {
+			detail = err.Error()
+		}
+		body := text
+		if body == "" {
+			body = detail
+		} else {
+			body = body + "\n\n[git stderr]\n" + detail
+		}
+		return body, fmt.Errorf("git status failed: %w", err)
 	}
 	if text == "" {
 		return "(clean working tree)", nil
@@ -7246,14 +7371,23 @@ func (t GitDiffTool) Execute(ctx context.Context, input any) (string, error) {
 		}
 		cmdArgs = append(cmdArgs, "--", path)
 	}
-	cmd := newGitHelperCommand(ctx, t.ws.Root, cmdArgs...)
-	out, err := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
+	stdout, stderr, err := runGitHelperSplit(ctx, t.ws.Root, cmdArgs...)
+	text := strings.TrimSpace(stdout)
 	if err != nil {
-		if text == "" {
-			text = err.Error()
+		detail := filterBenignGitStderr(stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(stderr)
 		}
-		return text, fmt.Errorf("git diff failed: %w", err)
+		if detail == "" {
+			detail = err.Error()
+		}
+		body := text
+		if body == "" {
+			body = detail
+		} else {
+			body = body + "\n\n[git stderr]\n" + detail
+		}
+		return body, fmt.Errorf("git diff failed: %w", err)
 	}
 	if text == "" {
 		return "(no diff)", nil
@@ -7324,6 +7458,43 @@ func runGitHelperCommand(ctx context.Context, dir string, args ...string) (strin
 		return "(no output)", nil
 	}
 	return text, nil
+}
+
+// runGitHelperSplit runs a git helper command capturing stdout and stderr in
+// separate buffers. On Windows with core.autocrlf, git prints CRLF/LF warnings
+// to stderr for nearly every file; merging them (CombinedOutput) corrupts the
+// status/diff body the model parses. We return stdout verbatim and only surface
+// stderr when the command actually failed (benign CRLF warnings are dropped).
+func runGitHelperSplit(ctx context.Context, dir string, args ...string) (stdout string, stderr string, err error) {
+	cmd := newGitHelperCommand(ctx, dir, args...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err = cmd.Run()
+	return outBuf.String(), errBuf.String(), err
+}
+
+// filterBenignGitStderr removes git's autocrlf line-ending warnings so they do
+// not pollute surfaced stderr. Returns the remaining (non-benign) lines.
+func filterBenignGitStderr(stderr string) string {
+	normalized := strings.ReplaceAll(stderr, "\r\n", "\n")
+	kept := make([]string, 0)
+	for _, line := range strings.Split(normalized, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if strings.Contains(lower, "will be replaced by crlf") ||
+			strings.Contains(lower, "will be replaced by lf") ||
+			strings.Contains(lower, "lf will be replaced by crlf") ||
+			strings.Contains(lower, "crlf will be replaced by lf") ||
+			(strings.HasPrefix(lower, "warning:") && strings.Contains(lower, "line endings")) {
+			continue
+		}
+		kept = append(kept, trimmed)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func summarizeExec(name string, args ...string) string {

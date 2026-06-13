@@ -75,7 +75,16 @@ func NormalizeAssistantToolCalls(calls []ToolCall, opts ToolContractNormalizatio
 		}
 		if seen := seenIDs[call.ID]; seen > 0 {
 			original := call.ID
-			call.ID = fmt.Sprintf("%s__duplicate_%d", original, seen+1)
+			// Loop-increment the suffix until the candidate id is unused so a
+			// pre-existing or model-emitted "X__duplicate_N" cannot collide and
+			// drop a tool result.
+			suffix := seen + 1
+			candidate := fmt.Sprintf("%s__duplicate_%d", original, suffix)
+			for seenIDs[candidate] > 0 {
+				suffix++
+				candidate = fmt.Sprintf("%s__duplicate_%d", original, suffix)
+			}
+			call.ID = candidate
 			result.Issues = append(result.Issues, ToolContractIssue{
 				Kind:     ToolContractSyntheticInvalid,
 				CallID:   call.ID,
@@ -115,6 +124,20 @@ func NormalizeAssistantToolCalls(calls []ToolCall, opts ToolContractNormalizatio
 				Call:     call,
 				Kind:     ToolContractSyntheticInvalid,
 				Reason:   fmt.Sprintf("INVALID: invalid JSON tool arguments; tool arguments must be a valid JSON object: %v", err),
+				Guidance: invalidToolArgumentsGuidance(call.Name),
+				IsError:  true,
+			})
+			continue
+		}
+		// Fail CLOSED on a shell command/commands argument that is present but
+		// the wrong schema type (for example a JSON array passed as "command").
+		// Such a value reads back empty in the boundary detectors and would
+		// otherwise slip a mutating command past the no-git/no-file envelope.
+		if toolCallShellCommandArgTypeMismatch(call) {
+			result.SyntheticResults = append(result.SyntheticResults, ToolContractSyntheticResult{
+				Call:     call,
+				Kind:     ToolContractSyntheticInvalid,
+				Reason:   "INVALID: shell command argument has the wrong type; 'command' must be a JSON string and 'commands' must be a JSON array of strings.",
 				Guidance: invalidToolArgumentsGuidance(call.Name),
 				IsError:  true,
 			})
@@ -338,6 +361,19 @@ func toolContractParseArgumentsObject(raw string) (map[string]any, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return map[string]any{}, nil
+	}
+	// Reject literal null and any non-object JSON (array, scalar). json.Unmarshal
+	// of "null" into a map leaves it nil with no error, which would otherwise be
+	// silently accepted as an empty object instead of being flagged invalid.
+	var probe any
+	if err := json.Unmarshal([]byte(raw), &probe); err != nil {
+		return nil, err
+	}
+	if probe == nil {
+		return nil, fmt.Errorf("tool arguments must be a JSON object, got null")
+	}
+	if _, ok := probe.(map[string]any); !ok {
+		return nil, fmt.Errorf("tool arguments must be a JSON object")
 	}
 	payload := map[string]any{}
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {

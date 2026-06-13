@@ -1133,7 +1133,10 @@ func TestApplyPatchWorkdirCanCreateMissingDirectoryForAdd(t *testing.T) {
 	}
 }
 
-func TestApplyPatchUpdateAppendsTrailingNewlineLikeCodex(t *testing.T) {
+func TestApplyPatchUpdatePreservesMissingTrailingNewline(t *testing.T) {
+	// Corrected contract (cluster T9): a file that ended WITHOUT a trailing
+	// newline must keep that state after an update; apply_patch must not silently
+	// append a newline (which would alter the file bytes / EOL).
 	root := t.TempDir()
 	target := filepath.Join(root, "no_newline.txt")
 	if err := os.WriteFile(target, []byte("no newline at end"), 0o644); err != nil {
@@ -1165,8 +1168,11 @@ func TestApplyPatchUpdateAppendsTrailingNewlineLikeCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if string(content) != "first line\nsecond line\n" {
-		t.Fatalf("expected Codex-style trailing newline, got %q", string(content))
+	if string(content) != "first line\nsecond line" {
+		t.Fatalf("expected preserved no-trailing-newline state, got %q", string(content))
+	}
+	if strings.HasSuffix(string(content), "\n") {
+		t.Fatalf("update must not append a trailing newline to a file that lacked one: %q", string(content))
 	}
 }
 
@@ -1208,18 +1214,21 @@ func TestApplyPatchAcceptsEndOfFileSentinelLikeCodexGrammar(t *testing.T) {
 	}
 }
 
-func TestApplyPatchAddOverwritesExistingRegularFileLikeCodex(t *testing.T) {
+func TestApplyPatchAddOntoExistingRegularFileFailsClosed(t *testing.T) {
+	// Corrected contract (cluster T1): an Add File targeting an existing regular
+	// file must fail closed and must NOT destroy the existing file data. The model
+	// has to use Update to modify an existing file.
 	root := t.TempDir()
 	target := filepath.Join(root, "duplicate.txt")
 	if err := os.WriteFile(target, []byte("old content\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	var preview EditPreview
+	previewCalls := 0
 	tool := NewApplyPatchTool(Workspace{
 		BaseRoot: root,
 		Root:     root,
 		PreviewEdit: func(next EditPreview) (bool, error) {
-			preview = next
+			previewCalls++
 			return true, nil
 		},
 	})
@@ -1227,18 +1236,21 @@ func TestApplyPatchAddOverwritesExistingRegularFileLikeCodex(t *testing.T) {
 	_, err := tool.ExecuteDetailed(context.Background(), map[string]any{
 		"patch": "*** Begin Patch\n*** Add File: duplicate.txt\n+new content\n*** End Patch\n",
 	})
-	if err != nil {
-		t.Fatalf("ExecuteDetailed: %v", err)
+	if err == nil {
+		t.Fatalf("expected add-onto-existing-file to fail closed, got nil error")
 	}
-	content, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected already-exists error, got %v", err)
 	}
-	if string(content) != "new content\n" {
-		t.Fatalf("expected Codex-style add overwrite, got %q", string(content))
+	content, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
 	}
-	if !strings.Contains(preview.Preview, "-   1 | old content") || !strings.Contains(preview.Preview, "+   1 | new content") {
-		t.Fatalf("expected overwrite preview to include old and new content, got %q", preview.Preview)
+	if string(content) != "old content\n" {
+		t.Fatalf("failed add must not modify the existing file, got %q", string(content))
+	}
+	if previewCalls != 0 {
+		t.Fatalf("a rejected add must not reach the edit-preview stage, previewCalls=%d", previewCalls)
 	}
 }
 
@@ -3383,14 +3395,19 @@ func TestShellOutputCollectorTracksCarriageReturnProgress(t *testing.T) {
 
 func TestRunShellUsesWorkspaceDefaultTimeout(t *testing.T) {
 	root := t.TempDir()
-	command := "sleep 0.2"
+	// The command must run far longer than the workspace timeout, and the
+	// timeout must comfortably exceed shell-process startup so the workspace
+	// timeout (not the raw context deadline before the process even starts) is
+	// what kills it. A sub-startup budget (e.g. 50ms) is shorter than PowerShell
+	// startup on Windows and makes this test flaky regardless of the wrapper.
+	command := "sleep 10"
 	if runtime.GOOS == "windows" {
-		command = "Start-Sleep -Milliseconds 200"
+		command = "Start-Sleep -Seconds 10"
 	}
 	tool := NewRunShellTool(Workspace{
 		BaseRoot:     root,
 		Root:         root,
-		ShellTimeout: 50 * time.Millisecond,
+		ShellTimeout: 1 * time.Second,
 	})
 
 	_, err := tool.Execute(context.Background(), map[string]any{

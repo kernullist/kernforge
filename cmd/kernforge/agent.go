@@ -76,6 +76,10 @@ const (
 	repeatedReadFilePathNudgeTurns        = 4
 	repeatedReadFilePathRecoveryThreshold = 6
 	repeatedReadFilePathAbortTurns        = 8
+	repeatedReadSetNudgeTurns             = 4
+	repeatedReadSetRecoveryThreshold      = 6
+	repeatedReadSetAbortTurns             = 8
+	repeatedReadSetWindow                 = 6
 	maxPreWriteReviewRepairBlocksPerTurn  = 4
 	maxPreWriteReviewRepairInspectTools   = 6
 	maxPreWriteReviewRepairInspectNudges  = 1
@@ -624,6 +628,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	lastToolCallSummary := ""
 	lastReadFilePath := ""
 	lastReadFilePathTurns := 0
+	multiPathReadWindow := [][]string{}
+	lastMultiPathReadSignature := ""
+	multiPathReadRepeatTurns := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -1222,6 +1229,76 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				turnRuntime.Counters.RepeatedCachedReadFileNudges = 0
 				turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
 			}
+			// Multi-path read churn: a model alternating read_file across two or
+			// more distinct paths trips neither the identical-signature detector
+			// (disabled for pure read batches) nor the single-path detector. Track
+			// the union of distinct read_file paths over a sliding window; when the
+			// same multi-path set/cycle persists across turns, feed the existing
+			// nudge/recovery/abort path.
+			if batchPaths, ok := readFileBatchPaths(resp.Message.ToolCalls); ok {
+				multiPathReadWindow = append(multiPathReadWindow, batchPaths)
+				if len(multiPathReadWindow) > repeatedReadSetWindow {
+					multiPathReadWindow = multiPathReadWindow[len(multiPathReadWindow)-repeatedReadSetWindow:]
+				}
+				signature, distinct := multiPathReadWindowSignature(multiPathReadWindow)
+				if signature != "" {
+					if signature == lastMultiPathReadSignature {
+						multiPathReadRepeatTurns++
+					} else {
+						lastMultiPathReadSignature = signature
+						multiPathReadRepeatTurns = 1
+						turnRuntime.Counters.RepeatedReadSetNudges = 0
+						turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
+					}
+					if multiPathReadRepeatTurns >= repeatedReadSetAbortTurns {
+						return "", fmt.Errorf("stopped after repeatedly cycling read_file across the same %d files without making progress", distinct)
+					}
+					if multiPathReadRepeatTurns >= repeatedReadSetRecoveryThreshold && turnRuntime.Counters.RepeatedReadSetRecoveryCount < 1 {
+						turnRuntime.Counters.RepeatedReadSetRecoveryCount++
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "read_file cycled the same set of paths without progress",
+							Guidance:  repeatedToolCallRecoveryGuidance(summarizeToolCalls(resp.Message.ToolCalls), summarizeRecentToolTurns(a.Session.Messages, 3)),
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     multiPathReadRepeatTurns,
+							Iteration: turnCount,
+						})
+						a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
+							Summary: summarizeToolCalls(resp.Message.ToolCalls),
+							Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
+							Detail:  summarizeToolCalls(resp.Message.ToolCalls),
+						})))
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+						continue
+					}
+					if multiPathReadRepeatTurns >= repeatedReadSetNudgeTurns && turnRuntime.Counters.RepeatedReadSetNudges < 1 {
+						turnRuntime.Counters.RepeatedReadSetNudges++
+						multiPathGuidance := fmt.Sprintf("You keep re-reading the same set of %d files across multiple tool turns without making progress. Stop cycling read_file over these paths. Either explain what you found so far, switch to a different tool, or provide the final answer now.", distinct)
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:      RuntimeInterventionRepeatedTool,
+							Reason:    "read_file cycled the same set of paths",
+							Guidance:  multiPathGuidance,
+							ToolCalls: resp.Message.ToolCalls,
+							Count:     multiPathReadRepeatTurns,
+							Iteration: turnCount,
+						})
+						a.Session.AddMessage(internalUserMessage(multiPathGuidance))
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+				}
+			} else {
+				multiPathReadWindow = multiPathReadWindow[:0]
+				lastMultiPathReadSignature = ""
+				multiPathReadRepeatTurns = 0
+				turnRuntime.Counters.RepeatedReadSetNudges = 0
+				turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
+			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
 				if preamble != "" {
@@ -1257,6 +1334,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			turnRuntime.Counters.RepeatedReadFilePathNudges = 0
 			turnRuntime.Counters.RepeatedCachedReadFileNudges = 0
 			turnRuntime.Counters.RepeatedReadFilePathRecoveryCount = 0
+			multiPathReadWindow = multiPathReadWindow[:0]
+			lastMultiPathReadSignature = ""
+			multiPathReadRepeatTurns = 0
+			turnRuntime.Counters.RepeatedReadSetNudges = 0
+			turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
 			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !deferEndTurnFollowUpForPostWorkReply && !finalAnswerOnlyCorrection {
 				turnRuntime.Counters.CommentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
@@ -3477,8 +3559,16 @@ func generatedDocumentArtifactFinalizationOnlyToolCalls(calls []ToolCall) bool {
 func shellToolCallMayWriteWorkspace(call ToolCall) bool {
 	switch strings.TrimSpace(call.Name) {
 	case "run_shell", "run_shell_background":
+		// Fail CLOSED: a type-mismatched command reads back empty, so treat it
+		// as a potential workspace write instead of read-only.
+		if toolCallShellCommandArgTypeMismatch(call) {
+			return true
+		}
 		return shellMutationClassMayWriteWorkspace(assessShellCommandMutation(toolCallCommandArgument(call)).Class)
 	case "run_shell_bundle_background":
+		if toolCallShellCommandArgTypeMismatch(call) {
+			return true
+		}
 		for _, command := range toolCallCommandsArgument(call) {
 			if shellMutationClassMayWriteWorkspace(assessShellCommandMutation(command).Class) {
 				return true
@@ -3534,7 +3624,11 @@ func (a *Agent) buildTurnToolExposurePlanForEnvelope(baseDisabled map[string]boo
 	}
 	envelope.Normalize()
 	request := envelope.ExternalUserText
-	disableRequestEnvelopeForbiddenTools(disabled, registry, envelope)
+	var mcp *MCPManager
+	if a != nil {
+		mcp = a.MCP
+	}
+	disableRequestEnvelopeForbiddenTools(disabled, registry, envelope, mcp)
 	generatedDocumentFinalOnly := a.shouldUseGeneratedDocumentArtifactFinalOnlyTools(request, unresolvedVerification)
 	suppressInteractiveWorkers := a.shouldSuppressInteractiveWorkersForTurn(request)
 	if finalAnswerOnlyCorrection || verificationOutOfScopeFinalOnly || verificationSkippedFinalOnly || generatedDocumentFinalOnly {
@@ -3542,7 +3636,7 @@ func (a *Agent) buildTurnToolExposurePlanForEnvelope(baseDisabled map[string]boo
 		suppressInteractiveWorkers = true
 	}
 	if !latestUserExplicitWebResearch && localCodeToolPolicyForTurn {
-		disableWebResearchToolsForLocalCodeWork(disabled, registry)
+		disableWebResearchToolsForLocalCodeWork(disabled, registry, mcp)
 	}
 	return turnToolExposurePlan{
 		DisabledTools:              disabled,
@@ -4925,6 +5019,60 @@ func repeatedReadFilePathKey(calls []ToolCall) (string, bool) {
 	}
 
 	return key, key != ""
+}
+
+// readFileBatchPaths returns the sorted set of distinct read_file path keys for
+// a tool-call batch, but only when every call in the batch is a read_file with
+// a resolvable path. ok is false for any non-read_file call or empty path so
+// non-read turns do not pollute the multi-path window.
+func readFileBatchPaths(calls []ToolCall) ([]string, bool) {
+	if len(calls) == 0 {
+		return nil, false
+	}
+	seen := map[string]struct{}{}
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "read_file" {
+			return nil, false
+		}
+		path := readFilePathKey(call.Arguments)
+		if path == "" {
+			return nil, false
+		}
+		seen[path] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return nil, false
+	}
+	paths := make([]string, 0, len(seen))
+	for path := range seen {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, true
+}
+
+// multiPathReadWindowSignature computes a stable signature over the union of
+// distinct read_file paths in a sliding window of recent read-only turns. It
+// returns a non-empty signature only when the window covers two or more
+// distinct paths, since single-path churn is already handled by the
+// repeatedReadFilePathKey detector. distinct reports how many unique paths the
+// window currently spans.
+func multiPathReadWindowSignature(window [][]string) (string, int) {
+	union := map[string]struct{}{}
+	for _, paths := range window {
+		for _, path := range paths {
+			union[path] = struct{}{}
+		}
+	}
+	if len(union) < 2 {
+		return "", len(union)
+	}
+	paths := make([]string, 0, len(union))
+	for path := range union {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return strings.Join(paths, "\x1e"), len(union)
 }
 
 func readFilePathKey(arguments string) string {
@@ -7266,13 +7414,21 @@ func cloneDisabledTools(disabled map[string]bool) map[string]bool {
 	return out
 }
 
-func disableWebResearchToolsForLocalCodeWork(disabled map[string]bool, registry *ToolRegistry) {
+func disableWebResearchToolsForLocalCodeWork(disabled map[string]bool, registry *ToolRegistry, mcp *MCPManager) {
 	if disabled == nil || registry == nil {
 		return
 	}
 	for _, def := range registry.Definitions() {
 		name := strings.TrimSpace(def.Name)
-		if name == "" || !toolCallNameLooksLikeWebResearch(name) {
+		if name == "" {
+			continue
+		}
+		// Hide by name-substring heuristic, and also hide any capability-declared
+		// MCP web tool. Keeping these two in sync with the runtime guard and the
+		// tool-contract classifier (mcp.IsWebResearchToolName) avoids exposing a
+		// tool that would only be blocked mid-turn.
+		if !toolCallNameLooksLikeWebResearch(name) &&
+			!(mcp != nil && mcp.IsWebResearchToolName(name)) {
 			continue
 		}
 		disabled[name] = true
@@ -8012,8 +8168,16 @@ func toolCallMutatesGitState(call ToolCall) bool {
 	case "git_add", "git_commit", "git_push", "git_create_pr":
 		return true
 	case "run_shell", "run_shell_background":
+		// Fail CLOSED: a type-mismatched command reads back empty, so treat it
+		// as potentially mutating instead of waving it through the boundary.
+		if toolCallShellCommandArgTypeMismatch(call) {
+			return true
+		}
 		return shellCommandMutatesGitState(toolCallCommandArgument(call))
 	case "run_shell_bundle_background":
+		if toolCallShellCommandArgTypeMismatch(call) {
+			return true
+		}
 		for _, command := range toolCallCommandsArgument(call) {
 			if shellCommandMutatesGitState(command) {
 				return true
@@ -8455,6 +8619,42 @@ func hiddenModelToolCallBlockedResult(cfg Config, call ToolCall) ToolExecutionRe
 func toolCallCommandArgument(call ToolCall) string {
 	args := toolCallArgumentsMap(call)
 	return stringValue(args, "command")
+}
+
+// toolCallShellCommandArgTypeMismatch reports whether a shell-exec tool call
+// carries a command/commands argument that is present but NOT the schema type
+// (command must be a JSON string; commands must be a JSON array of strings).
+// A type-mismatched command (for example ["git","push"] passed as "command")
+// would read back empty via stringValue/stringSliceValue, which silently
+// defeats the git/workspace mutation boundary detectors. Treat such calls as
+// suspect so callers can fail CLOSED. The empty-key and correct-type cases are
+// not mismatches.
+func toolCallShellCommandArgTypeMismatch(call ToolCall) bool {
+	if !toolCallIsExecCommandLike(call.Name) {
+		return false
+	}
+	args := toolCallArgumentsMap(call)
+	switch strings.TrimSpace(call.Name) {
+	case "run_shell", "run_shell_background":
+		if v, ok := args["command"]; ok && v != nil {
+			if _, isString := v.(string); !isString {
+				return true
+			}
+		}
+	case "run_shell_bundle_background":
+		if v, ok := args["commands"]; ok && v != nil {
+			arr, isArray := v.([]any)
+			if !isArray {
+				return true
+			}
+			for _, item := range arr {
+				if _, isString := item.(string); !isString {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func toolCallPathArgument(call ToolCall) string {

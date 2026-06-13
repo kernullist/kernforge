@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -580,6 +581,13 @@ func LoadMCPManager(ws Workspace, configs []MCPServerConfig) (*MCPManager, []str
 		manager.servers = append(manager.servers, client)
 		manager.status = append(manager.status, client.status)
 	}
+	// Detect residual namespaced-name collisions across all loaded servers and
+	// surface them loudly. Routing stays correct (each MCPTool carries its own
+	// client/remote and a disambiguated name), but operators should know a name
+	// was rewritten.
+	if _, collisionWarnings := resolveNamespacedMCPToolNames(manager.servers); len(collisionWarnings) > 0 {
+		warnings = append(warnings, collisionWarnings...)
+	}
 	return manager, warnings
 }
 
@@ -977,11 +985,17 @@ func (m *MCPManager) Tools() []Tool {
 		return nil
 	}
 	var out []Tool
+	resolved, _ := resolveNamespacedMCPToolNames(m.servers)
 	for _, server := range m.servers {
-		for _, tool := range server.tools {
+		perTool := resolved[server]
+		for idx, tool := range server.tools {
+			namespaced := perTool[idx]
+			if namespaced == "" {
+				namespaced = namespacedMCPToolName(server.config.Name, tool.Name)
+			}
 			out = append(out, MCPTool{
 				client:      server,
-				namespaced:  namespacedMCPToolName(server.config.Name, tool.Name),
+				namespaced:  namespaced,
 				remote:      tool,
 				description: fmt.Sprintf("[MCP:%s] %s", server.config.Name, strings.TrimSpace(tool.Description)),
 				workspace:   m.workspace,
@@ -1132,6 +1146,7 @@ func (m *MCPManager) IsWebResearchToolName(name string) bool {
 	if trimmed == "" {
 		return false
 	}
+	resolved, _ := resolveNamespacedMCPToolNames(m.servers)
 	for _, server := range m.servers {
 		if serverDeclaresWebResearchCapability(server.config) {
 			serverPromptTool := "mcp__prompt__" + sanitizeMCPName(server.config.Name)
@@ -1154,8 +1169,13 @@ func (m *MCPManager) IsWebResearchToolName(name string) bool {
 				}
 			}
 		}
-		for _, tool := range server.tools {
-			if trimmed == namespacedMCPToolName(server.config.Name, tool.Name) &&
+		perTool := resolved[server]
+		for idx, tool := range server.tools {
+			toolName := perTool[idx]
+			if toolName == "" {
+				toolName = namespacedMCPToolName(server.config.Name, tool.Name)
+			}
+			if trimmed == toolName &&
 				(serverDeclaresWebResearchCapability(server.config) || looksLikeWebResearchMCPText(tool.Name, tool.Description)) {
 				return true
 			}
@@ -1173,6 +1193,7 @@ func (m *MCPManager) IsWebResearchToolCall(call ToolCall) bool {
 		return false
 	}
 	args := toolCallArgumentsMap(call)
+	resolved, _ := resolveNamespacedMCPToolNames(m.servers)
 	for _, server := range m.servers {
 		serverPromptTool := "mcp__prompt__" + sanitizeMCPName(server.config.Name)
 		if name == serverPromptTool {
@@ -1204,8 +1225,13 @@ func (m *MCPManager) IsWebResearchToolCall(call ToolCall) bool {
 				}
 			}
 		}
-		for _, tool := range server.tools {
-			if name != namespacedMCPToolName(server.config.Name, tool.Name) {
+		perTool := resolved[server]
+		for idx, tool := range server.tools {
+			toolName := perTool[idx]
+			if toolName == "" {
+				toolName = namespacedMCPToolName(server.config.Name, tool.Name)
+			}
+			if name != toolName {
 				continue
 			}
 			if serverDeclaresWebResearchCapability(server.config) || looksLikeWebResearchMCPText(tool.Name, tool.Description) {
@@ -1302,6 +1328,64 @@ func serverDeclaresWebResearchCapability(cfg MCPServerConfig) bool {
 
 func namespacedMCPToolName(server, tool string) string {
 	return "mcp__" + sanitizeMCPName(server) + "__" + sanitizeMCPName(tool)
+}
+
+// mcpToolNameDisambiguator returns a short stable suffix derived from the
+// original (server, tool) identity. It is used to keep namespaced tool names
+// collision-free when sanitizeMCPName folds two distinct pairs onto the same
+// base name. The suffix is deterministic across runs for a given identity.
+func mcpToolNameDisambiguator(server, tool string) string {
+	sum := sha256.Sum256([]byte(server + "\x00" + tool))
+	return hex.EncodeToString(sum[:])[:6]
+}
+
+// resolveNamespacedMCPToolNames walks the live servers in stable order and
+// assigns a collision-free namespaced name to every server tool. When two
+// distinct (server, tool) identities fold onto the same base namespaced name
+// the later entry is disambiguated with a short stable hash of its original
+// identity (and a numeric suffix as a last resort). The returned map is keyed
+// by server pointer then tool index so callers that iterate m.servers in the
+// same order can recover the final unique name. Residual collisions (which
+// should not happen given the hash) are reported via warnings.
+func resolveNamespacedMCPToolNames(servers []*MCPClient) (map[*MCPClient]map[int]string, []string) {
+	resolved := make(map[*MCPClient]map[int]string, len(servers))
+	used := map[string]struct{}{}
+	warnings := []string{}
+	for _, server := range servers {
+		if server == nil {
+			continue
+		}
+		perTool := make(map[int]string, len(server.tools))
+		for idx, tool := range server.tools {
+			base := namespacedMCPToolName(server.config.Name, tool.Name)
+			name := base
+			if _, taken := used[name]; taken {
+				name = base + "_" + mcpToolNameDisambiguator(server.config.Name, tool.Name)
+				if _, taken := used[name]; taken {
+					// Last-resort numeric suffix; keeps routing unique even on
+					// the (practically impossible) hash collision.
+					for n := 2; ; n++ {
+						candidate := fmt.Sprintf("%s_%d", name, n)
+						if _, taken := used[candidate]; !taken {
+							name = candidate
+							break
+						}
+					}
+				}
+				warnings = append(warnings, fmt.Sprintf(
+					"mcp tool name collision: %s/%s folded onto %s; routed as %s",
+					strings.TrimSpace(server.config.Name),
+					strings.TrimSpace(tool.Name),
+					base,
+					name,
+				))
+			}
+			used[name] = struct{}{}
+			perTool[idx] = name
+		}
+		resolved[server] = perTool
+	}
+	return resolved, warnings
 }
 
 func filterValidMCPToolDescriptors(serverName string, tools []MCPToolDescriptor) ([]MCPToolDescriptor, []string) {
