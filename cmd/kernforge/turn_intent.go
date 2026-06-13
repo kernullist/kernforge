@@ -134,11 +134,28 @@ func looksLikeGitOperationRequest(text string) bool {
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower,
-		"커밋", "commit", "푸시", "push",
-		"git ", "git-", "git_", "깃 ",
-		"스테이지", "stage ",
-	)
+	// KO git nouns have no ASCII word breaks, so substring matching is fine for
+	// them. The ASCII git verbs must be whole words so that "multistage pipeline",
+	// "commit message hook", or "push data to the queue" do not flip to a git
+	// intent. A standalone whole-word git verb still requires a git object/context
+	// or an explicit git prefix to count.
+	if containsAny(lower, "커밋", "푸시", "스테이지", "깃 ", "git ", "git-", "git_") {
+		return true
+	}
+	hasGitVerb := containsWord(lower, "commit", "push", "stage", "rebase", "amend", "cherry-pick", "squash")
+	if !hasGitVerb {
+		return false
+	}
+	// A whole-word git verb counts when paired with a git object/context (EN or
+	// KO) or with a KO action suffix ("commit 해줘", "push 하자"). Plain English
+	// like "push data to the queue" lacks both and stays non-git.
+	if containsWord(lower, "git", "branch", "changes", "staged", "pr", "remote", "origin", "head") {
+		return true
+	}
+	if containsAny(lower, "변경사항", "변경분", "변경 사항", "브랜치", "스테이징", "원격") {
+		return true
+	}
+	return containsAny(lower, "해줘", "해 줘", "하자", "하고", "할게", "할래", "해라", "해줄래")
 }
 
 func looksLikeRecentErrorQuestion(text string) bool {

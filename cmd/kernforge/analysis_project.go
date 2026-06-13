@@ -17108,6 +17108,81 @@ func containsAny(text string, needles ...string) bool {
 	return false
 }
 
+// isWordBoundaryByte reports whether b is an ASCII alphanumeric byte. Anything
+// that is not alphanumeric (space, punctuation, or a non-ASCII lead byte such as
+// the start of a Hangul rune) counts as a word boundary.
+func isWordBoundaryByte(b byte) bool {
+	if b >= 'a' && b <= 'z' {
+		return false
+	}
+	if b >= 'A' && b <= 'Z' {
+		return false
+	}
+	if b >= '0' && b <= '9' {
+		return false
+	}
+	if b == '_' {
+		return false
+	}
+	return true
+}
+
+// requestTextHasWord reports whether word occurs in text as a whole ASCII word,
+// i.e. not embedded inside a longer alphanumeric run. This prevents raw
+// substring matches such as "fix" inside "prefix/suffix/postfix/affix" or "run"
+// inside "run loop" vs "rerun". The word should be a lowercased ASCII token; the
+// caller is expected to pass already-lowered text. Multi-byte (Hangul) needles
+// fall back to plain substring matching because Korean has no ASCII word breaks.
+func requestTextHasWord(text, word string) bool {
+	if word == "" {
+		return false
+	}
+	if !isASCIIWord(word) {
+		return strings.Contains(text, word)
+	}
+	start := 0
+	for {
+		idx := strings.Index(text[start:], word)
+		if idx < 0 {
+			return false
+		}
+		pos := start + idx
+		before := pos == 0 || isWordBoundaryByte(text[pos-1])
+		afterPos := pos + len(word)
+		after := afterPos >= len(text) || isWordBoundaryByte(text[afterPos])
+		if before && after {
+			return true
+		}
+		start = pos + 1
+		if start >= len(text) {
+			return false
+		}
+	}
+}
+
+// containsWord reports whether any of the supplied needles occurs in text. ASCII
+// needles are matched on whole-word boundaries via requestTextHasWord; non-ASCII
+// (Hangul) needles fall back to substring matching. This is the single shared
+// boundary-aware matcher reused by the intent predicates so that "run/fix/edit/
+// change/commit/stage/push" do not match when embedded in unrelated words.
+func containsWord(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if requestTextHasWord(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIIWord(word string) bool {
+	for i := 0; i < len(word); i++ {
+		if word[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 func containsString(items []string, target string) bool {
 	target = strings.TrimSpace(target)
 	if target == "" {

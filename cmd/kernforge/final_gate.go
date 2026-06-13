@@ -102,7 +102,7 @@ func BuildFinalGateInput(root string, session *Session, envelope RequestEnvelope
 		ChangedFiles:                   normalizeTaskStateList(changedFiles, 128),
 		Verification:                   finalGateVerificationResult(session, envelope, changedFiles),
 		Review:                         finalGateReviewResult(session),
-		GitMutation:                    finalGateGitMutationState(envelope),
+		GitMutation:                    finalGateGitMutationState(session, envelope),
 		Reply:                          strings.TrimSpace(reply),
 		AttemptedEditTool:              ctx.AttemptedEditTool,
 		ExplicitEditRequest:            ctx.ExplicitEditRequest || envelope.ExplicitEditRequest,
@@ -158,6 +158,16 @@ func DecideFinalGate(input FinalGateInput) FinalGateDecision {
 	}
 	if input.GitMutation.Requested && input.GitMutation.IdentityChecked && !input.GitMutation.IdentityAllowed {
 		return set(FinalGateNeedsUserConfirmation, "git commit identity is not approved", "Configure git identity as kernullist <gloryo@naver.com> before creating a commit.")
+	}
+	// Unexpected file mutation guard. Any turn whose envelope does not allow file
+	// mutation must NOT leak a workspace edit, regardless of PrimaryClass. This
+	// covers question/research/git turns that the read-only boundary helper does
+	// not classify. Harness-owned generated documents are exempt because the
+	// document gate (not this guard) governs their writes.
+	if !input.RequestEnvelope.AllowsFileMutation && !input.GeneratedDocumentHarnessOwnsIt {
+		if input.AttemptedEditTool || len(input.ChangedFiles) > 0 {
+			return set(FinalGateNeedsRecovery, "request does not allow file mutation but a workspace edit was attempted or produced", "Keep non-edit turns read-only unless the user explicitly asks for a file mutation.")
+		}
 	}
 	if finalGateReadOnlyBoundary(input.RequestEnvelope) {
 		if input.AttemptedEditTool || len(input.ChangedFiles) > 0 {
@@ -276,12 +286,63 @@ func finalGateReviewResult(session *Session) FinalGateReviewResult {
 	return result
 }
 
-func finalGateGitMutationState(envelope RequestEnvelope) FinalGateGitMutationState {
-	return FinalGateGitMutationState{
+func finalGateGitMutationState(session *Session, envelope RequestEnvelope) FinalGateGitMutationState {
+	state := FinalGateGitMutationState{
 		Requested:         envelope.ExplicitGitRequest || envelope.AllowsGitMutation,
 		AllowedByEnvelope: envelope.AllowsGitMutation,
 		IdentityAllowed:   false,
 	}
+	// MutationAttempted is driven by recorded runtime evidence: a git-mutating
+	// tool execution (git_add/commit/push/create_pr) or a run_shell command that
+	// mutates git state. This is the only layer where the actual tool history is
+	// available, so the git-safety branches in DecideFinalGate are reachable.
+	state.MutationAttempted = finalGateGitMutationAttempted(session)
+	// Git commit identity is enforced at the git_commit/git_push tool layer
+	// (checkAllowedGitCommitIdentity runs there before any mutation). The final
+	// gate must stay a pure, deterministic decision; it does not shell out to read
+	// git config, so IdentityChecked stays false here and the identity branch in
+	// DecideFinalGate defers to that tool-layer enforcement.
+	return state
+}
+
+// finalGateGitMutationAttempted reports whether the recorded conversation shows a
+// git-mutating tool execution in the current session. Tool result messages carry
+// the executed tool name and, for run_shell, the executed command in ToolMeta.
+func finalGateGitMutationAttempted(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	for i := range session.Messages {
+		msg := session.Messages[i]
+		if !strings.EqualFold(strings.TrimSpace(msg.Role), "tool") {
+			continue
+		}
+		switch strings.TrimSpace(strings.ToLower(msg.ToolName)) {
+		case "git_add", "git_commit", "git_push", "git_create_pr":
+			return true
+		}
+		if finalGateToolMetaIsGitMutation(msg.ToolMeta) {
+			return true
+		}
+	}
+	return false
+}
+
+func finalGateToolMetaIsGitMutation(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	if effect, ok := meta["effect"].(string); ok {
+		if strings.EqualFold(strings.TrimSpace(effect), "git_mutation") {
+			return true
+		}
+	}
+	if command, ok := meta["command"].(string); ok {
+		if shellCommandMutatesGitState(strings.ToLower(strings.TrimSpace(command))) {
+			return true
+		}
+	}
+	return false
 }
 
 func finalGateReadOnlyBoundary(envelope RequestEnvelope) bool {

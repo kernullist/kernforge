@@ -414,7 +414,12 @@ func hasRepairActionNegation(input string) bool {
 		"고치지 말", "고치지는 말", "고치지 마", "고치지마", "패치하지 말", "패치 하지 말", "패치하지 마", "패치 하지 마", "패치 없이",
 		"do not edit", "don't edit", "dont edit", "no edit", "no edits", "without editing",
 		"do not modify", "don't modify", "dont modify", "without modifying",
-		"do not patch", "don't patch", "dont patch", "without patching")
+		"do not patch", "don't patch", "dont patch", "without patching",
+		"do not change", "don't change", "dont change", "without changing", "no change", "no changes",
+		"do not touch", "don't touch", "dont touch", "without touching", "leave the code", "leave it as is", "leave as is",
+		"코드는 건드리지", "건드리지 마", "건드리지 말", "건들지 마", "건들지 말", "손대지 마", "손대지 말",
+		"변경하지 마", "변경 하지 마", "변경하지 말", "변경 하지 말", "변경하지마", "변경 없이",
+		"바꾸지 마", "바꾸지 말", "바꾸지마", "바꾸지 않")
 }
 
 func looksLikeExplicitReviewModeIntent(input string) bool {

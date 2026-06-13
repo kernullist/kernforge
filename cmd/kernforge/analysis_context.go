@@ -1297,9 +1297,9 @@ func looksLikeActionOrToolIntent(text string) bool {
 	if lower == "" {
 		return false
 	}
-	if strings.HasPrefix(lower, "/") {
-		return true
-	}
+	// Slash commands are intercepted upstream by ParseCommand/handleCommand and
+	// never reach this natural-language pipeline. A leading "/" here is just a
+	// stray path-like token, so do not blanket-assume action/edit intent for it.
 	if looksLikeExecutionFlowQuestion(lower) {
 		return false
 	}
@@ -1324,7 +1324,7 @@ func looksLikeAnswerDeliveryRequest(text string) bool {
 		lower = strings.ToLower(strings.TrimSpace(text))
 	}
 	return containsAny(lower,
-		"tell me", "explain", "summarize", "summary", "compare", "list ", "list the", "show me", "what ", "which ", "how ",
+		"tell me", "explain", "describe", "walk me through", "overview of", "summarize", "summary", "compare", "list ", "list the", "show me", "what ", "which ", "how ",
 		"알려줘", "알려 줘", "말해줘", "말해 줘", "설명해", "설명해줘", "설명해 줘", "정리해", "정리해서", "요약해", "요약해줘", "비교해", "나열해",
 	)
 }
@@ -1368,9 +1368,18 @@ func looksLikeAnswerOnlyKnowledgeRequest(text string) bool {
 	if looksLikeDocumentArtifactOutputRequest(lower) || looksLikeExplicitGitIntent(lower) {
 		return false
 	}
+	// Use whole-word matching for ASCII edit verbs so "explain the prefix matching"
+	// or "explain the run loop" is not mistaken for an edit request, and require KO
+	// imperative forms rather than bare nouns ("변경"/"추가"/"수정") so analysis-only
+	// questions like "최신 커널 변경사항 알려줘" stay answer-only.
+	if containsWord(lower,
+		"apply", "commit", "delete", "edit", "fix", "implement", "modify", "patch", "refactor", "remove", "replace", "update",
+	) {
+		return false
+	}
 	if containsAny(lower,
-		"apply ", "change ", "commit ", "delete ", "edit ", "fix ", "implement ", "modify ", "patch ", "refactor ", "remove ", "replace ", "update ",
-		"적용", "커밋", "고쳐", "고치", "구현", "변경", "삭제", "수정", "추가", "패치", "반영",
+		"적용해", "커밋해", "고쳐", "고치", "구현해", "삭제해",
+		"수정해", "수정하", "변경해", "변경하", "추가해", "추가하", "패치해", "패치하", "반영해", "반영하",
 	) {
 		return false
 	}
@@ -1411,9 +1420,9 @@ func looksLikeExplicitEditIntent(text string) bool {
 	if lower == "" {
 		return false
 	}
-	if strings.HasPrefix(lower, "/") {
-		return true
-	}
+	// Slash commands are dispatched upstream and never reach this pipeline; a
+	// leading "/" here is a stray token, not a guaranteed edit command. Fall
+	// through to the verb checks (least-privilege default) instead of forcing edit.
 	if looksLikeGoalPromptDraftOnlyRequest(lower) {
 		return false
 	}
@@ -1423,10 +1432,36 @@ func looksLikeExplicitEditIntent(text string) bool {
 	if looksLikePlanOrDirectionOnlyRequest(lower) {
 		return false
 	}
+	// Descriptive questions ("what is the latest update on the schedule?",
+	// "explain how the patch tuesday cycle works") often contain noun-form verbs
+	// like update/patch/change. They are edit intent only when an imperative
+	// source-edit command is actually present; otherwise an answer-delivery
+	// question must stay read-only (least-privilege default).
+	if looksLikeAnswerDeliveryRequest(lower) && !looksLikeImperativeSourceEditCommand(lower) {
+		return false
+	}
+	// Execution verbs (run/build/test/compile and KO equivalents) describe
+	// running code, not editing source. They must NOT imply an edit on their own;
+	// only a real source-mutation verb or imperative form counts as edit intent.
+	// "fix the failing test" still matches the repair verb "fix" below, so a
+	// genuine repair request stays editable.
+	// "commit" is a git verb handled by looksLikeExplicitGitIntent, not a source
+	// edit, so it is intentionally absent here.
+	if containsWord(lower,
+		"add", "apply", "change", "create", "delete", "draft", "edit",
+		"fix", "generate", "implement", "modify", "patch", "prepare", "refactor",
+		"remove", "rename", "replace", "update", "write",
+	) {
+		return true
+	}
+	if containsAny(lower, "make the change", "make this change", "make changes") {
+		return true
+	}
+	// KO imperative source-edit forms only (bare nouns such as "변경/추가/수정"
+	// describing content must not flip an answer-only question to edit intent).
 	return containsAny(lower,
-		"add ", "apply ", "build ", "change ", "commit ", "compile ", "create ", "delete ", "draft ", "edit ", "fix ", "generate ", "implement ", "modify ", "patch ", "prepare ", "refactor ", "remove ", "rename ", "replace ", "run ", "test ", "update ", "write ",
-		"make the change", "make this change", "make changes",
-		"고쳐", "구현", "만들", "변경", "빌드", "삭제", "생성", "수정", "실행", "적용", "작성", "저장", "추가", "테스트", "패치",
+		"고쳐", "구현", "만들", "삭제", "생성", "적용", "작성", "저장",
+		"수정해", "수정하", "변경해", "변경하", "추가해", "추가하", "패치해", "패치하",
 	)
 }
 
@@ -1459,15 +1494,49 @@ func looksLikeImperativeSourceEditCommand(text string) bool {
 	)
 }
 
+// hasGitActionNegationOrQuestion gates git-mutation intent: a request that
+// forbids git ("do not commit", "커밋하지 마", "커밋 없이") or merely asks about
+// git ("git push가 뭐야?", "what does git push do?") must never grant git
+// mutation. Mirrors hasRepairActionNegation for the git surface.
+func hasGitActionNegationOrQuestion(lower string) bool {
+	lower = strings.ToLower(strings.TrimSpace(lower))
+	if lower == "" {
+		return false
+	}
+	if containsAny(lower,
+		"커밋하지 마", "커밋 하지 마", "커밋하지마", "커밋하지 말", "커밋 하지 말", "커밋은 하지", "커밋 없이", "커밋하지는 말",
+		"푸시하지 마", "푸시 하지 마", "푸시하지마", "푸시하지 말", "푸시 하지 말", "푸시 없이",
+		"스테이징하지 마", "스테이지하지 마",
+		"do not commit", "don't commit", "dont commit", "no commit", "without committing", "without commit",
+		"do not push", "don't push", "dont push", "no push", "without pushing",
+		"do not stage", "don't stage", "without staging",
+		"do not create a pr", "don't create a pr", "without a pr", "without creating a pr",
+	) {
+		return true
+	}
+	// Answer-only / question phrasing about git ("what does git push do?",
+	// "git push가 뭐야?", "explain git commit") asks rather than orders.
+	if containsAny(lower,
+		"뭐야", "뭔가요", "무엇", "뭐가", "어떻게", "차이", "설명", "알려줘", "알려 줘", "의미",
+		"what does", "what is", "what are", "how does", "how do", "explain", "describe", "difference between", "tell me about",
+	) {
+		return true
+	}
+	return false
+}
+
 func looksLikeExplicitGitIntent(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
 	if lower == "" {
 		return false
 	}
-	return containsAny(lower,
+	if hasGitActionNegationOrQuestion(lower) {
+		return false
+	}
+	if containsAny(lower,
 		"git add", "git commit", "git push", "git stage", "git stash", "create a pr", "create pr", "open a pr", "open pr", "pull request",
-		"stage these changes", "stage the changes", "stage this", "stage it",
-		"commit these changes", "commit the changes", "commit this", "commit it",
+		"stage these changes", "stage the changes", "stage this", "stage it", "stage everything", "stage all",
+		"commit these changes", "commit the changes", "commit the staged changes", "commit this", "commit it", "commit everything", "commit all",
 		"push this branch", "push the branch", "push these changes", "push it",
 		"check in these changes", "check in this",
 		"commit해", "commit하고", "push해", "push하고",
@@ -1475,7 +1544,31 @@ func looksLikeExplicitGitIntent(text string) bool {
 		"스테이징해", "스테이징해줘", "스테이징해 줘", "스테이지해", "스테이지해줘", "스테이지해 줘",
 		"푸시해", "푸시해줘", "푸시해 줘", "푸시하고", "브랜치 푸시",
 		"pr 만들어", "pr 열어", "pull request 만들어", "pull request 열어", "풀 리퀘스트 만들어", "풀 리퀘스트 열어",
-	)
+	) {
+		return true
+	}
+	// Two or more distinct git verbs together (e.g. "commit and push", "stage and
+	// commit") are unambiguously a git request even without an explicit object.
+	gitVerbs := []string{"commit", "push", "stage", "amend", "rebase", "cherry-pick", "squash"}
+	verbHits := 0
+	for _, v := range gitVerbs {
+		if requestTextHasWord(lower, v) {
+			verbHits++
+		}
+	}
+	if verbHits >= 2 {
+		return true
+	}
+	if verbHits == 0 {
+		return false
+	}
+	// A single bare whole-word git verb (no embedding inside "multistage" etc.)
+	// requires a git object/context word (EN or KO) so plain "push the button"
+	// does not match.
+	if containsWord(lower, "git", "branch", "changes", "staged", "pr", "remote", "origin", "head", "everything") {
+		return true
+	}
+	return containsAny(lower, "변경사항", "변경분", "변경 사항", "브랜치", "스테이징", "원격")
 }
 
 func looksLikeDocumentAuthoringIntent(text string) bool {

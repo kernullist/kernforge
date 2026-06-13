@@ -344,7 +344,12 @@ func (e *RequestEnvelope) applyPolicy() {
 	if e.AllowsGitMutation {
 		e.Boundary = ActionBoundaryMayGit
 	} else if e.AllowsFileMutation {
-		if e.ExplicitEditRequest && !e.DocumentAuthoring {
+		// must_edit is the strongest mutating boundary. Grant it only when the
+		// explicit edit request is corroborated by a real source-edit signal (an
+		// imperative source-edit command, or a source-edit verb co-occurring with a
+		// file target) and the request is not git-only / run-command. Otherwise an
+		// over-matched edit signal degrades to the softer may_edit boundary.
+		if e.ExplicitEditRequest && !e.DocumentAuthoring && e.boundaryHasCorroboratedSourceEdit() {
 			e.Boundary = ActionBoundaryMustEdit
 		} else {
 			e.Boundary = ActionBoundaryMayEdit
@@ -355,6 +360,43 @@ func (e *RequestEnvelope) applyPolicy() {
 	if !e.AllowsGitMutation && e.Boundary == "" {
 		e.Boundary = ActionBoundaryNoCommit
 	}
+}
+
+// boundaryHasCorroboratedSourceEdit reports whether the request carries a real
+// source-edit signal strong enough to justify the must_edit boundary: an
+// imperative source-edit command, or a source-edit verb co-occurring with a file
+// target. Git-only and run-command intents never corroborate a source edit.
+func (e *RequestEnvelope) boundaryHasCorroboratedSourceEdit() bool {
+	if e == nil {
+		return false
+	}
+	if e.Intent == TurnIntentRunCommand || e.Intent == TurnIntentReviewCode {
+		return false
+	}
+	base := strings.ToLower(strings.TrimSpace(baseUserQueryText(e.ExternalUserText)))
+	if base == "" {
+		return false
+	}
+	if requestLooksLikeGitOnlyMutation(base) {
+		return false
+	}
+	if looksLikeImperativeSourceEditCommand(base) {
+		return true
+	}
+	hasSourceEditVerb := containsWord(base,
+		"fix", "edit", "modify", "patch", "refactor", "implement", "replace", "rename", "change", "update",
+	) || containsAny(base,
+		"고쳐", "고치", "수정해", "수정하", "구현해", "패치해", "변경해", "변경하", "교체해", "리팩터", "리팩토",
+	)
+	if !hasSourceEditVerb {
+		return false
+	}
+	hasFileTarget := containsAny(base,
+		".go", ".c", ".cpp", ".h", ".hpp", ".py", ".js", ".ts", ".rs", ".java", ".cs",
+		"file", "함수", "function", "method", "메서드", "메소드", "class", "클래스",
+		"코드", "소스", "source", "줄", "line ", "라인",
+	)
+	return hasFileTarget
 }
 
 func (e *RequestEnvelope) Normalize() {
@@ -546,6 +588,13 @@ func (a *Agent) applySessionRequestEnvelopeContext(envelope *RequestEnvelope) {
 		return
 	}
 	if contract != nil && requestEnvelopeContractIsReadOnly(contract) {
+		return
+	}
+	// A prior successful file-mutation transaction must NOT re-enable mutation on a
+	// NEW request that itself classifies as read-only. Ambiguity falls toward
+	// read-only: do not inherit write capability from history when the fresh
+	// envelope carries no edit/document/git signal of its own.
+	if envelope.ReadOnlyAnalysis && !envelope.ExplicitEditRequest && !envelope.DocumentAuthoring && !envelope.ExplicitGitRequest && !requestEnvelopeReviewClassMutates(envelope.ReviewRequestClass) {
 		return
 	}
 	if requestEnvelopeSessionHasMutablePatchContext(a.Session) {

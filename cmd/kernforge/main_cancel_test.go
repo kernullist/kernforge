@@ -3686,7 +3686,7 @@ func TestConfigShowsRequestRuntimeSettings(t *testing.T) {
 		EnabledClasses: []string{RequestRuntimeClassExplicitEdit, RequestRuntimeClassDocumentAuthoring},
 		SemanticClassifier: RequestSemanticClassifierConfig{
 			Mode:          RequestSemanticClassifierModeShadow,
-			MinConfidence: 0.8,
+			MinConfidence: floatPtr(0.8),
 			MaxTokens:     256,
 		},
 	}

@@ -134,8 +134,9 @@ func mergeRequestSemanticClassifierConfig(dst *RequestSemanticClassifierConfig, 
 	if strings.TrimSpace(src.Mode) != "" {
 		dst.Mode = normalizeRequestSemanticClassifierMode(src.Mode)
 	}
-	if src.MinConfidence != 0 {
-		dst.MinConfidence = src.MinConfidence
+	if src.MinConfidence != nil {
+		value := *src.MinConfidence
+		dst.MinConfidence = &value
 	}
 	if src.MaxTokens != 0 {
 		dst.MaxTokens = src.MaxTokens
@@ -394,12 +395,75 @@ func requestRuntimeClassAllowsMutation(class string) bool {
 	}
 }
 
+// requestRuntimeToolExposureExpanded reports a privilege-relevant expansion
+// only. A symmetric swap of two equal-privilege tools (e.g. drop grep, add
+// web_search) is NOT an expansion even though raw set membership differs in
+// both directions. Expansion is true when the semantic decision newly exposes
+// a higher-privilege tool class (file mutation or git) the baseline withheld,
+// or when the semantic exposed set is a strict superset of the baseline set.
 func requestRuntimeToolExposureExpanded(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) bool {
-	return requestRuntimeListHasExtra(semantic.ExposedTools, baseline.ExposedTools) || requestRuntimeListHasExtra(baseline.DisabledTools, semantic.DisabledTools)
+	if requestRuntimeNewlyExposesHigherPrivilege(baseline, semantic) {
+		return true
+	}
+	return requestRuntimeExposedSetIsStrictSuperset(baseline, semantic)
 }
 
 func requestRuntimeToolExposureNarrowed(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) bool {
-	return requestRuntimeListHasExtra(baseline.ExposedTools, semantic.ExposedTools) || requestRuntimeListHasExtra(semantic.DisabledTools, baseline.DisabledTools)
+	if requestRuntimeNewlyExposesHigherPrivilege(semantic, baseline) {
+		return true
+	}
+	return requestRuntimeExposedSetIsStrictSuperset(semantic, baseline)
+}
+
+// requestRuntimeNewlyExposesHigherPrivilege reports whether semantic exposes a
+// privileged tool (file mutation or git) that the baseline did not expose.
+func requestRuntimeNewlyExposesHigherPrivilege(baseline RequestRuntimeDecisionSummary, semantic RequestRuntimeDecisionSummary) bool {
+	baselineExposed := requestRuntimeStringSet(baseline.ExposedTools)
+	for _, tool := range normalizeTaskStateList(semantic.ExposedTools, 128) {
+		key := strings.ToLower(strings.TrimSpace(tool))
+		if key == "" {
+			continue
+		}
+		if !requestRuntimeToolIsPrivileged(key) {
+			continue
+		}
+		if _, ok := baselineExposed[key]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// requestRuntimeExposedSetIsStrictSuperset reports whether candidate's exposed
+// set strictly contains baseline's exposed set (adds at least one tool and
+// drops none).
+func requestRuntimeExposedSetIsStrictSuperset(baseline RequestRuntimeDecisionSummary, candidate RequestRuntimeDecisionSummary) bool {
+	if requestRuntimeListHasExtra(baseline.ExposedTools, candidate.ExposedTools) {
+		return false
+	}
+	return requestRuntimeListHasExtra(candidate.ExposedTools, baseline.ExposedTools)
+}
+
+func requestRuntimeStringSet(values []string) map[string]struct{} {
+	set := make(map[string]struct{})
+	for _, item := range normalizeTaskStateList(values, 128) {
+		key := strings.ToLower(strings.TrimSpace(item))
+		if key == "" {
+			continue
+		}
+		set[key] = struct{}{}
+	}
+	return set
+}
+
+func requestRuntimeToolIsPrivileged(toolName string) bool {
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "apply_patch", "write_file", "replace_in_file", "apply_edit_proposal",
+		"git_add", "git_commit", "git_push", "git_create_pr":
+		return true
+	default:
+		return false
+	}
 }
 
 func requestRuntimeListHasExtra(left []string, right []string) bool {

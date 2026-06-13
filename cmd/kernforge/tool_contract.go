@@ -374,10 +374,20 @@ func toolContractCallUsesWebResearch(call ToolCall, mcp *MCPManager) bool {
 	if name == "" {
 		return false
 	}
-	if strings.Contains(name, "web") || strings.Contains(name, "browser") {
-		return true
+	// MCP-namespaced tools are classified solely by IsWebResearchToolCall above.
+	// Internal providers (Atlassian/Jira/Confluence) expose "_search" tools that
+	// are not web research, so do not fall through to the generic heuristic.
+	if strings.HasPrefix(name, "mcp__") {
+		return false
 	}
-	return strings.HasPrefix(name, "search_") || strings.HasSuffix(name, "_search")
+	// Require an explicit web/internet signal rather than the generic "_search"
+	// suffix, which would false-block internal search providers.
+	for _, signal := range []string{"web", "browser", "http", "fetch_url", "google", "bing"} {
+		if strings.Contains(name, signal) {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeToolContractSyntheticResults(items []ToolContractSyntheticResult) []ToolContractSyntheticResult {

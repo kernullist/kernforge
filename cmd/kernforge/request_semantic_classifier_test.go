@@ -119,7 +119,7 @@ func TestAgentSemanticClassifierUsesModelJSONBeforeMainTurn(t *testing.T) {
 	cfg := DefaultConfig(root)
 	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
 		Mode:          RequestSemanticClassifierModeEnabled,
-		MinConfidence: 0.7,
+		MinConfidence: floatPtr(0.7),
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	provider := &scriptedProviderClient{
@@ -160,7 +160,7 @@ func TestAgentSemanticClassifierHoldsDocumentPromotionUntilCalibrated(t *testing
 	cfg := DefaultConfig(root)
 	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
 		Mode:          RequestSemanticClassifierModeEnabled,
-		MinConfidence: 0.7,
+		MinConfidence: floatPtr(0.7),
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	provider := &scriptedProviderClient{replies: []ChatResponse{{
@@ -191,7 +191,7 @@ func TestAgentSemanticClassifierAllowsCalibratedDocumentPromotion(t *testing.T) 
 	cfg := DefaultConfig(root)
 	cfg.RequestRuntime.SemanticClassifier = RequestSemanticClassifierConfig{
 		Mode:          RequestSemanticClassifierModeEnabled,
-		MinConfidence: 0.7,
+		MinConfidence: floatPtr(0.7),
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	session.RequestRuntimeShadowStats = &RequestRuntimeShadowStats{

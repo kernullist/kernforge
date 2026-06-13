@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,9 +18,9 @@ const (
 )
 
 type RequestSemanticClassifierConfig struct {
-	Mode          string  `json:"mode,omitempty"`
-	MinConfidence float64 `json:"min_confidence,omitempty"`
-	MaxTokens     int     `json:"max_tokens,omitempty"`
+	Mode          string   `json:"mode,omitempty"`
+	MinConfidence *float64 `json:"min_confidence,omitempty"`
+	MaxTokens     int      `json:"max_tokens,omitempty"`
 }
 
 type RequestSemanticClassification struct {
@@ -42,11 +43,15 @@ func normalizeRequestSemanticClassifierConfig(cfg *RequestSemanticClassifierConf
 		return
 	}
 	cfg.Mode = normalizeRequestSemanticClassifierMode(cfg.Mode)
-	if cfg.MinConfidence < 0 {
-		cfg.MinConfidence = 0
-	}
-	if cfg.MinConfidence > 1 {
-		cfg.MinConfidence = 1
+	if cfg.MinConfidence != nil {
+		// Negative is treated as unset; >=0 is an explicit operator choice
+		// (including 0 to accept all classifications).
+		if *cfg.MinConfidence < 0 {
+			cfg.MinConfidence = nil
+		} else if *cfg.MinConfidence > 1 {
+			clamped := 1.0
+			cfg.MinConfidence = &clamped
+		}
 	}
 	if cfg.MaxTokens < 0 {
 		cfg.MaxTokens = 0
@@ -67,10 +72,19 @@ func normalizeRequestSemanticClassifierMode(mode string) string {
 }
 
 func requestSemanticClassifierMinConfidence(cfg RequestSemanticClassifierConfig) float64 {
-	if cfg.MinConfidence > 0 {
-		return cfg.MinConfidence
+	// nil means unset -> fall back to the default threshold. A configured
+	// value (including 0 for accept-all) is honored verbatim after clamping.
+	if cfg.MinConfidence == nil {
+		return defaultRequestSemanticClassifierMinConfidence
 	}
-	return defaultRequestSemanticClassifierMinConfidence
+	value := *cfg.MinConfidence
+	if value < 0 {
+		return defaultRequestSemanticClassifierMinConfidence
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
 }
 
 func requestSemanticClassifierMaxTokens(cfg RequestSemanticClassifierConfig) int {
@@ -194,12 +208,60 @@ func extractJSONObjectText(text string) string {
 			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	}
-	start := strings.Index(trimmed, "{")
-	end := strings.LastIndex(trimmed, "}")
-	if start < 0 || end < start {
-		return ""
+	// Scan forward from each '{', tracking brace depth and string state, and
+	// return the first balanced object. Prose containing a stray '{' before
+	// the real object must not break parsing, so we keep advancing to the next
+	// candidate start when a balanced span does not unmarshal as an object.
+	for offset := 0; offset < len(trimmed); {
+		idx := strings.IndexByte(trimmed[offset:], '{')
+		if idx < 0 {
+			return ""
+		}
+		start := offset + idx
+		candidate := balancedJSONObjectAt(trimmed, start)
+		if candidate != "" {
+			if json.Valid([]byte(candidate)) {
+				return candidate
+			}
+		}
+		offset = start + 1
 	}
-	return strings.TrimSpace(trimmed[start : end+1])
+	return ""
+}
+
+func balancedJSONObjectAt(text string, start int) string {
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(text); i++ {
+		ch := text[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(text[start : i+1])
+			}
+		}
+	}
+	return ""
 }
 
 func applySemanticRequestClassification(envelope RequestEnvelope, classification RequestSemanticClassification, cfg RequestSemanticClassifierConfig) RequestEnvelope {
@@ -446,12 +508,75 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 	if cfg.Mode == RequestSemanticClassifierModeShadow {
 		return applySemanticRequestClassification(envelope, classification, cfg)
 	}
+	// Enabled mode must still accrue calibration: record a baseline-vs-candidate
+	// observation each turn so a consistently safe classifier can eventually earn
+	// document promotion. A risky widening delta increments SemanticRiskyDiverged
+	// and permanently blocks auto-widening, preserving the safety intent. The
+	// document promotion under evaluation is itself an intended widening, so it
+	// must not be scored as miscalibration evidence against its own gate.
+	if !requestSemanticClassifierCandidateIsDocumentPromotion(envelope, candidate, classification) {
+		a.accrueSemanticClassifierCalibration(envelope, candidate)
+	}
 	if !requestSemanticClassifierCandidatePromotionAllowed(envelope, candidate, classification, a.Session) {
 		envelope.Warnings = append(envelope.Warnings, "semantic classifier promotion held in shadow until risky delta-free calibration is available")
 		envelope.Normalize()
 		return envelope
 	}
 	return candidate
+}
+
+// accrueSemanticClassifierCalibration records a baseline-vs-candidate semantic
+// observation into the session shadow stats while running in enabled mode.
+// Without this, SemanticObserved never advances in enabled mode and document
+// promotion stays permanently deadlocked behind requestSemanticClassifierPromotionCalibrated.
+func (a *Agent) accrueSemanticClassifierCalibration(baseline RequestEnvelope, candidate RequestEnvelope) {
+	if a == nil || a.Session == nil {
+		return
+	}
+	baseline.Normalize()
+	candidate.Normalize()
+	baselineSummary := semanticCalibrationDecisionSummary("baseline", baseline)
+	candidateSummary := semanticCalibrationDecisionSummary("semantic_classifier", candidate)
+	comparison := RequestRuntimeShadowComparison{
+		GeneratedAt:            time.Now(),
+		SessionID:              strings.TrimSpace(a.Session.ID),
+		Mode:                   RequestRuntimeModeEnabled,
+		EnabledPath:            requestRuntimeClassForEnvelope(baseline),
+		SemanticClassifierMode: RequestSemanticClassifierModeEnabled,
+		LegacyDecision:         baselineSummary,
+		V2Decision:             baselineSummary,
+		SemanticDecision:       &candidateSummary,
+	}
+	comparison.SemanticDifferences = requestRuntimeDecisionDifferences(baselineSummary, candidateSummary)
+	comparison.SemanticDeltaLabels = requestRuntimeSemanticDeltaLabels(baselineSummary, candidateSummary)
+	a.Session.RequestRuntimeShadowStats = updateRequestRuntimeShadowStats(a.Session.RequestRuntimeShadowStats, comparison)
+}
+
+// semanticCalibrationDecisionSummary builds a privilege-aware decision summary
+// from an envelope without needing a turn tool plan. The synthesized tool sets
+// reflect file/git mutation privilege so tool_exposure_expansion stays
+// consistent with mutation_expansion during calibration.
+func semanticCalibrationDecisionSummary(source string, envelope RequestEnvelope) RequestRuntimeDecisionSummary {
+	envelope.Normalize()
+	var exposed []string
+	var disabled []string
+	if envelope.AllowsFileMutation {
+		exposed = append(exposed, "apply_patch", "write_file")
+	} else {
+		disabled = append(disabled, "apply_patch", "write_file")
+	}
+	if envelope.AllowsGitMutation {
+		exposed = append(exposed, "git_commit", "git_push")
+	} else {
+		disabled = append(disabled, "git_commit", "git_push")
+	}
+	summary := RequestRuntimeDecisionSummary{
+		Source:        source,
+		RequestClass:  requestRuntimeClassForEnvelope(envelope),
+		ExposedTools:  exposed,
+		DisabledTools: disabled,
+	}
+	return sanitizeRequestRuntimeDecisionSummary(summary)
 }
 
 func requestSemanticClassifierCandidatePromotionAllowed(baseline RequestEnvelope, candidate RequestEnvelope, classification RequestSemanticClassification, session *Session) bool {

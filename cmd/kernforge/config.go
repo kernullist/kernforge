@@ -2423,6 +2423,11 @@ func boolPtr(value bool) *bool {
 	return &v
 }
 
+func floatPtr(value float64) *float64 {
+	v := value
+	return &v
+}
+
 func configAutoCheckpointEdits(cfg Config) bool {
 	if cfg.AutoCheckpointEdits == nil {
 		return false
