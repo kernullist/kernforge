@@ -40,7 +40,7 @@ func localizedReviewText(korean bool, english string, koreanText string) string 
 
 // humanizeBlockerClass maps a blocker class codename to a short localized label.
 func humanizeBlockerClass(value string, korean bool) string {
-	switch strings.TrimSpace(value) {
+	switch strings.TrimSpace(strings.ToLower(value)) {
 	case reviewBlockerClassCodeRepair:
 		if korean {
 			return "코드 수정 필요"

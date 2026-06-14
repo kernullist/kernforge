@@ -2186,17 +2186,20 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			}
 		}
 		writeReviewHeaderBox(&b, verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), summary, nextDecision, korean)
+		// Lead with a newline so this line sits one row below the header box,
+		// matching the normal branch (see the "\n" prefixes below) instead of
+		// relying on the box's trailing newline for separation.
 		if korean {
 			if source != "" {
-				fmt.Fprintf(&b, "모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
+				fmt.Fprintf(&b, "\n모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
 			} else {
-				fmt.Fprintf(&b, "모델 리뷰: 생략됨 (%s)", skip)
+				fmt.Fprintf(&b, "\n모델 리뷰: 생략됨 (%s)", skip)
 			}
 		} else {
 			if source != "" {
-				fmt.Fprintf(&b, "Model review: skipped (%s, source=%s)", skip, source)
+				fmt.Fprintf(&b, "\nModel review: skipped (%s, source=%s)", skip, source)
 			} else {
-				fmt.Fprintf(&b, "Model review: skipped (%s)", skip)
+				fmt.Fprintf(&b, "\nModel review: skipped (%s)", skip)
 			}
 		}
 	} else {
