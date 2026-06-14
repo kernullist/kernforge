@@ -88,57 +88,40 @@ func (a *Agent) maybeRunCodexAppReviewMode(ctx context.Context, userText string,
 func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 	korean := reviewRunPrefersKorean(cfg, run)
 	findings := reviewModeVisibleFindings(run, 10)
+	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	requestType := humanizeRequestClass(valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly), korean)
+	// humanizeRequestClass already returns a self-describing phrase such as
+	// "review only (no edits)", so use it directly. Wrapping it again produced
+	// doubled parentheses like "no file edits (review only (no edits))".
+	nextDecision := requestType
 	var b strings.Builder
-	if korean {
-		b.WriteString("검토 결과:")
-		if len(findings) == 0 {
+	writeReviewHeaderBox(&b, verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), reviewVisibleInlineText(run.Result.Summary), nextDecision, korean)
+	b.WriteString("\n")
+	if len(findings) == 0 {
+		if korean {
 			if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
-				b.WriteString("\n\n- 차단 항목 없음.")
+				b.WriteString("차단 항목 없음.")
 			} else {
-				b.WriteString("\n\n- 구조화된 항목 없음.")
+				b.WriteString("구조화된 항목 없음.")
 			}
 		} else {
-			for _, finding := range findings {
-				writeCodexAppReviewModeFinding(&b, finding, true)
+			if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+				b.WriteString("No blocking findings.")
+			} else {
+				b.WriteString("No structured findings.")
 			}
 		}
-		b.WriteString("\n\n요약:")
-		fmt.Fprintf(&b, "\n- 판정: %s", humanizeReviewVerdict(firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"), true))
-		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
-		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
-		fmt.Fprintf(&b, "\n- 요청 유형: %s", humanizeRequestClass(valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly), true))
-		b.WriteString("\n- 파일 수정: 없음.")
-		if strings.TrimSpace(run.Result.Summary) != "" {
-			fmt.Fprintf(&b, "\n- 리뷰 요약: %s", reviewVisibleInlineText(run.Result.Summary))
-		}
-		if len(findings) == 0 && !strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
-			b.WriteString("\n- 남은 리스크: evidence가 부족할 수 있으니 대상 범위를 좁혀 다시 리뷰하는 편이 안전합니다.")
+		if !strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
+			if korean {
+				b.WriteString("\n남은 리스크: evidence가 부족할 수 있으니 대상 범위를 좁혀 다시 리뷰하는 편이 안전합니다.")
+			} else {
+				b.WriteString("\nResidual risk: review evidence may be incomplete; rerun with a narrower target before relying on it.")
+			}
 		}
 		return strings.TrimSpace(b.String())
 	}
-	b.WriteString("Review findings:")
-	if len(findings) == 0 {
-		if strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
-			b.WriteString("\n\n- No blocking findings.")
-		} else {
-			b.WriteString("\n\n- No structured findings.")
-		}
-	} else {
-		for _, finding := range findings {
-			writeCodexAppReviewModeFinding(&b, finding, false)
-		}
-	}
-	b.WriteString("\n\nSummary:")
-	fmt.Fprintf(&b, "\n- Verdict: %s", humanizeReviewVerdict(firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown"), false))
-	fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
-	fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
-	fmt.Fprintf(&b, "\n- Request type: %s", humanizeRequestClass(valueOrDefault(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass), reviewRequestClassReviewOnly), false))
-	b.WriteString("\n- Files edited: none.")
-	if strings.TrimSpace(run.Result.Summary) != "" {
-		fmt.Fprintf(&b, "\n- Review summary: %s", reviewVisibleInlineText(run.Result.Summary))
-	}
-	if len(findings) == 0 && !strings.EqualFold(run.Gate.Verdict, reviewVerdictApproved) {
-		b.WriteString("\n- Residual risk: review evidence may be incomplete; rerun with a narrower target before relying on it.")
+	for _, finding := range findings {
+		writeReviewFindingCard(&b, finding, korean, false)
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -156,72 +139,6 @@ func reviewModeVisibleFindings(run ReviewRun, limit int) []ReviewFinding {
 	}
 	sortReviewFindings(findings)
 	return limitReviewFindings(findings, limit)
-}
-
-func writeCodexAppReviewModeFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
-	finding.Normalize()
-	id := valueOrDefault(finding.ID, "RF")
-	severity := valueOrDefault(finding.Severity, "unknown")
-	category := valueOrDefault(finding.Category, "general")
-	// Localize internal completeness/contract finding titles (keyed on the stable
-	// English title) so they do not leak English vocabulary into a Korean reply.
-	rawTitle := firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding")
-	title := reviewVisibleInlineText(humanizeFinalAnswerCompletenessTitle(rawTitle, korean))
-	fmt.Fprintf(b, "\n\n- %s [%s/%s]: %s", id, severity, category, title)
-	if location := codexAppReviewModeFindingLocation(finding, korean); location != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 위치: %s", location)
-		} else {
-			fmt.Fprintf(b, "\n  - Location: %s", location)
-		}
-	}
-	if strings.TrimSpace(finding.Evidence) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 근거: %s", reviewVisibleInlineText(finding.Evidence))
-		} else {
-			fmt.Fprintf(b, "\n  - Evidence: %s", reviewVisibleInlineText(finding.Evidence))
-		}
-	}
-	if strings.TrimSpace(finding.Impact) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 영향: %s", reviewVisibleInlineText(finding.Impact))
-		} else {
-			fmt.Fprintf(b, "\n  - Impact: %s", reviewVisibleInlineText(finding.Impact))
-		}
-	}
-	if strings.TrimSpace(finding.RequiredFix) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 조치: %s", reviewVisibleInlineText(finding.RequiredFix))
-		} else {
-			fmt.Fprintf(b, "\n  - Fix: %s", reviewVisibleInlineText(finding.RequiredFix))
-		}
-	}
-	if strings.TrimSpace(finding.TestRecommendation) != "" {
-		if korean {
-			fmt.Fprintf(b, "\n  - 테스트: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		} else {
-			fmt.Fprintf(b, "\n  - Test: %s", reviewVisibleInlineText(finding.TestRecommendation))
-		}
-	}
-}
-
-func codexAppReviewModeFindingLocation(finding ReviewFinding, korean bool) string {
-	var parts []string
-	if strings.TrimSpace(finding.Path) != "" {
-		path := reviewVisibleInlineText(finding.Path)
-		if finding.Line > 0 {
-			path = fmt.Sprintf("%s:%d", path, finding.Line)
-		}
-		parts = append(parts, path)
-	}
-	if strings.TrimSpace(finding.Symbol) != "" {
-		if korean {
-			parts = append(parts, "심볼 "+reviewVisibleInlineText(finding.Symbol))
-		} else {
-			parts = append(parts, "symbol "+reviewVisibleInlineText(finding.Symbol))
-		}
-	}
-	return strings.Join(parts, ", ")
 }
 
 func (rt *runtimeState) naturalLanguageReviewOptions(input string, images []MessageImage) (ReviewHarnessOptions, *ViewerSelection, bool) {

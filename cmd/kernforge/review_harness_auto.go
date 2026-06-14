@@ -2166,93 +2166,76 @@ func preWriteReviewReportProgressSuffix(cfg Config, run ReviewRun) string {
 func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedToPreview bool) string {
 	korean := reviewRunPrefersKorean(cfg, run)
 	verdict := firstNonBlankString(run.Gate.Verdict, run.Result.Verdict, "unknown")
+	summary := reviewVisibleInlineText(run.Result.Summary)
 	var b strings.Builder
 	if reviewRunModelReviewSkipped(run) {
 		skip := strings.TrimSpace(run.SkipReason)
 		source := strings.TrimSpace(run.ConsentSource)
+		var nextDecision string
 		if korean {
-			b.WriteString("모델 리뷰 생략 결과:")
-			if source != "" {
-				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
-			} else {
-				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s)", skip)
-			}
-			fmt.Fprintf(&b, "\n- 결정적 게이트: %s", verdict)
-			fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
-			fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
 			if proceedToPreview {
-				b.WriteString("\n- 진행: 모델 리뷰 없이 diff preview로 진행합니다.")
+				nextDecision = "preview 진행(모델 리뷰 생략)"
 			} else {
-				b.WriteString("\n- 진행: 결정적 차단 finding 때문에 diff preview로 진행하지 않습니다.")
-			}
-			if strings.TrimSpace(run.Result.Summary) != "" {
-				fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
+				nextDecision = "preview 중단(결정적 차단)"
 			}
 		} else {
-			b.WriteString("Model review skipped:")
-			if source != "" {
-				fmt.Fprintf(&b, "\n- Model review: skipped (%s, source=%s)", skip, source)
-			} else {
-				fmt.Fprintf(&b, "\n- Model review: skipped (%s)", skip)
-			}
-			fmt.Fprintf(&b, "\n- Deterministic gate: %s", verdict)
-			fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
-			fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
 			if proceedToPreview {
-				b.WriteString("\n- Next: proceed to diff preview without model review.")
+				nextDecision = "preview without model review"
 			} else {
-				b.WriteString("\n- Next: do not proceed to diff preview because deterministic blockers remain.")
-			}
-			if strings.TrimSpace(run.Result.Summary) != "" {
-				fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
+				nextDecision = "preview stopped (deterministic blockers)"
 			}
 		}
-	} else if korean {
-		b.WriteString("최종 검토 결과:")
-		fmt.Fprintf(&b, "\n- 판정: %s", verdict)
-		fmt.Fprintf(&b, "\n- 차단: %d개", len(run.Gate.BlockingFindings))
-		fmt.Fprintf(&b, "\n- 경고: %d개", len(run.Gate.WarningFindings))
-		if proceedToPreview {
-			b.WriteString("\n- 진행: diff preview로 진행합니다.")
-		} else {
-			b.WriteString("\n- 진행: diff preview로 진행하지 않습니다.")
-		}
-		if proceedToPreview && preWriteWarningsAreHarnessEvidenceOnly(run) {
-			b.WriteString("\n- 참고: 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence/after-preview 확인 부족 경고입니다.")
-		}
-		if strings.TrimSpace(run.Result.Summary) != "" {
-			fmt.Fprintf(&b, "\n- 요약: %s", reviewVisibleInlineText(run.Result.Summary))
-		}
-		if skip := strings.TrimSpace(run.SkipReason); skip != "" {
-			source := strings.TrimSpace(run.ConsentSource)
+		writeReviewHeaderBox(&b, verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), summary, nextDecision, korean)
+		if korean {
 			if source != "" {
-				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
+				fmt.Fprintf(&b, "모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
 			} else {
-				fmt.Fprintf(&b, "\n- 모델 리뷰: 생략됨 (%s)", skip)
+				fmt.Fprintf(&b, "모델 리뷰: 생략됨 (%s)", skip)
+			}
+		} else {
+			if source != "" {
+				fmt.Fprintf(&b, "Model review: skipped (%s, source=%s)", skip, source)
+			} else {
+				fmt.Fprintf(&b, "Model review: skipped (%s)", skip)
 			}
 		}
 	} else {
-		b.WriteString("Final review result:")
-		fmt.Fprintf(&b, "\n- Verdict: %s", verdict)
-		fmt.Fprintf(&b, "\n- Blockers: %d", len(run.Gate.BlockingFindings))
-		fmt.Fprintf(&b, "\n- Warnings: %d", len(run.Gate.WarningFindings))
-		if proceedToPreview {
-			b.WriteString("\n- Next: proceed to diff preview.")
+		var nextDecision string
+		if korean {
+			if proceedToPreview {
+				nextDecision = "preview 진행"
+			} else {
+				nextDecision = "preview 중단"
+			}
 		} else {
-			b.WriteString("\n- Next: do not proceed to diff preview.")
+			if proceedToPreview {
+				nextDecision = "preview"
+			} else {
+				nextDecision = "preview stopped"
+			}
 		}
+		writeReviewHeaderBox(&b, verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), summary, nextDecision, korean)
 		if proceedToPreview && preWriteWarningsAreHarnessEvidenceOnly(run) {
-			b.WriteString("\n- Note: remaining warnings are review-evidence or after-preview visibility gaps, not confirmed unresolved code blockers.")
-		}
-		if strings.TrimSpace(run.Result.Summary) != "" {
-			fmt.Fprintf(&b, "\n- Summary: %s", reviewVisibleInlineText(run.Result.Summary))
+			if korean {
+				b.WriteString("참고: 남은 경고는 코드 미해결 blocker가 아니라 리뷰 evidence/after-preview 확인 부족 경고입니다.")
+			} else {
+				b.WriteString("Note: remaining warnings are review-evidence or after-preview visibility gaps, not confirmed unresolved code blockers.")
+			}
 		}
 		if skip := strings.TrimSpace(run.SkipReason); skip != "" {
 			source := strings.TrimSpace(run.ConsentSource)
-			if source != "" {
-				fmt.Fprintf(&b, "\n- Model review: skipped (%s, source=%s)", skip, source)
+			if korean {
+				if source != "" {
+					fmt.Fprintf(&b, "\n모델 리뷰: 생략됨 (%s, source=%s)", skip, source)
+				} else {
+					fmt.Fprintf(&b, "\n모델 리뷰: 생략됨 (%s)", skip)
+				}
 			} else {
-				fmt.Fprintf(&b, "\n- Model review: skipped (%s)", skip)
+				if source != "" {
+					fmt.Fprintf(&b, "\nModel review: skipped (%s, source=%s)", skip, source)
+				} else {
+					fmt.Fprintf(&b, "\nModel review: skipped (%s)", skip)
+				}
 			}
 		}
 	}
@@ -2369,49 +2352,109 @@ func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, kore
 	writeReviewFindingCard(b, finding, korean, false)
 }
 
+// reviewFindingCardField is one aligned label row in a review finding card.
+type reviewFindingCardField struct {
+	english string
+	korean  string
+	value   string
+}
+
+// writeReviewFindingCard emits the refined card form for a single review
+// finding (or repair target): a header line "<symbol> <id>  [<severity>.<cat>]",
+// the title on its own line, then aligned label rows for the kept fields
+// (location/evidence/impact/action/test, plus status/required-fix for repair
+// targets). Korean labels are aligned by visibleLen so values line up. The
+// output is plain text (box/severity glyphs only, no ANSI) so it is identical
+// on every review reply surface.
 func writeReviewFindingCard(b *strings.Builder, finding ReviewFinding, korean bool, repairTarget bool) {
 	finding.Normalize()
 	id := valueOrDefault(finding.ID, "RF")
 	severity := valueOrDefault(finding.Severity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
-	title := reviewVisibleInlineText(firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding"))
-	fmt.Fprintf(b, "\n- %s | %s/%s", id, severity, category)
+	symbol := reviewSeveritySymbol(finding.Severity)
+	severityLabel := humanizeReviewSeverity(severity, korean)
+	// Localize internal completeness/contract finding titles (keyed on the
+	// stable English title) so they do not leak English vocabulary into a
+	// Korean reply.
+	rawTitle := firstNonBlankString(finding.Title, finding.Evidence, finding.Impact, "Review finding")
+	title := reviewVisibleInlineText(humanizeFinalAnswerCompletenessTitle(rawTitle, korean))
+
+	fmt.Fprintf(b, "\n%s %s  [%s·%s]", symbol, id, severityLabel, category)
 	if title != "" {
-		writeReviewFindingCardField(b, korean, "Title", "제목", title)
+		fmt.Fprintf(b, "\n  %s", title)
 	}
-	location := reviewFindingLocationText(finding)
-	if location != "" {
-		writeReviewFindingCardField(b, korean, "Location", "위치", location)
-	}
+
 	evidenceLabelEnglish := "Evidence"
 	evidenceLabelKorean := "근거"
 	if repairTarget {
 		evidenceLabelEnglish = "Problem"
 		evidenceLabelKorean = "문제"
 	}
-	writeReviewFindingCardField(b, korean, evidenceLabelEnglish, evidenceLabelKorean, reviewVisibleInlineText(finding.Evidence))
-	writeReviewFindingCardField(b, korean, "Impact", "영향", reviewVisibleInlineText(finding.Impact))
 	actionLabelEnglish := "Action"
 	actionLabelKorean := "조치"
 	if repairTarget {
 		actionLabelEnglish = "Required fix"
 		actionLabelKorean = "수정 기준"
 	}
-	writeReviewFindingCardField(b, korean, actionLabelEnglish, actionLabelKorean, reviewVisibleInlineText(finding.RequiredFix))
+	checkLabelEnglish := "Test"
+	checkLabelKorean := "테스트"
+	if repairTarget {
+		checkLabelEnglish = "Check"
+		checkLabelKorean = "확인"
+	}
+
+	fields := []reviewFindingCardField{
+		{english: "Location", korean: "위치", value: reviewFindingLocationText(finding)},
+		{english: evidenceLabelEnglish, korean: evidenceLabelKorean, value: reviewVisibleInlineText(finding.Evidence)},
+		{english: "Impact", korean: "영향", value: reviewVisibleInlineText(finding.Impact)},
+		{english: actionLabelEnglish, korean: actionLabelKorean, value: reviewVisibleInlineText(finding.RequiredFix)},
+	}
 	if strings.TrimSpace(finding.ResolutionStatus) != "" {
-		writeReviewFindingCardField(b, korean, "Status", "상태", reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, korean))
+		fields = append(fields, reviewFindingCardField{english: "Status", korean: "상태", value: reviewRepairResolutionStatusVisibleText(finding.ResolutionStatus, korean)})
 	}
-	checkLabelEnglish := "Check"
-	checkLabelKorean := "확인"
-	if !repairTarget {
-		checkLabelEnglish = "Test"
-		checkLabelKorean = "테스트"
+	fields = append(fields, reviewFindingCardField{english: checkLabelEnglish, korean: checkLabelKorean, value: reviewVisibleInlineText(finding.TestRecommendation)})
+
+	writeReviewFindingCardFields(b, korean, fields)
+}
+
+// writeReviewFindingCardFields writes the present label rows aligned to a shared
+// label column width (computed via visibleLen so Korean labels line up).
+func writeReviewFindingCardFields(b *strings.Builder, korean bool, fields []reviewFindingCardField) {
+	labelWidth := 0
+	for _, field := range fields {
+		if reviewVisibleInlineText(field.value) == "" {
+			continue
+		}
+		label := field.english
+		if korean {
+			label = field.korean
+		}
+		if width := visibleLen(label); width > labelWidth {
+			labelWidth = width
+		}
 	}
-	writeReviewFindingCardField(b, korean, checkLabelEnglish, checkLabelKorean, reviewVisibleInlineText(finding.TestRecommendation))
+	for _, field := range fields {
+		value := reviewVisibleInlineText(field.value)
+		if value == "" {
+			continue
+		}
+		label := field.english
+		if korean {
+			label = field.korean
+		}
+		pad := labelWidth - visibleLen(label)
+		if pad < 0 {
+			pad = 0
+		}
+		fmt.Fprintf(b, "\n    %s%s   %s", label, strings.Repeat(" ", pad), value)
+	}
 }
 
 func reviewFindingLocationText(finding ReviewFinding) string {
 	path := reviewVisibleInlineText(finding.Path)
+	if path != "" && finding.Line > 0 {
+		path = fmt.Sprintf("%s:%d", path, finding.Line)
+	}
 	symbol := reviewVisibleInlineText(finding.Symbol)
 	if path == "" {
 		return symbol
@@ -2420,18 +2463,6 @@ func reviewFindingLocationText(finding ReviewFinding) string {
 		return path
 	}
 	return path + " :: " + symbol
-}
-
-func writeReviewFindingCardField(b *strings.Builder, korean bool, englishLabel string, koreanLabel string, value string) {
-	value = reviewVisibleInlineText(value)
-	if value == "" {
-		return
-	}
-	label := englishLabel
-	if korean {
-		label = koreanLabel
-	}
-	fmt.Fprintf(b, "\n  %s: %s", label, value)
 }
 
 func reviewVisibleInlineText(text string) string {

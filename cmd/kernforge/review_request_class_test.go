@@ -313,10 +313,10 @@ func TestReviewOnlyModeReplyIsFindingsFirstAndReadOnly(t *testing.T) {
 		},
 	}
 	reply := formatCodexAppReviewModeReply(Config{AutoLocale: boolPtr(false)}, run)
-	if !strings.HasPrefix(reply, "Review findings:") {
-		t.Fatalf("review-only reply must be findings-first, got:\n%s", reply)
+	if !strings.HasPrefix(reply, reviewBoxTopLeft) || !strings.Contains(reply, "Review result") {
+		t.Fatalf("review-only reply must lead with the review result box, got:\n%s", reply)
 	}
-	if !strings.Contains(reply, "Files edited: none.") {
+	if !strings.Contains(reply, "no edits") {
 		t.Fatalf("review-only reply must disclose read-only behavior, got:\n%s", reply)
 	}
 }

@@ -132,6 +132,41 @@ func humanizeReviewVerdict(value string, korean bool) string {
 	}
 }
 
+// humanizeReviewSeverity maps a finding severity enum to a short localized
+// label for the refined finding card header. The raw enum is still written
+// into machine/JSON fields unchanged elsewhere.
+func humanizeReviewSeverity(value string, korean bool) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case reviewSeverityBlocker:
+		if korean {
+			return "차단"
+		}
+		return "blocker"
+	case reviewSeverityHigh:
+		if korean {
+			return "높음"
+		}
+		return "high"
+	case reviewSeverityMedium:
+		if korean {
+			return "경고"
+		}
+		return "warning"
+	case reviewSeverityLow:
+		if korean {
+			return "낮음"
+		}
+		return "low"
+	case reviewSeverityInfo:
+		if korean {
+			return "참고"
+		}
+		return "info"
+	default:
+		return humanizeEnumFallback(value)
+	}
+}
+
 // humanizeReviewTarget maps review targets to plain language.
 func humanizeReviewTarget(value string, korean bool) string {
 	switch strings.TrimSpace(strings.ToLower(value)) {

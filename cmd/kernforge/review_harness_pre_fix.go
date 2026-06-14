@@ -884,64 +884,27 @@ func (a *Agent) formatNonBlockingPreFixReviewReply() string {
 	}
 	run := *a.Session.LastReviewRun
 	korean := reviewRunPrefersKorean(a.Config, run)
+	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
+	if strings.TrimSpace(verdict) == "" {
+		verdict = "unknown"
+	}
 	var b strings.Builder
+	var nextDecision string
+	if korean {
+		nextDecision = "파일 수정 없음(차단 없음)"
+	} else {
+		nextDecision = "no file edits (no blockers)"
+	}
+	writeReviewHeaderBox(&b, verdict, len(run.Gate.BlockingFindings), len(run.Gate.WarningFindings), reviewVisibleInlineText(run.Result.Summary), nextDecision, korean)
 	if korean {
 		b.WriteString("수정 전 리뷰에서 차단 수준의 버그를 찾지 못해서 코드는 수정하지 않았습니다.")
 	} else {
 		b.WriteString("The pre-fix review did not find blocking bug findings, so I did not modify files.")
 	}
-	verdict := valueOrDefault(run.Gate.Verdict, run.Result.Verdict)
-	if strings.TrimSpace(verdict) != "" {
-		if korean {
-			fmt.Fprintf(&b, "\n\n리뷰 결과: %s", humanizeReviewVerdict(verdict, true))
-		} else {
-			fmt.Fprintf(&b, "\n\nReview verdict: %s", humanizeReviewVerdict(verdict, false))
-		}
-	}
-	if len(run.Gate.WarningFindings) > 0 {
-		if korean {
-			fmt.Fprintf(&b, "\n경고 항목: %d개", len(run.Gate.WarningFindings))
-		} else {
-			fmt.Fprintf(&b, "\nWarning findings: %d", len(run.Gate.WarningFindings))
-		}
-	}
 	warnings := preFixReplyWarningFindings(run, 5)
 	if len(warnings) > 0 {
-		if korean {
-			b.WriteString("\n\n참고 경고:")
-		} else {
-			b.WriteString("\n\nWarnings:")
-		}
 		for _, finding := range warnings {
-			fmt.Fprintf(&b, "\n- [%s] %s/%s: %s", valueOrDefault(finding.ID, "finding"), finding.Severity, finding.Category, valueOrDefault(finding.Title, "Review finding"))
-			if strings.TrimSpace(finding.Evidence) != "" {
-				if korean {
-					fmt.Fprintf(&b, "\n  근거: %s", finding.Evidence)
-				} else {
-					fmt.Fprintf(&b, "\n  Evidence: %s", finding.Evidence)
-				}
-			}
-			if strings.TrimSpace(finding.Impact) != "" {
-				if korean {
-					fmt.Fprintf(&b, "\n  영향: %s", finding.Impact)
-				} else {
-					fmt.Fprintf(&b, "\n  Impact: %s", finding.Impact)
-				}
-			}
-			if strings.TrimSpace(finding.RequiredFix) != "" {
-				if korean {
-					fmt.Fprintf(&b, "\n  권장 조치: %s", finding.RequiredFix)
-				} else {
-					fmt.Fprintf(&b, "\n  Suggested action: %s", finding.RequiredFix)
-				}
-			}
-			if strings.TrimSpace(finding.TestRecommendation) != "" {
-				if korean {
-					fmt.Fprintf(&b, "\n  테스트: %s", finding.TestRecommendation)
-				} else {
-					fmt.Fprintf(&b, "\n  Test: %s", finding.TestRecommendation)
-				}
-			}
+			writeReviewFindingCard(&b, finding, korean, false)
 		}
 	}
 	if len(run.ArtifactRefs) > 0 {

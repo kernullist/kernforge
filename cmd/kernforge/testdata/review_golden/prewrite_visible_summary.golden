@@ -1,25 +1,24 @@
-Final review result:
-- Verdict: approved_with_warnings
-- Blockers: 0
-- Warnings: 1
-- Next: proceed to diff preview.
-- Summary: The proposed diff satisfies the repair target and leaves a verification obligation.
+╭─────────────────────────────── Review result ────────────────────────────────╮
+│ ⚠ approved with warnings    blockers 0   warnings 1   preview                │
+│ Summary: The proposed diff satisfies the repair target and leaves a verif... │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
 
 Repair targets checked:
-- RF-010 | high/correctness
-  Title: Prefix match can select the wrong volume
-  Location: SampleReview.cpp :: Convert
-  Problem: The old code accepted a prefix without requiring a path boundary.
-  Impact: A sibling device path can be trusted as the requested volume.
-  Required fix: Require exact or slash-boundary matches before accepting the prefix.
-  Status: resolved
-  Check: Replay sibling volume names with shared prefixes.
+⚠ RF-010  [high·correctness]
+  Prefix match can select the wrong volume
+    Location       SampleReview.cpp :: Convert
+    Problem        The old code accepted a prefix without requiring a path boundary.
+    Impact         A sibling device path can be trusted as the requested volume.
+    Required fix   Require exact or slash-boundary matches before accepting the prefix.
+    Status         resolved
+    Check          Replay sibling volume names with shared prefixes.
 
 Remaining review items:
-- RF-020 | low/test_gap
-  Title: Focused verification was not run
-  Evidence: The review has no focused test output for the proposed patch.
-  Action: Run focused verification before merging.
-  Test: go test ./cmd/kernforge -run TestSampleReview
+● RF-020  [low·test_gap]
+  Focused verification was not run
+    Evidence   The review has no focused test output for the proposed patch.
+    Action     Run focused verification before merging.
+    Test       go test ./cmd/kernforge -run TestSampleReview
 
 Review report: C:/tmp/review.md

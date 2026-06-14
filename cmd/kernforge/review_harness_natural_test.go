@@ -403,7 +403,7 @@ func TestAgentReplyReviewModeRunsReviewOnly(t *testing.T) {
 	if session.LastReviewRun.RequestAnalysis.OriginalRequest != request {
 		t.Fatalf("review-mode analysis should preserve the external user request, got %q want %q", session.LastReviewRun.RequestAnalysis.OriginalRequest, request)
 	}
-	for _, needle := range []string{"검토 결과:", "Wrong return value", "위치: main.cpp, 심볼 value", "요약:", "판정:"} {
+	for _, needle := range []string{"검토 결과", "Wrong return value", "main.cpp :: value", "요약:", "수정 필요"} {
 		if !strings.Contains(reply, needle) {
 			t.Fatalf("expected review-only reply to contain %q, got %q", needle, reply)
 		}
@@ -459,7 +459,7 @@ func TestAgentReplyReviewModeCanUseReviewerWithoutMainChatClient(t *testing.T) {
 	if len(reviewer.requests) != 1 {
 		t.Fatalf("expected reviewer-only review mode to make one review request, got %d", len(reviewer.requests))
 	}
-	if !strings.Contains(reply, "검토 결과") || !strings.Contains(reply, "판정: 승인") {
+	if !strings.Contains(reply, "검토 결과") || !strings.Contains(reply, "승인") {
 		t.Fatalf("expected review-mode reply from reviewer-only route, got %q", reply)
 	}
 
@@ -790,11 +790,10 @@ func TestReviewBeforeFixApprovedWithWarningsStopsBeforeImplementation(t *testing
 		t.Fatalf("expected no-repair summary, got %q", reply)
 	}
 	for _, needle := range []string{
-		"참고 경고:",
-		"근거: value returns a literal",
-		"영향: future behavior changes may need tests",
-		"권장 조치: Add a focused regression test if this function becomes externally visible.",
-		"테스트: Add a focused value test.",
+		"value returns a literal",
+		"future behavior changes may need tests",
+		"Add a focused regression test if this function becomes externally visible.",
+		"Add a focused value test.",
 	} {
 		if !strings.Contains(reply, needle) {
 			t.Fatalf("expected non-blocking reply to include %q, got %q", needle, reply)

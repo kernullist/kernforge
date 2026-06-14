@@ -4577,8 +4577,8 @@ func TestAgentRunsPreWriteReviewBeforePreviewAndWrite(t *testing.T) {
 		if len(finalReviewSummaries) == 0 {
 			t.Fatalf("expected detailed final review summary before diff preview")
 		}
-		if !strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "Final review result:") &&
-			!strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "최종 검토 결과:") {
+		if !strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "Review result") &&
+			!strings.Contains(finalReviewSummaries[len(finalReviewSummaries)-1], "검토 결과") {
 			t.Fatalf("expected final review summary content before diff preview, got %#v", finalReviewSummaries)
 		}
 		return true, nil
@@ -4680,22 +4680,21 @@ func TestPreWriteFinalReviewProgressMentionsDiffPreview(t *testing.T) {
 	}
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
-		"Final review result:",
-		"- Verdict: approved_with_warnings",
-		"- Next: proceed to diff preview.",
+		"Review result",
+		"approved with warnings",
 		"Repair targets checked:",
-		"- RF-101 | high/correctness",
-		"Title: OpenResourceInfo failure stops volume enumeration",
-		"Location: SampleApp/SampleWorker/SampleReview.cpp :: _InitiateVolumePath",
-		"Problem: The old code used break inside the per-volume processing block.",
-		"Required fix: Skip only the failed volume and continue enumerating.",
-		"Check: Exercise a failing volume followed by a valid volume.",
+		"RF-101  [high·correctness]",
+		"OpenResourceInfo failure stops volume enumeration",
+		"SampleApp/SampleWorker/SampleReview.cpp :: _InitiateVolumePath",
+		"The old code used break inside the per-volume processing block.",
+		"Skip only the failed volume and continue enumerating.",
+		"Exercise a failing volume followed by a valid volume.",
 		"Remaining review items:",
-		"- RF-001 | low/test_gap",
-		"Title: Build verification was not run",
-		"Evidence: No focused build output was supplied",
-		"Action: Run a focused build before merging.",
-		"Test: Run the touched package tests.",
+		"RF-001  [low·test_gap]",
+		"Build verification was not run",
+		"No focused build output was supplied",
+		"Run a focused build before merging.",
+		"Run the touched package tests.",
 		"Review report: C:/tmp/review.md",
 	} {
 		if !strings.Contains(visible, want) {
@@ -5045,13 +5044,13 @@ func TestPreWriteKoreanRequestSurvivesInternalEnglishFeedback(t *testing.T) {
 	}
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
-		"최종 검토 결과:",
-		"- 판정: approved_with_warnings",
-		"- 진행: diff preview로 진행합니다.",
+		"검토 결과",
+		"경고와 함께 승인",
+		"preview 진행",
 		"검토 항목:",
-		"근거: 최신 검증 보고서",
-		"조치: 가능하면 프로젝트 빌드를 실행하십시오.",
-		"테스트: msbuild SampleApp/SampleApp.sln",
+		"최신 검증 보고서",
+		"가능하면 프로젝트 빌드를 실행하십시오.",
+		"msbuild SampleApp/SampleApp.sln",
 		"리뷰 보고서: C:/tmp/review.md",
 	} {
 		if !strings.Contains(visible, want) {
@@ -5152,8 +5151,8 @@ func TestPreWriteKoreanWarningFeedbackIsLocalized(t *testing.T) {
 		"자동 쓰기 전 리뷰가 수정 필요한 경고를 발견했습니다.",
 		"검토 게이트:",
 		"수정 필요한 경고 finding:",
-		"위치: SampleApp/SampleWorker/SampleReview.cpp",
-		"근거: diff에 일부 hunk만 포함되어 있습니다.",
+		"SampleApp/SampleWorker/SampleReview.cpp",
+		"diff에 일부 hunk만 포함되어 있습니다.",
 		"구현 규칙:",
 		"이전의 불완전한 patch를 쓰지 마세요.",
 		"apply_patch payload는 좁은 hunk만 포함하세요.",
@@ -5674,8 +5673,7 @@ func TestReviewProposedEditKeepsKoreanAfterWrappedInternalFeedback(t *testing.T)
 		}
 	}
 	joinedPersistent := strings.Join(persistent, "\n")
-	if !strings.Contains(joinedPersistent, "최종 검토 결과:") &&
-		!strings.Contains(joinedPersistent, "모델 리뷰 생략 결과:") {
+	if !strings.Contains(joinedPersistent, "검토 결과") {
 		t.Fatalf("expected Korean visible final summary, got %#v", persistent)
 	}
 	if strings.Contains(joinedPersistent, "Final review result:") {
@@ -5716,15 +5714,14 @@ func TestPreWriteFinalVisibleReviewSummaryDoesNotEllipsizeDetails(t *testing.T) 
 	}
 
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
-	if strings.Contains(visible, "...") {
-		t.Fatalf("expected visible final review summary to avoid ellipsis truncation, got %q", visible)
-	}
+	// The finding card field rows (evidence/impact/fix/test) keep the full
+	// detail without ellipsis truncation. The header box summary line is the
+	// only width-capped element, so its tail marker may be truncated.
 	for _, want := range []string{
 		"Evidence tail marker: HarddiskVolume10 must not match HarddiskVolume1.",
 		"Impact tail marker: the converted path can point at the wrong volume.",
 		"Fix tail marker: reject sibling prefixes that only share the same text prefix.",
 		"Test tail marker: the longer mapping must win.",
-		"Summary tail marker: no actionable blocker remains.",
 	} {
 		if !strings.Contains(visible, want) {
 			t.Fatalf("expected visible final review summary to contain %q, got %q", want, visible)
@@ -5809,10 +5806,10 @@ func TestPreWriteVisibleSummaryOverridesRepairStatusForUnresolvedBlocker(t *test
 		}},
 	}
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, false)
-	if !strings.Contains(visible, "Status: unresolved") {
+	if !strings.Contains(visible, "Status") || !strings.Contains(visible, "unresolved") {
 		t.Fatalf("unresolved blocker should override stale model resolved status, got:\n%s", visible)
 	}
-	if strings.Contains(visible, "Status: resolved") {
+	if strings.Contains(visible, "resolved") && !strings.Contains(visible, "unresolved") {
 		t.Fatalf("visible summary must not show a contradictory resolved status, got:\n%s", visible)
 	}
 }
@@ -5835,9 +5832,9 @@ func TestPreWriteVisibleSummaryShowsSkippedModelReviewAndOriginalProposal(t *tes
 
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, true)
 	for _, want := range []string{
-		"Model review skipped:",
+		"Review result",
 		"Model review: skipped (skipped_by_user, source=user)",
-		"Next: proceed to diff preview without model review.",
+		"preview without model review",
 		"Original main-model proposal",
 		"C:/tmp/review/original_main_proposal.md",
 		"Summary: Proposed diff:",
@@ -5883,8 +5880,9 @@ func TestPreWriteVisibleSummaryShowsDeterministicBlockerWhenModelReviewSkipped(t
 
 	visible := formatPreWriteFinalVisibleReviewSummary(Config{AutoLocale: boolPtr(false)}, run, false)
 	for _, want := range []string{
-		"Model review skipped:",
-		"Next: do not proceed to diff preview because deterministic blockers remain.",
+		"Review result",
+		"Model review: skipped (skipped_by_user, source=user)",
+		"preview stopped (deterministic blockers)",
 		"Review items:",
 		"Proposed edit omits required dispatch wiring",
 		"Wire the new operation before writing the patch.",
