@@ -723,6 +723,12 @@ func (rt *runtimeState) activateReviewModelRole(role string, provider string, mo
 	rt.cfg.Review = reviewCfg
 	rt.storeProviderKey(provider, apiKey)
 	rt.syncAgentReviewerClientFromConfig()
+	// D-A: a user reconfiguring the cross route is an explicit fix; clear the
+	// consecutive-failure counter so the new route is tried again instead of
+	// staying in single-model fallback.
+	if roleChoice.Role == "cross_reviewer" {
+		reviewResetCrossReviewerFailureCounter(rt)
+	}
 	if err := rt.saveUserConfig(); err != nil {
 		return err
 	}
@@ -775,6 +781,11 @@ func (rt *runtimeState) clearReviewModelRole(role string) error {
 	}
 	rt.cfg.Review = reviewCfg
 	rt.syncAgentReviewerClientFromConfig()
+	// D-A: clearing the cross route ends single-model fallback bookkeeping; reset
+	// the consecutive-failure counter so a later reconfigured route starts clean.
+	if roleChoice.Role == "cross_reviewer" {
+		reviewResetCrossReviewerFailureCounter(rt)
+	}
 	if err := rt.saveUserConfigReplacingReviewRoleModels(); err != nil {
 		return err
 	}

@@ -95,6 +95,15 @@ const (
 	reviewArtifactDirName = "reviews"
 
 	reviewReviewerGatePolicyMainOnlyFallback = "main_only_fallback"
+
+	// crossReviewerFallbackThreshold is the number of consecutive cross-review
+	// route failures that triggers a fallback to the single-model review path.
+	// At 2+ consecutive failures we stop re-running the same failing cross route
+	// every review (which otherwise leaves the gate stuck at RF-REVIEWER-001
+	// forever) and let the single-model review reach a real verdict. A single
+	// isolated cross failure still runs normally so a transient blip does not
+	// disable the independent reviewer.
+	crossReviewerFallbackThreshold = 2
 )
 
 type ReviewHarnessConfig struct {

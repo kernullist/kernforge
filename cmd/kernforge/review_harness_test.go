@@ -3727,6 +3727,86 @@ func TestPreWriteMainOnlyFallbackPolicyDoesNotTreatCrossFailureAsHardGate(t *tes
 	}
 }
 
+func TestCrossReviewerRepeatedFailureFallsBackToSingleModel(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "SampleReview.cpp")
+	if err := os.WriteFile(path, []byte("bool Fix(){return true;}\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("review model soft timeout after 3m0s")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "main-model"
+	mainReplies := []ChatResponse{}
+	for i := 0; i < crossReviewerFallbackThreshold+1; i++ {
+		mainReplies = append(mainReplies, approvedReviewResponse("main model approved the proposed edit"))
+		// Single-model fallback path may run a second self-review pass.
+		mainReplies = append(mainReplies, approvedReviewResponse("main model self-review approved"))
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{replies: mainReplies},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "deepseek-v4-pro",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "main-model", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+
+	newOpts := func() ReviewHarnessOptions {
+		return ReviewHarnessOptions{
+			Trigger:      "pre_write",
+			Target:       reviewTargetChange,
+			Mode:         reviewModeLiveFix,
+			Request:      "automatic pre-write review",
+			Paths:        []string{path},
+			ProvidedDiff: "- break;\n+ continue;\n",
+			EditProposals: []EditProposal{{
+				File:            "SampleReview.cpp",
+				Operation:       "apply_patch",
+				ExpectedPreview: "- break;\n+ continue;\n",
+			}},
+		}
+	}
+
+	// The first crossReviewerFallbackThreshold runs must still run the cross
+	// route, fail, and block as a required reviewer failure.
+	for i := 0; i < crossReviewerFallbackThreshold; i++ {
+		run, err := runReviewHarness(context.Background(), rt, newOpts())
+		if err != nil {
+			t.Fatalf("runReviewHarness pre-fallback run %d: %v", i, err)
+		}
+		if !reviewRunHasRequiredReviewerFailure(run) {
+			t.Fatalf("run %d before fallback should record required reviewer failure, got verdict=%s findings=%#v", i, run.Gate.Verdict, run.Findings)
+		}
+	}
+	if got := agent.Session.CrossReviewerConsecutiveFailures; got != crossReviewerFallbackThreshold {
+		t.Fatalf("expected %d consecutive cross failures, got %d", crossReviewerFallbackThreshold, got)
+	}
+
+	reviewerCallsBeforeFallback := len(reviewer.requests)
+
+	// The next run must engage the fallback: do not call the failing cross route
+	// again, and reach a real (non required-reviewer-failure) verdict.
+	run, err := runReviewHarness(context.Background(), rt, newOpts())
+	if err != nil {
+		t.Fatalf("runReviewHarness fallback run: %v", err)
+	}
+	if len(reviewer.requests) != reviewerCallsBeforeFallback {
+		t.Fatalf("fallback run must not call the failing cross route again: before=%d after=%d", reviewerCallsBeforeFallback, len(reviewer.requests))
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("fallback run should not block on RF-REVIEWER-001, got findings=%#v", run.Findings)
+	}
+	if run.Gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("fallback run should reach a real verdict, got %s", run.Gate.Verdict)
+	}
+	if !run.SingleModelPolicy.Enabled {
+		t.Fatalf("fallback run should activate single-model policy")
+	}
+}
+
 func TestReviewerGateUnavailableReplyOffersMainModelFallback(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.AutoLocale = boolPtr(false)

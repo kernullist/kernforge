@@ -80,19 +80,54 @@ const (
 	repeatedReadSetRecoveryThreshold      = 6
 	repeatedReadSetAbortTurns             = 8
 	repeatedReadSetWindow                 = 6
-	maxPreWriteReviewRepairBlocksPerTurn  = 4
-	maxPreWriteReviewRepairInspectTools   = 6
-	maxPreWriteReviewRepairInspectNudges  = 1
-	maxPreFixReviewRepairInspectTools     = 6
-	maxPreFixReviewRepairInspectNudges    = 1
-	maxEditTargetMismatchFailuresPerTurn  = 1
-	maxEditTargetMismatchReanchorBlocks   = 1
-	maxToolBudgetExtensions               = 2
-	maxStopHookRevisions                  = 3
-	compactPinnedMessagesToKeep           = 6
-	compactRetainedMessageTokenBudget     = 64_000
-	compactApproxCharsPerToken            = 4
-	compactMinRetainedMessageCharBudget   = 8_000
+	// T12 widening: thresholds for the cumulative no-new-path read-churn detector
+	// that catches a rotating reread across more files than the fixed window
+	// holds. A run of this many consecutive read-only batches that introduce zero
+	// new distinct paths means the model is re-reading an already-seen file set
+	// without gathering new information. These are larger than the windowed
+	// thresholds because they accumulate over a longer rotation, and any read of
+	// a genuinely new path resets the run so real exploration is never affected.
+	readChurnNoNewPathNudgeTurns         = 6
+	readChurnNoNewPathRecoveryTurns      = 9
+	readChurnNoNewPathAbortTurns         = 12
+	maxPreWriteReviewRepairBlocksPerTurn = 4
+	// maxPreWriteReviewDistinctBlockRounds caps the number of consecutive
+	// pre-write review blocked rounds for the same edit target even when each
+	// round surfaces a DIFFERENT finding (so the per-fingerprint repeat detector
+	// never fires). Without this an automatic re-patch loop can churn forever,
+	// each round producing a new blocker that never converges. A genuine one- or
+	// two-round revise still completes; only an unconverging loop is stopped and
+	// handed to the user as a y/n decision. Set below
+	// maxPreWriteReviewRepairBlocksPerTurn so the distinct-finding loop is the
+	// one that trips first.
+	maxPreWriteReviewDistinctBlockRounds = 3
+	maxPreWriteReviewRepairInspectTools  = 6
+	maxPreWriteReviewRepairInspectNudges = 1
+	maxPreFixReviewRepairInspectTools    = 6
+	maxPreFixReviewRepairInspectNudges   = 1
+	maxEditTargetMismatchFailuresPerTurn = 1
+	maxEditTargetMismatchReanchorBlocks  = 1
+	maxToolBudgetExtensions              = 2
+	maxStopHookRevisions                 = 3
+	compactPinnedMessagesToKeep          = 6
+	compactRetainedMessageTokenBudget    = 64_000
+	compactApproxCharsPerToken           = 4
+	compactMinRetainedMessageCharBudget  = 8_000
+)
+
+// D-E global no-progress guard thresholds. These are package vars (not consts)
+// only so tests can lower them; production keeps the conservative defaults so a
+// normal successful task never trips them. A turn must run at least
+// noProgressIterationFloor tool iterations AND at least noProgressWallClockFloor
+// of wall-clock time AND have made zero successful workspace mutations AND show
+// a no-progress signature (no new read path and no non-read tool success) for
+// noProgressIterationFloor consecutive iterations, with no pending user
+// approval, before it stops and reports. Any successful mutation, any newly read
+// path, or any non-read tool success resets the run, so real multi-file
+// exploration and incremental edits keep working.
+var (
+	noProgressIterationFloor = 24
+	noProgressWallClockFloor = 8 * time.Minute
 )
 
 var errVerificationFollowupBlocked = errors.New("verification follow-up blocked after verification was declined or skipped")
@@ -631,6 +666,34 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	multiPathReadWindow := [][]string{}
 	lastMultiPathReadSignature := ""
 	multiPathReadRepeatTurns := 0
+	// D-E: global no-progress guard. Track the union of distinct read paths seen
+	// this turn and a run of consecutive tool iterations that produced no
+	// successful workspace mutation and no new read path (a stable no-progress
+	// signature). When the run grows large with zero mutations and no pending
+	// user approval, stop and report instead of spinning for hours. This also
+	// catches a long rotating re-read of an already-seen file set that the
+	// fixed-width multi-path window can miss.
+	noProgressReadPaths := map[string]struct{}{}
+	noProgressIterations := 0
+	noProgressReported := false
+	// T12 widening: a model can rotate read_file across MORE distinct files than
+	// the fixed multi-path window holds, so the windowed union signature keeps
+	// shifting and never trips. Track the cumulative set of distinct read paths
+	// seen during an uninterrupted run of read-only churn and count consecutive
+	// read-only batches that add zero new paths. That run is the rotating-reread
+	// signal regardless of how many files are in the cycle.
+	readChurnSeenPaths := map[string]struct{}{}
+	readChurnNoNewPathTurns := 0
+	// D-B widening: count of successful workspace mutations this turn. The
+	// rotating-reread (read-churn) detector treats a successful mutation as the
+	// only true "progress" reset. A non-read tool batch that merely fails or has
+	// no workspace effect (for example git_status/git_diff erroring on a non-repo,
+	// retried over and over) must NOT mask an ongoing rotating reread, so such a
+	// batch no longer resets the cumulative no-new-path counter. We record the
+	// mutation count observed when a churn run starts and reset the run only when
+	// that count has since increased.
+	workspaceMutationCount := 0
+	readChurnMutationMark := 0
 	lastStopReason := ""
 	lastIteration := 0
 	lastRecentToolTurns := ""
@@ -1242,6 +1305,77 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			// same multi-path set/cycle persists across turns, feed the existing
 			// nudge/recovery/abort path.
 			if batchPaths, ok := readFileBatchPaths(resp.Message.ToolCalls); ok {
+				// T12 widening: cumulative no-new-path read-churn detector. This
+				// runs before the fixed-window detector so a rotating reread across
+				// more files than the window holds is still caught.
+				addedNewReadChurnPath := false
+				for _, path := range batchPaths {
+					if _, seen := readChurnSeenPaths[path]; !seen {
+						readChurnSeenPaths[path] = struct{}{}
+						addedNewReadChurnPath = true
+					}
+				}
+				// A genuine workspace mutation since the run began is real progress
+				// and resets the rotating-reread run (and rebases the mutation mark).
+				// This is the ONLY signal that clears an in-progress churn run other
+				// than reading a genuinely new path; non-mutating non-read batches no
+				// longer mask it (see the else branch below).
+				mutatedSinceRunStart := workspaceMutationCount > readChurnMutationMark
+				if addedNewReadChurnPath || mutatedSinceRunStart {
+					readChurnNoNewPathTurns = 0
+					readChurnMutationMark = workspaceMutationCount
+				} else {
+					readChurnNoNewPathTurns++
+				}
+				// The pre-write and pre-fix repair flows own their own read-only
+				// inspection budgets while a review block is pending; do not let the
+				// general read-churn detector pre-empt those dedicated paths.
+				readChurnDetectorActive := preWriteReviewRepairBlocks == 0 &&
+					!a.preFixReviewRepairActive(explicitEditRequest, successfulEditTool)
+				if !readChurnDetectorActive {
+					readChurnNoNewPathTurns = 0
+				}
+				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathAbortTurns {
+					return "", fmt.Errorf("stopped after repeatedly re-reading the same %d files without gathering new information", len(readChurnSeenPaths))
+				}
+				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathRecoveryTurns && turnRuntime.Counters.RepeatedReadSetRecoveryCount < 1 {
+					turnRuntime.Counters.RepeatedReadSetRecoveryCount++
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file kept re-reading an already-seen file set without new information",
+						Guidance:  repeatedToolCallRecoveryGuidance(summarizeToolCalls(resp.Message.ToolCalls), summarizeRecentToolTurns(a.Session.Messages, 3)),
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     readChurnNoNewPathTurns,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(a.recoveryGuidance(ctx, recoveryTriggerRepeatedToolCalls, recoveryInput{
+						Summary: summarizeToolCalls(resp.Message.ToolCalls),
+						Recent:  summarizeRecentToolTurns(a.Session.Messages, 3),
+						Detail:  summarizeToolCalls(resp.Message.ToolCalls),
+					})))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					lastRecentToolTurns = summarizeRecentToolTurns(a.Session.Messages, 3)
+					continue
+				}
+				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathNudgeTurns && turnRuntime.Counters.RepeatedReadSetNudges < 1 {
+					turnRuntime.Counters.RepeatedReadSetNudges++
+					readChurnGuidance := fmt.Sprintf("You keep re-reading files you have already read (%d distinct files so far) across many tool turns without gathering new information. Stop re-reading these paths. Explain what you found so far, switch to a different tool, or provide the final answer now.", len(readChurnSeenPaths))
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file kept re-reading an already-seen file set",
+						Guidance:  readChurnGuidance,
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     readChurnNoNewPathTurns,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(readChurnGuidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
 				multiPathReadWindow = append(multiPathReadWindow, batchPaths)
 				if len(multiPathReadWindow) > repeatedReadSetWindow {
 					multiPathReadWindow = multiPathReadWindow[len(multiPathReadWindow)-repeatedReadSetWindow:]
@@ -1304,6 +1438,21 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				multiPathReadRepeatTurns = 0
 				turnRuntime.Counters.RepeatedReadSetNudges = 0
 				turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
+				// D-B widening: a non-read tool batch no longer unconditionally resets
+				// the rotating-reread run. The observed failure interleaved failing
+				// git_status/git_diff calls (exit 128/129 on a non-repo, retried for
+				// hours) between rereads of the same ~14 files; resetting here let the
+				// cumulative no-new-path counter never reach the abort threshold. Now
+				// only a genuine workspace mutation since the run began counts as
+				// progress and clears the run. A non-mutating non-read batch is simply
+				// preserved (not reset) so it can no longer indefinitely mask the
+				// reread loop, while the counter itself only advances on read batches
+				// that add zero new paths -- so a successful exploratory grep/list is
+				// never penalized.
+				if workspaceMutationCount > readChurnMutationMark {
+					readChurnNoNewPathTurns = 0
+					readChurnMutationMark = workspaceMutationCount
+				}
 			}
 			preamble := strings.TrimSpace(resp.Message.Text)
 			if a.EmitAssistant != nil {
@@ -1345,6 +1494,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			multiPathReadRepeatTurns = 0
 			turnRuntime.Counters.RepeatedReadSetNudges = 0
 			turnRuntime.Counters.RepeatedReadSetRecoveryCount = 0
+			readChurnNoNewPathTurns = 0
+			readChurnMutationMark = workspaceMutationCount
 			if chatResponseRequestsFollowUp(resp) && !deferEndTurnFollowUpForGeneratedDocument && !deferEndTurnFollowUpForFinalLookingReply && !deferEndTurnFollowUpForPostWorkReply && !finalAnswerOnlyCorrection {
 				turnRuntime.Counters.CommentaryOnlyReplies = 0
 				if err := a.Store.Save(a.Session); err != nil {
@@ -2367,7 +2518,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					preWriteReviewRepairBlockFingerprints[blockFingerprint]++
 				}
 				repeatedPreWriteBlock := blockFingerprint != "" && preWriteReviewRepairBlockFingerprints[blockFingerprint] > 1
-				if repeatedPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
+				// D-C: stop the automatic re-patch loop once it has been blocked
+				// enough times for the same target without converging, even when
+				// each round reports a different finding. This is the non-
+				// convergence guard that the per-fingerprint repeat check misses.
+				nonConvergingPreWriteBlock := preWriteReviewRepairBlocks >= maxPreWriteReviewDistinctBlockRounds
+				if repeatedPreWriteBlock || nonConvergingPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
 					toolMsg.IsError = true
 					toolMsg.Text = toolExecutionModelTextWithError(result, err)
 					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
@@ -2382,7 +2538,17 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					}
 					a.setToolExecutionResult(toolMsgIndex, toolMsg)
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
-					reply := formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock && a.EmitProgress != nil {
+						a.EmitProgress(localizedText(a.Config,
+							fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit without converging (each round a different finding). Stopping the automatic re-patch loop and asking the user to decide.", preWriteReviewRepairBlocks),
+							fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤지만 매번 다른 finding으로 수렴하지 못했습니다. 자동 재패치 루프를 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks)))
+					}
+					reply := ""
+					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+						reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks)
+					} else {
+						reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					if saveErr := a.Store.Save(a.Session); saveErr != nil {
 						return "", saveErr
@@ -2612,6 +2778,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				if toolResultRepresentsWorkspaceEdit(call.Name, result.Meta) {
 					edited = true
 					successfulEditTool = true
+					// D-B: count genuine workspace mutations so the rotating-reread
+					// detector can distinguish real progress from non-mutating
+					// non-read tool batches (failing git_status/git_diff, etc.).
+					workspaceMutationCount++
 					finalAnswerOnlyCorrection = false
 					syncRuntimeFlags()
 					finalHarnessRevisions = 0
@@ -2691,6 +2861,66 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		}
 		if err := ctx.Err(); err != nil {
 			return "", err
+		}
+		// D-E: global no-progress guard. Detect a turn that keeps issuing tool
+		// calls while never mutating the workspace and never gathering new
+		// information, and stop it with a clear status report instead of spinning
+		// indefinitely.
+		if !noProgressReported {
+			iterationAddedNewReadPath := false
+			if batchPaths, ok := readFileBatchPaths(resp.Message.ToolCalls); ok {
+				for _, path := range batchPaths {
+					if _, seen := noProgressReadPaths[path]; !seen {
+						noProgressReadPaths[path] = struct{}{}
+						iterationAddedNewReadPath = true
+					}
+				}
+			}
+			// An iteration makes progress if it mutated the workspace at any point
+			// this turn, or read a path not seen before this turn, or a non-read
+			// tool succeeded this iteration (a side effect we cannot prove is
+			// churn). Anything else is a no-progress iteration.
+			nonReadToolSucceeded := iterationHadToolSuccess && !toolCallsAreAllReadFile(resp.Message.ToolCalls)
+			if successfulEditTool || iterationAddedNewReadPath || nonReadToolSucceeded {
+				noProgressIterations = 0
+			} else {
+				noProgressIterations++
+			}
+			pendingUserApproval := false
+			if mcpTurnMetadata != nil {
+				if v, ok := mcpTurnMetadata[mcpTurnMetadataUserInputRequestedKey]; ok {
+					if b, ok := v.(bool); ok && b {
+						pendingUserApproval = true
+					}
+				}
+			}
+			wallClock := time.Since(turnStartedAt)
+			if !successfulEditTool &&
+				!pendingUserApproval &&
+				noProgressIterations >= noProgressIterationFloor &&
+				wallClock >= noProgressWallClockFloor {
+				noProgressReported = true
+				recordRuntimeIntervention(RuntimeIntervention{
+					Kind:      RuntimeInterventionRepeatedTool,
+					Reason:    "turn made no successful workspace mutation across many tool calls",
+					Guidance:  "No-progress guard stopped the turn after sustained tool churn with zero workspace mutations and no new information.",
+					ToolCalls: resp.Message.ToolCalls,
+					Count:     noProgressIterations,
+					Iteration: turnCount,
+				})
+				if a.EmitProgress != nil {
+					a.EmitProgress(localizedText(a.Config,
+						fmt.Sprintf("No-progress guard: %d tool iterations over %s with zero workspace mutations and no new information. Stopping and reporting status.", turnCount, wallClock.Round(time.Second)),
+						fmt.Sprintf("무진행 가드: %s 동안 도구 호출 %d회를 했지만 작업공간 변경이 전혀 없고 새 정보도 없습니다. 중단하고 상태를 보고합니다.", wallClock.Round(time.Second), turnCount)))
+				}
+				markRuntimeBlocked("no_progress_guard")
+				reply := formatNoProgressGuardReply(a.Config, a.Session, turnCount, wallClock, len(noProgressReadPaths))
+				a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+				if err := a.Store.Save(a.Session); err != nil {
+					return "", err
+				}
+				return reply, nil
+			}
 		}
 		if iterationHadToolSuccess {
 			lastToolError = ""
@@ -5088,6 +5318,21 @@ func toolCallSignature(calls []ToolCall) string {
 	return strings.Join(parts, "\x1e")
 }
 
+// toolCallsAreAllReadFile reports whether every call in the batch is a
+// read_file call. Used by the no-progress guard to decide whether a successful
+// iteration that gathered no new path counts as progress.
+func toolCallsAreAllReadFile(calls []ToolCall) bool {
+	if len(calls) == 0 {
+		return false
+	}
+	for _, call := range calls {
+		if strings.TrimSpace(call.Name) != "read_file" {
+			return false
+		}
+	}
+	return true
+}
+
 func shouldTrackRepeatedToolCallSignature(calls []ToolCall) bool {
 	if len(calls) == 0 {
 		return false
@@ -5302,12 +5547,57 @@ func isPreWriteReviewBlockedError(err error) bool {
 		strings.Contains(text, "자동 쓰기 전 리뷰가 수정 필요한 경고 때문에 파일 쓰기를 차단했습니다")
 }
 
+// formatNoProgressGuardReply builds the status report returned when the global
+// no-progress guard (D-E) stops a turn that issued many tool calls without any
+// successful workspace mutation. It states what was tried and why the turn is
+// stuck, and hands the next decision to the user.
+func formatNoProgressGuardReply(cfg Config, session *Session, iterations int, wallClock time.Duration, distinctReadPaths int) string {
+	korean := localePrefersKorean(cfg)
+	wall := wallClock.Round(time.Second)
+	var b strings.Builder
+	if korean {
+		b.WriteString("무진행 가드로 이번 턴을 중단했습니다. 변경된 파일은 없습니다.")
+		b.WriteString(fmt.Sprintf("\n- 시도: 도구 호출 %d회, 경과 %s, 읽은 파일 %d개. 그동안 작업공간 변경(파일 쓰기/수정)이 한 번도 성공하지 못했고 새 정보도 얻지 못했습니다.", iterations, wall, distinctReadPaths))
+		b.WriteString("\n- 추정 원인: 같은 파일들을 반복해서 다시 읽거나, 쓰기 전 리뷰/리뷰어 route 문제로 수정안이 적용되지 못해 진행이 막혔을 수 있습니다.")
+		b.WriteString("\n- 다음 조치 제안:")
+		b.WriteString("\n  1) 작업 범위를 더 좁혀 다시 요청하거나, 어디부터 수정할지 구체적으로 지시해 주세요.")
+		b.WriteString("\n  2) 리뷰어 route가 계속 실패하면 `/model cross-review`로 교차 리뷰 route를 고치거나 비우세요.")
+		b.WriteString("\n  3) 자동 리뷰 게이트가 막고 있다면 메인 모델 기준으로 진행할지 알려 주세요.")
+	} else {
+		b.WriteString("No-progress guard stopped this turn. No files were changed.")
+		b.WriteString(fmt.Sprintf("\n- Tried: %d tool iterations over %s, %d files read. No workspace mutation (file write/edit) ever succeeded and no new information was gathered.", iterations, wall, distinctReadPaths))
+		b.WriteString("\n- Likely cause: repeatedly re-reading the same files, or edits never landing because pre-write review / a reviewer route kept blocking them.")
+		b.WriteString("\n- Suggested next steps:")
+		b.WriteString("\n  1) Re-ask with a narrower scope, or tell me exactly which part to change first.")
+		b.WriteString("\n  2) If a reviewer route keeps failing, fix or clear the cross-review route with `/model cross-review`.")
+		b.WriteString("\n  3) If the automatic review gate is the blocker, tell me whether to proceed on the main-model review only.")
+	}
+	if session != nil {
+		session.UpdatedAt = time.Now()
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func formatPreWriteReviewRepairLoopLimitReply(cfg Config, session *Session) string {
 	return formatPreWriteReviewRepairUserDecisionReply(
 		cfg,
 		session,
 		"The revised edit still did not pass the pre-write review.",
 		"수정안이 아직 쓰기 전 리뷰 모델을 통과하지 못했습니다.",
+	)
+}
+
+// formatPreWriteReviewRepairNonConvergenceReply is used when the automatic
+// pre-write re-patch loop is stopped because it kept getting blocked with a
+// DIFFERENT finding each round and never converged. It hands the user a clear
+// y/n decision (via the shared user-decision reply) instead of silently
+// continuing to churn.
+func formatPreWriteReviewRepairNonConvergenceReply(cfg Config, session *Session, rounds int) string {
+	return formatPreWriteReviewRepairUserDecisionReply(
+		cfg,
+		session,
+		fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit, each round surfacing a different finding, so the automatic repair loop did not converge. I stopped re-patching instead of looping further. No files were changed.", rounds),
+		fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드 동안 매번 다른 finding으로 차단되어 자동 수리 루프가 수렴하지 못했습니다. 계속 재패치하지 않고 중단했습니다. 변경된 파일은 없습니다.", rounds),
 	)
 }
 

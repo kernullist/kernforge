@@ -1,0 +1,552 @@
+package main
+
+// Permanent regression suite for the "implement the proposal" deadlock.
+//
+// A real turn ran for 2h27m and never applied a single change. The root causes,
+// and the guards that must now contain each of them, are:
+//
+//   D-A: the configured cross reviewer failed in ~2s on every pre-write review,
+//        so the gate ended at insufficient_evidence with RF-REVIEWER-001 and
+//        permanently blocked the write. A repeatedly-failing cross route must
+//        fall back to the single-model review path and reach a real verdict,
+//        never re-run the failing route forever and never auto-write unreviewed.
+//
+//   D-B: the model re-read the SAME ~14 files hundreds of times. An interleaved
+//        failing git_status/git_diff (exit 128/129 on a non-repo) used to reset
+//        the read-churn counter, masking the loop. A rotating reread over an
+//        already-seen file set must now nudge and then stop in finite steps;
+//        reading genuinely new files must NOT trip it.
+//
+//   D-C: the pre-write review blocked every apply_patch with a DIFFERENT finding
+//        each round (needs_revision x4 then insufficient_evidence), so the
+//        auto re-patch loop never converged. After a small cap the loop must
+//        stop and hand a y/n decision to the user; one or two rounds must still
+//        proceed normally.
+//
+//   D-D: every review emitted a noise finding redacting a benign app.py
+//        password_assignment (a USERS dict literal, a dev placeholder secret, a
+//        check_password call). Those benign shapes must NOT be redacted, while a
+//        genuine long/high-entropy secret assignment MUST still be redacted.
+//
+//   D-E: the whole turn issued hundreds of tool calls with zero successful
+//        mutations and gathered no new information. A global no-progress guard
+//        must stop such a turn and report status; a normal task that lands a
+//        successful mutation must NOT trip it.
+//
+// These tests intentionally reuse the shared test doubles (scriptedProviderClient,
+// failingReviewProviderClient, sequenceTool, toolCallResponse, approvedReviewResponse)
+// so they stay aligned with the real harness behavior.
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestImplementDeadlockD_A_CrossReviewerFailureFallsBackToSingleModel asserts
+// that a cross-review route which errors on N consecutive reviews stops being
+// re-run and the harness falls back to the single-model review path, reaching a
+// real verdict instead of an endless RF-REVIEWER-001 permanent block. It also
+// asserts no unreviewed auto-write happened: the main self-review still ran.
+func TestImplementDeadlockD_A_CrossReviewerFailureFallsBackToSingleModel(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "app.py")
+	if err := os.WriteFile(path, []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+		t.Fatalf("write app.py: %v", err)
+	}
+	// The cross reviewer "fails in 2s" every time, exactly like the observed run.
+	reviewer := &failingReviewProviderClient{err: fmt.Errorf("review model soft timeout after 2s")}
+	cfg := DefaultConfig(root)
+	cfg.Provider = "scripted"
+	cfg.Model = "gpt-5.5"
+	// Enough approved main self-review replies for every pre-fallback round plus
+	// the fallback single-model pass (which may run a second self-review).
+	mainReplies := []ChatResponse{}
+	for i := 0; i < crossReviewerFallbackThreshold+2; i++ {
+		mainReplies = append(mainReplies, approvedReviewResponse("main model approved the proposed edit"))
+		mainReplies = append(mainReplies, approvedReviewResponse("main model self-review approved"))
+	}
+	agent := &Agent{
+		Config:         cfg,
+		Client:         &scriptedProviderClient{replies: mainReplies},
+		ReviewerClient: reviewer,
+		ReviewerModel:  "anthropic-claude-cli/sonnet",
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        NewSession(root, "scripted", "gpt-5.5", "", "default"),
+		Store:          NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	rt := agent.reviewHarnessRuntime(root)
+	newOpts := func() ReviewHarnessOptions {
+		return ReviewHarnessOptions{
+			Trigger:      "pre_write",
+			Target:       reviewTargetChange,
+			Mode:         reviewModeLiveFix,
+			Request:      "implement the proposal",
+			Paths:        []string{path},
+			ProvidedDiff: "- DATA_FILE = 'data.json'\n+ DATA_FILE = os.environ.get('DATA_FILE', 'data.json')\n",
+			EditProposals: []EditProposal{{
+				File:            "app.py",
+				Operation:       "apply_patch",
+				ExpectedPreview: "- DATA_FILE = 'data.json'\n+ DATA_FILE = os.environ.get('DATA_FILE', 'data.json')\n",
+			}},
+		}
+	}
+
+	// Before the fallback threshold is reached each review still runs the cross
+	// route, fails, and blocks as a required reviewer failure (not an unreviewed
+	// write). This is the safe-but-blocking state, never an auto-write.
+	for i := 0; i < crossReviewerFallbackThreshold; i++ {
+		run, err := runReviewHarness(context.Background(), rt, newOpts())
+		if err != nil {
+			t.Fatalf("pre-fallback review %d: %v", i, err)
+		}
+		if !reviewRunHasRequiredReviewerFailure(run) {
+			t.Fatalf("review %d before fallback must record required reviewer failure (no auto-write), got verdict=%s findings=%#v", i, run.Gate.Verdict, run.Findings)
+		}
+	}
+	if got := agent.Session.CrossReviewerConsecutiveFailures; got != crossReviewerFallbackThreshold {
+		t.Fatalf("expected %d consecutive cross failures recorded, got %d", crossReviewerFallbackThreshold, got)
+	}
+
+	reviewerCallsBeforeFallback := len(reviewer.requests)
+
+	// Now the fallback must engage: the failing cross route must NOT be called
+	// again, and the single-model review must reach a real verdict.
+	run, err := runReviewHarness(context.Background(), rt, newOpts())
+	if err != nil {
+		t.Fatalf("fallback review: %v", err)
+	}
+	if len(reviewer.requests) != reviewerCallsBeforeFallback {
+		t.Fatalf("fallback must not re-run the failing cross route: before=%d after=%d", reviewerCallsBeforeFallback, len(reviewer.requests))
+	}
+	if reviewRunHasRequiredReviewerFailure(run) {
+		t.Fatalf("fallback run must not stay stuck on RF-REVIEWER-001, got findings=%#v", run.Findings)
+	}
+	if run.Gate.Verdict == reviewVerdictInsufficientEvidence {
+		t.Fatalf("fallback run must reach a real verdict, got %s", run.Gate.Verdict)
+	}
+	if !run.SingleModelPolicy.Enabled {
+		t.Fatalf("fallback run must activate the single-model review policy")
+	}
+}
+
+// TestImplementDeadlockD_B_RotatingRereadStopsThenAllowsNewExploration locks in
+// the widened read-churn guard. The first sub-case rotates read_file over an
+// already-seen file set while an interleaved failing git tool (exit 128/129 on a
+// non-repo) tries to mask the loop; the turn must abort in finite steps. The
+// second sub-case reads only genuinely new files and must NOT trip the guard.
+func TestImplementDeadlockD_B_RotatingRereadStopsThenAllowsNewExploration(t *testing.T) {
+	t.Run("rotating reread with interleaved failing git aborts", func(t *testing.T) {
+		root := t.TempDir() // not a git repo: git_status/git_diff fail every time.
+		files := []string{"app.py", "templates_index.html", "sample_tvp.json", "check_data.py"}
+		for _, name := range files {
+			if err := os.WriteFile(filepath.Join(root, name), []byte("content of "+name+"\n"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		// Rotate reads over the same set with varied offsets so the per-signature
+		// repeat detector cannot catch it, interleaving the two failing git tools
+		// exactly like the observed run. Only the cumulative no-new-path read-churn
+		// counter can stop this.
+		gitTools := []string{"git_status", "git_diff"}
+		var replies []ChatResponse
+		for i := 0; i < 80; i++ {
+			name := files[i%len(files)]
+			offset := (i % 4) + 1
+			replies = append(replies, toolCallResponse("read_file", map[string]any{"path": name, "offset": offset}))
+			replies = append(replies, toolCallResponse(gitTools[i%len(gitTools)], map[string]any{}))
+		}
+		provider := &scriptedProviderClient{replies: replies}
+		ws := Workspace{BaseRoot: root, Root: root}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(NewReadFileTool(ws), NewGitStatusTool(ws), NewGitDiffTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		_, err := agent.Reply(context.Background(), "implement the proposal")
+		if err == nil {
+			t.Fatalf("expected the rotating-reread guard to stop the turn, got nil error")
+		}
+		if !strings.Contains(err.Error(), "re-reading the same") {
+			t.Fatalf("expected read-churn abort error, got: %v", err)
+		}
+		if provider.index >= len(replies) {
+			t.Fatalf("guard did not stop early: consumed %d/%d replies (failing git masked the loop)", provider.index, len(replies))
+		}
+		// A nudge must have been issued before the abort, not a silent kill: the
+		// read-churn guidance is injected as an internal session message at the
+		// nudge threshold, well before the abort threshold.
+		nudged := false
+		for _, msg := range session.Messages {
+			if strings.Contains(msg.Text, "Stop re-reading these paths") {
+				nudged = true
+				break
+			}
+		}
+		if !nudged {
+			t.Fatalf("expected a read-churn nudge message before the abort")
+		}
+	})
+
+	t.Run("reading genuinely new files does not trip the guard", func(t *testing.T) {
+		root := t.TempDir()
+		names := []string{"a.py", "b.py", "c.py", "d.py", "e.py", "f.py", "g.py", "h.py"}
+		for _, name := range names {
+			if err := os.WriteFile(filepath.Join(root, name), []byte("# "+name+"\n"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		var replies []ChatResponse
+		for _, name := range names {
+			replies = append(replies, toolCallResponse("read_file", map[string]any{"path": name}))
+		}
+		replies = append(replies, ChatResponse{Message: Message{Role: "assistant", Text: "Reviewed all new files; here is the summary."}})
+		provider := &scriptedProviderClient{replies: replies}
+		ws := Workspace{BaseRoot: root, Root: root}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		reply, err := agent.Reply(context.Background(), "review these new files")
+		if err != nil {
+			t.Fatalf("genuine new-file exploration must not abort, got: %v", err)
+		}
+		if !strings.Contains(reply, "Reviewed all new files") {
+			t.Fatalf("expected the real answer after new-file exploration, got %q", reply)
+		}
+	})
+}
+
+// TestImplementDeadlockD_C_NonConvergingPreWriteLoopStopsButShortRoundsProceed
+// locks in the pre-write re-patch cap. The first sub-case reproduces the
+// observed loop where each blocked round surfaces a DIFFERENT finding (so the
+// per-fingerprint repeat detector never fires); after the distinct-block cap the
+// loop must stop and hand a y/n decision to the user. The second sub-case proves
+// a single needs_revision round still proceeds normally to a successful edit.
+func TestImplementDeadlockD_C_NonConvergingPreWriteLoopStopsButShortRoundsProceed(t *testing.T) {
+	t.Run("non-converging distinct-finding loop stops with y/n", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+			t.Fatalf("write app.py: %v", err)
+		}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		ws := Workspace{BaseRoot: root, Root: root}
+
+		setReviewFinding := func(id, title, fix string) func() {
+			return func() {
+				session.LastReviewRun = &ReviewRun{
+					Trigger: "pre_write",
+					Gate: GateDecision{
+						Verdict:          reviewVerdictNeedsRevision,
+						BlockingFindings: []string{id},
+					},
+					Result: ReviewResult{Summary: "The proposal still leaves a pre-write blocker unresolved."},
+					Findings: []ReviewFinding{{
+						ID:          id,
+						Severity:    reviewSeverityMedium,
+						Category:    "correctness",
+						Path:        "app.py",
+						Title:       title,
+						RequiredFix: fix,
+						Quality:     reviewFindingQualityComplete,
+					}},
+				}
+			}
+		}
+		blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+		// Mirror the observed sequence: DATA_FILE removed -> secret key -> JSON
+		// validation -> ... a fresh finding every round so it never converges.
+		patchTool := &sequenceTool{
+			name: "apply_patch",
+			before: []func(){
+				setReviewFinding("RF-001", "DATA_FILE constant removed", "Keep the DATA_FILE constant defined."),
+				setReviewFinding("RF-002", "Hardcoded secret key", "Load SECRET_KEY from the environment."),
+				setReviewFinding("RF-003", "Missing JSON validation", "Validate the parsed JSON before use."),
+				setReviewFinding("RF-004", "Unhandled file error", "Handle the file-open error path."),
+			},
+			errs: []error{blockedErr, blockedErr, blockedErr, blockedErr},
+		}
+		patchReply := func(i int) ChatResponse {
+			return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: app.py\n@@\n DATA_FILE = 'data.json'\n+# attempt %d\n*** End Patch\n", i)})
+		}
+		readReply := toolCallResponse("read_file", map[string]any{"path": "app.py"})
+		// Re-read after each blocked patch so the re-anchor gate is satisfied and
+		// each new patch reaches pre-write review again.
+		replies := []ChatResponse{}
+		for i := 0; i < 8; i++ {
+			replies = append(replies, patchReply(i))
+			replies = append(replies, readReply)
+		}
+		provider := &scriptedProviderClient{replies: replies}
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		if !strings.Contains(reply, "did not converge") {
+			t.Fatalf("expected non-convergence stop reply, got %q", reply)
+		}
+		if !strings.Contains(reply, "Should I keep repairing") {
+			t.Fatalf("expected y/n decision handoff, got %q", reply)
+		}
+		if patchTool.calls != maxPreWriteReviewDistinctBlockRounds {
+			t.Fatalf("loop must stop after %d distinct blocked rounds, got %d patch attempts", maxPreWriteReviewDistinctBlockRounds, patchTool.calls)
+		}
+		if session.PendingReviewRepairConfirm == nil {
+			t.Fatalf("expected a pending y/n repair confirmation to be recorded")
+		}
+	})
+
+	t.Run("a single needs_revision round still proceeds to a successful edit", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+			t.Fatalf("write app.py: %v", err)
+		}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		ws := Workspace{BaseRoot: root, Root: root}
+
+		blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+		// Exactly one blocked round, then the second patch succeeds. This must NOT
+		// trip the cap: one or two revise rounds are a normal, healthy flow.
+		patchTool := &sequenceTool{
+			name: "apply_patch",
+			before: []func(){
+				func() {
+					session.LastReviewRun = &ReviewRun{
+						Trigger: "pre_write",
+						Gate: GateDecision{
+							Verdict:          reviewVerdictNeedsRevision,
+							BlockingFindings: []string{"RF-001"},
+						},
+						Result: ReviewResult{Summary: "One blocker remains."},
+						Findings: []ReviewFinding{{
+							ID:          "RF-001",
+							Severity:    reviewSeverityMedium,
+							Category:    "correctness",
+							Path:        "app.py",
+							Title:       "DATA_FILE constant removed",
+							RequiredFix: "Keep the DATA_FILE constant defined.",
+							Quality:     reviewFindingQualityComplete,
+						}},
+					}
+				},
+				func() { session.LastReviewRun = nil },
+			},
+			outputs: []string{"", "Applied patch to app.py."},
+			errs:    []error{blockedErr, nil},
+		}
+		patchReply := func(i int) ChatResponse {
+			return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: app.py\n@@\n DATA_FILE = 'data.json'\n+# attempt %d\n*** End Patch\n", i)})
+		}
+		readReply := toolCallResponse("read_file", map[string]any{"path": "app.py"})
+		finalReply := testModificationFinalAnswer("app.py", "targeted verification passed.", "no known remaining blocker.")
+		replies := []ChatResponse{
+			patchReply(0),
+			readReply,
+			patchReply(1),
+			{Message: Message{Role: "assistant", Text: finalReply}},
+		}
+		provider := &scriptedProviderClient{replies: replies}
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		if strings.Contains(reply, "did not converge") || strings.Contains(reply, "Should I keep repairing") {
+			t.Fatalf("a single needs_revision round must not trip the non-convergence cap, got %q", reply)
+		}
+		if patchTool.calls != 2 {
+			t.Fatalf("expected one blocked patch then one successful patch (2 calls), got %d", patchTool.calls)
+		}
+		if session.PendingReviewRepairConfirm != nil {
+			t.Fatalf("a successful repair must not leave a pending y/n confirmation")
+		}
+	})
+}
+
+// TestImplementDeadlockD_D_PasswordRedactionScoping locks in the redaction
+// tightening: the benign app.py shapes that previously produced a noise finding
+// on every review must NOT be redacted, while a genuine long/high-entropy secret
+// assignment MUST still be redacted.
+func TestImplementDeadlockD_D_PasswordRedactionScoping(t *testing.T) {
+	benign := []string{
+		`USERS = {'admin': 'password', 'alice': 'wonderland'}`,
+		`SECRET_KEY = 'dev_secret_key_change_me'`,
+		`app.config['SECRET_KEY'] = "dev_secret_key_change_me"`,
+		`if check_password(password, user['password']):`,
+		`password = request.form['password']`,
+		`token = secrets.token_hex(16)`,
+		`api_key = os.environ.get('API_KEY')`,
+		`Token: "security"`,
+	}
+	for _, line := range benign {
+		if out, redacted := redactPasswordAssignments(line); redacted {
+			t.Errorf("D-D: benign line must not be redacted: %q -> %q", line, out)
+		}
+		if _, rep := redactSensitiveText(line); rep.Redacted {
+			t.Errorf("D-D: benign line must not produce a redaction finding: %q", line)
+		}
+	}
+
+	mustRedact := []string{
+		`secret = "x7Kp9Lm2Qr5Tv8Wz3Bn6Df0Hs"`,
+		`password = "Aa1!supersecretvalue"`,
+		`api_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"`,
+	}
+	for _, line := range mustRedact {
+		out, redacted := redactPasswordAssignments(line)
+		if !redacted {
+			t.Errorf("D-D: genuine secret must still be redacted: %q -> %q", line, out)
+		}
+		if redacted && !strings.Contains(out, "[REDACTED:password_assignment]") {
+			t.Errorf("D-D: redacted secret must be masked: %q", out)
+		}
+	}
+}
+
+// TestImplementDeadlockD_E_NoProgressGuardFiresButRealMutationDoesNot locks in
+// the global no-progress guard. The first sub-case reproduces the turn that
+// issued many tool calls with zero successful mutations and no new information;
+// the guard must stop it and report status. The second sub-case lands a real
+// workspace mutation and must NOT trip the guard.
+func TestImplementDeadlockD_E_NoProgressGuardFiresButRealMutationDoesNot(t *testing.T) {
+	prevFloor := noProgressIterationFloor
+	prevWall := noProgressWallClockFloor
+	noProgressIterationFloor = 3
+	noProgressWallClockFloor = 0
+	defer func() {
+		noProgressIterationFloor = prevFloor
+		noProgressWallClockFloor = prevWall
+	}()
+
+	t.Run("zero mutations and no new info stops with a status report", func(t *testing.T) {
+		root := t.TempDir()
+		for _, name := range []string{"app.py", "check_data.py"} {
+			if err := os.WriteFile(filepath.Join(root, name), []byte("# "+name+"\n"), 0o644); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		var replies []ChatResponse
+		for i := 0; i < 12; i++ {
+			name := "app.py"
+			if i%2 == 1 {
+				name = "check_data.py"
+			}
+			replies = append(replies, toolCallResponse("read_file", map[string]any{"path": name}))
+		}
+		provider := &scriptedProviderClient{replies: replies}
+		ws := Workspace{BaseRoot: root, Root: root}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		if !strings.Contains(reply, "No-progress guard stopped this turn") {
+			t.Fatalf("expected no-progress guard report, got %q", reply)
+		}
+		if !strings.Contains(reply, "No files were changed") {
+			t.Fatalf("expected report to state no files changed, got %q", reply)
+		}
+		if len(provider.requests) >= len(replies) {
+			t.Fatalf("no-progress guard did not stop early: %d requests for %d replies", len(provider.requests), len(replies))
+		}
+		if session.LastTurnRuntimeState == nil || session.LastTurnRuntimeState.State != TurnRuntimeBlocked {
+			t.Fatalf("expected runtime state blocked by no-progress guard, got %#v", session.LastTurnRuntimeState)
+		}
+	})
+
+	t.Run("a successful mutation does not trip the guard", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("# app\n"), 0o644); err != nil {
+			t.Fatalf("write app.py: %v", err)
+		}
+		finalReply := testModificationFinalAnswer("app.py", "targeted verification passed.", "no known remaining blocker.")
+		// A read followed by a real write that mutates the workspace, then the final
+		// answer. The mutation must reset the no-progress guard so a normal task
+		// with a successful change is never stopped.
+		replies := []ChatResponse{
+			toolCallResponse("read_file", map[string]any{"path": "app.py"}),
+			toolCallResponse("write_file", map[string]any{"path": "app.py", "content": "# app\nDATA_FILE = 'data.json'\n"}),
+			{Message: Message{Role: "assistant", Text: finalReply}},
+		}
+		provider := &scriptedProviderClient{replies: replies}
+		ws := Workspace{BaseRoot: root, Root: root}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(NewReadFileTool(ws), NewWriteFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		// The load-bearing assertion: the no-progress guard must NOT have fired,
+		// because a successful workspace mutation landed during the turn. (Other
+		// unrelated final-answer gates are out of scope for this D-E regression.)
+		if strings.Contains(reply, "No-progress guard stopped this turn") {
+			t.Fatalf("no-progress guard must not trip when a mutation landed, got %q", reply)
+		}
+		if session.LastTurnRuntimeState != nil &&
+			strings.Contains(session.LastTurnRuntimeState.LastTransitionReason, "no_progress") {
+			t.Fatalf("turn with a successful mutation must not be blocked by the no-progress guard, got reason=%q", session.LastTurnRuntimeState.LastTransitionReason)
+		}
+		// The mutation must have actually been applied to the workspace.
+		got, readErr := os.ReadFile(filepath.Join(root, "app.py"))
+		if readErr != nil {
+			t.Fatalf("read mutated app.py: %v", readErr)
+		}
+		if !strings.Contains(string(got), "DATA_FILE = 'data.json'") {
+			t.Fatalf("expected the write_file mutation to land, got contents %q", string(got))
+		}
+	})
+}

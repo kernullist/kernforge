@@ -66,39 +66,45 @@ type Session struct {
 	LastReviewRun                   *ReviewRun                       `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState   `json:"pending_review_repair_confirmation,omitempty"`
 	ReviewRouteHealth               []ReviewRouteHealth              `json:"review_route_health,omitempty"`
-	LastLiveProviderDrill           *LiveProviderDrillReport         `json:"last_live_provider_drill,omitempty"`
-	SecondPassReviewCache           []SecondPassReviewCacheEntry     `json:"second_pass_review_cache,omitempty"`
-	ExternalLookupIntents           []ReviewExternalLookupIntent     `json:"external_lookup_intents,omitempty"`
-	RuntimeGateLedger               *RuntimeGateLedger               `json:"runtime_gate_ledger,omitempty"`
-	ActiveFailureRepair             *FailureRepairAttempt            `json:"active_failure_repair,omitempty"`
-	FailureRepairAttempts           []FailureRepairAttempt           `json:"failure_repair_attempts,omitempty"`
-	LastSelection                   *ViewerSelection                 `json:"last_selection,omitempty"`
-	Selections                      []ViewerSelection                `json:"selections,omitempty"`
-	ActiveSelection                 int                              `json:"active_selection,omitempty"`
-	TaskState                       *TaskState                       `json:"task_state,omitempty"`
-	TaskGraph                       *TaskGraph                       `json:"task_graph,omitempty"`
-	BackgroundJobs                  []BackgroundShellJob             `json:"background_jobs,omitempty"`
-	BackgroundBundles               []BackgroundShellBundle          `json:"background_bundles,omitempty"`
-	ConversationEvents              []ConversationEvent              `json:"conversation_events,omitempty"`
-	ConversationState               *ConversationState               `json:"conversation_state,omitempty"`
-	LastRequestEnvelope             *RequestEnvelope                 `json:"last_request_envelope,omitempty"`
-	LastSemanticRequestEnvelope     *RequestEnvelope                 `json:"last_semantic_request_envelope,omitempty"`
-	LastTurnRuntimeState            *TurnRuntimeState                `json:"last_turn_runtime_state,omitempty"`
-	LastFinalGateDecision           *FinalGateDecision               `json:"last_final_gate_decision,omitempty"`
-	LastRequestRuntimeShadow        *RequestRuntimeShadowComparison  `json:"last_request_runtime_shadow,omitempty"`
-	RequestRuntimeShadowStats       *RequestRuntimeShadowStats       `json:"request_runtime_shadow_stats,omitempty"`
-	ImplicitModelReviewBudget       *ImplicitModelReviewTurnBudget   `json:"implicit_model_review_budget,omitempty"`
-	TurnQueue                       []TurnQueueItem                  `json:"turn_queue,omitempty"`
-	LastRecoveryDecision            *RecoveryDecision                `json:"last_recovery_decision,omitempty"`
-	LastContextMaintenanceDecision  *ContextMaintenanceDecision      `json:"last_context_maintenance_decision,omitempty"`
-	ProviderStateRevision           int                              `json:"provider_state_revision,omitempty"`
-	LastProviderStateResetReason    string                           `json:"last_provider_state_reset_reason,omitempty"`
-	LastProviderStateResetAt        time.Time                        `json:"last_provider_state_reset_at,omitempty"`
-	SuggestionMemory                *SuggestionMemory                `json:"suggestion_memory,omitempty"`
-	Automations                     []SessionAutomation              `json:"automations,omitempty"`
-	ActiveGoalID                    string                           `json:"active_goal_id,omitempty"`
-	Goals                           []GoalState                      `json:"goals,omitempty"`
-	Messages                        []Message                        `json:"messages"`
+	// CrossReviewerConsecutiveFailures counts how many reviews in a row the
+	// configured cross-review route failed (error or weak/empty output). When it
+	// reaches the fallback threshold, the harness stops re-running the failing
+	// cross route and falls back to the single-model review path so the gate can
+	// still reach a real verdict instead of blocking forever on RF-REVIEWER-001.
+	CrossReviewerConsecutiveFailures int                             `json:"cross_reviewer_consecutive_failures,omitempty"`
+	LastLiveProviderDrill            *LiveProviderDrillReport        `json:"last_live_provider_drill,omitempty"`
+	SecondPassReviewCache            []SecondPassReviewCacheEntry    `json:"second_pass_review_cache,omitempty"`
+	ExternalLookupIntents            []ReviewExternalLookupIntent    `json:"external_lookup_intents,omitempty"`
+	RuntimeGateLedger                *RuntimeGateLedger              `json:"runtime_gate_ledger,omitempty"`
+	ActiveFailureRepair              *FailureRepairAttempt           `json:"active_failure_repair,omitempty"`
+	FailureRepairAttempts            []FailureRepairAttempt          `json:"failure_repair_attempts,omitempty"`
+	LastSelection                    *ViewerSelection                `json:"last_selection,omitempty"`
+	Selections                       []ViewerSelection               `json:"selections,omitempty"`
+	ActiveSelection                  int                             `json:"active_selection,omitempty"`
+	TaskState                        *TaskState                      `json:"task_state,omitempty"`
+	TaskGraph                        *TaskGraph                      `json:"task_graph,omitempty"`
+	BackgroundJobs                   []BackgroundShellJob            `json:"background_jobs,omitempty"`
+	BackgroundBundles                []BackgroundShellBundle         `json:"background_bundles,omitempty"`
+	ConversationEvents               []ConversationEvent             `json:"conversation_events,omitempty"`
+	ConversationState                *ConversationState              `json:"conversation_state,omitempty"`
+	LastRequestEnvelope              *RequestEnvelope                `json:"last_request_envelope,omitempty"`
+	LastSemanticRequestEnvelope      *RequestEnvelope                `json:"last_semantic_request_envelope,omitempty"`
+	LastTurnRuntimeState             *TurnRuntimeState               `json:"last_turn_runtime_state,omitempty"`
+	LastFinalGateDecision            *FinalGateDecision              `json:"last_final_gate_decision,omitempty"`
+	LastRequestRuntimeShadow         *RequestRuntimeShadowComparison `json:"last_request_runtime_shadow,omitempty"`
+	RequestRuntimeShadowStats        *RequestRuntimeShadowStats      `json:"request_runtime_shadow_stats,omitempty"`
+	ImplicitModelReviewBudget        *ImplicitModelReviewTurnBudget  `json:"implicit_model_review_budget,omitempty"`
+	TurnQueue                        []TurnQueueItem                 `json:"turn_queue,omitempty"`
+	LastRecoveryDecision             *RecoveryDecision               `json:"last_recovery_decision,omitempty"`
+	LastContextMaintenanceDecision   *ContextMaintenanceDecision     `json:"last_context_maintenance_decision,omitempty"`
+	ProviderStateRevision            int                             `json:"provider_state_revision,omitempty"`
+	LastProviderStateResetReason     string                          `json:"last_provider_state_reset_reason,omitempty"`
+	LastProviderStateResetAt         time.Time                       `json:"last_provider_state_reset_at,omitempty"`
+	SuggestionMemory                 *SuggestionMemory               `json:"suggestion_memory,omitempty"`
+	Automations                      []SessionAutomation             `json:"automations,omitempty"`
+	ActiveGoalID                     string                          `json:"active_goal_id,omitempty"`
+	Goals                            []GoalState                     `json:"goals,omitempty"`
+	Messages                         []Message                       `json:"messages"`
 }
 
 func NewSession(workingDir, providerName, model, baseURL, permissionMode string) *Session {

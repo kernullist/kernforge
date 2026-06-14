@@ -30,17 +30,82 @@ var reviewRedactionPatterns = []reviewRedactionPattern{
 // is validated by valueLooksLikeCredential before any redaction is applied.
 var reviewPasswordAssignmentRe = regexp.MustCompile(`(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret)(\s*[:=]\s*)(["']?)([^"'\s]{6,})(["']?)`)
 
+// placeholderSecretTokens are substrings that mark a value as an obvious
+// non-secret placeholder/default, not a real credential. D-D: a Flask sample app
+// commonly ships SECRET_KEY = "dev_secret_key_change_me" or similar; redacting
+// these created a noise finding every review and hid harmless code from the
+// reviewer. Matching is case-insensitive and substring-based so variants like
+// "changeme", "your-secret-here", "REPLACE_ME" are all treated as placeholders.
+var placeholderSecretTokens = []string{
+	"change_me", "changeme", "change-me", "replace_me", "replaceme", "replace-me",
+	"your_", "your-", "yoursecret", "yourtoken", "yourkey", "placeholder",
+	"example", "sample", "dummy", "fake", "todo", "xxxx", "<", ">", "{{", "}}",
+	"dev_secret", "dev-secret", "devsecret", "test_secret", "default_secret",
+	"insert_", "put_your", "change_this", "changethis",
+}
+
+// valueLooksLikePlaceholder reports whether the value is a self-describing
+// placeholder/default rather than a real secret. Such values must not be
+// redacted (no secret is leaked, and redaction only adds noise).
+func valueLooksLikePlaceholder(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	for _, token := range placeholderSecretTokens {
+		if strings.Contains(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeExpressionMarkers identify a value that is a code expression reading or
+// computing something (a function call, a subscript, an attribute access, a
+// concatenation) rather than a literal secret. D-D: lines like
+// password = request.form["password"], token = generate_token(), or
+// secret = hashlib.sha256(...).hexdigest() are normal code, not credentials, and
+// must not be redacted (doing so mangles source the reviewer needs to see).
+var codeExpressionMarkers = []string{
+	"(", ")", "[", "]", "request.", "self.", "os.environ", "os.getenv",
+	"getenv", "config[", "config.", "form.", "form[", "args.", "args[",
+	"json.", "json[", "hashlib", "hmac", "secrets.", "uuid", "generate",
+	"hash(", "+ ", " +", "%s", "{}", "f\"", "f'",
+}
+
+// valueLooksLikeCodeExpression reports whether the value is a code expression
+// (function call / subscript / attribute access / format string) rather than a
+// literal secret token.
+func valueLooksLikeCodeExpression(value string) bool {
+	v := strings.TrimSpace(value)
+	for _, marker := range codeExpressionMarkers {
+		if strings.Contains(v, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // valueLooksLikeCredential reports whether a captured value is plausibly a real
-// secret rather than an ordinary word/identifier. A real credential is long and
-// mixes character classes (digit and/or symbol), while a plain dictionary word
-// or short identifier is not redacted.
+// secret rather than an ordinary word/identifier, a placeholder default, or a
+// code expression. D-D: the previous U13/T13 rule still false-fired on Flask
+// sample apps (placeholder SECRET_KEY defaults, password form-field reads, etc.).
+// The tightened rule redacts only a long, opaque, high-entropy literal that is
+// NOT a recognizable placeholder and NOT a code expression. When unsure we
+// prefer NOT redacting, since a false redaction creates a noise finding and hides
+// real code from the reviewer.
 func valueLooksLikeCredential(value string) bool {
 	v := strings.TrimSpace(value)
-	if len(v) < 12 {
+	if len(v) < 16 {
+		// A genuine opaque secret is long. Raising the floor from 12 to 16 drops
+		// short identifiers and most placeholders while keeping real API tokens.
+		return false
+	}
+	// Self-describing placeholders and code expressions are never redacted.
+	if valueLooksLikePlaceholder(v) {
+		return false
+	}
+	if valueLooksLikeCodeExpression(v) {
 		return false
 	}
 	hasDigit := false
-	hasSymbol := false
 	hasUpper := false
 	hasLower := false
 	for _, r := range v {
@@ -51,17 +116,30 @@ func valueLooksLikeCredential(value string) bool {
 			hasUpper = true
 		case r >= 'a' && r <= 'z':
 			hasLower = true
-		default:
-			hasSymbol = true
 		}
 	}
-	// Require entropy markers: either a digit, a symbol (-, _, +, /, =, .), or a
-	// mixed-case run. A lowercase-only English word (e.g. "configuration") stays
-	// untouched.
-	if hasDigit || hasSymbol {
+	// Require a real entropy signature: an opaque secret mixes letters with
+	// digits, or is mixed-case AND fairly long. A snake_case English phrase
+	// (only lowercase + underscores, e.g. "user_password_field") looks like a
+	// symbol-bearing token under the old rule but is not a secret, so underscores
+	// or dashes alone no longer qualify; we require a digit, a non-word symbol, or
+	// a mixed-case run together with sufficient length.
+	hasNonWordSymbol := false
+	for _, r := range v {
+		switch r {
+		case '_', '-':
+			// snake/kebab separators are common in identifiers, not entropy
+		default:
+			if !(r >= '0' && r <= '9') && !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') {
+				hasNonWordSymbol = true
+			}
+		}
+	}
+	if hasDigit || hasNonWordSymbol {
 		return true
 	}
-	return hasUpper && hasLower
+	// Pure letters: require a mixed-case opaque-looking run of real length.
+	return hasUpper && hasLower && len(v) >= 20
 }
 
 // redactPasswordAssignments replaces only credential-key assignments whose value

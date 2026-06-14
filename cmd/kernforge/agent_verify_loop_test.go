@@ -4565,6 +4565,113 @@ func TestAgentRetriesAbruptlyTruncatedFinalReply(t *testing.T) {
 	}
 }
 
+func TestNoProgressGuardStopsTurnWithZeroMutations(t *testing.T) {
+	prevFloor := noProgressIterationFloor
+	prevWall := noProgressWallClockFloor
+	noProgressIterationFloor = 3
+	noProgressWallClockFloor = 0
+	defer func() {
+		noProgressIterationFloor = prevFloor
+		noProgressWallClockFloor = prevWall
+	}()
+
+	root := t.TempDir()
+	for _, name := range []string{"a.go", "b.go"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	// The model rotates read_file across the same two already-seen files without
+	// ever mutating the workspace or gathering new information.
+	replies := []ChatResponse{}
+	for i := 0; i < 12; i++ {
+		name := "a.go"
+		if i%2 == 1 {
+			name = "b.go"
+		}
+		replies = append(replies, toolCallResponse("read_file", map[string]any{"path": name}))
+	}
+	provider := &scriptedProviderClient{replies: replies}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "implement the proposal")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "No-progress guard stopped this turn") {
+		t.Fatalf("expected no-progress guard report, got %q", reply)
+	}
+	if !strings.Contains(reply, "No files were changed") {
+		t.Fatalf("expected no-progress report to state no files changed, got %q", reply)
+	}
+	// The guard must stop before consuming every scripted reply.
+	if len(provider.requests) >= len(replies) {
+		t.Fatalf("no-progress guard did not stop the turn early: %d requests for %d replies", len(provider.requests), len(replies))
+	}
+	if session.LastTurnRuntimeState == nil || session.LastTurnRuntimeState.State != TurnRuntimeBlocked {
+		t.Fatalf("expected runtime state blocked by no-progress guard, got %#v", session.LastTurnRuntimeState)
+	}
+}
+
+func TestNoProgressGuardDoesNotTripWhenReadingNewFiles(t *testing.T) {
+	prevFloor := noProgressIterationFloor
+	prevWall := noProgressWallClockFloor
+	noProgressIterationFloor = 3
+	noProgressWallClockFloor = 0
+	defer func() {
+		noProgressIterationFloor = prevFloor
+		noProgressWallClockFloor = prevWall
+	}()
+
+	root := t.TempDir()
+	names := []string{"f1.go", "f2.go", "f3.go", "f4.go", "f5.go", "f6.go"}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("package main\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	// Genuine exploration: each turn reads a NEW file, then a final answer. This
+	// must not trip the no-progress guard even with a low iteration floor.
+	replies := []ChatResponse{}
+	for _, name := range names {
+		replies = append(replies, toolCallResponse("read_file", map[string]any{"path": name}))
+	}
+	replies = append(replies, ChatResponse{Message: Message{Role: "assistant", Text: "All six files reviewed; here is the summary."}})
+	provider := &scriptedProviderClient{replies: replies}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "review these files")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "No-progress guard stopped this turn") {
+		t.Fatalf("no-progress guard must not trip on genuine new-file exploration, got %q", reply)
+	}
+	if !strings.Contains(reply, "All six files reviewed") {
+		t.Fatalf("expected the model's real answer, got %q", reply)
+	}
+}
+
 func TestAgentRetriesAbruptlyTruncatedFinalReplyWhileStreaming(t *testing.T) {
 	root := t.TempDir()
 	provider := &streamingScriptedProviderClient{
@@ -9205,6 +9312,90 @@ func TestAgentAsksUserAfterPreWriteRepairInspectionNudgeIsExhausted(t *testing.T
 	}
 	if !scriptedRequestsContainText(provider.requests, "next response must be an edit-tool call") {
 		t.Fatalf("expected force-edit guidance before asking the user, got %#v", provider.requests)
+	}
+}
+
+func TestAgentStopsNonConvergingPreWriteRepairLoop(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+
+	setReviewFinding := func(id, title, fix string) func() {
+		return func() {
+			session.LastReviewRun = &ReviewRun{
+				Trigger: "pre_write",
+				Gate: GateDecision{
+					Verdict:          reviewVerdictNeedsRevision,
+					BlockingFindings: []string{id},
+				},
+				Result: ReviewResult{Summary: "The proposal still leaves a pre-write blocker unresolved."},
+				Findings: []ReviewFinding{{
+					ID:          id,
+					Severity:    reviewSeverityMedium,
+					Category:    "correctness",
+					Path:        "main.go",
+					Title:       title,
+					RequiredFix: fix,
+					Quality:     reviewFindingQualityComplete,
+				}},
+			}
+		}
+	}
+	blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+	// Each blocked round surfaces a DIFFERENT finding so the per-fingerprint
+	// repeat detector never fires; only the non-convergence cap should stop it.
+	patchTool := &sequenceTool{
+		name: "apply_patch",
+		before: []func(){
+			setReviewFinding("RF-101", "Missing nil check", "Add a nil check before use."),
+			setReviewFinding("RF-102", "Unhandled error path", "Return the error instead of ignoring it."),
+			setReviewFinding("RF-103", "Resource leak", "Close the handle on every exit path."),
+			setReviewFinding("RF-104", "Off-by-one bound", "Use <= instead of < at the boundary."),
+		},
+		errs: []error{blockedErr, blockedErr, blockedErr, blockedErr},
+	}
+	patchReply := func(i int) ChatResponse {
+		return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: main.go\n@@\n package main\n+// attempt %d\n*** End Patch\n", i)})
+	}
+	readReply := toolCallResponse("read_file", map[string]any{"path": "main.go"})
+	// Interleave a re-read after each blocked patch so the re-anchor gate is
+	// satisfied and each new patch attempt reaches the pre-write review again
+	// (the real non-convergence scenario, where each round produces a fresh
+	// finding). The distinct-block cap must still stop the loop.
+	replies := []ChatResponse{}
+	for i := 0; i < 6; i++ {
+		replies = append(replies, patchReply(i))
+		replies = append(replies, readReply)
+	}
+	provider := &scriptedProviderClient{replies: replies}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the bug in main.go and apply the change")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "did not converge") {
+		t.Fatalf("expected non-convergence stop reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "Should I keep repairing") {
+		t.Fatalf("expected y/n decision handoff, got %q", reply)
+	}
+	if patchTool.calls != maxPreWriteReviewDistinctBlockRounds {
+		t.Fatalf("expected the loop to stop after %d distinct blocked rounds, got %d patch attempts", maxPreWriteReviewDistinctBlockRounds, patchTool.calls)
+	}
+	if session.PendingReviewRepairConfirm == nil {
+		t.Fatalf("expected a pending y/n repair confirmation to be recorded")
 	}
 }
 

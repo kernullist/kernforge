@@ -321,6 +321,20 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 	mainClient, mainModel, mainLabel, mainErr := reviewMainRoleClient(rt)
 	mainLabel = reviewModelDisplayLabel(rt.cfg, mainClient, mainModel, mainLabel, reviewRoleReasoningEffortForRun(rt.cfg, mainRole, *run))
 	crossClient, crossModel, crossLabel, crossRole, _, hasCrossReviewer := reviewCrossReviewerClient(rt, *run, originalRequiredRoles, mainClient, mainModel)
+	// D-A: when the configured cross-review route has failed on consecutive
+	// reviews, stop re-running it (it otherwise leaves the gate at
+	// insufficient_evidence with RF-REVIEWER-001 forever) and fall back to the
+	// single-model review path so the gate can still reach a real verdict.
+	crossFallbackEngaged := false
+	if hasCrossReviewer && reviewCrossReviewerFallbackEngaged(rt) {
+		hasCrossReviewer = false
+		crossFallbackEngaged = true
+		emitReviewCrossReviewerFallbackProgress(rt, *run, crossLabel)
+		if run.ModelPlan.UserGuidance == nil {
+			run.ModelPlan.UserGuidance = []string{}
+		}
+		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, fmt.Sprintf("Cross reviewer %s failed on %d consecutive reviews; falling back to single-model review for this turn. Fix or clear that route with /model cross-review to restore independent cross review.", strings.TrimSpace(crossLabel), reviewCrossReviewerConsecutiveFailures(rt)))
+	}
 	if reviewRunShouldUseConfiguredReviewerAsPrimary(rt, *run, hasCrossReviewer) {
 		if hasCrossReviewer {
 			mainClient = crossClient
@@ -360,8 +374,15 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		})
 		reviewerRuns = append(reviewerRuns, crossRun)
 		findings = append(findings, crossFindings...)
+		// D-A: track consecutive cross-route failures so a route that fails every
+		// call eventually triggers the single-model fallback instead of infinite
+		// retry. A usable cross result resets the counter.
+		reviewRecordCrossReviewerOutcome(rt, reviewCrossReviewerRunFailed(crossRun))
 		emitReviewModelCrossResultHandoffProgress(rt, crossRun)
 	} else {
+		if crossFallbackEngaged {
+			run.SingleModelPolicy.NoCrossReviewReason = "cross_reviewer_repeated_failure_fallback"
+		}
 		emitReviewModelNoCrossReviewerProgress(rt)
 		if run.ModelPlan.UserGuidance == nil {
 			run.ModelPlan.UserGuidance = []string{}
@@ -733,6 +754,58 @@ func executeSingleReviewModelRun(ctx context.Context, rt *runtimeState, root str
 		run.Result.ModelQuality = quality
 	}
 	return roleFindings, reviewerRun, raw
+}
+
+// reviewCrossReviewerConsecutiveFailures reports how many reviews in a row the
+// configured cross-review route has failed for the active session.
+func reviewCrossReviewerConsecutiveFailures(rt *runtimeState) int {
+	if rt == nil || rt.session == nil {
+		return 0
+	}
+	return rt.session.CrossReviewerConsecutiveFailures
+}
+
+// reviewCrossReviewerFallbackEngaged reports whether consecutive cross-route
+// failures have reached the fallback threshold, meaning the harness should stop
+// re-running the failing cross route and use the single-model path instead.
+func reviewCrossReviewerFallbackEngaged(rt *runtimeState) bool {
+	return reviewCrossReviewerConsecutiveFailures(rt) >= crossReviewerFallbackThreshold
+}
+
+// reviewCrossReviewerRunFailed reports whether a cross reviewer run did not
+// produce usable independent output (error, weak/failed quality, or empty).
+func reviewCrossReviewerRunFailed(crossRun ReviewReviewerRun) bool {
+	if !strings.EqualFold(strings.TrimSpace(crossRun.Status), "completed") {
+		return true
+	}
+	if strings.TrimSpace(crossRun.Error) != "" {
+		return true
+	}
+	return !reviewModelQualityUsableOrBetter(crossRun.ModelQuality)
+}
+
+// reviewRecordCrossReviewerOutcome updates the session's consecutive
+// cross-route failure counter. A failed run increments it (so 2+ in a row
+// trigger the single-model fallback); a usable run resets it.
+func reviewRecordCrossReviewerOutcome(rt *runtimeState, failed bool) {
+	if rt == nil || rt.session == nil {
+		return
+	}
+	if failed {
+		rt.session.CrossReviewerConsecutiveFailures++
+		return
+	}
+	rt.session.CrossReviewerConsecutiveFailures = 0
+}
+
+// reviewResetCrossReviewerFailureCounter clears the consecutive cross-route
+// failure counter, used when the user reconfigures or clears the cross route so
+// the route is tried again instead of staying in single-model fallback.
+func reviewResetCrossReviewerFailureCounter(rt *runtimeState) {
+	if rt == nil || rt.session == nil {
+		return
+	}
+	rt.session.CrossReviewerConsecutiveFailures = 0
 }
 
 func reviewMainRoleClient(rt *runtimeState) (ProviderClient, string, string, error) {
@@ -1822,6 +1895,15 @@ func emitReviewModelNoCrossReviewerProgress(rt *runtimeState) {
 		rt,
 		"No separate review model is configured, so Kernforge will use the main model review result.",
 		"별도 리뷰 모델이 없어 메인 모델 리뷰 결과를 사용합니다.",
+	)
+}
+
+func emitReviewCrossReviewerFallbackProgress(rt *runtimeState, run ReviewRun, crossLabel string) {
+	failures := reviewCrossReviewerConsecutiveFailures(rt)
+	emitReviewModelFlowProgress(
+		rt,
+		fmt.Sprintf("Cross reviewer %s failed on %d consecutive reviews. Falling back to single-model review for this turn so the gate can still reach a verdict.", strings.TrimSpace(crossLabel), failures),
+		fmt.Sprintf("cross reviewer %s가 %d회 연속 실패했습니다. 게이트가 판정을 낼 수 있도록 이번 턴은 단일 모델 리뷰로 폴백합니다.", strings.TrimSpace(crossLabel), failures),
 	)
 }
 

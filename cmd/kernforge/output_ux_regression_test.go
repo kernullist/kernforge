@@ -364,3 +364,35 @@ func TestPasswordRedactionDoesNotFireOnPlainWord(t *testing.T) {
 		t.Fatalf("redacted credential must be masked: %q", redOut)
 	}
 }
+
+// TestPasswordRedactionDDFalsePositives locks in the D-D tightening: the
+// password_assignment rule must NOT fire on a Flask sample app's placeholder
+// SECRET_KEY default, a password form-field read, a check_password() call, or a
+// USERS dict literal, while still redacting a genuine high-entropy literal
+// secret. These exact shapes were the repeated noise findings observed on the
+// user's app.py.
+func TestPasswordRedactionDDFalsePositives(t *testing.T) {
+	noRedact := []string{
+		`SECRET_KEY = 'dev_secret_key_change_me'`,
+		`app.config['SECRET_KEY'] = "your-secret-key-here"`,
+		`password = request.form['password']`,
+		`if check_password(password, user['password']):`,
+		`USERS = {'admin': 'password'}`,
+		`token = secrets.token_hex(16)`,
+		`api_key = os.environ['API_KEY']`,
+	}
+	for _, line := range noRedact {
+		if _, rep := redactSensitiveText(line); rep.Redacted {
+			t.Errorf("D-D: must not redact non-secret line: %q", line)
+		}
+	}
+	mustRedact := []string{
+		`api_key = "sk_live_4eC39HqLyjWDarjtT1zdp7dc"`,
+		`secret = "x7Kp9Lm2Qr5Tv8Wz3Bn6Df"`,
+	}
+	for _, line := range mustRedact {
+		if _, rep := redactSensitiveText(line); !rep.Redacted {
+			t.Errorf("D-D: must still redact genuine secret line: %q", line)
+		}
+	}
+}
