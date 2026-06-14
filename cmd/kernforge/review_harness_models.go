@@ -1143,12 +1143,29 @@ func requiredReviewerFailureFindings(run ReviewRun) []ReviewFinding {
 		return nil
 	}
 	var details []string
+	unavailableModelRoute := ""
 	for _, reviewerRun := range failed {
 		role := firstNonBlankString(reviewRoleProgressName(reviewerRun.Role), "reviewer")
 		status := valueOrDefault(strings.TrimSpace(reviewerRun.Status), "unknown")
 		quality := valueOrDefault(strings.TrimSpace(reviewerRun.ModelQuality), "unknown")
+		model := valueOrDefault(strings.TrimSpace(reviewerRun.Model), "unknown")
 		errText := firstNonBlankString(firstNonEmptyLine(reviewerRun.Error), "reviewer output quality was too weak for the required gate")
-		details = append(details, fmt.Sprintf("%s status=%s quality=%s: %s", role, status, quality, errText))
+		// A model that is gone (deprecated/retired/not found) is a permanent
+		// configuration problem, not a transient failure. Name the model and the
+		// reason so the user does not have to discover it manually.
+		if textIndicatesUnavailableModel(reviewerRun.Error) {
+			errText = "configured model is no longer available (deprecated/retired/not found): " + errText
+			if unavailableModelRoute == "" {
+				unavailableModelRoute = fmt.Sprintf("%s model %s", role, model)
+			}
+		}
+		details = append(details, fmt.Sprintf("%s status=%s quality=%s model=%s: %s", role, status, quality, model, errText))
+	}
+	title := "Required review route failed or returned weak output"
+	requiredFix := "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross failed, switch that reviewer route with /model cross-review or clear it with /model clear cross-review. Then rerun the review before writing."
+	if unavailableModelRoute != "" {
+		title = fmt.Sprintf("Review route model is no longer available (%s)", unavailableModelRoute)
+		requiredFix = fmt.Sprintf("The %s is no longer available from the provider. Set a currently supported model with /model cross-review <provider> <model> (or /model for the primary route), or run single-model review with /model clear cross-review, then rerun.", unavailableModelRoute)
 	}
 	return []ReviewFinding{{
 		ID:                 requiredReviewerFailureFindingID,
@@ -1158,10 +1175,10 @@ func requiredReviewerFailureFindings(run ReviewRun) []ReviewFinding {
 		Category:           "evidence_gap",
 		Confidence:         "high",
 		Quality:            reviewFindingQualityComplete,
-		Title:              "Required review route failed or returned weak output",
+		Title:              title,
 		Evidence:           strings.Join(details, " | "),
 		Impact:             "The review gate cannot treat a failed or weak required review-stage model route as approval for a write-gated change.",
-		RequiredFix:        "Fix the failed review route. If primary failed, switch the active main model with /model or fix that provider route; if cross failed, switch that reviewer route with /model cross-review or clear it with /model clear cross-review. Then rerun the review before writing.",
+		RequiredFix:        requiredFix,
 		TestRecommendation: "Rerun the same review request and confirm every required review route completes with usable structured findings or approval.",
 		BlocksGate:         true,
 	}}

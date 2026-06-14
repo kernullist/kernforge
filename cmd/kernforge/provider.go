@@ -851,6 +851,24 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 		"usage_not_included",
 		"cyber_policy",
 		"invalid_prompt",
+		// A configured model that is gone (not found, deprecated, retired) is a
+		// permanent configuration problem: retrying the same model cannot succeed,
+		// so fail fast and let the user change the model. These are matched as
+		// phrases that do not collide with the transient "service unavailable" /
+		// "temporarily unavailable" retry hints below.
+		"model_not_found",
+		"model not found",
+		"no such model",
+		"unknown model",
+		"invalid model",
+		"model_not_available",
+		"model is not available",
+		"model does not exist",
+		"model_deprecated",
+		"model has been deprecated",
+		"has been retired",
+		"is no longer available",
+		"decommissioned",
 	}
 	for _, hint := range nonRetryableHints {
 		if strings.Contains(text, hint) {
@@ -895,6 +913,47 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 	}
 	for _, hint := range retryHints {
 		if strings.Contains(text, hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// providerErrorIndicatesUnavailableModel reports whether a provider error means
+// the configured model itself is gone (not found, deprecated, retired). This is
+// a permanent configuration problem the user must fix by switching the model,
+// not a transient failure worth retrying, so callers can surface a precise,
+// actionable message (which model is unavailable and how to change it) on the
+// first failure instead of looping on a route that can never succeed.
+func providerErrorIndicatesUnavailableModel(err error) bool {
+	if err == nil {
+		return false
+	}
+	return textIndicatesUnavailableModel(err.Error())
+}
+
+func textIndicatesUnavailableModel(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	hints := []string{
+		"model_not_found",
+		"model not found",
+		"no such model",
+		"unknown model",
+		"invalid model",
+		"model_not_available",
+		"model is not available",
+		"model does not exist",
+		"model_deprecated",
+		"model has been deprecated",
+		"has been retired",
+		"is no longer available",
+		"decommissioned",
+	}
+	for _, hint := range hints {
+		if strings.Contains(lower, hint) {
 			return true
 		}
 	}
