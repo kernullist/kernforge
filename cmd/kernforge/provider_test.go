@@ -571,8 +571,11 @@ func TestProviderHTTPErrorFormatsCodexRateLimitReachedTypes(t *testing.T) {
 					t.Fatalf("expected %q in error, got %q", part, text)
 				}
 			}
-			if !providerErr.Retryable() {
-				t.Fatalf("expected 429 provider error to remain retryable")
+			// M7: a hard usage/spend-cap or credits-depleted 429 is terminal.
+			// It must surface immediately rather than be retried against a cap
+			// that will not reset within the turn.
+			if providerErr.Retryable() {
+				t.Fatalf("expected usage/credit-cap 429 to be non-retryable")
 			}
 		})
 	}
@@ -692,6 +695,308 @@ func TestProviderHTTPErrorMatchesCodexServerOverloadedBodyCodes(t *testing.T) {
 				t.Fatalf("expected server overloaded error to remain retryable")
 			}
 		})
+	}
+}
+
+func TestOpenAIClientSendsExplicitZeroTemperature(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:          "gpt-4o",
+		Messages:       []Message{{Role: "user", Text: "hi"}},
+		Temperature:    0,
+		TemperatureSet: true,
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	temp, ok := body["temperature"]
+	if !ok {
+		t.Fatalf("expected explicit temperature in body, got %#v", body)
+	}
+	if val, isNumber := temp.(float64); !isNumber || val != 0 {
+		t.Fatalf("expected temperature=0, got %#v", temp)
+	}
+}
+
+func TestOpenAIClientOmitsUnsetZeroTemperature(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:    "gpt-4o",
+		Messages: []Message{{Role: "user", Text: "hi"}},
+		// Temperature left as zero-value and unset.
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Fatalf("expected temperature omitted when unset, got %#v", body["temperature"])
+	}
+}
+
+func TestOpenAIClientUsesMaxCompletionTokensForReasoningModels(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:           "gpt-5.4",
+		Messages:        []Message{{Role: "user", Text: "hi"}},
+		MaxTokens:       1234,
+		ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if _, ok := body["max_tokens"]; ok {
+		t.Fatalf("reasoning model must not send max_tokens, got %#v", body["max_tokens"])
+	}
+	if got, ok := body["max_completion_tokens"].(float64); !ok || got != 1234 {
+		t.Fatalf("expected max_completion_tokens=1234, got %#v", body["max_completion_tokens"])
+	}
+	if body["reasoning_effort"] != "high" {
+		t.Fatalf("expected reasoning_effort=high, got %#v", body["reasoning_effort"])
+	}
+}
+
+func TestOpenAIClientRetriesWithMaxCompletionTokens(t *testing.T) {
+	var bodies []map[string]any
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		bodies = append(bodies, body)
+		calls++
+		if calls == 1 {
+			w.Header().Set("content-type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","param":"max_tokens"}}`))
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "key")
+	// Use a classic-looking model id so it is not proactively detected.
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "mystery-model",
+		Messages:  []Message{{Role: "user", Text: "hi"}},
+		MaxTokens: 777,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Message.Text != "ok" {
+		t.Fatalf("expected ok after retry, got %#v", resp)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 calls (initial + retry), got %d", calls)
+	}
+	if _, ok := bodies[0]["max_tokens"]; !ok {
+		t.Fatalf("first call should have sent max_tokens, got %#v", bodies[0])
+	}
+	if got, ok := bodies[1]["max_completion_tokens"].(float64); !ok || got != 777 {
+		t.Fatalf("retry should send max_completion_tokens=777, got %#v", bodies[1]["max_completion_tokens"])
+	}
+	if _, ok := bodies[1]["max_tokens"]; ok {
+		t.Fatalf("retry should not send max_tokens, got %#v", bodies[1]["max_tokens"])
+	}
+}
+
+func TestOpenAIClientSerializesMultimodalToolResult(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{Role: "user", Text: "look"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "snap", Arguments: "{}"}}},
+			{
+				Role:       "tool",
+				ToolName:   "snap",
+				ToolCallID: "c1",
+				Text:       "here",
+				ToolContentItems: []ToolContentItem{
+					{Type: "input_text", Text: "here"},
+					{Type: "input_image", ImageURL: "data:image/png;base64,AAA", Detail: imageDetailHigh},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", body["messages"])
+	}
+	var toolContent []any
+	for _, raw := range messages {
+		m, _ := raw.(map[string]any)
+		if m["role"] == "tool" {
+			toolContent, _ = m["content"].([]any)
+		}
+	}
+	if len(toolContent) == 0 {
+		t.Fatalf("expected multimodal tool content array, got %#v", toolContent)
+	}
+	sawImage := false
+	for _, raw := range toolContent {
+		part, _ := raw.(map[string]any)
+		if part["type"] == "image_url" {
+			sawImage = true
+			img, _ := part["image_url"].(map[string]any)
+			if img["url"] != "data:image/png;base64,AAA" {
+				t.Fatalf("unexpected image url: %#v", img)
+			}
+		}
+	}
+	if !sawImage {
+		t.Fatalf("expected an image_url part in tool content, got %#v", toolContent)
+	}
+}
+
+func TestAnthropicClientMapsReasoningEffortAndServiceTier(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:           "claude-opus-4-8",
+		Messages:        []Message{{Role: "user", Text: "hi"}},
+		MaxTokens:       40000,
+		ReasoningEffort: "high",
+		ServiceTier:     "priority",
+		Temperature:     0.2,
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "enabled" {
+		t.Fatalf("expected thinking enabled, got %#v", body["thinking"])
+	}
+	if budget, ok := thinking["budget_tokens"].(float64); !ok || budget != 16384 {
+		t.Fatalf("expected budget_tokens=16384, got %#v", thinking["budget_tokens"])
+	}
+	if body["service_tier"] != "auto" {
+		t.Fatalf("expected service_tier=auto, got %#v", body["service_tier"])
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Fatalf("temperature must be dropped when thinking is enabled, got %#v", body["temperature"])
+	}
+}
+
+func TestAnthropicClientSerializesMultimodalToolResult(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "claude-opus-4-8",
+		MaxTokens: 1024,
+		Messages: []Message{
+			{Role: "user", Text: "look"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "snap", Arguments: "{}"}}},
+			{
+				Role:       "tool",
+				ToolCallID: "c1",
+				Text:       "here",
+				ToolContentItems: []ToolContentItem{
+					{Type: "input_text", Text: "here"},
+					{Type: "input_image", ImageURL: "data:image/png;base64,AAA", Detail: imageDetailHigh},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array, got %#v", body["messages"])
+	}
+	var toolResultContent []any
+	for _, raw := range messages {
+		m, _ := raw.(map[string]any)
+		content, _ := m["content"].([]any)
+		for _, blockRaw := range content {
+			block, _ := blockRaw.(map[string]any)
+			if block["type"] == "tool_result" {
+				toolResultContent, _ = block["content"].([]any)
+			}
+		}
+	}
+	if len(toolResultContent) == 0 {
+		t.Fatalf("expected tool_result content array, got %#v", toolResultContent)
+	}
+	sawImage := false
+	for _, raw := range toolResultContent {
+		block, _ := raw.(map[string]any)
+		if block["type"] == "image" {
+			sawImage = true
+			source, _ := block["source"].(map[string]any)
+			if source["media_type"] != "image/png" || source["data"] != "AAA" {
+				t.Fatalf("unexpected image source: %#v", source)
+			}
+		}
+	}
+	if !sawImage {
+		t.Fatalf("expected an image block in tool_result, got %#v", toolResultContent)
 	}
 }
 

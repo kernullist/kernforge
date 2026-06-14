@@ -42,16 +42,24 @@ func TestCodexCLIProviderDoesNotInheritStaleAPIKey(t *testing.T) {
 }
 
 func TestBuildCodexCLIArgsUsesModelConfigOverride(t *testing.T) {
-	args := buildCodexCLIArgs("gpt-5.1-codex", []string{"--sandbox", "read-only"}, "hello")
+	args := buildCodexCLIArgs("gpt-5.1-codex", []string{"--sandbox", "read-only"}, "hello", ChatRequest{})
 	want := []string{"exec", "-c", "model=gpt-5.1-codex", "--sandbox", "read-only", "hello"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
 
-	args = buildCodexCLIArgs(codexCLIDefaultModel, []string{"--json"}, "hello")
+	args = buildCodexCLIArgs(codexCLIDefaultModel, []string{"--json"}, "hello", ChatRequest{})
 	want = []string{"exec", "--json", "hello"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("default model args = %#v, want %#v", args, want)
+	}
+}
+
+func TestBuildCodexCLIArgsForwardsReasoningEffort(t *testing.T) {
+	args := buildCodexCLIArgs("gpt-5.1-codex", nil, "hello", ChatRequest{ReasoningEffort: "high"})
+	want := []string{"exec", "-c", "model=gpt-5.1-codex", "-c", "model_reasoning_effort=high", "hello"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("args = %#v, want %#v", args, want)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -156,8 +157,19 @@ func (c *OpenAICodexClient) postImageRequest(ctx context.Context, path string, r
 		}
 		if resp.StatusCode >= 300 {
 			apiErr := newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+			var providerErr *ProviderAPIError
+			if errors.As(apiErr, &providerErr) {
+				if shouldRetryOpenAICodexUnaryAPIError(providerErr, retryAttempts) {
+					if waitErr := waitOpenAICodexUnaryRetryForError(ctx, apiErr, retryAttempts); waitErr != nil {
+						return OpenAICodexImageResponse{}, waitErr
+					}
+					retryAttempts++
+					continue
+				}
+				return OpenAICodexImageResponse{}, apiErr
+			}
 			if shouldRetryOpenAICodexUnaryStatus(resp.StatusCode, retryAttempts) {
-				if waitErr := waitOpenAICodexUnaryRetry(ctx, retryAttempts); waitErr != nil {
+				if waitErr := waitOpenAICodexUnaryRetryForError(ctx, apiErr, retryAttempts); waitErr != nil {
 					return OpenAICodexImageResponse{}, waitErr
 				}
 				retryAttempts++
@@ -183,11 +195,37 @@ func shouldRetryOpenAICodexUnaryStatus(statusCode int, retryAttempts int) bool {
 	if retryAttempts >= openAICodexUnaryRequestMaxRetries {
 		return false
 	}
+	if statusCode == http.StatusTooManyRequests {
+		return true
+	}
 	return statusCode >= http.StatusInternalServerError && statusCode <= 599
 }
 
+// shouldRetryOpenAICodexUnaryAPIError classifies a structured provider error so
+// a terminal usage/spend-cap 429 is not retried even though its raw status is
+// in the retryable set.
+func shouldRetryOpenAICodexUnaryAPIError(err *ProviderAPIError, retryAttempts int) bool {
+	if err == nil {
+		return false
+	}
+	if retryAttempts >= openAICodexUnaryRequestMaxRetries {
+		return false
+	}
+	return err.Retryable()
+}
+
 func waitOpenAICodexUnaryRetry(ctx context.Context, retryAttempts int) error {
-	delay := providerRetryDelay(openAICodexUnaryRequestRetryBaseDelay, retryAttempts)
+	return waitOpenAICodexUnaryRetryWithDelay(ctx, providerRetryDelay(openAICodexUnaryRequestRetryBaseDelay, retryAttempts))
+}
+
+// waitOpenAICodexUnaryRetryForError honors a server Retry-After / reset hint
+// from the provider error when present, capped at maxProviderRetryDelay, and
+// otherwise falls back to the synthetic jittered backoff.
+func waitOpenAICodexUnaryRetryForError(ctx context.Context, err error, retryAttempts int) error {
+	return waitOpenAICodexUnaryRetryWithDelay(ctx, providerRetryDelayForError(err, openAICodexUnaryRequestRetryBaseDelay, retryAttempts))
+}
+
+func waitOpenAICodexUnaryRetryWithDelay(ctx context.Context, delay time.Duration) error {
 	if delay <= 0 {
 		return nil
 	}

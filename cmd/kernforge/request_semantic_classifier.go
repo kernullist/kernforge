@@ -485,6 +485,7 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 		Messages:        []Message{{Role: "user", Text: buildRequestSemanticClassifierUserPrompt(envelope)}},
 		MaxTokens:       requestSemanticClassifierMaxTokens(cfg),
 		Temperature:     0,
+		TemperatureSet:  true,
 		ReasoningEffort: "low",
 		ServiceTier:     a.Config.ServiceTier,
 		WorkingDir:      a.Workspace.Root,

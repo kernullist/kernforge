@@ -102,7 +102,7 @@ func (c *CodexCLIClient) Complete(ctx context.Context, req ChatRequest) (ChatRes
 		defer cleanup()
 	}
 
-	args := buildCodexCLIArgs(req.Model, c.extraArgs, promptArg)
+	args := buildCodexCLIArgs(req.Model, c.extraArgs, promptArg, req)
 	env := append(os.Environ(), "NO_COLOR=1", "TERM=dumb", "CI=1")
 	runner := c.run
 	if runner == nil {
@@ -268,10 +268,16 @@ func parseCodexCLIModelsJSON(data []byte) ([]CodexCLIModelInfo, error) {
 	return models, nil
 }
 
-func buildCodexCLIArgs(model string, extraArgs []string, prompt string) []string {
+func buildCodexCLIArgs(model string, extraArgs []string, prompt string, req ChatRequest) []string {
 	args := []string{"exec"}
 	if modelValue := codexCLIModelFlagValue(model); modelValue != "" {
 		args = append(args, "-c", "model="+modelValue)
+	}
+	// Codex CLI honors reasoning effort via a config override. Other sampling
+	// params (max_tokens, temperature, service_tier) are not exposed as Codex CLI
+	// options, so they cannot be forwarded through this bridge.
+	if effort := normalizeReasoningEffort(req.ReasoningEffort); effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+effort)
 	}
 	for _, arg := range extraArgs {
 		arg = strings.TrimSpace(arg)
@@ -435,8 +441,7 @@ func lastCodexAssistantBlock(text string) string {
 		start := i + 1
 		end := len(lines)
 		for j := start; j < len(lines); j++ {
-			marker := strings.TrimSpace(lines[j])
-			if isCodexCLIMetadataMarker(marker) {
+			if isCodexCLIMetadataMarkerAt(lines, j) {
 				end = j
 				break
 			}
@@ -449,15 +454,161 @@ func lastCodexAssistantBlock(text string) string {
 	return last
 }
 
-func isCodexCLIMetadataMarker(line string) bool {
-	switch strings.TrimSpace(line) {
-	case "user", "exec", "tokens used":
+// isCodexCLIMetadataMarkerAt reports whether the line at index j is a codex CLI
+// frame metadata marker rather than answer content that merely happens to equal
+// one of the marker words. The codex CLI text frame format places section
+// headers ("user", "exec") as standalone tokens that head a new frame, and emits
+// a "tokens used" trailer immediately followed by a numeric count. Anchoring on
+// that structure prevents truncating an answer at a content line such as a bare
+// "exec" or "tokens used" inside the model output.
+func isCodexCLIMetadataMarkerAt(lines []string, j int) bool {
+	if j < 0 || j >= len(lines) {
+		return false
+	}
+	marker := strings.TrimSpace(lines[j])
+	// Rollout/error trailer lines are unambiguous regardless of context.
+	if strings.Contains(lines[j], " ERROR ") && strings.Contains(lines[j], "codex_core::") {
+		return true
+	}
+	switch marker {
+	case "tokens used":
+		// The "tokens used" trailer is always followed by a token count line
+		// (digits, optionally grouped with commas). A bare "tokens used" line in
+		// the answer body is not followed by such a count, so it is not split on.
+		return codexCLINextNonBlankIsTokenCount(lines, j+1)
+	case "user", "exec":
+		// Frame headers head a new frame: they are preceded by a frame boundary
+		// (blank line, the codex banner / delimiter, a timestamp or rollout error
+		// line, or another frame header) OR they directly follow assistant content
+		// inside the alternating transcript. The dangerous case the guard removes
+		// is a header word embedded in a paragraph; require that the line stand
+		// alone as a structural header by confirming a frame boundary on at least
+		// one side.
+		return codexCLILineIsFrameBoundary(lines, j-1) ||
+			codexCLILineIsFrameHeaderToken(lines, j+1) ||
+			codexCLINextLineLooksLikeFrameContent(lines, j)
+	}
+	return false
+}
+
+// codexCLINextNonBlankIsTokenCount reports whether the next non-blank line from
+// index k is a numeric token count such as "3,785".
+func codexCLINextNonBlankIsTokenCount(lines []string, k int) bool {
+	for ; k < len(lines); k++ {
+		candidate := strings.TrimSpace(lines[k])
+		if candidate == "" {
+			continue
+		}
+		return codexCLILooksLikeTokenCount(candidate)
+	}
+	return false
+}
+
+func codexCLILooksLikeTokenCount(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == ',' || r == '.' || r == ' ' {
+			continue
+		}
+		return false
+	}
+	// Require at least one digit.
+	return strings.ContainsAny(s, "0123456789")
+}
+
+// codexCLILineIsFrameBoundary reports whether the line at index k marks a frame
+// boundary that can precede a section header.
+func codexCLILineIsFrameBoundary(lines []string, k int) bool {
+	if k < 0 {
+		// Start of transcript is a valid boundary.
+		return true
+	}
+	if k >= len(lines) {
+		return false
+	}
+	line := lines[k]
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "----") {
 		return true
 	}
 	if strings.Contains(line, " ERROR ") && strings.Contains(line, "codex_core::") {
 		return true
 	}
+	if strings.HasPrefix(trimmed, "OpenAI Codex") {
+		return true
+	}
+	if codexCLILineStartsWithTimestamp(trimmed) {
+		return true
+	}
+	switch trimmed {
+	case "codex", "user", "exec", "thinking":
+		return true
+	}
 	return false
+}
+
+// codexCLILineIsFrameHeaderToken reports whether the line at index k is one of
+// the bare frame header tokens.
+func codexCLILineIsFrameHeaderToken(lines []string, k int) bool {
+	if k < 0 || k >= len(lines) {
+		return false
+	}
+	switch strings.TrimSpace(lines[k]) {
+	case "codex", "user", "exec", "thinking":
+		return true
+	}
+	return false
+}
+
+// codexCLINextLineLooksLikeFrameContent reports whether the line after a header
+// at index j begins a new frame's content (a non-empty line that is not itself a
+// stray boundary). This preserves the existing transcript fixtures where "exec"
+// directly follows assistant content and precedes the exec command output.
+func codexCLINextLineLooksLikeFrameContent(lines []string, j int) bool {
+	next := j + 1
+	if next >= len(lines) {
+		return false
+	}
+	if strings.TrimSpace(lines[next]) == "" {
+		return false
+	}
+	// The previous line must be assistant/frame content (non-empty) for this to
+	// be the alternating user/codex/exec transcript rather than a header word that
+	// appears at the very start of a paragraph with no surrounding structure.
+	prev := j - 1
+	if prev < 0 {
+		return false
+	}
+	return strings.TrimSpace(lines[prev]) != ""
+}
+
+func codexCLILineStartsWithTimestamp(line string) bool {
+	if len(line) < 10 {
+		return false
+	}
+	// Match an ISO-like date prefix YYYY-MM-DD.
+	for idx, r := range line[:10] {
+		switch idx {
+		case 4, 7:
+			if r != '-' {
+				return false
+			}
+		default:
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func lastValidJSONObject(text string) string {

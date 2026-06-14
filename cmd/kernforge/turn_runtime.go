@@ -24,6 +24,7 @@ const (
 	RuntimeInterventionRepeatedTool           RuntimeInterventionKind = "RepeatedTool"
 	RuntimeInterventionEmptyStop              RuntimeInterventionKind = "EmptyStop"
 	RuntimeInterventionLengthStop             RuntimeInterventionKind = "LengthStop"
+	RuntimeInterventionContentFilter          RuntimeInterventionKind = "ContentFilter"
 	RuntimeInterventionCommentaryOnly         RuntimeInterventionKind = "CommentaryOnly"
 	RuntimeInterventionManualEditHandoff      RuntimeInterventionKind = "ManualEditHandoff"
 	RuntimeInterventionVerificationUnresolved RuntimeInterventionKind = "VerificationUnresolved"
@@ -56,6 +57,7 @@ type TurnRuntimeCounters struct {
 	ManualEditHandoffRetries          int `json:"manual_edit_handoff_retries,omitempty"`
 	CommentaryOnlyReplies             int `json:"commentary_only_replies,omitempty"`
 	LengthStopReplies                 int `json:"length_stop_replies,omitempty"`
+	ContentFilterReplies              int `json:"content_filter_replies,omitempty"`
 	FinalAnswerReviewRevisions        int `json:"final_answer_review_revisions,omitempty"`
 	RuntimeGateFinalAnswerRevisions   int `json:"runtime_gate_final_answer_revisions,omitempty"`
 }
@@ -272,6 +274,7 @@ func runtimeInterventionNextState(kind RuntimeInterventionKind) TurnRuntimeState
 		RuntimeInterventionRepeatedTool,
 		RuntimeInterventionEmptyStop,
 		RuntimeInterventionLengthStop,
+		RuntimeInterventionContentFilter,
 		RuntimeInterventionCommentaryOnly,
 		RuntimeInterventionManualEditHandoff,
 		RuntimeInterventionVerificationUnresolved,
@@ -288,6 +291,7 @@ func runtimeInterventionResolvedByRecoveryTurn(kind RuntimeInterventionKind) boo
 		RuntimeInterventionRepeatedTool,
 		RuntimeInterventionEmptyStop,
 		RuntimeInterventionLengthStop,
+		RuntimeInterventionContentFilter,
 		RuntimeInterventionCommentaryOnly,
 		RuntimeInterventionFinalLooksPremature:
 		return true
@@ -347,12 +351,32 @@ func ensureRuntimeVerificationNotRunDisclosure(reply string) string {
 	return reply + "\n\nValidation: verification was not run."
 }
 
+// ensureLengthTruncationDisclosure annotates a reply that was cut off by a model
+// token limit and could not be continued (continuation budget exhausted). The
+// answer must not be presented as complete; this marks it as truncated so the
+// caller and the user can see the response is partial.
+func ensureLengthTruncationDisclosure(reply string, stopReason string) string {
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "" {
+		return reply
+	}
+	if strings.Contains(trimmed, "[truncated:") {
+		return trimmed
+	}
+	normalized := normalizeStopReason(stopReason)
+	if normalized == "" {
+		normalized = "length"
+	}
+	return trimmed + "\n\n[truncated: the model hit an output token limit (stop_reason=" + normalized + ") and the answer could not be fully continued; the response above is incomplete.]"
+}
+
 func normalizeRuntimeInterventionKind(kind RuntimeInterventionKind) RuntimeInterventionKind {
 	switch kind {
 	case RuntimeInterventionBlockedTool,
 		RuntimeInterventionRepeatedTool,
 		RuntimeInterventionEmptyStop,
 		RuntimeInterventionLengthStop,
+		RuntimeInterventionContentFilter,
 		RuntimeInterventionCommentaryOnly,
 		RuntimeInterventionManualEditHandoff,
 		RuntimeInterventionVerificationUnresolved,

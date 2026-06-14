@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strings"
@@ -30,13 +31,33 @@ type modelRouteMetadataProvider interface {
 }
 
 type ModelRoute struct {
-	Key             string
+	// Key is the IDENTITY of a route: provider+model+baseURL+effort+tier. It is
+	// used for route-limit lookups, dedup, and anything that must distinguish two
+	// requests that differ only by effort/tier.
+	Key string
+	// ScheduleKey is the SCHEDULING key: the physical backend only
+	// (provider+model+baseURL). Reasoning effort and service tier do not change
+	// how many requests a backend serves in parallel, so two requests against the
+	// same physical backend must serialize on the same limiter even when their
+	// effort/tier (and therefore Key) differ. When empty the scheduler falls back
+	// to Key for backward compatibility.
+	ScheduleKey     string
 	Label           string
 	Provider        string
 	Model           string
 	BaseURL         string
 	ReasoningEffort string
 	ServiceTier     string
+}
+
+// schedulingKey returns the key the scheduler should serialize on. It prefers
+// the physical-backend ScheduleKey and falls back to the identity Key so that
+// callers that only populate Key keep their previous behavior.
+func (r ModelRoute) schedulingKey() string {
+	if sk := strings.TrimSpace(r.ScheduleKey); sk != "" {
+		return sk
+	}
+	return strings.TrimSpace(r.Key)
 }
 
 type ModelRoutePolicy struct {
@@ -53,11 +74,15 @@ type ModelRouteScheduler struct {
 }
 
 type modelRouteLimiter struct {
-	key           string
-	label         string
-	limit         int
-	sem           chan struct{}
+	key   string
+	label string
+	// mu guards every field below, including limit. A counter+cond design lets a
+	// dynamic per-route limit change resize the gate atomically (M23) without
+	// draining in-flight requests: raising the limit wakes waiters, lowering it
+	// simply blocks new acquires until active drains below the new limit.
 	mu            sync.Mutex
+	cond          *sync.Cond
+	limit         int
 	active        int
 	queued        int
 	totalAcquires int64
@@ -94,59 +119,91 @@ func (s *ModelRouteScheduler) Acquire(ctx context.Context, route ModelRoute, lim
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if s == nil || strings.TrimSpace(route.Key) == "" || limit <= 0 {
+	if s == nil || route.schedulingKey() == "" || limit <= 0 {
 		return func() {}, nil
 	}
 	limiter := s.limiter(route, limit)
 	start := time.Now()
+
+	// Wake the waiter loop when ctx is cancelled so a queued acquire can bail out
+	// even though sync.Cond has no native context support.
+	ctxDone := ctx.Done()
+	var watcherDone chan struct{}
+	if ctxDone != nil {
+		watcherDone = make(chan struct{})
+		go func() {
+			select {
+			case <-ctxDone:
+				limiter.mu.Lock()
+				limiter.cond.Broadcast()
+				limiter.mu.Unlock()
+			case <-watcherDone:
+			}
+		}()
+	}
+
 	limiter.mu.Lock()
 	limiter.queued++
-	limiter.mu.Unlock()
-
-	select {
-	case limiter.sem <- struct{}{}:
-		wait := time.Since(start)
-		limiter.mu.Lock()
-		limiter.queued--
-		limiter.active++
-		limiter.totalAcquires++
-		limiter.lastWait = wait
-		if wait > limiter.maxWait {
-			limiter.maxWait = wait
-		}
-		limiter.lastAcquired = time.Now()
-		limiter.mu.Unlock()
-		released := false
-		var releaseMu sync.Mutex
-		return func() {
-			releaseMu.Lock()
-			defer releaseMu.Unlock()
-			if released {
-				return
+	for limiter.active >= limiter.limit {
+		if ctxDone != nil {
+			select {
+			case <-ctxDone:
+				if limiter.queued > 0 {
+					limiter.queued--
+				}
+				limiter.mu.Unlock()
+				if watcherDone != nil {
+					close(watcherDone)
+				}
+				return nil, ctx.Err()
+			default:
 			}
-			released = true
-			<-limiter.sem
-			limiter.mu.Lock()
-			if limiter.active > 0 {
-				limiter.active--
-			}
-			limiter.mu.Unlock()
-		}, nil
-	case <-ctx.Done():
-		limiter.mu.Lock()
-		if limiter.queued > 0 {
-			limiter.queued--
 		}
-		limiter.mu.Unlock()
-		return nil, ctx.Err()
+		limiter.cond.Wait()
 	}
+	wait := time.Since(start)
+	limiter.queued--
+	limiter.active++
+	limiter.totalAcquires++
+	limiter.lastWait = wait
+	if wait > limiter.maxWait {
+		limiter.maxWait = wait
+	}
+	limiter.lastAcquired = time.Now()
+	limiter.mu.Unlock()
+	if watcherDone != nil {
+		close(watcherDone)
+	}
+
+	released := false
+	var releaseMu sync.Mutex
+	return func() {
+		releaseMu.Lock()
+		defer releaseMu.Unlock()
+		if released {
+			return
+		}
+		released = true
+		limiter.mu.Lock()
+		if limiter.active > 0 {
+			limiter.active--
+		}
+		// Wake all waiters: a resize may have raised the limit so more than one
+		// queued acquire could now proceed.
+		limiter.cond.Broadcast()
+		limiter.mu.Unlock()
+	}, nil
 }
 
 func (s *ModelRouteScheduler) limiter(route ModelRoute, limit int) *modelRouteLimiter {
 	if limit < 1 {
 		limit = 1
 	}
-	key := strings.TrimSpace(route.Key)
+	// Serialize on the physical backend (provider+model+baseURL), NOT on the full
+	// identity that includes reasoning effort and service tier. A single local
+	// backend must get one limiter regardless of effort/tier, so requests at
+	// different efforts against the same server still serialize (M6).
+	key := route.schedulingKey()
 	label := strings.TrimSpace(route.Label)
 	if label == "" {
 		label = key
@@ -157,22 +214,24 @@ func (s *ModelRouteScheduler) limiter(route ModelRoute, limit int) *modelRouteLi
 		s.routes = map[string]*modelRouteLimiter{}
 	}
 	if existing, ok := s.routes[key]; ok {
-		if existing.limit == limit {
-			return existing
-		}
+		// Dynamic per-route limit change: resize atomically under the limiter mutex
+		// (M23). Raising the limit wakes queued waiters immediately; lowering it
+		// just gates new acquires until active drains below the new limit. No
+		// draining of in-flight requests is required.
 		existing.mu.Lock()
-		idle := existing.active == 0 && existing.queued == 0 && len(existing.sem) == 0
-		existing.mu.Unlock()
-		if !idle {
-			return existing
+		if existing.limit != limit {
+			existing.limit = limit
+			existing.cond.Broadcast()
 		}
+		existing.mu.Unlock()
+		return existing
 	}
 	limiter := &modelRouteLimiter{
 		key:   key,
 		label: label,
 		limit: limit,
-		sem:   make(chan struct{}, limit),
 	}
+	limiter.cond = sync.NewCond(&limiter.mu)
 	s.routes[key] = limiter
 	return limiter
 }
@@ -378,8 +437,10 @@ func modelRouteForRequest(cfg Config, client ProviderClient, req ChatRequest) Mo
 		serviceTier = normalizeServiceTier(cfg.ServiceTier)
 	}
 	key := modelRouteKeyFromParts(provider, model, baseURL, reasoningEffort, serviceTier)
+	scheduleKey := modelRouteScheduleKeyFromParts(provider, model, baseURL)
 	return ModelRoute{
 		Key:             key,
+		ScheduleKey:     scheduleKey,
 		Label:           modelRouteLabel(provider, model, baseURL, reasoningEffort, serviceTier),
 		Provider:        provider,
 		Model:           model,
@@ -425,15 +486,22 @@ func requestWithRouteReasoningEffort(cfg Config, client ProviderClient, req Chat
 		}
 	}
 
+	// Only inherit the main effort when the role carries no explicit effort of its
+	// own. If the reviewer/worker client has an explicit metaEffort, honor it as-is
+	// rather than raising it onto a higher-cost route (M25). With the scheduling
+	// key decoupled from effort (M6), route-sharing for serialization no longer
+	// requires forcing matching effort, so we never silently raise an explicit
+	// per-role effort.
+	if metaEffort != "" {
+		req.ReasoningEffort = metaEffort
+		return req
+	}
 	if reviewConfiguredRouteMatchesMain(cfg, provider, model, baseURL) {
 		mainEffort := normalizeReasoningEffort(cfg.ReasoningEffort)
 		if mainEffort != "" {
-			req.ReasoningEffort = reasoningEffortAtLeast(metaEffort, mainEffort)
+			req.ReasoningEffort = mainEffort
 			return req
 		}
-	}
-	if metaEffort != "" {
-		req.ReasoningEffort = metaEffort
 	}
 	return req
 }
@@ -499,6 +567,20 @@ func modelRouteKeyFromParts(provider string, model string, baseURL string, reaso
 	return provider + "\x00" + model + "\x00" + baseURL + "\x00" + reasoningEffort + "\x00" + serviceTier
 }
 
+// modelRouteScheduleKeyFromParts builds the SCHEDULING key from the physical
+// backend only (provider+model+baseURL). Reasoning effort and service tier are
+// deliberately excluded: they do not change how many concurrent requests a
+// backend can serve, so they must not fragment a single backend limiter (M6).
+func modelRouteScheduleKeyFromParts(provider string, model string, baseURL string) string {
+	provider = normalizeProviderName(provider)
+	model = strings.TrimSpace(model)
+	baseURL = normalizeModelRouteBaseURL(provider, baseURL)
+	if provider == "" && model == "" && baseURL == "" {
+		return ""
+	}
+	return provider + "\x00" + model + "\x00" + baseURL
+}
+
 func modelRouteLabel(provider string, model string, baseURL string, reasoningEffort string, serviceTier string) string {
 	provider = normalizeProviderName(provider)
 	model = strings.TrimSpace(model)
@@ -556,12 +638,30 @@ func isLocalModelRouteBaseURL(baseURL string) bool {
 		return false
 	}
 	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
-	switch host {
-	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
-		return true
-	default:
-		return strings.HasPrefix(host, "127.")
+	if host == "" {
+		return false
 	}
+	// Well-known local and container-host names.
+	switch host {
+	case "localhost", "0.0.0.0", "::", "host.docker.internal", "gateway.docker.internal":
+		return true
+	}
+	if strings.HasSuffix(host, ".localhost") || strings.HasSuffix(host, ".local") {
+		return true
+	}
+	// IP literals: loopback, link-local, and RFC1918 private ranges are all
+	// non-routable single backends, not cloud routes (M18).
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() {
+			return true
+		}
+		// Treat unspecified address (e.g. "::") as local.
+		if ip.IsUnspecified() {
+			return true
+		}
+		return false
+	}
+	return false
 }
 
 func acquireModelRoute(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (func(), ModelRoute, error) {

@@ -258,6 +258,119 @@ func TestModelRouteSchedulerSerializesSameLocalProviderRoute(t *testing.T) {
 	}
 }
 
+// M6: a single local backend must serialize (limit=1) across reasoning efforts.
+// Two routes that differ only by effort share one limiter, so the second acquire
+// blocks until the first releases.
+func TestModelRouteSerializesSingleLocalBackendAcrossEfforts(t *testing.T) {
+	scheduler := NewModelRouteScheduler()
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-compatible"
+	cfg.Model = "local-model"
+	cfg.BaseURL = "http://127.0.0.1:1234/v1/"
+	policy := modelRoutePolicyFromConfig(cfg)
+
+	lowRoute := modelRouteForRequest(cfg, nil, ChatRequest{Model: cfg.Model, ReasoningEffort: "low"})
+	highRoute := modelRouteForRequest(cfg, nil, ChatRequest{Model: cfg.Model, ReasoningEffort: "high"})
+
+	if lowRoute.Key == highRoute.Key {
+		t.Fatalf("identity keys should differ across efforts, both = %q", lowRoute.Key)
+	}
+	if lowRoute.schedulingKey() == "" || lowRoute.schedulingKey() != highRoute.schedulingKey() {
+		t.Fatalf("scheduling keys must match: low=%q high=%q", lowRoute.schedulingKey(), highRoute.schedulingKey())
+	}
+	if got := policy.LimitFor(lowRoute); got != 1 {
+		t.Fatalf("local backend limit = %d, want 1", got)
+	}
+
+	release, err := scheduler.Acquire(context.Background(), lowRoute, policy.LimitFor(lowRoute))
+	if err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	_, err = scheduler.Acquire(ctx, highRoute, policy.LimitFor(highRoute))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("second acquire at a different effort should block on the shared backend, err = %v", err)
+	}
+	release()
+
+	release2, err := scheduler.Acquire(context.Background(), highRoute, policy.LimitFor(highRoute))
+	if err != nil {
+		t.Fatalf("acquire after release failed: %v", err)
+	}
+	release2()
+
+	snapshots := scheduler.Snapshot()
+	if len(snapshots) != 1 {
+		t.Fatalf("expected one shared route snapshot, got %#v", snapshots)
+	}
+}
+
+// M18: LAN/RFC1918/container-host backends are treated as a single local
+// backend (limit 1) rather than getting cloud concurrency.
+func TestModelRoutePolicyTreatsPrivateAndContainerHostsAsLocal(t *testing.T) {
+	for _, baseURL := range []string{
+		"http://10.0.0.5:1234/v1",
+		"http://172.16.4.4:1234/v1",
+		"http://192.168.1.50:1234/v1",
+		"http://host.docker.internal:1234/v1",
+		"http://my-box.local:1234/v1",
+	} {
+		if !isLocalModelRouteBaseURL(baseURL) {
+			t.Fatalf("expected %q to be classified local", baseURL)
+		}
+		cfg := DefaultConfig(t.TempDir())
+		cfg.Provider = "openai-compatible"
+		cfg.Model = "local-model"
+		cfg.BaseURL = baseURL
+		route := modelRouteForRequest(cfg, NewOpenAICompatibleClient(cfg.Provider, baseURL, "test-key"), ChatRequest{Model: cfg.Model})
+		if got := modelRoutePolicyFromConfig(cfg).LimitFor(route); got != 1 {
+			t.Fatalf("private/container host %q limit = %d, want 1", baseURL, got)
+		}
+	}
+
+	// A public host must remain a cloud route.
+	if isLocalModelRouteBaseURL("http://8.8.8.8:1234/v1") {
+		t.Fatalf("public host should not be classified local")
+	}
+}
+
+// M23: a dynamic per-route limit increase is applied while the route is busy and
+// immediately admits a previously blocked acquire.
+func TestModelRouteSchedulerDynamicLimitResize(t *testing.T) {
+	scheduler := NewModelRouteScheduler()
+	route := ModelRoute{Key: "resize-test", Label: "resize-test"}
+
+	release1, err := scheduler.Acquire(context.Background(), route, 1)
+	if err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+
+	// With limit 1 the second acquire blocks.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if _, err := scheduler.Acquire(ctx, route, 1); !errors.Is(err, context.DeadlineExceeded) {
+		cancel()
+		t.Fatalf("second acquire at limit 1 should block, err = %v", err)
+	}
+	cancel()
+
+	// Raise the limit to 2 while the first permit is still held; the resize must
+	// apply immediately and admit the new acquire.
+	release2, err := scheduler.Acquire(context.Background(), route, 2)
+	if err != nil {
+		t.Fatalf("acquire after resize to 2 failed: %v", err)
+	}
+	release1()
+	release2()
+
+	for _, snap := range scheduler.Snapshot() {
+		if snap.Key == "resize-test" && snap.Limit != 2 {
+			t.Fatalf("route limit after resize = %d, want 2", snap.Limit)
+		}
+	}
+}
+
 func TestModelRoutePermitHeldUntilProviderReturnsAfterCallerTimeout(t *testing.T) {
 	scheduler := NewModelRouteScheduler()
 	client := &contextIgnoringProviderClient{
@@ -503,7 +616,14 @@ func TestModelRouteForRequestPreservesRequestReasoningEffort(t *testing.T) {
 	}
 }
 
-func TestModelRequestUsesMainEffortWhenReviewerClientSharesRoute(t *testing.T) {
+// M25: a reviewer client that carries an explicit reasoning effort must keep it
+// even when it shares the physical backend with main. Previously the code raised
+// the reviewer effort up to the main effort so the route identities would match
+// for serialization; with M6 the scheduling key ignores effort, so serialization
+// no longer depends on forcing matching effort and the explicit per-role effort
+// is honored. (This test previously asserted the now-fixed wrong behavior of
+// raising "high" to "xhigh".)
+func TestModelRequestHonorsExplicitReviewerEffortWhenSharingBackend(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai-codex"
 	cfg.Model = "gpt-5.5"
@@ -528,8 +648,20 @@ func TestModelRequestUsesMainEffortWhenReviewerClientSharesRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("completeModelTurnOnceWithModelRoutes: %v", err)
 	}
-	if client.req.ReasoningEffort != "xhigh" {
-		t.Fatalf("request reasoning effort = %q, want xhigh", client.req.ReasoningEffort)
+	if client.req.ReasoningEffort != "high" {
+		t.Fatalf("request reasoning effort = %q, want high (explicit reviewer effort honored)", client.req.ReasoningEffort)
+	}
+
+	// M6: even though efforts differ, the explicit-high reviewer and the
+	// xhigh main route must share one scheduling key so a single backend
+	// serializes across efforts.
+	reviewerRoute := modelRouteForRequest(cfg, client, ChatRequest{Model: cfg.Model})
+	mainRoute := modelRouteForRequest(cfg, nil, ChatRequest{Model: cfg.Model, ReasoningEffort: "xhigh"})
+	if reviewerRoute.schedulingKey() == "" || reviewerRoute.schedulingKey() != mainRoute.schedulingKey() {
+		t.Fatalf("scheduling keys must match across efforts: reviewer=%q main=%q", reviewerRoute.schedulingKey(), mainRoute.schedulingKey())
+	}
+	if reviewerRoute.Key == mainRoute.Key {
+		t.Fatalf("identity keys should differ across efforts, both = %q", reviewerRoute.Key)
 	}
 }
 

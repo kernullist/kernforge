@@ -293,6 +293,7 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 	}
 
 	authRecovered := false
+	preStreamRetryAttempts := 0
 	for {
 		httpReq, err := newHTTPRequest(accessToken)
 		if err != nil {
@@ -300,6 +301,15 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 		}
 		resp, err := httpClient.Do(httpReq)
 		if err != nil {
+			// Pre-stream transport failure: no SSE bytes were produced yet, so a
+			// retry cannot duplicate streamed output. Honor the unary retry policy.
+			if shouldRetryOpenAICodexUnaryError(ctx, err, preStreamRetryAttempts) {
+				if waitErr := waitOpenAICodexUnaryRetry(ctx, preStreamRetryAttempts); waitErr != nil {
+					return ChatResponse{}, waitErr
+				}
+				preStreamRetryAttempts++
+				continue
+			}
 			return ChatResponse{}, err
 		}
 		captureProviderTurnStateHeader(resp, req.TurnState)
@@ -333,7 +343,20 @@ func (c *OpenAICodexClient) Complete(ctx context.Context, req ChatRequest) (Chat
 				}
 				continue
 			}
-			return ChatResponse{}, newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+			apiErr := newProviderHTTPErrorWithHeaders("openai-codex", resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+			// Pre-stream error status (no SSE bytes yet). Retry transient >=500/429
+			// per the structured classifier, honoring any Retry-After / reset hint.
+			// Terminal usage/spend-cap 429s are classified non-retryable and surface
+			// immediately.
+			var providerErr *ProviderAPIError
+			if errors.As(apiErr, &providerErr) && shouldRetryOpenAICodexUnaryAPIError(providerErr, preStreamRetryAttempts) {
+				if waitErr := waitOpenAICodexUnaryRetryForError(ctx, apiErr, preStreamRetryAttempts); waitErr != nil {
+					return ChatResponse{}, waitErr
+				}
+				preStreamRetryAttempts++
+				continue
+			}
+			return ChatResponse{}, apiErr
 		}
 		out, err := readOpenAICodexStreamWithOptions(ctx, resp.Body, openAICodexStreamOptions{
 			OnProgressEvent: req.OnProgressEvent,
@@ -1923,7 +1946,18 @@ func parseOpenAICodexResponse(data []byte) (ChatResponse, error) {
 	out.Phase = messagePhase
 	stopReason := strings.TrimSpace(decoded.Status)
 	if decoded.IncompleteDetails != nil && strings.TrimSpace(decoded.IncompleteDetails.Reason) != "" {
-		stopReason = strings.TrimSpace(decoded.IncompleteDetails.Reason)
+		reason := strings.TrimSpace(decoded.IncompleteDetails.Reason)
+		// Normalize length reasons (max_output_tokens / max_tokens / length)
+		// to the canonical "length" stop reason so the token-limit continuation
+		// route engages instead of finalizing a truncated answer. Content-filter
+		// incompletes map to a recognizable content_filter stop reason.
+		if openAICodexIncompleteReasonIsLength(reason) {
+			stopReason = "length"
+		} else if openAICodexIncompleteReasonIsContentFilter(reason) {
+			stopReason = "content_filter"
+		} else {
+			stopReason = reason
+		}
 	}
 	if !openAICodexMessageHasOutput(out) {
 		return ChatResponse{}, newProviderMessageError("openai-codex", "empty Responses output", "", "", nil, data)
@@ -2315,6 +2349,36 @@ func readOpenAICodexStreamWithOptions(ctx context.Context, body io.Reader, opts 
 			return ChatResponse{}, false, newProviderMessageError("openai-codex", "response.failed event received", "", "", nil, []byte(payload))
 		case "response.incomplete":
 			reason := openAICodexIncompleteReason(event.Response)
+			// A length-truncated incomplete response still carries the text
+			// already produced. Do NOT discard it: capture the payload, mark
+			// the stop reason as a length stop, and fall through to the final
+			// assembly path so the length-stop continuation can run. Only true
+			// failure reasons (anything other than a length or content-filter
+			// reason) are surfaced as errors.
+			if openAICodexIncompleteReasonIsLength(reason) {
+				if len(event.Response) > 0 {
+					completedResponse = append(completedResponse[:0], event.Response...)
+					if completedID := openAICodexResponseIDFromResponsePayload(event.Response); completedID != "" {
+						responseID = completedID
+					}
+				}
+				completedSeen = true
+				stopReason = "length"
+				lengthIncomplete := false
+				endTurn = &lengthIncomplete
+				return ChatResponse{}, false, nil
+			}
+			if openAICodexIncompleteReasonIsContentFilter(reason) {
+				if len(event.Response) > 0 {
+					completedResponse = append(completedResponse[:0], event.Response...)
+					if completedID := openAICodexResponseIDFromResponsePayload(event.Response); completedID != "" {
+						responseID = completedID
+					}
+				}
+				completedSeen = true
+				stopReason = "content_filter"
+				return ChatResponse{}, false, nil
+			}
 			message := "Incomplete response returned"
 			if reason != "" {
 				message += ", reason: " + reason
@@ -2832,6 +2896,30 @@ func openAICodexIncompleteReason(response json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(decoded.IncompleteDetails.Reason)
+}
+
+// openAICodexIncompleteReasonIsLength reports whether an incomplete reason is a
+// length/token-budget stop (Responses uses max_output_tokens; some shims report
+// max_tokens or length). Such responses still carry already-produced text and
+// must not be discarded.
+func openAICodexIncompleteReasonIsLength(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "max_output_tokens", "max_tokens", "length":
+		return true
+	default:
+		return false
+	}
+}
+
+// openAICodexIncompleteReasonIsContentFilter reports whether an incomplete
+// reason is a content-filter stop.
+func openAICodexIncompleteReasonIsContentFilter(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "content_filter", "content_filtered", "output_content_filter":
+		return true
+	default:
+		return false
+	}
 }
 
 func openAICodexOutputItemText(item openAICodexOutputItem) string {

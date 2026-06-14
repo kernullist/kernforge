@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -224,6 +225,7 @@ type Config struct {
 	ReasoningEffort             string                        `json:"reasoning_effort,omitempty"`
 	ServiceTier                 string                        `json:"service_tier,omitempty"`
 	MaxTokens                   int                           `json:"max_tokens"`
+	ContextWindowTokens         int                           `json:"context_window_tokens,omitempty"`
 	MaxToolIterations           int                           `json:"max_tool_iterations"`
 	MaxRequestRetries           int                           `json:"max_request_retries,omitempty"`
 	RequestRetryDelayMs         int                           `json:"request_retry_delay_ms,omitempty"`
@@ -1314,6 +1316,9 @@ func mergeConfig(dst *Config, src Config) {
 	}
 	if src.MaxTokens != 0 {
 		dst.MaxTokens = src.MaxTokens
+	}
+	if src.ContextWindowTokens != 0 {
+		dst.ContextWindowTokens = src.ContextWindowTokens
 	}
 	if src.MaxToolIterations != 0 {
 		dst.MaxToolIterations = src.MaxToolIterations
@@ -2493,6 +2498,22 @@ func configRequestRetryDelay(cfg Config) time.Duration {
 		return time.Duration(cfg.RequestRetryDelayMs) * time.Millisecond
 	}
 	return 1500 * time.Millisecond
+}
+
+// providerRetryDelayForError prefers a server-provided Retry-After / reset hint
+// when the error carries one, capped at maxProviderRetryDelay. Otherwise it
+// falls back to the jittered synthetic backoff. The server hint is treated as
+// authoritative, so no jitter is added on that path.
+func providerRetryDelayForError(err error, baseDelay time.Duration, attempt int) time.Duration {
+	var apiErr *ProviderAPIError
+	if errors.As(err, &apiErr) && apiErr != nil && apiErr.RetryAfter > 0 {
+		delay := apiErr.RetryAfter
+		if delay > maxProviderRetryDelay {
+			delay = maxProviderRetryDelay
+		}
+		return delay
+	}
+	return providerRetryDelay(baseDelay, attempt)
 }
 
 func providerRetryDelay(baseDelay time.Duration, attempt int) time.Duration {

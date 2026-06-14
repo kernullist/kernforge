@@ -20,13 +20,13 @@ func TestNewProviderClientSupportsClaudeCLIAliases(t *testing.T) {
 }
 
 func TestBuildClaudeCLIArgsUsesModelConfigOverride(t *testing.T) {
-	args := buildClaudeCLIArgs("sonnet", []string{"--permission-mode", "plan"}, "hello")
+	args := buildClaudeCLIArgs("sonnet", []string{"--permission-mode", "plan"}, "hello", ChatRequest{})
 	want := []string{"--model", "sonnet", "--permission-mode", "plan", "-p", "hello"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
 
-	args = buildClaudeCLIArgs(claudeCLIDefaultModel, []string{"--output-format", "text"}, "hello")
+	args = buildClaudeCLIArgs(claudeCLIDefaultModel, []string{"--output-format", "text"}, "hello", ChatRequest{})
 	want = []string{"--output-format", "text", "-p", "hello"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("default model args = %#v, want %#v", args, want)
@@ -46,7 +46,7 @@ func TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			args := buildClaudeCLIArgs(tt.model, nil, "hello")
+			args := buildClaudeCLIArgs(tt.model, nil, "hello", ChatRequest{})
 			want := []string{"--model", tt.want, "-p", "hello"}
 			if !reflect.DeepEqual(args, want) {
 				t.Fatalf("args = %#v, want %#v", args, want)

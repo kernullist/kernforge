@@ -182,16 +182,35 @@ func (c *OpenCodeClient) completeResponses(ctx context.Context, req ChatRequest)
 		req.OnTextDelta(out.Text)
 	}
 
+	// A length-truncated OpenCode Responses reply arrives with status=="incomplete"
+	// and incomplete_details.reason pointing at a token-budget stop. Map that to the
+	// canonical "length" stop reason so the agent runs the continuation route instead
+	// of finalizing a partial answer behind an unrecognized stop reason.
+	stopReason := normalizeStopReason(decoded.Status)
+	if strings.EqualFold(strings.TrimSpace(decoded.Status), "incomplete") && decoded.IncompleteDetails != nil {
+		reason := strings.TrimSpace(decoded.IncompleteDetails.Reason)
+		if openAICodexIncompleteReasonIsLength(reason) {
+			stopReason = "length"
+		} else if openAICodexIncompleteReasonIsContentFilter(reason) {
+			stopReason = "content_filter"
+		} else if reason != "" {
+			stopReason = normalizeStopReason(reason)
+		}
+	}
+
 	return ChatResponse{
 		Message:    out,
-		StopReason: normalizeStopReason(decoded.Status),
+		StopReason: stopReason,
 	}, nil
 }
 
 type openCodeResponsesPayload struct {
-	OutputText string `json:"output_text,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Output     []struct {
+	OutputText        string `json:"output_text,omitempty"`
+	Status            string `json:"status,omitempty"`
+	IncompleteDetails *struct {
+		Reason string `json:"reason,omitempty"`
+	} `json:"incomplete_details,omitempty"`
+	Output []struct {
 		Type      string          `json:"type"`
 		ID        string          `json:"id,omitempty"`
 		CallID    string          `json:"call_id,omitempty"`

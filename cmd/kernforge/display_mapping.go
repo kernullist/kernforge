@@ -499,6 +499,11 @@ func humanizeInterventionKind(value string, korean bool) string {
 			return "답변이 길이 제한에 걸려 이어서 진행했습니다"
 		}
 		return "continued past a length cutoff"
+	case RuntimeInterventionContentFilter:
+		if korean {
+			return "제공자 콘텐츠 필터에 차단되었습니다"
+		}
+		return "provider content filter blocked the response"
 	case RuntimeInterventionCommentaryOnly:
 		if korean {
 			return "설명만 반복돼 실제 작업을 다시 요청했습니다"

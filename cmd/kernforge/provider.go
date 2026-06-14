@@ -298,12 +298,17 @@ func cliConversationRoleLabel(msg Message) string {
 }
 
 type ChatRequest struct {
-	Model               string
-	System              string
-	Messages            []Message
-	Tools               []ToolDefinition
-	MaxTokens           int
-	Temperature         float64
+	Model       string
+	System      string
+	Messages    []Message
+	Tools       []ToolDefinition
+	MaxTokens   int
+	Temperature float64
+	// TemperatureSet forces an explicit temperature (including 0) to be sent to
+	// the provider. When false, a zero Temperature is treated as unset and
+	// omitted so providers fall back to their own defaults. Any non-zero
+	// Temperature is always sent regardless of this flag.
+	TemperatureSet      bool
 	ReasoningEffort     string
 	ServiceTier         string
 	WorkingDir          string
@@ -316,6 +321,11 @@ type ChatRequest struct {
 	ThreadID            string
 	CodexSubagent       string
 	CodexParentThreadID string
+	// forceMaxCompletionTokens is an internal one-shot retry flag for OpenAI
+	// chat-completions: when a classic-model request is rejected because the
+	// model requires max_completion_tokens, the call is re-issued with this set
+	// so the cap is serialized as max_completion_tokens instead of max_tokens.
+	forceMaxCompletionTokens bool
 }
 
 type ChatResponse struct {
@@ -329,6 +339,20 @@ type ChatResponse struct {
 	ReasoningIncluded  bool
 	RateLimitSummary   string
 	ModelVerifications []string
+}
+
+// requestTemperaturePointer returns a pointer to the temperature value that
+// should be serialized for a provider, or nil when the temperature is unset.
+// A non-zero temperature is always sent. A zero temperature is only sent when
+// the caller explicitly marked it via TemperatureSet, so that classic
+// omitempty-style behavior (zero == unset) is preserved for callers that did
+// not request deterministic sampling.
+func requestTemperaturePointer(req ChatRequest) *float64 {
+	if req.TemperatureSet || req.Temperature != 0 {
+		value := req.Temperature
+		return &value
+	}
+	return nil
 }
 
 const (
@@ -513,6 +537,7 @@ type ProviderAPIError struct {
 	RateLimitSummary     string
 	RequestSummary       string
 	RawBody              string
+	RetryAfter           time.Duration
 }
 
 func (e *ProviderAPIError) Error() string {
@@ -563,8 +588,33 @@ func (e *ProviderAPIError) Details() string {
 	return detail
 }
 
+// statusCodeBandwidthLimit is the non-standard HTTP 509 (Bandwidth Limit
+// Exceeded) status used by some edges; net/http does not define a constant.
+const statusCodeBandwidthLimit = 509
+
 func (e *ProviderAPIError) Retryable() bool {
+	// A hard usage/spend-cap or credits-depleted condition is terminal even
+	// though the transport status is 429. Surface it immediately instead of
+	// retrying against a cap that will not reset within the turn.
+	if providerRateLimitReachedTypeIsTerminal(e.RateLimitReachedType) {
+		return false
+	}
 	return providerErrorLooksRetryable(e.StatusCode, e.ErrorType, e.Message, e.Code, e.RawBody)
+}
+
+// providerRateLimitReachedTypeIsTerminal reports whether the structured Codex
+// rate-limit-reached type indicates a non-retryable usage/spend cap or a
+// depleted credit balance. A plain "rate_limit_reached" remains retryable.
+func providerRateLimitReachedTypeIsTerminal(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "workspace_owner_credits_depleted",
+		"workspace_member_credits_depleted",
+		"workspace_owner_usage_limit_reached",
+		"workspace_member_usage_limit_reached":
+		return true
+	default:
+		return false
+	}
 }
 
 func newProviderHTTPError(provider string, statusCode int, status string, data []byte, requestSummary string) error {
@@ -585,7 +635,70 @@ func newProviderHTTPErrorWithHeaders(provider string, statusCode int, status str
 		RateLimitSummary:     providerCodexRateLimitSummaryFromHeaders(headers),
 		RequestSummary:       requestSummary,
 		RawBody:              rawBody,
+		RetryAfter:           providerRetryAfterFromHeaders(headers),
 	}
+}
+
+// providerRetryAfterFromHeaders extracts a positive retry delay from a provider
+// error response. It honors the standard Retry-After header (delta seconds or an
+// HTTP-date) first, then falls back to the soonest Codex *-Reset-At window. The
+// returned duration is never negative; zero means no usable hint was present.
+func providerRetryAfterFromHeaders(headers http.Header) time.Duration {
+	if headers == nil {
+		return 0
+	}
+	if value := strings.TrimSpace(headers.Get("Retry-After")); value != "" {
+		if secs, err := strconv.Atoi(value); err == nil {
+			if secs > 0 {
+				return time.Duration(secs) * time.Second
+			}
+			return 0
+		}
+		if when, err := http.ParseTime(value); err == nil {
+			if delay := time.Until(when); delay > 0 {
+				return delay
+			}
+			return 0
+		}
+	}
+	best := time.Duration(0)
+	for _, prefix := range []string{"X-Codex-Primary", "X-Codex-Secondary"} {
+		resetAt := strings.TrimSpace(headers.Get(prefix + "-Reset-At"))
+		if resetAt == "" {
+			continue
+		}
+		delay := providerParseResetAtDelay(resetAt)
+		if delay <= 0 {
+			continue
+		}
+		if best == 0 || delay < best {
+			best = delay
+		}
+	}
+	return best
+}
+
+// providerParseResetAtDelay converts a Codex *-Reset-At header into a delay
+// relative to now. The value may be an RFC3339 timestamp or an absolute unix
+// epoch (seconds). Past or unparseable values yield zero.
+func providerParseResetAtDelay(value string) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if when, err := time.Parse(time.RFC3339, value); err == nil {
+		if delay := time.Until(when); delay > 0 {
+			return delay
+		}
+		return 0
+	}
+	if epoch, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if delay := time.Until(time.Unix(epoch, 0)); delay > 0 {
+			return delay
+		}
+		return 0
+	}
+	return 0
 }
 
 func newProviderMessageError(provider, message, errorType, param string, code any, raw []byte) error {
@@ -744,12 +857,22 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 			return false
 		}
 	}
-	if statusCode == http.StatusTooManyRequests {
+	// Transient transport statuses. 408 (request timeout), 425 (too early) and
+	// 509 (bandwidth limit) join 429 and 500-504 so a transient edge timeout is
+	// not fatal just because the literal word "timeout" is missing.
+	switch statusCode {
+	case http.StatusRequestTimeout, // 408
+		http.StatusTooManyRequests, // 429
+		http.StatusTooEarly,        // 425
+		statusCodeBandwidthLimit:   // 509
 		return true
 	}
 	if statusCode >= 500 && statusCode <= 504 {
 		return true
 	}
+	// Textual hints only use word-boundary phrases, not bare numeric tokens.
+	// Lone digits like "429"/"500" produced false-positive retries on permanent
+	// 4xx whose bodies happened to contain those numbers.
 	retryHints := []string{
 		"rate limit",
 		"timeout",
@@ -764,11 +887,11 @@ func providerErrorLooksRetryable(statusCode int, errorType, message, code, raw s
 		"slow_down",
 		"server_error",
 		"timeout_error",
-		"429",
-		"500",
-		"502",
-		"503",
-		"504",
+		"http 500",
+		"http 502",
+		"http 503",
+		"http 504",
+		"http 429",
 	}
 	for _, hint := range retryHints {
 		if strings.Contains(text, hint) {
@@ -882,6 +1005,34 @@ func providerErrorTextSuggestsJSONModeUnsupported(msg string) bool {
 	return false
 }
 
+// providerErrorSuggestsMaxCompletionTokens reports whether an OpenAI-style error
+// indicates the model rejected max_tokens and requires max_completion_tokens.
+// Classification is structural (parameter names) rather than by status digits.
+func providerErrorSuggestsMaxCompletionTokens(err error) bool {
+	if err == nil {
+		return false
+	}
+	var text string
+	apiErr := &ProviderAPIError{}
+	if errors.As(err, &apiErr) {
+		text = strings.Join([]string{apiErr.Message, apiErr.ErrorType, apiErr.Param, apiErr.Code, apiErr.RawBody}, " ")
+	} else {
+		text = err.Error()
+	}
+	text = strings.ToLower(text)
+	if !strings.Contains(text, "max_completion_tokens") {
+		return false
+	}
+	// Require an indication that max_tokens is the rejected parameter so we do
+	// not loop on unrelated errors that merely mention the field name.
+	return strings.Contains(text, "max_tokens") ||
+		strings.Contains(text, "unsupported parameter") ||
+		strings.Contains(text, "unsupported param") ||
+		strings.Contains(text, "not supported") ||
+		strings.Contains(text, "use ") ||
+		strings.Contains(text, "instead")
+}
+
 type ProviderClient interface {
 	Name() string
 	Complete(ctx context.Context, req ChatRequest) (ChatResponse, error)
@@ -983,6 +1134,165 @@ func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
 	}
 }
 
+// anthropicThinkingBudgetForEffort maps a normalized reasoning effort to an
+// Anthropic extended-thinking token budget. Returns 0 when the effort does not
+// request reasoning so non-reasoning calls stay unchanged.
+func anthropicThinkingBudgetForEffort(effort string) int {
+	switch normalizeReasoningEffort(effort) {
+	case "minimal":
+		return 1024
+	case "low":
+		return 4096
+	case "medium":
+		return 8192
+	case "high":
+		return 16384
+	case "xhigh":
+		return 32768
+	default:
+		return 0
+	}
+}
+
+// anthropicImageSourceFromDataURL converts a base64 image data URL into an
+// Anthropic image source map. It returns ok=false when the value is not a
+// recognizable base64 image data URL.
+func anthropicImageSourceFromDataURL(imageURL string) (map[string]any, bool) {
+	imageURL = strings.TrimSpace(imageURL)
+	payload, ok := base64ImageDataURLPayload(imageURL)
+	if !ok {
+		return nil, false
+	}
+	comma := strings.IndexByte(imageURL, ',')
+	if comma < 0 {
+		return nil, false
+	}
+	metadata := imageURL[len("data:"):comma]
+	mediaType := metadata
+	if semi := strings.IndexByte(metadata, ';'); semi >= 0 {
+		mediaType = metadata[:semi]
+	}
+	mediaType = strings.TrimSpace(strings.ToLower(mediaType))
+	if mediaType == "" {
+		return nil, false
+	}
+	return map[string]any{
+		"type":       "base64",
+		"media_type": mediaType,
+		"data":       payload,
+	}, true
+}
+
+// anthropicToolResultContentBlocks renders multimodal tool output as an
+// Anthropic tool_result content array (text plus base64 image blocks). Leading
+// plain text from the tool message is preserved first so nothing is dropped.
+func anthropicToolResultContentBlocks(leadingText string, items []ToolContentItem) ([]map[string]any, error) {
+	blocks := make([]map[string]any, 0, len(items)+1)
+	if strings.TrimSpace(leadingText) != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": leadingText})
+	}
+	for _, item := range items {
+		switch strings.TrimSpace(item.Type) {
+		case "input_text":
+			if strings.TrimSpace(item.Text) == "" {
+				continue
+			}
+			blocks = append(blocks, map[string]any{"type": "text", "text": item.Text})
+		case "input_image":
+			source, ok := anthropicImageSourceFromDataURL(item.ImageURL)
+			if !ok {
+				// Non-data-URL images cannot be inlined as base64 for Anthropic;
+				// keep the reference as text instead of silently dropping it.
+				if strings.TrimSpace(item.ImageURL) != "" {
+					blocks = append(blocks, map[string]any{"type": "text", "text": "[image] " + strings.TrimSpace(item.ImageURL)})
+				}
+				continue
+			}
+			blocks = append(blocks, map[string]any{"type": "image", "source": source})
+		case "encrypted_content":
+			// Anthropic has no encrypted_content tool_result block; surface it as
+			// text so the information is not lost.
+			if strings.TrimSpace(item.EncryptedContent) != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": item.EncryptedContent})
+			}
+		}
+	}
+	if len(blocks) == 0 {
+		// Anthropic requires non-empty tool_result content; fall back to text.
+		blocks = append(blocks, map[string]any{"type": "text", "text": leadingText})
+	}
+	return blocks, nil
+}
+
+// openAIToolResultContentParts renders multimodal tool output as an OpenAI
+// chat-completions content-part array (text plus image_url parts). Leading plain
+// text from the tool message is preserved first so nothing is dropped. Falls
+// back to the plain text string when no renderable parts remain.
+func openAIToolResultContentParts(leadingText string, items []ToolContentItem) any {
+	parts := make([]map[string]any, 0, len(items)+1)
+	if strings.TrimSpace(leadingText) != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": leadingText})
+	}
+	for _, item := range items {
+		switch strings.TrimSpace(item.Type) {
+		case "input_text":
+			if strings.TrimSpace(item.Text) == "" {
+				continue
+			}
+			parts = append(parts, map[string]any{"type": "text", "text": item.Text})
+		case "input_image":
+			if strings.TrimSpace(item.ImageURL) == "" {
+				continue
+			}
+			imageURL := map[string]any{"url": strings.TrimSpace(item.ImageURL)}
+			if strings.TrimSpace(item.Detail) != "" {
+				imageURL["detail"] = strings.TrimSpace(item.Detail)
+			}
+			parts = append(parts, map[string]any{"type": "image_url", "image_url": imageURL})
+		case "encrypted_content":
+			if strings.TrimSpace(item.EncryptedContent) != "" {
+				parts = append(parts, map[string]any{"type": "text", "text": item.EncryptedContent})
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return leadingText
+	}
+	return parts
+}
+
+// appendAnthropicJSONModeInstruction adds a JSON-only output instruction to the
+// system prompt. Anthropic has no native json_object response format, so JSON
+// mode is honored through explicit guidance. The instruction is only appended
+// once to avoid duplication on retries.
+func appendAnthropicJSONModeInstruction(system string) string {
+	const instruction = "Respond with only a single valid JSON value. Do not include Markdown code fences, comments, or any prose outside the JSON."
+	if strings.Contains(system, instruction) {
+		return system
+	}
+	if strings.TrimSpace(system) == "" {
+		return instruction
+	}
+	return system + "\n\n" + instruction
+}
+
+// anthropicServiceTier maps a normalized Kernforge service tier to a value the
+// Anthropic Messages API accepts. Anthropic supports "auto" and
+// "standard_only"; faster/priority tiers map to "auto" so the platform may
+// upgrade, while an empty tier stays absent.
+func anthropicServiceTier(serviceTier string) string {
+	switch strings.ToLower(strings.TrimSpace(normalizeServiceTier(serviceTier))) {
+	case "":
+		return ""
+	case "priority", "flex", "auto":
+		return "auto"
+	case "standard", "standard_only":
+		return "standard_only"
+	default:
+		return ""
+	}
+}
+
 func (c *AnthropicClient) Name() string {
 	return "anthropic"
 }
@@ -1006,7 +1316,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		ID        string `json:"id,omitempty"`
 		Name      string `json:"name,omitempty"`
 		ToolUseID string `json:"tool_use_id,omitempty"`
-		Content   string `json:"content,omitempty"`
+		Content   any    `json:"content,omitempty"`
 		IsError   bool   `json:"is_error,omitempty"`
 		Input     any    `json:"input,omitempty"`
 		Source    any    `json:"source,omitempty"`
@@ -1015,13 +1325,19 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		Role    string                  `json:"role"`
 		Content []anthropicContentBlock `json:"content"`
 	}
+	type anthropicThinking struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens,omitempty"`
+	}
 	type anthropicRequest struct {
 		Model       string             `json:"model"`
 		System      string             `json:"system,omitempty"`
 		MaxTokens   int                `json:"max_tokens"`
-		Temperature float64            `json:"temperature,omitempty"`
+		Temperature *float64           `json:"temperature,omitempty"`
 		Messages    []anthropicMessage `json:"messages"`
 		Tools       []anthropicTool    `json:"tools,omitempty"`
+		Thinking    *anthropicThinking `json:"thinking,omitempty"`
+		ServiceTier string             `json:"service_tier,omitempty"`
 	}
 	type anthropicResponse struct {
 		Content    []anthropicContentBlock `json:"content"`
@@ -1034,12 +1350,30 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	payload := anthropicRequest{
 		Model:       req.Model,
 		MaxTokens:   req.MaxTokens,
-		Temperature: req.Temperature,
+		Temperature: requestTemperaturePointer(req),
 		Messages:    make([]anthropicMessage, 0, len(req.Messages)),
 		Tools:       make([]anthropicTool, 0, len(req.Tools)),
 	}
+	if tier := anthropicServiceTier(req.ServiceTier); tier != "" {
+		payload.ServiceTier = tier
+	}
+	// Map reasoning effort to Anthropic extended thinking. Extended thinking
+	// requires max_tokens to be strictly greater than the thinking budget and
+	// disallows a custom temperature, so only enable it when both hold.
+	if budget := anthropicThinkingBudgetForEffort(req.ReasoningEffort); budget > 0 && payload.MaxTokens > budget {
+		payload.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
+		// Anthropic rejects an explicit temperature when thinking is enabled.
+		payload.Temperature = nil
+	}
 	messages := ensureOpenAIToolCallResponses(req.Messages)
 	payload.System, messages = splitProviderSystemGuidance(req.System, messages)
+	if req.JSONMode {
+		// The Anthropic Messages API has no response_format/json_object switch,
+		// so enforce JSON output by appending a system instruction. This keeps
+		// non-JSON calls unchanged while still honoring JSON mode where the API
+		// allows it (via guidance rather than a native flag).
+		payload.System = appendAnthropicJSONModeInstruction(payload.System)
+	}
 
 	for _, tool := range req.Tools {
 		payload.Tools = append(payload.Tools, anthropicTool{
@@ -1093,12 +1427,23 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 			}
 		case "tool":
 			blocked.Role = "user"
-			blocked.Content = append(blocked.Content, anthropicContentBlock{
+			toolResult := anthropicContentBlock{
 				Type:      "tool_result",
 				ToolUseID: msg.ToolCallID,
-				Content:   msg.Text,
 				IsError:   msg.IsError,
-			})
+			}
+			if items := normalizeToolContentItems(msg.ToolContentItems); len(items) > 0 {
+				// Serialize multimodal tool results (text + images) as an
+				// Anthropic content array so image tool output is not dropped.
+				resultBlocks, err := anthropicToolResultContentBlocks(msg.Text, items)
+				if err != nil {
+					return ChatResponse{}, err
+				}
+				toolResult.Content = resultBlocks
+			} else {
+				toolResult.Content = msg.Text
+			}
+			blocked.Content = append(blocked.Content, toolResult)
 		default:
 			continue
 		}
@@ -1231,6 +1576,33 @@ func (c *OpenAIClient) ModelRouteMetadata() ModelRouteMetadata {
 	return meta
 }
 
+// isOpenAIReasoningClassModel reports whether an OpenAI chat-completions model
+// is a reasoning-class model (o1/o3/o4 and gpt-5 families) that requires
+// max_completion_tokens instead of max_tokens and accepts reasoning_effort.
+// Only applies to OpenAI / OpenAI-compatible routes, not DeepSeek which has its
+// own reasoning handling.
+func isOpenAIReasoningClassModel(providerName, model string) bool {
+	if strings.EqualFold(normalizeProviderName(providerName), "deepseek") {
+		return false
+	}
+	id := strings.ToLower(strings.TrimSpace(model))
+	if id == "" {
+		return false
+	}
+	// Strip a leading "openai/" style route prefix if present.
+	if slash := strings.LastIndex(id, "/"); slash >= 0 && slash+1 < len(id) {
+		id = id[slash+1:]
+	}
+	switch {
+	case strings.HasPrefix(id, "gpt-5"):
+		return true
+	case strings.HasPrefix(id, "o1") || strings.HasPrefix(id, "o3") || strings.HasPrefix(id, "o4"):
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	providerName := c.Name()
 	type openAIToolCall struct {
@@ -1250,14 +1622,15 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		ToolCalls        []openAIToolCall `json:"tool_calls,omitempty"`
 	}
 	type openAIRequest struct {
-		Model           string          `json:"model"`
-		Messages        []openAIMessage `json:"messages"`
-		Temperature     float64         `json:"temperature,omitempty"`
-		MaxTokens       int             `json:"max_tokens,omitempty"`
-		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-		Thinking        any             `json:"thinking,omitempty"`
-		ResponseFormat  any             `json:"response_format,omitempty"`
-		Tools           []struct {
+		Model               string          `json:"model"`
+		Messages            []openAIMessage `json:"messages"`
+		Temperature         *float64        `json:"temperature,omitempty"`
+		MaxTokens           int             `json:"max_tokens,omitempty"`
+		MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+		ReasoningEffort     string          `json:"reasoning_effort,omitempty"`
+		Thinking            any             `json:"thinking,omitempty"`
+		ResponseFormat      any             `json:"response_format,omitempty"`
+		Tools               []struct {
 			Type     string `json:"type"`
 			Function struct {
 				Name        string         `json:"name"`
@@ -1285,11 +1658,22 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		} `json:"error,omitempty"`
 	}
 
+	reasoningClassModel := isOpenAIReasoningClassModel(providerName, req.Model)
 	payload := openAIRequest{
 		Model:       req.Model,
 		Messages:    make([]openAIMessage, 0, len(req.Messages)+1),
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+		Temperature: requestTemperaturePointer(req),
+	}
+	// Reasoning-class OpenAI models (o1/o3/o4/gpt-5 family) reject max_tokens and
+	// require max_completion_tokens; classic models keep max_tokens. The
+	// forceMaxCompletionTokens flag is set by the one-shot retry when a classic
+	// request is rejected for using max_tokens.
+	if req.MaxTokens > 0 {
+		if reasoningClassModel || req.forceMaxCompletionTokens {
+			payload.MaxCompletionTokens = req.MaxTokens
+		} else {
+			payload.MaxTokens = req.MaxTokens
+		}
 	}
 	if req.JSONMode {
 		payload.ResponseFormat = map[string]string{"type": "json_object"}
@@ -1302,6 +1686,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		if effort != "" {
 			payload.ReasoningEffort = effort
 			payload.Thinking = map[string]string{"type": "enabled"}
+		}
+	} else if reasoningClassModel {
+		// M9: forward reasoning_effort for OpenAI-family reasoning-capable models.
+		if effort := normalizeReasoningEffort(firstNonBlankString(req.ReasoningEffort, c.reasoning)); effort != "" {
+			payload.ReasoningEffort = effort
 		}
 	}
 
@@ -1357,9 +1746,15 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			}
 			payload.Messages = append(payload.Messages, item)
 		case "tool":
+			toolContent := any(msg.Text)
+			if items := normalizeToolContentItems(msg.ToolContentItems); len(items) > 0 {
+				// Serialize multimodal tool results (text + images) as an OpenAI
+				// content-part array so image tool output is not dropped.
+				toolContent = openAIToolResultContentParts(msg.Text, items)
+			}
 			payload.Messages = append(payload.Messages, openAIMessage{
 				Role:       "tool",
-				Content:    msg.Text,
+				Content:    toolContent,
 				Name:       msg.ToolName,
 				ToolCallID: firstNonEmptyTrimmed(msg.ToolCallID, msg.ToolName),
 			})
@@ -1416,6 +1811,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			return ChatResponse{}, err
 		}
 		apiErr := newProviderHTTPErrorWithHeaders(providerName, resp.StatusCode, resp.Status, data, summarizeOpenAIRequestBody(body), resp.Header)
+		if !req.forceMaxCompletionTokens && req.MaxTokens > 0 && !reasoningClassModel && providerErrorSuggestsMaxCompletionTokens(apiErr) {
+			retryReq := req
+			retryReq.forceMaxCompletionTokens = true
+			return c.Complete(ctx, retryReq)
+		}
 		if req.JSONMode && providerErrorSuggestsJSONModeUnsupported(apiErr) {
 			fallbackReq := req
 			fallbackReq.JSONMode = false
@@ -1454,6 +1854,11 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	}
 	if decoded.Error != nil {
 		apiErr := newProviderMessageError(providerName, decoded.Error.Message, decoded.Error.Type, decoded.Error.Param, decoded.Error.Code, data)
+		if !req.forceMaxCompletionTokens && req.MaxTokens > 0 && !reasoningClassModel && providerErrorSuggestsMaxCompletionTokens(apiErr) {
+			retryReq := req
+			retryReq.forceMaxCompletionTokens = true
+			return c.Complete(ctx, retryReq)
+		}
 		if req.JSONMode && providerErrorSuggestsJSONModeUnsupported(apiErr) {
 			fallbackReq := req
 			fallbackReq.JSONMode = false
@@ -1589,7 +1994,18 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 					if streamUnlocked && !sawToolCalls {
 						emitVisibleTextDelta(deltaText)
 					} else if !sawToolCalls {
+						// M13: buffer leading text until the unlock heuristic decides
+						// it is safe to stream live. Once no tool call has appeared and
+						// enough text has accumulated, flush the buffer through the delta
+						// callback and switch to live streaming for subsequent deltas.
 						pendingText.WriteString(deltaText)
+						if shouldReleaseBufferedStreamText(pendingText.String()) {
+							streamUnlocked = true
+							if buffered := pendingText.String(); buffered != "" {
+								emitVisibleTextDelta(buffered)
+							}
+							pendingText.Reset()
+						}
 					}
 				}
 			}
@@ -1700,7 +2116,16 @@ func readOpenAIStream(ctx context.Context, providerName string, body io.ReadClos
 		Message:    out,
 		StopReason: stopReason,
 	}
-	if !sawDone && strings.TrimSpace(result.StopReason) == "" && strings.TrimSpace(result.Message.Text) != "" && len(result.Message.ToolCalls) == 0 {
+	// A stream that closed without a [DONE] sentinel and without any terminal
+	// finish_reason was transport-truncated. This is true whether the last
+	// thing on the wire was text OR a partially-streamed tool call. Marking it
+	// incomplete (1) preserves the already-produced text instead of finalizing
+	// it as complete, and (2) prevents a partial tool call from being dispatched
+	// as a complete call: callers treat "stream_incomplete" as a fallback/retry
+	// signal rather than executing the half-built ToolCalls. We only require some
+	// partial output so a genuinely empty closed stream keeps its empty stop
+	// reason and follows the empty-response path.
+	if !sawDone && strings.TrimSpace(result.StopReason) == "" && (strings.TrimSpace(result.Message.Text) != "" || len(result.Message.ToolCalls) > 0) {
 		result.StopReason = "stream_incomplete"
 	}
 	return result, nil
@@ -1727,13 +2152,16 @@ func shouldReleaseBufferedStreamText(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	if strings.Contains(trimmed, "\n\n") || strings.Contains(trimmed, "```") {
-		return true
-	}
-	if visibleLen(trimmed) >= 120 {
-		return true
-	}
-	return len(strings.Fields(trimmed)) >= 24
+	// Release only on a structural signal of a real, structured answer: a
+	// paragraph break or a code fence. Plain length is NOT a release trigger.
+	// A long pre-tool-call preamble (for example "this is a local code review,
+	// so no external research is needed; let me proceed with local inspection")
+	// is just as long as a genuine answer, so releasing on length alone leaks
+	// that noise to the user before the tool call appears. Such single-paragraph
+	// preambles carry no "\n\n" or code fence, so they stay buffered and are
+	// suppressed once a tool call arrives, while multi-paragraph or code answers
+	// still stream live.
+	return strings.Contains(trimmed, "\n\n") || strings.Contains(trimmed, "```")
 }
 
 func buildPartialStreamResponse(text string, hasToolCalls bool, stopReason string) (ChatResponse, bool) {

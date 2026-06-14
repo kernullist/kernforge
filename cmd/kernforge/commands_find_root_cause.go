@@ -391,13 +391,14 @@ func (rt *runtimeState) refineRootCausePromptClarityWithModel(ctx context.Contex
 		return fallback, false
 	}
 	resp, err := rt.agent.completeModelTurn(ctx, ChatRequest{
-		Model:       rt.session.Model,
-		System:      rootCausePromptClaritySystemPrompt(),
-		Messages:    []Message{{Role: "user", Text: buildRootCausePromptClarityPrompt(problem, fallback)}},
-		MaxTokens:   900,
-		Temperature: 0,
-		WorkingDir:  rt.session.WorkingDir,
-		JSONMode:    true,
+		Model:          rt.session.Model,
+		System:         rootCausePromptClaritySystemPrompt(),
+		Messages:       []Message{{Role: "user", Text: buildRootCausePromptClarityPrompt(problem, fallback)}},
+		MaxTokens:      900,
+		Temperature:    0,
+		TemperatureSet: true,
+		WorkingDir:     rt.session.WorkingDir,
+		JSONMode:       true,
 	})
 	if err != nil {
 		return fallback, false

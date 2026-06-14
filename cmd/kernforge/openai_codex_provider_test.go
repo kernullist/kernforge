@@ -4375,11 +4375,60 @@ func TestReadOpenAICodexStreamRejectsMissingCompletedEvent(t *testing.T) {
 	}
 }
 
-func TestReadOpenAICodexStreamReturnsIncompleteReason(t *testing.T) {
+func TestReadOpenAICodexStreamContentFilterIncompletePreservesText(t *testing.T) {
+	// A content-filter incomplete must not be reported as a missing-completed
+	// error and must preserve the already-streamed text, mapping the stop reason
+	// to content_filter so the caller can handle it (rather than discarding the
+	// partial output as a hard error).
 	stream := strings.NewReader(strings.Join([]string{
 		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}}`,
 		`data: {"type":"response.output_text.delta","delta":" content"}`,
 		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("content_filter incomplete should not error: %v", err)
+	}
+	if resp.StopReason != "content_filter" {
+		t.Fatalf("expected content_filter stop reason, got %q", resp.StopReason)
+	}
+	if !strings.Contains(resp.Message.Text, "partial content") {
+		t.Fatalf("expected streamed text preserved, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamLengthIncompletePreservesText(t *testing.T) {
+	// A length-truncated incomplete (max_output_tokens) must NOT discard the
+	// already-streamed text. It returns StopReason "length" with EndTurn false so
+	// the length-stop continuation route can run.
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}}`,
+		`data: {"type":"response.output_text.delta","delta":" answer that ran out of budget"}`,
+		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}`,
+		"",
+	}, "\n\n"))
+	resp, err := readOpenAICodexStream(context.Background(), stream)
+	if err != nil {
+		t.Fatalf("length incomplete should not error: %v", err)
+	}
+	if resp.StopReason != "length" {
+		t.Fatalf("expected length stop reason, got %q", resp.StopReason)
+	}
+	if resp.EndTurn == nil || *resp.EndTurn {
+		t.Fatalf("expected EndTurn false for length stop, got %v", resp.EndTurn)
+	}
+	if !strings.Contains(resp.Message.Text, "partial answer that ran out of budget") {
+		t.Fatalf("expected streamed text preserved, got %q", resp.Message.Text)
+	}
+}
+
+func TestReadOpenAICodexStreamReturnsIncompleteReasonForNonLength(t *testing.T) {
+	// A non-length, non-content-filter incomplete reason is still surfaced as an
+	// error and must not be misreported as a missing completed event.
+	stream := strings.NewReader(strings.Join([]string{
+		`data: {"type":"response.output_item.added","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}}`,
+		`data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"server_error"}}}`,
 		"",
 	}, "\n\n"))
 	_, err := readOpenAICodexStream(context.Background(), stream)
@@ -4387,7 +4436,7 @@ func TestReadOpenAICodexStreamReturnsIncompleteReason(t *testing.T) {
 		t.Fatalf("expected incomplete stream error")
 	}
 	text := err.Error()
-	if !strings.Contains(text, "Incomplete response returned, reason: content_filter") {
+	if !strings.Contains(text, "Incomplete response returned, reason: server_error") {
 		t.Fatalf("expected incomplete reason in error, got %v", err)
 	}
 	if strings.Contains(text, "stream closed before response.completed") {

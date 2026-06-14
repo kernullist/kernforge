@@ -10942,11 +10942,11 @@ func shouldRetryProviderError(err error) bool {
 		"bad gateway",
 		"gateway timeout",
 		"service unavailable",
-		"429",
-		"500",
-		"502",
-		"503",
-		"504",
+		"http 500",
+		"http 502",
+		"http 503",
+		"http 504",
+		"http 429",
 	}
 	for _, hint := range retryHints {
 		if strings.Contains(text, hint) {

@@ -642,6 +642,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	toolAvailabilityBlameReplyRetries := 0
 	localCodeToolAvailabilityBlameRetries := 0
 	abruptReplyRetries := 0
+	lengthContinuationRetries := 0
 	rawReviewResultReplyRetries := 0
 	stopHookRevisions := 0
 	stopHookActive := false
@@ -799,17 +800,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		syncRuntimeFlags()
 		turnCount++
 		lastIteration = turnCount
-		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > a.Config.AutoCompactChars {
+		// M24: keep AutoCompactChars > 0 as the enable gate, but trigger on the
+		// per-model window-derived threshold when a context window is known so we
+		// do not compact far too early on large-window models or too late on
+		// small ones. Falls back to AutoCompactChars when the window is unknown.
+		autoCompactThreshold := a.autoCompactThresholdChars()
+		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > autoCompactThreshold {
 			a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
 				Kind:        RecoveryKindCompaction,
 				ApproxChars: a.Session.ApproxChars(),
-				Threshold:   a.Config.AutoCompactChars,
+				Threshold:   autoCompactThreshold,
 				CanCompact:  true,
 			}))
 			a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
 				Trigger:     RecoveryKindCompaction,
 				ApproxChars: a.Session.ApproxChars(),
-				Threshold:   a.Config.AutoCompactChars,
+				Threshold:   autoCompactThreshold,
 				CanCompact:  true,
 				Reason:      "context_growth",
 			}))
@@ -848,7 +854,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			System:       systemPrompt,
 			Messages:     a.Session.Messages,
 			Tools:        toolExposurePlan.modelToolDefinitions(a.Tools, a.Session.Provider, a.Session.Model),
-			MaxTokens:    a.Config.MaxTokens,
+			MaxTokens:    a.turnMaxTokens(),
 			Temperature:  a.Config.Temperature,
 			WorkingDir:   a.Session.WorkingDir,
 			OnTextDelta:  onTextDelta,
@@ -1415,6 +1421,40 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						return "", err
 					}
 				}
+				// A length/token-limit stop that still carried partial text must
+				// not be finalized as the complete answer. Take the same
+				// continue-and-merge route used for abruptly truncated replies so
+				// the model resumes exactly where it stopped. If no continuation
+				// budget remains, mark the answer as truncated instead of silently
+				// accepting it as complete.
+				if isTokenLimitStopReason(lastStopReason) {
+					if lengthContinuationRetries < 2 {
+						lengthContinuationRetries++
+						turnRuntime.Counters.LengthStopReplies++
+						continuedReplyPrefix = reply
+						continuedReplyMessageIndex = len(a.Session.Messages) - 1
+						recordRuntimeIntervention(RuntimeIntervention{
+							Kind:       RuntimeInterventionLengthStop,
+							Reason:     "model stopped at a token limit with partial text; continuing instead of finalizing the truncated answer",
+							Guidance:   RenderLengthStopContinuePrompt(lastStopReason),
+							StopReason: lastStopReason,
+							Count:      lengthContinuationRetries,
+							Iteration:  turnCount,
+						})
+						a.Session.AddMessage(internalUserMessage(RenderLengthStopContinuePrompt(lastStopReason)))
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						continue
+					}
+					reply = ensureLengthTruncationDisclosure(reply, lastStopReason)
+					if len(a.Session.Messages) > 0 {
+						a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+					}
+				}
 				if replyBlamesInternalToolTranscriptRecovery(reply) && internalToolTranscriptFailureReplyRetries < 1 {
 					internalToolTranscriptFailureReplyRetries++
 					a.discardRecentFinalAnswerCandidate(reply)
@@ -1746,19 +1786,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			if isTokenLimitStopReason(lastStopReason) {
 				turnRuntime.Counters.LengthStopReplies++
 				canCompactForLength := a.Config.AutoCompactChars > 0 && len(a.Session.Messages) > 12
+				// M24: report the window-derived compaction threshold so the
+				// recovery/maintenance decisions match the actual trigger.
+				lengthCompactThreshold := a.autoCompactThresholdChars()
 				decision := a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
 					Kind:        RecoveryKindLengthStop,
 					StopReason:  lastStopReason,
 					Attempt:     turnRuntime.Counters.LengthStopReplies,
 					MaxAttempts: 2,
 					ApproxChars: a.Session.ApproxChars(),
-					Threshold:   a.Config.AutoCompactChars,
+					Threshold:   lengthCompactThreshold,
 					CanCompact:  canCompactForLength,
 				}))
 				contextDecision := a.recordContextMaintenanceDecision(DecideContextMaintenance(ContextMaintenanceInput{
 					Trigger:     RecoveryKindLengthStop,
 					ApproxChars: a.Session.ApproxChars(),
-					Threshold:   a.Config.AutoCompactChars,
+					Threshold:   lengthCompactThreshold,
 					CanCompact:  canCompactForLength,
 					Reason:      "output_length_stop",
 				}))
@@ -1794,6 +1837,31 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				})
 				markRuntimeBlocked("length_stop")
 				return "", fmt.Errorf("model stopped before producing a usable response due to token limit (stop_reason=%s)", lastStopReason)
+			}
+			if isContentFilterStopReason(lastStopReason) {
+				// M19: a content-filter stop is terminal, not an empty-stop hiccup.
+				// Blind empty-stop re-prompting wastes round trips and surfaces a
+				// misleading "empty response" error. Apply a single targeted retry
+				// (the filter is sometimes transient/partial), then stop with a clear
+				// content-filter message rather than the generic empty-stop path.
+				turnRuntime.Counters.ContentFilterReplies++
+				recordRuntimeIntervention(RuntimeIntervention{
+					Kind:       RuntimeInterventionContentFilter,
+					Reason:     "provider content filter blocked this response",
+					StopReason: lastStopReason,
+					Count:      turnRuntime.Counters.ContentFilterReplies,
+					Iteration:  turnCount,
+				})
+				if turnRuntime.Counters.ContentFilterReplies < 2 {
+					guidance := "The provider content filter blocked the previous response (stop_reason=" + normalizeStopReason(lastStopReason) + "). Rephrase the answer to avoid the blocked content and try once more."
+					a.Session.AddMessage(internalUserMessage(guidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
+				}
+				markRuntimeBlocked("content_filter")
+				return "", fmt.Errorf("provider content filter blocked this response (stop_reason=%s)", normalizeStopReason(lastStopReason))
 			}
 			turnRuntime.Counters.EmptyFinalReplies++
 			a.cleanupOrphanToolMessagesAfterRecovery("empty_stop_orphan_tool_cleanup")
@@ -4817,6 +4885,43 @@ func isAssistantNarrationPreamble(text string) bool {
 	}
 }
 
+// sessionContextWindowTokens resolves the context window (in tokens) for the
+// session's selected provider/model, honoring an explicit config override and
+// falling back to model-family/provider seeds. Returns 0 when unknown so
+// callers preserve the global defaults.
+func (a *Agent) sessionContextWindowTokens() int {
+	provider := ""
+	model := ""
+	if a.Session != nil {
+		provider = a.Session.Provider
+		model = a.Session.Model
+	}
+	return modelContextWindow(provider, model, a.Config.ContextWindowTokens)
+}
+
+// turnMaxTokens computes the per-turn output-token budget. With a known context
+// window it clamps the configured MaxTokens against the room left after the
+// estimated input and a safety margin; otherwise it returns the configured
+// value unchanged.
+func (a *Agent) turnMaxTokens() int {
+	window := a.sessionContextWindowTokens()
+	if window <= 0 {
+		return a.Config.MaxTokens
+	}
+	inputTokens := 0
+	if a.Session != nil {
+		inputTokens = estimatedInputTokensFromChars(a.Session.ApproxChars())
+	}
+	return effectiveMaxTokens(window, a.Config.MaxTokens, inputTokens)
+}
+
+// autoCompactThresholdChars computes the auto-compaction trigger in characters.
+// With a known context window it uses a fraction of the window; otherwise it
+// returns the configured global AutoCompactChars.
+func (a *Agent) autoCompactThresholdChars() int {
+	return compactionTriggerChars(a.sessionContextWindowTokens(), a.Config.AutoCompactChars)
+}
+
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
 	req = a.attachProviderRequestMetadata(req)
 	req = a.attachProgressEventHandler(req)
@@ -4842,7 +4947,7 @@ func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatRes
 			return ChatResponse{}, err
 		}
 		a.noteProviderConversationError(err, req, false)
-		delay := providerRetryDelay(baseDelay, attempt)
+		delay := providerRetryDelayForError(err, baseDelay, attempt)
 		a.emitProgressEvent(ProgressEvent{
 			Kind:    progressKindProviderRetry,
 			Message: modelRetryProgressMessage(a.Config, err, attempt, totalAttempts, delay),
@@ -6815,12 +6920,40 @@ func formatEmptyModelResponseError(session *Session, stopReason string, afterToo
 }
 
 func isTokenLimitStopReason(reason string) bool {
-	switch normalizeStopReason(reason) {
+	normalized := normalizeStopReason(reason)
+	// Stream-fallback and partial paths suffix the canonical stop reason
+	// (for example "length_after_stream_retry" or "length_partial"). Match
+	// the canonical token-limit prefixes so those suffixed variants still
+	// classify as token-limit stops and drive the continuation route.
+	switch normalized {
 	case "length", "max_tokens":
 		return true
-	default:
-		return false
 	}
+	if strings.HasPrefix(normalized, "length_") || strings.HasPrefix(normalized, "max_tokens_") {
+		return true
+	}
+	return false
+}
+
+// isContentFilterStopReason reports whether a provider stop reason indicates the
+// response was blocked by a provider-side content filter. Like the token-limit
+// classifier this matches the canonical reasons plus the suffixed variants the
+// stream-fallback and partial paths produce (for example
+// "content_filter_after_stream_retry"). A content-filter stop is a distinct,
+// terminal condition: blind empty-stop re-prompting only wastes round trips and
+// returns a misleading "empty response" error, so callers handle it separately.
+func isContentFilterStopReason(reason string) bool {
+	normalized := normalizeStopReason(reason)
+	switch normalized {
+	case "content_filter", "content_filtered", "output_content_filter":
+		return true
+	}
+	if strings.HasPrefix(normalized, "content_filter_") ||
+		strings.HasPrefix(normalized, "content_filtered_") ||
+		strings.HasPrefix(normalized, "output_content_filter_") {
+		return true
+	}
+	return false
 }
 
 func formatToolLoopDiagnostic(toolSummary, stopReason string, iteration, maxIterations int, recentToolTurns string) string {

@@ -86,7 +86,7 @@ func (c *ClaudeCLIClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		defer cleanup()
 	}
 
-	args := buildClaudeCLIArgs(req.Model, c.extraArgs, promptArg)
+	args := buildClaudeCLIArgs(req.Model, c.extraArgs, promptArg, req)
 	env := append(os.Environ(), "NO_COLOR=1", "TERM=dumb", "CI=1")
 	runner := c.run
 	if runner == nil {
@@ -137,11 +137,17 @@ func runClaudeCLICommand(ctx context.Context, executable string, args []string, 
 	return cmd.CombinedOutput()
 }
 
-func buildClaudeCLIArgs(model string, extraArgs []string, prompt string) []string {
+func buildClaudeCLIArgs(model string, extraArgs []string, prompt string, req ChatRequest) []string {
 	args := []string{}
 	if modelValue := claudeCLIModelFlagValue(model); modelValue != "" {
 		args = append(args, "--model", modelValue)
 	}
+	// The Claude Code CLI headless mode (-p) does not expose reasoning_effort,
+	// max_tokens, temperature, or service_tier flags, so these request params
+	// cannot be forwarded through this bridge. They are intentionally dropped
+	// here; the underlying CLI uses its own defaults. The req argument is kept
+	// for signature parity with the other CLI bridges and future flag support.
+	_ = req
 	for _, arg := range extraArgs {
 		arg = strings.TrimSpace(arg)
 		if arg != "" {
