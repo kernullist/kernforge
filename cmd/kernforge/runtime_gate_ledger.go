@@ -35,6 +35,11 @@ type RuntimeGateLedger struct {
 	ReviewAutoTriggered     bool                             `json:"review_auto_triggered,omitempty"`
 	ReviewCreatedAt         time.Time                        `json:"review_created_at,omitempty"`
 	ReviewOriginalRequest   string                           `json:"review_original_request,omitempty"`
+	// ReviewRouteIncomplete marks the degrade where the latest review never
+	// completed because its required model route failed (and nothing was in gate
+	// scope), so the gate dropped to needs_review instead of a permanent block.
+	// Status rendering uses it to avoid echoing the route-failure finding twice.
+	ReviewRouteIncomplete   bool                             `json:"review_route_incomplete,omitempty"`
 	ModelReviewConsent      string                           `json:"model_review_consent,omitempty"`
 	ConsentSource           string                           `json:"consent_source,omitempty"`
 	SkipReason              string                           `json:"skip_reason,omitempty"`
@@ -585,6 +590,7 @@ func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (R
 // a stable domain term and is kept as-is; only the auto/manual mode is localized.
 func runtimeGateReviewOriginLine(cfg Config, ledger RuntimeGateLedger) string {
 	var parts []string
+	requestConsumed := false
 	if trigger := strings.TrimSpace(ledger.ReviewTrigger); trigger != "" {
 		switch strings.ToLower(trigger) {
 		case "auto":
@@ -598,7 +604,19 @@ func runtimeGateReviewOriginLine(cfg Config, ledger RuntimeGateLedger) string {
 			if ledger.ReviewAutoTriggered {
 				mode = localizedText(cfg, "auto", "자동")
 			}
-			parts = append(parts, mode+" "+trigger)
+			token := trigger
+			// For an explicit /review invocation, show the actual command (and
+			// its args) so even an arg-less run discloses where it came from,
+			// instead of the opaque "explicit_command" enum. The args double as
+			// the request echo, so they are consumed here and not quoted again.
+			if strings.EqualFold(trigger, "explicit_command") {
+				token = "/review"
+				if args := compactReviewVisibleInlineText(ledger.ReviewOriginalRequest, 72); args != "" {
+					token += " " + args
+					requestConsumed = true
+				}
+			}
+			parts = append(parts, mode+" "+token)
 		}
 	} else if ledger.ReviewAutoTriggered {
 		parts = append(parts, localizedText(cfg, "auto", "자동"))
@@ -606,8 +624,10 @@ func runtimeGateReviewOriginLine(cfg Config, ledger RuntimeGateLedger) string {
 	if !ledger.ReviewCreatedAt.IsZero() {
 		parts = append(parts, ledger.ReviewCreatedAt.Format("2006-01-02 15:04"))
 	}
-	if req := compactReviewVisibleInlineText(ledger.ReviewOriginalRequest, 96); req != "" {
-		parts = append(parts, "\""+req+"\"")
+	if !requestConsumed {
+		if req := compactReviewVisibleInlineText(ledger.ReviewOriginalRequest, 96); req != "" {
+			parts = append(parts, "\""+req+"\"")
+		}
 	}
 	return strings.Join(parts, " · ")
 }
@@ -693,6 +713,7 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		// session would inherit a gate it cannot clear. Surface it as a warning
 		// (needs_review) that asks for a fresh /review once the route is fixed.
 		tx.Status = "review_route_incomplete"
+		ledger.ReviewRouteIncomplete = true
 		ledger.Warnings = append(ledger.Warnings, "latest review did not complete: required review route failed and no files are in gate scope. Fix the review route (/model or /model cross-review), then rerun /review to restore review coverage.")
 		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 			ID:             "review",
@@ -1337,7 +1358,12 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 	// Compact mode (default): lead with the human verdict, then the top 1-2
 	// blockers as full sentences and the single next command. All raw enum /
 	// ledger / lifecycle codename lines move behind "/status detail".
-	if !detail && blockers != nil && blockers.HasBlockers {
+	// Normally the underlying review-finding blocker sentences are useful even at
+	// needs_review (they say WHY another review is needed). The one exception is a
+	// reviewer-route incomplete degrade: there the single ledger warning already
+	// says the route failed, so echoing the same RF-REVIEWER-001 finding here is
+	// pure duplication. Suppress only that case.
+	if !detail && !ledger.ReviewRouteIncomplete && blockers != nil && blockers.HasBlockers {
 		for _, primary := range blockers.Primary {
 			line := humanizeBlockerSentence(primary, korean)
 			if strings.TrimSpace(line) != "" {

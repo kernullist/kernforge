@@ -1301,6 +1301,68 @@ func TestRuntimeGateReviewOriginLineSummarizesProvenance(t *testing.T) {
 	if got := runtimeGateReviewOriginLine(Config{}, RuntimeGateLedger{}); got != "" {
 		t.Fatalf("empty provenance should render nothing, got %q", got)
 	}
+
+	// An explicit /review invocation shows the actual command (so an arg-less run
+	// still discloses its origin) instead of the opaque "explicit_command" enum.
+	bare := runtimeGateReviewOriginLine(Config{AutoLocale: boolPtr(false)}, RuntimeGateLedger{ReviewTrigger: "explicit_command"})
+	if !strings.Contains(bare, "/review") || strings.Contains(bare, "explicit_command") {
+		t.Fatalf("arg-less explicit_command should show /review, got %q", bare)
+	}
+	withArgs := runtimeGateReviewOriginLine(Config{AutoLocale: boolPtr(false)}, RuntimeGateLedger{ReviewTrigger: "explicit_command", ReviewOriginalRequest: "--path app.py"})
+	if !strings.Contains(withArgs, "/review --path app.py") {
+		t.Fatalf("explicit_command with args should show them after /review, got %q", withArgs)
+	}
+	if strings.Contains(withArgs, "\"--path app.py\"") {
+		t.Fatalf("explicit_command args must not be double-quoted as a prompt, got %q", withArgs)
+	}
+}
+
+// TestRuntimeGateNeedsReviewStatusOmitsRedundantBlockerSentences confirms that
+// when the gate has degraded to needs_review (reviewer-route failure, nothing in
+// scope), the compact status no longer echoes the underlying review-finding
+// blocker sentences -- the single ledger warning already explains it. A genuinely
+// blocked gate still shows its blocker sentence.
+func TestRuntimeGateNeedsReviewStatusOmitsRedundantBlockerSentences(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-route-failed",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		Trigger:       "explicit_command",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+		Findings: []ReviewFinding{{
+			ID:         requiredReviewerFailureFindingID,
+			Source:     "deterministic",
+			Severity:   reviewSeverityBlocker,
+			Category:   "evidence_gap",
+			Title:      "Required review route failed",
+			BlocksGate: true,
+		}},
+	}
+	var buf bytes.Buffer
+	rt := &runtimeState{cfg: Config{AutoLocale: boolPtr(false)}, session: session, workspace: Workspace{BaseRoot: root, Root: root}, ui: NewUI(), writer: &buf}
+	rt.writeRuntimeGateStatusWithDetail(&buf, runtimeGateActionGitWrite, false)
+	out := buf.String()
+
+	if !strings.Contains(out, "needs review") {
+		t.Fatalf("expected a needs_review gate, got:\n%s", out)
+	}
+	if !strings.Contains(out, "latest review did not complete") {
+		t.Fatalf("expected the single ledger warning to remain, got:\n%s", out)
+	}
+	// The underlying review-finding blocker sentence (a humanized blocker-class
+	// label like "missing evidence: ...") must not be echoed in compact mode when
+	// the gate is not actually blocked.
+	if strings.Contains(out, "missing evidence") {
+		t.Fatalf("needs_review status should not echo the review-finding blocker sentence:\n%s", out)
+	}
 }
 
 // TestRuntimeGateAttachReviewCarriesProvenance confirms the review provenance is
