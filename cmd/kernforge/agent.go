@@ -2569,7 +2569,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				}
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				disabledTools["replace_in_file"] = true
-				a.Session.AddMessage(internalUserMessage(formatPreWriteReviewBlockedRetryGuidance(a.Config, a.Session)))
+				a.Session.AddMessage(internalUserMessage(formatPreWriteReviewBlockedRetryGuidance(a.Config, a.Session, preWriteReviewRepairBlocks)))
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier edit in this model response was blocked by pre-write review; retry from the next model turn.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
 					return "", saveErr
@@ -6333,7 +6333,7 @@ func formatPreWriteReviewRepairForceEditGuidance(cfg Config, session *Session, r
 	return strings.TrimSpace(b.String())
 }
 
-func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session) string {
+func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session, rounds int) string {
 	var b strings.Builder
 	korean := localePrefersKorean(cfg)
 	if session != nil && session.LastReviewRun != nil {
@@ -6346,7 +6346,8 @@ func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session) stri
 		b.WriteString("1. 최신 pre-write blocker와 원래 pre-fix 필수 RF를 모두 같은 수리 의무로 유지하세요.\n")
 		b.WriteString("2. replace_in_file은 이번 복구 경로에서 비활성화되었으니 사용하지 마세요.\n")
 		b.WriteString("3. 차단된 proposal은 파일에 쓰이지 않았습니다. 다음 edit tool 전에 read_file, grep, git_diff 중 하나로 현재 대상 파일 또는 현재 diff를 다시 확인하세요.\n")
-		b.WriteString("4. 그 다음 현재 상태에 바로 적용 가능한 완전한 standalone apply_patch를 작성하세요. review artifact 재읽기나 run_shell 우회 쓰기로 게이트를 우회하지 마세요.")
+		b.WriteString("4. 그 다음 현재 상태에 바로 적용 가능한 완전한 standalone apply_patch를 작성하세요. review artifact 재읽기나 run_shell 우회 쓰기로 게이트를 우회하지 마세요.\n")
+		b.WriteString("5. 함수 시그니처, 상수, 전역 변수, API 계약을 바꾸면 그것을 참조·호출하는 모든 위치를 같은 패치에서 일관되게 갱신하세요. 패치를 쓰기 전에 바꿀 이름을 grep으로 검색해 호출부와 사용처를 빠짐없이 포함하세요. 부분 변경(시그니처만 바꾸고 호출부는 그대로)은 다음 리뷰에서 다시 차단됩니다.")
 	} else {
 		b.WriteString("The pre-write review already blocked the edit.\n")
 		b.WriteString("On the next turn, do not submit a missing-piece delta for the blocked proposal; produce a complete standalone apply_patch anchored to the current file state.\n")
@@ -6354,7 +6355,15 @@ func formatPreWriteReviewBlockedRetryGuidance(cfg Config, session *Session) stri
 		b.WriteString("1. Keep both the latest pre-write blocker and every original required pre-fix RF as active repair obligations.\n")
 		b.WriteString("2. replace_in_file is disabled for this recovery path; do not use it.\n")
 		b.WriteString("3. The blocked proposal was not written. Before the next edit tool, re-read the current target file or current diff with read_file, grep, or git_diff.\n")
-		b.WriteString("4. Then write a complete standalone apply_patch against that current state. Do not reread review artifacts or bypass the gate with run_shell writes.")
+		b.WriteString("4. Then write a complete standalone apply_patch against that current state. Do not reread review artifacts or bypass the gate with run_shell writes.\n")
+		b.WriteString("5. If you change a function signature, constant, global, or API contract, update every place that references or calls it in the SAME patch. Before writing the patch, grep for each name you change and include all call sites and usages. A partial change (new signature but stale call sites) will be blocked again by the next review.")
+	}
+	if rounds >= 2 {
+		if korean {
+			b.WriteString("\n\n반복 차단 경고: 이 편집은 이미 여러 번 차단되었고, 매번 호출부/참조 누락 같은 일관성 문제일 가능성이 큽니다. 부분 패치를 또 보내지 마세요. 바꾸려는 모든 심볼을 먼저 grep하고, 대상 파일이 충분히 작으면 전체를 일관되게 재작성하는 단일 apply_patch로 모든 참조를 한 번에 정리하세요.")
+		} else {
+			b.WriteString("\n\nRepeated-block warning: this edit has already been blocked multiple times, most likely for consistency gaps such as missing call sites or stale references. Do not send another partial patch. Grep for every symbol you change first, and if the target file is small enough, rewrite it consistently in a single apply_patch that resolves all references at once.")
+		}
 	}
 	if carried := formatLatestPreWriteCarriedRepairObligationsForUserDecision(cfg, session); carried != "" {
 		if korean {
