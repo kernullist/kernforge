@@ -1161,6 +1161,182 @@ func TestRuntimeGateFeedbackBlocksGitWriteOnReviewBlocker(t *testing.T) {
 	}
 }
 
+// TestRuntimeGateReviewerRouteFailureWithoutChangesDoesNotBlockNewSession locks
+// in the fix for the cross-session permanent-block bug: a prior review whose
+// only unwaived blocker is a required-reviewer-route failure (RF-REVIEWER-001)
+// must NOT keep blocking a new session on unchanged code. The review-route
+// failure is an infrastructure state (the review model was down), not a code
+// defect, so with no files in gate scope the gate degrades to needs_review and
+// asks for a fresh /review instead of staying blocked forever.
+func TestRuntimeGateReviewerRouteFailureWithoutChangesDoesNotBlockNewSession(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-route-failed",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionGitWrite)
+
+	if strings.EqualFold(ledger.Status, runtimeGateStatusBlocked) {
+		t.Fatalf("reviewer-route failure with no changes must not hard-block, got status %q blockers %#v", ledger.Status, ledger.Blockers)
+	}
+	if !strings.EqualFold(ledger.Status, runtimeGateStatusNeedsReview) {
+		t.Fatalf("expected needs_review, got status %q", ledger.Status)
+	}
+	if len(ledger.Blockers) != 0 {
+		t.Fatalf("expected no hard blockers, got %#v", ledger.Blockers)
+	}
+	joinedWarnings := strings.ToLower(strings.Join(ledger.Warnings, " | "))
+	if !strings.Contains(joinedWarnings, "review route") {
+		t.Fatalf("expected a review-route warning, got %#v", ledger.Warnings)
+	}
+	foundReviewNext := false
+	for _, cmd := range ledger.NextCommands {
+		if strings.TrimSpace(cmd.Command) == "/review" {
+			foundReviewNext = true
+			break
+		}
+	}
+	if !foundReviewNext {
+		t.Fatalf("expected a /review next command, got %#v", ledger.NextCommands)
+	}
+}
+
+// TestRuntimeGateReviewerRouteFailureWithCodeBlockerStillBlocks confirms the
+// safety boundary: when a genuine code finding is also blocking, the gate still
+// hard-blocks. The route-failure relaxation only applies when every unwaived
+// blocker is a reviewer-route failure.
+func TestRuntimeGateReviewerRouteFailureWithCodeBlockerStillBlocks(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-route-and-code",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID, "RF-001"},
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionGitWrite)
+
+	if !strings.EqualFold(ledger.Status, runtimeGateStatusBlocked) {
+		t.Fatalf("a real code blocker must still hard-block, got status %q", ledger.Status)
+	}
+	if !strings.Contains(strings.Join(ledger.Blockers, " | "), "RF-001") {
+		t.Fatalf("expected the code blocker to be carried, got %#v", ledger.Blockers)
+	}
+}
+
+// TestRuntimeGateReviewerRouteFailureWithChangedFilesStillBlocks confirms that a
+// reviewer-route failure with files in gate scope still hard-blocks: the change
+// genuinely needs a completed review, so the relaxation must not apply.
+func TestRuntimeGateReviewerRouteFailureWithChangedFilesStillBlocks(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", []string{"README.md"})
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-route-failed-with-changes",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		ChangeSet: ReviewChangeSet{
+			ChangedPaths: []string{"README.md"},
+		},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{requiredReviewerFailureFindingID},
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionGitWrite)
+
+	if !strings.EqualFold(ledger.Status, runtimeGateStatusBlocked) {
+		t.Fatalf("reviewer-route failure with changed files in scope must still hard-block, got status %q", ledger.Status)
+	}
+}
+
+// TestRuntimeGateReviewOriginLineSummarizesProvenance locks in that the gate
+// status can answer "which prompt/command/time produced this review" -- the
+// origin line carries the trigger, the auto/manual mode, the creation time, and
+// an echo of the original request, and does not duplicate the mode word when the
+// trigger already conveys it.
+func TestRuntimeGateReviewOriginLineSummarizesProvenance(t *testing.T) {
+	ledger := RuntimeGateLedger{
+		ReviewTrigger:         "pre_write",
+		ReviewAutoTriggered:   true,
+		ReviewCreatedAt:       time.Date(2026, 6, 14, 10, 10, 0, 0, time.UTC),
+		ReviewOriginalRequest: "implement the policy export feature",
+	}
+	line := runtimeGateReviewOriginLine(Config{AutoLocale: boolPtr(false)}, ledger)
+	for _, want := range []string{"auto", "pre_write", "2026-06-14 10:10", "implement the policy export feature"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("origin line missing %q: %s", want, line)
+		}
+	}
+	// A trigger that already conveys the mode must localize without duplicating
+	// it (no "수동 manual").
+	manual := runtimeGateReviewOriginLine(Config{AutoLocale: boolPtr(true)}, RuntimeGateLedger{ReviewTrigger: "manual"})
+	if strings.Contains(manual, "manual") {
+		t.Fatalf("manual trigger should not echo the raw mode token: %s", manual)
+	}
+	if !strings.Contains(manual, "수동") {
+		t.Fatalf("manual trigger should localize to 수동: %s", manual)
+	}
+	// No review provenance at all yields an empty line (caller omits the row).
+	if got := runtimeGateReviewOriginLine(Config{}, RuntimeGateLedger{}); got != "" {
+		t.Fatalf("empty provenance should render nothing, got %q", got)
+	}
+}
+
+// TestRuntimeGateAttachReviewCarriesProvenance confirms the review provenance is
+// copied into the ledger so /status can render it.
+func TestRuntimeGateAttachReviewCarriesProvenance(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-origin",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		Trigger:       "pre_write",
+		AutoTriggered: true,
+		CreatedAt:     time.Date(2026, 6, 14, 10, 10, 0, 0, time.UTC),
+		RequestAnalysis: ReviewRequestAnalysis{
+			OriginalRequest: "implement the policy export feature",
+		},
+		Gate: GateDecision{Verdict: reviewVerdictApproved},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionGitWrite)
+
+	if ledger.ReviewTrigger != "pre_write" || !ledger.ReviewAutoTriggered {
+		t.Fatalf("expected trigger provenance, got trigger=%q auto=%t", ledger.ReviewTrigger, ledger.ReviewAutoTriggered)
+	}
+	if ledger.ReviewOriginalRequest != "implement the policy export feature" {
+		t.Fatalf("expected original request provenance, got %q", ledger.ReviewOriginalRequest)
+	}
+	if ledger.ReviewCreatedAt.IsZero() {
+		t.Fatalf("expected created-at provenance to be carried")
+	}
+}
+
 func TestGitWriteGateDoesNotAutoRunImplicitModelReview(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"README.md"})

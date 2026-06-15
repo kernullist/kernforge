@@ -29,6 +29,12 @@ type RuntimeGateLedger struct {
 	Lifecycle               *ReviewRequestLifecycle          `json:"lifecycle,omitempty"`
 	Branch                  string                           `json:"branch,omitempty"`
 	ReviewRunID             string                           `json:"review_run_id,omitempty"`
+	// Review provenance: enough to answer "which prompt/command produced this
+	// gate state" from /status without opening the review artifact.
+	ReviewTrigger           string                           `json:"review_trigger,omitempty"`
+	ReviewAutoTriggered     bool                             `json:"review_auto_triggered,omitempty"`
+	ReviewCreatedAt         time.Time                        `json:"review_created_at,omitempty"`
+	ReviewOriginalRequest   string                           `json:"review_original_request,omitempty"`
 	ModelReviewConsent      string                           `json:"model_review_consent,omitempty"`
 	ConsentSource           string                           `json:"consent_source,omitempty"`
 	SkipReason              string                           `json:"skip_reason,omitempty"`
@@ -571,6 +577,60 @@ func runtimeGateReviewRun(root string, session *Session, provided *ReviewRun) (R
 	return latest, true
 }
 
+// runtimeGateReviewOriginLine renders a one-line provenance summary for the
+// latest review backing the gate: which trigger/command produced it (and whether
+// it was automatic), when it ran, and a short echo of the user prompt that drove
+// it. This lets /status answer "where did this gate warning come from" without
+// opening the review artifact. The trigger token (pre_write/manual/git_write) is
+// a stable domain term and is kept as-is; only the auto/manual mode is localized.
+func runtimeGateReviewOriginLine(cfg Config, ledger RuntimeGateLedger) string {
+	var parts []string
+	if trigger := strings.TrimSpace(ledger.ReviewTrigger); trigger != "" {
+		switch strings.ToLower(trigger) {
+		case "auto":
+			// The trigger already names the mode; emit the localized word alone
+			// instead of a redundant "auto auto".
+			parts = append(parts, localizedText(cfg, "auto", "자동"))
+		case "manual":
+			parts = append(parts, localizedText(cfg, "manual", "수동"))
+		default:
+			mode := localizedText(cfg, "manual", "수동")
+			if ledger.ReviewAutoTriggered {
+				mode = localizedText(cfg, "auto", "자동")
+			}
+			parts = append(parts, mode+" "+trigger)
+		}
+	} else if ledger.ReviewAutoTriggered {
+		parts = append(parts, localizedText(cfg, "auto", "자동"))
+	}
+	if !ledger.ReviewCreatedAt.IsZero() {
+		parts = append(parts, ledger.ReviewCreatedAt.Format("2006-01-02 15:04"))
+	}
+	if req := compactReviewVisibleInlineText(ledger.ReviewOriginalRequest, 96); req != "" {
+		parts = append(parts, "\""+req+"\"")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// reviewBlockersAreOnlyReviewerRouteFailures reports whether every unwaived
+// blocking finding id is a required-reviewer-route failure (RF-REVIEWER-001).
+// Such a finding means the review model route was down so the review never
+// completed -- an infrastructure state, not a code defect. The caller uses this
+// to avoid persisting a route failure as a permanent cross-session hard block
+// when there are no files in gate scope. A single real code blocker mixed in
+// returns false, so genuine code findings still hard-block as before.
+func reviewBlockersAreOnlyReviewerRouteFailures(blockerIDs []string) bool {
+	if len(blockerIDs) == 0 {
+		return false
+	}
+	for _, id := range blockerIDs {
+		if !strings.EqualFold(strings.TrimSpace(id), requiredReviewerFailureFindingID) {
+			return false
+		}
+	}
+	return true
+}
+
 func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review ReviewRun) {
 	if ledger == nil {
 		return
@@ -622,6 +682,27 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 			ClientHint:     "Repeat /review after the latest changes.",
 			ExpectedResult: "A fresh review transaction replaces the stale one.",
 		})
+	} else if len(blockers) > 0 && reviewBlockersAreOnlyReviewerRouteFailures(blockers) && len(ledger.ChangedPaths) == 0 {
+		// The only unwaived blockers are required-reviewer-route failures
+		// (RF-REVIEWER-001): the review never completed because the review model
+		// route was down, not because the code is wrong. With no files in gate
+		// scope there is nothing to gate, so this infrastructure failure must
+		// NOT carry forward as a permanent cross-session hard block on unchanged
+		// code -- the code-freshness signals (branch/changed-paths/hashes) would
+		// otherwise keep the failed review "fresh" forever and a brand new
+		// session would inherit a gate it cannot clear. Surface it as a warning
+		// (needs_review) that asks for a fresh /review once the route is fixed.
+		tx.Status = "review_route_incomplete"
+		ledger.Warnings = append(ledger.Warnings, "latest review did not complete: required review route failed and no files are in gate scope. Fix the review route (/model or /model cross-review), then rerun /review to restore review coverage.")
+		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+			ID:             "review",
+			Command:        "/review",
+			Reason:         "latest review route failed and no changes are in scope",
+			Safety:         "read_only",
+			When:           "after fixing the review model route",
+			ClientHint:     "Fix the review route (/model or /model cross-review), then run /review.",
+			ExpectedResult: "A completed review replaces the failed route.",
+		})
 	} else if len(blockers) > 0 {
 		tx.Status = "blocked"
 		ledger.Blockers = append(ledger.Blockers, "latest review has unwaived blockers: "+strings.Join(limitStrings(blockers, 6), ", "))
@@ -649,6 +730,10 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		tx.Status = "fresh"
 	}
 	ledger.ReviewRunID = strings.TrimSpace(review.ID)
+	ledger.ReviewTrigger = strings.TrimSpace(review.Trigger)
+	ledger.ReviewAutoTriggered = review.AutoTriggered
+	ledger.ReviewCreatedAt = review.CreatedAt
+	ledger.ReviewOriginalRequest = strings.TrimSpace(firstNonBlankString(review.RequestAnalysis.OriginalRequest, review.Objective))
 	ledger.ModelReviewConsent = strings.TrimSpace(review.ModelReviewConsent)
 	ledger.ConsentSource = strings.TrimSpace(review.ConsentSource)
 	ledger.SkipReason = strings.TrimSpace(review.SkipReason)
@@ -1397,6 +1482,9 @@ func (rt *runtimeState) writeRuntimeGateStatusWithDetail(writer io.Writer, actio
 	}
 	if ledger.ReviewRunID != "" {
 		fmt.Fprintln(writer, rt.ui.statusKV("latest_review", ledger.ReviewRunID))
+		if origin := runtimeGateReviewOriginLine(rt.cfg, ledger); origin != "" {
+			fmt.Fprintln(writer, rt.ui.statusKV(localizedText(rt.cfg, "review_origin", "리뷰 출처"), origin))
+		}
 	}
 	if detail && ledger.ReviewObservability != nil {
 		obs := ledger.ReviewObservability
