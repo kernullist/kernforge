@@ -21,6 +21,17 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		scopePaths = append(scopePaths, proposal.File)
 	}
 	scopePaths = append(scopePaths, reviewScopeCandidateFilesFromDiff(opts.ProvidedDiff)...)
+	// When no explicit scope was given (no --path, edit proposals, or provided
+	// diff/code), anchor a change-oriented review to the files this session
+	// actually changed, using the same archive-aware source the runtime gate
+	// uses. Without this a bare post-edit `/review` discovers an empty scope,
+	// collects no diff, and can only warn that it could not see the change.
+	if len(mcpReviewCleanPaths(scopePaths)) == 0 &&
+		strings.TrimSpace(opts.ProvidedDiff) == "" &&
+		strings.TrimSpace(opts.ProvidedCode) == "" &&
+		reviewTargetAllowsSessionChangedScope(opts.Target) {
+		scopePaths = append(scopePaths, reviewSessionChangedScopePaths(rt, root)...)
+	}
 	discovery := discoverReviewScopeForAnalysis(root, request, opts, scopePaths)
 	if target == reviewTargetAuto {
 		target = inferReviewTarget(rt, root, request, discovery)
@@ -92,6 +103,31 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 		Reason:                  reason,
 		AmbiguityWarnings:       warnings,
 	}
+}
+
+// reviewTargetAllowsSessionChangedScope reports whether seeding the session's
+// changed files as the review scope is appropriate. It is only done for an
+// unspecified/auto target or an explicit change review -- never for a plan,
+// selection, PR, goal, analysis, or final-answer target the user named.
+func reviewTargetAllowsSessionChangedScope(target string) bool {
+	switch normalizeReviewTarget(target) {
+	case reviewTargetAuto, reviewTargetChange:
+		return true
+	default:
+		return false
+	}
+}
+
+// reviewSessionChangedScopePaths returns the files this session changed, using
+// the same archive-aware source the runtime gate uses for the review action. The
+// review action recovers an already-finalized patch transaction, so a `/review`
+// run on a later turn still anchors to (and covers) what an earlier edit turn
+// changed instead of discovering an empty scope.
+func reviewSessionChangedScopePaths(rt *runtimeState, root string) []string {
+	if rt == nil || rt.session == nil {
+		return nil
+	}
+	return runtimeGateChangedPathsForAction(root, rt.session, runtimeGateActionReview)
 }
 
 func discoverReviewScopeForAnalysis(root string, request string, opts ReviewHarnessOptions, scopePaths []string) ReviewScopeDiscovery {
