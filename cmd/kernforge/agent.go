@@ -1809,6 +1809,34 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					return reply, nil
 				}
 				if !harnessApproved && finalHarnessRevisions >= 2 {
+					// Self-heal the single deterministic, known-safe gap: verification
+					// was skipped or declined and the only remaining blocker is the
+					// missing not-run disclosure. Append the disclosure, re-run the
+					// harness, and finalize as completed only if it now approves. This
+					// mirrors the generated-document synthesized-final shortcut and can
+					// only upgrade a pure-disclosure block into a completed turn.
+					if healed, recheck, ok := a.healSkippedVerificationDisclosure(reply, latestUser, attemptedEditTool, unresolvedVerification); ok {
+						reply = healed
+						a.Session.LastCodingHarnessReport = recheck
+						a.Session.LastTestImpactReport = &recheck.TestImpact
+						a.Session.LastJobSupervisorReport = &recheck.JobSupervisor
+						if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+							a.Session.Messages[continuedReplyMessageIndex].Text = reply
+						} else if len(a.Session.Messages) > 0 {
+							a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+						}
+						a.acceptRecentFinalAnswerCandidate(reply)
+						a.markFinalAnswerCorrectionAccepted()
+						a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+						a.finalizePatchTransactionOnReturn()
+						a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+						a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+						if err := a.Store.Save(a.Session); err != nil {
+							return "", err
+						}
+						markRuntimeCompleted("pre_final_harness_disclosure_self_healed")
+						return reply, nil
+					}
 					a.discardRecentFinalAnswerCandidate(reply)
 					if a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) {
 						reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
@@ -2550,36 +2578,74 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				preWriteReviewPrevBlockerIDs = currentBlockerIDs
 				nonConvergingPreWriteBlock := preWriteReviewNoProgressBlocks >= maxPreWriteReviewNoProgressRounds
 				if repeatedPreWriteBlock || nonConvergingPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
-					toolMsg.IsError = true
-					toolMsg.Text = toolExecutionModelTextWithError(result, err)
-					if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
-						a.emitProgressEvent(ProgressEvent{
-							Kind:             progressKindToolFailed,
-							Message:          summary,
-							ToolName:         call.Name,
-							ToolCallID:       call.ID,
-							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
-							Status:           firstNonEmptyLine(err.Error()),
-						})
-					}
-					a.setToolExecutionResult(toolMsgIndex, toolMsg)
-					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
-					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock && a.EmitProgress != nil {
-						a.EmitProgress(localizedText(a.Config,
-							fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic re-patch loop did not converge. Stopping and asking the user to decide.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
-							fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 재패치 루프가 수렴하지 못했습니다. 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)))
-					}
-					reply := ""
-					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
-						reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
+					if a.PromptContinueReviewRepair != nil && sessionAllowsReviewRepairContinuation(a.Session) {
+						// Interactive mode: ask the live confirm widget whether to keep
+						// repairing instead of dead-ending in a text-only two-turn
+						// handoff. On yes, grant a fresh repair budget and fall through
+						// to the normal under-cap retry below so the model re-patches in
+						// this same turn; on no, stop with no files changed.
+						promptText := ""
+						if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+							promptText = formatPreWriteReviewRepairNonConvergencePrompt(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
+						} else {
+							promptText = formatPreWriteReviewRepairLoopLimitPrompt(a.Config, a.Session)
+						}
+						markUserInputRequestedDuringTurn()
+						continueRepair, promptErr := a.PromptContinueReviewRepair(promptText)
+						if promptErr != nil {
+							return "", promptErr
+						}
+						a.Session.PendingReviewRepairConfirm = nil
+						if !continueRepair {
+							toolMsg.IsError = true
+							toolMsg.Text = toolExecutionModelTextWithError(result, err)
+							a.setToolExecutionResult(toolMsgIndex, toolMsg)
+							a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: the user stopped pre-write review repair after the loop did not converge.")
+							reply := formatCancelledPendingReviewRepairReply(a.Config)
+							a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+							if saveErr := a.Store.Save(a.Session); saveErr != nil {
+								return "", saveErr
+							}
+							return reply, nil
+						}
+						preWriteReviewRepairBlocks = 0
+						preWriteReviewNoProgressBlocks = 0
+						preWriteReviewPrevBlockerIDs = nil
+						for fingerprint := range preWriteReviewRepairBlockFingerprints {
+							delete(preWriteReviewRepairBlockFingerprints, fingerprint)
+						}
 					} else {
-						reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+						toolMsg.IsError = true
+						toolMsg.Text = toolExecutionModelTextWithError(result, err)
+						if summary := summarizeToolFailure(a.Config, call, err); summary != "" {
+							a.emitProgressEvent(ProgressEvent{
+								Kind:             progressKindToolFailed,
+								Message:          summary,
+								ToolName:         call.Name,
+								ToolCallID:       call.ID,
+								ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
+								Status:           firstNonEmptyLine(err.Error()),
+							})
+						}
+						a.setToolExecutionResult(toolMsgIndex, toolMsg)
+						a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
+						if nonConvergingPreWriteBlock && !repeatedPreWriteBlock && a.EmitProgress != nil {
+							a.EmitProgress(localizedText(a.Config,
+								fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic re-patch loop did not converge. Stopping and asking the user to decide.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
+								fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 재패치 루프가 수렴하지 못했습니다. 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)))
+						}
+						reply := ""
+						if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+							reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
+						} else {
+							reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
+						}
+						a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+						if saveErr := a.Store.Save(a.Session); saveErr != nil {
+							return "", saveErr
+						}
+						return reply, nil
 					}
-					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
-					if saveErr := a.Store.Save(a.Session); saveErr != nil {
-						return "", saveErr
-					}
-					return reply, nil
 				}
 				toolMsg.IsError = true
 				toolMsg.Text = toolExecutionModelTextWithError(result, err)
@@ -5615,6 +5681,31 @@ func formatPreWriteReviewRepairLoopLimitReply(cfg Config, session *Session) stri
 	)
 }
 
+// formatPreWriteReviewRepairLoopLimitPrompt is the interactive-widget counterpart
+// of formatPreWriteReviewRepairLoopLimitReply: same context, no inline y/n tail,
+// no pending two-turn confirmation recorded.
+func formatPreWriteReviewRepairLoopLimitPrompt(cfg Config, session *Session) string {
+	return formatPreWriteReviewRepairUserDecisionPrompt(
+		cfg,
+		session,
+		"The revised edit still did not pass the pre-write review.",
+		"수정안이 아직 쓰기 전 리뷰 모델을 통과하지 못했습니다.",
+	)
+}
+
+// formatPreWriteReviewRepairNonConvergencePrompt is the interactive-widget
+// counterpart of formatPreWriteReviewRepairNonConvergenceReply. The intro omits
+// the "I stopped re-patching" wording because the loop has not stopped yet; the
+// user is being asked whether to keep repairing.
+func formatPreWriteReviewRepairNonConvergencePrompt(cfg Config, session *Session, rounds, stalledRounds int) string {
+	return formatPreWriteReviewRepairUserDecisionPrompt(
+		cfg,
+		session,
+		fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic repair loop did not converge. No files were changed yet.", rounds, stalledRounds),
+		fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 수리 루프가 수렴하지 못했습니다. 아직 변경된 파일은 없습니다.", rounds, stalledRounds),
+	)
+}
+
 // formatPreWriteReviewRepairNonConvergenceReply is used when the automatic
 // pre-write re-patch loop is stopped because the remaining blocker count failed
 // to shrink across enough consecutive rounds (it stayed level or grew), so the
@@ -5766,11 +5857,26 @@ func formatPreWriteReviewRepairInspectionLoopLimitReply(cfg Config, session *Ses
 }
 
 func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
+	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, true)
+}
+
+// formatPreWriteReviewRepairUserDecisionPrompt renders the same review context as
+// the inline reply but omits the textual "[y=...] reply with exactly y or n" tail
+// and does NOT record a pending two-turn confirmation. It is used when an
+// interactive confirmation widget (PromptContinueReviewRepair) collects the
+// decision live within the same turn.
+func formatPreWriteReviewRepairUserDecisionPrompt(cfg Config, session *Session, englishIntro string, koreanIntro string) string {
+	return formatPreWriteReviewRepairUserDecisionContent(cfg, session, englishIntro, koreanIntro, false)
+}
+
+func formatPreWriteReviewRepairUserDecisionContent(cfg Config, session *Session, englishIntro string, koreanIntro string, forInlineReply bool) string {
 	canContinueRepair := sessionAllowsReviewRepairContinuation(session)
-	if canContinueRepair {
-		recordPendingReviewRepairConfirmation(session)
-	} else if session != nil {
-		session.PendingReviewRepairConfirm = nil
+	if forInlineReply {
+		if canContinueRepair {
+			recordPendingReviewRepairConfirmation(session)
+		} else if session != nil {
+			session.PendingReviewRepairConfirm = nil
+		}
 	}
 	korean := localePrefersKorean(cfg)
 	var b strings.Builder
@@ -5803,10 +5909,14 @@ func formatPreWriteReviewRepairUserDecisionReply(cfg Config, session *Session, e
 		}
 		b.WriteString(proposalText)
 	}
-	if canContinueRepair && korean {
+	if canContinueRepair && forInlineReply && korean {
 		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할까요? [y=계속, n=중지]\n`y` 또는 `n`만 입력해 주세요.")
-	} else if canContinueRepair {
+	} else if canContinueRepair && forInlineReply {
 		b.WriteString("\n\n[3] Next decision\nShould I keep repairing from this review result? [y=continue, n=stop]\nReply with exactly `y` or `n`.")
+	} else if canContinueRepair && korean {
+		b.WriteString("\n\n[3] 다음 선택\n이 검토 결과를 기준으로 계속 수정할 수 있습니다.")
+	} else if canContinueRepair {
+		b.WriteString("\n\n[3] Next decision\nI can keep repairing from this review result.")
 	} else if korean {
 		b.WriteString("\n\n[3] 다음 조치\n원 요청의 action boundary가 읽기 전용이므로 이 리뷰 결과를 코드 수리 confirmation으로 전환하지 않습니다.")
 		b.WriteString("\n- 추가 파일 수정은 진행하지 않습니다.")

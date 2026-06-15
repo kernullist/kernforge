@@ -968,6 +968,84 @@ func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+// reportOnlyBlockedBySkippedVerificationDisclosure reports true when the only
+// blocker left in the report is the skipped-verification disclosure gap, so the
+// final answer can be deterministically self-healed by appending the not-run
+// disclosure instead of dead-ending in a blocked reply. Any other blocker -
+// including a real verification failure ("Unresolved verification failure" or
+// "Edit loop verification failure is unstated") - disqualifies the heal so we
+// never paper over a genuine failure or a second outstanding issue.
+func reportOnlyBlockedBySkippedVerificationDisclosure(report *CodingHarnessReport) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if copyReport.Approved {
+		return false
+	}
+	sawDisclosureBlocker := false
+	for _, finding := range copyReport.allFindings() {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		if strings.TrimSpace(finding.Title) == "Verification was not run disclosure missing" {
+			sawDisclosureBlocker = true
+			continue
+		}
+		return false
+	}
+	return sawDisclosureBlocker
+}
+
+// appendSkippedVerificationNotRunDisclosure appends the deterministic not-run
+// disclosure that the outcome-invariant harness requires for a skipped or
+// declined verification. Unlike ensureRuntimeVerificationNotRunDisclosure it
+// does NOT treat a stray "blocker"-style word as sufficient: the harness
+// skipped-verification branch only accepts the explicit not-run phrasing, so a
+// reply that merely says "verification is blocked" must still receive the line.
+func appendSkippedVerificationNotRunDisclosure(reply string) string {
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "" || replyMentionsVerificationNotRun(trimmed) {
+		return trimmed
+	}
+	return trimmed + "\n\nValidation: verification was not run."
+}
+
+// healSkippedVerificationDisclosure performs the one deterministic, known-safe
+// recovery for a turn that the pre-final harness blocked solely because a
+// skipped or declined verification was not disclosed in the final answer. It
+// appends the not-run disclosure and re-runs the harness, returning the healed
+// reply, the re-checked report, and ok=true only when the disclosure was the
+// sole blocker and the re-check now approves. It never fires for a real
+// verification failure (which keeps verificationWasSkipped false) or for any
+// other outstanding blocker, so it can only upgrade a pure-disclosure block
+// into a completed turn, never mask a genuine failure or overclaim.
+func (a *Agent) healSkippedVerificationDisclosure(reply string, latestUser string, attemptedEditTool bool, unresolvedVerification bool) (string, *CodingHarnessReport, bool) {
+	if a == nil || a.Session == nil || !unresolvedVerification {
+		return "", nil, false
+	}
+	verificationSkipped := a.Session.LastVerification != nil && a.Session.LastVerification.WasSkipped()
+	if !verificationSkipped {
+		return "", nil, false
+	}
+	if a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) {
+		return "", nil, false
+	}
+	if !reportOnlyBlockedBySkippedVerificationDisclosure(a.Session.LastCodingHarnessReport) {
+		return "", nil, false
+	}
+	healed := appendSkippedVerificationNotRunDisclosure(reply)
+	if healed == strings.TrimSpace(reply) {
+		return "", nil, false
+	}
+	recheck := a.buildCodingHarnessReport(healed, attemptedEditTool, unresolvedVerification)
+	if !recheck.Approved {
+		return "", nil, false
+	}
+	return healed, &recheck, true
+}
+
 func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
 	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
 	if len(paths) == 0 && a != nil && a.Session != nil {

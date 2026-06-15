@@ -1239,6 +1239,138 @@ func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {
 	}
 }
 
+func TestReportOnlyBlockedBySkippedVerificationDisclosure(t *testing.T) {
+	disclosure := CodingHarnessFinding{
+		Severity: "blocker",
+		Title:    "Verification was not run disclosure missing",
+		Detail:   "The latest verification was skipped, but the final answer does not say so.",
+	}
+
+	only := &CodingHarnessReport{Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{disclosure}}}
+	if !reportOnlyBlockedBySkippedVerificationDisclosure(only) {
+		t.Fatalf("expected the sole disclosure blocker to qualify for self-heal")
+	}
+
+	withFailure := &CodingHarnessReport{Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{
+		disclosure,
+		{Severity: "blocker", Title: "Unresolved verification failure", Detail: "verification still failing"},
+	}}}
+	if reportOnlyBlockedBySkippedVerificationDisclosure(withFailure) {
+		t.Fatalf("a real verification failure blocker must disqualify the self-heal")
+	}
+
+	withOther := &CodingHarnessReport{
+		Findings: []CodingHarnessFinding{{Severity: "blocker", Title: "Final answer has inconsistent bug counts"}},
+		Outcome:  OutcomeInvariantReport{Findings: []CodingHarnessFinding{disclosure}},
+	}
+	if reportOnlyBlockedBySkippedVerificationDisclosure(withOther) {
+		t.Fatalf("a second unrelated blocker must disqualify the self-heal")
+	}
+
+	if reportOnlyBlockedBySkippedVerificationDisclosure(&CodingHarnessReport{}) {
+		t.Fatalf("an approved report has nothing to heal")
+	}
+	if reportOnlyBlockedBySkippedVerificationDisclosure(nil) {
+		t.Fatalf("a nil report must not qualify")
+	}
+}
+
+func TestAppendSkippedVerificationNotRunDisclosure(t *testing.T) {
+	blockerOnly := "Changed files: main.go. Validation: the test runner is currently blocked. Remaining risk: behavior is unconfirmed."
+	if replyMentionsVerificationNotRun(blockerOnly) {
+		t.Fatalf("fixture should not already disclose not-run, got %q", blockerOnly)
+	}
+	healed := appendSkippedVerificationNotRunDisclosure(blockerOnly)
+	if !strings.Contains(healed, "verification was not run") {
+		t.Fatalf("expected the not-run disclosure to be appended even when only a blocker is mentioned, got %q", healed)
+	}
+	if !replyMentionsVerificationNotRun(healed) {
+		t.Fatalf("healed reply must satisfy the harness not-run detector, got %q", healed)
+	}
+
+	alreadyDisclosed := "Validation: verification was not run."
+	if got := appendSkippedVerificationNotRunDisclosure(alreadyDisclosed); got != alreadyDisclosed {
+		t.Fatalf("must not double-append when the disclosure is already present, got %q", got)
+	}
+	if got := appendSkippedVerificationNotRunDisclosure("   "); got != "" {
+		t.Fatalf("empty reply should stay empty, got %q", got)
+	}
+}
+
+func TestPreFinalHarnessSelfHealsSkippedVerificationDisclosure(t *testing.T) {
+	root := t.TempDir()
+	// A divergent final answer: it mentions a "blocker" (so the runtime gate treats
+	// the verification intervention as resolved) but never states that verification
+	// was not run (so the harness keeps blocking). This is the exact reply class that
+	// used to dead-end in a blocked turn after the correction loop exhausted.
+	divergent := testModificationFinalAnswer("main.go",
+		"the local test runner is currently blocked, so no result is available",
+		"behavior has no successful test evidence")
+	if replyMentionsVerificationNotRun(divergent) {
+		t.Fatalf("fixture must NOT disclose not-run, got %q", divergent)
+	}
+	if !replyMentionsVerificationBlocker(divergent) {
+		t.Fatalf("fixture must mention a blocker to reproduce the divergence, got %q", divergent)
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: divergent}},
+			{Message: Message{Role: "assistant", Text: divergent}},
+			{Message: Message{Role: "assistant", Text: divergent}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	history := &VerificationHistoryStore{Path: filepath.Join(root, "verification-history.json")}
+	ws := Workspace{BaseRoot: root, Root: root}
+	verifyCount := 0
+	agent := &Agent{
+		Config:        Config{},
+		Client:        provider,
+		Tools:         NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:     ws,
+		Session:       session,
+		Store:         store,
+		VerifyHistory: history,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			_ = plan
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			verifyCount++
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if verifyCount != 0 {
+		t.Fatalf("verification must not run after the user declines, got %d", verifyCount)
+	}
+	if strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
+		t.Fatalf("self-heal should replace the blocked reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "Validation: verification was not run.") {
+		t.Fatalf("self-heal should append the not-run disclosure, got %q", reply)
+	}
+	if !strings.Contains(reply, "Changed files: main.go") {
+		t.Fatalf("self-heal must preserve the model's original answer, got %q", reply)
+	}
+	if session.LastCodingHarnessReport == nil || !session.LastCodingHarnessReport.Approved {
+		t.Fatalf("re-checked harness report should be approved after the heal, got %#v", session.LastCodingHarnessReport)
+	}
+	if session.LastVerification == nil || !session.LastVerification.WasSkipped() {
+		t.Fatalf("declined verification should remain recorded as skipped, got %#v", session.LastVerification)
+	}
+	if len(provider.requests) != 4 {
+		t.Fatalf("expected exactly 4 model requests (1 tool + 3 finals, then deterministic heal), got %d", len(provider.requests))
+	}
+}
+
 func TestReviewObservabilityPreservesRejectedFinalAnswerCorrection(t *testing.T) {
 	report := &CodingHarnessReport{
 		Findings: []CodingHarnessFinding{{

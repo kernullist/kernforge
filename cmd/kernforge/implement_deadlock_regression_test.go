@@ -398,6 +398,195 @@ func TestImplementDeadlockD_C_NonConvergingPreWriteLoopStopsButShortRoundsProcee
 	})
 }
 
+// TestImplementDeadlockNonConvergenceInteractivePromptDrivesDecision proves that
+// when an interactive confirmation widget (PromptContinueReviewRepair) is wired,
+// the non-convergence handoff is collected LIVE within the same turn instead of
+// dead-ending in a text-only two-turn handoff: on "yes" the repair budget is
+// reset and the model re-patches this turn; on "no" the turn stops cleanly with
+// no pending two-turn confirmation left behind.
+func TestImplementDeadlockNonConvergenceInteractivePromptDrivesDecision(t *testing.T) {
+	blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+	n := maxPreWriteReviewNoProgressRounds
+	// Genuinely distinct findings each round (distinct title AND fix) so the
+	// fingerprint differs and the loop trips via non-convergence, not the
+	// repeated-fingerprint cap.
+	distinctFindings := []struct{ id, title, fix string }{
+		{"RF-001", "DATA_FILE constant removed", "Keep the DATA_FILE constant defined."},
+		{"RF-002", "Hardcoded secret key", "Load SECRET_KEY from the environment."},
+		{"RF-003", "Missing JSON validation", "Validate the parsed JSON before use."},
+		{"RF-004", "Unhandled file error", "Handle the file-open error path."},
+		{"RF-005", "Missing request timeout", "Add an explicit request timeout."},
+		{"RF-006", "Unclosed file handle", "Close the file handle on every path."},
+		{"RF-007", "Unvalidated path input", "Reject path traversal in the input."},
+	}
+	if n > len(distinctFindings) {
+		t.Fatalf("test needs %d distinct findings but only %d are defined", n, len(distinctFindings))
+	}
+
+	newSetReviewFinding := func(session *Session) func(id, title, fix string) func() {
+		return func(id, title, fix string) func() {
+			return func() {
+				session.LastReviewRun = &ReviewRun{
+					Trigger: "pre_write",
+					Gate: GateDecision{
+						Verdict:          reviewVerdictNeedsRevision,
+						BlockingFindings: []string{id},
+					},
+					Result: ReviewResult{Summary: "The proposal still leaves a pre-write blocker unresolved."},
+					Findings: []ReviewFinding{{
+						ID:          id,
+						Severity:    reviewSeverityMedium,
+						Category:    "correctness",
+						Path:        "app.py",
+						Title:       title,
+						RequiredFix: fix,
+						Quality:     reviewFindingQualityComplete,
+					}},
+				}
+			}
+		}
+	}
+	patchReply := func(i int) ChatResponse {
+		return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: app.py\n@@\n DATA_FILE = 'data.json'\n+# attempt %d\n*** End Patch\n", i)})
+	}
+	readReply := toolCallResponse("read_file", map[string]any{"path": "app.py"})
+
+	t.Run("interactive yes resets the budget and re-patches this turn", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+			t.Fatalf("write app.py: %v", err)
+		}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		ws := Workspace{BaseRoot: root, Root: root}
+		setReviewFinding := newSetReviewFinding(session)
+
+		before := []func(){}
+		errs := []error{}
+		outputs := []string{}
+		for i := 0; i < n; i++ {
+			before = append(before, setReviewFinding(distinctFindings[i].id, distinctFindings[i].title, distinctFindings[i].fix))
+			errs = append(errs, blockedErr)
+			outputs = append(outputs, "")
+		}
+		// The round after the user opts to continue passes pre-write review.
+		before = append(before, func() { session.LastReviewRun = nil })
+		errs = append(errs, nil)
+		outputs = append(outputs, "Applied patch to app.py.")
+		patchTool := &sequenceTool{name: "apply_patch", before: before, errs: errs, outputs: outputs}
+
+		replies := []ChatResponse{}
+		for i := 0; i < n; i++ {
+			replies = append(replies, patchReply(i), readReply)
+		}
+		finalReply := testModificationFinalAnswer("app.py", "targeted verification passed.", "no known remaining blocker.")
+		replies = append(replies, patchReply(n), ChatResponse{Message: Message{Role: "assistant", Text: finalReply}})
+		provider := &scriptedProviderClient{replies: replies}
+
+		promptCount := 0
+		promptMessage := ""
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+			PromptContinueReviewRepair: func(message string) (bool, error) {
+				promptCount++
+				promptMessage = message
+				return true, nil
+			},
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		if promptCount != 1 {
+			t.Fatalf("expected exactly one interactive continue prompt, got %d", promptCount)
+		}
+		if !strings.Contains(promptMessage, "did not converge") {
+			t.Fatalf("interactive prompt should carry the non-convergence context, got %q", promptMessage)
+		}
+		if strings.Contains(promptMessage, "Reply with exactly") || strings.Contains(promptMessage, "[y=continue") {
+			t.Fatalf("interactive prompt must omit the inline y/n tail (the widget shows it), got %q", promptMessage)
+		}
+		if strings.Contains(reply, "did not converge") || strings.Contains(reply, "Should I keep repairing") {
+			t.Fatalf("an interactive 'yes' must resume and finish, not emit the text handoff, got %q", reply)
+		}
+		if patchTool.calls != n+1 {
+			t.Fatalf("expected %d blocked patches then one successful re-patch, got %d", n, patchTool.calls)
+		}
+		if session.PendingReviewRepairConfirm != nil {
+			t.Fatalf("interactive resolution must not leave a pending two-turn confirmation")
+		}
+	})
+
+	t.Run("interactive no stops the turn with no pending confirmation", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+			t.Fatalf("write app.py: %v", err)
+		}
+		session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+		store := NewSessionStore(filepath.Join(root, "sessions"))
+		ws := Workspace{BaseRoot: root, Root: root}
+		setReviewFinding := newSetReviewFinding(session)
+
+		before := []func(){}
+		errs := []error{}
+		for i := 0; i < n; i++ {
+			before = append(before, setReviewFinding(distinctFindings[i].id, distinctFindings[i].title, distinctFindings[i].fix))
+			errs = append(errs, blockedErr)
+		}
+		patchTool := &sequenceTool{name: "apply_patch", before: before, errs: errs}
+
+		replies := []ChatResponse{}
+		for i := 0; i < n; i++ {
+			replies = append(replies, patchReply(i))
+			if i < n-1 {
+				replies = append(replies, readReply)
+			}
+		}
+		provider := &scriptedProviderClient{replies: replies}
+
+		promptCount := 0
+		agent := &Agent{
+			Config:    Config{AutoLocale: boolPtr(false)},
+			Client:    provider,
+			Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+			Workspace: ws,
+			Session:   session,
+			Store:     store,
+			PromptContinueReviewRepair: func(message string) (bool, error) {
+				_ = message
+				promptCount++
+				return false, nil
+			},
+		}
+
+		reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+		if err != nil {
+			t.Fatalf("Reply: %v", err)
+		}
+		if promptCount != 1 {
+			t.Fatalf("expected exactly one interactive continue prompt, got %d", promptCount)
+		}
+		if !strings.Contains(reply, "will not continue repairing") {
+			t.Fatalf("an interactive 'no' should return the cancelled reply, got %q", reply)
+		}
+		if strings.Contains(reply, "Reply with exactly") {
+			t.Fatalf("interactive stop must not emit the text-handoff y/n tail, got %q", reply)
+		}
+		if patchTool.calls != n {
+			t.Fatalf("expected the loop to stop after %d blocked patches, got %d", n, patchTool.calls)
+		}
+		if session.PendingReviewRepairConfirm != nil {
+			t.Fatalf("interactive stop must not leave a pending two-turn confirmation")
+		}
+	})
+}
+
 // TestImplementDeadlockProgressiveConvergenceProceedsBeyondThreeRounds locks in
 // the progress-aware cutoff: when each blocked round resolves blockers and the
 // total count strictly decreases (4 -> 3 -> 2 -> done), the loop is multi-stage
