@@ -9391,8 +9391,8 @@ func TestAgentStopsNonConvergingPreWriteRepairLoop(t *testing.T) {
 	if !strings.Contains(reply, "Should I keep repairing") {
 		t.Fatalf("expected y/n decision handoff, got %q", reply)
 	}
-	if patchTool.calls != maxPreWriteReviewDistinctBlockRounds {
-		t.Fatalf("expected the loop to stop after %d distinct blocked rounds, got %d patch attempts", maxPreWriteReviewDistinctBlockRounds, patchTool.calls)
+	if patchTool.calls != maxPreWriteReviewNoProgressRounds {
+		t.Fatalf("expected the loop to stop after %d no-progress blocked rounds, got %d patch attempts", maxPreWriteReviewNoProgressRounds, patchTool.calls)
 	}
 	if session.PendingReviewRepairConfirm == nil {
 		t.Fatalf("expected a pending y/n repair confirmation to be recorded")

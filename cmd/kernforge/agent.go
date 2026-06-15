@@ -87,20 +87,26 @@ const (
 	// without gathering new information. These are larger than the windowed
 	// thresholds because they accumulate over a longer rotation, and any read of
 	// a genuinely new path resets the run so real exploration is never affected.
-	readChurnNoNewPathNudgeTurns         = 6
-	readChurnNoNewPathRecoveryTurns      = 9
-	readChurnNoNewPathAbortTurns         = 12
-	maxPreWriteReviewRepairBlocksPerTurn = 4
-	// maxPreWriteReviewDistinctBlockRounds caps the number of consecutive
-	// pre-write review blocked rounds for the same edit target even when each
-	// round surfaces a DIFFERENT finding (so the per-fingerprint repeat detector
-	// never fires). Without this an automatic re-patch loop can churn forever,
-	// each round producing a new blocker that never converges. A genuine one- or
-	// two-round revise still completes; only an unconverging loop is stopped and
-	// handed to the user as a y/n decision. Set below
-	// maxPreWriteReviewRepairBlocksPerTurn so the distinct-finding loop is the
-	// one that trips first.
-	maxPreWriteReviewDistinctBlockRounds = 3
+	readChurnNoNewPathNudgeTurns    = 6
+	readChurnNoNewPathRecoveryTurns = 9
+	readChurnNoNewPathAbortTurns    = 12
+	// maxPreWriteReviewRepairBlocksPerTurn is the ABSOLUTE per-turn cap on
+	// pre-write review blocked rounds, regardless of progress. It bounds a loop
+	// that keeps making "progress" forever (e.g. blocker counts oscillating), so
+	// even a steadily advancing repair stops and hands a y/n decision here.
+	maxPreWriteReviewRepairBlocksPerTurn = 6
+	// maxPreWriteReviewNoProgressRounds caps the number of consecutive
+	// NO-PROGRESS pre-write review blocked rounds for the same edit target. A
+	// round counts as progress ONLY when the total unwaived-blocker count
+	// strictly decreases (multi-stage convergence, e.g. blockers 4 -> 3 -> 2);
+	// see preWriteReviewRepairProgressed. Such rounds do NOT count toward this
+	// cap, so a genuinely advancing repair loop is not killed early even when a
+	// different finding surfaces each round. Rounds where the count stays the
+	// same (including one finding swapped for another) or grows make no progress
+	// and accrue; once that stalls for this many consecutive rounds the loop
+	// stops and hands the user a y/n decision. The absolute cap above still
+	// bounds the total (and is the backstop for a count that merely oscillates).
+	maxPreWriteReviewNoProgressRounds    = 3
 	maxPreWriteReviewRepairInspectTools  = 6
 	maxPreWriteReviewRepairInspectNudges = 1
 	maxPreFixReviewRepairInspectTools    = 6
@@ -649,6 +655,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	editTargetMismatchReanchorBlocks := 0
 	preWriteReviewRepairBlocks := 0
 	preWriteReviewRepairBlockFingerprints := map[string]int{}
+	// Progress-aware non-convergence tracking: count only consecutive rounds
+	// that resolve no prior blocker, so multi-stage convergence is not killed.
+	preWriteReviewNoProgressBlocks := 0
+	preWriteReviewPrevBlockerIDs := map[string]bool{}
 	preWriteReviewRepairInspectTools := 0
 	preWriteReviewRepairInspectNudges := 0
 	preFixReviewRepairInspectTools := 0
@@ -2518,11 +2528,27 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					preWriteReviewRepairBlockFingerprints[blockFingerprint]++
 				}
 				repeatedPreWriteBlock := blockFingerprint != "" && preWriteReviewRepairBlockFingerprints[blockFingerprint] > 1
-				// D-C: stop the automatic re-patch loop once it has been blocked
-				// enough times for the same target without converging, even when
-				// each round reports a different finding. This is the non-
-				// convergence guard that the per-fingerprint repeat check misses.
-				nonConvergingPreWriteBlock := preWriteReviewRepairBlocks >= maxPreWriteReviewDistinctBlockRounds
+				// D-C (progress-aware): stop the automatic re-patch loop once it
+				// stalls -- but only count rounds that make NO progress, where
+				// progress means the total blocker count strictly dropped (e.g.
+				// 4 -> 3 -> 2). Count-decreasing rounds are multi-stage
+				// convergence and must not be killed early; same-count or growing
+				// rounds accrue toward the cap.
+				currentBlockerIDs := map[string]bool{}
+				if a.Session != nil && a.Session.LastReviewRun != nil {
+					for _, id := range runtimeGateUnwaivedBlockers(*a.Session.LastReviewRun, time.Now()) {
+						if normalized := strings.ToLower(strings.TrimSpace(id)); normalized != "" {
+							currentBlockerIDs[normalized] = true
+						}
+					}
+				}
+				if preWriteReviewRepairProgressed(preWriteReviewPrevBlockerIDs, currentBlockerIDs) {
+					preWriteReviewNoProgressBlocks = 0
+				} else {
+					preWriteReviewNoProgressBlocks++
+				}
+				preWriteReviewPrevBlockerIDs = currentBlockerIDs
+				nonConvergingPreWriteBlock := preWriteReviewNoProgressBlocks >= maxPreWriteReviewNoProgressRounds
 				if repeatedPreWriteBlock || nonConvergingPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
 					toolMsg.IsError = true
 					toolMsg.Text = toolExecutionModelTextWithError(result, err)
@@ -2540,12 +2566,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: repeated pre-write review failures stopped this tool-call batch before this tool could run.")
 					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock && a.EmitProgress != nil {
 						a.EmitProgress(localizedText(a.Config,
-							fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit without converging (each round a different finding). Stopping the automatic re-patch loop and asking the user to decide.", preWriteReviewRepairBlocks),
-							fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤지만 매번 다른 finding으로 수렴하지 못했습니다. 자동 재패치 루프를 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks)))
+							fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic re-patch loop did not converge. Stopping and asking the user to decide.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
+							fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 재패치 루프가 수렴하지 못했습니다. 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)))
 					}
 					reply := ""
 					if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
-						reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks)
+						reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
 					} else {
 						reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
 					}
@@ -2790,6 +2816,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					lastReviewedFinalAnswer = ""
 					preWriteReviewRepairBlocks = 0
 					preWriteReviewRepairBlockFingerprints = map[string]int{}
+					preWriteReviewNoProgressBlocks = 0
+					preWriteReviewPrevBlockerIDs = map[string]bool{}
 					preWriteReviewRepairInspectTools = 0
 					preWriteReviewRepairInspectNudges = 0
 					preFixReviewRepairInspectTools = 0
@@ -5588,17 +5616,32 @@ func formatPreWriteReviewRepairLoopLimitReply(cfg Config, session *Session) stri
 }
 
 // formatPreWriteReviewRepairNonConvergenceReply is used when the automatic
-// pre-write re-patch loop is stopped because it kept getting blocked with a
-// DIFFERENT finding each round and never converged. It hands the user a clear
-// y/n decision (via the shared user-decision reply) instead of silently
-// continuing to churn.
-func formatPreWriteReviewRepairNonConvergenceReply(cfg Config, session *Session, rounds int) string {
+// pre-write re-patch loop is stopped because the remaining blocker count failed
+// to shrink across enough consecutive rounds (it stayed level or grew), so the
+// loop did not converge. It hands the user a clear y/n decision (via the shared
+// user-decision reply) instead of silently continuing to churn. rounds is the
+// total blocked rounds this turn; stalledRounds is the consecutive no-progress
+// streak that actually tripped the cap.
+func formatPreWriteReviewRepairNonConvergenceReply(cfg Config, session *Session, rounds, stalledRounds int) string {
 	return formatPreWriteReviewRepairUserDecisionReply(
 		cfg,
 		session,
-		fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit, each round surfacing a different finding, so the automatic repair loop did not converge. I stopped re-patching instead of looping further. No files were changed.", rounds),
-		fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드 동안 매번 다른 finding으로 차단되어 자동 수리 루프가 수렴하지 못했습니다. 계속 재패치하지 않고 중단했습니다. 변경된 파일은 없습니다.", rounds),
+		fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic repair loop did not converge. I stopped re-patching instead of looping further. No files were changed.", rounds, stalledRounds),
+		fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 수리 루프가 수렴하지 못했습니다. 계속 재패치하지 않고 중단했습니다. 변경된 파일은 없습니다.", rounds, stalledRounds),
 	)
+}
+
+// preWriteReviewRepairProgressed reports whether a repair round made real
+// progress: the total blocker count strictly decreased (multi-stage
+// convergence, e.g. blockers 4 -> 2 -> 1). A round that merely swaps one finding
+// for another while keeping the same count is whack-a-mole churn, not progress,
+// and must still count toward the non-convergence cut; likewise a growing count.
+// An empty previous set (the first block of the turn) is not progress.
+func preWriteReviewRepairProgressed(prev, current map[string]bool) bool {
+	if len(prev) == 0 {
+		return false
+	}
+	return len(current) < len(prev)
 }
 
 func preWriteReviewRepairBlockFingerprint(session *Session, err error) string {

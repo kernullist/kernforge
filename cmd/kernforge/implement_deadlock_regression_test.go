@@ -314,8 +314,8 @@ func TestImplementDeadlockD_C_NonConvergingPreWriteLoopStopsButShortRoundsProcee
 		if !strings.Contains(reply, "Should I keep repairing") {
 			t.Fatalf("expected y/n decision handoff, got %q", reply)
 		}
-		if patchTool.calls != maxPreWriteReviewDistinctBlockRounds {
-			t.Fatalf("loop must stop after %d distinct blocked rounds, got %d patch attempts", maxPreWriteReviewDistinctBlockRounds, patchTool.calls)
+		if patchTool.calls != maxPreWriteReviewNoProgressRounds {
+			t.Fatalf("loop must stop after %d no-progress blocked rounds, got %d patch attempts", maxPreWriteReviewNoProgressRounds, patchTool.calls)
 		}
 		if session.PendingReviewRepairConfirm == nil {
 			t.Fatalf("expected a pending y/n repair confirmation to be recorded")
@@ -396,6 +396,200 @@ func TestImplementDeadlockD_C_NonConvergingPreWriteLoopStopsButShortRoundsProcee
 			t.Fatalf("a successful repair must not leave a pending y/n confirmation")
 		}
 	})
+}
+
+// TestImplementDeadlockProgressiveConvergenceProceedsBeyondThreeRounds locks in
+// the progress-aware cutoff: when each blocked round resolves blockers and the
+// total count strictly decreases (4 -> 3 -> 2 -> done), the loop is multi-stage
+// convergence and must NOT be killed at the 3-distinct-round cap even though a
+// different finding surfaces each round. The earlier 2h27m deadlock fix made the
+// cap fire on any 3 distinct findings, which also killed genuine convergence;
+// this guards the corrected behavior.
+func TestImplementDeadlockProgressiveConvergenceProceedsBeyondThreeRounds(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+		t.Fatalf("write app.py: %v", err)
+	}
+	session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+
+	setBlockers := func(ids ...string) func() {
+		return func() {
+			findings := make([]ReviewFinding, 0, len(ids))
+			for _, id := range ids {
+				findings = append(findings, ReviewFinding{
+					ID:          id,
+					Severity:    reviewSeverityMedium,
+					Category:    "correctness",
+					Path:        "app.py",
+					Title:       id + " needs work",
+					RequiredFix: "resolve " + id,
+					Quality:     reviewFindingQualityComplete,
+				})
+			}
+			session.LastReviewRun = &ReviewRun{
+				Trigger:  "pre_write",
+				Gate:     GateDecision{Verdict: reviewVerdictNeedsRevision, BlockingFindings: append([]string{}, ids...)},
+				Result:   ReviewResult{Summary: "blockers remain"},
+				Findings: findings,
+			}
+		}
+	}
+	blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+	// Blocker count strictly decreases each round, then the 4th patch succeeds.
+	patchTool := &sequenceTool{
+		name: "apply_patch",
+		before: []func(){
+			setBlockers("RF-001", "RF-002", "RF-003", "RF-004"),
+			setBlockers("RF-001", "RF-002", "RF-003"),
+			setBlockers("RF-001", "RF-002"),
+			func() { session.LastReviewRun = nil },
+		},
+		outputs: []string{"", "", "", "Applied patch to app.py."},
+		errs:    []error{blockedErr, blockedErr, blockedErr, nil},
+	}
+	patchReply := func(i int) ChatResponse {
+		return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: app.py\n@@\n DATA_FILE = 'data.json'\n+# attempt %d\n*** End Patch\n", i)})
+	}
+	readReply := toolCallResponse("read_file", map[string]any{"path": "app.py"})
+	finalReply := testModificationFinalAnswer("app.py", "targeted verification passed.", "no known remaining blocker.")
+	replies := []ChatResponse{
+		patchReply(0), readReply,
+		patchReply(1), readReply,
+		patchReply(2), readReply,
+		patchReply(3),
+		{Message: Message{Role: "assistant", Text: finalReply}},
+	}
+	provider := &scriptedProviderClient{replies: replies}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if strings.Contains(reply, "did not converge") || strings.Contains(reply, "Should I keep repairing") {
+		t.Fatalf("decreasing-blocker convergence must not trip the non-convergence cap, got %q", reply)
+	}
+	if patchTool.calls != 4 {
+		t.Fatalf("expected 3 progressing blocked rounds then a successful patch (4 calls), got %d", patchTool.calls)
+	}
+	if session.PendingReviewRepairConfirm != nil {
+		t.Fatalf("a converged repair must not leave a pending y/n confirmation")
+	}
+}
+
+// TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap locks in the
+// absolute backstop for the progress-aware loop. When the blocker count merely
+// OSCILLATES (3 -> 2 -> 3 -> 2 ...) with a disjoint finding set each round, no
+// round repeats (so the per-fingerprint detector never fires) and every
+// count-drop round resets the no-progress counter (so the no-progress cap never
+// fires either). Only the absolute per-turn cap can stop it. The loop must halt
+// at exactly maxPreWriteReviewRepairBlocksPerTurn+1 blocked rounds and hand the
+// user the loop-limit y/n decision -- never looping unbounded. This is the
+// scenario the raised cap (4 -> 6) and the count-only progress metric were
+// deliberately designed to bound; without the absolute cap this would churn
+// forever.
+func TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
+		t.Fatalf("write app.py: %v", err)
+	}
+	session := NewSession(root, "scripted", "gpt-5.5", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+
+	// Each finding carries a distinct Symbol (= its id) so its repair fingerprint
+	// is unique per round; otherwise same-count rounds would collide on the
+	// fingerprint and trip the repeat detector before the absolute cap, which
+	// would test a different guard than intended.
+	setBlockers := func(ids ...string) func() {
+		return func() {
+			findings := make([]ReviewFinding, 0, len(ids))
+			for _, id := range ids {
+				findings = append(findings, ReviewFinding{
+					ID:          id,
+					Severity:    reviewSeverityMedium,
+					Category:    "correctness",
+					Path:        "app.py",
+					Symbol:      id,
+					Title:       id + " needs work",
+					RequiredFix: "resolve " + id,
+					Quality:     reviewFindingQualityComplete,
+				})
+			}
+			session.LastReviewRun = &ReviewRun{
+				Trigger:  "pre_write",
+				Gate:     GateDecision{Verdict: reviewVerdictNeedsRevision, BlockingFindings: append([]string{}, ids...)},
+				Result:   ReviewResult{Summary: "blockers oscillate"},
+				Findings: findings,
+			}
+		}
+	}
+	blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
+	// Counts oscillate 3 -> 2 -> 3 -> 2 -> 3 -> 2 -> 3 with disjoint ids every
+	// round. The trailing entries are buffer; the absolute cap stops the loop at
+	// round 7 before they run. All rounds stay blocked.
+	patchTool := &sequenceTool{
+		name: "apply_patch",
+		before: []func(){
+			setBlockers("AA-1", "AA-2", "AA-3"),
+			setBlockers("BB-1", "BB-2"),
+			setBlockers("CC-1", "CC-2", "CC-3"),
+			setBlockers("DD-1", "DD-2"),
+			setBlockers("EE-1", "EE-2", "EE-3"),
+			setBlockers("FF-1", "FF-2"),
+			setBlockers("GG-1", "GG-2", "GG-3"),
+			setBlockers("HH-1", "HH-2"),
+		},
+		errs: []error{blockedErr, blockedErr, blockedErr, blockedErr, blockedErr, blockedErr, blockedErr, blockedErr},
+	}
+	patchReply := func(i int) ChatResponse {
+		return toolCallResponse("apply_patch", map[string]any{"patch": fmt.Sprintf("*** Begin Patch\n*** Update File: app.py\n@@\n DATA_FILE = 'data.json'\n+# attempt %d\n*** End Patch\n", i)})
+	}
+	readReply := toolCallResponse("read_file", map[string]any{"path": "app.py"})
+	replies := []ChatResponse{}
+	for i := 0; i < 9; i++ {
+		replies = append(replies, patchReply(i), readReply)
+	}
+	provider := &scriptedProviderClient{replies: replies}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(patchTool, NewReadFileTool(ws)),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	reply, err := agent.Reply(context.Background(), "implement the proposal and apply the change to app.py")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if patchTool.calls != maxPreWriteReviewRepairBlocksPerTurn+1 {
+		t.Fatalf("oscillating count must stop at the absolute cap (%d blocked rounds), got %d patch attempts", maxPreWriteReviewRepairBlocksPerTurn+1, patchTool.calls)
+	}
+	// The absolute cap fired, not the no-progress cap: the user gets the
+	// loop-limit decision, never the non-convergence one.
+	if strings.Contains(reply, "did not converge") {
+		t.Fatalf("absolute-cap stop must use the loop-limit reply, not the non-convergence reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "did not pass") {
+		t.Fatalf("expected the loop-limit reply, got %q", reply)
+	}
+	if !strings.Contains(reply, "Should I keep repairing") {
+		t.Fatalf("expected a y/n decision handoff, got %q", reply)
+	}
+	if session.PendingReviewRepairConfirm == nil {
+		t.Fatalf("the absolute-cap stop must record a pending y/n confirmation")
+	}
 }
 
 // TestImplementDeadlockD_D_PasswordRedactionScoping locks in the redaction
