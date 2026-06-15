@@ -935,31 +935,53 @@ func finalAnswerOnlyHarnessToolBlockedGuidance(report *CodingHarnessReport) stri
 	return finalAnswerOnlyHarnessRevisionGuidance(report, "")
 }
 
-func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport) string {
-	if report == nil {
-		return "Pre-final coding harness is still blocking completion. I stopped instead of routing the task into another tool or review loop without a clear repair path."
-	}
-	copyReport := *report
-	copyReport.Normalize()
+// preFinalCodingHarnessBlockedReply renders the user-facing blocked reply. The
+// coding-harness report findings drive the list, and extraBlockers carries any
+// non-harness runtime-gate-ledger blockers (stale review, patch-transaction
+// scope, stale context) so the enumerated list matches the status-line blocker
+// count instead of under-reporting the harness findings alone.
+func preFinalCodingHarnessBlockedReply(report *CodingHarnessReport, extraBlockers ...string) string {
 	lines := []string{
 		"Pre-final coding harness is still blocking completion.",
 		"I stopped instead of routing the task into another tool or review loop without a clear repair path.",
 	}
 	blockers := make([]string, 0)
-	for _, finding := range copyReport.allFindings() {
-		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
-			continue
+	seen := map[string]bool{}
+	addBlocker := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" || len(blockers) >= finalHarnessMaxFindings {
+			return
 		}
-		title := firstNonBlankString(finding.Title, "coding harness blocker")
-		detail := strings.TrimSpace(finding.Detail)
-		if detail != "" {
-			blockers = append(blockers, "- "+title+": "+detail)
-		} else {
-			blockers = append(blockers, "- "+title)
+		key := strings.ToLower(text)
+		if seen[key] {
+			return
 		}
-		if len(blockers) >= finalHarnessMaxFindings {
-			break
+		seen[key] = true
+		blockers = append(blockers, "- "+text)
+	}
+	if report != nil {
+		copyReport := *report
+		copyReport.Normalize()
+		for _, finding := range copyReport.allFindings() {
+			if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+				continue
+			}
+			title := firstNonBlankString(finding.Title, "coding harness blocker")
+			if detail := strings.TrimSpace(finding.Detail); detail != "" {
+				addBlocker(title + ": " + detail)
+			} else {
+				addBlocker(title)
+			}
+			if len(blockers) >= finalHarnessMaxFindings {
+				break
+			}
 		}
+	}
+	for _, extra := range extraBlockers {
+		addBlocker(extra)
+	}
+	if report == nil && len(blockers) == 0 {
+		return "Pre-final coding harness is still blocking completion. I stopped instead of routing the task into another tool or review loop without a clear repair path."
 	}
 	if len(blockers) > 0 {
 		lines = append(lines, "", "Remaining blockers:")

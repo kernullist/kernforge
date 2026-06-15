@@ -875,6 +875,25 @@ func TestRuntimeGateFinalAnswerRequiresExplicitBlockerDisclosure(t *testing.T) {
 	}
 }
 
+func TestNonHarnessLedgerBlockersFiltersHarnessEntries(t *testing.T) {
+	ledger := RuntimeGateLedger{
+		Blockers: []string{
+			"coding harness blocker: Verification was not run disclosure missing",
+			"latest review has unwaived blockers: RF-1",
+			"patch transaction has unknown changed-file scope: main.go",
+		},
+	}
+	got := nonHarnessLedgerBlockers(ledger)
+	if len(got) != 2 {
+		t.Fatalf("expected the two non-harness blockers, got %#v", got)
+	}
+	for _, blocker := range got {
+		if strings.HasPrefix(blocker, "coding harness blocker:") {
+			t.Fatalf("harness blocker leaked into the non-harness set: %q", blocker)
+		}
+	}
+}
+
 func TestRuntimeGateLedgerLinksReviewPatchVerificationAndWaiver(t *testing.T) {
 	root := t.TempDir()
 	useRuntimeGateGitFixture(t, "main", []string{"README.md"})

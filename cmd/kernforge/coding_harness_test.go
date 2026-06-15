@@ -1369,6 +1369,116 @@ func TestPreFinalHarnessSelfHealsSkippedVerificationDisclosure(t *testing.T) {
 	if len(provider.requests) != 4 {
 		t.Fatalf("expected exactly 4 model requests (1 tool + 3 finals, then deterministic heal), got %d", len(provider.requests))
 	}
+	// A self-healed completed turn must not leave the runtime gate ledger reading
+	// "blocked": the status line is driven by the ledger, so a completed turn with
+	// a blocked ledger would show "gate: blocked" against a finished answer.
+	if session.RuntimeGateLedger != nil {
+		led := *session.RuntimeGateLedger
+		led.Normalize()
+		if strings.EqualFold(led.Status, runtimeGateStatusBlocked) {
+			t.Fatalf("self-healed completed turn left the runtime gate ledger blocked, blockers=%#v", led.Blockers)
+		}
+	}
+}
+
+func TestPreFinalHarnessDoesNotSelfHealWhenNonHarnessLedgerBlockerRemains(t *testing.T) {
+	root := t.TempDir()
+	divergent := testModificationFinalAnswer("main.go",
+		"the local test runner is currently blocked, so no result is available",
+		"behavior has no successful test evidence")
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("write_file", map[string]any{"path": "main.go", "content": "package main\n"}),
+			{Message: Message{Role: "assistant", Text: divergent}},
+			{Message: Message{Role: "assistant", Text: divergent}},
+			{Message: Message{Role: "assistant", Text: divergent}},
+		},
+	}
+	session := NewSession(root, "scripted", "model", "", "default")
+	// Inject a genuine, non-harness code blocker into the runtime gate ledger via a
+	// needs_revision review that is NOT a reviewer-route failure. The harness report
+	// is still disclosure-only, so the self-heal would fire on the harness report
+	// alone -- but the ledger stays blocked, so the turn must NOT complete.
+	session.LastReviewRun = &ReviewRun{
+		ID:      "review-cooccur-1",
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-REVIEW-1"},
+		},
+		Result: ReviewResult{Summary: "A real code blocker remains."},
+		Findings: []ReviewFinding{{
+			ID:          "RF-REVIEW-1",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Path:        "main.go",
+			Title:       "Unhandled error path",
+			RequiredFix: "Handle the error path.",
+			Quality:     reviewFindingQualityComplete,
+		}},
+	}
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	history := &VerificationHistoryStore{Path: filepath.Join(root, "verification-history.json")}
+	ws := Workspace{BaseRoot: root, Root: root}
+	agent := &Agent{
+		Config:        Config{},
+		Client:        provider,
+		Tools:         NewToolRegistry(NewWriteFileTool(ws)),
+		Workspace:     ws,
+		Session:       session,
+		Store:         store,
+		VerifyHistory: history,
+		PromptConfirmAutoVerify: func(plan VerificationPlan) (bool, error) {
+			_ = plan
+			return false, nil
+		},
+		VerifyChanges: func(ctx context.Context) (VerificationReport, bool) {
+			_ = ctx
+			return VerificationReport{}, false
+		},
+	}
+
+	reply, err := agent.Reply(context.Background(), "fix the file")
+	if err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if !strings.Contains(reply, "Pre-final coding harness is still blocking completion") {
+		t.Fatalf("a co-occurring non-harness ledger blocker must prevent self-heal completion, got %q", reply)
+	}
+	if !strings.Contains(reply, "Verification was not run disclosure missing") {
+		t.Fatalf("blocked reply should still list the harness disclosure blocker, got %q", reply)
+	}
+	if !strings.Contains(reply, "latest review") {
+		t.Fatalf("blocked reply should also surface the non-harness ledger blocker, got %q", reply)
+	}
+	if session.RuntimeGateLedger == nil {
+		t.Fatalf("expected a runtime gate ledger to be recorded")
+	}
+	led := *session.RuntimeGateLedger
+	led.Normalize()
+	if !strings.EqualFold(led.Status, runtimeGateStatusBlocked) {
+		t.Fatalf("ledger should remain blocked with the non-harness blocker, got status=%q blockers=%#v", led.Status, led.Blockers)
+	}
+}
+
+func TestPreFinalCodingHarnessBlockedReplyIncludesLedgerBlockers(t *testing.T) {
+	report := &CodingHarnessReport{
+		Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Verification was not run disclosure missing",
+			Detail:   "The latest verification was skipped.",
+		}}},
+	}
+	withExtras := preFinalCodingHarnessBlockedReply(report, "latest review has unwaived blockers: RF-1")
+	if !strings.Contains(withExtras, "Verification was not run disclosure missing") {
+		t.Fatalf("expected the harness finding in the reply, got %q", withExtras)
+	}
+	if !strings.Contains(withExtras, "latest review has unwaived blockers: RF-1") {
+		t.Fatalf("expected the extra ledger blocker in the reply, got %q", withExtras)
+	}
+	if reportOnly := preFinalCodingHarnessBlockedReply(report); strings.Contains(reportOnly, "latest review") {
+		t.Fatalf("report-only reply must not invent ledger blockers, got %q", reportOnly)
+	}
 }
 
 func TestReviewObservabilityPreservesRejectedFinalAnswerCorrection(t *testing.T) {

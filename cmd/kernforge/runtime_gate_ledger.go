@@ -20,21 +20,21 @@ const (
 )
 
 type RuntimeGateLedger struct {
-	ID                      string                           `json:"id,omitempty"`
-	GeneratedAt             time.Time                        `json:"generated_at,omitempty"`
-	Action                  string                           `json:"action,omitempty"`
-	Status                  string                           `json:"status,omitempty"`
-	Ready                   bool                             `json:"ready"`
-	RequestClass            string                           `json:"request_class,omitempty"`
-	Lifecycle               *ReviewRequestLifecycle          `json:"lifecycle,omitempty"`
-	Branch                  string                           `json:"branch,omitempty"`
-	ReviewRunID             string                           `json:"review_run_id,omitempty"`
+	ID           string                  `json:"id,omitempty"`
+	GeneratedAt  time.Time               `json:"generated_at,omitempty"`
+	Action       string                  `json:"action,omitempty"`
+	Status       string                  `json:"status,omitempty"`
+	Ready        bool                    `json:"ready"`
+	RequestClass string                  `json:"request_class,omitempty"`
+	Lifecycle    *ReviewRequestLifecycle `json:"lifecycle,omitempty"`
+	Branch       string                  `json:"branch,omitempty"`
+	ReviewRunID  string                  `json:"review_run_id,omitempty"`
 	// Review provenance: enough to answer "which prompt/command produced this
 	// gate state" from /status without opening the review artifact.
-	ReviewTrigger           string                           `json:"review_trigger,omitempty"`
-	ReviewAutoTriggered     bool                             `json:"review_auto_triggered,omitempty"`
-	ReviewCreatedAt         time.Time                        `json:"review_created_at,omitempty"`
-	ReviewOriginalRequest   string                           `json:"review_original_request,omitempty"`
+	ReviewTrigger         string    `json:"review_trigger,omitempty"`
+	ReviewAutoTriggered   bool      `json:"review_auto_triggered,omitempty"`
+	ReviewCreatedAt       time.Time `json:"review_created_at,omitempty"`
+	ReviewOriginalRequest string    `json:"review_original_request,omitempty"`
 	// ReviewRouteIncomplete marks the degrade where the latest review never
 	// completed because its required model route failed (and nothing was in gate
 	// scope), so the gate dropped to needs_review instead of a permanent block.
@@ -1197,6 +1197,25 @@ func runtimeGateWaiverActive(waiver ReviewWaiver, now time.Time) bool {
 func runtimeGateBlocksAction(ledger RuntimeGateLedger) bool {
 	ledger.Normalize()
 	return strings.EqualFold(ledger.Status, runtimeGateStatusBlocked)
+}
+
+// nonHarnessLedgerBlockers returns the ledger blockers that do NOT originate from
+// the coding-harness report (stale review, patch-transaction scope, stale
+// context, verification failure, ...). The harness findings are already rendered
+// from the report itself, so surfacing only the non-harness ledger blockers in
+// the blocked reply makes the enumerated list match the status-line blocker count
+// without double-listing the harness ones.
+func nonHarnessLedgerBlockers(ledger RuntimeGateLedger) []string {
+	ledger.Normalize()
+	out := make([]string, 0, len(ledger.Blockers))
+	for _, blocker := range ledger.Blockers {
+		trimmed := strings.TrimSpace(blocker)
+		if trimmed == "" || strings.HasPrefix(trimmed, "coding harness blocker:") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func runtimeGateBlocksFinalAnswer(ledger RuntimeGateLedger, reply string) bool {

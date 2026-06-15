@@ -1816,32 +1816,48 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					// mirrors the generated-document synthesized-final shortcut and can
 					// only upgrade a pure-disclosure block into a completed turn.
 					if healed, recheck, ok := a.healSkippedVerificationDisclosure(reply, latestUser, attemptedEditTool, unresolvedVerification); ok {
-						reply = healed
+						// Tentatively adopt the re-checked (approved) harness report and
+						// refresh the ledger so non-harness gate blockers (stale review,
+						// patch-transaction scope, stale context) are still honored. Only
+						// finalize as completed when the refreshed ledger is not blocked;
+						// otherwise restore the original report and fall through to the
+						// normal blocked handling so the turn never completes while the
+						// status line still reads blocked.
+						prevReport := a.Session.LastCodingHarnessReport
+						prevTestImpact := a.Session.LastTestImpactReport
+						prevJobSupervisor := a.Session.LastJobSupervisorReport
 						a.Session.LastCodingHarnessReport = recheck
 						a.Session.LastTestImpactReport = &recheck.TestImpact
 						a.Session.LastJobSupervisorReport = &recheck.JobSupervisor
-						if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
-							a.Session.Messages[continuedReplyMessageIndex].Text = reply
-						} else if len(a.Session.Messages) > 0 {
-							a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+						if !runtimeGateBlocksAction(a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)) {
+							reply = healed
+							if continuedReplyMessageIndex >= 0 && continuedReplyMessageIndex < len(a.Session.Messages) {
+								a.Session.Messages[continuedReplyMessageIndex].Text = reply
+							} else if len(a.Session.Messages) > 0 {
+								a.Session.Messages[len(a.Session.Messages)-1].Text = reply
+							}
+							a.acceptRecentFinalAnswerCandidate(reply)
+							a.markFinalAnswerCorrectionAccepted()
+							a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
+							a.finalizePatchTransactionOnReturn()
+							a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
+							a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
+							if err := a.Store.Save(a.Session); err != nil {
+								return "", err
+							}
+							markRuntimeCompleted("pre_final_harness_disclosure_self_healed")
+							return reply, nil
 						}
-						a.acceptRecentFinalAnswerCandidate(reply)
-						a.markFinalAnswerCorrectionAccepted()
-						a.finalizeTaskStateOnAcceptedFinalAnswer(reply, unresolvedVerification)
-						a.finalizePatchTransactionOnReturn()
-						a.finalizeEditLoopOnReturn(reply, unresolvedVerification)
-						a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer)
-						if err := a.Store.Save(a.Session); err != nil {
-							return "", err
-						}
-						markRuntimeCompleted("pre_final_harness_disclosure_self_healed")
-						return reply, nil
+						a.Session.LastCodingHarnessReport = prevReport
+						a.Session.LastTestImpactReport = prevTestImpact
+						a.Session.LastJobSupervisorReport = prevJobSupervisor
 					}
 					a.discardRecentFinalAnswerCandidate(reply)
+					extraBlockers := nonHarnessLedgerBlockers(a.refreshRuntimeGateLedger(runtimeGateActionFinalAnswer))
 					if a.changesAreGeneratedDocumentArtifactsForTurn(latestUser) {
 						reply = generatedDocumentArtifactHarnessBlockedReply(a.Session.LastCodingHarnessReport)
 					} else {
-						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport)
+						reply = preFinalCodingHarnessBlockedReply(a.Session.LastCodingHarnessReport, extraBlockers...)
 					}
 					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
 					a.markFinalAnswerCorrectionRejected("correction_attempts_exhausted")
