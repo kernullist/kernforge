@@ -316,6 +316,9 @@ func buildAcceptanceContract(userText string, intent TurnIntent, readOnlyAnalysi
 			"After edits, perform a second-pass regression review of touched code, call sites, contracts, error paths, and stale docs.",
 			"Run the most relevant available validation or report why validation could not run.",
 		)
+		contract.NonGoals = append(contract.NonGoals,
+			"Stay within the scope of the latest request: implement what it asks for plus the supporting edits that change directly requires, but do not add unrelated features, refactors, rewrites, or new subsystems the user did not request. If a broader change seems necessary, propose it as a suggestion instead of making it in this turn.",
+		)
 	}
 	switch contract.RequestClass {
 	case reviewRequestClassReviewThenModify:

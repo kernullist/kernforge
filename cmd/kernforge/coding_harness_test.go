@@ -745,6 +745,28 @@ func TestAcceptanceContractExtractsArtifactsAndVerificationIntent(t *testing.T) 
 	}
 }
 
+func TestAcceptanceContractEditAddsScopeFidelityNonGoal(t *testing.T) {
+	hasNonGoal := func(c AcceptanceContract, needle string) bool {
+		for _, g := range c.NonGoals {
+			if strings.Contains(g, needle) {
+				return true
+			}
+		}
+		return false
+	}
+	// An edit request is bounded to its own scope: deliver it plus the supporting
+	// edits it requires, but not unrelated features the user did not ask for.
+	edit := buildAcceptanceContract("토큰을 .env에 넣고 사용하게 해줘", TurnIntentEditCode, false, true, false)
+	if !hasNonGoal(edit, "do not add unrelated features") {
+		t.Fatalf("edit contract must carry a scope-fidelity non-goal, got %#v", edit.NonGoals)
+	}
+	// A read-only request stays answer-only and must not pick up the edit scope non-goal.
+	ro := buildAcceptanceContract("이거 어떻게 동작해?", TurnIntentReviewCode, true, false, false)
+	if hasNonGoal(ro, "do not add unrelated features") {
+		t.Fatalf("read-only contract must not carry the edit scope-fidelity non-goal, got %#v", ro.NonGoals)
+	}
+}
+
 func TestAcceptanceContractExtractsKoreanDocumentArtifactRequest(t *testing.T) {
 	contract := buildAcceptanceContract(
 		"각 소스코드 파일들을 검토해서 버그를 찾아서 SampleGame/BugReport.md 별도 문서로 생성해",
