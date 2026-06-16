@@ -117,7 +117,7 @@ func (ui UI) banner(provider, model, sessionID, cwd string) string {
 	hero := ui.bannerHero(
 		ui.bannerLogo(),
 		[]string{
-			ui.bold(ui.accent("Kernforge")) + "  " + ui.accent("version") + "=" + ui.info(currentVersion()),
+			ui.bold(ui.accent("Kernforge")) + "  " + ui.accent("version") + "=" + ui.info(currentVersion()) + "  " + ui.accent("build") + "=" + ui.dim(currentBuildStamp()),
 			ui.dim("forge-ready terminal coding agent"),
 			ui.bold(ui.cloud("Welcome back.")),
 			ui.info("Describe the task and Kernforge will inspect, edit, and verify with you."),

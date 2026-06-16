@@ -7543,7 +7543,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warning))
 		}
 	case "version":
-		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()))
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()+"  build: "+currentBuildStamp()))
 	case "model":
 		if err := rt.handleModelCommand(cmd.Args); err != nil {
 			return false, err

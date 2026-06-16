@@ -70,6 +70,26 @@ func currentBuildIdentity() KernforgeBuildIdentity {
 	return identity
 }
 
+// currentBuildStamp returns a short, banner-friendly build identifier (the VCS
+// commit, suffixed +modified when the working tree was dirty at build time, or
+// "unstamped" when no VCS info is embedded). Surfacing it makes a stale
+// transferred binary obvious at a glance instead of being mistaken for the
+// latest source.
+func currentBuildStamp() string {
+	identity := currentBuildIdentity()
+	commit := strings.TrimSpace(identity.Commit)
+	if commit == "" {
+		return "unstamped"
+	}
+	if len(commit) > 12 {
+		commit = commit[:12]
+	}
+	if identity.StampSource == "go_build_info_modified" {
+		commit += "+modified"
+	}
+	return commit
+}
+
 func kernforgeBuildIdentitySummary(identity KernforgeBuildIdentity) string {
 	parts := []string{}
 	if version := strings.TrimSpace(identity.Version); version != "" {

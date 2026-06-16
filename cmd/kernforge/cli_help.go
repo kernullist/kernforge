@@ -198,6 +198,7 @@ func kernforgeGeneralHelpText() string {
 	return strings.TrimSpace(`
 Kernforge
 Version: `+currentVersion()+`
+Build: `+currentBuildStamp()+`
 
 Usage:
   kernforge [options]
