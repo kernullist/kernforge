@@ -108,21 +108,27 @@ DEFERRED (minor): the read-only hard block reuses the "read-only analysis" wordi
 in plan mode it could read "plan mode". Low priority -- allowWithoutPrompt already
 says "disabled in plan mode", and the hard block only fires for plan/nil/legacy now.
 
-### Slice 4 - tests + safety regression suite
-- Update tests asserting `permission_mode == "default"` (`hooks_test.go` ~336/375/
-  420/707) to `"plan"` or to the new default expectation.
-- Update `config_test.go` mode<->profile maps and valid-modes.
-- The read-only-by-default safety (request_handling_safety_regression_test.go,
-  request_semantic_classifier_test.go, request_envelope_test.go,
-  request_envelope_boundary_audit_test.go, analysis_qa_context_test.go,
-  interactive_orchestration_test.go, tools_edit_guard_test.go): the invariant
-  becomes "default MODE is plan (read-only)", not a per-request hard block. Tests
-  that assert a request-classified read-only HARD block on a tool call must be
-  updated to assert plan-mode denial instead; tests that assert the classifier's
-  soft signal can stay.
-- Add: plan denies write/shell/git; edit allows in-ws write, prompts out-of-ws/
-  shell/git; full allows all without prompts; every legacy alias parses to the
-  right canonical mode; empty -> plan.
+### Slice 4 - tests + safety regression suite  [DONE 2026-06-16]
+Outcome: no existing safety/permission test needed updating across Slices 1-4 (the
+full suite stayed green). The read-only-by-default invariant is now anchored to the
+default MODE being plan, and the classifier tests (request_handling_safety_regression
+_test.go, request_semantic_classifier_test.go, request_envelope*_test.go,
+analysis_qa_context_test.go, interactive_orchestration_test.go, tools_edit_guard_test.go)
+remain valid as locks on the classifier's read-only DETECTION, which is now a soft
+signal (the edit/full force only overrides it; nil/plan/legacy keep request-based behavior).
+- Added `permission_default_readonly_safety_test.go`:
+  `TestReadOnlyByDefaultSafetyIsModeAnchored` (default config -> plan; plan denies
+  write/shell/shell_write/git but allows read; edit/full allow writes) and
+  `TestNormalizeConfigAcceptsCanonicalModes` (plan/edit/full pass config validation
+  and still display as plan/edit/full).
+- Earlier slices added `permission_mode_canonical_test.go` (parse/aliases/default/
+  3-mode enforcement) and `permission_mode_edit_authority_test.go` (the single-authority gate).
+NOTE: `normalizeConfigPermissionMode` rewrites cfg.PermissionMode to the internal
+Mode string, so "edit"/"full" persist as "acceptEdits"/"bypassPermissions" (still
+parse + display as edit/full). Canonicalizing the persisted string to plan/edit/full
+is a deferred polish (would touch config_test.go's profile-alias round-trip expectation).
+
+## Status: redesign complete (Slices 1-4 done).
 
 ## Risks / invariants to preserve
 
