@@ -658,7 +658,7 @@ func TestLoadConfigIgnoresWorkspaceHostLocalOverrides(t *testing.T) {
 	if loaded.ClaudeCLIPath != `C:\User\claude.exe` || len(loaded.ClaudeCLIArgs) != 1 || loaded.ClaudeCLIArgs[0] != "--user" {
 		t.Fatalf("expected user Claude CLI settings, got %q %#v", loaded.ClaudeCLIPath, loaded.ClaudeCLIArgs)
 	}
-	if loaded.PermissionMode != "edit" || loaded.Shell != "powershell" || loaded.SessionDir != filepath.Join(home, "sessions") {
+	if loaded.PermissionMode != "plan" || loaded.Shell != "powershell" || loaded.SessionDir != filepath.Join(home, "sessions") {
 		t.Fatalf("expected user host execution settings, got permission=%q shell=%q session=%q", loaded.PermissionMode, loaded.Shell, loaded.SessionDir)
 	}
 	if len(loaded.MCPServers) != 1 || loaded.MCPServers[0].Name != "global-web" {

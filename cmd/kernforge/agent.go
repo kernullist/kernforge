@@ -198,8 +198,12 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	if a.editPermissionGranted() {
 		// edit/full mode is the single authority for whether edits are allowed; do
 		// not let the per-request read-only-analysis classification block edits or
-		// tell the model it is read-only.
+		// tell the model it is read-only. Keep the envelope internally consistent so
+		// the final verification gate is not weakened: an edit-capable turn allows
+		// file mutation and therefore requires verification.
 		requestEnvelope.ReadOnlyAnalysis = false
+		requestEnvelope.AllowsFileMutation = true
+		requestEnvelope.RequiresVerification = true
 	}
 	a.rememberRequestEnvelope(requestEnvelope)
 	requestMode := requestEnvelope.agentRequestMode()
@@ -641,6 +645,8 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	requestEnvelope := a.latestRequestEnvelopeFor(latestUser)
 	if a.editPermissionGranted() {
 		requestEnvelope.ReadOnlyAnalysis = false
+		requestEnvelope.AllowsFileMutation = true
+		requestEnvelope.RequiresVerification = true
 	}
 	readOnlyAnalysis = requestEnvelope.ReadOnlyAnalysis
 	explicitEditRequest = requestEnvelope.ExplicitEditRequest

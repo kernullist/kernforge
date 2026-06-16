@@ -1521,7 +1521,7 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 			{Message: Message{Role: "assistant", Text: "done"}},
 		},
 	}
-	session := NewSession(dir, "scripted", "model-a", "high", "default")
+	session := NewSession(dir, "scripted", "model-a", "high", "edit")
 	agent := &Agent{
 		Config: Config{
 			Model:           "model-a",
@@ -1592,7 +1592,7 @@ func TestAgentMCPToolCallCarriesTurnMetadata(t *testing.T) {
 	if got, ok := turnMeta["turn_started_at_unix_ms"].(float64); !ok || got <= 0 {
 		t.Fatalf("expected positive turn start metadata, got %#v in %#v", turnMeta["turn_started_at_unix_ms"], turnMeta)
 	}
-	if got := turnMeta["permission_mode"]; got != "default" {
+	if got := turnMeta["permission_mode"]; got != "edit" {
 		t.Fatalf("expected permission mode metadata, got %#v in %#v", got, turnMeta)
 	}
 	if got := turnMeta["active_permission_profile_id"]; got != builtInPermissionProfileWorkspace {

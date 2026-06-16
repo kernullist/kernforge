@@ -7562,7 +7562,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		}
 	case "permissions":
 		if cmd.Args == "" {
-			fmt.Fprintln(rt.writer, rt.ui.infoLine("Permissions: "+string(rt.perms.Mode())))
+			fmt.Fprintln(rt.writer, rt.ui.infoLine("Permissions: "+permissionModeDisplayName(rt.perms.Mode())))
 			return false, nil
 		}
 		mode, ok := ParseModeStrict(cmd.Args)
@@ -7576,7 +7576,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		if err := rt.saveUserConfig(); err != nil {
 			return false, err
 		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+string(mode)))
+		fmt.Fprintln(rt.writer, rt.ui.successLine("Permissions set to "+permissionModeDisplayName(mode)))
 	case "set-max-tool-iterations":
 		if cmd.Args == "" {
 			fmt.Fprintln(rt.writer, rt.ui.infoLine("max_tool_iterations: "+formatMaxToolIterations(configMaxToolIterations(rt.cfg))))

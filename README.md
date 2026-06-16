@@ -688,8 +688,8 @@ Isolated implementation:
 | `-goal "<objective>"` / `-goal-file <path>` | Run an autonomous goal loop from inline text or a markdown file |
 | `-image <paths>` / `-i` | Attach one or more images in one-shot mode, comma-separated |
 | `-resume <session-id>` | Resume a saved session |
-| `-permission-mode <mode>` | Set the permission mode: `default`, `acceptEdits`, `plan`, or `bypassPermissions` |
-| `-y` | Auto-approve all permissions (`bypassPermissions`) |
+| `-permission-mode <mode>` | Set the permission mode: `plan`, `edit`, or `full` (default `plan`); legacy names and Codex profile ids also accepted |
+| `-y` | Auto-approve all permissions (`full`) |
 | `-mcp-server` | Run Kernforge as a stdio MCP server |
 | `-mcp-daemon-proxy` | Proxy stdio MCP requests through the local Kernforge daemon |
 | `--version`, `-version`, `version` | Print the Kernforge executable version and exit |
@@ -756,7 +756,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
   "provider": "ollama",
   "model": "qwen3.5:14b",
   "base_url": "http://localhost:11434",
-  "permission_mode": "default",
+  "permission_mode": "plan",
   "shell": "powershell",
   "request_timeout_seconds": 1200,
   "shell_timeout_seconds": 900,
@@ -817,7 +817,7 @@ Project-local config cannot mark itself trusted. Even after a project is trusted
 | `progress_display` | Runtime progress style. Default `compact` keeps routine progress transient and review output action-oriented; `auto` keeps durable tool/model/project-analysis events while avoiding repeated verbose review flow text; `stream` writes every progress update into the transcript for long-run debugging |
 | `model_routes` | Per-route model concurrency limits keyed by provider/model/base_url/reasoning_effort. Local providers default to serial execution, while cloud/API routes follow the configured provider or route limit. |
 | `max_tool_iterations` | Max tool loop count per request. `0` or any non-positive value means unlimited, and the default is `0` |
-| `permission_mode` | `default`, `acceptEdits`, `plan`, `bypassPermissions` |
+| `permission_mode` | `plan` (default, read-only), `edit`, `full`; legacy names and Codex profile ids accepted |
 | `shell` | Shell used by `run_shell` |
 | `shell_timeout_seconds` | Default timeout in seconds used by `run_shell`. Default is `900` |
 | `read_hint_spans` | Shared `read_file` and `grep` cached-nearby hint history size |
@@ -1393,20 +1393,22 @@ Built-in AI git tools available to the model include:
 
 ## Permission Modes
 
+The permission mode is the single authority for whether the agent may edit.
+
 | Mode | Meaning |
 | --- | --- |
-| `default` | Reads auto-allowed, writes and shell require confirmation |
-| `acceptEdits` | Reads and writes auto-allowed, shell requires confirmation |
-| `plan` | Read-only mode |
-| `bypassPermissions` | Everything auto-approved |
+| `plan` (default) | Read-only: analyze and plan; no file edits, shell, or git |
+| `edit` | Edit workspace files automatically; out-of-workspace writes and dangerous ops (shell, git) require confirmation |
+| `full` | Everything auto-approved, no prompts |
+
+New sessions start in `plan` (read-only by default); opt into `edit`/`full` explicitly. Legacy mode names (`default`, `acceptEdits`, `bypassPermissions`) and Codex profile ids (`:read-only`, `:workspace`, `:danger-full-access`) are still accepted and map onto plan/edit/full.
 
 Change it in the REPL:
 
 ```text
-/permissions default
-/permissions acceptEdits
 /permissions plan
-/permissions bypassPermissions
+/permissions edit
+/permissions full
 ```
 
 ## Verification, Checkpoints, And Rollback

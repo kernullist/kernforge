@@ -29,7 +29,8 @@ func analyzeReviewRequest(rt *runtimeState, root string, opts ReviewHarnessOptio
 	if len(mcpReviewCleanPaths(scopePaths)) == 0 &&
 		strings.TrimSpace(opts.ProvidedDiff) == "" &&
 		strings.TrimSpace(opts.ProvidedCode) == "" &&
-		reviewTargetAllowsSessionChangedScope(opts.Target) {
+		reviewTargetAllowsSessionChangedScope(opts.Target) &&
+		!reviewRequestNamesNonChangeTarget(request) {
 		scopePaths = append(scopePaths, reviewSessionChangedScopePaths(rt, root)...)
 	}
 	discovery := discoverReviewScopeForAnalysis(root, request, opts, scopePaths)
@@ -127,7 +128,31 @@ func reviewSessionChangedScopePaths(rt *runtimeState, root string) []string {
 	if rt == nil || rt.session == nil {
 		return nil
 	}
-	return runtimeGateChangedPathsForAction(root, rt.session, runtimeGateActionReview)
+	paths := runtimeGateChangedPathsForAction(root, rt.session, runtimeGateActionReview)
+	// The review action anchors on the newest patch transaction and disables the
+	// git-changed fallback; also union the uncommitted worktree changes so an
+	// earlier turn's still-uncommitted edits (a different file) are covered too,
+	// not silently dropped from the review scope.
+	if strings.TrimSpace(root) != "" && runtimeGateGitStatusUsableProvider(root) {
+		paths = append(paths, filterReviewablePaths(runtimeGateChangedFilesProvider(root))...)
+	}
+	return analysisUniqueStrings(paths)
+}
+
+// reviewRequestNamesNonChangeTarget reports that the request text explicitly names
+// a non-change review target (plan/PR/final-answer/analysis-report). Seeding
+// session-changed scope for such a request would make discovery surface candidate
+// files and misroute it to a change review, so the seed is skipped in that case.
+func reviewRequestNamesNonChangeTarget(request string) bool {
+	lower := strings.ToLower(strings.TrimSpace(request))
+	if lower == "" {
+		return false
+	}
+	return containsAny(lower,
+		"plan", "design", "architecture", "설계", "계획",
+		"pull request", "merge request", "pr review", "review pr",
+		"final answer", "최종 답변",
+		"analysis report", "root cause", "보고서")
 }
 
 func discoverReviewScopeForAnalysis(root string, request string, opts ReviewHarnessOptions, scopePaths []string) ReviewScopeDiscovery {

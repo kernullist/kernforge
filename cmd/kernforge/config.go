@@ -4403,8 +4403,11 @@ func ParseModeStrict(value string) (Mode, bool) {
 		// New default: an unspecified permission mode is the read-only plan mode.
 		return ModePlan, true
 	case string(ModeDefault):
-		// Legacy alias kept for back-compat with persisted configs/sessions.
-		return ModeDefault, true
+		// Legacy "default" (prompt-on-write) is no longer a canonical tier. Migrate
+		// it to the SAFER read-only plan rather than the more-permissive edit, so a
+		// persisted "default" never silently becomes auto-write. Users opt into edit
+		// explicitly.
+		return ModePlan, true
 	case "edit", string(ModeAcceptEdits):
 		// "edit" is the canonical name; acceptEdits is the legacy alias.
 		return ModeAcceptEdits, true

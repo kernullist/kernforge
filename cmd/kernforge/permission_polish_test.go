@@ -32,7 +32,7 @@ func TestNormalizeConfigCanonicalizesPersistedMode(t *testing.T) {
 		"plan":                "plan",
 		"edit":                "edit",
 		"full":                "full",
-		"default":             "edit",
+		"default":             "plan",
 		"acceptEdits":         "edit",
 		"bypassPermissions":   "full",
 		":read-only":          "plan",

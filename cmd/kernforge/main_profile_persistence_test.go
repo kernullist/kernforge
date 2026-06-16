@@ -87,8 +87,8 @@ func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testi
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if loaded.PermissionMode != "edit" {
-		t.Fatalf("expected global permission mode to remain edit (canonicalized from default), got %q", loaded.PermissionMode)
+	if loaded.PermissionMode != "plan" {
+		t.Fatalf("expected global permission mode to migrate default -> plan (read-only), got %q", loaded.PermissionMode)
 	}
 	if loaded.MaxToolIterations != 37 {
 		t.Fatalf("expected unrelated setting to persist, got %d", loaded.MaxToolIterations)
@@ -104,8 +104,8 @@ func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testi
 	if err != nil {
 		t.Fatalf("LoadConfig after role replacement save: %v", err)
 	}
-	if loaded.PermissionMode != "edit" {
-		t.Fatalf("expected role replacement save to keep global permission mode edit (canonicalized), got %q", loaded.PermissionMode)
+	if loaded.PermissionMode != "plan" {
+		t.Fatalf("expected role replacement save to keep global permission mode plan (migrated from default), got %q", loaded.PermissionMode)
 	}
 	if loaded.MaxToolIterations != 41 {
 		t.Fatalf("expected role replacement save to persist unrelated setting, got %d", loaded.MaxToolIterations)

@@ -83,3 +83,25 @@ func TestReviewSessionChangedScopePathsRecoversArchivedPatch(t *testing.T) {
 		t.Fatalf("nil runtime state must seed no scope")
 	}
 }
+
+// TestReviewRequestNamesNonChangeTarget locks the guard that stops session-changed
+// scope seeding from hijacking an explicit plan/PR/analysis-report request into a
+// change review.
+func TestReviewRequestNamesNonChangeTarget(t *testing.T) {
+	for _, r := range []string{
+		"review the design plan",
+		"look at the architecture",
+		"review this pull request",
+		"check the analysis report",
+		"이 설계 계획 검토해줘",
+	} {
+		if !reviewRequestNamesNonChangeTarget(r) {
+			t.Fatalf("expected %q to name a non-change target", r)
+		}
+	}
+	for _, r := range []string{"", "review", "review the code", "fix the bug in app.py", "summarize main.go"} {
+		if reviewRequestNamesNonChangeTarget(r) {
+			t.Fatalf("expected %q to NOT name a non-change target", r)
+		}
+	}
+}

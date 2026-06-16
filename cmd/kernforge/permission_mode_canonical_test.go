@@ -10,7 +10,7 @@ func TestParseModeCanonicalAndAliases(t *testing.T) {
 		"plan":                ModePlan,
 		"edit":                ModeAcceptEdits,
 		"full":                ModeBypass,
-		"default":             ModeDefault,     // legacy alias still parses
+		"default":             ModePlan,        // legacy default migrates to read-only plan (safe)
 		"acceptEdits":         ModeAcceptEdits, // legacy alias
 		"bypassPermissions":   ModeBypass,      // legacy alias
 		":read-only":          ModePlan,

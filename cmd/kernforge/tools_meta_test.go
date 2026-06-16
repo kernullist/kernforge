@@ -1658,7 +1658,7 @@ func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 		BaseRoot: baseRoot,
 		Root:     activeRoot,
 		Shell:    defaultShell(),
-		Perms: NewPermissionManager(ModeDefault, func(string) (bool, error) {
+		Perms: NewPermissionManager(ModeAcceptEdits, func(string) (bool, error) {
 			return true, nil
 		}),
 		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
@@ -1694,8 +1694,8 @@ func TestRunShellHookPayloadIncludesEffectiveWorkspaceRoots(t *testing.T) {
 	if len(roots) != 2 || !sameFilePath(roots[0], baseRoot) || !sameFilePath(roots[1], activeRoot) {
 		t.Fatalf("expected hook workspace_roots [%q %q], got %#v", baseRoot, activeRoot, prePayload)
 	}
-	if got := toolMetaString(prePayload, "permission_mode"); got != string(ModeDefault) {
-		t.Fatalf("expected hook permission mode %q, got %#v", ModeDefault, prePayload)
+	if got := toolMetaString(prePayload, "permission_mode"); got != string(ModeAcceptEdits) {
+		t.Fatalf("expected hook permission mode %q, got %#v", ModeAcceptEdits, prePayload)
 	}
 	if got := toolMetaString(prePayload, "active_permission_profile_id"); got != builtInPermissionProfileWorkspace {
 		t.Fatalf("expected hook active permission profile %q, got %#v", builtInPermissionProfileWorkspace, prePayload)

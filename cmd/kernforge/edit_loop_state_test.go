@@ -216,7 +216,7 @@ func TestEditLoopGoalKeepsStatusTaskStateForStatusFollowup(t *testing.T) {
 }
 
 func TestSessionExportIncludesEditLoopLedger(t *testing.T) {
-	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
+	session := NewSession("C:\\workspace", "scripted", "model", "", "edit")
 	session.RecordEditLoopEvent("fix file", EditLoopEvent{
 		Kind:         "apply",
 		Source:       "main",
