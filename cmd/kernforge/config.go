@@ -387,7 +387,7 @@ func DefaultConfig(cwd string) Config {
 		ShellTimeoutSecs:       currentDefaultShellTimeoutSecs,
 		ReadHintSpans:          defaultReadHintSpans,
 		ReadCacheEntries:       defaultReadCacheEntries,
-		PermissionMode:         "default",
+		PermissionMode:         "plan",
 		Shell:                  defaultShell(),
 		SessionDir:             filepath.Join(userConfigDir(), "sessions"),
 		ProjectDocMaxBytes:     intPtr(agentsMDMaxBytes),
@@ -4399,13 +4399,19 @@ func ParseMode(value string) Mode {
 
 func ParseModeStrict(value string) (Mode, bool) {
 	switch strings.TrimSpace(value) {
-	case "", string(ModeDefault):
+	case "":
+		// New default: an unspecified permission mode is the read-only plan mode.
+		return ModePlan, true
+	case string(ModeDefault):
+		// Legacy alias kept for back-compat with persisted configs/sessions.
 		return ModeDefault, true
-	case string(ModeAcceptEdits):
+	case "edit", string(ModeAcceptEdits):
+		// "edit" is the canonical name; acceptEdits is the legacy alias.
 		return ModeAcceptEdits, true
 	case string(ModePlan):
 		return ModePlan, true
-	case string(ModeBypass):
+	case "full", string(ModeBypass):
+		// "full" is the canonical name; bypassPermissions is the legacy alias.
 		return ModeBypass, true
 	default:
 		return modeForBuiltInActivePermissionProfileID(value)
@@ -4443,9 +4449,11 @@ func invalidPermissionModeError(field string, value string) error {
 
 func validPermissionModes() string {
 	return strings.Join([]string{
+		string(ModePlan),
+		"edit",
+		"full",
 		string(ModeDefault),
 		string(ModeAcceptEdits),
-		string(ModePlan),
 		string(ModeBypass),
 		builtInPermissionProfileReadOnly,
 		builtInPermissionProfileWorkspace,
