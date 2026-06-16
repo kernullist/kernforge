@@ -172,12 +172,14 @@ func TestImplementDeadlockD_B_RotatingRereadStopsThenAllowsNewExploration(t *tes
 			Store:     store,
 		}
 
-		_, err := agent.Reply(context.Background(), "implement the proposal")
-		if err == nil {
-			t.Fatalf("expected the rotating-reread guard to stop the turn, got nil error")
+		reply, err := agent.Reply(context.Background(), "implement the proposal")
+		if err != nil {
+			t.Fatalf("read-churn guard should escalate to the user, not error, got: %v", err)
 		}
-		if !strings.Contains(err.Error(), "re-reading the same") {
-			t.Fatalf("expected read-churn abort error, got: %v", err)
+		// The turn must STOP (bounded loop) but as a clarification escalation that
+		// names the churned files -- not a bare error and not an endless loop.
+		if strings.TrimSpace(reply) == "" || !strings.Contains(reply, "app.py") {
+			t.Fatalf("expected a read-churn escalation reply naming the churned files, got: %q", reply)
 		}
 		if provider.index >= len(replies) {
 			t.Fatalf("guard did not stop early: consumed %d/%d replies (failing git masked the loop)", provider.index, len(replies))
@@ -932,4 +934,31 @@ func TestImplementDeadlockD_E_NoProgressGuardFiresButRealMutationDoesNot(t *test
 			t.Fatalf("expected the write_file mutation to land, got contents %q", string(got))
 		}
 	})
+}
+
+// TestReadChurnEscalationReplyAsksForClarification locks the escalate-to-user
+// behavior of the read-churn no-progress guard: when the model keeps re-reading
+// an already-seen file set, the turn must end with a useful clarification request
+// (echoing the request and the churned files), not a bare guard error.
+func TestReadChurnEscalationReplyAsksForClarification(t *testing.T) {
+	session := NewSession(t.TempDir(), "scripted", "model", "", "default")
+	session.AcceptanceContract = &AcceptanceContract{SourcePrompt: ".env에 gitlab 토큰을 넣어두고 사용하게 하자"}
+	agent := &Agent{Config: Config{}, Session: session}
+
+	reply := agent.readChurnEscalationReply(map[string]struct{}{
+		"app.py":               {},
+		"lea.py":               {},
+		"templates/index.html": {},
+	})
+	if strings.TrimSpace(reply) == "" {
+		t.Fatal("expected a non-empty escalation reply")
+	}
+	for _, needle := range []string{"gitlab 토큰", "app.py"} {
+		if !strings.Contains(reply, needle) {
+			t.Fatalf("escalation reply missing %q, got:\n%s", needle, reply)
+		}
+	}
+	if strings.Contains(reply, "stopped after repeatedly re-reading") {
+		t.Fatalf("escalation must be a clarification, not the bare guard error, got:\n%s", reply)
+	}
 }

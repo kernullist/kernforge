@@ -615,6 +615,52 @@ func compactHookPayload(a *Agent, event HookEvent, instructions string, trigger 
 	return payload
 }
 
+// readChurnEscalationReply builds a user-facing message for when the no-progress
+// guard trips because the model kept re-reading an already-seen file set without
+// gathering new information. Instead of aborting the turn with a bare error,
+// escalate to the user with the request, the churned files, and a concrete
+// clarification ask, so an under-specified request ends in a useful question
+// rather than a crash (the bounded-loop / escalate-to-user invariant).
+func (a *Agent) readChurnEscalationReply(seen map[string]struct{}) string {
+	cfg := Config{}
+	if a != nil {
+		cfg = a.Config
+	}
+	files := make([]string, 0, len(seen))
+	for p := range seen {
+		if p = strings.TrimSpace(p); p != "" {
+			files = append(files, p)
+		}
+	}
+	sort.Strings(files)
+	if len(files) > 8 {
+		files = append(files[:8:8], fmt.Sprintf("(+%d more)", len(files)-8))
+	}
+	request := ""
+	if a != nil && a.Session != nil {
+		if a.Session.AcceptanceContract != nil {
+			request = strings.TrimSpace(baseUserQueryText(a.Session.AcceptanceContract.SourcePrompt))
+		}
+		if request == "" {
+			request = strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(a.Session)))
+		}
+	}
+	var b strings.Builder
+	b.WriteString(localizedText(cfg,
+		"I stopped to avoid an unproductive loop: I re-read the same files repeatedly without gathering new information, so I could not determine how to proceed on my own.",
+		"진전 없는 반복을 피하려고 멈췄습니다: 같은 파일들을 새 정보 없이 계속 다시 읽어, 스스로 진행 방법을 정할 수 없었습니다."))
+	if request != "" {
+		fmt.Fprintf(&b, "\n\n%s %s", localizedText(cfg, "Request:", "요청:"), compactPromptSection(request, 240))
+	}
+	if len(files) > 0 {
+		fmt.Fprintf(&b, "\n\n%s\n- %s", localizedText(cfg, "Files I kept re-reading:", "반복해서 읽은 파일:"), strings.Join(files, "\n- "))
+	}
+	fmt.Fprintf(&b, "\n\n%s", localizedText(cfg,
+		"Please clarify what you want so I can implement just that: the specific change or behavior, the target file/function, and any context the current code does not make clear (for example what a value should be used for and where).",
+		"원하시는 바를 명확히 알려주시면 그 부분만 구현하겠습니다: 구체적 변경/동작, 대상 파일/함수, 그리고 현재 코드만으로는 불분명한 맥락(예: 어떤 값을 무엇에/어디에 써야 하는지)."))
+	return strings.TrimSpace(b.String())
+}
+
 func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explicitEditRequest bool, explicitGitRequest bool) (string, error) {
 	a.refreshBackgroundJobs()
 	if reply, ok, err := a.maybeAnswerFromCachedProjectAnalysis(ctx); err != nil {
@@ -1348,7 +1394,22 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					readChurnNoNewPathTurns = 0
 				}
 				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathAbortTurns {
-					return "", fmt.Errorf("stopped after repeatedly re-reading the same %d files without gathering new information", len(readChurnSeenPaths))
+					// Bounded-loop / escalate-to-user: rather than aborting with a bare
+					// error, return a useful clarification request so an under-specified
+					// task ends in a question, not a crash.
+					reply := a.readChurnEscalationReply(readChurnSeenPaths)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionRepeatedTool,
+						Reason:    "read_file kept re-reading an already-seen file set; escalated to the user instead of aborting",
+						ToolCalls: resp.Message.ToolCalls,
+						Count:     readChurnNoNewPathTurns,
+						Iteration: turnCount,
+					})
+					a.noteAssistantConversationEvent(reply)
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					return reply, nil
 				}
 				if readChurnDetectorActive && readChurnNoNewPathTurns >= readChurnNoNewPathRecoveryTurns && turnRuntime.Counters.RepeatedReadSetRecoveryCount < 1 {
 					turnRuntime.Counters.RepeatedReadSetRecoveryCount++

@@ -54,12 +54,14 @@ func TestReadChurnAbortsDespiteInterleavedFailingTool(t *testing.T) {
 		Store:     store,
 	}
 
-	_, err := agent.Reply(context.Background(), "rotate reads over the file set")
-	if err == nil {
-		t.Fatalf("expected the rotating-reread guard to stop the turn, got nil error")
+	reply, err := agent.Reply(context.Background(), "rotate reads over the file set")
+	if err != nil {
+		t.Fatalf("read-churn guard should escalate to the user, not error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "re-reading the same") {
-		t.Fatalf("expected read-churn abort error, got: %v", err)
+	// The turn must STOP (bounded loop) as a clarification escalation naming the
+	// churned files, rather than a bare error or an endless loop.
+	if strings.TrimSpace(reply) == "" || !strings.Contains(reply, "a.txt") {
+		t.Fatalf("expected a read-churn escalation reply naming the churned files, got: %q", reply)
 	}
 	// The guard must trip well before the script is exhausted; otherwise the
 	// interleaved failing tool was still masking the loop.
