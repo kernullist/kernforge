@@ -1393,7 +1393,7 @@ Built-in AI git tools available to the model include:
 
 ## Permission Modes
 
-The permission mode is the single authority for whether the agent may edit.
+The permission mode is the single authority for whether the agent *may* edit — but it never *compels* an edit. A request the agent reads as a genuine question or analysis stays answer-only even in `edit`/`full`; the mode only governs whether a change the request actually asks for is allowed.
 
 | Mode | Meaning |
 | --- | --- |
@@ -1401,7 +1401,11 @@ The permission mode is the single authority for whether the agent may edit.
 | `edit` | Edit workspace files automatically; out-of-workspace writes and dangerous ops (shell, git) require confirmation |
 | `full` | Everything auto-approved, no prompts |
 
-New sessions start in `plan` (read-only by default); opt into `edit`/`full` explicitly. Legacy mode names (`default`, `acceptEdits`, `bypassPermissions`) and Codex profile ids (`:read-only`, `:workspace`, `:danger-full-access`) are still accepted and map onto plan/edit/full.
+New sessions start in `plan` (read-only by default); opt into `edit`/`full` explicitly.
+
+Request intent (question vs. edit) is classified language-agnostically: a fast deterministic heuristic runs first, and an LLM intent classifier runs by default to correct its misreads. The classifier only narrows toward read-only on its own; widening toward edits stays governed by the permission mode and calibration.
+
+Legacy mode names (`default`, `acceptEdits`, `bypassPermissions`) and Codex profile ids (`:read-only`, `:workspace`, `:danger-full-access`) are still accepted as input for back-compat, but are no longer listed in `/permissions` or `--help`.
 
 Change it in the REPL:
 
