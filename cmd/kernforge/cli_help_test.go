@@ -64,7 +64,6 @@ func TestKernforgeGeneralHelpIncludesStandaloneAndMCPUsage(t *testing.T) {
 		"Run Kernforge as a stdio MCP server",
 		"kernforge -mcp-server -cwd",
 		"plan | edit | full (default: plan)",
-		":read-only | :workspace | :danger-full-access",
 		"-dangerously-bypass-hook-trust",
 		"--version",
 		"You usually do not need daemon mode",
@@ -75,6 +74,19 @@ func TestKernforgeGeneralHelpIncludesStandaloneAndMCPUsage(t *testing.T) {
 	} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("expected general help to contain %q, got:\n%s", needle, text)
+		}
+	}
+	// The help advertises only the canonical modes; legacy and Codex profile
+	// aliases stay accepted by the parser but are no longer documented here.
+	for _, absent := range []string{
+		"Legacy aliases accepted",
+		"Codex profile ids",
+		"acceptEdits",
+		"bypassPermissions",
+		":danger-full-access",
+	} {
+		if strings.Contains(text, absent) {
+			t.Fatalf("general help must not advertise legacy/Codex aliases, found %q in:\n%s", absent, text)
 		}
 	}
 }
