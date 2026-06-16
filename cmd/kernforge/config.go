@@ -409,15 +409,13 @@ func DefaultConfig(cwd string) Config {
 		},
 		RequestRuntime: RequestRuntimeConfig{
 			Mode: RequestRuntimeModeDisabled,
-			// The semantic (LLM) classifier is the language-agnostic intent authority
-			// within the permission mode's bounds. The deterministic heuristic remains
-			// a fast prior and least-privilege floor, but keyword lists cannot cover
-			// every language or phrasing, so it runs by default to correct heuristic
-			// misreads. It can only NARROW toward read-only freely; widening is
-			// calibration-gated. The fast path keeps clear-cut turns from paying for it.
-			SemanticClassifier: RequestSemanticClassifierConfig{
-				Mode: RequestSemanticClassifierModeEnabled,
-			},
+			// The semantic (LLM) classifier stays opt-in (disabled by default). It is
+			// the language-agnostic intent authority, but enabling it by default could
+			// narrow a neutral/ambiguous ACTION request (e.g. ".env token, use it") to
+			// read-only, which in edit/full strips edit tools and can leave the model
+			// re-reading without progress. Re-enable per session via config once the
+			// narrowing only fires for high-confidence genuine questions. The mechanism
+			// (fast path, mutation-override narrow guard) remains available.
 		},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled: boolPtr(true),
