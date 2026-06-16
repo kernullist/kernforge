@@ -71,17 +71,28 @@ prompt; out-of-ws handled by CheckEditBoundary), full=ModeBypass.
 NOTE: internal Mode values stay ModePlan/ModeAcceptEdits/ModeBypass; the display
 mapping mode -> plan/edit/full is Slice 3.
 
-### Slice 2 - retire the read-only-analysis hard block (mode = single authority)
-- `agent.go:~2465` and `~9014`: `if readOnlyAnalysis && !toolCallAllowedInReadOnlyAnalysis(call)`
-  no longer hard-blocks edit tools. Gate edits on the permission mode (plan) via
-  the existing `perms.Allow(...)` path instead; in edit/full a tool call is never
-  blocked by request classification.
-- Keep `readOnlyAnalysis` only as a soft hint (do not feed a hard "you are
-  read-only" instruction to the model in edit/full). Review `prompt_assets.go`
-  `ReadOnlyAnalysis` (~55/64) and `final_gate.go:412`, `interactive_orchestration.go:409`.
-- Messaging: a refusal-to-edit must reference mode=plan, not "read_only".
-- Verify: the model in edit/full proposes/applies edits for a neutral request
-  ("이제 수정될거야") instead of self-reporting read-only.
+### Slice 2 - retire the read-only-analysis hard block (mode = single authority)  [DONE 2026-06-16]
+Implemented via a single lever rather than editing every gate: in an edit-capable
+mode (edit/full) the per-request read-only-analysis classification is forced off,
+so the hard block, the "you are read-only" prompt section, and the acceptance
+contract all consistently treat the turn as edit-capable.
+- New `Agent.editPermissionGranted()` (agent.go): true iff `Workspace.Perms.Mode()`
+  is ModeAcceptEdits (edit) or ModeBypass (full). nil/plan/legacy-default return
+  false (preserves prior behavior; plan stays read-only via allowWithoutPrompt).
+- `Reply` (after the semantic-classifier refine) and `completeLoop` (after the
+  envelope fetch): `if a.editPermissionGranted() { requestEnvelope.ReadOnlyAnalysis = false }`.
+  `agentRequestMode()` reads the envelope field, so this propagates to the hard
+  block (agent.go:2465/9014), the discard-edit-tools guard (1185), the prompt
+  section, and the acceptance contract in one place. The hard-block conditions
+  themselves were left intact (they still protect nil/plan/legacy turns where the
+  read-only classification remains request-based; plan also denies via the gate).
+- Tests: `permission_mode_edit_authority_test.go` (`TestEditPermissionGrantedByMode`)
+  locks the gate per mode. A full-Reply integration test was dropped as too
+  entangled with the agent's pre-loop model calls; the gate is the deterministic seam.
+- Full cmd/kernforge suite green; no existing test needed updating (safety
+  regression tests run with nil Perms or plan/default, so the force does not fire).
+NOTE: messaging refinement (a plan-mode refusal should say "plan mode" not the
+"read-only analysis" wording reused by the hard block) is deferred to Slice 3.
 
 ### Slice 3 - status / CLI / completion / help
 - Status line `[perm:...]`, `/status detail` permission lines, `cli_help.go`

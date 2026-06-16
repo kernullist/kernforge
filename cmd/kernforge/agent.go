@@ -195,6 +195,12 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	requestEnvelope := a.latestRequestEnvelopeFor(userText)
 	requestEnvelope = a.maybeRefineRequestEnvelopeWithSemanticClassifier(ctx, requestEnvelope)
+	if a.editPermissionGranted() {
+		// edit/full mode is the single authority for whether edits are allowed; do
+		// not let the per-request read-only-analysis classification block edits or
+		// tell the model it is read-only.
+		requestEnvelope.ReadOnlyAnalysis = false
+	}
 	a.rememberRequestEnvelope(requestEnvelope)
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
@@ -633,6 +639,9 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	}
 	latestUser := sessionEffectiveUserRequestText(a.Session)
 	requestEnvelope := a.latestRequestEnvelopeFor(latestUser)
+	if a.editPermissionGranted() {
+		requestEnvelope.ReadOnlyAnalysis = false
+	}
 	readOnlyAnalysis = requestEnvelope.ReadOnlyAnalysis
 	explicitEditRequest = requestEnvelope.ExplicitEditRequest
 	explicitGitRequest = requestEnvelope.AllowsGitMutation
@@ -9704,6 +9713,24 @@ func (a *Agent) activePermissionModeSnapshot() string {
 		return strings.TrimSpace(a.Session.PermissionMode)
 	}
 	return ""
+}
+
+// editPermissionGranted reports that the user has explicitly chosen an
+// edit-capable permission mode (edit/full). In that case the per-request
+// read-only-analysis classification must NOT block edits or tell the model it is
+// read-only: the permission mode is the single authority for whether edits are
+// allowed. In plan mode the gate (allowWithoutPrompt) denies edits regardless, and
+// for a nil/legacy mode the prior request-based behavior is preserved.
+func (a *Agent) editPermissionGranted() bool {
+	if a == nil || a.Workspace.Perms == nil {
+		return false
+	}
+	switch a.Workspace.Perms.Mode() {
+	case ModeAcceptEdits, ModeBypass:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
