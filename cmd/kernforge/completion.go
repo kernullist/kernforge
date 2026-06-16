@@ -157,15 +157,13 @@ var slashCommandDescriptions = map[string]string{
 
 var slashSubcommandDescriptions = map[string]map[string]string{
 	"permissions": {
-		"plan":                                   "Read-only: analyze and plan; no file edits.",
-		"edit":                                   "Edit workspace files; ask before out-of-workspace or dangerous (shell/git) actions.",
-		"full":                                   "Allow everything this session without prompts.",
-		"default":                                "Legacy alias for edit.",
-		"acceptEdits":                            "Legacy alias for edit.",
-		"bypassPermissions":                      "Legacy alias for full.",
-		builtInPermissionProfileReadOnly:         "Codex built-in read-only profile (= plan).",
-		builtInPermissionProfileWorkspace:        "Codex built-in workspace profile (= edit).",
-		builtInPermissionProfileDangerFullAccess: "Codex built-in danger-full-access profile (= full).",
+		// Only the three canonical modes are listed. Legacy names
+		// (default/acceptEdits/bypassPermissions) and Codex profile ids
+		// (:read-only/:workspace/:danger-full-access) are still accepted as input
+		// for back-compat, but are intentionally not advertised here.
+		"plan": "Read-only: analyze and plan; no file edits.",
+		"edit": "Edit workspace files; ask before out-of-workspace or dangerous (shell/git) actions.",
+		"full": "Allow everything this session without prompts.",
 	},
 	"locale-auto": {
 		"on":  "Let Kernforge switch response locale automatically.",
@@ -727,7 +725,7 @@ func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string
 
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
-		"permissions":       {"plan", "edit", "full", "default", "acceptEdits", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
+		"permissions":       {"plan", "edit", "full"},
 		"locale-auto":       {"on", "off"},
 		"set-auto-verify":   {"on", "off"},
 		"progress-display":  {"auto", "compact", "stream"},
