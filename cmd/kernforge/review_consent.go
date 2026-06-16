@@ -421,6 +421,12 @@ func reviewConsentTriggerForRun(run ReviewRun) string {
 
 func reviewOriginalMainProposalForOptions(opts ReviewHarnessOptions) string {
 	parts := []string{}
+	// Lead with a plain-language scope summary so the user can see the shape of a
+	// proposed change (and catch a small request that ballooned into a large one)
+	// before the raw diff. Placed first so it survives preview truncation.
+	if summary := summarizeProposedEditDiff(opts.ProvidedDiff); summary != "" {
+		parts = append(parts, summary)
+	}
 	if strings.TrimSpace(opts.OriginalMainProposal) != "" {
 		parts = append(parts, strings.TrimSpace(opts.OriginalMainProposal))
 	}

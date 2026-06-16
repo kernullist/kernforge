@@ -72,6 +72,193 @@ func buildEditPreview(path, before, after string) string {
 	return strings.Join(lines, "\n")
 }
 
+// summarizeProposedEditDiff renders a concise, plain-language summary of a
+// proposed change so the pre-write checkpoint shows its SHAPE and SCOPE before
+// the raw diff: per-file added/removed line counts plus any new imports, new
+// top-level definitions, and removed definitions. It accepts the buildEditPreview
+// format ("+%4d | code") and standard unified diffs, and returns "" when there is
+// no diff content to summarize. This lets a user see that a small request grew
+// into a large unrelated change without reading the whole diff.
+func summarizeProposedEditDiff(diff string) string {
+	diff = strings.TrimSpace(diff)
+	if diff == "" {
+		return ""
+	}
+	type fileStat struct {
+		path    string
+		added   int
+		removed int
+	}
+	var order []string
+	stats := map[string]*fileStat{}
+	current := ""
+	statFor := func(path string) *fileStat {
+		if strings.TrimSpace(path) == "" {
+			path = "(file)"
+		}
+		s, ok := stats[path]
+		if !ok {
+			s = &fileStat{path: path}
+			stats[path] = s
+			order = append(order, path)
+		}
+		return s
+	}
+	var addedImports, addedDefs, removedDefs []string
+	seenImport := map[string]bool{}
+	seenAddedDef := map[string]bool{}
+	seenRemovedDef := map[string]bool{}
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "Preview for "):
+			current = strings.TrimSpace(strings.TrimPrefix(line, "Preview for "))
+			statFor(current)
+			continue
+		case strings.HasPrefix(line, "+++ "):
+			p := strings.TrimSpace(strings.TrimPrefix(line, "+++ "))
+			p = strings.TrimPrefix(p, "after/")
+			p = strings.TrimPrefix(p, "b/")
+			if p != "" && p != "/dev/null" {
+				current = p
+				statFor(current)
+			}
+			continue
+		case strings.HasPrefix(line, "--- "):
+			continue
+		case line == "":
+			continue
+		}
+		switch line[0] {
+		case '+':
+			content := previewDiffLineContent(line)
+			statFor(current).added++
+			if name := diffImportToken(content); name != "" {
+				if !seenImport[name] {
+					seenImport[name] = true
+					addedImports = append(addedImports, name)
+				}
+			} else if name := diffDefinitionToken(content); name != "" && !seenAddedDef[name] {
+				seenAddedDef[name] = true
+				addedDefs = append(addedDefs, name)
+			}
+		case '-':
+			content := previewDiffLineContent(line)
+			statFor(current).removed++
+			if name := diffDefinitionToken(content); name != "" && !seenRemovedDef[name] {
+				seenRemovedDef[name] = true
+				removedDefs = append(removedDefs, name)
+			}
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Change summary (check the scope matches the request before approving):")
+	for _, p := range order {
+		s := stats[p]
+		fmt.Fprintf(&b, "\n- %s: +%d / -%d lines", s.path, s.added, s.removed)
+	}
+	if len(addedImports) > 0 {
+		fmt.Fprintf(&b, "\n- new imports: %s", joinCappedList(addedImports, 12))
+	}
+	if len(addedDefs) > 0 {
+		fmt.Fprintf(&b, "\n- new definitions: %s", joinCappedList(addedDefs, 12))
+	}
+	if len(removedDefs) > 0 {
+		fmt.Fprintf(&b, "\n- removed definitions: %s", joinCappedList(removedDefs, 12))
+	}
+	return b.String()
+}
+
+// previewDiffLineContent strips the diff sign and, for buildEditPreview lines
+// ("+%4d | code"), the leading line-number gutter, returning the code content.
+func previewDiffLineContent(line string) string {
+	if line == "" {
+		return ""
+	}
+	body := line[1:]
+	if idx := strings.Index(body, "| "); idx > 0 && idx <= 7 && previewLineNumberPrefix(body[:idx]) {
+		return strings.TrimSpace(body[idx+2:])
+	}
+	return strings.TrimSpace(body)
+}
+
+func previewLineNumberPrefix(s string) bool {
+	hasDigit := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == ' ':
+		default:
+			return false
+		}
+	}
+	return hasDigit
+}
+
+func diffImportToken(content string) string {
+	c := strings.TrimSpace(content)
+	lower := strings.ToLower(c)
+	switch {
+	case strings.HasPrefix(c, "import "):
+		rest := strings.Trim(strings.TrimSpace(c[len("import "):]), "\"'`();")
+		return firstFieldToken(rest)
+	case strings.HasPrefix(lower, "from ") && strings.Contains(lower, " import "):
+		return firstFieldToken(strings.TrimSpace(c[len("from "):]))
+	case strings.HasPrefix(lower, "#include"):
+		return strings.TrimSpace(c[len("#include"):])
+	case strings.HasPrefix(c, "using "):
+		return strings.TrimRight(strings.TrimSpace(c[len("using "):]), ";")
+	case strings.HasPrefix(c, "use "):
+		return strings.TrimRight(strings.TrimSpace(c[len("use "):]), ";")
+	}
+	return ""
+}
+
+func diffDefinitionToken(content string) string {
+	c := strings.TrimSpace(content)
+	for _, kw := range []string{"async def ", "def ", "class ", "func ", "fn ", "type ", "interface "} {
+		if strings.HasPrefix(c, kw) {
+			return leadingIdentifier(strings.TrimSpace(c[len(kw):]))
+		}
+	}
+	return ""
+}
+
+func leadingIdentifier(s string) string {
+	s = strings.TrimSpace(s)
+	end := 0
+	for end < len(s) {
+		c := s[end]
+		if c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			end++
+			continue
+		}
+		break
+	}
+	return s[:end]
+}
+
+func firstFieldToken(s string) string {
+	s = strings.TrimSpace(s)
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == ',' || s[i] == ';' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+func joinCappedList(items []string, limit int) string {
+	if limit <= 0 || len(items) <= limit {
+		return strings.Join(items, ", ")
+	}
+	return strings.Join(items[:limit], ", ") + fmt.Sprintf(", (+%d more)", len(items)-limit)
+}
+
 func buildUnifiedDiff(path, before, after string) string {
 	path = filepath.ToSlash(strings.TrimSpace(path))
 	if path == "" {
