@@ -73,6 +73,14 @@ func TestRequestHandlingSafetyRegression(t *testing.T) {
 		{name: "ko implement", request: "구현해줘", wantFileMutation: true, wantPrimary: RequestClassEdit, wantExplicitEdit: boolPtr(true)},
 		{name: "ko review only", request: "이 코드 리뷰만 해줘", wantFileMutation: false, wantReadOnly: true, wantPrimary: RequestClassReview, wantReviewClass: reviewRequestClassReviewOnly},
 		{name: "ko commit please", request: "커밋해줘", wantGitMutation: true, wantFileMutation: false, wantPrimary: RequestClassGit},
+
+		// F-state-query: Korean passive/perfective status questions ("V되어 있어?")
+		// embed an edit-verb stem but ask about the CURRENT state, so they stay
+		// read-only. The imperative form of the same verb still edits.
+		{name: "ko is it implemented", request: "정책을 git repo에서 다 받도록 구현되어 있어?", wantFileMutation: false, wantReadOnly: true, forbidMustEdit: true, wantExplicitEdit: boolPtr(false)},
+		{name: "ko is it implemented short", request: "이거 구현돼 있나?", wantFileMutation: false, wantReadOnly: true, forbidMustEdit: true, wantExplicitEdit: boolPtr(false)},
+		{name: "ko is it reflected", request: "반영됐어?", wantFileMutation: false, wantReadOnly: true, forbidMustEdit: true, wantExplicitEdit: boolPtr(false)},
+		{name: "ko implement if missing still edits", request: "안 돼 있으면 구현해줘", wantFileMutation: true, wantPrimary: RequestClassEdit, wantExplicitEdit: boolPtr(true)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

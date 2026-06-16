@@ -1415,6 +1415,32 @@ func prefersReadOnlyAnalysisIntent(text string) bool {
 	)
 }
 
+// looksLikeStateQueryQuestion reports whether the request is asking whether
+// something is ALREADY in a given state ("구현되어 있어?", "반영됐어?",
+// "적용돼 있나?") rather than ordering a change. Korean passive/perfective
+// forms (V되다 / V돼다 / V됐다) embed an edit-verb stem, so the substring-based
+// Hangul keyword matcher would otherwise read such a status question as an
+// edit command. A genuine imperative edit order ("구현해줘", "수정해") is
+// detected first and excluded, so only true status questions stay read-only.
+func looksLikeStateQueryQuestion(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(baseUserQueryText(text)))
+	if lower == "" {
+		return false
+	}
+	// A real imperative source-edit command is never a state query, even when it
+	// also references the current state ("안 돼 있으면 구현해줘").
+	if looksLikeImperativeSourceEditCommand(lower) {
+		return false
+	}
+	// Passive/perfective state markers describe an existing state, so a request
+	// built around them is asking about status, not commanding a mutation.
+	return containsAny(lower,
+		"되어 있", "되어있", "돼 있", "돼있", "된 상태", "되었", "됐어", "됐나", "됐는지",
+		"되어 있나", "되어있나", "되어 있는지", "돼 있나", "돼 있는지",
+		"구현돼", "구현되", "반영돼", "반영되", "적용돼", "적용되",
+	)
+}
+
 func looksLikeExplicitEditIntent(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" {
@@ -1427,6 +1453,9 @@ func looksLikeExplicitEditIntent(text string) bool {
 		return false
 	}
 	if looksLikeExecutionFlowQuestion(lower) {
+		return false
+	}
+	if looksLikeStateQueryQuestion(lower) {
 		return false
 	}
 	if looksLikePlanOrDirectionOnlyRequest(lower) {
@@ -1460,7 +1489,7 @@ func looksLikeExplicitEditIntent(text string) bool {
 	// KO imperative source-edit forms only (bare nouns such as "변경/추가/수정"
 	// describing content must not flip an answer-only question to edit intent).
 	return containsAny(lower,
-		"고쳐", "구현", "만들", "삭제", "생성", "적용", "작성", "저장",
+		"고쳐", "구현해", "구현하", "만들", "삭제", "생성", "적용", "작성", "저장",
 		"수정해", "수정하", "변경해", "변경하", "추가해", "추가하", "패치해", "패치하",
 	)
 }
