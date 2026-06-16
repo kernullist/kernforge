@@ -4439,7 +4439,9 @@ func normalizeConfigPermissionMode(cfg *Config) error {
 	if !ok {
 		return invalidPermissionModeError("permission_mode", cfg.PermissionMode)
 	}
-	cfg.PermissionMode = string(mode)
+	// Persist the canonical user-facing name (plan/edit/full); legacy names and
+	// Codex profile ids normalize to their canonical mode.
+	cfg.PermissionMode = permissionModeDisplayName(mode)
 	return nil
 }
 

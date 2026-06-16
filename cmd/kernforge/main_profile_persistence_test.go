@@ -87,8 +87,8 @@ func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testi
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
 	}
-	if loaded.PermissionMode != "default" {
-		t.Fatalf("expected global permission mode to remain default, got %q", loaded.PermissionMode)
+	if loaded.PermissionMode != "edit" {
+		t.Fatalf("expected global permission mode to remain edit (canonicalized from default), got %q", loaded.PermissionMode)
 	}
 	if loaded.MaxToolIterations != 37 {
 		t.Fatalf("expected unrelated setting to persist, got %d", loaded.MaxToolIterations)
@@ -104,8 +104,8 @@ func TestSaveUserConfigDoesNotLetSessionPermissionOverwriteActiveConfig(t *testi
 	if err != nil {
 		t.Fatalf("LoadConfig after role replacement save: %v", err)
 	}
-	if loaded.PermissionMode != "default" {
-		t.Fatalf("expected role replacement save to keep global permission mode default, got %q", loaded.PermissionMode)
+	if loaded.PermissionMode != "edit" {
+		t.Fatalf("expected role replacement save to keep global permission mode edit (canonicalized), got %q", loaded.PermissionMode)
 	}
 	if loaded.MaxToolIterations != 41 {
 		t.Fatalf("expected role replacement save to persist unrelated setting, got %d", loaded.MaxToolIterations)
@@ -137,8 +137,8 @@ func TestReloadRuntimeConfigUsesLivePermissionSnapshotOverStaleSession(t *testin
 	if err := rt.reloadRuntimeConfig(); err != nil {
 		t.Fatalf("reloadRuntimeConfig: %v", err)
 	}
-	if rt.cfg.PermissionMode != string(ModeAcceptEdits) {
-		t.Fatalf("expected loaded config permission %q, got %q", ModeAcceptEdits, rt.cfg.PermissionMode)
+	if rt.cfg.PermissionMode != "edit" {
+		t.Fatalf("expected loaded config permission %q, got %q", "edit", rt.cfg.PermissionMode)
 	}
 	if rt.session.PermissionMode != string(ModeAcceptEdits) {
 		t.Fatalf("expected stale session permission to adopt loaded config, got %q", rt.session.PermissionMode)
@@ -200,8 +200,8 @@ func TestReloadRuntimeConfigPreservesLivePermissionOverride(t *testing.T) {
 	if err := rt.reloadRuntimeConfig(); err != nil {
 		t.Fatalf("reloadRuntimeConfig: %v", err)
 	}
-	if rt.cfg.PermissionMode != string(ModeAcceptEdits) {
-		t.Fatalf("expected loaded config permission %q, got %q", ModeAcceptEdits, rt.cfg.PermissionMode)
+	if rt.cfg.PermissionMode != "edit" {
+		t.Fatalf("expected loaded config permission %q, got %q", "edit", rt.cfg.PermissionMode)
 	}
 	if rt.session.PermissionMode != string(ModeBypass) {
 		t.Fatalf("expected live permission override to be persisted to session, got %q", rt.session.PermissionMode)

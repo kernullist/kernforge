@@ -104,9 +104,10 @@ NOTE: messaging refinement (a plan-mode refusal should say "plan mode" not the
   lead with plan/edit/full (default plan) and list the legacy/profile aliases.
 - Tests: updated cli_help_test ("plan | edit | full (default: plan)") and
   main_cancel_test ([perm:full]); full suite green.
-DEFERRED (minor): the read-only hard block reuses the "read-only analysis" wording;
-in plan mode it could read "plan mode". Low priority -- allowWithoutPrompt already
-says "disabled in plan mode", and the hard block only fires for plan/nil/legacy now.
+RESOLVED (Polish 1): in plan mode the hard block now says "plan mode" and tags
+result_class=plan_mode_block via readOnlyAnalysisToolBlockedResult(..., planMode)
+gated on Agent.permissionModeIsPlan(); non-plan read-only refusals keep the generic
+read-only-analysis wording.
 
 ### Slice 4 - tests + safety regression suite  [DONE 2026-06-16]
 Outcome: no existing safety/permission test needed updating across Slices 1-4 (the
@@ -123,10 +124,10 @@ signal (the edit/full force only overrides it; nil/plan/legacy keep request-base
   and still display as plan/edit/full).
 - Earlier slices added `permission_mode_canonical_test.go` (parse/aliases/default/
   3-mode enforcement) and `permission_mode_edit_authority_test.go` (the single-authority gate).
-NOTE: `normalizeConfigPermissionMode` rewrites cfg.PermissionMode to the internal
-Mode string, so "edit"/"full" persist as "acceptEdits"/"bypassPermissions" (still
-parse + display as edit/full). Canonicalizing the persisted string to plan/edit/full
-is a deferred polish (would touch config_test.go's profile-alias round-trip expectation).
+RESOLVED (Polish 2): `normalizeConfigPermissionMode` now persists the canonical
+name (permissionModeDisplayName), so every accepted input (legacy names + Codex
+profile ids) saves as plan/edit/full; cfg and session stay consistent. config_test
+and main_profile_persistence_test expectations were updated to the canonical strings.
 
 ## Status: redesign complete (Slices 1-4 done).
 

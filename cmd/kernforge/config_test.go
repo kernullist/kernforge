@@ -658,7 +658,7 @@ func TestLoadConfigIgnoresWorkspaceHostLocalOverrides(t *testing.T) {
 	if loaded.ClaudeCLIPath != `C:\User\claude.exe` || len(loaded.ClaudeCLIArgs) != 1 || loaded.ClaudeCLIArgs[0] != "--user" {
 		t.Fatalf("expected user Claude CLI settings, got %q %#v", loaded.ClaudeCLIPath, loaded.ClaudeCLIArgs)
 	}
-	if loaded.PermissionMode != "default" || loaded.Shell != "powershell" || loaded.SessionDir != filepath.Join(home, "sessions") {
+	if loaded.PermissionMode != "edit" || loaded.Shell != "powershell" || loaded.SessionDir != filepath.Join(home, "sessions") {
 		t.Fatalf("expected user host execution settings, got permission=%q shell=%q session=%q", loaded.PermissionMode, loaded.Shell, loaded.SessionDir)
 	}
 	if len(loaded.MCPServers) != 1 || loaded.MCPServers[0].Name != "global-web" {
@@ -752,8 +752,8 @@ func TestPermissionModeAcceptsCodexBuiltInActiveProfileAliases(t *testing.T) {
 	if err := normalizeConfigPermissionMode(&cfg); err != nil {
 		t.Fatalf("normalizeConfigPermissionMode: %v", err)
 	}
-	if cfg.PermissionMode != string(ModeBypass) {
-		t.Fatalf("expected active profile alias to normalize to %q, got %q", ModeBypass, cfg.PermissionMode)
+	if cfg.PermissionMode != "full" {
+		t.Fatalf("expected active profile alias to normalize to canonical %q, got %q", "full", cfg.PermissionMode)
 	}
 }
 

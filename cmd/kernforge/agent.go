@@ -2472,7 +2472,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			var err error
 			blockedToolResult := false
 			if readOnlyAnalysis && !a.toolCallAllowedInReadOnlyAnalysis(call) {
-				result = readOnlyAnalysisToolBlockedResult(a.Config, call)
+				result = readOnlyAnalysisToolBlockedResult(a.Config, call, a.permissionModeIsPlan())
 				err = fmt.Errorf("%w: %s", errReadOnlyAnalysisToolBlocked, strings.TrimSpace(call.Name))
 				blockedToolResult = true
 			} else if a.Tools.ToolHiddenFromModel(call.Name) {
@@ -9173,20 +9173,25 @@ func readOnlyInspectionToolName(name string) bool {
 	}
 }
 
-func readOnlyAnalysisToolBlockedResult(cfg Config, call ToolCall) ToolExecutionResult {
+func readOnlyAnalysisToolBlockedResult(cfg Config, call ToolCall, planMode bool) ToolExecutionResult {
 	name := strings.TrimSpace(call.Name)
 	if name == "" {
 		name = "unknown"
 	}
+	resultClass := "read_only_policy_block"
+	enText := fmt.Sprintf("NOT_EXECUTED: read-only analysis mode blocked tool `%s` because it is not in the read-only inspection allowlist. Use read_file, grep, list_files, git_status, git_diff, or answer from the evidence already collected.", name)
+	koText := fmt.Sprintf("NOT_EXECUTED: 읽기 전용 분석 모드에서 `%s` 도구를 차단했습니다. 이 도구는 읽기 전용 검사 허용 목록에 없습니다. read_file, grep, list_files, git_status, git_diff를 사용하거나 이미 수집한 근거로 답하세요.", name)
+	if planMode {
+		resultClass = "plan_mode_block"
+		enText = fmt.Sprintf("NOT_EXECUTED: plan mode is read-only, so tool `%s` was not run. Switch to edit or full mode (e.g. /permissions edit) to allow changes, or use read_file, grep, list_files, git_status, or git_diff.", name)
+		koText = fmt.Sprintf("NOT_EXECUTED: 현재 plan 모드는 읽기 전용이라 `%s` 도구를 실행하지 않았습니다. 수정하려면 edit 또는 full 모드로 전환하세요(예: /permissions edit). 그 외에는 read_file, grep, list_files, git_status, git_diff를 사용하세요.", name)
+	}
 	return ToolExecutionResult{
-		DisplayText: localizedText(cfg,
-			fmt.Sprintf("NOT_EXECUTED: read-only analysis mode blocked tool `%s` because it is not in the read-only inspection allowlist. Use read_file, grep, list_files, git_status, git_diff, or answer from the evidence already collected.", name),
-			fmt.Sprintf("NOT_EXECUTED: 읽기 전용 분석 모드에서 `%s` 도구를 차단했습니다. 이 도구는 읽기 전용 검사 허용 목록에 없습니다. read_file, grep, list_files, git_status, git_diff를 사용하거나 이미 수집한 근거로 답하세요.", name),
-		),
+		DisplayText: localizedText(cfg, enText, koText),
 		Meta: map[string]any{
 			"tool_name":                name,
 			"plan_effect":              "none",
-			"result_class":             "read_only_policy_block",
+			"result_class":             resultClass,
 			"read_only_analysis":       true,
 			"read_only_allowed":        false,
 			"command_execution_status": "blocked",
@@ -9731,6 +9736,13 @@ func (a *Agent) editPermissionGranted() bool {
 	default:
 		return false
 	}
+}
+
+// permissionModeIsPlan reports whether the active permission mode is plan
+// (read-only). Used to phrase an edit refusal as a plan-mode block rather than
+// the generic read-only-analysis wording.
+func (a *Agent) permissionModeIsPlan() bool {
+	return a != nil && a.Workspace.Perms != nil && a.Workspace.Perms.Mode() == ModePlan
 }
 
 func (a *Agent) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
