@@ -15,6 +15,11 @@ const (
 
 	defaultRequestSemanticClassifierMinConfidence = 0.72
 	defaultRequestSemanticClassifierMaxTokens     = 700
+	// Overriding a deterministic mutation signal (heuristic said edit/git) by
+	// narrowing to read-only is the safe direction, but it can still wrongly
+	// silence a genuine edit. Require a higher bar than the base threshold so
+	// only a confident "this is actually a question" verdict flips it.
+	requestSemanticClassifierMutationOverrideConfidence = 0.85
 )
 
 type RequestSemanticClassifierConfig struct {
@@ -92,6 +97,17 @@ func requestSemanticClassifierMaxTokens(cfg RequestSemanticClassifierConfig) int
 		return cfg.MaxTokens
 	}
 	return defaultRequestSemanticClassifierMaxTokens
+}
+
+// requestSemanticClassifierMutationOverrideConfidenceFor returns the confidence
+// bar required to let a read-only narrowing override a deterministic mutation
+// signal. It never drops below the configured base threshold.
+func requestSemanticClassifierMutationOverrideConfidenceFor(cfg RequestSemanticClassifierConfig) float64 {
+	base := requestSemanticClassifierMinConfidence(cfg)
+	if base > requestSemanticClassifierMutationOverrideConfidence {
+		return base
+	}
+	return requestSemanticClassifierMutationOverrideConfidence
 }
 
 func requestSemanticClassifierShadowModeEnabled(cfg Config) bool {
@@ -287,7 +303,18 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		envelope.Normalize()
 		return envelope
 	}
-	if semanticClassificationNarrowsToReadOnly(classification) && !requestEnvelopeHasDeterministicMutation(envelope) {
+	// Narrowing to read-only is the safe (least-privilege) direction. Allow it
+	// even when the heuristic claimed a mutation, but only on a high-confidence
+	// verdict and never for an unambiguous imperative edit command -- that
+	// protects genuine "fix it / implement it" requests from being silenced
+	// while still letting the LLM correct heuristic mutation false positives
+	// (e.g. a status question whose verb stem matched an edit keyword).
+	mutationOverrideOK := classification.Confidence >= requestSemanticClassifierMutationOverrideConfidenceFor(cfg) &&
+		!looksLikeImperativeSourceEditCommand(envelope.ExternalUserText)
+	narrowedToReadOnly := false
+	if semanticClassificationNarrowsToReadOnly(classification) &&
+		(!requestEnvelopeHasDeterministicMutation(envelope) || mutationOverrideOK) {
+		narrowedToReadOnly = true
 		envelope.ReadOnlyAnalysis = true
 		envelope.ExplicitEditRequest = false
 		envelope.DocumentAuthoring = false
@@ -314,6 +341,9 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		envelope.ReviewRequestClassReason = firstNonBlankString(classification.Reason, "semantic classifier narrowed request to read-only analysis")
 	}
 	if semanticClassificationPromotesDocumentAuthoring(classification) && requestEnvelopeAllowsSemanticDocumentPromotion(envelope) {
+		// Document authoring is an intended (calibration-gated) widening that mutates
+		// a file, so it supersedes any read-only narrowing decided just above.
+		narrowedToReadOnly = false
 		envelope.ReadOnlyAnalysis = false
 		envelope.ExplicitEditRequest = false
 		envelope.DocumentAuthoring = true
@@ -331,6 +361,15 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		envelope.AllowsWebResearch = true
 	}
 	envelope.applyPolicy()
+	if narrowedToReadOnly {
+		// Read-only narrowing is irreversible. applyPolicy recomputes
+		// AllowsFileMutation from ExplicitEditRequest/DocumentAuthoring/the review
+		// class; re-assert the least-privilege result so no future change to those
+		// inputs (or to applyPolicy) can silently widen a request the classifier
+		// already judged read-only.
+		envelope.ReadOnlyAnalysis = true
+		envelope.AllowsFileMutation = false
+	}
 	if envelope.PrimaryClass == "" || len(envelope.Classes) == 0 {
 		decision := requestEnvelopeReviewDecision(envelope)
 		envelope.Classes = requestEnvelopeClasses(envelope, decision)
@@ -464,6 +503,21 @@ func buildRequestSemanticClassifierUserPrompt(envelope RequestEnvelope) string {
 	return "Classify this request and return JSON only.\n\nBaseline deterministic envelope:\n" + string(data)
 }
 
+// requestSemanticClassifierCanSkip reports whether the deterministic envelope is
+// already unambiguous enough that an enabled-mode LLM pass cannot safely improve
+// it: an explicit imperative source-edit command (which must never be narrowed
+// to read-only) or an already read-only request with no mutation signal (already
+// least-privilege, so narrowing is a no-op and widening is disallowed). Every
+// other shape -- neutral requests and mutation claims that are not clear
+// imperatives -- is the ambiguous middle where heuristic misreads live, so it
+// still gets the LLM.
+func requestSemanticClassifierCanSkip(envelope RequestEnvelope) bool {
+	if looksLikeImperativeSourceEditCommand(envelope.ExternalUserText) {
+		return true
+	}
+	return envelope.ReadOnlyAnalysis && !requestEnvelopeHasDeterministicMutation(envelope)
+}
+
 func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Context, envelope RequestEnvelope) RequestEnvelope {
 	if a == nil {
 		return envelope
@@ -472,6 +526,14 @@ func (a *Agent) maybeRefineRequestEnvelopeWithSemanticClassifier(ctx context.Con
 	cfg := a.Config.RequestRuntime.SemanticClassifier
 	normalizeRequestSemanticClassifierConfig(&cfg)
 	if cfg.Mode == RequestSemanticClassifierModeDisabled {
+		return envelope
+	}
+	// Fast path: in enabled mode, skip the LLM round-trip when the deterministic
+	// envelope is already unambiguous (a clear imperative edit, or an already
+	// read-only request with no mutation signal). The ambiguous middle -- the
+	// only place a heuristic misread can hide -- still pays for the LLM. Shadow
+	// mode keeps running every turn so calibration data stays complete.
+	if cfg.Mode == RequestSemanticClassifierModeEnabled && requestSemanticClassifierCanSkip(envelope) {
 		return envelope
 	}
 	if a.Client == nil {

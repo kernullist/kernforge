@@ -195,16 +195,7 @@ func (a *Agent) ReplyWithImages(ctx context.Context, userText string, extraImage
 	}
 	requestEnvelope := a.latestRequestEnvelopeFor(userText)
 	requestEnvelope = a.maybeRefineRequestEnvelopeWithSemanticClassifier(ctx, requestEnvelope)
-	if a.editPermissionGranted() {
-		// edit/full mode is the single authority for whether edits are allowed; do
-		// not let the per-request read-only-analysis classification block edits or
-		// tell the model it is read-only. Keep the envelope internally consistent so
-		// the final verification gate is not weakened: an edit-capable turn allows
-		// file mutation and therefore requires verification.
-		requestEnvelope.ReadOnlyAnalysis = false
-		requestEnvelope.AllowsFileMutation = true
-		requestEnvelope.RequiresVerification = true
-	}
+	a.applyEditAuthorityToEnvelope(&requestEnvelope)
 	a.rememberRequestEnvelope(requestEnvelope)
 	requestMode := requestEnvelope.agentRequestMode()
 	intent := requestMode.Intent
@@ -643,11 +634,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	}
 	latestUser := sessionEffectiveUserRequestText(a.Session)
 	requestEnvelope := a.latestRequestEnvelopeFor(latestUser)
-	if a.editPermissionGranted() {
-		requestEnvelope.ReadOnlyAnalysis = false
-		requestEnvelope.AllowsFileMutation = true
-		requestEnvelope.RequiresVerification = true
-	}
+	a.applyEditAuthorityToEnvelope(&requestEnvelope)
 	readOnlyAnalysis = requestEnvelope.ReadOnlyAnalysis
 	explicitEditRequest = requestEnvelope.ExplicitEditRequest
 	explicitGitRequest = requestEnvelope.AllowsGitMutation
@@ -9749,6 +9736,37 @@ func (a *Agent) editPermissionGranted() bool {
 // the generic read-only-analysis wording.
 func (a *Agent) permissionModeIsPlan() bool {
 	return a != nil && a.Workspace.Perms != nil && a.Workspace.Perms.Mode() == ModePlan
+}
+
+// applyEditAuthorityToEnvelope grants file-mutation capability for the turn when
+// the permission mode authorizes edits AND the request is not a genuine
+// read-only question. The mode is the single authority for whether edits are
+// ALLOWED, but it must not turn an answer-only question into an edit: a request
+// the classifier (heuristic + semantic LLM) reads as read-only keeps
+// AllowsFileMutation false so edit tools are not exposed for it, even in
+// edit/full. For every other request, grant mutation so a non-read-only edit is
+// never blocked by the per-request classification, and keep verification
+// required for that edit-capable turn.
+func (a *Agent) applyEditAuthorityToEnvelope(envelope *RequestEnvelope) {
+	if envelope == nil {
+		return
+	}
+	if a.permissionModeIsPlan() {
+		// plan mode is read-only and is the single authority, so it REVOKES any
+		// mutation the per-request classification (or inherited session context)
+		// may have granted -- not merely refrains from granting it. This keeps edit
+		// tools unexposed in plan instead of letting the model attempt an edit that
+		// the permission gate would only reject at write time.
+		envelope.AllowsFileMutation = false
+		envelope.AllowsGitMutation = false
+		envelope.ReadOnlyAnalysis = true
+		envelope.RequiresVerification = false
+		return
+	}
+	if a.editPermissionGranted() && !envelope.ReadOnlyAnalysis {
+		envelope.AllowsFileMutation = true
+		envelope.RequiresVerification = true
+	}
 }
 
 func (a *Agent) runHook(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
