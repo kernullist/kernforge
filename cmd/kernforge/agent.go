@@ -87,9 +87,15 @@ const (
 	// without gathering new information. These are larger than the windowed
 	// thresholds because they accumulate over a longer rotation, and any read of
 	// a genuinely new path resets the run so real exploration is never affected.
-	readChurnNoNewPathNudgeTurns    = 6
-	readChurnNoNewPathRecoveryTurns = 9
-	readChurnNoNewPathAbortTurns    = 12
+	// Lowered from 6/9/12 to 3/4/6: a no-new-path read turn (zero new files read
+	// AND no workspace mutation) is already strong stuck-evidence, and gpt-5.5 was
+	// observed to ignore the nudge/recovery and churn the full ~9 minutes to the
+	// old abort. Escalating to the user at 6 (~4 min) returns a useful clarification
+	// far sooner; any genuinely new read or a mutation still resets the run, so real
+	// multi-file exploration is unaffected.
+	readChurnNoNewPathNudgeTurns    = 3
+	readChurnNoNewPathRecoveryTurns = 4
+	readChurnNoNewPathAbortTurns    = 6
 	// maxPreWriteReviewRepairBlocksPerTurn is the ABSOLUTE per-turn cap on
 	// pre-write review blocked rounds, regardless of progress. It bounds a loop
 	// that keeps making "progress" forever (e.g. blocker counts oscillating), so
