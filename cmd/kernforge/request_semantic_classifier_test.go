@@ -153,6 +153,26 @@ func TestSemanticClassifierDoesNotNarrowMutationBelowOverrideConfidence(t *testi
 	}
 }
 
+func TestSemanticClassifierNoOpPreservesInheritedMutation(t *testing.T) {
+	// A continuation that inherited a mutable patch context has AllowsFileMutation
+	// =true WITHOUT ExplicitEditRequest. When the classifier returns a no-op
+	// (neither narrowing nor promoting), applyPolicy would recompute mutation from
+	// ExplicitEditRequest alone and drop it; the classifier must preserve it.
+	envelope := buildRequestEnvelope("계속해")
+	envelope.AllowsFileMutation = true
+	classification := RequestSemanticClassification{
+		PrimaryClass:     string(RequestClassEdit),
+		ActionBoundary:   string(ActionBoundaryMayEdit),
+		ReadOnlyAnalysis: boolPtr(false),
+		Confidence:       0.9,
+		Reason:           "no read-only or document decision",
+	}
+	got := applySemanticRequestClassification(envelope, classification, RequestSemanticClassifierConfig{Mode: RequestSemanticClassifierModeEnabled})
+	if !got.AllowsFileMutation {
+		t.Fatalf("a no-op classification must preserve inherited session mutation, got %#v", got)
+	}
+}
+
 func TestRequestSemanticClassifierCanSkip(t *testing.T) {
 	// Clear imperative edit -> skip (must never be narrowed; LLM adds no value).
 	if !requestSemanticClassifierCanSkip(buildRequestEnvelope("구현해줘")) {
@@ -196,6 +216,7 @@ func TestAgentSemanticClassifierUsesModelJSONBeforeMainTurn(t *testing.T) {
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
 	provider := &scriptedProviderClient{
+		handleClassifier: true,
 		replies: []ChatResponse{
 			{Message: Message{Role: "assistant", Text: `{"primary_class":"question","action_boundary":"read_only","read_only_analysis":true,"explicit_edit_request":false,"document_authoring":false,"confidence":0.93,"reason":"asks for an answer, not an edit"}`}},
 			{Message: Message{Role: "assistant", Text: "부족한 기능을 답변으로 정리했습니다. Files edited: none."}},
@@ -239,7 +260,7 @@ func TestAgentSemanticClassifierHoldsDocumentPromotionUntilCalibrated(t *testing
 		MinConfidence: floatPtr(0.7),
 	}
 	session := NewSession(root, "scripted", "model", "", "default")
-	provider := &scriptedProviderClient{replies: []ChatResponse{{
+	provider := &scriptedProviderClient{handleClassifier: true, replies: []ChatResponse{{
 		Message: Message{Role: "assistant", Text: `{"primary_class":"document","action_boundary":"may_edit","read_only_analysis":false,"explicit_edit_request":false,"document_authoring":true,"confidence":0.94,"reason":"asks for a separate Markdown artifact"}`},
 	}}}
 	agent := &Agent{
@@ -274,7 +295,7 @@ func TestAgentSemanticClassifierAllowsCalibratedDocumentPromotion(t *testing.T) 
 		SemanticObserved:      3,
 		SemanticRiskyDiverged: 0,
 	}
-	provider := &scriptedProviderClient{replies: []ChatResponse{{
+	provider := &scriptedProviderClient{handleClassifier: true, replies: []ChatResponse{{
 		Message: Message{Role: "assistant", Text: `{"primary_class":"document","action_boundary":"may_edit","read_only_analysis":false,"explicit_edit_request":false,"document_authoring":true,"confidence":0.94,"reason":"asks for a separate Markdown artifact"}`},
 	}}}
 	agent := &Agent{

@@ -22,6 +22,13 @@ type scriptedProviderClient struct {
 	replies  []ChatResponse
 	requests []ChatRequest
 	index    int
+	// handleClassifier controls the pre-turn semantic classifier call (enabled by
+	// default in DefaultConfig). When false (the default for full-turn tests that
+	// do not exercise the classifier) the call is served a transparent no-op that
+	// leaves the deterministic envelope unchanged and is NOT recorded, so scripted
+	// main-turn replies are not consumed and request assertions are not shifted.
+	// Classifier-specific tests set it true to script and observe the call.
+	handleClassifier bool
 }
 
 func (s *scriptedProviderClient) Name() string { return "scripted" }
@@ -30,6 +37,9 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	_ = ctx
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if isSemanticClassifierRequest(req) && !s.handleClassifier {
+		return transparentClassifierResponse(), nil
+	}
 	s.requests = append(s.requests, cloneChatRequestForTest(req))
 	if s.index >= len(s.replies) {
 		return ChatResponse{Message: Message{Role: "assistant", Text: "done"}}, nil
@@ -37,6 +47,25 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	resp := s.replies[s.index]
 	s.index++
 	return resp, nil
+}
+
+// isSemanticClassifierRequest reports whether req is the pre-turn semantic
+// classifier JSON call, so provider doubles can serve it transparently.
+func isSemanticClassifierRequest(req ChatRequest) bool {
+	for _, m := range req.Messages {
+		if strings.HasPrefix(strings.TrimSpace(m.Text), "Classify this request and return JSON only") {
+			return true
+		}
+	}
+	return false
+}
+
+// transparentClassifierResponse is a valid classification that leaves the
+// deterministic envelope unchanged (no narrow, no document promotion, no fresh
+// external info) and clears the calibration confidence gate, so an enabled
+// classifier is invisible to tests that do not assert on it.
+func transparentClassifierResponse() ChatResponse {
+	return ChatResponse{Message: Message{Role: "assistant", Text: `{"read_only_analysis":false,"document_authoring":false,"requires_fresh_external_info":false,"confidence":0.99,"reason":"test transparent classifier no-op"}`}}
 }
 
 func testModificationFinalAnswer(path string, validation string, risk string) string {

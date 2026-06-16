@@ -312,6 +312,13 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 	mutationOverrideOK := classification.Confidence >= requestSemanticClassifierMutationOverrideConfidenceFor(cfg) &&
 		!looksLikeImperativeSourceEditCommand(envelope.ExternalUserText)
 	narrowedToReadOnly := false
+	documentPromoted := false
+	// Incoming (deterministic, session-aware) mutation flags. applyPolicy below
+	// recomputes AllowsFileMutation from request-level signals only, which would
+	// drop mutation a continuation inherited from a mutable patch context, so we
+	// restore these when the classifier makes no mutation decision of its own.
+	priorFileMutation := envelope.AllowsFileMutation
+	priorGitMutation := envelope.AllowsGitMutation
 	if semanticClassificationNarrowsToReadOnly(classification) &&
 		(!requestEnvelopeHasDeterministicMutation(envelope) || mutationOverrideOK) {
 		narrowedToReadOnly = true
@@ -344,6 +351,7 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		// Document authoring is an intended (calibration-gated) widening that mutates
 		// a file, so it supersedes any read-only narrowing decided just above.
 		narrowedToReadOnly = false
+		documentPromoted = true
 		envelope.ReadOnlyAnalysis = false
 		envelope.ExplicitEditRequest = false
 		envelope.DocumentAuthoring = true
@@ -369,6 +377,12 @@ func applySemanticRequestClassification(envelope RequestEnvelope, classification
 		// already judged read-only.
 		envelope.ReadOnlyAnalysis = true
 		envelope.AllowsFileMutation = false
+	} else if !documentPromoted {
+		// The classifier made no mutation decision (neither narrowed nor promoted),
+		// so preserve the deterministic session-aware mutation flags that applyPolicy
+		// would otherwise recompute away from request-level signals alone.
+		envelope.AllowsFileMutation = priorFileMutation
+		envelope.AllowsGitMutation = priorGitMutation
 	}
 	if envelope.PrimaryClass == "" || len(envelope.Classes) == 0 {
 		decision := requestEnvelopeReviewDecision(envelope)
