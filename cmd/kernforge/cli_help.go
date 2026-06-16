@@ -228,9 +228,9 @@ Common options:
   -profile, -p <name>         Layer ~/.kernforge/<name>.config.json onto this process.
   -model <name>               Model override for this process.
   -base-url <url>             Provider endpoint override.
-  -permission-mode <mode>     default | acceptEdits | plan | bypassPermissions.
-                              Also accepts Codex built-in active profile ids:
-                              :workspace | :read-only | :danger-full-access.
+  -permission-mode <mode>     plan | edit | full (default: plan).
+                              Legacy aliases accepted: default, acceptEdits, bypassPermissions.
+                              Codex profile ids: :read-only | :workspace | :danger-full-access.
   -resume <session-id>        Resume an existing session.
   -y                          Use bypass permission mode.
   -strict-config              Fail fast on unknown config.json fields.
@@ -334,7 +334,7 @@ Useful options:
   -profile, -p <name>
   -model <name>
   -base-url <url>
-  -permission-mode <default|acceptEdits|plan|bypassPermissions|:workspace|:read-only|:danger-full-access>
+  -permission-mode <plan|edit|full>   (legacy: default|acceptEdits|bypassPermissions|:read-only|:workspace|:danger-full-access)
   -resume <session-id>
   -y
 `) + "\n"

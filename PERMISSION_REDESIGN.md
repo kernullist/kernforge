@@ -94,11 +94,19 @@ contract all consistently treat the turn as edit-capable.
 NOTE: messaging refinement (a plan-mode refusal should say "plan mode" not the
 "read-only analysis" wording reused by the hard block) is deferred to Slice 3.
 
-### Slice 3 - status / CLI / completion / help
-- Status line `[perm:...]`, `/status detail` permission lines, `cli_help.go`
-  (~231-233, ~337), `completion.go` (~163-166, ~728), `config.go` help text
-  (~3309, ~3749-3750), `main.go` `confirmLabel` hints (~2908-2922).
-- Show `plan|edit|full`; keep accepting legacy strings/profile ids as input.
+### Slice 3 - status / CLI / completion / help  [DONE 2026-06-16]
+- New `permissionModeDisplayName` / `permissionModeDisplayNameForString` (config.go):
+  ModePlan->plan, ModeAcceptEdits/ModeDefault->edit, ModeBypass->full.
+- `statusOverviewPermission` (main.go) now shows the display name (`[perm:plan|edit|full]`)
+  instead of the raw profile id. `/status detail` keeps the raw mode + profile for debugging.
+- `completion.go`: `/permissions` suggests plan/edit/full first (legacy still offered
+  + described as aliases). `cli_help.go` and the `/permissions` `config.go` help text
+  lead with plan/edit/full (default plan) and list the legacy/profile aliases.
+- Tests: updated cli_help_test ("plan | edit | full (default: plan)") and
+  main_cancel_test ([perm:full]); full suite green.
+DEFERRED (minor): the read-only hard block reuses the "read-only analysis" wording;
+in plan mode it could read "plan mode". Low priority -- allowWithoutPrompt already
+says "disabled in plan mode", and the hard block only fires for plan/nil/legacy now.
 
 ### Slice 4 - tests + safety regression suite
 - Update tests asserting `permission_mode == "default"` (`hooks_test.go` ~336/375/

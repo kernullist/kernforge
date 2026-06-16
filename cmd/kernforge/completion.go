@@ -157,13 +157,15 @@ var slashCommandDescriptions = map[string]string{
 
 var slashSubcommandDescriptions = map[string]map[string]string{
 	"permissions": {
-		"default":                                "Ask before shell, write, and git actions.",
-		"acceptEdits":                            "Auto-approve workspace edits while still asking for shell and git.",
-		"plan":                                   "Favor planning and read-only analysis before edits.",
-		"bypassPermissions":                      "Bypass runtime permission prompts for this session.",
-		builtInPermissionProfileReadOnly:         "Codex built-in read-only active permission profile.",
-		builtInPermissionProfileWorkspace:        "Codex built-in workspace active permission profile.",
-		builtInPermissionProfileDangerFullAccess: "Codex built-in danger-full-access active permission profile.",
+		"plan":                                   "Read-only: analyze and plan; no file edits.",
+		"edit":                                   "Edit workspace files; ask before out-of-workspace or dangerous (shell/git) actions.",
+		"full":                                   "Allow everything this session without prompts.",
+		"default":                                "Legacy alias for edit.",
+		"acceptEdits":                            "Legacy alias for edit.",
+		"bypassPermissions":                      "Legacy alias for full.",
+		builtInPermissionProfileReadOnly:         "Codex built-in read-only profile (= plan).",
+		builtInPermissionProfileWorkspace:        "Codex built-in workspace profile (= edit).",
+		builtInPermissionProfileDangerFullAccess: "Codex built-in danger-full-access profile (= full).",
 	},
 	"locale-auto": {
 		"on":  "Let Kernforge switch response locale automatically.",
@@ -725,7 +727,7 @@ func availableAnalyzeProjectFlags(fields []string, firstLevel []string) []string
 
 func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []string, endsWithSpace bool) ([]string, int, bool) {
 	firstLevel := map[string][]string{
-		"permissions":       {"default", "acceptEdits", "plan", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
+		"permissions":       {"plan", "edit", "full", "default", "acceptEdits", "bypassPermissions", builtInPermissionProfileReadOnly, builtInPermissionProfileWorkspace, builtInPermissionProfileDangerFullAccess},
 		"locale-auto":       {"on", "off"},
 		"set-auto-verify":   {"on", "off"},
 		"progress-display":  {"auto", "compact", "stream"},

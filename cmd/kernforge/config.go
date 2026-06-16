@@ -3306,7 +3306,7 @@ Provider And Models:
 /model task-owner [status|clear <owner-profile|all>|<owner-profile> <provider> <model> [reasoning_effort]] Configure optional task-owner model overrides
 /effort [target] [value] Show or set per-model reasoning effort: undefined, minimal, low, medium, high, xhigh
 /codex-auth [status|login|logout] Manage Kernforge-owned OpenAI Codex OAuth auth
-/permissions [mode]          Show or change permissions: default, acceptEdits, plan, bypassPermissions, or Codex built-in profile ids
+/permissions [mode]          Show or change permissions: plan, edit, full (default plan); legacy names and Codex profile ids also accepted
 /set-max-tool-iterations <n|0|unlimited|none|off> Set the maximum tool iteration count per request; 0 disables the cap
 /progress-display [auto|compact|stream] Show or set in-flight progress visibility
 /profile [list|<number>|rN|dN|pN] Show saved provider/model profiles, role model routing, or manage one explicitly
@@ -3746,8 +3746,8 @@ Provider and model commands control which model is active and how planning/revie
 - When model selection through /model, /provider, or route-specific model commands selects an effort-capable model while that target's effort is undefined, Kernforge defaults that target to low. Use /effort to change or clear it.
 
 /permissions [mode]
-- Show or change permissions. Modes: default, acceptEdits, plan, bypassPermissions.
-- Codex built-in active profile ids are accepted as aliases: :workspace, :read-only, :danger-full-access.
+- Show or change permissions. Modes: plan (read-only), edit (workspace edits; ask for out-of-workspace or dangerous shell/git), full (everything, no prompts). Default: plan.
+- Legacy mode names (default, acceptEdits, bypassPermissions) and Codex profile ids (:read-only, :workspace, :danger-full-access) are accepted as aliases.
 
 /progress-display [auto|compact|stream]
 - Show or change in-flight progress visibility.
@@ -4480,6 +4480,30 @@ func activePermissionProfileIDForModeString(value string) string {
 		return ""
 	}
 	return activePermissionProfileIDForMode(mode)
+}
+
+// permissionModeDisplayName maps an internal mode to the canonical user-facing
+// name: plan / edit / full. Legacy ModeDefault renders as "edit" (its closest
+// canonical mode).
+func permissionModeDisplayName(mode Mode) string {
+	switch mode {
+	case ModePlan:
+		return "plan"
+	case ModeAcceptEdits, ModeDefault:
+		return "edit"
+	case ModeBypass:
+		return "full"
+	default:
+		return string(mode)
+	}
+}
+
+func permissionModeDisplayNameForString(value string) string {
+	mode, ok := ParseModeStrict(value)
+	if !ok {
+		return strings.TrimSpace(value)
+	}
+	return permissionModeDisplayName(mode)
 }
 
 func activePermissionProfileSnapshotForModeString(value string) map[string]any {

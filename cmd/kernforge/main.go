@@ -6995,10 +6995,10 @@ func statusOverviewPermission(rt *runtimeState) string {
 	if mode == "" {
 		mode = strings.TrimSpace(rt.cfg.PermissionMode)
 	}
-	if profile := activePermissionProfileIDForModeString(mode); profile != "" {
-		return strings.TrimPrefix(profile, ":")
+	if name := permissionModeDisplayNameForString(mode); name != "" {
+		return name
 	}
-	return valueOrDefault(mode, "default")
+	return valueOrDefault(mode, "plan")
 }
 
 func statusOverviewPermissionTone(rt *runtimeState) string {
