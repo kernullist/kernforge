@@ -65,6 +65,11 @@ type Session struct {
 	LastJobSupervisorReport         *JobSupervisorReport             `json:"last_job_supervisor_report,omitempty"`
 	LastReviewRun                   *ReviewRun                       `json:"last_review_run,omitempty"`
 	PendingReviewRepairConfirm      *ReviewRepairConfirmationState   `json:"pending_review_repair_confirmation,omitempty"`
+	// PriorReviewArtifactConsent is a per-session, one-time decision about whether
+	// the model may read review artifacts under .kernforge/reviews that were
+	// produced by a PRIOR session (stale cross-session findings). Empty means not
+	// yet asked; "use" allows them; "skip" blocks them for the rest of the session.
+	PriorReviewArtifactConsent string `json:"prior_review_artifact_consent,omitempty"`
 	ReviewRouteHealth               []ReviewRouteHealth              `json:"review_route_health,omitempty"`
 	// CrossReviewerConsecutiveFailures counts how many reviews in a row the
 	// configured cross-review route failed (error or weak/empty output). When it

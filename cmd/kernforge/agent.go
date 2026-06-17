@@ -46,7 +46,12 @@ type Agent struct {
 	PromptConfirmModelReview       func(ModelReviewConsentRequest) ModelReviewConsentDecision
 	PromptResolveAutoVerifyFailure func(VerificationReport) (AutoVerifyFailureResolution, error)
 	PromptContinueReviewRepair     func(string) (bool, error)
-	UserChangeIsolation            *UserChangeIsolationState
+	// PromptUsePriorReviewArtifacts asks the user once per session whether the
+	// model may read review artifacts produced by a PRIOR session. It receives the
+	// gated paths and returns true to use them. Nil (non-interactive) defaults to
+	// skipping them.
+	PromptUsePriorReviewArtifacts func([]string) (bool, error)
+	UserChangeIsolation           *UserChangeIsolationState
 	EmitAssistant                  func(string)
 	EmitAssistantPersistent        func(string)
 	EmitAssistantDelta             func(string)
@@ -1321,6 +1326,50 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 						continue
 					}
+				}
+			}
+			if gated := priorSessionReviewArtifactReadPaths(a.Workspace.Root, a.Session, resp.Message.ToolCalls); len(gated) > 0 {
+				// One-time, lazy (first-read) consent: the model is trying to read
+				// review artifacts a PRIOR session produced. Re-reading stale
+				// cross-session findings is the fixation that wasted ~10m in a real
+				// run, so ask once whether to use them and remember the answer for the
+				// rest of the session. Intercepting before the read-churn/repeat
+				// guards means a declined read is never counted toward those loops.
+				consent := strings.ToLower(strings.TrimSpace(a.Session.PriorReviewArtifactConsent))
+				if consent != priorReviewArtifactConsentUse && consent != priorReviewArtifactConsentSkip {
+					use := false
+					if a.PromptUsePriorReviewArtifacts != nil {
+						markUserInputRequestedDuringTurn()
+						ans, promptErr := a.PromptUsePriorReviewArtifacts(append([]string(nil), gated...))
+						if promptErr != nil {
+							return "", promptErr
+						}
+						use = ans
+					}
+					if use {
+						consent = priorReviewArtifactConsentUse
+					} else {
+						consent = priorReviewArtifactConsentSkip
+					}
+					a.Session.PriorReviewArtifactConsent = consent
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+				}
+				if consent == priorReviewArtifactConsentSkip {
+					guidance := priorReviewArtifactConsentSkipGuidance(a.Config)
+					recordRuntimeIntervention(RuntimeIntervention{
+						Kind:      RuntimeInterventionBlockedTool,
+						Reason:    "blocked read of prior-session review artifacts without user consent",
+						Guidance:  guidance,
+						ToolCalls: resp.Message.ToolCalls,
+						Iteration: turnCount,
+					})
+					a.Session.AddMessage(internalUserMessage(guidance))
+					if err := a.Store.Save(a.Session); err != nil {
+						return "", err
+					}
+					continue
 				}
 			}
 			if readPath, ok := repeatedReadFilePathKey(resp.Message.ToolCalls); ok {

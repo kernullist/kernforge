@@ -482,6 +482,9 @@ func run(args []string) error {
 		rt.agent.PromptContinueReviewRepair = func(message string) (bool, error) {
 			return rt.promptContinueReviewRepair(message)
 		}
+		rt.agent.PromptUsePriorReviewArtifacts = func(paths []string) (bool, error) {
+			return rt.promptUsePriorReviewArtifacts(paths)
+		}
 	}
 	rt.syncAgentReviewerClientFromConfig()
 	rt.reloadHooks()
@@ -732,6 +735,35 @@ func (rt *runtimeState) promptContinueReviewRepair(message string) (bool, error)
 	)
 	rt.withRequestCancelSuspended(func() {
 		confirmed, err = rt.confirm(reviewRepairContinuationQuestion(rt.cfg))
+	})
+	if err != nil {
+		return false, err
+	}
+	return confirmed, nil
+}
+
+// promptUsePriorReviewArtifacts asks the user, once per session, whether the
+// model may read review artifacts that a prior session produced. It prints the
+// gated paths for context, then collects a y/n decision. Non-interactive runs
+// never reach here (the agent defaults to skipping).
+func (rt *runtimeState) promptUsePriorReviewArtifacts(paths []string) (bool, error) {
+	if rt == nil || !rt.interactive {
+		return false, nil
+	}
+	rt.printAssistant(localizedText(rt.cfg,
+		"The model wants to read review artifacts produced by a PRIOR session (they may be stale):",
+		"모델이 이전 세션에서 생성된 리뷰 산출물을 읽으려 합니다 (stale일 수 있음):"))
+	for _, p := range limitStrings(paths, 8) {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("- "+filepath.ToSlash(strings.TrimSpace(p))))
+	}
+	var (
+		confirmed bool
+		err       error
+	)
+	rt.withRequestCancelSuspended(func() {
+		confirmed, err = rt.confirm(localizedText(rt.cfg,
+			"Use these prior-session review artifacts for this task?",
+			"이번 작업에 이 이전-세션 리뷰 산출물을 사용할까요?"))
 	})
 	if err != nil {
 		return false, err
