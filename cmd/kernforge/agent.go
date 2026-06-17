@@ -621,6 +621,26 @@ func compactHookPayload(a *Agent, event HookEvent, instructions string, trigger 
 	return payload
 }
 
+// readChurnPathIsHarnessArtifact reports whether a read targets the harness's
+// own .kernforge state tree (reviews, plans, evidence, ...). Re-reading our own
+// artifacts is never task-investigation progress -- the pre-write feedback even
+// instructs the model not to re-read review artifacts -- so such reads must not
+// count as a new investigative path. Otherwise a model fixated on stale review
+// files (for example a prior session's .kernforge/reviews/*) keeps "discovering"
+// a fresh artifact path every few turns, which resets the read-churn no-progress
+// counter and lets the loop burn many expensive model turns before the guard
+// trips.
+func readChurnPathIsHarnessArtifact(path string) bool {
+	norm := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(path), "\\", "/"))
+	norm = strings.TrimPrefix(norm, "./")
+	if norm == "" {
+		return false
+	}
+	return norm == ".kernforge" ||
+		strings.HasPrefix(norm, ".kernforge/") ||
+		strings.Contains(norm, "/.kernforge/")
+}
+
 // readChurnEscalationReply builds a user-facing message for when the no-progress
 // guard trips because the model kept re-reading an already-seen file set without
 // gathering new information. Instead of aborting the turn with a bare error,
@@ -1376,7 +1396,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				for _, path := range batchPaths {
 					if _, seen := readChurnSeenPaths[path]; !seen {
 						readChurnSeenPaths[path] = struct{}{}
-						addedNewReadChurnPath = true
+						// Record the path for the escalation diagnostic, but only a
+						// genuine source/workspace file counts as investigative
+						// progress. Re-reading our own .kernforge artifacts must not
+						// reset the no-progress counter.
+						if !readChurnPathIsHarnessArtifact(path) {
+							addedNewReadChurnPath = true
+						}
 					}
 				}
 				// A genuine workspace mutation since the run began is real progress
