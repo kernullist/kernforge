@@ -7002,6 +7002,34 @@ func TestPreWriteFeedbackCarriesAllOriginalRepairObligations(t *testing.T) {
 	}
 }
 
+// TestPreWriteReviewFeedbackPinsOriginalScope guards the scope-pinning guidance
+// added so the re-patch loop stops growing the implementation each round (the
+// real failure where ".env 토큰 사용" turned into a full git sync engine and the
+// blocker set never converged).
+func TestPreWriteReviewFeedbackPinsOriginalScope(t *testing.T) {
+	run := ReviewRun{
+		Trigger: "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-PW-001"},
+		},
+		Findings: []ReviewFinding{{
+			ID:          "RF-PW-001",
+			Severity:    reviewSeverityMedium,
+			Category:    "correctness",
+			Title:       "Latest pre-write blocker",
+			RequiredFix: "Revise the proposal before writing.",
+			BlocksGate:  true,
+		}},
+	}
+	if en := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(false)}, run); !strings.Contains(en, "Stay within the ORIGINAL request scope") {
+		t.Fatalf("expected English scope-pinning guidance, got:\n%s", en)
+	}
+	if ko := formatPreWriteReviewFeedback(Config{AutoLocale: boolPtr(true)}, run); !strings.Contains(ko, "원 요청의 범위 안에서만") {
+		t.Fatalf("expected Korean scope-pinning guidance, got:\n%s", ko)
+	}
+}
+
 func TestPreWriteForceEditGuidanceCarriesAllOriginalRepairObligations(t *testing.T) {
 	session := NewSession("C:\\workspace", "scripted", "model", "", "default")
 	session.LastReviewRun = &ReviewRun{

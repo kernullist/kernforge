@@ -96,6 +96,26 @@ func TestRequestEnvelopeClassifiesExplicitEditRequiresVerification(t *testing.T)
 	}
 }
 
+// TestRequestEnvelopeClassifiesInsertionEditAsEdit guards the fix for a real
+// session where ".env에 gitlab 토큰을 넣어두고 사용하게 하자" was misread as a
+// read-only request. The insertion/wiring phrasing is a genuine edit, so the
+// envelope must allow file mutation AND repair continuation; otherwise the
+// pre-write repair stop wrongly renders a read-only "cannot continue" boundary.
+func TestRequestEnvelopeClassifiesInsertionEditAsEdit(t *testing.T) {
+	for _, request := range []string{
+		".env에 gitlab 토큰을 넣어두고 사용하게 하자",
+		"config.json에 키를 집어넣어줘",
+	} {
+		envelope := buildRequestEnvelope(request)
+		if !envelope.ExplicitEditRequest || !envelope.AllowsFileMutation {
+			t.Fatalf("insertion edit %q should allow file mutation, got %#v", request, envelope)
+		}
+		if !requestTextAllowsRepairContinuation(request) {
+			t.Fatalf("insertion edit %q should allow repair continuation", request)
+		}
+	}
+}
+
 func TestRequestEnvelopeAllowsDocumentArtifactWrites(t *testing.T) {
 	envelope := buildRequestEnvelope("분석 계획 문서를 .kernforge/plans/request.md로 작성해줘")
 	if envelope.PrimaryClass != RequestClassDocument {

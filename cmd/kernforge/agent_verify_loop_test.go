@@ -9986,6 +9986,40 @@ func TestReviewerGateUnavailableReadOnlyAnswerDoesNotOfferRepairContinuation(t *
 	}
 }
 
+// TestPreWriteNonConvergenceReplyForInsertionEditOffersRepair guards the fix for
+// a real session where ".env에 gitlab 토큰을 넣어두고 사용하게 하자" went through
+// the full pre-write repair loop, then the non-convergence stop reply wrongly
+// claimed the request had a "read-only action boundary" and refused to continue.
+// The request is a genuine edit, so the stop reply must offer a keep-repairing
+// decision instead of the read-only refusal.
+func TestPreWriteNonConvergenceReplyForInsertionEditOffersRepair(t *testing.T) {
+	root := t.TempDir()
+	request := ".env에 gitlab 토큰을 넣어두고 사용하게 하자"
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	session.AddMessage(Message{Role: "user", Text: request})
+	session.LastReviewRun = &ReviewRun{
+		ID:        "prewrite-insertion-edit",
+		Trigger:   "pre_write",
+		Objective: request,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001", "RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{ID: "RF-001", Severity: reviewSeverityMedium, Category: "correctness", Title: "Token not wired up", RequiredFix: "Wire the token.", BlocksGate: true},
+			{ID: "RF-002", Severity: reviewSeverityMedium, Category: "correctness", Title: "Origin not validated", RequiredFix: "Validate origin.", BlocksGate: true},
+		},
+	}
+
+	reply := formatPreWriteReviewRepairNonConvergenceReply(Config{AutoLocale: boolPtr(false)}, session, 3, 3)
+	if strings.Contains(reply, "read-only action boundary") || strings.Contains(reply, "읽기 전용") {
+		t.Fatalf("insertion edit must not render a read-only boundary stop, got %q", reply)
+	}
+	if !strings.Contains(reply, "keep repairing") {
+		t.Fatalf("insertion edit stop must offer a keep-repairing decision, got %q", reply)
+	}
+}
+
 func TestSessionAllowsReviewRepairContinuationForMutableContinuation(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "main-model", "", "default")

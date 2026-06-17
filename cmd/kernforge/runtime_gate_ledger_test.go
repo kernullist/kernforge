@@ -1384,6 +1384,47 @@ func TestRuntimeGateNeedsReviewStatusOmitsRedundantBlockerSentences(t *testing.T
 	}
 }
 
+// TestRuntimeGatePreWriteUnappliedProposalDegradesToNeedsReview guards the fix
+// for a real session where a pre-write review blocked an edit that was never
+// written to disk (the re-patch loop stopped without converging). With no files
+// in gate scope, the rejected proposal's blockers must NOT persist as a
+// cross-session hard block -- a brand new session would inherit a "blocked" gate
+// it cannot clear because the diff no longer exists. The gate degrades to
+// needs_review, mirroring the reviewer-route-incomplete case.
+func TestRuntimeGatePreWriteUnappliedProposalDegradesToNeedsReview(t *testing.T) {
+	root := t.TempDir()
+	useRuntimeGateGitFixture(t, "main", nil)
+	session := NewSession(root, "provider", "model", "", "default")
+	session.LastReviewRun = &ReviewRun{
+		ID:            "review-prewrite-unapplied",
+		SchemaVersion: reviewSchemaVersion,
+		Target:        reviewTargetChange,
+		Mode:          reviewModeGeneralChange,
+		Branch:        "main",
+		Trigger:       "pre_write",
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001", "RF-002"},
+		},
+		Findings: []ReviewFinding{
+			{ID: "RF-001", Source: "model", Severity: reviewSeverityMedium, Category: "correctness", Title: "Token not wired up", BlocksGate: true},
+			{ID: "RF-002", Source: "model", Severity: reviewSeverityMedium, Category: "correctness", Title: "Origin not validated", BlocksGate: true},
+		},
+	}
+
+	ledger := buildRuntimeGateLedger(root, session, runtimeGateActionFinalAnswer)
+
+	if ledger.Status != runtimeGateStatusNeedsReview || ledger.Ready {
+		t.Fatalf("expected unapplied pre-write proposal to degrade to needs_review, got status=%q ready=%t blockers=%#v", ledger.Status, ledger.Ready, ledger.Blockers)
+	}
+	if len(ledger.Blockers) != 0 {
+		t.Fatalf("unapplied pre-write proposal must not persist hard blockers, got %#v", ledger.Blockers)
+	}
+	if !strings.Contains(strings.Join(ledger.Warnings, " "), "not applied") {
+		t.Fatalf("expected a needs_review warning about the unapplied proposal, got %#v", ledger.Warnings)
+	}
+}
+
 // TestRuntimeGateAttachReviewCarriesProvenance confirms the review provenance is
 // copied into the ledger so /status can render it.
 func TestRuntimeGateAttachReviewCarriesProvenance(t *testing.T) {

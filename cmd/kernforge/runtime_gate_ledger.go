@@ -724,6 +724,27 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 			ClientHint:     "Fix the review route (/model or /model cross-review), then run /review.",
 			ExpectedResult: "A completed review replaces the failed route.",
 		})
+	} else if len(blockers) > 0 && strings.EqualFold(strings.TrimSpace(review.Trigger), "pre_write") && len(ledger.ChangedPaths) == 0 {
+		// The unwaived blockers come from a pre-write review of a PROPOSED edit
+		// that was never written to disk: the pre-write gate blocked it, or the
+		// automatic re-patch loop stopped without converging. With no files in
+		// gate scope, the blockers describe a discarded proposal, not code on
+		// disk, so there is nothing to gate. Persisting them as a cross-session
+		// hard block would make a brand new session inherit a "blocked" gate it
+		// cannot clear, because the diff those findings reference no longer
+		// exists. Surface it as needs_review pointing back at re-running the edit,
+		// mirroring the reviewer-route-incomplete degrade above.
+		tx.Status = "prewrite_proposal_not_applied"
+		ledger.Warnings = append(ledger.Warnings, "latest pre-write review blocked a proposed edit that was not applied, and no files are in gate scope. Re-run the edit request to retry the change, or start a fresh request.")
+		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
+			ID:             "repair",
+			Command:        "/session continuity continue from review",
+			Reason:         "pre-write review blocked an unapplied proposal and no changes are in scope",
+			Safety:         "safe_local",
+			When:           "when ready to retry the edit",
+			ClientHint:     "Re-run the edit request; the pre-write review will re-evaluate a fresh proposal.",
+			ExpectedResult: "A new edit proposal passes pre-write review, or you explicitly drop the change.",
+		})
 	} else if len(blockers) > 0 {
 		tx.Status = "blocked"
 		ledger.Blockers = append(ledger.Blockers, "latest review has unwaived blockers: "+strings.Join(limitStrings(blockers, 6), ", "))

@@ -41,6 +41,29 @@ func reviewPatchRelevanceGuidance(korean bool) string {
 	}, "\n")
 }
 
+// reviewScopePinningGuidance keeps the re-patch loop pinned to the ORIGINAL
+// request's scope. Without it the main model tends to "fix" a finding by adding
+// new functionality the user never asked for (e.g. answering "the token is not
+// wired up" by building a whole git clone/fetch/pull/push sync engine), and each
+// new subsystem creates fresh review surface, so the blocker set keeps churning
+// instead of shrinking and the loop never converges. The bullets tell the model
+// to resolve only the listed findings within the original boundary, and to
+// report -- not implement -- anything that would require out-of-scope work.
+func reviewScopePinningGuidance(korean bool) string {
+	if korean {
+		return strings.Join([]string{
+			"- 원 요청의 범위 안에서만 수정하세요. 나열된 finding을 해소하는 데 필요한 최소 변경만 하고, 요청에 없던 새 기능/하위 시스템/명령 경로를 추가하지 마세요.",
+			"- 어떤 finding의 required_fix가 원 요청 범위를 벗어나는 새 기능 구현을 요구하면, 그 부분은 구현하지 말고 범위를 벗어난다고 보고하세요. 그래야 사용자가 확장 여부를 결정합니다.",
+			"- 매 라운드 구현을 키우지 마세요. 범위 확장은 새 리뷰 표면을 만들어 blocker가 줄지 않고 루프가 수렴하지 못하게 합니다.",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"- Stay within the ORIGINAL request scope. Make only the minimal change needed to resolve the listed findings; do not add new features, subsystems, or command paths the request never asked for.",
+		"- If a finding's required_fix would require building functionality beyond the original request scope, do NOT implement it -- report that it is out of scope so the user can decide whether to expand.",
+		"- Do not grow the implementation each round. Scope expansion creates fresh review surface, which keeps the blocker set from shrinking and prevents the loop from converging.",
+	}, "\n")
+}
+
 func reviewDedicatedInspectionToolGuidance(korean bool) string {
 	if korean {
 		return "- 파일 내용, diff, git 상태 확인은 read_file, grep, git_diff, git_status 같은 전용 workspace 도구를 사용하세요. 줄 번호나 파일 일부 출력을 위해 run_shell, Get-Content, PowerShell 파이프를 호출하지 마세요."

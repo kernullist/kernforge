@@ -1488,9 +1488,14 @@ func looksLikeExplicitEditIntent(text string) bool {
 	}
 	// KO imperative source-edit forms only (bare nouns such as "변경/추가/수정"
 	// describing content must not flip an answer-only question to edit intent).
+	// The insertion/wiring forms (넣어두/넣어줘/집어넣/써넣) cover requests that ask
+	// to put a value into a config or source file and wire it up (for example
+	// ".env에 토큰을 넣어두고 사용하게 하자"), which are genuine edits the bare-noun
+	// list misses.
 	return containsAny(lower,
 		"고쳐", "구현해", "구현하", "만들", "삭제", "생성", "적용", "작성", "저장",
 		"수정해", "수정하", "변경해", "변경하", "추가해", "추가하", "패치해", "패치하",
+		"넣어두", "넣어줘", "넣어 줘", "넣어서", "집어넣", "써넣",
 	)
 }
 
