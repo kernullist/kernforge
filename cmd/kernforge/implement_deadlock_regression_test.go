@@ -678,17 +678,16 @@ func TestImplementDeadlockProgressiveConvergenceProceedsBeyondThreeRounds(t *tes
 }
 
 // TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap locks in the
-// absolute backstop for the progress-aware loop. When the blocker count merely
-// OSCILLATES (3 -> 2 -> 3 -> 2 ...) with a disjoint finding set each round, no
-// round repeats (so the per-fingerprint detector never fires) and every
-// count-drop round resets the no-progress counter (so the no-progress cap never
-// fires either). Only the absolute per-turn cap can stop it. The loop must halt
-// at exactly maxPreWriteReviewRepairBlocksPerTurn+1 blocked rounds and hand the
-// user the loop-limit y/n decision -- never looping unbounded. This is the
-// scenario the raised cap (4 -> 6) and the count-only progress metric were
-// deliberately designed to bound; without the absolute cap this would churn
-// forever.
-func TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap(t *testing.T) {
+// scenario for the progress-aware loop. When the blocker count OSCILLATES
+// (3 -> 2 -> 3 -> 2 ...) with a disjoint finding set each round, no round repeats
+// (so the per-fingerprint detector never fires). The progress metric measures
+// each round against the running MINIMUM blocker count, not the previous round,
+// so once the count has dipped to its low it cannot keep resetting the guard by
+// bouncing back up: the bounces read as no-progress and the non-convergence cap
+// fires well before the absolute per-turn cap. This bounds the real-world scope-
+// explosion churn (a vague request whose review findings keep changing) instead
+// of letting it run all the way to the absolute backstop.
+func TestImplementDeadlockOscillatingBlockerCountStopsViaNoProgressGuard(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("DATA_FILE = 'data.json'\n"), 0o644); err != nil {
 		t.Fatalf("write app.py: %v", err)
@@ -725,9 +724,12 @@ func TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap(t *testing.T
 		}
 	}
 	blockedErr := fmt.Errorf("automatic pre-write review blocked this edit before writing:\n\nReview gate: needs_revision")
-	// Counts oscillate 3 -> 2 -> 3 -> 2 -> 3 -> 2 -> 3 with disjoint ids every
-	// round. The trailing entries are buffer; the absolute cap stops the loop at
-	// round 7 before they run. All rounds stay blocked.
+	// Counts oscillate 3 -> 2 -> 3 -> 2 -> 3 ... with disjoint ids every round.
+	// Running-minimum progress trace (no-progress cap = 3): R1 sets min=3
+	// (no-progress 1); R2 count 2 < 3 is progress (reset to 0, min=2); R3 count 3
+	// is not below min 2 (no-progress 1); R4 count 2 is not below min 2
+	// (no-progress 2); R5 count 3 (no-progress 3) trips the non-convergence cap.
+	// So the loop stops at the 5th blocked round, before the absolute cap (7).
 	patchTool := &sequenceTool{
 		name: "apply_patch",
 		before: []func(){
@@ -764,22 +766,22 @@ func TestImplementDeadlockOscillatingBlockerCountStopsAtAbsoluteCap(t *testing.T
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if patchTool.calls != maxPreWriteReviewRepairBlocksPerTurn+1 {
-		t.Fatalf("oscillating count must stop at the absolute cap (%d blocked rounds), got %d patch attempts", maxPreWriteReviewRepairBlocksPerTurn+1, patchTool.calls)
+	const expectedBlockedRounds = 5
+	if patchTool.calls != expectedBlockedRounds {
+		t.Fatalf("oscillating count must stop via the no-progress guard at %d blocked rounds (before the absolute cap %d), got %d patch attempts", expectedBlockedRounds, maxPreWriteReviewRepairBlocksPerTurn+1, patchTool.calls)
 	}
-	// The absolute cap fired, not the no-progress cap: the user gets the
-	// loop-limit decision, never the non-convergence one.
-	if strings.Contains(reply, "did not converge") {
-		t.Fatalf("absolute-cap stop must use the loop-limit reply, not the non-convergence reply, got %q", reply)
+	if patchTool.calls >= maxPreWriteReviewRepairBlocksPerTurn+1 {
+		t.Fatalf("running-minimum progress must stop oscillation before the absolute cap, got %d", patchTool.calls)
 	}
-	if !strings.Contains(reply, "did not pass") {
-		t.Fatalf("expected the loop-limit reply, got %q", reply)
+	// The non-convergence (no-progress) cap fired, not the absolute loop-limit cap.
+	if !strings.Contains(reply, "did not converge") {
+		t.Fatalf("oscillation stop must use the non-convergence reply, got %q", reply)
 	}
 	if !strings.Contains(reply, "Should I keep repairing") {
-		t.Fatalf("expected a y/n decision handoff, got %q", reply)
+		t.Fatalf("expected a y/n decision handoff (the request is an edit), got %q", reply)
 	}
 	if session.PendingReviewRepairConfirm == nil {
-		t.Fatalf("the absolute-cap stop must record a pending y/n confirmation")
+		t.Fatalf("the non-convergence stop must record a pending y/n confirmation")
 	}
 }
 

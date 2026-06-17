@@ -738,6 +738,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	// that resolve no prior blocker, so multi-stage convergence is not killed.
 	preWriteReviewNoProgressBlocks := 0
 	preWriteReviewPrevBlockerIDs := map[string]bool{}
+	// Running minimum unwaived-blocker count seen across this turn's pre-write
+	// repair rounds. Progress is measured against this minimum, not the previous
+	// round, so an oscillating count (e.g. 3 -> 2 -> 3 -> 2 whack-a-mole, where the
+	// model swaps one finding for another and the count bounces) is correctly seen
+	// as no-progress instead of resetting the guard every time the count dips. -1
+	// means no round has completed yet.
+	preWriteReviewMinBlockerCount := -1
 	preWriteReviewRepairInspectTools := 0
 	preWriteReviewRepairInspectNudges := 0
 	preFixReviewRepairInspectTools := 0
@@ -2730,12 +2737,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						}
 					}
 				}
-				if preWriteReviewRepairProgressed(preWriteReviewPrevBlockerIDs, currentBlockerIDs) {
+				if preWriteReviewRepairProgressed(preWriteReviewPrevBlockerIDs, currentBlockerIDs, preWriteReviewMinBlockerCount) {
 					preWriteReviewNoProgressBlocks = 0
 				} else {
 					preWriteReviewNoProgressBlocks++
 				}
 				preWriteReviewPrevBlockerIDs = currentBlockerIDs
+				if currentCount := len(currentBlockerIDs); preWriteReviewMinBlockerCount < 0 || currentCount < preWriteReviewMinBlockerCount {
+					preWriteReviewMinBlockerCount = currentCount
+				}
 				nonConvergingPreWriteBlock := preWriteReviewNoProgressBlocks >= maxPreWriteReviewNoProgressRounds
 				if repeatedPreWriteBlock || nonConvergingPreWriteBlock || preWriteReviewRepairBlocks > maxPreWriteReviewRepairBlocksPerTurn {
 					if a.PromptContinueReviewRepair != nil && sessionAllowsReviewRepairContinuation(a.Session) {
@@ -2771,6 +2781,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						preWriteReviewRepairBlocks = 0
 						preWriteReviewNoProgressBlocks = 0
 						preWriteReviewPrevBlockerIDs = nil
+						preWriteReviewMinBlockerCount = -1
 						for fingerprint := range preWriteReviewRepairBlockFingerprints {
 							delete(preWriteReviewRepairBlockFingerprints, fingerprint)
 						}
@@ -3044,6 +3055,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					preWriteReviewRepairBlockFingerprints = map[string]int{}
 					preWriteReviewNoProgressBlocks = 0
 					preWriteReviewPrevBlockerIDs = map[string]bool{}
+					preWriteReviewMinBlockerCount = -1
 					preWriteReviewRepairInspectTools = 0
 					preWriteReviewRepairInspectNudges = 0
 					preFixReviewRepairInspectTools = 0
@@ -5883,16 +5895,20 @@ func formatPreWriteReviewRepairNonConvergenceReply(cfg Config, session *Session,
 }
 
 // preWriteReviewRepairProgressed reports whether a repair round made real
-// progress: the total blocker count strictly decreased (multi-stage
-// convergence, e.g. blockers 4 -> 2 -> 1). A round that merely swaps one finding
-// for another while keeping the same count is whack-a-mole churn, not progress,
-// and must still count toward the non-convergence cut; likewise a growing count.
-// An empty previous set (the first block of the turn) is not progress.
-func preWriteReviewRepairProgressed(prev, current map[string]bool) bool {
-	if len(prev) == 0 {
+// progress: the total blocker count fell below the lowest count seen so far this
+// turn (multi-stage convergence, e.g. blockers 4 -> 2 -> 1). Measuring against
+// the running minimum -- not just the previous round -- means an oscillating
+// count (3 -> 2 -> 3 -> 2, where the model swaps one finding for another and the
+// count bounces) no longer resets the guard each time it dips: only a count that
+// beats the best-so-far is progress. A round that merely swaps findings while
+// keeping or growing the count is whack-a-mole churn and must count toward the
+// non-convergence cut. The first block of the turn (minSoFar < 0) is not
+// progress. prev is retained for callers/tests that still pass the previous set.
+func preWriteReviewRepairProgressed(prev, current map[string]bool, minSoFar int) bool {
+	if minSoFar < 0 {
 		return false
 	}
-	return len(current) < len(prev)
+	return len(current) < minSoFar
 }
 
 func preWriteReviewRepairBlockFingerprint(session *Session, err error) string {
