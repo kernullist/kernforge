@@ -1509,7 +1509,7 @@ func (a *Agent) buildDiffAwareSelfReviewReport(reply string, attemptedEditTool b
 			Detail:   "The final answer says no files changed, but the patch transaction recorded changes in: " + strings.Join(changed, ", "),
 		})
 	}
-	if len(changed) > 0 && replyClaimsVerificationSuccess(reply) && !sessionHasSuccessfulVerificationEvidence(a.Session) {
+	if len(changed) > 0 && replyClaimsVerificationSuccess(reply) && !sessionHasSuccessfulVerificationEvidence(a.Session) && !changedPathsAreVcsToolingMetadataOnly(changed) {
 		report.Findings = append(report.Findings, CodingHarnessFinding{
 			Severity: "blocker",
 			Title:    "Verification claim has no recorded evidence",

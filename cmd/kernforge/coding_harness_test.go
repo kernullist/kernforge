@@ -1603,6 +1603,80 @@ func TestDiffAwareHarnessAllowsKoreanBuildSkippedDisclosure(t *testing.T) {
 	}
 }
 
+func vcsToolingMetadataOnlySession(root string) *Session {
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.PatchTransactions = []PatchTransaction{{
+		ID:            "patch-tx-test",
+		WorkspaceRoot: root,
+		Status:        patchTransactionStatusCommitted,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-tx-test-001",
+			ToolName: "write_file",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      ".gitignore",
+				Operation: "create",
+				After: HarnessFileFingerprint{
+					Path:   ".gitignore",
+					Kind:   "file",
+					Exists: true,
+				},
+			}},
+		}},
+	}}
+	return session
+}
+
+// A .gitignore write has no build/test semantics, so "git status로 확인했습니다"
+// must not be treated as a false build/test verification claim.
+func TestDiffAwareHarnessAllowsVerificationClaimForVcsMetadataOnlyTurn(t *testing.T) {
+	root := t.TempDir()
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   vcsToolingMetadataOnlySession(root),
+	}
+
+	report := agent.buildDiffAwareSelfReviewReport("변경: .gitignore 생성.\n검증: git status로 확인했습니다.", false)
+	if codingHarnessReportHasFinding(report.Findings, "Verification claim has no recorded evidence") {
+		t.Fatalf("expected .gitignore-only turn to skip verification-evidence gate, got %#v", report.Findings)
+	}
+}
+
+// The full completeness gate must not demand review/validation/remaining-risk
+// ceremony for a metadata-only turn; naming the changed file is enough.
+func TestFinalAnswerCompletenessAllowsLowCeremonyVcsMetadataTurn(t *testing.T) {
+	root := t.TempDir()
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   vcsToolingMetadataOnlySession(root),
+	}
+
+	findings := agent.finalAnswerCompletenessFindings(".gitignore 파일을 생성하고 내용을 채웠습니다.", false)
+	for _, unexpected := range []string{
+		"Remaining-risk statement is missing",
+		"Validation result is missing",
+		"Review result is missing",
+	} {
+		if codingHarnessReportHasFinding(findings, unexpected) {
+			t.Fatalf("metadata-only turn should not require %q, got %#v", unexpected, findings)
+		}
+	}
+}
+
+// The honesty floor still holds: a metadata-only turn must name the changed file.
+func TestFinalAnswerCompletenessStillRequiresChangedFileForVcsMetadataTurn(t *testing.T) {
+	root := t.TempDir()
+	agent := &Agent{
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   vcsToolingMetadataOnlySession(root),
+	}
+
+	findings := agent.finalAnswerCompletenessFindings("작업을 마쳤습니다.", false)
+	if !codingHarnessReportHasFinding(findings, "Changed-file summary is missing") {
+		t.Fatalf("expected metadata-only turn to still require the changed-file summary, got %#v", findings)
+	}
+}
+
 func codingHarnessReportHasFinding(findings []CodingHarnessFinding, title string) bool {
 	for _, finding := range findings {
 		if finding.Title == title {

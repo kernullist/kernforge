@@ -1262,6 +1262,45 @@ func isCodeLikePath(path string) bool {
 	return false
 }
 
+// pathLooksLikeVcsToolingMetadata reports whether a path is a version-control or
+// tooling metadata file that has no build or test semantics, for example
+// .gitignore or .editorconfig. Writing such a file produces nothing to compile,
+// run, or verify, so the code-modification verification gates must not treat it
+// like a code change. filepath.Ext is unreliable for dotfiles (it returns the
+// whole leading-dot name), so match on the base name instead.
+func pathLooksLikeVcsToolingMetadata(path string) bool {
+	base := strings.TrimSpace(strings.ToLower(filepath.Base(normalizeSessionRelativePath(path))))
+	if base == "" {
+		return false
+	}
+	switch base {
+	case ".gitignore", ".gitattributes", ".gitkeep", ".hgignore",
+		".dockerignore", ".npmignore", ".eslintignore", ".prettierignore",
+		".stylelintignore", ".editorconfig", ".gcloudignore", ".helmignore",
+		".vscodeignore":
+		return true
+	}
+	return false
+}
+
+// changedPathsAreVcsToolingMetadataOnly reports whether every recorded changed
+// path is a VCS or tooling metadata file (and there is at least one). It routes
+// metadata-only turns onto the low-ceremony completion path instead of the full
+// code-modification verification lifecycle.
+func changedPathsAreVcsToolingMetadataOnly(changedPaths []string) bool {
+	saw := false
+	for _, path := range changedPaths {
+		if strings.TrimSpace(path) == "" {
+			continue
+		}
+		if !pathLooksLikeVcsToolingMetadata(path) {
+			return false
+		}
+		saw = true
+	}
+	return saw
+}
+
 func collectSessionChangedPaths(sess *Session) []string {
 	return collectSessionChangedPathsInRange(sess, 0)
 }

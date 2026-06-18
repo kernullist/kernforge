@@ -18,7 +18,11 @@ func (a *Agent) finalAnswerCompletenessFindings(reply string, attemptedEditTool 
 		return normalizeCodingHarnessFindings(findings)
 	}
 	if a.finalAnswerCompletenessRequiresModificationFacts(attemptedEditTool) {
-		findings = append(findings, a.modificationFinalAnswerCompletenessFindings(reply)...)
+		if changedPathsAreVcsToolingMetadataOnly(finalAnswerCompletenessChangedPaths(a.Session)) {
+			findings = append(findings, a.vcsToolingMetadataFinalAnswerCompletenessFindings(reply)...)
+		} else {
+			findings = append(findings, a.modificationFinalAnswerCompletenessFindings(reply)...)
+		}
 	}
 	if a.finalAnswerCompletenessRequiresReviewOnlyFacts() {
 		findings = append(findings, a.reviewOnlyFinalAnswerCompletenessFindings(reply)...)
@@ -481,6 +485,33 @@ func (a *Agent) modificationFinalAnswerCompletenessFindings(reply string) []Codi
 			Severity: "blocker",
 			Title:    "Remaining-risk statement is missing",
 			Detail:   "A modification final answer must state remaining risks or say that no known remaining blocker remains.",
+		})
+	}
+	return findings
+}
+
+// vcsToolingMetadataFinalAnswerCompletenessFindings applies the low-ceremony
+// completion contract for turns that only write VCS or tooling metadata files
+// (for example .gitignore). Such files have no build/test semantics, so the only
+// honesty requirement is that the final answer name the changed file(s) or state
+// that nothing changed. Review, validation, and remaining-risk ceremony are not
+// required because there is nothing to compile, run, or verify.
+func (a *Agent) vcsToolingMetadataFinalAnswerCompletenessFindings(reply string) []CodingHarnessFinding {
+	changed := finalAnswerCompletenessChangedPaths(a.Session)
+	var findings []CodingHarnessFinding
+	if len(changed) == 0 {
+		if !replyClaimsNoFileChanges(strings.ToLower(reply)) {
+			findings = append(findings, CodingHarnessFinding{
+				Severity: "blocker",
+				Title:    "Changed-file summary is missing",
+				Detail:   "This was a modification lifecycle, but no changed paths were recorded and the final answer does not clearly state that no file changed.",
+			})
+		}
+	} else if !replyMentionsChangedFileSummary(reply, changed) {
+		findings = append(findings, CodingHarnessFinding{
+			Severity: "blocker",
+			Title:    "Changed-file summary is missing",
+			Detail:   "Changed paths are recorded in the patch transaction, but the final answer does not name the changed file(s): " + strings.Join(changed, ", "),
 		})
 	}
 	return findings
