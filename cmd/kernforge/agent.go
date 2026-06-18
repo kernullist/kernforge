@@ -2754,8 +2754,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						// handoff. On yes, grant a fresh repair budget and fall through
 						// to the normal under-cap retry below so the model re-patches in
 						// this same turn; on no, stop with no files changed.
+						scopeChurn := nonConvergingPreWriteBlock && !repeatedPreWriteBlock &&
+							preWriteReviewRepairLooksLikeScopeChurn(preWriteReviewRepairBlockFingerprints, preWriteReviewRepairBlocks)
 						promptText := ""
-						if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+						if scopeChurn {
+							promptText = formatPreWriteReviewRepairScopeClarificationPrompt(a.Config, a.Session, preWriteReviewRepairBlocks)
+						} else if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
 							promptText = formatPreWriteReviewRepairNonConvergencePrompt(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
 						} else {
 							promptText = formatPreWriteReviewRepairLoopLimitPrompt(a.Config, a.Session)
@@ -2805,8 +2809,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 								fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic re-patch loop did not converge. Stopping and asking the user to decide.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks),
 								fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 재패치 루프가 수렴하지 못했습니다. 중단하고 사용자에게 결정을 요청합니다.", preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)))
 						}
+						scopeChurn := nonConvergingPreWriteBlock && !repeatedPreWriteBlock &&
+							preWriteReviewRepairLooksLikeScopeChurn(preWriteReviewRepairBlockFingerprints, preWriteReviewRepairBlocks)
 						reply := ""
-						if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
+						if scopeChurn {
+							reply = formatPreWriteReviewRepairScopeClarificationReply(a.Config, a.Session, preWriteReviewRepairBlocks)
+						} else if nonConvergingPreWriteBlock && !repeatedPreWriteBlock {
 							reply = formatPreWriteReviewRepairNonConvergenceReply(a.Config, a.Session, preWriteReviewRepairBlocks, preWriteReviewNoProgressBlocks)
 						} else {
 							reply = formatPreWriteReviewRepairLoopLimitReply(a.Config, a.Session)
@@ -5892,6 +5900,41 @@ func formatPreWriteReviewRepairNonConvergenceReply(cfg Config, session *Session,
 		fmt.Sprintf("Pre-write review blocked %d revise rounds for this edit; the remaining blocker count did not shrink across the last %d rounds, so the automatic repair loop did not converge. I stopped re-patching instead of looping further. No files were changed.", rounds, stalledRounds),
 		fmt.Sprintf("이 편집에 대해 쓰기 전 리뷰가 %d번 수정 라운드를 거쳤고, 최근 %d라운드 동안 남은 blocker 개수가 줄지 않아 자동 수리 루프가 수렴하지 못했습니다. 계속 재패치하지 않고 중단했습니다. 변경된 파일은 없습니다.", rounds, stalledRounds),
 	)
+}
+
+// preWriteReviewRepairLooksLikeScopeChurn reports whether the non-convergence was
+// driven by SCOPE CHURN rather than being stuck on one finding: across the turn's
+// blocked rounds the review produced many DIFFERENT finding sets (distinct block
+// fingerprints) instead of the same one repeating. That pattern is the signature
+// of an under-specified request whose implementation keeps expanding into new
+// surface each round (e.g. ".env에 토큰 넣고 사용" growing into a whole GitLab
+// client). When this holds the user is better served by a scope-clarification ask
+// than a bare "keep repairing?" prompt.
+func preWriteReviewRepairLooksLikeScopeChurn(blockFingerprints map[string]int, rounds int) bool {
+	return rounds >= 3 && len(blockFingerprints) >= 3
+}
+
+// formatPreWriteReviewRepairScopeClarificationPrompt / ...Reply reframe the
+// non-convergence stop as a scope question: the change kept expanding past the
+// original request, so ask the user to name the minimal behavior they want
+// (rather than letting the model keep guessing). They reuse the shared
+// user-decision body, so [1] latest review / [2] last proposal / [3] y-n still
+// render -- y keeps the current broad direction, n stops so the user can restate
+// a narrower request.
+func formatPreWriteReviewRepairScopeClarificationPrompt(cfg Config, session *Session, rounds int) string {
+	en, ko := preWriteReviewRepairScopeClarificationIntro(rounds)
+	return formatPreWriteReviewRepairUserDecisionPrompt(cfg, session, en, ko)
+}
+
+func formatPreWriteReviewRepairScopeClarificationReply(cfg Config, session *Session, rounds int) string {
+	en, ko := preWriteReviewRepairScopeClarificationIntro(rounds)
+	return formatPreWriteReviewRepairUserDecisionReply(cfg, session, en, ko)
+}
+
+func preWriteReviewRepairScopeClarificationIntro(rounds int) (string, string) {
+	en := fmt.Sprintf("Pre-write review did not converge after %d revise rounds, and the change kept expanding into new areas each round -- it grew well beyond the original request. This usually means the request is under-specified about how much to build, so I stopped instead of guessing further. No files were changed. Tell me the minimal behavior you actually want and I will implement only that.", rounds)
+	ko := fmt.Sprintf("쓰기 전 리뷰가 %d번 수정 라운드 동안 수렴하지 못했고, 매 라운드 변경이 새로운 영역으로 계속 확장돼 원 요청 범위를 크게 벗어났습니다. 보통 이는 '어디까지 구현할지'가 요청에 명시되지 않았다는 뜻이라, 계속 추측하지 않고 중단했습니다. 변경된 파일은 없습니다. 원하는 최소 동작을 구체적으로 알려주시면 그 부분만 구현하겠습니다.", rounds)
+	return en, ko
 }
 
 // preWriteReviewRepairProgressed reports whether a repair round made real

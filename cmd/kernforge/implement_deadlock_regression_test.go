@@ -777,6 +777,11 @@ func TestImplementDeadlockOscillatingBlockerCountStopsViaNoProgressGuard(t *test
 	if !strings.Contains(reply, "did not converge") {
 		t.Fatalf("oscillation stop must use the non-convergence reply, got %q", reply)
 	}
+	// Disjoint finding sets every round are scope churn, so the stop reframes as a
+	// scope-clarification ask rather than a bare keep-repairing prompt.
+	if !strings.Contains(reply, "minimal behavior") {
+		t.Fatalf("scope-churn non-convergence must ask for the minimal behavior, got %q", reply)
+	}
 	if !strings.Contains(reply, "Should I keep repairing") {
 		t.Fatalf("expected a y/n decision handoff (the request is an edit), got %q", reply)
 	}
