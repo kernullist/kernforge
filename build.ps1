@@ -1,3 +1,9 @@
+# -Release bumps the version (consuming a release number) and persists it to the
+# version state. Without it, a plain dev build reuses the current version without
+# consuming a release number; dev builds are still distinguishable by the build
+# commit shown in the banner.
+param([switch]$Release)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -122,7 +128,13 @@ function Get-ResourceWriterType {
 
 $resourceWriterType = Get-ResourceWriterType
 $baselineVersion = Get-BaselineVersion
-$nextParts = Increment-Version (Parse-VersionParts $baselineVersion)
+$baselineParts = Parse-VersionParts $baselineVersion
+if ($Release) {
+	$nextParts = Increment-Version $baselineParts
+}
+else {
+	$nextParts = $baselineParts
+}
 $nextVersion = Format-Version $nextParts
 $gitCommit = ""
 try {
@@ -155,12 +167,17 @@ catch [System.Reflection.TargetInvocationException] {
 	throw
 }
 
-$state = [pscustomobject]@{
-	current_version = $nextVersion
-	commit          = $gitCommit
-	build_time      = $buildTime
-	updated_at      = (Get-Date).ToString("o")
+if ($Release) {
+	# Only a release build consumes a version number, so only it updates the
+	# persisted state. Dev builds leave current_version untouched.
+	$state = [pscustomobject]@{
+		current_version = $nextVersion
+		commit          = $gitCommit
+		build_time      = $buildTime
+		updated_at      = (Get-Date).ToString("o")
+	}
+	$state | ConvertTo-Json | Set-Content -Path $statePath -Encoding UTF8
 }
-$state | ConvertTo-Json | Set-Content -Path $statePath -Encoding UTF8
 
-Write-Host "Built kernforge.exe with PE version $nextVersion commit $gitCommit"
+$buildMode = if ($Release) { "release" } else { "dev" }
+Write-Host "Built kernforge.exe ($buildMode) with PE version $nextVersion commit $gitCommit"
