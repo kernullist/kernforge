@@ -176,6 +176,30 @@ func TestRequestEnvelopeGatesGitMutationOnExplicitRequest(t *testing.T) {
 	}
 }
 
+// TestRequestEnvelopeAllowsRepoBootstrapGitRequests guards the fix for a real
+// session where "git 초기화 하자" (and "git init") was not recognized as an
+// explicit git request, so AllowsGitMutation stayed false and the tool contract
+// blocked git init even under full permission. Repo bootstrap (init/clone) is an
+// explicit user-requested git action and must allow git mutation.
+func TestRequestEnvelopeAllowsRepoBootstrapGitRequests(t *testing.T) {
+	for _, request := range []string{
+		"git 초기화 하자",
+		"git init",
+		"저장소 초기화 해줘",
+		"clone the repository",
+	} {
+		envelope := buildRequestEnvelope(request)
+		if !envelope.ExplicitGitRequest || !envelope.AllowsGitMutation {
+			t.Fatalf("repo bootstrap request %q should allow git mutation, got %#v", request, envelope)
+		}
+	}
+	// A question about git init stays read-only (no mutation granted).
+	q := buildRequestEnvelope("git init이 뭐야?")
+	if q.AllowsGitMutation {
+		t.Fatalf("a question about git init must not allow git mutation, got %#v", q)
+	}
+}
+
 func TestRequestEnvelopeKeepsDraftGoalPromptOutOfExecution(t *testing.T) {
 	envelope := buildRequestEnvelope("goal 프롬프트를 작성해줘")
 	if !envelope.GoalPromptDraftOnly {

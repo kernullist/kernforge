@@ -1569,6 +1569,13 @@ func looksLikeExplicitGitIntent(text string) bool {
 	}
 	if containsAny(lower,
 		"git add", "git commit", "git push", "git stage", "git stash", "create a pr", "create pr", "open a pr", "open pr", "pull request",
+		// Repo bootstrap (init/clone) is an explicit, user-requested git action even
+		// though it is not in the commit/push verb set; recognize it so a plain
+		// "git init" / "저장소 초기화" is not blocked as an unrequested git mutation.
+		"git init", "git clone", "initialize a git", "initialize the git", "init a git", "set up a git repo", "set up git",
+		"clone the repo", "clone this repo", "clone the repository",
+		"git 초기화", "깃 초기화", "저장소 초기화", "레포 초기화", "리포 초기화", "리포지토리 초기화", "repo 초기화", "repository 초기화",
+		"git 저장소 초기화", "git 저장소 만들", "깃 저장소 만들", "저장소 복제", "레포 복제", "리포 복제",
 		"stage these changes", "stage the changes", "stage this", "stage it", "stage everything", "stage all",
 		"commit these changes", "commit the changes", "commit the staged changes", "commit this", "commit it", "commit everything", "commit all",
 		"push this branch", "push the branch", "push these changes", "push it",
