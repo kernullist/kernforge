@@ -811,6 +811,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	stopHookActive := false
 	finalHarnessRevisions := 0
 	runtimeGateGitWriteNudges := 0
+	runtimeGateGitWriteStalenessWarned := false
 	postChangeReviewRevisions := 0
 	postChangeReviewExhaustedNudge := false
 	lastPostChangeReviewFingerprint := ""
@@ -1163,20 +1164,38 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				continue
 			}
 			if explicitGitRequest && hasMutatingGitToolCalls(resp.Message.ToolCalls) {
-				blocked, feedback := a.runtimeGateFeedbackForAction(runtimeGateActionGitWrite)
-				if blocked {
-					runtimeGateGitWriteNudges++
-					if runtimeGateGitWriteNudges > 3 {
-						return "", fmt.Errorf("runtime gate still blocks git write after repeated attempts")
+				gitWriteLedger := a.refreshRuntimeGateLedger(runtimeGateActionGitWrite)
+				if runtimeGateBlocksAction(gitWriteLedger) {
+					if runtimeGateBlockersAreReviewStalenessOnly(gitWriteLedger) {
+						// The user explicitly asked to commit and the only thing the
+						// gate holds against it is review freshness (the latest review
+						// is stale, or no review covers the current changes). That is
+						// the user's call to override -- "not reviewed yet" is not a
+						// code defect -- so surface it once as a warning and let the
+						// git write proceed instead of looping until the nudge cap
+						// aborts the turn. Real review findings still hard-block below.
+						if !runtimeGateGitWriteStalenessWarned {
+							runtimeGateGitWriteStalenessWarned = true
+							if a.EmitProgress != nil {
+								a.EmitProgress(localizedText(a.Config,
+									"Proceeding with the git write at your explicit request even though the latest review is stale or missing. Run /review first if you want the commit gated on a fresh review.",
+									"명시적 요청에 따라 최신 리뷰가 없거나 오래되었어도 git 작업을 진행합니다. 커밋을 최신 리뷰로 게이트하려면 먼저 /review를 실행하세요."))
+							}
+						}
+					} else {
+						runtimeGateGitWriteNudges++
+						if runtimeGateGitWriteNudges > 3 {
+							return "", fmt.Errorf("runtime gate still blocks git write after repeated attempts")
+						}
+						if err := addRedirectGuidance(
+							resp.Message.ToolCalls,
+							"NOT_EXECUTED: runtime gate blocked this git write action; follow the gate feedback before retrying.",
+							renderRuntimeGateBlockedFeedback(gitWriteLedger, runtimeGateActionGitWrite),
+						); err != nil {
+							return "", err
+						}
+						continue
 					}
-					if err := addRedirectGuidance(
-						resp.Message.ToolCalls,
-						"NOT_EXECUTED: runtime gate blocked this git write action; follow the gate feedback before retrying.",
-						feedback,
-					); err != nil {
-						return "", err
-					}
-					continue
 				}
 			}
 			if replyBlamesInternalToolTranscriptRecovery(resp.Message.Text) {

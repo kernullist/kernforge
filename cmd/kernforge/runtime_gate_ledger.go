@@ -124,7 +124,7 @@ func buildRuntimeGateLedgerWithReview(root string, session *Session, action stri
 		runtimeGateAttachReview(root, &ledger, reviewRun)
 		observedReview = &reviewRun
 	} else if len(ledger.ChangedPaths) > 0 {
-		message := "no latest review run covers current changed files"
+		message := runtimeGateBlockerMissingReviewMessage
 		if runtimeGateActionRequiresReview(action) {
 			ledger.Blockers = append(ledger.Blockers, message)
 		} else if !strings.EqualFold(action, runtimeGateActionCompletionAudit) || !runtimeGateVerificationPassed(session) {
@@ -692,7 +692,7 @@ func runtimeGateAttachReview(root string, ledger *RuntimeGateLedger, review Revi
 		tx.Status = "stale"
 		tx.StaleReasons = append(tx.StaleReasons, freshness.StaleReason)
 		ledger.StaleReasons = append(ledger.StaleReasons, freshness.StaleReason)
-		ledger.Blockers = append(ledger.Blockers, "latest review is stale: "+valueOrDefault(freshness.StaleReason, "review fingerprint changed"))
+		ledger.Blockers = append(ledger.Blockers, runtimeGateBlockerStaleReviewPrefix+" "+valueOrDefault(freshness.StaleReason, "review fingerprint changed"))
 		ledger.NextCommands = appendRuntimeGateNextCommand(ledger.NextCommands, ReviewNextCommand{
 			ID:             "review",
 			Command:        "/review",
@@ -1218,6 +1218,45 @@ func runtimeGateWaiverActive(waiver ReviewWaiver, now time.Time) bool {
 func runtimeGateBlocksAction(ledger RuntimeGateLedger) bool {
 	ledger.Normalize()
 	return strings.EqualFold(ledger.Status, runtimeGateStatusBlocked)
+}
+
+// Stable blocker messages so freshness-only blocks can be distinguished from
+// real review-finding blocks without fragile string matching scattered around.
+const (
+	runtimeGateBlockerStaleReviewPrefix    = "latest review is stale:"
+	runtimeGateBlockerMissingReviewMessage = "no latest review run covers current changed files"
+)
+
+// runtimeGateBlockerIsReviewStaleness reports whether a single blocker is a
+// review-freshness signal (the review is stale, or no review covers the current
+// changes) rather than an actual code-finding blocker.
+func runtimeGateBlockerIsReviewStaleness(blocker string) bool {
+	b := strings.TrimSpace(blocker)
+	if b == "" {
+		return false
+	}
+	if strings.EqualFold(b, runtimeGateBlockerMissingReviewMessage) {
+		return true
+	}
+	return strings.HasPrefix(b, runtimeGateBlockerStaleReviewPrefix)
+}
+
+// runtimeGateBlockersAreReviewStalenessOnly reports whether the gate is blocked
+// solely by review-freshness signals (stale or missing review) and not by any
+// real review findings. An explicit user git request may proceed past such a
+// freshness-only block with a warning -- "not reviewed yet" is the user's call
+// to override -- but must still be hard-blocked when the review actually ran and
+// found blocking issues.
+func runtimeGateBlockersAreReviewStalenessOnly(ledger RuntimeGateLedger) bool {
+	if len(ledger.Blockers) == 0 {
+		return false
+	}
+	for _, blocker := range ledger.Blockers {
+		if !runtimeGateBlockerIsReviewStaleness(blocker) {
+			return false
+		}
+	}
+	return true
 }
 
 // nonHarnessLedgerBlockers returns the ledger blockers that do NOT originate from
@@ -1792,10 +1831,42 @@ func runtimeGatePrimaryNextCommandLine(ledger RuntimeGateLedger) string {
 	return command + " - " + strings.TrimSpace(next.Reason)
 }
 
+// runtimeGateBlockedRemedy returns plain-language, concrete steps that tell the
+// reader exactly what to do to clear the block, keyed off the kind of blocker
+// (real review findings vs. a stale/missing review). The terse blocker strings
+// alone ("latest review is stale") left users unsure what action to take.
+func runtimeGateBlockedRemedy(ledger RuntimeGateLedger) string {
+	staleness := false
+	findings := false
+	for _, blocker := range ledger.Blockers {
+		if runtimeGateBlockerIsReviewStaleness(blocker) {
+			staleness = true
+		} else {
+			findings = true
+		}
+	}
+	var steps []string
+	if findings {
+		if ref := strings.TrimSpace(ledger.ReviewRunID); ref != "" {
+			steps = append(steps, fmt.Sprintf("- The latest review found blocking issues. Open the review report (%s), fix each listed finding in the code, then run /review again. Waive a finding only if it is a confirmed false positive.", ref))
+		} else {
+			steps = append(steps, "- The latest review found blocking issues. Fix each listed finding in the code, then run /review again. Waive a finding only if it is a confirmed false positive.")
+		}
+	}
+	if staleness {
+		steps = append(steps, "- The current changes are not covered by a fresh review. Run /review (read-only and safe) to create one. Note: an explicit user git commit proceeds without this with a warning; a final answer still needs it.")
+	}
+	return strings.Join(steps, "\n")
+}
+
 func renderRuntimeGateBlockedFeedback(ledger RuntimeGateLedger, action string) string {
 	ledger.Normalize()
 	var b strings.Builder
-	fmt.Fprintf(&b, "Runtime gate ledger blocked %s. Resolve the blockers before continuing.", normalizeRuntimeGateAction(action))
+	fmt.Fprintf(&b, "Runtime gate blocked %s.", normalizeRuntimeGateAction(action))
+	if remedy := runtimeGateBlockedRemedy(ledger); remedy != "" {
+		b.WriteString("\n\nWhat to do:\n")
+		b.WriteString(remedy)
+	}
 	if ledger.ID != "" {
 		fmt.Fprintf(&b, "\n\nLedger: %s", ledger.ID)
 	}

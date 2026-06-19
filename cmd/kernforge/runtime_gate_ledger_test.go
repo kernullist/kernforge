@@ -1666,3 +1666,49 @@ func TestRuntimeGateSummaryTreatsEmptyLedgerAsUnknown(t *testing.T) {
 		t.Fatalf("expected empty ledger review freshness to be unknown, got %q", got)
 	}
 }
+
+func TestRuntimeGateBlockersAreReviewStalenessOnly(t *testing.T) {
+	cases := []struct {
+		name     string
+		blockers []string
+		want     bool
+	}{
+		{"stale only", []string{runtimeGateBlockerStaleReviewPrefix + " unreviewed changed files: app.py"}, true},
+		{"missing review only", []string{runtimeGateBlockerMissingReviewMessage}, true},
+		{"stale and missing", []string{runtimeGateBlockerMissingReviewMessage, runtimeGateBlockerStaleReviewPrefix + " branch changed"}, true},
+		{"real findings", []string{"latest review has unwaived blockers: RF-001"}, false},
+		{"mixed staleness and findings", []string{runtimeGateBlockerMissingReviewMessage, "latest review has unwaived blockers: RF-001"}, false},
+		{"no blockers", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := runtimeGateBlockersAreReviewStalenessOnly(RuntimeGateLedger{Blockers: tc.blockers})
+			if got != tc.want {
+				t.Fatalf("runtimeGateBlockersAreReviewStalenessOnly(%v) = %v, want %v", tc.blockers, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderRuntimeGateBlockedFeedbackGivesConcreteRemedy(t *testing.T) {
+	// Stale/missing review -> tell the user to run /review, not just "stale".
+	staleLedger := RuntimeGateLedger{
+		Action:   runtimeGateActionGitWrite,
+		Blockers: []string{runtimeGateBlockerMissingReviewMessage},
+	}
+	staleFeedback := renderRuntimeGateBlockedFeedback(staleLedger, runtimeGateActionGitWrite)
+	if !strings.Contains(staleFeedback, "What to do:") || !strings.Contains(staleFeedback, "/review") {
+		t.Fatalf("expected stale feedback to name a concrete action, got:\n%s", staleFeedback)
+	}
+
+	// Real findings -> tell the user to fix the findings and reference the report.
+	findingsLedger := RuntimeGateLedger{
+		Action:      runtimeGateActionGitWrite,
+		ReviewRunID: "review-123",
+		Blockers:    []string{"latest review has unwaived blockers: RF-001"},
+	}
+	findingsFeedback := renderRuntimeGateBlockedFeedback(findingsLedger, runtimeGateActionGitWrite)
+	if !strings.Contains(findingsFeedback, "fix each listed finding") || !strings.Contains(findingsFeedback, "review-123") {
+		t.Fatalf("expected findings feedback to point at the report and fixes, got:\n%s", findingsFeedback)
+	}
+}
