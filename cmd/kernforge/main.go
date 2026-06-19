@@ -86,7 +86,10 @@ type runtimeState struct {
 	pendingAssistantSpacing         string
 	assistantStreamInFence          bool
 	assistantStreamLine             string
-	assistantBlockPrinted           bool
+	assistantBlockOpen              bool
+	assistantTurnClosedWithRail     bool
+	pendingCloseElapsed             time.Duration
+	pendingCloseWithElapsed         bool
 	suppressThinkingMu              sync.Mutex
 	suppressThinking                bool
 	thinkingStatusMu                sync.Mutex
@@ -953,18 +956,33 @@ func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
 	if startedAt.IsZero() {
 		return
 	}
+	elapsed := time.Since(startedAt)
+	// Ask the stream-finisher to close the turn's final block with the elapsed
+	// time as its footer, then flush any in-flight stream.
+	rt.pendingCloseElapsed = elapsed
+	rt.pendingCloseWithElapsed = true
 	rt.flushAssistantStream()
 	rt.clearThinkingStatus()
 	rt.clearThinkingDetails()
 	rt.stopThinkingIndicator()
 	rt.clearFooterLine()
-	elapsed := time.Since(startedAt)
-	if rt.assistantBlockPrinted {
-		rt.assistantBlockPrinted = false
-		rt.writeOutputLines(rt.ui.assistantClosingRail(elapsed))
-		return
+
+	closedWithRail := rt.assistantTurnClosedWithRail
+	rt.assistantTurnClosedWithRail = false
+
+	switch {
+	case closedWithRail:
+		// The streamed final block already carries the elapsed footer.
+	case rt.assistantBlockOpen:
+		// A non-streamed block (printAssistant) is still open; close it with
+		// the elapsed footer.
+		rt.emitAssistantClosingRail()
+	default:
+		// No assistant block to attach the footer to (tool-only turn, or the
+		// block was already closed before later output).
+		rt.writeOutputLines(rt.ui.turnElapsedLine(rt.cfg, elapsed))
 	}
-	rt.writeOutputLines(rt.ui.turnElapsedLine(rt.cfg, elapsed))
+	rt.pendingCloseWithElapsed = false
 }
 
 func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
@@ -1393,6 +1411,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.pendingAssistantSpacing += text
 		if countLineBreaks(rt.pendingAssistantSpacing) >= 3 {
 			rt.writeOutput("\n")
+			rt.emitAssistantClosingRail()
 			rt.streamingAssistant = false
 			if normalized := normalizeAssistantDisplayText(rt.streamedAssistantText.String()); normalized != "" {
 				rt.lastAssistantMu.Lock()
@@ -1420,7 +1439,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.stopThinkingIndicator()
 		rt.writeOutput(rt.ui.assistantHeader() + "\n")
 		rt.streamingAssistant = true
-		rt.assistantBlockPrinted = true
+		rt.assistantBlockOpen = true
 	}
 	text = formatAssistantStreamDelta(rt.streamedAssistantText.String(), text)
 	if text == "" {
@@ -1428,6 +1447,26 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 	}
 	rt.streamedAssistantText.WriteString(text)
 	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamInFence, &rt.assistantStreamLine))
+}
+
+// emitAssistantClosingRail terminates the assistant block that is currently
+// open by drawing the rail's closing corner. The turn's final block carries
+// the elapsed time; intermediate blocks get a bare corner. It is a no-op when
+// no block is open or in no-color mode (there is no rail to close).
+func (rt *runtimeState) emitAssistantClosingRail() {
+	if !rt.assistantBlockOpen || !rt.ui.color {
+		rt.assistantBlockOpen = false
+		rt.pendingCloseWithElapsed = false
+		return
+	}
+	rt.assistantBlockOpen = false
+	if rt.pendingCloseWithElapsed {
+		rt.pendingCloseWithElapsed = false
+		rt.assistantTurnClosedWithRail = true
+		rt.writeOutput(rt.ui.assistantClosingRail(rt.pendingCloseElapsed) + "\n")
+		return
+	}
+	rt.writeOutput(rt.ui.assistantClosingRailBare() + "\n")
 }
 
 func (rt *runtimeState) finishAssistantStream() {
@@ -1439,6 +1478,7 @@ func (rt *runtimeState) finishAssistantStream() {
 		return
 	}
 	rt.writeOutput("\n")
+	rt.emitAssistantClosingRail()
 	rt.streamingAssistant = false
 	if normalized := normalizeAssistantDisplayText(rt.streamedAssistantText.String()); normalized != "" {
 		rt.lastAssistantMu.Lock()
@@ -2275,7 +2315,7 @@ func (rt *runtimeState) printAssistant(text string) {
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
 	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
-	rt.assistantBlockPrinted = true
+	rt.assistantBlockOpen = true
 }
 
 func (rt *runtimeState) printAssistantWhileThinking(text string) {

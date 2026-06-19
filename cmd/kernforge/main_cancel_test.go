@@ -739,6 +739,40 @@ func TestRuntimeStateAppendAssistantStreamPreservesBufferedParagraphBreaks(t *te
 	}
 }
 
+func TestRuntimeStateMultipleAssistantBlocksEachGetClosingRail(t *testing.T) {
+	var out bytes.Buffer
+	rt := &runtimeState{
+		writer: &out,
+		ui:     UI{color: true},
+	}
+
+	// Intermediate block: closed before the next one with a bare corner.
+	rt.appendAssistantStream("first block")
+	rt.finishAssistantStream()
+
+	// Final block: closed carrying the turn elapsed time as its footer.
+	rt.appendAssistantStream("second block")
+	rt.pendingCloseElapsed = 805 * time.Second
+	rt.pendingCloseWithElapsed = true
+	rt.finishAssistantStream()
+
+	rendered := out.String()
+	if got := strings.Count(rendered, ">> assistant "); got != 2 {
+		t.Fatalf("expected two assistant headers, got %d in %q", got, rendered)
+	}
+	bare := UI{color: true}.assistantClosingRailBare()
+	withElapsed := UI{color: true}.assistantClosingRail(805 * time.Second)
+	if !strings.Contains(rendered, bare) {
+		t.Fatalf("expected intermediate block to close with a bare rail, got %q", rendered)
+	}
+	if !strings.Contains(rendered, withElapsed) {
+		t.Fatalf("expected final block to close with the elapsed rail, got %q", rendered)
+	}
+	if rt.assistantBlockOpen {
+		t.Fatalf("expected no assistant block left open after final close")
+	}
+}
+
 func TestRuntimeStateAppendAssistantStreamShowsWorkingStatusForRepeatedBlankLines(t *testing.T) {
 	var out bytes.Buffer
 	rt := &runtimeState{

@@ -104,14 +104,24 @@ func (ui UI) assistantGutterBlank() string {
 }
 
 // assistantClosingRail renders the rail's closing corner with the turn elapsed
-// time (e.g. " ╰─ 13m25s"), used in place of the standard elapsed line when an
-// assistant block was printed this turn.
+// time (e.g. " ╰─ 13m25s"), used to terminate the final assistant block of a
+// turn so the elapsed time reads as the block footer.
 func (ui UI) assistantClosingRail(elapsed time.Duration) string {
 	label := formatProgressElapsed(elapsed)
 	if !ui.color {
 		return " " + assistantRailCorner + " " + label
 	}
 	return ui.assistantRail(" "+assistantRailCorner+" ") + ui.dim(label)
+}
+
+// assistantClosingRailBare renders the rail's closing corner without a footer,
+// used to terminate intermediate assistant blocks when a turn emits more than
+// one (e.g. a review verdict followed by the final answer).
+func (ui UI) assistantClosingRailBare() string {
+	if !ui.color {
+		return " " + assistantRailCorner
+	}
+	return ui.assistantRail(" " + assistantRailCorner)
 }
 
 func (ui UI) clearScreen() string {
