@@ -577,6 +577,51 @@ func TestAssistantCodeBlocksUseSeparateToneWhenColorEnabled(t *testing.T) {
 	}
 }
 
+func TestAssistantBodyFramesEachLineWithLeftRailWhenColorEnabled(t *testing.T) {
+	ui := UI{color: true}
+	rendered := ui.assistant("Summary:\n- first\n- second")
+
+	gutter := ui.assistantGutter()
+	for _, needle := range []string{
+		gutter + ui.mint("Summary:"),
+		gutter + ui.mint("- first"),
+		gutter + ui.mint("- second"),
+	} {
+		if !strings.Contains(rendered, needle) {
+			t.Fatalf("expected body line framed by left rail %q, got %q", needle, rendered)
+		}
+	}
+	// The rail must not bleed into the no-color path.
+	plain := UI{color: false}.assistant("Summary:\n- first")
+	if strings.Contains(plain, assistantGutterBar) {
+		t.Fatalf("expected no rail in plain output, got %q", plain)
+	}
+}
+
+func TestAssistantStreamDeltaDrawsRailOncePerLine(t *testing.T) {
+	ui := UI{color: true}
+	inFence := false
+	prefix := ""
+
+	// A line split across two deltas must carry exactly one rail.
+	out := ui.renderAssistantStreamDelta("hel", &inFence, &prefix)
+	out += ui.renderAssistantStreamDelta("lo\nworld\n", &inFence, &prefix)
+
+	if got := strings.Count(out, assistantGutterBar); got != 2 {
+		t.Fatalf("expected one rail per line (2 total), got %d in %q", got, out)
+	}
+	if prefix != "" {
+		t.Fatalf("expected line prefix reset after completed lines, got %q", prefix)
+	}
+}
+
+func TestAssistantClosingRailCarriesElapsed(t *testing.T) {
+	plain := UI{color: false}.assistantClosingRail(805 * time.Second)
+	if !strings.Contains(plain, assistantRailCorner) || !strings.Contains(plain, "13m25s") {
+		t.Fatalf("expected closing rail with elapsed, got %q", plain)
+	}
+}
+
 func TestAssistantCollapsesRepeatedSentenceRun(t *testing.T) {
 	ui := UI{color: false}
 	repeated := "검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다. 검증 실패가 현재 patch scope 밖입니다.수정 완료했습니다."

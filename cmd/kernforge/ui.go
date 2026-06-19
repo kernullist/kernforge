@@ -82,6 +82,37 @@ func (ui UI) cloud(text string) string         { return ui.paint("38;5;255", tex
 func (ui UI) blush(text string) string         { return ui.paint("38;5;218", text) }
 func (ui UI) mint(text string) string          { return ui.paint("38;5;121", text) }
 func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
+func (ui UI) assistantRail(text string) string { return ui.paint("38;5;79", text) }
+
+// assistantGutterBar is the vertical rail drawn to the left of every assistant
+// body line so the answer block reads as a framed callout, distinct from the
+// flush-left shell/tool output. assistantRailCorner closes the rail.
+const (
+	assistantGutterBar  = "┃" // heavy vertical bar
+	assistantRailCorner = "╰─"
+)
+
+// assistantGutter is the painted left rail prefixed before non-blank body
+// lines (bar plus a trailing space). assistantGutterBlank omits the trailing
+// space so blank lines inside the block do not carry trailing whitespace.
+func (ui UI) assistantGutter() string {
+	return " " + ui.assistantRail(assistantGutterBar) + " "
+}
+
+func (ui UI) assistantGutterBlank() string {
+	return " " + ui.assistantRail(assistantGutterBar)
+}
+
+// assistantClosingRail renders the rail's closing corner with the turn elapsed
+// time (e.g. " ╰─ 13m25s"), used in place of the standard elapsed line when an
+// assistant block was printed this turn.
+func (ui UI) assistantClosingRail(elapsed time.Duration) string {
+	label := formatProgressElapsed(elapsed)
+	if !ui.color {
+		return " " + assistantRailCorner + " " + label
+	}
+	return ui.assistantRail(" "+assistantRailCorner+" ") + ui.dim(label)
+}
 
 func (ui UI) clearScreen() string {
 	ensureVirtualTerminalProcessing()
@@ -1125,6 +1156,9 @@ func (ui UI) renderAssistantBody(text string) string {
 		return text
 	}
 
+	gutter := ui.assistantGutter()
+	blankGutter := ui.assistantGutterBlank()
+
 	var out strings.Builder
 	inFence := false
 	for _, line := range strings.SplitAfter(text, "\n") {
@@ -1133,8 +1167,13 @@ func (ui UI) renderAssistantBody(text string) string {
 		}
 		hasNewline := strings.HasSuffix(line, "\n")
 		content := strings.TrimSuffix(line, "\n")
-		kind := classifyAssistantLine(content, inFence)
-		out.WriteString(ui.renderAssistantLine(kind, content))
+		if strings.TrimSpace(content) == "" {
+			out.WriteString(blankGutter)
+		} else {
+			kind := classifyAssistantLine(content, inFence)
+			out.WriteString(gutter)
+			out.WriteString(ui.renderAssistantLine(kind, content))
+		}
 		if hasNewline {
 			out.WriteByte('\n')
 		}
@@ -1153,6 +1192,9 @@ func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *
 		return text
 	}
 
+	gutter := ui.assistantGutter()
+	blankGutter := ui.assistantGutterBlank()
+
 	var out strings.Builder
 	for _, segment := range strings.SplitAfter(text, "\n") {
 		if segment == "" {
@@ -1161,10 +1203,24 @@ func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *
 
 		hasNewline := strings.HasSuffix(segment, "\n")
 		content := strings.TrimSuffix(segment, "\n")
+		// linePrefix holds the visible content already emitted for the current
+		// line; an empty prefix means we are at the start of a line and must
+		// draw the left rail before any content.
+		atLineStart := *linePrefix == ""
+
 		if hasNewline {
 			fullLine := *linePrefix + content
 			kind := classifyAssistantLine(fullLine, *inFence)
-			out.WriteString(ui.renderAssistantLine(kind, content))
+			if atLineStart {
+				if strings.TrimSpace(content) == "" {
+					out.WriteString(blankGutter)
+				} else {
+					out.WriteString(gutter)
+					out.WriteString(ui.renderAssistantLine(kind, content))
+				}
+			} else {
+				out.WriteString(ui.renderAssistantLine(kind, content))
+			}
 			out.WriteByte('\n')
 			if isAssistantFenceLine(fullLine) {
 				*inFence = !*inFence
@@ -1175,6 +1231,9 @@ func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *
 
 		previewLine := *linePrefix + content
 		kind := classifyAssistantLine(previewLine, *inFence)
+		if atLineStart {
+			out.WriteString(gutter)
+		}
 		out.WriteString(ui.renderAssistantLine(kind, content))
 		*linePrefix = previewLine
 	}

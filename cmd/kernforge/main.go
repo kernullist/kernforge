@@ -86,6 +86,7 @@ type runtimeState struct {
 	pendingAssistantSpacing         string
 	assistantStreamInFence          bool
 	assistantStreamLine             string
+	assistantBlockPrinted           bool
 	suppressThinkingMu              sync.Mutex
 	suppressThinking                bool
 	thinkingStatusMu                sync.Mutex
@@ -957,7 +958,13 @@ func (rt *runtimeState) printTurnElapsed(startedAt time.Time) {
 	rt.clearThinkingDetails()
 	rt.stopThinkingIndicator()
 	rt.clearFooterLine()
-	rt.writeOutputLines(rt.ui.turnElapsedLine(rt.cfg, time.Since(startedAt)))
+	elapsed := time.Since(startedAt)
+	if rt.assistantBlockPrinted {
+		rt.assistantBlockPrinted = false
+		rt.writeOutputLines(rt.ui.assistantClosingRail(elapsed))
+		return
+	}
+	rt.writeOutputLines(rt.ui.turnElapsedLine(rt.cfg, elapsed))
 }
 
 func slashCommandShouldPrintTurnElapsed(cmd Command) bool {
@@ -1413,6 +1420,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		rt.stopThinkingIndicator()
 		rt.writeOutput(rt.ui.assistantHeader() + "\n")
 		rt.streamingAssistant = true
+		rt.assistantBlockPrinted = true
 	}
 	text = formatAssistantStreamDelta(rt.streamedAssistantText.String(), text)
 	if text == "" {
@@ -2267,6 +2275,7 @@ func (rt *runtimeState) printAssistant(text string) {
 	rt.outputMu.Lock()
 	defer rt.outputMu.Unlock()
 	fmt.Fprintln(rt.writer, rt.ui.assistant(text))
+	rt.assistantBlockPrinted = true
 }
 
 func (rt *runtimeState) printAssistantWhileThinking(text string) {
