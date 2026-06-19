@@ -17495,3 +17495,43 @@ func TestAgentStripsUnsupportedOwnerNodeIDFromListFilesToolCall(t *testing.T) {
 		t.Fatalf("expected list_files result content, got %q", toolResult.Text)
 	}
 }
+
+func TestGitOnlyCommitRequestDoesNotRunCodeEdits(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "app.py"), []byte("print(1)\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	session := NewSession(root, "scripted", "main-model", "", "default")
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	ws := Workspace{BaseRoot: root, Root: root}
+	// The model tries to re-edit on a commit-only request; the edit tool must
+	// never run -- the guard redirects it back to committing the working tree.
+	editTool := &failingTool{
+		name: "apply_patch",
+		err:  fmt.Errorf("apply_patch must not run on a git-only commit request"),
+	}
+	provider := &scriptedProviderClient{
+		replies: []ChatResponse{
+			toolCallResponse("apply_patch", map[string]any{"patch": "*** Begin Patch\n*** End Patch\n"}),
+			{Message: Message{Role: "assistant", Text: "Committed the working tree."}},
+		},
+	}
+	agent := &Agent{
+		Config:    Config{AutoLocale: boolPtr(false)},
+		Client:    provider,
+		Tools:     NewToolRegistry(editTool),
+		Workspace: ws,
+		Session:   session,
+		Store:     store,
+	}
+
+	if _, err := agent.Reply(context.Background(), "커밋하자"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if editTool.calls != 0 {
+		t.Fatalf("expected no code edits on a git-only commit request, got %d apply_patch call(s)", editTool.calls)
+	}
+	if len(provider.requests) < 2 {
+		t.Fatalf("expected the edit to be redirected and the turn to continue, got %d requests", len(provider.requests))
+	}
+}

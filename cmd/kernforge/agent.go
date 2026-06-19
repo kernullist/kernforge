@@ -812,6 +812,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 	finalHarnessRevisions := 0
 	runtimeGateGitWriteNudges := 0
 	runtimeGateGitWriteStalenessWarned := false
+	gitOnlyEditRedirects := 0
 	postChangeReviewRevisions := 0
 	postChangeReviewExhaustedNudge := false
 	lastPostChangeReviewFingerprint := ""
@@ -1158,6 +1159,32 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					resp.Message.ToolCalls,
 					"NOT_EXECUTED: git write actions require an explicit user request; continue without staging, committing, pushing, or opening a PR.",
 					"Do not stage, commit, push, or open a PR unless the user explicitly asks for a git action first. Continue with inspection, edits, verification, and a summary instead.",
+				); err != nil {
+					return "", err
+				}
+				continue
+			}
+			if explicitGitRequest && !explicitEditRequest && hasMutatingEditToolCalls(resp.Message.ToolCalls) {
+				// This turn is a git-only request (e.g. "commit"), not an edit
+				// request. Do not let it silently turn into a new code edit plus a
+				// pre-write review -- the user asked to commit the current work, not
+				// to keep changing it. Redirect to the git action; if code genuinely
+				// must change first, the model must stop and ask rather than edit.
+				gitOnlyEditRedirects++
+				if gitOnlyEditRedirects > 3 {
+					reply := localizedText(a.Config,
+						"I did not commit. You asked only to commit, but I kept being steered toward code edits, and I should not edit code on a commit-only request. Either tell me to fix the code (then I will edit, review, and commit), or tell me to commit the current working tree as it is.",
+						"커밋하지 않았습니다. 커밋만 요청하셨는데 계속 코드 수정 쪽으로 흘러가서 멈췄습니다. 커밋 전용 요청에서는 코드를 임의로 고치지 않습니다. 코드를 고치라고 하시면 수정 후 리뷰하고 커밋하겠고, 아니면 현재 작업 트리 그대로 커밋하라고 알려주세요.")
+					a.Session.AddMessage(Message{Role: "assistant", Phase: messagePhaseFinalAnswer, Text: reply})
+					if saveErr := a.Store.Save(a.Session); saveErr != nil {
+						return "", saveErr
+					}
+					return reply, nil
+				}
+				if err := addRedirectGuidance(
+					resp.Message.ToolCalls,
+					"NOT_EXECUTED: this is a git-only request (e.g. commit); do not propose code edits. Stage and commit the current working tree as it is.",
+					"The user asked only for a git action such as commit, not for code changes. Do not call apply_patch, write_file, replace_in_file, or apply_edit_proposal. Use git_add and git_commit to commit the current working tree exactly as it is now. If you genuinely believe code must change before committing, do not edit -- stop and ask the user first.",
 				); err != nil {
 					return "", err
 				}
@@ -7957,6 +7984,15 @@ func mixedToolCallEditDeferralGuidance(cfg Config) string {
 func hasMutatingGitToolCalls(calls []ToolCall) bool {
 	for _, call := range calls {
 		if toolCallMutatesGitState(call) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMutatingEditToolCalls(calls []ToolCall) bool {
+	for _, call := range calls {
+		if isEditTool(strings.TrimSpace(call.Name)) {
 			return true
 		}
 	}
