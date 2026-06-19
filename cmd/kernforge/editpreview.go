@@ -466,6 +466,19 @@ func buildSelectionAfterExcerptForSelection(path string, after string, selection
 	return fmt.Sprintf("After selected-range excerpt: %s:%d-%d\n%s", filepath.ToSlash(path), start, end, body)
 }
 
+// changedAfterExcerptMaxDiffLines bounds the LCS line diff used to build the
+// multi-region after excerpt. Above this the O(n*m) table is too large, so we
+// fall back to the single-block window.
+const changedAfterExcerptMaxDiffLines = 6000
+
+// buildChangedAfterExcerpt renders the proposed (after) content for the lines
+// that actually changed, as one or more regions with surrounding context and
+// unchanged spans collapsed. A multi-region edit (e.g. imports near the top,
+// a function in the middle, and the entry point at the bottom) keeps EVERY
+// changed region visible instead of being flattened into a single first-to-last
+// block that then loses its middle to head/tail truncation. That middle loss is
+// exactly what made a pre-write reviewer unable to confirm a real change and
+// loop forever on "evidence_unconfirmed".
 func buildChangedAfterExcerpt(path string, before string, after string, limit int) string {
 	before = normalizePreviewText(before)
 	after = normalizePreviewText(after)
@@ -474,6 +487,40 @@ func buildChangedAfterExcerpt(path string, before string, after string, limit in
 	if len(newLines) == 0 {
 		return ""
 	}
+	if len(oldLines) > changedAfterExcerptMaxDiffLines || len(newLines) > changedAfterExcerptMaxDiffLines {
+		return buildChangedAfterExcerptSingleBlock(path, oldLines, newLines, limit)
+	}
+	regions := changedNewLineRegions(oldLines, newLines, 4)
+	if len(regions) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "After changed-code excerpt: %s (%d changed region(s))\n", filepath.ToSlash(path), len(regions))
+	prevEnd := -1
+	omitted := 0
+	for _, region := range regions {
+		if limit > 0 && b.Len() > limit && b.Len() > 0 {
+			omitted++
+			continue
+		}
+		if prevEnd >= 0 && region.start > prevEnd+1 {
+			fmt.Fprintf(&b, "    ... (%d unchanged line(s)) ...\n", region.start-prevEnd-1)
+		}
+		for i := region.start; i <= region.end && i < len(newLines); i++ {
+			fmt.Fprintf(&b, "%5d | %s\n", i+1, newLines[i])
+		}
+		prevEnd = region.end
+	}
+	if omitted > 0 {
+		fmt.Fprintf(&b, "    ... (%d more changed region(s) omitted for length) ...\n", omitted)
+	}
+	return compactPromptSectionPreserveHeadTail(b.String(), limit)
+}
+
+// buildChangedAfterExcerptSingleBlock is the legacy single-window excerpt, kept
+// as a fallback for files too large to diff line-by-line.
+func buildChangedAfterExcerptSingleBlock(path string, oldLines, newLines []string, limit int) string {
 	prefix := 0
 	for prefix < len(oldLines) && prefix < len(newLines) && oldLines[prefix] == newLines[prefix] {
 		prefix++
@@ -504,4 +551,92 @@ func buildChangedAfterExcerpt(path string, before string, after string, limit in
 		fmt.Fprintf(&b, "%5d | %s\n", i+1, newLines[i])
 	}
 	return compactPromptSectionPreserveHeadTail(b.String(), limit)
+}
+
+// changedRegion is an inclusive range of new-line indices that changed,
+// expanded by context and with nearby regions merged.
+type changedRegion struct {
+	start int
+	end   int
+}
+
+// changedNewLineRegions returns the regions of newLines that differ from
+// oldLines, each padded by ctx context lines, with regions closer than the
+// context window merged. It uses an LCS line alignment so every distinct change
+// is reported rather than one first-to-last span.
+func changedNewLineRegions(oldLines, newLines []string, ctx int) []changedRegion {
+	if len(newLines) == 0 {
+		return nil
+	}
+	if ctx < 0 {
+		ctx = 0
+	}
+	matchedNew := lcsMatchedNewIndexes(oldLines, newLines)
+	var regions []changedRegion
+	i := 0
+	for i < len(newLines) {
+		if matchedNew[i] {
+			i++
+			continue
+		}
+		start := i
+		for i < len(newLines) && !matchedNew[i] {
+			i++
+		}
+		end := i - 1
+		start -= ctx
+		if start < 0 {
+			start = 0
+		}
+		end += ctx
+		if end >= len(newLines) {
+			end = len(newLines) - 1
+		}
+		if n := len(regions); n > 0 && start <= regions[n-1].end+1 {
+			if end > regions[n-1].end {
+				regions[n-1].end = end
+			}
+			continue
+		}
+		regions = append(regions, changedRegion{start: start, end: end})
+	}
+	return regions
+}
+
+// lcsMatchedNewIndexes returns, for each index of newLines, whether that line
+// is part of the longest common subsequence with oldLines (i.e. unchanged).
+func lcsMatchedNewIndexes(oldLines, newLines []string) []bool {
+	n, m := len(oldLines), len(newLines)
+	matched := make([]bool, m)
+	if n == 0 || m == 0 {
+		return matched
+	}
+	dp := make([][]int, n+1)
+	for i := range dp {
+		dp[i] = make([]int, m+1)
+	}
+	for i := n - 1; i >= 0; i-- {
+		for j := m - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+	i, j := 0, 0
+	for i < n && j < m {
+		if oldLines[i] == newLines[j] {
+			matched[j] = true
+			i++
+			j++
+		} else if dp[i+1][j] >= dp[i][j+1] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return matched
 }
