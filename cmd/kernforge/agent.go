@@ -122,7 +122,11 @@ const (
 	maxPreWriteReviewRepairInspectNudges = 1
 	maxPreFixReviewRepairInspectTools    = 6
 	maxPreFixReviewRepairInspectNudges   = 1
-	maxEditTargetMismatchFailuresPerTurn = 1
+	// One genuine re-anchor (a fresh read of the current file/diff) earns
+	// another bounded edit attempt instead of bailing on the second mismatch.
+	// The re-anchor-blocks guard below still stops retries that skip re-reading,
+	// so this stays deadlock-safe.
+	maxEditTargetMismatchFailuresPerTurn = 2
 	maxEditTargetMismatchReanchorBlocks  = 1
 	maxToolBudgetExtensions              = 2
 	maxStopHookRevisions                 = 3

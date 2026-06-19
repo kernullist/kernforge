@@ -10372,7 +10372,7 @@ func TestAgentStopsPendingReviewRepairOnN(t *testing.T) {
 	}
 }
 
-func TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess(t *testing.T) {
+func TestAgentReanchorEarnsAnotherEditAttemptAfterMismatch(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "main.go")
 	if err := os.WriteFile(path, []byte("package main\n"), 0o644); err != nil {
@@ -10385,12 +10385,18 @@ func TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess(t *te
 		name: "replace_in_file",
 		err:  fmt.Errorf("%w: search text not found in main.go", ErrEditTargetMismatch),
 	}
+	// A genuine re-anchor (read_file) between mismatches now earns another edit
+	// attempt instead of bailing on the very second mismatch. The second edit
+	// executes (it is not pre-empted by the loop-limit) and the turn continues
+	// to a normal final answer rather than the hard mismatch stop. The ultimate
+	// tool-budget cap still bounds the loop, so this stays deadlock-safe.
 	provider := &scriptedProviderClient{
 		replies: []ChatResponse{
 			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),
 			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
 			toolCallResponse("replace_in_file", map[string]any{"path": "main.go", "search": "missing", "replace": "present"}),
-			{Message: Message{Role: "assistant", Text: "this response must not be requested after repeated edit target mismatch"}},
+			toolCallResponse("read_file", map[string]any{"path": "main.go"}),
+			{Message: Message{Role: "assistant", Text: "final answer after re-anchored retry"}},
 		},
 	}
 	agent := &Agent{
@@ -10406,17 +10412,14 @@ func TestAgentStopsAfterSecondEditTargetMismatchEvenWithInterleavedSuccess(t *te
 	if err != nil {
 		t.Fatalf("Reply: %v", err)
 	}
-	if !strings.Contains(reply, "Edit target mismatches repeated") {
-		t.Fatalf("expected bounded edit mismatch stop reply, got %q", reply)
+	// The second mismatch must NOT trigger the immediate loop-limit bail.
+	if strings.Contains(reply, "Edit target mismatches repeated") {
+		t.Fatalf("expected the re-anchored second attempt to be tolerated, but got the loop-limit bail: %q", reply)
 	}
-	if !strings.Contains(reply, "Result: no code changes were applied") || !strings.Contains(reply, "Latest edit proposal") {
-		t.Fatalf("expected mismatch stop reply to show result and latest proposal, got %q", reply)
-	}
+	// Both edits executed: the re-anchor earned the second attempt instead of
+	// pre-empting it (the old behavior allowed only a single attempt per turn).
 	if replaceTool.calls != 2 {
-		t.Fatalf("expected exactly two mismatched edit attempts, got %d", replaceTool.calls)
-	}
-	if len(provider.requests) != 3 {
-		t.Fatalf("expected agent to stop on the second edit mismatch, got %d requests", len(provider.requests))
+		t.Fatalf("expected two executed edit attempts after a re-anchor, got %d", replaceTool.calls)
 	}
 }
 

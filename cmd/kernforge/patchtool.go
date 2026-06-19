@@ -724,11 +724,17 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to apply hunk %s: %w", hunk.header, err)
 		}
-		updated := make([]string, 0, len(oldLines)-len(oldChunk)+len(newChunk))
+		// Rebuild the replacement from the file's actual lines for context so a
+		// whitespace-tolerant (fuzzy) match preserves the real indentation of
+		// unchanged lines instead of rewriting them with the patch's version.
+		// For exact matches this is identical to newChunk.
+		rebuilt := rebuildPatchNewChunk(hunk, oldLines, applyAt)
+		updated := make([]string, 0, len(oldLines)-len(oldChunk)+len(rebuilt))
 		updated = append(updated, oldLines[:applyAt]...)
-		updated = append(updated, newChunk...)
+		updated = append(updated, rebuilt...)
 		updated = append(updated, oldLines[applyAt+len(oldChunk):]...)
 		oldLines = updated
+		newChunk = rebuilt
 		cursor = applyAt + len(newChunk)
 		lineDelta += len(newChunk) - len(oldChunk)
 	}
@@ -738,6 +744,32 @@ func applyPatchHunks(content string, hunks []patchHunk) (string, error) {
 		result += lineEnding
 	}
 	return result, nil
+}
+
+// rebuildPatchNewChunk produces the replacement lines for a located hunk,
+// taking context (' ') lines from the file's actual content at applyAt so that
+// a whitespace-tolerant match does not rewrite unchanged lines. Added ('+')
+// lines use the patch text; removed ('-') lines are dropped. For an exact match
+// the result is identical to the patch's own new chunk.
+func rebuildPatchNewChunk(hunk patchHunk, fileLines []string, applyAt int) []string {
+	out := make([]string, 0, len(hunk.lines))
+	oldIdx := applyAt
+	for _, line := range hunk.lines {
+		switch line.kind {
+		case ' ':
+			if oldIdx >= 0 && oldIdx < len(fileLines) {
+				out = append(out, fileLines[oldIdx])
+			} else {
+				out = append(out, line.text)
+			}
+			oldIdx++
+		case '-':
+			oldIdx++
+		case '+':
+			out = append(out, line.text)
+		}
+	}
+	return out
 }
 
 func normalizePatchLineEndings(content string) string {
@@ -783,7 +815,64 @@ func locatePatchChunk(lines, oldChunk []string, cursor int, header string, lineD
 	if len(matches) > 1 {
 		return -1, fmt.Errorf("%w: expected context is ambiguous (%d matches)%s", ErrEditTargetMismatch, len(matches), formatPatchMismatchDiagnostic(lines, oldChunk, cursor, header, lineDelta, matches))
 	}
+	// Exact matching failed. Fall back to whitespace-tolerant matching so a
+	// patch whose context drifted only by trailing spaces or indentation still
+	// applies. Leniency is escalated only as needed, and a fuzzy match is
+	// accepted only when it is unambiguous (exactly one location) so a hunk is
+	// never applied to the wrong place. The caller rebuilds the replacement
+	// from the file's actual lines, so unchanged context keeps its real
+	// whitespace.
+	for _, eq := range []func(string, string) bool{patchLinesEqualTrailing, patchLinesEqualTrimmed} {
+		fuzzy := findChunkFuzzyMatchesAtOrAfter(lines, oldChunk, cursor, eq)
+		if len(fuzzy) == 1 {
+			return fuzzy[0], nil
+		}
+		if len(fuzzy) > 1 {
+			break
+		}
+	}
 	return -1, fmt.Errorf("%w: expected context not found%s", ErrEditTargetMismatch, formatPatchMismatchDiagnostic(lines, oldChunk, cursor, header, lineDelta, nil))
+}
+
+// patchLinesEqualTrailing treats two lines as equal when they differ only by
+// trailing spaces or tabs.
+func patchLinesEqualTrailing(a, b string) bool {
+	return strings.TrimRight(a, " \t") == strings.TrimRight(b, " \t")
+}
+
+// patchLinesEqualTrimmed treats two lines as equal when they differ only by
+// leading or trailing whitespace (indentation drift).
+func patchLinesEqualTrimmed(a, b string) bool {
+	return strings.TrimSpace(a) == strings.TrimSpace(b)
+}
+
+func chunkMatchesFuzzyAt(lines, chunk []string, index int, eq func(string, string) bool) bool {
+	if index < 0 || index+len(chunk) > len(lines) {
+		return false
+	}
+	for j := 0; j < len(chunk); j++ {
+		if !eq(lines[index+j], chunk[j]) {
+			return false
+		}
+	}
+	return true
+}
+
+func findChunkFuzzyMatchesAtOrAfter(lines, chunk []string, start int, eq func(string, string) bool) []int {
+	if len(chunk) == 0 {
+		return nil
+	}
+	if start < 0 {
+		start = 0
+	}
+	limit := len(lines) - len(chunk)
+	var matches []int
+	for i := start; i <= limit; i++ {
+		if chunkMatchesFuzzyAt(lines, chunk, i, eq) {
+			matches = append(matches, i)
+		}
+	}
+	return matches
 }
 
 func formatPatchMismatchDiagnostic(lines, oldChunk []string, cursor int, header string, lineDelta int, matches []int) string {
@@ -810,6 +899,10 @@ func formatPatchMismatchDiagnostic(lines, oldChunk []string, cursor int, header 
 
 	candidates := patchMismatchCandidateStarts(lines, oldChunk, cursor, header, lineDelta, matches)
 	if len(candidates) == 0 {
+		// No anchor line matched anywhere, so the patch context is stale or the
+		// path is wrong. Surface the file's actual content around the predicted
+		// location so the next attempt can re-anchor without a separate read.
+		b.WriteString(formatPatchCurrentContentWindow(lines, cursor, header, lineDelta))
 		return b.String()
 	}
 	b.WriteString("\nnearest current context:")
@@ -835,6 +928,41 @@ func formatPatchMismatchDiagnostic(lines, oldChunk []string, cursor int, header 
 		for i := start; i < end; i++ {
 			fmt.Fprintf(&b, "\n    %d: %s", i+1, quotePatchDiagnosticLine(lines[i]))
 		}
+	}
+	return b.String()
+}
+
+// formatPatchCurrentContentWindow renders a window of the file's actual lines
+// around the location the hunk header predicted (falling back to the search
+// cursor), so a model whose patch context no longer matches can see the real
+// current content and rebuild the patch against it.
+func formatPatchCurrentContentWindow(lines []string, cursor int, header string, lineDelta int) string {
+	if len(lines) == 0 {
+		return "\ncurrent file is empty (0 lines); the path may be wrong or the file may not exist"
+	}
+	const windowRadius = 6
+	center := cursor
+	if oldStart, ok := parsePatchHunkOldStart(header); ok {
+		center = oldStart - 1 + lineDelta
+	}
+	if center < 0 {
+		center = 0
+	}
+	if center >= len(lines) {
+		center = len(lines) - 1
+	}
+	start := center - windowRadius
+	if start < 0 {
+		start = 0
+	}
+	end := center + windowRadius + 1
+	if end > len(lines) {
+		end = len(lines)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\ncurrent file content (lines %d-%d of %d):", start+1, end, len(lines))
+	for i := start; i < end; i++ {
+		fmt.Fprintf(&b, "\n  %d: %s", i+1, quotePatchDiagnosticLine(lines[i]))
 	}
 	return b.String()
 }
