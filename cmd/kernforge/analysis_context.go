@@ -1588,6 +1588,13 @@ func looksLikeExplicitGitIntent(text string) bool {
 	) {
 		return true
 	}
+	// Branch operations (rename/switch/create/use a branch) are explicit git
+	// mutations even though they are not in the commit/push verb set. A plain
+	// "브랜치를 main으로 써야 해" / "rename the branch to main" must not be blocked
+	// as an unrequested git action.
+	if looksLikeBranchMutationIntent(lower) {
+		return true
+	}
 	// Two or more distinct git verbs together (e.g. "commit and push", "stage and
 	// commit") are unambiguously a git request even without an explicit object.
 	gitVerbs := []string{"commit", "push", "stage", "amend", "rebase", "cherry-pick", "squash"}
@@ -1610,6 +1617,35 @@ func looksLikeExplicitGitIntent(text string) bool {
 		return true
 	}
 	return containsAny(lower, "변경사항", "변경분", "변경 사항", "브랜치", "스테이징", "원격")
+}
+
+// looksLikeBranchMutationIntent reports whether the text asks to change the git
+// branch (rename, switch, create, or "use branch X"). It requires a branch noun
+// plus an action/target cue so that questions like "what branch is this?" (which
+// are filtered earlier as questions) or passing mentions do not match.
+func looksLikeBranchMutationIntent(lower string) bool {
+	// Direct branch CLI verbs are unambiguous git mutations.
+	if containsAny(lower, "git branch", "git checkout", "git switch", "checkout -b", "switch -c") {
+		return true
+	}
+	if containsAny(lower, "branch", "브랜치") {
+		return containsAny(lower,
+			// English branch actions / targets
+			"rename", "switch", "checkout", "create", "to main", "to master", "to a new",
+			"default branch", "set the branch", "set branch",
+			// Korean branch actions / targets
+			"변경", "바꿔", "바꾸", "만들", "생성", "전환", "이름", "사용",
+			"main으로", "메인으로", "master로", "마스터로", "main 으로", "메인 으로",
+		)
+	}
+	// "switch to <branch>" / "check out <branch>" without the literal word
+	// "branch" but with a branch-looking target. containsWord avoids matching
+	// "main" inside "domain".
+	if containsAny(lower, "switch to ", "switch back to ", "check out ", "checkout ") &&
+		containsWord(lower, "main", "master", "develop", "trunk") {
+		return true
+	}
+	return false
 }
 
 func looksLikeDocumentAuthoringIntent(text string) bool {

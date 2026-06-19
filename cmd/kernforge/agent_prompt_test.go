@@ -1155,6 +1155,33 @@ func TestLooksLikeExplicitGitIntentIgnoresCodeOnlyCommitMentions(t *testing.T) {
 	}
 }
 
+func TestLooksLikeExplicitGitIntentRecognizesBranchOperations(t *testing.T) {
+	positives := []string{
+		"브랜치를 main으로 써야 해",
+		"브랜치를 main으로 변경해줘",
+		"main 브랜치로 바꿔줘",
+		"브랜치 이름을 main으로 바꿔",
+		"rename the branch to main",
+		"switch to main",
+		"create a new branch for this",
+	}
+	for _, p := range positives {
+		if !looksLikeExplicitGitIntent(p) {
+			t.Fatalf("expected branch operation to be explicit git intent: %q", p)
+		}
+	}
+	negatives := []string{
+		"이 브랜치 코드 설명해줘",
+		"what branch is this?",
+		"브랜치 전략이 뭐야?",
+	}
+	for _, n := range negatives {
+		if looksLikeExplicitGitIntent(n) {
+			t.Fatalf("expected non-mutating branch mention to stay false: %q", n)
+		}
+	}
+}
+
 func TestSummarizeToolCompletionForReadFile(t *testing.T) {
 	summary := summarizeToolCompletion(Config{AutoLocale: boolPtr(false)}, ToolCall{
 		Name:      "read_file",
