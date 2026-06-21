@@ -847,13 +847,27 @@ func TestMCPHTTPAuthStatusReportsConfiguredModes(t *testing.T) {
 	}, nil, func(string) string { return "" }); got != "bearer_token_missing" {
 		t.Fatalf("expected missing authorization env header status, got %q", got)
 	}
-	if got := mcpHTTPAuthStatus(MCPServerConfig{
+	// OAuth is configured but no token is stored: the status must be honest and
+	// report "oauth_no_token" rather than falsely claiming "oauth_configured".
+	if got := mcpHTTPAuthStatusWithStore(MCPServerConfig{
 		URL: "https://example.com/mcp",
 		OAuth: &MCPServerOAuthConfig{
 			ClientID: "client",
 		},
-	}, nil, nil); got != "oauth_configured" {
-		t.Fatalf("expected oauth status, got %q", got)
+	}, nil, nil, mcpOAuthTokenStoreStub{}); got != "oauth_no_token" {
+		t.Fatalf("expected oauth_no_token status with no stored token, got %q", got)
+	}
+	// With a valid stored token, OAuth reports "oauth_configured".
+	if got := mcpHTTPAuthStatusWithStore(MCPServerConfig{
+		URL: "https://example.com/mcp",
+		OAuth: &MCPServerOAuthConfig{
+			ClientID: "client",
+		},
+	}, nil, nil, mcpOAuthTokenStoreStub{token: &mcpOAuthToken{
+		AccessToken: "live-token",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}}); got != "oauth_configured" {
+		t.Fatalf("expected oauth_configured status with a stored token, got %q", got)
 	}
 	if got := mcpHTTPAuthStatus(MCPServerConfig{
 		Command: "node",

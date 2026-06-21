@@ -602,6 +602,43 @@ func TestKernforgeMCPServerInitializeAndListTools(t *testing.T) {
 	}
 }
 
+// TestKernforgeMCPServerNegotiatesProtocolVersion verifies the server echoes a
+// supported client-requested protocol version and falls back to its default for
+// blank or unknown requests.
+func TestKernforgeMCPServerNegotiatesProtocolVersion(t *testing.T) {
+	server, cleanup := newTestKernforgeMCPServer(t)
+	defer cleanup()
+
+	cases := []struct {
+		requested string
+		want      string
+	}{
+		{"", kernforgeMCPProtocolVersion},
+		{"2025-06-18", "2025-06-18"},
+		{"2024-11-05", "2024-11-05"}, // legacy client still negotiates
+		{"2099-01-01", kernforgeMCPProtocolVersion},
+	}
+	for _, tc := range cases {
+		params := map[string]any{}
+		if tc.requested != "" {
+			params["protocolVersion"] = tc.requested
+		}
+		resp, ok := server.handleMessage(context.Background(), map[string]any{
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "initialize",
+			"params":  params,
+		})
+		if !ok {
+			t.Fatalf("initialize produced no response for %q", tc.requested)
+		}
+		result := requireMCPResult(t, resp)
+		if result["protocolVersion"] != tc.want {
+			t.Fatalf("requested %q: got protocolVersion %v want %q", tc.requested, result["protocolVersion"], tc.want)
+		}
+	}
+}
+
 func TestKernforgeMCPServerRejectsUnknownToolArgument(t *testing.T) {
 	server, cleanup := newTestKernforgeMCPServer(t)
 	defer cleanup()

@@ -48,6 +48,46 @@ type MCPServerConfig struct {
 
 const mcpToolModelOutputMaxBytes = 12000
 
+// mcpClientProtocolVersion is the MCP revision this client advertises during
+// initialize. It is intentionally a current revision rather than the legacy
+// "2024-11-05" pin; older servers are still supported via negotiation below.
+const mcpClientProtocolVersion = "2025-06-18"
+
+// mcpSupportedProtocolVersions lists the protocol revisions this client knows
+// how to speak, newest first. The server's reported version is accepted when it
+// appears here; otherwise the client falls back to its advertised version.
+var mcpSupportedProtocolVersions = []string{
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+}
+
+// negotiateMCPProtocolVersion picks the effective protocol version given what
+// the client advertised and what the server reported. A blank or unknown server
+// version falls back to the client's advertised version so negotiation degrades
+// gracefully instead of failing the connection.
+func negotiateMCPProtocolVersion(clientVersion string, serverVersion string) string {
+	clientVersion = strings.TrimSpace(clientVersion)
+	if clientVersion == "" {
+		clientVersion = mcpClientProtocolVersion
+	}
+	serverVersion = strings.TrimSpace(serverVersion)
+	if serverVersion == "" {
+		return clientVersion
+	}
+	if serverVersion == clientVersion {
+		return serverVersion
+	}
+	for _, known := range mcpSupportedProtocolVersions {
+		if serverVersion == known {
+			// Server speaks a revision we understand; honor it.
+			return serverVersion
+		}
+	}
+	// Unknown server revision: keep our advertised version.
+	return clientVersion
+}
+
 type mcpServerConfigJSON struct {
 	Name                      string                `json:"name"`
 	Command                   string                `json:"command,omitempty"`
@@ -257,6 +297,8 @@ type MCPClient struct {
 	status       MCPServerStatus
 	stderrMu     sync.Mutex
 	stderr       []string
+	// protocolVersion is the effective MCP revision after initialize negotiation.
+	protocolVersion string
 }
 
 type mcpHTTPTransport struct {
@@ -864,6 +906,17 @@ func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
 			headers["Authorization"] = "Bearer " + token
 		}
 	}
+	// Attach a stored OAuth access token when present and no explicit
+	// Authorization header was already configured. Refresh-on-expiry is handled
+	// inside mcpOAuthValidToken; if no usable token exists the request proceeds
+	// unauthenticated and the server will answer with 401.
+	if _, hasAuth := headers["Authorization"]; !hasAuth && mcpOAuthConfigured(cfg) {
+		if token, ok := mcpOAuthValidToken(context.Background(), cfg, defaultMCPOAuthTokenStore); ok {
+			if value := token.bearerValue(); strings.TrimSpace(value) != "" {
+				headers["Authorization"] = value
+			}
+		}
+	}
 	client := &MCPClient{
 		config: cfg,
 		http: &mcpHTTPTransport{
@@ -938,6 +991,14 @@ func buildMCPHTTPHeaders(cfg MCPServerConfig) map[string]string {
 }
 
 func mcpHTTPAuthStatus(cfg MCPServerConfig, headers map[string]string, getenv func(string) string) string {
+	return mcpHTTPAuthStatusWithStore(cfg, headers, getenv, defaultMCPOAuthTokenStore)
+}
+
+// mcpHTTPAuthStatusWithStore reports the auth posture for a streamable HTTP MCP
+// server. The OAuth branch is honest: it only reports "oauth_configured" when a
+// usable token is actually held; otherwise it reports "oauth_no_token" so the
+// status does not falsely imply the connection is authorized.
+func mcpHTTPAuthStatusWithStore(cfg MCPServerConfig, headers map[string]string, getenv func(string) string, store mcpOAuthTokenStore) string {
 	if strings.TrimSpace(cfg.URL) == "" {
 		return ""
 	}
@@ -964,8 +1025,13 @@ func mcpHTTPAuthStatus(cfg MCPServerConfig, headers map[string]string, getenv fu
 		}
 		return "bearer_token_missing"
 	}
-	if cfg.OAuth != nil || strings.TrimSpace(cfg.OAuthResource) != "" {
-		return "oauth_configured"
+	if mcpOAuthConfigured(cfg) {
+		if _, ok := mcpOAuthValidToken(context.Background(), cfg, store); ok {
+			return "oauth_configured"
+		}
+		// OAuth is requested but no usable token is stored yet. Reporting
+		// "oauth_configured" here would be a false claim of authorization.
+		return "oauth_no_token"
 	}
 	return "none"
 }
@@ -1500,8 +1566,8 @@ func (c *MCPClient) stderrSummary() string {
 }
 
 func (c *MCPClient) initialize(ctx context.Context) error {
-	_, err := c.request(ctx, "initialize", map[string]any{
-		"protocolVersion": "2024-11-05",
+	result, err := c.request(ctx, "initialize", map[string]any{
+		"protocolVersion": mcpClientProtocolVersion,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},
@@ -1513,6 +1579,14 @@ func (c *MCPClient) initialize(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Negotiate: accept the server's reported revision when we understand it,
+	// otherwise keep our advertised version. This avoids hard-pinning a single
+	// revision and lets older servers connect.
+	serverVersion := ""
+	if result != nil {
+		serverVersion = strings.TrimSpace(stringValue(result, "protocolVersion"))
+	}
+	c.protocolVersion = negotiateMCPProtocolVersion(mcpClientProtocolVersion, serverVersion)
 	return c.notify("notifications/initialized", map[string]any{})
 }
 
@@ -2262,6 +2336,18 @@ func (c *MCPClient) postHTTPRPC(ctx context.Context, payload map[string]any) (ma
 		return nil, fmt.Errorf("streamable HTTP session expired with 404 Not Found")
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
+		// Surface the WWW-Authenticate challenge when present so the failure is
+		// actionable (e.g. which realm/resource the server expects).
+		challenge := strings.TrimSpace(resp.Header.Get("WWW-Authenticate"))
+		if c != nil && mcpOAuthConfigured(c.config) {
+			if challenge != "" {
+				return nil, fmt.Errorf("streamable HTTP authentication required (oauth token missing or expired; %s)", challenge)
+			}
+			return nil, fmt.Errorf("streamable HTTP authentication required (oauth token missing or expired)")
+		}
+		if challenge != "" {
+			return nil, fmt.Errorf("streamable HTTP authentication required (%s)", challenge)
+		}
 		return nil, fmt.Errorf("streamable HTTP authentication required")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -2788,6 +2874,13 @@ func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionR
 		args = cloneStringAnyMap(verdict.UpdatedInput)
 		input = args
 	}
+	// Gate the MCP tool call through the PermissionManager as outbound network
+	// access (ActionNetwork). Plan mode denies it; other modes prompt or honor a
+	// configured per-server/per-domain allowlist, and approval can be remembered
+	// session-wide. This is what makes plan mode actually block MCP network usage.
+	if err := t.workspace.EnsureNetworkWithContext(ctx, t.networkPermissionTarget()); err != nil {
+		return ToolExecutionResult{}, err
+	}
 	result, err := t.client.callToolDetailed(ctx, t.remote.Name, input)
 	if result.Meta == nil {
 		result.Meta = map[string]any{}
@@ -2801,6 +2894,45 @@ func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionR
 		result = t.runPostToolUseHook(ctx, args, result)
 	}
 	return result, err
+}
+
+// networkPermissionTarget builds the detail string used to gate this MCP tool
+// call under ActionNetwork. It includes the server name, the destination
+// URL/host (for remote servers), and the remote tool name so configured network
+// allowlist patterns can match on server name or domain. The string is also what
+// the prompt displays to the user.
+func (t MCPTool) networkPermissionTarget() string {
+	if t.client == nil {
+		return strings.TrimSpace(t.namespaced)
+	}
+	cfg := t.client.config
+	parts := make([]string, 0, 3)
+	if name := strings.TrimSpace(cfg.Name); name != "" {
+		parts = append(parts, "mcp:"+name)
+	}
+	if rawURL := strings.TrimSpace(cfg.URL); rawURL != "" {
+		parts = append(parts, rawURL)
+		if host := mcpURLHost(rawURL); host != "" {
+			parts = append(parts, host)
+		}
+	}
+	if toolName := strings.TrimSpace(t.remote.Name); toolName != "" {
+		parts = append(parts, "tool:"+toolName)
+	}
+	if len(parts) == 0 {
+		return strings.TrimSpace(t.namespaced)
+	}
+	return strings.Join(parts, " ")
+}
+
+// mcpURLHost extracts the host (without port) from an MCP server URL for
+// allowlist matching. It tolerates malformed URLs by returning an empty string.
+func mcpURLHost(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed == nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
 }
 
 func (t MCPTool) hookPayload(ctx context.Context, args map[string]any) HookPayload {

@@ -16,7 +16,33 @@ import (
 	"time"
 )
 
-const kernforgeMCPProtocolVersion = "2024-11-05"
+// kernforgeMCPProtocolVersion is the MCP revision this server advertises. The
+// handshake echoes the client's requested version when it is one we support,
+// so older clients still negotiate successfully (see handleMessage initialize).
+const kernforgeMCPProtocolVersion = "2025-06-18"
+
+// kernforgeMCPSupportedProtocolVersions lists revisions the server can speak,
+// newest first, used to honor a compatible client-requested version.
+var kernforgeMCPSupportedProtocolVersions = []string{
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+}
+
+// negotiateKernforgeMCPProtocolVersion echoes the client's requested protocol
+// version when the server supports it; otherwise it advertises its own default.
+func negotiateKernforgeMCPProtocolVersion(requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		return kernforgeMCPProtocolVersion
+	}
+	for _, known := range kernforgeMCPSupportedProtocolVersions {
+		if requested == known {
+			return requested
+		}
+	}
+	return kernforgeMCPProtocolVersion
+}
 
 const (
 	mcpServerEntrypointCLIFlag      = "cli_flag"
@@ -856,8 +882,9 @@ func (s *kernforgeMCPServer) handleMessage(ctx context.Context, msg map[string]a
 	params, _ := msg["params"].(map[string]any)
 	switch method {
 	case "initialize":
+		requestedProtocol := strings.TrimSpace(stringValue(params, "protocolVersion"))
 		return mcpServerResult(id, map[string]any{
-			"protocolVersion": kernforgeMCPProtocolVersion,
+			"protocolVersion": negotiateKernforgeMCPProtocolVersion(requestedProtocol),
 			"capabilities": map[string]any{
 				"tools": map[string]any{},
 				"resources": map[string]any{
