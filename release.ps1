@@ -10,6 +10,7 @@ $statePath = Join-Path $root ".build\version-state.json"
 $releaseExe = Join-Path $releaseDir "kernforge.exe"
 $versionPath = Join-Path $releaseDir "kernforge-version.json"
 $zipPath = Join-Path $releaseDir "kernforge.zip"
+$manifestPath = Join-Path $releaseDir "release-manifest.json"
 $releaseToolsDir = Join-Path $releaseDir "tools"
 $releaseThirdPartyRipgrepDir = Join-Path $releaseDir "third_party\ripgrep"
 $thirdPartyRipgrepDir = Join-Path $root "third_party\ripgrep"
@@ -49,7 +50,7 @@ foreach ($legacyName in @("im-cli.exe", "im-cli.zip", "im-cli-version.json")) {
 	}
 }
 
-foreach ($path in @($releaseExe, $versionPath, $zipPath)) {
+foreach ($path in @($releaseExe, $versionPath, $zipPath, $manifestPath)) {
 	if (Test-Path $path) {
 		Remove-Item -LiteralPath $path -Force
 	}
@@ -128,10 +129,24 @@ finally {
 	$zip.Dispose()
 }
 
+# Emit a release-manifest.json next to the zip so the in-app self-update check
+# (Phase 1: check + notify only) can compare versions and verify the artifact.
+# signed_sha256 is the SHA-256 of the distributed zip.
+$zipSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$releaseDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+$manifest = [ordered]@{
+	latest_version = $version
+	release_date   = $releaseDate
+	signed_sha256  = $zipSha256
+}
+$manifestJson = ($manifest | ConvertTo-Json -Depth 4)
+Set-Content -Path $manifestPath -Value $manifestJson -Encoding UTF8
+
 Write-Host "Prepared release assets:"
 Write-Host " - $releaseExe"
 Write-Host " - $versionPath"
 Write-Host " - $zipPath"
+Write-Host " - $manifestPath"
 if ($bundledRipgrep) {
 	Write-Host " - bundled ripgrep sidecar from $thirdPartyRipgrepDir"
 } else {

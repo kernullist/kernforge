@@ -69,6 +69,34 @@ func kernforgeCLIVersionRequest(args []string) bool {
 	return false
 }
 
+// kernforgeCLIUpdateCheckRequest reports whether a "--check-update" (or
+// "-check-update") flag was passed. It is only meaningful alongside the
+// "version" subcommand and selects the non-interactive, scriptable update
+// check instead of the plain version banner.
+func kernforgeCLIUpdateCheckRequest(args []string) bool {
+	for _, arg := range args {
+		switch strings.TrimSpace(strings.ToLower(arg)) {
+		case "--check-update", "-check-update":
+			return true
+		}
+	}
+	return false
+}
+
+// versionCommandRequestsUpdateCheck reports whether the REPL "/version"
+// argument selects the self-update check. It accepts "check-update",
+// "--check-update", and "-check-update" so the interactive form mirrors the
+// CLI flag.
+func versionCommandRequestsUpdateCheck(args string) bool {
+	for _, field := range strings.Fields(args) {
+		switch strings.TrimSpace(strings.ToLower(field)) {
+		case "check-update", "--check-update", "-check-update":
+			return true
+		}
+	}
+	return false
+}
+
 func isKernforgeHelpToken(value string) bool {
 	trimmed := strings.TrimSpace(strings.ToLower(value))
 	return trimmed == "help" || isKernforgeHelpFlag(trimmed)

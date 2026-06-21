@@ -382,6 +382,20 @@ func BuildProactiveSuggestions(snapshot SituationSnapshot, src ProactiveSources)
 			DedupKey:             "evidence:" + gap,
 		})
 	}
+	if version, ok := pendingUpdateSuggestion(); ok {
+		reason := "update-state.json reports a newer, non-dismissed KernForge build."
+		command := "version --check-update"
+		add(Suggestion{
+			Type:                 "update_available",
+			Title:                "Update available: " + currentVersion() + " -> " + version,
+			Reason:               reason,
+			Command:              command,
+			EstimatedCost:        "low",
+			Risk:                 "low",
+			RequiresConfirmation: false,
+			DedupKey:             "update-available:" + version,
+		})
+	}
 	if cleanup := cleanupFeatureSuggestion(src.Session); cleanup != "" {
 		add(Suggestion{
 			Type:                 "cleanup_or_close_feature",
@@ -999,6 +1013,8 @@ func suggestionPriority(item Suggestion) int {
 		score += 60
 	case "evidence_capture", "continue_workflow":
 		score += 50
+	case "update_available":
+		score += 40
 	}
 	switch strings.ToLower(item.Risk) {
 	case "critical":
