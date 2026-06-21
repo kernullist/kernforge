@@ -383,6 +383,34 @@ func (s *DaemonScheduler) Poll() []JobDefinition {
 	return fired
 }
 
+// recordRunError stores reason on a job's advisory LastError so an operator
+// listing jobs can see why the last unattended run failed. It is called by the
+// daemon's runFn after a fired job's execution transport fails. It deliberately
+// does NOT disable the job or change its NextRun: a transient run failure must not
+// stop an otherwise healthy schedule (a malformed SCHEDULE is the only thing that
+// disables a job, via applyScheduleLocked). A missing job id is a no-op. It never
+// returns an error; a persist failure is swallowed because the in-memory LastError
+// is still surfaced to list.
+func (s *DaemonScheduler) recordRunError(jobID string, reason string) {
+	if s == nil {
+		return
+	}
+	jobID = strings.TrimSpace(jobID)
+	reason = truncateStatusSnippet(firstNonEmptyLine(reason), 200)
+	if jobID == "" || reason == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return
+	}
+	job.LastError = reason
+	s.jobs[jobID] = job
+	_ = s.persistLocked()
+}
+
 // Start launches the poll loop goroutine. It is idempotent. Stop terminates it.
 func (s *DaemonScheduler) Start() {
 	if s == nil {

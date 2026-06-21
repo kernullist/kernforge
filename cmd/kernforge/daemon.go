@@ -55,6 +55,11 @@ type kernforgeDaemonServer struct {
 	httpServer      *http.Server
 	shutdownStarted bool
 	scheduler       *DaemonScheduler
+	// scheduledRuns bounds unattended scheduled execution: it skips a job whose
+	// previous run is still in flight and caps total concurrent scheduled runs so a
+	// burst of due jobs cannot saturate the host. It is independent of interactive
+	// sessions, which run in their own processes.
+	scheduledRuns *scheduledRunGuard
 	// stream fans observe-only MCP RPC progress out to connected IDE clients over
 	// the token-authed GET /stream SSE endpoint. It holds no edit authority and is
 	// fully opt-in: when no client is connected, publishing is a cheap no-op and
@@ -115,6 +120,7 @@ func runKernforgeDaemon(cwd string, cfg Config, resumeID string, options mcpServ
 		token:          token,
 		runtimes:       map[string]*kernforgeMCPServerRuntime{},
 		stream:         newDaemonStreamHub(0),
+		scheduledRuns:  newScheduledRunGuard(maxConcurrentScheduledRuns),
 	}
 	daemon.scheduler = daemon.buildScheduler(cfg)
 	if err := daemon.scheduler.Load(); err != nil {
@@ -660,18 +666,24 @@ func kernforgeDaemonScheduleRunLogPath() string {
 }
 
 // buildScheduler constructs the daemon's scheduler. The runFn is the daemon's
-// only execution coupling: it durably records each fired job to a run-log file
-// (alongside daemon state) so an unattended run survives a restart and is
-// auditable. It carries the per-job workspace and budgets, keeping multi-
-// workspace isolation, and never touches a foreground goal. A heavier in-process
-// goal loop or BackgroundShellBundle dispatch can be plugged in here later
-// without changing the scheduler core (see ScheduleRunFunc).
+// only execution coupling and is built by buildScheduledRunFunc: it durably
+// records each fired job to a run-log file (alongside daemon state) for an
+// auditable trail, then dispatches the job to the real execution transport (the
+// in-process goal runner for type=goal, a BackgroundShellBundle for
+// type=verify|batch). It carries the per-job workspace and budgets, keeping
+// multi-workspace isolation, runs in a bounded goroutine so the poll loop is never
+// blocked, and never touches a foreground goal. The scheduler core stays
+// seam-injectable and clock-injectable for tests (see ScheduleRunFunc) because the
+// runFn is supplied here, not baked into the core.
 func (d *kernforgeDaemonServer) buildScheduler(cfg Config) *DaemonScheduler {
 	pollEvery := time.Duration(0)
 	if cfg.Scheduler.PollSeconds > 0 {
 		pollEvery = time.Duration(cfg.Scheduler.PollSeconds) * time.Second
 	}
-	return NewDaemonScheduler(kernforgeDaemonSchedulePath(), pollEvery, time.Now, recordScheduledJobRun)
+	if d.scheduledRuns == nil {
+		d.scheduledRuns = newScheduledRunGuard(maxConcurrentScheduledRuns)
+	}
+	return NewDaemonScheduler(kernforgeDaemonSchedulePath(), pollEvery, time.Now, d.buildScheduledRunFunc())
 }
 
 // recordScheduledJobRun is the fail-closed default execution transport: it
