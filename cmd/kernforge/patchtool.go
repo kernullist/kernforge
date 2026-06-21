@@ -468,27 +468,38 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 		return "", false, nil, "", err
 	}
 
+	// Apply the planned operations transactionally. Every path that will be
+	// touched has its original state captured up front, all parent directories
+	// that can be created are pre-created, then the ops are executed with a
+	// rollback journal. On any failure mid-sequence the already-applied ops are
+	// rolled back to the captured state so the tree is never left with partial
+	// writes, a half-finished move, or a duplicated file.
+	tx := newPatchTransaction()
+	if err := capturePlannedPatchOriginals(tx, planned); err != nil {
+		return "", false, nil, "", err
+	}
+	if err := prevalidatePlannedPatchWrites(planned); err != nil {
+		return "", false, nil, "", err
+	}
+
 	var summaries []string
 	var previews []string
 	var unifiedDiffs []string
-	mutated := false
 	var changedPaths []string
 	for _, change := range planned {
 		select {
 		case <-ctx.Done():
-			return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), ctx.Err()
+			tx.Rollback()
+			return "", false, nil, "", ctx.Err()
 		default:
 		}
 		switch change.kind {
 		case "add":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
-			if err := ensureParentDir(change.destPath); err != nil {
-				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
+			if err := tx.WriteFile(change.destPath, []byte(change.after)); err != nil {
+				tx.Rollback()
+				return "", false, nil, "", err
 			}
-			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
-			}
-			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
 			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
@@ -498,10 +509,10 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 			}
 		case "delete":
 			ws.Progress("Deleting " + relOrAbs(change.displayRoot, change.srcPath) + "...")
-			if err := os.Remove(change.srcPath); err != nil {
-				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
+			if err := tx.Remove(change.srcPath); err != nil {
+				tx.Rollback()
+				return "", false, nil, "", err
 			}
-			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
 			ws.Progress("Deleted " + relOrAbs(change.displayRoot, change.srcPath) + ".")
 			summaries = append(summaries, change.summary)
@@ -511,32 +522,182 @@ func applyPatchDocument(ctx context.Context, ws Workspace, doc patchDocument, ow
 			}
 		case "update":
 			ws.Progress("Writing " + relOrAbs(change.displayRoot, change.destPath) + "...")
-			if err := ensureParentDir(change.destPath); err != nil {
-				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
+			// Move = copy-to-dest then remove-src. Writing the destination first
+			// and removing the source second keeps the source intact for rollback
+			// until the new file is fully on disk.
+			if err := tx.WriteFile(change.destPath, []byte(change.after)); err != nil {
+				tx.Rollback()
+				return "", false, nil, "", err
 			}
-			if err := os.WriteFile(change.destPath, []byte(change.after), 0o644); err != nil {
-				return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
-			}
-			mutated = true
 			changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.destPath))
 			if diff := buildUnifiedDiff(relOrAbs(change.displayRoot, change.destPath), change.before, change.after); strings.TrimSpace(diff) != "" {
 				unifiedDiffs = append(unifiedDiffs, diff)
 			}
 			if change.destPath != change.srcPath {
-				if err := os.Remove(change.srcPath); err != nil {
-					return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), err
+				if err := tx.Remove(change.srcPath); err != nil {
+					tx.Rollback()
+					return "", false, nil, "", err
 				}
-				mutated = true
 				changedPaths = append(changedPaths, relOrAbs(change.displayRoot, change.srcPath))
 			}
 			ws.Progress("Saved " + relOrAbs(change.displayRoot, change.destPath) + ".")
 			summaries = append(summaries, change.summary)
 			previews = append(previews, buildEditPreview(relOrAbs(change.displayRoot, change.destPath), change.before, change.after))
 		default:
-			return "", mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), fmt.Errorf("unsupported patch operation: %s", change.kind)
+			tx.Rollback()
+			return "", false, nil, "", fmt.Errorf("unsupported patch operation: %s", change.kind)
 		}
 	}
-	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), mutated, changedPaths, strings.Join(unifiedDiffs, "\n"), nil
+	return joinNonEmpty(strings.Join(summaries, "\n"), strings.Join(previews, "\n\n")), true, changedPaths, strings.Join(unifiedDiffs, "\n"), nil
+}
+
+// patchFileRemove is the file-removal primitive used by the transactional
+// apply. It is a package-level seam so tests can deterministically inject a
+// mid-sequence failure (for example, a failed Move source removal) and assert
+// the whole apply rolls back. Production always uses os.Remove.
+var patchFileRemove = os.Remove
+
+// patchTransaction applies file mutations with enough captured state to undo
+// them if a later operation in the same apply sequence fails. It is not safe
+// for concurrent use; a single apply runs it from one goroutine.
+type patchTransaction struct {
+	// originals records, per absolute path, the state to restore on rollback:
+	// existed=false means the path must be removed, existed=true means its bytes
+	// must be written back. Only the first capture for a path is kept so the
+	// pre-apply state is preserved even if the path is touched more than once.
+	originals map[string]patchPathState
+	// applied lists paths mutated so far so rollback can restore them in
+	// reverse order without scanning the whole originals map.
+	applied []string
+}
+
+type patchPathState struct {
+	existed bool
+	data    []byte
+}
+
+func newPatchTransaction() *patchTransaction {
+	return &patchTransaction{originals: make(map[string]patchPathState)}
+}
+
+// capture records the current on-disk state of path the first time it is seen,
+// so a later rollback can restore exactly the pre-apply content (or absence).
+func (tx *patchTransaction) capture(path string) error {
+	if _, ok := tx.originals[path]; ok {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			tx.originals[path] = patchPathState{existed: false}
+			return nil
+		}
+		return err
+	}
+	tx.originals[path] = patchPathState{existed: true, data: data}
+	return nil
+}
+
+func (tx *patchTransaction) markApplied(path string) {
+	tx.applied = append(tx.applied, path)
+}
+
+// WriteFile writes data to path atomically (temp file then atomic replace)
+// after capturing the original state for rollback. atomicWriteFile creates the
+// parent directory as needed, so no separate mkdir is required here.
+func (tx *patchTransaction) WriteFile(path string, data []byte) error {
+	if err := tx.capture(path); err != nil {
+		return err
+	}
+	if err := atomicWriteFile(path, data, 0o644); err != nil {
+		return err
+	}
+	tx.markApplied(path)
+	return nil
+}
+
+// Remove deletes path after capturing its original state for rollback. A path
+// that is already absent is treated as a successful no-op.
+func (tx *patchTransaction) Remove(path string) error {
+	if err := tx.capture(path); err != nil {
+		return err
+	}
+	if err := patchFileRemove(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	tx.markApplied(path)
+	return nil
+}
+
+// Rollback restores every mutated path to its captured pre-apply state, in
+// reverse order of application. Best effort: restore errors are reported via
+// progress-free return because there is no caller channel for them, but the
+// rollback continues so as many paths as possible are reverted.
+func (tx *patchTransaction) Rollback() {
+	for i := len(tx.applied) - 1; i >= 0; i-- {
+		path := tx.applied[i]
+		state, ok := tx.originals[path]
+		if !ok {
+			continue
+		}
+		if !state.existed {
+			// The path did not exist before the apply; remove what we created.
+			_ = os.Remove(path)
+			continue
+		}
+		// The path existed before; restore its original bytes. atomicWriteFile
+		// recreates the parent directory if an intervening op removed it.
+		_ = atomicWriteFile(path, state.data, 0o644)
+	}
+}
+
+// capturePlannedPatchOriginals snapshots the pre-apply state of every path the
+// planned ops will touch before any mutation happens, so a mid-sequence failure
+// can be rolled back to exactly this state.
+func capturePlannedPatchOriginals(tx *patchTransaction, planned []plannedPatchChange) error {
+	for _, change := range planned {
+		switch change.kind {
+		case "add":
+			if err := tx.capture(change.destPath); err != nil {
+				return err
+			}
+		case "delete":
+			if err := tx.capture(change.srcPath); err != nil {
+				return err
+			}
+		case "update":
+			if err := tx.capture(change.destPath); err != nil {
+				return err
+			}
+			if change.destPath != change.srcPath {
+				if err := tx.capture(change.srcPath); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// prevalidatePlannedPatchWrites pre-creates every write target's parent
+// directory before any file content is written. Directory creation is
+// idempotent and not the data-integrity hazard (partial writes, duplicated
+// files), so it is safe to do up front; doing so surfaces failures such as a
+// parent path component being an existing regular file before any file is
+// touched, so a write that cannot land never partially mutates the tree.
+func prevalidatePlannedPatchWrites(planned []plannedPatchChange) error {
+	for _, change := range planned {
+		switch change.kind {
+		case "add", "update":
+			if err := ensureParentDir(change.destPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func ensurePlannedPatchWrites(ctx context.Context, ws Workspace, planned []plannedPatchChange) error {

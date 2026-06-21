@@ -19,6 +19,14 @@ func NewViewImageTool(ws Workspace) ViewImageTool {
 	return ViewImageTool{ws: ws}
 }
 
+// ReadOnlyToolCall reports that view_image only reads a local image file and
+// returns it; it never mutates the workspace. Declaring this routes the tool
+// through the read permission path (like read_file/list_files/grep) instead of
+// being treated as a workspace mutation that requires verification.
+func (t ViewImageTool) ReadOnlyToolCall() bool {
+	return true
+}
+
 func (t ViewImageTool) SupportsParallelToolCalls() bool {
 	return true
 }

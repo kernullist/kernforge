@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 	"unicode/utf16"
+	"unicode/utf8"
 )
 
 type Tool interface {
@@ -1325,6 +1326,7 @@ type Workspace struct {
 	ResolveShellRoot      func(string) (ShellRoutingResult, error)
 	GoalSession           *Session
 	GoalStore             *SessionStore
+	Search                SearchConfig
 }
 
 type EditPreview struct {
@@ -2211,6 +2213,112 @@ func (w Workspace) EnsureShellWithContext(ctx context.Context, command string) e
 	if !ok {
 		return fmt.Errorf("shell permission denied")
 	}
+	// Best-effort: a shell command that obviously reaches the network (curl, wget,
+	// Invoke-WebRequest/iwr, etc.) must also clear the ActionNetwork gate so plan
+	// mode and a configured network allowlist apply to it too. Pattern detection
+	// is intentionally conservative; it never substitutes for real egress control.
+	if shellCommandLooksNetworked(command) {
+		if err := w.EnsureNetworkWithContext(ctx, "shell: "+summarizeShellCommand(command)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// shellCommandLooksNetworked reports whether a shell command obviously performs
+// outbound network access. It matches common downloaders and PowerShell web
+// cmdlets/aliases on word boundaries to limit false positives.
+func shellCommandLooksNetworked(command string) bool {
+	lower := strings.ToLower(command)
+	for _, token := range []string{
+		"curl",
+		"wget",
+		"invoke-webrequest",
+		"invoke-restmethod",
+		"iwr",
+		"irm",
+		"start-bitstransfer",
+		"system.net.webclient",
+		"downloadfile",
+		"downloadstring",
+		"httpwebrequest",
+	} {
+		if shellTokenPresent(lower, token) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellTokenPresent reports whether token appears in lower as a standalone
+// token, i.e. not surrounded by other identifier characters. This avoids
+// matching substrings inside unrelated words (e.g. "wget" inside "widget").
+func shellTokenPresent(lower string, token string) bool {
+	index := 0
+	for {
+		pos := strings.Index(lower[index:], token)
+		if pos < 0 {
+			return false
+		}
+		pos += index
+		before := pos - 1
+		after := pos + len(token)
+		leftOK := before < 0 || !isShellTokenChar(lower[before])
+		rightOK := after >= len(lower) || !isShellTokenChar(lower[after])
+		if leftOK && rightOK {
+			return true
+		}
+		index = pos + 1
+		if index >= len(lower) {
+			return false
+		}
+	}
+}
+
+func isShellTokenChar(b byte) bool {
+	switch {
+	case b >= 'a' && b <= 'z':
+		return true
+	case b >= 'A' && b <= 'Z':
+		return true
+	case b >= '0' && b <= '9':
+		return true
+	case b == '_' || b == '-' || b == '.':
+		return true
+	default:
+		return false
+	}
+}
+
+// EnsureNetworkWithContext gates outbound network access (MCP tool calls and
+// obvious network shell commands) through the PermissionManager under
+// ActionNetwork. Plan mode denies it; other modes prompt (or honor configured
+// allow rules) and the approval can be remembered session-wide. A nil
+// PermissionManager leaves behavior unchanged (no gate).
+func (w Workspace) EnsureNetworkWithContext(ctx context.Context, target string) error {
+	if w.Perms == nil {
+		return nil
+	}
+	if allowed, decided, message, err := w.permissionRequestHook(ctx, ActionNetwork, target, HookPayload{
+		"network_target": target,
+	}); err != nil {
+		return err
+	} else if decided {
+		if allowed {
+			return nil
+		}
+		if strings.TrimSpace(message) != "" {
+			return fmt.Errorf("network permission denied: %s", message)
+		}
+		return fmt.Errorf("network permission denied")
+	}
+	ok, err := w.Perms.Allow(ActionNetwork, target)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("network permission denied")
+	}
 	return nil
 }
 
@@ -2290,6 +2398,8 @@ func permissionRequestToolName(action Action) string {
 		return "git"
 	case ActionWrite:
 		return "write"
+	case ActionNetwork:
+		return "network"
 	default:
 		return string(action)
 	}
@@ -2303,6 +2413,8 @@ func permissionRequestToolKind(action Action) string {
 		return "git"
 	case ActionWrite:
 		return "edit"
+	case ActionNetwork:
+		return "network"
 	default:
 		return string(action)
 	}
@@ -3319,7 +3431,27 @@ func readRenderedFileRange(ctx context.Context, path string, start, end int) ([]
 		return nil, 0, err
 	}
 
-	scanner := bufio.NewScanner(file)
+	var reader io.Reader = file
+	// Transcode UTF-16 (LE/BE) content to UTF-8 before line scanning so CJK and
+	// other UTF-16 files read correctly instead of as NUL-interleaved garbage.
+	// Plain UTF-8/ASCII keeps the original streaming reader.
+	if probe, err := io.ReadAll(io.LimitReader(file, 8192)); err == nil {
+		if decoded, isUTF16 := decodeFileTextForRead(probe); isUTF16 {
+			rest, readErr := io.ReadAll(file)
+			if readErr != nil {
+				return nil, 0, readErr
+			}
+			full := append(append([]byte(nil), probe...), rest...)
+			decoded, _ = decodeFileTextForRead(full)
+			reader = bytes.NewReader(decoded)
+		} else if _, seekErr := file.Seek(0, 0); seekErr != nil {
+			return nil, 0, seekErr
+		}
+	} else if _, seekErr := file.Seek(0, 0); seekErr != nil {
+		return nil, 0, seekErr
+	}
+
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 
 	renderedLines := make([]string, 0)
@@ -3396,10 +3528,93 @@ func rejectBinaryFile(file *os.File) error {
 	if err != nil && err != io.EOF {
 		return err
 	}
-	if !isText(preview[:n]) {
+	if !looksLikeReadableText(preview[:n]) {
 		return fmt.Errorf("refusing to read binary file: %s", file.Name())
 	}
 	return nil
+}
+
+// looksLikeReadableText reports whether a preview is decodable text. It accepts
+// plain UTF-8/ASCII as well as UTF-16 (LE/BE), so CJK and other UTF-16 files
+// produced on Windows are not misclassified as binary by the raw NUL check.
+func looksLikeReadableText(preview []byte) bool {
+	if isText(preview) {
+		return true
+	}
+	_, ok := decodeUTF16Text(preview)
+	return ok
+}
+
+// decodeFileTextForRead decodes file bytes for the read tool. When the content
+// is UTF-16 (detected by BOM or a NUL-density heuristic) it returns the UTF-8
+// transcoding and decoded=true; otherwise it returns the input unchanged with
+// decoded=false so the streaming reader keeps its existing behavior.
+func decodeFileTextForRead(data []byte) (out []byte, decoded bool) {
+	text, ok := decodeUTF16Text(data)
+	if !ok {
+		return data, false
+	}
+	return []byte(text), true
+}
+
+// decodeUTF16Text decodes UTF-16 LE/BE content to UTF-8 text. It returns ok=true
+// only when the bytes are recognized as UTF-16 (via a BOM or a NUL-density
+// heuristic) and the decoded result is valid UTF-8. A leading UTF-8 BOM, if
+// present, is stripped. Plain UTF-8/ASCII input returns ok=false because it does
+// not need transcoding and is handled by the normal text path.
+func decodeUTF16Text(data []byte) (string, bool) {
+	if len(data) >= 2 {
+		switch {
+		case data[0] == 0xFF && data[1] == 0xFE:
+			text := string(utf16.Decode(bytesToUint16s(data[2:], true)))
+			return text, utf8.ValidString(text)
+		case data[0] == 0xFE && data[1] == 0xFF:
+			text := string(utf16.Decode(bytesToUint16s(data[2:], false)))
+			return text, utf8.ValidString(text)
+		}
+	}
+	// BOM-less UTF-16 heuristic: ASCII-range text encoded as UTF-16 produces a
+	// NUL in every other byte. Sample the head and require a high NUL density
+	// plus a consistent byte-position parity before committing to a decode.
+	sample := data
+	if len(sample) > 4096 {
+		sample = sample[:4096]
+	}
+	if len(sample) < 4 {
+		return "", false
+	}
+	zeroEven := 0
+	zeroOdd := 0
+	for i, b := range sample {
+		if b != 0 {
+			continue
+		}
+		if i%2 == 0 {
+			zeroEven++
+		} else {
+			zeroOdd++
+		}
+	}
+	totalZero := zeroEven + zeroOdd
+	// Require roughly half the bytes to be NUL (one per UTF-16 code unit) and
+	// for those NULs to sit almost entirely on one parity, which distinguishes
+	// UTF-16 text from arbitrary binary that happens to contain NUL bytes.
+	if totalZero < len(sample)/4 {
+		return "", false
+	}
+	littleEndian := zeroOdd >= zeroEven
+	dominant := zeroOdd
+	if !littleEndian {
+		dominant = zeroEven
+	}
+	if dominant*10 < totalZero*9 {
+		return "", false
+	}
+	text := string(utf16.Decode(bytesToUint16s(data, littleEndian)))
+	if !utf8.ValidString(text) {
+		return "", false
+	}
+	return text, true
 }
 
 func readFileMinInt(a, b int) int {
@@ -3429,12 +3644,19 @@ type grepSearchRequest struct {
 	PatternForMeta string
 	Glob           string
 	MaxResults     int
+	IgnoreCase     bool
+	BeforeContext  int
+	AfterContext   int
+	FixedString    bool
+	Multiline      bool
+	FileType       string
 }
 
 type grepSearchMatch struct {
-	Path   string
-	LineNo int
-	Line   string
+	Path    string
+	LineNo  int
+	Line    string
+	Context bool
 }
 
 type grepSearchResult struct {
@@ -3495,6 +3717,34 @@ func (t GrepTool) Definition() ToolDefinition {
 				"path":        map[string]any{"type": "string"},
 				"glob":        map[string]any{"type": "string"},
 				"max_results": map[string]any{"type": "integer"},
+				"ignore_case": map[string]any{
+					"type":        "boolean",
+					"description": "Case-insensitive search (ripgrep -i). Defaults to case-sensitive.",
+				},
+				"before_context": map[string]any{
+					"type":        "integer",
+					"description": "Number of leading context lines to include for each match (ripgrep -B).",
+				},
+				"after_context": map[string]any{
+					"type":        "integer",
+					"description": "Number of trailing context lines to include for each match (ripgrep -A).",
+				},
+				"context": map[string]any{
+					"type":        "integer",
+					"description": "Lines of context before and after each match (ripgrep -C). Overrides before_context/after_context when set.",
+				},
+				"fixed_string": map[string]any{
+					"type":        "boolean",
+					"description": "Treat the pattern as a literal string instead of a regular expression (ripgrep -F).",
+				},
+				"multiline": map[string]any{
+					"type":        "boolean",
+					"description": "Allow the pattern to match across line boundaries (ripgrep -U).",
+				},
+				"type": map[string]any{
+					"type":        "string",
+					"description": "Restrict the search to a ripgrep file type, e.g. `go`, `cpp`, `py` (ripgrep -t).",
+				},
 			},
 			"required": []string{"pattern"},
 		},
@@ -3527,7 +3777,26 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 	if maxResults <= 0 {
 		maxResults = 100
 	}
-	re, err := regexp.Compile(pattern)
+	ignoreCase := boolValue(args, "ignore_case", false)
+	fixedString := boolValue(args, "fixed_string", false)
+	multiline := boolValue(args, "multiline", false)
+	fileType := strings.TrimSpace(stringValue(args, "type"))
+	beforeContext := intValue(args, "before_context", 0)
+	afterContext := intValue(args, "after_context", 0)
+	if ctxLines := intValue(args, "context", 0); ctxLines > 0 {
+		beforeContext = ctxLines
+		afterContext = ctxLines
+	}
+	if beforeContext < 0 {
+		beforeContext = 0
+	}
+	if afterContext < 0 {
+		afterContext = 0
+	}
+	// Build the regex used for validation and the Go fallback. fixed_string and
+	// ignore_case are reflected here so the fallback stays consistent with the
+	// ripgrep flags for the options it can honor line-by-line.
+	re, err := compileGrepRegex(pattern, fixedString, ignoreCase)
 	if err != nil {
 		display, meta := buildInvalidGrepPatternResult(displayRoot, root, pattern, glob, maxResults, err)
 		return ToolExecutionResult{
@@ -3552,6 +3821,12 @@ func (t GrepTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecution
 		PatternForMeta: re.String(),
 		Glob:           glob,
 		MaxResults:     maxResults,
+		IgnoreCase:     ignoreCase,
+		BeforeContext:  beforeContext,
+		AfterContext:   afterContext,
+		FixedString:    fixedString,
+		Multiline:      multiline,
+		FileType:       fileType,
 	}
 	ripgrepResult, ripgrepErr := t.executeRipgrepSearch(ctx, request)
 	if ripgrepErr == nil {
@@ -3625,11 +3900,18 @@ func (t GrepTool) executeGoGrepSearch(ctx context.Context, request grepSearchReq
 func (t GrepTool) renderGrepSearchResult(request grepSearchRequest, result grepSearchResult) ToolExecutionResult {
 	matchedFiles := map[string]struct{}{}
 	lines := make([]string, 0, len(result.Matches))
+	matchCount := 0
 	for _, match := range result.Matches {
 		matchPath := grepMatchAbsolutePath(request.Root, match.Path)
 		displayPath := relOrAbs(request.DisplayRoot, matchPath)
 		text := strings.TrimRight(match.Line, "\r\n")
-		line := fmt.Sprintf("%s:%d: %s", displayPath, match.LineNo, text)
+		// Context lines (from -A/-B/-C) use the ripgrep "-" separator so they
+		// are visually distinct from true matches, which keep the ":" form.
+		separator := ":"
+		if match.Context {
+			separator = "-"
+		}
+		line := fmt.Sprintf("%s%s%d%s %s", displayPath, separator, match.LineNo, separator, text)
 		if info, err := os.Stat(matchPath); err == nil {
 			if hint := t.grepReadCacheHint(matchPath, match.LineNo, info); hint != "" {
 				line += " " + hint
@@ -3637,13 +3919,16 @@ func (t GrepTool) renderGrepSearchResult(request grepSearchRequest, result grepS
 		}
 		lines = append(lines, line)
 		matchedFiles[displayPath] = struct{}{}
+		if !match.Context {
+			matchCount++
+		}
 	}
 	paths := make([]string, 0, len(matchedFiles))
 	for path := range matchedFiles {
 		paths = append(paths, path)
 	}
 	slices.Sort(paths)
-	truncated := result.Truncated || len(result.Matches) >= request.MaxResults
+	truncated := result.Truncated || matchCount >= request.MaxResults
 	if len(lines) == 0 {
 		return ToolExecutionResult{
 			DisplayText: "(no matches)",
@@ -3668,7 +3953,7 @@ func (t GrepTool) renderGrepSearchResult(request grepSearchRequest, result grepS
 			"path":          relOrAbs(request.DisplayRoot, request.Root),
 			"pattern":       request.PatternForMeta,
 			"glob":          request.Glob,
-			"match_count":   len(result.Matches),
+			"match_count":   matchCount,
 			"file_count":    len(paths),
 			"max_results":   request.MaxResults,
 			"truncated":     truncated,
@@ -3732,6 +4017,7 @@ func (t GrepTool) executeRipgrepSearch(ctx context.Context, request grepSearchRe
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var parseErr error
+	matchCount := 0
 	for scanner.Scan() {
 		match, ok, err := parseRipgrepJSONMatch(scanner.Bytes())
 		if err != nil {
@@ -3743,7 +4029,12 @@ func (t GrepTool) executeRipgrepSearch(ctx context.Context, request grepSearchRe
 			continue
 		}
 		result.Matches = append(result.Matches, match)
-		if len(result.Matches) >= request.MaxResults {
+		if !match.Context {
+			matchCount++
+		}
+		// Count only true matches toward the limit so requested context lines
+		// do not prematurely truncate the result set.
+		if matchCount >= request.MaxResults {
 			result.Truncated = true
 			cancel()
 			break
@@ -3778,6 +4069,21 @@ func (t GrepTool) executeRipgrepSearch(ctx context.Context, request grepSearchRe
 	return grepSearchResult{}, waitErr
 }
 
+// compileGrepRegex compiles the pattern for validation and the Go fallback,
+// reflecting fixed_string (literal match via QuoteMeta) and ignore_case (the
+// (?i) flag) so the fallback stays consistent with the ripgrep flags it can
+// honor while scanning line-by-line.
+func compileGrepRegex(pattern string, fixedString, ignoreCase bool) (*regexp.Regexp, error) {
+	expr := pattern
+	if fixedString {
+		expr = regexp.QuoteMeta(pattern)
+	}
+	if ignoreCase {
+		expr = "(?i)" + expr
+	}
+	return regexp.Compile(expr)
+}
+
 func buildRipgrepArgs(request grepSearchRequest) ([]string, error) {
 	if strings.TrimSpace(request.Glob) != "" {
 		if _, err := filepath.Match(request.Glob, "probe"); err != nil {
@@ -3797,11 +4103,52 @@ func buildRipgrepArgs(request grepSearchRequest) ([]string, error) {
 		"-g",
 		"!.git/**",
 	}
+	if request.IgnoreCase {
+		args = append(args, "-i")
+	}
+	if request.FixedString {
+		args = append(args, "-F")
+	}
+	if request.Multiline {
+		args = append(args, "-U", "--multiline-dotall")
+	}
+	if request.BeforeContext > 0 {
+		args = append(args, "-B", strconv.Itoa(request.BeforeContext))
+	}
+	if request.AfterContext > 0 {
+		args = append(args, "-A", strconv.Itoa(request.AfterContext))
+	}
+	if ft := strings.TrimSpace(request.FileType); ft != "" {
+		if !isSafeRipgrepFileType(ft) {
+			return nil, fmt.Errorf("%w: unsupported file type %q", errRipgrepUnsupportedInput, ft)
+		}
+		args = append(args, "-t", ft)
+	}
 	if strings.TrimSpace(request.Glob) != "" {
 		args = append(args, "-g", filepath.ToSlash(request.Glob))
 	}
 	args = append(args, "--", request.Pattern, request.Root)
 	return args, nil
+}
+
+// isSafeRipgrepFileType guards the -t value so a caller cannot smuggle extra
+// ripgrep flags through the type field. Ripgrep type names are short tokens of
+// letters, digits, hyphen, underscore, or plus (for example "cpp", "c++").
+func isSafeRipgrepFileType(ft string) bool {
+	if len(ft) == 0 || len(ft) > 32 {
+		return false
+	}
+	for _, r := range ft {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '+':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func parseRipgrepJSONMatch(line []byte) (grepSearchMatch, bool, error) {
@@ -3812,16 +4159,19 @@ func parseRipgrepJSONMatch(line []byte) (grepSearchMatch, bool, error) {
 	if err := json.Unmarshal(line, &msg); err != nil {
 		return grepSearchMatch{}, false, err
 	}
-	if msg.Type != "match" {
+	// "context" events arrive only when -A/-B/-C are requested and carry the
+	// surrounding lines; they share the match payload shape.
+	if msg.Type != "match" && msg.Type != "context" {
 		return grepSearchMatch{}, false, nil
 	}
 	if msg.Data.Path.Text == nil || msg.Data.Lines.Text == nil || msg.Data.LineNumber <= 0 {
 		return grepSearchMatch{}, false, nil
 	}
 	return grepSearchMatch{
-		Path:   filepath.Clean(*msg.Data.Path.Text),
-		LineNo: msg.Data.LineNumber,
-		Line:   *msg.Data.Lines.Text,
+		Path:    filepath.Clean(*msg.Data.Path.Text),
+		LineNo:  msg.Data.LineNumber,
+		Line:    *msg.Data.Lines.Text,
+		Context: msg.Type == "context",
 	}, true, nil
 }
 
@@ -4990,9 +5340,16 @@ func (t RunShellTool) runShellCommand(ctx context.Context, workDir string, comma
 		return "", err
 	}
 	collector := newShellOutputCollector(t.ws, command)
+	// Process-tree containment (Windows: Job Object with KILL_ON_JOB_CLOSE; no-op
+	// elsewhere). Closing the containment kills the whole child tree, so detached
+	// grandchildren cannot outlive this command's cancel/timeout. This is tree
+	// containment, not a full sandbox.
+	containment, assignToJob := prepareProcessContainment(cmd)
+	defer containment.Close()
 	if err := cmd.Start(); err != nil {
 		return "", err
 	}
+	assignToJob()
 	done := make(chan struct{})
 	defer close(done)
 	go t.emitShellHeartbeats(done, collector)
