@@ -1482,6 +1482,7 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		Tools       []anthropicTool         `json:"tools,omitempty"`
 		Thinking    *anthropicThinking      `json:"thinking,omitempty"`
 		ServiceTier string                  `json:"service_tier,omitempty"`
+		Stream      bool                    `json:"stream,omitempty"`
 	}
 	type anthropicUsage struct {
 		InputTokens              int `json:"input_tokens"`
@@ -1637,6 +1638,13 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		payload.Messages = append(payload.Messages, blocked)
 	}
 
+	// Stream natively when the caller supplied a live text sink. The streaming
+	// path emits text deltas through req.OnTextDelta and rebuilds the same
+	// ChatResponse the blocking path returns. When no sink is supplied the
+	// blocking path below is used unchanged.
+	streaming := req.OnTextDelta != nil
+	payload.Stream = streaming
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return ChatResponse{}, err
@@ -1649,24 +1657,46 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("x-api-key", c.apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	if streaming {
+		httpReq.Header.Set("accept", "text/event-stream")
+	}
 	for key, value := range c.headers {
 		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
 			httpReq.Header.Set(key, value)
 		}
 	}
 
-	resp, err := c.httpClient.Do(httpReq)
+	// A streaming read can outlast the client-level deadline (a long completion
+	// trickles deltas for many minutes), so the fixed http.Client.Timeout would
+	// cut the stream off mid-flight. Use a deadline-free shallow copy of the
+	// client for streaming and rely on the request context for cancellation
+	// instead. The blocking path keeps the original bounded-timeout client.
+	httpClient := c.httpClient
+	if streaming {
+		httpClient = c.streamingHTTPClient()
+	}
+
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return ChatResponse{}, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode >= 300 {
+		data, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return ChatResponse{}, readErr
+		}
+		return ChatResponse{}, newProviderHTTPError("anthropic", resp.StatusCode, resp.Status, data, "")
+	}
+
+	if streaming {
+		return readAnthropicStream(ctx, resp.Body, req.OnTextDelta, req.OnProgressEvent)
+	}
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return ChatResponse{}, err
-	}
-	if resp.StatusCode >= 300 {
-		return ChatResponse{}, newProviderHTTPError("anthropic", resp.StatusCode, resp.Status, data, "")
 	}
 
 	var decoded anthropicResponse
@@ -1709,6 +1739,283 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		}
 	}
 	return response, nil
+}
+
+// streamingHTTPClient returns a shallow copy of the configured client with the
+// fixed deadline removed. Streaming responses can run far longer than the
+// blocking ceiling, so a fixed http.Client.Timeout would truncate them; the
+// request context still carries cancellation. The shared transport (connection
+// pooling, proxy, TLS config) is preserved by copying the client value.
+func (c *AnthropicClient) streamingHTTPClient() *http.Client {
+	if c.httpClient == nil {
+		return &http.Client{}
+	}
+	streaming := *c.httpClient
+	streaming.Timeout = 0
+	return &streaming
+}
+
+// readAnthropicStream consumes a native Anthropic text/event-stream response and
+// rebuilds the same ChatResponse the blocking path returns: joined assistant
+// text, assembled tool calls, the final stop reason, and token usage. Text
+// deltas are emitted live through onTextDelta in arrival order. The Anthropic
+// event sequence is message_start -> (content_block_start, content_block_delta*,
+// content_block_stop)* -> message_delta -> message_stop, interleaved with ping
+// and error events. Each SSE record carries an "event:" line and a "data:" line;
+// the data JSON also carries its own "type" field, which is what we switch on so
+// a missing event line does not lose an event.
+func readAnthropicStream(ctx context.Context, body io.ReadCloser, onTextDelta func(string), onProgressEvent func(ProgressEvent)) (ChatResponse, error) {
+	type usagePayload struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	}
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+		ID   string `json:"id,omitempty"`
+		Name string `json:"name,omitempty"`
+	}
+	type deltaPayload struct {
+		Type        string `json:"type"`
+		Text        string `json:"text,omitempty"`
+		PartialJSON string `json:"partial_json,omitempty"`
+		Thinking    string `json:"thinking,omitempty"`
+		StopReason  string `json:"stop_reason,omitempty"`
+	}
+	type streamEvent struct {
+		Type    string `json:"type"`
+		Index   int    `json:"index"`
+		Message *struct {
+			StopReason string        `json:"stop_reason"`
+			Usage      *usagePayload `json:"usage,omitempty"`
+		} `json:"message,omitempty"`
+		ContentBlock *contentBlock `json:"content_block,omitempty"`
+		Delta        *deltaPayload `json:"delta,omitempty"`
+		Usage        *usagePayload `json:"usage,omitempty"`
+		Error        *struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error,omitempty"`
+	}
+	// blockAccumulator collects per-index content-block state. Text and thinking
+	// blocks build a string; tool_use blocks build their input JSON from the
+	// input_json_delta fragments using the same SeenArgument convention as the
+	// OpenAI path so an empty-arg tool call still serializes as "{}".
+	type blockAccumulator struct {
+		kind         string
+		text         strings.Builder
+		toolID       string
+		toolName     string
+		toolArgs     strings.Builder
+		seenArgument bool
+		started      bool
+		argsStarted  bool
+	}
+
+	// Close the body when the context is cancelled so a blocked Scan unblocks and
+	// returns promptly with the context error.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = body.Close()
+		case <-done:
+		}
+	}()
+
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	blocks := map[int]*blockAccumulator{}
+	order := make([]int, 0, 4)
+	stopReason := ""
+	usage := TokenUsage{}
+	sawMessageStop := false
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		// Only the data line carries the JSON payload; the event line is
+		// redundant with the JSON "type" field, so it is skipped.
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+
+		var event streamEvent
+		if err := json.Unmarshal([]byte(data), &event); err != nil {
+			return ChatResponse{}, err
+		}
+
+		switch event.Type {
+		case "ping":
+			continue
+		case "error":
+			if event.Error != nil {
+				return ChatResponse{}, newProviderMessageError("anthropic", event.Error.Message, event.Error.Type, "", nil, []byte(data))
+			}
+			return ChatResponse{}, newProviderMessageError("anthropic", "stream error", "", "", nil, []byte(data))
+		case "message_start":
+			if event.Message != nil && event.Message.Usage != nil {
+				usage.InputTokens = event.Message.Usage.InputTokens
+				usage.OutputTokens = event.Message.Usage.OutputTokens
+				usage.CacheCreationInputTokens = event.Message.Usage.CacheCreationInputTokens
+				usage.CacheReadInputTokens = event.Message.Usage.CacheReadInputTokens
+			}
+		case "content_block_start":
+			entry := blocks[event.Index]
+			if entry == nil {
+				entry = &blockAccumulator{}
+				blocks[event.Index] = entry
+				order = append(order, event.Index)
+			}
+			if event.ContentBlock != nil {
+				entry.kind = event.ContentBlock.Type
+				if event.ContentBlock.Type == "tool_use" {
+					entry.toolID = event.ContentBlock.ID
+					entry.toolName = event.ContentBlock.Name
+					if !entry.started {
+						entry.started = true
+						emitProgressEvent(onProgressEvent, ProgressEvent{
+							Kind:       progressKindModelStreamToolCall,
+							Provider:   "anthropic",
+							ToolName:   entry.toolName,
+							ToolCallID: entry.toolID,
+						})
+					}
+				}
+			}
+		case "content_block_delta":
+			if event.Delta == nil {
+				continue
+			}
+			entry := blocks[event.Index]
+			if entry == nil {
+				entry = &blockAccumulator{}
+				blocks[event.Index] = entry
+				order = append(order, event.Index)
+			}
+			switch event.Delta.Type {
+			case "text_delta":
+				if event.Delta.Text != "" {
+					entry.text.WriteString(event.Delta.Text)
+					if onTextDelta != nil {
+						onTextDelta(event.Delta.Text)
+					}
+				}
+			case "input_json_delta":
+				if event.Delta.PartialJSON != "" {
+					if !entry.argsStarted {
+						entry.argsStarted = true
+						emitProgressEvent(onProgressEvent, ProgressEvent{
+							Kind:       progressKindModelStreamToolArgs,
+							Provider:   "anthropic",
+							ToolName:   entry.toolName,
+							ToolCallID: entry.toolID,
+						})
+					}
+					entry.toolArgs.WriteString(event.Delta.PartialJSON)
+					entry.seenArgument = true
+				}
+			case "thinking_delta":
+				// Thinking deltas accumulate into the block text for completeness
+				// but are not streamed to the visible sink.
+				if event.Delta.Thinking != "" {
+					entry.text.WriteString(event.Delta.Thinking)
+				}
+			}
+		case "content_block_stop":
+			// No accumulation work: the block is finalized when the message ends.
+		case "message_delta":
+			if event.Delta != nil && strings.TrimSpace(event.Delta.StopReason) != "" {
+				stopReason = event.Delta.StopReason
+			}
+			if event.Usage != nil {
+				// message_delta carries the cumulative output usage; input/cache
+				// counts were fixed at message_start, so only overwrite non-zero
+				// fields to avoid clobbering them with zeros.
+				if event.Usage.OutputTokens != 0 {
+					usage.OutputTokens = event.Usage.OutputTokens
+				}
+				if event.Usage.InputTokens != 0 {
+					usage.InputTokens = event.Usage.InputTokens
+				}
+				if event.Usage.CacheCreationInputTokens != 0 {
+					usage.CacheCreationInputTokens = event.Usage.CacheCreationInputTokens
+				}
+				if event.Usage.CacheReadInputTokens != 0 {
+					usage.CacheReadInputTokens = event.Usage.CacheReadInputTokens
+				}
+			}
+		case "message_stop":
+			sawMessageStop = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ChatResponse{}, ctxErr
+		}
+		return ChatResponse{}, err
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ChatResponse{}, ctxErr
+	}
+
+	out := Message{Role: "assistant"}
+	var texts []string
+	for _, index := range order {
+		entry := blocks[index]
+		if entry == nil {
+			continue
+		}
+		switch entry.kind {
+		case "tool_use":
+			arguments := "{}"
+			if entry.seenArgument {
+				arguments = entry.toolArgs.String()
+			}
+			out.ToolCalls = append(out.ToolCalls, ToolCall{
+				ID:        entry.toolID,
+				Name:      entry.toolName,
+				Arguments: arguments,
+			})
+			emitProgressEvent(onProgressEvent, ProgressEvent{
+				Kind:             progressKindModelStreamToolReady,
+				Provider:         "anthropic",
+				ToolName:         entry.toolName,
+				ToolCallID:       entry.toolID,
+				ArgumentsPreview: summarizeToolArgumentsPreview(arguments),
+			})
+		case "thinking":
+			// Thinking text is internal; keep it out of the visible message text.
+		default:
+			if text := entry.text.String(); strings.TrimSpace(text) != "" {
+				texts = append(texts, text)
+			}
+		}
+	}
+	out.Text = strings.Join(texts, "\n")
+
+	result := ChatResponse{
+		Message:    out,
+		StopReason: stopReason,
+		Usage:      usage,
+	}
+	// A stream that closed without a terminal message_stop and without a parsed
+	// stop reason was transport-truncated. Mirror the OpenAI path: mark partial
+	// output as incomplete so callers retry rather than finalizing it.
+	if !sawMessageStop && strings.TrimSpace(result.StopReason) == "" && (strings.TrimSpace(result.Message.Text) != "" || len(result.Message.ToolCalls) > 0) {
+		result.StopReason = "stream_incomplete"
+	}
+	return result, nil
 }
 
 type OpenAIClient struct {

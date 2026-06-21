@@ -1067,6 +1067,131 @@ func TestAnthropicClientDecodesUsage(t *testing.T) {
 	}
 }
 
+func TestAnthropicClientStreamsTextAndUsage(t *testing.T) {
+	var requestBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"cache_creation_input_tokens\":3,\"cache_read_input_tokens\":5}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+			"event: ping\ndata: {\"type\":\"ping\"}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\", world\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":7}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		for _, event := range events {
+			_, _ = fmt.Fprint(w, event)
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	var deltas []string
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "claude-opus-4-8",
+		MaxTokens: 1024,
+		Messages:  []Message{{Role: "user", Text: "hi"}},
+		OnTextDelta: func(text string) {
+			deltas = append(deltas, text)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if requestBody["stream"] != true {
+		t.Fatalf("expected stream=true in request body, got %#v", requestBody["stream"])
+	}
+	wantDeltas := []string{"Hello", ", world"}
+	if strings.Join(deltas, "|") != strings.Join(wantDeltas, "|") {
+		t.Fatalf("deltas=%#v, want %#v", deltas, wantDeltas)
+	}
+	if resp.Message.Text != "Hello, world" {
+		t.Fatalf("unexpected streamed text: %q", resp.Message.Text)
+	}
+	if resp.StopReason != "end_turn" {
+		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
+	}
+	wantUsage := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheCreationInputTokens: 3, CacheReadInputTokens: 5}
+	if resp.Usage != wantUsage {
+		t.Fatalf("usage=%#v, want %#v", resp.Usage, wantUsage)
+	}
+}
+
+func TestAnthropicClientStreamsToolUseArguments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		w.Header().Set("content-type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatalf("expected flusher")
+		}
+		events := []string{
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n",
+			"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"read_file\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\"\"}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\":\\\"main.go\\\"}\"}}\n\n",
+			"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}\n\n",
+			"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+		}
+		for _, event := range events {
+			_, _ = fmt.Fprint(w, event)
+			flusher.Flush()
+		}
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	var events []ProgressEvent
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "claude-opus-4-8",
+		MaxTokens: 1024,
+		Messages:  []Message{{Role: "user", Text: "inspect"}},
+		Tools:     []ToolDefinition{{Name: "read_file", InputSchema: map[string]any{"type": "object"}}},
+		OnTextDelta: func(text string) {
+		},
+		OnProgressEvent: func(event ProgressEvent) {
+			events = append(events, event)
+		},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("expected one streamed tool call, got %#v", resp.Message.ToolCalls)
+	}
+	call := resp.Message.ToolCalls[0]
+	if call.ID != "toolu_1" || call.Name != "read_file" {
+		t.Fatalf("unexpected tool call identity: %#v", call)
+	}
+	if call.Arguments != "{\"path\":\"main.go\"}" {
+		t.Fatalf("unexpected tool call arguments: %q", call.Arguments)
+	}
+	if resp.StopReason != "tool_use" {
+		t.Fatalf("unexpected stop reason: %q", resp.StopReason)
+	}
+	if resp.Usage.OutputTokens != 9 {
+		t.Fatalf("unexpected output usage: %#v", resp.Usage)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolCall, "read_file") {
+		t.Fatalf("expected streamed tool-call progress event, got %#v", events)
+	}
+	if !progressEventsContain(events, progressKindModelStreamToolReady, "read_file") {
+		t.Fatalf("expected streamed tool-ready progress event, got %#v", events)
+	}
+}
+
 func TestAnthropicClientSerializesMultimodalToolResult(t *testing.T) {
 	var body map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
