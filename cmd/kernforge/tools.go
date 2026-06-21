@@ -1327,6 +1327,7 @@ type Workspace struct {
 	GoalSession           *Session
 	GoalStore             *SessionStore
 	Search                SearchConfig
+	LSP                   *LSPServerPool
 }
 
 type EditPreview struct {

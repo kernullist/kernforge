@@ -58,6 +58,7 @@ type Session struct {
 	ActiveEditLoop                  *EditLoopState                   `json:"active_edit_loop,omitempty"`
 	EditLoops                       []EditLoopState                  `json:"edit_loops,omitempty"`
 	LastCodingHarnessReport         *CodingHarnessReport             `json:"last_coding_harness_report,omitempty"`
+	LastDisclosureClaimsCheck       *DisclosureClaimsCheck           `json:"last_disclosure_claims_check,omitempty"`
 	LastFinalAnswerCorrection       *FinalAnswerCorrectionVisibility `json:"last_final_answer_correction,omitempty"`
 	LastDocumentArtifactFingerprint string                           `json:"last_document_artifact_fingerprint,omitempty"`
 	LastUserChangeIsolationReport   *UserChangeIsolationReport       `json:"last_user_change_isolation_report,omitempty"`
@@ -109,6 +110,11 @@ type Session struct {
 	Automations                      []SessionAutomation             `json:"automations,omitempty"`
 	ActiveGoalID                     string                          `json:"active_goal_id,omitempty"`
 	Goals                            []GoalState                     `json:"goals,omitempty"`
+	// SpawnedTasks holds bounded read-only investigation tasks spawned via the
+	// spawn_task tool. SpawnedTaskDepth records how deep this session already is
+	// in the spawn tree (root interactive session is 0) and gates further spawns.
+	SpawnedTasks     []SpawnedTask `json:"spawned_tasks,omitempty"`
+	SpawnedTaskDepth int           `json:"spawned_task_depth,omitempty"`
 	// TokenEstimateCorrectionRatio is the per-session learned UTF-8
 	// bytes-per-token divisor used to convert ApproxChars (a byte count) into a
 	// token estimate for budgeting and auto-compaction. It is updated from real
@@ -787,6 +793,7 @@ func loadSessionFile(path string) (*Session, []byte, error) {
 	sess.normalizeSuggestionMemory()
 	sess.normalizeAutomations()
 	sess.normalizeGoals()
+	sess.normalizeSpawnedTasks()
 	sess.ResetProviderStateForReload("session_load")
 	return &sess, data, nil
 }

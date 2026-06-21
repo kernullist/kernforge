@@ -57,6 +57,7 @@ type runtimeState struct {
 	autoCP                          *AutoCheckpointController
 	verifyHistory                   *VerificationHistoryStore
 	backgroundJobs                  *BackgroundJobManager
+	lspPool                         *LSPServerPool
 	modelRoutes                     *ModelRouteScheduler
 	hooks                           *HookRuntime
 	hookWarns                       []string
@@ -445,6 +446,7 @@ func run(args []string) error {
 		Search:         cfg.Search,
 	}
 	rt.syncWorkspaceFromSession()
+	rt.configureLSPPool()
 	if err := rt.ensureConfigured(); err != nil {
 		return err
 	}
@@ -732,12 +734,22 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewUpdatePlanTool(ws),
 		NewWebFetchTool(ws),
 		NewWebSearchTool(ws),
+		NewLSPNavigationTool(ws),
 	}
 	if goalToolsAvailable(ws) {
 		items = append(items,
 			NewGetGoalTool(ws),
 			NewCreateGoalTool(ws),
 			NewUpdateGoalTool(ws),
+		)
+	}
+	if taskToolsAvailable(ws) {
+		items = append(items,
+			NewSpawnTaskTool(ws),
+			NewGetTaskTool(ws),
+			NewListTasksTool(ws),
+			NewCancelTaskTool(ws),
+			NewUpdateTaskTool(ws),
 		)
 	}
 	if mcp != nil {
@@ -10751,6 +10763,35 @@ func (rt *runtimeState) closeExtensions() {
 		rt.mcp.Close()
 		rt.mcp = nil
 	}
+	if rt.lspPool != nil {
+		rt.lspPool.Close()
+		rt.lspPool = nil
+		rt.workspace.LSP = nil
+	}
+}
+
+// configureLSPPool builds (or tears down) the opt-in LSP navigation pool from
+// the current config and attaches it to the workspace. It is idempotent and
+// safe to call again after a config reload: a previous pool is closed before a
+// new one is created, and when lsp.enabled is false no pool is attached so the
+// lsp_nav tool degrades to a "not enabled" message.
+func (rt *runtimeState) configureLSPPool() {
+	if rt == nil {
+		return
+	}
+	enabled := rt.cfg.LSP.Enabled
+	// Drop any existing pool first; a reload may have flipped the flag or changed
+	// server paths, and a stale pool must not linger.
+	if rt.lspPool != nil {
+		rt.lspPool.Close()
+		rt.lspPool = nil
+	}
+	rt.workspace.LSP = nil
+	if !enabled {
+		return
+	}
+	rt.lspPool = NewLSPServerPool(rt.cfg.LSP.resolvedPoolConfig())
+	rt.workspace.LSP = rt.lspPool
 }
 
 func (rt *runtimeState) reloadRuntimeConfig() error {
@@ -10836,6 +10877,9 @@ func (rt *runtimeState) reloadExtensions() {
 	rt.skills, rt.skillWarns = LoadSkills(rt.workspace.BaseRoot, rt.cfg.SkillPaths, rt.cfg.EnabledSkills)
 	rt.userCommands, rt.userCommandWarns = LoadUserCommands(rt.workspace.BaseRoot, rt.cfg.CommandPaths)
 	registerUserCommandDescriptions(rt.userCommands)
+	// Reconfigure the optional LSP pool before the tool registry is rebuilt so
+	// the lsp_nav tool captures the right workspace state after a config reload.
+	rt.configureLSPPool()
 	if rt.agent != nil {
 		rt.agent.Skills = rt.skills
 	}

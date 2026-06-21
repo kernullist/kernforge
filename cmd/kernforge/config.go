@@ -301,7 +301,71 @@ type Config struct {
 	WorktreeIsolation           WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
 	Parallelism                 ParallelismConfig             `json:"parallelism,omitempty"`
 	Search                      SearchConfig                  `json:"search,omitempty"`
+	LSP                         LSPConfig                     `json:"lsp,omitempty"`
 	Desktop                     map[string]any                `json:"desktop,omitempty"`
+}
+
+// LSPConfig configures the opt-in lsp_nav code navigation tool. It is disabled
+// by default: when Enabled is false the tool stays registered but reports that
+// LSP navigation is off so the model falls back to grep. When enabled, the pool
+// launches per-language Language Server Protocol servers (gopls for Go, clangd
+// for C/C++) on demand. Server binaries are resolved from an explicit per-
+// language path or from PATH, and may be constrained by Allowlist.
+type LSPConfig struct {
+	// Enabled turns on lazy server launch. Default false (read-only navigation
+	// stays available but degrades to a "not enabled" message).
+	Enabled bool `json:"enabled,omitempty"`
+	// Servers maps a logical language id ("go", "c", "cpp") to an explicit server
+	// configuration. A language absent here uses the default binary on PATH.
+	Servers map[string]LSPServerConfig `json:"servers,omitempty"`
+	// Allowlist, when non-empty, restricts which resolved server binaries may
+	// launch. Entries match either an absolute path or a base name (case-
+	// insensitive, ".exe" stripped), e.g. "gopls" or "clangd".
+	Allowlist []string `json:"allowlist,omitempty"`
+	// RequestTimeoutSecs bounds a single navigation request. Default 5s.
+	RequestTimeoutSecs int `json:"request_timeout_seconds,omitempty"`
+	// IdleTimeoutSecs bounds how long an unused server stays alive. Default 300s.
+	IdleTimeoutSecs int `json:"idle_timeout_seconds,omitempty"`
+}
+
+// LSPServerConfig pins a per-language server binary and optional extra args.
+type LSPServerConfig struct {
+	Path string   `json:"path,omitempty"`
+	Args []string `json:"args,omitempty"`
+}
+
+// resolvedPoolConfig converts the user-facing config into the validated pool
+// configuration. It is safe to call when Enabled is false (the caller checks
+// Enabled separately before launching servers).
+func (c LSPConfig) resolvedPoolConfig() LSPPoolConfig {
+	out := LSPPoolConfig{
+		ServerPaths: map[string]string{},
+		ServerArgs:  map[string][]string{},
+	}
+	for language, server := range c.Servers {
+		language = strings.ToLower(strings.TrimSpace(language))
+		if language == "" {
+			continue
+		}
+		if path := strings.TrimSpace(server.Path); path != "" {
+			out.ServerPaths[language] = path
+		}
+		if len(server.Args) > 0 {
+			out.ServerArgs[language] = append([]string(nil), server.Args...)
+		}
+	}
+	for _, entry := range c.Allowlist {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			out.Allowlist = append(out.Allowlist, entry)
+		}
+	}
+	if c.RequestTimeoutSecs > 0 {
+		out.RequestTimeout = time.Duration(c.RequestTimeoutSecs) * time.Second
+	}
+	if c.IdleTimeoutSecs > 0 {
+		out.IdleTimeout = time.Duration(c.IdleTimeoutSecs) * time.Second
+	}
+	return out
 }
 
 // SearchConfig configures the built-in web_search tool. When Provider and
