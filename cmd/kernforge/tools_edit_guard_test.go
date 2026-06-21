@@ -1370,7 +1370,14 @@ func TestApplyPatchErrorMetadataDoesNotClaimWorkspaceChanged(t *testing.T) {
 	}
 }
 
-func TestApplyPatchPartialFailureMetadataReportsOnlyChangedPaths(t *testing.T) {
+// tooling-3: the multi-file apply is transactional. This patch's first op adds
+// the file "dir" and its second op adds "dir/child.txt", which cannot succeed
+// because "dir" would have to be both a file and a directory. The whole apply
+// must therefore fail WITHOUT committing the first op: no "dir" file content is
+// written and no child is created. This test previously asserted the old buggy
+// behavior (the first file persisting and changed_workspace=true); it now
+// asserts the corrected all-or-nothing semantics.
+func TestApplyPatchTransactionalFailureCommitsNothing(t *testing.T) {
 	root := t.TempDir()
 	tool := NewApplyPatchTool(Workspace{
 		BaseRoot: root,
@@ -1384,24 +1391,24 @@ func TestApplyPatchPartialFailureMetadataReportsOnlyChangedPaths(t *testing.T) {
 		"patch": "*** Begin Patch\n*** Add File: dir\n+not a directory\n*** Add File: dir/child.txt\n+child\n*** End Patch\n",
 	})
 	if err == nil {
-		t.Fatalf("expected partial patch failure")
+		t.Fatalf("expected transactional patch failure")
 	}
-	data, readErr := os.ReadFile(filepath.Join(root, "dir"))
-	if readErr != nil {
-		t.Fatalf("expected first patch operation to have written dir file: %v", readErr)
-	}
-	if string(data) != "not a directory\n" {
-		t.Fatalf("unexpected first file content: %q", string(data))
+	// The first op's file content must never have been committed. "dir" may
+	// remain as an empty directory (a benign pre-validation artifact), but it
+	// must not be a regular file carrying the first op's content.
+	if info, statErr := os.Stat(filepath.Join(root, "dir")); statErr == nil && info.Mode().IsRegular() {
+		t.Fatalf("first patch operation must not have committed a dir file after rollback")
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "dir", "child.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("second patch operation should not create child, stat err=%v", statErr)
 	}
-	if changed, _ := result.Meta["changed_workspace"].(bool); !changed {
-		t.Fatalf("partial patch failure must report changed_workspace=true")
+	// A rolled-back apply committed nothing, so it must not claim the workspace
+	// changed or that verification is required.
+	if changed, _ := result.Meta["changed_workspace"].(bool); changed {
+		t.Fatalf("transactional patch failure must report changed_workspace=false")
 	}
-	changedPaths, _ := result.Meta["changed_paths"].([]string)
-	if !slices.Equal(changedPaths, []string{"dir"}) {
-		t.Fatalf("expected exact changed paths [dir], got %#v", result.Meta["changed_paths"])
+	if requires, _ := result.Meta["requires_verification"].(bool); requires {
+		t.Fatalf("transactional patch failure must not require verification")
 	}
 }
 
@@ -2248,56 +2255,146 @@ func TestRunShellPlainApprovalDoesNotSkipLaterPermissionRequestHook(t *testing.T
 	}
 }
 
+// TestRunShellRememberedShellApprovalDoesNotSkipVerificationConfirmation locks
+// the permission_sandbox-3 fix: a plain shell approval ("allow once") is
+// command-scoped, so approving one command does NOT silently auto-approve a
+// DIFFERENT later command. The first sub-case proves the different command
+// re-prompts; the second proves the explicit session-wide opt-in (the old [a]
+// behavior) still auto-approves later commands. Either way, the separate
+// verification confirmation gate is never bypassed by a shell approval.
 func TestRunShellRememberedShellApprovalDoesNotSkipVerificationConfirmation(t *testing.T) {
-	root := t.TempDir()
-	shellPromptCalls := 0
-	verificationPromptCalls := 0
-	var perms *PermissionManager
-	perms = NewPermissionManager(ModeDefault, func(string) (bool, error) {
-		shellPromptCalls++
-		perms.RememberShellApproval()
-		return true, nil
-	})
-	tool := NewRunShellTool(Workspace{
-		BaseRoot: root,
-		Root:     root,
-		Shell:    defaultShell(),
-		Perms:    perms,
-		ConfirmVerification: func(plan VerificationPlan) (bool, error) {
-			verificationPromptCalls++
-			if len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Command, "go test") {
-				t.Fatalf("unexpected verification plan: %#v", plan)
-			}
-			return false, nil
-		},
-		RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
-			_ = ctx
-			_ = event
-			_ = payload
-			return HookVerdict{Allow: true}, nil
-		},
+	// Sub-case 1: plain approval (no session-wide opt-in) must re-prompt for a
+	// DIFFERENT command. This used to pass without a second prompt due to the
+	// blanket m.shellAllowed flag.
+	t.Run("plain approval re-prompts different command", func(t *testing.T) {
+		root := t.TempDir()
+		shellPromptCalls := 0
+		verificationPromptCalls := 0
+		perms := NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			shellPromptCalls++
+			// Plain "allow once": do NOT remember anything for the session.
+			return true, nil
+		})
+		tool := NewRunShellTool(Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Shell:    defaultShell(),
+			Perms:    perms,
+			ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+				verificationPromptCalls++
+				if len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Command, "go test") {
+					t.Fatalf("unexpected verification plan: %#v", plan)
+				}
+				return false, nil
+			},
+			RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+				_ = ctx
+				_ = event
+				_ = payload
+				return HookVerdict{Allow: true}, nil
+			},
+		})
+
+		// Two DIFFERENT plain shell commands must each prompt: approving the
+		// first no longer silently auto-approves the second. (Before the fix,
+		// the first approval set a session-global flag and the second ran with
+		// no prompt.)
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo first",
+		}); err != nil {
+			t.Fatalf("first shell approval: %v", err)
+		}
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo second",
+		}); err != nil {
+			t.Fatalf("second shell approval: %v", err)
+		}
+		if shellPromptCalls != 2 {
+			t.Fatalf("a different command must re-prompt under plain approval, got %d prompt(s)", shellPromptCalls)
+		}
+
+		// A separate verification command is gated by the verification
+		// confirmation, never by a prior shell approval. Declining it is a
+		// non-error skip.
+		text, err := tool.Execute(context.Background(), map[string]any{
+			"command": "go test ./...",
+		})
+		if err != nil {
+			t.Fatalf("declined verification command should be a non-error skip, got %v", err)
+		}
+		if !strings.Contains(text, "skipped") {
+			t.Fatalf("expected skipped verification output, got %q", text)
+		}
+		if verificationPromptCalls != 1 {
+			t.Fatalf("shell approval must not bypass verification confirmation, got %d prompt(s)", verificationPromptCalls)
+		}
 	})
 
-	if _, err := tool.Execute(context.Background(), map[string]any{
-		"command": "echo remembered",
-	}); err != nil {
-		t.Fatalf("initial shell approval: %v", err)
-	}
-	text, err := tool.Execute(context.Background(), map[string]any{
-		"command": "go test ./...",
+	// Sub-case 2: explicit session-wide opt-in ([a]) auto-approves later
+	// commands, but the verification confirmation gate still runs.
+	t.Run("session-wide opt-in auto-approves later command", func(t *testing.T) {
+		root := t.TempDir()
+		shellPromptCalls := 0
+		verificationPromptCalls := 0
+		var perms *PermissionManager
+		perms = NewPermissionManager(ModeDefault, func(string) (bool, error) {
+			shellPromptCalls++
+			// Explicit session-wide opt-in for plain shell (the [a] answer).
+			perms.RememberShellSessionWide(ActionShell)
+			return true, nil
+		})
+		tool := NewRunShellTool(Workspace{
+			BaseRoot: root,
+			Root:     root,
+			Shell:    defaultShell(),
+			Perms:    perms,
+			ConfirmVerification: func(plan VerificationPlan) (bool, error) {
+				verificationPromptCalls++
+				if len(plan.Steps) != 1 || !strings.Contains(plan.Steps[0].Command, "go test") {
+					t.Fatalf("unexpected verification plan: %#v", plan)
+				}
+				return false, nil
+			},
+			RunHook: func(ctx context.Context, event HookEvent, payload HookPayload) (HookVerdict, error) {
+				_ = ctx
+				_ = event
+				_ = payload
+				return HookVerdict{Allow: true}, nil
+			},
+		})
+
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo first",
+		}); err != nil {
+			t.Fatalf("initial shell approval: %v", err)
+		}
+		// A DIFFERENT plain shell command now auto-approves because the user
+		// explicitly chose session-wide approval.
+		if _, err := tool.Execute(context.Background(), map[string]any{
+			"command": "echo second",
+		}); err != nil {
+			t.Fatalf("session-wide approved command: %v", err)
+		}
+		if shellPromptCalls != 1 {
+			t.Fatalf("session-wide opt-in should auto-approve the later command, got %d prompt(s)", shellPromptCalls)
+		}
+		// The verification gate still runs for a verification command.
+		text, err := tool.Execute(context.Background(), map[string]any{
+			"command": "go test ./...",
+		})
+		if err != nil {
+			t.Fatalf("declined verification command should be a non-error skip, got %v", err)
+		}
+		if !strings.Contains(text, "skipped") {
+			t.Fatalf("expected skipped verification output, got %q", text)
+		}
+		if shellPromptCalls != 1 {
+			t.Fatalf("session-wide opt-in should not re-prompt, got %d prompt(s)", shellPromptCalls)
+		}
+		if verificationPromptCalls != 1 {
+			t.Fatalf("session-wide shell approval must not bypass verification confirmation, got %d prompt(s)", verificationPromptCalls)
+		}
 	})
-	if err != nil {
-		t.Fatalf("declined verification command should be a non-error skip, got %v", err)
-	}
-	if !strings.Contains(text, "skipped") {
-		t.Fatalf("expected skipped verification output, got %q", text)
-	}
-	if shellPromptCalls != 1 {
-		t.Fatalf("expected only the initial shell prompt, got %d", shellPromptCalls)
-	}
-	if verificationPromptCalls != 1 {
-		t.Fatalf("remembered shell approval must not bypass verification confirmation, got %d prompt(s)", verificationPromptCalls)
-	}
 }
 
 func TestRunShellPreToolUseRewriteExecutesUpdatedCommand(t *testing.T) {

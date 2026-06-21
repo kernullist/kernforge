@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,6 +20,14 @@ type BackgroundJobManager struct {
 	root    string
 	session *Session
 	store   *SessionStore
+	// containments holds the per-job process-tree containment (Windows Job
+	// Object; no-op elsewhere) keyed by job id. Holding the handle keeps the
+	// detached background tree bounded to kernforge's lifetime: the whole tree is
+	// killed when the job is canceled/completed or when kernforge exits, so a
+	// background command's grandchildren cannot outlive it. This is tree
+	// containment, not a full sandbox.
+	containmentsMu sync.Mutex
+	containments   map[string]*processContainment
 }
 
 type BackgroundShellBundleOptions struct {
@@ -88,9 +97,16 @@ func (m *BackgroundJobManager) StartShellJob(shell string, workDir string, comma
 	cmd.Stdout = devNull
 	cmd.Stderr = devNull
 	cmd.Stdin = nil
+	// Bound the background process tree to a Job Object (Windows; no-op
+	// elsewhere). The manager retains the handle so the tree is killed on cancel,
+	// on completion, or when kernforge exits. Tree containment, not a sandbox.
+	containment, assignToJob := prepareProcessContainment(cmd)
 	if err := cmd.Start(); err != nil {
+		containment.Close()
 		return BackgroundShellJob{}, err
 	}
+	assignToJob()
+	m.storeContainment(jobID, containment)
 	job.PID = cmd.Process.Pid
 	job.UpdatedAt = shellJobNow()
 	job.Normalize()
@@ -99,6 +115,38 @@ func (m *BackgroundJobManager) StartShellJob(shell string, workDir string, comma
 		return BackgroundShellJob{}, err
 	}
 	return job, nil
+}
+
+// storeContainment retains the per-job containment handle so the background
+// process tree stays bounded for the lifetime of the job.
+func (m *BackgroundJobManager) storeContainment(jobID string, containment *processContainment) {
+	if m == nil || containment == nil {
+		return
+	}
+	m.containmentsMu.Lock()
+	defer m.containmentsMu.Unlock()
+	if m.containments == nil {
+		m.containments = make(map[string]*processContainment)
+	}
+	m.containments[jobID] = containment
+}
+
+// closeContainment closes and forgets the containment for a job. Closing the
+// Job Object handle terminates the whole process tree (Windows); it is a no-op
+// elsewhere and harmless if no handle was retained.
+func (m *BackgroundJobManager) closeContainment(jobID string) {
+	if m == nil {
+		return
+	}
+	m.containmentsMu.Lock()
+	containment, ok := m.containments[jobID]
+	if ok {
+		delete(m.containments, jobID)
+	}
+	m.containmentsMu.Unlock()
+	if ok {
+		containment.Close()
+	}
 }
 
 func (m *BackgroundJobManager) nextShellJobID(now time.Time) string {
@@ -210,6 +258,11 @@ func (m *BackgroundJobManager) SyncJob(jobID string) (BackgroundShellJob, error)
 	if tail, err := readFileTail(job.LogPath, shellOutputTailLimit); err == nil {
 		job.LastOutput = strings.TrimSpace(normalizeShellOutputForDisplay(tail))
 	}
+	// Once a job reaches a terminal state, drop its retained Job Object handle so
+	// we do not leak handles for the rest of the session.
+	if backgroundJobStatusTerminal(job.Status) {
+		m.closeContainment(job.ID)
+	}
 	job.UpdatedAt = shellJobNow()
 	job.Normalize()
 	m.session.UpsertBackgroundJob(job)
@@ -217,6 +270,17 @@ func (m *BackgroundJobManager) SyncJob(jobID string) (BackgroundShellJob, error)
 		return BackgroundShellJob{}, err
 	}
 	return job, nil
+}
+
+// backgroundJobStatusTerminal reports whether a job status is final (the process
+// is no longer expected to run).
+func backgroundJobStatusTerminal(status string) bool {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "completed", "failed", "canceled", "preempted":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *BackgroundJobManager) Snapshot() []BackgroundShellJob {
@@ -458,6 +522,9 @@ func (m *BackgroundJobManager) CancelJob(jobID string, reason string, preemptedB
 	if job.PID > 0 {
 		_ = terminateBackgroundProcess(job.PID)
 	}
+	// Close the Job Object handle so the whole tree is torn down (Windows) and
+	// the handle is not leaked for the rest of the session.
+	m.closeContainment(job.ID)
 	if job.PreemptedBy != "" {
 		job.Status = "preempted"
 	} else {

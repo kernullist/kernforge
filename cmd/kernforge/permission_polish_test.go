@@ -25,8 +25,10 @@ func TestPlanModeToolBlockWording(t *testing.T) {
 }
 
 // TestNormalizeConfigCanonicalizesPersistedMode locks Polish 2: every accepted
-// mode string (canonical, legacy, or Codex profile id) persists as the canonical
-// plan/edit/full name.
+// mode string (canonical, legacy, or Codex profile id) persists as its canonical
+// user-facing name. permission_sandbox-7: the :workspace profile is ModeDefault
+// (prompt-on-write), which is NOT the auto-write "edit" tier, so it now persists
+// as "workspace" to match its behavior instead of misreporting as "edit".
 func TestNormalizeConfigCanonicalizesPersistedMode(t *testing.T) {
 	cases := map[string]string{
 		"plan":                "plan",
@@ -36,7 +38,7 @@ func TestNormalizeConfigCanonicalizesPersistedMode(t *testing.T) {
 		"acceptEdits":         "edit",
 		"bypassPermissions":   "full",
 		":read-only":          "plan",
-		":workspace":          "edit",
+		":workspace":          "workspace",
 		":danger-full-access": "full",
 	}
 	for input, want := range cases {

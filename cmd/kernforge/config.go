@@ -83,6 +83,9 @@ type SpecialistSubagentProfile struct {
 	ReadOnly        *bool    `json:"read_only,omitempty"`
 	Editable        *bool    `json:"editable,omitempty"`
 	OwnershipPaths  []string `json:"ownership_paths,omitempty"`
+	// Tools is an optional advisory allowlist of tool names a disk-defined
+	// agent may use. Empty means "no restriction beyond the role default".
+	Tools []string `json:"tools,omitempty"`
 }
 
 type SpecialistSubagentsConfig struct {
@@ -95,6 +98,30 @@ type WorktreeIsolationConfig struct {
 	RootDir                string `json:"root_dir,omitempty"`
 	BranchPrefix           string `json:"branch_prefix,omitempty"`
 	AutoForTrackedFeatures *bool  `json:"auto_for_tracked_features,omitempty"`
+}
+
+// ParallelismConfig tunes the interactive multi-worker orchestration. The zero
+// value means "use the safe built-in default" for every field, so an absent or
+// partial config never raises the cost or the concurrent-write risk.
+type ParallelismConfig struct {
+	// Per-batch worker caps. Values <= 0 fall back to the built-in defaults.
+	MicroWorkerCap int `json:"micro_worker_cap,omitempty"`
+	ReadWorkerCap  int `json:"read_worker_cap,omitempty"`
+	EditWorkerCap  int `json:"edit_worker_cap,omitempty"`
+
+	// Per-editable-worker budgets. Values <= 0 fall back to the built-in defaults.
+	EditWorkerMaxTurns  int `json:"edit_worker_max_turns,omitempty"`
+	EditWorkerMaxTokens int `json:"edit_worker_max_tokens,omitempty"`
+
+	// Per-micro-worker token budget. Value <= 0 falls back to the built-in default.
+	MicroWorkerMaxTokens int `json:"micro_worker_max_tokens,omitempty"`
+
+	// AllowEditableWorkersInSharedTree opts in to running editable workers in
+	// the shared working tree when worktree isolation is off. Editable workers
+	// concurrently write files, so without isolation the only protection is
+	// path-glob leasing. The safe default (nil/false) refuses editable workers
+	// unless worktree isolation is enabled or the user explicitly opts in here.
+	AllowEditableWorkersInSharedTree *bool `json:"allow_editable_workers_in_shared_tree,omitempty"`
 }
 
 type ProjectTrustConfig struct {
@@ -213,6 +240,7 @@ func cloneOpaqueConfigValue(value any) any {
 type Config struct {
 	Provider                    string                        `json:"provider"`
 	Model                       string                        `json:"model"`
+	FallbackModels              []string                      `json:"fallback_models,omitempty"`
 	BaseURL                     string                        `json:"base_url"`
 	APIKey                      string                        `json:"api_key"`
 	ProviderKeys                map[string]string             `json:"provider_keys,omitempty"`
@@ -241,6 +269,7 @@ type Config struct {
 	NinjaPath                   string                        `json:"ninja_path,omitempty"`
 	Command                     string                        `json:"command,omitempty"`
 	PermissionMode              string                        `json:"permission_mode"`
+	PermissionRules             PermissionRulesConfig         `json:"permission_rules,omitempty"`
 	Shell                       string                        `json:"shell"`
 	SessionDir                  string                        `json:"session_dir"`
 	AutoCompactChars            int                           `json:"auto_compact_chars"`
@@ -255,6 +284,7 @@ type Config struct {
 	MemoryFiles                 []string                      `json:"memory_files"`
 	SkillPaths                  []string                      `json:"skill_paths,omitempty"`
 	EnabledSkills               []string                      `json:"enabled_skills,omitempty"`
+	CommandPaths                []string                      `json:"command_paths,omitempty"`
 	MCPServers                  []MCPServerConfig             `json:"mcp_servers,omitempty"`
 	Profiles                    []Profile                     `json:"profiles,omitempty"`
 	ActiveProfileKey            string                        `json:"active_profile_key,omitempty"`
@@ -269,7 +299,25 @@ type Config struct {
 	TaskOwnership               *SpecialistSubagentsConfig    `json:"task_ownership,omitempty"`
 	LegacySpecialists           *SpecialistSubagentsConfig    `json:"specialists,omitempty"`
 	WorktreeIsolation           WorktreeIsolationConfig       `json:"worktree_isolation,omitempty"`
+	Parallelism                 ParallelismConfig             `json:"parallelism,omitempty"`
+	Search                      SearchConfig                  `json:"search,omitempty"`
 	Desktop                     map[string]any                `json:"desktop,omitempty"`
+}
+
+// SearchConfig configures the built-in web_search tool. When Provider and
+// APIKey are set, web_search performs a real query against the named provider.
+// When unset, web_search returns a clear "not configured" message instead of
+// failing. Endpoint overrides the provider's default API endpoint for
+// self-hosted or proxied deployments.
+type SearchConfig struct {
+	Provider string `json:"provider,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	Endpoint string `json:"endpoint,omitempty"`
+}
+
+// IsConfigured reports whether a real search backend is available.
+func (c SearchConfig) IsConfigured() bool {
+	return strings.TrimSpace(c.Provider) != "" && strings.TrimSpace(c.APIKey) != ""
 }
 
 func (cfg *Config) UnmarshalJSON(data []byte) error {
@@ -465,6 +513,11 @@ func LoadConfigWithOptions(cwd string, options ConfigLoadOptions) (Config, error
 	}
 	applyEnv(&cfg)
 	normalizeConfigPaths(&cfg)
+	if configProjectTrusted(cfg, cwd) {
+		if disk := loadAgentCatalogProfiles(projectConfigRoot(cfg, cwd)); len(disk) > 0 {
+			cfg.Specialists.Profiles = mergeAgentCatalogProfiles(cfg.Specialists.Profiles, disk)
+		}
+	}
 	if profileName == "" {
 		applyActiveProfileRoleModels(&cfg)
 	} else {
@@ -1280,6 +1333,9 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Model != "" {
 		dst.Model = src.Model
 	}
+	if len(src.FallbackModels) > 0 {
+		dst.FallbackModels = append([]string(nil), src.FallbackModels...)
+	}
 	if src.BaseURL != "" {
 		dst.BaseURL = src.BaseURL
 	}
@@ -1439,6 +1495,9 @@ func mergeConfig(dst *Config, src Config) {
 	if len(src.EnabledSkills) > 0 {
 		dst.EnabledSkills = append([]string(nil), src.EnabledSkills...)
 	}
+	if len(src.CommandPaths) > 0 {
+		dst.CommandPaths = append([]string(nil), src.CommandPaths...)
+	}
 	if len(src.MCPServers) > 0 {
 		dst.MCPServers = mergeMCPServerOverrides(dst.MCPServers, src.MCPServers)
 	}
@@ -1548,6 +1607,28 @@ func mergeConfig(dst *Config, src Config) {
 	if src.WorktreeIsolation.AutoForTrackedFeatures != nil {
 		value := *src.WorktreeIsolation.AutoForTrackedFeatures
 		dst.WorktreeIsolation.AutoForTrackedFeatures = &value
+	}
+	if src.Parallelism.MicroWorkerCap != 0 {
+		dst.Parallelism.MicroWorkerCap = src.Parallelism.MicroWorkerCap
+	}
+	if src.Parallelism.ReadWorkerCap != 0 {
+		dst.Parallelism.ReadWorkerCap = src.Parallelism.ReadWorkerCap
+	}
+	if src.Parallelism.EditWorkerCap != 0 {
+		dst.Parallelism.EditWorkerCap = src.Parallelism.EditWorkerCap
+	}
+	if src.Parallelism.EditWorkerMaxTurns != 0 {
+		dst.Parallelism.EditWorkerMaxTurns = src.Parallelism.EditWorkerMaxTurns
+	}
+	if src.Parallelism.EditWorkerMaxTokens != 0 {
+		dst.Parallelism.EditWorkerMaxTokens = src.Parallelism.EditWorkerMaxTokens
+	}
+	if src.Parallelism.MicroWorkerMaxTokens != 0 {
+		dst.Parallelism.MicroWorkerMaxTokens = src.Parallelism.MicroWorkerMaxTokens
+	}
+	if src.Parallelism.AllowEditableWorkersInSharedTree != nil {
+		value := *src.Parallelism.AllowEditableWorkersInSharedTree
+		dst.Parallelism.AllowEditableWorkersInSharedTree = &value
 	}
 	if len(src.Desktop) > 0 {
 		dst.Desktop = mergeOpaqueConfigMaps(dst.Desktop, src.Desktop)
@@ -1675,6 +1756,9 @@ func normalizeConfigPaths(cfg *Config) {
 	}
 	for i, item := range cfg.SkillPaths {
 		cfg.SkillPaths[i] = expandHome(item)
+	}
+	for i, item := range cfg.CommandPaths {
+		cfg.CommandPaths[i] = expandHome(item)
 	}
 	cfg.Projects = mergeProjectTrustConfigs(nil, cfg.Projects)
 	if strings.TrimSpace(cfg.CodexCLIPath) != "" {
@@ -1861,6 +1945,7 @@ func normalizeConfigPaths(cfg *Config) {
 		cfg.Specialists.Profiles[i].NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 		cfg.Specialists.Profiles[i].Keywords = normalizeTaskStateList(profile.Keywords, 32)
 		cfg.Specialists.Profiles[i].OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)
+		cfg.Specialists.Profiles[i].Tools = normalizeTaskStateList(profile.Tools, 32)
 	}
 	if strings.TrimSpace(cfg.WorktreeIsolation.RootDir) != "" {
 		cfg.WorktreeIsolation.RootDir = expandHome(cfg.WorktreeIsolation.RootDir)
@@ -2646,6 +2731,85 @@ func configWorktreeIsolationAutoForTrackedFeatures(cfg Config) bool {
 	return *cfg.WorktreeIsolation.AutoForTrackedFeatures
 }
 
+// Safe built-in defaults for the interactive multi-worker orchestration. These
+// match the values that were previously hard-coded at the call sites so that an
+// absent parallelism config preserves the existing behavior.
+const (
+	defaultMicroWorkerCap        = 3
+	defaultReadWorkerCap         = 2
+	defaultEditWorkerCap         = 2
+	defaultEditWorkerMaxTurns    = 4
+	defaultEditWorkerMaxTokens   = 768
+	defaultMicroWorkerMaxTokens  = 256
+	maxConfiguredWorkerCap       = 16
+	maxConfiguredEditWorkerTurns = 32
+)
+
+func configParallelismMicroWorkerCap(cfg Config) int {
+	return clampWorkerCap(cfg.Parallelism.MicroWorkerCap, defaultMicroWorkerCap)
+}
+
+func configParallelismReadWorkerCap(cfg Config) int {
+	return clampWorkerCap(cfg.Parallelism.ReadWorkerCap, defaultReadWorkerCap)
+}
+
+func configParallelismEditWorkerCap(cfg Config) int {
+	return clampWorkerCap(cfg.Parallelism.EditWorkerCap, defaultEditWorkerCap)
+}
+
+func configParallelismEditWorkerMaxTurns(cfg Config) int {
+	value := cfg.Parallelism.EditWorkerMaxTurns
+	if value <= 0 {
+		return defaultEditWorkerMaxTurns
+	}
+	if value > maxConfiguredEditWorkerTurns {
+		return maxConfiguredEditWorkerTurns
+	}
+	return value
+}
+
+// configParallelismEditWorkerMaxTokens returns the per-turn token ceiling for an
+// editable worker. The default preserves the original min(768, max(256, MaxTokens/3))
+// cost guard; an explicit positive value overrides only the upper bound.
+func configParallelismEditWorkerMaxTokens(cfg Config) int {
+	if cfg.Parallelism.EditWorkerMaxTokens > 0 {
+		return min(cfg.Parallelism.EditWorkerMaxTokens, max(256, cfg.MaxTokens/3))
+	}
+	return min(defaultEditWorkerMaxTokens, max(256, cfg.MaxTokens/3))
+}
+
+// configParallelismMicroWorkerMaxTokens returns the per-turn token ceiling for a
+// micro-worker. The default preserves the original min(256, max(128, MaxTokens/6))
+// cost guard; an explicit positive value overrides only the upper bound.
+func configParallelismMicroWorkerMaxTokens(cfg Config) int {
+	if cfg.Parallelism.MicroWorkerMaxTokens > 0 {
+		return min(cfg.Parallelism.MicroWorkerMaxTokens, max(128, cfg.MaxTokens/6))
+	}
+	return min(defaultMicroWorkerMaxTokens, max(128, cfg.MaxTokens/6))
+}
+
+// configEditableWorkersRequireIsolation reports whether editable workers in the
+// shared working tree are blocked. The safe default is to require worktree
+// isolation: editable workers concurrently write files, so without isolation
+// only path-glob leases protect against corruption. The user can opt in via
+// parallelism.allow_editable_workers_in_shared_tree.
+func configEditableWorkersAllowedInSharedTree(cfg Config) bool {
+	if cfg.Parallelism.AllowEditableWorkersInSharedTree == nil {
+		return false
+	}
+	return *cfg.Parallelism.AllowEditableWorkersInSharedTree
+}
+
+func clampWorkerCap(value int, fallback int) int {
+	if value <= 0 {
+		return fallback
+	}
+	if value > maxConfiguredWorkerCap {
+		return maxConfiguredWorkerCap
+	}
+	return value
+}
+
 func parseBoolString(value string) (bool, bool) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "on", "yes", "y":
@@ -2801,6 +2965,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		NinjaPath           string   `json:"ninja_path,omitempty"`
 		SkillPaths          []string `json:"skill_paths,omitempty"`
 		EnabledSkills       []string `json:"enabled_skills,omitempty"`
+		CommandPaths        []string `json:"command_paths,omitempty"`
 		TaskOwnership       struct {
 			Enabled  *bool                       `json:"enabled"`
 			Profiles []SpecialistSubagentProfile `json:"profiles"`
@@ -2822,6 +2987,7 @@ func InitWorkspaceConfigTemplate(workspaceRoot string) string {
 		NinjaPath:           "",
 		SkillPaths:          []string{"./.kernforge/skills"},
 		EnabledSkills:       []string{},
+		CommandPaths:        []string{"./.kernforge/commands"},
 		WorktreeIsolation: WorktreeIsolationConfig{
 			Enabled:                boolPtr(false),
 			RootDir:                filepath.Join("~", userConfigDirName, "worktrees"),
@@ -3275,7 +3441,7 @@ Conversation And Sessions:
 /compact [focus]       Summarize older messages and shrink context
 /export [file]         Export the conversation as markdown
 /rename <name>         Rename the current session
-/resume <session-id>   Resume a saved session
+/resume [id|latest]    Resume a session (no arg opens an interactive picker)
 /session [status]      Show the current session id and storage path
 /session list|search <query> List recent sessions or search saved session content
 /session handoff [note]|import <path> Generate or import a compact delegation handoff/result artifact
@@ -3705,8 +3871,10 @@ Conversation and session commands manage chat history and saved sessions.
 /rename <name>
 - Rename the current session.
 
-/resume <session-id>
-- Resume a previously saved session by id.
+/resume [id|latest]
+- Resume a previously saved session. Pass an id to resume it directly, "latest"
+  (or "last") to continue the most recently updated session, or no argument to
+  open an interactive picker of recent sessions.
 
 /session
 - Show the current session id and save location.
@@ -4352,6 +4520,10 @@ const (
 	ActionShell      Action = "shell"
 	ActionShellWrite Action = "shell_write"
 	ActionGit        Action = "git"
+	// ActionNetwork gates outbound network access (MCP tool calls and obvious
+	// network shell commands). Plan mode denies it by default; other modes prompt
+	// (or honor configured allow rules) so existing usage keeps working.
+	ActionNetwork Action = "network"
 )
 
 type PromptFunc func(question string) (bool, error)
@@ -4388,12 +4560,87 @@ func (t *UserInputRequestTracker) MarkRequested() {
 	}
 }
 
+// permissionRuleEffect is the outcome of a config-driven permission rule.
+// Evaluation precedence is deny > ask > allow.
+type permissionRuleEffect int
+
+const (
+	permissionRuleNone  permissionRuleEffect = iota // no rule matched
+	permissionRuleAllow                             // auto-allow without prompting
+	permissionRuleAsk                               // always prompt (cannot be remembered away)
+	permissionRuleDeny                              // hard deny
+)
+
+// shellCommandRule maps a command pattern to an allow/ask/deny effect. The
+// pattern is a regular expression matched against the full command string.
+type shellCommandRule struct {
+	pattern *regexp.Regexp
+	effect  permissionRuleEffect
+}
+
+// pathAnchorRule maps a path prefix (anchor) to an allow/ask/deny effect for
+// read or edit/write actions. Anchors are matched as cleaned path prefixes.
+type pathAnchorRule struct {
+	anchor string
+	effect permissionRuleEffect
+}
+
+// PermissionRulesConfig holds optional config-driven permission rules consulted
+// by the PermissionManager. Each map entry maps a pattern/anchor to one of
+// "allow", "ask", or "deny", evaluated with deny > ask > allow precedence. When
+// every map is empty the manager keeps its default prompt behavior, so this is
+// fully backward compatible.
+type PermissionRulesConfig struct {
+	// Shell maps a command regular expression to allow|ask|deny.
+	Shell map[string]string `json:"shell,omitempty"`
+	// Read maps a read path anchor (prefix) to allow|ask|deny.
+	Read map[string]string `json:"read,omitempty"`
+	// Edit maps an edit/write path anchor (prefix) to allow|ask|deny.
+	Edit map[string]string `json:"edit,omitempty"`
+	// Network maps a network target regular expression (matched against the MCP
+	// server name and/or destination URL/host) to allow|ask|deny. When empty the
+	// manager keeps its default prompt behavior outside plan mode, so this is
+	// backward compatible (existing MCP usage is not hard-broken).
+	Network map[string]string `json:"network,omitempty"`
+}
+
+// IsEmpty reports whether no rules are configured.
+func (c PermissionRulesConfig) IsEmpty() bool {
+	return len(c.Shell) == 0 && len(c.Read) == 0 && len(c.Edit) == 0 && len(c.Network) == 0
+}
+
 type PermissionManager struct {
 	mode              Mode
 	prompt            PromptFunc
 	userInputRequests *UserInputRequestTracker
-	shellAllowed      bool
+	// shellAllowed is the explicit session-wide opt-in for ActionShell (the
+	// legacy "[a] allow all shell this session" behavior). It NEVER covers
+	// ActionShellWrite.
+	shellAllowed bool
+	// shellWriteAllowed is the separate session-wide opt-in for ActionShellWrite.
+	shellWriteAllowed bool
 	gitAllowed        bool
+	// networkAllowed is the session-wide opt-in for ActionNetwork ([a] semantics),
+	// approved once like shell so repeated network tool calls do not re-prompt.
+	networkAllowed bool
+	// rememberedCommands holds exact command strings the user approved for the
+	// rest of the session, keyed by action. A later command only auto-allows if
+	// it matches one of these exactly (or a remembered pattern below).
+	rememberedCommands map[Action]map[string]bool
+	// rememberedPatterns holds user-approved command patterns, keyed by action.
+	rememberedPatterns map[Action][]*regexp.Regexp
+	// lastPrompt tracks the action/detail most recently prompted so the UI layer
+	// can target the right command/pattern when the user picks remember-style
+	// answers without re-passing the command.
+	lastPromptAction Action
+	lastPromptDetail string
+	// Config-driven rules (backward compatible: empty -> current prompt behavior).
+	shellRules    []shellCommandRule
+	readPathRules []pathAnchorRule
+	editPathRules []pathAnchorRule
+	// networkRules maps a network-target regular expression to allow|ask|deny,
+	// consulted for ActionNetwork. Empty means "no rule" (prompt as usual).
+	networkRules []shellCommandRule
 }
 
 func ParseMode(value string) Mode {
@@ -4423,6 +4670,12 @@ func ParseModeStrict(value string) (Mode, bool) {
 	case "full", string(ModeBypass):
 		// "full" is the canonical name; bypassPermissions is the legacy alias.
 		return ModeBypass, true
+	case "workspace":
+		// "workspace" is the honest display name for the prompt-on-write
+		// ModeDefault tier (read auto, write/shell/git prompt). It round-trips
+		// from permissionModeDisplayName so a persisted "workspace" reloads to the
+		// same behavior instead of masquerading as the auto-write "edit" tier.
+		return ModeDefault, true
 	default:
 		return modeForBuiltInActivePermissionProfileID(value)
 	}
@@ -4464,6 +4717,7 @@ func validPermissionModes() string {
 		string(ModePlan),
 		"edit",
 		"full",
+		"workspace",
 		string(ModeDefault),
 		string(ModeAcceptEdits),
 		string(ModeBypass),
@@ -4494,15 +4748,18 @@ func activePermissionProfileIDForModeString(value string) string {
 	return activePermissionProfileIDForMode(mode)
 }
 
-// permissionModeDisplayName maps an internal mode to the canonical user-facing
-// name: plan / edit / full. Legacy ModeDefault renders as "edit" (its closest
-// canonical mode).
+// permissionModeDisplayName maps an internal mode to its user-facing name.
+// permission_sandbox-7: ModeDefault is prompt-on-write (read auto, write/shell/
+// git prompt), which is NOT the auto-write "edit" tier, so it renders as
+// "workspace" to match its actual behavior instead of misreporting as "edit".
 func permissionModeDisplayName(mode Mode) string {
 	switch mode {
 	case ModePlan:
 		return "plan"
-	case ModeAcceptEdits, ModeDefault:
+	case ModeAcceptEdits:
 		return "edit"
+	case ModeDefault:
+		return "workspace"
 	case ModeBypass:
 		return "full"
 	default:
@@ -4554,12 +4811,16 @@ func (m *PermissionManager) SetUserInputRequestTracker(tracker *UserInputRequest
 }
 
 func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
-	if allowed, decided, err := m.allowWithoutPrompt(action); decided || err != nil {
+	if allowed, decided, err := m.allowWithoutPromptDetail(action, detail); decided || err != nil {
 		return allowed, err
 	}
 	if m.prompt == nil {
 		return false, fmt.Errorf("permission required for %s but no interactive prompt is available", action)
 	}
+	// Record the command/detail being prompted so a remember-style answer can
+	// target exactly this command or pattern without re-passing it.
+	m.lastPromptAction = action
+	m.lastPromptDetail = detail
 	question := permissionQuestion(action, detail)
 	if m.userInputRequests != nil {
 		m.userInputRequests.MarkRequested()
@@ -4568,49 +4829,453 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 	return allowed, err
 }
 
+// allowWithoutPrompt preserves the historical action-only entry point used by
+// callers (e.g. hooks) that do not have the command detail available. It treats
+// the detail as empty, so config rules and remembered exact-command/pattern
+// approvals that need the command will simply not match here.
 func (m *PermissionManager) allowWithoutPrompt(action Action) (bool, bool, error) {
+	return m.allowWithoutPromptDetail(action, "")
+}
+
+func (m *PermissionManager) allowWithoutPromptDetail(action Action, detail string) (bool, bool, error) {
 	switch m.mode {
 	case ModeBypass:
 		return true, true, nil
 	case ModePlan:
 		if action == ActionRead {
+			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
+				return false, true, fmt.Errorf("permission denied: read of %q is denied by configured rule", detail)
+			}
 			return true, true, nil
 		}
 		return false, true, fmt.Errorf("permission denied: %s is disabled in plan mode", action)
 	case ModeAcceptEdits:
 		if action == ActionRead || action == ActionWrite {
+			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
+				return false, true, fmt.Errorf("permission denied: %s of %q is denied by configured rule", action, detail)
+			}
 			return true, true, nil
 		}
 	case ModeDefault:
 		if action == ActionRead {
+			if effect := m.pathRuleEffect(action, detail); effect == permissionRuleDeny {
+				return false, true, fmt.Errorf("permission denied: read of %q is denied by configured rule", detail)
+			}
 			return true, true, nil
 		}
 	}
-	if (action == ActionShell || action == ActionShellWrite) && m.shellAllowed {
-		return true, true, nil
+	// Config-driven rules take precedence over remembered approvals: a deny is a
+	// hard block and an ask always re-prompts (cannot be silently remembered).
+	switch action {
+	case ActionShell, ActionShellWrite:
+		switch m.shellRuleEffect(detail) {
+		case permissionRuleDeny:
+			return false, true, fmt.Errorf("shell permission denied: command %q is denied by configured rule", detail)
+		case permissionRuleAllow:
+			return true, true, nil
+		case permissionRuleAsk:
+			return false, false, nil
+		}
+	case ActionRead, ActionWrite:
+		switch m.pathRuleEffect(action, detail) {
+		case permissionRuleDeny:
+			return false, true, fmt.Errorf("permission denied: %s of %q is denied by configured rule", action, detail)
+		case permissionRuleAllow:
+			return true, true, nil
+		case permissionRuleAsk:
+			return false, false, nil
+		}
+	case ActionNetwork:
+		switch m.networkRuleEffect(detail) {
+		case permissionRuleDeny:
+			return false, true, fmt.Errorf("network permission denied: target %q is denied by configured rule", detail)
+		case permissionRuleAllow:
+			return true, true, nil
+		case permissionRuleAsk:
+			return false, false, nil
+		}
 	}
-	if action == ActionGit && m.gitAllowed {
-		return true, true, nil
+	switch action {
+	case ActionShell:
+		if m.shellAllowed || m.commandRemembered(ActionShell, detail) {
+			return true, true, nil
+		}
+	case ActionShellWrite:
+		// permission_sandbox-6: ActionShellWrite has its OWN session opt-in and
+		// remembered set. Plain shell approval must not silently cover it.
+		if m.shellWriteAllowed || m.commandRemembered(ActionShellWrite, detail) {
+			return true, true, nil
+		}
+	case ActionGit:
+		if m.gitAllowed {
+			return true, true, nil
+		}
+	case ActionNetwork:
+		if m.networkAllowed {
+			return true, true, nil
+		}
 	}
 	return false, false, nil
+}
+
+// commandRemembered reports whether the given command was remembered for the
+// session for this action, either as an exact command or via a remembered
+// pattern. An empty detail never matches (the action-only path cannot resolve a
+// specific command).
+func (m *PermissionManager) commandRemembered(action Action, detail string) bool {
+	if strings.TrimSpace(detail) == "" {
+		return false
+	}
+	if commands := m.rememberedCommands[action]; commands != nil {
+		if commands[detail] {
+			return true
+		}
+	}
+	for _, pattern := range m.rememberedPatterns[action] {
+		if pattern != nil && pattern.MatchString(detail) {
+			return true
+		}
+	}
+	return false
+}
+
+// shellRuleEffect returns the highest-precedence (deny > ask > allow) configured
+// shell rule effect matching the command, or permissionRuleNone if none match.
+func (m *PermissionManager) shellRuleEffect(command string) permissionRuleEffect {
+	result := permissionRuleNone
+	for _, rule := range m.shellRules {
+		if rule.pattern == nil || !rule.pattern.MatchString(command) {
+			continue
+		}
+		result = higherPrecedenceEffect(result, rule.effect)
+	}
+	return result
+}
+
+// networkRuleEffect returns the highest-precedence (deny > ask > allow)
+// configured network rule effect matching the target (an MCP server name and/or
+// destination URL/host), or permissionRuleNone if none match.
+func (m *PermissionManager) networkRuleEffect(target string) permissionRuleEffect {
+	if strings.TrimSpace(target) == "" {
+		return permissionRuleNone
+	}
+	result := permissionRuleNone
+	for _, rule := range m.networkRules {
+		if rule.pattern == nil || !rule.pattern.MatchString(target) {
+			continue
+		}
+		result = higherPrecedenceEffect(result, rule.effect)
+	}
+	return result
+}
+
+// pathRuleEffect returns the highest-precedence configured path-anchor rule
+// effect for the action and path, or permissionRuleNone if none match. Read
+// actions consult readPathRules; write/edit actions consult editPathRules.
+func (m *PermissionManager) pathRuleEffect(action Action, path string) permissionRuleEffect {
+	var rules []pathAnchorRule
+	switch action {
+	case ActionRead:
+		rules = m.readPathRules
+	case ActionWrite:
+		rules = m.editPathRules
+	default:
+		return permissionRuleNone
+	}
+	if len(rules) == 0 || strings.TrimSpace(path) == "" {
+		return permissionRuleNone
+	}
+	cleaned := normalizeRulePath(path)
+	result := permissionRuleNone
+	for _, rule := range rules {
+		if rule.anchor == "" {
+			continue
+		}
+		if pathHasAnchor(cleaned, rule.anchor) {
+			result = higherPrecedenceEffect(result, rule.effect)
+		}
+	}
+	return result
+}
+
+// higherPrecedenceEffect resolves two effects by deny > ask > allow precedence.
+func higherPrecedenceEffect(current, candidate permissionRuleEffect) permissionRuleEffect {
+	if effectPrecedence(candidate) > effectPrecedence(current) {
+		return candidate
+	}
+	return current
+}
+
+func effectPrecedence(effect permissionRuleEffect) int {
+	switch effect {
+	case permissionRuleDeny:
+		return 3
+	case permissionRuleAsk:
+		return 2
+	case permissionRuleAllow:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// normalizeRulePath cleans a path for prefix matching using forward slashes so
+// rules behave consistently across separators.
+func normalizeRulePath(path string) string {
+	cleaned := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	return cleaned
+}
+
+// pathHasAnchor reports whether the cleaned path is the anchor or lives under it.
+func pathHasAnchor(cleaned, anchor string) bool {
+	anchor = filepath.ToSlash(filepath.Clean(strings.TrimSpace(anchor)))
+	if anchor == "" {
+		return false
+	}
+	if cleaned == anchor {
+		return true
+	}
+	prefix := anchor
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return strings.HasPrefix(cleaned, prefix)
+}
+
+// parsePermissionRuleEffect maps a config string to an effect. Unknown or empty
+// values yield permissionRuleNone with ok=false so callers can reject them.
+func parsePermissionRuleEffect(value string) (permissionRuleEffect, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "allow":
+		return permissionRuleAllow, true
+	case "ask", "prompt":
+		return permissionRuleAsk, true
+	case "deny", "block":
+		return permissionRuleDeny, true
+	default:
+		return permissionRuleNone, false
+	}
 }
 
 func permissionQuestion(action Action, detail string) string {
 	switch action {
 	case ActionShellWrite:
 		return fmt.Sprintf("Allow shell write? %s", detail)
+	case ActionNetwork:
+		return fmt.Sprintf("Allow network access? %s", detail)
 	default:
 		return fmt.Sprintf("Allow %s? %s", action, detail)
 	}
 }
 
-// IsShellAllowed returns whether shell permissions have been granted for this session.
+// IsShellAllowed returns whether a session-wide shell opt-in is active. It does
+// NOT reflect per-command or per-pattern remembered approvals; callers that have
+// a specific command should use ShellAutoApproved instead.
 func (m *PermissionManager) IsShellAllowed() bool {
 	return m.shellAllowed
 }
 
+// ShellAutoApproved reports whether the given shell command would run without a
+// prompt, accounting for the session-wide opt-in, remembered exact commands,
+// remembered patterns, and configured allow rules. It is command-aware so the
+// FIRST approved command no longer silently auto-approves unrelated commands.
+func (m *PermissionManager) ShellAutoApproved(action Action, command string) bool {
+	if m == nil {
+		return false
+	}
+	if action != ActionShell && action != ActionShellWrite {
+		return false
+	}
+	allowed, decided, err := m.allowWithoutPromptDetail(action, command)
+	if err != nil {
+		return false
+	}
+	return decided && allowed
+}
+
+// RememberShellApprovalForCommand remembers the exact command for the rest of
+// the session ([y]-with-remember semantics) under the given action. ActionShell
+// and ActionShellWrite are tracked separately so plain shell approval never
+// covers shell-write.
+func (m *PermissionManager) RememberShellApprovalForCommand(action Action, command string) {
+	if action != ActionShell && action != ActionShellWrite {
+		return
+	}
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return
+	}
+	if m.rememberedCommands == nil {
+		m.rememberedCommands = make(map[Action]map[string]bool)
+	}
+	if m.rememberedCommands[action] == nil {
+		m.rememberedCommands[action] = make(map[string]bool)
+	}
+	m.rememberedCommands[action][command] = true
+}
+
+// RememberShellPattern remembers a command pattern for the rest of the session
+// under the given action ([p] semantics). An invalid pattern is rejected.
+func (m *PermissionManager) RememberShellPattern(action Action, pattern string) error {
+	if action != ActionShell && action != ActionShellWrite {
+		return fmt.Errorf("shell pattern approval not supported for action %s", action)
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return fmt.Errorf("empty shell approval pattern")
+	}
+	compiled, err := regexp.Compile(pattern)
+	if err != nil {
+		return fmt.Errorf("invalid shell approval pattern %q: %w", pattern, err)
+	}
+	if m.rememberedPatterns == nil {
+		m.rememberedPatterns = make(map[Action][]*regexp.Regexp)
+	}
+	m.rememberedPatterns[action] = append(m.rememberedPatterns[action], compiled)
+	return nil
+}
+
+// RememberShellSessionWide enables the explicit session-wide opt-in for the
+// given shell action ([a] semantics). ActionShell and ActionShellWrite each have
+// their own session opt-in so approving plain shell does not cover shell-write.
+func (m *PermissionManager) RememberShellSessionWide(action Action) {
+	switch action {
+	case ActionShell:
+		m.shellAllowed = true
+	case ActionShellWrite:
+		m.shellWriteAllowed = true
+	}
+}
+
+// RememberShellApproval is the legacy session-wide opt-in for ActionShell only.
+// It is retained for compatibility but no longer covers ActionShellWrite.
 func (m *PermissionManager) RememberShellApproval() {
 	m.shellAllowed = true
+}
+
+// LastPrompt returns the action and detail of the most recent permission prompt
+// so the UI layer can apply a remember-style answer to exactly that command
+// without re-threading it.
+func (m *PermissionManager) LastPrompt() (Action, string) {
+	if m == nil {
+		return "", ""
+	}
+	return m.lastPromptAction, m.lastPromptDetail
+}
+
+// SetShellCommandRules installs config-driven shell command rules. Each entry
+// maps a regular expression pattern to allow|ask|deny. Invalid patterns or
+// effects are reported. Passing no rules clears them (restoring prompt behavior).
+func (m *PermissionManager) SetShellCommandRules(rules map[string]string) error {
+	compiled, err := compileShellCommandRules(rules)
+	if err != nil {
+		return err
+	}
+	m.shellRules = compiled
+	return nil
+}
+
+func compileShellCommandRules(rules map[string]string) ([]shellCommandRule, error) {
+	compiled := make([]shellCommandRule, 0, len(rules))
+	for pattern, effectValue := range rules {
+		trimmed := strings.TrimSpace(pattern)
+		if trimmed == "" {
+			continue
+		}
+		effect, ok := parsePermissionRuleEffect(effectValue)
+		if !ok {
+			return nil, fmt.Errorf("invalid shell rule effect %q for pattern %q (valid: allow, ask, deny)", effectValue, pattern)
+		}
+		re, err := regexp.Compile(trimmed)
+		if err != nil {
+			return nil, fmt.Errorf("invalid shell rule pattern %q: %w", pattern, err)
+		}
+		compiled = append(compiled, shellCommandRule{pattern: re, effect: effect})
+	}
+	return compiled, nil
+}
+
+// SetReadPathRules installs config-driven read path-anchor rules.
+func (m *PermissionManager) SetReadPathRules(rules map[string]string) error {
+	compiled, err := compilePathAnchorRules(rules, "read")
+	if err != nil {
+		return err
+	}
+	m.readPathRules = compiled
+	return nil
+}
+
+// SetEditPathRules installs config-driven edit/write path-anchor rules.
+func (m *PermissionManager) SetEditPathRules(rules map[string]string) error {
+	compiled, err := compilePathAnchorRules(rules, "edit")
+	if err != nil {
+		return err
+	}
+	m.editPathRules = compiled
+	return nil
+}
+
+// ApplyConfigRules installs all config-driven permission rules at once. A nil
+// receiver or an empty config is a no-op (preserving prompt behavior). All rule
+// sets are compiled and validated before any are committed, so an invalid rule
+// is reported without leaving partial state behind.
+func (m *PermissionManager) ApplyConfigRules(rules PermissionRulesConfig) error {
+	if m == nil || rules.IsEmpty() {
+		return nil
+	}
+	shellRules, err := compileShellCommandRules(rules.Shell)
+	if err != nil {
+		return err
+	}
+	readRules, err := compilePathAnchorRules(rules.Read, "read")
+	if err != nil {
+		return err
+	}
+	editRules, err := compilePathAnchorRules(rules.Edit, "edit")
+	if err != nil {
+		return err
+	}
+	networkRules, err := compileShellCommandRules(rules.Network)
+	if err != nil {
+		return err
+	}
+	m.shellRules = shellRules
+	m.readPathRules = readRules
+	m.editPathRules = editRules
+	m.networkRules = networkRules
+	return nil
+}
+
+// SetNetworkRules installs config-driven network target rules. Each entry maps a
+// regular expression (matched against the MCP server name and/or destination
+// URL/host) to allow|ask|deny. Invalid patterns or effects are reported. Passing
+// no rules clears them (restoring prompt behavior).
+func (m *PermissionManager) SetNetworkRules(rules map[string]string) error {
+	compiled, err := compileShellCommandRules(rules)
+	if err != nil {
+		return err
+	}
+	m.networkRules = compiled
+	return nil
+}
+
+func compilePathAnchorRules(rules map[string]string, kind string) ([]pathAnchorRule, error) {
+	compiled := make([]pathAnchorRule, 0, len(rules))
+	for anchor, effectValue := range rules {
+		trimmed := strings.TrimSpace(anchor)
+		if trimmed == "" {
+			continue
+		}
+		effect, ok := parsePermissionRuleEffect(effectValue)
+		if !ok {
+			return nil, fmt.Errorf("invalid %s path rule effect %q for anchor %q (valid: allow, ask, deny)", kind, effectValue, anchor)
+		}
+		compiled = append(compiled, pathAnchorRule{
+			anchor: filepath.ToSlash(filepath.Clean(trimmed)),
+			effect: effect,
+		})
+	}
+	return compiled, nil
 }
 
 func (m *PermissionManager) IsGitAllowed() bool {
@@ -4619,4 +5284,22 @@ func (m *PermissionManager) IsGitAllowed() bool {
 
 func (m *PermissionManager) RememberGitApproval() {
 	m.gitAllowed = true
+}
+
+// IsNetworkAllowed reports whether a session-wide network opt-in is active.
+func (m *PermissionManager) IsNetworkAllowed() bool {
+	if m == nil {
+		return false
+	}
+	return m.networkAllowed
+}
+
+// RememberNetworkApproval enables the session-wide opt-in for ActionNetwork
+// ([a]/approve-once semantics) so subsequent network tool calls do not
+// re-prompt for the rest of the session.
+func (m *PermissionManager) RememberNetworkApproval() {
+	if m == nil {
+		return
+	}
+	m.networkAllowed = true
 }
