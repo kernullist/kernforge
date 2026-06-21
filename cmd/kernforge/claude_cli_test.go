@@ -39,9 +39,16 @@ func TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases(t *testing.T) {
 		model string
 		want  string
 	}{
-		{name: "sonnet 4.7", model: "claude-sonnet-4-7", want: "sonnet"},
+		// Current catalog ids must each resolve to their CLI family alias so a
+		// live config model lands on the right model instead of falling through.
+		{name: "fable 5", model: "claude-fable-5", want: "fable"},
+		{name: "mythos 5", model: "claude-mythos-5", want: "fable"},
 		{name: "opus 4.8", model: "claude-opus-4-8", want: "opus"},
 		{name: "opus 4.7", model: "claude-opus-4-7", want: "opus"},
+		{name: "opus 4.6", model: "claude-opus-4-6", want: "opus"},
+		{name: "sonnet 4.6", model: "claude-sonnet-4-6", want: "sonnet"},
+		{name: "sonnet 4.7", model: "claude-sonnet-4-7", want: "sonnet"},
+		{name: "haiku 4.5", model: "claude-haiku-4-5", want: "haiku"},
 		{name: "haiku 3.5", model: "claude-haiku-3-5", want: "haiku"},
 	}
 	for _, tt := range tests {
@@ -50,6 +57,31 @@ func TestBuildClaudeCLIArgsMapsVersionedBuiltinsToAliases(t *testing.T) {
 			want := []string{"--model", tt.want, "-p", "hello"}
 			if !reflect.DeepEqual(args, want) {
 				t.Fatalf("args = %#v, want %#v", args, want)
+			}
+		})
+	}
+}
+
+func TestBuildClaudeCLIArgsForwardsReasoningEffort(t *testing.T) {
+	// The CLI accepts low/medium/high/xhigh/max via --effort; "minimal" has no CLI
+	// level so it folds onto "low", and unsupported values are dropped (no flag).
+	tests := []struct {
+		name   string
+		effort string
+		want   []string
+	}{
+		{name: "high", effort: "high", want: []string{"--model", "opus", "--effort", "high", "-p", "hi"}},
+		{name: "xhigh", effort: "xhigh", want: []string{"--model", "opus", "--effort", "xhigh", "-p", "hi"}},
+		{name: "max", effort: "max", want: []string{"--model", "opus", "--effort", "max", "-p", "hi"}},
+		{name: "minimal folds to low", effort: "minimal", want: []string{"--model", "opus", "--effort", "low", "-p", "hi"}},
+		{name: "empty drops flag", effort: "", want: []string{"--model", "opus", "-p", "hi"}},
+		{name: "unsupported drops flag", effort: "bogus", want: []string{"--model", "opus", "-p", "hi"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := buildClaudeCLIArgs("opus", nil, "hi", ChatRequest{ReasoningEffort: tt.effort})
+			if !reflect.DeepEqual(args, tt.want) {
+				t.Fatalf("args = %#v, want %#v", args, tt.want)
 			}
 		})
 	}

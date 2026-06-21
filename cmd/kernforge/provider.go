@@ -339,6 +339,19 @@ type ChatResponse struct {
 	ReasoningIncluded  bool
 	RateLimitSummary   string
 	ModelVerifications []string
+	Usage              TokenUsage
+}
+
+// TokenUsage carries per-request token accounting decoded from a provider's
+// response. Fields are zero when the provider did not report them, so callers
+// can treat a missing usage block as all-zero without a separate presence flag.
+// Field names follow the Anthropic usage block; OpenAI/Ollama counts are mapped
+// onto InputTokens/OutputTokens (those providers do not split cache tokens).
+type TokenUsage struct {
+	InputTokens              int
+	OutputTokens             int
+	CacheCreationInputTokens int
+	CacheReadInputTokens     int
 }
 
 // requestTemperaturePointer returns a pointer to the temperature value that
@@ -1187,15 +1200,22 @@ type AnthropicClient struct {
 
 func NewAnthropicClient(baseURL, apiKey string) *AnthropicClient {
 	return &AnthropicClient{
-		apiKey:     apiKey,
-		baseURL:    normalizeAnthropicBaseURL(baseURL),
-		httpClient: &http.Client{},
+		apiKey:  apiKey,
+		baseURL: normalizeAnthropicBaseURL(baseURL),
+		// Set a client-level timeout so a hung or half-open response cannot block
+		// the request forever. The native Anthropic path is non-streaming, so a
+		// 10-minute ceiling is generous for large max_tokens completions while
+		// still bounding pathological stalls. Callers can still cancel earlier via
+		// the request context.
+		httpClient: &http.Client{Timeout: 10 * time.Minute},
 	}
 }
 
 // anthropicThinkingBudgetForEffort maps a normalized reasoning effort to an
 // Anthropic extended-thinking token budget. Returns 0 when the effort does not
-// request reasoning so non-reasoning calls stay unchanged.
+// request reasoning so non-reasoning calls stay unchanged. This budget form is
+// only valid on older models that still accept thinking:{type:"enabled"} (see
+// anthropicModelUsesBudgetThinking).
 func anthropicThinkingBudgetForEffort(effort string) int {
 	switch normalizeReasoningEffort(effort) {
 	case "minimal":
@@ -1210,6 +1230,60 @@ func anthropicThinkingBudgetForEffort(effort string) int {
 		return 32768
 	default:
 		return 0
+	}
+}
+
+// anthropicModelUsesBudgetThinking reports whether a model id still accepts the
+// extended-thinking budget form thinking:{type:"enabled", budget_tokens:N}.
+// Current Claude models (Opus 4.7/4.8, Fable 5, and anything newer in those
+// families) removed that form and reject it with HTTP 400; they require the
+// adaptive form thinking:{type:"adaptive"} instead. Opus 4.6 / Sonnet 4.6 still
+// accept the budget form (deprecated), and pre-4.6 models require it, so those
+// keep the budget form. The check is conservative: anything we do not positively
+// recognize as a budget-thinking model is treated as adaptive-only, since
+// emitting the removed form to a new model is a hard request failure while the
+// adaptive form is the supported path for every current model.
+func anthropicModelUsesBudgetThinking(model string) bool {
+	id := strings.ToLower(strings.TrimSpace(model))
+	if id == "" {
+		// Unknown model id: prefer the safe adaptive form rather than risk a 400.
+		return false
+	}
+	// Strip a leading provider prefix (e.g. Bedrock's "anthropic.").
+	if idx := strings.LastIndex(id, "."); idx >= 0 && idx+1 < len(id) {
+		if strings.HasPrefix(id, "anthropic.") {
+			id = id[idx+1:]
+		}
+	}
+	// Adaptive-only families: Opus 4.7+, Fable, Mythos. These removed the budget
+	// form. Opus 4.6 and earlier (4-6, 4-5, 4-1, 4-0) keep it.
+	switch {
+	case strings.HasPrefix(id, "claude-fable"):
+		return false
+	case strings.HasPrefix(id, "claude-mythos"):
+		return false
+	case strings.HasPrefix(id, "claude-opus-4-8"):
+		return false
+	case strings.HasPrefix(id, "claude-opus-4-7"):
+		return false
+	case strings.HasPrefix(id, "claude-opus-4-6"):
+		return true
+	case strings.HasPrefix(id, "claude-sonnet-4-6"):
+		return true
+	case strings.Contains(id, "opus-4-5"),
+		strings.Contains(id, "opus-4-1"),
+		strings.Contains(id, "opus-4-0"),
+		strings.Contains(id, "sonnet-4-5"),
+		strings.Contains(id, "sonnet-4-0"),
+		strings.Contains(id, "sonnet-3"),
+		strings.Contains(id, "haiku"),
+		strings.Contains(id, "claude-3"),
+		strings.Contains(id, "claude-2"):
+		return true
+	default:
+		// Unrecognized claude-* id (likely a future model): default to the
+		// adaptive form, which is the supported path going forward.
+		return false
 	}
 }
 
@@ -1364,21 +1438,32 @@ func (c *AnthropicClient) ModelRouteMetadata() ModelRouteMetadata {
 }
 
 func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	// cacheControl is the prompt-caching marker {"type":"ephemeral"} placed on
+	// stable prefix blocks (tools, system) so the large, unchanging prefix is
+	// cached and re-served on later turns instead of being reprocessed at full
+	// price. Render order is tools -> system -> messages, so the marker is set on
+	// the last tool definition and on the system block. Anthropic allows at most
+	// 4 cache_control breakpoints per request; this path uses at most 2.
+	type cacheControl struct {
+		Type string `json:"type"`
+	}
 	type anthropicTool struct {
-		Name        string         `json:"name"`
-		Description string         `json:"description"`
-		InputSchema map[string]any `json:"input_schema"`
+		Name         string         `json:"name"`
+		Description  string         `json:"description"`
+		InputSchema  map[string]any `json:"input_schema"`
+		CacheControl *cacheControl  `json:"cache_control,omitempty"`
 	}
 	type anthropicContentBlock struct {
-		Type      string `json:"type"`
-		Text      string `json:"text,omitempty"`
-		ID        string `json:"id,omitempty"`
-		Name      string `json:"name,omitempty"`
-		ToolUseID string `json:"tool_use_id,omitempty"`
-		Content   any    `json:"content,omitempty"`
-		IsError   bool   `json:"is_error,omitempty"`
-		Input     any    `json:"input,omitempty"`
-		Source    any    `json:"source,omitempty"`
+		Type         string        `json:"type"`
+		Text         string        `json:"text,omitempty"`
+		ID           string        `json:"id,omitempty"`
+		Name         string        `json:"name,omitempty"`
+		ToolUseID    string        `json:"tool_use_id,omitempty"`
+		Content      any           `json:"content,omitempty"`
+		IsError      bool          `json:"is_error,omitempty"`
+		Input        any           `json:"input,omitempty"`
+		Source       any           `json:"source,omitempty"`
+		CacheControl *cacheControl `json:"cache_control,omitempty"`
 	}
 	type anthropicMessage struct {
 		Role    string                  `json:"role"`
@@ -1389,18 +1474,25 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 		BudgetTokens int    `json:"budget_tokens,omitempty"`
 	}
 	type anthropicRequest struct {
-		Model       string             `json:"model"`
-		System      string             `json:"system,omitempty"`
-		MaxTokens   int                `json:"max_tokens"`
-		Temperature *float64           `json:"temperature,omitempty"`
-		Messages    []anthropicMessage `json:"messages"`
-		Tools       []anthropicTool    `json:"tools,omitempty"`
-		Thinking    *anthropicThinking `json:"thinking,omitempty"`
-		ServiceTier string             `json:"service_tier,omitempty"`
+		Model       string                  `json:"model"`
+		System      []anthropicContentBlock `json:"system,omitempty"`
+		MaxTokens   int                     `json:"max_tokens"`
+		Temperature *float64                `json:"temperature,omitempty"`
+		Messages    []anthropicMessage      `json:"messages"`
+		Tools       []anthropicTool         `json:"tools,omitempty"`
+		Thinking    *anthropicThinking      `json:"thinking,omitempty"`
+		ServiceTier string                  `json:"service_tier,omitempty"`
+	}
+	type anthropicUsage struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 	}
 	type anthropicResponse struct {
 		Content    []anthropicContentBlock `json:"content"`
 		StopReason string                  `json:"stop_reason"`
+		Usage      *anthropicUsage         `json:"usage,omitempty"`
 		Error      *struct {
 			Message string `json:"message"`
 		} `json:"error,omitempty"`
@@ -1416,22 +1508,48 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	if tier := anthropicServiceTier(req.ServiceTier); tier != "" {
 		payload.ServiceTier = tier
 	}
-	// Map reasoning effort to Anthropic extended thinking. Extended thinking
-	// requires max_tokens to be strictly greater than the thinking budget and
-	// disallows a custom temperature, so only enable it when both hold.
-	if budget := anthropicThinkingBudgetForEffort(req.ReasoningEffort); budget > 0 && payload.MaxTokens > budget {
-		payload.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
-		// Anthropic rejects an explicit temperature when thinking is enabled.
-		payload.Temperature = nil
+	// Map reasoning effort to Anthropic thinking. Current Claude models
+	// (Opus 4.7/4.8, Fable 5) removed the budget form and require the adaptive
+	// form; older models still accept the budget form. anthropicModelUsesBudgetThinking
+	// selects the correct shape per model id so a new model never receives the
+	// removed budget_tokens form (which returns HTTP 400).
+	if normalizeReasoningEffort(req.ReasoningEffort) != "" {
+		if anthropicModelUsesBudgetThinking(req.Model) {
+			// Older models: budget form. It requires max_tokens strictly greater
+			// than the thinking budget and disallows a custom temperature, so only
+			// enable it when both hold.
+			if budget := anthropicThinkingBudgetForEffort(req.ReasoningEffort); budget > 0 && payload.MaxTokens > budget {
+				payload.Thinking = &anthropicThinking{Type: "enabled", BudgetTokens: budget}
+				// Anthropic rejects an explicit temperature when thinking is enabled.
+				payload.Temperature = nil
+			}
+		} else {
+			// Current models: adaptive thinking. There is no token budget to set;
+			// thinking depth is controlled by effort on the model side. A custom
+			// temperature is also rejected on these models, so drop it.
+			payload.Thinking = &anthropicThinking{Type: "adaptive"}
+			payload.Temperature = nil
+		}
 	}
 	messages := ensureOpenAIToolCallResponses(req.Messages)
-	payload.System, messages = splitProviderSystemGuidance(req.System, messages)
+	systemText, messages := splitProviderSystemGuidance(req.System, messages)
 	if req.JSONMode {
 		// The Anthropic Messages API has no response_format/json_object switch,
 		// so enforce JSON output by appending a system instruction. This keeps
 		// non-JSON calls unchanged while still honoring JSON mode where the API
 		// allows it (via guidance rather than a native flag).
-		payload.System = appendAnthropicJSONModeInstruction(payload.System)
+		systemText = appendAnthropicJSONModeInstruction(systemText)
+	}
+	// Mark the system prompt as a prompt-caching breakpoint. The system block is
+	// part of the stable prefix (large, unchanging system guidance + AGENTS.md /
+	// memory) and sits after tools in render order, so caching it lets later
+	// turns re-read the cached prefix instead of paying full input price.
+	if strings.TrimSpace(systemText) != "" {
+		payload.System = []anthropicContentBlock{{
+			Type:         "text",
+			Text:         systemText,
+			CacheControl: &cacheControl{Type: "ephemeral"},
+		}}
 	}
 
 	for _, tool := range req.Tools {
@@ -1440,6 +1558,13 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 			Description: tool.Description,
 			InputSchema: tool.InputSchema,
 		})
+	}
+	// Cache the tool prefix too: tools render before system, and the tool set is
+	// stable across a session. Setting cache_control on the final tool caches the
+	// whole tools block (a prefix match up to that breakpoint). Combined with the
+	// system breakpoint this uses 2 of the 4 allowed breakpoints per request.
+	if n := len(payload.Tools); n > 0 {
+		payload.Tools[n-1].CacheControl = &cacheControl{Type: "ephemeral"}
 	}
 
 	for _, msg := range messages {
@@ -1571,10 +1696,19 @@ func (c *AnthropicClient) Complete(ctx context.Context, req ChatRequest) (ChatRe
 	}
 	out.Text = strings.Join(texts, "\n")
 
-	return ChatResponse{
+	response := ChatResponse{
 		Message:    out,
 		StopReason: decoded.StopReason,
-	}, nil
+	}
+	if decoded.Usage != nil {
+		response.Usage = TokenUsage{
+			InputTokens:              decoded.Usage.InputTokens,
+			OutputTokens:             decoded.Usage.OutputTokens,
+			CacheCreationInputTokens: decoded.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     decoded.Usage.CacheReadInputTokens,
+		}
+	}
+	return response, nil
 }
 
 type OpenAIClient struct {
@@ -1709,6 +1843,10 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage,omitempty"`
 		Error *struct {
 			Message string `json:"message"`
 			Type    string `json:"type,omitempty"`
@@ -1942,11 +2080,20 @@ func (c *OpenAIClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 		out.ReasoningContent = strings.TrimSpace(choice.Message.ReasoningContent)
 	}
 
-	return ChatResponse{
+	response := ChatResponse{
 		Message:    out,
 		StopReason: choice.FinishReason,
 		RawBody:    string(data),
-	}, nil
+	}
+	if decoded.Usage != nil {
+		// OpenAI splits usage as prompt/completion tokens with no cache breakdown;
+		// map them onto the shared input/output fields.
+		response.Usage = TokenUsage{
+			InputTokens:  decoded.Usage.PromptTokens,
+			OutputTokens: decoded.Usage.CompletionTokens,
+		}
+	}
+	return response, nil
 }
 
 func readOpenAIStream(ctx context.Context, providerName string, body io.ReadCloser, onTextDelta func(string), onProgressEvent func(ProgressEvent), bufferLeadingText bool) (ChatResponse, error) {
@@ -2622,7 +2769,11 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 			ToolCalls []ollamaToolCall `json:"tool_calls,omitempty"`
 		} `json:"message"`
 		DoneReason string `json:"done_reason"`
-		Error      string `json:"error,omitempty"`
+		// Ollama reports token counts on the final (non-streamed) response:
+		// prompt_eval_count is the input tokens, eval_count the generated tokens.
+		PromptEvalCount int    `json:"prompt_eval_count,omitempty"`
+		EvalCount       int    `json:"eval_count,omitempty"`
+		Error           string `json:"error,omitempty"`
 	}
 
 	payload := ollamaRequest{
@@ -2747,6 +2898,10 @@ func (c *OllamaClient) Complete(ctx context.Context, req ChatRequest) (ChatRespo
 	return ChatResponse{
 		Message:    out,
 		StopReason: decoded.DoneReason,
+		Usage: TokenUsage{
+			InputTokens:  decoded.PromptEvalCount,
+			OutputTokens: decoded.EvalCount,
+		},
 	}, nil
 }
 

@@ -919,6 +919,48 @@ func TestAnthropicClientMapsReasoningEffortAndServiceTier(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
+	// claude-opus-4-8 removed the budget thinking form (it returns HTTP 400), so
+	// the client must emit the adaptive form with no budget_tokens. This asserts
+	// the corrected behavior; the old test asserted thinking:{type:"enabled",
+	// budget_tokens:16384}, which would now be rejected by the API.
+	thinking, ok := body["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("expected thinking adaptive, got %#v", body["thinking"])
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("budget_tokens must not be emitted for claude-opus-4-8, got %#v", thinking["budget_tokens"])
+	}
+	if body["service_tier"] != "auto" {
+		t.Fatalf("expected service_tier=auto, got %#v", body["service_tier"])
+	}
+	if _, ok := body["temperature"]; ok {
+		t.Fatalf("temperature must be dropped when thinking is enabled, got %#v", body["temperature"])
+	}
+}
+
+func TestAnthropicClientUsesBudgetThinkingForOlderModels(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	// Opus 4.6 still accepts the budget form, so the client should keep emitting
+	// thinking:{type:"enabled", budget_tokens:N} for it.
+	client := NewAnthropicClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:           "claude-opus-4-6",
+		Messages:        []Message{{Role: "user", Text: "hi"}},
+		MaxTokens:       40000,
+		ReasoningEffort: "high",
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
 	thinking, ok := body["thinking"].(map[string]any)
 	if !ok || thinking["type"] != "enabled" {
 		t.Fatalf("expected thinking enabled, got %#v", body["thinking"])
@@ -926,11 +968,102 @@ func TestAnthropicClientMapsReasoningEffortAndServiceTier(t *testing.T) {
 	if budget, ok := thinking["budget_tokens"].(float64); !ok || budget != 16384 {
 		t.Fatalf("expected budget_tokens=16384, got %#v", thinking["budget_tokens"])
 	}
-	if body["service_tier"] != "auto" {
-		t.Fatalf("expected service_tier=auto, got %#v", body["service_tier"])
+}
+
+func TestAnthropicModelUsesBudgetThinking(t *testing.T) {
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{"claude-opus-4-8", false},
+		{"claude-opus-4-7", false},
+		{"claude-fable-5", false},
+		{"claude-mythos-5", false},
+		{"anthropic.claude-opus-4-8", false},
+		{"", false},
+		{"claude-opus-4-6", true},
+		{"claude-sonnet-4-6", true},
+		{"claude-opus-4-5", true},
+		{"claude-sonnet-4-5", true},
+		{"claude-3-5-sonnet-20241022", true},
+		{"anthropic.claude-opus-4-6", true},
 	}
-	if _, ok := body["temperature"]; ok {
-		t.Fatalf("temperature must be dropped when thinking is enabled, got %#v", body["temperature"])
+	for _, tc := range cases {
+		if got := anthropicModelUsesBudgetThinking(tc.model); got != tc.want {
+			t.Errorf("anthropicModelUsesBudgetThinking(%q)=%v, want %v", tc.model, got, tc.want)
+		}
+	}
+}
+
+func TestAnthropicClientSetsPromptCachingBreakpoints(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	if _, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "claude-opus-4-8",
+		System:    "you are a stable system prompt",
+		MaxTokens: 1024,
+		Messages:  []Message{{Role: "user", Text: "hi"}},
+		Tools: []ToolDefinition{
+			{Name: "a", Description: "first", InputSchema: map[string]any{"type": "object"}},
+			{Name: "b", Description: "second", InputSchema: map[string]any{"type": "object"}},
+		},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	// System must be an array of content blocks with cache_control on the block.
+	systemBlocks, ok := body["system"].([]any)
+	if !ok || len(systemBlocks) != 1 {
+		t.Fatalf("expected system content-block array, got %#v", body["system"])
+	}
+	sysBlock, _ := systemBlocks[0].(map[string]any)
+	if _, ok := sysBlock["cache_control"].(map[string]any); !ok {
+		t.Fatalf("expected cache_control on system block, got %#v", sysBlock)
+	}
+	// Only the final tool definition carries the cache_control breakpoint.
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %#v", body["tools"])
+	}
+	first, _ := tools[0].(map[string]any)
+	if _, ok := first["cache_control"]; ok {
+		t.Fatalf("first tool must not carry cache_control, got %#v", first["cache_control"])
+	}
+	last, _ := tools[1].(map[string]any)
+	if _, ok := last["cache_control"].(map[string]any); !ok {
+		t.Fatalf("expected cache_control on final tool, got %#v", last)
+	}
+}
+
+func TestAnthropicClientDecodesUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":11,"output_tokens":7,"cache_creation_input_tokens":3,"cache_read_input_tokens":5}}`))
+	}))
+	defer server.Close()
+
+	client := NewAnthropicClient(server.URL, "key")
+	resp, err := client.Complete(context.Background(), ChatRequest{
+		Model:     "claude-opus-4-8",
+		MaxTokens: 1024,
+		Messages:  []Message{{Role: "user", Text: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	want := TokenUsage{InputTokens: 11, OutputTokens: 7, CacheCreationInputTokens: 3, CacheReadInputTokens: 5}
+	if resp.Usage != want {
+		t.Fatalf("usage=%#v, want %#v", resp.Usage, want)
 	}
 }
 
@@ -1684,7 +1817,15 @@ func TestAnthropicClientPromotesInternalUserGuidanceToSystem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	system, _ := body["system"].(string)
+	// The Anthropic system field is now a content-block array (so cache_control
+	// can be attached to it for prompt caching); extract the text block. The old
+	// assertion expected a plain string, which no longer matches the wire shape.
+	systemBlocks, ok := body["system"].([]any)
+	if !ok || len(systemBlocks) == 0 {
+		t.Fatalf("expected system content-block array, got %#v", body["system"])
+	}
+	sysBlock, _ := systemBlocks[0].(map[string]any)
+	system, _ := sysBlock["text"].(string)
 	if !strings.Contains(system, "base system") ||
 		!strings.Contains(system, internalModelGuidanceHeader) ||
 		!strings.Contains(system, "Please provide the final answer now.") {

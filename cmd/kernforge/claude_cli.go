@@ -142,12 +142,20 @@ func buildClaudeCLIArgs(model string, extraArgs []string, prompt string, req Cha
 	if modelValue := claudeCLIModelFlagValue(model); modelValue != "" {
 		args = append(args, "--model", modelValue)
 	}
-	// The Claude Code CLI headless mode (-p) does not expose reasoning_effort,
-	// max_tokens, temperature, or service_tier flags, so these request params
-	// cannot be forwarded through this bridge. They are intentionally dropped
-	// here; the underlying CLI uses its own defaults. The req argument is kept
-	// for signature parity with the other CLI bridges and future flag support.
-	_ = req
+	// Forward the request's reasoning effort through the CLI's --effort flag. The
+	// Claude Code CLI accepts exactly low/medium/high/xhigh/max, which is the same
+	// set normalizeReasoningEffort produces (minus "minimal", which the CLI does
+	// not accept and is folded onto "low"). Anything else is dropped so an
+	// unsupported value never makes the CLI reject the whole invocation.
+	if effort := claudeCLIEffortFlagValue(req.ReasoningEffort); effort != "" {
+		args = append(args, "--effort", effort)
+	}
+	// max_tokens, temperature, and service_tier are NOT exposed by the Claude Code
+	// CLI (confirmed against `claude --help`: it has --effort and --fallback-model
+	// but no --max-tokens/--temperature/--service-tier). They are intentionally
+	// not forwarded here; fabricating those flags would make every Claude CLI
+	// invocation fail with an unknown-option error. The CLI uses its own defaults
+	// for those knobs.
 	for _, arg := range extraArgs {
 		arg = strings.TrimSpace(arg)
 		if arg != "" {
@@ -158,18 +166,54 @@ func buildClaudeCLIArgs(model string, extraArgs []string, prompt string, req Cha
 	return args
 }
 
+// claudeCLIEffortFlagValue maps a Kernforge reasoning effort onto the value the
+// Claude Code CLI's --effort flag accepts (low, medium, high, xhigh, max). It
+// returns "" when the effort is unset or unsupported by the CLI so the flag is
+// omitted rather than passed an invalid value. "minimal" has no CLI equivalent,
+// so it is folded onto the closest supported level, "low".
+func claudeCLIEffortFlagValue(effort string) string {
+	switch normalizeReasoningEffort(effort) {
+	case "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "xhigh"
+	case "max":
+		return "max"
+	default:
+		return ""
+	}
+}
+
 func claudeCLIModelFlagValue(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" || strings.EqualFold(model, claudeCLIDefaultModel) {
 		return ""
 	}
+	// Map versioned Anthropic model ids onto the Claude Code CLI's stable family
+	// aliases (fable, opus, sonnet, haiku). The CLI accepts either an alias for
+	// the latest model in a family or a full model name, so when an id is not a
+	// recognized family member it is passed through verbatim (custom or future
+	// full names still work). Keep the current 4.6/4.7/4.8/fable ids in sync with
+	// the model catalog so a live config model resolves to the right alias.
 	switch strings.ToLower(model) {
-	case "claude-sonnet-4-7", "claude-sonnet-4.7", "sonnet-4-7", "sonnet-4.7":
+	case "claude-fable-5", "claude-fable5", "fable", "fable-5", "fable5",
+		"claude-mythos-5", "claude-mythos5", "mythos", "mythos-5", "mythos5":
+		return "fable"
+	case "claude-sonnet-4-6", "claude-sonnet-4.6", "sonnet-4-6", "sonnet-4.6",
+		"claude-sonnet-4-7", "claude-sonnet-4.7", "sonnet-4-7", "sonnet-4.7",
+		"claude-sonnet-4-5", "claude-sonnet-4.5", "sonnet-4-5", "sonnet-4.5":
 		return "sonnet"
 	case "claude-opus-4-8", "claude-opus-4.8", "opus-4-8", "opus-4.8",
-		"claude-opus-4-7", "claude-opus-4.7", "opus-4-7", "opus-4.7":
+		"claude-opus-4-7", "claude-opus-4.7", "opus-4-7", "opus-4.7",
+		"claude-opus-4-6", "claude-opus-4.6", "opus-4-6", "opus-4.6",
+		"claude-opus-4-5", "claude-opus-4.5", "opus-4-5", "opus-4.5":
 		return "opus"
-	case "claude-haiku-3-5", "claude-haiku-3.5", "claude-3-5-haiku-latest", "haiku-3-5", "haiku-3.5":
+	case "claude-haiku-4-5", "claude-haiku-4.5", "haiku-4-5", "haiku-4.5",
+		"claude-haiku-3-5", "claude-haiku-3.5", "claude-3-5-haiku-latest", "haiku-3-5", "haiku-3.5":
 		return "haiku"
 	}
 	return model

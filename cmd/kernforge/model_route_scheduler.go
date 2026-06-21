@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -690,4 +691,74 @@ func (a *Agent) modelRoutePolicy() ModelRoutePolicy {
 		return modelRoutePolicyFromConfig(Config{})
 	}
 	return modelRoutePolicyFromConfig(a.Config)
+}
+
+// maxModelRouteFallbackModels caps how many configured fallback models are
+// tried after the primary route fails terminally or is refused. The chain is
+// off by default (empty config) and is bounded so a misconfigured list cannot
+// turn a single turn into an unbounded sweep of model retries.
+const maxModelRouteFallbackModels = 3
+
+// selectModelRouteFallbackModels returns the ordered, deduplicated fallback
+// model chain for a turn. It drops blank entries, entries that match the
+// primary model (a fallback to the same model cannot recover a model-specific
+// terminal error or refusal), and any duplicates, then caps the result at
+// maxModelRouteFallbackModels. An empty config yields a nil chain, which keeps
+// the current single-route behavior.
+func selectModelRouteFallbackModels(cfg Config, primaryModel string) []string {
+	if len(cfg.FallbackModels) == 0 {
+		return nil
+	}
+	primaryModel = strings.TrimSpace(primaryModel)
+	out := make([]string, 0, maxModelRouteFallbackModels)
+	seen := map[string]struct{}{}
+	if primaryModel != "" {
+		seen[strings.ToLower(primaryModel)] = struct{}{}
+	}
+	for _, candidate := range cfg.FallbackModels {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		key := strings.ToLower(candidate)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, candidate)
+		if len(out) >= maxModelRouteFallbackModels {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// chatResponseIsRefusal reports whether a provider response is a safety/policy
+// refusal (HTTP 200 with stop_reason "refusal"). A refusal is not an error, so
+// it must be detected on the response rather than the error value before the
+// fallback chain decides whether to try the next model.
+func chatResponseIsRefusal(resp ChatResponse) bool {
+	return normalizeStopReason(resp.StopReason) == "refusal"
+}
+
+// shouldTryFallbackModel decides whether the primary route's outcome warrants
+// trying the next model in the fallback chain. The trigger is a terminal
+// (non-retryable) provider error or a refusal response. Retryable errors are
+// left to the existing per-route retry loop in completeModelTurn, and a clean
+// success never falls back.
+func shouldTryFallbackModel(err error, resp ChatResponse) bool {
+	if err != nil {
+		// Context cancellation/deadline is the caller giving up, not a model
+		// problem the next model could solve; do not consume the fallback chain.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return false
+		}
+		// A retryable transport error is handled by the per-route retry loop; only
+		// a terminal/non-retryable error should advance to the next model.
+		return !shouldRetryProviderError(err)
+	}
+	return chatResponseIsRefusal(resp)
 }
