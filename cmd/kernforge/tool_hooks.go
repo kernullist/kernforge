@@ -42,6 +42,10 @@ func (t GitDiffTool) hookWorkspace() Workspace { return t.ws }
 
 func (t UpdatePlanTool) hookWorkspace() Workspace { return t.ws }
 
+func (t WebFetchTool) hookWorkspace() Workspace { return t.ws }
+
+func (t WebSearchTool) hookWorkspace() Workspace { return t.ws }
+
 func (t ApplyEditProposalTool) hookWorkspace() Workspace { return t.ws }
 
 func (t ApplyPatchTool) hookWorkspace() Workspace { return t.ws }

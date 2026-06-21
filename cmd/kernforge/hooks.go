@@ -204,6 +204,9 @@ func normalizeContextInjectingHookVerdict(event HookEvent, verdict HookVerdict) 
 	if event != HookSubagentStart {
 		return verdict
 	}
+	// A SubagentStart confirmation (ask) is downgraded to a warning because there
+	// is no interactive confirmation point at subagent start. A deny, however, is
+	// enforced: it is left intact so HookRuntime.Run aborts the subagent startup.
 	if askMessage := strings.TrimSpace(verdict.AskMessage); askMessage != "" {
 		verdict.Warns = append(verdict.Warns, HookNotice{
 			RuleID:  "hook-runtime",
@@ -211,19 +214,6 @@ func normalizeContextInjectingHookVerdict(event HookEvent, verdict HookVerdict) 
 		})
 		verdict.AskMessage = ""
 	}
-	denyReason := strings.TrimSpace(verdict.DenyReason)
-	if denyReason == "" && !verdict.Allow {
-		denyReason = "SubagentStart hook requested a block."
-	}
-	if denyReason == "" {
-		return verdict
-	}
-	verdict.Warns = append(verdict.Warns, HookNotice{
-		RuleID:  "hook-runtime",
-		Message: "SubagentStart hook block ignored because SubagentStart is context-injection-only: " + denyReason,
-	})
-	verdict.Allow = true
-	verdict.DenyReason = ""
 	return verdict
 }
 
@@ -471,13 +461,10 @@ func (e *HookEngine) Evaluate(ctx context.Context, event HookEvent, payload Hook
 				verdict.AskMessage = hookActionMessage(rule, "Continue?")
 			}
 		case "deny":
-			if event == HookSubagentStart {
-				verdict.Warns = append(verdict.Warns, HookNotice{
-					RuleID:  rule.ID,
-					Message: "SubagentStart hook block ignored because SubagentStart is context-injection-only: " + hookActionMessage(rule, "Blocked by hook policy."),
-				})
-				break
-			}
+			// A SubagentStart deny is enforced: it must actually prevent the
+			// subagent from starting, like any other deny. (Only the ask/confirm
+			// action is downgraded for SubagentStart, since there is no
+			// interactive confirmation point at subagent start.)
 			verdict.Allow = false
 			verdict.DenyReason = hookActionMessage(rule, "Blocked by hook policy.")
 			if event == HookPermissionRequest {

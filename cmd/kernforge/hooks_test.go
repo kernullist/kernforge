@@ -452,7 +452,11 @@ func TestHookEngineMatchesSubagentStartAgentIdentity(t *testing.T) {
 	}
 }
 
-func TestHookRuntimeSubagentStartDenyIsContextOnly(t *testing.T) {
+// TestHookRuntimeSubagentStartDenyBlocksStartup asserts the corrected behavior:
+// a SubagentStart rule with action=deny must actually prevent the subagent from
+// starting (Run returns an error), not be silently downgraded to a warning. This
+// replaces the previous "context-only" expectation, which let a deny be ignored.
+func TestHookRuntimeSubagentStartDenyBlocksStartup(t *testing.T) {
 	runtime := &HookRuntime{
 		Engine: &HookEngine{
 			Enabled: true,
@@ -468,35 +472,18 @@ func TestHookRuntimeSubagentStartDenyIsContextOnly(t *testing.T) {
 						Message: "do not start reviewer",
 					},
 				},
-				{
-					ID:     "subagent-start-context-after-deny",
-					Events: []HookEvent{HookSubagentStart},
-					Match: HookMatch{
-						ContainsText: []string{"reviewer"},
-					},
-					Action: HookAction{
-						Type:    "append_context",
-						Message: "later context still applies",
-					},
-				},
 			},
 		},
 	}
 
-	verdict, err := runtime.Run(context.Background(), HookSubagentStart, HookPayload{
+	_, err := runtime.Run(context.Background(), HookSubagentStart, HookPayload{
 		"agent_type": "reviewer",
 	})
-	if err != nil {
-		t.Fatalf("Run: %v", err)
+	if err == nil {
+		t.Fatalf("SubagentStart deny must block startup with an error, got nil")
 	}
-	if !verdict.Allow || verdict.DenyReason != "" {
-		t.Fatalf("SubagentStart deny must not block startup, got %#v", verdict)
-	}
-	if len(verdict.Warns) != 1 || !strings.Contains(verdict.Warns[0].Message, "context-injection-only") {
-		t.Fatalf("expected context-only warning, got %#v", verdict.Warns)
-	}
-	if len(verdict.ContextAdds) != 1 || verdict.ContextAdds[0] != "later context still applies" {
-		t.Fatalf("expected later context rule to run after deny, got %#v", verdict.ContextAdds)
+	if !strings.Contains(err.Error(), "do not start reviewer") {
+		t.Fatalf("expected deny reason in error, got %v", err)
 	}
 }
 

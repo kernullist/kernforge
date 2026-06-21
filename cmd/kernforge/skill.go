@@ -9,11 +9,12 @@ import (
 )
 
 type Skill struct {
-	Name    string
-	Path    string
-	Summary string
-	Content string
-	Enabled bool
+	Name         string
+	Path         string
+	Summary      string
+	Content      string
+	AllowedTools []string
+	Enabled      bool
 }
 
 type SkillCatalog struct {
@@ -144,14 +145,143 @@ func loadSkillFile(path string) (Skill, error) {
 	if err != nil {
 		return Skill{}, err
 	}
-	content := strings.TrimSpace(string(data))
-	name := extractSkillName(path, content)
-	return Skill{
-		Name:    name,
-		Path:    path,
-		Summary: summarizeSkillContent(content),
-		Content: content,
-	}, nil
+	front, body := parseSkillFrontmatter(string(data))
+	content := strings.TrimSpace(body)
+
+	name := strings.TrimSpace(front["name"])
+	if name == "" {
+		name = extractSkillName(path, content)
+	}
+
+	summary := strings.TrimSpace(front["description"])
+	if summary == "" {
+		summary = summarizeSkillContent(content)
+	} else {
+		summary = clampSkillSummary(summary)
+	}
+
+	skill := Skill{
+		Name:         name,
+		Path:         path,
+		Summary:      summary,
+		Content:      content,
+		AllowedTools: parseSkillToolList(front["allowed-tools"]),
+	}
+	return skill, nil
+}
+
+// parseSkillFrontmatter splits an optional leading YAML frontmatter block
+// delimited by a "---" line at the very top of the file from the markdown
+// body. It supports the flat "key: value" subset used by SKILL.md
+// (name, description, allowed-tools). When no frontmatter is present the full
+// trimmed input is returned as the body and the map is empty.
+func parseSkillFrontmatter(raw string) (map[string]string, string) {
+	front := map[string]string{}
+	// Normalize line endings so CRLF files parse the same as LF files.
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	trimmedLeft := strings.TrimLeft(normalized, "\n")
+	if !strings.HasPrefix(trimmedLeft, "---\n") && trimmedLeft != "---" {
+		return front, normalized
+	}
+	// Drop the opening fence line.
+	rest := strings.TrimPrefix(trimmedLeft, "---")
+	rest = strings.TrimPrefix(rest, "\n")
+	lines := strings.Split(rest, "\n")
+	closeIndex := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == "---" {
+			closeIndex = index
+			break
+		}
+	}
+	if closeIndex < 0 {
+		// No closing fence: treat the whole thing as body, not frontmatter.
+		return front, normalized
+	}
+	lastKey := ""
+	for _, line := range lines[:closeIndex] {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Support simple block-list continuation lines ("- value") that
+		// extend the most recent key.
+		if strings.HasPrefix(trimmed, "- ") && lastKey != "" {
+			item := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
+			item = trimSkillScalar(item)
+			if item == "" {
+				continue
+			}
+			if front[lastKey] == "" {
+				front[lastKey] = item
+			} else {
+				front[lastKey] = front[lastKey] + ", " + item
+			}
+			continue
+		}
+		colon := strings.Index(trimmed, ":")
+		if colon <= 0 {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(trimmed[:colon]))
+		value := trimSkillScalar(strings.TrimSpace(trimmed[colon+1:]))
+		if key == "" {
+			continue
+		}
+		front[key] = value
+		lastKey = key
+	}
+	body := ""
+	if closeIndex+1 < len(lines) {
+		body = strings.Join(lines[closeIndex+1:], "\n")
+	}
+	return front, body
+}
+
+// trimSkillScalar removes optional surrounding quotes and trailing inline
+// comments from a YAML scalar value.
+func trimSkillScalar(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 {
+		first := value[0]
+		last := value[len(value)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			return value[1 : len(value)-1]
+		}
+	}
+	return value
+}
+
+// parseSkillToolList splits an allowed-tools value into individual tool names.
+// It accepts comma-separated scalars as well as flow-list syntax ("[a, b]").
+func parseSkillToolList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	value = strings.TrimPrefix(value, "[")
+	value = strings.TrimSuffix(value, "]")
+	parts := strings.Split(value, ",")
+	tools := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tool := trimSkillScalar(strings.TrimSpace(part))
+		if tool != "" {
+			tools = append(tools, tool)
+		}
+	}
+	if len(tools) == 0 {
+		return nil
+	}
+	return tools
+}
+
+func clampSkillSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if len(summary) > 280 {
+		summary = strings.TrimSpace(summary[:280]) + "..."
+	}
+	return summary
 }
 
 func extractSkillName(path, content string) string {
@@ -203,6 +333,18 @@ func (c SkillCatalog) Count() int {
 
 func (c SkillCatalog) EnabledCount() int {
 	return len(c.enabled)
+}
+
+// SelectableCount reports how many discovered skills are not enabled by
+// default and therefore remain available for on-demand selection by relevance.
+func (c SkillCatalog) SelectableCount() int {
+	count := 0
+	for _, skill := range c.items {
+		if !skill.Enabled {
+			count++
+		}
+	}
+	return count
 }
 
 func (c SkillCatalog) Items() []Skill {

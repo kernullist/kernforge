@@ -138,7 +138,7 @@ var slashCommandDescriptions = map[string]string{
 	"clear-selections":        "Clear the full saved selection stack.",
 	"diff-selection":          "Diff the active selection against current changes.",
 	"edit-selection":          "Apply an edit task scoped to the active selection.",
-	"resume":                  "Resume a previous session by id.",
+	"resume":                  "Resume a session by id, 'latest', or no arg for an interactive picker.",
 	"rename":                  "Rename the current session.",
 	"session":                 "Show session metadata and lifecycle commands for lists, events, recovery, jobs, handoff, tasks, and dashboards.",
 	"diff":                    "Show the current workspace diff.",
@@ -260,6 +260,9 @@ var slashSubcommandDescriptions = map[string]map[string]string{
 		"prune":            "Prune stale or low-value persistent memory entries.",
 		"prune all":        "Prune memory entries without limiting to the current workspace.",
 		"stats":            "Show persistent memory counts and health metrics.",
+		"note":             "Quick-capture a human-curatable markdown note under .kernforge/memory.",
+		"notes":            "List the human-curatable markdown notes saved for this workspace.",
+		"note-show":        "Print one markdown note saved under .kernforge/memory.",
 	},
 	"evidence": {
 		"recent":           "Show recent evidence records for this workspace.",
@@ -453,6 +456,29 @@ func (rt *runtimeState) completeLine(buffer string) (string, []string, bool) {
 	return buffer, nil, false
 }
 
+// completionCommandNames returns the built-in slash command names merged with
+// any discovered user-defined command names. Built-ins always come first and
+// user commands that collide with a built-in are not added (the loader already
+// drops those), keeping built-in behavior intact.
+func (rt *runtimeState) completionCommandNames() []string {
+	if rt == nil || rt.userCommands.Count() == 0 {
+		return slashCommands
+	}
+	builtin := make(map[string]bool, len(slashCommands))
+	merged := make([]string, 0, len(slashCommands)+rt.userCommands.Count())
+	for _, cmd := range slashCommands {
+		builtin[cmd] = true
+		merged = append(merged, cmd)
+	}
+	for _, name := range rt.userCommands.Names() {
+		if builtin[name] {
+			continue
+		}
+		merged = append(merged, name)
+	}
+	return merged
+}
+
 func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, bool) {
 	trimmedLeft := strings.TrimLeft(buffer, " \t")
 	if !strings.HasPrefix(trimmedLeft, "/") {
@@ -468,7 +494,7 @@ func (rt *runtimeState) completeSlashCommand(buffer string) (string, []string, b
 	leading := buffer[:len(buffer)-len(trimmedLeft)]
 	partial := normalizeSlashCommandName(commandText)
 	var matches []string
-	for _, cmd := range slashCommands {
+	for _, cmd := range rt.completionCommandNames() {
 		if strings.HasPrefix(cmd, partial) {
 			matches = append(matches, cmd)
 		}
@@ -744,7 +770,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"review":            {"change", "plan", "selection", "pr", "final", "goal", "analysis", "--no-model", "--mode", "--follow-up", "--no-follow-up"},
 		"goal":              {"--run", "--no-run", "--file GOAL.md", "@GOAL.md", "run latest", "status", "audit latest", "complete latest", "cancel latest"},
 		"review-soak":       {"--mode scripted", "--mode real-provider", "--turns", "--timeout"},
-		"memory":            {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats"},
+		"memory":            {"loaded", "recent", "search", "show", "promote", "demote", "confirm", "tentative", "dashboard", "dashboard --html", "prune", "stats", "note", "notes", "note-show"},
 		"evidence":          {"recent", "search", "show", "dashboard", "dashboard --html"},
 		"override":          {"status", "add", "clear"},
 		"checkpoint":        {"auto", "diff", "list", "rollback"},
@@ -1379,7 +1405,10 @@ func commandCompletionDescription(item string) string {
 			}
 		}
 	}
-	return strings.TrimSpace(slashCommandDescriptions[commandName])
+	if builtin := strings.TrimSpace(slashCommandDescriptions[commandName]); builtin != "" {
+		return builtin
+	}
+	return strings.TrimSpace(userCommandDescription(commandName))
 }
 
 func createDriverPOCSlashArgumentSuggestions(fields []string, firstLevel []string) ([]string, int, bool) {

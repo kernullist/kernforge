@@ -69,9 +69,90 @@ func (rt *runtimeState) handleMemoryFamilyCommand(args string) error {
 		return rt.handlePersistentMemoryPrune(rest)
 	case "stats":
 		return rt.handlePersistentMemoryStats()
+	case "note", "capture", "memo":
+		return rt.handleMarkdownMemoryNote(rest)
+	case "notes":
+		return rt.handleMarkdownMemoryNotesList()
+	case "note-show":
+		return rt.handleMarkdownMemoryNoteShow(rest)
 	default:
-		return fmt.Errorf("usage: /memory [loaded|recent|search|show|promote|demote|confirm|tentative|dashboard [--html]|prune|stats]")
+		return fmt.Errorf("usage: /memory [loaded|recent|search|show|promote|demote|confirm|tentative|dashboard [--html]|prune|stats|note [title -- body]|notes|note-show <file>]")
 	}
+}
+
+// markdownMemory returns the workspace-scoped markdown memory store.
+func (rt *runtimeState) markdownMemory() *MarkdownMemoryStore {
+	return NewMarkdownMemoryStore(rt.workspace.BaseRoot)
+}
+
+// handleMarkdownMemoryNote quick-captures a markdown note. The argument may be
+// just a body, or "title -- body" to file the note under a titled note file.
+func (rt *runtimeState) handleMarkdownMemoryNote(rest string) error {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return fmt.Errorf("usage: /memory note [title --] <text>")
+	}
+	title := ""
+	body := rest
+	if idx := strings.Index(rest, "--"); idx >= 0 {
+		title = strings.TrimSpace(rest[:idx])
+		body = strings.TrimSpace(rest[idx+2:])
+	}
+	store := rt.markdownMemory()
+	if store == nil {
+		return fmt.Errorf("markdown memory is unavailable: no workspace base directory")
+	}
+	path, err := store.AppendNote(title, body)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine("Saved note to "+path))
+	return nil
+}
+
+func (rt *runtimeState) handleMarkdownMemoryNotesList() error {
+	store := rt.markdownMemory()
+	if store == nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Markdown memory is unavailable for this workspace."))
+		return nil
+	}
+	notes, err := store.ListNotes()
+	if err != nil {
+		return err
+	}
+	if len(notes) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No markdown notes yet. Add one with /memory note <text>."))
+		return nil
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Markdown Memory"))
+	fmt.Fprintln(rt.writer, rt.ui.dim(store.Dir))
+	for _, note := range notes {
+		fmt.Fprintf(rt.writer, "%s  %s  %dB  %s\n",
+			rt.ui.dim(note.File),
+			rt.ui.info(note.ModifiedAt.Format(time.RFC3339)),
+			note.SizeBytes,
+			note.Title,
+		)
+	}
+	return nil
+}
+
+func (rt *runtimeState) handleMarkdownMemoryNoteShow(rest string) error {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return fmt.Errorf("usage: /memory note-show <file>")
+	}
+	store := rt.markdownMemory()
+	if store == nil {
+		return fmt.Errorf("markdown memory is unavailable for this workspace")
+	}
+	content, err := store.ReadNote(rest)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Note: "+rest))
+	fmt.Fprintln(rt.writer, content)
+	return nil
 }
 
 func (rt *runtimeState) handleLoadedMemoryCommand() error {

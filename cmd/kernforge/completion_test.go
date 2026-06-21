@@ -66,7 +66,7 @@ func TestCompleteSlashSubcommandEnumeratedArguments(t *testing.T) {
 		{input: "/review ", wantSuggest: []string{"/review change", "/review plan", "/review selection", "/review pr", "/review final", "/review goal", "/review analysis", "/review --no-model", "/review --mode", "/review --follow-up", "/review --no-follow-up"}},
 		{input: "/review --mode ", wantSuggest: []string{"/review --mode general-change", "/review --mode security-hardening", "/review --mode core-build", "/review --mode live-fix", "/review --mode refactor", "/review --mode research", "/review --mode ui-polish"}},
 		{input: "/goal ", wantSuggest: []string{"/goal --run", "/goal --no-run", "/goal --file GOAL.md", "/goal @GOAL.md", "/goal run latest", "/goal status", "/goal audit latest", "/goal complete latest", "/goal cancel latest"}},
-		{input: "/memory ", wantSuggest: []string{"/memory loaded", "/memory recent", "/memory search", "/memory show", "/memory promote", "/memory demote", "/memory confirm", "/memory tentative", "/memory dashboard", "/memory dashboard --html", "/memory prune", "/memory stats"}},
+		{input: "/memory ", wantSuggest: []string{"/memory loaded", "/memory recent", "/memory search", "/memory show", "/memory promote", "/memory demote", "/memory confirm", "/memory tentative", "/memory dashboard", "/memory dashboard --html", "/memory prune", "/memory stats", "/memory note", "/memory notes", "/memory note-show"}},
 		{input: "/memory prune a", wantBuffer: "/memory prune all "},
 		{input: "/evidence ", wantSuggest: []string{"/evidence recent", "/evidence search", "/evidence show", "/evidence dashboard", "/evidence dashboard --html"}},
 		{input: "/checkpoint ", wantSuggest: []string{"/checkpoint auto", "/checkpoint diff", "/checkpoint list", "/checkpoint rollback"}},
