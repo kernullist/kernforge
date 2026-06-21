@@ -1653,8 +1653,10 @@ func TestRuntimeStateAppendAssistantStreamUsesCodeToneInsideFence(t *testing.T) 
 	if !strings.Contains(rendered, ui.assistantCode("```go")) {
 		t.Fatalf("expected fence line to use code tone during streaming, got %q", rendered)
 	}
-	if !strings.Contains(rendered, ui.assistantCode("fmt.Println(\"hi\")")) {
-		t.Fatalf("expected code line to use code tone during streaming, got %q", rendered)
+	// The fenced go body is syntax-highlighted during streaming, so the string
+	// literal carries the string tone instead of the flat code tone.
+	if !strings.Contains(rendered, ui.paintSyntax(syntaxStringCode, "\"hi\"")) {
+		t.Fatalf("expected streamed go code body string literal to be highlighted, got %q", rendered)
 	}
 }
 

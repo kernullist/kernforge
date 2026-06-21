@@ -569,8 +569,10 @@ func TestAssistantCodeBlocksUseSeparateToneWhenColorEnabled(t *testing.T) {
 	if !strings.Contains(rendered, ui.assistantCode("```go")) {
 		t.Fatalf("expected fence line to use code tone, got %q", rendered)
 	}
-	if !strings.Contains(rendered, ui.assistantCode("fmt.Println(\"hi\")")) {
-		t.Fatalf("expected code body to use separate tone, got %q", rendered)
+	// Inside a known-language fence the body is now syntax-highlighted: the
+	// string literal carries the string tone rather than the flat code tone.
+	if !strings.Contains(rendered, ui.paintSyntax(syntaxStringCode, "\"hi\"")) {
+		t.Fatalf("expected code body string literal to be highlighted, got %q", rendered)
 	}
 	if !strings.Contains(rendered, ui.mint("Done")) {
 		t.Fatalf("expected trailing paragraph to return to body tone, got %q", rendered)
@@ -600,12 +602,12 @@ func TestAssistantBodyFramesEachLineWithLeftRailWhenColorEnabled(t *testing.T) {
 
 func TestAssistantStreamDeltaDrawsRailOncePerLine(t *testing.T) {
 	ui := UI{color: true}
-	inFence := false
+	var ctx assistantRenderContext
 	prefix := ""
 
 	// A line split across two deltas must carry exactly one rail.
-	out := ui.renderAssistantStreamDelta("hel", &inFence, &prefix)
-	out += ui.renderAssistantStreamDelta("lo\nworld\n", &inFence, &prefix)
+	out := ui.renderAssistantStreamDelta("hel", &ctx, &prefix)
+	out += ui.renderAssistantStreamDelta("lo\nworld\n", &ctx, &prefix)
 
 	if got := strings.Count(out, assistantGutterBar); got != 2 {
 		t.Fatalf("expected one rail per line (2 total), got %d in %q", got, out)

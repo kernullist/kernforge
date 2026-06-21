@@ -84,6 +84,14 @@ func (ui UI) mint(text string) string          { return ui.paint("38;5;121", tex
 func (ui UI) assistantCode(text string) string { return ui.paint("38;5;153", text) }
 func (ui UI) assistantRail(text string) string { return ui.paint("38;5;79", text) }
 
+// paintSyntax is the paint variant handed to the syntax highlighter and the
+// inline-markdown layer. It mirrors ui.paint exactly (respecting no-color mode
+// and emitting only ansiPattern-strippable SGR sequences) but matches the
+// func(code, text) shape those helpers expect.
+func (ui UI) paintSyntax(code, text string) string {
+	return ui.paint(code, text)
+}
+
 // assistantGutterBar is the vertical rail drawn to the left of every assistant
 // body line so the answer block reads as a framed callout, distinct from the
 // flush-left shell/tool output. assistantRailCorner closes the rail.
@@ -1170,7 +1178,7 @@ func (ui UI) renderAssistantBody(text string) string {
 	blankGutter := ui.assistantGutterBlank()
 
 	var out strings.Builder
-	inFence := false
+	var ctx assistantRenderContext
 	for _, line := range strings.SplitAfter(text, "\n") {
 		if line == "" {
 			continue
@@ -1180,21 +1188,19 @@ func (ui UI) renderAssistantBody(text string) string {
 		if strings.TrimSpace(content) == "" {
 			out.WriteString(blankGutter)
 		} else {
-			kind := classifyAssistantLine(content, inFence)
+			kind := classifyAssistantLine(content, ctx.inFence)
 			out.WriteString(gutter)
-			out.WriteString(ui.renderAssistantLine(kind, content))
+			out.WriteString(ui.renderAssistantLine(kind, content, &ctx))
 		}
 		if hasNewline {
 			out.WriteByte('\n')
 		}
-		if isAssistantFenceLine(content) {
-			inFence = !inFence
-		}
+		ctx.applyFenceLine(content)
 	}
 	return out.String()
 }
 
-func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *string) string {
+func (ui UI) renderAssistantStreamDelta(text string, ctx *assistantRenderContext, linePrefix *string) string {
 	if text == "" {
 		return ""
 	}
@@ -1220,46 +1226,136 @@ func (ui UI) renderAssistantStreamDelta(text string, inFence *bool, linePrefix *
 
 		if hasNewline {
 			fullLine := *linePrefix + content
-			kind := classifyAssistantLine(fullLine, *inFence)
+			kind := classifyAssistantLine(fullLine, ctx.inFence)
 			if atLineStart {
 				if strings.TrimSpace(content) == "" {
 					out.WriteString(blankGutter)
 				} else {
 					out.WriteString(gutter)
-					out.WriteString(ui.renderAssistantLine(kind, content))
+					out.WriteString(ui.renderAssistantLine(kind, content, ctx))
 				}
 			} else {
-				out.WriteString(ui.renderAssistantLine(kind, content))
+				// The line was split across deltas: only the tail is emitted
+				// here (the prefix already went out). Color the tail through a
+				// scratch context so its lexing does not advance the persistent
+				// block-comment state with partial information; the canonical
+				// state is then derived below by lexing the whole line.
+				previewCtx := *ctx
+				out.WriteString(ui.renderAssistantLine(kind, content, &previewCtx))
+				ui.advanceLexerState(kind, fullLine, ctx)
 			}
 			out.WriteByte('\n')
-			if isAssistantFenceLine(fullLine) {
-				*inFence = !*inFence
-			}
+			ctx.applyFenceLine(fullLine)
 			*linePrefix = ""
 			continue
 		}
 
 		previewLine := *linePrefix + content
-		kind := classifyAssistantLine(previewLine, *inFence)
+		kind := classifyAssistantLine(previewLine, ctx.inFence)
 		if atLineStart {
 			out.WriteString(gutter)
 		}
-		out.WriteString(ui.renderAssistantLine(kind, content))
+		// A partial (not-yet-terminated) code line must not commit the lexer's
+		// cross-line block-comment state: the same physical line keeps arriving
+		// in later deltas and is re-lexed from its own start, so the persistent
+		// state has to reflect only completed lines. Render through a scratch
+		// copy of the context to color the preview without side effects.
+		previewCtx := *ctx
+		out.WriteString(ui.renderAssistantLine(kind, content, &previewCtx))
 		*linePrefix = previewLine
 	}
 	return out.String()
 }
 
-func (ui UI) renderAssistantLine(kind assistantLineKind, text string) string {
+// assistantRenderContext threads the per-render fence state through the line
+// classifier and renderer: inFence marks whether the current line sits inside a
+// fenced code block, language is the canonicalizable token from the opening
+// fence, and blockComment carries multi-line C/C++/Go comment depth across the
+// lexed lines so block comments stay colored. A zero value is a valid prose
+// context. The streaming delta path mutates one of these across deltas; the
+// final-body path uses a local one.
+type assistantRenderContext struct {
+	inFence      bool
+	language     string
+	blockComment highlightState
+}
+
+// applyFenceLine updates the context when content is a fence line: toggling the
+// in-fence flag, capturing the opening language, and resetting the lexer state
+// at every fence boundary so a new block starts clean.
+func (ctx *assistantRenderContext) applyFenceLine(content string) {
+	if !isAssistantFenceLine(content) {
+		return
+	}
+	if ctx.inFence {
+		ctx.inFence = false
+		ctx.language = ""
+	} else {
+		ctx.inFence = true
+		ctx.language = extractLanguageFromFence(content)
+	}
+	ctx.blockComment = highlightState{}
+}
+
+func (ui UI) renderAssistantLine(kind assistantLineKind, text string, ctx *assistantRenderContext) string {
 	if text == "" {
 		return ""
 	}
 	switch kind {
-	case assistantLineFence, assistantLineCode:
+	case assistantLineFence:
+		return ui.assistantCode(text)
+	case assistantLineCode:
+		if ctx != nil && ctx.inFence {
+			if hl := defaultHighlighterRegistry.Lookup(ctx.language); hl != nil {
+				if ui.color {
+					return hl.HighlightLine(text, &ctx.blockComment, ui.paintSyntax)
+				}
+				return text
+			}
+		}
 		return ui.assistantCode(text)
 	default:
-		return ui.mint(text)
+		return ui.renderProseLine(text)
 	}
+}
+
+// proseToneCode is the SGR code behind ui.mint, the prose body tone. The inline
+// markdown layer needs the raw code so it can re-assert the prose color after a
+// styled span without the span's reset stripping the surrounding color.
+const proseToneCode = "38;5;121"
+
+// renderProseLine paints a prose body line in the mint tone and styles inline
+// **bold**, *italic*, and inline `code` spans. In no-color mode it returns the
+// raw text so the markers survive when ANSI is unavailable.
+func (ui UI) renderProseLine(text string) string {
+	if !ui.color {
+		return text
+	}
+	return renderInlineMarkdown(text, proseToneCode, ui.paintSyntax)
+}
+
+// advanceLexerState lexes a full code line solely to update the context's
+// cross-line block-comment state, discarding the colored output. It is used by
+// the streaming path when a code line was split across deltas: the visible tail
+// is colored separately, but the canonical state must be derived from the whole
+// line so the next line's block-comment depth is correct.
+func (ui UI) advanceLexerState(kind assistantLineKind, fullLine string, ctx *assistantRenderContext) {
+	if kind != assistantLineCode || ctx == nil || !ctx.inFence {
+		return
+	}
+	hl := defaultHighlighterRegistry.Lookup(ctx.language)
+	if hl == nil {
+		return
+	}
+	// Use a no-op paint so no allocation-heavy SGR strings are built; only the
+	// state pointer matters here.
+	hl.HighlightLine(fullLine, &ctx.blockComment, noopPaint)
+}
+
+// noopPaint returns the text unchanged. It feeds advanceLexerState so a
+// highlighter can update cross-line state without producing colored output.
+func noopPaint(_ string, text string) string {
+	return text
 }
 
 type assistantLineKind int
