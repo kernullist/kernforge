@@ -330,8 +330,18 @@ func mergeTaskNodeRuntimeState(current TaskNode, previous TaskNode) TaskNode {
 }
 
 func isPrimaryTaskNode(node TaskNode) bool {
-	return !strings.EqualFold(strings.TrimSpace(node.Kind), "background_bundle") &&
-		!strings.HasPrefix(strings.TrimSpace(node.ID), "bundle:")
+	kind := strings.TrimSpace(node.Kind)
+	id := strings.TrimSpace(node.ID)
+	if strings.EqualFold(kind, "background_bundle") || strings.HasPrefix(id, "bundle:") {
+		return false
+	}
+	// Spawn nodes track read-only spawned investigations (see task_spawn.go).
+	// They are not executable plan work and must never be surfaced as ready
+	// nodes, scored by the executor, or picked as micro-worker candidates.
+	if strings.EqualFold(kind, "spawn") || strings.HasPrefix(id, "spawn:") {
+		return false
+	}
+	return true
 }
 
 func (g *TaskGraph) UpsertNode(node TaskNode) {
