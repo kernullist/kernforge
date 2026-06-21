@@ -57,6 +57,7 @@ type RuntimeGateLedger struct {
 	NextCommands            []ReviewNextCommand              `json:"next_commands,omitempty"`
 	ReviewObservability     *ReviewDecisionObservability     `json:"review_observability,omitempty"`
 	FinalAnswerCorrection   *FinalAnswerCorrectionVisibility `json:"final_answer_correction,omitempty"`
+	DisclosureClaimsCheck   *DisclosureClaimsCheck           `json:"disclosure_claims_check,omitempty"`
 	StaleContextSummary     *StaleContextSummary             `json:"stale_context_summary,omitempty"`
 	RouteHealthEvents       []ReviewRouteHealthEvent         `json:"route_health_events,omitempty"`
 	LiveProviderDrill       *LiveProviderDrillReport         `json:"live_provider_drill,omitempty"`
@@ -438,6 +439,9 @@ func (l RuntimeGateLedger) RenderPromptSection() string {
 	}
 	if l.FinalAnswerCorrection != nil {
 		lines = append(lines, "- Final answer correction: "+finalAnswerCorrectionStatusLine(l.FinalAnswerCorrection))
+	}
+	if l.DisclosureClaimsCheck != nil {
+		lines = append(lines, "- Disclosure cross-check: "+disclosureClaimsCheckStatusLine(l.DisclosureClaimsCheck))
 	}
 	if l.StaleContextSummary != nil {
 		lines = append(lines, "- Stale context: "+staleContextSummaryStatusLine(l.StaleContextSummary))
@@ -976,6 +980,14 @@ func runtimeGatePatchTransactionScopeWarningsForAction(session *Session, action 
 func runtimeGateAttachCodingHarness(session *Session, ledger *RuntimeGateLedger) {
 	if session == nil || ledger == nil {
 		return
+	}
+	// Surface the latest disclosure cross-check for observability only. The
+	// contradiction blockers it produced already flow through the coding-harness
+	// report findings below, so this does not change the gate status; it only
+	// records which check ran for /status.
+	if session.LastDisclosureClaimsCheck != nil {
+		check := *session.LastDisclosureClaimsCheck
+		ledger.DisclosureClaimsCheck = &check
 	}
 	if session.LastFinalAnswerCorrection != nil {
 		correction := *session.LastFinalAnswerCorrection

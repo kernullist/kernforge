@@ -180,6 +180,7 @@ var finalAnswerRequiredShapeInstructions = map[string]string{
 	"review_self_review_disclosure":      "include the latest review result or state that review was not run",
 	"validation_disclosure":              "include verification status exactly: passed, failed, skipped, or not run",
 	"remaining_risk_disclosure":          "include unresolved risks, residual risk, or the absence of remaining known blockers",
+	"disclosure_contradiction":           "correct the disclosure that contradicts the observed changed files, verification, review, or remaining risk so it matches reality",
 }
 
 // finalAnswerRequiredShapeOrder pins a deterministic order so the rendered shape
@@ -191,6 +192,7 @@ var finalAnswerRequiredShapeOrder = []string{
 	"review_self_review_disclosure",
 	"validation_disclosure",
 	"remaining_risk_disclosure",
+	"disclosure_contradiction",
 }
 
 func finalAnswerRequiredShapeForReasons(reasons []string) []string {
@@ -295,6 +297,8 @@ func finalAnswerCorrectionReasonForFinding(finding CodingHarnessFinding) string 
 	case "Review-only answer is not findings-first",
 		"Review-only no-edit statement is missing":
 		return "review_only_findings_first_no_edit"
+	case disclosureContradictionFindingTitle:
+		return "disclosure_contradiction"
 	case "Document artifact path is missing",
 		"Document artifact quality status is missing":
 		return "document_artifact_disclosure"
@@ -335,6 +339,11 @@ func humanizeFinalAnswerCorrectionReason(value string, korean bool) string {
 			return "생성한 문서"
 		}
 		return "generated document"
+	case "disclosure_contradiction":
+		if korean {
+			return "사실과 다른 설명"
+		}
+		return "contradicted disclosure"
 	default:
 		return humanizeEnumFallback(value)
 	}

@@ -906,7 +906,8 @@ func codingHarnessFindingRequiresFinalAnswerOnlyRevision(finding CodingHarnessFi
 		"Document artifact path is missing",
 		"Document artifact quality status is missing",
 		"Document artifact verification disclosure is missing",
-		"Document artifact limitation statement is missing":
+		"Document artifact limitation statement is missing",
+		disclosureContradictionFindingTitle:
 		return true
 	default:
 		return false
@@ -1693,6 +1694,18 @@ func (a *Agent) buildOutcomeInvariantReport(reply string, flags ...bool) Outcome
 				Detail:   fmt.Sprintf("The final answer appears to claim %s was created or updated, but the file is empty.", rel),
 			})
 		}
+	}
+	// Disclosure cross-check (rh-5): after the deterministic presence/shape
+	// checks above, run a bounded single-model pass that compares the final
+	// answer's explicit CLAIMS against the OBSERVED reality from existing truth
+	// sources. This is purely additive and fail-closed: it can only add a
+	// disclosure-contradiction blocker (stricter); it never downgrades any
+	// existing finding. When no model runner or consent is available it skips and
+	// leaves behavior unchanged.
+	if bundle := a.collectDisclosureEvidence(); a.shouldRunDisclosureClaimsCheck(reply, bundle) {
+		check := a.runDisclosureClaimsCheck(context.Background(), reply, bundle)
+		a.Session.LastDisclosureClaimsCheck = check
+		report.Findings = append(report.Findings, disclosureClaimsContradictionFindings(check)...)
 	}
 	report.Checks = normalizeTaskStateList(report.Checks, 16)
 	report.Findings = normalizeCodingHarnessFindings(report.Findings)
