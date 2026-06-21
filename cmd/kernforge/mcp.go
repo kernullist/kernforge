@@ -42,11 +42,31 @@ type MCPServerConfig struct {
 	EnvironmentIDSet          bool                  `json:"-"`
 	Capabilities              []string              `json:"capabilities,omitempty"`
 	SupportsParallelToolCalls bool                  `json:"supports_parallel_tool_calls,omitempty"`
+	DeferToolSchemas          bool                  `json:"defer_tool_schemas,omitempty"`
 	Disabled                  bool                  `json:"disabled,omitempty"`
 	DisabledSet               bool                  `json:"-"`
 }
 
 const mcpToolModelOutputMaxBytes = 12000
+
+// mcpDeferToolSchemaLatencyThreshold is the connection-latency heuristic that
+// opts a server into deferred tool schemas even without an explicit config flag.
+// When the initialize+tools/list round trip during startup exceeds this, the
+// server is treated as "expensive enough" that loading every full InputSchema up
+// front would bloat the model context; the schemas are fetched on demand instead.
+// The heuristic only triggers when the server also reports many tools (see
+// mcpDeferToolSchemaHeuristicMinTools) so a slow-but-tiny server stays eager.
+const mcpDeferToolSchemaLatencyThreshold = 2 * time.Second
+
+// mcpDeferToolSchemaHeuristicMinTools is the minimum remote tool count required
+// before the latency heuristic defers schemas. A handful of tools never bloats
+// context meaningfully, so deferral there only adds round trips.
+const mcpDeferToolSchemaHeuristicMinTools = 20
+
+// mcpToolSearchTimeout bounds the live tools/list round trip used to populate a
+// deferred tool's schema on demand. It is intentionally short so a slow or hung
+// server surfaces a clear error instead of stalling the turn.
+const mcpToolSearchTimeout = 2 * time.Second
 
 // mcpClientProtocolVersion is the MCP revision this client advertises during
 // initialize. It is intentionally a current revision rather than the legacy
@@ -104,6 +124,7 @@ type mcpServerConfigJSON struct {
 	EnvironmentID             *string               `json:"environment_id,omitempty"`
 	Capabilities              []string              `json:"capabilities,omitempty"`
 	SupportsParallelToolCalls bool                  `json:"supports_parallel_tool_calls,omitempty"`
+	DeferToolSchemas          bool                  `json:"defer_tool_schemas,omitempty"`
 	Disabled                  *bool                 `json:"disabled,omitempty"`
 }
 
@@ -136,6 +157,7 @@ func (cfg *MCPServerConfig) UnmarshalJSON(data []byte) error {
 		EnvironmentID:             defaultMCPServerEnvironmentID,
 		Capabilities:              raw.Capabilities,
 		SupportsParallelToolCalls: raw.SupportsParallelToolCalls,
+		DeferToolSchemas:          raw.DeferToolSchemas,
 	}
 	if raw.EnvironmentID != nil {
 		cfg.EnvironmentID = normalizeMCPServerEnvironmentID(*raw.EnvironmentID)
@@ -212,6 +234,7 @@ func (cfg MCPServerConfig) MarshalJSON() ([]byte, error) {
 		EnvironmentID:             &environmentID,
 		Capabilities:              cfg.Capabilities,
 		SupportsParallelToolCalls: cfg.SupportsParallelToolCalls,
+		DeferToolSchemas:          cfg.DeferToolSchemas,
 		Disabled:                  disabled,
 	})
 }
@@ -228,6 +251,12 @@ type MCPToolDescriptor struct {
 	OutputSchema map[string]any
 	Annotations  map[string]any
 	ReadOnlyHint *bool
+	// Deferred marks a remote tool whose full InputSchema is not exposed to the
+	// model up front. The stub carries only name+description; the real schema is
+	// fetched on demand via the ToolSearch path and cached on the MCPClient. This
+	// is opt-in (see MCPServerConfig.DeferToolSchemas or the latency heuristic)
+	// and defaults to false so eager behavior is unchanged.
+	Deferred bool
 }
 
 type MCPResourceDescriptor struct {
@@ -299,6 +328,10 @@ type MCPClient struct {
 	stderr       []string
 	// protocolVersion is the effective MCP revision after initialize negotiation.
 	protocolVersion string
+	// schemaMu guards schemaCache, the on-demand input-schema cache populated by
+	// the ToolSearch path for deferred tools. Keyed by remote tool name.
+	schemaMu    sync.Mutex
+	schemaCache map[string]map[string]any
 }
 
 type mcpHTTPTransport struct {
@@ -859,6 +892,7 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	connectStart := time.Now()
 	if err := client.initialize(ctx); err != nil {
 		client.Close()
 		return nil, nil, err
@@ -868,8 +902,10 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		client.Close()
 		return nil, nil, err
 	}
+	connectLatency := time.Since(connectStart)
 	warnings := []string{}
-	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools)
+	deferSchemas := shouldDeferMCPToolSchemas(cfg, connectLatency, len(tools))
+	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools, deferSchemas)
 	warnings = append(warnings, toolWarnings...)
 	client.tools = tools
 	client.status.ToolCount = len(tools)
@@ -886,6 +922,21 @@ func startMCPClient(ws Workspace, cfg MCPServerConfig) (*MCPClient, []string, er
 		warnings = append(warnings, fmt.Sprintf("mcp server %s prompts: %v", cfg.Name, err))
 	}
 	return client, warnings, nil
+}
+
+// shouldDeferMCPToolSchemas decides whether a freshly connected server exposes
+// its tools as deferred stubs. Deferral is opt-in: it is enabled either by the
+// explicit per-server defer_tool_schemas flag, or by a connection-latency
+// heuristic (slow handshake combined with a large tool surface). Default is OFF
+// so existing eager behavior is unchanged.
+func shouldDeferMCPToolSchemas(cfg MCPServerConfig, connectLatency time.Duration, toolCount int) bool {
+	if cfg.DeferToolSchemas {
+		return true
+	}
+	if toolCount < mcpDeferToolSchemaHeuristicMinTools {
+		return false
+	}
+	return connectLatency >= mcpDeferToolSchemaLatencyThreshold
 }
 
 func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
@@ -936,6 +987,7 @@ func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	connectStart := time.Now()
 	if err := client.initialize(ctx); err != nil {
 		client.Close()
 		return nil, nil, err
@@ -945,8 +997,10 @@ func startMCPHTTPClient(cfg MCPServerConfig) (*MCPClient, []string, error) {
 		client.Close()
 		return nil, nil, err
 	}
+	connectLatency := time.Since(connectStart)
 	warnings := []string{}
-	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools)
+	deferSchemas := shouldDeferMCPToolSchemas(cfg, connectLatency, len(tools))
+	tools, toolWarnings := filterValidMCPToolDescriptors(cfg.Name, tools, deferSchemas)
 	warnings = append(warnings, toolWarnings...)
 	client.tools = tools
 	client.status.ToolCount = len(tools)
@@ -1078,6 +1132,78 @@ func (m *MCPManager) Tools() []Tool {
 		return out[i].Definition().Name < out[j].Definition().Name
 	})
 	return out
+}
+
+// MCPToolSearchHit is one tool returned by a ToolSearch query: its namespaced
+// model-facing name, owning server, description, and full input schema (fetched
+// on demand for deferred tools and cached on the client).
+type MCPToolSearchHit struct {
+	Name        string         `json:"name"`
+	Server      string         `json:"server"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
+	Deferred    bool           `json:"deferred"`
+}
+
+// ToolSearch discovers tools across loaded MCP servers, fetching and caching the
+// full input schema for matching tools (so deferred stubs become fully usable).
+// serverName, when non-empty, restricts the search to one server by name;
+// toolNameFilter matches the remote tool name (case-insensitive substring). The
+// search runs the live tools/list per server under a bounded timeout, so a slow
+// server surfaces an error instead of hanging. Results are deterministically
+// ordered by namespaced name for reproducible turns.
+func (m *MCPManager) ToolSearch(ctx context.Context, serverName string, toolNameFilter string) ([]MCPToolSearchHit, error) {
+	if m == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	wantServer := strings.TrimSpace(serverName)
+	resolved, _ := resolveNamespacedMCPToolNames(m.servers)
+	var hits []MCPToolSearchHit
+	var firstErr error
+	for _, server := range m.servers {
+		if wantServer != "" && !strings.EqualFold(strings.TrimSpace(server.config.Name), wantServer) {
+			continue
+		}
+		matches, err := server.toolSearch(ctx, toolNameFilter)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("mcp server %s tool search: %w", server.config.Name, err)
+			}
+			continue
+		}
+		perTool := resolved[server]
+		nameByRemote := map[string]string{}
+		for idx, tool := range server.tools {
+			namespaced := perTool[idx]
+			if namespaced == "" {
+				namespaced = namespacedMCPToolName(server.config.Name, tool.Name)
+			}
+			nameByRemote[tool.Name] = namespaced
+		}
+		for _, match := range matches {
+			namespaced := nameByRemote[match.Name]
+			if namespaced == "" {
+				namespaced = namespacedMCPToolName(server.config.Name, match.Name)
+			}
+			hits = append(hits, MCPToolSearchHit{
+				Name:        namespaced,
+				Server:      strings.TrimSpace(server.config.Name),
+				Description: mcpToolDescription(server.config.Name, match),
+				InputSchema: match.InputSchema,
+				Deferred:    match.Deferred,
+			})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		return hits[i].Name < hits[j].Name
+	})
+	if len(hits) == 0 && firstErr != nil {
+		return nil, firstErr
+	}
+	return hits, firstErr
 }
 
 func (m *MCPManager) Status() []MCPServerStatus {
@@ -1454,7 +1580,7 @@ func resolveNamespacedMCPToolNames(servers []*MCPClient) (map[*MCPClient]map[int
 	return resolved, warnings
 }
 
-func filterValidMCPToolDescriptors(serverName string, tools []MCPToolDescriptor) ([]MCPToolDescriptor, []string) {
+func filterValidMCPToolDescriptors(serverName string, tools []MCPToolDescriptor, deferSchemas bool) ([]MCPToolDescriptor, []string) {
 	if len(tools) == 0 {
 		return nil, nil
 	}
@@ -1474,6 +1600,10 @@ func filterValidMCPToolDescriptors(serverName string, tools []MCPToolDescriptor)
 		}
 		tool.InputSchema = def.InputSchema
 		tool.OutputSchema = def.OutputSchema
+		// When deferral is enabled, keep the validated full schema on the
+		// descriptor (so on-demand population has a local fallback) but mark the
+		// tool deferred so it is exposed to the model as a lightweight stub.
+		tool.Deferred = deferSchemas
 		valid = append(valid, tool)
 	}
 	return valid, warnings
@@ -1657,6 +1787,123 @@ func mcpReadOnlyHintFromAnnotations(annotations map[string]any) (bool, bool) {
 
 func (d MCPToolDescriptor) readOnlyHint() bool {
 	return d.ReadOnlyHint != nil && *d.ReadOnlyHint
+}
+
+// cachedToolSchema returns the on-demand input schema previously fetched for a
+// remote tool via the ToolSearch path, if any. The returned map is a defensive
+// clone so callers cannot mutate the cache.
+func (c *MCPClient) cachedToolSchema(toolName string) (map[string]any, bool) {
+	if c == nil {
+		return nil, false
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return nil, false
+	}
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	schema, ok := c.schemaCache[toolName]
+	if !ok {
+		return nil, false
+	}
+	return cloneStringAnyMap(schema), true
+}
+
+// storeToolSchema caches a fetched input schema for a remote tool. An empty
+// schema is normalized to the empty-object schema so the cache always holds a
+// usable, non-nil value once a tool has been searched.
+func (c *MCPClient) storeToolSchema(toolName string, schema map[string]any) {
+	if c == nil {
+		return
+	}
+	toolName = strings.TrimSpace(toolName)
+	if toolName == "" {
+		return
+	}
+	if len(schema) == 0 {
+		schema = emptyObjectSchema()
+	}
+	c.schemaMu.Lock()
+	defer c.schemaMu.Unlock()
+	if c.schemaCache == nil {
+		c.schemaCache = map[string]map[string]any{}
+	}
+	c.schemaCache[toolName] = cloneStringAnyMap(schema)
+}
+
+// toolSearch performs a live tools/list against the server, caches the full
+// input schema of every returned tool, and returns the descriptors whose name
+// contains toolNameFilter (case-insensitive). An empty filter returns all tools.
+// The call is bounded by mcpToolSearchTimeout so a slow or hung server surfaces
+// an error rather than stalling the caller. Results are deterministically
+// ordered by tool name for reproducible turns.
+func (c *MCPClient) toolSearch(ctx context.Context, toolNameFilter string) ([]MCPToolDescriptor, error) {
+	if c == nil {
+		return nil, fmt.Errorf("mcp client is not configured")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	searchCtx, cancel := context.WithTimeout(ctx, mcpToolSearchTimeout)
+	defer cancel()
+	tools, err := c.listTools(searchCtx)
+	if err != nil {
+		return nil, err
+	}
+	filter := strings.ToLower(strings.TrimSpace(toolNameFilter))
+	out := make([]MCPToolDescriptor, 0, len(tools))
+	for _, tool := range tools {
+		name := strings.TrimSpace(tool.Name)
+		if name == "" {
+			continue
+		}
+		schema := tool.InputSchema
+		if len(schema) == 0 {
+			schema = emptyObjectSchema()
+		}
+		c.storeToolSchema(name, schema)
+		if filter != "" && !strings.Contains(strings.ToLower(name), filter) {
+			continue
+		}
+		tool.InputSchema = cloneStringAnyMap(schema)
+		out = append(out, tool)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+// ensureToolSchema returns a usable input schema for a deferred tool, fetching
+// it on demand via the ToolSearch path when it has not been cached yet. It
+// prefers, in order: the cached fetched schema, a live ToolSearch fetch, and
+// finally the schema captured locally during startup. The bounded ToolSearch
+// timeout means a hung server degrades to the local fallback instead of stalling
+// the turn; the returned error reports a genuine fetch failure with no fallback.
+func (c *MCPClient) ensureToolSchema(ctx context.Context, remote MCPToolDescriptor) (map[string]any, error) {
+	toolName := strings.TrimSpace(remote.Name)
+	if schema, ok := c.cachedToolSchema(toolName); ok {
+		return schema, nil
+	}
+	_, err := c.toolSearch(ctx, toolName)
+	if err == nil {
+		if schema, ok := c.cachedToolSchema(toolName); ok {
+			return schema, nil
+		}
+		// The server answered but did not list this tool; fall back to the
+		// schema captured at startup so routing still succeeds.
+		if len(remote.InputSchema) > 0 {
+			c.storeToolSchema(toolName, remote.InputSchema)
+			return cloneStringAnyMap(remote.InputSchema), nil
+		}
+		return emptyObjectSchema(), nil
+	}
+	// ToolSearch failed (timeout or transport error). Gracefully fall back to the
+	// locally captured schema when one exists so the call can still proceed.
+	if len(remote.InputSchema) > 0 {
+		return cloneStringAnyMap(remote.InputSchema), nil
+	}
+	return nil, fmt.Errorf("tool schema fetch failed for %s: %w", toolName, err)
 }
 
 func (c *MCPClient) listResources(ctx context.Context) ([]MCPResourceDescriptor, error) {
@@ -2838,7 +3085,35 @@ func (t MCPTool) Definition() ToolDefinition {
 	if description == "" {
 		description = mcpToolDescription(t.client.config.Name, t.remote)
 	}
+	// Deferred tools are exposed to the model as lightweight stubs: name plus
+	// description, a minimal empty-object input schema, and a note that the real
+	// schema is fetched on demand. Once the schema has been fetched (cached on
+	// the client) the full schema is rendered so subsequent turns see it.
+	if t.remote.Deferred {
+		if schema, ok := t.client.cachedToolSchema(t.remote.Name); ok {
+			remote := t.remote
+			remote.InputSchema = schema
+			return mcpToolDefinition(t.namespaced, remote, description)
+		}
+		return ToolDefinition{
+			Name:        t.namespaced,
+			Description: appendDeferredSchemaNote(description),
+			InputSchema: emptyObjectSchema(),
+		}
+	}
 	return mcpToolDefinition(t.namespaced, t.remote, description)
+}
+
+// appendDeferredSchemaNote adds a short, ASCII-only note telling the model that
+// this tool's argument schema is fetched on demand and can be discovered via the
+// ToolSearch tool before calling it.
+func appendDeferredSchemaNote(description string) string {
+	description = strings.TrimSpace(description)
+	note := "(schema fetched on demand; use tool_search to load its arguments before calling)"
+	if description == "" {
+		return note
+	}
+	return description + " " + note
 }
 
 func (t MCPTool) ReadOnlyToolCall() bool {
@@ -2858,7 +3133,18 @@ func (t MCPTool) Execute(ctx context.Context, input any) (string, error) {
 }
 
 func (t MCPTool) ExecuteDetailed(ctx context.Context, input any) (ToolExecutionResult, error) {
-	args, err := requireToolInputObject(input, t.Definition().Name)
+	// For a deferred tool whose schema has not been fetched yet, transparently
+	// populate it via the bounded ToolSearch path before routing the call. On a
+	// genuine fetch failure (timeout/transport with no local fallback) surface a
+	// clear error rather than hanging or silently routing without a schema.
+	if t.remote.Deferred {
+		if _, ok := t.client.cachedToolSchema(t.remote.Name); !ok {
+			if _, err := t.client.ensureToolSchema(ctx, t.remote); err != nil {
+				return ToolExecutionResult{}, fmt.Errorf("mcp tool %s: %w", t.namespaced, err)
+			}
+		}
+	}
+	args, err := requireToolInputObject(input, t.namespaced)
 	if err != nil {
 		return ToolExecutionResult{}, err
 	}

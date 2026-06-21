@@ -359,7 +359,10 @@ kernforge_fuzz_campaign_run
 kernforge_verify
 kernforge_analyze_project
 kernforge_find_root_cause
+tool_search
 ```
+
+`tool_search`는 시작 시 전체 schema를 올리지 않은 deferred MCP tool의 입력 schema를 on-demand로 가져오는 discovery tool이다. `server_name`, `tool_name_filter`로 좁혀서 live tools/list를 짧은 timeout으로 호출하고 결과 schema를 client에 cache한다.
 
 첫 호출은 `kernforge_status`를 권장한다.
 

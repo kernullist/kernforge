@@ -793,6 +793,10 @@ func (s *kernforgeMCPServer) registerTools() {
 		"max_total_shards": map[string]any{"type": "integer", "description": "Optional cap for total analysis shards."},
 		"max_chars":        map[string]any{"type": "integer", "description": "Maximum response text characters."},
 	}), s.toolAnalyzeProject)
+	s.addTool("tool_search", "Discover deferred MCP tools whose full input schema was not loaded up front. Runs a bounded live tools/list against the matching MCP server(s), caches the returned schemas, and returns each matching tool's namespaced name, description, and full input schema so it can be called with valid arguments. Filter by server_name and/or tool_name_filter (case-insensitive substring of the remote tool name).", mcpObjectSchema(map[string]any{
+		"server_name":      map[string]any{"type": "string", "description": "Optional MCP server name to restrict the search to one server."},
+		"tool_name_filter": map[string]any{"type": "string", "description": "Optional case-insensitive substring matched against the remote tool name. Empty returns all tools."},
+	}), s.toolToolSearch)
 	s.addTool("kernforge_find_root_cause", "Run KernForge symptom-driven root-cause analysis and persist analysis/audit artifacts.", mcpObjectSchema(map[string]any{
 		"problem":               map[string]any{"type": "string", "description": "Concrete symptom, trigger, observed failure, and expected invariant."},
 		"pattern_pack_paths":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional local root-cause pattern pack paths."},
@@ -1695,6 +1699,37 @@ func (s *kernforgeMCPServer) toolLook(ctx context.Context, args map[string]any) 
 		return "", err
 	}
 	return strings.Replace(text, "KernForge guided MCP", "KernForge look MCP", 1), nil
+}
+
+// toolToolSearch is the kernforge MCP server handler that discovers deferred
+// MCP tools. It accepts {server_name, tool_name_filter}, delegates to the live
+// MCPManager.ToolSearch (which calls each matching client's tools/list under a
+// bounded timeout and caches the returned schemas), and returns the matching
+// tools as JSON. When no downstream MCP servers are loaded it returns an empty,
+// well-formed result rather than an error.
+func (s *kernforgeMCPServer) toolToolSearch(ctx context.Context, args map[string]any) (string, error) {
+	serverName := strings.TrimSpace(stringValue(args, "server_name"))
+	toolFilter := strings.TrimSpace(stringValue(args, "tool_name_filter"))
+	var mcp *MCPManager
+	if s.rt != nil {
+		mcp = s.rt.mcp
+	}
+	hits, searchErr := mcp.ToolSearch(ctx, serverName, toolFilter)
+	payload := map[string]any{
+		"tools": toolSearchHitPayloads(hits),
+		"count": len(hits),
+	}
+	if searchErr != nil {
+		payload["error"] = searchErr.Error()
+	}
+	data, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return "", marshalErr
+	}
+	if len(hits) == 0 && searchErr != nil {
+		return string(data), fmt.Errorf("tool_search failed: %w", searchErr)
+	}
+	return string(data), nil
 }
 
 func (s *kernforgeMCPServer) toolStatus(ctx context.Context, args map[string]any) (string, error) {
