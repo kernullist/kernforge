@@ -2242,6 +2242,104 @@ func TestPreWriteReviewUsesDiffFirstContextBudget(t *testing.T) {
 	}
 }
 
+func TestConfigReviewHarnessFoldsAutoCrossReviewer(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	cfg.Review.AutoCrossReviewer = &ReviewModelConfig{
+		Provider: "anthropic",
+		Model:    "claude-opus-4",
+	}
+	reviewCfg := configReviewHarness(cfg)
+	got, ok := reviewCfg.RoleModels["cross_reviewer"]
+	if !ok || got.Provider != "anthropic" || got.Model != "claude-opus-4" {
+		t.Fatalf("auto cross reviewer should fold into cross_reviewer role, got %#v", reviewCfg.RoleModels)
+	}
+	// The caller's config map must not be mutated by the ephemeral injection.
+	if _, leaked := cfg.Review.RoleModels["cross_reviewer"]; leaked {
+		t.Fatalf("auto cross reviewer leaked into caller config role models")
+	}
+
+	// An explicit cross_reviewer route takes precedence over the auto reviewer.
+	cfg.Review.RoleModels = map[string]ReviewModelConfig{
+		"cross_reviewer": {Provider: "deepseek", Model: "deepseek-v4"},
+	}
+	reviewCfg = configReviewHarness(cfg)
+	if got := reviewCfg.RoleModels["cross_reviewer"]; got.Provider != "deepseek" || got.Model != "deepseek-v4" {
+		t.Fatalf("explicit cross_reviewer should win over auto reviewer, got %#v", got)
+	}
+}
+
+func TestParseReviewCommandOptionsBaseAndCommit(t *testing.T) {
+	base := parseReviewCommandOptions("change --base main")
+	if base.BaseRef != "main" {
+		t.Fatalf("expected base ref main, got %q", base.BaseRef)
+	}
+	baseEq := parseReviewCommandOptions("--base=origin/release")
+	if baseEq.BaseRef != "origin/release" {
+		t.Fatalf("expected base ref origin/release, got %q", baseEq.BaseRef)
+	}
+	commit := parseReviewCommandOptions("--commit abc1234")
+	if commit.Commit != "abc1234" {
+		t.Fatalf("expected commit abc1234, got %q", commit.Commit)
+	}
+	commitEq := parseReviewCommandOptions("--commit=deadbeef")
+	if commitEq.Commit != "deadbeef" {
+		t.Fatalf("expected commit deadbeef, got %q", commitEq.Commit)
+	}
+	// Base/commit flags must not leak into the free-text request.
+	if strings.Contains(base.Request, "--base") || strings.Contains(commit.Request, "--commit") {
+		t.Fatalf("flags leaked into request: base=%q commit=%q", base.Request, commit.Request)
+	}
+}
+
+func TestReviewGitDiffArgsForScope(t *testing.T) {
+	// Specific commit uses git show and no staged diff.
+	statArgs, diffArgs, stagedArgs, note := reviewGitDiffArgsForScope(reviewGitDiffScope{Commit: "abc123"}, nil)
+	if note != "git_diff_commit" {
+		t.Fatalf("expected git_diff_commit source note, got %q", note)
+	}
+	if len(stagedArgs) != 0 {
+		t.Fatalf("commit scope should have no staged diff, got %#v", stagedArgs)
+	}
+	if len(diffArgs) == 0 || diffArgs[0] != "show" || diffArgs[len(diffArgs)-1] != "abc123" {
+		t.Fatalf("commit diff should use git show <sha>, got %#v", diffArgs)
+	}
+	if len(statArgs) == 0 || statArgs[0] != "show" {
+		t.Fatalf("commit stat should use git show, got %#v", statArgs)
+	}
+
+	// Base ref uses a merge-base three-dot diff.
+	_, baseDiff, baseStaged, baseNote := reviewGitDiffArgsForScope(reviewGitDiffScope{BaseRef: "main"}, nil)
+	if baseNote != "git_diff_base" {
+		t.Fatalf("expected git_diff_base source note, got %q", baseNote)
+	}
+	if len(baseStaged) != 0 {
+		t.Fatalf("base scope should have no staged diff, got %#v", baseStaged)
+	}
+	foundSpec := false
+	for _, a := range baseDiff {
+		if a == "main..." {
+			foundSpec = true
+		}
+	}
+	if !foundSpec {
+		t.Fatalf("base diff should use three-dot spec main..., got %#v", baseDiff)
+	}
+
+	// Worktree scope keeps the staged diff and adds no source note.
+	wtStat, wtDiff, wtStaged, wtNote := reviewGitDiffArgsForScope(reviewGitDiffScope{}, nil)
+	if wtNote != "" {
+		t.Fatalf("worktree scope should add no source note, got %q", wtNote)
+	}
+	if len(wtStaged) == 0 || wtStaged[0] != "diff" {
+		t.Fatalf("worktree scope should keep the staged diff, got %#v", wtStaged)
+	}
+	if len(wtStat) == 0 || wtStat[0] != "diff" || len(wtDiff) == 0 || wtDiff[0] != "diff" {
+		t.Fatalf("worktree scope should use git diff, stat=%#v diff=%#v", wtStat, wtDiff)
+	}
+}
+
 func TestFocusedCrossReviewerUsesSoftTimeoutBudget(t *testing.T) {
 	cfg := DefaultConfig(t.TempDir())
 	cfg.Provider = "openai-codex-subscription"
@@ -2265,8 +2363,32 @@ func TestFocusedCrossReviewerUsesSoftTimeoutBudget(t *testing.T) {
 	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "cross_reviewer", Kind: "cross"}); got != reviewCloudCrossSoftTimeout {
 		t.Fatalf("expected cloud focused cross soft timeout, got %s", got)
 	}
-	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}); got != 0 {
-		t.Fatalf("main review should not use a soft timeout, got %s", got)
+	// The main reviewer now gets a bounded soft timeout too so a hung reviewer
+	// degrades gracefully instead of stalling finalization forever.
+	if got := reviewModelSoftTimeoutForRun(cfg, run, ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}); got != reviewMainSoftTimeout {
+		t.Fatalf("main review should use the default main soft timeout, got %s", got)
+	}
+}
+
+func TestMainReviewerSoftTimeoutConfigurable(t *testing.T) {
+	cfg := DefaultConfig(t.TempDir())
+	cfg.Provider = "openai-codex-subscription"
+	cfg.Model = "gpt-5.5"
+	run := ReviewRun{Target: reviewTargetChange}
+	mainRun := ReviewReviewerRun{Role: "primary_reviewer", Kind: "main"}
+	// Default floor when unset.
+	if got := reviewModelSoftTimeoutForRun(cfg, run, mainRun); got != reviewMainSoftTimeout {
+		t.Fatalf("expected default main soft timeout, got %s", got)
+	}
+	// Positive override is honored.
+	cfg.Review.MainReviewerSoftTimeoutSecs = 120
+	if got := reviewModelSoftTimeoutForRun(cfg, run, mainRun); got != 120*time.Second {
+		t.Fatalf("expected 120s main soft timeout override, got %s", got)
+	}
+	// Negative disables the main soft timeout entirely.
+	cfg.Review.MainReviewerSoftTimeoutSecs = -1
+	if got := reviewModelSoftTimeoutForRun(cfg, run, mainRun); got != 0 {
+		t.Fatalf("expected disabled main soft timeout, got %s", got)
 	}
 }
 

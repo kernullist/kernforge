@@ -595,6 +595,27 @@ func TestVerificationReportSummaryLine(t *testing.T) {
 	}
 }
 
+func TestVerificationReportWasNotExecuted(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps []VerificationStep
+		want  bool
+	}{
+		{name: "empty proves nothing", steps: nil, want: false},
+		{name: "all skipped", steps: []VerificationStep{{Status: VerificationSkipped}}, want: true},
+		{name: "all pending", steps: []VerificationStep{{Status: VerificationPending}}, want: true},
+		{name: "skipped and pending mix", steps: []VerificationStep{{Status: VerificationSkipped}, {Status: VerificationPending}}, want: true},
+		{name: "any passed means it ran", steps: []VerificationStep{{Status: VerificationSkipped}, {Status: VerificationPassed}}, want: false},
+		{name: "any failed means it ran", steps: []VerificationStep{{Status: VerificationPending}, {Status: VerificationFailed}}, want: false},
+	}
+	for _, tc := range cases {
+		report := VerificationReport{Steps: tc.steps}
+		if got := report.WasNotExecuted(); got != tc.want {
+			t.Fatalf("%s: WasNotExecuted()=%t want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestCollectVerificationChangedPathsFiltersGeneratedArtifacts(t *testing.T) {
 	root := initTestGitRepo(t)
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o644); err != nil {

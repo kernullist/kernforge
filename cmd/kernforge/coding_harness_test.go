@@ -1200,6 +1200,46 @@ func TestFinalAnswerCorrectionAcceptedDoesNotCrossExternalTurn(t *testing.T) {
 	}
 }
 
+func TestFinalAnswerCorrectionNotAcceptedWithoutReport(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	agent := &Agent{Session: session}
+	report := CodingHarnessReport{
+		Findings: []CodingHarnessFinding{{
+			Severity: "blocker",
+			Title:    "Changed-file summary is missing",
+			Detail:   "Changed paths are recorded but not disclosed.",
+		}},
+	}
+	report.Normalize()
+	agent.recordFinalAnswerCorrectionRequired(&report)
+
+	// No coding-harness report recorded: a missing report is not acceptance, so
+	// the correction must stay unverified rather than being silently accepted.
+	session.LastCodingHarnessReport = nil
+	agent.markFinalAnswerCorrectionAccepted()
+	if session.LastFinalAnswerCorrection == nil {
+		t.Fatalf("expected pending correction visibility")
+	}
+	if session.LastFinalAnswerCorrection.Corrected {
+		t.Fatalf("missing harness report must not mark the correction accepted: %#v", session.LastFinalAnswerCorrection)
+	}
+
+	// An unapproved report likewise must not accept the correction.
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: false}
+	agent.markFinalAnswerCorrectionAccepted()
+	if session.LastFinalAnswerCorrection.Corrected {
+		t.Fatalf("unapproved harness report must not mark the correction accepted: %#v", session.LastFinalAnswerCorrection)
+	}
+
+	// An explicitly approved report is what actually accepts the correction.
+	session.LastCodingHarnessReport = &CodingHarnessReport{Approved: true}
+	agent.markFinalAnswerCorrectionAccepted()
+	if !session.LastFinalAnswerCorrection.Corrected {
+		t.Fatalf("approved harness report should accept the correction: %#v", session.LastFinalAnswerCorrection)
+	}
+}
+
 func TestPreFinalHarnessExhaustionReturnsBlockedReply(t *testing.T) {
 	root := t.TempDir()
 	badReply := strings.Join([]string{

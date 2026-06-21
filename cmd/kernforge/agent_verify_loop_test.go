@@ -2183,6 +2183,261 @@ func TestAutomaticPostChangeReviewGateSkipsAfterDeclinedVerificationDisclosure(t
 	}
 }
 
+func TestAutomaticPostChangeReviewGateAllowsHonestNotRunDisclosure(t *testing.T) {
+	// A needs_revision review whose only blocker is missing verification evidence
+	// is downgraded when the final answer honestly discloses verification was not
+	// run AND no recorded verification outcome contradicts that claim. Here
+	// LastVerification is nil (verification did not execute), so the honest
+	// disclosure is acceptable and the gate downgrades instead of over-blocking a
+	// legitimate no-verification turn (for example when no test command exists). A
+	// real executed outcome that contradicts the disclosure is covered by
+	// TestAutomaticPostChangeReviewGateKeepsBlockOnContradictingOutcome.
+	root := t.TempDir()
+	const fingerprint = "fp-postchange-1"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.LastVerification = nil
+	// A matching user message keeps the patch transaction bound to the current
+	// turn so autoReviewChangedPaths reports the changed file.
+	session.Messages = []Message{{Role: "user", Text: "fix the file"}}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-code",
+		Goal:   "fix the file",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+	verificationFinding := ReviewFinding{
+		ID:          "RF-VERIFY-001",
+		Severity:    "high",
+		Category:    "verification",
+		Title:       "missing verification evidence",
+		Evidence:    "no latest verification report; run the required verification",
+		RequiredFix: "run the required verification (/verify) and record the result",
+		BlocksGate:  true,
+	}
+	session.LastReviewRun = &ReviewRun{
+		Trigger:           "post_change",
+		AutoTriggered:     true,
+		ReviewFingerprint: fingerprint,
+		Findings:          []ReviewFinding{verificationFinding},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{verificationFinding.ID},
+		},
+	}
+
+	agent := &Agent{
+		Config: Config{
+			Model: "model",
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	lastFingerprint := fingerprint
+	revisionCount := 0
+	exhaustedNudge := false
+	finalReply := "Updated main.go. Verification was not run."
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(
+		context.Background(),
+		"fix the file",
+		finalReply,
+		&lastFingerprint,
+		&revisionCount,
+		&exhaustedNudge,
+	)
+	if err != nil {
+		t.Fatalf("post-change review gate: %v", err)
+	}
+	if needsModelTurn {
+		t.Fatalf("an honest not-run disclosure with no contradicting verification outcome should downgrade, not request a repair turn")
+	}
+	if session.LastReviewRun.Findings[0].ResolutionStatus != "disclosed_in_final_answer" {
+		t.Fatalf("verification-only blocker should be marked disclosed when verification did not execute, got %#v", session.LastReviewRun.Findings[0])
+	}
+	// Second case: an all-pending verification report (planned but never executed)
+	// must also downgrade on honest disclosure. Use a FRESH session/agent so the
+	// first case's downgrade (which marks the review fingerprint processed) cannot
+	// suppress this independent re-evaluation. An all-pending report proves the
+	// work did not run yet without tripping the fully-skipped final-blocker
+	// shortcut, so the gate reaches the disclosure downgrade.
+	root2 := t.TempDir()
+	session2 := NewSession(root2, "scripted", "model", "", "default")
+	session2.Messages = []Message{{Role: "user", Text: "fix the file"}}
+	session2.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-code",
+		Goal:   "fix the file",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths:    []PatchPathChange{{Path: "main.go", Operation: "apply_patch"}},
+		}},
+	}
+	session2.LastReviewRun = &ReviewRun{
+		Trigger:           "post_change",
+		AutoTriggered:     true,
+		ReviewFingerprint: fingerprint,
+		Findings:          []ReviewFinding{verificationFinding},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{verificationFinding.ID},
+		},
+	}
+	session2.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{Label: "go test", Status: VerificationPending}},
+	}
+	// Keep the cached review run consistent with the recorded verification so the
+	// deterministic cached-review path is used instead of a live reviewer run.
+	session2.LastReviewRun.Evidence.VerificationSummary = session2.LastVerification.SummaryLine()
+	session2.LastReviewRun.Evidence.VerificationFailed = session2.LastVerification.HasFailures()
+	agent2 := &Agent{
+		Config: Config{
+			Model:  "model",
+			Review: ReviewHarnessConfig{AutoAfterChange: boolPtr(true)},
+		},
+		Workspace: Workspace{BaseRoot: root2, Root: root2},
+		Session:   session2,
+		Store:     NewSessionStore(filepath.Join(root2, "sessions")),
+	}
+	lastFingerprint = fingerprint
+	revisionCount = 0
+	exhaustedNudge = false
+	needsModelTurn, err = agent2.runAutomaticPostChangeReviewGate(
+		context.Background(),
+		"fix the file",
+		finalReply,
+		&lastFingerprint,
+		&revisionCount,
+		&exhaustedNudge,
+	)
+	if err != nil {
+		t.Fatalf("post-change review gate (all-pending state): %v", err)
+	}
+	if needsModelTurn {
+		t.Fatalf("recorded all-pending verification plus disclosure should allow the downgrade, not request a repair turn")
+	}
+	if session2.LastReviewRun.Findings[0].ResolutionStatus != "disclosed_in_final_answer" {
+		t.Fatalf("expected verification blocker to be marked disclosed, got %#v", session2.LastReviewRun.Findings[0])
+	}
+}
+
+func TestAutomaticPostChangeReviewGateKeepsBlockOnContradictingOutcome(t *testing.T) {
+	// When verification ACTUALLY executed with a real outcome (here a passing
+	// step), a "verification was not run" disclosure must NOT downgrade a
+	// needs_revision gate. This is the masking guard: a real recorded outcome
+	// cannot be hidden behind a not-run phrase.
+	root := t.TempDir()
+	const fingerprint = "fp-postchange-contradict"
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.Messages = []Message{{Role: "user", Text: "fix the file"}}
+	session.ActivePatchTransaction = &PatchTransaction{
+		ID:     "patch-code",
+		Goal:   "fix the file",
+		Status: patchTransactionStatusActive,
+		Entries: []PatchTransactionEntry{{
+			ID:       "patch-code-001",
+			ToolName: "apply_patch",
+			Status:   "success",
+			Paths: []PatchPathChange{{
+				Path:      "main.go",
+				Operation: "apply_patch",
+			}},
+		}},
+	}
+	verificationFinding := ReviewFinding{
+		ID:          "RF-VERIFY-001",
+		Severity:    "high",
+		Category:    "verification",
+		Title:       "missing verification evidence",
+		Evidence:    "no latest verification report; run the required verification",
+		RequiredFix: "run the required verification (/verify) and record the result",
+		BlocksGate:  true,
+	}
+	session.LastReviewRun = &ReviewRun{
+		Trigger:           "post_change",
+		AutoTriggered:     true,
+		ReviewFingerprint: fingerprint,
+		Findings:          []ReviewFinding{verificationFinding},
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{verificationFinding.ID},
+		},
+	}
+	// A real executed (passing) verification outcome contradicts a "not run"
+	// disclosure, so the gate must keep the block.
+	session.LastVerification = &VerificationReport{
+		Steps: []VerificationStep{{Label: "go test", Status: VerificationPassed}},
+	}
+	session.LastReviewRun.Evidence.VerificationSummary = session.LastVerification.SummaryLine()
+	session.LastReviewRun.Evidence.VerificationFailed = session.LastVerification.HasFailures()
+
+	agent := &Agent{
+		Config: Config{
+			Model: "model",
+			Review: ReviewHarnessConfig{
+				AutoAfterChange: boolPtr(true),
+			},
+		},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+
+	lastFingerprint := fingerprint
+	revisionCount := 0
+	exhaustedNudge := false
+	needsModelTurn, err := agent.runAutomaticPostChangeReviewGate(
+		context.Background(),
+		"fix the file",
+		"Updated main.go. Verification was not run.",
+		&lastFingerprint,
+		&revisionCount,
+		&exhaustedNudge,
+	)
+	if err != nil {
+		t.Fatalf("post-change review gate: %v", err)
+	}
+	if !needsModelTurn {
+		t.Fatalf("an executed verification outcome contradicting the not-run disclosure must keep the block and request a repair turn")
+	}
+	if session.LastReviewRun.Findings[0].ResolutionStatus == "disclosed_in_final_answer" {
+		t.Fatalf("verification blocker must not be downgraded when an executed outcome contradicts the disclosure, got %#v", session.LastReviewRun.Findings[0])
+	}
+}
+
+func TestVerificationReportHasExecutedOutcome(t *testing.T) {
+	cases := []struct {
+		name   string
+		report VerificationReport
+		want   bool
+	}{
+		{"empty", VerificationReport{}, false},
+		{"all-skipped", VerificationReport{Steps: []VerificationStep{{Status: VerificationSkipped}}}, false},
+		{"all-pending", VerificationReport{Steps: []VerificationStep{{Status: VerificationPending}}}, false},
+		{"skipped-and-pending", VerificationReport{Steps: []VerificationStep{{Status: VerificationSkipped}, {Status: VerificationPending}}}, false},
+		{"has-pass", VerificationReport{Steps: []VerificationStep{{Status: VerificationSkipped}, {Status: VerificationPassed}}}, true},
+		{"has-fail", VerificationReport{Steps: []VerificationStep{{Status: VerificationFailed}}}, true},
+	}
+	for _, tc := range cases {
+		if got := tc.report.HasExecutedOutcome(); got != tc.want {
+			t.Errorf("%s: HasExecutedOutcome()=%v want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestInteractiveFinalReviewSkipsAfterDeclinedVerificationDisclosure(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "model", "", "default")
@@ -5885,6 +6140,202 @@ func TestSummarizeMessagesKeepsPinnedVerificationSnippet(t *testing.T) {
 	summary := summarizeMessages(messages, "Auto-compacted due to context growth.")
 	if !strings.Contains(summary, "Automatic verification results:") || !strings.Contains(summary, "msbuild failed") {
 		t.Fatalf("expected compact summary to preserve pinned verification snippet, got %q", summary)
+	}
+}
+
+// recordingSummaryProviderClient records the requests it receives and returns a
+// scripted summary, so tests can assert the bounded LLM summarization call shape.
+type recordingSummaryProviderClient struct {
+	mu       sync.Mutex
+	summary  string
+	err      error
+	requests []ChatRequest
+}
+
+func (c *recordingSummaryProviderClient) Name() string { return "recording-summary" }
+
+func (c *recordingSummaryProviderClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.requests = append(c.requests, req)
+	if c.err != nil {
+		return ChatResponse{}, c.err
+	}
+	return ChatResponse{Message: Message{Role: "assistant", Text: c.summary}}, nil
+}
+
+// TestSummarizeMessagesForCompactionFallsBackWithoutClient verifies the required
+// fallback: with no provider client, compaction still produces the deterministic
+// summary rather than an empty result or a panic.
+func TestSummarizeMessagesForCompactionFallsBackWithoutClient(t *testing.T) {
+	agent := &Agent{} // no Client
+	messages := []Message{
+		{Role: "user", Text: "please fix the off-by-one in parse()"},
+		{Role: "assistant", Text: "I will patch parse() to use <= instead of <."},
+	}
+	got := agent.summarizeMessagesForCompaction(context.Background(), messages, "Auto-compacted due to context growth.")
+	deterministic := summarizeMessages(messages, "Auto-compacted due to context growth.")
+	if got != deterministic {
+		t.Fatalf("expected deterministic fallback without a client, got %q want %q", got, deterministic)
+	}
+	if strings.TrimSpace(got) == "" {
+		t.Fatalf("fallback summary must not be empty")
+	}
+}
+
+// TestSummarizeMessagesForCompactionFallsBackOnClientError verifies that a failing
+// provider call degrades to the deterministic summary rather than losing context.
+func TestSummarizeMessagesForCompactionFallsBackOnClientError(t *testing.T) {
+	client := &recordingSummaryProviderClient{err: errors.New("provider unavailable")}
+	agent := &Agent{Client: client}
+	messages := []Message{
+		{Role: "user", Text: "investigate the crash in worker loop"},
+	}
+	got := agent.summarizeMessagesForCompaction(context.Background(), messages, "focus on the crash")
+	deterministic := summarizeMessages(messages, "focus on the crash")
+	if got != deterministic {
+		t.Fatalf("expected deterministic fallback on client error, got %q", got)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected exactly one bounded summary call, got %d", len(client.requests))
+	}
+}
+
+// TestSummarizeMessagesForCompactionUsesLLMSummary verifies that a healthy client
+// returns its model-generated summary and that the call is bounded (single call,
+// capped output tokens, no tools).
+func TestSummarizeMessagesForCompactionUsesLLMSummary(t *testing.T) {
+	const modelSummary = "Intent: fix parser. Decision: use <=. Fixed off-by-one. Pending: add regression test."
+	client := &recordingSummaryProviderClient{summary: modelSummary}
+	agent := &Agent{
+		Config:  Config{Model: "test-model"},
+		Client:  client,
+		Session: NewSession(t.TempDir(), "recording-summary", "test-model", "", "default"),
+	}
+	messages := []Message{
+		{Role: "user", Text: "fix the off-by-one in parse()"},
+		{Role: "assistant", Text: "patched parse() to use <="},
+	}
+	got := agent.summarizeMessagesForCompaction(context.Background(), messages, "Auto-compacted due to context growth.")
+	if got != modelSummary {
+		t.Fatalf("expected LLM summary, got %q", got)
+	}
+	if len(client.requests) != 1 {
+		t.Fatalf("expected a single bounded summary call, got %d", len(client.requests))
+	}
+	req := client.requests[0]
+	if req.MaxTokens != compactLLMSummaryMaxTokens {
+		t.Fatalf("expected capped output tokens %d, got %d", compactLLMSummaryMaxTokens, req.MaxTokens)
+	}
+	if len(req.Tools) != 0 {
+		t.Fatalf("summary call must not expose tools, got %d", len(req.Tools))
+	}
+	if !req.TemperatureSet || req.Temperature != 0 {
+		t.Fatalf("summary call should pin temperature 0, got set=%v temp=%v", req.TemperatureSet, req.Temperature)
+	}
+}
+
+// TestSummarizeMessagesForCompactionFallsBackOnEmptyLLMReply verifies a too-short
+// model reply is rejected in favor of the deterministic summary.
+func TestSummarizeMessagesForCompactionFallsBackOnEmptyLLMReply(t *testing.T) {
+	client := &recordingSummaryProviderClient{summary: "ok"} // shorter than compactLLMSummaryMinUseful
+	agent := &Agent{Client: client}
+	messages := []Message{{Role: "user", Text: "do the thing"}}
+	got := agent.summarizeMessagesForCompaction(context.Background(), messages, "")
+	deterministic := summarizeMessages(messages, "")
+	if got != deterministic {
+		t.Fatalf("expected fallback on too-short LLM reply, got %q", got)
+	}
+}
+
+// TestMaybeMicrocompactTrimsOldestLargeToolResults verifies the microcompaction
+// pass trims the oldest large tool-result message in place while leaving the
+// newest tool results intact and preserving the tool-call/result pairing.
+func TestMaybeMicrocompactTrimsOldestLargeToolResults(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	bigOldest := strings.Repeat("OLDEST-", microcompactLargeToolResultChars) // well over the large threshold
+	bigSecond := strings.Repeat("SECOND-", microcompactLargeToolResultChars)
+	// Oldest large tool results, then enough recent small tool results that the
+	// newest keep-window stays intact.
+	session.AddMessage(Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c1", Name: "read_file"}}})
+	session.AddMessage(Message{Role: "tool", ToolCallID: "c1", ToolName: "read_file", Text: bigOldest})
+	session.AddMessage(Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "c2", Name: "read_file"}}})
+	session.AddMessage(Message{Role: "tool", ToolCallID: "c2", ToolName: "read_file", Text: bigSecond})
+	for i := 0; i < microcompactKeepRecentToolResults; i++ {
+		session.AddMessage(Message{Role: "tool", ToolName: "run_shell", Text: fmt.Sprintf("recent small %d", i)})
+	}
+	beforeLen := len(session.Messages)
+	agent := &Agent{
+		Config:    Config{AutoCompactChars: 1000},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	// Threshold low enough that ApproxChars (dominated by the big tool results)
+	// is at or above the microcompaction trigger fraction.
+	threshold := 4000
+	if !agent.maybeMicrocompactOldestToolResults(threshold) {
+		t.Fatalf("expected microcompaction to trim at least one oldest large tool result")
+	}
+	if len(agent.Session.Messages) != beforeLen {
+		t.Fatalf("microcompaction must not add or remove messages: before=%d after=%d", beforeLen, len(agent.Session.Messages))
+	}
+	oldest := agent.Session.Messages[1]
+	if oldest.Role != "tool" || oldest.ToolCallID != "c1" {
+		t.Fatalf("expected oldest tool result to keep its pairing, got %#v", oldest)
+	}
+	if len(oldest.Text) > microcompactTrimmedToolResultChars {
+		t.Fatalf("expected oldest large tool result to be trimmed, got %d chars", len(oldest.Text))
+	}
+	if !strings.Contains(oldest.Text, "microcompaction") {
+		t.Fatalf("expected elision marker in trimmed text, got %q", oldest.Text[:64])
+	}
+	// The newest tool results must be untouched.
+	newest := agent.Session.Messages[len(agent.Session.Messages)-1]
+	if newest.Text != fmt.Sprintf("recent small %d", microcompactKeepRecentToolResults-1) {
+		t.Fatalf("newest tool result must remain intact, got %q", newest.Text)
+	}
+}
+
+// TestMaybeMicrocompactSkipsWhenBelowTrigger verifies microcompaction does
+// nothing while the session is comfortably below the trigger fraction.
+func TestMaybeMicrocompactSkipsWhenBelowTrigger(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	session.AddMessage(Message{Role: "tool", ToolName: "read_file", Text: "small output"})
+	agent := &Agent{
+		Config:    Config{AutoCompactChars: 1_000_000},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	if agent.maybeMicrocompactOldestToolResults(1_000_000) {
+		t.Fatalf("microcompaction should not trim below the trigger fraction")
+	}
+}
+
+// TestMaybeMicrocompactPreservesErrorToolResults verifies error/pinned tool
+// results are never trimmed even when large and old.
+func TestMaybeMicrocompactPreservesErrorToolResults(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "scripted", "model", "", "default")
+	bigError := strings.Repeat("ERR-", microcompactLargeToolResultChars)
+	session.AddMessage(Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "e1", Name: "run_shell"}}})
+	session.AddMessage(Message{Role: "tool", ToolCallID: "e1", ToolName: "run_shell", Text: bigError, IsError: true})
+	for i := 0; i < microcompactKeepRecentToolResults; i++ {
+		session.AddMessage(Message{Role: "tool", ToolName: "run_shell", Text: fmt.Sprintf("recent %d", i)})
+	}
+	agent := &Agent{
+		Config:    Config{AutoCompactChars: 1000},
+		Workspace: Workspace{BaseRoot: root, Root: root},
+		Session:   session,
+		Store:     NewSessionStore(filepath.Join(root, "sessions")),
+	}
+	_ = agent.maybeMicrocompactOldestToolResults(4000)
+	errMsg := agent.Session.Messages[1]
+	if len(errMsg.Text) != len(bigError) {
+		t.Fatalf("error tool result must be preserved verbatim, got %d chars", len(errMsg.Text))
 	}
 }
 

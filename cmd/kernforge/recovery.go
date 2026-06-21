@@ -1029,13 +1029,34 @@ func (rt *runtimeState) recordRecoveryVerification(action RecoveryActionPlanItem
 		Steps:        []VerificationStep{step},
 		Decision:     "Recovery safe execution recorded a verification gate result.",
 	}
-	rt.session.LastVerification = &report
+	// Never let a recovery success silently erase a prior REAL verification
+	// failure. If the existing LastVerification records a non-recovery failure
+	// and this recovery result is not itself a failure, keep the earlier real
+	// failure as the visible state and only append this recovery report to the
+	// history. A recovery failure may still replace a prior failure, and any
+	// prior success or non-failure state is replaced as before.
+	preserveRealFailure := false
+	if prior := rt.session.LastVerification; prior != nil {
+		if prior.HasFailures() && !verificationReportIsRecovery(*prior) && !report.HasFailures() {
+			preserveRealFailure = true
+		}
+	}
+	if !preserveRealFailure {
+		rt.session.LastVerification = &report
+	}
 	if rt.store != nil {
 		_ = rt.store.Save(rt.session)
 	}
 	if rt.verifyHistory != nil {
 		_ = rt.verifyHistory.Append(rt.session.ID, workspaceSnapshotRoot(rt.workspace), report)
 	}
+}
+
+// verificationReportIsRecovery reports whether a verification report was
+// produced by the recovery safe-execution path rather than a real
+// verification run. Recovery reports are tagged with the "recovery" trigger.
+func verificationReportIsRecovery(report VerificationReport) bool {
+	return strings.EqualFold(strings.TrimSpace(report.Trigger), "recovery")
 }
 
 func recoveryCommandAutoRunnable(command string) bool {

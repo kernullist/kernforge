@@ -33,12 +33,20 @@ const (
 	reviewLowerPerformanceCrossSoftTimeout = reviewLocalCrossSoftTimeout
 	reviewDeepSeekBroadCrossSoftTimeout    = reviewCloudCrossSoftTimeout
 	reviewAdaptiveTimeoutCrossSoftTimeout  = 10 * time.Minute
-	reviewFocusedPrimaryRawCrossLimit      = 6000
-	reviewFocusedPrimaryFindingCrossLimit  = 6000
-	reviewPreWriteDiffEvidenceMaxChars     = 50000
-	reviewPreWriteFileContextChars         = 60000
-	reviewPreWriteLineContextBefore        = 20
-	reviewPreWriteLineContextAfter         = 180
+	// reviewMainSoftTimeout bounds how long the harness waits for the MAIN
+	// (non-cross) reviewer before degrading gracefully. Without it a hung main
+	// reviewer stalls finalization forever. It is generous (longer than the cross
+	// timeout) because the main reviewer is the primary verdict source, and it is
+	// only a floor: it can be overridden per-config and is auto-extended after a
+	// recent timeout via the adaptive timeout. A negative config value disables
+	// it entirely.
+	reviewMainSoftTimeout                 = 8 * time.Minute
+	reviewFocusedPrimaryRawCrossLimit     = 6000
+	reviewFocusedPrimaryFindingCrossLimit = 6000
+	reviewPreWriteDiffEvidenceMaxChars    = 50000
+	reviewPreWriteFileContextChars        = 60000
+	reviewPreWriteLineContextBefore       = 20
+	reviewPreWriteLineContextAfter        = 180
 
 	reviewTargetAuto           = "auto"
 	reviewTargetPlan           = "plan"
@@ -107,14 +115,25 @@ const (
 )
 
 type ReviewHarnessConfig struct {
-	AutoAfterChange               *bool                        `json:"auto_after_change,omitempty"`
-	AutoAfterGoalIteration        *bool                        `json:"auto_after_goal_iteration,omitempty"`
-	AutoBeforeGitWrite            *bool                        `json:"auto_before_git_write,omitempty"`
-	ModelReviewConsent            string                       `json:"model_review_consent,omitempty"`
-	AutoFollowUp                  string                       `json:"auto_follow_up,omitempty"`
-	AutoRepairMaxRounds           int                          `json:"auto_repair_max_rounds,omitempty"`
-	RepeatedFindingBlockThreshold int                          `json:"repeated_finding_block_threshold,omitempty"`
-	RoleModels                    map[string]ReviewModelConfig `json:"role_models,omitempty"`
+	AutoAfterChange               *bool  `json:"auto_after_change,omitempty"`
+	AutoAfterGoalIteration        *bool  `json:"auto_after_goal_iteration,omitempty"`
+	AutoBeforeGitWrite            *bool  `json:"auto_before_git_write,omitempty"`
+	ModelReviewConsent            string `json:"model_review_consent,omitempty"`
+	AutoFollowUp                  string `json:"auto_follow_up,omitempty"`
+	AutoRepairMaxRounds           int    `json:"auto_repair_max_rounds,omitempty"`
+	RepeatedFindingBlockThreshold int    `json:"repeated_finding_block_threshold,omitempty"`
+	// MainReviewerSoftTimeoutSecs bounds how long the harness waits for the main
+	// (non-cross) reviewer before degrading gracefully instead of hanging
+	// finalization forever. 0 uses the provider default; a negative value
+	// disables the main-reviewer soft timeout entirely.
+	MainReviewerSoftTimeoutSecs int `json:"main_reviewer_soft_timeout_seconds,omitempty"`
+	// AutoCrossReviewer, when set with both provider and model, designates a
+	// reviewer route the harness automatically uses for a genuinely independent
+	// second pass when no explicit cross-review route is configured. Without it,
+	// the enforced second pass reuses the main model and is honestly labeled as a
+	// same-model pass rather than independent cross review.
+	AutoCrossReviewer *ReviewModelConfig           `json:"auto_cross_reviewer,omitempty"`
+	RoleModels        map[string]ReviewModelConfig `json:"role_models,omitempty"`
 }
 
 type ReviewRun struct {
@@ -159,6 +178,7 @@ type ReviewRun struct {
 	CapabilityManifest      ReviewCapabilityManifest     `json:"capability_manifest,omitempty"`
 	SingleModelPolicy       SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
 	SingleModelSecondPass   *SingleModelSecondPassReview `json:"single_model_second_pass,omitempty"`
+	DocumentClaimsCheck     *ReviewDocumentClaimsCheck   `json:"document_claims_check,omitempty"`
 	ExternalLookupIntents   []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
 	ArtifactIntegrity       ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
 	LedgerConsistency       ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
@@ -488,7 +508,13 @@ type ReviewHarnessOptions struct {
 	MaxContextChars      int
 	ReviewerGatePolicy   string
 	OriginalMainProposal string
-	RawArgs              string
+	// BaseRef scopes git diff evidence to changes since this ref using a
+	// merge-base three-dot diff (git diff <ref>...). Empty means worktree diff.
+	BaseRef string
+	// Commit scopes review evidence to a single commit (git show <sha>). It takes
+	// precedence over BaseRef and the worktree diff.
+	Commit  string
+	RawArgs string
 }
 
 func configReviewHarness(cfg Config) ReviewHarnessConfig {
@@ -514,6 +540,24 @@ func configReviewHarness(cfg Config) ReviewHarnessConfig {
 	}
 	if out.RoleModels == nil {
 		out.RoleModels = map[string]ReviewModelConfig{}
+	}
+	// Fold a configured auto cross-reviewer into the cross_reviewer role when no
+	// explicit cross_reviewer route is set, so the normal route resolvers use it
+	// for a genuinely independent second pass. Distinctness from main is still
+	// enforced downstream, so an auto route that matches main stays unused. Clone
+	// the role map before injecting so the synthetic entry is ephemeral and is
+	// never written back into the caller's (and saved) config.
+	if out.AutoCrossReviewer != nil &&
+		strings.TrimSpace(out.AutoCrossReviewer.Provider) != "" &&
+		strings.TrimSpace(out.AutoCrossReviewer.Model) != "" {
+		if existing, ok := out.RoleModels["cross_reviewer"]; !ok || strings.TrimSpace(existing.Provider) == "" || strings.TrimSpace(existing.Model) == "" {
+			cloned := make(map[string]ReviewModelConfig, len(out.RoleModels)+1)
+			for k, v := range out.RoleModels {
+				cloned[k] = v
+			}
+			cloned["cross_reviewer"] = *out.AutoCrossReviewer
+			out.RoleModels = cloned
+		}
 	}
 	return out
 }

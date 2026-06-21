@@ -41,13 +41,18 @@ type ReviewGateObservability struct {
 }
 
 type ReviewSecondPassObservability struct {
-	Status        string   `json:"status,omitempty"`
-	State         string   `json:"state,omitempty"`
-	Ran           bool     `json:"ran"`
-	CacheHit      bool     `json:"cache_hit,omitempty"`
-	CrossModelRan bool     `json:"cross_model_review_ran,omitempty"`
-	ReviewerOnly  bool     `json:"reviewer_only_post_change_review_used,omitempty"`
-	EvidenceGap   bool     `json:"evidence_gap,omitempty"`
+	Status        string `json:"status,omitempty"`
+	State         string `json:"state,omitempty"`
+	Ran           bool   `json:"ran"`
+	CacheHit      bool   `json:"cache_hit,omitempty"`
+	CrossModelRan bool   `json:"cross_model_review_ran,omitempty"`
+	ReviewerOnly  bool   `json:"reviewer_only_post_change_review_used,omitempty"`
+	EvidenceGap   bool   `json:"evidence_gap,omitempty"`
+	// Independence states honestly whether the second pass was independent
+	// cross-review or a same-model re-review. It is "same_model" whenever the
+	// pass reused the primary model so it is never presented as independent
+	// corroboration.
+	Independence  string   `json:"independence,omitempty"`
 	ModelRoute    string   `json:"model_route,omitempty"`
 	FindingCount  int      `json:"finding_count,omitempty"`
 	ReviewedPaths []string `json:"reviewed_paths,omitempty"`
@@ -213,6 +218,7 @@ func buildReviewSecondPassObservability(run ReviewRun) *ReviewSecondPassObservab
 			CrossModelRan: crossModelRan,
 			ReviewerOnly:  reviewerOnlyPostChange,
 			EvidenceGap:   reviewSecondPassSkippedIsEvidenceGap(state, strings.TrimSpace(second.SkippedReason)),
+			Independence:  "same_model",
 			ModelRoute:    strings.TrimSpace(second.Model),
 			FindingCount:  second.FindingCount,
 			ReviewedPaths: normalizeTaskStateList(second.ReviewedPaths, 32),
@@ -602,6 +608,9 @@ func reviewSecondPassStatusLine(obs *ReviewSecondPassObservability) string {
 	}
 	if obs.EvidenceGap {
 		parts = append(parts, "evidence_gap=true")
+	}
+	if obs.Independence != "" {
+		parts = append(parts, "independence="+obs.Independence)
 	}
 	if obs.ModelRoute != "" {
 		parts = append(parts, "route="+obs.ModelRoute)

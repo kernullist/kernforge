@@ -135,6 +135,22 @@ func reviewRuntimeUsesReviewerOnlyPrimary(rt *runtimeState) bool {
 	return rt.agent.ReviewerClient != nil && strings.TrimSpace(rt.agent.ReviewerModel) != ""
 }
 
+// reviewSecondPassModelLabel returns an honest route label for the single-model
+// second pass. It annotates the underlying main-model label so the second pass
+// is never presented as an independent cross reviewer. The annotation is added
+// at most once.
+func reviewSecondPassModelLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "same model (single-model second pass)"
+	}
+	const suffix = " (single-model second pass; same model)"
+	if strings.Contains(strings.ToLower(label), "single-model second pass") {
+		return label
+	}
+	return label + suffix
+}
+
 func prepareSingleModelSecondPassPlan(run *ReviewRun, label string) {
 	if run == nil {
 		return

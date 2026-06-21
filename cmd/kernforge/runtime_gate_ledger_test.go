@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+func TestVerificationReportCoversPatchTimeUnprovenWithoutChangedPaths(t *testing.T) {
+	patchTime := time.Now().Add(-time.Minute)
+	// Report timestamp is newer than the patch, so timestamp-only coverage would
+	// have falsely passed before the fix. With changed paths to cover but no
+	// recorded ChangedPaths on the report, coverage is UNPROVEN.
+	report := VerificationReport{
+		GeneratedAt: time.Now(),
+		Steps:       []VerificationStep{{Status: VerificationPassed}},
+	}
+	if verificationReportCoversPatchTime(report, time.Time{}, []string{"agent.go"}, patchTime) {
+		t.Fatalf("report without ChangedPaths must not prove coverage of changed files from timestamp alone")
+	}
+
+	// When the report records covering ChangedPaths, coverage is proven again.
+	report.ChangedPaths = []string{"agent.go"}
+	if !verificationReportCoversPatchTime(report, time.Time{}, []string{"agent.go"}, patchTime) {
+		t.Fatalf("report covering the changed file should prove coverage")
+	}
+
+	// When there are no changed paths to cover, timestamp coverage still applies.
+	if !verificationReportCoversPatchTime(VerificationReport{GeneratedAt: time.Now()}, time.Time{}, nil, patchTime) {
+		t.Fatalf("with no changed paths to cover, a fresh report should cover the patch time")
+	}
+}
+
 func useRuntimeGateGitFixture(t *testing.T, branch string, changed []string) {
 	t.Helper()
 	previousBranch := runtimeGateGitBranchProvider

@@ -117,6 +117,9 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 	}
 	if second := buildReviewSecondPassObservability(run); second != nil {
 		fmt.Fprintf(&diag, "- single_model_second_pass: `%s` ran=`%t` cache_hit=`%t`", second.Status, second.Ran, second.CacheHit)
+		if strings.TrimSpace(second.Independence) != "" {
+			fmt.Fprintf(&diag, " independence=`%s`", second.Independence)
+		}
 		if strings.TrimSpace(second.ModelRoute) != "" {
 			fmt.Fprintf(&diag, " route=`%s`", second.ModelRoute)
 		}

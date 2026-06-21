@@ -1625,6 +1625,38 @@ func (r VerificationReport) WasSkipped() bool {
 	return true
 }
 
+// WasNotExecuted reports whether the recorded verification state proves
+// verification did not actually run: every step is skipped or still pending
+// (never executed) and no step passed or failed. This is a real recorded
+// state, not an inference from reply text. An empty report has no steps and
+// therefore proves nothing, so it is not treated as not-executed here.
+func (r VerificationReport) WasNotExecuted() bool {
+	if len(r.Steps) == 0 {
+		return false
+	}
+	for _, step := range r.Steps {
+		if step.Status != VerificationSkipped && step.Status != VerificationPending {
+			return false
+		}
+	}
+	return true
+}
+
+// HasExecutedOutcome reports whether any recorded verification step actually
+// executed with a pass or fail result (as opposed to skipped, pending, or no
+// steps at all). It is used to detect when a "verification was not run"
+// disclosure contradicts a real recorded outcome, so a genuine pass/fail cannot
+// be masked by a not-run claim. When verification did not execute, an honest
+// not-run disclosure remains acceptable.
+func (r VerificationReport) HasExecutedOutcome() bool {
+	for _, step := range r.Steps {
+		if step.Status == VerificationPassed || step.Status == VerificationFailed {
+			return true
+		}
+	}
+	return false
+}
+
 func (r VerificationReport) FirstFailure() *VerificationStep {
 	for i := range r.Steps {
 		if r.Steps[i].Status == VerificationFailed {

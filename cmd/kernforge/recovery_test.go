@@ -141,6 +141,60 @@ func useRecoveryNestedArtifactSlashFixture(t *testing.T) {
 	})
 }
 
+func TestRecordRecoveryVerificationKeepsPriorRealFailure(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "provider", "model", "", "default")
+	// Prior REAL (non-recovery) verification failure that must not be erased by a
+	// recovery success.
+	priorFailure := VerificationReport{
+		GeneratedAt:  time.Now().Add(-time.Minute),
+		Trigger:      "manual",
+		Workspace:    root,
+		ChangedPaths: []string{"agent.go"},
+		Steps: []VerificationStep{{
+			Label:   "go test",
+			Command: "go test ./...",
+			Status:  VerificationFailed,
+			Output:  "FAIL package",
+		}},
+	}
+	session.LastVerification = &priorFailure
+	rt := &runtimeState{
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	action := RecoveryActionPlanItem{ID: "verification-rerun-01", Title: "rerun", VerificationGate: true}
+	successRecord := RecoveryExecutionRecord{
+		ActionID:   action.ID,
+		Status:     recoveryActionStatusExecuted,
+		Output:     "ok",
+		FinishedAt: time.Now(),
+	}
+	rt.recordRecoveryVerification(action, "go test ./...", successRecord)
+
+	if session.LastVerification == nil || !session.LastVerification.HasFailures() {
+		t.Fatalf("recovery success must not erase a prior real verification failure, got %#v", session.LastVerification)
+	}
+	if verificationReportIsRecovery(*session.LastVerification) {
+		t.Fatalf("prior real failure must remain the visible state, got recovery report %#v", session.LastVerification)
+	}
+
+	// A recovery FAILURE may still replace the prior failure (both are failures,
+	// keeping the latest failing state is acceptable and not an erasure of truth).
+	failRecord := RecoveryExecutionRecord{
+		ActionID:   action.ID,
+		Status:     recoveryActionStatusFailed,
+		Output:     "still failing",
+		FinishedAt: time.Now(),
+	}
+	rt.recordRecoveryVerification(action, "go test ./...", failRecord)
+	if session.LastVerification == nil || !session.LastVerification.HasFailures() {
+		t.Fatalf("recovery failure should keep a failing verification state, got %#v", session.LastVerification)
+	}
+}
+
 func TestRecoverCommandWritesRecoveryBrief(t *testing.T) {
 	root := t.TempDir()
 	useDelegationChangedFilesFixture(t, []string{"agent.go"})

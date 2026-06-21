@@ -1776,6 +1776,84 @@ func collectAnalysisReviewEvidence(rt *runtimeState, root string, paths []string
 
 var reviewHarnessGitTextRunner = runGitText
 
+// reviewGitDiffScope describes whether the review diff evidence is scoped to a
+// specific commit, a base ref (merge-base three-dot diff), or the worktree.
+type reviewGitDiffScope struct {
+	Commit  string
+	BaseRef string
+}
+
+func (s reviewGitDiffScope) isCommit() bool {
+	return strings.TrimSpace(s.Commit) != ""
+}
+
+func (s reviewGitDiffScope) isBase() bool {
+	return !s.isCommit() && strings.TrimSpace(s.BaseRef) != ""
+}
+
+// reviewGitDiffScope resolves the diff scope from review options. A specific
+// commit takes precedence over a base ref.
+func reviewGitDiffScopeFromOpts(opts ReviewHarnessOptions) reviewGitDiffScope {
+	return reviewGitDiffScope{
+		Commit:  strings.TrimSpace(opts.Commit),
+		BaseRef: strings.TrimSpace(opts.BaseRef),
+	}
+}
+
+// reviewGitDiffArgsForScope returns the git argument lists for the diff stat,
+// diff, and staged-diff invocations for the requested scope. For a specific
+// commit it uses `git show <sha>` (no separate staged diff); for a base ref it
+// uses a merge-base three-dot diff (`git diff <ref>...`); otherwise it keeps the
+// existing worktree + staged diff behavior. The returned source note records
+// the scope so the evidence sources are honest about what was reviewed.
+func reviewGitDiffArgsForScope(scope reviewGitDiffScope, pathArgs []string) (diffStatArgs []string, diffArgs []string, stagedArgs []string, sourceNote string) {
+	switch {
+	case scope.isCommit():
+		commit := strings.TrimSpace(scope.Commit)
+		diffStatArgs = append([]string{"show", "--stat", "--oneline", commit}, pathArgs...)
+		diffArgs = append([]string{"show", "--unified=3", "--no-ext-diff", commit}, pathArgs...)
+		return diffStatArgs, diffArgs, nil, "git_diff_commit"
+	case scope.isBase():
+		spec := strings.TrimSpace(scope.BaseRef) + "..."
+		diffStatArgs = append([]string{"diff", "--stat", spec}, pathArgs...)
+		diffArgs = append([]string{"diff", "--unified=3", "--no-ext-diff", spec}, pathArgs...)
+		return diffStatArgs, diffArgs, nil, "git_diff_base"
+	default:
+		diffStatArgs = append([]string{"diff", "--stat"}, pathArgs...)
+		diffArgs = append([]string{"diff", "--unified=3", "--no-ext-diff"}, pathArgs...)
+		stagedArgs = append([]string{"diff", "--staged", "--unified=3", "--no-ext-diff"}, pathArgs...)
+		return diffStatArgs, diffArgs, stagedArgs, ""
+	}
+}
+
+// reviewGitScopeChangedPaths returns the changed paths for a commit/base scope
+// using name-only diff, so the review change set reflects the scoped revision
+// rather than the (possibly empty) worktree status. Returns nil for worktree
+// scope, where status parsing already supplies the paths.
+func reviewGitScopeChangedPaths(root string, scope reviewGitDiffScope, pathArgs []string, gitText func(string, ...string) string) []string {
+	var args []string
+	switch {
+	case scope.isCommit():
+		args = append([]string{"show", "--name-only", "--pretty=format:", strings.TrimSpace(scope.Commit)}, pathArgs...)
+	case scope.isBase():
+		args = append([]string{"diff", "--name-only", strings.TrimSpace(scope.BaseRef) + "..."}, pathArgs...)
+	default:
+		return nil
+	}
+	out := gitText(root, args...)
+	if reviewGitOutputIsUnavailable(out) {
+		return nil
+	}
+	var paths []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			paths = append(paths, line)
+		}
+	}
+	return filterReviewablePaths(paths)
+}
+
 func collectGitReviewEvidence(ctx context.Context, root string, paths []string, changeSet *ReviewChangeSet, evidence *ReviewEvidencePack, opts ReviewHarnessOptions) {
 	if changeSet.Source == "" {
 		changeSet.Source = "git_worktree"
@@ -1810,14 +1888,29 @@ func collectGitReviewEvidence(ctx context.Context, root string, paths []string, 
 	}
 	changeSet.ChangedPaths = append(changeSet.ChangedPaths, changed...)
 	changeSet.UntrackedPaths = append(changeSet.UntrackedPaths, untracked...)
-	diffStat := gitText(root, append([]string{"diff", "--stat"}, pathArgs...)...)
+	scope := reviewGitDiffScopeFromOpts(opts)
+	diffStatArgs, diffArgs, stagedArgs, scopeNote := reviewGitDiffArgsForScope(scope, pathArgs)
+	if scopeNote != "" {
+		evidence.Sources = append(evidence.Sources, scopeNote)
+		// In commit/base scope the worktree status does not describe the reviewed
+		// revision, so derive the changed paths from the scoped diff instead.
+		scopePaths := reviewGitScopeChangedPaths(root, scope, pathArgs, gitText)
+		if len(paths) > 0 {
+			scopePaths = filterMCPReviewPaths(scopePaths, paths)
+		}
+		changeSet.ChangedPaths = append(changeSet.ChangedPaths, scopePaths...)
+	}
+	diffStat := gitText(root, diffStatArgs...)
 	if strings.TrimSpace(diffStat) != "" {
 		changeSet.DiffStat = diffStat
 		evidence.Text = appendReviewEvidenceSection(evidence.Text, "Git diff stat", diffStat)
 		evidence.Sources = append(evidence.Sources, "git_diff_stat")
 	}
-	diff := gitText(root, append([]string{"diff", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
-	staged := gitText(root, append([]string{"diff", "--staged", "--unified=3", "--no-ext-diff"}, pathArgs...)...)
+	diff := gitText(root, diffArgs...)
+	staged := ""
+	if len(stagedArgs) > 0 {
+		staged = gitText(root, stagedArgs...)
+	}
 	combined := strings.TrimSpace(strings.Join([]string{diff, staged}, "\n\n"))
 	if combined != "" {
 		remaining := reviewRemainingContextChars(opts.MaxContextChars, evidence.Text)

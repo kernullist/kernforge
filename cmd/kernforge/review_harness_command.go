@@ -129,6 +129,24 @@ func parseReviewCommandOptions(args string) ReviewHarnessOptions {
 			opts.Paths = append(opts.Paths, fields[i])
 			continue
 		}
+		if strings.HasPrefix(lower, "--base=") {
+			opts.BaseRef = strings.TrimSpace(field[len("--base="):])
+			continue
+		}
+		if lower == "--base" && i+1 < len(fields) {
+			i++
+			opts.BaseRef = strings.TrimSpace(fields[i])
+			continue
+		}
+		if strings.HasPrefix(lower, "--commit=") {
+			opts.Commit = strings.TrimSpace(field[len("--commit="):])
+			continue
+		}
+		if lower == "--commit" && i+1 < len(fields) {
+			i++
+			opts.Commit = strings.TrimSpace(fields[i])
+			continue
+		}
 		if strings.HasPrefix(lower, "--max-context-chars=") {
 			if n, ok := parsePositiveInt(strings.TrimSpace(field[len("--max-context-chars="):])); ok == nil && n > 0 {
 				opts.MaxContextChars = n
@@ -150,7 +168,11 @@ func parseReviewCommandOptions(args string) ReviewHarnessOptions {
 	}
 	if len(requestParts) > 0 {
 		opts.Request = strings.Join(requestParts, " ")
-	} else if opts.Target != reviewTargetAuto {
+	} else {
+		// No free-text request parts remained after flag/target parsing, so the
+		// request objective is empty. RawArgs still preserves the original input.
+		// This keeps parsed flags (for example --base/--commit) from leaking into
+		// the request objective.
 		opts.Request = ""
 	}
 	opts.Paths = mcpReviewCleanPaths(opts.Paths)

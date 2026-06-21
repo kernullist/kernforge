@@ -501,7 +501,12 @@ func (a *Agent) markFinalAnswerCorrectionAccepted() {
 	if a == nil || a.Session == nil || a.Session.LastFinalAnswerCorrection == nil {
 		return
 	}
-	if a.Session.LastCodingHarnessReport != nil && !a.Session.LastCodingHarnessReport.Approved {
+	// A missing coding-harness report is NOT acceptance: with no recorded report
+	// there is no evidence the correction was rechecked and approved, so refuse
+	// to promote the correction to accepted. Only an explicitly approved report
+	// can mark the correction accepted; a nil or unapproved report leaves the
+	// correction unverified and pending its required recheck.
+	if a.Session.LastCodingHarnessReport == nil || !a.Session.LastCodingHarnessReport.Approved {
 		return
 	}
 	visibility := *a.Session.LastFinalAnswerCorrection

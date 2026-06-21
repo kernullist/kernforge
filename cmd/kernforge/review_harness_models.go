@@ -390,25 +390,28 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 		run.ModelPlan.UserGuidance = append(run.ModelPlan.UserGuidance, "Single-model review mode is active; no independent cross reviewer is configured for this run.")
 		if shouldRunSingleModelSecondPass(rt, run, mainRun, mainRaw) {
 			secondPassFingerprint := singleModelSecondPassFingerprint(*run, mainRaw, findings)
+			// Label the second-pass route honestly: it reuses the primary model, so
+			// it must never read as an independent cross reviewer.
+			secondPassLabel := reviewSecondPassModelLabel(mainLabel)
 			run.SingleModelSecondPass = &SingleModelSecondPassReview{
 				Enabled:       true,
 				Fingerprint:   secondPassFingerprint,
 				Status:        "pending",
-				Model:         mainLabel,
+				Model:         secondPassLabel,
 				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
 			}
-			prepareSingleModelSecondPassPlan(run, mainLabel)
+			prepareSingleModelSecondPassPlan(run, secondPassLabel)
 			if cached, ok := lookupAcceptedSecondPassCache(rt, secondPassFingerprint); ok {
 				cachedRun := cachedSingleModelSecondPassRun(cached)
 				reviewerRuns = append(reviewerRuns, cachedRun)
 				run.SingleModelSecondPass.Status = "cached"
 				run.SingleModelSecondPass.CacheHit = true
 				run.SingleModelSecondPass.ReviewedAt = cached.AcceptedAt
-				run.SingleModelSecondPass.Model = cached.Model
+				run.SingleModelSecondPass.Model = reviewSecondPassModelLabel(cached.Model)
 				emitReviewModelResultProgress(rt, cachedRun, 0)
 			} else {
 				secondPrompt := buildSingleModelSecondPassReviewPrompt(rt.cfg, *run, mainRaw, findings)
-				emitReviewModelPhaseBudgetProgress(rt, *run, "second_pass", 2, phaseTotal, singleModelSecondPassRole, mainLabel)
+				emitReviewModelPhaseBudgetProgress(rt, *run, "second_pass", 2, phaseTotal, singleModelSecondPassRole, secondPassLabel)
 				secondFindings, secondRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, singleModelSecondPassRole, "second_pass", secondPrompt, nil, reviewModelRunPeerContext{
 					PriorFindings:     append([]ReviewFinding(nil), findings...),
 					PriorReviewerRuns: append([]ReviewReviewerRun(nil), reviewerRuns...),
@@ -416,7 +419,7 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 				reviewerRuns = append(reviewerRuns, secondRun)
 				findings = append(findings, secondFindings...)
 				run.SingleModelSecondPass.Status = secondRun.Status
-				run.SingleModelSecondPass.Model = secondRun.Model
+				run.SingleModelSecondPass.Model = reviewSecondPassModelLabel(secondRun.Model)
 				run.SingleModelSecondPass.ReviewedAt = secondRun.FinishedAt
 				run.SingleModelSecondPass.FindingCount = len(secondFindings)
 				run.SingleModelSecondPass.PromptPath = secondRun.PromptPath
@@ -426,9 +429,45 @@ func executeReviewModelRuns(ctx context.Context, rt *runtimeState, root string, 
 			run.SingleModelSecondPass = &SingleModelSecondPassReview{
 				Enabled:       true,
 				Status:        "skipped",
-				Model:         mainLabel,
+				Model:         reviewSecondPassModelLabel(mainLabel),
 				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
 				SkippedReason: singleModelSecondPassSkipReason(rt, *run, mainRun, mainRaw),
+			}
+		}
+		// Document-artifact turns skip the code-behavior second pass; run a bounded
+		// model-based claims sanity check over the artifact instead of relying on a
+		// byte-fingerprint alone.
+		if shouldRunDocumentClaimsSanityPass(rt, run, mainRun, mainRaw) {
+			docLabel := reviewDocumentClaimsModelLabel(mainLabel)
+			run.DocumentClaimsCheck = &ReviewDocumentClaimsCheck{
+				Enabled:       true,
+				Status:        "pending",
+				Model:         docLabel,
+				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
+			}
+			prepareDocumentClaimsCheckPlan(run, docLabel)
+			docPrompt := buildDocumentClaimsCheckPrompt(rt.cfg, *run, mainRaw)
+			emitReviewModelPhaseBudgetProgress(rt, *run, "document_claims", 2, phaseTotal, reviewDocumentClaimsRole, docLabel)
+			docFindings, docRun, _ := executeSingleReviewModelRun(ctx, rt, root, run, mainClient, mainModel, mainLabel, reviewDocumentClaimsRole, "document_claims", docPrompt, nil, reviewModelRunPeerContext{
+				PriorFindings:     append([]ReviewFinding(nil), findings...),
+				PriorReviewerRuns: append([]ReviewReviewerRun(nil), reviewerRuns...),
+			})
+			reviewerRuns = append(reviewerRuns, docRun)
+			findings = append(findings, docFindings...)
+			run.DocumentClaimsCheck.Status = docRun.Status
+			run.DocumentClaimsCheck.Model = reviewDocumentClaimsModelLabel(docRun.Model)
+			run.DocumentClaimsCheck.ReviewedAt = docRun.FinishedAt
+			run.DocumentClaimsCheck.FindingCount = len(docFindings)
+			run.DocumentClaimsCheck.PromptPath = docRun.PromptPath
+			run.DocumentClaimsCheck.RawOutputPath = docRun.RawOutputPath
+		} else if run.SingleModelPolicy.Enabled &&
+			normalizeReviewRequestClass(firstNonBlankString(run.RequestClass, run.RequestAnalysis.RequestClass)) == reviewRequestClassDocumentArtifact {
+			run.DocumentClaimsCheck = &ReviewDocumentClaimsCheck{
+				Enabled:       true,
+				Status:        "skipped",
+				Model:         reviewDocumentClaimsModelLabel(mainLabel),
+				ReviewedPaths: normalizeTaskStateList(run.ChangeSet.ChangedPaths, 32),
+				SkippedReason: documentClaimsSanityPassSkipReason(*run, mainRun, mainRaw),
 			}
 		}
 	}
@@ -1933,7 +1972,11 @@ func emitReviewModelFlowProgress(rt *runtimeState, english string, korean string
 
 func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewReviewerRun, healthGroups ...[]ReviewRouteHealth) time.Duration {
 	if !strings.EqualFold(strings.TrimSpace(reviewerRun.Kind), "cross") {
-		return 0
+		// The MAIN (and same-model second pass) reviewer also gets a bounded soft
+		// timeout so a hung reviewer degrades gracefully instead of stalling
+		// finalization forever. A negative config value disables it; 0 uses the
+		// default floor.
+		return reviewMainSoftTimeoutForRun(cfg, reviewerRun, healthGroups...)
 	}
 	role := normalizeReviewRole(reviewerRun.Role)
 	provider, _ := reviewRoleProviderModelForRun(cfg, role)
@@ -1943,6 +1986,26 @@ func reviewModelSoftTimeoutForRun(cfg Config, run ReviewRun, reviewerRun ReviewR
 	timeout := reviewDefaultCrossSoftTimeoutForProvider(provider)
 	if timeout <= 0 {
 		timeout = reviewCloudCrossSoftTimeout
+	}
+	if reviewRouteHealthHasRecentTimeout(mergeReviewRouteHealthGroups(healthGroups...), reviewerRun) {
+		timeout = reviewAdaptiveCrossSoftTimeout(timeout)
+	}
+	return timeout
+}
+
+// reviewMainSoftTimeoutForRun returns the soft timeout for the main reviewer
+// (and the same-model second pass). A negative MainReviewerSoftTimeoutSecs
+// disables the timeout; a positive value overrides the default floor; 0 uses
+// the default. A recent timeout on this route auto-extends the budget so a
+// transient slow call does not get permanently shortened.
+func reviewMainSoftTimeoutForRun(cfg Config, reviewerRun ReviewReviewerRun, healthGroups ...[]ReviewRouteHealth) time.Duration {
+	reviewCfg := configReviewHarness(cfg)
+	if reviewCfg.MainReviewerSoftTimeoutSecs < 0 {
+		return 0
+	}
+	timeout := reviewMainSoftTimeout
+	if reviewCfg.MainReviewerSoftTimeoutSecs > 0 {
+		timeout = time.Duration(reviewCfg.MainReviewerSoftTimeoutSecs) * time.Second
 	}
 	if reviewRouteHealthHasRecentTimeout(mergeReviewRouteHealthGroups(healthGroups...), reviewerRun) {
 		timeout = reviewAdaptiveCrossSoftTimeout(timeout)
@@ -2474,6 +2537,13 @@ func reviewRoleReasoningEffort(cfg Config, role string) string {
 }
 
 func reviewRoleReasoningEffortForRun(cfg Config, role string, run ReviewRun) string {
+	// The single-model second pass reuses the primary model. Force a materially
+	// different reasoning effort from the first pass so it is not a verbatim
+	// re-ask of the same model at the same setting.
+	if normalizeReviewRole(role) == singleModelSecondPassRole {
+		base := reviewRoleReasoningEffort(cfg, "primary_reviewer")
+		return reviewSecondPassDistinctReasoningEffort(base)
+	}
 	if !strings.EqualFold(strings.TrimSpace(run.Trigger), reviewBeforeFixTrigger) {
 		return reviewRoleReasoningEffort(cfg, role)
 	}
@@ -2549,6 +2619,44 @@ func reviewConfiguredRouteMatchesMain(cfg Config, provider string, model string,
 	roleBaseURL := normalizeProviderBaseURL(roleProvider, roleBaseURLInput)
 	mainBaseURL := normalizeProviderBaseURL(mainProvider, cfg.BaseURL)
 	return strings.EqualFold(roleBaseURL, mainBaseURL)
+}
+
+// reviewSecondPassDistinctReasoningEffort returns a reasoning effort that is
+// materially different from the first-pass effort for the same-model second
+// pass. It steps one level above the base (so the adversarial pass thinks
+// harder); if the base is already at the maximum, it steps one level down so
+// the second pass is still not identical to the first. An unset base defaults
+// to a concrete higher effort instead of inheriting the provider default.
+func reviewSecondPassDistinctReasoningEffort(base string) string {
+	normalized := normalizeReasoningEffort(base)
+	rank := reasoningEffortRank(normalized)
+	if rank == 0 {
+		return "high"
+	}
+	if rank >= reasoningEffortRank("xhigh") {
+		return reasoningEffortForRank(rank - 1)
+	}
+	return reasoningEffortForRank(rank + 1)
+}
+
+func reasoningEffortForRank(rank int) string {
+	switch rank {
+	case 1:
+		return "minimal"
+	case 2:
+		return "low"
+	case 3:
+		return "medium"
+	case 4:
+		return "high"
+	case 5:
+		return "xhigh"
+	default:
+		if rank < 1 {
+			return "minimal"
+		}
+		return "xhigh"
+	}
 }
 
 func reasoningEffortAtLeast(effort string, minimum string) string {
@@ -2739,6 +2847,17 @@ func reviewModelSystemPrompt(cfg Config, run ReviewRun, role string) string {
 	switch normalizeReviewRole(role) {
 	case "cross_reviewer":
 		b.WriteString("Act as an independent second-pass reviewer. First review the supplied evidence yourself, then compare against the primary model draft. Do not assume the primary draft is correct.\n")
+	case singleModelSecondPassRole:
+		// Honest framing: this pass uses the SAME model as the first pass, so it is
+		// not independent corroboration. Force an adversarial reviewer persona so it
+		// is not a verbatim re-ask and is more likely to surface what the first pass
+		// missed instead of restating it.
+		b.WriteString("This is a same-model second pass, not an independent cross review. You are the same model that produced the first-pass review, so do not treat the first pass as independent confirmation.\n")
+		b.WriteString("Act as an adversarial reviewer whose explicit goal is to find what the first pass missed or got wrong. Re-derive the analysis from the evidence yourself; do not restate the first-pass findings as agreement. Prefer concrete new issues, missed edge cases, and unverified claims over re-listing already-known findings.\n")
+	case reviewDocumentClaimsRole:
+		// Document artifact claims check: read the generated document and verify
+		// its claims against the supplied evidence rather than reviewing code.
+		b.WriteString("This is a document claims sanity check, not code review and not independent cross review. Verify that the generated document's claims are supported by the supplied evidence and flag fabricated, unsupported, or contradicted statements. Do not invent facts.\n")
 	default:
 		b.WriteString("Focus on correctness, security, stability, test gaps, and maintainability.\n")
 	}
@@ -2779,6 +2898,8 @@ func reviewModelLocalCompactSystemPrompt(cfg Config, run ReviewRun, role string)
 	switch normalizeReviewRole(role) {
 	case "cross_reviewer":
 		b.WriteString("Act as a compact second-pass reviewer.\n")
+	case singleModelSecondPassRole:
+		b.WriteString("This is a same-model second pass, not independent cross review. Act as an adversarial reviewer and prioritize concrete issues the first pass missed.\n")
 	default:
 		b.WriteString("Prioritize concrete correctness, stability, and maintainability issues.\n")
 	}

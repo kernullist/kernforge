@@ -213,6 +213,54 @@ func TestReviewRequestClassClassificationCoversCoreLifecycles(t *testing.T) {
 	}
 }
 
+func TestReviewClassifierConfidenceSafetyDowngrade(t *testing.T) {
+	// Low-confidence text-inferred edit intent routes to review-before-modify.
+	low := applyReviewClassifierConfidenceSafetyDowngrade(ReviewRequestClassDecision{
+		RequestClass: reviewRequestClassModifyThenReview,
+		Confidence:   0.7,
+	}, "")
+	if low.RequestClass != reviewRequestClassReviewThenModify {
+		t.Fatalf("low confidence modify intent should downgrade to review_then_modify, got %s", low.RequestClass)
+	}
+	if low.LifecycleKind != reviewLifecycleKindFixFromReview {
+		t.Fatalf("expected fix-from-review lifecycle, got %s", low.LifecycleKind)
+	}
+	if len(low.AmbiguityWarnings) == 0 {
+		t.Fatalf("expected an ambiguity warning explaining the downgrade")
+	}
+
+	// Ambiguity warnings alone trigger the downgrade even at higher confidence.
+	ambiguous := applyReviewClassifierConfidenceSafetyDowngrade(ReviewRequestClassDecision{
+		RequestClass:      reviewRequestClassModifyThenReview,
+		Confidence:        0.95,
+		AmbiguityWarnings: []string{"mixed signals"},
+	}, "")
+	if ambiguous.RequestClass != reviewRequestClassReviewThenModify {
+		t.Fatalf("ambiguous modify intent should downgrade to review_then_modify, got %s", ambiguous.RequestClass)
+	}
+
+	// An explicit pre_write/post_change edit lifecycle is never downgraded.
+	for _, mode := range []string{"pre_write", "post_change", reviewBeforeFixTrigger} {
+		kept := applyReviewClassifierConfidenceSafetyDowngrade(ReviewRequestClassDecision{
+			RequestClass:      reviewRequestClassModifyThenReview,
+			Confidence:        0.5,
+			AmbiguityWarnings: []string{"mixed signals"},
+		}, mode)
+		if kept.RequestClass != reviewRequestClassModifyThenReview {
+			t.Fatalf("mode %s should keep modify_then_review, got %s", mode, kept.RequestClass)
+		}
+	}
+
+	// Confident, unambiguous text intent is left as-is.
+	confident := applyReviewClassifierConfidenceSafetyDowngrade(ReviewRequestClassDecision{
+		RequestClass: reviewRequestClassModifyThenReview,
+		Confidence:   0.86,
+	}, "")
+	if confident.RequestClass != reviewRequestClassModifyThenReview {
+		t.Fatalf("confident modify intent should stay modify_then_review, got %s", confident.RequestClass)
+	}
+}
+
 func reviewRequestClassDecisionForUnitTest(rt *runtimeState, root string, opts ReviewHarnessOptions) ReviewRequestAnalysis {
 	target := normalizeReviewTarget(opts.Target)
 	if target == reviewTargetAuto {

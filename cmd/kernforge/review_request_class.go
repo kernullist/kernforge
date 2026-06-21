@@ -308,8 +308,61 @@ func applyReviewLifecycleKindToDecision(decision ReviewRequestClassDecision, req
 			decision.SecondaryRequestClasses = reviewSecondaryRequestClassesForDecision(decision)
 		}
 	}
+	decision = applyReviewClassifierConfidenceSafetyDowngrade(decision, mode)
 	decision.Normalize()
 	return decision
+}
+
+// reviewClassifierLowConfidenceThreshold is the confidence below which a
+// text-inferred edit-authorizing classification is treated as too uncertain to
+// silently start editing. Trigger/mode-driven edit lifecycles score above this,
+// so explicit edit turns are never downgraded.
+const reviewClassifierLowConfidenceThreshold = 0.8
+
+// applyReviewClassifierConfidenceSafetyDowngrade routes an ambiguous or
+// low-confidence modify-then-review classification to the more conservative
+// review-then-modify lifecycle so the harness reviews before it optimistically
+// edits. It never downgrades an explicit trigger/mode-driven edit lifecycle
+// (pre_write/post_change/pre_fix), and never touches read-only, document, or
+// already-review-first classes.
+func applyReviewClassifierConfidenceSafetyDowngrade(decision ReviewRequestClassDecision, mode string) ReviewRequestClassDecision {
+	if normalizeReviewRequestClass(decision.RequestClass) != reviewRequestClassModifyThenReview {
+		return decision
+	}
+	if reviewModeDrivesExplicitEditLifecycle(mode) {
+		return decision
+	}
+	// A resolved mixed flow (document plus an explicit imperative source-edit
+	// command) already went through deliberate doc-vs-modify disambiguation; its
+	// ambiguity warning is about routing, not about whether to edit, so it keeps
+	// its modify lifecycle.
+	if decision.MixedFlow || reviewDecisionHasSignal(decision, "document_artifact_intent") {
+		return decision
+	}
+	lowConfidence := decision.Confidence > 0 && decision.Confidence < reviewClassifierLowConfidenceThreshold
+	ambiguous := decision.Ambiguous || len(decision.AmbiguityWarnings) > 0
+	if !lowConfidence && !ambiguous {
+		return decision
+	}
+	decision.RequestClass = reviewRequestClassReviewThenModify
+	decision.LifecycleKind = reviewLifecycleKindFixFromReview
+	if lowConfidence {
+		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "edit-intent confidence was low; routed to review-before-modify so findings are confirmed before any edit")
+	} else {
+		decision.AmbiguityWarnings = append(decision.AmbiguityWarnings, "edit intent was ambiguous; routed to review-before-modify so findings are confirmed before any edit")
+	}
+	decision.Reason = "edit-intent classification was low-confidence or ambiguous; selected the conservative review-before-modify lifecycle so the change is reviewed before any edit"
+	return decision
+}
+
+func reviewModeDrivesExplicitEditLifecycle(mode string) bool {
+	// reviewBeforeFixTrigger is "pre_fix"; list it once via the constant.
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "pre_write", "post_change", reviewBeforeFixTrigger:
+		return true
+	default:
+		return false
+	}
 }
 
 func reviewLifecycleKindForRun(run *ReviewRun) string {

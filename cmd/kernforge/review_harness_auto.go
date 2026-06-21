@@ -1086,7 +1086,18 @@ func (a *Agent) runAutomaticPostChangeReviewGate(ctx context.Context, request st
 	if isGeneratedDocumentArtifactQualityFingerprint(fingerprint) && !needsRevision {
 		return false, nil
 	}
-	if needsRevision && reviewRunOnlyRequiresVerificationEvidence(a.Session.LastReviewRun) && replyMentionsVerificationNotRun(finalReply) {
+	// Block the text-based downgrade only when a recorded verification outcome
+	// CONTRADICTS the "not run" disclosure: verification actually executed with a
+	// pass or fail. That guard is what stops a real failure from being masked by a
+	// "verification was not run" phrase. When verification did not execute (no
+	// record, an empty report, or all steps skipped/pending), an honest not-run
+	// disclosure remains acceptable and the gate downgrades to approved-with-
+	// warnings. The reply-text disclosure is still required as an additional
+	// condition, never the sole one. This avoids over-blocking legitimate turns
+	// (for example when no test command is configured) while keeping the gate
+	// honest about real verification outcomes.
+	verificationOutcomeContradictsClaim := a.Session.LastVerification != nil && a.Session.LastVerification.HasExecutedOutcome()
+	if needsRevision && !verificationOutcomeContradictsClaim && reviewRunOnlyRequiresVerificationEvidence(a.Session.LastReviewRun) && replyMentionsVerificationNotRun(finalReply) {
 		markReviewVerificationEvidenceDisclosed(a.Session.LastReviewRun)
 		if a.EmitProgress != nil {
 			a.EmitProgress(localizedTextForReviewRequest(a.Config, request, "Automatic post-change review found only missing verification evidence; the final answer already discloses verification was not run.", "자동 변경 후 리뷰에서 검증 증거 부족만 확인됐고, 최종 답변이 이미 검증 미실행을 명시했습니다."))

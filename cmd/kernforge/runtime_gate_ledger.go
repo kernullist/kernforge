@@ -856,8 +856,16 @@ func verificationReportCoversRuntimeGateScope(session *Session, report Verificat
 
 func verificationReportCoversPatchTime(report VerificationReport, recordedAt time.Time, changedPaths []string, patchTime time.Time) bool {
 	changedPaths = normalizeTaskStateList(changedPaths, 64)
-	if len(changedPaths) > 0 && len(report.ChangedPaths) > 0 && !changedPathsCovered(changedPaths, report.ChangedPaths) {
-		return false
+	if len(changedPaths) > 0 {
+		// There are changed paths that must be covered. If the report records no
+		// ChangedPaths we cannot prove it covered them: a matching timestamp alone
+		// does not establish scope coverage, so treat coverage as unproven.
+		if len(report.ChangedPaths) == 0 {
+			return false
+		}
+		if !changedPathsCovered(changedPaths, report.ChangedPaths) {
+			return false
+		}
 	}
 	if patchTime.IsZero() {
 		return true
