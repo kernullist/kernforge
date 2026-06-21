@@ -1007,7 +1007,7 @@ func (rt *runtimeState) runREPL() error {
 		nextTurn := rt.promptTurn + 1
 		rt.printTurnSeparator(nextTurn)
 		rt.printOperatorFooter()
-		input, err := rt.readInput(rt.ui.prompt(rt.session.Provider, rt.session.Model, rt.mainPromptReasoningEffort()))
+		input, err := rt.readInput(rt.ui.prompt())
 		if err != nil {
 			if errors.Is(err, ErrPromptCanceled) {
 				continue
@@ -7207,17 +7207,26 @@ func (rt *runtimeState) operatorStatusSnapshot(action string) operatorStatusSnap
 	if rt.clientErr != nil {
 		providerError = rt.clientErr.Error()
 	}
+	// The active provider/model is surfaced here in the status footer (not inline
+	// in the input prompt). The provider item already carries provider/model; the
+	// reasoning effort that the prompt badge used to show is added next to it so
+	// no information is lost by moving it out of the prompt.
 	items := []statusSummaryItem{
 		{Label: "cwd", Value: statusOverviewCWD(rt), Tone: "info"},
 		{Label: "provider", Value: statusOverviewProvider(rt), Tone: "info"},
-		{Label: "gate", Value: statusOverviewGateLabel(rt.cfg, ledger), Tone: statusOverviewGateTone(ledger.Status)},
-		{Label: "perm", Value: statusOverviewPermission(rt), Tone: statusOverviewPermissionTone(rt)},
-		{Label: "progress", Value: configProgressDisplay(rt.cfg), Tone: "info"},
-		{Label: "mcp", Value: statusOverviewMCP(rt), Tone: statusOverviewMCPTone(rt)},
-		{Label: "skills", Value: fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), Tone: "info"},
-		{Label: "verify", Value: statusOverviewVerification(rt), Tone: statusOverviewVerificationTone(rt)},
-		{Label: "memory", Value: fmt.Sprintf("%d", rt.persistentMemoryCount()), Tone: "info"},
 	}
+	if effort := strings.TrimSpace(rt.mainPromptReasoningEffort()); effort != "" {
+		items = append(items, statusSummaryItem{Label: "effort", Value: effort, Tone: "info"})
+	}
+	items = append(items,
+		statusSummaryItem{Label: "gate", Value: statusOverviewGateLabel(rt.cfg, ledger), Tone: statusOverviewGateTone(ledger.Status)},
+		statusSummaryItem{Label: "perm", Value: statusOverviewPermission(rt), Tone: statusOverviewPermissionTone(rt)},
+		statusSummaryItem{Label: "progress", Value: configProgressDisplay(rt.cfg), Tone: "info"},
+		statusSummaryItem{Label: "mcp", Value: statusOverviewMCP(rt), Tone: statusOverviewMCPTone(rt)},
+		statusSummaryItem{Label: "skills", Value: fmt.Sprintf("%d/%d", statusOverviewEnabledSkills(rt), statusOverviewSkillCount(rt)), Tone: "info"},
+		statusSummaryItem{Label: "verify", Value: statusOverviewVerification(rt), Tone: statusOverviewVerificationTone(rt)},
+		statusSummaryItem{Label: "memory", Value: fmt.Sprintf("%d", rt.persistentMemoryCount()), Tone: "info"},
+	)
 	if requestRuntime := statusOverviewRequestRuntime(rt); requestRuntime != "" {
 		items = append(items, statusSummaryItem{Label: "req", Value: requestRuntime, Tone: statusOverviewRequestRuntimeTone(rt)})
 	}

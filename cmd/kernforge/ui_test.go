@@ -158,19 +158,18 @@ func TestTruncateStatusSnippetDoesNotSplitKoreanUTF8(t *testing.T) {
 	}
 }
 
-func TestPromptUsesUserScopedTargetLabel(t *testing.T) {
+func TestPromptOmitsModelTargetAndStaysClean(t *testing.T) {
 	ui := UI{color: false}
-	prompt := ui.prompt("openai", "gpt-5.4", "")
-	if prompt != "you [openai-api / gpt-5.4] > " {
+	prompt := ui.prompt()
+	if prompt != "you > " {
 		t.Fatalf("unexpected prompt rendering: %q", prompt)
 	}
-}
-
-func TestPromptIncludesReasoningEffortWhenProvided(t *testing.T) {
-	ui := UI{color: false}
-	prompt := ui.prompt("openai-codex", "gpt-5.5", "high")
-	if prompt != "you [openai-codex-subscription / gpt-5.5 / effort=high] > " {
-		t.Fatalf("unexpected prompt rendering: %q", prompt)
+	// The active provider/model/effort now lives in the operator status footer,
+	// not the input prompt line; make sure none of it leaked back into the prompt.
+	for _, leaked := range []string{"gpt-", "openai", "effort=", "[", "]"} {
+		if strings.Contains(prompt, leaked) {
+			t.Fatalf("prompt should not include model/target detail %q, got %q", leaked, prompt)
+		}
 	}
 }
 

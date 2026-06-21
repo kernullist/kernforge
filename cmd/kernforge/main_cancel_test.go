@@ -3863,6 +3863,38 @@ func TestOperatorFooterLineShowsCompactRuntimeState(t *testing.T) {
 	}
 }
 
+func TestOperatorFooterShowsModelAndReasoningEffortInStatus(t *testing.T) {
+	root := t.TempDir()
+	session := NewSession(root, "openai-codex", "gpt-5.5", "", "default")
+	cfg := DefaultConfig(root)
+	cfg.AutoLocale = boolPtr(false)
+	cfg.Provider = "openai-codex"
+	cfg.Model = "gpt-5.5"
+	cfg.ReasoningEffort = "high"
+	rt := &runtimeState{
+		ui:        UI{},
+		cfg:       cfg,
+		session:   session,
+		store:     NewSessionStore(filepath.Join(root, "sessions")),
+		perms:     NewPermissionManager(ModeBypass, nil),
+		workspace: Workspace{BaseRoot: root, Root: root},
+	}
+
+	line := rt.operatorFooterLine()
+	// The active model now lives in the status footer, not the input prompt.
+	if !strings.Contains(line, "gpt-5.5") {
+		t.Fatalf("expected status footer to show the model, got %q", line)
+	}
+	// The reasoning effort the prompt badge used to carry moved into the status too.
+	if !strings.Contains(line, "[effort:") {
+		t.Fatalf("expected status footer to show the reasoning effort, got %q", line)
+	}
+	// The input prompt itself must stay clean (no model/effort badge).
+	if p := rt.ui.prompt(); p != "you > " {
+		t.Fatalf("expected clean input prompt without model/effort, got %q", p)
+	}
+}
+
 func TestOperatorFooterLineSplitsOnNarrowTerminal(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "openrouter", "google/gemini-2.5-pro", "https://example.test", "default")
