@@ -3243,6 +3243,17 @@ func reviewModelPromptEvidenceLimit(run ReviewRun) int {
 	return reviewDefaultMaxContextChars
 }
 
+// reviewSecondOpinionEvidenceLimit reports the compact evidence budget the
+// model-callable second-opinion tool uses. quick keeps the budget very small so
+// a mid-turn second opinion is cheap; thorough allows a slightly larger budget.
+// Any other value defaults to quick.
+func reviewSecondOpinionEvidenceLimit(mode string) int {
+	if strings.EqualFold(strings.TrimSpace(mode), "thorough") {
+		return reviewSecondOpinionThoroughEvidenceLimit
+	}
+	return reviewSecondOpinionQuickEvidenceLimit
+}
+
 func reviewLocalCompactReviewEvidenceLimit(run ReviewRun) int {
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		return reviewPreWritePromptEvidenceLimit

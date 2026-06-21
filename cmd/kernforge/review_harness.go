@@ -104,6 +104,21 @@ const (
 
 	reviewReviewerGatePolicyMainOnlyFallback = "main_only_fallback"
 
+	// guestReviewerRole is the reviewer role used by the model-callable
+	// review_second_opinion tool. It is deliberately distinct from
+	// primary_reviewer/cross_reviewer/single-model-second-pass so a second
+	// opinion requested mid-turn by the working model can never be confused with
+	// the gate's own primary/cross review passes.
+	guestReviewerRole = "guest_reviewer"
+
+	// reviewSecondOpinionQuickEvidenceLimit and
+	// reviewSecondOpinionThoroughEvidenceLimit bound the evidence the bounded
+	// second-opinion tool sends to the reviewer model. They are intentionally far
+	// smaller than the full review budgets so a mid-turn second opinion stays
+	// cheap and fast.
+	reviewSecondOpinionQuickEvidenceLimit    = 30000
+	reviewSecondOpinionThoroughEvidenceLimit = 40000
+
 	// crossReviewerFallbackThreshold is the number of consecutive cross-review
 	// route failures that triggers a fallback to the single-model review path.
 	// At 2+ consecutive failures we stop re-running the same failing cross route
@@ -581,6 +596,8 @@ func normalizeReviewRole(role string) string {
 		return "test_reviewer"
 	case "final", "gate", "final_gate", "final_gate_reviewer":
 		return "final_gate_reviewer"
+	case "guest", "guest_reviewer", "second_opinion", "second_opinion_reviewer":
+		return guestReviewerRole
 	default:
 		return role
 	}
