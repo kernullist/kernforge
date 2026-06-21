@@ -294,6 +294,91 @@ func TestSearchRootCauseGitHubIssuesParsesResponse(t *testing.T) {
 	}
 }
 
+// reliability_honesty-7: a failing query must not discard results from queries
+// that already succeeded. The corpus keeps the partial items and records the
+// per-query error, and no top-level error is returned when at least one query
+// succeeds.
+func TestSearchRootCauseGitHubIssuesContinuesOnPartialFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		if strings.Contains(q, "boom") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"server error"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
+  "total_count": 1,
+  "items": [
+    {
+      "number": 7,
+      "title": "Real root cause issue",
+      "body": "Root cause was a missing cancel routine. Added regression coverage.",
+      "state": "closed",
+      "html_url": "https://github.com/example/driver/issues/7",
+      "labels": [{"name": "bug"}],
+      "repository": {"full_name": "example/driver"},
+      "created_at": "2026-01-01T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z"
+    }
+  ]
+}`))
+	}))
+	defer server.Close()
+
+	corpus, err := searchRootCauseGitHubIssues(context.Background(), server.Client(), rootCauseGitHubSearchConfig{
+		APIURL:  server.URL,
+		Queries: []string{`"boom"`, `"good"`},
+		Limit:   5,
+	})
+	if err != nil {
+		t.Fatalf("expected no top-level error when one query succeeds, got %v", err)
+	}
+	if len(corpus.Items) != 1 {
+		t.Fatalf("expected one accumulated item from the succeeding query, got %#v", corpus.Items)
+	}
+	if len(corpus.QueryResults) != 2 {
+		t.Fatalf("expected per-query results for both queries, got %#v", corpus.QueryResults)
+	}
+	var sawError, sawSuccess bool
+	for _, result := range corpus.QueryResults {
+		if strings.TrimSpace(result.Error) != "" {
+			sawError = true
+		} else if result.Fetched > 0 {
+			sawSuccess = true
+		}
+	}
+	if !sawError {
+		t.Fatalf("expected the failing query to record an error, got %#v", corpus.QueryResults)
+	}
+	if !sawSuccess {
+		t.Fatalf("expected the succeeding query to record a fetch, got %#v", corpus.QueryResults)
+	}
+}
+
+// When every query fails, the function returns an aggregated error.
+func TestSearchRootCauseGitHubIssuesAllFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"message":"bad gateway"}`))
+	}))
+	defer server.Close()
+
+	corpus, err := searchRootCauseGitHubIssues(context.Background(), server.Client(), rootCauseGitHubSearchConfig{
+		APIURL:  server.URL,
+		Queries: []string{`"one"`, `"two"`},
+		Limit:   5,
+	})
+	if err == nil {
+		t.Fatalf("expected an aggregated error when all queries fail")
+	}
+	if !strings.Contains(err.Error(), "all github root-cause queries failed") {
+		t.Fatalf("expected aggregated failure message, got %v", err)
+	}
+	if len(corpus.QueryResults) != 2 {
+		t.Fatalf("expected per-query error records, got %#v", corpus.QueryResults)
+	}
+}
+
 func TestParseRootCauseGitHubSearchResponseSkipsPullRequests(t *testing.T) {
 	items, err := parseRootCauseGitHubSearchResponse([]byte(`{
   "items": [

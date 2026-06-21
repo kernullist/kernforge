@@ -38,6 +38,8 @@ type runtimeState struct {
 	promptTurn                      int
 	prefillInput                    string
 	inputHistory                    []string
+	inputHistoryPath                string
+	inputHistoryLoaded              bool
 	store                           *SessionStore
 	session                         *Session
 	agent                           *Agent
@@ -60,6 +62,8 @@ type runtimeState struct {
 	hookWarns                       []string
 	skills                          SkillCatalog
 	skillWarns                      []string
+	userCommands                    UserCommandSet
+	userCommandWarns                []string
 	mcp                             *MCPManager
 	mcpWarns                        []string
 	ollamaModels                    []OllamaModelInfo
@@ -391,6 +395,12 @@ func run(args []string) error {
 	userInputRequests := NewUserInputRequestTracker()
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
 	rt.perms.SetUserInputRequestTracker(userInputRequests)
+	// permission_sandbox-4: install optional config-driven shell/read/edit rules.
+	// Invalid rules are non-fatal so a bad entry never blocks startup; the manager
+	// keeps its default prompt behavior when no valid rules are present.
+	if err := rt.perms.ApplyConfigRules(cfg.PermissionRules); err != nil {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("Ignoring invalid permission_rules: "+err.Error()))
+	}
 	rt.backgroundJobs = NewBackgroundJobManager(filepath.Join(sessionBaseWorkingDir(sess), userConfigDirName, "jobs"), sess, store)
 	rt.workspace = Workspace{
 		BaseRoot:              sessionBaseWorkingDir(sess),
@@ -427,6 +437,7 @@ func run(args []string) error {
 		BackgroundJobs: rt.backgroundJobs,
 		GoalSession:    rt.session,
 		GoalStore:      rt.store,
+		Search:         cfg.Search,
 	}
 	rt.syncWorkspaceFromSession()
 	if err := rt.ensureConfigured(); err != nil {
@@ -543,6 +554,139 @@ func loadOrCreateSession(store *SessionStore, resumeID, cwd string, cfg Config) 
 	return sess, nil
 }
 
+// handleResumeCommand implements /resume. With an explicit id it resumes that
+// session. With no args it shows an interactive picker of recent sessions. The
+// special keyword "latest" (or "last") continues the most recently updated
+// session without prompting.
+func (rt *runtimeState) handleResumeCommand(args string) error {
+	target := strings.TrimSpace(args)
+	switch {
+	case target == "":
+		picked, err := rt.pickSessionToResume()
+		if err != nil {
+			return err
+		}
+		if picked == "" {
+			return nil
+		}
+		target = picked
+	case strings.EqualFold(target, "latest"), strings.EqualFold(target, "last"):
+		latest, err := rt.latestResumableSessionID()
+		if err != nil {
+			return err
+		}
+		if latest == "" {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine("No saved sessions to resume."))
+			return nil
+		}
+		target = latest
+	}
+	return rt.resumeIntoSession(target)
+}
+
+// latestResumableSessionID returns the id of the most recently updated session
+// other than the current one, or empty when none qualify.
+func (rt *runtimeState) latestResumableSessionID() (string, error) {
+	items, err := rt.store.List()
+	if err != nil {
+		return "", err
+	}
+	for _, item := range items {
+		if rt.session != nil && strings.EqualFold(item.ID, rt.session.ID) {
+			continue
+		}
+		return item.ID, nil
+	}
+	return "", nil
+}
+
+// pickSessionToResume lists recent sessions and prompts the operator to choose
+// one. Returning an empty id with a nil error means the picker was canceled.
+func (rt *runtimeState) pickSessionToResume() (string, error) {
+	items, err := rt.store.List()
+	if err != nil {
+		return "", err
+	}
+	// Drop the active session from the list; resuming it is a no-op.
+	filtered := make([]SessionSummary, 0, len(items))
+	for _, item := range items {
+		if rt.session != nil && strings.EqualFold(item.ID, rt.session.ID) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if len(filtered) == 0 {
+		fmt.Fprintln(rt.writer, rt.ui.warnLine("No other saved sessions to resume."))
+		return "", nil
+	}
+	const maxPickerEntries = 20
+	if len(filtered) > maxPickerEntries {
+		filtered = filtered[:maxPickerEntries]
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("Resume Session"))
+	for i, item := range filtered {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = "(unnamed)"
+		}
+		fmt.Fprintf(rt.writer, "%s  %s  %s  %s\n",
+			rt.ui.accent(fmt.Sprintf("%2d.", i+1)),
+			rt.ui.dim(item.ID),
+			rt.ui.info(item.UpdatedAt.Format(time.RFC3339)),
+			name,
+		)
+		if cwd := strings.TrimSpace(item.WorkingDir); cwd != "" {
+			fmt.Fprintf(rt.writer, "      %s %s\n", rt.ui.dim("cwd:"), rt.ui.dim(cwd))
+		}
+	}
+	fmt.Fprintln(rt.writer, rt.ui.hintLine("Enter a number to resume, 'l' for the latest, or press Enter to cancel."))
+	for {
+		answer, err := rt.readInput(rt.ui.accent("resume pick") + rt.ui.dim(" > "))
+		if err != nil {
+			if errors.Is(err, ErrPromptCanceled) {
+				return "", nil
+			}
+			return "", err
+		}
+		answer = strings.TrimSpace(answer)
+		if answer == "" {
+			return "", nil
+		}
+		if strings.EqualFold(answer, "l") || strings.EqualFold(answer, "latest") || strings.EqualFold(answer, "last") {
+			return filtered[0].ID, nil
+		}
+		index, convErr := strconv.Atoi(answer)
+		if convErr != nil || index < 1 || index > len(filtered) {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf("Choose a number between 1 and %d.", len(filtered))))
+			continue
+		}
+		return filtered[index-1].ID, nil
+	}
+}
+
+// resumeIntoSession loads the given session id and swaps it in as the active
+// session, reloading derived runtime context.
+func (rt *runtimeState) resumeIntoSession(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("usage: /resume <session-id>")
+	}
+	loaded, err := rt.store.Load(id)
+	if err != nil {
+		return err
+	}
+	rt.session = loaded
+	rt.cfg.Provider = loaded.Provider
+	rt.cfg.Model = loaded.Model
+	rt.cfg.BaseURL = loaded.BaseURL
+	rt.perms.SetMode(ParseMode(loaded.PermissionMode))
+	if err := rt.reloadSessionContext(); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Resumed %s (%s)", loaded.ID, loaded.Name)))
+	return nil
+}
+
 func sessionStartHookSourceForResumeID(resumeID string) string {
 	if strings.TrimSpace(resumeID) != "" {
 		return "resume"
@@ -560,6 +704,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewApplyPatchTool(ws),
 		NewWriteFileTool(ws),
 		NewReplaceInFileTool(ws),
+		NewNotebookEditTool(ws),
 		NewRunShellTool(ws),
 		NewRunBackgroundShellTool(ws),
 		NewRunShellBundleBackgroundTool(ws),
@@ -574,6 +719,8 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewGitStatusTool(ws),
 		NewGitDiffTool(ws),
 		NewUpdatePlanTool(ws),
+		NewWebFetchTool(ws),
+		NewWebSearchTool(ws),
 	}
 	if goalToolsAvailable(ws) {
 		items = append(items,
@@ -815,6 +962,7 @@ func (rt *runtimeState) redrawScreen() {
 }
 
 func (rt *runtimeState) runREPL() error {
+	rt.loadInputHistory()
 	rt.redrawScreen()
 	rt.printAutomationStartupNotice(time.Now())
 
@@ -2820,6 +2968,9 @@ func (rt *runtimeState) readInput(prompt string) (string, error) {
 		var historyNav *inputHistoryNavigator
 		if len(lines) == 0 {
 			historyNav = newInputHistoryNavigator(rt.inputHistoryEntries(), initial)
+			// Prefill text acts as a prefix filter so history navigation walks
+			// only entries that start with what the user has already typed.
+			historyNav.SetPrefix(initial)
 		}
 		line, usedInteractive, err := rt.readInteractiveLine(currentPrompt, initial, historyNav, false)
 		if !usedInteractive {
@@ -2898,6 +3049,22 @@ func (rt *runtimeState) confirm(question string) (bool, error) {
 				}
 				return err
 			}
+			// Shell approvals offer an extra [p] = remember a pattern answer. Handle
+			// it before the generic y/a/n parse so it is not treated as invalid.
+			if isShellApprovalQuestion(question) && isShellPatternAnswer(answer) {
+				registered, perr := rt.rememberShellPatternApproval(question)
+				if perr != nil {
+					fmt.Fprintln(rt.writer, rt.ui.warnLine("Invalid pattern: "+perr.Error()))
+					continue
+				}
+				if !registered {
+					// No pattern entered; treat as cancel/deny rather than allow.
+					allowed = false
+					return nil
+				}
+				allowed = true
+				return nil
+			}
 			parsedAllowed, always, handled := parseConfirmationAnswer(answer)
 			if !handled {
 				continue
@@ -2966,7 +3133,15 @@ func analysisDirectoryCandidateReasonLabel(reason string) string {
 
 func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 	if isShellApprovalQuestion(question) {
-		return rt.perms != nil && rt.perms.IsShellAllowed()
+		if rt.perms == nil {
+			return false
+		}
+		// Command-aware auto-approval: a later shell command only runs without a
+		// prompt if THAT command (or a remembered pattern / explicit session-wide
+		// opt-in / config allow rule) matches. The first approved command no
+		// longer silently auto-approves unrelated commands.
+		action, command := shellApprovalActionAndCommand(question)
+		return rt.perms.ShellAutoApproved(action, command)
 	}
 	if isWriteApprovalQuestion(question) {
 		return rt.alwaysApproveWrites
@@ -2988,7 +3163,11 @@ func (rt *runtimeState) autoApproveConfirmation(question string) bool {
 
 func (rt *runtimeState) confirmLabel(question string) string {
 	hint := localizedText(rt.cfg, "[y=yes, n=no, Esc=cancel]", "[y=예, n=아니오, Esc=취소]")
-	if isPermissionApprovalQuestion(question) {
+	if isShellApprovalQuestion(question) {
+		// Shell approvals add [p]=remember a pattern. [a] is the explicit
+		// session-wide opt-in; plain shell approval no longer covers shell-write.
+		hint = localizedText(rt.cfg, "[y=allow once, a=allow all shell this session, p=remember pattern, n=deny, Esc=cancel]", "[y=이번만 허용, a=세션 전체 쉘 허용, p=패턴 기억, n=거부, Esc=취소]")
+	} else if isPermissionApprovalQuestion(question) {
 		hint = localizedText(rt.cfg, "[y=allow once, a=allow for session, n=deny, Esc=cancel]", "[y=이번만 허용, a=세션 허용, n=거부, Esc=취소]")
 	} else if isDiffPreviewQuestion(question) {
 		hint = localizedText(rt.cfg, "[y=open once, a=accept edits for session, n=cancel edit, Esc=cancel]", "[y=이번만 열기, a=세션 편집 승인, n=편집 취소, Esc=취소]")
@@ -3012,6 +3191,26 @@ func isShellApprovalQuestion(question string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(question))
 	return strings.HasPrefix(normalized, "allow shell?") ||
 		strings.HasPrefix(normalized, "allow shell write?")
+}
+
+// shellApprovalActionAndCommand recovers the shell action and the exact command
+// from a shell approval question produced by permissionQuestion. The shell-write
+// prefix must be checked before the plain shell prefix because "Allow shell?" is
+// a prefix of neither but their lowercased forms overlap on "allow shell".
+func shellApprovalActionAndCommand(question string) (Action, string) {
+	trimmed := strings.TrimSpace(question)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "allow shell write?") {
+		return ActionShellWrite, strings.TrimSpace(trimmed[len("Allow shell write?"):])
+	}
+	if strings.HasPrefix(lower, "allow shell?") {
+		return ActionShell, strings.TrimSpace(trimmed[len("Allow shell?"):])
+	}
+	return ActionShell, ""
+}
+
+func isShellWriteApprovalQuestion(question string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(question)), "allow shell write?")
 }
 
 func isWriteApprovalQuestion(question string) bool {
@@ -3077,8 +3276,16 @@ func parseConfirmationAnswer(answer string) (bool, bool, bool) {
 }
 
 func (rt *runtimeState) rememberConfirmationApproval(question string) {
+	// permission_sandbox-6: check shell-write BEFORE plain shell because the plain
+	// shell predicate also matches the "Allow shell write?" prefix. Shell-write
+	// has its own session opt-in so a plain shell [a] never silently covers it.
+	if isShellWriteApprovalQuestion(question) && rt.perms != nil {
+		rt.perms.RememberShellSessionWide(ActionShellWrite)
+		return
+	}
 	if isShellApprovalQuestion(question) && rt.perms != nil {
-		rt.perms.RememberShellApproval()
+		// Explicit [a]: session-wide opt-in for plain shell only.
+		rt.perms.RememberShellSessionWide(ActionShell)
 		return
 	}
 	if isWriteApprovalQuestion(question) {
@@ -3101,6 +3308,41 @@ func (rt *runtimeState) rememberConfirmationApproval(question string) {
 	if isGitApprovalQuestion(question) && rt.perms != nil {
 		rt.perms.RememberGitApproval()
 	}
+}
+
+// isShellPatternAnswer reports whether the user picked the [p] remember-a-pattern
+// option at a shell approval prompt.
+func isShellPatternAnswer(answer string) bool {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "p", "pattern":
+		return true
+	default:
+		return false
+	}
+}
+
+// rememberShellPatternApproval prompts for a command pattern and registers it for
+// the rest of the session under the action the question targets. It returns
+// (true, nil) when a pattern was registered, (false, nil) when the user entered
+// nothing (cancel), or (false, err) when the pattern is invalid.
+func (rt *runtimeState) rememberShellPatternApproval(question string) (bool, error) {
+	if rt.perms == nil {
+		return false, nil
+	}
+	action, _ := shellApprovalActionAndCommand(question)
+	prompt := localizedText(rt.cfg, "Enter a regex pattern to allow for this session", "이번 세션에서 허용할 정규식 패턴을 입력하세요")
+	pattern, err := rt.promptValueAllowEmpty(prompt, "")
+	if err != nil {
+		return false, nil
+	}
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false, nil
+	}
+	if rerr := rt.perms.RememberShellPattern(action, pattern); rerr != nil {
+		return false, rerr
+	}
+	return true, nil
 }
 
 func sessionApprovalStateLabel(enabled bool, mode string) string {
@@ -7188,7 +7430,7 @@ func statusOverviewWarningCount(rt *runtimeState) int {
 	if rt == nil {
 		return 0
 	}
-	return len(rt.skillWarns) + len(rt.mcpWarns) + len(rt.hookWarns)
+	return len(rt.skillWarns) + len(rt.userCommandWarns) + len(rt.mcpWarns) + len(rt.hookWarns)
 }
 
 // statusOverviewRequestRuntime returns the always-on footer note for the
@@ -7620,7 +7862,8 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_tools", fmt.Sprintf("%d", rt.mcpToolCount())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_resources", fmt.Sprintf("%d", rt.mcpResourceCount())))
 		fmt.Fprintln(rt.writer, rt.ui.statusKV("mcp_prompts", fmt.Sprintf("%d", rt.mcpPromptCount())))
-		for _, warning := range append(append(append([]string(nil), rt.skillWarns...), rt.mcpWarns...), rt.hookWarns...) {
+		fmt.Fprintln(rt.writer, rt.ui.statusKV("user_commands", fmt.Sprintf("%d", rt.userCommands.Count())))
+		for _, warning := range append(append(append(append([]string(nil), rt.skillWarns...), rt.userCommandWarns...), rt.mcpWarns...), rt.hookWarns...) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warning))
 		}
 	case "version":
@@ -7978,22 +8221,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			return false, err
 		}
 	case "resume":
-		if cmd.Args == "" {
-			return false, fmt.Errorf("usage: /resume <session-id>")
-		}
-		loaded, err := rt.store.Load(cmd.Args)
-		if err != nil {
-			return false, err
-		}
-		rt.session = loaded
-		rt.cfg.Provider = loaded.Provider
-		rt.cfg.Model = loaded.Model
-		rt.cfg.BaseURL = loaded.BaseURL
-		rt.perms.SetMode(ParseMode(loaded.PermissionMode))
-		if err := rt.reloadSessionContext(); err != nil {
-			return false, err
-		}
-		fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Resumed %s (%s)", loaded.ID, loaded.Name)))
+		return false, rt.handleResumeCommand(cmd.Args)
 	case "rename":
 		if cmd.Args == "" {
 			return false, fmt.Errorf("usage: /rename <name>")
@@ -8105,6 +8333,16 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			kv("auto_for_tracked_features", fmt.Sprintf("%t", configWorktreeIsolationAutoForTrackedFeatures(rt.cfg))),
 		)
 		fmt.Fprintln(rt.writer)
+		rt.printKVGroup("Parallelism",
+			kv("micro_worker_cap", fmt.Sprintf("%d", configParallelismMicroWorkerCap(rt.cfg))),
+			kv("read_worker_cap", fmt.Sprintf("%d", configParallelismReadWorkerCap(rt.cfg))),
+			kv("edit_worker_cap", fmt.Sprintf("%d", configParallelismEditWorkerCap(rt.cfg))),
+			kv("edit_worker_max_turns", fmt.Sprintf("%d", configParallelismEditWorkerMaxTurns(rt.cfg))),
+			kv("edit_worker_max_tokens", fmt.Sprintf("%d", configParallelismEditWorkerMaxTokens(rt.cfg))),
+			kv("micro_worker_max_tokens", fmt.Sprintf("%d", configParallelismMicroWorkerMaxTokens(rt.cfg))),
+			kv("allow_editable_workers_in_shared_tree", fmt.Sprintf("%t", configEditableWorkersAllowedInSharedTree(rt.cfg))),
+		)
+		fmt.Fprintln(rt.writer)
 		rt.printKVGroup("Tool Paths",
 			kv("msbuild_path", valueOrUnset(rt.cfg.MSBuildPath)),
 			kv("cmake_path", valueOrUnset(rt.cfg.CMakePath)),
@@ -8154,9 +8392,32 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 	case "exit", "quit":
 		return true, nil
 	default:
+		if userCmd, ok := rt.userCommands.Lookup(cmd.Name); ok {
+			return false, rt.runUserCommand(userCmd, cmd.Args)
+		}
 		return false, fmt.Errorf("unknown command: /%s", cmd.Name)
 	}
 	return false, nil
+}
+
+// runUserCommand expands a user-defined slash command into a prompt and runs it
+// through the normal agent reply path so it behaves like typed input.
+func (rt *runtimeState) runUserCommand(cmd UserCommand, args string) error {
+	prompt := strings.TrimSpace(cmd.RenderPrompt(args))
+	if prompt == "" {
+		return fmt.Errorf("user command /%s has no prompt body", cmd.Name)
+	}
+	if rt.clientErr != nil {
+		return rt.clientErr
+	}
+	reply, err := rt.runAgentReply(context.Background(), prompt)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(reply) != "" {
+		rt.printAssistant(reply)
+	}
+	return nil
 }
 
 func (rt *runtimeState) handleLocaleAutoCommand(args string) error {
@@ -10545,6 +10806,8 @@ func (rt *runtimeState) activePermissionModeSnapshot() string {
 
 func (rt *runtimeState) reloadExtensions() {
 	rt.skills, rt.skillWarns = LoadSkills(rt.workspace.BaseRoot, rt.cfg.SkillPaths, rt.cfg.EnabledSkills)
+	rt.userCommands, rt.userCommandWarns = LoadUserCommands(rt.workspace.BaseRoot, rt.cfg.CommandPaths)
+	registerUserCommandDescriptions(rt.userCommands)
 	if rt.agent != nil {
 		rt.agent.Skills = rt.skills
 	}

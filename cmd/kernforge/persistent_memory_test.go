@@ -838,3 +838,77 @@ func TestPersistentMemoryDashboardHTMLWritesFile(t *testing.T) {
 		t.Fatalf("expected html memory dashboard file to exist: %v", err)
 	}
 }
+
+// context_memory-8: value-weighted truncation must keep high-importance and
+// confirmed records over more recent low-value ones, and preserve append order.
+func TestTrimPersistentMemoryByValueKeepsHighValue(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	records := []PersistentMemoryRecord{
+		{ID: "old-high", Importance: PersistentMemoryHigh, Trust: PersistentMemoryConfirmed, CreatedAt: base},
+		{ID: "mid-low", Importance: PersistentMemoryLow, Trust: PersistentMemoryTentative, CreatedAt: base.Add(time.Hour)},
+		{ID: "new-low", Importance: PersistentMemoryLow, Trust: PersistentMemoryTentative, CreatedAt: base.Add(2 * time.Hour)},
+	}
+	got := trimPersistentMemoryByValue(records, 2)
+	if len(got) != 2 {
+		t.Fatalf("trim kept %d records, want 2", len(got))
+	}
+	// The old high-importance record must survive even though it is the oldest.
+	foundHigh := false
+	for _, r := range got {
+		if r.ID == "old-high" {
+			foundHigh = true
+		}
+	}
+	if !foundHigh {
+		t.Fatalf("high-importance record was evicted: %#v", got)
+	}
+	// Surviving records keep their original chronological (append) order.
+	if got[0].CreatedAt.After(got[1].CreatedAt) {
+		t.Fatalf("surviving records not in chronological order: %#v", got)
+	}
+}
+
+// Integration: Append overflow must not FIFO-evict a high-importance record in
+// favor of newer low-value entries.
+func TestPersistentMemoryAppendOverflowKeepsHighImportance(t *testing.T) {
+	dir := t.TempDir()
+	store := &PersistentMemoryStore{
+		Path:       filepath.Join(dir, "persistent-memory.json"),
+		MaxEntries: 3,
+	}
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	mustAppend := func(id string, importance PersistentMemoryImportance, trust PersistentMemoryTrust, created time.Time) {
+		if err := store.Append(PersistentMemoryRecord{
+			ID:         id,
+			Workspace:  dir,
+			Request:    "req " + id,
+			Importance: importance,
+			Trust:      trust,
+			CreatedAt:  created,
+		}); err != nil {
+			t.Fatalf("Append(%s): %v", id, err)
+		}
+	}
+	mustAppend("keep-high", PersistentMemoryHigh, PersistentMemoryConfirmed, base)
+	mustAppend("low-1", PersistentMemoryLow, PersistentMemoryTentative, base.Add(time.Hour))
+	mustAppend("low-2", PersistentMemoryLow, PersistentMemoryTentative, base.Add(2*time.Hour))
+	// This fourth append overflows MaxEntries=3 and triggers truncation.
+	mustAppend("low-3", PersistentMemoryLow, PersistentMemoryTentative, base.Add(3*time.Hour))
+
+	records, err := store.load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("store kept %d records, want 3", len(records))
+	}
+	foundHigh := false
+	for _, r := range records {
+		if r.ID == "keep-high" {
+			foundHigh = true
+		}
+	}
+	if !foundHigh {
+		t.Fatalf("high-importance record was FIFO-evicted on overflow: %#v", records)
+	}
+}

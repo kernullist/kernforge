@@ -3,10 +3,7 @@ package main
 import (
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
-	"syscall"
-	"unsafe"
 )
 
 var englishWordPattern = regexp.MustCompile(`[A-Za-z][A-Za-z']*`)
@@ -16,14 +13,10 @@ func getSystemLocale() string {
 		parts := strings.Split(lang, ".")
 		return parts[0]
 	}
-	if runtime.GOOS == "windows" {
-		kernel32 := syscall.NewLazyDLL("kernel32.dll")
-		getUserDefaultLocaleName := kernel32.NewProc("GetUserDefaultLocaleName")
-		buf := make([]uint16, 85)
-		ret, _, _ := getUserDefaultLocaleName.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
-		if ret != 0 {
-			return syscall.UTF16ToString(buf)
-		}
+	// platformSystemLocale provides an OS-specific lookup; the Windows build
+	// queries GetUserDefaultLocaleName, other platforms return "" here.
+	if locale := strings.TrimSpace(platformSystemLocale()); locale != "" {
+		return locale
 	}
 	return "en-US"
 }

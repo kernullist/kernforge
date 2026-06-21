@@ -87,6 +87,7 @@ type RootCauseGitHubQueryResult struct {
 	FetchedAt          time.Time `json:"fetched_at,omitempty"`
 	RateLimitRemaining string    `json:"rate_limit_remaining,omitempty"`
 	RateLimitReset     string    `json:"rate_limit_reset,omitempty"`
+	Error              string    `json:"error,omitempty"`
 }
 
 type RootCauseGitHubIssue struct {
@@ -1011,15 +1012,41 @@ func searchRootCauseGitHubIssues(ctx context.Context, client *http.Client, cfg r
 		ProjectTypes: normalizeRootCauseProjectTypes(cfg.ProjectTypes),
 	}
 	seen := map[string]struct{}{}
+	// reliability_honesty-7: keep going when an individual query fails so a
+	// single transport/HTTP error never discards results already fetched from
+	// earlier queries. Per-query errors are recorded on the corpus; an error is
+	// returned only when every query failed.
+	succeeded := 0
+	var queryErrors []string
 	for _, query := range queries {
-		if rootCauseGitHubQueryRequestsPullRequests(query) {
-			return corpus, fmt.Errorf("github root-cause issue search only supports issues; remove pull-request qualifier from query %q", query)
-		}
 		originalQuery := query
+		recordFailure := func(executedQuery, endpointURL string, statusCode int, header http.Header, cause error) {
+			result := RootCauseGitHubQueryResult{
+				Query:         originalQuery,
+				ExecutedQuery: executedQuery,
+				APIURL:        endpointURL,
+				StatusCode:    statusCode,
+				FetchedAt:     time.Now(),
+				Error:         cause.Error(),
+			}
+			if header != nil {
+				result.RateLimitRemaining = header.Get("X-RateLimit-Remaining")
+				result.RateLimitReset = header.Get("X-RateLimit-Reset")
+			}
+			corpus.ExecutedQueries = append(corpus.ExecutedQueries, executedQuery)
+			corpus.QueryResults = append(corpus.QueryResults, result)
+			queryErrors = append(queryErrors, fmt.Sprintf("%q: %v", originalQuery, cause))
+		}
+
+		if rootCauseGitHubQueryRequestsPullRequests(query) {
+			recordFailure(query, "", 0, nil, fmt.Errorf("github root-cause issue search only supports issues; remove pull-request qualifier"))
+			continue
+		}
 		query = rootCauseGitHubIssueQuery(originalQuery)
 		endpoint, err := url.Parse(strings.TrimRight(apiURL, "/") + "/search/issues")
 		if err != nil {
-			return corpus, err
+			recordFailure(query, "", 0, nil, err)
+			continue
 		}
 		values := endpoint.Query()
 		values.Set("q", query)
@@ -1029,7 +1056,8 @@ func searchRootCauseGitHubIssues(ctx context.Context, client *http.Client, cfg r
 		endpoint.RawQuery = values.Encode()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 		if err != nil {
-			return corpus, err
+			recordFailure(query, endpoint.String(), 0, nil, err)
+			continue
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
@@ -1039,32 +1067,29 @@ func searchRootCauseGitHubIssues(ctx context.Context, client *http.Client, cfg r
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return corpus, err
+			recordFailure(query, endpoint.String(), 0, nil, err)
+			continue
 		}
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 8*1024*1024))
+		respHeader := resp.Header
 		closeErr := resp.Body.Close()
 		if readErr != nil {
-			return corpus, readErr
+			recordFailure(query, endpoint.String(), resp.StatusCode, respHeader, readErr)
+			continue
 		}
 		if closeErr != nil {
-			return corpus, closeErr
+			recordFailure(query, endpoint.String(), resp.StatusCode, respHeader, closeErr)
+			continue
 		}
 		if resp.StatusCode < 200 || resp.StatusCode > 299 {
-			corpus.ExecutedQueries = append(corpus.ExecutedQueries, query)
-			corpus.QueryResults = append(corpus.QueryResults, RootCauseGitHubQueryResult{
-				Query:              originalQuery,
-				ExecutedQuery:      query,
-				APIURL:             endpoint.String(),
-				StatusCode:         resp.StatusCode,
-				FetchedAt:          time.Now(),
-				RateLimitRemaining: resp.Header.Get("X-RateLimit-Remaining"),
-				RateLimitReset:     resp.Header.Get("X-RateLimit-Reset"),
-			})
-			return corpus, fmt.Errorf("github search failed: status=%d body=%s", resp.StatusCode, analysisPromptExcerpt(string(body), 500))
+			recordFailure(query, endpoint.String(), resp.StatusCode, respHeader,
+				fmt.Errorf("github search failed: status=%d body=%s", resp.StatusCode, analysisPromptExcerpt(string(body), 500)))
+			continue
 		}
 		payload, err := parseRootCauseGitHubSearchPayload(body)
 		if err != nil {
-			return corpus, err
+			recordFailure(query, endpoint.String(), resp.StatusCode, respHeader, err)
+			continue
 		}
 		corpus.ExecutedQueries = append(corpus.ExecutedQueries, query)
 		corpus.QueryResults = append(corpus.QueryResults, RootCauseGitHubQueryResult{
@@ -1075,9 +1100,10 @@ func searchRootCauseGitHubIssues(ctx context.Context, client *http.Client, cfg r
 			TotalCount:         payload.TotalCount,
 			Fetched:            len(payload.Items),
 			FetchedAt:          time.Now(),
-			RateLimitRemaining: resp.Header.Get("X-RateLimit-Remaining"),
-			RateLimitReset:     resp.Header.Get("X-RateLimit-Reset"),
+			RateLimitRemaining: respHeader.Get("X-RateLimit-Remaining"),
+			RateLimitReset:     respHeader.Get("X-RateLimit-Reset"),
 		})
+		succeeded++
 		for _, item := range payload.Items {
 			key := item.HTMLURL
 			if key == "" {
@@ -1096,6 +1122,11 @@ func searchRootCauseGitHubIssues(ctx context.Context, client *http.Client, cfg r
 		}
 		return corpus.Items[i].Score > corpus.Items[j].Score
 	})
+	// Only fail outright when no query succeeded; otherwise return the partial
+	// corpus (per-query errors remain visible on corpus.QueryResults).
+	if succeeded == 0 && len(queryErrors) > 0 {
+		return corpus, fmt.Errorf("all github root-cause queries failed: %s", strings.Join(queryErrors, "; "))
+	}
 	return corpus, nil
 }
 

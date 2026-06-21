@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -51,7 +53,9 @@ func TestInputHistoryNavigatorSyncBufferDetachesFromHistory(t *testing.T) {
 }
 
 func TestRememberInputHistory(t *testing.T) {
-	rt := &runtimeState{}
+	// Point persistence at a temp file so the test never touches the real
+	// user config directory.
+	rt := &runtimeState{inputHistoryPath: filepath.Join(t.TempDir(), "input-history")}
 	rt.rememberInputHistory("first")
 	rt.rememberInputHistory("")
 	rt.rememberInputHistory("second\ncontinued")
@@ -60,5 +64,61 @@ func TestRememberInputHistory(t *testing.T) {
 	want := []string{"first", " third "}
 	if !reflect.DeepEqual(rt.inputHistoryEntries(), want) {
 		t.Fatalf("inputHistoryEntries() = %#v, want %#v", rt.inputHistoryEntries(), want)
+	}
+}
+
+func TestRememberInputHistorySkipsConsecutiveDuplicates(t *testing.T) {
+	rt := &runtimeState{inputHistoryPath: filepath.Join(t.TempDir(), "input-history")}
+	rt.rememberInputHistory("build")
+	rt.rememberInputHistory("build")
+	rt.rememberInputHistory("test")
+	rt.rememberInputHistory("build")
+
+	want := []string{"build", "test", "build"}
+	if !reflect.DeepEqual(rt.inputHistoryEntries(), want) {
+		t.Fatalf("inputHistoryEntries() = %#v, want %#v", rt.inputHistoryEntries(), want)
+	}
+}
+
+func TestInputHistoryPersistAndLoadRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "input-history")
+	writer := &runtimeState{inputHistoryPath: path}
+	writer.rememberInputHistory("alpha")
+	writer.rememberInputHistory("beta")
+	writer.rememberInputHistory("gamma")
+
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("history file not written: %v", err)
+	}
+
+	reader := &runtimeState{inputHistoryPath: path}
+	reader.loadInputHistory()
+	want := []string{"alpha", "beta", "gamma"}
+	if !reflect.DeepEqual(reader.inputHistoryEntries(), want) {
+		t.Fatalf("loaded history = %#v, want %#v", reader.inputHistoryEntries(), want)
+	}
+
+	// A second load must be a no-op (no duplication).
+	reader.loadInputHistory()
+	if !reflect.DeepEqual(reader.inputHistoryEntries(), want) {
+		t.Fatalf("history after second load = %#v, want %#v", reader.inputHistoryEntries(), want)
+	}
+}
+
+func TestInputHistoryNavigatorPrefixSearch(t *testing.T) {
+	nav := newInputHistoryNavigator([]string{"build", "git status", "go test", "git push"}, "")
+	nav.SetPrefix("git")
+
+	got, ok := nav.Previous("git")
+	if !ok || got != "git push" {
+		t.Fatalf("first Previous() = %q, %v; want git push, true", got, ok)
+	}
+	got, ok = nav.Previous(got)
+	if !ok || got != "git status" {
+		t.Fatalf("second Previous() = %q, %v; want git status, true", got, ok)
+	}
+	// No earlier "git" entry exists, so Previous stops.
+	if got, ok = nav.Previous(got); ok {
+		t.Fatalf("third Previous() = %q, %v; want no match", got, ok)
 	}
 }

@@ -767,8 +767,14 @@ func TestSystemPromptIncludesSkillAndMCPCatalogsWhenUserAsks(t *testing.T) {
 	}
 
 	prompt := agent.systemPrompt()
-	if !strings.Contains(prompt, "Available local skills:") {
+	// The skill catalog header now guides relevance-based selection
+	// ("Available local skills (select by relevance ...):"), so match the stable
+	// prefix rather than the old exact "Available local skills:" wording.
+	if !strings.Contains(prompt, "Available local skills") {
 		t.Fatalf("expected skill catalog in system prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "MemoryOps") {
+		t.Fatalf("expected skill entry in system prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Available MCP resources:") || !strings.Contains(prompt, "Available MCP prompts:") {
 		t.Fatalf("expected MCP catalogs in system prompt, got %q", prompt)

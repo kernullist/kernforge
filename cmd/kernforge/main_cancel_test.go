@@ -3496,6 +3496,73 @@ func TestRuntimeStateConfirmSessionApprovesFutureShellPrompts(t *testing.T) {
 	if !rt.autoApproveConfirmation("Allow shell? go test ./cmd/kernforge") {
 		t.Fatalf("expected subsequent shell prompt to be auto-approved")
 	}
+	// permission_sandbox-6: plain shell session approval must NOT auto-approve a
+	// shell-write command.
+	if rt.autoApproveConfirmation("Allow shell write? rewrite main.go") {
+		t.Fatalf("plain shell session approval must not cover shell-write")
+	}
+}
+
+// TestRuntimeStateConfirmPlainShellApprovalIsCommandScoped locks
+// permission_sandbox-3 at the UI layer: a plain "allow once" (y) shell approval
+// does NOT auto-approve a different later command.
+func TestRuntimeStateConfirmPlainShellApprovalIsCommandScoped(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("y\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	allowed, err := rt.confirm("Allow shell? go test ./...")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected shell prompt to be allowed once")
+	}
+	if rt.perms.IsShellAllowed() {
+		t.Fatalf("plain allow-once must not enable a session-wide shell opt-in")
+	}
+	// A DIFFERENT command must NOT be auto-approved by the prior allow-once.
+	if rt.autoApproveConfirmation("Allow shell? rm -rf /") {
+		t.Fatalf("allow-once must not auto-approve an unrelated later command")
+	}
+}
+
+// TestRuntimeStateConfirmShellWriteSessionApprovalIsSeparate locks
+// permission_sandbox-6 at the UI layer: choosing session-wide ([a]) at a
+// shell-write prompt enables shell-write auto-approval but NOT plain shell.
+func TestRuntimeStateConfirmShellWriteSessionApprovalIsSeparate(t *testing.T) {
+	rt := &runtimeState{
+		reader:      bufio.NewReader(strings.NewReader("a\n")),
+		writer:      &bytes.Buffer{},
+		ui:          UI{},
+		cfg:         Config{AutoLocale: boolPtr(false)},
+		interactive: true,
+		perms:       NewPermissionManager(ModeDefault, nil),
+	}
+
+	allowed, err := rt.confirm("Allow shell write? rewrite main.go")
+	if err != nil {
+		t.Fatalf("confirm returned error: %v", err)
+	}
+	if !allowed {
+		t.Fatalf("expected shell-write prompt to be allowed")
+	}
+	// A later shell-write auto-approves under the shell-write session opt-in.
+	if !rt.autoApproveConfirmation("Allow shell write? rewrite other.go") {
+		t.Fatalf("expected later shell-write to be auto-approved")
+	}
+	// But plain shell must still prompt: the shell-write opt-in does not cover it.
+	if rt.perms.IsShellAllowed() {
+		t.Fatalf("shell-write session approval must not enable plain shell opt-in")
+	}
+	if rt.autoApproveConfirmation("Allow shell? go test ./...") {
+		t.Fatalf("shell-write session approval must not auto-approve plain shell")
+	}
 }
 
 func TestRuntimeStateConfirmSessionAcceptsFutureDiffPreviewPrompts(t *testing.T) {

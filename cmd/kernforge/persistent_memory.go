@@ -534,7 +534,10 @@ func (s *PersistentMemoryStore) Append(record PersistentMemoryRecord) error {
 			maxEntries = defaultPersistentMemoryMaxEntries
 		}
 		if len(records) > maxEntries {
-			records = append([]PersistentMemoryRecord(nil), records[len(records)-maxEntries:]...)
+			// context_memory-8: run an importance/trust-weighted selection
+			// instead of a recency-only FIFO truncation so high-importance and
+			// confirmed records survive over more recent low-value ones.
+			records = trimPersistentMemoryByValue(records, maxEntries)
 		}
 		if err := s.save(records); err != nil {
 			return err
@@ -548,6 +551,65 @@ func (s *PersistentMemoryStore) Append(record PersistentMemoryRecord) error {
 		_, _ = s.Prune(record.Workspace, policy, false)
 	}
 	return nil
+}
+
+// trimPersistentMemoryByValue keeps the highest-value records when the store
+// exceeds maxEntries. Value is ranked by importance, then trust, then recency,
+// so a recency-only overflow no longer evicts high-importance or confirmed
+// records in favor of newer low-value ones. The surviving records are returned
+// in their original chronological (append) order to preserve downstream
+// recency assumptions.
+func trimPersistentMemoryByValue(records []PersistentMemoryRecord, maxEntries int) []PersistentMemoryRecord {
+	if maxEntries <= 0 || len(records) <= maxEntries {
+		return records
+	}
+	type ranked struct {
+		index  int
+		record PersistentMemoryRecord
+	}
+	order := make([]ranked, len(records))
+	for i, record := range records {
+		order[i] = ranked{index: i, record: record}
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		left := order[i].record
+		right := order[j].record
+		if lv, rv := persistentMemoryValueRank(left), persistentMemoryValueRank(right); lv != rv {
+			return lv > rv
+		}
+		if !left.CreatedAt.Equal(right.CreatedAt) {
+			return left.CreatedAt.After(right.CreatedAt)
+		}
+		// Stable tie-break on append order keeps results deterministic.
+		return order[i].index > order[j].index
+	})
+	keep := order[:maxEntries]
+	sort.Slice(keep, func(i, j int) bool {
+		return keep[i].index < keep[j].index
+	})
+	out := make([]PersistentMemoryRecord, 0, maxEntries)
+	for _, item := range keep {
+		out = append(out, item.record)
+	}
+	return out
+}
+
+// persistentMemoryValueRank scores a record's retention value from its
+// importance and trust tiers. Higher is more valuable and survives truncation.
+func persistentMemoryValueRank(record PersistentMemoryRecord) int {
+	rank := 0
+	switch record.Importance {
+	case PersistentMemoryHigh:
+		rank += 30
+	case PersistentMemoryMedium:
+		rank += 15
+	default:
+		rank += 0
+	}
+	if record.Trust == PersistentMemoryConfirmed {
+		rank += 10
+	}
+	return rank
 }
 
 func normalizePersistentMemoryRecord(record PersistentMemoryRecord) PersistentMemoryRecord {

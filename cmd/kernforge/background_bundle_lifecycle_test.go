@@ -171,3 +171,53 @@ func TestMarkBundleLifecycleCompletesVerificationLikeOwnerNode(t *testing.T) {
 		t.Fatalf("expected next plan item to advance after verification completes, got %#v", session.Plan)
 	}
 }
+
+// TestBackgroundJobStatusTerminal locks the terminal-status classifier used to
+// drop a job's retained process-tree containment handle.
+func TestBackgroundJobStatusTerminal(t *testing.T) {
+	terminal := []string{"completed", "failed", "canceled", "preempted", "  COMPLETED  "}
+	for _, status := range terminal {
+		if !backgroundJobStatusTerminal(status) {
+			t.Fatalf("expected %q to be terminal", status)
+		}
+	}
+	nonTerminal := []string{"running", "", "queued", "starting"}
+	for _, status := range nonTerminal {
+		if backgroundJobStatusTerminal(status) {
+			t.Fatalf("did not expect %q to be terminal", status)
+		}
+	}
+}
+
+// TestBackgroundContainmentLifecycle locks that the manager stores and then
+// closes (and forgets) the per-job containment handle. On non-Windows the
+// containment is a no-op, but the bookkeeping must still be exercised so the
+// handle map does not leak.
+func TestBackgroundContainmentLifecycle(t *testing.T) {
+	root := t.TempDir()
+	store := NewSessionStore(filepath.Join(root, "sessions"))
+	session := NewSession(root, "openai", "gpt-test", "", "default")
+	manager := NewBackgroundJobManager(filepath.Join(root, "jobs"), session, store)
+
+	// Use a directly-constructed containment so the test exercises the manager
+	// bookkeeping on every platform (prepareProcessContainment returns a nil
+	// containment when there is no real process to bound).
+	containment := &processContainment{}
+	manager.storeContainment("job-1", containment)
+	manager.containmentsMu.Lock()
+	_, ok := manager.containments["job-1"]
+	manager.containmentsMu.Unlock()
+	if !ok {
+		t.Fatalf("expected containment to be stored for job-1")
+	}
+
+	manager.closeContainment("job-1")
+	manager.containmentsMu.Lock()
+	_, stillThere := manager.containments["job-1"]
+	manager.containmentsMu.Unlock()
+	if stillThere {
+		t.Fatalf("expected containment to be forgotten after close")
+	}
+	// Closing an unknown job id must be a safe no-op.
+	manager.closeContainment("job-unknown")
+}
