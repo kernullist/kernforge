@@ -738,6 +738,13 @@ func userProfileConfigPath(name string) string {
 	return filepath.Join(userConfigDir(), strings.TrimSpace(name)+".config.json")
 }
 
+// updateStatePath returns the on-disk path that throttles self-update checks
+// and remembers a dismissed version. It lives next to the user config so the
+// state survives across sessions and is independent of any single workspace.
+func updateStatePath() string {
+	return filepath.Join(userConfigDir(), "update-state.json")
+}
+
 func parseConfigLayerProfileName(value string) (string, error) {
 	name := strings.TrimSpace(value)
 	if name == "" {
@@ -3292,6 +3299,9 @@ func mergeMCPServerConfig(base MCPServerConfig, overlay MCPServerConfig) MCPServ
 	}
 	if len(overlay.Capabilities) > 0 {
 		merged.Capabilities = append([]string(nil), overlay.Capabilities...)
+	}
+	if overlay.DeferToolSchemas {
+		merged.DeferToolSchemas = true
 	}
 	if overlay.DisabledSet || overlay.Disabled {
 		merged.Disabled = overlay.Disabled

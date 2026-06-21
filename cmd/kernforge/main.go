@@ -88,7 +88,7 @@ type runtimeState struct {
 	streamingAssistant              bool
 	streamedAssistantText           strings.Builder
 	pendingAssistantSpacing         string
-	assistantStreamInFence          bool
+	assistantStreamCtx              assistantRenderContext
 	assistantStreamLine             string
 	assistantBlockOpen              bool
 	assistantTurnClosedWithRail     bool
@@ -135,6 +135,11 @@ const openAIUsageDashboardHelpURL = "https://help.openai.com/en/articles/1047891
 
 func run(args []string) error {
 	if kernforgeCLIVersionRequest(args) {
+		if kernforgeCLIUpdateCheckRequest(args) {
+			result := RunUpdateCheckNow(context.Background(), nil)
+			fmt.Fprint(os.Stdout, renderUpdateCheckResultText(result))
+			return nil
+		}
 		fmt.Fprintln(os.Stdout, "Kernforge "+currentVersion())
 		return nil
 	}
@@ -508,6 +513,12 @@ func run(args []string) error {
 		return err
 	}
 
+	// Phase 1 self-update: kick off a throttled, non-blocking manifest check.
+	// It is a no-op unless the build was stamped with -X main.updateManifestURL,
+	// never blocks startup, and only records an available version into
+	// update-state.json for the proactive suggestion engine to surface later.
+	MaybeRunBackgroundUpdateCheck(nil, nil)
+
 	if promptFlag != "" {
 		return rt.runSinglePrompt(promptFlag, cliImages)
 	}
@@ -731,6 +742,12 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 	}
 	if mcp != nil {
 		items = append(items, mcp.Tools()...)
+		// Expose a discovery tool so the model can fetch on-demand schemas for
+		// deferred MCP tools. Registered only when at least one MCP server is
+		// loaded; otherwise it would always return an empty result.
+		if toolSearchToolAvailable(mcp) {
+			items = append(items, NewToolSearchTool(mcp))
+		}
 	}
 	return NewToolRegistryWithDefaultHookWorkspace(ws, items...)
 }
@@ -1517,7 +1534,7 @@ func (rt *runtimeState) resetAssistantStream() {
 	rt.streamingAssistant = false
 	rt.streamedAssistantText.Reset()
 	rt.pendingAssistantSpacing = ""
-	rt.assistantStreamInFence = false
+	rt.assistantStreamCtx = assistantRenderContext{}
 	rt.assistantStreamLine = ""
 	rt.streamMu.Unlock()
 }
@@ -1568,7 +1585,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 			}
 			rt.streamedAssistantText.Reset()
 			rt.pendingAssistantSpacing = ""
-			rt.assistantStreamInFence = false
+			rt.assistantStreamCtx = assistantRenderContext{}
 			rt.assistantStreamLine = ""
 			rt.setThinkingStatus(localizedText(rt.cfg, "Working ...", "작업 중 ..."))
 			rt.allowThinkingIndicator()
@@ -1594,7 +1611,7 @@ func (rt *runtimeState) appendAssistantStream(text string) {
 		return
 	}
 	rt.streamedAssistantText.WriteString(text)
-	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamInFence, &rt.assistantStreamLine))
+	rt.writeOutput(rt.ui.renderAssistantStreamDelta(text, &rt.assistantStreamCtx, &rt.assistantStreamLine))
 }
 
 // emitAssistantClosingRail terminates the assistant block that is currently
@@ -1634,7 +1651,7 @@ func (rt *runtimeState) finishAssistantStream() {
 		rt.lastAssistantMu.Unlock()
 	}
 	rt.streamedAssistantText.Reset()
-	rt.assistantStreamInFence = false
+	rt.assistantStreamCtx = assistantRenderContext{}
 	rt.assistantStreamLine = ""
 }
 
@@ -7867,6 +7884,11 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine(warning))
 		}
 	case "version":
+		if versionCommandRequestsUpdateCheck(cmd.Args) {
+			result := RunUpdateCheckNow(context.Background(), nil)
+			fmt.Fprint(rt.writer, renderUpdateCheckResultText(result))
+			return false, nil
+		}
 		fmt.Fprintln(rt.writer, rt.ui.infoLine("Version: "+currentVersion()+"  build: "+currentBuildStamp()))
 	case "model":
 		if err := rt.handleModelCommand(cmd.Args); err != nil {
