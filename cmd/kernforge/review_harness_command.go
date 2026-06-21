@@ -29,6 +29,7 @@ func (rt *runtimeState) handleReviewCommandWithContext(ctx context.Context, args
 		}
 	}
 	opts := parseReviewCommandOptions(args)
+	opts = applyGitHubActionsReviewScope(args, opts, prReviewGitHubActionsGetenv)
 	if strings.EqualFold(opts.Target, reviewTargetPR) && reviewCommandHasPRWriteOptions(args) {
 		if _, err := rt.runReviewCommandWithContext(ctx, opts); err != nil {
 			return err
@@ -931,7 +932,9 @@ func reviewCommandHasPRWriteOptions(args string) bool {
 		strings.Contains(lower, "--post-comments") ||
 		strings.Contains(lower, "--resolve-thread") ||
 		strings.Contains(lower, "--draft-issue") ||
-		strings.Contains(lower, "--create-issue")
+		strings.Contains(lower, "--create-issue") ||
+		strings.Contains(lower, "--github-actions") ||
+		strings.Contains(lower, "--ci")
 }
 
 func reviewPRArgsFromReviewArgs(args string) string {

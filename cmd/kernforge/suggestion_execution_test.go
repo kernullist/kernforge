@@ -487,6 +487,107 @@ func TestPRReviewAutomationParsesIssueOperationalFields(t *testing.T) {
 	}
 }
 
+func TestPRReviewAutomationGitHubActionsFlagImpliesGatedPosting(t *testing.T) {
+	options := parsePRReviewAutomationOptions("--github-actions")
+	if !options.GitHubActions {
+		t.Fatalf("expected github actions flag to be set")
+	}
+	if !options.GitHub || !options.PostComments || !options.DraftComments {
+		t.Fatalf("expected github actions to imply gated github post path, got %#v", options)
+	}
+	if !options.HasGitHubWrite() {
+		t.Fatalf("github actions path must be classified as a GitHub write so the honesty gate applies")
+	}
+	alias := parsePRReviewAutomationOptions("--ci")
+	if !alias.GitHubActions || !alias.PostComments {
+		t.Fatalf("expected --ci alias to behave like --github-actions, got %#v", alias)
+	}
+}
+
+func TestSafeSuggestionCommandRejectsGitHubActionsPRReview(t *testing.T) {
+	root := initTestGitRepo(t)
+	var output bytes.Buffer
+	session := NewSession(root, "provider", "model", "", "default")
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+	if _, err := rt.executeSafeSuggestionCommand("/review pr --github-actions"); err == nil {
+		t.Fatalf("expected the honesty gate to reject GitHub Actions posting from suggestion execution")
+	}
+}
+
+func TestPRReviewAutomationGitHubActionsWritesStatusOutput(t *testing.T) {
+	root := initTestGitRepo(t)
+	if err := os.WriteFile(filepath.Join(root, "agent.go"), []byte("package main\n\nfunc changed() {}\n"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+
+	previousGH := runPRReviewGitHubCommand
+	defer func() {
+		runPRReviewGitHubCommand = previousGH
+	}()
+	runPRReviewGitHubCommand = func(root string, args ...string) (string, error) {
+		if strings.Join(args, " ") == "pr view --json url,title,state,author,baseRefName,headRefName,isDraft,reviewDecision,mergeStateStatus,comments,reviews,statusCheckRollup" {
+			return `{"url":"https://github.com/example/repo/pull/9","title":"CI review","state":"OPEN","author":{"login":"kern"}}`, nil
+		}
+		if len(args) == 5 && strings.Join(args[:4], " ") == "pr review --comment --body-file" {
+			return "review submitted", nil
+		}
+		t.Fatalf("unexpected gh args: %#v", args)
+		return "", nil
+	}
+
+	outputPath := filepath.Join(t.TempDir(), "github_output")
+	previousEnv := prReviewGitHubActionsGetenv
+	defer func() {
+		prReviewGitHubActionsGetenv = previousEnv
+	}()
+	prReviewGitHubActionsGetenv = githubActionsTestGetenv(map[string]string{
+		githubActionsEnvFlag:      "true",
+		githubActionsEnvOutput:    outputPath,
+		githubActionsEnvPRNumber:  "9",
+		githubActionsEnvPRBaseSHA: "base-ci",
+	})
+
+	var output bytes.Buffer
+	session := NewSession(root, "provider", "model", "", "default")
+	rt := &runtimeState{
+		writer:  &output,
+		ui:      NewUI(),
+		session: session,
+		store:   NewSessionStore(filepath.Join(root, "sessions")),
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+
+	if err := rt.handlePRReviewAutomationCommand("--github-actions"); err != nil {
+		t.Fatalf("handlePRReviewAutomationCommand: %v", err)
+	}
+
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected GITHUB_OUTPUT to be written: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{"status=pr=9", "comment_post=posted", "verdict="} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected GITHUB_OUTPUT to contain %q, got %q", want, text)
+		}
+	}
+	if !strings.Contains(output.String(), "PR review CI status:") {
+		t.Fatalf("expected CI status line in output, got %q", output.String())
+	}
+}
+
 func TestPRReviewPostCommentsIsRejectedFromAutomaticExecution(t *testing.T) {
 	root := t.TempDir()
 	var output bytes.Buffer

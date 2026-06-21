@@ -1,0 +1,68 @@
+# KernForge in-repo PR review (rv-3-prbot Path 1: GitHub Actions).
+#
+# This workflow runs the existing /review pr automation inside CI and posts the
+# result through `gh pr review`, reusing the controlled comment-posting gate in
+# handlePRReviewAutomationCommand. The bot only posts for an explicit
+# `/review pr --github-actions` invocation; it never posts from suggestion
+# acceptance. GITHUB_TOKEN is the only credential and is scoped to this repo.
+name: kernforge-pr-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, review_requested]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One in-flight review per PR; a newer push cancels the prior run so the bot
+# does not post stale comments on top of a superseded diff.
+concurrency:
+  group: kernforge-pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # Skip draft PRs unless a review was explicitly requested on the draft.
+    if: github.event.pull_request.draft == false || github.event.action == 'review_requested'
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          # Full history so the merge-base three-dot diff against the base SHA
+          # can be computed for PR-scoped review evidence.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build kernforge
+        run: go build -o "$RUNNER_TEMP/kernforge" ./cmd/kernforge
+
+      - name: Run kernforge PR review
+        id: review
+        env:
+          # GITHUB_TOKEN authorizes gh pr view / gh pr review for this repo only.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Explicit PR identity consumed by the github_actions_adapter so the
+          # review is scoped to the PR diff (base = base SHA) without parsing
+          # the raw event payload.
+          KERNFORGE_PR_NUMBER: ${{ github.event.pull_request.number }}
+          KERNFORGE_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          KERNFORGE_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          KERNFORGE_PR_OWNER: ${{ github.repository_owner }}
+          KERNFORGE_PR_REPO: ${{ github.event.repository.name }}
+        run: |
+          "$RUNNER_TEMP/kernforge" \
+            -cwd "$GITHUB_WORKSPACE" \
+            -command "/review pr --github-actions --draft-comments"
+
+      - name: Show review status
+        if: always()
+        run: |
+          echo "verdict=${{ steps.review.outputs.verdict }}"
+          echo "comment_post=${{ steps.review.outputs.comment_post }}"
+          echo "status=${{ steps.review.outputs.status }}"

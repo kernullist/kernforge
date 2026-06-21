@@ -1494,8 +1494,50 @@ func (rt *runtimeState) handlePRReviewAutomationCommand(args string) error {
 	if strings.EqualFold(issueCreateStatus, "created") {
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Created GitHub follow-up issue."))
 	}
+	if options.GitHubActions {
+		if err := rt.writePRReviewGitHubActionsStatus(root, commentPostStatus); err != nil {
+			writeFailures = append(writeFailures, "github actions output: "+err.Error())
+		}
+	}
 	if len(writeFailures) > 0 {
 		return fmt.Errorf("PR review GitHub write failures: %s", strings.Join(writeFailures, "; "))
+	}
+	return nil
+}
+
+// prReviewGitHubActionsGetenv is the env-lookup seam for the GitHub Actions CI
+// status write. It mirrors runPRReviewGitHubCommand so tests can drive
+// GITHUB_OUTPUT without touching the real process environment.
+var prReviewGitHubActionsGetenv = os.Getenv
+
+// writePRReviewGitHubActionsStatus surfaces the CI outcome to later workflow
+// steps through GITHUB_OUTPUT. The verdict comes from the latest review run
+// artifact already written for this run; comment_post reflects the gated
+// gh pr review result. It is a no-op outside CI (GITHUB_OUTPUT unset).
+func (rt *runtimeState) writePRReviewGitHubActionsStatus(root string, commentPostStatus string) error {
+	payload, _ := parsePREventPayloadFromEnv(prReviewGitHubActionsGetenv)
+	verdict := "unknown"
+	if run, _, ok, err := loadLatestReviewRun(root); err == nil && ok {
+		if trimmed := strings.TrimSpace(run.Gate.Verdict); trimmed != "" {
+			verdict = trimmed
+		}
+	}
+	status := githubActionsStatusLine(payload, verdict, commentPostStatus)
+	failures := []string{}
+	if err := writeGitHubActionsOutput(prReviewGitHubActionsGetenv, "status", status); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if err := writeGitHubActionsOutput(prReviewGitHubActionsGetenv, "verdict", verdict); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if err := writeGitHubActionsOutput(prReviewGitHubActionsGetenv, "comment_post", commentPostStatus); err != nil {
+		failures = append(failures, err.Error())
+	}
+	if rt != nil && rt.writer != nil {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine("PR review CI status: "+status))
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "; "))
 	}
 	return nil
 }
@@ -1510,6 +1552,11 @@ type PRReviewAutomationOptions struct {
 	IssueLabels    []string
 	IssueAssignees []string
 	IssueMilestone string
+	// GitHubActions marks the CI (GitHub Actions) path. It posts the review via
+	// gh pr review using the controlled gate and writes a status line to
+	// GITHUB_OUTPUT. It implies GitHub + PostComments so the same honesty gate
+	// that guards interactive posting also guards the Action.
+	GitHubActions bool
 }
 
 func parsePRReviewAutomationOptions(args string) PRReviewAutomationOptions {
@@ -1523,6 +1570,11 @@ func parsePRReviewAutomationOptions(args string) PRReviewAutomationOptions {
 		case "--draft-comments", "--comments":
 			options.DraftComments = true
 		case "--post-comments", "--publish-comments":
+			options.GitHub = true
+			options.DraftComments = true
+			options.PostComments = true
+		case "--github-actions", "--ci":
+			options.GitHubActions = true
 			options.GitHub = true
 			options.DraftComments = true
 			options.PostComments = true
@@ -1571,6 +1623,11 @@ func parsePRReviewAutomationOptions(args string) PRReviewAutomationOptions {
 			}
 		}
 	}
+	if options.GitHubActions {
+		options.GitHub = true
+		options.DraftComments = true
+		options.PostComments = true
+	}
 	if options.PostComments || options.CreateIssue || len(options.ResolveThreads) > 0 {
 		options.GitHub = true
 	}
@@ -1584,7 +1641,7 @@ func parsePRReviewAutomationOptions(args string) PRReviewAutomationOptions {
 }
 
 func (o PRReviewAutomationOptions) HasGitHubWrite() bool {
-	return o.PostComments || o.CreateIssue || len(o.ResolveThreads) > 0
+	return o.PostComments || o.CreateIssue || len(o.ResolveThreads) > 0 || o.GitHubActions
 }
 
 func appendPRReviewIssueValues(items []string, raw string) []string {
