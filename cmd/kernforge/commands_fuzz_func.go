@@ -5027,7 +5027,7 @@ func functionFuzzHarnessReady(target SymbolRecord, params []FunctionFuzzParamStr
 
 func buildFunctionFuzzGuidance(cfg Config, target SymbolRecord, closure functionFuzzClosure, run FunctionFuzzRun) ([]string, []string, []string) {
 	interpretation := []string{
-		functionFuzzLocalizedText(cfg, "This is an AI source-only fuzz analysis result, not a runtime-confirmed vulnerability finding.", "이 결과는 AI 기반 소스 전용 fuzz 분석 결과이며, 런타임 재현으로 확정된 취약점 판정은 아닙니다."),
+		functionFuzzLocalizedText(cfg, "This is a static source-only fuzz triage result, not a runtime-confirmed vulnerability finding.", "이 결과는 정적 소스 전용 fuzz 트리아지 결과이며, 런타임 재현으로 확정된 취약점 판정은 아닙니다."),
 		functionFuzzLocalizedText(cfg, fmt.Sprintf("Kernforge selected %s as the root and mapped %d reachable call edge(s) at depth %d.", valueOrUnset(run.TargetSymbolName), run.ReachableCallCount, run.ReachableDepth), fmt.Sprintf("Kernforge는 %s를 루트로 잡고, 깊이 %d까지 도달 가능한 호출 간선 %d개를 매핑했습니다.", valueOrUnset(run.TargetSymbolName), run.ReachableDepth, run.ReachableCallCount)),
 	}
 	nextSteps := []string{}
@@ -8270,7 +8270,7 @@ func functionFuzzConclusionLines(cfg Config, run FunctionFuzzRun) []string {
 	}
 	switch {
 	case len(run.VirtualScenarios) > 0:
-		lines = append(lines, functionFuzzLocalizedText(cfg, fmt.Sprintf("Bottom line: Kernforge completed AI source-only fuzz analysis for %s and predicted %d issue pattern(s) worth reviewing.", target, len(run.VirtualScenarios)), fmt.Sprintf("결론: Kernforge가 %s에 대한 AI 소스 전용 fuzz 분석을 완료했고, 검토할 가치가 있는 이슈 패턴 %d개를 예측했습니다.", target, len(run.VirtualScenarios))))
+		lines = append(lines, functionFuzzLocalizedText(cfg, fmt.Sprintf("Bottom line: Kernforge completed static source-only fuzz triage for %s and predicted %d issue pattern(s) worth reviewing.", target, len(run.VirtualScenarios)), fmt.Sprintf("결론: Kernforge가 %s에 대한 정적 소스 전용 fuzz 트리아지를 완료했고, 검토할 가치가 있는 이슈 패턴 %d개를 예측했습니다.", target, len(run.VirtualScenarios))))
 	case len(run.CodeObservations) > 0:
 		lines = append(lines, functionFuzzLocalizedText(cfg, fmt.Sprintf("Bottom line: Kernforge extracted %d source-derived guard or sink observation(s) for %s, but they did not yet combine into a strong attack scenario.", len(run.CodeObservations), target), fmt.Sprintf("결론: Kernforge가 %s에 대해 소스 기반 가드 또는 sink 관찰 %d개를 추출했지만, 아직 강한 공격 시나리오로는 결합되지 않았습니다.", target, len(run.CodeObservations))))
 	default:
@@ -8305,7 +8305,7 @@ func functionFuzzStatusLines(cfg Config, run FunctionFuzzRun) []string {
 	}
 	lines = append(lines,
 		functionFuzzLocalizedText(cfg, "Planning: ", "계획 상태: ")+functionFuzzPlanStatusWithConfig(cfg, run),
-		functionFuzzLocalizedText(cfg, "AI source-only analysis: ", "AI 소스 전용 분석: ")+functionFuzzSourceOnlyStatusWithConfig(cfg, run),
+		functionFuzzLocalizedText(cfg, "static source-only analysis: ", "정적 소스 전용 분석: ")+functionFuzzSourceOnlyStatusWithConfig(cfg, run),
 		functionFuzzLocalizedText(cfg, "Source-derived attack surface: ", "소스 기반 공격 표면: ")+functionFuzzObservationSummary(cfg, run),
 		functionFuzzLocalizedText(cfg, "Native auto-run: ", "네이티브 자동 실행: ")+functionFuzzFriendlyExecutionStatusWithConfig(cfg, run.Execution.Status),
 		functionFuzzLocalizedText(cfg, "Current target role: ", "현재 타깃 역할: ")+functionFuzzTargetRoleSummary(cfg, run),
@@ -10115,6 +10115,9 @@ func functionFuzzBuildExecutionArgsClangCL(run FunctionFuzzRun, record Compilati
 		"/Zi",
 		"/Od",
 		"/fsanitize=fuzzer,address",
+		// Comparison/value-profile instrumentation so libFuzzer can reward
+		// flipping magic/version/checksum/size equality gates.
+		"-fsanitize-coverage=trace-cmp,pc-table",
 		"/EHsc",
 		"/utf-8",
 	}
@@ -10138,6 +10141,9 @@ func functionFuzzBuildExecutionArgsClang(run FunctionFuzzRun, record Compilation
 		"-O1",
 		"-fno-omit-frame-pointer",
 		"-fsanitize=fuzzer,address,undefined",
+		// Comparison/value-profile instrumentation so libFuzzer can reward
+		// flipping magic/version/checksum/size equality gates.
+		"-fsanitize-coverage=trace-cmp,pc-table",
 	}
 	subset := functionFuzzCompileFlagSubset(record, "clang")
 	if !functionFuzzArgsContainPrefix(subset, "-std=") {
@@ -10283,6 +10289,9 @@ func functionFuzzRunArgs(run FunctionFuzzRun, execState FunctionFuzzExecution) [
 	base := []string{
 		fmt.Sprintf("-max_len=%d", maxLen),
 		"-rss_limit_mb=4096",
+		// Reward progress on comparisons so value-profile/trace-cmp coverage
+		// feedback helps libFuzzer flip equality gates.
+		"-use_value_profile=1",
 		artifactPrefix,
 	}
 	if dictArg != "" {
@@ -10507,7 +10516,9 @@ func (rt *runtimeState) refreshFunctionFuzzExecution(run FunctionFuzzRun) (Funct
 	updated := run
 	changed := false
 	if strings.TrimSpace(updated.Execution.CrashDir) != "" {
-		if crashCount := functionFuzzCountCrashArtifacts(updated.Execution.CrashDir); crashCount != updated.Execution.CrashCount {
+		artifactCount := functionFuzzCountCrashArtifacts(updated.Execution.CrashDir)
+		crashCount := functionFuzzEffectiveCrashCount(artifactCount, updated.Execution.ExitCode, updated.Execution.LastOutput)
+		if crashCount != updated.Execution.CrashCount {
 			updated.Execution.CrashCount = crashCount
 			changed = true
 		}
@@ -10551,6 +10562,17 @@ func (rt *runtimeState) refreshFunctionFuzzExecution(run FunctionFuzzRun) (Funct
 			changed = true
 		}
 	}
+	// Re-corroborate against the now-synced exit code and run output so a
+	// crash with no artifact file (for example under -ignore_crashes=1) is
+	// still reflected in CrashCount.
+	if strings.TrimSpace(updated.Execution.CrashDir) != "" {
+		artifactCount := functionFuzzCountCrashArtifacts(updated.Execution.CrashDir)
+		crashCount := functionFuzzEffectiveCrashCount(artifactCount, updated.Execution.ExitCode, updated.Execution.LastOutput)
+		if crashCount != updated.Execution.CrashCount {
+			updated.Execution.CrashCount = crashCount
+			changed = true
+		}
+	}
 	reason := updated.Execution.Reason
 	switch updated.Execution.Status {
 	case "completed":
@@ -10578,6 +10600,37 @@ func (rt *runtimeState) refreshFunctionFuzzExecution(run FunctionFuzzRun) (Funct
 	return updated, changed
 }
 
+// functionFuzzCrashArtifactPrefixes lists the libFuzzer artifact base-name
+// prefixes that indicate a recorded crash, so a non-artifact leftover
+// (corpus/dict/log) in the crash directory can no longer fabricate a crash.
+var functionFuzzCrashArtifactPrefixes = []string{
+	"crash-",
+	"leak-",
+	"oom-",
+	"timeout-",
+	"slow-unit-",
+}
+
+// functionFuzzIsCrashArtifactName reports whether base is a libFuzzer crash
+// artifact name. Matching is case-insensitive and tolerant of a path
+// separator (only the base name is inspected).
+func functionFuzzIsCrashArtifactName(name string) bool {
+	base := name
+	if idx := strings.LastIndexAny(base, "/\\"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	base = strings.ToLower(strings.TrimSpace(base))
+	if base == "" {
+		return false
+	}
+	for _, prefix := range functionFuzzCrashArtifactPrefixes {
+		if strings.HasPrefix(base, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func functionFuzzCountCrashArtifacts(crashDir string) int {
 	entries, err := os.ReadDir(crashDir)
 	if err != nil {
@@ -10588,7 +10641,49 @@ func functionFuzzCountCrashArtifacts(crashDir string) int {
 		if entry.IsDir() {
 			continue
 		}
+		if !functionFuzzIsCrashArtifactName(entry.Name()) {
+			continue
+		}
 		count++
+	}
+	return count
+}
+
+// functionFuzzOutputHasCrashSignal reports whether captured run output carries
+// a sanitizer/crash signal. It is used to corroborate a non-zero exit code so
+// a crash that wrote no artifact file is not missed. Matching is
+// case-insensitive.
+func functionFuzzOutputHasCrashSignal(output string) bool {
+	lower := strings.ToLower(output)
+	if strings.TrimSpace(lower) == "" {
+		return false
+	}
+	signals := []string{
+		"error: addresssanitizer",
+		"runtime error:",
+		"summary: undefinedbehaviorsanitizer",
+		"==error==",
+	}
+	for _, signal := range signals {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	return false
+}
+
+// functionFuzzEffectiveCrashCount corroborates the artifact-derived crash count
+// with the recorded run outcome. A non-zero exit code paired with a
+// sanitizer/crash signal in the captured output guarantees at least one crash,
+// so a crash that wrote no artifact file (for example under -ignore_crashes=1)
+// is not missed. The returned value is always >= 0.
+func functionFuzzEffectiveCrashCount(artifactCount int, exitCode *int, output string) int {
+	count := artifactCount
+	if count < 0 {
+		count = 0
+	}
+	if count == 0 && exitCode != nil && *exitCode != 0 && functionFuzzOutputHasCrashSignal(output) {
+		count = 1
 	}
 	return count
 }
@@ -10605,7 +10700,7 @@ func renderFunctionFuzzRunWithConfig(run FunctionFuzzRun, cfg Config) string {
 	for _, item := range functionFuzzStatusLines(cfg, run) {
 		functionFuzzWriteWrappedText(&b, "- ", "  ", item, 112)
 	}
-	functionFuzzWriteWrappedText(&b, "- "+functionFuzzLocalizedText(cfg, "AI source-only fuzzing", "AI 소스 전용 fuzzing")+": ", "  ", functionFuzzSourceOnlySynthesisSummaryWithConfig(cfg, run), 99)
+	functionFuzzWriteWrappedText(&b, "- "+functionFuzzLocalizedText(cfg, "static source-only fuzz triage", "정적 소스 전용 fuzz 트리아지")+": ", "  ", functionFuzzSourceOnlySynthesisSummaryWithConfig(cfg, run), 99)
 	functionFuzzWriteWrappedText(&b, "- "+functionFuzzLocalizedText(cfg, "Best next move", "다음 권장 조치")+": ", "  ", functionFuzzBestNextMove(cfg, run), 104)
 	if best := functionFuzzBestSuggestedTarget(run); strings.TrimSpace(best) != "" {
 		targetText, rationale := functionFuzzSplitSuggestedTargetLabel(best)
@@ -10830,7 +10925,7 @@ func renderFunctionFuzzReportMarkdownWithConfig(run FunctionFuzzRun, closure fun
 	for _, item := range functionFuzzStatusLines(cfg, run) {
 		b.WriteString("- " + functionFuzzNormalizeDisplayText(item) + "\n")
 	}
-	fmt.Fprintf(&b, "- %s: %s\n", functionFuzzLocalizedText(cfg, "AI source-only fuzzing", "AI 소스 전용 fuzzing"), functionFuzzSourceOnlySynthesisSummaryWithConfig(cfg, run))
+	fmt.Fprintf(&b, "- %s: %s\n", functionFuzzLocalizedText(cfg, "static source-only fuzz triage", "정적 소스 전용 fuzz 트리아지"), functionFuzzSourceOnlySynthesisSummaryWithConfig(cfg, run))
 	fmt.Fprintf(&b, "- %s: %s\n", functionFuzzLocalizedText(cfg, "Best next move", "다음 권장 조치"), functionFuzzBestNextMove(cfg, run))
 	if best := functionFuzzBestSuggestedTarget(run); strings.TrimSpace(best) != "" {
 		targetText, rationale := functionFuzzSplitSuggestedTargetLabel(best)

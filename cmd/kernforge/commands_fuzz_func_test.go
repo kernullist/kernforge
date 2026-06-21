@@ -477,7 +477,8 @@ func TestHandleFuzzFuncCommandCreatesArtifacts(t *testing.T) {
 	if !strings.Contains(output.String(), "Function Fuzz") {
 		t.Fatalf("expected command output to include section title, got %q", output.String())
 	}
-	if !strings.Contains(output.String(), "Bottom line: Kernforge completed AI source-only fuzz analysis for ValidateRequest") {
+	// Updated wording: the pipeline performs static source triage, not AI analysis.
+	if !strings.Contains(output.String(), "Bottom line: Kernforge completed static source-only fuzz triage for ValidateRequest") {
 		t.Fatalf("expected command output to start with a clearer conclusion, got %q", output.String())
 	}
 	if !strings.Contains(output.String(), "Top predicted problems:") {
@@ -1364,7 +1365,8 @@ func TestBuildFunctionFuzzRunRequiresConfirmationForRecoveredBuildContext(t *tes
 	if strings.TrimSpace(run.Execution.ContinueCommand) == "" {
 		t.Fatalf("expected continue command for pending confirmation, got %+v", run.Execution)
 	}
-	if !containsAny(strings.ToLower(strings.Join(run.Interpretation, " ")), "source-only fuzz analysis", "awaiting confirmation") {
+	// Updated wording: "static source-only fuzz triage" replaces the old "AI source-only fuzz analysis".
+	if !containsAny(strings.ToLower(strings.Join(run.Interpretation, " ")), "source-only fuzz triage", "awaiting confirmation") {
 		t.Fatalf("expected readable interpretation for recovered build context, got %+v", run.Interpretation)
 	}
 	if len(run.VirtualScenarios) == 0 {
@@ -1707,7 +1709,8 @@ func TestRenderFunctionFuzzRunExplainsDriverEntryPlanningResult(t *testing.T) {
 	if !strings.Contains(rendered, "Analysis priority: high (100/100); this is an exposure and review-priority score, not proof of a vulnerability") {
 		t.Fatalf("expected clearer analysis-priority summary, got %q", rendered)
 	}
-	if !strings.Contains(rendered, "AI source-only fuzzing: Kernforge synthesized") {
+	// Updated wording: "static source-only fuzz triage" replaces the old "AI source-only fuzzing" label.
+	if !strings.Contains(rendered, "static source-only fuzz triage: Kernforge synthesized") {
 		t.Fatalf("expected source-only synthesis summary, got %q", rendered)
 	}
 	if !strings.Contains(rendered, "Suggested next command: /fuzz-func ValidateIoctlBuffer --file \"src/ioctl.cpp\"") {
@@ -3164,5 +3167,112 @@ func TestFunctionFuzzAttachScenarioConnectionsShowsScopeAndCallTrace(t *testing.
 	if !strings.Contains(rendered, "선택한 대표 루트에서 이 구현까지 이어진 호출 경로:") ||
 		!strings.Contains(rendered, "ArbitraryOverwriteThread -> TriggerDoubleFetch") {
 		t.Fatalf("expected root-to-implementation call trace in rendered output, got %q", rendered)
+	}
+}
+
+func TestFunctionFuzzBuildAndRunArgsIncludeComparisonCoverage(t *testing.T) {
+	run := FunctionFuzzRun{
+		ID:          "fuzz-cmp-coverage",
+		HarnessPath: "harness.cpp",
+		Workspace:   "C:\\ws",
+	}
+	execState := FunctionFuzzExecution{
+		ExecutablePath:  "C:\\ws\\out\\fuzz.exe",
+		TranslationUnit: "C:\\ws\\target.cpp",
+		CrashDir:        "C:\\ws\\out\\crashes",
+		CorpusDir:       "C:\\ws\\out\\corpus",
+		Profile:         "smoke",
+	}
+	record := CompilationCommandRecord{}
+
+	clangCL := functionFuzzBuildExecutionArgsClangCL(run, record, execState)
+	if !functionFuzzArgsContain(clangCL, "-fsanitize-coverage=trace-cmp,pc-table") {
+		t.Fatalf("expected clang-cl build args to include comparison coverage, got %#v", clangCL)
+	}
+
+	clang := functionFuzzBuildExecutionArgsClang(run, record, execState)
+	if !functionFuzzArgsContain(clang, "-fsanitize-coverage=trace-cmp,pc-table") {
+		t.Fatalf("expected clang build args to include comparison coverage, got %#v", clang)
+	}
+
+	runArgs := functionFuzzRunArgs(run, execState)
+	if !functionFuzzArgsContain(runArgs, "-use_value_profile=1") {
+		t.Fatalf("expected run args to enable value profile, got %#v", runArgs)
+	}
+}
+
+func functionFuzzArgsContain(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFunctionFuzzUsesStaticTriageWordingNotAI(t *testing.T) {
+	cfg := Config{}
+	run := FunctionFuzzRun{
+		TargetSymbolName: "ValidateRequest",
+		VirtualScenarios: []FunctionFuzzVirtualScenario{
+			{Title: "Attacker-controlled size", Confidence: "high", RiskScore: 90},
+		},
+	}
+	for _, line := range functionFuzzConclusionLines(cfg, run) {
+		// The pipeline performs static source triage; the old "AI" label
+		// overstated reasoning depth and must not reappear.
+		if strings.Contains(line, "AI source-only") {
+			t.Fatalf("conclusion line still uses AI wording: %q", line)
+		}
+	}
+	guidance := false
+	for _, line := range functionFuzzConclusionLines(cfg, run) {
+		if strings.Contains(line, "static source-only fuzz triage for ValidateRequest") {
+			guidance = true
+		}
+	}
+	if !guidance {
+		t.Fatalf("expected static source-only fuzz triage wording in conclusion lines, got %#v", functionFuzzConclusionLines(cfg, run))
+	}
+}
+
+func TestFunctionFuzzCountCrashArtifactsMatchesLibFuzzerPatternsOnly(t *testing.T) {
+	dir := t.TempDir()
+	writeFile := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	// Non-artifact leftovers must not be counted as crashes.
+	writeFile("corpus_unit_0001")
+	writeFile("fuzz.dict")
+	writeFile("run.log")
+	// libFuzzer crash artifacts must be counted (case-insensitive).
+	writeFile("crash-deadbeef")
+	writeFile("Leak-1234")
+
+	if got := functionFuzzCountCrashArtifacts(dir); got != 2 {
+		t.Fatalf("expected only libFuzzer artifacts to count, got %d", got)
+	}
+
+	// A crash that wrote no artifact must still be corroborated from the
+	// non-zero exit code plus a sanitizer signal in the captured output.
+	emptyDir := t.TempDir()
+	if got := functionFuzzCountCrashArtifacts(emptyDir); got != 0 {
+		t.Fatalf("expected empty crash dir to count zero artifacts, got %d", got)
+	}
+	exit := 88
+	output := "==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x..."
+	if got := functionFuzzEffectiveCrashCount(0, &exit, output); got < 1 {
+		t.Fatalf("expected non-zero exit plus sanitizer signal to yield >=1 crash, got %d", got)
+	}
+	// A clean exit with no artifact must remain zero.
+	clean := 0
+	if got := functionFuzzEffectiveCrashCount(0, &clean, output); got != 0 {
+		t.Fatalf("expected clean exit to yield zero crashes, got %d", got)
+	}
+	// A non-zero exit with no sanitizer signal must not fabricate a crash.
+	if got := functionFuzzEffectiveCrashCount(0, &exit, "build finished, no findings"); got != 0 {
+		t.Fatalf("expected non-zero exit without sanitizer signal to yield zero, got %d", got)
 	}
 }
