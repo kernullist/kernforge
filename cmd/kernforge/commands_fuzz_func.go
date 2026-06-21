@@ -198,37 +198,43 @@ type FunctionFuzzSourceExcerpt struct {
 }
 
 type FunctionFuzzExecution struct {
-	Eligible             bool     `json:"eligible,omitempty"`
-	Status               string   `json:"status,omitempty"`
-	Reason               string   `json:"reason,omitempty"`
-	CompileContextLevel  string   `json:"compile_context_level,omitempty"`
-	CompilerCandidate    string   `json:"compiler_candidate,omitempty"`
-	CompilerResolvedPath string   `json:"compiler_resolved_path,omitempty"`
-	CompilerStyle        string   `json:"compiler_style,omitempty"`
-	CompileCommandSource string   `json:"compile_command_source,omitempty"`
-	CompileDirectory     string   `json:"compile_directory,omitempty"`
-	TranslationUnit      string   `json:"translation_unit,omitempty"`
-	BuildScriptPath      string   `json:"build_script_path,omitempty"`
-	BuildLogPath         string   `json:"build_log_path,omitempty"`
-	RunLogPath           string   `json:"run_log_path,omitempty"`
-	BuildCommand         string   `json:"build_command,omitempty"`
-	RunCommand           string   `json:"run_command,omitempty"`
-	ExecutablePath       string   `json:"executable_path,omitempty"`
-	CorpusDir            string   `json:"corpus_dir,omitempty"`
-	CrashDir             string   `json:"crash_dir,omitempty"`
-	DictionaryPath       string   `json:"dictionary_path,omitempty"`
-	CorpusManifestPath   string   `json:"corpus_manifest_path,omitempty"`
-	Profile              string   `json:"profile,omitempty"`
-	CrashInputPath       string   `json:"crash_input_path,omitempty"`
-	BackgroundJobID      string   `json:"background_job_id,omitempty"`
-	LastOutput           string   `json:"last_output,omitempty"`
-	CrashCount           int      `json:"crash_count,omitempty"`
-	ExitCode             *int     `json:"exit_code,omitempty"`
-	MissingSettings      []string `json:"missing_settings,omitempty"`
-	RecoveryNotes        []string `json:"recovery_notes,omitempty"`
-	ContinueCommand      string   `json:"continue_command,omitempty"`
-	BuildArgv            []string `json:"build_argv,omitempty"`
-	RunArgv              []string `json:"run_argv,omitempty"`
+	Eligible             bool   `json:"eligible,omitempty"`
+	Status               string `json:"status,omitempty"`
+	Reason               string `json:"reason,omitempty"`
+	CompileContextLevel  string `json:"compile_context_level,omitempty"`
+	CompilerCandidate    string `json:"compiler_candidate,omitempty"`
+	CompilerResolvedPath string `json:"compiler_resolved_path,omitempty"`
+	CompilerStyle        string `json:"compiler_style,omitempty"`
+	CompileCommandSource string `json:"compile_command_source,omitempty"`
+	CompileDirectory     string `json:"compile_directory,omitempty"`
+	TranslationUnit      string `json:"translation_unit,omitempty"`
+	BuildScriptPath      string `json:"build_script_path,omitempty"`
+	BuildLogPath         string `json:"build_log_path,omitempty"`
+	RunLogPath           string `json:"run_log_path,omitempty"`
+	BuildCommand         string `json:"build_command,omitempty"`
+	RunCommand           string `json:"run_command,omitempty"`
+	ExecutablePath       string `json:"executable_path,omitempty"`
+	CorpusDir            string `json:"corpus_dir,omitempty"`
+	CrashDir             string `json:"crash_dir,omitempty"`
+	DictionaryPath       string `json:"dictionary_path,omitempty"`
+	CorpusManifestPath   string `json:"corpus_manifest_path,omitempty"`
+	Profile              string `json:"profile,omitempty"`
+	// SanitizerProfile selects which sanitizer the libFuzzer build links against.
+	// Empty/"address" keeps the default ASan(+UBSan) build; "memory" and "thread"
+	// are mutually-exclusive single-sanitizer alternatives, and "kernel-address"
+	// is a KASAN/MSVC driver-build profile that is gated until the driver path
+	// exists (it only records flags + metadata, never a user-mode build).
+	SanitizerProfile string   `json:"sanitizer_profile,omitempty"`
+	CrashInputPath   string   `json:"crash_input_path,omitempty"`
+	BackgroundJobID  string   `json:"background_job_id,omitempty"`
+	LastOutput       string   `json:"last_output,omitempty"`
+	CrashCount       int      `json:"crash_count,omitempty"`
+	ExitCode         *int     `json:"exit_code,omitempty"`
+	MissingSettings  []string `json:"missing_settings,omitempty"`
+	RecoveryNotes    []string `json:"recovery_notes,omitempty"`
+	ContinueCommand  string   `json:"continue_command,omitempty"`
+	BuildArgv        []string `json:"build_argv,omitempty"`
+	RunArgv          []string `json:"run_argv,omitempty"`
 }
 
 type FunctionFuzzRun struct {
@@ -530,6 +536,14 @@ func normalizeFunctionFuzzExecution(execState FunctionFuzzExecution) FunctionFuz
 	case "", "smoke", "extended", "repro", "minimize":
 	default:
 		execState.Profile = "smoke"
+	}
+	execState.SanitizerProfile = strings.ToLower(strings.TrimSpace(execState.SanitizerProfile))
+	switch execState.SanitizerProfile {
+	case "", "address", "memory", "thread", "kernel-address":
+	default:
+		// Unknown sanitizer profiles fall back to the safe default ASan build
+		// rather than emitting an invalid -fsanitize combination.
+		execState.SanitizerProfile = "address"
 	}
 	execState.BackgroundJobID = strings.TrimSpace(execState.BackgroundJobID)
 	execState.LastOutput = compactPersistentMemoryText(execState.LastOutput, 260)
@@ -9663,6 +9677,23 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 		return
 	}
 
+	sanitizerProfile := functionFuzzSanitizerProfile(execState)
+	if sanitizerProfile == "kernel-address" {
+		// KASAN is a driver/MSVC build profile. The kernel build+run path depends
+		// on the Phase 2 IOCTL/driver harness, which does not exist yet, so the
+		// profile only records the /fsanitize=kernel-address flag plus metadata and
+		// reports the gap instead of silently producing a user-mode .exe that would
+		// ignore the kernel-address sanitizer.
+		functionFuzzPlanKernelAddressProfile(cfg, run, record, execState)
+		return
+	}
+	if (sanitizerProfile == "memory" || sanitizerProfile == "thread") && execState.CompilerStyle == "clang-cl" {
+		// MSan/TSan are clang-only sanitizers; MSVC (clang-cl) cannot link them, so
+		// block with a clear reason rather than silently downgrading to ASan.
+		setBlocked(fmt.Sprintf("Sanitizer profile %q requires clang; the recovered compiler %q is MSVC-style (clang-cl) and only supports the address profile.", sanitizerProfile, filepath.Base(execState.CompilerResolvedPath)))
+		return
+	}
+
 	buildArgs, err := functionFuzzBuildExecutionArgs(*run, record, execState)
 	if err != nil {
 		setBlocked(err.Error())
@@ -9704,6 +9735,49 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg, "Recovered build settings are partial or heuristic, so autonomous execution now waits for confirmation before it starts.", "복구된 빌드 설정이 부분적이거나 휴리스틱이라서 자동 실행은 지금 확인 대기 상태입니다."))
 		run.Notes = uniqueStrings(run.Notes)
 	}
+	run.Execution = normalizeFunctionFuzzExecution(execState)
+}
+
+// functionFuzzPlanKernelAddressProfile records the KASAN (kernel-address) build
+// flags and metadata without claiming a kernel build or run. The real
+// driver-side build+run path depends on the Phase 2 IOCTL/driver harness, which
+// is not wired yet, so this profile deliberately stops at recording the MSVC
+// /fsanitize=kernel-address flag plus a clear gap note. It never emits a
+// user-mode executable, run command, or PowerShell runner that would ignore the
+// kernel-address sanitizer.
+func functionFuzzPlanKernelAddressProfile(cfg Config, run *FunctionFuzzRun, record CompilationCommandRecord, execState FunctionFuzzExecution) {
+	// Build the MSVC-style flag set for the future driver compile so the recorded
+	// metadata reflects exactly what the kernel build would pass, including the
+	// /fsanitize=kernel-address gate and the comparison-coverage instrumentation.
+	kasanArgs := []string{
+		"/nologo",
+		"/Zi",
+		"/Od",
+		functionFuzzClangCLSanitizeFlag("kernel-address"),
+		"-fsanitize-coverage=trace-cmp,pc-table",
+	}
+	subset := functionFuzzCompileFlagSubset(record, "clang-cl")
+	kasanArgs = append(kasanArgs, subset...)
+	kasanArgs = functionFuzzUniqueArgs(kasanArgs)
+
+	// Clear any user-mode build/run artifacts: KASAN cannot run as a user-mode
+	// libFuzzer target, so the tool must not advertise an .exe it will not build.
+	execState.ExecutablePath = ""
+	execState.RunCommand = ""
+	execState.RunArgv = nil
+	execState.BuildScriptPath = ""
+
+	execState.BuildArgv = append([]string{firstNonBlankString(execState.CompilerResolvedPath, execState.CompilerCandidate)}, kasanArgs...)
+	execState.BuildCommand = functionFuzzRenderDisplayCommand(firstNonBlankString(execState.CompilerResolvedPath, execState.CompilerCandidate), kasanArgs)
+
+	execState.Eligible = false
+	execState.Status = "kasan_profile_pending_driver_path"
+	execState.Reason = "KASAN profile requires the driver build path (not yet wired)."
+	gapNote := functionFuzzLocalizedText(cfg,
+		"KASAN profile requires the driver build path (not yet wired); the /fsanitize=kernel-address flags and metadata are recorded but no kernel build or run is performed.",
+		"KASAN 프로파일은 드라이버 빌드 경로가 필요합니다(아직 연결되지 않음). /fsanitize=kernel-address 플래그와 메타데이터만 기록하고 커널 빌드나 실행은 수행하지 않습니다.")
+	execState.RecoveryNotes = uniqueStrings(append(execState.RecoveryNotes, gapNote))
+	run.Notes = uniqueStrings(append(run.Notes, gapNote))
 	run.Execution = normalizeFunctionFuzzExecution(execState)
 }
 
@@ -10109,12 +10183,53 @@ func functionFuzzBuildExecutionArgs(run FunctionFuzzRun, record CompilationComma
 	}
 }
 
+// functionFuzzSanitizerProfile returns the normalized sanitizer profile for an
+// execution. Empty selects the default ASan(+UBSan) build so existing behavior
+// is preserved when no profile was requested.
+func functionFuzzSanitizerProfile(execState FunctionFuzzExecution) string {
+	profile := strings.ToLower(strings.TrimSpace(execState.SanitizerProfile))
+	switch profile {
+	case "memory", "thread", "kernel-address":
+		return profile
+	default:
+		return "address"
+	}
+}
+
+// functionFuzzClangSanitizeFlag maps a sanitizer profile to the clang-style
+// -fsanitize argument for a libFuzzer build. ASan/MSan/TSan are mutually
+// exclusive, so each non-address profile is a single-sanitizer alternative and
+// the default keeps the address+undefined combination.
+func functionFuzzClangSanitizeFlag(profile string) string {
+	switch profile {
+	case "memory":
+		return "-fsanitize=fuzzer,memory"
+	case "thread":
+		return "-fsanitize=fuzzer,thread"
+	default:
+		return "-fsanitize=fuzzer,address,undefined"
+	}
+}
+
+// functionFuzzClangCLSanitizeFlag maps a sanitizer profile to the MSVC-style
+// /fsanitize argument. MSVC only supports the address sanitizer for user-mode
+// builds, so memory/thread profiles route through clang and never reach here.
+func functionFuzzClangCLSanitizeFlag(profile string) string {
+	switch profile {
+	case "kernel-address":
+		return "/fsanitize=kernel-address"
+	default:
+		return "/fsanitize=fuzzer,address"
+	}
+}
+
 func functionFuzzBuildExecutionArgsClangCL(run FunctionFuzzRun, record CompilationCommandRecord, execState FunctionFuzzExecution) []string {
+	profile := functionFuzzSanitizerProfile(execState)
 	args := []string{
 		"/nologo",
 		"/Zi",
 		"/Od",
-		"/fsanitize=fuzzer,address",
+		functionFuzzClangCLSanitizeFlag(profile),
 		// Comparison/value-profile instrumentation so libFuzzer can reward
 		// flipping magic/version/checksum/size equality gates.
 		"-fsanitize-coverage=trace-cmp,pc-table",
@@ -10136,11 +10251,12 @@ func functionFuzzBuildExecutionArgsClangCL(run FunctionFuzzRun, record Compilati
 }
 
 func functionFuzzBuildExecutionArgsClang(run FunctionFuzzRun, record CompilationCommandRecord, execState FunctionFuzzExecution) []string {
+	profile := functionFuzzSanitizerProfile(execState)
 	args := []string{
 		"-g",
 		"-O1",
 		"-fno-omit-frame-pointer",
-		"-fsanitize=fuzzer,address,undefined",
+		functionFuzzClangSanitizeFlag(profile),
 		// Comparison/value-profile instrumentation so libFuzzer can reward
 		// flipping magic/version/checksum/size equality gates.
 		"-fsanitize-coverage=trace-cmp,pc-table",
@@ -11268,13 +11384,71 @@ func renderFunctionFuzzHarness(run FunctionFuzzRun) string {
 	b.WriteString("\n")
 	b.WriteString("        FuzzInputView input{data, size, 0};\n")
 	b.WriteString("\n")
-	for _, item := range run.ParameterStrategies {
-		for _, line := range functionFuzzHarnessParamLines(item) {
+	// Resolve statically-inferred buffer<->length relations so the harness can
+	// emit a coupled length argument instead of two independent decodes. Each
+	// pair is keyed by the length parameter name; the helper already drops any
+	// relation whose partner is not a real parameter (defensive fallback).
+	coupledLengths := map[string]functionFuzzParamPair{}
+	for _, pair := range functionFuzzRelatedBufferLengthPairs(run.ParameterStrategies) {
+		lenKey := strings.ToLower(strings.TrimSpace(pair.Length.Name))
+		if lenKey == "" {
+			continue
+		}
+		if _, exists := coupledLengths[lenKey]; !exists {
+			coupledLengths[lenKey] = pair
+		}
+	}
+	// Emit decode lines in parameter order, but defer a coupled length until
+	// after its paired buffer storage has been declared so the length can read
+	// the buffer's actual .size(). A buffer that follows the length in the
+	// signature must not produce a forward reference.
+	emitted := map[string]struct{}{}
+	emitParamLines := func(lines []string) {
+		for _, line := range lines {
 			b.WriteString("        ")
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 		b.WriteString("\n")
+	}
+	var deferredLengths []functionFuzzParamPair
+	flushDeferred := func() {
+		for i := 0; i < len(deferredLengths); {
+			pair := deferredLengths[i]
+			bufKey := strings.ToLower(strings.TrimSpace(pair.Buffer.Name))
+			if _, ready := emitted[bufKey]; ready {
+				emitParamLines(functionFuzzHarnessCoupledLengthLines(pair))
+				emitted[strings.ToLower(strings.TrimSpace(pair.Length.Name))] = struct{}{}
+				deferredLengths = append(deferredLengths[:i], deferredLengths[i+1:]...)
+				continue
+			}
+			i++
+		}
+	}
+	for _, item := range run.ParameterStrategies {
+		itemKey := strings.ToLower(strings.TrimSpace(item.Name))
+		if pair, ok := coupledLengths[itemKey]; ok && item.Class == "length" {
+			bufKey := strings.ToLower(strings.TrimSpace(pair.Buffer.Name))
+			if _, ready := emitted[bufKey]; ready {
+				emitParamLines(functionFuzzHarnessCoupledLengthLines(pair))
+				emitted[itemKey] = struct{}{}
+			} else {
+				// Buffer is decoded later in the signature; emit the coupled
+				// length right after the buffer instead of here.
+				deferredLengths = append(deferredLengths, pair)
+			}
+			continue
+		}
+		emitParamLines(functionFuzzHarnessParamLines(item))
+		emitted[itemKey] = struct{}{}
+		flushDeferred()
+	}
+	// Defensive: if a coupled length never saw its buffer emitted (should not
+	// happen because the buffer is a real parameter), fall back to the
+	// independent decode so the harness still compiles.
+	for _, pair := range deferredLengths {
+		emitParamLines(functionFuzzHarnessParamLines(pair.Length))
+		emitted[strings.ToLower(strings.TrimSpace(pair.Length.Name))] = struct{}{}
 	}
 
 	if run.HarnessReady {
@@ -11351,6 +11525,57 @@ func functionFuzzHarnessParamLines(item FunctionFuzzParamStrategy) []string {
 		return []string{
 			fmt.Sprintf("// TODO: raw byte mapping is still required for %s.", name),
 		}
+	}
+}
+
+// functionFuzzHarnessName resolves the C++ identifier the harness uses for a
+// parameter, matching the fallback in functionFuzzHarnessParamLines so coupled
+// references point at the same variables.
+func functionFuzzHarnessName(item FunctionFuzzParamStrategy) string {
+	name := strings.TrimSpace(item.Name)
+	if name == "" {
+		name = fmt.Sprintf("arg%d", item.Index)
+	}
+	return name
+}
+
+// functionFuzzHarnessCoupledLengthLines emits the decode for a length parameter
+// that is statically related to a buffer parameter (relation "sized_by"/"sizes").
+// Instead of an independent ReadSize - which routinely produces a length that
+// disagrees with the buffer and trips the target's own size guard before any
+// real code runs (the "size desync" bug) - the length is derived from the
+// buffer's actual .size(). A guarded, minority desync mutation is still reachable
+// so the attacker-controlled desync scenario can be probed: most executions keep
+// the length consistent (and pass the guard), while a small fraction apply a
+// bounded delta read from the input to deliberately probe the desync path.
+func functionFuzzHarnessCoupledLengthLines(pair functionFuzzParamPair) []string {
+	lengthName := functionFuzzHarnessName(pair.Length)
+	bufferName := functionFuzzHarnessName(pair.Buffer)
+	bufferStorage := bufferName + "_storage"
+	lengthType := strings.TrimSpace(pair.Length.RawType)
+	if lengthType == "" {
+		lengthType = "uint8_t"
+	}
+	desyncFlag := lengthName + "_desync"
+	desyncDelta := lengthName + "_delta"
+	return []string{
+		fmt.Sprintf("// Coupled length for %s: derive from %s.size() so most runs stay consistent.", bufferName, bufferStorage),
+		fmt.Sprintf("size_t %s_value = %s.size();", lengthName, bufferStorage),
+		fmt.Sprintf("uint8_t %s = ReadScalar<uint8_t>(input);", desyncFlag),
+		fmt.Sprintf("if ((%s & 0x07u) == 0u)", desyncFlag),
+		"{",
+		"    // Minority path: probe the size desync the target may mishandle.",
+		fmt.Sprintf("    int8_t %s = static_cast<int8_t>(ReadScalar<uint8_t>(input));", desyncDelta),
+		fmt.Sprintf("    if (%s < 0 && %s_value < static_cast<size_t>(-%s))", desyncDelta, lengthName, desyncDelta),
+		"    {",
+		fmt.Sprintf("        %s_value = 0;", lengthName),
+		"    }",
+		"    else",
+		"    {",
+		fmt.Sprintf("        %s_value = %s_value + static_cast<size_t>(%s);", lengthName, lengthName, desyncDelta),
+		"    }",
+		"}",
+		fmt.Sprintf("%s %s = static_cast<%s>(%s_value);", lengthType, lengthName, lengthType, lengthName),
 	}
 }
 

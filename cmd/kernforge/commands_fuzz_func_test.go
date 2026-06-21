@@ -3210,6 +3210,145 @@ func functionFuzzArgsContain(args []string, want string) bool {
 	return false
 }
 
+func TestFunctionFuzzBuildArgsHonorSanitizerProfile(t *testing.T) {
+	run := FunctionFuzzRun{
+		ID:          "fuzz-san-profiles",
+		HarnessPath: "harness.cpp",
+		Workspace:   "C:\\ws",
+	}
+	baseExec := FunctionFuzzExecution{
+		ExecutablePath:  "C:\\ws\\out\\fuzz.exe",
+		TranslationUnit: "C:\\ws\\target.cpp",
+		CrashDir:        "C:\\ws\\out\\crashes",
+		CorpusDir:       "C:\\ws\\out\\corpus",
+		Profile:         "smoke",
+	}
+	record := CompilationCommandRecord{}
+
+	cases := []struct {
+		name             string
+		sanitizerProfile string
+		wantSanitize     string
+		forbidSanitize   []string
+	}{
+		{
+			name:             "default empty stays address+undefined",
+			sanitizerProfile: "",
+			wantSanitize:     "-fsanitize=fuzzer,address,undefined",
+		},
+		{
+			name:             "explicit address stays address+undefined",
+			sanitizerProfile: "address",
+			wantSanitize:     "-fsanitize=fuzzer,address,undefined",
+		},
+		{
+			name:             "memory profile uses MSan and drops address",
+			sanitizerProfile: "memory",
+			wantSanitize:     "-fsanitize=fuzzer,memory",
+			forbidSanitize:   []string{"-fsanitize=fuzzer,address,undefined", "-fsanitize=fuzzer,address"},
+		},
+		{
+			name:             "thread profile uses TSan and drops address",
+			sanitizerProfile: "thread",
+			wantSanitize:     "-fsanitize=fuzzer,thread",
+			forbidSanitize:   []string{"-fsanitize=fuzzer,address,undefined", "-fsanitize=fuzzer,address"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			execState := baseExec
+			execState.SanitizerProfile = tc.sanitizerProfile
+			args := functionFuzzBuildExecutionArgsClang(run, record, execState)
+			if !functionFuzzArgsContain(args, tc.wantSanitize) {
+				t.Fatalf("expected clang args to include %q, got %#v", tc.wantSanitize, args)
+			}
+			// All profiles keep the comparison/value-profile coverage instrumentation.
+			if !functionFuzzArgsContain(args, "-fsanitize-coverage=trace-cmp,pc-table") {
+				t.Fatalf("expected clang args to keep trace-cmp coverage for profile %q, got %#v", tc.sanitizerProfile, args)
+			}
+			for _, forbidden := range tc.forbidSanitize {
+				if functionFuzzArgsContain(args, forbidden) {
+					t.Fatalf("expected clang args for profile %q to NOT include %q, got %#v", tc.sanitizerProfile, forbidden, args)
+				}
+			}
+		})
+	}
+}
+
+func TestFunctionFuzzKernelAddressProfileGatesDriverPath(t *testing.T) {
+	cfg := Config{}
+	run := &FunctionFuzzRun{
+		ID:          "fuzz-kasan",
+		HarnessPath: "harness.cpp",
+		Workspace:   "C:\\ws",
+	}
+	execState := FunctionFuzzExecution{
+		CompilerCandidate:    "clang-cl",
+		CompilerResolvedPath: "C:\\llvm\\bin\\clang-cl.exe",
+		CompilerStyle:        "clang-cl",
+		TranslationUnit:      "C:\\ws\\driver.cpp",
+		ExecutablePath:       "C:\\ws\\out\\fuzz.exe",
+		CrashDir:             "C:\\ws\\out\\crashes",
+		CorpusDir:            "C:\\ws\\out\\corpus",
+		Profile:              "smoke",
+		SanitizerProfile:     "kernel-address",
+	}
+	record := CompilationCommandRecord{}
+
+	functionFuzzPlanKernelAddressProfile(cfg, run, record, execState)
+
+	got := run.Execution
+	if !functionFuzzArgsContain(got.BuildArgv, "/fsanitize=kernel-address") {
+		t.Fatalf("expected KASAN build argv to include /fsanitize=kernel-address, got %#v", got.BuildArgv)
+	}
+	if !functionFuzzArgsContain(got.BuildArgv, "-fsanitize-coverage=trace-cmp,pc-table") {
+		t.Fatalf("expected KASAN build argv to keep trace-cmp coverage, got %#v", got.BuildArgv)
+	}
+	if !strings.Contains(got.BuildCommand, "/fsanitize=kernel-address") {
+		t.Fatalf("expected KASAN build command to mention /fsanitize=kernel-address, got %q", got.BuildCommand)
+	}
+	// The driver build+run path is not wired, so no user-mode .exe must be claimed.
+	if got.ExecutablePath != "" {
+		t.Fatalf("expected KASAN profile to clear the user-mode executable path, got %q", got.ExecutablePath)
+	}
+	if got.RunCommand != "" || len(got.RunArgv) != 0 {
+		t.Fatalf("expected KASAN profile to claim no run command/argv, got cmd=%q argv=%#v", got.RunCommand, got.RunArgv)
+	}
+	if got.BuildScriptPath != "" {
+		t.Fatalf("expected KASAN profile to write no PowerShell runner, got %q", got.BuildScriptPath)
+	}
+	if got.Eligible {
+		t.Fatalf("expected KASAN profile to remain ineligible for autonomous user-mode execution")
+	}
+	if !strings.Contains(strings.ToLower(got.Reason), "driver build path") || !strings.Contains(strings.ToLower(got.Reason), "not yet wired") {
+		t.Fatalf("expected KASAN reason to flag the not-yet-wired driver build path, got %q", got.Reason)
+	}
+	noteFound := false
+	for _, note := range run.Notes {
+		if strings.Contains(strings.ToLower(note), "driver build path") && strings.Contains(strings.ToLower(note), "not yet wired") {
+			noteFound = true
+			break
+		}
+	}
+	if !noteFound {
+		t.Fatalf("expected a run note about the not-yet-wired KASAN driver build path, got %#v", run.Notes)
+	}
+}
+
+func TestFunctionFuzzMemoryThreadProfileBlockedOnClangCL(t *testing.T) {
+	// MSan/TSan are clang-only; selecting them with an MSVC-style compiler must
+	// block with a clear reason instead of silently emitting the address build.
+	for _, profile := range []string{"memory", "thread"} {
+		flag := functionFuzzClangCLSanitizeFlag(profile)
+		// clang-cl cannot express MSan/TSan; the mapping falls back to the address
+		// form, which is exactly why the planner must block the combination.
+		if flag != "/fsanitize=fuzzer,address" {
+			t.Fatalf("expected clang-cl sanitize flag for %q to fall back to address, got %q", profile, flag)
+		}
+	}
+}
+
 func TestFunctionFuzzUsesStaticTriageWordingNotAI(t *testing.T) {
 	cfg := Config{}
 	run := FunctionFuzzRun{
@@ -3274,5 +3413,116 @@ func TestFunctionFuzzCountCrashArtifactsMatchesLibFuzzerPatternsOnly(t *testing.
 	// A non-zero exit with no sanitizer signal must not fabricate a crash.
 	if got := functionFuzzEffectiveCrashCount(0, &exit, "build finished, no findings"); got != 0 {
 		t.Fatalf("expected non-zero exit without sanitizer signal to yield zero, got %d", got)
+	}
+}
+
+func TestFunctionFuzzHarnessCouplesBufferLengthRelation(t *testing.T) {
+	// A buffer parameter sized by an adjacent length must be inferred as a
+	// related pair so the harness can drive the length from the buffer size.
+	params := buildFunctionFuzzParameterStrategies("int Decode(const uint8_t* buffer, size_t length)")
+	if len(params) != 2 {
+		t.Fatalf("expected 2 parameter strategies, got %d", len(params))
+	}
+	var bufParam, lenParam *FunctionFuzzParamStrategy
+	for i := range params {
+		switch params[i].Class {
+		case "buffer", "pointer":
+			bufParam = &params[i]
+		case "length":
+			lenParam = &params[i]
+		}
+	}
+	if bufParam == nil || lenParam == nil {
+		t.Fatalf("expected a buffer and a length param, got %+v", params)
+	}
+	if bufParam.Relation != "sized_by:length" {
+		t.Fatalf("expected buffer relation sized_by:length, got %q", bufParam.Relation)
+	}
+	if lenParam.Relation != "sizes:buffer" {
+		t.Fatalf("expected length relation sizes:buffer, got %q", lenParam.Relation)
+	}
+
+	run := FunctionFuzzRun{
+		TargetSignature:     "int Decode(const uint8_t* buffer, size_t length)",
+		HarnessReady:        true,
+		ParameterStrategies: params,
+	}
+	src := renderFunctionFuzzHarness(run)
+
+	// The coupled length must be derived from the buffer's actual byte vector
+	// size rather than an independent ReadSize.
+	if !strings.Contains(src, "length_value = buffer_storage.size();") {
+		t.Fatalf("expected coupled length derived from buffer size, harness:\n%s", src)
+	}
+	if !strings.Contains(src, "size_t length = static_cast<size_t>(length_value);") {
+		t.Fatalf("expected length assigned from coupled value, harness:\n%s", src)
+	}
+	// The length must NOT be decoded with an independent ReadSize anymore.
+	if strings.Contains(src, "size_t length = static_cast<size_t>(ReadSize(input, 0x1000));") {
+		t.Fatalf("coupled length must not use independent ReadSize, harness:\n%s", src)
+	}
+	// A guarded, minority desync mutation must remain reachable so the size
+	// desync scenario can still be probed.
+	if !strings.Contains(src, "length_desync") || !strings.Contains(src, "length_delta") {
+		t.Fatalf("expected guarded minority desync path, harness:\n%s", src)
+	}
+	// The call must pass the coupled length argument.
+	if !strings.Contains(src, "Decode(buffer, length)") {
+		t.Fatalf("expected call to pass coupled length, harness:\n%s", src)
+	}
+	// The buffer must still be decoded before the length consumes its size.
+	bufIdx := strings.Index(src, "std::vector<uint8_t> buffer_storage = ReadByteVector(input, 0x1000);")
+	lenIdx := strings.Index(src, "length_value = buffer_storage.size();")
+	if bufIdx < 0 || lenIdx < 0 || bufIdx > lenIdx {
+		t.Fatalf("expected buffer decode before coupled length, harness:\n%s", src)
+	}
+}
+
+func TestFunctionFuzzHarnessCouplesWhenBufferFollowsLength(t *testing.T) {
+	// When the length precedes the buffer in the signature, the coupled length
+	// must be deferred and emitted after the buffer storage to avoid a forward
+	// reference.
+	params := buildFunctionFuzzParameterStrategies("int Decode(size_t length, const uint8_t* buffer)")
+	run := FunctionFuzzRun{
+		TargetSignature:     "int Decode(size_t length, const uint8_t* buffer)",
+		HarnessReady:        true,
+		ParameterStrategies: params,
+	}
+	src := renderFunctionFuzzHarness(run)
+
+	bufIdx := strings.Index(src, "std::vector<uint8_t> buffer_storage = ReadByteVector(input, 0x1000);")
+	lenIdx := strings.Index(src, "length_value = buffer_storage.size();")
+	if bufIdx < 0 || lenIdx < 0 {
+		t.Fatalf("expected coupled buffer and length, harness:\n%s", src)
+	}
+	if bufIdx > lenIdx {
+		t.Fatalf("expected buffer decode emitted before deferred coupled length, harness:\n%s", src)
+	}
+	if strings.Contains(src, "size_t length = static_cast<size_t>(ReadSize(input, 0x1000));") {
+		t.Fatalf("deferred coupled length must not use independent ReadSize, harness:\n%s", src)
+	}
+}
+
+func TestFunctionFuzzHarnessKeepsIndependentDecodeWithoutRelation(t *testing.T) {
+	// A length parameter with no related buffer must keep the independent
+	// ReadSize decode unchanged.
+	params := buildFunctionFuzzParameterStrategies("int Resize(size_t count)")
+	if len(params) != 1 {
+		t.Fatalf("expected 1 parameter strategy, got %d", len(params))
+	}
+	if params[0].Relation != "" {
+		t.Fatalf("expected no inferred relation for lone length, got %q", params[0].Relation)
+	}
+	run := FunctionFuzzRun{
+		TargetSignature:     "int Resize(size_t count)",
+		HarnessReady:        true,
+		ParameterStrategies: params,
+	}
+	src := renderFunctionFuzzHarness(run)
+	if !strings.Contains(src, "size_t count = static_cast<size_t>(ReadSize(input, 0x1000));") {
+		t.Fatalf("expected lone length to keep independent ReadSize, harness:\n%s", src)
+	}
+	if strings.Contains(src, "count_value") || strings.Contains(src, "count_desync") {
+		t.Fatalf("lone length must not emit coupled decode, harness:\n%s", src)
 	}
 }
