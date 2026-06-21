@@ -226,6 +226,9 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 		rt.backgroundJobs.store = rt.store
 		rt.workspace.BackgroundJobs = rt.backgroundJobs
 	}
+	// Keep the optional LSP navigation pool attached across worktree switches so
+	// lsp_nav continues to resolve against the active workspace root.
+	rt.workspace.LSP = rt.lspPool
 	if rt.agent != nil {
 		rt.agent.Session = rt.session
 		rt.agent.Workspace = rt.workspace
