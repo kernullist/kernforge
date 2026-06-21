@@ -444,6 +444,13 @@ func run(args []string) error {
 		GoalSession:    rt.session,
 		GoalStore:      rt.store,
 		Search:         cfg.Search,
+		// Lazily resolve the running agent so tools built before the agent exists
+		// (the tool registry is constructed inside the Agent literal below) can
+		// reach the model route at execution time. The closure captures rt, so it
+		// returns the agent once it is set and nil until then.
+		ResolveAgent: func() *Agent {
+			return rt.agent
+		},
 	}
 	rt.syncWorkspaceFromSession()
 	rt.configureLSPPool()
@@ -735,6 +742,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		NewWebFetchTool(ws),
 		NewWebSearchTool(ws),
 		NewLSPNavigationTool(ws),
+		NewReviewSecondOpinionTool(ws),
 	}
 	if goalToolsAvailable(ws) {
 		items = append(items,

@@ -302,7 +302,18 @@ type Config struct {
 	Parallelism                 ParallelismConfig             `json:"parallelism,omitempty"`
 	Search                      SearchConfig                  `json:"search,omitempty"`
 	LSP                         LSPConfig                     `json:"lsp,omitempty"`
+	Scheduler                   DaemonSchedulerConfig         `json:"scheduler,omitempty"`
 	Desktop                     map[string]any                `json:"desktop,omitempty"`
+}
+
+// DaemonSchedulerConfig tunes the opt-in local daemon scheduler. It is disabled
+// by default: when Enabled is false the daemon never starts the poll loop, so
+// the scheduler cannot run anything unattended unless an operator explicitly
+// turns it on. PollSeconds bounds how often the poll loop wakes to look for due
+// jobs; a value <= 0 uses the built-in default.
+type DaemonSchedulerConfig struct {
+	Enabled     bool `json:"enabled,omitempty"`
+	PollSeconds int  `json:"poll_seconds,omitempty"`
 }
 
 // LSPConfig configures the opt-in lsp_nav code navigation tool. It is disabled
@@ -1700,6 +1711,12 @@ func mergeConfig(dst *Config, src Config) {
 	if src.Parallelism.AllowEditableWorkersInSharedTree != nil {
 		value := *src.Parallelism.AllowEditableWorkersInSharedTree
 		dst.Parallelism.AllowEditableWorkersInSharedTree = &value
+	}
+	if src.Scheduler.Enabled {
+		dst.Scheduler.Enabled = true
+	}
+	if src.Scheduler.PollSeconds != 0 {
+		dst.Scheduler.PollSeconds = src.Scheduler.PollSeconds
 	}
 	if len(src.Desktop) > 0 {
 		dst.Desktop = mergeOpaqueConfigMaps(dst.Desktop, src.Desktop)

@@ -361,6 +361,18 @@ func mcpWorkspaceHintFromAny(raw any, source string) (string, string) {
 				return path, src
 			}
 		}
+		// IDE clients (for example the VS Code extension scaffold) may nest the
+		// workspace hint inside a client-context or active-selection envelope. We
+		// recurse into these additively. A bare file uri carried by a selection
+		// fails the directory check in mcpWorkspaceCandidate and is ignored, so a
+		// selection never poisons workspace resolution; only a directory-bearing
+		// field inside the envelope resolves. When these keys are absent the
+		// traversal is unchanged.
+		for _, key := range []string{"clientContext", "context", "activeSelection", "selection"} {
+			if path, src := mcpWorkspaceHintFromAny(value[key], source+"."+key); path != "" {
+				return path, src
+			}
+		}
 	case []any:
 		for i, item := range value {
 			if path, src := mcpWorkspaceHintFromAny(item, fmt.Sprintf("%s[%d]", source, i)); path != "" {
@@ -547,6 +559,9 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		},
 		RunHook:        rt.runHook,
 		BackgroundJobs: rt.backgroundJobs,
+		ResolveAgent: func() *Agent {
+			return rt.agent
+		},
 	}
 	rt.syncWorkspaceFromSession()
 	rt.applyMCPProviderDefaultsFromSession()

@@ -1328,6 +1328,13 @@ type Workspace struct {
 	GoalStore             *SessionStore
 	Search                SearchConfig
 	LSP                   *LSPServerPool
+	// ResolveAgent lazily resolves the running Agent for tools that need a model
+	// route at execution time (for example review_second_opinion). It is nil by
+	// default; the runtime installs it after the Agent is constructed because the
+	// tool registry is built before the Agent exists. A nil resolver (or one that
+	// returns nil) means no model route is available and the dependent tool must
+	// degrade rather than crash.
+	ResolveAgent func() *Agent
 }
 
 type EditPreview struct {
