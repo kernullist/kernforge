@@ -179,7 +179,21 @@ func implicitModelReviewPreConsentDecision(cfg Config, session *Session, req Mod
 
 func implicitModelReviewTriggerBypassesBoundaryBudget(req ModelReviewConsentRequest) bool {
 	trigger := strings.ToLower(strings.TrimSpace(req.Trigger))
-	return strings.Contains(trigger, "analysis") && strings.Contains(trigger, "reviewer")
+	if strings.Contains(trigger, "analysis") && strings.Contains(trigger, "reviewer") {
+		return true
+	}
+	// The rh-5 disclosure-claims cross-check is an additive meta-check. It must
+	// NOT consume a per-turn implicit-review budget slot: with the budget at 2,
+	// a modification turn already spends both slots on the post-change review and
+	// the final-answer review, so counting the disclosure check would starve the
+	// final-answer review (the primary honesty gate) and silently stop it from
+	// running. The disclosure check is independently gated by
+	// shouldRunDisclosureClaimsCheck plus model-review consent, so it still runs at
+	// most once per qualifying turn even while bypassing the boundary budget.
+	if strings.Contains(trigger, "disclosure") {
+		return true
+	}
+	return false
 }
 
 func implicitModelReviewFinalizeDecision(session *Session, req ModelReviewConsentRequest, decision ModelReviewConsentDecision) ModelReviewConsentDecision {

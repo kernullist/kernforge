@@ -29,6 +29,12 @@ type scriptedProviderClient struct {
 	// main-turn replies are not consumed and request assertions are not shifted.
 	// Classifier-specific tests set it true to script and observe the call.
 	handleClassifier bool
+	// autoConsistentDisclosure serves the rh-5 disclosure-claims cross-check
+	// request a canned "consistent" verdict WITHOUT consuming a scripted FIFO
+	// reply, so reviewer choreography in tests that script plan/post-change/final
+	// review replies is not shifted by the additional disclosure call. The
+	// request is still recorded. Default false leaves all other tests unchanged.
+	autoConsistentDisclosure bool
 }
 
 func (s *scriptedProviderClient) Name() string { return "scripted" }
@@ -39,6 +45,13 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 	defer s.mu.Unlock()
 	if isSemanticClassifierRequest(req) && !s.handleClassifier {
 		return transparentClassifierResponse(), nil
+	}
+	if s.autoConsistentDisclosure && isDisclosureClaimsRequest(req) {
+		// Serve the disclosure cross-check a clean "consistent" verdict without
+		// recording it as a reviewer request or consuming a scripted review reply,
+		// so the plan/post-change/final review choreography these tests script,
+		// count, and search by content is preserved.
+		return ChatResponse{Message: Message{Role: "assistant", Text: "DISCLOSURE_CHECK\nverdict: consistent\ncontradictions:\n"}}, nil
 	}
 	s.requests = append(s.requests, cloneChatRequestForTest(req))
 	if s.index >= len(s.replies) {
@@ -54,6 +67,19 @@ func (s *scriptedProviderClient) Complete(ctx context.Context, req ChatRequest) 
 func isSemanticClassifierRequest(req ChatRequest) bool {
 	for _, m := range req.Messages {
 		if strings.HasPrefix(strings.TrimSpace(m.Text), "Classify this request and return JSON only") {
+			return true
+		}
+	}
+	return false
+}
+
+// isDisclosureClaimsRequest reports whether req is the rh-5 disclosure-claims
+// cross-check call, so provider doubles can serve it a canned consistent verdict
+// without consuming a scripted review reply. It keys on the stable role marker
+// embedded in the disclosure prompt.
+func isDisclosureClaimsRequest(req ChatRequest) bool {
+	for _, m := range req.Messages {
+		if strings.Contains(m.Text, "Role: disclosure_claims_check") {
 			return true
 		}
 	}
@@ -11898,6 +11924,7 @@ func TestAgentFinalAnswerReviewerRequestsRevisionBeforeReturn(t *testing.T) {
 			},
 		},
 	}
+	reviewer.autoConsistentDisclosure = true
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}
@@ -17341,6 +17368,7 @@ func TestAgentFinalAnswerReviewerPromptIncludesEditLoopLedger(t *testing.T) {
 			},
 		},
 	}
+	reviewer.autoConsistentDisclosure = true
 	session := NewSession(root, "scripted", "model", "", "default")
 	store := NewSessionStore(filepath.Join(root, "sessions"))
 	ws := Workspace{BaseRoot: root, Root: root}

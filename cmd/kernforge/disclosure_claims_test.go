@@ -274,6 +274,203 @@ func TestDisclosureClaimsCheckDropsUnsupportedContradiction(t *testing.T) {
 	}
 }
 
+// scriptedDisclosureReviewerClient is a hermetic ProviderClient that returns a
+// canned DISCLOSURE_CHECK contract for the bounded single-model disclosure pass.
+// It exercises the REAL runner (defaultDisclosureClaimsModelRun) without any
+// network or external binary, and records the prompts it received.
+type scriptedDisclosureReviewerClient struct {
+	raw     string
+	err     error
+	prompts []string
+	calls   int
+}
+
+func (c *scriptedDisclosureReviewerClient) Name() string { return "scripted-reviewer" }
+
+func (c *scriptedDisclosureReviewerClient) Complete(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	_ = ctx
+	c.calls++
+	for _, m := range req.Messages {
+		c.prompts = append(c.prompts, m.Text)
+	}
+	if c.err != nil {
+		return ChatResponse{}, c.err
+	}
+	return ChatResponse{Message: Message{Role: "assistant", Text: c.raw}}, nil
+}
+
+// liveDisclosureReviewerAgent builds an agent whose disclosure cross-check uses a
+// real reviewer ROUTE (scripted client/model) and no injected global seam, so the
+// production resolver path (disclosureClaimsRunner -> defaultDisclosureClaimsModelRun)
+// is exercised end-to-end.
+func liveDisclosureReviewerAgent(root string, session *Session, client ProviderClient) *Agent {
+	cfg := DefaultConfig(root)
+	cfg.Review.ModelReviewConsent = modelReviewConsentAlways
+	return &Agent{
+		Config:         cfg,
+		Workspace:      Workspace{BaseRoot: root, Root: root},
+		Session:        session,
+		ReviewerClient: client,
+		ReviewerModel:  "reviewer-model",
+	}
+}
+
+// TestDisclosureClaimsCheckLivePathFlagsContradiction drives the LIVE reviewer
+// path (ReviewerClient set, no injected global seam) through runPreFinalCodingHarnesses
+// and verifies a contradiction is detected end-to-end via the real bounded
+// single-model invocation, blocks the final answer, and records the check.
+func TestDisclosureClaimsCheckLivePathFlagsContradiction(t *testing.T) {
+	if disclosureClaimsModelRunner != nil {
+		t.Fatalf("test seam must be nil so the real reviewer-route runner is exercised")
+	}
+	root := t.TempDir()
+	session := disclosureModificationSession(t, root, "fix main.go", "main.go")
+	client := &scriptedDisclosureReviewerClient{
+		raw: strings.Join([]string{
+			"DISCLOSURE_CHECK",
+			"verdict: contradicted",
+			"contradictions:",
+			"- reason: changed_files",
+			"  claim: no files were changed",
+			"  observed: patch transaction recorded a diff for main.go",
+		}, "\n"),
+	}
+	agent := liveDisclosureReviewerAgent(root, session, client)
+
+	reply := "No files were changed. Validation: verification not run. Remaining risk: no known remaining blocker."
+	approved, feedback := agent.runPreFinalCodingHarnesses(context.Background(), reply, true, false)
+	if approved {
+		t.Fatalf("expected live-path disclosure contradiction to block the final answer, feedback=%q", feedback)
+	}
+	if client.calls == 0 {
+		t.Fatalf("expected the real reviewer route to be called on the live path")
+	}
+	if session.LastDisclosureClaimsCheck == nil ||
+		session.LastDisclosureClaimsCheck.Status != "completed" ||
+		len(session.LastDisclosureClaimsCheck.Contradictions) != 1 ||
+		session.LastDisclosureClaimsCheck.Contradictions[0].Reason != disclosureContradictionChangedFiles {
+		t.Fatalf("expected one recorded changed_files contradiction on the live path, got %#v", session.LastDisclosureClaimsCheck)
+	}
+	if !strings.Contains(feedback, disclosureContradictionFindingTitle) {
+		t.Fatalf("expected blocking feedback to cite the disclosure contradiction, got %q", feedback)
+	}
+	// The live-path block must route to the disclosure_contradiction final-answer
+	// correction reason, exactly like the deterministic path.
+	if session.LastCodingHarnessReport == nil {
+		t.Fatalf("expected a recorded coding harness report on the live-path block")
+	}
+	correction := finalAnswerCorrectionVisibilityFromReport(session.LastCodingHarnessReport, false)
+	if correction == nil || !containsString(correction.Reasons, "disclosure_contradiction") {
+		t.Fatalf("expected disclosure_contradiction correction reason, got %#v", correction)
+	}
+	// At least one prompt the reviewer saw must carry the changed path evidence.
+	sawPath := false
+	for _, p := range client.prompts {
+		if strings.Contains(p, "main.go") {
+			sawPath = true
+			break
+		}
+	}
+	if !sawPath {
+		t.Fatalf("expected the reviewer prompt to include the changed path evidence, prompts=%#v", client.prompts)
+	}
+}
+
+// TestDisclosureClaimsCheckLivePathHonestAnswerApproves verifies the live path
+// approves when the real reviewer route reports a consistent verdict.
+func TestDisclosureClaimsCheckLivePathHonestAnswerApproves(t *testing.T) {
+	root := t.TempDir()
+	session := disclosureModificationSession(t, root, "fix main.go", "main.go")
+	client := &scriptedDisclosureReviewerClient{
+		raw: "DISCLOSURE_CHECK\nverdict: consistent\ncontradictions:\n",
+	}
+	agent := liveDisclosureReviewerAgent(root, session, client)
+
+	reply := "Changed files: main.go. Validation: verification not run. Remaining risk: no known remaining blocker."
+	approved, feedback := agent.runPreFinalCodingHarnesses(context.Background(), reply, true, false)
+	if !approved {
+		t.Fatalf("expected an honest answer to pass the live disclosure gate, feedback=%q", feedback)
+	}
+	if client.calls == 0 {
+		t.Fatalf("expected the real reviewer route to be called on the live path")
+	}
+	if session.LastDisclosureClaimsCheck == nil || session.LastDisclosureClaimsCheck.Status != "completed" {
+		t.Fatalf("expected a completed disclosure check, got %#v", session.LastDisclosureClaimsCheck)
+	}
+	if len(session.LastDisclosureClaimsCheck.Contradictions) != 0 {
+		t.Fatalf("expected zero contradictions, got %#v", session.LastDisclosureClaimsCheck.Contradictions)
+	}
+}
+
+// TestDisclosureClaimsCheckSkipsWhenNoReviewerRoute verifies that with no injected
+// seam AND no reviewer route configured, the resolver returns nil so the pass
+// skips cleanly and does not call any model.
+func TestDisclosureClaimsCheckSkipsWhenNoReviewerRoute(t *testing.T) {
+	if disclosureClaimsModelRunner != nil {
+		t.Fatalf("test seam must be nil for this case")
+	}
+	root := t.TempDir()
+	session := disclosureModificationSession(t, root, "fix main.go", "main.go")
+	// disclosureTestAgent sets ReviewerModel but no ReviewerClient/Client, so no
+	// usable route exists and the resolver must yield nil.
+	agent := disclosureTestAgent(root, session)
+	agent.ReviewerModel = ""
+
+	reply := "No files were changed. Validation: verification not run. Remaining risk: no known remaining blocker."
+	bundle := agent.collectDisclosureEvidence()
+	if agent.disclosureClaimsRunner() != nil {
+		t.Fatalf("resolver must be nil with no reviewer route")
+	}
+	if agent.shouldRunDisclosureClaimsCheck(reply, bundle) {
+		t.Fatalf("disclosure cross-check must skip with no reviewer route")
+	}
+	// runDisclosureClaimsLivePath returns (blocked, feedback); blocked must be false.
+	blocked, feedback := agent.runDisclosureClaimsLivePath(context.Background(), reply, true, false)
+	if blocked {
+		t.Fatalf("no-route live path must not block, feedback=%q", feedback)
+	}
+	if session.LastDisclosureClaimsCheck != nil {
+		t.Fatalf("no disclosure check should be recorded with no reviewer route, got %#v", session.LastDisclosureClaimsCheck)
+	}
+}
+
+// TestDisclosureClaimsCheckLivePathSkipsWhenConsentNever verifies that even with a
+// real reviewer route, a model_review_consent=never policy skips the pass cleanly
+// (no model call, no fabricated verdict, no block).
+func TestDisclosureClaimsCheckLivePathSkipsWhenConsentNever(t *testing.T) {
+	root := t.TempDir()
+	session := disclosureModificationSession(t, root, "fix main.go", "main.go")
+	client := &scriptedDisclosureReviewerClient{
+		raw: strings.Join([]string{
+			"DISCLOSURE_CHECK",
+			"verdict: contradicted",
+			"contradictions:",
+			"- reason: changed_files",
+			"  claim: no files were changed",
+			"  observed: patch transaction recorded a diff for main.go",
+		}, "\n"),
+	}
+	agent := liveDisclosureReviewerAgent(root, session, client)
+	agent.Config.Review.ModelReviewConsent = modelReviewConsentNever
+
+	reply := "No files were changed. Validation: verification not run. Remaining risk: no known remaining blocker."
+	bundle := agent.collectDisclosureEvidence()
+	// shouldRun short-circuits on consent=never before any model interaction.
+	if agent.shouldRunDisclosureClaimsCheck(reply, bundle) {
+		t.Fatalf("consent=never must skip the disclosure cross-check")
+	}
+	approved, feedback := agent.runPreFinalCodingHarnesses(context.Background(), reply, true, false)
+	if !approved {
+		t.Fatalf("consent=never must not block the final answer, feedback=%q", feedback)
+	}
+	if client.calls != 0 {
+		t.Fatalf("consent=never must not call the reviewer model, calls=%d", client.calls)
+	}
+	if session.LastDisclosureClaimsCheck != nil {
+		t.Fatalf("no disclosure check should be recorded when consent=never, got %#v", session.LastDisclosureClaimsCheck)
+	}
+}
+
 func TestParseDisclosureClaimsResult(t *testing.T) {
 	raw := strings.Join([]string{
 		"some preamble",

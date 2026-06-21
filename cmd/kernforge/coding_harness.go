@@ -1403,11 +1403,18 @@ func (a *Agent) finalizePatchTransactionOnReturn() {
 }
 
 func (a *Agent) runPreFinalCodingHarnesses(ctx context.Context, reply string, attemptedEditTool bool, unresolvedVerification bool) (bool, string) {
-	_ = ctx
 	if a == nil || a.Session == nil {
 		return true, ""
 	}
 	if a.ReviewerClient != nil {
+		// Live-reviewer path: the deterministic coding-harness report is owned by
+		// the auto post-change review gate, so it is not built here. The disclosure
+		// cross-check (rh-5) must still run on this real final-answer path, so run it
+		// as a standalone additive, fail-closed step: it can only add a disclosure-
+		// contradiction blocker (stricter); it never relaxes the live review gate.
+		if blocked, feedback := a.runDisclosureClaimsLivePath(ctx, reply, attemptedEditTool, unresolvedVerification); blocked {
+			return false, feedback
+		}
 		return true, ""
 	}
 	report := a.buildCodingHarnessReport(reply, attemptedEditTool, unresolvedVerification)
@@ -1419,6 +1426,47 @@ func (a *Agent) runPreFinalCodingHarnesses(ctx context.Context, reply string, at
 	}
 	a.recordFinalAnswerCorrectionRequired(&report)
 	return false, report.BlockingFeedback()
+}
+
+// runDisclosureClaimsLivePath runs the bounded model-based disclosure cross-check
+// on the live-reviewer final-answer path, where the deterministic coding-harness
+// report is not built. It is purely additive and fail-closed: when no reviewer
+// route or consent is available it skips cleanly (no recorded check, no finding),
+// and when a contradiction IS detected it records the check, routes the single
+// disclosure-contradiction finding through the existing final-answer-only
+// correction machinery, and returns blocking feedback so the main model corrects
+// the disclosure. It never relaxes the live review gate.
+func (a *Agent) runDisclosureClaimsLivePath(ctx context.Context, reply string, attemptedEditTool bool, unresolvedVerification bool) (bool, string) {
+	if a == nil || a.Session == nil {
+		return false, ""
+	}
+	bundle := a.collectDisclosureEvidence()
+	if !a.shouldRunDisclosureClaimsCheck(reply, bundle) {
+		return false, ""
+	}
+	check := a.runDisclosureClaimsCheck(ctx, reply, bundle)
+	a.Session.LastDisclosureClaimsCheck = check
+	findings := disclosureClaimsContradictionFindings(check)
+	if len(findings) == 0 {
+		return false, ""
+	}
+	// Wrap the disclosure findings in a minimal coding-harness report so the same
+	// correction machinery the deterministic path uses (finding title ->
+	// disclosure_contradiction reason) records the final-answer-only correction.
+	report := CodingHarnessReport{
+		GeneratedAt: time.Now(),
+		Approved:    false,
+		Outcome:     OutcomeInvariantReport{Findings: findings},
+	}
+	report.Normalize()
+	if correction := finalAnswerCorrectionVisibilityFromReport(&report, false); correction != nil {
+		report.FinalAnswerCorrection = correction
+	}
+	a.Session.LastCodingHarnessReport = &report
+	a.Session.LastTestImpactReport = &report.TestImpact
+	a.Session.LastJobSupervisorReport = &report.JobSupervisor
+	a.recordFinalAnswerCorrectionRequired(&report)
+	return true, report.BlockingFeedback()
 }
 
 func (a *Agent) buildCodingHarnessReport(reply string, attemptedEditTool bool, unresolvedVerification bool) CodingHarnessReport {

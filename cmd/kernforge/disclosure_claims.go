@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -95,14 +96,159 @@ type DisclosureClaimsCheck struct {
 	RedactedInput  bool                      `json:"redacted_input,omitempty"`
 }
 
-// disclosureClaimsModelRunner is the seam used to perform the bounded single
-// model pass. It is nil by default, which makes the disclosure cross-check skip
-// (model unavailable) instead of fabricating a verdict, leaving existing
-// behavior unchanged. Tests inject a scripted runner; a future slice wires the
-// real review provider through this seam. The runner receives the already
-// redacted prompt and must return the raw model text, exactly like the bounded
-// single-model review path.
+// disclosureClaimsModelRunner is the test seam used to perform the bounded
+// single model pass. It is nil by default; tests inject a scripted runner so the
+// pass is hermetic. In production this seam stays nil and the real bounded
+// single-model runner is resolved per-agent via disclosureClaimsRunner, so the
+// nil-default skip behavior is preserved for any agent without a reviewer route.
+// The runner receives the already redacted prompt and must return the raw model
+// text, exactly like the bounded single-model review path.
 var disclosureClaimsModelRunner func(ctx context.Context, a *Agent, prompt string) (string, error)
+
+// disclosureClaimsSoftTimeout bounds how long the disclosure cross-check waits
+// for the bounded single-model pass before failing closed (skip, no verdict).
+// It mirrors the review harness main-model soft timeout intent but stays small
+// because this is a lightweight claims read, not a full code review.
+const disclosureClaimsSoftTimeout = 4 * time.Minute
+
+// disclosureClaimsMaxTokens caps the bounded disclosure pass output. The DISCLOSURE_CHECK
+// contract is tiny, so a small cap is enough and keeps the implicit review cheap.
+const disclosureClaimsMaxTokens = 1024
+
+// disclosureClaimsConsentTrigger is the implicit-review consent/budget trigger id
+// for the disclosure cross-check. It deliberately does NOT match the analysis
+// reviewer bypass token, so it is counted against the per-turn implicit-review
+// budget and honors model_review_consent like the other implicit reviews.
+const disclosureClaimsConsentTrigger = "disclosure-claims final-answer"
+
+// disclosureClaimsRunner resolves the runner used by the disclosure cross-check.
+// The test seam wins when injected (hermetic scripted runner). Otherwise the real
+// bounded single-model runner is returned only when a reviewer route is available;
+// when no reviewer is configured it returns nil so the check skips cleanly instead
+// of fabricating a verdict.
+func (a *Agent) disclosureClaimsRunner() func(ctx context.Context, a *Agent, prompt string) (string, error) {
+	if disclosureClaimsModelRunner != nil {
+		return disclosureClaimsModelRunner
+	}
+	if a == nil || !a.disclosureClaimsRouteAvailable() {
+		return nil
+	}
+	return func(ctx context.Context, agent *Agent, prompt string) (string, error) {
+		return agent.defaultDisclosureClaimsModelRun(ctx, prompt)
+	}
+}
+
+// disclosureClaimsRouteAvailable reports whether the agent can run the bounded
+// single-model disclosure pass with a real reviewer route. It follows the same
+// single-model fallback order used by the review harness: a dedicated reviewer
+// client/model, then the aux reviewer, then the main client/model. With no usable
+// route the check skips (no fabricated verdict), preserving backward compatibility.
+func (a *Agent) disclosureClaimsRouteAvailable() bool {
+	client, model, _ := a.disclosureClaimsReviewerRoute()
+	return client != nil && strings.TrimSpace(model) != ""
+}
+
+// disclosureClaimsReviewerRoute resolves the client/model/label for the bounded
+// single-model disclosure pass. It prefers the dedicated reviewer route, then the
+// aux reviewer, then the main route, matching the existing single-model review
+// policy. It never independently spawns a new provider; it reuses the clients the
+// agent already holds.
+func (a *Agent) disclosureClaimsReviewerRoute() (ProviderClient, string, string) {
+	if a == nil {
+		return nil, "", ""
+	}
+	if a.ReviewerClient != nil && strings.TrimSpace(a.ReviewerModel) != "" {
+		return a.ReviewerClient, a.ReviewerModel, formatProviderModelEffortLabel(a.Config.Provider, a.ReviewerModel, a.Config.ReasoningEffort)
+	}
+	if a.AuxReviewerClient != nil && strings.TrimSpace(a.AuxReviewerModel) != "" {
+		return a.AuxReviewerClient, a.AuxReviewerModel, formatProviderModelEffortLabel(a.Config.Provider, a.AuxReviewerModel, a.Config.ReasoningEffort)
+	}
+	if a.Client != nil && reviewMainModelRouteConfigured(a.Config) {
+		return a.Client, a.Config.Model, formatProviderModelEffortLabel(a.Config.Provider, a.Config.Model, a.Config.ReasoningEffort)
+	}
+	return nil, "", ""
+}
+
+// errDisclosureClaimsSkipped is returned by the real runner when the bounded pass
+// must be skipped without contacting a model (no consent, budget exhausted, or no
+// route). runDisclosureClaimsCheck records it as a clean skip so no verdict is
+// fabricated and existing behavior is unchanged.
+var errDisclosureClaimsSkipped = fmt.Errorf("disclosure cross-check skipped")
+
+// defaultDisclosureClaimsModelRun is the real bounded single-model disclosure
+// runner. It mirrors how review_document_claims.go's pass is invoked: it uses the
+// agent's reviewer route (with the single-model fallback), honors
+// model_review_consent and the per-turn implicit-review budget via
+// confirmImplicitModelReview, emits a budget-progress line, and then performs one
+// bounded model turn through the agent's existing client. It returns the raw model
+// text on success or errDisclosureClaimsSkipped when it must fail closed.
+func (a *Agent) defaultDisclosureClaimsModelRun(ctx context.Context, prompt string) (string, error) {
+	if a == nil {
+		return "", errDisclosureClaimsSkipped
+	}
+	client, model, label := a.disclosureClaimsReviewerRoute()
+	if client == nil || strings.TrimSpace(model) == "" {
+		return "", errDisclosureClaimsSkipped
+	}
+	// Honor model_review_consent and account against the per-turn implicit-review
+	// budget, exactly like the other implicit single-model reviews. A "never"
+	// policy or an exhausted budget skips cleanly (no fabricated verdict).
+	decision := a.confirmImplicitModelReview(disclosureClaimsConsentTrigger, prompt)
+	if !decision.Allowed {
+		return "", errDisclosureClaimsSkipped
+	}
+	a.emitDisclosureClaimsBudgetProgress(label)
+	effort := reviewRoleReasoningEffort(a.Config, "primary_reviewer")
+	maxTokens := disclosureClaimsMaxTokens
+	if a.Config.MaxTokens > 0 && a.Config.MaxTokens < maxTokens {
+		maxTokens = a.Config.MaxTokens
+	}
+	callCtx, cancel := context.WithTimeout(ctx, disclosureClaimsSoftTimeout)
+	defer cancel()
+	resp, err := a.completeModelTurnWithClient(callCtx, client, ChatRequest{
+		Model:           model,
+		System:          disclosureClaimsSystemPrompt(a.Config),
+		Messages:        []Message{{Role: "user", Text: prompt}},
+		MaxTokens:       maxTokens,
+		Temperature:     0.1,
+		ReasoningEffort: effort,
+		WorkingDir:      a.Workspace.Root,
+		CodexSubagent:   openAICodexSubagentReview,
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Message.Text), nil
+}
+
+// disclosureClaimsSystemPrompt is the bounded system prompt for the disclosure
+// cross-check. It keeps the model in a narrow comparison role: it must only judge
+// whether the final answer's claims contradict the supplied observed reality, and
+// must not invent facts or review code behavior.
+func disclosureClaimsSystemPrompt(cfg Config) string {
+	if localePrefersKorean(cfg) {
+		return "당신은 최종 답변의 명시적 주장을 관찰된 실제 상태와 대조하는 검사기입니다. 코드 동작을 리뷰하지 말고, 제공된 근거에 없는 사실을 만들어내지 마세요. 요청된 DISCLOSURE_CHECK 형식만 출력하세요."
+	}
+	return "You are a disclosure cross-check that compares a final answer's explicit claims against the supplied observed reality. Do not review code behavior and do not invent facts beyond the supplied evidence. Emit only the requested DISCLOSURE_CHECK contract."
+}
+
+// emitDisclosureClaimsBudgetProgress surfaces a compact budget line before the
+// bounded disclosure pass runs, mirroring emitReviewModelPhaseBudgetProgress so the
+// user can see the same-model implicit review is about to happen.
+func (a *Agent) emitDisclosureClaimsBudgetProgress(label string) {
+	if a == nil || a.EmitProgress == nil {
+		return
+	}
+	if strings.TrimSpace(label) == "" {
+		label = strings.TrimSpace(a.ReviewerModel)
+	}
+	message := fmt.Sprintf(
+		localizedText(a.Config, "Disclosure cross-check: comparing the final answer's claims against observed reality using %s (same-model implicit review, wait up to %s).", "공개 설명 교차 검사: 최종 답변의 주장을 관찰된 실제 상태와 대조합니다. 모델 %s 사용 (동일 모델 암묵 리뷰, 최대 %s 대기)."),
+		valueOrDefault(strings.TrimSpace(label), "the reviewer model"),
+		formatProgressElapsed(disclosureClaimsSoftTimeout),
+	)
+	a.EmitProgress(message)
+}
 
 // shouldRunDisclosureClaimsCheck reports whether the bounded model-based
 // disclosure cross-check should run. It mirrors shouldRunDocumentClaimsSanityPass:
@@ -117,7 +263,7 @@ func (a *Agent) shouldRunDisclosureClaimsCheck(reply string, bundle DisclosureEv
 	if strings.TrimSpace(reply) == "" {
 		return false
 	}
-	if disclosureClaimsModelRunner == nil {
+	if a.disclosureClaimsRunner() == nil {
 		return false
 	}
 	if finalAnswerCompletenessIsTrivialOrStatusOnly(a.Session) {
@@ -382,7 +528,8 @@ func (a *Agent) runDisclosureClaimsCheck(ctx context.Context, reply string, bund
 		Status:        "pending",
 		ReviewedPaths: normalizeTaskStateList(bundle.ChangedPaths, 32),
 	}
-	if disclosureClaimsModelRunner == nil {
+	runner := a.disclosureClaimsRunner()
+	if runner == nil {
 		check.Status = "skipped"
 		check.SkippedReason = "no disclosure cross-check model runner is wired"
 		return check
@@ -391,10 +538,14 @@ func (a *Agent) runDisclosureClaimsCheck(ctx context.Context, reply string, bund
 	redactedBundle, bundleRedacted := redactDisclosureEvidenceBundle(bundle)
 	check.RedactedInput = replyReport.Redacted || bundleRedacted
 	prompt := buildDisclosureClaimsCheckPrompt(a.Config, redactedReply, redactedBundle)
-	raw, err := disclosureClaimsModelRunner(ctx, a, prompt)
+	raw, err := runner(ctx, a, prompt)
 	if err != nil {
 		check.Status = "skipped"
-		check.SkippedReason = "disclosure cross-check model run failed: " + compactPromptSection(err.Error(), 160)
+		if errors.Is(err, errDisclosureClaimsSkipped) {
+			check.SkippedReason = "disclosure cross-check skipped (no consent, budget exhausted, or no reviewer route)"
+		} else {
+			check.SkippedReason = "disclosure cross-check model run failed: " + compactPromptSection(err.Error(), 160)
+		}
 		return check
 	}
 	check.Status = "completed"
