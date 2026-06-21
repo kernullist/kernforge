@@ -117,12 +117,13 @@ func TestEffectiveMaxTokensClampsAndFallsBack(t *testing.T) {
 }
 
 func TestCompactionTriggerChars(t *testing.T) {
-	// Unknown window: fallback.
-	if got := compactionTriggerChars(0, 45000); got != 45000 {
+	// Unknown window: fallback. bytesPerToken 0 selects the flat ASCII default,
+	// preserving the historical behavior this test originally asserted.
+	if got := compactionTriggerChars(0, 45000, 0); got != 45000 {
 		t.Fatalf("unknown window should return fallback: got %d", got)
 	}
 	// 128000 tokens * 7/10 = 89600 tokens * 4 chars = 358400.
-	if got := compactionTriggerChars(128000, 45000); got != 358400 {
+	if got := compactionTriggerChars(128000, 45000, 0); got != 358400 {
 		t.Fatalf("derived trigger: want 358400, got %d", got)
 	}
 }

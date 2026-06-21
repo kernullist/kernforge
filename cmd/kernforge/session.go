@@ -69,8 +69,8 @@ type Session struct {
 	// the model may read review artifacts under .kernforge/reviews that were
 	// produced by a PRIOR session (stale cross-session findings). Empty means not
 	// yet asked; "use" allows them; "skip" blocks them for the rest of the session.
-	PriorReviewArtifactConsent string `json:"prior_review_artifact_consent,omitempty"`
-	ReviewRouteHealth               []ReviewRouteHealth              `json:"review_route_health,omitempty"`
+	PriorReviewArtifactConsent string              `json:"prior_review_artifact_consent,omitempty"`
+	ReviewRouteHealth          []ReviewRouteHealth `json:"review_route_health,omitempty"`
 	// CrossReviewerConsecutiveFailures counts how many reviews in a row the
 	// configured cross-review route failed (error or weak/empty output). When it
 	// reaches the fallback threshold, the harness stops re-running the failing
@@ -109,7 +109,14 @@ type Session struct {
 	Automations                      []SessionAutomation             `json:"automations,omitempty"`
 	ActiveGoalID                     string                          `json:"active_goal_id,omitempty"`
 	Goals                            []GoalState                     `json:"goals,omitempty"`
-	Messages                         []Message                       `json:"messages"`
+	// TokenEstimateCorrectionRatio is the per-session learned UTF-8
+	// bytes-per-token divisor used to convert ApproxChars (a byte count) into a
+	// token estimate for budgeting and auto-compaction. It is updated from real
+	// provider usage after each turn (clamped to [minCorrectionRatio,
+	// maxCorrectionRatio]). Zero means "not yet observed", in which case callers
+	// fall back to the CJK-aware heuristic.
+	TokenEstimateCorrectionRatio float64   `json:"token_estimate_correction_ratio,omitempty"`
+	Messages                     []Message `json:"messages"`
 }
 
 func NewSession(workingDir, providerName, model, baseURL, permissionMode string) *Session {
@@ -312,6 +319,66 @@ func (s *Session) ApproxChars() int {
 		}
 	}
 	return total
+}
+
+// tokenRatioTextSampleBudget bounds how many bytes of recent message text are
+// scanned to estimate the CJK fraction for the chars/token heuristic. The
+// sample only needs to be representative of the language mix, so a small,
+// recent slice keeps the per-turn cost negligible on large sessions.
+const tokenRatioTextSampleBudget = 16384
+
+// sampleTextForTokenRatio returns up to tokenRatioTextSampleBudget bytes of the
+// most recent assistant/user message text, used to estimate the CJK fraction of
+// the session for the chars/token heuristic. Most recent messages are sampled
+// first because they best reflect the current language of the conversation.
+func (s *Session) sampleTextForTokenRatio() string {
+	if s == nil {
+		return ""
+	}
+	var b strings.Builder
+	budget := tokenRatioTextSampleBudget
+	for i := len(s.Messages) - 1; i >= 0 && budget > 0; i-- {
+		text := s.Messages[i].Text
+		if text == "" {
+			continue
+		}
+		if len(text) > budget {
+			text = text[:budget]
+		}
+		b.WriteString(text)
+		b.WriteByte('\n')
+		budget -= len(text) + 1
+	}
+	if b.Len() == 0 {
+		return s.Summary
+	}
+	return b.String()
+}
+
+// effectiveBytesPerToken returns the UTF-8 bytes-per-token divisor to apply to
+// ApproxChars for this session. Once real provider usage has been observed it
+// returns the learned correction ratio; otherwise it falls back to the
+// CJK-aware heuristic derived from a sample of recent message text so a
+// Korean-heavy session is not over-counted ~4x before any usage arrives.
+func (s *Session) effectiveBytesPerToken() float64 {
+	if s != nil && s.TokenEstimateCorrectionRatio > 0 {
+		return s.TokenEstimateCorrectionRatio
+	}
+	if s == nil {
+		return charsPerTokenEstimate
+	}
+	return cjkAwareBytesPerToken(s.sampleTextForTokenRatio())
+}
+
+// recordTokenUsageObservation folds a real provider usage sample into the
+// per-session bytes-per-token correction ratio. promptChars is the BYTE count
+// estimated for the prompt that produced inputTokens. Invalid samples leave the
+// ratio unchanged.
+func (s *Session) recordTokenUsageObservation(inputTokens, promptChars int) {
+	if s == nil {
+		return
+	}
+	s.TokenEstimateCorrectionRatio = updatedTokenCorrectionRatio(s.TokenEstimateCorrectionRatio, inputTokens, promptChars)
 }
 
 func (s *Session) ExportText() string {

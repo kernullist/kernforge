@@ -52,13 +52,13 @@ type Agent struct {
 	// skipping them.
 	PromptUsePriorReviewArtifacts func([]string) (bool, error)
 	UserChangeIsolation           *UserChangeIsolationState
-	EmitAssistant                  func(string)
-	EmitAssistantPersistent        func(string)
-	EmitAssistantDelta             func(string)
-	EmitProgress                   func(string)
-	EmitProgressEvent              func(ProgressEvent)
-	lastEmittedText                string
-	turnMu                         sync.Mutex
+	EmitAssistant                 func(string)
+	EmitAssistantPersistent       func(string)
+	EmitAssistantDelta            func(string)
+	EmitProgress                  func(string)
+	EmitProgressEvent             func(ProgressEvent)
+	lastEmittedText               string
+	turnMu                        sync.Mutex
 }
 
 var completeModelTurnRequestTimeout = configRequestTimeout
@@ -134,6 +134,21 @@ const (
 	compactRetainedMessageTokenBudget    = 64_000
 	compactApproxCharsPerToken           = 4
 	compactMinRetainedMessageCharBudget  = 8_000
+	// LLM-backed summarization bounds. A single capped call with a short timeout
+	// keeps compaction cheap and prevents the summary call from itself growing
+	// context or recursing into another compaction.
+	compactLLMSummaryMaxTokens  = 1_200
+	compactLLMSummaryTimeout    = 45 * time.Second
+	compactLLMSummaryInputChars = 60_000
+	compactLLMSummaryMinUseful  = 24
+	// Microcompaction bounds. As the session approaches the full-compaction
+	// threshold, the oldest large tool-result messages are trimmed while the most
+	// recent ones are left intact, deferring (not replacing) full compaction.
+	microcompactTriggerFraction        = 75 // trigger at 75% of the compaction threshold
+	microcompactKeepRecentToolResults  = 6  // never trim the newest N tool-result messages
+	microcompactLargeToolResultChars   = 8_000
+	microcompactTrimmedToolResultChars = 2_000
+	microcompactMaxTrimsPerPass        = 4
 )
 
 // D-E global no-progress guard thresholds. These are package vars (not consts)
@@ -569,7 +584,11 @@ func (a *Agent) CompactWithTrigger(ctx context.Context, instructions string, tri
 	}
 	older := a.Session.Messages[:olderEnd]
 	a.Session.Messages = retained
-	summary := summarizeMessages(older, instructions)
+	// Prefer an LLM-generated summary that preserves intent, key decisions,
+	// errors/fixes, and pending tasks. The deterministic line-by-line summary is
+	// kept as the fallback when no client is configured or the bounded summary
+	// call fails or times out, so compaction always succeeds.
+	summary := a.summarizeMessagesForCompaction(ctx, older, instructions)
 	if workingMemory := strings.TrimSpace(renderCompactionWorkingMemory(a.Session)); workingMemory != "" {
 		summary = strings.TrimSpace(summary) + "\n\n" + workingMemory
 	}
@@ -970,6 +989,13 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 		// do not compact far too early on large-window models or too late on
 		// small ones. Falls back to AutoCompactChars when the window is unknown.
 		autoCompactThreshold := a.autoCompactThresholdChars()
+		// Microcompaction: before full compaction trips, conservatively trim the
+		// oldest large tool-result messages in place. This defers the all-or-nothing
+		// compaction and keeps recent context verbatim. It is cheap (no model call)
+		// and bounded, so it is safe to attempt every iteration once enabled.
+		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() <= autoCompactThreshold {
+			a.maybeMicrocompactOldestToolResults(autoCompactThreshold)
+		}
 		if a.Config.AutoCompactChars > 0 && a.Session.ApproxChars() > autoCompactThreshold {
 			a.recordRecoveryDecision(DecideRecovery(RecoveryPolicyInput{
 				Kind:        RecoveryKindCompaction,
@@ -1026,6 +1052,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			TurnState:    providerTurnState,
 			TurnMetadata: providerTurnMetadata,
 		}
+		// Approximate byte count of the prompt actually sent this turn, used to
+		// reconcile the chars/token estimate against the provider's real usage
+		// report below. Captured before the response is appended to the session.
+		turnPromptApproxChars := a.Session.ApproxChars() + len(systemPrompt)
 		resp, err := a.completeModelTurn(ctx, turnReq)
 		if err != nil && readOnlyAnalysis && isToolUseUnsupportedError(err) && len(turnReq.Tools) > 0 {
 			if a.EmitProgress != nil {
@@ -1068,6 +1098,12 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 			return "", err
 		}
 		a.emitProviderResponseMetadata(turnReq, resp, &serverModelWarningEmitted, &modelVerificationEmitted)
+		// Reconcile the chars/token estimate with the provider's real prompt
+		// token count so subsequent budgeting and auto-compaction adapt to the
+		// session's actual language mix (for example CJK-heavy sessions).
+		if a.Session != nil {
+			a.Session.recordTokenUsageObservation(resp.Usage.InputTokens, turnPromptApproxChars)
+		}
 		rawAssistantText := resp.Message.Text
 		resp.Message.Text = sanitizeAssistantMessageText(rawAssistantText, len(resp.Message.ToolCalls) > 0)
 		resp.Message.ToolCalls = assignFocusedOwnerNodeToToolCalls(resp.Message.ToolCalls, a.Session)
@@ -5464,7 +5500,7 @@ func (a *Agent) turnMaxTokens() int {
 	}
 	inputTokens := 0
 	if a.Session != nil {
-		inputTokens = estimatedInputTokensFromChars(a.Session.ApproxChars())
+		inputTokens = estimatedInputTokensFromChars(a.Session.ApproxChars(), a.sessionBytesPerToken())
 	}
 	return effectiveMaxTokens(window, a.Config.MaxTokens, inputTokens)
 }
@@ -5473,7 +5509,18 @@ func (a *Agent) turnMaxTokens() int {
 // With a known context window it uses a fraction of the window; otherwise it
 // returns the configured global AutoCompactChars.
 func (a *Agent) autoCompactThresholdChars() int {
-	return compactionTriggerChars(a.sessionContextWindowTokens(), a.Config.AutoCompactChars)
+	return compactionTriggerChars(a.sessionContextWindowTokens(), a.Config.AutoCompactChars, a.sessionBytesPerToken())
+}
+
+// sessionBytesPerToken returns the UTF-8 bytes-per-token divisor for the active
+// session: the learned usage-corrected ratio when available, otherwise the
+// CJK-aware heuristic. Falls back to the flat ASCII default when there is no
+// session.
+func (a *Agent) sessionBytesPerToken() float64 {
+	if a.Session == nil {
+		return charsPerTokenEstimate
+	}
+	return a.Session.effectiveBytesPerToken()
 }
 
 func (a *Agent) completeModelTurn(ctx context.Context, req ChatRequest) (ChatResponse, error) {
@@ -10648,12 +10695,12 @@ func (a *Agent) systemPrompt() string {
 		b.WriteString(compactPromptSection(combined, 700))
 		b.WriteString("\n")
 	}
-	if shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser) {
+	if shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser, a.Skills) {
 		if catalog := a.safePromptSection("skill_catalog", "", func() string {
 			return a.Skills.CatalogPrompt()
 		}); catalog != "" {
-			b.WriteString("\nAvailable local skills:\n")
-			b.WriteString(compactPromptSection(catalog, 1200))
+			b.WriteString("\nAvailable local skills (select by relevance to the request; load a skill with $name):\n")
+			b.WriteString(compactPromptSection(catalog, 1600))
 			b.WriteString("\n")
 		}
 	}
@@ -10870,9 +10917,18 @@ func renderEnabledSkillSummary(c SkillCatalog) string {
 	return strings.Join(lines, "\n")
 }
 
-func shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser string) bool {
+func shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser string, skills SkillCatalog) bool {
 	if strings.TrimSpace(lowerLatestUser) == "" {
 		return false
+	}
+	// Description-based auto-availability: when local skills exist, surface the
+	// compact catalog (names + short descriptions only) so the model can pick a
+	// relevant skill itself instead of relying on a literal "$name" token or a
+	// "skill" keyword in the prompt. Enabled-by-default skills are already
+	// injected in full elsewhere, so only inject the catalog when at least one
+	// skill is not enabled by default and could still be selected on demand.
+	if skills.SelectableCount() > 0 {
+		return true
 	}
 	if explicitSkillPattern.MatchString(lowerLatestUser) {
 		return true
@@ -11036,6 +11092,109 @@ func requestExplicitlyAsksForWebResearch(lowerLatestUser string) bool {
 		"look up online", "find online sources", "external source", "external sources",
 		"웹 검색", "웹에서", "웹 브라우저", "인터넷", "온라인", "외부 자료", "외부 출처",
 	)
+}
+
+// summarizeMessagesForCompaction produces the compaction summary for the older
+// messages being dropped. It first attempts a bounded LLM summary that preserves
+// intent, key decisions, errors/fixes, and pending tasks. If no provider client
+// is configured, or the call fails, times out, or returns nothing useful, it
+// falls back to the deterministic line-by-line summarizeMessages. The result is
+// never empty: the fallback always yields at least a placeholder.
+func (a *Agent) summarizeMessagesForCompaction(ctx context.Context, messages []Message, instructions string) string {
+	deterministic := summarizeMessages(messages, instructions)
+	if a == nil || a.Client == nil || len(messages) == 0 {
+		return deterministic
+	}
+	if summary, ok := a.llmSummarizeForCompaction(ctx, messages, instructions, deterministic); ok {
+		return summary
+	}
+	return deterministic
+}
+
+// llmSummarizeForCompaction makes a single bounded provider call to summarize the
+// messages being compacted away. It returns ok=false when the call cannot be
+// trusted (no client, error, timeout, empty/too-short reply) so the caller can
+// fall back to the deterministic summary. The deterministic summary is passed in
+// as the model's source material, which keeps the prompt small and bounded while
+// still letting the model recover intent and rationale that pure truncation drops.
+func (a *Agent) llmSummarizeForCompaction(ctx context.Context, messages []Message, instructions string, deterministic string) (string, bool) {
+	if a == nil || a.Client == nil {
+		return "", false
+	}
+	source := strings.TrimSpace(buildCompactionSummaryInput(messages, deterministic))
+	if source == "" {
+		return "", false
+	}
+	if len(source) > compactLLMSummaryInputChars {
+		source = source[:compactLLMSummaryInputChars] + "\n...[older detail truncated for summarization]..."
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Bound the call: short timeout, single attempt, capped output. The timeout is
+	// independent of the parent turn so a slow summary cannot stall the loop.
+	callCtx, cancel := context.WithTimeout(ctx, compactLLMSummaryTimeout)
+	defer cancel()
+	model := strings.TrimSpace(a.Config.Model)
+	if a.Session != nil && strings.TrimSpace(a.Session.Model) != "" {
+		model = strings.TrimSpace(a.Session.Model)
+	}
+	req := ChatRequest{
+		Model:           model,
+		System:          buildCompactionSummarySystemPrompt(),
+		Messages:        []Message{{Role: "user", Text: buildCompactionSummaryUserPrompt(instructions, source)}},
+		MaxTokens:       compactLLMSummaryMaxTokens,
+		Temperature:     0,
+		TemperatureSet:  true,
+		ReasoningEffort: "low",
+		ServiceTier:     a.Config.ServiceTier,
+		WorkingDir:      a.Workspace.Root,
+		SessionID:       a.SessionIDForRequest(),
+	}
+	resp, err := a.Client.Complete(callCtx, req)
+	if err != nil {
+		return "", false
+	}
+	summary := strings.TrimSpace(resp.Message.Text)
+	if len(summary) < compactLLMSummaryMinUseful {
+		return "", false
+	}
+	return summary, true
+}
+
+// buildCompactionSummaryInput renders the messages being dropped into a compact,
+// bounded text block for the summarization prompt. It reuses the deterministic
+// per-message summary (which already filters noise and pins errors) so the LLM
+// input stays small and the structure is predictable.
+func buildCompactionSummaryInput(messages []Message, deterministic string) string {
+	deterministic = strings.TrimSpace(deterministic)
+	if deterministic != "" && deterministic != "No prior summary available." {
+		return deterministic
+	}
+	// Fall back to recomputing without instructions if the caller did not supply
+	// a usable deterministic summary.
+	return strings.TrimSpace(summarizeMessages(messages, ""))
+}
+
+func buildCompactionSummarySystemPrompt() string {
+	return "You compress an AI coding agent's older conversation history into a dense summary. " +
+		"Preserve: the user's intent and goals, key decisions and their rationale, errors encountered and how they were fixed, " +
+		"files and symbols touched, and any pending or unfinished tasks. Drop chit-chat and redundant detail. " +
+		"Do not invent facts not present in the input. Write plain text, no preamble, no markdown headers, " +
+		"using short labeled lines or bullets. Keep it under roughly 1000 words."
+}
+
+func buildCompactionSummaryUserPrompt(instructions string, source string) string {
+	var b strings.Builder
+	b.WriteString("Summarize the following older conversation history so the agent can continue the task with this summary in place of the raw history.\n")
+	if focus := strings.TrimSpace(instructions); focus != "" {
+		b.WriteString("\nCompaction focus: ")
+		b.WriteString(focus)
+		b.WriteString("\n")
+	}
+	b.WriteString("\nOlder conversation history to summarize:\n")
+	b.WriteString(source)
+	return b.String()
 }
 
 func summarizeMessages(messages []Message, instructions string) string {
@@ -11610,6 +11769,137 @@ func compactPinnedMessageSnippet(text string, maxLines int) string {
 		}
 	}
 	return strings.Join(filtered, " | ")
+}
+
+// maybeMicrocompactOldestToolResults is a lightweight, conservative pass that
+// trims the contents of the OLDEST large tool-result messages while leaving the
+// most recent tool results intact. It runs as the session approaches the full
+// auto-compaction threshold, so a large early read or shell dump can be shrunk
+// in place before an all-or-nothing compaction has to drop whole turns. This is
+// intentionally cheap (no model call, in-place edit) and bounded: it only trims
+// a few of the oldest messages per pass, never touches the newest ones, never
+// removes a message (so tool-call/result pairing stays intact), and skips
+// pinned/error results. It returns true when it trimmed at least one message.
+func (a *Agent) maybeMicrocompactOldestToolResults(threshold int) bool {
+	if a == nil || a.Session == nil || threshold <= 0 {
+		return false
+	}
+	if a.Session.ApproxChars() < microcompactTriggerChars(threshold) {
+		return false
+	}
+	messages := a.Session.Messages
+	if len(messages) == 0 {
+		return false
+	}
+	// Identify the indexes of tool-result messages, oldest first. Keep the newest
+	// microcompactKeepRecentToolResults untouched so in-flight reasoning still has
+	// its recent evidence verbatim.
+	toolResultIdx := make([]int, 0, len(messages))
+	for i := range messages {
+		if strings.EqualFold(strings.TrimSpace(messages[i].Role), "tool") {
+			toolResultIdx = append(toolResultIdx, i)
+		}
+	}
+	if len(toolResultIdx) <= microcompactKeepRecentToolResults {
+		return false
+	}
+	trimmable := toolResultIdx[:len(toolResultIdx)-microcompactKeepRecentToolResults]
+	trims := 0
+	mutated := false
+	for _, idx := range trimmable {
+		if trims >= microcompactMaxTrimsPerPass {
+			break
+		}
+		msg := messages[idx]
+		// Preserve error results and other pinned tool output verbatim: those are
+		// exactly the small, high-signal messages compaction tries hardest to keep.
+		if msg.IsError || messageShouldPinForCompact(msg) {
+			continue
+		}
+		if !microcompactToolResultIsLarge(msg) {
+			continue
+		}
+		if trimmed, ok := microcompactTrimToolResult(msg); ok {
+			messages[idx] = trimmed
+			mutated = true
+			trims++
+		}
+	}
+	if !mutated {
+		return false
+	}
+	if a.Store != nil {
+		_ = a.Store.Save(a.Session)
+	}
+	return true
+}
+
+// microcompactTriggerChars returns the character count at which microcompaction
+// should begin, a fraction of the full-compaction threshold.
+func microcompactTriggerChars(threshold int) int {
+	if threshold <= 0 {
+		return 0
+	}
+	trigger := threshold * microcompactTriggerFraction / 100
+	if trigger <= 0 {
+		return threshold
+	}
+	return trigger
+}
+
+// microcompactToolResultIsLarge reports whether a tool-result message carries
+// enough text content to be worth trimming.
+func microcompactToolResultIsLarge(msg Message) bool {
+	if microcompactToolResultTextChars(msg) >= microcompactLargeToolResultChars {
+		return true
+	}
+	return false
+}
+
+// microcompactToolResultTextChars sums the trimmable text payload of a tool
+// result (its Text plus any ToolContentItem text), ignoring structured items
+// that are not plain text.
+func microcompactToolResultTextChars(msg Message) int {
+	total := len(msg.Text)
+	for _, item := range msg.ToolContentItems {
+		total += len(item.Text)
+	}
+	return total
+}
+
+// microcompactTrimToolResult shrinks a large tool-result message's text payload
+// to microcompactTrimmedToolResultChars, keeping the head and tail (where the
+// useful signal usually is) and inserting an explicit elision marker. It only
+// trims the primary Text field; if the message has no trimmable Text it leaves
+// it unchanged. Returns the trimmed copy and whether anything was trimmed.
+func microcompactTrimToolResult(msg Message) (Message, bool) {
+	text := msg.Text
+	if len(text) <= microcompactTrimmedToolResultChars {
+		return msg, false
+	}
+	trimmed := msg
+	trimmed.Text = microcompactTrimText(text, microcompactTrimmedToolResultChars)
+	return trimmed, true
+}
+
+// microcompactTrimText keeps the head and tail of an oversized string and
+// replaces the middle with an elision marker, so leading context (often a header
+// or path) and trailing context (often a result/error) both survive.
+func microcompactTrimText(text string, maxChars int) string {
+	if maxChars <= 0 || len(text) <= maxChars {
+		return text
+	}
+	marker := "\n...[older tool output trimmed during microcompaction]...\n"
+	budget := maxChars - len(marker)
+	if budget <= 0 {
+		return text[:maxChars]
+	}
+	head := budget * 2 / 3
+	tail := budget - head
+	if head <= 0 || tail <= 0 {
+		return text[:maxChars]
+	}
+	return text[:head] + marker + text[len(text)-tail:]
 }
 
 func compactToolErrorDetail(text string) string {
