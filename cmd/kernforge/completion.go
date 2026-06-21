@@ -118,7 +118,7 @@ var slashCommandDescriptions = map[string]string{
 	"locale-auto":             "Enable or disable automatic locale switching.",
 	"worktree":                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
 	"skills":                  "Inspect and manage loaded Codex skills.",
-	"mcp":                     "Inspect MCP server status and tool availability.",
+	"mcp":                     "Inspect MCP server status; '/mcp auth <server>' runs the interactive OAuth login.",
 	"resources":               "List MCP resources across configured servers.",
 	"resource":                "Open a specific MCP resource by name or URI.",
 	"prompts":                 "List MCP prompts across configured servers.",

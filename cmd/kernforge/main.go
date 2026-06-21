@@ -8059,6 +8059,12 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			}
 		}
 	case "mcp":
+		if fields := strings.Fields(strings.TrimSpace(cmd.Args)); len(fields) > 0 {
+			if err := rt.handleMCPSubcommand(fields); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
 		statuses := rt.mcpStatus()
 		if len(statuses) == 0 {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine("No MCP servers configured."))
@@ -10962,6 +10968,68 @@ func (rt *runtimeState) mcpStatus() []MCPServerStatus {
 		return nil
 	}
 	return rt.mcp.Status()
+}
+
+// handleMCPSubcommand routes "/mcp <subcommand> ..." forms. With no subcommand
+// the caller renders the status listing; this handles the explicit actions.
+func (rt *runtimeState) handleMCPSubcommand(fields []string) error {
+	subcommand := strings.ToLower(strings.TrimSpace(fields[0]))
+	switch subcommand {
+	case "auth", "login", "authorize":
+		serverName := ""
+		if len(fields) > 1 {
+			serverName = strings.TrimSpace(strings.Join(fields[1:], " "))
+		}
+		return rt.handleMCPAuthCommand(serverName)
+	default:
+		return fmt.Errorf("unknown /mcp subcommand %q; usage: /mcp [auth <server>]", subcommand)
+	}
+}
+
+// findConfiguredMCPServer resolves a configured server by name, preferring the
+// raw config so OAuth authorization works even when the server is not currently
+// connected (for example because it has no token yet).
+func (rt *runtimeState) findConfiguredMCPServer(name string) (MCPServerConfig, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return MCPServerConfig{}, false
+	}
+	for _, cfg := range rt.cfg.MCPServers {
+		if strings.EqualFold(strings.TrimSpace(deriveMCPServerName(cfg)), name) {
+			return cfg, true
+		}
+	}
+	if rt.mcp != nil {
+		if cfg, ok := rt.mcp.ServerConfig(name); ok {
+			return cfg, true
+		}
+	}
+	return MCPServerConfig{}, false
+}
+
+// handleMCPAuthCommand runs the interactive OAuth authorize flow for a single
+// configured streamable HTTP MCP server. It is only reachable from the explicit
+// "/mcp auth <server>" command, never from headless startup.
+func (rt *runtimeState) handleMCPAuthCommand(serverName string) error {
+	if strings.TrimSpace(serverName) == "" {
+		return fmt.Errorf("usage: /mcp auth <server>")
+	}
+	cfg, ok := rt.findConfiguredMCPServer(serverName)
+	if !ok {
+		return fmt.Errorf("no MCP server named %q is configured", serverName)
+	}
+	if strings.TrimSpace(cfg.URL) == "" {
+		return fmt.Errorf("MCP server %q is not a streamable_http server; oauth is only supported over http", serverName)
+	}
+	if !mcpOAuthConfigured(cfg) {
+		return fmt.Errorf("MCP server %q does not request oauth (set oauth.client_id or oauth_resource)", serverName)
+	}
+	fmt.Fprintln(rt.writer, rt.ui.section("MCP OAuth"))
+	if err := mcpOAuthInteractiveAuthorize(context.Background(), cfg, defaultMCPOAuthTokenStore, rt.writer); err != nil {
+		return err
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Authorized MCP server %q; reload or reconnect to attach the token.", serverName)))
+	return nil
 }
 
 func (rt *runtimeState) mcpToolCount() int {

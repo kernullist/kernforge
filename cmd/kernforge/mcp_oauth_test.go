@@ -230,6 +230,162 @@ func TestMCPOAuthValidTokenNoStoredToken(t *testing.T) {
 	}
 }
 
+// TestMCPOAuthInteractiveAuthorizeStoresAndAttachesToken exercises the wired
+// interactive flow end to end against a hermetic fake authorization server. The
+// browser-open step is stubbed: instead of launching a real browser it parses
+// the authorize URL, extracts the loopback redirect_uri and state, and drives
+// the callback with a synthetic authorization code. It then asserts a token is
+// stored under the server key and that the auth-status reporter sees it.
+func TestMCPOAuthInteractiveAuthorizeStoresAndAttachesToken(t *testing.T) {
+	var sawCode, sawVerifier, sawRedirect string
+	authSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/.well-known/oauth-authorization-server"):
+			base := "http://" + r.Host
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"issuer":                 base,
+				"authorization_endpoint": base + "/authorize",
+				"token_endpoint":         base + "/token",
+				"scopes_supported":       []string{"profile", "openid"},
+			})
+		case r.URL.Path == "/token":
+			_ = r.ParseForm()
+			sawCode = r.Form.Get("code")
+			sawVerifier = r.Form.Get("code_verifier")
+			sawRedirect = r.Form.Get("redirect_uri")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "interactive-access",
+				"token_type":    "Bearer",
+				"refresh_token": "interactive-refresh",
+				"expires_in":    3600,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer authSrv.Close()
+
+	// Stub the browser-open step: hit the loopback callback with a synthetic code.
+	prevOpen := mcpOAuthOpenURL
+	mcpOAuthOpenURL = func(authorizeURL string) error {
+		parsed, err := url.Parse(authorizeURL)
+		if err != nil {
+			return err
+		}
+		q := parsed.Query()
+		redirect := q.Get("redirect_uri")
+		state := q.Get("state")
+		cb, err := url.Parse(redirect)
+		if err != nil {
+			return err
+		}
+		cbq := cb.Query()
+		cbq.Set("code", "synthetic-code")
+		cbq.Set("state", state)
+		cb.RawQuery = cbq.Encode()
+		go func() {
+			resp, err := http.Get(cb.String())
+			if err == nil {
+				resp.Body.Close()
+			}
+		}()
+		return nil
+	}
+	defer func() { mcpOAuthOpenURL = prevOpen }()
+
+	cfg := MCPServerConfig{
+		Name:  "fake",
+		URL:   authSrv.URL + "/mcp",
+		OAuth: &MCPServerOAuthConfig{ClientID: "client-id"},
+	}
+	store := &mcpOAuthMutableStore{}
+
+	if err := mcpOAuthInteractiveAuthorize(context.Background(), cfg, store, nil); err != nil {
+		t.Fatalf("mcpOAuthInteractiveAuthorize: %v", err)
+	}
+	if sawCode != "synthetic-code" {
+		t.Fatalf("token endpoint did not receive the synthetic code, got %q", sawCode)
+	}
+	if strings.TrimSpace(sawVerifier) == "" {
+		t.Fatalf("token endpoint did not receive a code_verifier (PKCE not wired)")
+	}
+	if !strings.HasPrefix(sawRedirect, "http://127.0.0.1:") {
+		t.Fatalf("token endpoint did not receive a loopback redirect_uri, got %q", sawRedirect)
+	}
+	if store.saved == nil || store.saved.AccessToken != "interactive-access" {
+		t.Fatalf("expected interactive token to be stored, got %#v", store.saved)
+	}
+
+	// The stored token must be attached: prime the store to load it back and
+	// confirm the honest auth-status reporter sees an authorized server.
+	store.token = store.saved
+	status := mcpHTTPAuthStatusWithStore(cfg, map[string]string{}, func(string) string { return "" }, store)
+	if status != "oauth_configured" {
+		t.Fatalf("expected oauth_configured after authorize, got %q", status)
+	}
+}
+
+// TestMCPOAuthCallbackServerRejectsStateMismatch confirms the loopback callback
+// handler enforces the anti-CSRF state.
+func TestMCPOAuthCallbackServerRejectsStateMismatch(t *testing.T) {
+	cb, err := newMCPOAuthCallbackServer("expected-state")
+	if err != nil {
+		t.Fatalf("newMCPOAuthCallbackServer: %v", err)
+	}
+	defer cb.Close()
+
+	target := cb.redirectURI + "?code=abc&state=wrong-state"
+	resp, err := http.Get(target)
+	if err != nil {
+		t.Fatalf("callback GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on state mismatch, got %d", resp.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, waitErr := cb.Wait(ctx); waitErr == nil {
+		t.Fatalf("expected a state-mismatch error from Wait")
+	}
+}
+
+// TestMCPOAuthResolveServerMetadataViaResource exercises the RFC 9728
+// protected-resource discovery path that points at an authorization server.
+func TestMCPOAuthResolveServerMetadataViaResource(t *testing.T) {
+	var authBase string
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	authBase = srv.URL
+	mux.HandleFunc("/.well-known/oauth-protected-resource", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"resource":              authBase,
+			"authorization_servers": []string{authBase},
+		})
+	})
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 authBase,
+			"authorization_endpoint": authBase + "/authorize",
+			"token_endpoint":         authBase + "/token",
+		})
+	})
+
+	cfg := MCPServerConfig{
+		Name:          "res",
+		URL:           "https://example.com/mcp",
+		OAuthResource: srv.URL,
+	}
+	meta, err := mcpOAuthResolveServerMetadata(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("mcpOAuthResolveServerMetadata: %v", err)
+	}
+	if meta.TokenEndpoint != authBase+"/token" {
+		t.Fatalf("unexpected token endpoint via resource discovery: %q", meta.TokenEndpoint)
+	}
+}
+
 func TestNegotiateMCPProtocolVersion(t *testing.T) {
 	cases := []struct {
 		client string
