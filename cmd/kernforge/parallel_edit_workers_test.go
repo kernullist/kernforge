@@ -321,6 +321,10 @@ func TestMaybeRunInteractiveParallelEditableWorkersDefersOverlappingSecondaryEdi
 		Config: Config{
 			Model:     "gpt-test",
 			MaxTokens: 1024,
+			// Editable workers now require worktree isolation or an explicit
+			// shared-tree opt-in (mb-4 safe default). This test exercises the
+			// shared-tree worker logic, so it opts in.
+			Parallelism: ParallelismConfig{AllowEditableWorkersInSharedTree: boolPtr(true)},
 		},
 		Session: session,
 		Tools: NewToolRegistry(
@@ -446,6 +450,10 @@ func TestMaybeRunInteractiveParallelEditableWorkersAppliesPatchForSecondaryEditN
 		Config: Config{
 			Model:     "gpt-test",
 			MaxTokens: 1024,
+			// Editable workers now require worktree isolation or an explicit
+			// shared-tree opt-in (mb-4 safe default). This test exercises the
+			// shared-tree worker logic, so it opts in.
+			Parallelism: ParallelismConfig{AllowEditableWorkersInSharedTree: boolPtr(true)},
 		},
 		ReviewerClient: reviewer,
 		ReviewerModel:  "reviewer-model",

@@ -14,7 +14,6 @@ import (
 
 const (
 	parallelEditableWorkerCooldown = 8 * time.Second
-	parallelEditableWorkerMaxTurns = 4
 )
 
 var parallelEditableWorkerAllowedTools = map[string]struct{}{
@@ -65,7 +64,7 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 	if graph == nil || len(graph.Nodes) == 0 {
 		return nil
 	}
-	candidates := a.executorAwareEditableWorkerCandidates(2)
+	candidates := a.executorAwareEditableWorkerCandidates(configParallelismEditWorkerCap(a.Config))
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -218,8 +217,16 @@ func (a *Agent) maybeRunInteractiveParallelEditableWorkers(ctx context.Context, 
 }
 
 func parallelEditableWorkersEnabledForSession(cfg Config, session *Session) bool {
+	// Worktree isolation gives each editable worker its own checkout, so
+	// concurrent writes cannot corrupt the shared tree. This is the safe path.
 	if configWorktreeIsolationEnabled(cfg) {
 		return true
+	}
+	// Without isolation every editable worker writes into the SAME working
+	// tree, protected only by best-effort path-glob leases. Refuse that risky
+	// path by default; require an explicit opt-in even when a feature is active.
+	if !configEditableWorkersAllowedInSharedTree(cfg) {
+		return false
 	}
 	return session != nil && strings.TrimSpace(session.ActiveFeatureID) != ""
 }
@@ -409,13 +416,15 @@ func (a *Agent) runParallelEditableWorker(ctx context.Context, plan parallelEdit
 	lastErr := error(nil)
 	lastErrToolName := ""
 
-	for turn := 0; turn < parallelEditableWorkerMaxTurns; turn++ {
+	maxTurns := configParallelismEditWorkerMaxTurns(a.Config)
+	maxTokens := configParallelismEditWorkerMaxTokens(a.Config)
+	for turn := 0; turn < maxTurns; turn++ {
 		resp, err := a.completeModelTurnWithClient(ctx, client, ChatRequest{
 			Model:               model,
 			System:              buildSpecialistEditableWorkerSystemPrompt(plan.Assignment.Profile),
 			Messages:            messages,
 			Tools:               tools,
-			MaxTokens:           min(768, max(256, a.Config.MaxTokens/3)),
+			MaxTokens:           maxTokens,
 			Temperature:         0.1,
 			WorkingDir:          a.Session.WorkingDir,
 			SessionID:           subagentThreadID,
@@ -1072,7 +1081,66 @@ var (
 	modelRequestWaitRepeatDelay  = 15 * time.Second
 )
 
+// completeModelTurnOnceWithModelRoutes runs one model turn through the route
+// scheduler. When a fallback chain is configured (cfg.FallbackModels), it tries
+// the primary route first and, only if the primary returns a terminal
+// (non-retryable) error or a refusal, retries the same request against each
+// fallback model in order until one succeeds without a refusal or the chain is
+// exhausted. With no fallback chain configured (the default) this is exactly the
+// previous single-route behavior. Transient/retryable errors are NOT consumed
+// here; they are left to the per-route retry loop in completeModelTurn.
 func completeModelTurnOnceWithModelRoutes(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
+	if client == nil {
+		return ChatResponse{}, fmt.Errorf("no model provider is configured")
+	}
+
+	resp, err := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, req)
+	if !shouldTryFallbackModel(err, resp) {
+		return resp, err
+	}
+
+	primaryModel := firstNonBlankString(req.Model, cfg.Model)
+	fallbacks := selectModelRouteFallbackModels(cfg, primaryModel)
+	for _, fallbackModel := range fallbacks {
+		if ctx.Err() != nil {
+			return resp, err
+		}
+		fallbackReq := req
+		fallbackReq.Model = fallbackModel
+		emitProgressEvent(req.OnProgressEvent, ProgressEvent{
+			Kind:    progressKindModelReroute,
+			Model:   primaryModel,
+			Status:  fallbackModel,
+			Message: modelRouteFallbackMessage(primaryModel, fallbackModel, err, resp),
+		})
+		fallbackResp, fallbackErr := completeModelTurnSingleRouteAttempt(ctx, scheduler, policy, cfg, client, fallbackReq)
+		// Keep the latest attempt as the outcome to return if the chain is
+		// exhausted, so the caller sees the final model's error/refusal rather
+		// than the stale primary one.
+		resp, err = fallbackResp, fallbackErr
+		if !shouldTryFallbackModel(fallbackErr, fallbackResp) {
+			return resp, err
+		}
+	}
+	return resp, err
+}
+
+// modelRouteFallbackMessage describes why the turn is moving to a fallback
+// model, distinguishing a refusal from a terminal provider error so the
+// progress line is actionable.
+func modelRouteFallbackMessage(primaryModel string, fallbackModel string, err error, resp ChatResponse) string {
+	primaryModel = strings.TrimSpace(primaryModel)
+	if primaryModel == "" {
+		primaryModel = "primary model"
+	}
+	reason := "terminal error"
+	if err == nil && chatResponseIsRefusal(resp) {
+		reason = "refusal"
+	}
+	return fmt.Sprintf("Primary model %s returned a %s; falling back to %s.", primaryModel, reason, strings.TrimSpace(fallbackModel))
+}
+
+func completeModelTurnSingleRouteAttempt(ctx context.Context, scheduler *ModelRouteScheduler, policy ModelRoutePolicy, cfg Config, client ProviderClient, req ChatRequest) (ChatResponse, error) {
 	if client == nil {
 		return ChatResponse{}, fmt.Errorf("no model provider is configured")
 	}

@@ -170,6 +170,7 @@ func normalizeSpecialistProfile(profile SpecialistSubagentProfile) SpecialistSub
 	profile.NodeKinds = normalizeTaskStateList(profile.NodeKinds, 16)
 	profile.Keywords = normalizeTaskStateList(profile.Keywords, 32)
 	profile.OwnershipPaths = normalizeTaskStateList(profile.OwnershipPaths, 32)
+	profile.Tools = normalizeTaskStateList(profile.Tools, 32)
 	return profile
 }
 
@@ -219,6 +220,9 @@ func mergeSpecialistProfile(base SpecialistSubagentProfile, overlay SpecialistSu
 	}
 	if len(overlay.OwnershipPaths) > 0 {
 		merged.OwnershipPaths = append([]string(nil), overlay.OwnershipPaths...)
+	}
+	if len(overlay.Tools) > 0 {
+		merged.Tools = append([]string(nil), overlay.Tools...)
 	}
 	return normalizeSpecialistProfile(merged)
 }

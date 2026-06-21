@@ -508,7 +508,8 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	if !shouldRunInteractiveMicroWorkers(trigger, graph) {
 		return nil
 	}
-	candidates := a.executorAwareMicroWorkerCandidates(3)
+	microWorkerCap := configParallelismMicroWorkerCap(a.Config)
+	candidates := a.executorAwareMicroWorkerCandidates(microWorkerCap)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -526,7 +527,7 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		model      string
 		route      ModelRoute
 	}
-	workerCount := min(3, len(candidates))
+	workerCount := min(microWorkerCap, len(candidates))
 	plans := make([]microWorkerPlan, 0, workerCount)
 	routes := make([]ModelRoute, 0, workerCount)
 	for _, node := range candidates[:workerCount] {
@@ -583,7 +584,7 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 				Model:               plan.model,
 				System:              buildSpecialistMicroWorkerSystemPrompt(plan.assignment.Profile),
 				Messages:            messages,
-				MaxTokens:           min(256, max(128, a.Config.MaxTokens/6)),
+				MaxTokens:           configParallelismMicroWorkerMaxTokens(a.Config),
 				Temperature:         0.1,
 				WorkingDir:          a.Session.WorkingDir,
 				SessionID:           subagentThreadID,
@@ -661,12 +662,16 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 	wg.Wait()
 	close(results)
 	updated := false
-	var firstErr error
+	state := a.Session.EnsureTaskState()
 	for result := range results {
 		if result.err != nil {
-			if firstErr == nil {
-				firstErr = result.err
-			}
+			// Micro-workers only produce advisory planning briefs. A failed
+			// brief must never hard-fail the orchestration step: record it on
+			// the event ledger and continue so the executor can still run.
+			detail := compactPromptSection(result.err.Error(), 220)
+			summary := "Advisory micro-worker could not finish; continuing without its brief."
+			state.RecordEvent("micro_worker_error", strings.TrimSpace(result.nodeID), firstNonBlankString(result.specialist, "micro_worker"), summary, detail, "advisory", false)
+			updated = true
 			continue
 		}
 		if strings.TrimSpace(result.nodeID) == "" || strings.TrimSpace(result.brief) == "" {
@@ -675,9 +680,6 @@ func (a *Agent) maybeRunInteractiveMicroWorkers(ctx context.Context, trigger str
 		a.Session.RecordTaskGraphSpecialistAssignment(result.nodeID, result.specialist, result.reason)
 		a.Session.RecordTaskGraphMicroWorkerBrief(result.nodeID, result.brief)
 		updated = true
-	}
-	if firstErr != nil {
-		return firstErr
 	}
 	if updated && a.Store != nil {
 		return a.Store.Save(a.Session)

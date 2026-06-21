@@ -41,7 +41,7 @@ func (a *Agent) maybeRunInteractiveParallelReadOnlyWorkers(ctx context.Context, 
 	if !shouldRunInteractiveMicroWorkers(trigger, graph) {
 		return nil
 	}
-	candidates := a.executorAwareReadOnlyWorkerCandidates(2)
+	candidates := a.executorAwareReadOnlyWorkerCandidates(configParallelismReadWorkerCap(a.Config))
 	if len(candidates) == 0 {
 		return nil
 	}
