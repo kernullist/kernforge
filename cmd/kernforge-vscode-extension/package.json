@@ -1,0 +1,68 @@
+{
+  "name": "kernforge-vscode",
+  "displayName": "KernForge",
+  "description": "KernForge IDE integration (Slice-1 scaffold): observe tool-call progress over the daemon SSE stream and route edit previews back through the review/permission gate.",
+  "version": "0.0.1",
+  "publisher": "kernforge",
+  "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kernforge.analyzeSelection",
+        "title": "KernForge: Analyze Selection"
+      },
+      {
+        "command": "kernforge.review",
+        "title": "KernForge: Review"
+      },
+      {
+        "command": "kernforge.connect",
+        "title": "KernForge: Connect To Daemon"
+      },
+      {
+        "command": "kernforge.disconnect",
+        "title": "KernForge: Disconnect From Daemon"
+      }
+    ],
+    "configuration": {
+      "title": "KernForge",
+      "properties": {
+        "kernforge.binaryPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the kernforge binary. When empty the extension searches PATH and common build output locations."
+        },
+        "kernforge.autoStartDaemon": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the KernForge daemon automatically when it is not already running."
+        },
+        "kernforge.healthTimeoutMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "Timeout in milliseconds for the daemon /health probe."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
