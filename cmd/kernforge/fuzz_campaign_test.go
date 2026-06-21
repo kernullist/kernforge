@@ -661,3 +661,402 @@ func TestHandleFuzzCampaignStatusRecommendsSingleRunCommand(t *testing.T) {
 		t.Fatalf("expected status to hide expert subcommands, got %q", text)
 	}
 }
+
+// Canned sanitizer reports used by the crash-report parser tests. They are
+// hermetic strings (no real fuzzer/compiler) shaped after real ASan/UBSan output.
+const (
+	cannedAsanHeapWrite = "" +
+		"==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000050 at pc 0x0001 bp 0x7ffd sp 0x7ffd\n" +
+		"WRITE of size 4 at 0x602000000050 thread T0\n" +
+		"    #0 0x4a1b2c in ParsePacketHeader src/parser.cpp:128:9\n" +
+		"    #1 0x4a2000 in HandleRequest src/server.cpp:55:3\n" +
+		"    #2 0x4a3000 in main src/main.cpp:12:1\n"
+
+	cannedAsanHeapRead = "" +
+		"==12345==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000050 at pc 0x0001 bp 0x7ffd sp 0x7ffd\n" +
+		"READ of size 1 at 0x602000000050 thread T0\n" +
+		"    #0 0x4a1b2c in ParsePacketHeader src/parser.cpp:128:9\n" +
+		"    #1 0x4a2000 in HandleRequest src/server.cpp:55:3\n"
+
+	cannedAsanUseAfterFree = "" +
+		"==222==ERROR: AddressSanitizer: heap-use-after-free on address 0x603000000010 at pc 0x0002 bp 0x7ffd sp 0x7ffd\n" +
+		"WRITE of size 8 at 0x603000000010 thread T0\n" +
+		"    #0 0x4b1000 in ReleaseSession src/session.cpp:90:5\n" +
+		"    #1 0x4b2000 in HandleRequest src/server.cpp:60:3\n"
+
+	cannedUBSan = "" +
+		"src/math.cpp:44:17: runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type 'int'\n" +
+		"    #0 0x4c1000 in ComputeChecksum src/math.cpp:44:17\n" +
+		"    #1 0x4c2000 in HandleRequest src/server.cpp:70:3\n"
+
+	cannedSegvNull = "" +
+		"==333==ERROR: AddressSanitizer: SEGV on unknown address 0x000000000000 (pc 0x0003 bp 0x7ffd sp 0x7ffd T0)\n" +
+		"    #0 0x4d1000 in DerefConfig src/config.cpp:21:7\n" +
+		"    #1 0x4d2000 in main src/main.cpp:15:1\n"
+)
+
+func TestParseFuzzCampaignCrashReportExtractsFacts(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		wantClass  string
+		wantAccess string
+		wantAddr   string
+		wantParsed bool
+		wantFrame0 string
+	}{
+		{
+			name:       "heap overflow write",
+			text:       cannedAsanHeapWrite,
+			wantClass:  "heap-buffer-overflow",
+			wantAccess: "WRITE",
+			wantAddr:   "0x602000000050",
+			wantParsed: true,
+			wantFrame0: "ParsePacketHeader",
+		},
+		{
+			name:       "use after free",
+			text:       cannedAsanUseAfterFree,
+			wantClass:  "use-after-free",
+			wantAccess: "WRITE",
+			wantAddr:   "0x603000000010",
+			wantParsed: true,
+			wantFrame0: "ReleaseSession",
+		},
+		{
+			name:       "ubsan runtime error",
+			text:       cannedUBSan,
+			wantClass:  "ubsan-runtime-error",
+			wantAccess: "",
+			wantAddr:   "",
+			wantParsed: true,
+			wantFrame0: "ComputeChecksum",
+		},
+		{
+			name:       "segv null deref",
+			text:       cannedSegvNull,
+			wantClass:  "segv",
+			wantAccess: "",
+			wantAddr:   "0x000000000000",
+			wantParsed: true,
+			wantFrame0: "DerefConfig",
+		},
+		{
+			name:       "plain non-crash text",
+			text:       "INFO: Seed corpus loaded, 12 files, no findings",
+			wantParsed: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := parseFuzzCampaignCrashReport(tc.text)
+			if report.Parsed != tc.wantParsed {
+				t.Fatalf("parsed=%v want %v (report=%#v)", report.Parsed, tc.wantParsed, report)
+			}
+			if !tc.wantParsed {
+				return
+			}
+			if report.Class != tc.wantClass {
+				t.Fatalf("class=%q want %q", report.Class, tc.wantClass)
+			}
+			if report.Access != tc.wantAccess {
+				t.Fatalf("access=%q want %q", report.Access, tc.wantAccess)
+			}
+			if report.Address != tc.wantAddr {
+				t.Fatalf("address=%q want %q", report.Address, tc.wantAddr)
+			}
+			if len(report.Frames) == 0 || report.Frames[0] != tc.wantFrame0 {
+				t.Fatalf("frame0=%v want %q", report.Frames, tc.wantFrame0)
+			}
+			// Normalized frames must not leak absolute addresses or line columns.
+			for _, frame := range report.Frames {
+				if strings.Contains(frame, "0x4") || strings.Contains(frame, ".cpp:") {
+					t.Fatalf("frame not normalized: %q", frame)
+				}
+			}
+		})
+	}
+}
+
+func TestFuzzCampaignExploitabilityBandMapping(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		wantBand string
+		wantSev  string
+	}{
+		{name: "heap write overflow", text: cannedAsanHeapWrite, wantBand: "EXPLOITABLE", wantSev: "critical"},
+		{name: "heap read overflow", text: cannedAsanHeapRead, wantBand: "NOT_LIKELY", wantSev: "medium"},
+		{name: "use after free write", text: cannedAsanUseAfterFree, wantBand: "EXPLOITABLE", wantSev: "critical"},
+		{name: "ubsan", text: cannedUBSan, wantBand: "UNKNOWN", wantSev: "high"},
+		{name: "segv null deref", text: cannedSegvNull, wantBand: "NOT_LIKELY", wantSev: "medium"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			report := parseFuzzCampaignCrashReport(tc.text)
+			band := fuzzCampaignExploitabilityBand(report)
+			if band != tc.wantBand {
+				t.Fatalf("band=%q want %q", band, tc.wantBand)
+			}
+			if sev := fuzzCampaignExploitabilitySeverity(band); sev != tc.wantSev {
+				t.Fatalf("severity=%q want %q", sev, tc.wantSev)
+			}
+		})
+	}
+	// Unparsed report stays at the conservative UNKNOWN band and high severity.
+	if band := fuzzCampaignExploitabilityBand(FuzzCampaignCrashReport{}); band != "UNKNOWN" {
+		t.Fatalf("unparsed band=%q want UNKNOWN", band)
+	}
+}
+
+func TestFuzzCampaignCrashFingerprintFromReport(t *testing.T) {
+	runA := FunctionFuzzRun{
+		ID:               "run-a",
+		TargetSymbolID:   "func:Alpha",
+		TargetSymbolName: "Alpha",
+		TargetFile:       "src/a.cpp",
+		Execution:        FunctionFuzzExecution{CrashCount: 1},
+	}
+	runB := FunctionFuzzRun{
+		ID:               "run-b",
+		TargetSymbolID:   "func:Beta",
+		TargetSymbolName: "Beta",
+		TargetFile:       "src/b.cpp",
+		Execution:        FunctionFuzzExecution{CrashCount: 1},
+	}
+
+	heapWrite := parseFuzzCampaignCrashReport(cannedAsanHeapWrite)
+	uaf := parseFuzzCampaignCrashReport(cannedAsanUseAfterFree)
+
+	// Distinct crash classes/frames in the same target produce distinct fingerprints.
+	fpHeap := fuzzCampaignCrashFingerprintFromReport(runA, heapWrite)
+	fpUAF := fuzzCampaignCrashFingerprintFromReport(runA, uaf)
+	if fpHeap == "" || fpUAF == "" {
+		t.Fatalf("expected non-empty fingerprints, got %q %q", fpHeap, fpUAF)
+	}
+	if fpHeap == fpUAF {
+		t.Fatalf("expected distinct fingerprints for distinct crash classes, both=%q", fpHeap)
+	}
+
+	// The same report seen in different target functions shares a fingerprint
+	// because the bucket is rooted in crash class + normalized frames.
+	fpHeapInB := fuzzCampaignCrashFingerprintFromReport(runB, heapWrite)
+	if fpHeap != fpHeapInB {
+		t.Fatalf("expected shared fingerprint across targets, got %q vs %q", fpHeap, fpHeapInB)
+	}
+
+	// Unparsed text falls back to the target-identity fingerprint, which differs
+	// between the two targets and matches the legacy helper.
+	fallbackA := fuzzCampaignCrashFingerprintFromReport(runA, FuzzCampaignCrashReport{})
+	fallbackB := fuzzCampaignCrashFingerprintFromReport(runB, FuzzCampaignCrashReport{})
+	if fallbackA == fallbackB {
+		t.Fatalf("expected distinct target-identity fingerprints, both=%q", fallbackA)
+	}
+	if fallbackA != fuzzCampaignCrashFingerprint(runA) {
+		t.Fatalf("fallback fingerprint diverged from legacy helper: %q vs %q", fallbackA, fuzzCampaignCrashFingerprint(runA))
+	}
+	if !strings.HasPrefix(fallbackA, "ff-") || !strings.HasPrefix(fpHeap, "fc-") {
+		t.Fatalf("expected ff- fallback and fc- report fingerprints, got %q %q", fallbackA, fpHeap)
+	}
+}
+
+func TestParseFuzzCampaignRunArtifactsAttachExploitability(t *testing.T) {
+	base := FuzzCampaignRunArtifact{RunID: "run-x"}
+	artifacts := parseFuzzCampaignRunArtifactsFromText("last_output:run-x", cannedAsanHeapWrite, base)
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one sanitizer artifact, got %#v", artifacts)
+	}
+	art := artifacts[0]
+	if art.Kind != "sanitizer_report" {
+		t.Fatalf("kind=%q want sanitizer_report", art.Kind)
+	}
+	if art.CrashClass != "heap-buffer-overflow" || art.CrashAccess != "WRITE" {
+		t.Fatalf("expected parsed crash facts, got %#v", art)
+	}
+	if art.Exploitability != "EXPLOITABLE" || art.Severity != "critical" {
+		t.Fatalf("expected EXPLOITABLE/critical, got %#v", art)
+	}
+
+	// Unparsed sanitizer-ish text keeps the conservative high severity and no band.
+	plain := parseFuzzCampaignRunArtifactsFromText("last_output:run-y", "AddressSanitizer initialized; no crash recorded", base)
+	if len(plain) != 1 {
+		t.Fatalf("expected one artifact, got %#v", plain)
+	}
+	if plain[0].Severity != "high" {
+		t.Fatalf("expected conservative high severity for unparsed report, got %#v", plain[0])
+	}
+	if plain[0].Exploitability != "" {
+		t.Fatalf("expected no fabricated band for unparsed report, got %#v", plain[0])
+	}
+}
+
+func TestFuzzCampaignSanitizerSignalCoversAlternativeProfiles(t *testing.T) {
+	// Canned banner strings match what TSan/MSan/LSan actually print at the top of
+	// a crash report; the selectable sanitizer profiles make these reachable.
+	cases := []struct {
+		name       string
+		text       string
+		wantSignal string
+		wantClass  string
+	}{
+		{
+			name:       "thread sanitizer data race",
+			text:       "==1234==WARNING: ThreadSanitizer: data race (pid=1234)\n  Write of size 4 at 0x7b0400000010 by thread T1:",
+			wantSignal: "thread_sanitizer",
+			wantClass:  "data-race",
+		},
+		{
+			name:       "memory sanitizer uninitialized value",
+			text:       "==1234==WARNING: MemorySanitizer: use-of-uninitialized-value\n    #0 0x4a1b2c in parse src/parser.cpp:128:7",
+			wantSignal: "memory_sanitizer",
+			wantClass:  "use-of-uninitialized-value",
+		},
+		{
+			name:       "leak sanitizer detected leaks",
+			text:       "==1234==ERROR: LeakSanitizer: detected memory leaks\n\nDirect leak of 16 byte(s) in 1 object(s) allocated from:",
+			wantSignal: "leak_sanitizer",
+			wantClass:  "memory-leak",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fuzzCampaignSanitizerSignal(tc.text); got != tc.wantSignal {
+				t.Fatalf("sanitizer signal = %q, want %q", got, tc.wantSignal)
+			}
+			// The detection gate must let these reports through to a sanitizer_report
+			// artifact; before the profile work MSan fell through to the default and
+			// was never emitted.
+			base := FuzzCampaignRunArtifact{RunID: "run-san"}
+			artifacts := parseFuzzCampaignRunArtifactsFromText("last_output:run-san", tc.text, base)
+			if len(artifacts) != 1 {
+				t.Fatalf("expected one sanitizer artifact for %s, got %#v", tc.name, artifacts)
+			}
+			art := artifacts[0]
+			if art.Kind != "sanitizer_report" {
+				t.Fatalf("kind=%q want sanitizer_report for %s", art.Kind, tc.name)
+			}
+			if art.Signal != tc.wantSignal {
+				t.Fatalf("artifact signal = %q, want %q for %s", art.Signal, tc.wantSignal, tc.name)
+			}
+			if art.CrashClass != tc.wantClass {
+				t.Fatalf("artifact crash class = %q, want %q for %s", art.CrashClass, tc.wantClass, tc.name)
+			}
+		})
+	}
+}
+
+func TestParseFuzzCampaignDumpRecordsSymbolizationNote(t *testing.T) {
+	base := FuzzCampaignRunArtifact{RunID: "run-dump"}
+	art := parseFuzzCampaignRunArtifactFromCrashFile("crashes/target.dmp", base)
+	if art.Kind != "windows_crash_dump" {
+		t.Fatalf("kind=%q want windows_crash_dump", art.Kind)
+	}
+	if !strings.Contains(art.Summary, "needs symbolization") || !strings.Contains(art.Summary, "!analyze -v") {
+		t.Fatalf("expected symbolization note, got %q", art.Summary)
+	}
+	if art.Exploitability != "UNKNOWN" {
+		t.Fatalf("expected UNKNOWN band for unanalyzed dump, got %q", art.Exploitability)
+	}
+}
+
+func TestFuzzCampaignFindingDedupKeyUsesParsedFingerprint(t *testing.T) {
+	// Two findings in different functions that share a parsed crash fingerprint
+	// and source anchor merge into one bucket via the dedup key.
+	left := FuzzCampaignFinding{
+		CrashFingerprint: "fc-deadbeef",
+		SourceAnchor:     "src/parser.cpp:128",
+	}
+	right := FuzzCampaignFinding{
+		CrashFingerprint: "fc-deadbeef",
+		SourceAnchor:     "src/parser.cpp:128",
+	}
+	if fuzzCampaignFindingDedupKey(left) != fuzzCampaignFindingDedupKey(right) {
+		t.Fatalf("expected identical dedup keys for shared fingerprint+anchor")
+	}
+	// A different fingerprint yields a different bucket even at the same anchor.
+	other := FuzzCampaignFinding{
+		CrashFingerprint: "fc-feedface",
+		SourceAnchor:     "src/parser.cpp:128",
+	}
+	if fuzzCampaignFindingDedupKey(left) == fuzzCampaignFindingDedupKey(other) {
+		t.Fatalf("expected distinct dedup keys for distinct fingerprints")
+	}
+}
+
+func TestCaptureFuzzCampaignNativeResultBandsFromReport(t *testing.T) {
+	root := t.TempDir()
+	campaign, err := createFuzzCampaignFromWorkspace(root, "band campaign", AnalysisDocsManifest{})
+	if err != nil {
+		t.Fatalf("create campaign: %v", err)
+	}
+	runDir := filepath.Join(root, "fuzz-run-band")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir run dir: %v", err)
+	}
+	runLog := filepath.Join(runDir, "run.log")
+	if err := os.WriteFile(runLog, []byte(cannedAsanUseAfterFree), 0o644); err != nil {
+		t.Fatalf("write run log: %v", err)
+	}
+	rt := &runtimeState{
+		writer:   &bytes.Buffer{},
+		ui:       NewUI(),
+		evidence: &EvidenceStore{Path: filepath.Join(root, "evidence.json")},
+		session:  &Session{ID: "session-band"},
+		workspace: Workspace{
+			BaseRoot: root,
+			Root:     root,
+		},
+	}
+	run := FunctionFuzzRun{
+		ID:               "fuzz-run-band",
+		Workspace:        root,
+		TargetQuery:      "ReleaseSession",
+		TargetSymbolName: "ReleaseSession",
+		TargetSymbolID:   "func:ReleaseSession",
+		TargetFile:       "src/session.cpp",
+		TargetStartLine:  90,
+		RiskScore:        30,
+		Execution: FunctionFuzzExecution{
+			Status:     "completed",
+			CrashCount: 1,
+			RunLogPath: runLog,
+			RunCommand: "fuzzer.exe corpus",
+		},
+	}
+
+	updated, captured, err := rt.captureFuzzCampaignNativeResults(campaign, []FunctionFuzzRun{run})
+	if err != nil {
+		t.Fatalf("capture native result: %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected one native result, got %#v", captured)
+	}
+	result := captured[0]
+	if result.CrashClass != "use-after-free" || result.Exploitability != "EXPLOITABLE" {
+		t.Fatalf("expected parsed UAF/EXPLOITABLE on result, got %#v", result)
+	}
+	if !strings.HasPrefix(result.CrashFingerprint, "fc-") {
+		t.Fatalf("expected report-rooted fingerprint, got %q", result.CrashFingerprint)
+	}
+	if len(updated.Findings) == 0 {
+		t.Fatalf("expected a native finding, got none")
+	}
+	finding := updated.Findings[0]
+	if finding.Severity != "critical" || finding.Exploitability != "EXPLOITABLE" {
+		t.Fatalf("expected critical/EXPLOITABLE finding, got %#v", finding)
+	}
+	records, err := rt.evidence.Search("kind:fuzz_native_result", root, 10)
+	if err != nil {
+		t.Fatalf("search evidence: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one evidence record, got %#v", records)
+	}
+	if records[0].Severity != "critical" || records[0].RiskScore < 95 {
+		t.Fatalf("expected critical evidence with raised risk, got severity=%q risk=%d", records[0].Severity, records[0].RiskScore)
+	}
+	if records[0].Attributes["exploitability"] != "EXPLOITABLE" || records[0].Attributes["crash_class"] != "use-after-free" {
+		t.Fatalf("expected crash facts on evidence, got %#v", records[0].Attributes)
+	}
+}

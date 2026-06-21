@@ -41,6 +41,10 @@ type FuzzCampaignNativeResult struct {
 	Outcome            string    `json:"outcome,omitempty"`
 	CrashCount         int       `json:"crash_count,omitempty"`
 	CrashFingerprint   string    `json:"crash_fingerprint,omitempty"`
+	CrashClass         string    `json:"crash_class,omitempty"`
+	CrashAccess        string    `json:"crash_access,omitempty"`
+	CrashAddress       string    `json:"crash_address,omitempty"`
+	Exploitability     string    `json:"exploitability,omitempty"`
 	SuspectedInvariant string    `json:"suspected_invariant,omitempty"`
 	MinimizeCommand    string    `json:"minimize_command,omitempty"`
 	ReportPath         string    `json:"report_path,omitempty"`
@@ -71,6 +75,8 @@ type FuzzCampaignFinding struct {
 	VerificationGate   string    `json:"verification_gate,omitempty"`
 	TrackedFeatureGate string    `json:"tracked_feature_gate,omitempty"`
 	CrashFingerprint   string    `json:"crash_fingerprint,omitempty"`
+	CrashClass         string    `json:"crash_class,omitempty"`
+	Exploitability     string    `json:"exploitability,omitempty"`
 	SuspectedInvariant string    `json:"suspected_invariant,omitempty"`
 	ReportPath         string    `json:"report_path,omitempty"`
 	DuplicateCount     int       `json:"duplicate_count,omitempty"`
@@ -114,18 +120,22 @@ type FuzzCampaignCoverageReport struct {
 }
 
 type FuzzCampaignRunArtifact struct {
-	ID           string    `json:"id"`
-	Kind         string    `json:"kind"`
-	RunID        string    `json:"run_id,omitempty"`
-	Target       string    `json:"target,omitempty"`
-	TargetFile   string    `json:"target_file,omitempty"`
-	SourceAnchor string    `json:"source_anchor,omitempty"`
-	Path         string    `json:"path,omitempty"`
-	Summary      string    `json:"summary,omitempty"`
-	Severity     string    `json:"severity,omitempty"`
-	Signal       string    `json:"signal,omitempty"`
-	EvidenceID   string    `json:"evidence_id,omitempty"`
-	RecordedAt   time.Time `json:"recorded_at,omitempty"`
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	RunID          string    `json:"run_id,omitempty"`
+	Target         string    `json:"target,omitempty"`
+	TargetFile     string    `json:"target_file,omitempty"`
+	SourceAnchor   string    `json:"source_anchor,omitempty"`
+	Path           string    `json:"path,omitempty"`
+	Summary        string    `json:"summary,omitempty"`
+	Severity       string    `json:"severity,omitempty"`
+	Signal         string    `json:"signal,omitempty"`
+	CrashClass     string    `json:"crash_class,omitempty"`
+	CrashAccess    string    `json:"crash_access,omitempty"`
+	CrashAddress   string    `json:"crash_address,omitempty"`
+	Exploitability string    `json:"exploitability,omitempty"`
+	EvidenceID     string    `json:"evidence_id,omitempty"`
+	RecordedAt     time.Time `json:"recorded_at,omitempty"`
 }
 
 type FuzzCampaignArtifactGraph struct {
@@ -433,6 +443,10 @@ func normalizeFuzzCampaignNativeResults(items []FuzzCampaignNativeResult) []Fuzz
 		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
 		item.Outcome = strings.ToLower(strings.TrimSpace(item.Outcome))
 		item.CrashFingerprint = strings.TrimSpace(item.CrashFingerprint)
+		item.CrashClass = strings.ToLower(strings.TrimSpace(item.CrashClass))
+		item.CrashAccess = strings.ToUpper(strings.TrimSpace(item.CrashAccess))
+		item.CrashAddress = strings.ToLower(strings.TrimSpace(item.CrashAddress))
+		item.Exploitability = strings.ToUpper(strings.TrimSpace(item.Exploitability))
 		item.SuspectedInvariant = compactPersistentMemoryText(item.SuspectedInvariant, 220)
 		item.MinimizeCommand = compactPersistentMemoryText(item.MinimizeCommand, 220)
 		item.ReportPath = functionFuzzNormalizeOptionalPath(item.ReportPath)
@@ -479,6 +493,10 @@ func normalizeFuzzCampaignRunArtifacts(items []FuzzCampaignRunArtifact) []FuzzCa
 		item.Summary = compactPersistentMemoryText(item.Summary, 220)
 		item.Severity = strings.ToLower(strings.TrimSpace(item.Severity))
 		item.Signal = strings.TrimSpace(item.Signal)
+		item.CrashClass = strings.ToLower(strings.TrimSpace(item.CrashClass))
+		item.CrashAccess = strings.ToUpper(strings.TrimSpace(item.CrashAccess))
+		item.CrashAddress = strings.ToLower(strings.TrimSpace(item.CrashAddress))
+		item.Exploitability = strings.ToUpper(strings.TrimSpace(item.Exploitability))
 		item.EvidenceID = strings.TrimSpace(item.EvidenceID)
 		if item.Severity == "" {
 			item.Severity = "medium"
@@ -540,6 +558,8 @@ func normalizeFuzzCampaignFindings(items []FuzzCampaignFinding) []FuzzCampaignFi
 		item.VerificationGate = strings.ToLower(strings.TrimSpace(item.VerificationGate))
 		item.TrackedFeatureGate = strings.ToLower(strings.TrimSpace(item.TrackedFeatureGate))
 		item.CrashFingerprint = strings.TrimSpace(item.CrashFingerprint)
+		item.CrashClass = strings.ToLower(strings.TrimSpace(item.CrashClass))
+		item.Exploitability = strings.ToUpper(strings.TrimSpace(item.Exploitability))
 		item.SuspectedInvariant = compactPersistentMemoryText(item.SuspectedInvariant, 220)
 		item.ReportPath = functionFuzzNormalizeOptionalPath(item.ReportPath)
 		item.MergedFindingIDs = uniqueStrings(item.MergedFindingIDs)
@@ -634,6 +654,8 @@ func mergeFuzzCampaignFinding(existing FuzzCampaignFinding, incoming FuzzCampaig
 	out.VerificationGate = fuzzCampaignFindingMergedGate(existing.VerificationGate, incoming.VerificationGate, []string{"required", "pending_native", "monitor"})
 	out.TrackedFeatureGate = fuzzCampaignFindingMergedGate(existing.TrackedFeatureGate, incoming.TrackedFeatureGate, []string{"block_close", "monitor"})
 	out.CrashFingerprint = firstNonBlankString(existing.CrashFingerprint, incoming.CrashFingerprint)
+	out.CrashClass = firstNonBlankString(existing.CrashClass, incoming.CrashClass)
+	out.Exploitability = fuzzCampaignMergedExploitability(existing.Exploitability, incoming.Exploitability)
 	out.SuspectedInvariant = firstNonBlankString(existing.SuspectedInvariant, incoming.SuspectedInvariant)
 	out.ReportPath = firstNonBlankString(incoming.ReportPath, existing.ReportPath)
 	out.MergedFindingIDs = uniqueStrings(append(append(existing.MergedFindingIDs, incoming.MergedFindingIDs...), incoming.ID))
@@ -651,6 +673,18 @@ func mergeFuzzCampaignFinding(existing FuzzCampaignFinding, incoming FuzzCampaig
 		out.UpdatedAt = time.Now()
 	}
 	return out
+}
+
+// fuzzCampaignMergedExploitability keeps the most severe band when merging
+// duplicate findings so a dedup never downgrades a confirmed exploitable bucket.
+func fuzzCampaignMergedExploitability(left string, right string) string {
+	order := map[string]int{"EXPLOITABLE": 4, "PROBABLY_EXPLOITABLE": 3, "UNKNOWN": 2, "NOT_LIKELY": 1}
+	left = strings.ToUpper(strings.TrimSpace(left))
+	right = strings.ToUpper(strings.TrimSpace(right))
+	if order[right] > order[left] {
+		return right
+	}
+	return firstNonBlankString(left, right)
 }
 
 func fuzzCampaignFindingMergedSeverity(left string, right string) string {
@@ -1329,6 +1363,7 @@ func buildFuzzCampaignNativeResult(campaign FuzzCampaign, run FunctionFuzzRun) (
 	case status == "failed" || status == "canceled" || status == "preempted" || status == "blocked":
 		outcome = "failed"
 	}
+	crashReport := fuzzCampaignAggregateCrashReport(run)
 	result := FuzzCampaignNativeResult{
 		RunID:              run.ID,
 		Target:             firstNonBlankString(run.TargetSymbolName, run.TargetQuery),
@@ -1336,7 +1371,7 @@ func buildFuzzCampaignNativeResult(campaign FuzzCampaign, run FunctionFuzzRun) (
 		Status:             status,
 		Outcome:            outcome,
 		CrashCount:         crashCount,
-		CrashFingerprint:   fuzzCampaignCrashFingerprint(run),
+		CrashFingerprint:   fuzzCampaignCrashFingerprintFromReport(run, crashReport),
 		SuspectedInvariant: fuzzCampaignSuspectedInvariant(run),
 		MinimizeCommand:    fuzzCampaignMinimizeCommand(campaign, run),
 		BuildLogPath:       run.Execution.BuildLogPath,
@@ -1344,6 +1379,12 @@ func buildFuzzCampaignNativeResult(campaign FuzzCampaign, run FunctionFuzzRun) (
 		CrashDir:           run.Execution.CrashDir,
 		SourceCandidateID:  run.SourceCandidateID,
 		RecordedAt:         time.Now(),
+	}
+	if crashReport.Parsed {
+		result.CrashClass = crashReport.Class
+		result.CrashAccess = crashReport.Access
+		result.CrashAddress = crashReport.Address
+		result.Exploitability = fuzzCampaignExploitabilityBand(crashReport)
 	}
 	normalized := normalizeFuzzCampaignNativeResults([]FuzzCampaignNativeResult{result})
 	if len(normalized) == 0 {
@@ -1437,7 +1478,7 @@ func parseFuzzCampaignRunArtifactsFromText(path string, text string, base FuzzCa
 	}
 	lower := strings.ToLower(text)
 	out := []FuzzCampaignRunArtifact{}
-	add := func(kind string, signal string, summary string, severity string) {
+	add := func(kind string, signal string, summary string, severity string) int {
 		artifact := base
 		artifact.Kind = kind
 		artifact.Path = path
@@ -1446,9 +1487,27 @@ func parseFuzzCampaignRunArtifactsFromText(path string, text string, base FuzzCa
 		artifact.Severity = severity
 		artifact.ID = fuzzCampaignFindingID(artifact.RunID, artifact.Kind, artifact.Path, artifact.Signal, artifact.Summary)
 		out = append(out, artifact)
+		return len(out) - 1
 	}
-	if strings.Contains(lower, "addresssanitizer") || strings.Contains(lower, "undefinedbehaviorsanitizer") || strings.Contains(lower, "threadsanitizer") || strings.Contains(lower, "leaksanitizer") || strings.Contains(lower, "runtime error:") {
-		add("sanitizer_report", fuzzCampaignSanitizerSignal(text), fuzzCampaignFirstMatchingLine(text, "sanitizer", "runtime error:"), "high")
+	if strings.Contains(lower, "addresssanitizer") || strings.Contains(lower, "undefinedbehaviorsanitizer") || strings.Contains(lower, "threadsanitizer") || strings.Contains(lower, "memorysanitizer") || strings.Contains(lower, "leaksanitizer") || strings.Contains(lower, "runtime error:") {
+		// Refine the sanitizer artifact with the parsed crash class and
+		// exploitability band when the report is rich enough. Severity falls back
+		// to the conservative "high" when the report cannot be parsed so a real
+		// crash is never hidden below "present".
+		report := parseFuzzCampaignCrashReport(text)
+		severity := "high"
+		band := ""
+		if report.Parsed {
+			band = fuzzCampaignExploitabilityBand(report)
+			severity = fuzzCampaignExploitabilitySeverity(band)
+		}
+		idx := add("sanitizer_report", fuzzCampaignSanitizerSignal(text), fuzzCampaignFirstMatchingLine(text, "sanitizer", "runtime error:"), severity)
+		if report.Parsed {
+			out[idx].CrashClass = report.Class
+			out[idx].CrashAccess = report.Access
+			out[idx].CrashAddress = report.Address
+			out[idx].Exploitability = band
+		}
 	}
 	if strings.Contains(lower, "application verifier") || strings.Contains(lower, "verifier stop") {
 		add("application_verifier_report", "application_verifier", fuzzCampaignFirstMatchingLine(text, "application verifier", "verifier stop"), "high")
@@ -1468,7 +1527,10 @@ func parseFuzzCampaignRunArtifactFromCrashFile(path string, base FuzzCampaignRun
 	case ".dmp", ".dump", ".mdmp", ".hdmp":
 		artifact.Kind = "windows_crash_dump"
 		artifact.Signal = "crash_dump"
-		artifact.Summary = "Windows crash dump captured for native fuzz run"
+		// Dump content is not parsed here; record that symbolization is still
+		// required rather than implying the dump was analyzed.
+		artifact.Summary = "Windows crash dump captured for native fuzz run; needs symbolization (!analyze -v)"
+		artifact.Exploitability = "UNKNOWN"
 	default:
 		name := strings.ToLower(filepath.Base(path))
 		if strings.Contains(name, "crash") || strings.Contains(name, "oom") || strings.Contains(name, "timeout") {
@@ -1537,6 +1599,8 @@ func fuzzCampaignSanitizerSignal(text string) string {
 		return "undefined_behavior_sanitizer"
 	case strings.Contains(lower, "threadsanitizer"):
 		return "thread_sanitizer"
+	case strings.Contains(lower, "memorysanitizer"):
+		return "memory_sanitizer"
 	case strings.Contains(lower, "leaksanitizer"):
 		return "leak_sanitizer"
 	case strings.Contains(lower, "runtime error:"):
@@ -1560,6 +1624,311 @@ func fuzzCampaignFirstMatchingLine(text string, needles ...string) string {
 		}
 	}
 	return compactPersistentMemoryText(text, 220)
+}
+
+// FuzzCampaignCrashReport holds the facts a sanitizer/crash report actually
+// states. Fields stay empty when the report does not contain them so callers
+// never fabricate addresses, access sizes, or operations the tool did not see.
+type FuzzCampaignCrashReport struct {
+	Class      string   // normalized crash class, e.g. heap-buffer-overflow, use-after-free, segv, ubsan-runtime-error
+	Access     string   // READ or WRITE when stated, otherwise empty
+	AccessSize string   // access size in bytes when stated, otherwise empty
+	Address    string   // faulting address when stated, otherwise empty
+	UBSanKind  string   // UBSan "runtime error" kind when present
+	Frames     []string // normalized top stack frames (module+offset / function name)
+	HeaderLine string   // raw header line for summaries
+	Parsed     bool     // true only when a crash class could be extracted
+}
+
+var (
+	fuzzCampaignAsanHeaderRe = regexp.MustCompile(`(?i)(?:AddressSanitizer|ERROR:\s*AddressSanitizer)\s*:?\s*([a-z0-9\-]+)`)
+	fuzzCampaignAccessRe     = regexp.MustCompile(`(?i)\b(READ|WRITE)\b\s+of\s+size\s+(\d+)`)
+	fuzzCampaignAccessAltRe  = regexp.MustCompile(`(?i)\b(READ|WRITE)\b\s+of\s+size`)
+	fuzzCampaignAddressRe    = regexp.MustCompile(`(?i)\b(?:on\s+(?:unknown\s+)?address|address)\s+(0x[0-9a-f]+)`)
+	fuzzCampaignSegvAddrRe   = regexp.MustCompile(`(?i)(?:SEGV|access-violation)\s+on\s+unknown\s+address\s+(0x[0-9a-f]+)`)
+	fuzzCampaignUBSanRe      = regexp.MustCompile(`(?i)runtime error:\s*(.+)`)
+	fuzzCampaignFrameRe      = regexp.MustCompile(`^#\d+\s+(.*)$`)
+	fuzzCampaignHexAddrRe    = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+	fuzzCampaignLineColRe    = regexp.MustCompile(`:\d+(?::\d+)?$`)
+	fuzzCampaignBuildIDRe    = regexp.MustCompile(`\(BuildId:\s*[0-9a-fA-F]+\)`)
+)
+
+// parseFuzzCampaignCrashReport extracts the structured crash facts from captured
+// ASan/UBSan/sanitizer output. It returns Parsed=false when no crash class can be
+// recognized so callers fall back to the conservative defaults.
+func parseFuzzCampaignCrashReport(text string) FuzzCampaignCrashReport {
+	report := FuzzCampaignCrashReport{}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return report
+	}
+	lines := strings.Split(text, "\n")
+	// Crash class detection prefers the explicit ASan header, then falls back to
+	// distinctive substrings for non-ASan signals.
+	if m := fuzzCampaignAsanHeaderRe.FindStringSubmatch(text); len(m) > 1 {
+		report.Class = fuzzCampaignNormalizeCrashClass(m[1])
+	}
+	lower := strings.ToLower(text)
+	if report.Class == "" {
+		switch {
+		case strings.Contains(lower, "heap-use-after-free"), strings.Contains(lower, "use-after-free"):
+			report.Class = "use-after-free"
+		case strings.Contains(lower, "double-free"), strings.Contains(lower, "attempting double-free"):
+			report.Class = "double-free"
+		case strings.Contains(lower, "heap-buffer-overflow"):
+			report.Class = "heap-buffer-overflow"
+		case strings.Contains(lower, "stack-buffer-overflow"):
+			report.Class = "stack-buffer-overflow"
+		case strings.Contains(lower, "global-buffer-overflow"):
+			report.Class = "global-buffer-overflow"
+		case strings.Contains(lower, "stack-overflow"):
+			report.Class = "stack-overflow"
+		case strings.Contains(lower, "stack-use-after-return"):
+			report.Class = "stack-use-after-return"
+		case strings.Contains(lower, "stack-use-after-scope"):
+			report.Class = "stack-use-after-scope"
+		case strings.Contains(lower, "memory leak"), strings.Contains(lower, "detected memory leaks"):
+			report.Class = "memory-leak"
+		case strings.Contains(lower, "data race"):
+			report.Class = "data-race"
+		case strings.Contains(lower, "use-of-uninitialized-value"), strings.Contains(lower, "use of uninitialized value"):
+			report.Class = "use-of-uninitialized-value"
+		case strings.Contains(lower, "segv"), strings.Contains(lower, "access-violation"):
+			report.Class = "segv"
+		case strings.Contains(lower, "runtime error:"):
+			report.Class = "ubsan-runtime-error"
+		}
+	}
+	// UBSan kind, when present, is recorded verbatim (trimmed) for downstream context.
+	if m := fuzzCampaignUBSanRe.FindStringSubmatch(text); len(m) > 1 {
+		report.UBSanKind = compactPersistentMemoryText(strings.TrimSpace(m[1]), 160)
+		if report.Class == "" {
+			report.Class = "ubsan-runtime-error"
+		}
+	}
+	// Access operation and size.
+	if m := fuzzCampaignAccessRe.FindStringSubmatch(text); len(m) > 2 {
+		report.Access = strings.ToUpper(m[1])
+		report.AccessSize = m[2]
+	} else if m := fuzzCampaignAccessAltRe.FindStringSubmatch(text); len(m) > 1 {
+		report.Access = strings.ToUpper(m[1])
+	}
+	// Faulting address; the SEGV-specific pattern wins so we do not pick a stray hex value.
+	if m := fuzzCampaignSegvAddrRe.FindStringSubmatch(text); len(m) > 1 {
+		report.Address = strings.ToLower(m[1])
+	} else if m := fuzzCampaignAddressRe.FindStringSubmatch(text); len(m) > 1 {
+		report.Address = strings.ToLower(m[1])
+	}
+	// Header line for summary use.
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lowerLine := strings.ToLower(trimmed)
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(lowerLine, "sanitizer") || strings.Contains(lowerLine, "runtime error:") {
+			report.HeaderLine = compactPersistentMemoryText(trimmed, 220)
+			break
+		}
+	}
+	report.Frames = fuzzCampaignNormalizeStackFrames(lines, 6)
+	report.Parsed = report.Class != ""
+	return report
+}
+
+// fuzzCampaignNormalizeCrashClass maps raw sanitizer tokens to a stable class name.
+func fuzzCampaignNormalizeCrashClass(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.Trim(raw, ":")
+	// Strict allowlist: an unknown token (e.g. "initialized" from a non-crash
+	// "AddressSanitizer initialized" banner) returns "" so the caller falls back
+	// to the distinctive-substring detection rather than inventing a crash class.
+	switch raw {
+	case "heap-buffer-overflow", "stack-buffer-overflow", "global-buffer-overflow",
+		"stack-use-after-return", "stack-use-after-scope",
+		"stack-overflow", "double-free", "segv", "alloc-dealloc-mismatch",
+		"dynamic-stack-buffer-overflow":
+		return raw
+	case "heap-use-after-free", "use-after-free":
+		return "use-after-free"
+	default:
+		return ""
+	}
+}
+
+// fuzzCampaignNormalizeStackFrames extracts up to limit normalized stack frames.
+// Normalization strips absolute paths, line/column suffixes, build IDs, and
+// run-to-run varying addresses so the signature is stable across ASLR/rebuilds.
+func fuzzCampaignNormalizeStackFrames(lines []string, limit int) []string {
+	if limit <= 0 {
+		limit = 6
+	}
+	frames := []string{}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		m := fuzzCampaignFrameRe.FindStringSubmatch(trimmed)
+		if len(m) < 2 {
+			continue
+		}
+		normalized := fuzzCampaignNormalizeFrameBody(m[1])
+		if normalized == "" {
+			continue
+		}
+		frames = append(frames, normalized)
+		if len(frames) >= limit {
+			break
+		}
+	}
+	return frames
+}
+
+// fuzzCampaignNormalizeFrameBody normalizes a single frame body to function name
+// or module+offset, removing varying addresses, paths, and source line columns.
+func fuzzCampaignNormalizeFrameBody(body string) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	// Drop the leading instruction address (e.g. "0x... in func ...").
+	if loc := strings.Index(body, " in "); loc >= 0 && fuzzCampaignHexAddrRe.MatchString(body[:loc]) {
+		body = body[loc+4:]
+	}
+	body = fuzzCampaignBuildIDRe.ReplaceAllString(body, "")
+	// Function name is everything up to the source-location parenthetical or path.
+	fn := body
+	if loc := strings.Index(fn, " ("); loc >= 0 {
+		fn = fn[:loc]
+	}
+	// ASan frames are "FunctionName SourceFile:line:col"; strip a trailing
+	// whitespace-separated source-location token so the function name is stable
+	// regardless of which file/line the symbol resolved to this run.
+	if loc := strings.LastIndex(fn, " "); loc >= 0 {
+		tail := fn[loc+1:]
+		if fuzzCampaignLineColRe.MatchString(tail) || strings.Contains(tail, "/") || strings.Contains(tail, "\\") || strings.Contains(tail, ".") {
+			fn = fn[:loc]
+		}
+	}
+	fn = strings.TrimSpace(fn)
+	if fn != "" && !fuzzCampaignHexAddrRe.MatchString(fn) {
+		// Strip a trailing source location ":line:col" if it leaked into the name.
+		fn = fuzzCampaignLineColRe.ReplaceAllString(fn, "")
+		return strings.TrimSpace(fn)
+	}
+	// Fall back to module+normalized-offset, dropping absolute path directories.
+	module := strings.TrimSpace(body)
+	module = fuzzCampaignHexAddrRe.ReplaceAllString(module, "0x?")
+	module = fuzzCampaignLineColRe.ReplaceAllString(module, "")
+	module = filepath.ToSlash(module)
+	if idx := strings.LastIndex(module, "/"); idx >= 0 {
+		module = module[idx+1:]
+	}
+	module = strings.TrimSpace(strings.Trim(module, "()"))
+	return module
+}
+
+// fuzzCampaignExploitabilityBand maps a parsed crash class to an exploitability
+// band following the !exploitable / CASR severity lineage. WRITE memory
+// corruption and use-after-free are treated as the most dangerous; READ
+// overflows and null-page SEGV are downgraded. Unparsed reports get UNKNOWN.
+func fuzzCampaignExploitabilityBand(report FuzzCampaignCrashReport) string {
+	if !report.Parsed {
+		return "UNKNOWN"
+	}
+	write := strings.EqualFold(report.Access, "WRITE")
+	read := strings.EqualFold(report.Access, "READ")
+	switch report.Class {
+	case "use-after-free", "double-free", "alloc-dealloc-mismatch":
+		if read {
+			return "PROBABLY_EXPLOITABLE"
+		}
+		return "EXPLOITABLE"
+	case "heap-buffer-overflow", "stack-buffer-overflow", "global-buffer-overflow",
+		"dynamic-stack-buffer-overflow", "stack-use-after-return", "stack-use-after-scope":
+		if write {
+			return "EXPLOITABLE"
+		}
+		if read {
+			return "NOT_LIKELY"
+		}
+		return "PROBABLY_EXPLOITABLE"
+	case "stack-overflow":
+		return "PROBABLY_EXPLOITABLE"
+	case "segv":
+		// A null / near-null faulting address is the classic null deref: not likely.
+		if fuzzCampaignIsNullPageAddress(report.Address) {
+			return "NOT_LIKELY"
+		}
+		if write {
+			return "PROBABLY_EXPLOITABLE"
+		}
+		return "UNKNOWN"
+	case "ubsan-runtime-error", "data-race", "memory-leak", "use-of-uninitialized-value":
+		return "UNKNOWN"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// fuzzCampaignIsNullPageAddress reports whether an address parses into the
+// classic null-page range (< 0x10000), the typical null-deref signature.
+func fuzzCampaignIsNullPageAddress(addr string) bool {
+	addr = strings.ToLower(strings.TrimSpace(addr))
+	if !strings.HasPrefix(addr, "0x") {
+		return false
+	}
+	hex := strings.TrimPrefix(addr, "0x")
+	if hex == "" {
+		return false
+	}
+	var value uint64
+	for _, r := range hex {
+		var digit uint64
+		switch {
+		case r >= '0' && r <= '9':
+			digit = uint64(r - '0')
+		case r >= 'a' && r <= 'f':
+			digit = uint64(r-'a') + 10
+		default:
+			return false
+		}
+		value = value*16 + digit
+		if value >= 0x10000 {
+			return false
+		}
+	}
+	return value < 0x10000
+}
+
+// fuzzCampaignExploitabilitySeverity maps the band onto the finding/evidence
+// severity vocabulary. It never returns below "medium" for a parsed crash so a
+// real crash is refined, never hidden below "present".
+func fuzzCampaignExploitabilitySeverity(band string) string {
+	switch strings.ToUpper(strings.TrimSpace(band)) {
+	case "EXPLOITABLE":
+		return "critical"
+	case "PROBABLY_EXPLOITABLE", "UNKNOWN":
+		return "high"
+	case "NOT_LIKELY":
+		return "medium"
+	default:
+		return "high"
+	}
+}
+
+// fuzzCampaignExploitabilityRisk maps the band onto the EvidenceRecord risk band.
+func fuzzCampaignExploitabilityRisk(band string) int {
+	switch strings.ToUpper(strings.TrimSpace(band)) {
+	case "EXPLOITABLE":
+		return 95
+	case "PROBABLY_EXPLOITABLE":
+		return 85
+	case "UNKNOWN":
+		return 80
+	case "NOT_LIKELY":
+		return 65
+	default:
+		return 85
+	}
 }
 
 func parseFuzzCampaignCoverageReport(path string, text string, run FunctionFuzzRun, result FuzzCampaignNativeResult) (FuzzCampaignCoverageReport, bool) {
@@ -1768,6 +2137,12 @@ func buildFuzzCampaignNativeFinding(campaign FuzzCampaign, run FunctionFuzzRun, 
 	if result.CrashCount > 0 || len(result.ArtifactIDs) > 0 {
 		severity = "high"
 	}
+	// Refine severity with the parsed exploitability band when available. The band
+	// can only raise the floor (e.g. EXPLOITABLE -> critical); it never lowers a
+	// real crash below the "high" floor set above.
+	if strings.TrimSpace(result.Exploitability) != "" {
+		severity = fuzzCampaignFindingMergedSeverity(severity, fuzzCampaignExploitabilitySeverity(result.Exploitability))
+	}
 	now := time.Now()
 	nativeKey := fuzzCampaignNativeResultKey(result)
 	sourceAnchor := fuzzCampaignSourceAnchorForRun(run)
@@ -1788,6 +2163,8 @@ func buildFuzzCampaignNativeFinding(campaign FuzzCampaign, run FunctionFuzzRun, 
 		VerificationGate:   verificationGate,
 		TrackedFeatureGate: featureGate,
 		CrashFingerprint:   result.CrashFingerprint,
+		CrashClass:         result.CrashClass,
+		Exploitability:     result.Exploitability,
 		SuspectedInvariant: result.SuspectedInvariant,
 		ReportPath:         result.ReportPath,
 		CreatedAt:          now,
@@ -1838,9 +2215,25 @@ func fuzzCampaignFindingForNativeResult(campaign FuzzCampaign, result FuzzCampai
 }
 
 func fuzzCampaignCrashFingerprint(run FunctionFuzzRun) string {
+	return fuzzCampaignCrashFingerprintFromReport(run, FuzzCampaignCrashReport{})
+}
+
+// fuzzCampaignCrashFingerprintFromReport hashes the parsed crash class plus the
+// top normalized stack frames when a report is available, so distinct bugs in
+// one function get distinct buckets and the same root cause across functions
+// merges. When no report could be parsed it falls back to the target-identity
+// hash, preserving the historical behavior.
+func fuzzCampaignCrashFingerprintFromReport(run FunctionFuzzRun, report FuzzCampaignCrashReport) string {
 	if run.Execution.CrashCount <= 0 && strings.TrimSpace(run.Execution.CrashDir) != "" {
 		if functionFuzzCountCrashArtifacts(run.Execution.CrashDir) <= 0 {
 			return ""
+		}
+	}
+	if report.Parsed {
+		parts := append([]string{"class:" + strings.ToLower(report.Class)}, report.Frames...)
+		seed := strings.ToLower(strings.Join(parts, "|"))
+		if strings.TrimSpace(seed) != "" && strings.TrimSpace(seed) != "class:" {
+			return fmt.Sprintf("fc-%08x", stableHash32(seed))
 		}
 	}
 	parts := []string{
@@ -1853,6 +2246,35 @@ func fuzzCampaignCrashFingerprint(run FunctionFuzzRun) string {
 		seed = strings.TrimSpace(run.ID)
 	}
 	return fmt.Sprintf("ff-%08x", stableHash32(seed))
+}
+
+// fuzzCampaignAggregateCrashReport reads the captured run output (run log,
+// build log, last output) and returns the best parsed crash report. It returns
+// Parsed=false when no sanitizer/crash text is available so callers keep their
+// conservative defaults.
+func fuzzCampaignAggregateCrashReport(run FunctionFuzzRun) FuzzCampaignCrashReport {
+	texts := []string{}
+	for _, path := range []string{run.Execution.RunLogPath, run.Execution.BuildLogPath} {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		texts = append(texts, string(data))
+	}
+	if strings.TrimSpace(run.Execution.LastOutput) != "" {
+		texts = append(texts, run.Execution.LastOutput)
+	}
+	for _, text := range texts {
+		report := parseFuzzCampaignCrashReport(text)
+		if report.Parsed {
+			return report
+		}
+	}
+	return FuzzCampaignCrashReport{}
 }
 
 func stableHash32(value string) uint32 {
@@ -1911,6 +2333,18 @@ func writeFuzzCampaignNativeResultReport(campaign FuzzCampaign, run FunctionFuzz
 	if strings.TrimSpace(result.CrashFingerprint) != "" {
 		fmt.Fprintf(&b, "- Crash fingerprint: `%s`\n", result.CrashFingerprint)
 	}
+	if strings.TrimSpace(result.CrashClass) != "" {
+		fmt.Fprintf(&b, "- Crash class: `%s`\n", result.CrashClass)
+	}
+	if strings.TrimSpace(result.CrashAccess) != "" {
+		fmt.Fprintf(&b, "- Access: `%s`\n", result.CrashAccess)
+	}
+	if strings.TrimSpace(result.CrashAddress) != "" {
+		fmt.Fprintf(&b, "- Faulting address: `%s`\n", result.CrashAddress)
+	}
+	if strings.TrimSpace(result.Exploitability) != "" {
+		fmt.Fprintf(&b, "- Exploitability: `%s`\n", result.Exploitability)
+	}
 	if strings.TrimSpace(result.SuspectedInvariant) != "" {
 		fmt.Fprintf(&b, "- Suspected invariant: %s\n", result.SuspectedInvariant)
 	}
@@ -1960,6 +2394,15 @@ func buildFuzzCampaignNativeEvidenceRecord(campaign FuzzCampaign, run FunctionFu
 	} else if strings.EqualFold(result.Outcome, "failed") && risk < 60 {
 		risk = 60
 	}
+	// Refine with the parsed exploitability band when available. Severity can only
+	// be raised (never lowered below the crash-present floor); the risk band is set
+	// to the band's value when it would raise the conservative default.
+	if strings.TrimSpace(result.Exploitability) != "" {
+		severity = fuzzCampaignFindingMergedSeverity(severity, fuzzCampaignExploitabilitySeverity(result.Exploitability))
+		if bandRisk := fuzzCampaignExploitabilityRisk(result.Exploitability); bandRisk > risk {
+			risk = bandRisk
+		}
+	}
 	now := time.Now()
 	record := EvidenceRecord{
 		ID:                  fuzzCampaignNativeEvidenceID(campaign, run, result, now),
@@ -1986,6 +2429,10 @@ func buildFuzzCampaignNativeEvidenceRecord(campaign FuzzCampaign, run FunctionFu
 			"report_path":         filepath.ToSlash(result.ReportPath),
 			"crash_dir":           filepath.ToSlash(result.CrashDir),
 			"crash_fingerprint":   result.CrashFingerprint,
+			"crash_class":         result.CrashClass,
+			"crash_access":        result.CrashAccess,
+			"crash_address":       result.CrashAddress,
+			"exploitability":      result.Exploitability,
 			"suspected_invariant": result.SuspectedInvariant,
 			"minimize_command":    result.MinimizeCommand,
 			"artifact_ids":        strings.Join(result.ArtifactIDs, ","),
@@ -2616,6 +3063,12 @@ func renderFuzzCampaign(campaign FuzzCampaign) string {
 		fmt.Fprintf(&b, "Run artifacts:\n")
 		for _, artifact := range limitFuzzCampaignRunArtifacts(campaign.RunArtifacts, 8) {
 			line := fmt.Sprintf("- %s kind=%s severity=%s", artifact.ID, valueOrUnset(artifact.Kind), valueOrUnset(artifact.Severity))
+			if strings.TrimSpace(artifact.CrashClass) != "" {
+				line += " class=" + artifact.CrashClass
+			}
+			if strings.TrimSpace(artifact.Exploitability) != "" {
+				line += " exploitability=" + artifact.Exploitability
+			}
 			if strings.TrimSpace(artifact.Signal) != "" {
 				line += " signal=" + artifact.Signal
 			}
@@ -2635,6 +3088,9 @@ func renderFuzzCampaign(campaign FuzzCampaign) string {
 		fmt.Fprintf(&b, "Findings:\n")
 		for _, finding := range limitFuzzCampaignFindings(campaign.Findings, 8) {
 			line := fmt.Sprintf("- %s status=%s severity=%s", finding.ID, valueOrUnset(finding.Status), valueOrUnset(finding.Severity))
+			if strings.TrimSpace(finding.Exploitability) != "" {
+				line += " exploitability=" + finding.Exploitability
+			}
 			if strings.TrimSpace(finding.Target) != "" {
 				line += " target=" + finding.Target
 			}
