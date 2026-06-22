@@ -3390,6 +3390,298 @@ func functionFuzzArgsContain(args []string, want string) bool {
 	return false
 }
 
+func TestFunctionFuzzWriteAFLScriptEmitsCMPLOGEngine(t *testing.T) {
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "artifacts")
+	corpusDir := filepath.Join(artifactDir, "corpus")
+	dictPath := filepath.Join(artifactDir, "dict.txt")
+	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
+		t.Fatalf("mkdir corpus: %v", err)
+	}
+	if err := os.WriteFile(dictPath, []byte("# dict\n\"\\x4d\\x5a\"\n"), 0o644); err != nil {
+		t.Fatalf("write dict: %v", err)
+	}
+
+	run := FunctionFuzzRun{
+		ID:          "fuzz-afl-cmplog",
+		Workspace:   root,
+		HarnessPath: filepath.Join(artifactDir, "harness.cpp"),
+		ParameterStrategies: []FunctionFuzzParamStrategy{
+			{Class: "buffer"},
+		},
+	}
+	execState := FunctionFuzzExecution{
+		ExecutablePath:  filepath.Join(artifactDir, "build", "fuzz_target.exe"),
+		TranslationUnit: filepath.Join(root, "src", "guard.cpp"),
+		CorpusDir:       corpusDir,
+		DictionaryPath:  dictPath,
+		AFLScriptPath:   filepath.Join(artifactDir, "run_afl.sh"),
+		Profile:         "extended",
+	}
+	record := CompilationCommandRecord{
+		IncludePaths: []string{"include"},
+		Defines:      []string{"GUARD_MODE=1"},
+	}
+
+	if err := functionFuzzWriteAFLScript(run, record, execState); err != nil {
+		t.Fatalf("write afl script: %v", err)
+	}
+	data, err := os.ReadFile(execState.AFLScriptPath)
+	if err != nil {
+		t.Fatalf("read afl script: %v", err)
+	}
+	script := string(data)
+
+	cmplogBinary := filepath.Join(artifactDir, "build", "afl", "fuzz_target_cmplog")
+
+	// The CMPLOG (input-to-state) build must be instrumented with AFL_LLVM_CMPLOG=1.
+	if !strings.Contains(script, "AFL_LLVM_CMPLOG=1") {
+		t.Fatalf("expected CMPLOG build env AFL_LLVM_CMPLOG=1 in script:\n%s", script)
+	}
+	// afl-fuzz must pass -c <cmplog_binary> (comparison solving) ...
+	if !strings.Contains(script, "afl-fuzz ") {
+		t.Fatalf("expected an afl-fuzz invocation in script:\n%s", script)
+	}
+	if !strings.Contains(script, "-c \"$CMPLOG_BIN\"") {
+		t.Fatalf("expected afl-fuzz -c CMPLOG binary arg in script:\n%s", script)
+	}
+	if !strings.Contains(script, functionFuzzShellLiteral(cmplogBinary)) {
+		t.Fatalf("expected CMPLOG binary path %q in script:\n%s", cmplogBinary, script)
+	}
+	// ... -x pointing at the generated dictionary ...
+	if !strings.Contains(script, "-x \"$DICT\"") {
+		t.Fatalf("expected afl-fuzz -x dictionary arg in script:\n%s", script)
+	}
+	if !strings.Contains(script, "DICT="+functionFuzzShellLiteral(dictPath)) {
+		t.Fatalf("expected DICT to reference generated dictionary %q in script:\n%s", dictPath, script)
+	}
+	// ... the seed corpus as the input dir ...
+	if !strings.Contains(script, "-i \"$SEED_CORPUS\"") {
+		t.Fatalf("expected afl-fuzz -i seed corpus arg in script:\n%s", script)
+	}
+	if !strings.Contains(script, "SEED_CORPUS="+functionFuzzShellLiteral(corpusDir)) {
+		t.Fatalf("expected SEED_CORPUS to reference reused corpus %q in script:\n%s", corpusDir, script)
+	}
+	// ... and an output dir.
+	if !strings.Contains(script, "-o \"$OUTPUT_DIR\"") {
+		t.Fatalf("expected afl-fuzz -o output dir arg in script:\n%s", script)
+	}
+	// Timeout (-t in ms) and memory limit (-m) must be present.
+	if !strings.Contains(script, "-t 15000") {
+		t.Fatalf("expected afl-fuzz -t 15000 (extended profile) in script:\n%s", script)
+	}
+	if !strings.Contains(script, "-m 4096") {
+		t.Fatalf("expected afl-fuzz -m memory limit in script:\n%s", script)
+	}
+	// Honesty: the script must be marked Linux/WSL, gate on the afl toolchain, and
+	// not fabricate a run when the toolchain is absent.
+	if !strings.Contains(script, "Linux/WSL") {
+		t.Fatalf("expected Linux/WSL advisory in script:\n%s", script)
+	}
+	if !strings.Contains(script, "command -v afl-fuzz") {
+		t.Fatalf("expected afl toolchain gate in script:\n%s", script)
+	}
+	if !strings.Contains(script, "[advisory]") {
+		t.Fatalf("expected advisory exit path when toolchain absent in script:\n%s", script)
+	}
+}
+
+func TestFunctionFuzzWriteAFLScriptOmitsDictArgWhenNoDictionary(t *testing.T) {
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "artifacts")
+	corpusDir := filepath.Join(artifactDir, "corpus")
+	if err := os.MkdirAll(corpusDir, 0o755); err != nil {
+		t.Fatalf("mkdir corpus: %v", err)
+	}
+	run := FunctionFuzzRun{
+		ID:          "fuzz-afl-no-dict",
+		Workspace:   root,
+		HarnessPath: filepath.Join(artifactDir, "harness.cpp"),
+	}
+	execState := FunctionFuzzExecution{
+		ExecutablePath:  filepath.Join(artifactDir, "build", "fuzz_target.exe"),
+		TranslationUnit: filepath.Join(root, "src", "guard.cpp"),
+		CorpusDir:       corpusDir,
+		AFLScriptPath:   filepath.Join(artifactDir, "run_afl.sh"),
+		Profile:         "smoke",
+	}
+	if err := functionFuzzWriteAFLScript(run, CompilationCommandRecord{}, execState); err != nil {
+		t.Fatalf("write afl script: %v", err)
+	}
+	data, err := os.ReadFile(execState.AFLScriptPath)
+	if err != nil {
+		t.Fatalf("read afl script: %v", err)
+	}
+	script := string(data)
+	// With no dictionary the script keeps the conditional -x guard (DICT empty) and
+	// still wires CMPLOG, the corpus input dir, and the output dir.
+	if !strings.Contains(script, "DICT=\"\"") {
+		t.Fatalf("expected empty DICT when no dictionary path, got:\n%s", script)
+	}
+	if !strings.Contains(script, "if [ -n \"$DICT\" ]; then") {
+		t.Fatalf("expected conditional dictionary guard, got:\n%s", script)
+	}
+	if !strings.Contains(script, "-c \"$CMPLOG_BIN\"") {
+		t.Fatalf("expected CMPLOG arg even without dictionary, got:\n%s", script)
+	}
+	// Smoke profile timeout is 5s -> 5000ms.
+	if !strings.Contains(script, "-t 5000") {
+		t.Fatalf("expected smoke profile -t 5000, got:\n%s", script)
+	}
+}
+
+func TestBuildFunctionFuzzRunEmitsAFLScriptAlongsideLibFuzzer(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultConfig(root)
+	analysisCfg := configProjectAnalysis(cfg, root)
+	latestDir := filepath.Join(analysisCfg.OutputDir, "latest")
+	if err := os.MkdirAll(latestDir, 0o755); err != nil {
+		t.Fatalf("mkdir latest analysis: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "include"), 0o755); err != nil {
+		t.Fatalf("mkdir include: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "src", "guard.cpp"), []byte("bool ValidateRequest(const uint8_t*, size_t, uint32_t) { return true; }\n"), 0o644); err != nil {
+		t.Fatalf("write guard source: %v", err)
+	}
+
+	index := SemanticIndexV2{
+		Symbols: []SymbolRecord{
+			{
+				ID:             "func:ValidateRequest@src/guard.cpp",
+				Name:           "ValidateRequest",
+				Kind:           "function",
+				Language:       "cpp",
+				File:           "src/guard.cpp",
+				BuildContextID: "buildctx:compile:guard",
+				Signature:      "bool ValidateRequest(const uint8_t* data, size_t size, uint32_t flags)",
+				StartLine:      12,
+				EndLine:        40,
+			},
+		},
+	}
+	indexData, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal structural index v2: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "structural_index_v2.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write structural index v2: %v", err)
+	}
+
+	fakeCompiler := filepath.Join(root, "toolchain", "clang++.exe")
+	if err := os.MkdirAll(filepath.Dir(fakeCompiler), 0o755); err != nil {
+		t.Fatalf("mkdir toolchain: %v", err)
+	}
+	if err := os.WriteFile(fakeCompiler, []byte(""), 0o644); err != nil {
+		t.Fatalf("write fake compiler: %v", err)
+	}
+
+	snapshot := ProjectSnapshot{
+		Root:        root,
+		GeneratedAt: time.Now(),
+		CompileCommands: []CompilationCommandRecord{
+			{
+				File:           "src/guard.cpp",
+				Directory:      root,
+				Compiler:       fakeCompiler,
+				Arguments:      []string{fakeCompiler, "-std=c++20", "-Iinclude", "-DGUARD_MODE=1"},
+				IncludePaths:   []string{"include"},
+				Defines:        []string{"GUARD_MODE=1"},
+				BuildContextID: "buildctx:compile:guard",
+				Source:         "compile_commands.json",
+			},
+		},
+	}
+	snapshotData, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(latestDir, "snapshot.json"), snapshotData, 0o644); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+
+	run, err := buildFunctionFuzzRun(cfg, root, "ValidateRequest")
+	if err != nil {
+		t.Fatalf("build function fuzz run: %v", err)
+	}
+	if !run.Execution.Eligible {
+		t.Fatalf("expected autonomous execution to be eligible, got %+v", run.Execution)
+	}
+
+	// libFuzzer stays the default executing engine: the PowerShell runner and
+	// libFuzzer run command are unchanged.
+	if filepath.Base(run.Execution.BuildScriptPath) != "run_fuzz.ps1" {
+		t.Fatalf("expected libFuzzer runner run_fuzz.ps1 to stay default, got %q", run.Execution.BuildScriptPath)
+	}
+	if _, statErr := os.Stat(run.Execution.BuildScriptPath); statErr != nil {
+		t.Fatalf("expected run_fuzz.ps1 artifact: %v", statErr)
+	}
+	if !strings.Contains(run.Execution.RunCommand, "-use_value_profile=1") {
+		t.Fatalf("expected libFuzzer run command to stay unchanged, got %q", run.Execution.RunCommand)
+	}
+
+	// Secondary AFL++ engine: run_afl.sh is emitted next to run_fuzz.ps1.
+	if filepath.Base(run.Execution.AFLScriptPath) != "run_afl.sh" {
+		t.Fatalf("expected secondary AFL++ script run_afl.sh, got %q", run.Execution.AFLScriptPath)
+	}
+	if filepath.Dir(run.Execution.AFLScriptPath) != filepath.Dir(run.Execution.BuildScriptPath) {
+		t.Fatalf("expected run_afl.sh next to run_fuzz.ps1, got %q vs %q", run.Execution.AFLScriptPath, run.Execution.BuildScriptPath)
+	}
+	aflData, err := os.ReadFile(run.Execution.AFLScriptPath)
+	if err != nil {
+		t.Fatalf("expected run_afl.sh artifact: %v", err)
+	}
+	aflScript := string(aflData)
+	if !strings.Contains(aflScript, "AFL_LLVM_CMPLOG=1") {
+		t.Fatalf("expected emitted run_afl.sh to include CMPLOG build, got:\n%s", aflScript)
+	}
+	if !strings.Contains(aflScript, "-c \"$CMPLOG_BIN\"") {
+		t.Fatalf("expected emitted run_afl.sh to wire CMPLOG comparison solving, got:\n%s", aflScript)
+	}
+	// It must reuse the same dictionary and seed corpus the libFuzzer path generated.
+	if dict := strings.TrimSpace(run.Execution.DictionaryPath); dict != "" {
+		if !strings.Contains(aflScript, functionFuzzShellLiteral(dict)) {
+			t.Fatalf("expected run_afl.sh to reuse libFuzzer dictionary %q, got:\n%s", dict, aflScript)
+		}
+	}
+	if !strings.Contains(aflScript, functionFuzzShellLiteral(run.Execution.CorpusDir)) {
+		t.Fatalf("expected run_afl.sh to reuse libFuzzer corpus %q, got:\n%s", run.Execution.CorpusDir, aflScript)
+	}
+	// The report must surface the AFL script with a Linux/WSL advisory.
+	report := renderFunctionFuzzReportMarkdown(run, functionFuzzClosure{})
+	if !strings.Contains(report, "run_afl.sh") {
+		t.Fatalf("expected report to list run_afl.sh artifact, got:\n%s", report)
+	}
+	if !strings.Contains(report, "Linux/WSL") {
+		t.Fatalf("expected report to mark AFL++ script as Linux/WSL, got:\n%s", report)
+	}
+}
+
+func TestFunctionFuzzKernelAddressProfileSkipsAFLScript(t *testing.T) {
+	cfg := Config{}
+	root := t.TempDir()
+	run := &FunctionFuzzRun{
+		ID:        "fuzz-kasan-no-afl",
+		Workspace: root,
+	}
+	execState := FunctionFuzzExecution{
+		CompilerResolvedPath: filepath.Join(root, "clang-cl.exe"),
+		CompilerStyle:        "clang-cl",
+		AFLScriptPath:        filepath.Join(root, "run_afl.sh"),
+		SanitizerProfile:     "kernel-address",
+	}
+	functionFuzzPlanKernelAddressProfile(cfg, run, CompilationCommandRecord{}, execState)
+	if run.Execution.AFLScriptPath != "" {
+		t.Fatalf("expected gated KASAN profile to emit no AFL++ script, got %q", run.Execution.AFLScriptPath)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "run_afl.sh")); statErr == nil {
+		t.Fatalf("expected gated KASAN profile to write no run_afl.sh file")
+	}
+}
+
 func TestFunctionFuzzBuildArgsHonorSanitizerProfile(t *testing.T) {
 	run := FunctionFuzzRun{
 		ID:          "fuzz-san-profiles",
@@ -4073,4 +4365,102 @@ func TestFunctionFuzzDriveBuildRepairLoopUnfixableFailsImmediately(t *testing.T)
 	if run.Execution.Status != "build_failed" {
 		t.Fatalf("expected build_failed, got %q", run.Execution.Status)
 	}
+}
+
+func vulnClassTestObs(kind string, line int, evidence string, access []string, focus []string) FunctionFuzzCodeObservation {
+	return FunctionFuzzCodeObservation{
+		Kind:        kind,
+		SymbolID:    "sym1",
+		Symbol:      "TargetHandler",
+		File:        "drv.c",
+		Line:        line,
+		Evidence:    evidence,
+		AccessPaths: access,
+		FocusInputs: focus,
+	}
+}
+
+func TestFunctionFuzzVulnClassScenariosForSymbol(t *testing.T) {
+	symbol := SymbolRecord{ID: "sym1", Name: "TargetHandler", File: "drv.c"}
+	closure := functionFuzzClosure{}
+
+	classTitles := func(items []FunctionFuzzCodeObservation) map[string]string {
+		findings := functionFuzzVulnClassScenariosForSymbol("", SymbolRecord{ID: "root", Name: "Root"}, symbol, items, closure, nil, nil)
+		out := map[string]string{}
+		for _, f := range findings {
+			if _, ok := out[f.Class]; ok {
+				t.Fatalf("class %q appeared more than once for a single symbol", f.Class)
+			}
+			out[f.Class] = strings.ToLower(f.Scenario.Title)
+		}
+		return out
+	}
+
+	t.Run("integer_overflow_arithmetic_into_alloc", func(t *testing.T) {
+		got := classTitles([]FunctionFuzzCodeObservation{
+			vulnClassTestObs("size_guard", 10, "if (count > maxcount) return STATUS_INVALID;", []string{"count"}, []string{"count"}),
+			vulnClassTestObs("alloc_site", 12, "buf = ExAllocatePool2(POOL_FLAG_NONPAGED, count * elemsize, tag);", []string{"buf"}, []string{"count"}),
+		})
+		title, ok := got["overflow"]
+		if !ok {
+			t.Fatalf("expected an overflow finding, got classes %v", got)
+		}
+		if !strings.Contains(title, "size arithmetic") || !strings.Contains(title, "allocation") {
+			t.Fatalf("overflow title not class-specific: %q", title)
+		}
+	})
+
+	t.Run("use_after_free_ordering", func(t *testing.T) {
+		got := classTitles([]FunctionFuzzCodeObservation{
+			vulnClassTestObs("cleanup_path", 20, "FreeBuffer(obj->buffer);", []string{"obj->buffer"}, []string{"buffer"}),
+			vulnClassTestObs("copy_sink", 25, "RtlCopyMemory(dst, obj->buffer, len);", []string{"obj->buffer"}, []string{"buffer"}),
+		})
+		title, ok := got["lifetime"]
+		if !ok {
+			t.Fatalf("expected a lifetime finding, got classes %v", got)
+		}
+		if !strings.Contains(title, "use-after-free") {
+			t.Fatalf("expected use-after-free title, got %q", title)
+		}
+	})
+
+	t.Run("double_free_two_cleanups", func(t *testing.T) {
+		got := classTitles([]FunctionFuzzCodeObservation{
+			vulnClassTestObs("cleanup_path", 30, "FreeBuffer(ctx->handle);", []string{"ctx->handle"}, nil),
+			vulnClassTestObs("cleanup_path", 40, "FreeBuffer(ctx->handle);", []string{"ctx->handle"}, nil),
+		})
+		title, ok := got["lifetime"]
+		if !ok {
+			t.Fatalf("expected a lifetime finding, got classes %v", got)
+		}
+		if !strings.Contains(title, "released more than once") {
+			t.Fatalf("expected double-free title, got %q", title)
+		}
+	})
+
+	t.Run("toctou_double_fetch_same_user_buffer", func(t *testing.T) {
+		got := classTitles([]FunctionFuzzCodeObservation{
+			vulnClassTestObs("size_guard", 50, "if (userbuffer->size > max) return STATUS_INVALID;", []string{"userbuffer->size"}, []string{"userbuffer", "size"}),
+			vulnClassTestObs("copy_sink", 55, "RtlCopyMemory(dst, src, userbuffer->size);", []string{"userbuffer->size"}, []string{"userbuffer", "size"}),
+		})
+		title, ok := got["toctou"]
+		if !ok {
+			t.Fatalf("expected a toctou finding, got classes %v", got)
+		}
+		if !strings.Contains(title, "more than once") {
+			t.Fatalf("expected double-fetch title, got %q", title)
+		}
+	})
+
+	t.Run("safe_ordering_no_new_scenario", func(t *testing.T) {
+		// Use happens BEFORE free (no UAF), only one cleanup (no double-free),
+		// and the user buffer is fetched on a single line (no double-fetch).
+		got := classTitles([]FunctionFuzzCodeObservation{
+			vulnClassTestObs("copy_sink", 60, "RtlCopyMemory(dst, obj->buffer, len);", []string{"obj->buffer"}, []string{"buffer"}),
+			vulnClassTestObs("cleanup_path", 70, "FreeBuffer(obj->buffer);", []string{"obj->buffer"}, []string{"buffer"}),
+		})
+		if len(got) != 0 {
+			t.Fatalf("expected no vuln-class findings for safe ordering, got %v", got)
+		}
+	})
 }

@@ -209,16 +209,24 @@ type FunctionFuzzExecution struct {
 	CompileDirectory     string `json:"compile_directory,omitempty"`
 	TranslationUnit      string `json:"translation_unit,omitempty"`
 	BuildScriptPath      string `json:"build_script_path,omitempty"`
-	BuildLogPath         string `json:"build_log_path,omitempty"`
-	RunLogPath           string `json:"run_log_path,omitempty"`
-	BuildCommand         string `json:"build_command,omitempty"`
-	RunCommand           string `json:"run_command,omitempty"`
-	ExecutablePath       string `json:"executable_path,omitempty"`
-	CorpusDir            string `json:"corpus_dir,omitempty"`
-	CrashDir             string `json:"crash_dir,omitempty"`
-	DictionaryPath       string `json:"dictionary_path,omitempty"`
-	CorpusManifestPath   string `json:"corpus_manifest_path,omitempty"`
-	Profile              string `json:"profile,omitempty"`
+	// AFLScriptPath is the path of the generated AFL++ CMPLOG build+run script
+	// (run_afl.sh). It is a secondary, alternative engine to the default
+	// libFuzzer path: the script is emitted next to the libFuzzer artifacts and
+	// reuses the same source-derived dictionary and seed corpus, but it is a
+	// Linux/WSL deliverable (the afl toolchain is not a Windows path) and is
+	// never auto-executed by KernForge. Empty when the AFL script was not
+	// emitted (for example on the gated KASAN profile).
+	AFLScriptPath      string `json:"afl_script_path,omitempty"`
+	BuildLogPath       string `json:"build_log_path,omitempty"`
+	RunLogPath         string `json:"run_log_path,omitempty"`
+	BuildCommand       string `json:"build_command,omitempty"`
+	RunCommand         string `json:"run_command,omitempty"`
+	ExecutablePath     string `json:"executable_path,omitempty"`
+	CorpusDir          string `json:"corpus_dir,omitempty"`
+	CrashDir           string `json:"crash_dir,omitempty"`
+	DictionaryPath     string `json:"dictionary_path,omitempty"`
+	CorpusManifestPath string `json:"corpus_manifest_path,omitempty"`
+	Profile            string `json:"profile,omitempty"`
 	// SanitizerProfile selects which sanitizer the libFuzzer build links against.
 	// Empty/"address" keeps the default ASan(+UBSan) build; "memory" and "thread"
 	// are mutually-exclusive single-sanitizer alternatives, and "kernel-address"
@@ -567,6 +575,7 @@ func normalizeFunctionFuzzExecution(execState FunctionFuzzExecution) FunctionFuz
 	execState.CompileDirectory = functionFuzzNormalizeOptionalPath(execState.CompileDirectory)
 	execState.TranslationUnit = functionFuzzNormalizeOptionalPath(execState.TranslationUnit)
 	execState.BuildScriptPath = functionFuzzNormalizeOptionalPath(execState.BuildScriptPath)
+	execState.AFLScriptPath = functionFuzzNormalizeOptionalPath(execState.AFLScriptPath)
 	execState.BuildLogPath = functionFuzzNormalizeOptionalPath(execState.BuildLogPath)
 	execState.RunLogPath = functionFuzzNormalizeOptionalPath(execState.RunLogPath)
 	execState.ExecutablePath = functionFuzzNormalizeOptionalPath(execState.ExecutablePath)
@@ -6067,7 +6076,346 @@ func buildFunctionFuzzObservationDrivenScenarios(root string, target SymbolRecor
 			})
 		}
 	}
+
+	// Vulnerability-class post-pass (defensive). The template scenarios above
+	// match on observation-kind membership only; these additional scenarios key
+	// on the ORDER of observations (by source line) and the recovered expression
+	// text, which is where integer-overflow, use-after-free / double-free, and
+	// TOCTOU / double-fetch classes actually live. The goal is to surface these
+	// latent memory-safety classes in code the operator owns so a source-level
+	// fuzz harness drives them before an attacker can. One representative per
+	// class, taken from the highest-scoring symbol that exhibits it.
+	seenVulnClass := map[string]bool{}
+	for _, candidate := range candidates {
+		if seenVulnClass["overflow"] && seenVulnClass["lifetime"] && seenVulnClass["toctou"] {
+			break
+		}
+		symbol := symbolByID[candidate.symbolID]
+		if strings.TrimSpace(symbol.ID) == "" {
+			continue
+		}
+		for _, finding := range functionFuzzVulnClassScenariosForSymbol(root, target, symbol, grouped[candidate.symbolID], closure, sinks, overlays) {
+			if seenVulnClass[finding.Class] {
+				continue
+			}
+			seenVulnClass[finding.Class] = true
+			appendScenario(finding.Scenario)
+		}
+	}
 	return normalizeFunctionFuzzVirtualScenarios(scenarios)
+}
+
+// functionFuzzVulnClassFinding tags a virtual scenario with the vulnerability
+// class it represents so the assembler can keep one representative per class.
+type functionFuzzVulnClassFinding struct {
+	Class    string
+	Scenario FunctionFuzzVirtualScenario
+}
+
+// functionFuzzEvidenceHasSizeArithmetic reports whether a recovered source line
+// performs arithmetic on a size or length-like term in a way that can overflow
+// or truncate a size computation (multiply, shift, or addition of two terms).
+func functionFuzzEvidenceHasSizeArithmetic(evidence string) bool {
+	lower := strings.ToLower(strings.TrimSpace(evidence))
+	if lower == "" {
+		return false
+	}
+	if !containsAny(lower, "size", "len", "length", "count", "bytes", "num", "nelem", "elem", "stride", "width", "height") {
+		return false
+	}
+	if strings.Contains(lower, "<<") || strings.Contains(lower, "*") {
+		return true
+	}
+	if strings.Contains(lower, "+") && !strings.Contains(lower, "++") {
+		return true
+	}
+	return false
+}
+
+// functionFuzzObservationsShareObject reports whether two observations touch the
+// same buffer or pointer object, by intersecting their recovered access paths
+// and focus inputs. It keeps the lifetime (UAF / double-free) detector from
+// pairing an unrelated free with an unrelated use.
+func functionFuzzObservationsShareObject(a FunctionFuzzCodeObservation, b FunctionFuzzCodeObservation) bool {
+	keys := map[string]bool{}
+	add := func(items []string) {
+		for _, item := range items {
+			item = strings.ToLower(strings.TrimSpace(item))
+			if len(item) >= 3 {
+				keys[item] = true
+			}
+		}
+	}
+	add(a.AccessPaths)
+	add(a.FocusInputs)
+	if len(keys) == 0 {
+		return false
+	}
+	for _, item := range b.AccessPaths {
+		if keys[strings.ToLower(strings.TrimSpace(item))] {
+			return true
+		}
+	}
+	for _, item := range b.FocusInputs {
+		if keys[strings.ToLower(strings.TrimSpace(item))] {
+			return true
+		}
+	}
+	return false
+}
+
+// functionFuzzObservationObjectKeys returns indirect or user-memory access keys
+// for the double-fetch detector. It deliberately ignores plain local scalars so
+// the common bounds-check-then-copy pattern (a stable local length read twice)
+// is not mistaken for a time-of-check-to-time-of-use double-fetch.
+func functionFuzzObservationObjectKeys(ob FunctionFuzzCodeObservation) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	userish := func(v string) bool {
+		return containsAny(v, "userbuffer", "systembuffer", "type3inputbuffer", "payload", "input", "data", "buffer", "irp", "mdl")
+	}
+	for _, raw := range ob.AccessPaths {
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if len(v) < 3 || seen[v] {
+			continue
+		}
+		indirect := strings.ContainsAny(v, "*[") || strings.Contains(v, "->")
+		if !indirect && !userish(v) {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	for _, raw := range ob.FocusInputs {
+		v := strings.ToLower(strings.TrimSpace(raw))
+		if len(v) < 3 || seen[v] {
+			continue
+		}
+		if !userish(v) {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// functionFuzzVulnClassScenariosForSymbol derives ordering- and arithmetic-aware
+// vulnerability-class findings (integer-overflow, use-after-free / double-free,
+// TOCTOU / double-fetch) from one symbol's observation group. These complement
+// the membership-only template scenarios by keying on observation order (by
+// source line) and the recovered expression text. Defensive intent: surface
+// these latent memory-safety classes in the operator's own code so a
+// source-level fuzz harness exercises them before an attacker can.
+func functionFuzzVulnClassScenariosForSymbol(root string, target SymbolRecord, symbol SymbolRecord, items []FunctionFuzzCodeObservation, closure functionFuzzClosure, sinks []FunctionFuzzSinkSignal, overlays []string) []functionFuzzVulnClassFinding {
+	out := []functionFuzzVulnClassFinding{}
+	if strings.TrimSpace(symbol.ID) == "" || len(items) == 0 {
+		return out
+	}
+	ordered := append([]FunctionFuzzCodeObservation(nil), items...)
+	sort.SliceStable(ordered, func(i int, j int) bool {
+		return ordered[i].Line < ordered[j].Line
+	})
+	path := functionFuzzShortestSymbolPath(closure, strings.TrimSpace(symbol.ID))
+	if len(path) == 0 {
+		path = []string{functionFuzzDisplayName(target), functionFuzzDisplayName(symbol)}
+	}
+	path = functionFuzzCondensePath(path, 5)
+	focusFile := filepath.ToSlash(strings.TrimSpace(symbol.File))
+	build := func(focusKinds []string, title string, inputs []string, flow string, issues []string, focus FunctionFuzzCodeObservation) FunctionFuzzVirtualScenario {
+		invariants, drift := functionFuzzObservationInvariantInsights(items, focusKinds...)
+		return FunctionFuzzVirtualScenario{
+			Title:         title,
+			Confidence:    functionFuzzObservationScenarioConfidence(items, sinks, overlays, focusKinds...),
+			FocusSymbolID: strings.TrimSpace(symbol.ID),
+			FocusSymbol:   functionFuzzDisplayName(symbol),
+			FocusFile:     focusFile,
+			Inputs:        uniqueStrings(inputs),
+			Invariants:    invariants,
+			BranchFacts:   functionFuzzObservationBranchFacts(items, focusKinds...),
+			DriftExamples: drift,
+			ExpectedFlow:  flow,
+			LikelyIssues:  uniqueStrings(issues),
+			PathSketch:    path,
+			PathHint:      functionFuzzObservationScenarioHint(items),
+			SourceExcerpt: functionFuzzSourceExcerptForObservation(root, symbol, focus),
+		}
+	}
+
+	// Integer-overflow / size-arithmetic: a size computed from attacker-influenced
+	// arithmetic that reaches an allocation or copy in the same body.
+	hasAlloc := false
+	hasCopy := false
+	for _, ob := range ordered {
+		switch ob.Kind {
+		case "alloc_site":
+			hasAlloc = true
+		case "copy_sink":
+			hasCopy = true
+		}
+	}
+	if hasAlloc || hasCopy {
+		for _, ob := range ordered {
+			if !functionFuzzEvidenceHasSizeArithmetic(ob.Evidence) {
+				continue
+			}
+			sink := "allocation"
+			if !hasAlloc {
+				sink = "copy"
+			}
+			out = append(out, functionFuzzVulnClassFinding{
+				Class: "overflow",
+				Scenario: build(
+					[]string{"size_guard", "alloc_site", "copy_sink"},
+					"Size arithmetic on attacker-controlled length can wrap before the "+sink,
+					[]string{
+						"A length, count, or element-size field large enough that the multiply, shift, or add wraps a 32-bit or size_t computation",
+						"Boundary values around 0x7fffffff, 0xffffffff, and the element-size multiple that flips the high bit",
+					},
+					"The body computes a size from attacker-influenced arithmetic and then allocates or copies from it, so a wrapped or truncated result can make the backing store smaller than the data later written into it.",
+					[]string{
+						"Integer overflow or truncation in size arithmetic yields an undersized allocation",
+						"A wrapped length passes a >= or <= guard that assumed no overflow",
+						"count * element_size or length + header overflows before the copy consumes the original value",
+					},
+					ob,
+				),
+			})
+			break
+		}
+	}
+
+	// Use-after-free / double-free: ordering of a release edge against a later
+	// use of, or a second release of, the same object.
+	cleanups := []FunctionFuzzCodeObservation{}
+	for _, ob := range ordered {
+		if ob.Kind == "cleanup_path" {
+			cleanups = append(cleanups, ob)
+		}
+	}
+	lifetimeAdded := false
+	for i := 0; i < len(cleanups) && !lifetimeAdded; i++ {
+		for j := i + 1; j < len(cleanups); j++ {
+			if cleanups[i].Line == cleanups[j].Line {
+				continue
+			}
+			if !functionFuzzObservationsShareObject(cleanups[i], cleanups[j]) {
+				continue
+			}
+			out = append(out, functionFuzzVulnClassFinding{
+				Class: "lifetime",
+				Scenario: build(
+					[]string{"cleanup_path", "state_publish"},
+					"Object may be released more than once across overlapping cleanup edges (double-free)",
+					[]string{
+						"An input sequence that drives both the error-path and the normal-path release of the same object",
+						"A partial-failure path that frees an object a later edge frees again",
+					},
+					"The body has more than one release or free edge that can reach the same object, so an input that takes both unwind paths can free it twice.",
+					[]string{
+						"Double-free when two cleanup edges run for the same allocation",
+						"A freed pointer is not cleared, so a later cleanup releases stale memory",
+						"Error-path and success-path cleanup overlap on one object",
+					},
+					cleanups[j],
+				),
+			})
+			lifetimeAdded = true
+			break
+		}
+	}
+	if !lifetimeAdded {
+		for _, cu := range cleanups {
+			for _, ob := range ordered {
+				if ob.Line <= cu.Line {
+					continue
+				}
+				switch ob.Kind {
+				case "copy_sink", "state_publish", "dispatch_guard", "probe_sink":
+				default:
+					continue
+				}
+				if !functionFuzzObservationsShareObject(cu, ob) {
+					continue
+				}
+				out = append(out, functionFuzzVulnClassFinding{
+					Class: "lifetime",
+					Scenario: build(
+						[]string{"cleanup_path", "copy_sink", "state_publish"},
+						"Object may be used after a cleanup or free edge already ran (use-after-free)",
+						[]string{
+							"An input that takes the release path and still reaches the later use of the same object",
+							"A converging path where one predecessor freed the object the use assumes is live",
+						},
+						"A release or free edge appears earlier in the body than a later use of the same object, so an input that frees it and still reaches the use can touch freed memory.",
+						[]string{
+							"Use-after-free when a freed object is read, copied, or published downstream",
+							"A pointer is freed on one path and dereferenced on a converging path",
+							"State is published from an object after its backing storage was released",
+						},
+						ob,
+					),
+				})
+				lifetimeAdded = true
+				break
+			}
+			if lifetimeAdded {
+				break
+			}
+		}
+	}
+
+	// TOCTOU / double-fetch: the same indirect user-memory value is fetched or
+	// checked on more than one source line.
+	type fetchGroup struct {
+		lines map[int]bool
+		focus FunctionFuzzCodeObservation
+	}
+	groups := map[string]*fetchGroup{}
+	order := []string{}
+	for _, ob := range ordered {
+		switch ob.Kind {
+		case "size_guard", "probe_sink", "copy_sink":
+		default:
+			continue
+		}
+		for _, key := range functionFuzzObservationObjectKeys(ob) {
+			g := groups[key]
+			if g == nil {
+				g = &fetchGroup{lines: map[int]bool{}, focus: ob}
+				groups[key] = g
+				order = append(order, key)
+			}
+			g.lines[ob.Line] = true
+		}
+	}
+	for _, key := range order {
+		g := groups[key]
+		if len(g.lines) < 2 {
+			continue
+		}
+		out = append(out, functionFuzzVulnClassFinding{
+			Class: "toctou",
+			Scenario: build(
+				[]string{"size_guard", "probe_sink", "copy_sink"},
+				"The same attacker-controlled value is fetched or checked more than once (TOCTOU / double-fetch)",
+				[]string{
+					"A user buffer or shared field whose contents change between the first read or check and the later fetch",
+					"Inputs that pass the first validation and then mutate the value the second read consumes",
+				},
+				"The same indirect user-memory value is read or validated on one line and fetched again on a later line, so a value that changes in between (a classic double-fetch / time-of-check-to-time-of-use race) can defeat the earlier check.",
+				[]string{
+					"Double-fetch: a size or pointer is read twice and can change between reads",
+					"Time-of-check-to-time-of-use gap between validation and the consuming read",
+					"A re-read user buffer is trusted on the second fetch without re-validation",
+				},
+				g.focus,
+			),
+		})
+		break
+	}
+
+	return out
 }
 
 func functionFuzzObservationScenarioConfidence(items []FunctionFuzzCodeObservation, sinks []FunctionFuzzSinkSignal, overlays []string, emphasizedKinds ...string) string {
@@ -9925,6 +10273,10 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 	)
 	execState.ExecutablePath = filepath.Join(run.ArtifactDir, "build", "fuzz_target.exe")
 	execState.BuildScriptPath = filepath.Join(run.ArtifactDir, "run_fuzz.ps1")
+	// Secondary alternative engine: the AFL++ CMPLOG build+run script lives next
+	// to the libFuzzer artifacts. It is a Linux/WSL deliverable and is never
+	// auto-executed on Windows; libFuzzer stays the default executing engine.
+	execState.AFLScriptPath = filepath.Join(run.ArtifactDir, "run_afl.sh")
 	execState.BuildLogPath = filepath.Join(run.ArtifactDir, "build.log")
 	execState.RunLogPath = filepath.Join(run.ArtifactDir, "run.log")
 	execState.CorpusDir = filepath.Join(run.ArtifactDir, "corpus")
@@ -10001,6 +10353,24 @@ func planFunctionFuzzExecution(cfg Config, run *FunctionFuzzRun, target SymbolRe
 		return
 	}
 
+	// Emit the secondary AFL++ CMPLOG build+run script (run_afl.sh) next to the
+	// libFuzzer artifacts. It reuses the same dictionary and seed corpus and is a
+	// Linux/WSL deliverable that KernForge never auto-executes. A failure to write
+	// it must not block the default libFuzzer path: clear the path and record a
+	// note instead of failing the whole run.
+	if err := functionFuzzWriteAFLScript(*run, record, execState); err != nil {
+		execState.AFLScriptPath = ""
+		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg,
+			fmt.Sprintf("Could not emit the secondary AFL++ CMPLOG script: %v", err),
+			fmt.Sprintf("보조 AFL++ CMPLOG 스크립트를 생성하지 못했습니다: %v", err)))
+		run.Notes = uniqueStrings(run.Notes)
+	} else {
+		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg,
+			"Secondary AFL++ CMPLOG script (run_afl.sh) was emitted for Linux/WSL; the afl toolchain is required and KernForge keeps libFuzzer as the default executing engine on Windows.",
+			"보조 AFL++ CMPLOG 스크립트(run_afl.sh)를 Linux/WSL용으로 생성했습니다. afl 툴체인이 필요하며 Windows에서는 libFuzzer가 기본 실행 엔진으로 유지됩니다."))
+		run.Notes = uniqueStrings(run.Notes)
+	}
+
 	execState.Eligible = true
 	if execState.CompileContextLevel == "exact" {
 		execState.Status = "planned"
@@ -10043,6 +10413,9 @@ func functionFuzzPlanKernelAddressProfile(cfg Config, run *FunctionFuzzRun, reco
 	execState.RunCommand = ""
 	execState.RunArgv = nil
 	execState.BuildScriptPath = ""
+	// The gated KASAN profile builds nothing, so it must not advertise a secondary
+	// AFL++ script either.
+	execState.AFLScriptPath = ""
 
 	execState.BuildArgv = append([]string{firstNonBlankString(execState.CompilerResolvedPath, execState.CompilerCandidate)}, kasanArgs...)
 	execState.BuildCommand = functionFuzzRenderDisplayCommand(firstNonBlankString(execState.CompilerResolvedPath, execState.CompilerCandidate), kasanArgs)
@@ -10792,6 +11165,148 @@ func functionFuzzPowershellLiteral(value string) string {
 	return "'" + value + "'"
 }
 
+// functionFuzzShellLiteral renders a value as a single-quoted POSIX shell token.
+// Single quotes inside the value are escaped with the standard '\” close-reopen
+// idiom so the emitted run_afl.sh stays safe for paths that contain spaces or
+// shell metacharacters.
+func functionFuzzShellLiteral(value string) string {
+	value = strings.ReplaceAll(value, "'", `'\''`)
+	return "'" + value + "'"
+}
+
+// functionFuzzAFLTimeoutSeconds maps the run profile to the per-input timeout
+// (in seconds) passed to afl-fuzz via -t (milliseconds). Smoke stays short;
+// extended/repro/minimize get more headroom. This mirrors the intent of the
+// libFuzzer -timeout values without changing that path.
+func functionFuzzAFLTimeoutSeconds(profile string) int {
+	switch strings.ToLower(strings.TrimSpace(profile)) {
+	case "extended":
+		return 15
+	case "repro", "minimize":
+		return 30
+	default:
+		return 5
+	}
+}
+
+// functionFuzzWriteAFLScript emits run_afl.sh: a Linux/WSL AFL++ CMPLOG
+// build+run script offered as an alternative to the default libFuzzer engine.
+// It deliberately reuses the SAME source-derived dictionary (execState.DictionaryPath)
+// and seed corpus directory (execState.CorpusDir) the libFuzzer path already
+// generated, rather than re-deriving them. The script:
+//  1. compiles a normal AFL++-instrumented build with afl-clang-fast,
+//  2. compiles a separate CMPLOG (input-to-state) build with AFL_LLVM_CMPLOG=1,
+//  3. runs afl-fuzz with -c <cmplog_binary> (comparison solving), -x <dict>,
+//     the seed corpus as the input dir (-i), an output dir (-o), a -t timeout
+//     and a -m memory limit.
+//
+// HONESTY: the afl toolchain (afl-clang-fast / afl-fuzz / CMPLOG) is a
+// Linux/WSL toolchain. KernForge's executing engine stays libFuzzer on Windows;
+// this script is a ready-to-run deliverable for a host where the afl toolchain
+// is present and is never auto-executed here. The script itself probes for the
+// toolchain at the top and exits with an advisory message when it is absent
+// rather than fabricating a run.
+func functionFuzzWriteAFLScript(run FunctionFuzzRun, record CompilationCommandRecord, execState FunctionFuzzExecution) error {
+	scriptPath := strings.TrimSpace(execState.AFLScriptPath)
+	if scriptPath == "" {
+		return nil
+	}
+	if strings.TrimSpace(execState.CorpusDir) == "" {
+		return fmt.Errorf("cannot emit run_afl.sh without a seed corpus directory")
+	}
+
+	buildDir := filepath.Dir(execState.ExecutablePath)
+	aflBuildDir := filepath.Join(buildDir, "afl")
+	normalBinary := filepath.Join(aflBuildDir, "fuzz_target_afl")
+	cmplogBinary := filepath.Join(aflBuildDir, "fuzz_target_cmplog")
+	outputDir := filepath.Join(filepath.Dir(execState.CorpusDir), "afl_out")
+	maxLen := functionFuzzExecutionMaxLen(run.ParameterStrategies)
+	timeoutSec := functionFuzzAFLTimeoutSeconds(execState.Profile)
+
+	// Compiler include/define context recovered for the libFuzzer build is reused
+	// verbatim so the AFL++ build sees the same translation-unit context.
+	var b strings.Builder
+	b.WriteString("#!/usr/bin/env bash\n")
+	b.WriteString("#\n")
+	b.WriteString("# Auto-generated by KernForge: AFL++ CMPLOG build+run (Linux/WSL).\n")
+	b.WriteString("#\n")
+	b.WriteString("# This is a SECONDARY engine, an alternative to the default libFuzzer\n")
+	b.WriteString("# path KernForge executes on Windows. The afl toolchain (afl-clang-fast,\n")
+	b.WriteString("# afl-fuzz, CMPLOG) is a Linux/WSL toolchain and is NOT run on Windows.\n")
+	b.WriteString("# Run this on a Linux/WSL host where the afl toolchain is installed.\n")
+	b.WriteString("# It reuses the same source-derived dictionary and seed corpus that the\n")
+	b.WriteString("# libFuzzer path already generated.\n")
+	b.WriteString("#\n")
+	b.WriteString("# CMPLOG (input-to-state) solves magic-byte / length / version / checksum\n")
+	b.WriteString("# equality guards, complementing libFuzzer value-profile coverage.\n")
+	b.WriteString("set -euo pipefail\n\n")
+
+	b.WriteString("# --- Toolchain gate: do not fabricate a run when afl is absent. ---\n")
+	b.WriteString("AFL_CC=\"${AFL_CC:-afl-clang-fast}\"\n")
+	b.WriteString("if ! command -v \"$AFL_CC\" >/dev/null 2>&1; then\n")
+	b.WriteString("    if command -v afl-clang-lto >/dev/null 2>&1; then\n")
+	b.WriteString("        AFL_CC=\"afl-clang-lto\"\n")
+	b.WriteString("    fi\n")
+	b.WriteString("fi\n")
+	b.WriteString("if ! command -v \"$AFL_CC\" >/dev/null 2>&1 || ! command -v afl-fuzz >/dev/null 2>&1; then\n")
+	b.WriteString("    echo \"[advisory] AFL++ toolchain not found (need afl-clang-fast/afl-clang-lto and afl-fuzz).\" >&2\n")
+	b.WriteString("    echo \"[advisory] This script is the AFL++ CMPLOG deliverable; run it on a Linux/WSL host with AFL++ installed.\" >&2\n")
+	b.WriteString("    echo \"[advisory] KernForge did not execute AFL++ (the default executing engine is libFuzzer on Windows).\" >&2\n")
+	b.WriteString("    exit 0\n")
+	b.WriteString("fi\n\n")
+
+	fmt.Fprintf(&b, "TARGET_SRC=%s\n", functionFuzzShellLiteral(execState.TranslationUnit))
+	fmt.Fprintf(&b, "HARNESS_SRC=%s\n", functionFuzzShellLiteral(run.HarnessPath))
+	fmt.Fprintf(&b, "AFL_BUILD_DIR=%s\n", functionFuzzShellLiteral(aflBuildDir))
+	fmt.Fprintf(&b, "NORMAL_BIN=%s\n", functionFuzzShellLiteral(normalBinary))
+	fmt.Fprintf(&b, "CMPLOG_BIN=%s\n", functionFuzzShellLiteral(cmplogBinary))
+	fmt.Fprintf(&b, "SEED_CORPUS=%s\n", functionFuzzShellLiteral(execState.CorpusDir))
+	fmt.Fprintf(&b, "OUTPUT_DIR=%s\n", functionFuzzShellLiteral(outputDir))
+	if strings.TrimSpace(execState.DictionaryPath) != "" {
+		fmt.Fprintf(&b, "DICT=%s\n", functionFuzzShellLiteral(execState.DictionaryPath))
+	} else {
+		b.WriteString("DICT=\"\"\n")
+	}
+	b.WriteString("mkdir -p \"$AFL_BUILD_DIR\" \"$OUTPUT_DIR\"\n\n")
+
+	b.WriteString("# Shared compile flags (std + recovered include/define context).\n")
+	b.WriteString("CXXFLAGS=(\n")
+	b.WriteString("    -g\n")
+	b.WriteString("    -O1\n")
+	b.WriteString("    -fno-omit-frame-pointer\n")
+	b.WriteString("    -std=c++20\n")
+	b.WriteString("    -fsanitize=address,undefined\n")
+	for _, flag := range functionFuzzCompileFlagSubset(record, "clang") {
+		fmt.Fprintf(&b, "    %s\n", functionFuzzShellLiteral(flag))
+	}
+	for _, flag := range functionFuzzStructuredBuildFlags(record, "clang", run.Workspace) {
+		fmt.Fprintf(&b, "    %s\n", functionFuzzShellLiteral(flag))
+	}
+	b.WriteString(")\n\n")
+
+	b.WriteString("echo \"[1/3] Building AFL++-instrumented binary with $AFL_CC ...\"\n")
+	b.WriteString("\"$AFL_CC\" \"${CXXFLAGS[@]}\" \"$HARNESS_SRC\" \"$TARGET_SRC\" -o \"$NORMAL_BIN\"\n\n")
+
+	b.WriteString("echo \"[2/3] Building CMPLOG (input-to-state) binary with AFL_LLVM_CMPLOG=1 ...\"\n")
+	b.WriteString("AFL_LLVM_CMPLOG=1 \"$AFL_CC\" \"${CXXFLAGS[@]}\" \"$HARNESS_SRC\" \"$TARGET_SRC\" -o \"$CMPLOG_BIN\"\n\n")
+
+	b.WriteString("echo \"[3/3] Running afl-fuzz with CMPLOG comparison solving ...\"\n")
+	b.WriteString("AFL_ARGS=(\n")
+	b.WriteString("    -i \"$SEED_CORPUS\"\n")
+	b.WriteString("    -o \"$OUTPUT_DIR\"\n")
+	b.WriteString("    -c \"$CMPLOG_BIN\"\n")
+	fmt.Fprintf(&b, "    -t %d\n", timeoutSec*1000)
+	b.WriteString("    -m 4096\n")
+	b.WriteString(")\n")
+	b.WriteString("if [ -n \"$DICT\" ]; then\n")
+	b.WriteString("    AFL_ARGS+=( -x \"$DICT\" )\n")
+	b.WriteString("fi\n")
+	fmt.Fprintf(&b, "echo \"[info] max input length hint: %d bytes\"\n", maxLen)
+	b.WriteString("afl-fuzz \"${AFL_ARGS[@]}\" -- \"$NORMAL_BIN\"\n")
+
+	return os.WriteFile(scriptPath, []byte(b.String()), 0o644)
+}
+
 func functionFuzzRenderDisplayCommand(command string, args []string) string {
 	out := make([]string, 0, len(args)+1)
 	out = append(out, functionFuzzDisplayCommandPart(command))
@@ -11534,6 +12049,11 @@ func renderFunctionFuzzReportMarkdownWithConfig(run FunctionFuzzRun, closure fun
 		}
 		if strings.TrimSpace(run.Execution.BuildScriptPath) != "" {
 			fmt.Fprintf(&b, "- Runner script: `%s`\n", run.Execution.BuildScriptPath)
+		}
+		if strings.TrimSpace(run.Execution.AFLScriptPath) != "" {
+			fmt.Fprintf(&b, "- %s: `%s`\n",
+				functionFuzzLocalizedText(cfg, "AFL++ CMPLOG script (Linux/WSL, afl toolchain required; not auto-run on Windows)", "AFL++ CMPLOG 스크립트 (Linux/WSL, afl 툴체인 필요, Windows에서 자동 실행 안 함)"),
+				run.Execution.AFLScriptPath)
 		}
 		if strings.TrimSpace(run.Execution.BackgroundJobID) != "" {
 			fmt.Fprintf(&b, "- Background job: `%s`\n", run.Execution.BackgroundJobID)
