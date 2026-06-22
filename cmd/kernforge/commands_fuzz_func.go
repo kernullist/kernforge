@@ -11933,12 +11933,17 @@ func renderFunctionFuzzHarnessWithRepair(run FunctionFuzzRun, repair functionFuz
 	if len(repair.ParamClassOverrides) > 0 || len(repair.DroppedParams) > 0 {
 		run.ParameterStrategies = functionFuzzApplyParamRepairs(run.ParameterStrategies, repair)
 	}
+	ioctlTarget := functionFuzzTargetIsIOCTL(run)
 	var b strings.Builder
 	b.WriteString("#include <cstddef>\n")
 	b.WriteString("#include <cstdint>\n")
 	b.WriteString("#include <cstring>\n")
 	b.WriteString("#include <string>\n")
 	b.WriteString("#include <vector>\n")
+	if ioctlTarget {
+		// DeviceIoControl client for the operator's loaded driver IOCTL surface.
+		b.WriteString("#include <windows.h>\n")
+	}
 	for _, include := range functionFuzzRepairIncludeLines(repair.Includes) {
 		b.WriteString(include)
 		b.WriteString("\n")
@@ -12027,6 +12032,14 @@ func renderFunctionFuzzHarnessWithRepair(run FunctionFuzzRun, repair functionFuz
 	b.WriteString("    return std::string(bytes.begin(), bytes.end());\n")
 	b.WriteString("}\n")
 	b.WriteString("}\n\n")
+
+	if ioctlTarget {
+		// Driver IOCTL surface: drive it through DeviceIoControl rather than a
+		// direct free-function call. The free-function path below is left
+		// byte-for-byte unchanged for all non-IOCTL targets.
+		functionFuzzRenderIOCTLHarnessBody(&b, run)
+		return b.String()
+	}
 
 	if run.HarnessReady {
 		b.WriteString("// Detected free-function style signature.\n")
@@ -12148,6 +12161,81 @@ func renderFunctionFuzzHarnessWithRepair(run FunctionFuzzRun, repair functionFuz
 	b.WriteString("    return result;\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// functionFuzzTargetIsIOCTL reports whether the fuzz target is a Windows driver
+// IOCTL dispatch surface, so the harness should exercise it through
+// DeviceIoControl instead of a direct free-function call. This supports
+// DEFENSIVE in-house fuzzing of a driver the operator owns and has loaded; it is
+// gated on explicit driver/IOCTL signals so ordinary free functions are
+// unaffected.
+func functionFuzzTargetIsIOCTL(run FunctionFuzzRun) bool {
+	for _, d := range run.OverlayDomains {
+		dl := strings.ToLower(strings.TrimSpace(d))
+		if strings.Contains(dl, "ioctl") || dl == "driver" {
+			return true
+		}
+	}
+	hay := strings.ToLower(run.TargetFile + " " + run.TargetSymbolName + " " + run.TargetSignature)
+	return containsAny(hay, "ioctl", "deviceiocontrol", "irp_mj_device_control", "io_stack_location", "pirp")
+}
+
+// functionFuzzRenderIOCTLHarnessBody emits a user-mode libFuzzer harness that
+// replays fuzzer-derived DeviceIoControl requests against a driver the operator
+// owns and has loaded, for defensive in-house bug finding. It decodes the four
+// DeviceIoControl descriptors (control code, input buffer with its coupled
+// length, output buffer capacity) from the fuzz input, opens the operator's
+// device once, and issues the request so memory-safety defects in the operator's
+// own dispatch handlers surface under a sanitizer / Driver Verifier build. This
+// generates harness SOURCE only: running it requires the operator to load their
+// driver and set the device path. Recovered IOCTL control codes reach libFuzzer
+// through the existing comparison-constant dictionary collection.
+func functionFuzzRenderIOCTLHarnessBody(b *strings.Builder, run FunctionFuzzRun) {
+	target := strings.ReplaceAll(strings.TrimSpace(run.TargetSymbolName), "\n", " ")
+	if target != "" {
+		b.WriteString("// IOCTL dispatch surface detected: ")
+		b.WriteString(target)
+		b.WriteString("\n")
+	}
+	b.WriteString("// Defensive in-house harness: drives a LOADED driver the operator owns via\n")
+	b.WriteString("// DeviceIoControl. Load your driver (Driver Verifier / KASAN build recommended)\n")
+	b.WriteString("// and set KERNFORGE_FUZZ_DEVICE_PATH to your device before running.\n")
+	b.WriteString("#ifndef KERNFORGE_FUZZ_DEVICE_PATH\n")
+	b.WriteString("#define KERNFORGE_FUZZ_DEVICE_PATH \"\\\\\\\\.\\\\KernforgeFuzzDevice\"\n")
+	b.WriteString("#endif\n\n")
+	b.WriteString("extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)\n")
+	b.WriteString("{\n")
+	b.WriteString("    int result = 0;\n")
+	b.WriteString("    do\n")
+	b.WriteString("    {\n")
+	b.WriteString("        if (data == nullptr)\n")
+	b.WriteString("        {\n")
+	b.WriteString("            break;\n")
+	b.WriteString("        }\n")
+	b.WriteString("        FuzzInputView input{data, size, 0};\n\n")
+	b.WriteString("        // Open the operator's loaded device once and reuse it across iterations.\n")
+	b.WriteString("        static HANDLE device = CreateFileA(KERNFORGE_FUZZ_DEVICE_PATH,\n")
+	b.WriteString("            GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,\n")
+	b.WriteString("            nullptr, OPEN_EXISTING, 0, nullptr);\n")
+	b.WriteString("        if (device == INVALID_HANDLE_VALUE)\n")
+	b.WriteString("        {\n")
+	b.WriteString("            break; // load the target driver and set the device path first\n")
+	b.WriteString("        }\n\n")
+	b.WriteString("        // Decode the four DeviceIoControl descriptors from the fuzz input.\n")
+	b.WriteString("        DWORD ioControlCode = ReadScalar<DWORD>(input);\n")
+	b.WriteString("        std::vector<uint8_t> inBuffer = ReadByteVector(input, 0x10000);\n")
+	b.WriteString("        size_t outCap = ReadSize(input, 0x10000);\n")
+	b.WriteString("        std::vector<uint8_t> outBuffer(outCap);\n")
+	b.WriteString("        DWORD bytesReturned = 0;\n\n")
+	b.WriteString("        // InBufferLength is coupled to the actual input buffer size.\n")
+	b.WriteString("        (void) DeviceIoControl(device, ioControlCode,\n")
+	b.WriteString("            inBuffer.empty() ? nullptr : inBuffer.data(), (DWORD) inBuffer.size(),\n")
+	b.WriteString("            outBuffer.empty() ? nullptr : outBuffer.data(), (DWORD) outBuffer.size(),\n")
+	b.WriteString("            &bytesReturned, nullptr);\n")
+	b.WriteString("    }\n")
+	b.WriteString("    while (false);\n")
+	b.WriteString("    return result;\n")
+	b.WriteString("}\n")
 }
 
 func functionFuzzHarnessParamLines(item FunctionFuzzParamStrategy) []string {

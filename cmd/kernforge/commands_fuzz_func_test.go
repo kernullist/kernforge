@@ -3658,6 +3658,53 @@ func TestFunctionFuzzHarnessCouplesBufferLengthRelation(t *testing.T) {
 	}
 }
 
+func TestRenderFunctionFuzzHarnessEmitsIOCTLClientForDriverTarget(t *testing.T) {
+	// A driver IOCTL dispatch target is driven through DeviceIoControl for
+	// defensive in-house fuzzing of a loaded driver the operator owns, not a
+	// direct call of the dispatch routine.
+	run := FunctionFuzzRun{
+		TargetSymbolName: "TvkDeviceControl",
+		TargetSignature:  "NTSTATUS TvkDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)",
+		OverlayDomains:   []string{"ioctl"},
+		HarnessReady:     true,
+	}
+	src := renderFunctionFuzzHarness(run)
+	for _, want := range []string{
+		"#include <windows.h>",
+		"extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)",
+		"DWORD ioControlCode = ReadScalar<DWORD>(input);",
+		"std::vector<uint8_t> inBuffer = ReadByteVector(input, 0x10000);",
+		"DeviceIoControl(device, ioControlCode,",
+		"(DWORD) inBuffer.size(),",
+		"KERNFORGE_FUZZ_DEVICE_PATH",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("expected IOCTL harness to contain %q, harness:\n%s", want, src)
+		}
+	}
+	// It must not fall back to directly calling the dispatch routine.
+	if strings.Contains(src, "TvkDeviceControl(") {
+		t.Fatalf("IOCTL harness must not directly call the dispatch routine, harness:\n%s", src)
+	}
+}
+
+func TestRenderFunctionFuzzHarnessKeepsFreeFunctionShapeForNonDriverTarget(t *testing.T) {
+	// A plain free function with no driver/IOCTL signal keeps the original
+	// free-function harness (no DeviceIoControl client, no windows.h).
+	run := FunctionFuzzRun{
+		TargetSignature:     "int Validate(int selector)",
+		HarnessReady:        true,
+		ParameterStrategies: buildFunctionFuzzParameterStrategies("int Validate(int selector)"),
+	}
+	src := renderFunctionFuzzHarness(run)
+	if strings.Contains(src, "DeviceIoControl") || strings.Contains(src, "#include <windows.h>") {
+		t.Fatalf("non-driver target must keep the free-function harness, harness:\n%s", src)
+	}
+	if !strings.Contains(src, "Validate(") {
+		t.Fatalf("expected free-function call in harness, got:\n%s", src)
+	}
+}
+
 func TestFunctionFuzzHarnessCouplesWhenBufferFollowsLength(t *testing.T) {
 	// When the length precedes the buffer in the signature, the coupled length
 	// must be deferred and emitted after the buffer storage to avoid a forward
