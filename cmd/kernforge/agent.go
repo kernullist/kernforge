@@ -2060,6 +2060,14 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 						// stopping with an unsatisfiable contract.
 						healed, recheck, ok = a.healDocumentArtifactDisclosure(reply, attemptedEditTool, unresolvedVerification)
 					}
+					if !ok {
+						// Generalized heal for the remaining final-answer-only disclosure
+						// gaps (changed-file summary, review/validation/remaining-risk,
+						// review-only no-edit, cross-review residual). Append the facts the
+						// harness already knows so a satisfiable contract never dead-ends as
+						// an unsatisfiable block; a real defect stays blocked.
+						healed, recheck, ok = a.healFinalAnswerOnlyDisclosures(reply, attemptedEditTool, unresolvedVerification)
+					}
 					if ok {
 						// Tentatively adopt the re-checked (approved) harness report and
 						// refresh the ledger so non-harness gate blockers (stale review,

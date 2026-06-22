@@ -1152,6 +1152,232 @@ func (a *Agent) healDocumentArtifactDisclosure(reply string, attemptedEditTool b
 	return healed, &recheck, true
 }
 
+// isAppendSafeFinalAnswerDisclosureTitle reports whether a final-answer blocker
+// is a pure "the reply omitted a fact the harness already knows" disclosure gap
+// that can be safely auto-completed by appending the known fact. It deliberately
+// EXCLUDES findings that need a real correction rather than an append: the
+// document-artifact titles (handled by healDocumentArtifactDisclosure), the
+// review-only "not findings-first" structural finding, and every contradiction /
+// overclaim / unresolved-failure / background-work blocker (inconsistent bug
+// counts, contradicts the patch transaction, verification claim has no evidence,
+// required verification has no outcome, etc.). Those must never be papered over.
+func isAppendSafeFinalAnswerDisclosureTitle(title string) bool {
+	switch strings.TrimSpace(title) {
+	case "Changed-file summary is missing",
+		"Review result is missing",
+		"Validation result is missing",
+		"Remaining-risk statement is missing",
+		"Review-only no-edit statement is missing",
+		"No-finding review omits residual risk",
+		"Cross-review residual risk is undisclosed",
+		"Verification was not run disclosure missing":
+		return true
+	}
+	return false
+}
+
+// reportOnlyBlockedByAppendSafeFinalAnswerDisclosures generalizes
+// reportOnlyBlockedByDocumentArtifactCompleteness: it reports whether the report
+// is blocked ONLY by append-safe final-answer disclosure gaps (the work is done
+// and passed its checks; the final reply just did not state facts the harness
+// already knows). The completeness findings live in the Outcome report, so a
+// blocker anywhere else - or a non-append-safe Outcome blocker - is a real defect
+// that disqualifies the heal.
+func reportOnlyBlockedByAppendSafeFinalAnswerDisclosures(report *CodingHarnessReport) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if copyReport.Approved {
+		return false
+	}
+	if codingHarnessFindingsHaveBlockers(copyReport.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.Acceptance.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ScenarioReplay.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.SubagentOrchestration.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.TestImpact.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.JobSupervisor.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.DiffReview.Findings) {
+		return false
+	}
+	sawAppendSafe := false
+	for _, finding := range copyReport.Outcome.Findings {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		if !isAppendSafeFinalAnswerDisclosureTitle(finding.Title) {
+			return false
+		}
+		sawAppendSafe = true
+	}
+	return sawAppendSafe
+}
+
+// healFinalAnswerOnlyDisclosures is the generalized self-heal for the layered-gate
+// asymmetry: a final-answer blocker can fire on a broad condition while the two
+// narrow heals (skipped-verification, document-artifact) only engage on a narrow
+// one, leaving a satisfiable contract dead-ending as an unsatisfiable block. When
+// the report is blocked ONLY by append-safe disclosure gaps, it appends the facts
+// the harness already knows and re-runs the harness, finalizing only if the
+// re-check now approves. It can only upgrade a pure-disclosure block into a
+// completed turn, never mask a real defect.
+func (a *Agent) healFinalAnswerOnlyDisclosures(reply string, attemptedEditTool bool, unresolvedVerification bool) (string, *CodingHarnessReport, bool) {
+	if a == nil || a.Session == nil {
+		return "", nil, false
+	}
+	if !reportOnlyBlockedByAppendSafeFinalAnswerDisclosures(a.Session.LastCodingHarnessReport) {
+		return "", nil, false
+	}
+	healed := a.completeFinalAnswerDisclosures(reply, attemptedEditTool)
+	if strings.TrimSpace(healed) == strings.TrimSpace(reply) {
+		return "", nil, false
+	}
+	recheck := a.buildCodingHarnessReport(healed, attemptedEditTool, unresolvedVerification)
+	if !recheck.Approved {
+		return "", nil, false
+	}
+	return healed, &recheck, true
+}
+
+// completeFinalAnswerDisclosures appends the facts the final-answer completeness
+// contract requires when the reply omitted them. It mirrors
+// finalAnswerCompletenessFindings exactly - same lifecycle gating and same
+// replyMentions* checks - so every appended statement is the truthful, recorded
+// fact for the missing finding. It never appends the structural "findings-first"
+// reordering (which is not a fact to state) nor the document-artifact facts
+// (handled by completeGeneratedDocumentArtifactFinalReply). A fact the harness
+// cannot truthfully determine (e.g. a review result when no review ran) is simply
+// not appended, so the re-check stays blocked and the turn escalates instead of
+// finalizing on a fabricated claim.
+func (a *Agent) completeFinalAnswerDisclosures(reply string, attemptedEditTool bool) string {
+	reply = strings.TrimSpace(reply)
+	if a == nil || a.Session == nil || reply == "" {
+		return reply
+	}
+	cfg := a.Config
+	language, _ := inferResponseLanguageForUserText(codingHarnessSourcePrompt(a.Session), cfg)
+	ko := language == "ko"
+	additions := make([]string, 0, 5)
+	lowerReply := strings.ToLower(reply)
+	if a.finalAnswerCompletenessRequiresModificationFacts(attemptedEditTool) {
+		changed := finalAnswerCompletenessChangedPaths(a.Session)
+		if len(changed) > 0 {
+			if !replyMentionsChangedFileSummary(reply, changed) {
+				quoted := make([]string, 0, len(changed))
+				for _, path := range changed {
+					quoted = append(quoted, "`"+path+"`")
+				}
+				if ko {
+					additions = append(additions, "변경 파일: "+strings.Join(quoted, ", ")+".")
+				} else {
+					additions = append(additions, "Changed files: "+strings.Join(quoted, ", ")+".")
+				}
+			}
+		} else if !replyClaimsNoFileChanges(lowerReply) {
+			if ko {
+				additions = append(additions, "변경된 파일은 없습니다.")
+			} else {
+				additions = append(additions, "No files were changed.")
+			}
+		}
+		// VCS/tooling-metadata-only turns require only the changed-file summary; the
+		// review/validation/remaining-risk ceremony does not apply.
+		if !changedPathsAreVcsToolingMetadataOnly(changed) {
+			if !replyMentionsReviewResult(reply) {
+				if statement := a.knownReviewResultStatement(ko); statement != "" {
+					additions = append(additions, statement)
+				}
+			}
+			if !replyMentionsValidationResultForCompleteness(reply) {
+				additions = append(additions, a.knownValidationStatement(ko))
+			}
+			if !replyMentionsRemainingRisk(reply) && !replyMentionsVerificationBlocker(reply) {
+				if ko {
+					additions = append(additions, "남은 위험: 알려진 잔여 차단 항목은 없습니다.")
+				} else {
+					additions = append(additions, "Remaining risk: no known remaining blocker remains.")
+				}
+			}
+		}
+	}
+	if a.finalAnswerCompletenessRequiresReviewOnlyFacts() {
+		// "Review-only answer is not findings-first" is a structural reordering, not
+		// a fact to append, so it is excluded from the append-safe set and left for
+		// the model to fix.
+		if !replyClaimsNoFileChanges(lowerReply) {
+			if ko {
+				additions = append(additions, "이번 작업은 읽기 전용이며 파일을 변경하지 않았습니다.")
+			} else {
+				additions = append(additions, "This was read-only; no files were changed.")
+			}
+		}
+		if replyClaimsNoFindings(reply) && !replyMentionsResidualEvidenceRisk(reply) {
+			if ko {
+				additions = append(additions, "잔여 위험: 테스트 공백이 남아 있을 수 있습니다.")
+			} else {
+				additions = append(additions, "Residual risk: the review was not exhaustively tested.")
+			}
+		}
+	}
+	if a.finalAnswerCompletenessRequiresCrossReviewDisclosure(reply) {
+		if ko {
+			additions = append(additions, "교차 리뷰: 잔여 triage 항목이 남아 있습니다.")
+		} else {
+			additions = append(additions, "Cross-review: residual triage items remain.")
+		}
+	}
+	if len(additions) == 0 {
+		return reply
+	}
+	return strings.TrimSpace(reply + " " + strings.Join(additions, " "))
+}
+
+// knownReviewResultStatement returns a truthful review-result disclosure from the
+// recorded last review run, or "" when no review verdict is recorded (so the heal
+// does not fabricate a review that did not happen).
+func (a *Agent) knownReviewResultStatement(ko bool) string {
+	if a == nil || a.Session == nil || a.Session.LastReviewRun == nil {
+		return ""
+	}
+	verdict := strings.TrimSpace(a.Session.LastReviewRun.Gate.Verdict)
+	if verdict == "" {
+		verdict = strings.TrimSpace(a.Session.LastReviewRun.Result.Verdict)
+	}
+	if verdict == "" {
+		return ""
+	}
+	if ko {
+		return "리뷰 결과: " + verdict + "."
+	}
+	return "Review result: " + verdict + "."
+}
+
+// knownValidationStatement returns a truthful validation disclosure from the
+// recorded last verification report: a report with no executed pass/fail outcome
+// is reported as not run, an executed failure as failed, and an executed pass as
+// passed.
+func (a *Agent) knownValidationStatement(ko bool) string {
+	report := a.Session.LastVerification
+	if report == nil || !report.HasExecutedOutcome() {
+		if ko {
+			return "검증: 이번 턴에는 빌드/테스트 검증을 실행하지 않았습니다."
+		}
+		return "Validation: build/test verification was not run."
+	}
+	if report.HasFailures() {
+		if ko {
+			return "검증: 검증이 실패했습니다."
+		}
+		return "Validation: verification failed."
+	}
+	if ko {
+		return "검증: 검증을 통과했습니다."
+	}
+	return "Validation: verification passed."
+}
+
 func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
 	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
 	if len(paths) == 0 && a != nil && a.Session != nil {
