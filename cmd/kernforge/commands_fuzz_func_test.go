@@ -4545,6 +4545,120 @@ func TestFunctionFuzzDictionaryIncludesIOCTLSpecCodes(t *testing.T) {
 	}
 }
 
+func TestFunctionFuzzIOCTLPerCodeFields(t *testing.T) {
+	spec := functionFuzzInferIOCTLSpec(ioctlSpecTestRun())
+	if spec == nil {
+		t.Fatalf("expected a spec")
+	}
+	var target *FunctionFuzzIOCTLCode
+	for i := range spec.Codes {
+		if spec.Codes[i].HasValue && spec.Codes[i].Value == 0x222000 {
+			target = &spec.Codes[i]
+		}
+	}
+	if target == nil {
+		t.Fatalf("missing 0x222000 code")
+	}
+	fields := map[string]string{}
+	for _, f := range target.Fields {
+		fields[strings.ToLower(f.Access)] = f.Role
+	}
+	if fields["inputbufferlength"] != "length" {
+		t.Fatalf("expected inputbufferlength attached to 0x222000 as length, got %+v", target.Fields)
+	}
+	if fields["systembuffer"] != "buffer" {
+		t.Fatalf("expected systembuffer attached to 0x222000 as buffer, got %+v", target.Fields)
+	}
+}
+
+func TestFunctionFuzzIOCTLHarnessSequencesRequests(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	var b strings.Builder
+	functionFuzzRenderIOCTLHarnessBody(&b, run)
+	out := b.String()
+	for _, want := range []string{
+		"kKernforgeMaxRequests",
+		"for (size_t reqIndex = 0;",
+		"input.offset + sizeof(DWORD) > input.size",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("sequencing harness missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestFunctionFuzzIOCTLSequenceSeed(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	seeds := functionFuzzIOCTLSpecSeeds(run)
+	var seq []byte
+	found := false
+	for _, s := range seeds {
+		if s.Name == "seed-ioctl-sequence.bin" {
+			seq = s.payload
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected seed-ioctl-sequence.bin")
+	}
+	// codes 0x222004 (buf 16) then 0x222000 (empty): (4+8+16+8) + (4+8+0+8) = 56.
+	if len(seq) != 56 {
+		t.Fatalf("sequence seed length = %d, want 56", len(seq))
+	}
+	if got := ioctlSpecTestLE(seq[0:4], 4); got != 0x222004 {
+		t.Fatalf("first request code = 0x%X, want 0x222004", got)
+	}
+	if got := ioctlSpecTestLE(seq[36:40], 4); got != 0x222000 {
+		t.Fatalf("second request code = 0x%X, want 0x222000", got)
+	}
+}
+
+func TestFunctionFuzzHarnessSynthesisPrompt(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	prompt := functionFuzzBuildHarnessSynthesisPrompt(run)
+	for _, want := range []string{
+		"Fuzz Harness Synthesis Prompt",
+		"LLVMFuzzerTestOneInput",
+		"Hard constraints",
+		"Acceptance",
+		"Reference deterministic harness",
+		"MyDriverDeviceControl",
+		"0x222000",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("synthesis prompt missing %q", want)
+		}
+	}
+}
+
+func TestFunctionFuzzAcceptSynthesizedHarness(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+
+	valid := "extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)\n{\n    (void) data;\n    (void) size;\n    return 0;\n}\n"
+	got, accepted, issues := functionFuzzAcceptSynthesizedHarness(run, valid)
+	if !accepted || len(issues) != 0 || got != valid {
+		t.Fatalf("valid candidate should be accepted verbatim, accepted=%v issues=%v", accepted, issues)
+	}
+
+	missing := "int main() { return 0; }"
+	got, accepted, issues = functionFuzzAcceptSynthesizedHarness(run, missing)
+	if accepted || len(issues) == 0 {
+		t.Fatalf("candidate without the libFuzzer entrypoint must be rejected")
+	}
+	if !strings.Contains(got, "LLVMFuzzerTestOneInput") {
+		t.Fatalf("rejected candidate must fall back to the deterministic harness")
+	}
+
+	banned := valid + "\nstatic void evil() { system(\"calc\"); }\n"
+	if _, accepted, _ = functionFuzzAcceptSynthesizedHarness(run, banned); accepted {
+		t.Fatalf("candidate that shells out must be rejected")
+	}
+}
+
 func vulnClassTestObs(kind string, line int, evidence string, access []string, focus []string) FunctionFuzzCodeObservation {
 	return FunctionFuzzCodeObservation{
 		Kind:        kind,

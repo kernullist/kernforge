@@ -260,11 +260,13 @@ type FunctionFuzzIOCTLField struct {
 // named IOCTL_/FSCTL_ identifier). Value/HasValue are set when the literal
 // resolves to a concrete integer.
 type FunctionFuzzIOCTLCode struct {
-	Code     string `json:"code"`
-	Value    uint64 `json:"value,omitempty"`
-	HasValue bool   `json:"has_value,omitempty"`
-	Symbol   string `json:"symbol,omitempty"`
-	Evidence string `json:"evidence,omitempty"`
+	Code     string                   `json:"code"`
+	Value    uint64                   `json:"value,omitempty"`
+	HasValue bool                     `json:"has_value,omitempty"`
+	Symbol   string                   `json:"symbol,omitempty"`
+	Line     int                      `json:"line,omitempty"`
+	Evidence string                   `json:"evidence,omitempty"`
+	Fields   []FunctionFuzzIOCTLField `json:"fields,omitempty"`
 }
 
 // FunctionFuzzIOCTLSpec is a source-inferred, KernelGPT-style description of a
@@ -314,35 +316,36 @@ type FunctionFuzzRun struct {
 	RiskCalibration string `json:"risk_calibration,omitempty"`
 	// ExploitabilityBand carries the Phase 1 exploitability band recorded when a
 	// confirmed crash has a parsed crash report (e.g. EXPLOITABLE).
-	ExploitabilityBand  string                        `json:"exploitability_band,omitempty"`
-	HarnessReady        bool                          `json:"harness_ready,omitempty"`
-	ReachableCallCount  int                           `json:"reachable_call_count,omitempty"`
-	ReachableDepth      int                           `json:"reachable_depth,omitempty"`
-	ReachableTruncated  bool                          `json:"reachable_truncated,omitempty"`
-	ReachableSymbols    []string                      `json:"reachable_symbols,omitempty"`
-	ReachableFiles      []string                      `json:"reachable_files,omitempty"`
-	OverlayDomains      []string                      `json:"overlay_domains,omitempty"`
-	BuildContexts       []string                      `json:"build_contexts,omitempty"`
-	ParameterStrategies []FunctionFuzzParamStrategy   `json:"parameter_strategies,omitempty"`
-	SinkSignals         []FunctionFuzzSinkSignal      `json:"sink_signals,omitempty"`
-	CodeObservations    []FunctionFuzzCodeObservation `json:"code_observations,omitempty"`
-	VirtualScenarios    []FunctionFuzzVirtualScenario `json:"virtual_scenarios,omitempty"`
-	IOCTLSpec           *FunctionFuzzIOCTLSpec        `json:"ioctl_spec,omitempty"`
-	PrimaryEngine       string                        `json:"primary_engine,omitempty"`
-	SecondaryEngines    []string                      `json:"secondary_engines,omitempty"`
-	ArtifactDir         string                        `json:"artifact_dir,omitempty"`
-	PlanPath            string                        `json:"plan_path,omitempty"`
-	ReportPath          string                        `json:"report_path,omitempty"`
-	HarnessPath         string                        `json:"harness_path,omitempty"`
-	Summary             string                        `json:"summary,omitempty"`
-	Interpretation      []string                      `json:"interpretation,omitempty"`
-	NextSteps           []string                      `json:"next_steps,omitempty"`
-	SuggestedTargets    []string                      `json:"suggested_targets,omitempty"`
-	SuggestedCommands   []string                      `json:"suggested_commands,omitempty"`
-	Notes               []string                      `json:"notes,omitempty"`
-	TargetStartLine     int                           `json:"target_start_line,omitempty"`
-	TargetEndLine       int                           `json:"target_end_line,omitempty"`
-	Execution           FunctionFuzzExecution         `json:"execution,omitempty"`
+	ExploitabilityBand   string                        `json:"exploitability_band,omitempty"`
+	HarnessReady         bool                          `json:"harness_ready,omitempty"`
+	ReachableCallCount   int                           `json:"reachable_call_count,omitempty"`
+	ReachableDepth       int                           `json:"reachable_depth,omitempty"`
+	ReachableTruncated   bool                          `json:"reachable_truncated,omitempty"`
+	ReachableSymbols     []string                      `json:"reachable_symbols,omitempty"`
+	ReachableFiles       []string                      `json:"reachable_files,omitempty"`
+	OverlayDomains       []string                      `json:"overlay_domains,omitempty"`
+	BuildContexts        []string                      `json:"build_contexts,omitempty"`
+	ParameterStrategies  []FunctionFuzzParamStrategy   `json:"parameter_strategies,omitempty"`
+	SinkSignals          []FunctionFuzzSinkSignal      `json:"sink_signals,omitempty"`
+	CodeObservations     []FunctionFuzzCodeObservation `json:"code_observations,omitempty"`
+	VirtualScenarios     []FunctionFuzzVirtualScenario `json:"virtual_scenarios,omitempty"`
+	IOCTLSpec            *FunctionFuzzIOCTLSpec        `json:"ioctl_spec,omitempty"`
+	PrimaryEngine        string                        `json:"primary_engine,omitempty"`
+	SecondaryEngines     []string                      `json:"secondary_engines,omitempty"`
+	ArtifactDir          string                        `json:"artifact_dir,omitempty"`
+	PlanPath             string                        `json:"plan_path,omitempty"`
+	ReportPath           string                        `json:"report_path,omitempty"`
+	HarnessPath          string                        `json:"harness_path,omitempty"`
+	HarnessSynthesisPath string                        `json:"harness_synthesis_path,omitempty"`
+	Summary              string                        `json:"summary,omitempty"`
+	Interpretation       []string                      `json:"interpretation,omitempty"`
+	NextSteps            []string                      `json:"next_steps,omitempty"`
+	SuggestedTargets     []string                      `json:"suggested_targets,omitempty"`
+	SuggestedCommands    []string                      `json:"suggested_commands,omitempty"`
+	Notes                []string                      `json:"notes,omitempty"`
+	TargetStartLine      int                           `json:"target_start_line,omitempty"`
+	TargetEndLine        int                           `json:"target_end_line,omitempty"`
+	Execution            FunctionFuzzExecution         `json:"execution,omitempty"`
 
 	// repairOverlayState carries the heuristic compile self-repair accumulated by
 	// the bounded build-only loop. It is transient (never serialized) and only
@@ -570,6 +573,7 @@ func normalizeFunctionFuzzRun(run FunctionFuzzRun) FunctionFuzzRun {
 	run.PlanPath = functionFuzzNormalizeOptionalPath(run.PlanPath)
 	run.ReportPath = functionFuzzNormalizeOptionalPath(run.ReportPath)
 	run.HarnessPath = functionFuzzNormalizeOptionalPath(run.HarnessPath)
+	run.HarnessSynthesisPath = functionFuzzNormalizeOptionalPath(run.HarnessSynthesisPath)
 	run.Execution = normalizeFunctionFuzzExecution(run.Execution)
 	if run.RiskScore < 0 {
 		run.RiskScore = 0
@@ -10231,6 +10235,7 @@ func prepareFunctionFuzzArtifacts(run *FunctionFuzzRun) error {
 	run.PlanPath = filepath.Join(artifactDir, "plan.json")
 	run.ReportPath = filepath.Join(artifactDir, "report.md")
 	run.HarnessPath = filepath.Join(artifactDir, "harness.cpp")
+	run.HarnessSynthesisPath = filepath.Join(artifactDir, "harness_synthesis.md")
 	return nil
 }
 
@@ -10263,6 +10268,11 @@ func writeFunctionFuzzArtifacts(run *FunctionFuzzRun, closure functionFuzzClosur
 	}
 	if err := os.WriteFile(run.HarnessPath, []byte(renderFunctionFuzzHarness(*run)), 0o644); err != nil {
 		return err
+	}
+	if strings.TrimSpace(run.HarnessSynthesisPath) != "" {
+		if err := os.WriteFile(run.HarnessSynthesisPath, []byte(functionFuzzBuildHarnessSynthesisPrompt(*run)), 0o644); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -11993,6 +12003,30 @@ func renderFunctionFuzzReportMarkdownWithConfig(run FunctionFuzzRun, closure fun
 				}
 				b.WriteString("| `" + strings.ReplaceAll(c.Code, "|", "/") + "` | " + value + " | `" + evidence + "` |\n")
 			}
+			perCodeFields := false
+			for _, c := range shown {
+				if len(c.Fields) > 0 {
+					perCodeFields = true
+					break
+				}
+			}
+			if perCodeFields {
+				b.WriteString("\n### " + functionFuzzLocalizedText(cfg, "Per-code input fields (best-effort)", "코드별 입력 필드 (best-effort)") + "\n\n")
+				for _, c := range shown {
+					if len(c.Fields) == 0 {
+						continue
+					}
+					parts := []string{}
+					for _, f := range c.Fields {
+						role := strings.TrimSpace(f.Role)
+						if role == "" {
+							role = "field"
+						}
+						parts = append(parts, "`"+f.Access+"` ("+role+")")
+					}
+					b.WriteString("- `" + strings.ReplaceAll(c.Code, "|", "/") + "`: " + strings.Join(parts, ", ") + "\n")
+				}
+			}
 		}
 		if len(run.IOCTLSpec.InputFields) > 0 {
 			b.WriteString("\n### " + functionFuzzLocalizedText(cfg, "Observed input-buffer fields (best-effort)", "관찰된 입력 버퍼 필드 (best-effort)") + "\n\n")
@@ -12145,6 +12179,9 @@ func renderFunctionFuzzReportMarkdownWithConfig(run FunctionFuzzRun, closure fun
 	fmt.Fprintf(&b, "- Plan JSON: `%s`\n", run.PlanPath)
 	fmt.Fprintf(&b, "- Report: `%s`\n", run.ReportPath)
 	fmt.Fprintf(&b, "- Harness: `%s`\n", run.HarnessPath)
+	if strings.TrimSpace(run.HarnessSynthesisPath) != "" {
+		fmt.Fprintf(&b, "- LLM harness synthesis prompt: `%s`\n", run.HarnessSynthesisPath)
+	}
 	return strings.TrimSpace(b.String()) + "\n"
 }
 
@@ -12520,6 +12557,119 @@ func renderFunctionFuzzHarness(run FunctionFuzzRun) string {
 	return renderFunctionFuzzHarnessWithRepair(run, functionFuzzCompileRepair{})
 }
 
+// functionFuzzBuildHarnessSynthesisPrompt produces an OSS-Fuzz-Gen-style prompt
+// an LLM (the operator's, or KernForge's own agent step) can use to synthesize
+// or refine a libFuzzer harness for this target from the structured analysis
+// context. KernForge stays deterministic and does NOT call a model during
+// /fuzz-func; this is a ready-to-use prompt plus an explicit acceptance contract
+// (the candidate is run through the existing compile-repair loop and discarded
+// if it cannot be made to build, so the deterministic harness is never replaced
+// by an uncompilable one).
+func functionFuzzBuildHarnessSynthesisPrompt(run FunctionFuzzRun) string {
+	var b strings.Builder
+	b.WriteString("# Fuzz Harness Synthesis Prompt\n\n")
+	b.WriteString("You are improving a libFuzzer harness for DEFENSIVE in-house fuzzing of code\n")
+	b.WriteString("the operator owns. Produce a single self-contained C++ harness.\n\n")
+	b.WriteString("## Target\n\n")
+	fmt.Fprintf(&b, "- Symbol: `%s`\n", valueOrUnset(run.TargetSymbolName))
+	if s := strings.TrimSpace(run.TargetSignature); s != "" {
+		fmt.Fprintf(&b, "- Signature: `%s`\n", s)
+	}
+	if s := strings.TrimSpace(run.TargetFile); s != "" {
+		fmt.Fprintf(&b, "- File: `%s`\n", filepath.ToSlash(s))
+	}
+	if len(run.OverlayDomains) > 0 {
+		fmt.Fprintf(&b, "- Domains: %s\n", strings.Join(run.OverlayDomains, ", "))
+	}
+	if len(run.ParameterStrategies) > 0 {
+		b.WriteString("\n## Parameters\n\n")
+		for _, p := range run.ParameterStrategies {
+			fmt.Fprintf(&b, "- `%s` (%s)\n", valueOrUnset(p.Name), valueOrUnset(p.Class))
+		}
+	}
+	if run.IOCTLSpec != nil && len(run.IOCTLSpec.Codes) > 0 {
+		b.WriteString("\n## IOCTL control codes (source-inferred)\n\n")
+		shown := run.IOCTLSpec.Codes
+		if len(shown) > 24 {
+			shown = shown[:24]
+		}
+		for _, c := range shown {
+			if c.HasValue {
+				fmt.Fprintf(&b, "- `%s` = 0x%X\n", c.Code, uint32(c.Value))
+			} else {
+				fmt.Fprintf(&b, "- `%s`\n", c.Code)
+			}
+		}
+	}
+	if len(run.CodeObservations) > 0 {
+		b.WriteString("\n## Key source observations\n\n")
+		for _, o := range limitFunctionFuzzCodeObservations(functionFuzzSortedCodeObservations(run.CodeObservations), 10) {
+			loc := filepath.ToSlash(strings.TrimSpace(o.File))
+			if o.Line > 0 {
+				loc += ":" + strconv.Itoa(o.Line)
+			}
+			fmt.Fprintf(&b, "- [%s] `%s` @ %s\n", strings.TrimSpace(o.Kind), strings.TrimSpace(o.Evidence), loc)
+		}
+	}
+	b.WriteString("\n## Hard constraints\n\n")
+	b.WriteString("- Define `extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)`.\n")
+	b.WriteString("- Consume the input deterministically with a byte cursor like the reference harness.\n")
+	b.WriteString("- Single self-contained translation unit; ASCII only; no network and no shelling out.\n")
+	b.WriteString("- Must compile under the recovered build command for this target.\n")
+	b.WriteString("- Keep the framing defensive: drive only code or devices the operator owns.\n")
+	b.WriteString("\n## Acceptance\n\n")
+	b.WriteString("- KernForge runs the candidate through its compile-repair loop. If it cannot be\n")
+	b.WriteString("  made to build, the candidate is discarded and the reference harness below is\n")
+	b.WriteString("  kept. Do not regress the reference harness behavior.\n")
+	b.WriteString("\n## Reference deterministic harness\n\n")
+	b.WriteString("```cpp\n")
+	b.WriteString(renderFunctionFuzzHarness(run))
+	b.WriteString("\n```\n")
+	return b.String()
+}
+
+// functionFuzzValidateCandidateHarness is the cheap structural gate applied to
+// an LLM-synthesized harness before the compile-repair loop runs: it must be a
+// non-trivial, ASCII, single libFuzzer entrypoint that does not shell out or
+// reach the network. It does not compile the candidate; that is the repair
+// loop's job.
+func functionFuzzValidateCandidateHarness(source string) (bool, []string) {
+	issues := []string{}
+	if len(strings.TrimSpace(source)) < 64 {
+		issues = append(issues, "candidate harness is empty or too short")
+	}
+	if !strings.Contains(source, "LLVMFuzzerTestOneInput") {
+		issues = append(issues, "missing the libFuzzer entrypoint LLVMFuzzerTestOneInput")
+	}
+	for i := 0; i < len(source); i++ {
+		if source[i] > 0x7f {
+			issues = append(issues, "candidate harness contains non-ASCII bytes")
+			break
+		}
+	}
+	lower := strings.ToLower(source)
+	for _, banned := range []string{"system(", "popen(", "winexec", "shellexecute", "wsastartup", "urldownload", "internetopen"} {
+		if strings.Contains(lower, banned) {
+			issues = append(issues, "candidate harness references a disallowed runtime, network, or shell API: "+banned)
+		}
+	}
+	return len(issues) == 0, issues
+}
+
+// functionFuzzAcceptSynthesizedHarness validates an LLM-synthesized candidate
+// harness and returns the source to use: the candidate if it passes the
+// structural gate (the caller still compiles it through the repair loop), or
+// the deterministic reference harness as a safe fallback together with the
+// reasons the candidate was rejected. The reference harness is never replaced
+// by a structurally invalid candidate.
+func functionFuzzAcceptSynthesizedHarness(run FunctionFuzzRun, candidate string) (string, bool, []string) {
+	ok, issues := functionFuzzValidateCandidateHarness(candidate)
+	if !ok {
+		return renderFunctionFuzzHarness(run), false, issues
+	}
+	return candidate, true, nil
+}
+
 // renderFunctionFuzzHarnessWithRepair renders the harness with an optional
 // heuristic compile-repair overlay applied. The overlay can inject extra
 // includes, forward-declare unresolved types, override a parameter's decode
@@ -12854,6 +13004,85 @@ func functionFuzzInferIOCTLInputFields(run FunctionFuzzRun) []FunctionFuzzIOCTLF
 	return out
 }
 
+// functionFuzzFirstBufferAccess returns the first input-buffer or size-like
+// access expression on an observation, or "" if none looks input-related.
+func functionFuzzFirstBufferAccess(obs FunctionFuzzCodeObservation) string {
+	for _, ap := range obs.AccessPaths {
+		l := strings.ToLower(ap)
+		if containsAny(l, "systembuffer", "type3inputbuffer", "userbuffer", "inputbuffer", "buffer", "irp", "associatedirp") || functionFuzzLooksLikeSizeAccessPath(l) {
+			return strings.TrimSpace(ap)
+		}
+	}
+	return ""
+}
+
+// functionFuzzAttachIOCTLCodeFields associates observed input-buffer field
+// accesses with the control-code block they fall in, using the nearest
+// preceding code by source line within the same file. Offsets are not resolved;
+// this is a best-effort per-code grouping of the fields the handler reads.
+func functionFuzzAttachIOCTLCodeFields(run FunctionFuzzRun, order []string, byKey map[string]*FunctionFuzzIOCTLCode, fileByKey map[string]string) {
+	type ref struct {
+		key  string
+		line int
+		file string
+	}
+	refs := make([]ref, 0, len(order))
+	for _, key := range order {
+		entry := byKey[key]
+		if entry == nil || entry.Line <= 0 {
+			continue
+		}
+		refs = append(refs, ref{key: key, line: entry.Line, file: fileByKey[key]})
+	}
+	if len(refs) == 0 {
+		return
+	}
+	sort.Slice(refs, func(i int, j int) bool {
+		return refs[i].line < refs[j].line
+	})
+	for _, obs := range run.CodeObservations {
+		role := ""
+		switch strings.TrimSpace(obs.Kind) {
+		case "size_guard":
+			role = "length"
+		case "copy_sink":
+			role = "buffer"
+		default:
+			continue
+		}
+		access := functionFuzzFirstBufferAccess(obs)
+		if access == "" {
+			continue
+		}
+		chosen := ""
+		for _, r := range refs {
+			if r.file != "" && obs.File != "" && r.file != obs.File {
+				continue
+			}
+			if r.line <= obs.Line {
+				chosen = r.key
+			}
+		}
+		if chosen == "" {
+			continue
+		}
+		entry := byKey[chosen]
+		if entry == nil || len(entry.Fields) >= 6 {
+			continue
+		}
+		dup := false
+		for _, f := range entry.Fields {
+			if strings.EqualFold(f.Access, access) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			entry.Fields = append(entry.Fields, FunctionFuzzIOCTLField{Access: access, Role: role, Evidence: strings.TrimSpace(obs.Evidence)})
+		}
+	}
+}
+
 // functionFuzzInferIOCTLSpec derives a KernelGPT-style IOCTL surface description
 // from the operator's own driver source: the control codes the dispatch handles
 // (case labels, IoControlCode comparison constants, named IOCTL_/FSCTL_ codes)
@@ -12866,7 +13095,8 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 	}
 	order := []string{}
 	byKey := map[string]*FunctionFuzzIOCTLCode{}
-	addCode := func(literal string, evidence string, symbol string) {
+	fileByKey := map[string]string{}
+	addCode := func(literal string, evidence string, obs FunctionFuzzCodeObservation) {
 		literal = strings.TrimSpace(literal)
 		if literal == "" || functionFuzzIOCTLLiteralIsNoise(literal) {
 			return
@@ -12877,16 +13107,17 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 				existing.Evidence = strings.TrimSpace(evidence)
 			}
 			if existing.Symbol == "" {
-				existing.Symbol = strings.TrimSpace(symbol)
+				existing.Symbol = strings.TrimSpace(obs.Symbol)
 			}
 			return
 		}
-		entry := &FunctionFuzzIOCTLCode{Code: literal, Evidence: strings.TrimSpace(evidence), Symbol: strings.TrimSpace(symbol)}
+		entry := &FunctionFuzzIOCTLCode{Code: literal, Evidence: strings.TrimSpace(evidence), Symbol: strings.TrimSpace(obs.Symbol), Line: obs.Line}
 		if value, ok := functionFuzzParseDictionaryInteger(literal); ok {
 			entry.Value = value
 			entry.HasValue = true
 		}
 		byKey[key] = entry
+		fileByKey[key] = strings.TrimSpace(obs.File)
 		order = append(order, key)
 	}
 	for _, obs := range run.CodeObservations {
@@ -12896,15 +13127,15 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 		ev := obs.Evidence
 		for _, match := range functionFuzzIOCTLCaseLabelPattern.FindAllStringSubmatch(ev, -1) {
 			if len(match) >= 2 {
-				addCode(match[1], ev, obs.Symbol)
+				addCode(match[1], ev, obs)
 			}
 		}
 		for _, ident := range functionFuzzIOCTLNamedCodePattern.FindAllString(ev, -1) {
-			addCode(ident, ev, obs.Symbol)
+			addCode(ident, ev, obs)
 		}
 		if functionFuzzIOCTLControlCmpPattern.MatchString(ev) {
 			for _, lit := range functionFuzzIOCTLHexLiteralPattern.FindAllString(ev, -1) {
-				addCode(lit, ev, obs.Symbol)
+				addCode(lit, ev, obs)
 			}
 		}
 		for _, fact := range obs.ComparisonFacts {
@@ -12912,13 +13143,14 @@ func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
 				continue
 			}
 			for _, ident := range functionFuzzIOCTLNamedCodePattern.FindAllString(fact, -1) {
-				addCode(ident, fact, obs.Symbol)
+				addCode(ident, fact, obs)
 			}
 			for _, lit := range functionFuzzIOCTLHexLiteralPattern.FindAllString(fact, -1) {
-				addCode(lit, fact, obs.Symbol)
+				addCode(lit, fact, obs)
 			}
 		}
 	}
+	functionFuzzAttachIOCTLCodeFields(run, order, byKey, fileByKey)
 	fields := functionFuzzInferIOCTLInputFields(run)
 	if len(order) == 0 {
 		return &FunctionFuzzIOCTLSpec{
@@ -12970,6 +13202,16 @@ func normalizeFunctionFuzzIOCTLSpec(spec *FunctionFuzzIOCTLSpec) *FunctionFuzzIO
 		if c.Code == "" {
 			continue
 		}
+		codeFields := make([]FunctionFuzzIOCTLField, 0, len(c.Fields))
+		for _, f := range c.Fields {
+			f.Access = strings.TrimSpace(f.Access)
+			f.Role = strings.TrimSpace(f.Role)
+			f.Evidence = strings.TrimSpace(f.Evidence)
+			if f.Access != "" {
+				codeFields = append(codeFields, f)
+			}
+		}
+		c.Fields = codeFields
 		codes = append(codes, c)
 	}
 	fields := make([]FunctionFuzzIOCTLField, 0, len(spec.InputFields))
@@ -13046,37 +13288,50 @@ func functionFuzzRenderIOCTLHarnessBody(b *strings.Builder, run FunctionFuzzRun)
 	b.WriteString("        {\n")
 	b.WriteString("            break; // load the target driver and set the device path first\n")
 	b.WriteString("        }\n\n")
-	b.WriteString("        // Decode the four DeviceIoControl descriptors from the fuzz input.\n")
-	b.WriteString("        DWORD ioControlCode = ReadScalar<DWORD>(input);\n")
+	b.WriteString("        // Issue a short SEQUENCE of DeviceIoControl requests decoded from the\n")
+	b.WriteString("        // input on the same device handle, so cross-call state bugs (handle\n")
+	b.WriteString("        // reuse, use-after-free across IOCTLs, ordering) can surface. One\n")
+	b.WriteString("        // request worth of bytes issues exactly one call.\n")
+	b.WriteString("        static const size_t kKernforgeMaxRequests = 8;\n")
+	b.WriteString("        for (size_t reqIndex = 0; reqIndex < kKernforgeMaxRequests; ++reqIndex)\n")
+	b.WriteString("        {\n")
+	b.WriteString("            // Stop once there are not enough bytes left for another control code.\n")
+	b.WriteString("            if (reqIndex != 0 && input.offset + sizeof(DWORD) > input.size)\n")
+	b.WriteString("            {\n")
+	b.WriteString("                break;\n")
+	b.WriteString("            }\n")
+	b.WriteString("            // Decode the four DeviceIoControl descriptors from the fuzz input.\n")
+	b.WriteString("            DWORD ioControlCode = ReadScalar<DWORD>(input);\n")
 	if len(codes) > 0 {
-		b.WriteString("        // Prefer a recovered control code so the request reaches a real handler;\n")
-		b.WriteString("        // keep an exact match as-is and leave a fraction of inputs raw to still\n")
-		b.WriteString("        // exercise the dispatch default / error path.\n")
-		b.WriteString("        {\n")
-		b.WriteString("            bool knownCode = false;\n")
-		b.WriteString("            for (size_t i = 0; i < kKernforgeIoctlCodeCount; ++i)\n")
+		b.WriteString("            // Prefer a recovered control code so the request reaches a real handler;\n")
+		b.WriteString("            // keep an exact match as-is and leave a fraction of inputs raw to still\n")
+		b.WriteString("            // exercise the dispatch default / error path.\n")
 		b.WriteString("            {\n")
-		b.WriteString("                if (kKernforgeIoctlCodes[i] == ioControlCode)\n")
+		b.WriteString("                bool knownCode = false;\n")
+		b.WriteString("                for (size_t i = 0; i < kKernforgeIoctlCodeCount; ++i)\n")
 		b.WriteString("                {\n")
-		b.WriteString("                    knownCode = true;\n")
-		b.WriteString("                    break;\n")
+		b.WriteString("                    if (kKernforgeIoctlCodes[i] == ioControlCode)\n")
+		b.WriteString("                    {\n")
+		b.WriteString("                        knownCode = true;\n")
+		b.WriteString("                        break;\n")
+		b.WriteString("                    }\n")
+		b.WriteString("                }\n")
+		b.WriteString("                if (!knownCode && (ioControlCode & 7u) != 0u)\n")
+		b.WriteString("                {\n")
+		b.WriteString("                    ioControlCode = kKernforgeIoctlCodes[(ioControlCode >> 3) % kKernforgeIoctlCodeCount];\n")
 		b.WriteString("                }\n")
 		b.WriteString("            }\n")
-		b.WriteString("            if (!knownCode && (ioControlCode & 7u) != 0u)\n")
-		b.WriteString("            {\n")
-		b.WriteString("                ioControlCode = kKernforgeIoctlCodes[(ioControlCode >> 3) % kKernforgeIoctlCodeCount];\n")
-		b.WriteString("            }\n")
-		b.WriteString("        }\n")
 	}
-	b.WriteString("        std::vector<uint8_t> inBuffer = ReadByteVector(input, 0x10000);\n")
-	b.WriteString("        size_t outCap = ReadSize(input, 0x10000);\n")
-	b.WriteString("        std::vector<uint8_t> outBuffer(outCap);\n")
-	b.WriteString("        DWORD bytesReturned = 0;\n\n")
-	b.WriteString("        // InBufferLength is coupled to the actual input buffer size.\n")
-	b.WriteString("        (void) DeviceIoControl(device, ioControlCode,\n")
-	b.WriteString("            inBuffer.empty() ? nullptr : inBuffer.data(), (DWORD) inBuffer.size(),\n")
-	b.WriteString("            outBuffer.empty() ? nullptr : outBuffer.data(), (DWORD) outBuffer.size(),\n")
-	b.WriteString("            &bytesReturned, nullptr);\n")
+	b.WriteString("            std::vector<uint8_t> inBuffer = ReadByteVector(input, 0x10000);\n")
+	b.WriteString("            size_t outCap = ReadSize(input, 0x10000);\n")
+	b.WriteString("            std::vector<uint8_t> outBuffer(outCap);\n")
+	b.WriteString("            DWORD bytesReturned = 0;\n\n")
+	b.WriteString("            // InBufferLength is coupled to the actual input buffer size.\n")
+	b.WriteString("            (void) DeviceIoControl(device, ioControlCode,\n")
+	b.WriteString("                inBuffer.empty() ? nullptr : inBuffer.data(), (DWORD) inBuffer.size(),\n")
+	b.WriteString("                outBuffer.empty() ? nullptr : outBuffer.data(), (DWORD) outBuffer.size(),\n")
+	b.WriteString("                &bytesReturned, nullptr);\n")
+	b.WriteString("        }\n")
 	b.WriteString("    }\n")
 	b.WriteString("    while (false);\n")
 	b.WriteString("    return result;\n")

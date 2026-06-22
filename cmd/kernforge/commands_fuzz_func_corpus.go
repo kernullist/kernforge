@@ -562,6 +562,29 @@ func functionFuzzIOCTLSpecSeeds(run FunctionFuzzRun) []functionFuzzBoundarySeed 
 			payload:     functionFuzzIOCTLSeedPayload(code, buf, outCap),
 		})
 	}
+	// Stateful sequence seed: a few requests back-to-back on the same handle so
+	// the sequencing harness exercises cross-call state from the start.
+	if len(codes) >= 2 {
+		seqCodes := codes
+		if len(seqCodes) > 3 {
+			seqCodes = seqCodes[:3]
+		}
+		seq := []byte{}
+		for i, code := range seqCodes {
+			var buf []byte
+			if i%2 == 0 {
+				buf = functionFuzzRepeatBytes(0x41, 16)
+			}
+			seq = append(seq, functionFuzzIOCTLSeedPayload(code, buf, outCap)...)
+		}
+		out = append(out, functionFuzzBoundarySeed{
+			Name:        "seed-ioctl-sequence.bin",
+			Rule:        "ioctl_code_sequence",
+			Origin:      "ioctl_spec",
+			Description: "Back-to-back DeviceIoControl requests across recovered codes to exercise cross-call state.",
+			payload:     seq,
+		})
+	}
 	// A non-recovered code whose low three bits are zero stays raw through the
 	// harness selection, so it exercises the dispatch default / error path.
 	out = append(out, functionFuzzBoundarySeed{
