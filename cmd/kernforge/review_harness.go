@@ -149,6 +149,11 @@ type ReviewHarnessConfig struct {
 	// same-model pass rather than independent cross review.
 	AutoCrossReviewer *ReviewModelConfig           `json:"auto_cross_reviewer,omitempty"`
 	RoleModels        map[string]ReviewModelConfig `json:"role_models,omitempty"`
+	// Blocking selects how review findings gate work: "" or "blocking" (default)
+	// lets confirmed blockers stop the write/turn; "advisory" surfaces every
+	// review finding as a warning without blocking, so the operator still gets the
+	// signal but the review gate never hard-stops them.
+	Blocking string `json:"blocking,omitempty"`
 }
 
 type ReviewRun struct {
@@ -159,6 +164,7 @@ type ReviewRun struct {
 	PolicyPackVersions      map[string]string            `json:"policy_pack_versions,omitempty"`
 	ReviewFingerprint       string                       `json:"review_fingerprint,omitempty"`
 	Trigger                 string                       `json:"trigger,omitempty"`
+	AdvisoryReview          bool                         `json:"advisory_review,omitempty"`
 	Target                  string                       `json:"target,omitempty"`
 	Mode                    string                       `json:"mode,omitempty"`
 	Flow                    string                       `json:"flow,omitempty"`
@@ -1030,6 +1036,7 @@ func newReviewRunSkeleton(rt *runtimeState, root string, opts ReviewHarnessOptio
 		KernforgeVersion: buildIdentity.Version,
 		KernforgeBuild:   buildIdentity,
 		Trigger:          trigger,
+		AdvisoryReview:   reviewBlockingIsAdvisory(rt.cfg),
 		AutoTriggered:    opts.AutoTriggered,
 		Objective:        objective,
 		CreatedAt:        now,
@@ -1040,6 +1047,13 @@ func newReviewRunSkeleton(rt *runtimeState, root string, opts ReviewHarnessOptio
 			ModelQuality: reviewModelQualityUsable,
 		},
 	}
+}
+
+// reviewBlockingIsAdvisory reports whether the operator configured review to be
+// advisory (warn, never hard-block). Any value other than "advisory" keeps the
+// default blocking behavior.
+func reviewBlockingIsAdvisory(cfg Config) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Review.Blocking), "advisory")
 }
 
 func reviewPolicyPackVersions(packs []string) map[string]string {

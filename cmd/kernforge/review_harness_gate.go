@@ -1060,6 +1060,13 @@ func evaluateReviewGate(run ReviewRun) GateDecision {
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") {
 		gate = reviewPromotePreWriteActionableWarnings(run, gate)
 	}
+	if run.AdvisoryReview && len(gate.BlockingFindings) > 0 {
+		// Advisory mode: surface every would-be blocker as a warning instead of
+		// hard-blocking, so the operator gets the full review signal without the
+		// review gate stopping the write.
+		gate.WarningFindings = append(gate.WarningFindings, gate.BlockingFindings...)
+		gate.BlockingFindings = nil
+	}
 	gate.RequiredActions = normalizeTaskStateList(gate.RequiredActions, 12)
 	switch {
 	case len(gate.BlockingFindings) > 0:

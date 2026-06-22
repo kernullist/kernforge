@@ -1352,6 +1352,9 @@ func mergeReviewHarnessConfig(dst *ReviewHarnessConfig, src ReviewHarnessConfig)
 	if src.RepeatedFindingBlockThreshold > 0 {
 		dst.RepeatedFindingBlockThreshold = src.RepeatedFindingBlockThreshold
 	}
+	if strings.TrimSpace(src.Blocking) != "" {
+		dst.Blocking = strings.ToLower(strings.TrimSpace(src.Blocking))
+	}
 	if len(src.RoleModels) > 0 {
 		if dst.RoleModels == nil {
 			dst.RoleModels = map[string]ReviewModelConfig{}
@@ -1388,6 +1391,11 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 	}
 	if cfg.RepeatedFindingBlockThreshold <= 0 {
 		cfg.RepeatedFindingBlockThreshold = 2
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Blocking), "advisory") {
+		cfg.Blocking = "advisory"
+	} else {
+		cfg.Blocking = "blocking"
 	}
 	if len(cfg.RoleModels) > 0 {
 		normalized := map[string]ReviewModelConfig{}
