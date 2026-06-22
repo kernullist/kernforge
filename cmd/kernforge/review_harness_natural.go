@@ -121,7 +121,7 @@ func formatCodexAppReviewModeReply(cfg Config, run ReviewRun) string {
 		return strings.TrimSpace(b.String())
 	}
 	for _, finding := range findings {
-		writeReviewFindingCard(&b, finding, korean, false)
+		writeReviewFindingCard(&b, finding, korean, false, false)
 	}
 	return strings.TrimSpace(b.String())
 }

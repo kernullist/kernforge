@@ -927,7 +927,7 @@ func (a *Agent) formatNonBlockingPreFixReviewReply() string {
 	warnings := preFixReplyWarningFindings(run, 5)
 	if len(warnings) > 0 {
 		for _, finding := range warnings {
-			writeReviewFindingCard(&b, finding, korean, false)
+			writeReviewFindingCard(&b, finding, korean, false, false)
 		}
 	}
 	if len(run.ArtifactRefs) > 0 {
@@ -1324,7 +1324,7 @@ func renderReviewInlineFindingsLocalized(run ReviewRun, includeVerificationGaps 
 		if korean {
 			finding.RequiredFix = localizedReviewRequiredFixText(finding.RequiredFix, true)
 		}
-		writeReviewFindingCard(&b, finding, korean, false)
+		writeReviewFindingCard(&b, finding, korean, false, false)
 		b.WriteString("\n")
 	}
 	if strings.TrimSpace(b.String()) == "" {

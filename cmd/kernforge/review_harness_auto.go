@@ -2303,8 +2303,9 @@ func formatPreWriteFinalVisibleReviewSummary(cfg Config, run ReviewRun, proceedT
 			b.WriteString("\n- No key findings.")
 		}
 	} else {
+		blockingIDs := reviewFindingIDSet(run.Gate.BlockingFindings)
 		for _, finding := range limitReviewFindings(findings, 6) {
-			writePreWriteVisibleFinding(&b, finding, korean)
+			writePreWriteVisibleFinding(&b, finding, korean, blockingIDs[finding.ID])
 		}
 	}
 	if len(run.ArtifactRefs) > 0 {
@@ -2357,7 +2358,7 @@ func preWriteWarningsAreHarnessEvidenceOnly(run ReviewRun) bool {
 }
 
 func writePreWriteVisibleRepairTarget(b *strings.Builder, finding ReviewFinding, korean bool) {
-	writeReviewFindingCard(b, finding, korean, true)
+	writeReviewFindingCard(b, finding, korean, true, false)
 }
 
 func reviewRepairResolutionStatusVisibleText(status string, korean bool) string {
@@ -2373,8 +2374,8 @@ func reviewRepairResolutionStatusVisibleText(status string, korean bool) string 
 	}
 }
 
-func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, korean bool) {
-	writeReviewFindingCard(b, finding, korean, false)
+func writePreWriteVisibleFinding(b *strings.Builder, finding ReviewFinding, korean bool, gateBlocking bool) {
+	writeReviewFindingCard(b, finding, korean, false, gateBlocking)
 }
 
 // reviewFindingCardField is one aligned label row in a review finding card.
@@ -2391,12 +2392,19 @@ type reviewFindingCardField struct {
 // targets). Korean labels are aligned by visibleLen so values line up. The
 // output is plain text (box/severity glyphs only, no ANSI) so it is identical
 // on every review reply surface.
-func writeReviewFindingCard(b *strings.Builder, finding ReviewFinding, korean bool, repairTarget bool) {
+func writeReviewFindingCard(b *strings.Builder, finding ReviewFinding, korean bool, repairTarget bool, gateBlocking bool) {
 	finding.Normalize()
 	id := valueOrDefault(finding.ID, "RF")
-	severity := valueOrDefault(finding.Severity, "unknown")
+	effectiveSeverity := finding.Severity
+	if gateBlocking {
+		// A warning promoted into a gate blocker (e.g. an actionable pre-write
+		// warning) must read as a blocker in its card so the per-item label agrees
+		// with the "blockers N" count in the summary header.
+		effectiveSeverity = reviewSeverityBlocker
+	}
+	severity := valueOrDefault(effectiveSeverity, "unknown")
 	category := valueOrDefault(finding.Category, "general")
-	symbol := reviewSeveritySymbol(finding.Severity)
+	symbol := reviewSeveritySymbol(effectiveSeverity)
 	severityLabel := humanizeReviewSeverity(severity, korean)
 	// Localize internal completeness/contract finding titles (keyed on the
 	// stable English title) so they do not leak English vocabulary into a
