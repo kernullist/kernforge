@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -219,6 +220,121 @@ func TestParseFunctionFuzzReplayArgsAcceptsPositionalCrashPath(t *testing.T) {
 	}
 	if crashInput != "crashes/crash-abc.bin" {
 		t.Fatalf("crashInput = %q", crashInput)
+	}
+}
+
+func TestFunctionFuzzSeedsForScenarioEncodesConstantNotProse(t *testing.T) {
+	// A scenario whose invariant pins a comparison constant must land that
+	// constant, little-endian, at the leading scalar parameter's offset - and
+	// must NOT carry the English ConcreteInputs prose into the seed bytes.
+	const prose = "claimed size larger than backing store"
+	scenario := FunctionFuzzVirtualScenario{
+		Title: "attacker-controlled size",
+		Invariants: []FunctionFuzzInvariant{
+			{Kind: "size_eq", Left: "size", Right: "cap", Detail: "size == 0x1000"},
+		},
+		ConcreteInputs: []string{"size = 0x1000 -> " + prose},
+	}
+	params := []FunctionFuzzParamStrategy{
+		{Index: 0, Name: "size", Class: "scalar_int", RawType: "uint32_t"},
+	}
+	seeds := functionFuzzSeedsForScenario(0, scenario, params)
+	if len(seeds) != 1 {
+		t.Fatalf("expected exactly one scenario seed, got %d", len(seeds))
+	}
+	payload := seeds[0].payload
+
+	// uint32_t scalar -> 4 LE bytes of 0x1000 at offset 0.
+	wantLE := []byte{0x00, 0x10, 0x00, 0x00}
+	if len(payload) < len(wantLE) {
+		t.Fatalf("payload too short (%d bytes) to hold the leading scalar: % x", len(payload), payload)
+	}
+	if !bytes.Equal(payload[:len(wantLE)], wantLE) {
+		t.Fatalf("leading scalar bytes = % x, want % x (full payload % x)", payload[:len(wantLE)], wantLE, payload)
+	}
+	// The constant must appear LE-encoded somewhere too (offset already checked).
+	if !bytes.Contains(payload, wantLE) {
+		t.Fatalf("payload missing LE-encoded constant % x: % x", wantLE, payload)
+	}
+	// The English description prose must not be embedded as raw bytes.
+	if bytes.Contains(payload, []byte(prose)) {
+		t.Fatalf("payload must not contain English description prose %q: % x", prose, payload)
+	}
+	if seeds[0].Rule != "scenario_concrete_inputs" {
+		t.Fatalf("seed rule = %q, want scenario_concrete_inputs", seeds[0].Rule)
+	}
+}
+
+func TestFunctionFuzzSeedsForScenarioCouplesDesyncVersusConsistent(t *testing.T) {
+	// Buffer 'buf' is statically related to length 'len' (sized_by:len). The
+	// harness derives len from buf.size() and reads a desync-flag byte (plus an
+	// optional delta byte) from the seed. A size-desync scenario must encode the
+	// desync path; a normal scenario must keep them consistent.
+	params := []FunctionFuzzParamStrategy{
+		{Index: 0, Name: "buf", Class: "buffer", RawType: "uint8_t*", Relation: "sized_by:len"},
+		{Index: 1, Name: "len", Class: "length", RawType: "uint32_t"},
+	}
+
+	desyncScenario := FunctionFuzzVirtualScenario{
+		Title: "attacker-controlled size desync",
+	}
+	normalScenario := FunctionFuzzVirtualScenario{
+		Title: "happy path round trip",
+	}
+
+	desyncSeeds := functionFuzzSeedsForScenario(0, desyncScenario, params)
+	normalSeeds := functionFuzzSeedsForScenario(1, normalScenario, params)
+	if len(desyncSeeds) != 1 || len(normalSeeds) != 1 {
+		t.Fatalf("expected one seed each, got desync=%d normal=%d", len(desyncSeeds), len(normalSeeds))
+	}
+	desyncPayload := desyncSeeds[0].payload
+	normalPayload := normalSeeds[0].payload
+
+	// Common prefix is the buffer: LE size_t(4) + 4 body bytes = 12 bytes, equal
+	// for both because a coupled buffer keeps a consistent declared prefix.
+	wantBufferPrefix := append(functionFuzzLEBytes(4, 8), 0x41, 0x41, 0x41, 0x41)
+	if !bytes.HasPrefix(desyncPayload, wantBufferPrefix) {
+		t.Fatalf("desync payload missing coupled buffer prefix % x: % x", wantBufferPrefix, desyncPayload)
+	}
+	if !bytes.HasPrefix(normalPayload, wantBufferPrefix) {
+		t.Fatalf("normal payload missing coupled buffer prefix % x: % x", wantBufferPrefix, normalPayload)
+	}
+
+	// The coupled-length encoding is the tail after the buffer prefix.
+	desyncTail := desyncPayload[len(wantBufferPrefix):]
+	normalTail := normalPayload[len(wantBufferPrefix):]
+
+	// Consistent: single flag byte whose low 3 bits are non-zero so the harness
+	// keeps length == buffer.size().
+	if len(normalTail) != 1 {
+		t.Fatalf("normal coupled-length tail must be one byte, got % x", normalTail)
+	}
+	if normalTail[0]&0x07 == 0 {
+		t.Fatalf("normal coupled-length flag % x must keep (flag & 0x07) != 0", normalTail)
+	}
+
+	// Desync: flag byte clears the low 3 bits (harness takes the desync path) and
+	// is followed by a non-zero delta byte that perturbs the length.
+	if len(desyncTail) != 2 {
+		t.Fatalf("desync coupled-length tail must be two bytes, got % x", desyncTail)
+	}
+	if desyncTail[0]&0x07 != 0 {
+		t.Fatalf("desync coupled-length flag % x must clear (flag & 0x07) == 0", desyncTail)
+	}
+	if desyncTail[1] == 0 {
+		t.Fatalf("desync coupled-length delta must be non-zero, got % x", desyncTail)
+	}
+}
+
+func TestFunctionFuzzSeedsForScenarioOmittedWithoutParameters(t *testing.T) {
+	// With no parameter layout to encode against, the scenario must produce no
+	// seed rather than writing its prose as bytes.
+	scenario := FunctionFuzzVirtualScenario{
+		Title:          "lonely scenario",
+		ConcreteInputs: []string{"buf = 0x10000000 -> bytes[41]"},
+	}
+	if seeds := functionFuzzSeedsForScenario(0, scenario, nil); len(seeds) != 0 {
+		t.Fatalf("expected no seed when there are no parameters, got %d", len(seeds))
 	}
 }
 

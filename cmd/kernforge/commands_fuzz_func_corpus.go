@@ -498,7 +498,7 @@ func functionFuzzBuildBoundarySeeds(run FunctionFuzzRun) []functionFuzzBoundaryS
 		scenarios = scenarios[:8]
 	}
 	for idx, scenario := range scenarios {
-		seeds := functionFuzzSeedsForScenario(idx, scenario)
+		seeds := functionFuzzSeedsForScenario(idx, scenario, run.ParameterStrategies)
 		out = append(out, seeds...)
 	}
 	return out
@@ -571,7 +571,22 @@ func functionFuzzSeedsForParameter(param FunctionFuzzParamStrategy) []functionFu
 	return out
 }
 
-func functionFuzzSeedsForScenario(index int, scenario FunctionFuzzVirtualScenario) []functionFuzzBoundarySeed {
+// functionFuzzSeedsForScenario emits a structured seed for a virtual scenario.
+//
+// The seed bytes are laid out exactly the way the generated harness's
+// FuzzInputView decodes parameters in order (see renderFunctionFuzzHarness and
+// functionFuzzHarnessParamLines): typed scalars little-endian, an 8-byte size_t
+// length prefix for byte vectors/strings, and the buffer<->length coupling that
+// the harness applies via functionFuzzHarnessCoupledLengthLines. The values are
+// populated from the scenario's real data - the first parseable comparison
+// constant found in its invariants/concrete inputs/branch facts plus per-class
+// boundary values - not from the English ConcreteInputs prose (that prose stays
+// in the report). If the scenario has no parameters to encode against, no seed
+// is emitted rather than writing prose bytes.
+func functionFuzzSeedsForScenario(index int, scenario FunctionFuzzVirtualScenario, params []FunctionFuzzParamStrategy) []functionFuzzBoundarySeed {
+	if len(params) == 0 {
+		return nil
+	}
 	title := functionFuzzSanitizeIdentifierForLabel(scenario.Title)
 	if title == "" {
 		title = "scenario"
@@ -580,19 +595,20 @@ func functionFuzzSeedsForScenario(index int, scenario FunctionFuzzVirtualScenari
 		title = title[:48]
 	}
 	base := fmt.Sprintf("seed-scenario-%02d-%s", index+1, strings.ToLower(title))
-	payload := []byte{}
-	for _, line := range scenario.ConcreteInputs {
-		payload = append(payload, []byte(line)...)
-		payload = append(payload, '\n')
+
+	desync := functionFuzzScenarioTargetsSizeDesync(scenario)
+	targetConst, hasConst := functionFuzzScenarioPrimaryConstant(scenario)
+
+	payload, ok := functionFuzzEncodeScenarioPayload(params, desync, targetConst, hasConst)
+	if !ok {
+		// No parameter layout could be encoded for this scenario. Per the
+		// design, omit a seed rather than fall back to prose bytes.
+		return nil
 	}
-	if len(payload) == 0 {
-		for _, fact := range scenario.BranchFacts {
-			payload = append(payload, []byte(fact)...)
-			payload = append(payload, '\n')
-		}
-	}
-	if len(payload) == 0 {
-		payload = []byte(scenario.Title)
+
+	description := "Structured multi-parameter seed encoded for the harness FuzzInputView decode order."
+	if desync {
+		description = "Structured seed with a deliberate buffer<->length size desync for the harness decode order."
 	}
 	out := []functionFuzzBoundarySeed{
 		{
@@ -602,11 +618,251 @@ func functionFuzzSeedsForScenario(index int, scenario FunctionFuzzVirtualScenari
 			Origin:      "virtual_scenario",
 			SourceFile:  scenario.SourceExcerpt.File,
 			SourceLine:  scenario.SourceExcerpt.FocusLine,
-			Description: "Concrete input strings collected from the virtual scenario.",
+			Description: description,
 			payload:     payload,
 		},
 	}
 	return out
+}
+
+// functionFuzzScenarioTargetsSizeDesync reports whether a scenario is about a
+// buffer/length size disagreement, in which case the seed should encode a
+// declared length that deliberately differs from the real buffer length.
+func functionFuzzScenarioTargetsSizeDesync(scenario FunctionFuzzVirtualScenario) bool {
+	title := strings.ToLower(strings.TrimSpace(scenario.Title))
+	if containsAny(title,
+		"attacker-controlled size",
+		"short backing store",
+		"buffer and scalar size",
+		"conflicting scalar size",
+		"allocation size",
+		"size desync",
+		"size drift") {
+		return true
+	}
+	for _, inv := range scenario.Invariants {
+		kind := strings.ToLower(strings.TrimSpace(inv.Kind))
+		if containsAny(kind, "size", "buffer_size_contract", "guard_use_size") {
+			return true
+		}
+	}
+	return false
+}
+
+// functionFuzzScenarioPrimaryConstant extracts the first parseable integer
+// constant the scenario refers to, scanning its invariants, concrete inputs,
+// and branch facts in that priority order. This is the comparison constant the
+// seed should embed into the leading typed scalar/length parameter so the seed
+// exercises the relevant boundary.
+func functionFuzzScenarioPrimaryConstant(scenario FunctionFuzzVirtualScenario) (uint64, bool) {
+	candidates := []string{}
+	for _, inv := range scenario.Invariants {
+		candidates = append(candidates, inv.Detail, inv.Left, inv.Right)
+	}
+	candidates = append(candidates, scenario.ConcreteInputs...)
+	candidates = append(candidates, scenario.BranchFacts...)
+	for _, text := range candidates {
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		for _, match := range functionFuzzDictIntegerPattern.FindAllString(text, -1) {
+			if value, ok := functionFuzzParseDictionaryInteger(match); ok {
+				return value, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// functionFuzzScalarByteWidth maps a C scalar raw type to the byte width the
+// harness will read via ReadScalar<rawType> (sizeof(rawType)). It covers the
+// common fixed-width and Windows typedef widths and defaults to 4 bytes.
+func functionFuzzScalarByteWidth(rawType string) int {
+	lower := strings.ToLower(strings.TrimSpace(rawType))
+	lower = strings.TrimPrefix(lower, "const ")
+	lower = strings.TrimSpace(lower)
+	switch {
+	case lower == "":
+		return 4
+	case containsAny(lower, "int8", "uint8", "int8_t", "uint8_t", "char", "byte", "bool", "uchar", "boolean"):
+		return 1
+	case containsAny(lower, "int16", "uint16", "int16_t", "uint16_t", "short", "wchar", "ushort", "word"):
+		return 2
+	case containsAny(lower, "int64", "uint64", "int64_t", "uint64_t", "longlong", "size_t", " size", "ptr", "intptr", "uintptr", "ulong64", "long64", "qword", "double"):
+		return 8
+	case containsAny(lower, "int32", "uint32", "int32_t", "uint32_t", "long", "ulong", "dword", "float", "int", "uint"):
+		return 4
+	default:
+		return 4
+	}
+}
+
+// functionFuzzScenarioBoundaryForClass returns the per-class boundary value used
+// when a scenario does not pin a concrete comparison constant onto a scalar.
+func functionFuzzScenarioBoundaryForClass(class string) uint64 {
+	switch strings.ToLower(strings.TrimSpace(class)) {
+	case "length", "scalar_int":
+		return 0xFFFFFFFF
+	case "enum_or_flags":
+		return 0x80000000
+	default:
+		return 0
+	}
+}
+
+// functionFuzzEncodeScenarioPayload builds the structured seed bytes for the
+// scenario by walking the parameters in the SAME emit order the harness uses,
+// including the coupled-length deferral (a length related to a later buffer is
+// emitted after that buffer). Each parameter contributes the bytes its decode
+// helper consumes. The first scalar/length parameter receives targetConst (when
+// present) so the extracted comparison constant lands at a decodable offset.
+func functionFuzzEncodeScenarioPayload(params []FunctionFuzzParamStrategy, desync bool, targetConst uint64, hasConst bool) ([]byte, bool) {
+	// Resolve buffer<->length couplings the same way the harness does, keyed by
+	// the length parameter name.
+	coupledLengths := map[string]functionFuzzParamPair{}
+	coupledBuffers := map[string]struct{}{}
+	for _, pair := range functionFuzzRelatedBufferLengthPairs(params) {
+		lenKey := strings.ToLower(strings.TrimSpace(pair.Length.Name))
+		if lenKey == "" {
+			continue
+		}
+		if _, exists := coupledLengths[lenKey]; !exists {
+			coupledLengths[lenKey] = pair
+		}
+		coupledBuffers[strings.ToLower(strings.TrimSpace(pair.Buffer.Name))] = struct{}{}
+	}
+
+	var payload []byte
+	encoded := false
+	constUsed := false
+	emitted := map[string]struct{}{}
+	bufferLen := map[string]int{}
+
+	// emitScalarConstant places targetConst into the first scalar/length that can
+	// hold it, otherwise the per-class boundary value.
+	emitScalar := func(class string, width int) {
+		value := functionFuzzScenarioBoundaryForClass(class)
+		if hasConst && !constUsed {
+			value = targetConst
+			constUsed = true
+		}
+		payload = append(payload, functionFuzzLEBytes(value, width)...)
+	}
+
+	var deferred []functionFuzzParamPair
+	flushDeferred := func() {
+		for i := 0; i < len(deferred); {
+			pair := deferred[i]
+			bufKey := strings.ToLower(strings.TrimSpace(pair.Buffer.Name))
+			if realLen, ready := bufferLen[bufKey]; ready {
+				payload = append(payload, functionFuzzEncodeCoupledLength(realLen, desync)...)
+				emitted[strings.ToLower(strings.TrimSpace(pair.Length.Name))] = struct{}{}
+				encoded = true
+				deferred = append(deferred[:i], deferred[i+1:]...)
+				continue
+			}
+			i++
+		}
+	}
+
+	for _, item := range params {
+		itemKey := strings.ToLower(strings.TrimSpace(item.Name))
+		class := strings.ToLower(strings.TrimSpace(item.Class))
+
+		// Coupled length: encode it relative to its paired buffer's real length.
+		if pair, ok := coupledLengths[itemKey]; ok && class == "length" {
+			bufKey := strings.ToLower(strings.TrimSpace(pair.Buffer.Name))
+			if realLen, ready := bufferLen[bufKey]; ready {
+				payload = append(payload, functionFuzzEncodeCoupledLength(realLen, desync)...)
+				emitted[itemKey] = struct{}{}
+				encoded = true
+			} else {
+				deferred = append(deferred, pair)
+			}
+			continue
+		}
+
+		switch class {
+		case "boolean":
+			payload = append(payload, 0x01)
+			encoded = true
+		case "scalar_int", "scalar_float":
+			emitScalar(class, functionFuzzScalarByteWidth(item.RawType))
+			encoded = true
+		case "enum_or_flags":
+			emitScalar(class, 4)
+			encoded = true
+		case "length":
+			// Lone length: ReadSize reads an 8-byte size_t.
+			emitScalar(class, 8)
+			encoded = true
+		case "string", "buffer", "pointer", "container":
+			body := functionFuzzScenarioVectorBody(class)
+			declared := len(body)
+			_, isCoupled := coupledBuffers[itemKey]
+			if desync && !isCoupled {
+				// Declare a length larger than the bytes actually present so the
+				// harness decodes a length that disagrees with the payload. A
+				// buffer that is coupled to a length keeps a consistent declared
+				// prefix so it does not consume the trailing coupled-length
+				// flag/delta bytes - that desync is expressed by the coupled
+				// length below instead.
+				declared = len(body) + 0x40
+			}
+			payload = append(payload, functionFuzzLEBytes(uint64(declared), 8)...)
+			payload = append(payload, body...)
+			bufferLen[itemKey] = len(body)
+			encoded = true
+		case "handle", "object":
+			// The harness emits a zero-initialized placeholder and consumes no
+			// input bytes for these classes, so contribute nothing.
+		default:
+			// Unknown class: no decode bytes are consumed by the harness.
+		}
+		emitted[itemKey] = struct{}{}
+		flushDeferred()
+	}
+
+	// Any coupled length whose buffer never appeared falls back to an independent
+	// 8-byte size_t, matching the harness defensive fallback.
+	for _, pair := range deferred {
+		payload = append(payload, functionFuzzLEBytes(functionFuzzScenarioBoundaryForClass("length"), 8)...)
+		emitted[strings.ToLower(strings.TrimSpace(pair.Length.Name))] = struct{}{}
+		encoded = true
+	}
+
+	if !encoded {
+		return nil, false
+	}
+	return payload, true
+}
+
+// functionFuzzEncodeCoupledLength encodes the input bytes a coupled length
+// consumes in the harness. The length value itself is derived from the buffer's
+// real .size() at run time, so only the desync-flag byte (and an optional delta
+// byte) come from the seed. A consistent seed sets the flag so (flag & 0x07) is
+// non-zero, keeping the derived length equal to the buffer length. A desync seed
+// clears those low bits and supplies a non-zero delta so the harness perturbs
+// the length away from the buffer's real size.
+func functionFuzzEncodeCoupledLength(realBufferLen int, desync bool) []byte {
+	if !desync {
+		// (0x01 & 0x07) != 0 -> harness keeps length == buffer.size().
+		return []byte{0x01}
+	}
+	// (0x00 & 0x07) == 0 -> harness takes the desync path and reads a delta byte.
+	// Use +1 so the declared length exceeds the buffer's real length.
+	return []byte{0x00, 0x01}
+}
+
+// functionFuzzScenarioVectorBody returns a small, class-appropriate payload body
+// for a byte-vector/string parameter in a scenario seed.
+func functionFuzzScenarioVectorBody(class string) []byte {
+	switch strings.ToLower(strings.TrimSpace(class)) {
+	case "string":
+		return []byte("AAAA")
+	default:
+		return []byte{0x41, 0x41, 0x41, 0x41}
+	}
 }
 
 func functionFuzzRepeatBytes(b byte, count int) []byte {
