@@ -266,6 +266,12 @@ func parsePatchDocument(text string) (patchDocument, error) {
 			}
 			return patchDocument{environmentID: environmentID, ops: ops}, nil
 		}
+		if normalized := normalizePatchSectionHeaderAlias(line); normalized != line {
+			// Mutate the backing slice too: parseAddFileOp/parseUpdateFileOp re-read
+			// lines[index] for the path, so the canonical header must be in place.
+			lines[index] = normalized
+			line = normalized
+		}
 		switch {
 		case strings.HasPrefix(line, "*** Add File: "):
 			op, err := parseAddFileOp(lines, &index)
@@ -326,6 +332,30 @@ func normalizePatchDocumentPath(path string) string {
 	return path
 }
 
+// normalizePatchSectionHeaderAlias maps common apply_patch section-header
+// variants some models emit onto the canonical Add/Update/Delete forms, so a
+// well-formed patch is not rejected over a header synonym (for example a model
+// writing "*** New File:" instead of "*** Add File:").
+func normalizePatchSectionHeaderAlias(line string) string {
+	aliases := []struct {
+		from string
+		to   string
+	}{
+		{"*** New File: ", "*** Add File: "},
+		{"*** Create File: ", "*** Add File: "},
+		{"*** Modify File: ", "*** Update File: "},
+		{"*** Change File: ", "*** Update File: "},
+		{"*** Edit File: ", "*** Update File: "},
+		{"*** Remove File: ", "*** Delete File: "},
+	}
+	for _, alias := range aliases {
+		if strings.HasPrefix(line, alias.from) {
+			return alias.to + strings.TrimPrefix(line, alias.from)
+		}
+	}
+	return line
+}
+
 func parseAddFileOp(lines []string, index *int) (patchOperation, error) {
 	line := lines[*index]
 	path := normalizePatchDocumentPath(strings.TrimPrefix(line, "*** Add File: "))
@@ -337,6 +367,15 @@ func parseAddFileOp(lines []string, index *int) (patchOperation, error) {
 			break
 		}
 		if !strings.HasPrefix(current, "+") {
+			// A blank line inside a new file is canonically "+" with no content,
+			// but models often emit it as a truly empty line. Tolerate that exact
+			// case as an empty added line; any other non-"+" line is still an error
+			// so a content line that lost its "+" is never silently swallowed.
+			if current == "" {
+				addLines = append(addLines, "")
+				*index++
+				continue
+			}
 			return patchOperation{}, fmt.Errorf("patch_format_invalid_add_line: add file patch lines must start with +: %s", current)
 		}
 		addLines = append(addLines, strings.TrimPrefix(current, "+"))
