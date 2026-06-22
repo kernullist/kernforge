@@ -10,6 +10,233 @@ import (
 	"time"
 )
 
+func fuzzCampaignTestLaunchableRun(id string, name string, file string) FunctionFuzzRun {
+	return FunctionFuzzRun{
+		ID:               id,
+		TargetSymbolName: name,
+		TargetFile:       file,
+		Execution: FunctionFuzzExecution{
+			Eligible:             true,
+			Status:               "planned",
+			BuildScriptPath:      "C:/work/build.ps1",
+			CompilerResolvedPath: "C:/llvm/bin/clang-cl.exe",
+		},
+	}
+}
+
+func TestFuzzCampaignSelectCoverageRelaunchesIsBounded(t *testing.T) {
+	run := fuzzCampaignTestLaunchableRun("run-cov-1", "ParsePacketHeader", "src/parser.cpp")
+	runsByID := map[string]FunctionFuzzRun{run.ID: run}
+	gaps := []FuzzCampaignCoverageGap{
+		{
+			Target:     "ParsePacketHeader",
+			TargetFile: "src/parser.cpp",
+			RunID:      "run-cov-1",
+			Reason:     "coverage gap",
+		},
+		// A duplicate gap for the same target must not earn a second re-launch.
+		{
+			Target:     "ParsePacketHeader",
+			TargetFile: "src/parser.cpp",
+			Reason:     "coverage gap (libfuzzer feature count low)",
+		},
+	}
+
+	campaign := FuzzCampaign{ID: "campaign-cov-1"}
+	first := fuzzCampaignSelectCoverageRelaunches(campaign, gaps, runsByID)
+	if len(first) != 1 {
+		t.Fatalf("expected exactly one re-launch decision, got %d", len(first))
+	}
+	if first[0].Run.ID != "run-cov-1" {
+		t.Fatalf("expected decision to bind run-cov-1, got %q", first[0].Run.ID)
+	}
+
+	// Record the issued re-launch, then a second pass must not re-launch the
+	// same target again (the loop guard).
+	campaign.RelaunchedTargets = normalizeFuzzCampaignRelaunchTargets(append(campaign.RelaunchedTargets, first[0].TargetKey))
+	second := fuzzCampaignSelectCoverageRelaunches(campaign, gaps, runsByID)
+	if len(second) != 0 {
+		t.Fatalf("expected no re-launch on second pass after recording target, got %d", len(second))
+	}
+}
+
+func TestFuzzCampaignSelectCoverageRelaunchesSkipsRunWithoutContext(t *testing.T) {
+	// A target whose attached run has no model/compile context (not eligible,
+	// no build script) records the gap but never earns a fake re-launch.
+	run := FunctionFuzzRun{
+		ID:               "run-no-ctx",
+		TargetSymbolName: "DispatchIoctl",
+		TargetFile:       "src/dispatch.cpp",
+		Execution:        FunctionFuzzExecution{Eligible: false},
+	}
+	runsByID := map[string]FunctionFuzzRun{run.ID: run}
+	gaps := []FuzzCampaignCoverageGap{
+		{Target: "DispatchIoctl", TargetFile: "src/dispatch.cpp", RunID: "run-no-ctx", Reason: "coverage gap"},
+	}
+	decisions := fuzzCampaignSelectCoverageRelaunches(FuzzCampaign{ID: "campaign-no-ctx"}, gaps, runsByID)
+	if len(decisions) != 0 {
+		t.Fatalf("expected no re-launch decision without model/compile context, got %d", len(decisions))
+	}
+}
+
+func TestFuzzCampaignSelectCoverageRelaunchesMatchesByTargetWhenRunIDMissing(t *testing.T) {
+	run := fuzzCampaignTestLaunchableRun("run-match-1", "ValidateRequest", "src/net/guard.cpp")
+	runsByID := map[string]FunctionFuzzRun{run.ID: run}
+	// Gap carries no RunID; matching falls back to target name + file.
+	gaps := []FuzzCampaignCoverageGap{
+		{Target: "ValidateRequest", TargetFile: "src/net/guard.cpp", Reason: "coverage gap"},
+	}
+	decisions := fuzzCampaignSelectCoverageRelaunches(FuzzCampaign{ID: "campaign-match-1"}, gaps, runsByID)
+	if len(decisions) != 1 {
+		t.Fatalf("expected one decision via target match, got %d", len(decisions))
+	}
+	if decisions[0].Run.ID != "run-match-1" {
+		t.Fatalf("expected matched run-match-1, got %q", decisions[0].Run.ID)
+	}
+}
+
+func TestMaybeRelaunchFuzzCampaignCoverageGapsIsBoundedAndIdempotent(t *testing.T) {
+	root := t.TempDir()
+	// Real temp paths so the runner-script rewrite succeeds without a real
+	// compiler or background job manager (rt.backgroundJobs stays nil).
+	buildScript := filepath.Join(root, "build.ps1")
+	if err := os.WriteFile(buildScript, []byte("# placeholder\n"), 0o644); err != nil {
+		t.Fatalf("seed build script: %v", err)
+	}
+	run := FunctionFuzzRun{
+		ID:               "run-e2e-1",
+		Workspace:        root,
+		TargetSymbolName: "ParsePacketHeader",
+		TargetFile:       "src/parser.cpp",
+		StaticRiskScore:  60,
+		RiskScore:        60,
+		Execution: FunctionFuzzExecution{
+			Eligible:             true,
+			Status:               "completed",
+			Profile:              "smoke",
+			BuildScriptPath:      buildScript,
+			CompilerResolvedPath: filepath.Join(root, "clang-cl.exe"),
+			ExecutablePath:       filepath.Join(root, "out", "fuzzer.exe"),
+			CorpusDir:            filepath.Join(root, "corpus"),
+			CrashDir:             filepath.Join(root, "crashes"),
+		},
+	}
+
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	if _, err := store.Upsert(run); err != nil {
+		t.Fatalf("seed function fuzz run: %v", err)
+	}
+	rt := &runtimeState{
+		cfg:          DefaultConfig(root),
+		writer:       &bytes.Buffer{},
+		ui:           NewUI(),
+		functionFuzz: store,
+		workspace:    Workspace{BaseRoot: root, Root: root},
+	}
+
+	campaign := FuzzCampaign{
+		ID:           "campaign-e2e-1",
+		Workspace:    root,
+		FunctionRuns: []string{run.ID},
+		SeedTargets: []FuzzCampaignSeedTarget{
+			{Name: "ParsePacketHeader", File: "src/parser.cpp"},
+		},
+		CoverageReports: []FuzzCampaignCoverageReport{
+			{
+				ID:         "cov-gap-1",
+				Target:     "ParsePacketHeader",
+				TargetFile: "src/parser.cpp",
+				RunID:      run.ID,
+				Gap:        true,
+				GapReason:  "libFuzzer feature count is low: 8",
+			},
+		},
+	}
+
+	relaunchedRuns := []FunctionFuzzRun{run}
+	updated, relaunched, err := rt.maybeRelaunchFuzzCampaignCoverageGaps(campaign, relaunchedRuns)
+	if err != nil {
+		t.Fatalf("first relaunch pass: %v", err)
+	}
+	if len(relaunched) != 1 {
+		t.Fatalf("expected exactly one re-launch, got %d (%v)", len(relaunched), relaunched)
+	}
+	wantKey := fuzzCampaignRelaunchTargetKey("ParsePacketHeader", "src/parser.cpp")
+	if !fuzzCampaignTargetAlreadyRelaunched(updated, wantKey) {
+		t.Fatalf("expected target %q recorded in RelaunchedTargets %v", wantKey, updated.RelaunchedTargets)
+	}
+
+	// The persisted run was restaged on the extended profile with a bumped budget.
+	stored, ok, err := store.Get(run.ID)
+	if err != nil || !ok {
+		t.Fatalf("load restaged run: ok=%v err=%v", ok, err)
+	}
+	if stored.Execution.Profile != "extended" {
+		t.Fatalf("expected extended profile after re-launch, got %q", stored.Execution.Profile)
+	}
+	foundBump := false
+	for _, arg := range stored.Execution.RunArgv {
+		if arg == fmt.Sprintf("-max_total_time=%d", functionFuzzExtendedRelaunchMaxTotalTime) {
+			foundBump = true
+		}
+	}
+	if !foundBump {
+		t.Fatalf("expected bumped -max_total_time in run argv %v", stored.Execution.RunArgv)
+	}
+
+	// Second pass over the SAME campaign state must not re-launch again.
+	_, relaunchedAgain, err := rt.maybeRelaunchFuzzCampaignCoverageGaps(updated, relaunchedRuns)
+	if err != nil {
+		t.Fatalf("second relaunch pass: %v", err)
+	}
+	if len(relaunchedAgain) != 0 {
+		t.Fatalf("expected no re-launch on second pass, got %d (%v)", len(relaunchedAgain), relaunchedAgain)
+	}
+}
+
+func TestMaybeRelaunchFuzzCampaignCoverageGapsSkipsRunWithoutContext(t *testing.T) {
+	root := t.TempDir()
+	run := FunctionFuzzRun{
+		ID:               "run-no-ctx-e2e",
+		Workspace:        root,
+		TargetSymbolName: "DispatchIoctl",
+		TargetFile:       "src/dispatch.cpp",
+		Execution:        FunctionFuzzExecution{Eligible: false},
+	}
+	store := &FunctionFuzzStore{Path: filepath.Join(root, "function_fuzz.json")}
+	if _, err := store.Upsert(run); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	rt := &runtimeState{
+		cfg:          DefaultConfig(root),
+		writer:       &bytes.Buffer{},
+		ui:           NewUI(),
+		functionFuzz: store,
+		workspace:    Workspace{BaseRoot: root, Root: root},
+	}
+	campaign := FuzzCampaign{
+		ID:           "campaign-no-ctx-e2e",
+		Workspace:    root,
+		FunctionRuns: []string{run.ID},
+		SeedTargets: []FuzzCampaignSeedTarget{
+			{Name: "DispatchIoctl", File: "src/dispatch.cpp"},
+		},
+		CoverageReports: []FuzzCampaignCoverageReport{
+			{ID: "cov-gap-2", Target: "DispatchIoctl", TargetFile: "src/dispatch.cpp", RunID: run.ID, Gap: true, GapReason: "coverage gap"},
+		},
+	}
+	updated, relaunched, err := rt.maybeRelaunchFuzzCampaignCoverageGaps(campaign, []FunctionFuzzRun{run})
+	if err != nil {
+		t.Fatalf("relaunch pass: %v", err)
+	}
+	if len(relaunched) != 0 {
+		t.Fatalf("expected no re-launch without context, got %d", len(relaunched))
+	}
+	if len(updated.RelaunchedTargets) != 0 {
+		t.Fatalf("expected no recorded targets, got %v", updated.RelaunchedTargets)
+	}
+}
+
 func TestCreateFuzzCampaignFromWorkspaceWritesStandardLayout(t *testing.T) {
 	root := t.TempDir()
 	manifest := AnalysisDocsManifest{

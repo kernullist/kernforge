@@ -238,26 +238,40 @@ type FunctionFuzzExecution struct {
 }
 
 type FunctionFuzzRun struct {
-	ID                  string                        `json:"id"`
-	Workspace           string                        `json:"workspace"`
-	TargetQuery         string                        `json:"target_query"`
-	ScopeMode           string                        `json:"scope_mode,omitempty"`
-	ScopeRootFile       string                        `json:"scope_root_file,omitempty"`
-	ScopeFiles          []string                      `json:"scope_files,omitempty"`
-	TargetSymbolID      string                        `json:"target_symbol_id"`
-	TargetSymbolName    string                        `json:"target_symbol_name"`
-	TargetSignature     string                        `json:"target_signature,omitempty"`
-	TargetFile          string                        `json:"target_file,omitempty"`
-	SourceCandidateID   string                        `json:"source_candidate_id,omitempty"`
-	SourceMatcherSlug   string                        `json:"source_matcher_slug,omitempty"`
-	SourceScanMode      string                        `json:"source_scan_mode,omitempty"`
-	SourceScanRunID     string                        `json:"source_scan_run_id,omitempty"`
-	SourceScanSummary   string                        `json:"source_scan_summary,omitempty"`
-	AnalysisRunID       string                        `json:"analysis_run_id,omitempty"`
-	AnalysisGoal        string                        `json:"analysis_goal,omitempty"`
-	CreatedAt           time.Time                     `json:"created_at"`
-	QueryMode           string                        `json:"query_mode,omitempty"`
-	RiskScore           int                           `json:"risk_score,omitempty"`
+	ID                string    `json:"id"`
+	Workspace         string    `json:"workspace"`
+	TargetQuery       string    `json:"target_query"`
+	ScopeMode         string    `json:"scope_mode,omitempty"`
+	ScopeRootFile     string    `json:"scope_root_file,omitempty"`
+	ScopeFiles        []string  `json:"scope_files,omitempty"`
+	TargetSymbolID    string    `json:"target_symbol_id"`
+	TargetSymbolName  string    `json:"target_symbol_name"`
+	TargetSignature   string    `json:"target_signature,omitempty"`
+	TargetFile        string    `json:"target_file,omitempty"`
+	SourceCandidateID string    `json:"source_candidate_id,omitempty"`
+	SourceMatcherSlug string    `json:"source_matcher_slug,omitempty"`
+	SourceScanMode    string    `json:"source_scan_mode,omitempty"`
+	SourceScanRunID   string    `json:"source_scan_run_id,omitempty"`
+	SourceScanSummary string    `json:"source_scan_summary,omitempty"`
+	AnalysisRunID     string    `json:"analysis_run_id,omitempty"`
+	AnalysisGoal      string    `json:"analysis_goal,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	QueryMode         string    `json:"query_mode,omitempty"`
+	RiskScore         int       `json:"risk_score,omitempty"`
+	// StaticRiskScore preserves the original static prior computed at plan build
+	// time. RiskScore is later recalibrated from native execution evidence, so
+	// keeping the prior gives provenance and makes recalibration idempotent
+	// (recalibration always recomputes from the frozen prior, never from an
+	// already-adjusted RiskScore).
+	StaticRiskScore int `json:"static_risk_score,omitempty"`
+	// RiskCalibration records why RiskScore was adjusted away from the static
+	// prior: "crash-confirmed" when a native crash raised it, "exercised-clean"
+	// when a high-coverage extended run with no crash lowered it, or empty when
+	// the static prior still stands.
+	RiskCalibration string `json:"risk_calibration,omitempty"`
+	// ExploitabilityBand carries the Phase 1 exploitability band recorded when a
+	// confirmed crash has a parsed crash report (e.g. EXPLOITABLE).
+	ExploitabilityBand  string                        `json:"exploitability_band,omitempty"`
 	HarnessReady        bool                          `json:"harness_ready,omitempty"`
 	ReachableCallCount  int                           `json:"reachable_call_count,omitempty"`
 	ReachableDepth      int                           `json:"reachable_depth,omitempty"`
@@ -285,6 +299,28 @@ type FunctionFuzzRun struct {
 	TargetStartLine     int                           `json:"target_start_line,omitempty"`
 	TargetEndLine       int                           `json:"target_end_line,omitempty"`
 	Execution           FunctionFuzzExecution         `json:"execution,omitempty"`
+
+	// repairOverlayState carries the heuristic compile self-repair accumulated by
+	// the bounded build-only loop. It is transient (never serialized) and only
+	// used to thread the active overlay from the loop into the harness re-render.
+	repairOverlayState functionFuzzCompileRepair
+}
+
+// attachRepairOverlay records the active self-repair overlay so a subsequent
+// re-render reproduces the same fixes.
+func (r *FunctionFuzzRun) attachRepairOverlay(repair functionFuzzCompileRepair) {
+	if r == nil {
+		return
+	}
+	r.repairOverlayState = repair.clone()
+}
+
+// repairOverlay returns the active self-repair overlay (empty when none applied).
+func (r *FunctionFuzzRun) repairOverlay() functionFuzzCompileRepair {
+	if r == nil {
+		return functionFuzzCompileRepair{}
+	}
+	return r.repairOverlayState
 }
 
 type FunctionFuzzStore struct {
@@ -497,6 +533,14 @@ func normalizeFunctionFuzzRun(run FunctionFuzzRun) FunctionFuzzRun {
 	if run.RiskScore > 100 {
 		run.RiskScore = 100
 	}
+	if run.StaticRiskScore < 0 {
+		run.StaticRiskScore = 0
+	}
+	if run.StaticRiskScore > 100 {
+		run.StaticRiskScore = 100
+	}
+	run.RiskCalibration = strings.ToLower(strings.TrimSpace(run.RiskCalibration))
+	run.ExploitabilityBand = strings.ToUpper(strings.TrimSpace(run.ExploitabilityBand))
 	for i := range run.ParameterStrategies {
 		run.ParameterStrategies[i].Name = strings.TrimSpace(run.ParameterStrategies[i].Name)
 		run.ParameterStrategies[i].RawType = functionFuzzNormalizeDisplayText(run.ParameterStrategies[i].RawType)
@@ -2055,6 +2099,67 @@ func functionFuzzApplyProfile(run *FunctionFuzzRun, profile string, crashInputPa
 	return nil
 }
 
+// functionFuzzExtendedRelaunchMaxTotalTime is the bumped -max_total_time (in
+// seconds) used when a coverage gap triggers a bounded re-launch on the
+// extended profile. It is a single fixed bump (no unbounded growth) so the
+// re-launch always runs longer than the standard extended profile yet still
+// terminates on its own.
+const functionFuzzExtendedRelaunchMaxTotalTime = 1800
+
+// functionFuzzPrepareGapRelaunch stages a bounded re-launch of a run on the
+// extended profile with a bumped -max_total_time so a coverage gap gets a
+// longer, deeper run on the same authority and build path the manual launch
+// uses. It only restages the plan; the caller drives the actual launch through
+// maybeLaunchFunctionFuzzExecution. It returns an error only on a real staging
+// failure (for example when the runner script cannot be rewritten).
+func functionFuzzPrepareGapRelaunch(run *FunctionFuzzRun) error {
+	if run == nil {
+		return fmt.Errorf("run is nil")
+	}
+	if err := functionFuzzApplyProfile(run, "extended", ""); err != nil {
+		return err
+	}
+	runArgs := functionFuzzBumpMaxTotalTime(functionFuzzRunArgs(*run, run.Execution), functionFuzzExtendedRelaunchMaxTotalTime)
+	run.Execution.RunArgv = append([]string{run.Execution.ExecutablePath}, runArgs...)
+	run.Execution.RunCommand = functionFuzzRenderDisplayCommand(run.Execution.ExecutablePath, runArgs)
+	if strings.TrimSpace(run.Execution.BuildScriptPath) != "" && strings.TrimSpace(run.Execution.CompilerResolvedPath) != "" {
+		if err := functionFuzzWriteRunnerScript(run.Execution, stripLeading(run.Execution.BuildArgv), runArgs); err != nil {
+			return fmt.Errorf("failed to refresh runner script for gap re-launch: %v", err)
+		}
+	}
+	run.Execution.Reason = "Extended re-launch staged for a coverage gap: bumped -max_total_time campaign on the same build path."
+	run.Execution = normalizeFunctionFuzzExecution(run.Execution)
+	return nil
+}
+
+// functionFuzzBumpMaxTotalTime returns a copy of args with the -max_total_time
+// flag raised to seconds. When the flag is absent it is appended. The bump only
+// raises the budget; it never lowers an already-larger value.
+func functionFuzzBumpMaxTotalTime(args []string, seconds int) []string {
+	if seconds <= 0 {
+		return args
+	}
+	out := make([]string, 0, len(args)+1)
+	replaced := false
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-max_total_time=") {
+			current := parseIntDefault(strings.TrimPrefix(arg, "-max_total_time="), 0)
+			if current >= seconds {
+				out = append(out, arg)
+			} else {
+				out = append(out, fmt.Sprintf("-max_total_time=%d", seconds))
+			}
+			replaced = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	if !replaced {
+		out = append(out, fmt.Sprintf("-max_total_time=%d", seconds))
+	}
+	return out
+}
+
 func stripLeading(items []string) []string {
 	if len(items) <= 1 {
 		return nil
@@ -2274,6 +2379,7 @@ func buildFunctionFuzzRunFromArtifacts(cfg Config, root string, query string, ar
 		CreatedAt:           time.Now(),
 		QueryMode:           queryMode,
 		RiskScore:           risk,
+		StaticRiskScore:     risk,
 		HarnessReady:        harnessReady,
 		ReachableCallCount:  len(closure.CallEdges),
 		ReachableDepth:      closure.MaxDepth,
@@ -5020,6 +5126,177 @@ func functionFuzzRiskScore(target SymbolRecord, overlays []string, params []Func
 		score = 100
 	}
 	return score
+}
+
+// functionFuzzRiskFloorCrashConfirmed is the minimum recalibrated risk once a
+// native crash is observed. A confirmed crash is hard evidence, so risk can
+// never sit below this floor regardless of the static prior.
+const functionFuzzRiskFloorCrashConfirmed = 90
+
+// functionFuzzRiskCeilExercisedClean is the maximum recalibrated risk once a
+// target has been exercised clean (high coverage, extended profile, zero
+// crashes). It only lowers risk; it never raises a low static prior.
+const functionFuzzRiskCeilExercisedClean = 35
+
+// functionFuzzExercisedCleanFeatureFloor is the libFuzzer feature count at or
+// above which an extended, crash-free run is treated as high coverage. The
+// signal is parsed from the run's captured "cov: N ft: N" stats line.
+const functionFuzzExercisedCleanFeatureFloor = 64
+
+// functionFuzzRiskEvidence is the native-outcome evidence used to recalibrate a
+// run's risk away from its static prior. It is populated from the execution
+// record (and, when available, a Phase 1 exploitability band) so recalibration
+// stays a pure function of evidence.
+type functionFuzzRiskEvidence struct {
+	CrashConfirmed     bool
+	ExploitabilityBand string
+	Profile            string
+	Status             string
+	FeatureCount       int
+	HighCoverage       bool
+}
+
+// functionFuzzRunRiskEvidence derives the recalibration evidence from a run's
+// execution outcome. The high-coverage signal is parsed from libFuzzer final
+// stats in the captured output; when no stats line is present the feature
+// count stays 0 and the clean path does not fire.
+func functionFuzzRunRiskEvidence(run FunctionFuzzRun) functionFuzzRiskEvidence {
+	evidence := functionFuzzRiskEvidence{
+		CrashConfirmed:     run.Execution.CrashCount > 0,
+		ExploitabilityBand: strings.ToUpper(strings.TrimSpace(run.ExploitabilityBand)),
+		Profile:            strings.ToLower(strings.TrimSpace(run.Execution.Profile)),
+		Status:             strings.ToLower(strings.TrimSpace(run.Execution.Status)),
+	}
+	evidence.FeatureCount = functionFuzzParseFeatureCount(run.Execution.LastOutput)
+	evidence.HighCoverage = evidence.FeatureCount >= functionFuzzExercisedCleanFeatureFloor
+	return evidence
+}
+
+// functionFuzzParseFeatureCount extracts the last libFuzzer feature count ("ft:
+// N") from captured run output. It returns 0 when no stats line is present.
+func functionFuzzParseFeatureCount(output string) int {
+	output = strings.TrimSpace(output)
+	if output == "" {
+		return 0
+	}
+	matches := functionFuzzFeatureCountPattern.FindAllStringSubmatch(output, -1)
+	if len(matches) == 0 {
+		return 0
+	}
+	last := matches[len(matches)-1]
+	if len(last) < 2 {
+		return 0
+	}
+	return parseIntDefault(last[1], 0)
+}
+
+var functionFuzzFeatureCountPattern = regexp.MustCompile(`ft:\s*([0-9]+)`)
+
+// functionFuzzRecalibrateRisk adjusts a run's RiskScore from native execution
+// evidence rather than leaving the static prior frozen. It is explicit,
+// bounded, and idempotent: it always recomputes from the frozen StaticRiskScore
+// (captured once), so re-running with the same outcome does not drift the
+// score. A confirmed crash raises risk to at least the crash floor (and records
+// the exploitability band when present); a high-coverage, crash-free extended
+// run lowers risk to at most the exercised-clean ceiling and marks the target
+// exercised-clean. With no decisive evidence the static prior stands.
+func functionFuzzRecalibrateRisk(run FunctionFuzzRun) FunctionFuzzRun {
+	// Capture the static prior exactly once so later recalibrations stay
+	// idempotent. A zero static prior with a non-zero current score means this
+	// is the first recalibration of a legacy run.
+	if run.StaticRiskScore == 0 && run.RiskScore > 0 {
+		run.StaticRiskScore = run.RiskScore
+	}
+	static := run.StaticRiskScore
+	if static < 0 {
+		static = 0
+	}
+	if static > 100 {
+		static = 100
+	}
+
+	evidence := functionFuzzRunRiskEvidence(run)
+	score := static
+	calibration := ""
+	band := ""
+
+	switch {
+	case evidence.CrashConfirmed:
+		// Hard evidence: a native crash. Raise to at least the crash floor and
+		// let the Phase 1 exploitability band push higher when it is more severe.
+		score = static
+		if score < functionFuzzRiskFloorCrashConfirmed {
+			score = functionFuzzRiskFloorCrashConfirmed
+		}
+		if bandRisk := functionFuzzExploitabilityBandRisk(evidence.ExploitabilityBand); bandRisk > score {
+			score = bandRisk
+		}
+		calibration = "crash-confirmed"
+		band = evidence.ExploitabilityBand
+	case evidence.Profile == "extended" && evidence.Status == "completed" && !evidence.CrashConfirmed && evidence.HighCoverage:
+		// Soft evidence: an extended run finished clean with high coverage. Lower
+		// to at most the exercised-clean ceiling; never raise a low prior.
+		score = static
+		if score > functionFuzzRiskCeilExercisedClean {
+			score = functionFuzzRiskCeilExercisedClean
+		}
+		calibration = "exercised-clean"
+	default:
+		// No decisive evidence: the static prior still stands.
+		score = static
+		calibration = ""
+		band = strings.ToUpper(strings.TrimSpace(run.ExploitabilityBand))
+	}
+
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	run.RiskScore = score
+	run.RiskCalibration = calibration
+	run.ExploitabilityBand = strings.ToUpper(strings.TrimSpace(band))
+	return run
+}
+
+// functionFuzzApplyRiskRecalibration records the Phase 1 exploitability band
+// for a confirmed crash (when a crash report is parseable) and recalibrates the
+// run's risk from native evidence. It reports whether RiskScore, RiskCalibration
+// or ExploitabilityBand changed so the caller can persist only on a real delta.
+// It is idempotent: re-running with the same outcome produces the same result.
+func functionFuzzApplyRiskRecalibration(run FunctionFuzzRun) (FunctionFuzzRun, bool) {
+	if run.Execution.CrashCount > 0 {
+		if report := fuzzCampaignAggregateCrashReport(run); report.Parsed {
+			run.ExploitabilityBand = strings.ToUpper(strings.TrimSpace(fuzzCampaignExploitabilityBand(report)))
+		}
+	}
+	beforeScore := run.RiskScore
+	beforeCalibration := strings.ToLower(strings.TrimSpace(run.RiskCalibration))
+	beforeBand := strings.ToUpper(strings.TrimSpace(run.ExploitabilityBand))
+	recalibrated := functionFuzzRecalibrateRisk(run)
+	changed := recalibrated.RiskScore != beforeScore ||
+		strings.ToLower(strings.TrimSpace(recalibrated.RiskCalibration)) != beforeCalibration ||
+		strings.ToUpper(strings.TrimSpace(recalibrated.ExploitabilityBand)) != beforeBand
+	return recalibrated, changed
+}
+
+// functionFuzzExploitabilityBandRisk maps a Phase 1 exploitability band onto a
+// recalibrated risk score. It mirrors the campaign-side band-to-risk lineage so
+// a confirmed crash with a severe band lands at the same severity floor.
+func functionFuzzExploitabilityBandRisk(band string) int {
+	switch strings.ToUpper(strings.TrimSpace(band)) {
+	case "EXPLOITABLE":
+		return 95
+	case "PROBABLY_EXPLOITABLE":
+		return 90
+	case "UNKNOWN":
+		return 90
+	case "NOT_LIKELY":
+		return 90
+	default:
+		return 0
+	}
 }
 
 func functionFuzzHarnessReady(target SymbolRecord, params []FunctionFuzzParamStrategy) bool {
@@ -10640,8 +10917,13 @@ func (rt *runtimeState) refreshFunctionFuzzExecution(run FunctionFuzzRun) (Funct
 		}
 	}
 	if rt.backgroundJobs == nil || strings.TrimSpace(updated.Execution.BackgroundJobID) == "" {
+		if recalibrated, recalChanged := functionFuzzApplyRiskRecalibration(updated); recalChanged {
+			updated = recalibrated
+			changed = true
+		}
 		if changed {
 			updated.Execution = normalizeFunctionFuzzExecution(updated.Execution)
+			functionFuzzRefreshGuidance(rt.cfg, &updated)
 			updated.Summary = buildFunctionFuzzSummaryWithConfig(updated, rt.cfg)
 		}
 		return updated, changed
@@ -10705,6 +10987,10 @@ func (rt *runtimeState) refreshFunctionFuzzExecution(run FunctionFuzzRun) (Funct
 	}
 	if compactPersistentMemoryText(reason, 220) != updated.Execution.Reason {
 		updated.Execution.Reason = compactPersistentMemoryText(reason, 220)
+		changed = true
+	}
+	if recalibrated, recalChanged := functionFuzzApplyRiskRecalibration(updated); recalChanged {
+		updated = recalibrated
 		changed = true
 	}
 	if changed {
@@ -11268,15 +11554,403 @@ func renderFunctionFuzzReportMarkdown(run FunctionFuzzRun, closure functionFuzzC
 	return renderFunctionFuzzReportMarkdownWithConfig(run, closure, functionFuzzEnglishConfig())
 }
 
+// functionFuzzCompileRepair is the accumulated set of mechanical fixes applied
+// to a generated harness across the bounded self-repair loop. It is built up by
+// the pure planner functionFuzzPlanCompileRepair (one increment per failed
+// compile attempt) and consumed by renderFunctionFuzzHarnessWithRepair. Every
+// field is additive: an empty value renders the original harness untouched.
+type functionFuzzCompileRepair struct {
+	// Includes are extra "#include <...>" / "#include \"...\"" tokens injected at
+	// the top of the harness to satisfy a missing-include diagnostic. Stored as
+	// the bare header spelling (with angle brackets or quotes already attached).
+	Includes []string
+	// ForwardDeclares are minimal forward declarations ("struct Foo;" /
+	// "class Bar;") injected to satisfy an unknown-type / unresolved-identifier
+	// diagnostic when no header could be recovered.
+	ForwardDeclares []string
+	// ParamClassOverrides remaps a parameter index to a safer decode class so an
+	// un-adaptable TODO stub (object/handle/container/unknown) compiles. The most
+	// common override downgrades the parameter to a raw byte buffer.
+	ParamClassOverrides map[int]string
+	// DroppedParams marks parameter indices whose decode/call must collapse to a
+	// safe zero-initialized default because no usable strategy exists.
+	DroppedParams map[int]bool
+	// Steps is the human-readable audit trail of the fixes applied so far, one
+	// entry per repair increment, suitable for the build log / recovery notes.
+	Steps []string
+}
+
+// empty reports whether the repair carries no fixes at all.
+func (r functionFuzzCompileRepair) empty() bool {
+	return len(r.Includes) == 0 &&
+		len(r.ForwardDeclares) == 0 &&
+		len(r.ParamClassOverrides) == 0 &&
+		len(r.DroppedParams) == 0
+}
+
+// clone returns a deep copy so the planner can return a revised repair without
+// mutating the caller's accumulated state in place.
+func (r functionFuzzCompileRepair) clone() functionFuzzCompileRepair {
+	out := functionFuzzCompileRepair{
+		Includes:        append([]string(nil), r.Includes...),
+		ForwardDeclares: append([]string(nil), r.ForwardDeclares...),
+		Steps:           append([]string(nil), r.Steps...),
+	}
+	if len(r.ParamClassOverrides) > 0 {
+		out.ParamClassOverrides = make(map[int]string, len(r.ParamClassOverrides))
+		for k, v := range r.ParamClassOverrides {
+			out.ParamClassOverrides[k] = v
+		}
+	}
+	if len(r.DroppedParams) > 0 {
+		out.DroppedParams = make(map[int]bool, len(r.DroppedParams))
+		for k, v := range r.DroppedParams {
+			out.DroppedParams[k] = v
+		}
+	}
+	return out
+}
+
+// functionFuzzCompileRepairCap bounds how many self-repair attempts the build-only
+// loop will make before falling back to the terminal build_failed state. Two to
+// three attempts is enough for the common mechanical fixes; beyond that the
+// failure is almost certainly not mechanically fixable and looping would only
+// burn the build timeout.
+const functionFuzzCompileRepairCap = 3
+
+// functionFuzzPlanCompileRepair is the PURE decision core of the bounded compile
+// self-repair loop. Given the captured compiler diagnostics (clang / clang-cl
+// stderr) plus the current harness context (the run) and the repair already
+// applied so far, it returns a revised repair with at most one new mechanical fix
+// and reports whether a new fix was found. When it returns false the caller must
+// stop the loop and fall back to the terminal build_failed state - this is what
+// makes the loop bounded and prevents an unfixable diagnostic from looping.
+//
+// The heuristics cover the common, mechanically-fixable causes:
+//   - missing include / "file not found"      -> inject the named header include
+//   - unknown type / unresolved identifier      -> forward-declare it, or if it is
+//     a TODO-stub parameter type, downgrade that parameter to a raw byte buffer
+//   - undeclared identifier that names a param  -> drop the parameter to a default
+//
+// It never invents fixes it cannot anchor in the diagnostic text, and it never
+// repeats a fix it already applied (idempotent), so a clean diagnostic or a
+// diagnostic whose only cause was already addressed yields (repair, false).
+func functionFuzzPlanCompileRepair(diagnostics string, run FunctionFuzzRun, applied functionFuzzCompileRepair) (functionFuzzCompileRepair, bool) {
+	next := applied.clone()
+	trimmed := strings.TrimSpace(diagnostics)
+	if trimmed == "" {
+		// A clean build (no diagnostics) needs no repair.
+		return next, false
+	}
+
+	// 1) Missing include: clang reports "'foo.h' file not found" and clang-cl
+	// reports "cannot open include file: 'foo.h'". Inject the named header.
+	if header, ok := functionFuzzDiagnosticMissingInclude(trimmed); ok {
+		spelled := functionFuzzSpellInclude(header)
+		if !containsString(next.Includes, spelled) {
+			next.Includes = append(next.Includes, spelled)
+			next.Steps = append(next.Steps, "injected missing include "+spelled)
+			return next, true
+		}
+	}
+
+	// 2) Unknown type / unresolved identifier. Prefer a targeted parameter fix
+	// when the unresolved symbol is a TODO-stub parameter type (object / handle /
+	// container), because forward-declaring an incomplete type would not let the
+	// zero-initialized stub construct. Otherwise forward-declare the type.
+	if ident, ok := functionFuzzDiagnosticUnresolvedType(trimmed); ok {
+		if idx, found := functionFuzzStubParamIndexForType(run.ParameterStrategies, ident); found {
+			if next.ParamClassOverrides == nil {
+				next.ParamClassOverrides = map[int]string{}
+			}
+			if _, already := next.ParamClassOverrides[idx]; !already {
+				next.ParamClassOverrides[idx] = "buffer"
+				next.Steps = append(next.Steps, fmt.Sprintf("downgraded unresolved stub parameter #%d (type %s) to a raw byte buffer", idx, ident))
+				return next, true
+			}
+		}
+		decl := functionFuzzSpellForwardDeclare(ident)
+		if decl != "" && !containsString(next.ForwardDeclares, decl) {
+			next.ForwardDeclares = append(next.ForwardDeclares, decl)
+			next.Steps = append(next.Steps, "forward-declared unresolved type "+ident)
+			return next, true
+		}
+	}
+
+	// 3) Undeclared identifier that names one of our parameters: the decode line
+	// for that parameter never compiled (for example a stubbed object that the
+	// call still references). Drop it to a safe zero-initialized default.
+	if name, ok := functionFuzzDiagnosticUndeclaredIdentifier(trimmed); ok {
+		if idx, found := functionFuzzParamIndexForName(run.ParameterStrategies, name); found {
+			if next.DroppedParams == nil {
+				next.DroppedParams = map[int]bool{}
+			}
+			if !next.DroppedParams[idx] {
+				next.DroppedParams[idx] = true
+				next.Steps = append(next.Steps, fmt.Sprintf("dropped unadaptable parameter #%d (%s) to a safe default", idx, name))
+				return next, true
+			}
+		}
+	}
+
+	return next, false
+}
+
+// functionFuzzDiagnosticMissingInclude extracts the header named by a
+// missing-include diagnostic from either compiler frontend. Returns the bare
+// header spelling (no brackets/quotes) and whether one was found.
+func functionFuzzDiagnosticMissingInclude(diagnostics string) (string, bool) {
+	patterns := []*regexp.Regexp{
+		// clang: foo.cpp:1:10: fatal error: 'bar.h' file not found
+		regexp.MustCompile(`'([^']+\.(?:h|hpp|hh|hxx|inl))'\s+file not found`),
+		// clang-cl / MSVC: cannot open include file: 'bar.h'
+		regexp.MustCompile(`(?i)cannot open (?:include|source) file:?\s*'([^']+)'`),
+		// clang-cl alt: 'bar.h': No such file or directory
+		regexp.MustCompile(`'([^']+\.(?:h|hpp|hh|hxx|inl))'\s*:\s*No such file`),
+	}
+	for _, re := range patterns {
+		if m := re.FindStringSubmatch(diagnostics); len(m) == 2 {
+			header := strings.TrimSpace(m[1])
+			if header != "" {
+				return header, true
+			}
+		}
+	}
+	return "", false
+}
+
+// functionFuzzDiagnosticUnresolvedType extracts the type name from an
+// unknown-type / incomplete-type diagnostic.
+func functionFuzzDiagnosticUnresolvedType(diagnostics string) (string, bool) {
+	patterns := []*regexp.Regexp{
+		// clang: unknown type name 'Foo'
+		regexp.MustCompile(`unknown type name '([A-Za-z_][A-Za-z0-9_:]*)'`),
+		// clang: variable has incomplete type 'Foo'
+		regexp.MustCompile(`(?:variable|field) has incomplete type '([A-Za-z_][A-Za-z0-9_:]*)'`),
+		// MSVC: 'Foo': undeclared identifier used as a type (C2061/C2065 with "missing ';' before identifier")
+		regexp.MustCompile(`missing ';' before identifier '([A-Za-z_][A-Za-z0-9_:]*)'`),
+		// MSVC C2079: '...' uses undefined struct/class 'Foo'
+		regexp.MustCompile(`uses undefined (?:struct|class|union) '([A-Za-z_][A-Za-z0-9_:]*)'`),
+	}
+	for _, re := range patterns {
+		if m := re.FindStringSubmatch(diagnostics); len(m) == 2 {
+			ident := functionFuzzBaseTypeName(m[1])
+			if ident != "" {
+				return ident, true
+			}
+		}
+	}
+	return "", false
+}
+
+// functionFuzzDiagnosticUndeclaredIdentifier extracts the identifier from an
+// "use of undeclared identifier" / C2065 diagnostic.
+func functionFuzzDiagnosticUndeclaredIdentifier(diagnostics string) (string, bool) {
+	patterns := []*regexp.Regexp{
+		// clang: use of undeclared identifier 'foo'
+		regexp.MustCompile(`use of undeclared identifier '([A-Za-z_][A-Za-z0-9_]*)'`),
+		// MSVC C2065: 'foo': undeclared identifier
+		regexp.MustCompile(`'([A-Za-z_][A-Za-z0-9_]*)'\s*:\s*undeclared identifier`),
+	}
+	for _, re := range patterns {
+		if m := re.FindStringSubmatch(diagnostics); len(m) == 2 {
+			ident := strings.TrimSpace(m[1])
+			if ident != "" {
+				return ident, true
+			}
+		}
+	}
+	return "", false
+}
+
+// functionFuzzBaseTypeName strips a namespace qualifier so a forward declaration
+// targets the unqualified type ("ns::Foo" -> "Foo"). A qualified type cannot be
+// forward-declared without reopening the namespace, so the caller falls back to a
+// global forward declaration of the base name, which resolves many single-header
+// cases and is harmless when it does not.
+func functionFuzzBaseTypeName(ident string) string {
+	ident = strings.TrimSpace(ident)
+	if idx := strings.LastIndex(ident, "::"); idx >= 0 {
+		ident = ident[idx+2:]
+	}
+	return strings.TrimSpace(ident)
+}
+
+// functionFuzzSpellInclude wraps a recovered header name in the correct include
+// punctuation. Standard-looking headers (no path separator, or a known system
+// prefix) use angle brackets; project-relative headers use quotes.
+func functionFuzzSpellInclude(header string) string {
+	header = strings.TrimSpace(header)
+	header = strings.Trim(header, `<>"'`)
+	if header == "" {
+		return ""
+	}
+	if strings.ContainsAny(header, "/\\") {
+		return `#include "` + filepath.ToSlash(header) + `"`
+	}
+	return "#include <" + header + ">"
+}
+
+// functionFuzzRepairIncludeLines normalizes injected include tokens, dropping
+// blanks and de-duplicating while preserving order.
+func functionFuzzRepairIncludeLines(includes []string) []string {
+	out := make([]string, 0, len(includes))
+	seen := map[string]struct{}{}
+	for _, raw := range includes {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "#include") {
+			line = functionFuzzSpellInclude(line)
+		}
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		out = append(out, line)
+	}
+	return out
+}
+
+// functionFuzzSpellForwardDeclare turns a bare type name into a minimal
+// forward-declaration statement. A struct keyword is used because it is
+// compatible with both struct and class definitions in C++.
+func functionFuzzSpellForwardDeclare(ident string) string {
+	ident = functionFuzzBaseTypeName(ident)
+	if ident == "" {
+		return ""
+	}
+	return "struct " + ident + ";"
+}
+
+// functionFuzzRepairForwardDeclareLines renders the forward-declaration block,
+// de-duplicating and prefixing an audit comment.
+func functionFuzzRepairForwardDeclareLines(decls []string) []string {
+	out := make([]string, 0, len(decls)+1)
+	seen := map[string]struct{}{}
+	for _, raw := range decls {
+		decl := strings.TrimSpace(raw)
+		if decl == "" {
+			continue
+		}
+		if _, ok := seen[decl]; ok {
+			continue
+		}
+		seen[decl] = struct{}{}
+		out = append(out, decl)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return append([]string{"// Self-repair: forward declarations injected to satisfy unresolved types."}, out...)
+}
+
+// functionFuzzStubParamIndexForType returns the index of the first parameter
+// whose decode would emit a TODO stub (object / handle / container / unknown) and
+// whose raw type base name matches the unresolved identifier. These are the
+// parameters worth downgrading to a raw byte buffer so the harness compiles.
+func functionFuzzStubParamIndexForType(params []FunctionFuzzParamStrategy, ident string) (int, bool) {
+	target := functionFuzzBaseTypeName(ident)
+	if target == "" {
+		return 0, false
+	}
+	for i, item := range params {
+		if !functionFuzzParamClassIsStub(item.Class) {
+			continue
+		}
+		if strings.EqualFold(functionFuzzBaseTypeName(item.RawType), target) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// functionFuzzParamClassIsStub reports whether a parameter class renders a
+// // TODO stub (and therefore may not compile against the real target).
+func functionFuzzParamClassIsStub(class string) bool {
+	switch strings.ToLower(strings.TrimSpace(class)) {
+	case "object", "handle", "container":
+		return true
+	case "buffer", "pointer", "string", "length", "scalar_int", "scalar_float", "boolean", "enum_or_flags":
+		return false
+	default:
+		// Unknown / unmapped classes emit a bare TODO comment with no decode.
+		return true
+	}
+}
+
+// functionFuzzParamIndexForName returns the index of the parameter whose
+// harness identifier matches the given name (case-insensitive).
+func functionFuzzParamIndexForName(params []FunctionFuzzParamStrategy, name string) (int, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, false
+	}
+	for i, item := range params {
+		if strings.EqualFold(functionFuzzHarnessName(item), name) {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// functionFuzzApplyParamRepairs returns a copy of the parameter strategies with
+// class overrides and drops applied. Dropped parameters become a "drop" class so
+// the renderer emits a safe zero-initialized default and the call site passes it.
+func functionFuzzApplyParamRepairs(params []FunctionFuzzParamStrategy, repair functionFuzzCompileRepair) []FunctionFuzzParamStrategy {
+	out := make([]FunctionFuzzParamStrategy, len(params))
+	copy(out, params)
+	for i := range out {
+		if repair.DroppedParams[out[i].Index] {
+			out[i].Class = "drop"
+			continue
+		}
+		if override, ok := repair.ParamClassOverrides[out[i].Index]; ok && strings.TrimSpace(override) != "" {
+			out[i].Class = override
+		}
+	}
+	return out
+}
+
 func renderFunctionFuzzHarness(run FunctionFuzzRun) string {
+	// Default rendering applies no compile repair, so a harness that compiles on
+	// the first try is byte-for-byte unchanged by the self-repair feature.
+	return renderFunctionFuzzHarnessWithRepair(run, functionFuzzCompileRepair{})
+}
+
+// renderFunctionFuzzHarnessWithRepair renders the harness with an optional
+// heuristic compile-repair overlay applied. The overlay can inject extra
+// includes, forward-declare unresolved types, override a parameter's decode
+// class (for example downgrading an un-adaptable object/handle/container stub to
+// a raw byte buffer), or drop a parameter to a safe default. An empty overlay
+// produces exactly the same output as the original renderer, so this stays fully
+// additive for first-try-clean builds.
+func renderFunctionFuzzHarnessWithRepair(run FunctionFuzzRun, repair functionFuzzCompileRepair) string {
+	if len(repair.ParamClassOverrides) > 0 || len(repair.DroppedParams) > 0 {
+		run.ParameterStrategies = functionFuzzApplyParamRepairs(run.ParameterStrategies, repair)
+	}
 	var b strings.Builder
 	b.WriteString("#include <cstddef>\n")
 	b.WriteString("#include <cstdint>\n")
 	b.WriteString("#include <cstring>\n")
 	b.WriteString("#include <string>\n")
-	b.WriteString("#include <vector>\n\n")
+	b.WriteString("#include <vector>\n")
+	for _, include := range functionFuzzRepairIncludeLines(repair.Includes) {
+		b.WriteString(include)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString("// Generated by Kernforge function fuzz planning.\n")
-	b.WriteString("// Replace the target declaration block with real project headers before compiling.\n\n")
+	b.WriteString("// Replace the target declaration block with real project headers before compiling.\n")
+	for _, decl := range functionFuzzRepairForwardDeclareLines(repair.ForwardDeclares) {
+		b.WriteString(decl)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	b.WriteString("namespace\n")
 	b.WriteString("{\n")
 	b.WriteString("struct FuzzInputView\n")
@@ -11519,6 +12193,15 @@ func functionFuzzHarnessParamLines(item FunctionFuzzParamStrategy) []string {
 	case "object":
 		return []string{
 			fmt.Sprintf("// TODO: infer a builder or factory for object parameter %s.", name),
+			fmt.Sprintf("%s %s{};", rawType, name),
+		}
+	case "drop":
+		// Self-repair fallback: the original strategy did not compile, so this
+		// parameter is reduced to a zero-initialized default just to keep the
+		// harness building. The default-constructible assumption is noted so the
+		// engineer can revisit it.
+		return []string{
+			fmt.Sprintf("// Self-repair: %s reduced to a zero-initialized default (original strategy did not compile).", name),
 			fmt.Sprintf("%s %s{};", rawType, name),
 		}
 	default:

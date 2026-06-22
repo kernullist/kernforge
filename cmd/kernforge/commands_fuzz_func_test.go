@@ -13,6 +13,186 @@ import (
 	"time"
 )
 
+func TestFunctionFuzzRecalibrateRiskFromEvidence(t *testing.T) {
+	// A high-coverage extended completion: ft: count above the clean floor.
+	highCoverageOutput := "#4096 DONE   cov: 900 ft: 256 corp: 64/4096b exec/s: 100 rss: 200Mb"
+	lowCoverageOutput := "#10 DONE   cov: 12 ft: 8 corp: 2/512b exec/s: 5 rss: 100Mb"
+
+	tests := []struct {
+		name            string
+		run             FunctionFuzzRun
+		wantScore       int
+		wantCalibration string
+		wantBand        string
+	}{
+		{
+			name: "confirmed crash raises above static prior",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 40,
+				RiskScore:       40,
+				Execution:       FunctionFuzzExecution{Status: "failed", CrashCount: 1},
+			},
+			wantScore:       functionFuzzRiskFloorCrashConfirmed,
+			wantCalibration: "crash-confirmed",
+		},
+		{
+			name: "confirmed crash with severe band lands at band floor",
+			run: FunctionFuzzRun{
+				StaticRiskScore:    40,
+				RiskScore:          40,
+				ExploitabilityBand: "EXPLOITABLE",
+				Execution:          FunctionFuzzExecution{Status: "failed", CrashCount: 1},
+			},
+			wantScore:       95,
+			wantCalibration: "crash-confirmed",
+			wantBand:        "EXPLOITABLE",
+		},
+		{
+			name: "high static prior with crash is not lowered",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 97,
+				RiskScore:       97,
+				Execution:       FunctionFuzzExecution{Status: "failed", CrashCount: 2},
+			},
+			wantScore:       97,
+			wantCalibration: "crash-confirmed",
+		},
+		{
+			name: "clean extended high coverage lowers and marks exercised-clean",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 80,
+				RiskScore:       80,
+				Execution:       FunctionFuzzExecution{Status: "completed", Profile: "extended", CrashCount: 0, LastOutput: highCoverageOutput},
+			},
+			wantScore:       functionFuzzRiskCeilExercisedClean,
+			wantCalibration: "exercised-clean",
+		},
+		{
+			name: "clean extended but low coverage keeps static prior",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 80,
+				RiskScore:       80,
+				Execution:       FunctionFuzzExecution{Status: "completed", Profile: "extended", CrashCount: 0, LastOutput: lowCoverageOutput},
+			},
+			wantScore:       80,
+			wantCalibration: "",
+		},
+		{
+			name: "clean smoke run with high coverage does not mark clean",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 80,
+				RiskScore:       80,
+				Execution:       FunctionFuzzExecution{Status: "completed", Profile: "smoke", CrashCount: 0, LastOutput: highCoverageOutput},
+			},
+			wantScore:       80,
+			wantCalibration: "",
+		},
+		{
+			name: "running extended with no outcome keeps static prior",
+			run: FunctionFuzzRun{
+				StaticRiskScore: 55,
+				RiskScore:       55,
+				Execution:       FunctionFuzzExecution{Status: "running", Profile: "extended", CrashCount: 0},
+			},
+			wantScore:       55,
+			wantCalibration: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := functionFuzzRecalibrateRisk(tc.run)
+			if got.RiskScore != tc.wantScore {
+				t.Fatalf("RiskScore=%d want %d", got.RiskScore, tc.wantScore)
+			}
+			if got.RiskCalibration != tc.wantCalibration {
+				t.Fatalf("RiskCalibration=%q want %q", got.RiskCalibration, tc.wantCalibration)
+			}
+			if tc.wantBand != "" && got.ExploitabilityBand != tc.wantBand {
+				t.Fatalf("ExploitabilityBand=%q want %q", got.ExploitabilityBand, tc.wantBand)
+			}
+			// The static prior is preserved for provenance.
+			if got.StaticRiskScore != tc.run.StaticRiskScore {
+				t.Fatalf("StaticRiskScore=%d want preserved %d", got.StaticRiskScore, tc.run.StaticRiskScore)
+			}
+			// Recalibration is idempotent: feeding the result back in must not drift.
+			again := functionFuzzRecalibrateRisk(got)
+			if again.RiskScore != got.RiskScore || again.RiskCalibration != got.RiskCalibration || again.ExploitabilityBand != got.ExploitabilityBand {
+				t.Fatalf("recalibration not idempotent: first=(%d,%q,%q) second=(%d,%q,%q)",
+					got.RiskScore, got.RiskCalibration, got.ExploitabilityBand,
+					again.RiskScore, again.RiskCalibration, again.ExploitabilityBand)
+			}
+		})
+	}
+}
+
+func TestFunctionFuzzRecalibrateRiskCapturesLegacyStaticPrior(t *testing.T) {
+	// A legacy run persisted before StaticRiskScore existed: it has only RiskScore.
+	run := FunctionFuzzRun{RiskScore: 30, Execution: FunctionFuzzExecution{Status: "failed", CrashCount: 1}}
+	got := functionFuzzRecalibrateRisk(run)
+	if got.StaticRiskScore != 30 {
+		t.Fatalf("expected legacy RiskScore captured as StaticRiskScore=30, got %d", got.StaticRiskScore)
+	}
+	if got.RiskScore != functionFuzzRiskFloorCrashConfirmed {
+		t.Fatalf("expected crash floor %d, got %d", functionFuzzRiskFloorCrashConfirmed, got.RiskScore)
+	}
+}
+
+func TestFunctionFuzzApplyRiskRecalibrationRecordsBandFromOutput(t *testing.T) {
+	// A confirmed crash whose captured output parses as a WRITE heap overflow
+	// records the EXPLOITABLE band and raises risk; a re-run is a no-op delta.
+	run := FunctionFuzzRun{
+		StaticRiskScore: 35,
+		RiskScore:       35,
+		Execution: FunctionFuzzExecution{
+			Status:     "failed",
+			CrashCount: 1,
+			LastOutput: "==1==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000050\nWRITE of size 4 at 0x602000000050 thread T0\n    #0 0x1 in Parse src/p.cpp:10:1\n",
+		},
+	}
+	recalibrated, changed := functionFuzzApplyRiskRecalibration(run)
+	if !changed {
+		t.Fatalf("expected recalibration to report a change")
+	}
+	if recalibrated.ExploitabilityBand != "EXPLOITABLE" {
+		t.Fatalf("ExploitabilityBand=%q want EXPLOITABLE", recalibrated.ExploitabilityBand)
+	}
+	if recalibrated.RiskCalibration != "crash-confirmed" {
+		t.Fatalf("RiskCalibration=%q want crash-confirmed", recalibrated.RiskCalibration)
+	}
+	if recalibrated.RiskScore < functionFuzzRiskFloorCrashConfirmed {
+		t.Fatalf("RiskScore=%d want >= %d", recalibrated.RiskScore, functionFuzzRiskFloorCrashConfirmed)
+	}
+	// Idempotent: a second application reports no further change.
+	if _, changedAgain := functionFuzzApplyRiskRecalibration(recalibrated); changedAgain {
+		t.Fatalf("expected second recalibration to be a no-op delta")
+	}
+}
+
+func TestFunctionFuzzBumpMaxTotalTime(t *testing.T) {
+	args := []string{"-rss_limit_mb=4096", "-max_total_time=600", "-fork=2"}
+	bumped := functionFuzzBumpMaxTotalTime(args, functionFuzzExtendedRelaunchMaxTotalTime)
+	found := false
+	for _, arg := range bumped {
+		if arg == fmt.Sprintf("-max_total_time=%d", functionFuzzExtendedRelaunchMaxTotalTime) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected bumped -max_total_time in %v", bumped)
+	}
+	// Absent flag is appended.
+	appended := functionFuzzBumpMaxTotalTime([]string{"-rss_limit_mb=4096"}, 900)
+	if appended[len(appended)-1] != "-max_total_time=900" {
+		t.Fatalf("expected appended -max_total_time, got %v", appended)
+	}
+	// An already-larger value is not lowered.
+	kept := functionFuzzBumpMaxTotalTime([]string{"-max_total_time=3600"}, 1800)
+	if kept[0] != "-max_total_time=3600" {
+		t.Fatalf("expected larger value kept, got %v", kept)
+	}
+}
+
 func TestHelpTextIncludesFuzzFuncCommand(t *testing.T) {
 	help := HelpText()
 	if !strings.Contains(help, "/fuzz-func <name>") {
@@ -3524,5 +3704,326 @@ func TestFunctionFuzzHarnessKeepsIndependentDecodeWithoutRelation(t *testing.T) 
 	}
 	if strings.Contains(src, "count_value") || strings.Contains(src, "count_desync") {
 		t.Fatalf("lone length must not emit coupled decode, harness:\n%s", src)
+	}
+}
+
+// --- Bounded compile self-repair tests ---------------------------------------
+
+func TestFunctionFuzzPlanCompileRepairCleanBuildNoFix(t *testing.T) {
+	// An empty diagnostic (clean build) must yield no repair.
+	run := FunctionFuzzRun{HarnessReady: true}
+	repair, found := functionFuzzPlanCompileRepair("", run, functionFuzzCompileRepair{})
+	if found {
+		t.Fatalf("clean build must not produce a fix, got %+v", repair)
+	}
+	if !repair.empty() {
+		t.Fatalf("clean build repair must be empty, got %+v", repair)
+	}
+}
+
+func TestFunctionFuzzPlanCompileRepairMissingInclude(t *testing.T) {
+	cases := []struct {
+		name string
+		diag string
+		want string
+	}{
+		{
+			name: "clang_quote_header",
+			diag: "harness.cpp:7:10: fatal error: 'TavernTypes.h' file not found\n#include \"TavernTypes.h\"\n         ^",
+			want: "#include <TavernTypes.h>",
+		},
+		{
+			name: "clang_cl_cannot_open",
+			diag: "harness.cpp(7): fatal error C1083: cannot open include file: 'tavern/worker.h': No such file or directory",
+			want: `#include "tavern/worker.h"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			run := FunctionFuzzRun{HarnessReady: true}
+			repair, found := functionFuzzPlanCompileRepair(tc.diag, run, functionFuzzCompileRepair{})
+			if !found {
+				t.Fatalf("expected an injected include, got none")
+			}
+			if len(repair.Includes) != 1 || repair.Includes[0] != tc.want {
+				t.Fatalf("expected include %q, got %+v", tc.want, repair.Includes)
+			}
+			if len(repair.Steps) == 0 || !strings.Contains(repair.Steps[len(repair.Steps)-1], "injected missing include") {
+				t.Fatalf("expected an audit step for the injected include, got %+v", repair.Steps)
+			}
+			// The same diagnostic must be idempotent: replanning with the include
+			// already applied yields no new fix.
+			if _, again := functionFuzzPlanCompileRepair(tc.diag, run, repair); again {
+				t.Fatalf("missing-include fix must be idempotent, got another fix")
+			}
+		})
+	}
+}
+
+func TestFunctionFuzzPlanCompileRepairUnknownTypeForwardDeclares(t *testing.T) {
+	// An unknown type that does not match a stub parameter must be forward-declared.
+	run := FunctionFuzzRun{HarnessReady: true}
+	diag := "harness.cpp:20:5: error: unknown type name 'WorkerContext'"
+	repair, found := functionFuzzPlanCompileRepair(diag, run, functionFuzzCompileRepair{})
+	if !found {
+		t.Fatalf("expected a forward declaration, got none")
+	}
+	if len(repair.ForwardDeclares) != 1 || repair.ForwardDeclares[0] != "struct WorkerContext;" {
+		t.Fatalf("expected forward declare of WorkerContext, got %+v", repair.ForwardDeclares)
+	}
+	if len(repair.ParamClassOverrides) != 0 || len(repair.DroppedParams) != 0 {
+		t.Fatalf("forward-declare path must not touch parameters, got %+v", repair)
+	}
+}
+
+func TestFunctionFuzzPlanCompileRepairUnknownTypeDowngradesStubParam(t *testing.T) {
+	// When the unresolved type is the raw type of an object/handle/container stub
+	// parameter, the planner must downgrade that parameter to a raw byte buffer
+	// rather than forward-declaring an incomplete type the stub cannot construct.
+	run := FunctionFuzzRun{
+		HarnessReady: true,
+		ParameterStrategies: []FunctionFuzzParamStrategy{
+			{Index: 0, Name: "ctx", RawType: "WorkerContext", Class: "object"},
+		},
+	}
+	diag := "harness.cpp:20:5: error: unknown type name 'WorkerContext'"
+	repair, found := functionFuzzPlanCompileRepair(diag, run, functionFuzzCompileRepair{})
+	if !found {
+		t.Fatalf("expected a stub-parameter downgrade, got none")
+	}
+	if got := repair.ParamClassOverrides[0]; got != "buffer" {
+		t.Fatalf("expected param #0 downgraded to buffer, got %q (repair %+v)", got, repair)
+	}
+	if len(repair.ForwardDeclares) != 0 {
+		t.Fatalf("stub-parameter downgrade must not also forward-declare, got %+v", repair.ForwardDeclares)
+	}
+	// Re-rendering with the downgrade must replace the object TODO stub with a
+	// real byte-vector decode.
+	src := renderFunctionFuzzHarnessWithRepair(run, repair)
+	if strings.Contains(src, "// TODO: infer a builder or factory for object parameter ctx.") {
+		t.Fatalf("downgrade must remove the object TODO stub, harness:\n%s", src)
+	}
+	if !strings.Contains(src, "std::vector<uint8_t> ctx_storage = ReadByteVector(input, 0x1000);") {
+		t.Fatalf("expected ctx to decode as a byte buffer after downgrade, harness:\n%s", src)
+	}
+}
+
+func TestFunctionFuzzPlanCompileRepairUndeclaredIdentifierDropsParam(t *testing.T) {
+	// An "undeclared identifier" that names a parameter means its decode never
+	// compiled; the planner must drop it to a safe default.
+	run := FunctionFuzzRun{
+		HarnessReady: true,
+		ParameterStrategies: []FunctionFuzzParamStrategy{
+			{Index: 0, Name: "handle", RawType: "HANDLE", Class: "handle"},
+		},
+	}
+	diag := "harness.cpp:25:9: error: use of undeclared identifier 'handle'"
+	repair, found := functionFuzzPlanCompileRepair(diag, run, functionFuzzCompileRepair{})
+	if !found {
+		t.Fatalf("expected a parameter drop, got none")
+	}
+	if !repair.DroppedParams[0] {
+		t.Fatalf("expected param #0 dropped, got %+v", repair)
+	}
+	src := renderFunctionFuzzHarnessWithRepair(run, repair)
+	if !strings.Contains(src, "Self-repair: handle reduced to a zero-initialized default") {
+		t.Fatalf("expected dropped param to emit a zero-initialized default, harness:\n%s", src)
+	}
+	if !strings.Contains(src, "HANDLE handle{};") {
+		t.Fatalf("expected dropped param default-init declaration, harness:\n%s", src)
+	}
+}
+
+func TestFunctionFuzzCompileRepairCleanRenderUnchanged(t *testing.T) {
+	// The repair-aware renderer with an empty overlay must produce exactly the
+	// same harness as the original renderer (fully additive).
+	run := FunctionFuzzRun{
+		TargetSignature:     "int Decode(const uint8_t* buffer, size_t length)",
+		HarnessReady:        true,
+		ParameterStrategies: buildFunctionFuzzParameterStrategies("int Decode(const uint8_t* buffer, size_t length)"),
+	}
+	base := renderFunctionFuzzHarness(run)
+	overlaid := renderFunctionFuzzHarnessWithRepair(run, functionFuzzCompileRepair{})
+	if base != overlaid {
+		t.Fatalf("empty overlay must not change the harness output")
+	}
+	if strings.Contains(base, "Self-repair:") {
+		t.Fatalf("a clean harness must not contain self-repair markers, harness:\n%s", base)
+	}
+}
+
+func TestFunctionFuzzRepairIncludeRenderedAtTop(t *testing.T) {
+	run := FunctionFuzzRun{HarnessReady: true}
+	repair := functionFuzzCompileRepair{Includes: []string{"#include <TavernTypes.h>"}}
+	src := renderFunctionFuzzHarnessWithRepair(run, repair)
+	if !strings.Contains(src, "#include <TavernTypes.h>") {
+		t.Fatalf("expected injected include in harness, got:\n%s", src)
+	}
+	// The injected include must appear before the generated-by banner.
+	incIdx := strings.Index(src, "#include <TavernTypes.h>")
+	bannerIdx := strings.Index(src, "Generated by Kernforge function fuzz planning")
+	if incIdx < 0 || bannerIdx < 0 || incIdx > bannerIdx {
+		t.Fatalf("injected include must precede the banner, harness:\n%s", src)
+	}
+}
+
+func TestFunctionFuzzDriveBuildRepairLoopBounded(t *testing.T) {
+	// A failure whose diagnostic keeps naming a NEW missing include must still
+	// stop after functionFuzzCompileRepairCap repair attempts (so total compiles
+	// = cap + 1) and fall back to the terminal build_failed state. This proves the
+	// loop is hard-bounded even when the planner keeps finding fixable causes.
+	run := &FunctionFuzzRun{HarnessReady: true, HarnessPath: ""}
+	run.Execution.BuildArgv = []string{"clang", "harness.cpp"}
+	run.Execution.BuildLogPath = filepath.Join(t.TempDir(), "build.log")
+
+	compiles := 0
+	compile := func(attempt int) functionFuzzCompileOutcome {
+		compiles++
+		// Each attempt reports a distinct missing header so the planner always
+		// finds a new mechanical fix; only the bound stops the loop.
+		return functionFuzzCompileOutcome{
+			logText:  fmt.Sprintf("fatal error: 'gen_header_%d.h' file not found", compiles),
+			exitCode: 1,
+		}
+	}
+	rerenders := 0
+	rerender := func(_ *FunctionFuzzRun) { rerenders++ }
+
+	functionFuzzDriveBuildRepairLoop(run, 120, compile, rerender)
+
+	if run.Execution.Status != "build_failed" {
+		t.Fatalf("expected terminal build_failed after exhausting the bound, got %q", run.Execution.Status)
+	}
+	wantCompiles := functionFuzzCompileRepairCap + 1
+	if compiles != wantCompiles {
+		t.Fatalf("expected %d compiles (cap+1), got %d", wantCompiles, compiles)
+	}
+	if rerenders != functionFuzzCompileRepairCap {
+		t.Fatalf("expected %d re-renders (one per applied fix), got %d", functionFuzzCompileRepairCap, rerenders)
+	}
+	// Every applied fix must be recorded in the recovery notes for auditability.
+	repairNotes := 0
+	for _, note := range run.Execution.RecoveryNotes {
+		if strings.HasPrefix(note, "Self-repair: ") {
+			repairNotes++
+		}
+	}
+	if repairNotes != functionFuzzCompileRepairCap {
+		t.Fatalf("expected %d self-repair recovery notes, got %d (%v)", functionFuzzCompileRepairCap, repairNotes, run.Execution.RecoveryNotes)
+	}
+	// The build log must capture the self-repair trail.
+	data, err := os.ReadFile(run.Execution.BuildLogPath)
+	if err != nil {
+		t.Fatalf("read build log: %v", err)
+	}
+	if !strings.Contains(string(data), "KernForge self-repair log") {
+		t.Fatalf("expected self-repair log section in build log, got:\n%s", string(data))
+	}
+}
+
+func TestFunctionFuzzDriveBuildRepairLoopFirstTrySuccess(t *testing.T) {
+	// A harness that compiles on the first try must apply zero repairs and leave
+	// no self-repair markers.
+	run := &FunctionFuzzRun{HarnessReady: true}
+	run.Execution.BuildArgv = []string{"clang", "harness.cpp"}
+	run.Execution.BuildLogPath = filepath.Join(t.TempDir(), "build.log")
+
+	compiles := 0
+	compile := func(_ int) functionFuzzCompileOutcome {
+		compiles++
+		return functionFuzzCompileOutcome{ok: true}
+	}
+	rerenders := 0
+	functionFuzzDriveBuildRepairLoop(run, 120, compile, func(_ *FunctionFuzzRun) { rerenders++ })
+
+	if compiles != 1 {
+		t.Fatalf("expected exactly one compile on first-try success, got %d", compiles)
+	}
+	if rerenders != 0 {
+		t.Fatalf("first-try success must not re-render, got %d", rerenders)
+	}
+	if run.Execution.Status != "build_succeeded" {
+		t.Fatalf("expected build_succeeded, got %q", run.Execution.Status)
+	}
+	for _, note := range run.Execution.RecoveryNotes {
+		if strings.HasPrefix(note, "Self-repair: ") {
+			t.Fatalf("first-try success must not record self-repair notes, got %v", run.Execution.RecoveryNotes)
+		}
+	}
+}
+
+func TestFunctionFuzzDriveBuildRepairLoopFixThenSucceed(t *testing.T) {
+	// A single fixable failure followed by success must apply exactly one repair
+	// and report success-after-repair.
+	run := &FunctionFuzzRun{HarnessReady: true}
+	run.Execution.BuildArgv = []string{"clang", "harness.cpp"}
+	run.Execution.BuildLogPath = filepath.Join(t.TempDir(), "build.log")
+
+	compiles := 0
+	compile := func(_ int) functionFuzzCompileOutcome {
+		compiles++
+		if compiles == 1 {
+			return functionFuzzCompileOutcome{logText: "fatal error: 'Foo.h' file not found", exitCode: 1}
+		}
+		return functionFuzzCompileOutcome{ok: true}
+	}
+	functionFuzzDriveBuildRepairLoop(run, 120, compile, func(_ *FunctionFuzzRun) {})
+
+	if compiles != 2 {
+		t.Fatalf("expected 2 compiles (fail then succeed), got %d", compiles)
+	}
+	if run.Execution.Status != "build_succeeded" {
+		t.Fatalf("expected build_succeeded, got %q", run.Execution.Status)
+	}
+	if !strings.Contains(run.Execution.Reason, "self-repair") {
+		t.Fatalf("expected success-after-repair reason, got %q", run.Execution.Reason)
+	}
+}
+
+func TestFunctionFuzzDriveBuildRepairLoopTimeoutNoRepair(t *testing.T) {
+	// A timeout is not a mechanically-fixable diagnostic, so the loop must stop
+	// immediately and never attempt a repair.
+	run := &FunctionFuzzRun{HarnessReady: true}
+	run.Execution.BuildArgv = []string{"clang", "harness.cpp"}
+	run.Execution.BuildLogPath = filepath.Join(t.TempDir(), "build.log")
+
+	compiles := 0
+	compile := func(_ int) functionFuzzCompileOutcome {
+		compiles++
+		return functionFuzzCompileOutcome{timedOut: true, exitCode: -1}
+	}
+	rerenders := 0
+	functionFuzzDriveBuildRepairLoop(run, 30, compile, func(_ *FunctionFuzzRun) { rerenders++ })
+
+	if compiles != 1 {
+		t.Fatalf("a timeout must stop after one compile, got %d", compiles)
+	}
+	if rerenders != 0 {
+		t.Fatalf("a timeout must not trigger a repair re-render, got %d", rerenders)
+	}
+	if run.Execution.Status != "build_timed_out" {
+		t.Fatalf("expected build_timed_out, got %q", run.Execution.Status)
+	}
+}
+
+func TestFunctionFuzzDriveBuildRepairLoopUnfixableFailsImmediately(t *testing.T) {
+	// A failure with no mechanically-fixable cause must fall back to build_failed
+	// on the first attempt without any repair.
+	run := &FunctionFuzzRun{HarnessReady: true}
+	run.Execution.BuildArgv = []string{"clang", "harness.cpp"}
+	run.Execution.BuildLogPath = filepath.Join(t.TempDir(), "build.log")
+
+	compiles := 0
+	compile := func(_ int) functionFuzzCompileOutcome {
+		compiles++
+		return functionFuzzCompileOutcome{logText: "error: too many initializers for some unrelated reason", exitCode: 1}
+	}
+	functionFuzzDriveBuildRepairLoop(run, 120, compile, func(_ *FunctionFuzzRun) {})
+
+	if compiles != 1 {
+		t.Fatalf("an unfixable failure must stop after one compile, got %d", compiles)
+	}
+	if run.Execution.Status != "build_failed" {
+		t.Fatalf("expected build_failed, got %q", run.Execution.Status)
 	}
 }

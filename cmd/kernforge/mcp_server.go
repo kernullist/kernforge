@@ -2936,6 +2936,17 @@ func mcpFunctionFuzzNativeFollowups(run FunctionFuzzRun) []map[string]any {
 	}
 }
 
+// functionFuzzCompileOutcome is the captured result of a single compile attempt.
+// It is the seam between the real compiler invocation and the bounded self-repair
+// driver: tests substitute a stub that returns canned outcomes so the loop logic
+// runs without a real compiler.
+type functionFuzzCompileOutcome struct {
+	logText  string
+	exitCode int
+	timedOut bool
+	ok       bool
+}
+
 func (s *kernforgeMCPServer) runFunctionFuzzBuildOnly(ctx context.Context, run *FunctionFuzzRun, timeoutSec int) {
 	if run == nil {
 		return
@@ -2949,8 +2960,7 @@ func (s *kernforgeMCPServer) runFunctionFuzzBuildOnly(ctx context.Context, run *
 	if timeoutSec > 900 {
 		timeoutSec = 900
 	}
-	argv := append([]string(nil), run.Execution.BuildArgv...)
-	if len(argv) == 0 {
+	if len(run.Execution.BuildArgv) == 0 {
 		run.Execution.Status = "blocked"
 		run.Execution.Reason = "Build-only compile could not start because build_argv is empty."
 		run.Execution = normalizeFunctionFuzzExecution(run.Execution)
@@ -2958,6 +2968,29 @@ func (s *kernforgeMCPServer) runFunctionFuzzBuildOnly(ctx context.Context, run *
 		run.Summary = buildFunctionFuzzSummaryWithConfig(*run, s.rt.cfg)
 		return
 	}
+	// compile is the real-compiler side effect. The bounded self-repair driver is
+	// otherwise free of I/O so the loop can be tested with a stubbed compile.
+	compile := func(attempt int) functionFuzzCompileOutcome {
+		return s.runFunctionFuzzCompileOnce(ctx, run, timeoutSec)
+	}
+	functionFuzzDriveBuildRepairLoop(run, timeoutSec, compile, func(updated *FunctionFuzzRun) {
+		if strings.TrimSpace(updated.HarnessPath) == "" {
+			return
+		}
+		// Re-render with the accumulated repair so the next compile sees the fix.
+		_ = os.WriteFile(updated.HarnessPath, []byte(renderFunctionFuzzHarnessWithRepair(*updated, updated.repairOverlay())), 0o644)
+	})
+	run.Execution.BackgroundJobID = ""
+	run.Execution = normalizeFunctionFuzzExecution(run.Execution)
+	functionFuzzRefreshGuidance(s.rt.cfg, run)
+	run.Summary = buildFunctionFuzzSummaryWithConfig(*run, s.rt.cfg)
+}
+
+// runFunctionFuzzCompileOnce invokes the recovered build command exactly once and
+// captures the outcome. It is the single real-compiler side effect used by the
+// build-only path.
+func (s *kernforgeMCPServer) runFunctionFuzzCompileOnce(ctx context.Context, run *FunctionFuzzRun, timeoutSec int) functionFuzzCompileOutcome {
+	argv := append([]string(nil), run.Execution.BuildArgv...)
 	buildCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(buildCtx, argv[0], argv[1:]...)
@@ -2970,29 +3003,122 @@ func (s *kernforgeMCPServer) runFunctionFuzzBuildOnly(ctx context.Context, run *
 		}
 		logText += "build error: " + err.Error() + "\n"
 	}
-	if strings.TrimSpace(run.Execution.BuildLogPath) != "" {
-		_ = os.WriteFile(run.Execution.BuildLogPath, []byte(logText), 0o644)
-	}
-	exitCode := 0
+	outcome := functionFuzzCompileOutcome{logText: logText}
 	switch {
 	case buildCtx.Err() == context.DeadlineExceeded:
-		exitCode = -1
-		run.Execution.Status = "build_timed_out"
-		run.Execution.Reason = fmt.Sprintf("Build-only compile timed out after %d seconds. The fuzz executable was not run.", timeoutSec)
+		outcome.exitCode = -1
+		outcome.timedOut = true
 	case err != nil:
-		exitCode = mcpExitCodeFromError(err)
-		run.Execution.Status = "build_failed"
-		run.Execution.Reason = "Build-only compile failed. The fuzz executable was not run."
+		outcome.exitCode = mcpExitCodeFromError(err)
 	default:
-		run.Execution.Status = "build_succeeded"
-		run.Execution.Reason = "Build-only compile succeeded. The fuzz executable was not run."
+		outcome.ok = true
 	}
-	run.Execution.ExitCode = &exitCode
-	run.Execution.BackgroundJobID = ""
-	run.Execution.LastOutput = compactPersistentMemoryText(logText, 260)
-	run.Execution = normalizeFunctionFuzzExecution(run.Execution)
-	functionFuzzRefreshGuidance(s.rt.cfg, run)
-	run.Summary = buildFunctionFuzzSummaryWithConfig(*run, s.rt.cfg)
+	return outcome
+}
+
+// functionFuzzDriveBuildRepairLoop runs the bounded, heuristic compile self-repair
+// loop. It is intentionally free of compiler I/O: the caller supplies a compile
+// callback (the real compiler in production, a stub in tests) and a re-render
+// callback that rewrites the harness with the accumulated repair before the next
+// compile. The loop:
+//
+//  1. Compiles. On success or timeout it stops immediately (a timeout is not a
+//     mechanically-fixable diagnostic, so repair is never attempted for it).
+//  2. On a normal failure it asks the pure planner functionFuzzPlanCompileRepair
+//     for one new mechanical fix. If none is found it stops and falls back to the
+//     terminal build_failed state.
+//  3. Otherwise it applies the fix (re-render), records the attempt + fix in the
+//     execution metadata, and recompiles - up to functionFuzzCompileRepairCap
+//     additional attempts. The counter is hard-bounded so an unfixable diagnostic
+//     can never loop forever.
+//
+// The accumulated repair and per-attempt audit are written into the build log and
+// the execution RecoveryNotes so the self-repair is fully auditable.
+func functionFuzzDriveBuildRepairLoop(run *FunctionFuzzRun, timeoutSec int, compile func(attempt int) functionFuzzCompileOutcome, rerender func(*FunctionFuzzRun)) {
+	var repair functionFuzzCompileRepair
+	var lastLog string
+	var lastExit int
+	attempts := 0
+	repairsApplied := 0
+	auditLines := []string{}
+
+	for {
+		attempts++
+		outcome := compile(attempts)
+		lastLog = outcome.logText
+		lastExit = outcome.exitCode
+
+		if outcome.timedOut {
+			run.Execution.ExitCode = &lastExit
+			run.Execution.Status = "build_timed_out"
+			run.Execution.Reason = fmt.Sprintf("Build-only compile timed out after %d seconds. The fuzz executable was not run.", timeoutSec)
+			break
+		}
+		if outcome.ok {
+			run.Execution.ExitCode = &lastExit
+			run.Execution.Status = "build_succeeded"
+			if repairsApplied > 0 {
+				run.Execution.Reason = fmt.Sprintf("Build-only compile succeeded after %d heuristic self-repair fix(es). The fuzz executable was not run.", repairsApplied)
+			} else {
+				run.Execution.Reason = "Build-only compile succeeded. The fuzz executable was not run."
+			}
+			break
+		}
+
+		// Normal compile failure. Try one more mechanical fix if we are still
+		// under the attempt cap and the planner can anchor a fix in the output.
+		if repairsApplied >= functionFuzzCompileRepairCap {
+			run.Execution.ExitCode = &lastExit
+			run.Execution.Status = "build_failed"
+			run.Execution.Reason = fmt.Sprintf("Build-only compile failed after %d heuristic self-repair attempt(s); the remaining diagnostics are not mechanically fixable. The fuzz executable was not run.", repairsApplied)
+			break
+		}
+		nextRepair, found := functionFuzzPlanCompileRepair(outcome.logText, *run, repair)
+		if !found {
+			run.Execution.ExitCode = &lastExit
+			run.Execution.Status = "build_failed"
+			if repairsApplied > 0 {
+				run.Execution.Reason = fmt.Sprintf("Build-only compile failed after %d heuristic self-repair attempt(s); no further mechanical fix was found. The fuzz executable was not run.", repairsApplied)
+			} else {
+				run.Execution.Reason = "Build-only compile failed. The fuzz executable was not run."
+			}
+			break
+		}
+
+		repair = nextRepair
+		repairsApplied++
+		fix := "applied a heuristic fix"
+		if len(repair.Steps) > 0 {
+			fix = repair.Steps[len(repair.Steps)-1]
+		}
+		auditLines = append(auditLines, fmt.Sprintf("self-repair attempt %d: %s", repairsApplied, fix))
+		run.attachRepairOverlay(repair)
+		if rerender != nil {
+			rerender(run)
+		}
+	}
+
+	// Assemble the auditable build log: the final compiler output plus the
+	// chronological self-repair trail (empty on a first-try success).
+	finalLog := lastLog
+	if len(auditLines) > 0 {
+		if strings.TrimSpace(finalLog) != "" && !strings.HasSuffix(finalLog, "\n") {
+			finalLog += "\n"
+		}
+		finalLog += "\n-- KernForge self-repair log --\n"
+		finalLog += strings.Join(auditLines, "\n") + "\n"
+	}
+	if strings.TrimSpace(run.Execution.BuildLogPath) != "" {
+		_ = os.WriteFile(run.Execution.BuildLogPath, []byte(finalLog), 0o644)
+	}
+	if len(repair.Steps) > 0 {
+		notes := append([]string(nil), run.Execution.RecoveryNotes...)
+		for _, step := range repair.Steps {
+			notes = append(notes, "Self-repair: "+step)
+		}
+		run.Execution.RecoveryNotes = uniqueStrings(notes)
+	}
+	run.Execution.LastOutput = compactPersistentMemoryText(finalLog, 260)
 }
 
 func mcpExitCodeFromError(err error) int {

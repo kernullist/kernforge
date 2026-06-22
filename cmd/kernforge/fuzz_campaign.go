@@ -179,9 +179,13 @@ type FuzzCampaign struct {
 	Findings        []FuzzCampaignFinding        `json:"findings,omitempty"`
 	CoverageReports []FuzzCampaignCoverageReport `json:"coverage_reports,omitempty"`
 	CoverageGaps    []FuzzCampaignCoverageGap    `json:"coverage_gaps,omitempty"`
-	RunArtifacts    []FuzzCampaignRunArtifact    `json:"run_artifacts,omitempty"`
-	ArtifactGraph   FuzzCampaignArtifactGraph    `json:"artifact_graph,omitempty"`
-	Summary         string                       `json:"summary,omitempty"`
+	// RelaunchedTargets records the coverage-gap target keys that already
+	// triggered ONE automatic bounded re-launch this campaign. It is the loop
+	// guard that keeps gap-driven re-launch to at most one per target.
+	RelaunchedTargets []string                  `json:"relaunched_targets,omitempty"`
+	RunArtifacts      []FuzzCampaignRunArtifact `json:"run_artifacts,omitempty"`
+	ArtifactGraph     FuzzCampaignArtifactGraph `json:"artifact_graph,omitempty"`
+	Summary           string                    `json:"summary,omitempty"`
 }
 
 type FuzzCampaignStore struct {
@@ -371,6 +375,7 @@ func normalizeFuzzCampaign(campaign FuzzCampaign) FuzzCampaign {
 	campaign.Findings = normalizeFuzzCampaignFindings(campaign.Findings)
 	campaign.CoverageReports = normalizeFuzzCampaignCoverageReports(campaign.CoverageReports)
 	campaign.CoverageGaps = normalizeFuzzCampaignCoverageGaps(append(campaign.CoverageGaps, inferFuzzCampaignCoverageGaps(campaign)...))
+	campaign.RelaunchedTargets = normalizeFuzzCampaignRelaunchTargets(campaign.RelaunchedTargets)
 	campaign.RunArtifacts = normalizeFuzzCampaignRunArtifacts(campaign.RunArtifacts)
 	campaign.ArtifactGraph = buildFuzzCampaignArtifactGraph(campaign)
 	campaign.Summary = compactPersistentMemoryText(campaign.Summary, 320)
@@ -906,6 +911,135 @@ func fuzzCampaignCoverageTargetKeys(target string, file string, sourceAnchor str
 		}
 	}
 	return uniqueStrings(out)
+}
+
+// fuzzCampaignRelaunchTargetKey builds the stable key used to dedup automatic
+// gap-driven re-launches. It combines the target name and file so two distinct
+// functions in different files never share a re-launch budget.
+func fuzzCampaignRelaunchTargetKey(target string, file string) string {
+	target = strings.ToLower(strings.TrimSpace(target))
+	file = strings.ToLower(strings.TrimSpace(filepath.ToSlash(file)))
+	if target == "" && file == "" {
+		return ""
+	}
+	return target + "|" + file
+}
+
+func normalizeFuzzCampaignRelaunchTargets(items []string) []string {
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item = strings.ToLower(strings.TrimSpace(item))
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// fuzzCampaignTargetAlreadyRelaunched reports whether key already consumed its
+// one automatic re-launch this campaign.
+func fuzzCampaignTargetAlreadyRelaunched(campaign FuzzCampaign, key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return false
+	}
+	for _, existing := range campaign.RelaunchedTargets {
+		if strings.EqualFold(strings.TrimSpace(existing), key) {
+			return true
+		}
+	}
+	return false
+}
+
+// fuzzCampaignRunHasLaunchContext reports whether a run carries enough model and
+// compile context to support an automatic re-launch on the same authority and
+// build path the manual launch uses. A run with no eligible execution plan or
+// no build script just records the gap (no fake re-launch).
+func fuzzCampaignRunHasLaunchContext(run FunctionFuzzRun) bool {
+	if !run.Execution.Eligible {
+		return false
+	}
+	if strings.TrimSpace(run.Execution.BuildScriptPath) == "" {
+		return false
+	}
+	if strings.TrimSpace(run.Execution.CompilerResolvedPath) == "" {
+		return false
+	}
+	return true
+}
+
+// fuzzCampaignCoverageRelaunchDecision pairs a coverage gap with the attached
+// run that should service its one bounded re-launch.
+type fuzzCampaignCoverageRelaunchDecision struct {
+	TargetKey string
+	Gap       FuzzCampaignCoverageGap
+	Run       FunctionFuzzRun
+}
+
+// fuzzCampaignSelectCoverageRelaunches decides which coverage gaps warrant ONE
+// bounded re-launch this pass. It is a pure function: it returns at most one
+// decision per target key, skips targets that already consumed their re-launch
+// budget, skips gaps with no matching run carrying model/compile context, and
+// never returns the same target twice. runsByID maps an attached run ID to its
+// loaded run.
+func fuzzCampaignSelectCoverageRelaunches(campaign FuzzCampaign, gaps []FuzzCampaignCoverageGap, runsByID map[string]FunctionFuzzRun) []fuzzCampaignCoverageRelaunchDecision {
+	decisions := []fuzzCampaignCoverageRelaunchDecision{}
+	chosen := map[string]struct{}{}
+	for _, gap := range gaps {
+		key := fuzzCampaignRelaunchTargetKey(gap.Target, gap.TargetFile)
+		if key == "" {
+			continue
+		}
+		if _, done := chosen[key]; done {
+			continue
+		}
+		if fuzzCampaignTargetAlreadyRelaunched(campaign, key) {
+			continue
+		}
+		run, ok := fuzzCampaignMatchRelaunchRun(gap, runsByID)
+		if !ok || !fuzzCampaignRunHasLaunchContext(run) {
+			continue
+		}
+		chosen[key] = struct{}{}
+		decisions = append(decisions, fuzzCampaignCoverageRelaunchDecision{
+			TargetKey: key,
+			Gap:       gap,
+			Run:       run,
+		})
+	}
+	return decisions
+}
+
+// fuzzCampaignMatchRelaunchRun finds the attached run that owns a coverage gap.
+// It prefers a direct RunID match and falls back to matching the gap target and
+// file against a run's symbol name / query / file.
+func fuzzCampaignMatchRelaunchRun(gap FuzzCampaignCoverageGap, runsByID map[string]FunctionFuzzRun) (FunctionFuzzRun, bool) {
+	if id := strings.TrimSpace(gap.RunID); id != "" {
+		if run, ok := runsByID[id]; ok {
+			return run, true
+		}
+	}
+	gapKey := fuzzCampaignRelaunchTargetKey(gap.Target, gap.TargetFile)
+	if gapKey == "" {
+		return FunctionFuzzRun{}, false
+	}
+	for _, run := range runsByID {
+		name := firstNonBlankString(run.TargetSymbolName, run.TargetQuery)
+		if fuzzCampaignRelaunchTargetKey(name, run.TargetFile) == gapKey {
+			return run, true
+		}
+	}
+	return FunctionFuzzRun{}, false
 }
 
 func fuzzCampaignNativeResultKey(item FuzzCampaignNativeResult) string {
@@ -2790,7 +2924,12 @@ func (rt *runtimeState) runFuzzCampaignAutomation() error {
 			return err
 		}
 	}
-	if !created || attached || len(promoted) > 0 || len(nativeResults) > 0 {
+	var relaunched []string
+	campaign, relaunched, err = rt.maybeRelaunchFuzzCampaignCoverageGaps(campaign, refreshedRuns)
+	if err != nil {
+		return err
+	}
+	if !created || attached || len(promoted) > 0 || len(nativeResults) > 0 || len(relaunched) > 0 {
 		campaign, err = rt.fuzzCampaigns.Upsert(campaign)
 		if err != nil {
 			return err
@@ -2798,7 +2937,7 @@ func (rt *runtimeState) runFuzzCampaignAutomation() error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.section("Fuzz Campaign"))
 	switch {
-	case created || attached || len(promoted) > 0 || len(nativeResults) > 0:
+	case created || attached || len(promoted) > 0 || len(nativeResults) > 0 || len(relaunched) > 0:
 		var actions []string
 		if created {
 			actions = append(actions, "created campaign")
@@ -2812,6 +2951,9 @@ func (rt *runtimeState) runFuzzCampaignAutomation() error {
 		if len(nativeResults) > 0 {
 			actions = append(actions, fmt.Sprintf("captured %d native result(s)", len(nativeResults)))
 		}
+		if len(relaunched) > 0 {
+			actions = append(actions, fmt.Sprintf("re-launched %d coverage-gap target(s)", len(relaunched)))
+		}
 		fmt.Fprintln(rt.writer, rt.ui.successLine("Kernforge advanced the fuzz campaign: "+strings.Join(actions, ", ")+"."))
 	default:
 		fmt.Fprintln(rt.writer, rt.ui.hintLine("No automatic campaign action is needed right now."))
@@ -2820,6 +2962,60 @@ func (rt *runtimeState) runFuzzCampaignAutomation() error {
 	fmt.Fprintln(rt.writer)
 	fmt.Fprintln(rt.writer, renderFuzzCampaignNextStep(rt.fuzzCampaignAutomationPlan(campaign)))
 	return nil
+}
+
+// maybeRelaunchFuzzCampaignCoverageGaps triggers at most ONE bounded re-launch
+// per coverage-gap target per campaign. For each flagged gap whose target still
+// has its re-launch budget and an attached run with model/compile context, it
+// restages the run on the extended profile with a bumped -max_total_time, drives
+// the launch through the same path the manual launch uses, persists the run, and
+// records the target key so a later pass does not re-launch it again. A target
+// with no model/compile context just keeps its existing PriorityBoost gap (no
+// fake re-launch). It returns the campaign with any newly recorded re-launch
+// targets and the list of target keys re-launched this pass.
+func (rt *runtimeState) maybeRelaunchFuzzCampaignCoverageGaps(campaign FuzzCampaign, runs []FunctionFuzzRun) (FuzzCampaign, []string, error) {
+	if rt == nil || rt.functionFuzz == nil {
+		return campaign, nil, nil
+	}
+	gaps := inferFuzzCampaignCoverageGaps(campaign)
+	if len(gaps) == 0 {
+		return campaign, nil, nil
+	}
+	runsByID := make(map[string]FunctionFuzzRun, len(runs))
+	for _, run := range runs {
+		id := strings.TrimSpace(run.ID)
+		if id == "" {
+			continue
+		}
+		runsByID[id] = run
+	}
+	decisions := fuzzCampaignSelectCoverageRelaunches(campaign, gaps, runsByID)
+	if len(decisions) == 0 {
+		return campaign, nil, nil
+	}
+	relaunched := []string{}
+	for _, decision := range decisions {
+		run := decision.Run
+		if err := functionFuzzPrepareGapRelaunch(&run); err != nil {
+			// Staging failed: keep the PriorityBoost gap as the fallback and do
+			// not consume the re-launch budget so a fixed environment can retry.
+			continue
+		}
+		rt.maybeLaunchFunctionFuzzExecution(&run)
+		if _, err := rt.functionFuzz.Upsert(run); err != nil {
+			return campaign, nil, err
+		}
+		// Record the target key once a re-launch is issued so a later pass does
+		// not loop on the same target, even if the background manager could not
+		// physically start the job in this session.
+		campaign.RelaunchedTargets = normalizeFuzzCampaignRelaunchTargets(append(campaign.RelaunchedTargets, decision.TargetKey))
+		relaunched = append(relaunched, decision.TargetKey)
+	}
+	if len(relaunched) == 0 {
+		return campaign, nil, nil
+	}
+	campaign.UpdatedAt = time.Now()
+	return normalizeFuzzCampaign(campaign), relaunched, nil
 }
 
 func (rt *runtimeState) functionFuzzRunsNeedingSeedPromotion(campaign FuzzCampaign) ([]FunctionFuzzRun, error) {
