@@ -94,6 +94,18 @@ const (
 	reviewFindingQualityWeak     = "weak"
 	reviewFindingQualityInvalid  = "invalid"
 
+	// reviewFindingVerified* are the verdicts the independent blocker-verification
+	// pass writes onto a model finding that would hard-block. "" means the pass
+	// did not run for this finding (unrun, or verification was unavailable): the
+	// finding keeps its normal gate behavior, which is the conservative fail-closed
+	// default. "confirmed" means an independent (or honestly-labeled same-model)
+	// pass corroborated the finding, so it still blocks. "refuted" means the pass
+	// judged it a false positive, so it no longer blocks and is demoted. "unverified"
+	// means the pass could not corroborate it, so it downgrades to a warning.
+	reviewFindingVerifiedConfirmed  = "confirmed"
+	reviewFindingVerifiedRefuted    = "refuted"
+	reviewFindingVerifiedUnverified = "unverified"
+
 	reviewSeverityBlocker = "blocker"
 	reviewSeverityHigh    = "high"
 	reviewSeverityMedium  = "medium"
@@ -154,6 +166,13 @@ type ReviewHarnessConfig struct {
 	// review finding as a warning without blocking, so the operator still gets the
 	// signal but the review gate never hard-stops them.
 	Blocking string `json:"blocking,omitempty"`
+	// VerifyBlockers controls the independent blocker-verification pass: "" or
+	// "auto" (default) runs one focused second-opinion pass over the model
+	// findings that would hard-block and lets only a corroborated finding keep
+	// blocking; "off" disables the pass and reverts to the trust-floor blocking
+	// behavior. "auto" only spends a model call when there ARE model would-be
+	// blockers (often zero), so a clean review costs nothing extra.
+	VerifyBlockers string `json:"verify_blockers,omitempty"`
 }
 
 type ReviewRun struct {
@@ -200,6 +219,7 @@ type ReviewRun struct {
 	SingleModelPolicy       SingleModelReviewPolicy      `json:"single_model_policy,omitempty"`
 	SingleModelSecondPass   *SingleModelSecondPassReview `json:"single_model_second_pass,omitempty"`
 	DocumentClaimsCheck     *ReviewDocumentClaimsCheck   `json:"document_claims_check,omitempty"`
+	BlockerVerification     *ReviewBlockerVerification   `json:"blocker_verification,omitempty"`
 	ExternalLookupIntents   []ReviewExternalLookupIntent `json:"external_lookup_intents,omitempty"`
 	ArtifactIntegrity       ReviewArtifactIntegrity      `json:"artifact_integrity,omitempty"`
 	LedgerConsistency       ReviewLedgerConsistencyCheck `json:"ledger_consistency,omitempty"`
@@ -389,6 +409,7 @@ type ReviewFinding struct {
 	RequiredFix        string   `json:"required_fix,omitempty"`
 	TestRecommendation string   `json:"test_recommendation,omitempty"`
 	BlocksGate         bool     `json:"blocks_gate,omitempty"`
+	Verified           string   `json:"verified,omitempty"`
 	ResolutionStatus   string   `json:"resolution_status,omitempty"`
 	RelatedPolicy      string   `json:"related_policy,omitempty"`
 	EvidenceRefs       []string `json:"evidence_refs,omitempty"`
@@ -971,6 +992,12 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
+	if !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
+		runReviewBlockerVerificationPass(ctx, rt, root, &run)
+		if err := ctx.Err(); err != nil {
+			return run, err
+		}
+	}
 	refreshReviewCrossReviewTriage(&run)
 	run.ObligationLedger = buildReviewObligationLedger(run)
 	emitReviewPipelineProgress(rt, run, 5, "gate decision", "게이트 판정", "Decide approved, approved_with_warnings, needs_revision, or insufficient_evidence.", "approved, approved_with_warnings, needs_revision, insufficient_evidence 중 하나로 판정합니다.")
@@ -1054,6 +1081,15 @@ func newReviewRunSkeleton(rt *runtimeState, root string, opts ReviewHarnessOptio
 // default blocking behavior.
 func reviewBlockingIsAdvisory(cfg Config) bool {
 	return strings.EqualFold(strings.TrimSpace(cfg.Review.Blocking), "advisory")
+}
+
+// reviewBlockerVerificationDisabled reports whether the operator turned the
+// independent blocker-verification pass off. Any value other than "off"
+// (including the empty default) keeps the pass enabled ("auto"): it runs only
+// when there are model findings that would hard-block, so it costs nothing on a
+// clean review.
+func reviewBlockerVerificationDisabled(cfg Config) bool {
+	return strings.EqualFold(strings.TrimSpace(cfg.Review.VerifyBlockers), "off")
 }
 
 func reviewPolicyPackVersions(packs []string) map[string]string {

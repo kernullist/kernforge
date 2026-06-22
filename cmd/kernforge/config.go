@@ -1397,6 +1397,11 @@ func normalizeReviewHarnessConfig(cfg *ReviewHarnessConfig) {
 	} else {
 		cfg.Blocking = "blocking"
 	}
+	if strings.EqualFold(strings.TrimSpace(cfg.VerifyBlockers), "off") {
+		cfg.VerifyBlockers = "off"
+	} else {
+		cfg.VerifyBlockers = "auto"
+	}
 	if len(cfg.RoleModels) > 0 {
 		normalized := map[string]ReviewModelConfig{}
 		for role, model := range cfg.RoleModels {

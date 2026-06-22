@@ -131,6 +131,21 @@ func renderReviewRunMarkdown(run ReviewRun) string {
 		}
 		diag.WriteString("\n")
 	}
+	if bv := run.BlockerVerification; bv != nil {
+		fmt.Fprintf(&diag, "- blocker_verification: `%s`", bv.Status)
+		if strings.TrimSpace(bv.Route) != "" {
+			fmt.Fprintf(&diag, " route=`%s`", bv.Route)
+		}
+		fmt.Fprintf(&diag, " candidates=`%d` confirmed=`%d` refuted=`%d` unverified=`%d`",
+			len(bv.CandidateIDs), len(bv.ConfirmedIDs), len(bv.RefutedIDs), len(bv.UnverifiedIDs))
+		if bv.Status == reviewBlockerVerificationStatusUnavailable {
+			fmt.Fprintf(&diag, " policy=`%s`", valueOrDefault(bv.Policy, reviewBlockerVerificationPolicyConservative))
+			if strings.TrimSpace(bv.UnavailableReason) != "" {
+				fmt.Fprintf(&diag, " reason=%s", bv.UnavailableReason)
+			}
+		}
+		diag.WriteString("\n")
+	}
 	b.WriteString("\n## Summary\n\n")
 	b.WriteString(valueOrDefault(run.Result.Summary, run.Gate.Reason))
 	b.WriteString("\n\n")
@@ -705,6 +720,9 @@ func renderReviewFindingMarkdown(b *strings.Builder, finding ReviewFinding) {
 		fmt.Fprintf(b, "- Symbol: `%s`\n", finding.Symbol)
 	}
 	fmt.Fprintf(b, "- Category: `%s`\n", finding.Category)
+	if strings.TrimSpace(finding.Verified) != "" {
+		fmt.Fprintf(b, "- Verified: `%s`\n", finding.Verified)
+	}
 	if strings.TrimSpace(finding.Evidence) != "" {
 		fmt.Fprintf(b, "- Evidence: %s\n", finding.Evidence)
 	}

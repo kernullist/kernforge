@@ -1413,6 +1413,11 @@ func reviewPreWriteActionableWarningIDSet(run ReviewRun, warningIDs []string) ma
 		if reviewFindingSourceIsModelish(finding) && !reviewModelFindingMeetsBlockingFloor(finding) {
 			continue
 		}
+		// Never re-promote a warning the blocker-verification pass refuted or
+		// could not corroborate back into a pre-write blocker.
+		if reviewFindingVerificationRejectsBlock(finding) {
+			continue
+		}
 		if preWriteReviewWarningShouldBlock(finding) {
 			out[finding.ID] = true
 		}
@@ -1441,6 +1446,14 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	// write on its own, so it surfaces as a warning instead. Deterministic
 	// KernForge checks are not model-sourced and are unaffected.
 	if reviewFindingSourceIsModelish(finding) && !reviewModelFindingMeetsBlockingFloor(finding) {
+		return false
+	}
+	// Second-opinion verification: a model finding that the independent
+	// blocker-verification pass refuted or could not corroborate no longer
+	// hard-blocks. A confirmed finding (or one the pass did not reach, which keeps
+	// an empty Verified) falls through to the normal logic below: that empty case
+	// is the conservative fail-closed default when verification is unavailable.
+	if reviewFindingVerificationRejectsBlock(finding) {
 		return false
 	}
 	if reviewFindingLooksReviewMetaOnly(finding) {
