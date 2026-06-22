@@ -2052,7 +2052,15 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					// harness, and finalize as completed only if it now approves. This
 					// mirrors the generated-document synthesized-final shortcut and can
 					// only upgrade a pure-disclosure block into a completed turn.
-					if healed, recheck, ok := a.healSkippedVerificationDisclosure(reply, latestUser, attemptedEditTool, unresolvedVerification); ok {
+					healed, recheck, ok := a.healSkippedVerificationDisclosure(reply, latestUser, attemptedEditTool, unresolvedVerification)
+					if !ok {
+						// Same self-heal, for the document-artifact disclosure deadlock:
+						// when only the path/quality/verification/limitation disclosures
+						// block, append the facts the harness already knows instead of
+						// stopping with an unsatisfiable contract.
+						healed, recheck, ok = a.healDocumentArtifactDisclosure(reply, attemptedEditTool, unresolvedVerification)
+					}
+					if ok {
 						// Tentatively adopt the re-checked (approved) harness report and
 						// refresh the ledger so non-harness gate blockers (stale review,
 						// patch-transaction scope, stale context) are still honored. Only

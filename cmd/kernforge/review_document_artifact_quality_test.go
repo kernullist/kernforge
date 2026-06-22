@@ -125,3 +125,60 @@ func TestDocsOnlyCredentialLeakStillBlocks(t *testing.T) {
 		t.Fatalf("a credential leak in a document must still block, got verdict %q", gate.Verdict)
 	}
 }
+
+func TestIsDocumentArtifactCompletenessFindingTitle(t *testing.T) {
+	for _, title := range []string{
+		"Document artifact path is missing",
+		"Document artifact quality status is missing",
+		"Document artifact verification disclosure is missing",
+		"Document artifact limitation statement is missing",
+	} {
+		if !isDocumentArtifactCompletenessFindingTitle(title) {
+			t.Fatalf("%q should be a document-artifact completeness title", title)
+		}
+	}
+	for _, title := range []string{"Cross-review residual risk is undisclosed", "Unresolved verification failure", ""} {
+		if isDocumentArtifactCompletenessFindingTitle(title) {
+			t.Fatalf("%q must not be treated as a document-artifact completeness title", title)
+		}
+	}
+}
+
+// TestReportOnlyBlockedByDocumentArtifactCompleteness locks Fix E: a report
+// blocked solely by the document-artifact disclosure contract qualifies for the
+// self-heal (the work is done, only the final-answer prose is incomplete), while
+// any real blocker disqualifies it.
+func TestReportOnlyBlockedByDocumentArtifactCompleteness(t *testing.T) {
+	pathGap := CodingHarnessFinding{Severity: "blocker", Title: "Document artifact path is missing", Detail: "name the path"}
+	verifGap := CodingHarnessFinding{Severity: "blocker", Title: "Document artifact verification disclosure is missing", Detail: "say whether verification ran"}
+
+	only := &CodingHarnessReport{Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{pathGap, verifGap}}}
+	if !reportOnlyBlockedByDocumentArtifactCompleteness(only) {
+		t.Fatal("a report blocked only by document-artifact disclosures should be healable")
+	}
+
+	withRealBlocker := &CodingHarnessReport{
+		Outcome: OutcomeInvariantReport{Findings: []CodingHarnessFinding{
+			pathGap,
+			{Severity: "blocker", Title: "Final answer has inconsistent bug counts"},
+		}},
+	}
+	if reportOnlyBlockedByDocumentArtifactCompleteness(withRealBlocker) {
+		t.Fatal("a non-disclosure Outcome blocker must disqualify the heal")
+	}
+
+	withArtifactBlocker := &CodingHarnessReport{
+		ArtifactQuality: ArtifactQualityReport{Findings: []CodingHarnessFinding{{Severity: "blocker", Title: "Empty artifact"}}},
+		Outcome:         OutcomeInvariantReport{Findings: []CodingHarnessFinding{pathGap}},
+	}
+	if reportOnlyBlockedByDocumentArtifactCompleteness(withArtifactBlocker) {
+		t.Fatal("a real artifact-quality blocker must disqualify the heal")
+	}
+
+	if reportOnlyBlockedByDocumentArtifactCompleteness(&CodingHarnessReport{}) {
+		t.Fatal("an approved report has nothing to heal")
+	}
+	if reportOnlyBlockedByDocumentArtifactCompleteness(nil) {
+		t.Fatal("nil report is not blocked")
+	}
+}

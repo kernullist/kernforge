@@ -1072,6 +1072,86 @@ func (a *Agent) healSkippedVerificationDisclosure(reply string, latestUser strin
 	return healed, &recheck, true
 }
 
+// isDocumentArtifactCompletenessFindingTitle reports whether a finding title is
+// one of the document-artifact final-answer disclosure requirements (path,
+// quality, verification, limitation). These are pure presentation gaps in the
+// final reply, never a real artifact-content defect.
+func isDocumentArtifactCompletenessFindingTitle(title string) bool {
+	switch strings.TrimSpace(title) {
+	case "Document artifact path is missing",
+		"Document artifact quality status is missing",
+		"Document artifact verification disclosure is missing",
+		"Document artifact limitation statement is missing":
+		return true
+	}
+	return false
+}
+
+// reportOnlyBlockedByDocumentArtifactCompleteness reports whether the only thing
+// blocking the report is the document-artifact final-answer disclosure contract
+// (the work is done and the artifact passed its quality checks; the final reply
+// just did not state the known facts). Any real artifact, scenario, test, or
+// other final-answer blocker disqualifies the heal.
+func reportOnlyBlockedByDocumentArtifactCompleteness(report *CodingHarnessReport) bool {
+	if report == nil {
+		return false
+	}
+	copyReport := *report
+	copyReport.Normalize()
+	if copyReport.Approved {
+		return false
+	}
+	// The document-artifact disclosure findings live in the final-answer Outcome
+	// report; a blocker anywhere else is a real defect that must not be healed.
+	if codingHarnessFindingsHaveBlockers(copyReport.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.Acceptance.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ArtifactQuality.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.ScenarioReplay.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.SubagentOrchestration.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.TestImpact.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.JobSupervisor.Findings) ||
+		codingHarnessFindingsHaveBlockers(copyReport.DiffReview.Findings) {
+		return false
+	}
+	sawDocumentFinding := false
+	for _, finding := range copyReport.Outcome.Findings {
+		if !strings.EqualFold(strings.TrimSpace(finding.Severity), "blocker") {
+			continue
+		}
+		if !isDocumentArtifactCompletenessFindingTitle(finding.Title) {
+			return false
+		}
+		sawDocumentFinding = true
+	}
+	return sawDocumentFinding
+}
+
+// healDocumentArtifactDisclosure resolves the document-artifact disclosure
+// deadlock: the 4 disclosure blockers (path/quality/verification/limitation) fire
+// on the broad document-artifact request class, but the auto-synthesis shortcut
+// only engages on the narrower generated-document gate, so a document-artifact
+// turn that satisfies one but not the other can block forever. When the report
+// is blocked ONLY by those disclosure findings, append the facts the harness
+// already knows (mirroring healSkippedVerificationDisclosure for verification)
+// and re-run the harness; finalize only if it now approves.
+func (a *Agent) healDocumentArtifactDisclosure(reply string, attemptedEditTool bool, unresolvedVerification bool) (string, *CodingHarnessReport, bool) {
+	if a == nil || a.Session == nil {
+		return "", nil, false
+	}
+	if !reportOnlyBlockedByDocumentArtifactCompleteness(a.Session.LastCodingHarnessReport) {
+		return "", nil, false
+	}
+	healed := a.completeGeneratedDocumentArtifactFinalReply(a.Session.LastCodingHarnessReport, reply)
+	if strings.TrimSpace(healed) == strings.TrimSpace(reply) {
+		return "", nil, false
+	}
+	recheck := a.buildCodingHarnessReport(healed, attemptedEditTool, unresolvedVerification)
+	if !recheck.Approved {
+		return "", nil, false
+	}
+	return healed, &recheck, true
+}
+
 func (a *Agent) synthesizeGeneratedDocumentArtifactFinalReply(report *CodingHarnessReport) string {
 	paths := generatedDocumentArtifactPathsFromHarnessReport(report)
 	if len(paths) == 0 && a != nil && a.Session != nil {
