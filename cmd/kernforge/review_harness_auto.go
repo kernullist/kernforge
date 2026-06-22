@@ -1754,6 +1754,9 @@ func preWriteReviewBlockingWarningFindings(run ReviewRun) []ReviewFinding {
 		if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
 			continue
 		}
+		if reviewFindingSourceIsModelish(finding) && !reviewModelFindingMeetsBlockingFloor(finding) {
+			continue
+		}
 		if preWriteReviewWarningShouldBlock(finding) {
 			out = append(out, finding)
 		}

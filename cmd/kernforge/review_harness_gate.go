@@ -960,6 +960,27 @@ func reviewFindingSourceIsModelish(f ReviewFinding) bool {
 	return source == "" || source == "model" || source == "reviewer" || source == "main" || source == "cross"
 }
 
+// reviewModelFindingMeetsBlockingFloor reports whether a model-sourced review
+// finding is reliable enough to hard-block on its own: it must not be
+// weak/invalid quality and must not be explicitly low confidence. Marginal model
+// findings (the failure mode of a weaker reviewer emitting a plausible but
+// unreliable claim) surface as warnings instead of blocking the write.
+func reviewModelFindingMeetsBlockingFloor(finding ReviewFinding) bool {
+	// Use the finding's existing (already-normalized in the real pipeline) fields
+	// rather than re-classifying here: re-classifying an unclassified finding to
+	// "weak" would wrongly drop an explicit blocker that simply has no descriptive
+	// fields yet. This preserves the prior weak/invalid drop and only adds the
+	// low-confidence drop.
+	if strings.EqualFold(strings.TrimSpace(finding.Confidence), "low") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(finding.Quality)) {
+	case reviewFindingQualityWeak, reviewFindingQualityInvalid:
+		return false
+	}
+	return true
+}
+
 func reviewFindingLooksNonActionablePlaceholder(f ReviewFinding) bool {
 	title := strings.ToLower(strings.Trim(strings.TrimSpace(f.Title), ". "))
 	fix := strings.ToLower(strings.Trim(strings.TrimSpace(f.RequiredFix), ". "))
@@ -1382,6 +1403,9 @@ func reviewPreWriteActionableWarningIDSet(run ReviewRun, warningIDs []string) ma
 		if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
 			continue
 		}
+		if reviewFindingSourceIsModelish(finding) && !reviewModelFindingMeetsBlockingFloor(finding) {
+			continue
+		}
 		if preWriteReviewWarningShouldBlock(finding) {
 			out[finding.ID] = true
 		}
@@ -1405,9 +1429,11 @@ func reviewFindingCountsAsWarning(finding ReviewFinding) bool {
 }
 
 func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
-	if reviewFindingSourceIsModelish(finding) &&
-		(strings.EqualFold(finding.Quality, reviewFindingQualityWeak) ||
-			strings.EqualFold(finding.Quality, reviewFindingQualityInvalid)) {
+	// Trust floor: a model-sourced review finding that is weak/invalid quality or
+	// explicitly low confidence is not a reliable enough oracle to hard-block a
+	// write on its own, so it surfaces as a warning instead. Deterministic
+	// KernForge checks are not model-sourced and are unaffected.
+	if reviewFindingSourceIsModelish(finding) && !reviewModelFindingMeetsBlockingFloor(finding) {
 		return false
 	}
 	if reviewFindingLooksReviewMetaOnly(finding) {
