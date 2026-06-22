@@ -132,6 +132,14 @@ func summarizeProposedEditDiff(diff string) string {
 		case '+':
 			content := previewDiffLineContent(line)
 			statFor(current).added++
+			// Document artifacts (design docs, .md, etc.) routinely embed fenced
+			// code blocks. Extracting "imports"/"definitions" from them mislabels a
+			// prose document as code and feeds the reviewer a false code signal, so
+			// skip code-symbol extraction for document paths and keep only the line
+			// counts.
+			if pathLooksLikeDocumentArtifact(current) {
+				continue
+			}
 			if name := diffImportToken(content); name != "" {
 				if !seenImport[name] {
 					seenImport[name] = true
@@ -144,6 +152,9 @@ func summarizeProposedEditDiff(diff string) string {
 		case '-':
 			content := previewDiffLineContent(line)
 			statFor(current).removed++
+			if pathLooksLikeDocumentArtifact(current) {
+				continue
+			}
 			if name := diffDefinitionToken(content); name != "" && !seenRemovedDef[name] {
 				seenRemovedDef[name] = true
 				removedDefs = append(removedDefs, name)

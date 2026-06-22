@@ -1379,6 +1379,9 @@ func reviewPreWriteActionableWarningIDSet(run ReviewRun, warningIDs []string) ma
 		if !warningSet[finding.ID] {
 			continue
 		}
+		if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
+			continue
+		}
 		if preWriteReviewWarningShouldBlock(finding) {
 			out[finding.ID] = true
 		}
@@ -1408,6 +1411,14 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 		return false
 	}
 	if reviewFindingLooksReviewMetaOnly(finding) {
+		return false
+	}
+	// A security or bypass-surface finding raised against a docs-only changeset
+	// describes the documented (not-yet-built) system, not an executable
+	// artifact, so it surfaces as a warning instead of hard-blocking the document
+	// write. A real committed secret (credential_leak) is excluded by the helper
+	// and still blocks below.
+	if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(run.Trigger), "pre_write") &&
@@ -1445,15 +1456,19 @@ func reviewFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool {
 	if reviewRunLooksExplicitRepairIntent(run) {
 		return true
 	}
-	if strings.EqualFold(finding.Category, "security") ||
-		strings.EqualFold(finding.Category, "bypass_surface") ||
-		strings.EqualFold(finding.Category, "credential_leak") {
+	if strings.EqualFold(finding.Category, "credential_leak") {
 		return true
 	}
-	for _, pack := range run.PolicyPacks {
-		if strings.EqualFold(pack, "windows_kernel_driver") ||
-			strings.EqualFold(pack, "anti_cheat_telemetry") {
+	if !reviewChangedPathsDocsOnly(run.ChangeSet.ChangedPaths) {
+		if strings.EqualFold(finding.Category, "security") ||
+			strings.EqualFold(finding.Category, "bypass_surface") {
 			return true
+		}
+		for _, pack := range run.PolicyPacks {
+			if strings.EqualFold(pack, "windows_kernel_driver") ||
+				strings.EqualFold(pack, "anti_cheat_telemetry") {
+				return true
+			}
 		}
 	}
 	return false
@@ -1481,15 +1496,19 @@ func reviewReadOnlyFindingBlocksGate(run ReviewRun, finding ReviewFinding) bool 
 	if !reviewFindingLooksActionableForRepairGate(finding) {
 		return false
 	}
-	if strings.EqualFold(finding.Category, "security") ||
-		strings.EqualFold(finding.Category, "bypass_surface") ||
-		strings.EqualFold(finding.Category, "credential_leak") {
+	if strings.EqualFold(finding.Category, "credential_leak") {
 		return true
 	}
-	for _, pack := range run.PolicyPacks {
-		if strings.EqualFold(pack, "windows_kernel_driver") ||
-			strings.EqualFold(pack, "anti_cheat_telemetry") {
+	if !reviewChangedPathsDocsOnly(run.ChangeSet.ChangedPaths) {
+		if strings.EqualFold(finding.Category, "security") ||
+			strings.EqualFold(finding.Category, "bypass_surface") {
 			return true
+		}
+		for _, pack := range run.PolicyPacks {
+			if strings.EqualFold(pack, "windows_kernel_driver") ||
+				strings.EqualFold(pack, "anti_cheat_telemetry") {
+				return true
+			}
 		}
 	}
 	return true
@@ -3008,4 +3027,19 @@ func reviewChangedPathsDocsOnly(paths []string) bool {
 		return false
 	}
 	return sawPath
+}
+
+// reviewFindingIsDocsOnlyDescribedSecurity reports whether a finding is a
+// security or bypass-surface concern raised against a docs-only changeset. Such
+// a finding describes the security of a documented (not-yet-built) system rather
+// than an executable artifact, so it must surface as a warning instead of hard-
+// blocking the document write. A real secret committed in the document is the
+// "credential_leak" category and is intentionally excluded here so it still
+// blocks.
+func reviewFindingIsDocsOnlyDescribedSecurity(run ReviewRun, finding ReviewFinding) bool {
+	if !reviewChangedPathsDocsOnly(run.ChangeSet.ChangedPaths) {
+		return false
+	}
+	return strings.EqualFold(finding.Category, "security") ||
+		strings.EqualFold(finding.Category, "bypass_surface")
 }

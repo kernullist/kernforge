@@ -1751,6 +1751,9 @@ func preWriteReviewBlockingWarningFindings(run ReviewRun) []ReviewFinding {
 		if !warningIDs[finding.ID] {
 			continue
 		}
+		if reviewFindingIsDocsOnlyDescribedSecurity(run, finding) {
+			continue
+		}
 		if preWriteReviewWarningShouldBlock(finding) {
 			out = append(out, finding)
 		}
