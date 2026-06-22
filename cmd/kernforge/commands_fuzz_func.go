@@ -245,6 +245,41 @@ type FunctionFuzzExecution struct {
 	RunArgv          []string `json:"run_argv,omitempty"`
 }
 
+// FunctionFuzzIOCTLField is a best-effort hint about one field the dispatch
+// handler reads from the input buffer. Offsets are not resolved in this slice;
+// the access expression and a coarse role are recorded so the operator and the
+// harness know which input-buffer fields the handler actually touches.
+type FunctionFuzzIOCTLField struct {
+	Access   string `json:"access,omitempty"`
+	Role     string `json:"role,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// FunctionFuzzIOCTLCode is a control code recovered from the operator's own
+// dispatch source (a case label, an IoControlCode comparison constant, or a
+// named IOCTL_/FSCTL_ identifier). Value/HasValue are set when the literal
+// resolves to a concrete integer.
+type FunctionFuzzIOCTLCode struct {
+	Code     string `json:"code"`
+	Value    uint64 `json:"value,omitempty"`
+	HasValue bool   `json:"has_value,omitempty"`
+	Symbol   string `json:"symbol,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// FunctionFuzzIOCTLSpec is a source-inferred, KernelGPT-style description of a
+// driver's IOCTL surface: the recovered control codes plus best-effort input
+// field hints. It is derived purely from the operator's own driver source for
+// defensive in-house fuzzing, and it drives structure-aware seeds, dictionary
+// entries, and a valid-code-selecting harness so the fuzzer spends time inside
+// real handlers instead of failing the dispatch switch.
+type FunctionFuzzIOCTLSpec struct {
+	Detected    bool                     `json:"detected,omitempty"`
+	Codes       []FunctionFuzzIOCTLCode  `json:"codes,omitempty"`
+	InputFields []FunctionFuzzIOCTLField `json:"input_fields,omitempty"`
+	Notes       []string                 `json:"notes,omitempty"`
+}
+
 type FunctionFuzzRun struct {
 	ID                string    `json:"id"`
 	Workspace         string    `json:"workspace"`
@@ -292,6 +327,7 @@ type FunctionFuzzRun struct {
 	SinkSignals         []FunctionFuzzSinkSignal      `json:"sink_signals,omitempty"`
 	CodeObservations    []FunctionFuzzCodeObservation `json:"code_observations,omitempty"`
 	VirtualScenarios    []FunctionFuzzVirtualScenario `json:"virtual_scenarios,omitempty"`
+	IOCTLSpec           *FunctionFuzzIOCTLSpec        `json:"ioctl_spec,omitempty"`
 	PrimaryEngine       string                        `json:"primary_engine,omitempty"`
 	SecondaryEngines    []string                      `json:"secondary_engines,omitempty"`
 	ArtifactDir         string                        `json:"artifact_dir,omitempty"`
@@ -560,6 +596,7 @@ func normalizeFunctionFuzzRun(run FunctionFuzzRun) FunctionFuzzRun {
 	run.SinkSignals = normalizeFunctionFuzzSinkSignals(run.SinkSignals)
 	run.CodeObservations = normalizeFunctionFuzzCodeObservations(run.CodeObservations)
 	run.VirtualScenarios = normalizeFunctionFuzzVirtualScenarios(run.VirtualScenarios)
+	run.IOCTLSpec = normalizeFunctionFuzzIOCTLSpec(run.IOCTLSpec)
 	functionFuzzRecomputeScenarioScores(&run)
 	return run
 }
@@ -2407,6 +2444,7 @@ func buildFunctionFuzzRunFromArtifacts(cfg Config, root string, query string, ar
 		TargetStartLine:     target.StartLine,
 		TargetEndLine:       target.EndLine,
 	}
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
 	if functionFuzzDocsCatalogBoost(target, artifacts.DocsManifest) > 0 {
 		run.Notes = append(run.Notes, functionFuzzLocalizedText(cfg, "Generated FUZZ_TARGETS.md catalog contributed to target ranking for this run.", "생성된 FUZZ_TARGETS.md catalog가 이번 실행의 타깃 순위 결정에 반영되었습니다."))
 	}
@@ -11931,6 +11969,46 @@ func renderFunctionFuzzReportMarkdownWithConfig(run FunctionFuzzRun, closure fun
 		}
 	}
 
+	if run.IOCTLSpec != nil && run.IOCTLSpec.Detected {
+		b.WriteString("\n## " + functionFuzzLocalizedText(cfg, "IOCTL Surface (source-inferred)", "IOCTL 표면 (소스 추론)") + "\n\n")
+		b.WriteString("- " + functionFuzzLocalizedText(cfg,
+			"Control codes and input-field hints inferred from the operator's own dispatch source. The generated IOCTL harness selects these codes so fuzzing reaches real handlers, and the seed corpus and dictionary are shaped around them.",
+			"운영자 본인의 디스패치 소스에서 추론한 제어 코드와 입력 필드 힌트입니다. 생성된 IOCTL 하니스가 이 코드들을 선택해 실제 핸들러에 도달하도록 하고, 시드 코퍼스와 딕셔너리도 이에 맞춰 구성됩니다.") + "\n")
+		if len(run.IOCTLSpec.Codes) > 0 {
+			b.WriteString("\n### " + functionFuzzLocalizedText(cfg, "Recovered control codes", "복구된 제어 코드") + "\n\n")
+			b.WriteString("| " + functionFuzzLocalizedText(cfg, "Code", "코드") + " | " + functionFuzzLocalizedText(cfg, "Value", "값") + " | " + functionFuzzLocalizedText(cfg, "Evidence", "근거") + " |\n")
+			b.WriteString("| --- | --- | --- |\n")
+			shown := run.IOCTLSpec.Codes
+			if len(shown) > 24 {
+				shown = shown[:24]
+			}
+			for _, c := range shown {
+				value := "-"
+				if c.HasValue {
+					value = fmt.Sprintf("0x%X", uint32(c.Value))
+				}
+				evidence := strings.ReplaceAll(strings.TrimSpace(c.Evidence), "|", "/")
+				if evidence == "" {
+					evidence = "-"
+				}
+				b.WriteString("| `" + strings.ReplaceAll(c.Code, "|", "/") + "` | " + value + " | `" + evidence + "` |\n")
+			}
+		}
+		if len(run.IOCTLSpec.InputFields) > 0 {
+			b.WriteString("\n### " + functionFuzzLocalizedText(cfg, "Observed input-buffer fields (best-effort)", "관찰된 입력 버퍼 필드 (best-effort)") + "\n\n")
+			for _, f := range run.IOCTLSpec.InputFields {
+				role := strings.TrimSpace(f.Role)
+				if role == "" {
+					role = "field"
+				}
+				b.WriteString("- `" + f.Access + "` (" + role + ")\n")
+			}
+		}
+		for _, note := range run.IOCTLSpec.Notes {
+			b.WriteString("- " + functionFuzzNormalizeDisplayText(note) + "\n")
+		}
+	}
+
 	if len(run.NextSteps) > 0 {
 		b.WriteString("\n## " + functionFuzzLocalizedText(cfg, "What To Do Next", "다음에 할 일") + "\n\n")
 		for _, item := range run.NextSteps {
@@ -12700,6 +12778,219 @@ func functionFuzzTargetIsIOCTL(run FunctionFuzzRun) bool {
 	return containsAny(hay, "ioctl", "deviceiocontrol", "irp_mj_device_control", "io_stack_location", "pirp")
 }
 
+var (
+	functionFuzzIOCTLCaseLabelPattern  = regexp.MustCompile(`(?i)\bcase\s+([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?|0[xX][0-9a-fA-F]+|\d+)\s*:`)
+	functionFuzzIOCTLNamedCodePattern  = regexp.MustCompile(`\b(?:IOCTL|FSCTL)_[A-Z0-9_]+\b`)
+	functionFuzzIOCTLControlCmpPattern = regexp.MustCompile(`(?i)control\s*code|iocontrolcode`)
+	functionFuzzIOCTLHexLiteralPattern = regexp.MustCompile(`\b0[xX][0-9a-fA-F]+\b`)
+)
+
+// functionFuzzIOCTLLiteralIsNoise filters case labels that are unlikely to be
+// real control codes (a bare small decimal reads more like a state/index than
+// an IOCTL code). Named IOCTL_/FSCTL_/CTL_CODE and hex literals are always kept.
+func functionFuzzIOCTLLiteralIsNoise(literal string) bool {
+	l := strings.ToLower(strings.TrimSpace(literal))
+	if l == "" {
+		return true
+	}
+	if strings.Contains(l, "ioctl") || strings.Contains(l, "fsctl") || strings.Contains(l, "ctl_code") {
+		return false
+	}
+	if strings.HasPrefix(l, "0x") {
+		return false
+	}
+	if value, ok := functionFuzzParseDictionaryInteger(l); ok {
+		return value < 0x100
+	}
+	return false
+}
+
+// functionFuzzInferIOCTLInputFields records best-effort hints about which input
+// buffer fields the dispatch handler reads. Offsets are not resolved here; the
+// access expression and a coarse role are kept so the report and the operator
+// know which fields matter. Bounded to keep the spec compact.
+func functionFuzzInferIOCTLInputFields(run FunctionFuzzRun) []FunctionFuzzIOCTLField {
+	seen := map[string]bool{}
+	out := []FunctionFuzzIOCTLField{}
+	bufferish := func(v string) bool {
+		return containsAny(strings.ToLower(v), "systembuffer", "type3inputbuffer", "userbuffer", "inputbuffer", "buffer", "irp", "associatedirp")
+	}
+	consider := func(access string, role string, evidence string) {
+		access = strings.TrimSpace(access)
+		if access == "" {
+			return
+		}
+		key := strings.ToLower(access)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, FunctionFuzzIOCTLField{Access: access, Role: role, Evidence: strings.TrimSpace(evidence)})
+	}
+	for _, obs := range run.CodeObservations {
+		role := ""
+		switch strings.TrimSpace(obs.Kind) {
+		case "size_guard":
+			role = "length"
+		case "copy_sink":
+			role = "buffer"
+		case "dispatch_guard":
+			role = "selector"
+		default:
+			continue
+		}
+		for _, ap := range obs.AccessPaths {
+			if bufferish(ap) || functionFuzzLooksLikeSizeAccessPath(strings.ToLower(ap)) {
+				consider(ap, role, obs.Evidence)
+			}
+		}
+		if len(out) >= 8 {
+			break
+		}
+	}
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
+}
+
+// functionFuzzInferIOCTLSpec derives a KernelGPT-style IOCTL surface description
+// from the operator's own driver source: the control codes the dispatch handles
+// (case labels, IoControlCode comparison constants, named IOCTL_/FSCTL_ codes)
+// plus best-effort input-field hints. It is purely source-derived and defensive;
+// the recovered codes drive structure-aware seeds, dictionary entries, and a
+// valid-code-selecting harness so the fuzzer spends time inside real handlers.
+func functionFuzzInferIOCTLSpec(run FunctionFuzzRun) *FunctionFuzzIOCTLSpec {
+	if !functionFuzzTargetIsIOCTL(run) {
+		return nil
+	}
+	order := []string{}
+	byKey := map[string]*FunctionFuzzIOCTLCode{}
+	addCode := func(literal string, evidence string, symbol string) {
+		literal = strings.TrimSpace(literal)
+		if literal == "" || functionFuzzIOCTLLiteralIsNoise(literal) {
+			return
+		}
+		key := strings.ToLower(literal)
+		if existing := byKey[key]; existing != nil {
+			if existing.Evidence == "" {
+				existing.Evidence = strings.TrimSpace(evidence)
+			}
+			if existing.Symbol == "" {
+				existing.Symbol = strings.TrimSpace(symbol)
+			}
+			return
+		}
+		entry := &FunctionFuzzIOCTLCode{Code: literal, Evidence: strings.TrimSpace(evidence), Symbol: strings.TrimSpace(symbol)}
+		if value, ok := functionFuzzParseDictionaryInteger(literal); ok {
+			entry.Value = value
+			entry.HasValue = true
+		}
+		byKey[key] = entry
+		order = append(order, key)
+	}
+	for _, obs := range run.CodeObservations {
+		if strings.TrimSpace(obs.Kind) != "dispatch_guard" {
+			continue
+		}
+		ev := obs.Evidence
+		for _, match := range functionFuzzIOCTLCaseLabelPattern.FindAllStringSubmatch(ev, -1) {
+			if len(match) >= 2 {
+				addCode(match[1], ev, obs.Symbol)
+			}
+		}
+		for _, ident := range functionFuzzIOCTLNamedCodePattern.FindAllString(ev, -1) {
+			addCode(ident, ev, obs.Symbol)
+		}
+		if functionFuzzIOCTLControlCmpPattern.MatchString(ev) {
+			for _, lit := range functionFuzzIOCTLHexLiteralPattern.FindAllString(ev, -1) {
+				addCode(lit, ev, obs.Symbol)
+			}
+		}
+		for _, fact := range obs.ComparisonFacts {
+			if !functionFuzzIOCTLControlCmpPattern.MatchString(fact) {
+				continue
+			}
+			for _, ident := range functionFuzzIOCTLNamedCodePattern.FindAllString(fact, -1) {
+				addCode(ident, fact, obs.Symbol)
+			}
+			for _, lit := range functionFuzzIOCTLHexLiteralPattern.FindAllString(fact, -1) {
+				addCode(lit, fact, obs.Symbol)
+			}
+		}
+	}
+	fields := functionFuzzInferIOCTLInputFields(run)
+	if len(order) == 0 {
+		return &FunctionFuzzIOCTLSpec{
+			Detected:    true,
+			InputFields: fields,
+			Notes:       []string{"IOCTL dispatch surface detected; no explicit control-code constants were recovered from source."},
+		}
+	}
+	codes := make([]FunctionFuzzIOCTLCode, 0, len(order))
+	for _, key := range order {
+		codes = append(codes, *byKey[key])
+		if len(codes) >= 64 {
+			break
+		}
+	}
+	return &FunctionFuzzIOCTLSpec{Detected: true, Codes: codes, InputFields: fields}
+}
+
+// functionFuzzIOCTLSpecNumericCodes returns the resolved numeric control codes
+// from a spec, de-duplicated and bounded, for the harness table and seeds.
+func functionFuzzIOCTLSpecNumericCodes(spec *FunctionFuzzIOCTLSpec, limit int) []uint64 {
+	if spec == nil {
+		return nil
+	}
+	seen := map[uint64]bool{}
+	out := []uint64{}
+	for _, c := range spec.Codes {
+		if !c.HasValue || seen[c.Value] {
+			continue
+		}
+		seen[c.Value] = true
+		out = append(out, c.Value)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeFunctionFuzzIOCTLSpec(spec *FunctionFuzzIOCTLSpec) *FunctionFuzzIOCTLSpec {
+	if spec == nil {
+		return nil
+	}
+	codes := make([]FunctionFuzzIOCTLCode, 0, len(spec.Codes))
+	for _, c := range spec.Codes {
+		c.Code = strings.TrimSpace(c.Code)
+		c.Symbol = strings.TrimSpace(c.Symbol)
+		c.Evidence = strings.TrimSpace(c.Evidence)
+		if c.Code == "" {
+			continue
+		}
+		codes = append(codes, c)
+	}
+	fields := make([]FunctionFuzzIOCTLField, 0, len(spec.InputFields))
+	for _, f := range spec.InputFields {
+		f.Access = strings.TrimSpace(f.Access)
+		f.Role = strings.TrimSpace(f.Role)
+		f.Evidence = strings.TrimSpace(f.Evidence)
+		if f.Access == "" {
+			continue
+		}
+		fields = append(fields, f)
+	}
+	spec.Codes = codes
+	spec.InputFields = fields
+	spec.Notes = uniqueStrings(spec.Notes)
+	if !spec.Detected && len(codes) == 0 && len(fields) == 0 && len(spec.Notes) == 0 {
+		return nil
+	}
+	return spec
+}
+
 // functionFuzzRenderIOCTLHarnessBody emits a user-mode libFuzzer harness that
 // replays fuzzer-derived DeviceIoControl requests against a driver the operator
 // owns and has loaded, for defensive in-house bug finding. It decodes the four
@@ -12711,6 +13002,7 @@ func functionFuzzTargetIsIOCTL(run FunctionFuzzRun) bool {
 // driver and set the device path. Recovered IOCTL control codes reach libFuzzer
 // through the existing comparison-constant dictionary collection.
 func functionFuzzRenderIOCTLHarnessBody(b *strings.Builder, run FunctionFuzzRun) {
+	codes := functionFuzzIOCTLSpecNumericCodes(run.IOCTLSpec, 64)
 	target := strings.ReplaceAll(strings.TrimSpace(run.TargetSymbolName), "\n", " ")
 	if target != "" {
 		b.WriteString("// IOCTL dispatch surface detected: ")
@@ -12723,6 +13015,19 @@ func functionFuzzRenderIOCTLHarnessBody(b *strings.Builder, run FunctionFuzzRun)
 	b.WriteString("#ifndef KERNFORGE_FUZZ_DEVICE_PATH\n")
 	b.WriteString("#define KERNFORGE_FUZZ_DEVICE_PATH \"\\\\\\\\.\\\\KernforgeFuzzDevice\"\n")
 	b.WriteString("#endif\n\n")
+	if len(codes) > 0 {
+		b.WriteString("// Control codes inferred from the operator's own dispatch source (defensive).\n")
+		b.WriteString("// The harness keeps an exact-match code as-is and remaps most other inputs\n")
+		b.WriteString("// onto a recovered code so the fuzzer spends time inside real handlers.\n")
+		b.WriteString("static const DWORD kKernforgeIoctlCodes[] =\n")
+		b.WriteString("{\n")
+		for _, code := range codes {
+			b.WriteString(fmt.Sprintf("    0x%Xu,\n", uint32(code)))
+		}
+		b.WriteString("};\n")
+		b.WriteString("static const size_t kKernforgeIoctlCodeCount =\n")
+		b.WriteString("    sizeof(kKernforgeIoctlCodes) / sizeof(kKernforgeIoctlCodes[0]);\n\n")
+	}
 	b.WriteString("extern \"C\" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)\n")
 	b.WriteString("{\n")
 	b.WriteString("    int result = 0;\n")
@@ -12743,6 +13048,26 @@ func functionFuzzRenderIOCTLHarnessBody(b *strings.Builder, run FunctionFuzzRun)
 	b.WriteString("        }\n\n")
 	b.WriteString("        // Decode the four DeviceIoControl descriptors from the fuzz input.\n")
 	b.WriteString("        DWORD ioControlCode = ReadScalar<DWORD>(input);\n")
+	if len(codes) > 0 {
+		b.WriteString("        // Prefer a recovered control code so the request reaches a real handler;\n")
+		b.WriteString("        // keep an exact match as-is and leave a fraction of inputs raw to still\n")
+		b.WriteString("        // exercise the dispatch default / error path.\n")
+		b.WriteString("        {\n")
+		b.WriteString("            bool knownCode = false;\n")
+		b.WriteString("            for (size_t i = 0; i < kKernforgeIoctlCodeCount; ++i)\n")
+		b.WriteString("            {\n")
+		b.WriteString("                if (kKernforgeIoctlCodes[i] == ioControlCode)\n")
+		b.WriteString("                {\n")
+		b.WriteString("                    knownCode = true;\n")
+		b.WriteString("                    break;\n")
+		b.WriteString("                }\n")
+		b.WriteString("            }\n")
+		b.WriteString("            if (!knownCode && (ioControlCode & 7u) != 0u)\n")
+		b.WriteString("            {\n")
+		b.WriteString("                ioControlCode = kKernforgeIoctlCodes[(ioControlCode >> 3) % kKernforgeIoctlCodeCount];\n")
+		b.WriteString("            }\n")
+		b.WriteString("        }\n")
+	}
 	b.WriteString("        std::vector<uint8_t> inBuffer = ReadByteVector(input, 0x10000);\n")
 	b.WriteString("        size_t outCap = ReadSize(input, 0x10000);\n")
 	b.WriteString("        std::vector<uint8_t> outBuffer(outCap);\n")

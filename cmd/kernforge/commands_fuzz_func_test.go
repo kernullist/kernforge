@@ -4367,6 +4367,184 @@ func TestFunctionFuzzDriveBuildRepairLoopUnfixableFailsImmediately(t *testing.T)
 	}
 }
 
+func ioctlSpecTestRun() FunctionFuzzRun {
+	return FunctionFuzzRun{
+		TargetSymbolName: "MyDriverDeviceControl",
+		TargetSignature:  "NTSTATUS MyDriverDeviceControl(PDEVICE_OBJECT, PIRP)",
+		OverlayDomains:   []string{"driver"},
+		CodeObservations: []FunctionFuzzCodeObservation{
+			{Kind: "dispatch_guard", Symbol: "MyDriverDeviceControl", File: "drv.c", Line: 10, Evidence: "switch (stack->Parameters.DeviceIoControl.IoControlCode)"},
+			{Kind: "dispatch_guard", Symbol: "MyDriverDeviceControl", File: "drv.c", Line: 12, Evidence: "case IOCTL_MYDRV_START:"},
+			{Kind: "dispatch_guard", Symbol: "MyDriverDeviceControl", File: "drv.c", Line: 20, Evidence: "case 0x222004:"},
+			{Kind: "dispatch_guard", Symbol: "MyDriverDeviceControl", File: "drv.c", Line: 30, Evidence: "if (ioControlCode == 0x222000)", ComparisonFacts: []string{"iocontrolcode == 0x222000"}},
+			{Kind: "dispatch_guard", Symbol: "MyDriverDeviceControl", File: "drv.c", Line: 40, Evidence: "case 1:"},
+			{Kind: "size_guard", File: "drv.c", Line: 50, Evidence: "if (inputBufferLength < sizeof(REQ))", AccessPaths: []string{"inputbufferlength"}},
+			{Kind: "copy_sink", File: "drv.c", Line: 55, Evidence: "RtlCopyMemory(dst, systemBuffer, len)", AccessPaths: []string{"systembuffer"}},
+		},
+	}
+}
+
+func ioctlSpecTestLE(b []byte, n int) uint64 {
+	var v uint64
+	for i := 0; i < n && i < len(b); i++ {
+		v |= uint64(b[i]) << (8 * uint(i))
+	}
+	return v
+}
+
+func TestFunctionFuzzInferIOCTLSpec(t *testing.T) {
+	spec := functionFuzzInferIOCTLSpec(ioctlSpecTestRun())
+	if spec == nil || !spec.Detected {
+		t.Fatalf("expected a detected IOCTL spec, got %+v", spec)
+	}
+	byCode := map[string]FunctionFuzzIOCTLCode{}
+	for _, c := range spec.Codes {
+		byCode[strings.ToLower(c.Code)] = c
+	}
+	if _, ok := byCode["ioctl_mydrv_start"]; !ok {
+		t.Fatalf("expected named code IOCTL_MYDRV_START, got %+v", spec.Codes)
+	}
+	if c, ok := byCode["0x222004"]; !ok || !c.HasValue || c.Value != 0x222004 {
+		t.Fatalf("expected numeric code 0x222004, got %+v", spec.Codes)
+	}
+	if c, ok := byCode["0x222000"]; !ok || !c.HasValue || c.Value != 0x222000 {
+		t.Fatalf("expected numeric code 0x222000, got %+v", spec.Codes)
+	}
+	if _, ok := byCode["1"]; ok {
+		t.Fatalf("small decimal case label should be filtered as noise, got %+v", spec.Codes)
+	}
+	nums := functionFuzzIOCTLSpecNumericCodes(spec, 0)
+	if len(nums) != 2 {
+		t.Fatalf("expected 2 numeric codes, got %v", nums)
+	}
+	fields := map[string]string{}
+	for _, f := range spec.InputFields {
+		fields[strings.ToLower(f.Access)] = f.Role
+	}
+	if fields["inputbufferlength"] != "length" {
+		t.Fatalf("expected inputbufferlength field with role length, got %+v", spec.InputFields)
+	}
+	if fields["systembuffer"] != "buffer" {
+		t.Fatalf("expected systembuffer field with role buffer, got %+v", spec.InputFields)
+	}
+}
+
+func TestFunctionFuzzInferIOCTLSpecNonIOCTLReturnsNil(t *testing.T) {
+	run := FunctionFuzzRun{
+		TargetSymbolName: "ParseConfigBlob",
+		TargetSignature:  "int ParseConfigBlob(const uint8_t*, size_t)",
+		CodeObservations: []FunctionFuzzCodeObservation{
+			{Kind: "copy_sink", File: "cfg.c", Line: 10, Evidence: "memcpy(dst, src, len)"},
+		},
+	}
+	if spec := functionFuzzInferIOCTLSpec(run); spec != nil {
+		t.Fatalf("non-IOCTL target should yield a nil spec, got %+v", spec)
+	}
+}
+
+func TestFunctionFuzzIOCTLSpecSeedsWireFormat(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	seeds := functionFuzzIOCTLSpecSeeds(run)
+	if len(seeds) == 0 {
+		t.Fatalf("expected IOCTL spec seeds")
+	}
+	byName := map[string][]byte{}
+	for _, s := range seeds {
+		byName[s.Name] = s.payload
+	}
+	empty, ok := byName["seed-ioctl-00222000-empty.bin"]
+	if !ok {
+		t.Fatalf("expected empty-input seed for 0x222000, have %v", byName)
+	}
+	// [code:4][len:8][outcap:8] with no buffer => 20 bytes total.
+	if len(empty) != 20 {
+		t.Fatalf("empty seed wire size = %d, want 20", len(empty))
+	}
+	if got := ioctlSpecTestLE(empty[0:4], 4); got != 0x222000 {
+		t.Fatalf("empty seed code = 0x%X, want 0x222000", got)
+	}
+	if got := ioctlSpecTestLE(empty[4:12], 8); got != 0 {
+		t.Fatalf("empty seed buffer length = %d, want 0", got)
+	}
+	if got := ioctlSpecTestLE(empty[12:20], 8); got != 0x1000 {
+		t.Fatalf("empty seed outCap = 0x%X, want 0x1000", got)
+	}
+	buf, ok := byName["seed-ioctl-00222000-buf.bin"]
+	if !ok {
+		t.Fatalf("expected buffered seed for 0x222000")
+	}
+	// [code:4][len:8][buf:32][outcap:8] => 52 bytes total.
+	if len(buf) != 52 {
+		t.Fatalf("buffered seed wire size = %d, want 52", len(buf))
+	}
+	if got := ioctlSpecTestLE(buf[0:4], 4); got != 0x222000 {
+		t.Fatalf("buffered seed code = 0x%X, want 0x222000", got)
+	}
+	if got := ioctlSpecTestLE(buf[4:12], 8); got != 32 {
+		t.Fatalf("buffered seed buffer length = %d, want 32", got)
+	}
+	if _, ok := byName["seed-ioctl-wild.bin"]; !ok {
+		t.Fatalf("expected a wild-code seed")
+	}
+}
+
+func TestFunctionFuzzIOCTLHarnessEmitsCodeTable(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	var b strings.Builder
+	functionFuzzRenderIOCTLHarnessBody(&b, run)
+	out := b.String()
+	for _, want := range []string{
+		"static const DWORD kKernforgeIoctlCodes",
+		"0x222000u",
+		"0x222004u",
+		"bool knownCode = false;",
+		"% kKernforgeIoctlCodeCount",
+		"DWORD ioControlCode = ReadScalar<DWORD>(input);",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("IOCTL harness missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestFunctionFuzzIOCTLHarnessNoTableWithoutNumericCodes(t *testing.T) {
+	run := FunctionFuzzRun{
+		TargetSymbolName: "MyDriverDeviceControl",
+		OverlayDomains:   []string{"driver"},
+		IOCTLSpec: &FunctionFuzzIOCTLSpec{
+			Detected: true,
+			Codes:    []FunctionFuzzIOCTLCode{{Code: "IOCTL_NAMED_ONLY"}},
+		},
+	}
+	var b strings.Builder
+	functionFuzzRenderIOCTLHarnessBody(&b, run)
+	out := b.String()
+	if strings.Contains(out, "kKernforgeIoctlCodes") {
+		t.Fatalf("no numeric codes should mean no code table\n---\n%s", out)
+	}
+	if !strings.Contains(out, "DWORD ioControlCode = ReadScalar<DWORD>(input);") {
+		t.Fatalf("plain control-code read must remain\n---\n%s", out)
+	}
+}
+
+func TestFunctionFuzzDictionaryIncludesIOCTLSpecCodes(t *testing.T) {
+	run := ioctlSpecTestRun()
+	run.IOCTLSpec = functionFuzzInferIOCTLSpec(run)
+	entries := functionFuzzCollectDictionaryEntries(run)
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Origin, "ioctl_spec_code") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ioctl_spec_code dictionary entries")
+	}
+}
+
 func vulnClassTestObs(kind string, line int, evidence string, access []string, focus []string) FunctionFuzzCodeObservation {
 	return FunctionFuzzCodeObservation{
 		Kind:        kind,

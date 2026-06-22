@@ -195,6 +195,15 @@ func functionFuzzCollectDictionaryEntries(run FunctionFuzzRun) []functionFuzzDic
 			addIdentifier(param.Name, "param_"+functionFuzzSanitizeOriginToken(param.Class), 6)
 		}
 	}
+	if run.IOCTLSpec != nil {
+		// Source-inferred IOCTL control codes are high-value comparison constants:
+		// CMPLOG / value-profile use them to get past the dispatch switch.
+		for _, code := range run.IOCTLSpec.Codes {
+			if code.HasValue {
+				addInteger(fmt.Sprintf("0x%x", code.Value), "ioctl_spec_code", 30)
+			}
+		}
+	}
 
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Priority != out[j].Priority {
@@ -501,6 +510,67 @@ func functionFuzzBuildBoundarySeeds(run FunctionFuzzRun) []functionFuzzBoundaryS
 		seeds := functionFuzzSeedsForScenario(idx, scenario, run.ParameterStrategies)
 		out = append(out, seeds...)
 	}
+	out = append(out, functionFuzzIOCTLSpecSeeds(run)...)
+	return out
+}
+
+// functionFuzzIOCTLSeedPayload lays bytes out exactly the way the IOCTL harness
+// decodes a DeviceIoControl request: a 4-byte little-endian control code, an
+// 8-byte little-endian length prefix, the input buffer bytes, then an 8-byte
+// little-endian output-capacity descriptor (see functionFuzzRenderIOCTLHarnessBody
+// and the FuzzInputView ReadScalar/ReadByteVector/ReadSize decoders).
+func functionFuzzIOCTLSeedPayload(code uint64, buf []byte, outCap uint64) []byte {
+	out := functionFuzzLEBytes(code, 4)
+	out = append(out, functionFuzzLEBytes(uint64(len(buf)), 8)...)
+	out = append(out, buf...)
+	out = append(out, functionFuzzLEBytes(outCap, 8)...)
+	return out
+}
+
+// functionFuzzIOCTLSpecSeeds emits structure-aware seeds for a source-inferred
+// IOCTL surface: one empty-input and one small-buffer request per recovered
+// control code (so each real handler is exercised immediately), plus one wild
+// code to reach the dispatch default / error path. Codes are placed in the
+// first four bytes, which the harness keeps verbatim on an exact match.
+func functionFuzzIOCTLSpecSeeds(run FunctionFuzzRun) []functionFuzzBoundarySeed {
+	if !functionFuzzTargetIsIOCTL(run) {
+		return nil
+	}
+	codes := functionFuzzIOCTLSpecNumericCodes(run.IOCTLSpec, 12)
+	if len(codes) == 0 {
+		return nil
+	}
+	const outCap = 0x1000
+	out := []functionFuzzBoundarySeed{}
+	for _, code := range codes {
+		label := fmt.Sprintf("seed-ioctl-%08x", uint32(code))
+		out = append(out, functionFuzzBoundarySeed{
+			Name:        label + "-empty.bin",
+			Rule:        "ioctl_code_empty_input",
+			Origin:      "ioctl_spec",
+			Description: fmt.Sprintf("DeviceIoControl request for recovered control code 0x%X with an empty input buffer.", uint32(code)),
+			payload:     functionFuzzIOCTLSeedPayload(code, nil, outCap),
+		})
+		buf := functionFuzzRepeatBytes(0x41, 32)
+		buf[0], buf[1], buf[2], buf[3] = 0x00, 0x00, 0x00, 0x00
+		buf[4], buf[5], buf[6], buf[7] = 0xff, 0xff, 0xff, 0xff
+		out = append(out, functionFuzzBoundarySeed{
+			Name:        label + "-buf.bin",
+			Rule:        "ioctl_code_with_input",
+			Origin:      "ioctl_spec",
+			Description: fmt.Sprintf("DeviceIoControl request for recovered control code 0x%X with a 32-byte input buffer.", uint32(code)),
+			payload:     functionFuzzIOCTLSeedPayload(code, buf, outCap),
+		})
+	}
+	// A non-recovered code whose low three bits are zero stays raw through the
+	// harness selection, so it exercises the dispatch default / error path.
+	out = append(out, functionFuzzBoundarySeed{
+		Name:        "seed-ioctl-wild.bin",
+		Rule:        "ioctl_code_wild",
+		Origin:      "ioctl_spec",
+		Description: "DeviceIoControl request with a non-recovered control code to exercise the dispatch default / error path.",
+		payload:     functionFuzzIOCTLSeedPayload(0xDEADBE00, functionFuzzRepeatBytes(0xCC, 16), outCap),
+	})
 	return out
 }
 
