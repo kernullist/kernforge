@@ -77,6 +77,15 @@ type TurnRuntimeFinalContext struct {
 	AttemptedEditTool              bool
 	ExplicitEditRequest            bool
 	GeneratedDocumentHarnessOwnsIt bool
+	// VerificationResolvedStructurally is true when the recorded verification
+	// state (Session.LastVerification / tool-result evidence) shows verification
+	// actually passed. It is a structured signal, not an inference from the reply
+	// text, and it resolves a VerificationUnresolved intervention even when the
+	// reply does not narrate a blocker/not-run. Without it a genuinely-passing
+	// verification could stay trapped behind a stale intervention while the
+	// structured final gate already treats it as resolved (the prose/structured
+	// gate asymmetry, RC5).
+	VerificationResolvedStructurally bool
 }
 
 type TurnRuntimeFinalReadiness struct {
@@ -195,7 +204,12 @@ func (s *TurnRuntimeState) ResolveFinalAnswerInterventions(reply string, ctx Tur
 		}
 		switch s.Interventions[i].Kind {
 		case RuntimeInterventionVerificationUnresolved:
-			if ctx.GeneratedDocumentHarnessOwnsIt || replyMentionsVerificationBlocker(reply) || replyMentionsVerificationNotRun(reply) {
+			// Resolve when verification structurally passed (ctx), when the harness
+			// owns the document artifact, or when the reply honestly discloses the
+			// blocker/not-run state. The structured-pass path keeps this intervention
+			// in step with the structured final gate so a passing verification is
+			// never trapped behind a stale prose-only resolution requirement.
+			if ctx.VerificationResolvedStructurally || ctx.GeneratedDocumentHarnessOwnsIt || replyMentionsVerificationBlocker(reply) || replyMentionsVerificationNotRun(reply) {
 				s.resolveInterventionAt(i)
 			}
 		case RuntimeInterventionManualEditHandoff:

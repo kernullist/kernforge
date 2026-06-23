@@ -1941,9 +1941,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 					continue
 				}
 				readiness := turnRuntime.FinalAnswerReadiness(reply, TurnRuntimeFinalContext{
-					AttemptedEditTool:              attemptedEditTool,
-					ExplicitEditRequest:            explicitEditRequest,
-					GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+					AttemptedEditTool:                attemptedEditTool,
+					ExplicitEditRequest:              explicitEditRequest,
+					GeneratedDocumentHarnessOwnsIt:   a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+					VerificationResolvedStructurally: sessionHasSuccessfulVerificationEvidence(a.Session),
 				})
 				if !readiness.Ready {
 					if turnRuntime.Counters.FinalAnswerNudges >= 2 && readiness.BlockedOnlyBy(RuntimeInterventionVerificationUnresolved) {
@@ -1952,9 +1953,10 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							a.Session.Messages[len(a.Session.Messages)-1].Text = reply
 						}
 						readiness = turnRuntime.FinalAnswerReadiness(reply, TurnRuntimeFinalContext{
-							AttemptedEditTool:              attemptedEditTool,
-							ExplicitEditRequest:            explicitEditRequest,
-							GeneratedDocumentHarnessOwnsIt: a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+							AttemptedEditTool:                attemptedEditTool,
+							ExplicitEditRequest:              explicitEditRequest,
+							GeneratedDocumentHarnessOwnsIt:   a.shouldLetGeneratedDocumentArtifactHarnessHandleSkippedVerification(latestUser),
+							VerificationResolvedStructurally: sessionHasSuccessfulVerificationEvidence(a.Session),
 						})
 					}
 				}

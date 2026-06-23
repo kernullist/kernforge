@@ -97,6 +97,40 @@ func TestTurnRuntimeFinalGateBlocksUnresolvedVerification(t *testing.T) {
 	}
 }
 
+// TestTurnRuntimeStructuredVerificationResolvesUnresolvedIntervention locks the
+// output-axis fix: a VerificationUnresolved intervention resolves when the
+// recorded (structured) verification state shows it passed, even when the reply
+// text carries no blocker/not-run disclosure. This keeps the runtime intervention
+// in step with the structured final gate (the prose/structured asymmetry) so a
+// genuinely-passing verification is never trapped behind a stale intervention.
+func TestTurnRuntimeStructuredVerificationResolvesUnresolvedIntervention(t *testing.T) {
+	mk := func() *TurnRuntimeState {
+		state := NewTurnRuntimeState(buildRequestEnvelope("main.go를 수정해줘"))
+		state.Transition(TurnRuntimeNeedFinalGate, "assistant_final_candidate")
+		state.RecordInterventionKind(
+			RuntimeInterventionVerificationUnresolved,
+			"final-looking answer omitted unresolved verification status",
+			"Disclose that verification was not run.",
+			nil,
+		)
+		return state
+	}
+	// A clean reply with no verification disclosure stays blocked without a
+	// structured pass signal (the prior prose-only behavior is preserved).
+	blocked := mk().FinalAnswerReadiness("수정 완료했습니다. 모든 작업이 끝났습니다.", TurnRuntimeFinalContext{})
+	if blocked.Ready {
+		t.Fatalf("clean reply without structured pass should stay blocked, got %#v", blocked)
+	}
+	// The same clean reply becomes ready once the structured verification signal
+	// reports a pass, with no prose disclosure required.
+	ready := mk().FinalAnswerReadiness("수정 완료했습니다. 모든 작업이 끝났습니다.", TurnRuntimeFinalContext{
+		VerificationResolvedStructurally: true,
+	})
+	if !ready.Ready {
+		t.Fatalf("structured verification pass should resolve the unresolved-verification intervention, got %#v", ready)
+	}
+}
+
 func TestTurnRuntimeManualEditHandoffBlocksExplicitEditCompletion(t *testing.T) {
 	state := NewTurnRuntimeState(buildRequestEnvelope("main.go 버그를 수정해줘"))
 	state.Transition(TurnRuntimeNeedFinalGate, "assistant_final_candidate")
