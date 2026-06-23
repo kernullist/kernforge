@@ -10086,9 +10086,26 @@ func (a *Agent) applyEditAuthorityToEnvelope(envelope *RequestEnvelope) {
 		envelope.RequiresVerification = false
 		return
 	}
-	if a.editPermissionGranted() && !envelope.ReadOnlyAnalysis {
+	if a.editPermissionGranted() {
+		// edit/full mode is the single authority for whether edits are ALLOWED, so
+		// it grants file-mutation capability for the whole turn. The per-request
+		// read-only classification (heuristic or semantic LLM) is only a SOFT hint:
+		// it must NOT strip the edit tools (disableRequestEnvelopeForbiddenTools) or
+		// hard-block the mutation at the tool contract (tool_contract.go), otherwise
+		// a misread question silences a genuine edit and the model is left re-reading
+		// without progress. Keeping the capability on lets the model decide whether to
+		// actually edit -- the same model-driven contract Claude Code/Codex/OpenCode
+		// use, where the mode gates capability and the model gates the action.
+		//
+		// A request that already reads as a non-read-only edit keeps verification
+		// required (the prior contract). A request the classifier read as read-only is
+		// granted capability WITHOUT forcing verification and WITHOUT clearing the soft
+		// read-only hint, so a pure-question turn keeps its analysis-only prompt
+		// guidance and is never trapped behind an unsatisfiable verification gate.
+		if !envelope.ReadOnlyAnalysis {
+			envelope.RequiresVerification = true
+		}
 		envelope.AllowsFileMutation = true
-		envelope.RequiresVerification = true
 	}
 }
 

@@ -29,10 +29,15 @@ func TestEditPermissionGrantedByMode(t *testing.T) {
 }
 
 // TestApplyEditAuthorityToEnvelopeRespectsReadOnly locks the chosen behavior:
-// the permission mode authorizes edits but does NOT compel one. In edit/full a
-// non-read-only request becomes edit-capable, but a request the classifier read
-// as a genuine read-only question stays answer-only (no file mutation), so edit
-// tools are not exposed for it even in full mode. plan never grants mutation.
+// the permission MODE is the single authority for whether edits are ALLOWED. In
+// edit/full every request becomes edit-capable so the edit tools stay exposed and
+// the model decides whether to act -- the per-request read-only classification is
+// only a soft hint and must not strip tools or hard-block the mutation. A request
+// that already reads as a non-read-only edit keeps verification required; a
+// read-only-classified request is granted capability WITHOUT forcing verification
+// (so a pure-question turn is not trapped behind a verification gate) and WITHOUT
+// clearing the soft read-only hint (the analysis-only prompt guidance survives).
+// plan never grants mutation.
 func TestApplyEditAuthorityToEnvelopeRespectsReadOnly(t *testing.T) {
 	mk := func(mode Mode) *Agent {
 		return &Agent{Workspace: Workspace{Perms: NewPermissionManager(mode, func(string) (bool, error) { return true, nil })}}
@@ -45,8 +50,14 @@ func TestApplyEditAuthorityToEnvelopeRespectsReadOnly(t *testing.T) {
 		}
 		ro := RequestEnvelope{ReadOnlyAnalysis: true}
 		mk(mode).applyEditAuthorityToEnvelope(&ro)
-		if ro.AllowsFileMutation {
-			t.Fatalf("mode %v: a read-only question must stay answer-only even in edit/full, got AllowsFileMutation=true", mode)
+		if !ro.AllowsFileMutation {
+			t.Fatalf("mode %v: edit/full is the single authority and must keep edit capability even for a read-only-classified request, got AllowsFileMutation=false", mode)
+		}
+		if ro.RequiresVerification {
+			t.Fatalf("mode %v: a read-only-classified turn must not be forced into verification (avoids a no-edit deadlock), got RequiresVerification=true", mode)
+		}
+		if !ro.ReadOnlyAnalysis {
+			t.Fatalf("mode %v: the read-only classification is preserved as a soft prompt hint, got ReadOnlyAnalysis=false", mode)
 		}
 	}
 	plan := RequestEnvelope{ReadOnlyAnalysis: false}
@@ -68,5 +79,42 @@ func TestApplyEditAuthorityToEnvelopeRespectsReadOnly(t *testing.T) {
 	mk(ModeDefault).applyEditAuthorityToEnvelope(&def)
 	if !def.AllowsFileMutation {
 		t.Fatalf("legacy default must preserve a pre-set mutation signal, got %#v", def)
+	}
+}
+
+// TestEditAuthorityKeepsEditToolsExposedInEditMode locks INV-1: the permission
+// mode is the single authority for edit-tool EXPOSURE. A request the classifier
+// reads as read-only (here a Korean review-only request) keeps the edit tools
+// exposed in edit/full so the model can act if it judges an edit is needed, while
+// plan mode strips them. This is what makes the semantic classifier safe to enable
+// as the primary intent source: a misread "read-only" can no longer strand the
+// model by removing the edit tools mid-turn.
+func TestEditAuthorityKeepsEditToolsExposedInEditMode(t *testing.T) {
+	mk := func(mode Mode) *Agent {
+		root := t.TempDir()
+		return &Agent{
+			Config:    DefaultConfig(root),
+			Tools:     requestEnvelopeTestRegistry(),
+			Workspace: Workspace{BaseRoot: root, Root: root, Perms: NewPermissionManager(mode, func(string) (bool, error) { return true, nil })},
+			Session:   NewSession(root, "scripted", "model", "", "default"),
+		}
+	}
+	exposeAfterAuthority := func(a *Agent) turnToolExposurePlan {
+		env := buildRequestEnvelope("RuntimeManager.cpp 코드 리뷰해줘")
+		if !env.ReadOnlyAnalysis {
+			t.Fatalf("precondition: review-only request should classify read-only, got %#v", env)
+		}
+		a.applyEditAuthorityToEnvelope(&env)
+		return a.buildTurnToolExposurePlanForEnvelope(nil, env, false, false, false, false, false, false)
+	}
+	for _, mode := range []Mode{ModeAcceptEdits, ModeBypass} {
+		plan := exposeAfterAuthority(mk(mode))
+		if plan.toolDisabled("apply_patch") || plan.toolDisabled("write_file") {
+			t.Fatalf("mode %v: edit mode must keep edit tools exposed for a read-only-classified request, got disabled=%#v", mode, plan.DisabledTools)
+		}
+	}
+	planPlan := exposeAfterAuthority(mk(ModePlan))
+	if !planPlan.toolDisabled("apply_patch") || !planPlan.toolDisabled("write_file") {
+		t.Fatalf("plan mode must strip edit tools for a read-only request, got disabled=%#v", planPlan.DisabledTools)
 	}
 }
