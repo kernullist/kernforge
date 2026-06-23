@@ -532,13 +532,25 @@ func DefaultConfig(cwd string) Config {
 		},
 		RequestRuntime: RequestRuntimeConfig{
 			Mode: RequestRuntimeModeDisabled,
-			// The semantic (LLM) classifier stays opt-in (disabled by default). It is
-			// the language-agnostic intent authority, but enabling it by default could
-			// narrow a neutral/ambiguous ACTION request (e.g. ".env token, use it") to
-			// read-only, which in edit/full strips edit tools and can leave the model
-			// re-reading without progress. Re-enable per session via config once the
-			// narrowing only fires for high-confidence genuine questions. The mechanism
-			// (fast path, mutation-override narrow guard) remains available.
+			// The semantic (LLM) classifier is the language-agnostic intent authority
+			// and now runs by default: it is the primary signal for what the user
+			// wants, with the deterministic keyword heuristics kept only as the
+			// fallback when the classifier is unavailable, errors, or is below its
+			// confidence threshold. The one failure mode that previously kept it
+			// opt-in -- a misread "read-only" stripping edit tools in edit/full and
+			// stranding the model -- is gone: the permission MODE is now the single
+			// authority for edit-tool exposure (applyEditAuthorityToEnvelope), so a
+			// soft read-only classification can no longer remove the edit tools or
+			// hard-block the mutation. The classifier still only NARROWS to read-only
+			// (least privilege) or promotes to a document artifact under a calibration
+			// gate; it never widens mutation past the deterministic envelope. The
+			// enabled-mode fast path skips the round-trip for unambiguous requests
+			// (clear imperative edits, already-read-only-with-no-mutation), so only
+			// the ambiguous middle pays for the extra call. Opt back out per session
+			// with request_runtime.semantic_classifier.mode = "disabled".
+			SemanticClassifier: RequestSemanticClassifierConfig{
+				Mode: RequestSemanticClassifierModeEnabled,
+			},
 		},
 		Specialists: SpecialistSubagentsConfig{
 			Enabled: boolPtr(true),
