@@ -173,6 +173,14 @@ type ReviewHarnessConfig struct {
 	// behavior. "auto" only spends a model call when there ARE model would-be
 	// blockers (often zero), so a clean review costs nothing extra.
 	VerifyBlockers string `json:"verify_blockers,omitempty"`
+	// Deterministic controls review reproducibility: "" or "on" (default) reuses
+	// a recent ACCEPTED (approved / approved_with_warnings) verdict for an
+	// identical change fingerprint instead of re-running the model, so reviewing
+	// unchanged clean code twice returns the same verdict; deterministic findings
+	// (verification, evidence, etc.) still run fresh, and a blocking verdict is
+	// never cached. "off" disables verdict reuse and reviews from scratch every
+	// time.
+	Deterministic string `json:"deterministic,omitempty"`
 }
 
 type ReviewRun struct {
@@ -951,6 +959,8 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 		run.OriginalMainProposalRef = ref
 	}
 	emitReviewPipelineProgress(rt, run, 3, "model review", "모델 검토", "Run the main code review and the configured cross-review when available.", "메인 코드 검토와 설정된 교차 리뷰를 실행합니다.")
+	reviewCacheKey := reviewVerdictCacheKey(run)
+	reviewPrimaryModelLabel := reviewMainModelLabel(rt.cfg)
 	modelReviewSkippedByConsent := false
 	if opts.AutoTriggered && !opts.NoModel && len(run.Evidence.Sources) > 0 {
 		decision := rt.confirmImplicitModelReview(ModelReviewConsentRequest{
@@ -968,11 +978,31 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	} else {
 		run.ConsentSource = firstNonBlankString(run.ConsentSource, "explicit_review")
 	}
-	if !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
+	reuseCachedVerdict := false
+	var cachedVerdictEntry ReviewVerdictCacheEntry
+	if reviewDeterministicVerdictReuseEnabled(rt.cfg) && !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
+		if entry, ok := lookupReviewVerdictCache(rt, reviewCacheKey, reviewPrimaryModelLabel); ok {
+			reuseCachedVerdict = true
+			cachedVerdictEntry = entry
+		}
+	}
+	var capturedModelFindings []ReviewFinding
+	if reuseCachedVerdict {
+		// Deterministic reuse: an identical change fingerprint with a recent
+		// accepted verdict reuses the model findings instead of re-running the
+		// model, so the verdict is reproducible. Deterministic findings (evidence,
+		// verification, etc.) still ran fresh above, so a new verification failure
+		// on the same code is still caught.
+		run.Findings = append(run.Findings, cloneReviewFindings(cachedVerdictEntry.ModelFindings)...)
+		run.ReviewerRuns = append(run.ReviewerRuns, cachedReviewVerdictReviewerRun(cachedVerdictEntry))
+		run.Result.ModelQuality = reviewModelQualityUsable
+		emitReviewPipelineProgress(rt, run, 3, "model review reused", "모델 검토 재사용", "Reused a recent accepted review verdict for this identical change instead of re-running the model.", "동일한 변경에 대한 직전 합격 리뷰 결과를 재사용하고 모델을 다시 실행하지 않았습니다.")
+	} else if !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
 		modelFindings, reviewerRuns := executeReviewModelRuns(ctx, rt, root, &run)
 		if err := ctx.Err(); err != nil {
 			return run, err
 		}
+		capturedModelFindings = modelFindings
 		run.ReviewerRuns = append(run.ReviewerRuns, reviewerRuns...)
 		run.Findings = append(run.Findings, modelFindings...)
 		run.Findings = append(run.Findings, requiredReviewerFailureFindings(run)...)
@@ -992,7 +1022,7 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.Findings = append(run.Findings, singleModelPreWritePolicyFindings(run)...)
 	normalizeNonBlockingReviewMetaFindings(&run)
 	run.Findings, run.MergeResult = mergeReviewFindings(run.Findings)
-	if !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
+	if !reuseCachedVerdict && !opts.NoModel && !modelReviewSkippedByConsent && len(run.Evidence.Sources) > 0 {
 		runReviewBlockerVerificationPass(ctx, rt, root, &run)
 		if err := ctx.Err(); err != nil {
 			return run, err
@@ -1026,6 +1056,9 @@ func runReviewHarness(ctx context.Context, rt *runtimeState, opts ReviewHarnessO
 	run.DecisionObservability = buildReviewDecisionObservability(&run, &run.RuntimeGateLedger, nil)
 	if run.SingleModelSecondPass != nil {
 		recordAcceptedSecondPassCache(rt, run, *run.SingleModelSecondPass)
+	}
+	if !reuseCachedVerdict && reviewDeterministicVerdictReuseEnabled(rt.cfg) {
+		recordReviewVerdictCache(rt, reviewCacheKey, run, capturedModelFindings, reviewPrimaryModelLabel)
 	}
 	emitDistinctReviewGateResultProgress(rt, run)
 	emitReviewPipelineProgress(rt, run, 6, "next action", "다음 조치", reviewPipelineNextActionDetail(run, false), reviewPipelineNextActionDetail(run, true))

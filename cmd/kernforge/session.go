@@ -85,6 +85,7 @@ type Session struct {
 	SecondOpinionSameModelWarned   bool                            `json:"second_opinion_same_model_warned,omitempty"`
 	LastLiveProviderDrill          *LiveProviderDrillReport        `json:"last_live_provider_drill,omitempty"`
 	SecondPassReviewCache          []SecondPassReviewCacheEntry    `json:"second_pass_review_cache,omitempty"`
+	ReviewVerdictCache             []ReviewVerdictCacheEntry       `json:"review_verdict_cache,omitempty"`
 	ExternalLookupIntents          []ReviewExternalLookupIntent    `json:"external_lookup_intents,omitempty"`
 	RuntimeGateLedger              *RuntimeGateLedger              `json:"runtime_gate_ledger,omitempty"`
 	ActiveFailureRepair            *FailureRepairAttempt           `json:"active_failure_repair,omitempty"`

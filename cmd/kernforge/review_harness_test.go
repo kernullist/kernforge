@@ -12977,6 +12977,10 @@ func TestSingleModelSecondPassUsesAcceptedFingerprintCache(t *testing.T) {
 	cfg.Provider = "scripted"
 	cfg.Model = "main-model"
 	cfg.AutoLocale = boolPtr(false)
+	// Disable the broader accepted-verdict reuse so this test exercises the
+	// narrower single-model second-pass cache in isolation; with verdict reuse on
+	// (the default), the second run would short-circuit the whole model review.
+	cfg.Review.Deterministic = "off"
 	session := NewSession(root, "scripted", "main-model", "", "default")
 	agent := &Agent{
 		Config:    cfg,
