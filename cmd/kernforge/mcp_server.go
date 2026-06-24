@@ -571,7 +571,7 @@ func newRuntimeStateForMCPServer(cwd string, cfg Config, resumeID string, writer
 		Config:        rt.cfg,
 		Client:        client,
 		ModelRoutes:   rt.modelRoutes,
-		Tools:         buildRegistry(rt.workspace, nil),
+		Tools:         buildRegistry(rt.workspace, nil, rt.skills),
 		Workspace:     rt.workspace,
 		Session:       rt.session,
 		Store:         rt.store,

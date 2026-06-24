@@ -10734,16 +10734,21 @@ func (a *Agent) systemPrompt() string {
 		if catalog := a.safePromptSection("skill_catalog", "", func() string {
 			return a.Skills.CatalogPrompt()
 		}); catalog != "" {
-			b.WriteString("\nAvailable local skills (select by relevance to the request; load a skill with $name):\n")
+			b.WriteString("\nAvailable local skills (select by relevance to the request; call the load_skill tool with the skill name to pull its full instructions, or the user can type $name):\n")
 			b.WriteString(compactPromptSection(catalog, 1600))
 			b.WriteString("\n")
 		}
 	}
-	if defaults := a.safePromptSection("enabled_skill_summary", "", func() string {
-		return renderEnabledSkillSummary(a.Skills)
-	}); defaults != "" {
-		b.WriteString("\nEnabled local skills:\n")
-		b.WriteString(defaults)
+	if enabledFull := a.safePromptSection("enabled_skill_full", "", func() string {
+		return a.Skills.DefaultPrompt()
+	}); enabledFull != "" {
+		// Skills listed in EnabledSkills are explicitly opted in by the user, so
+		// their full instructions (not just a summary) are injected here and are
+		// the authoritative procedure to follow when relevant. The compaction cap
+		// is a runaway guard for a misconfigured oversized skill; normal skills
+		// fit well within it.
+		b.WriteString("\nEnabled local skills (full instructions; apply when relevant to the request):\n")
+		b.WriteString(compactPromptSection(enabledFull, 8000))
 		b.WriteString("\n")
 	}
 	if shouldIncludeMCPCatalogInSystemPrompt(lowerLatestUser) {
@@ -10937,31 +10942,17 @@ func compactPromptSection(text string, limit int) string {
 	return strings.TrimSpace(truncated) + "..."
 }
 
-func renderEnabledSkillSummary(c SkillCatalog) string {
-	if len(c.enabled) == 0 {
-		return ""
-	}
-	lines := make([]string, 0, len(c.enabled))
-	for _, skill := range c.enabled {
-		summary := strings.TrimSpace(skill.Summary)
-		if summary == "" {
-			summary = "No summary available."
-		}
-		lines = append(lines, fmt.Sprintf("- %s: %s", skill.Name, summary))
-	}
-	return strings.Join(lines, "\n")
-}
-
 func shouldIncludeSkillCatalogInSystemPrompt(lowerLatestUser string, skills SkillCatalog) bool {
 	if strings.TrimSpace(lowerLatestUser) == "" {
 		return false
 	}
 	// Description-based auto-availability: when local skills exist, surface the
 	// compact catalog (names + short descriptions only) so the model can pick a
-	// relevant skill itself instead of relying on a literal "$name" token or a
-	// "skill" keyword in the prompt. Enabled-by-default skills are already
-	// injected in full elsewhere, so only inject the catalog when at least one
-	// skill is not enabled by default and could still be selected on demand.
+	// relevant skill itself and pull its full body via the load_skill tool,
+	// instead of relying on a literal "$name" token or a "skill" keyword in the
+	// prompt. Enabled-by-default skills are injected in full by the
+	// "Enabled local skills" section, so only inject the catalog when at least
+	// one skill is not enabled by default and could still be selected on demand.
 	if skills.SelectableCount() > 0 {
 		return true
 	}

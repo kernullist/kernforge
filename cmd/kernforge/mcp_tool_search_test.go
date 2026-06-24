@@ -431,11 +431,11 @@ func TestToolSearchBuiltinToolRegistered(t *testing.T) {
 	dir := t.TempDir()
 	ws := Workspace{BaseRoot: dir, Root: dir}
 
-	withMCP := buildRegistry(ws, manager)
+	withMCP := buildRegistry(ws, manager, SkillCatalog{})
 	if !sliceContainsString(withMCP.ToolNames(), "tool_search") {
 		t.Fatalf("expected tool_search to be registered when MCP servers exist")
 	}
-	withoutMCP := buildRegistry(ws, nil)
+	withoutMCP := buildRegistry(ws, nil, SkillCatalog{})
 	if sliceContainsString(withoutMCP.ToolNames(), "tool_search") {
 		t.Fatalf("did not expect tool_search without MCP servers")
 	}

@@ -536,7 +536,7 @@ func kernforgeDoctorToolRegistryCheck(cwd string) kernforgeDoctorCheck {
 		BaseRoot: cwd,
 		Root:     cwd,
 	}
-	registry := buildRegistry(ws, nil)
+	registry := buildRegistry(ws, nil, SkillCatalog{})
 	issues := formatToolRegistrationIssues(registry.RegistrationIssues())
 	details := map[string]string{
 		"dispatchable_tools": fmt.Sprintf("%d", len(registry.ToolNames())),

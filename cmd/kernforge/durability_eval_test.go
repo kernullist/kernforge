@@ -609,7 +609,7 @@ func TestDurabilityEvalParallelReadOnlyWorkerExecutesSecondaryNodeInspection(t *
 	}
 	agent := &Agent{
 		Config:    Config{},
-		Tools:     buildRegistry(ws, nil),
+		Tools:     buildRegistry(ws, nil, SkillCatalog{}),
 		Workspace: ws,
 		Session:   session,
 	}

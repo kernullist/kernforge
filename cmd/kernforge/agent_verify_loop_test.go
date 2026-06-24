@@ -11176,7 +11176,7 @@ func TestAgentUsesLoadedWebResearchMCPToolsBeforeLocalInspection(t *testing.T) {
 	agent := &Agent{
 		Config:    Config{},
 		Client:    provider,
-		Tools:     buildRegistry(ws, manager),
+		Tools:     buildRegistry(ws, manager, SkillCatalog{}),
 		Workspace: ws,
 		Session:   session,
 		Store:     store,
@@ -14215,7 +14215,7 @@ func TestAgentSuppressesInteractiveWorkersForGeneratedDocumentFinalOnlyTurn(t *t
 			AutoLocale: boolPtr(false),
 		},
 		Client:    provider,
-		Tools:     buildRegistry(ws, nil),
+		Tools:     buildRegistry(ws, nil, SkillCatalog{}),
 		Workspace: ws,
 		Session:   session,
 		Store:     NewSessionStore(filepath.Join(root, "sessions")),

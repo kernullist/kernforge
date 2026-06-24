@@ -21,7 +21,7 @@ func bypassNetworkWorkspace() Workspace {
 func TestBuildRegistryContainsWebTools(t *testing.T) {
 	root := t.TempDir()
 	ws := Workspace{BaseRoot: root, Root: root}
-	registry := buildRegistry(ws, nil)
+	registry := buildRegistry(ws, nil, SkillCatalog{})
 	for _, want := range []string{"web_fetch", "web_search"} {
 		if _, ok := registry.tools[want]; !ok {
 			t.Fatalf("buildRegistry missing %q tool; have %v", want, registry.ToolNames())

@@ -503,7 +503,7 @@ func TestRegisteredToolsRejectMalformedInputWithoutPanic(t *testing.T) {
 		UpdatePlan: func(items []PlanItem) {
 		},
 	}
-	registry := buildRegistry(ws, nil)
+	registry := buildRegistry(ws, nil, SkillCatalog{})
 	for name, tool := range registry.tools {
 		for _, input := range []any{nil, "not an object", []any{"path"}} {
 			t.Run(name, func(t *testing.T) {

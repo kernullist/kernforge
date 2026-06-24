@@ -2747,7 +2747,7 @@ func TestBuildRegistryIncludesCodexGoalTools(t *testing.T) {
 		Root:        root,
 		GoalSession: NewSession(root, "provider", "model", "", "default"),
 		GoalStore:   NewSessionStore(filepath.Join(root, "sessions")),
-	}, nil)
+	}, nil, SkillCatalog{})
 	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
 		if _, ok := registry.tools[name]; !ok {
 			t.Fatalf("registry missing %s", name)
@@ -2756,7 +2756,7 @@ func TestBuildRegistryIncludesCodexGoalTools(t *testing.T) {
 }
 
 func TestBuildRegistryOmitsGoalToolsWithoutPersistentGoalState(t *testing.T) {
-	registry := buildRegistry(Workspace{}, nil)
+	registry := buildRegistry(Workspace{}, nil, SkillCatalog{})
 	for _, name := range []string{"get_goal", "create_goal", "update_goal"} {
 		if _, ok := registry.tools[name]; ok {
 			t.Fatalf("registry should omit %s without session/store-backed goal state", name)

@@ -464,7 +464,7 @@ func run(args []string) error {
 		Config:        rt.cfg,
 		Client:        client,
 		ModelRoutes:   rt.modelRoutes,
-		Tools:         buildRegistry(rt.workspace, nil),
+		Tools:         buildRegistry(rt.workspace, nil, rt.skills),
 		Workspace:     rt.workspace,
 		Session:       rt.session,
 		Store:         rt.store,
@@ -714,7 +714,7 @@ func sessionStartHookSourceForResumeID(resumeID string) string {
 	return "startup"
 }
 
-func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
+func buildRegistry(ws Workspace, mcp *MCPManager, skills SkillCatalog) *ToolRegistry {
 	items := []Tool{
 		NewListFilesTool(ws),
 		NewReadFileTool(ws),
@@ -768,6 +768,12 @@ func buildRegistry(ws Workspace, mcp *MCPManager) *ToolRegistry {
 		if toolSearchToolAvailable(mcp) {
 			items = append(items, NewToolSearchTool(mcp))
 		}
+	}
+	// Expose a skill-loading tool so the model can pull the full instructions of
+	// any discovered skill on demand. Registered only when at least one skill is
+	// present; otherwise it would always return an empty catalog.
+	if skills.Count() > 0 {
+		items = append(items, NewLoadSkillTool(skills))
 	}
 	return NewToolRegistryWithDefaultHookWorkspace(ws, items...)
 }
@@ -10906,7 +10912,7 @@ func (rt *runtimeState) reloadExtensions() {
 	rt.mcp, rt.mcpWarns = LoadMCPManager(rt.workspace, rt.cfg.MCPServers)
 	if rt.agent != nil {
 		rt.agent.MCP = rt.mcp
-		rt.agent.Tools = buildRegistry(rt.workspace, rt.mcp)
+		rt.agent.Tools = buildRegistry(rt.workspace, rt.mcp, rt.skills)
 		for _, issue := range formatToolRegistrationIssues(rt.agent.Tools.RegistrationIssues()) {
 			fmt.Fprintln(rt.writer, rt.ui.warnLine("Tool registry: "+issue))
 		}

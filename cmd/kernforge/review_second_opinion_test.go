@@ -240,7 +240,7 @@ func TestReviewSecondOpinionSameModelIsLabeledNotIndependent(t *testing.T) {
 // tool as a read-only, parallel-safe function tool.
 func TestReviewSecondOpinionRegisteredInRegistry(t *testing.T) {
 	root := t.TempDir()
-	registry := buildRegistry(Workspace{BaseRoot: root, Root: root}, nil)
+	registry := buildRegistry(Workspace{BaseRoot: root, Root: root}, nil, SkillCatalog{})
 	tool, ok := registry.tools["review_second_opinion"]
 	if !ok {
 		t.Fatalf("buildRegistry must register review_second_opinion; have %v", registry.ToolNames())

@@ -1283,7 +1283,7 @@ func TestToolRegistryDefaultWorkspaceHooksPlainFunctionTools(t *testing.T) {
 func TestBuildRegistryFunctionToolsHaveDefaultHookCoverage(t *testing.T) {
 	root := t.TempDir()
 	ws := Workspace{BaseRoot: root, Root: root}
-	registry := buildRegistry(ws, nil)
+	registry := buildRegistry(ws, nil, SkillCatalog{})
 	if !registry.hasDefaultHookWorkspace {
 		t.Fatalf("buildRegistry must install a default hook workspace")
 	}

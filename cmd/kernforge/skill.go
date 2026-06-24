@@ -414,7 +414,23 @@ func (c SkillCatalog) InjectPromptContext(input string) string {
 }
 
 func renderSkillPromptSection(skill Skill) string {
-	return fmt.Sprintf("### %s\nSource: %s\n%s", skill.Name, skill.Path, skill.Content)
+	header := fmt.Sprintf("### %s\nSource: %s", skill.Name, skill.Path)
+	if note := skillAllowedToolsNote(skill); note != "" {
+		header += "\n" + note
+	}
+	return header + "\n" + skill.Content
+}
+
+// skillAllowedToolsNote renders the skill's allowed-tools constraint as an
+// explicit instruction line. The architecture treats skills as injected
+// instructions rather than a persistent active mode, so there is no turn-level
+// gate to hard-disable other tools; surfacing the scope to the model is the
+// enforcement lever. Returns "" when the skill declares no tool scope.
+func skillAllowedToolsNote(skill Skill) string {
+	if len(skill.AllowedTools) == 0 {
+		return ""
+	}
+	return "Tool scope (allowed-tools): while carrying out the steps this skill governs, restrict yourself to these tools plus read-only inspection: " + strings.Join(skill.AllowedTools, ", ") + ". Do not reach for other mutating tools for those steps."
 }
 
 func InitSkillTemplate(name string) string {

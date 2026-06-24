@@ -59,7 +59,7 @@ func TestAgentsMDFileIsRegularMatchesCodexFileOnlyPolicy(t *testing.T) {
 	}
 }
 
-func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *testing.T) {
+func TestSystemPromptInjectsEnabledSkillBodiesAndOmitsHeavyCatalogs(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "provider", "model", "", "default")
 	agent := &Agent{
@@ -69,8 +69,9 @@ func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *te
 			enabled: []Skill{
 				{
 					Name:    "MemoryOps",
+					Path:    "/skill",
 					Summary: "Summarize memory workflow.",
-					Content: "### MemoryOps\nSource: /skill\nVery long skill body that should not appear in the system prompt by default.",
+					Content: "Full MemoryOps procedure body that the model must be able to follow.",
 				},
 			},
 		},
@@ -90,17 +91,19 @@ func TestSystemPromptOmitsHeavyCatalogsByDefaultAndSummarizesEnabledSkills(t *te
 	}
 
 	prompt := agent.systemPrompt()
-	if !strings.Contains(prompt, "Enabled local skills:") {
-		t.Fatalf("expected enabled skill summary in system prompt, got %q", prompt)
+	if !strings.Contains(prompt, "Enabled local skills (full instructions") {
+		t.Fatalf("expected enabled skill full-instruction section in system prompt, got %q", prompt)
 	}
-	if !strings.Contains(prompt, "MemoryOps: Summarize memory workflow.") {
-		t.Fatalf("expected enabled skill summary text, got %q", prompt)
+	// Enabled skills are explicitly opted in by the user, so their full body must
+	// reach the model -- a summary-only line is not enough to follow the skill.
+	if !strings.Contains(prompt, "Full MemoryOps procedure body that the model must be able to follow.") {
+		t.Fatalf("expected enabled skill full body to be injected, got %q", prompt)
 	}
-	if strings.Contains(prompt, "Very long skill body") || strings.Contains(prompt, "Source: /skill") {
-		t.Fatalf("expected full enabled skill body to be omitted, got %q", prompt)
+	if !strings.Contains(prompt, "### MemoryOps") {
+		t.Fatalf("expected enabled skill name header in injected body, got %q", prompt)
 	}
-	if strings.Contains(prompt, "Available local skills:") {
-		t.Fatalf("expected skill catalog to be omitted by default, got %q", prompt)
+	if strings.Contains(prompt, "Available local skills (select by relevance") {
+		t.Fatalf("expected selectable skill catalog to be omitted by default, got %q", prompt)
 	}
 	if strings.Contains(prompt, "Available MCP resources:") || strings.Contains(prompt, "Available MCP prompts:") {
 		t.Fatalf("expected MCP catalogs to be omitted by default, got %q", prompt)
