@@ -225,38 +225,79 @@ func verifySingleAnalysisClaim(snapshot ProjectSnapshot, run ProjectAnalysisRun,
 func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, shard AnalysisShard, index SemanticIndexV2, skipScope bool) []ClaimVerificationIssue {
 	_ = index
 	issues := []ClaimVerificationIssue{}
-	if len(claim.SourceAnchors) == 0 {
+	type parsedClaimAnchor struct {
+		raw  string
+		path string
+		line int
+	}
+	parsed := []parsedClaimAnchor{}
+	for _, anchor := range claim.SourceAnchors {
+		if strings.TrimSpace(anchor) == "" {
+			// A blank/whitespace-only entry carries no anchor; fold it into the
+			// missing-anchor check below rather than counting it as present.
+			continue
+		}
+		path, line, ok := parseAnalysisClaimSourceAnchor(anchor)
+		if !ok || path == "" {
+			// A non-blank anchor that does not resolve to a usable file path must
+			// not be dropped silently: record it so a malformed citation cannot
+			// no-op the anchor sub-check and let the claim pass unverified.
+			issues = append(issues, ClaimVerificationIssue{
+				Code:     "unparseable_source_anchor",
+				Severity: severityForConfidence(claim.Confidence, "warning"),
+				Message:  "Claim source anchor could not be parsed to a usable file path.",
+				Evidence: []string{anchor},
+			})
+			continue
+		}
+		parsed = append(parsed, parsedClaimAnchor{raw: anchor, path: path, line: line})
+	}
+	if len(parsed) == 0 && len(issues) == 0 {
+		// No usable anchor and nothing already flagged (empty slice or only blanks).
+		// Evaluate the missing-anchor gate on the parseable count, not the raw slice
+		// length, so a slice of blanks no longer bypasses it. When the slice held
+		// non-blank but unparseable entries, those already produced issues above, so
+		// we do not double-flag here.
 		return append(issues, ClaimVerificationIssue{
 			Code:     "missing_source_anchor",
 			Severity: severityForConfidence(claim.Confidence, "warning"),
-			Message:  "Claim has no source anchor.",
+			Message:  "Claim has no usable source anchor.",
 		})
 	}
-	for _, anchor := range claim.SourceAnchors {
-		path, line, ok := parseAnalysisClaimSourceAnchor(anchor)
-		if !ok || path == "" {
-			continue
-		}
-		if !skipScope && !packetPathInShardScope(path, shard) {
+	if len(parsed) == 0 {
+		return issues
+	}
+	for _, pa := range parsed {
+		if !skipScope && !packetPathInShardScope(pa.path, shard) {
 			issues = append(issues, ClaimVerificationIssue{
 				Code:     "source_scope_mismatch",
 				Severity: "blocking",
 				Message:  "Claim source anchor is outside the assigned primary/reference scope.",
-				Evidence: []string{anchor},
+				Evidence: []string{pa.raw},
 			})
 			continue
 		}
 		if len(packets) == 0 {
 			continue
 		}
+		anchorKey := analysisClaimPathKey(pa.path)
 		pathMatched := false
-		lineMatched := line <= 0
+		lineMatched := pa.line <= 0
 		for _, packet := range packets {
-			if packet.Path != path {
+			// Compare paths case/separator-insensitively (matching the
+			// attachment-stage canonicalEvidencePath). An exact-case comparison let
+			// a fabricated line number escape the blocking line-range check whenever
+			// the model wrote a divergent-but-valid path form, demoting it to a
+			// non-blocking warning.
+			if analysisClaimPathKey(packet.Path) != anchorKey {
 				continue
 			}
 			pathMatched = true
-			if line <= 0 || packet.StartLine <= 0 || (line >= packet.StartLine && line <= packet.EndLine) {
+			// Bypass the range check only when the packet carries NO line info at
+			// all (both bounds unset); a partially populated packet (e.g. StartLine
+			// 0, EndLine > 0) must still enforce its known bound rather than accept
+			// any line.
+			if pa.line <= 0 || (packet.StartLine <= 0 && packet.EndLine <= 0) || (pa.line >= packet.StartLine && pa.line <= packet.EndLine) {
 				lineMatched = true
 				break
 			}
@@ -266,14 +307,14 @@ func verifyClaimSourceAnchors(claim AnalysisClaim, packets []EvidencePacket, sha
 				Code:     "source_packet_mismatch",
 				Severity: "warning",
 				Message:  "Claim source anchor path does not match any cited packet path; treat the claim as a citation precision issue until the correct packet is attached.",
-				Evidence: []string{anchor},
+				Evidence: []string{pa.raw},
 			})
 		} else if !lineMatched {
 			issues = append(issues, ClaimVerificationIssue{
 				Code:     "line_range_mismatch",
 				Severity: "blocking",
 				Message:  "Claim source anchor line is outside the cited packet line range.",
-				Evidence: []string{anchor},
+				Evidence: []string{pa.raw},
 			})
 		}
 	}
@@ -294,10 +335,17 @@ func verifyClaimSymbolAnchors(claim AnalysisClaim, packets []EvidencePacket, ind
 		if strings.TrimSpace(packet.SymbolID) != "" {
 			packetSymbols[strings.ToLower(packet.SymbolID)] = struct{}{}
 		}
-		packetPaths[packet.Path] = struct{}{}
+		// Key packet paths case/separator-insensitively (analysisClaimPathKey),
+		// matching the attachment-stage canonicalization. canonicalEvidencePath
+		// preserves the originally-registered case, so an exact-case key compared
+		// against the structural index's symbol.File silently drops the entire
+		// index symbol scope when the two path forms diverge -- producing a
+		// blocking symbol_mismatch false-reject for a claim whose symbol detail
+		// lives only in the index (the false-reject mirror of CLAIM-1).
+		packetPaths[analysisClaimPathKey(packet.Path)] = struct{}{}
 	}
 	for _, symbol := range index.Symbols {
-		if _, ok := packetPaths[symbol.File]; !ok {
+		if _, ok := packetPaths[analysisClaimPathKey(symbol.File)]; !ok {
 			continue
 		}
 		packetSymbols[strings.ToLower(symbol.Name)] = struct{}{}
@@ -652,16 +700,40 @@ func parseAnalysisClaimSourceAnchor(anchor string) (string, int, bool) {
 	return filepathSlashOrEmpty(clean), line, true
 }
 
+// analysisClaimPathKey normalizes a file path for case/separator-insensitive
+// comparison inside the claim verifier, matching the attachment-stage
+// canonicalization (canonicalEvidencePath/rememberAllowedEvidencePath). The
+// verifier previously compared paths with exact-case equality, which is the
+// outlier in this subsystem and the root cause of both a false-confirm (a
+// fabricated line escaping the line-range check) and false-reject behavior.
+func analysisClaimPathKey(path string) string {
+	return strings.ToLower(filepathSlashOrEmpty(path))
+}
+
 func packetPathInShardScope(path string, shard AnalysisShard) bool {
-	if strings.TrimSpace(path) == "" {
+	key := analysisClaimPathKey(path)
+	if key == "" {
 		return false
 	}
+	// A shard with no assigned primary/reference files has no scope to anchor a
+	// claim to. Treat that as out-of-scope (fail-closed) instead of accept-all:
+	// the empty-scope case is reached only by a degenerate/synthetic or
+	// id-mismatched shard (legitimate shard builders always populate primary
+	// files), and silently confirming a claim against it defeats the scope gate.
 	if len(shard.PrimaryFiles) == 0 && len(shard.ReferenceFiles) == 0 {
-		return true
+		return false
 	}
-	allowed := graphFileSet(append(append([]string(nil), shard.PrimaryFiles...), shard.ReferenceFiles...))
-	_, ok := allowed[filepathSlashOrEmpty(path)]
-	return ok
+	for _, file := range shard.PrimaryFiles {
+		if analysisClaimPathKey(file) == key {
+			return true
+		}
+	}
+	for _, file := range shard.ReferenceFiles {
+		if analysisClaimPathKey(file) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func claimCitedSymbols(claim AnalysisClaim) []string {
