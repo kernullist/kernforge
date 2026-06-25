@@ -118,7 +118,7 @@ var slashCommandDescriptions = map[string]string{
 	"locale-auto":             "Enable or disable automatic locale switching.",
 	"worktree":                "Create, inspect, detach, or clean isolated git worktrees with tracked-feature follow-up.",
 	"skills":                  "Inspect and manage loaded Codex skills.",
-	"mcp":                     "Inspect MCP server status; '/mcp auth <server>' runs the interactive OAuth login.",
+	"mcp":                     "Manage MCP servers: '/mcp add|remove|enable|disable <name>', or '/mcp auth <server>' for OAuth login; '/mcp' alone shows status.",
 	"resources":               "List MCP resources across configured servers.",
 	"resource":                "Open a specific MCP resource by name or URI.",
 	"prompts":                 "List MCP prompts across configured servers.",
@@ -156,6 +156,13 @@ var slashCommandDescriptions = map[string]string{
 }
 
 var slashSubcommandDescriptions = map[string]map[string]string{
+	"mcp": {
+		"add":     "Register an MCP server (stdio: '-- <command> [args]'; remote: '--url <url>').",
+		"remove":  "Remove a configured MCP server from user or --workspace config.",
+		"enable":  "Enable a disabled MCP server and reconnect.",
+		"disable": "Disable a configured MCP server without removing it.",
+		"auth":    "Run the interactive OAuth login for a streamable_http server.",
+	},
 	"permissions": {
 		// Only the three canonical modes are listed. Legacy names
 		// (default/acceptEdits/bypassPermissions) and Codex profile ids
@@ -783,6 +790,7 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		"create-driver-poc": {"<driver-name>", "<driver-name> --type objectfilter", "<driver-name> --type minifilter", "<driver-name> --type registryfilter", "<driver-name> --type wfpcallout"},
 		"automation":        {"status", "due", "digest", "monitor", "monitor --notify", "monitor --webhook-url", "watch", "watch --notify", "watch --once", "watch --webhook-url", "daemon-start", "daemon-status", "daemon-stop", "notify", "notify --webhook-url", "run-due"},
 		"init":              {"config", "hooks", "memory-policy", "skill", "verify"},
+		"mcp":               {"add", "remove", "enable", "disable", "auth"},
 	}
 
 	if len(fields) == 0 {
@@ -939,6 +947,17 @@ func (rt *runtimeState) slashArgumentSuggestions(commandName string, fields []st
 		}
 		if len(fields) == 2 && strings.EqualFold(fields[0], "handoff") {
 			return []string{"import"}, 1, true
+		}
+		return nil, 0, false
+	case "mcp":
+		if len(fields) <= 1 {
+			return firstLevel[commandName], 0, true
+		}
+		if len(fields) == 2 {
+			switch strings.ToLower(strings.TrimSpace(fields[0])) {
+			case "remove", "rm", "delete", "enable", "disable", "auth", "login", "authorize":
+				return rt.configuredMCPServerNames(), 1, true
+			}
 		}
 		return nil, 0, false
 	case "model":
@@ -1697,6 +1716,27 @@ func (rt *runtimeState) completeOpenPath(buffer string) (string, []string, bool)
 		return buffer, prefixed, true
 	}
 	return leading + "/open " + completed, nil, true
+}
+
+// configuredMCPServerNames returns the de-duplicated names of every configured MCP
+// server (including disabled ones), used to complete the <name> argument of
+// /mcp remove|enable|disable|auth.
+func (rt *runtimeState) configuredMCPServerNames() []string {
+	seen := map[string]bool{}
+	names := make([]string, 0, len(rt.cfg.MCPServers))
+	for _, server := range rt.cfg.MCPServers {
+		name := strings.TrimSpace(deriveMCPServerName(server))
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		names = append(names, name)
+	}
+	return names
 }
 
 func (rt *runtimeState) completeMCPCommandTarget(buffer string) (string, []string, bool) {
