@@ -94,6 +94,7 @@ func TestParseMCPAddCommandErrors(t *testing.T) {
 		"bad header":        {"api", "--url", "https://x/sse", "--header", "novalue"},
 		"dangling dashdash": {"fs", "--"},
 		"flag needs value":  {"fs", "--url"},
+		"value is a flag":   {"api", "--url", "--transport", "http"},
 	}
 	for label, args := range cases {
 		if _, err := parseMCPAddCommand(args); err == nil {
@@ -258,5 +259,17 @@ func TestTokenizeCommandArgs(t *testing.T) {
 	}
 	if got := tokenizeCommandArgs("   "); len(got) != 0 {
 		t.Fatalf("whitespace-only must yield no tokens, got %#v", got)
+	}
+}
+
+// TestNormalizeConfigPathsExpandsMCPServerCwd locks the MED-1 fix: reconnect runs
+// normalizeConfigPaths, which expands a ~-prefixed stdio Cwd so a server added live
+// via /mcp add connects with the same path it would after a restart
+// (resolveMCPServerCwd does not expandHome itself).
+func TestNormalizeConfigPathsExpandsMCPServerCwd(t *testing.T) {
+	cfg := Config{MCPServers: []MCPServerConfig{{Name: "x", Command: "node", Cwd: "~/srv"}}}
+	normalizeConfigPaths(&cfg)
+	if strings.HasPrefix(cfg.MCPServers[0].Cwd, "~") {
+		t.Fatalf("a ~-prefixed Cwd must be expanded by normalizeConfigPaths, got %q", cfg.MCPServers[0].Cwd)
 	}
 }

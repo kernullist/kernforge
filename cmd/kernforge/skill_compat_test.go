@@ -118,3 +118,17 @@ func TestLoadSkillToolRejectsDisableModelInvocation(t *testing.T) {
 		t.Fatalf("expected a user-invocable-only message, got %q", result.ModelText)
 	}
 }
+
+// TestSelectableCountExcludesDisableModelInvocation locks the catalog-consistency
+// fix: a disable-model-invocation skill is hidden from CatalogPrompt, so it must not
+// count toward SelectableCount (which gates whether the catalog is built at all).
+func TestSelectableCountExcludesDisableModelInvocation(t *testing.T) {
+	catalog := newTestSkillCatalog(
+		Skill{Name: "a", UserInvocable: true},
+		Skill{Name: "b", Enabled: true},
+		Skill{Name: "c", DisableModelInvocation: true, UserInvocable: true},
+	)
+	if got := catalog.SelectableCount(); got != 1 {
+		t.Fatalf("SelectableCount must exclude enabled and disable-model-invocation skills (only 'a' is model-selectable), got %d", got)
+	}
+}

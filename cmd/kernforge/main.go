@@ -10914,6 +10914,13 @@ func (rt *runtimeState) reloadExtensions() {
 // rebuilt tool registry. Shared by config reload and the /mcp add|remove|enable|
 // disable commands so a server change takes effect immediately, without a /reload.
 func (rt *runtimeState) reconnectMCPServers() {
+	// Normalize the in-memory config the same way the disk loader does (expandHome
+	// on Cwd, env/capability cleanup) so a server added live via /mcp add connects
+	// with the same resolved values it would have after a restart -- without this a
+	// `--cwd ~/x` stdio server fails live (resolveMCPServerCwd sees a literal ~) yet
+	// works after the next reload. normalizeConfigPaths is idempotent, so the reload
+	// path that also calls this is unaffected.
+	normalizeConfigPaths(&rt.cfg)
 	if rt.mcp != nil {
 		rt.mcp.Close()
 	}
@@ -11149,7 +11156,8 @@ func errMCPAddUsage() error {
 		"       /mcp add <name> <command|url> [args...]                       (transport inferred)\n" +
 		"       options: --transport stdio|http|sse, --url <url>, --header \"Name: Value\",\n" +
 		"                --bearer-env VAR, --env K=V, --cwd DIR, --cap NAME, --user|--workspace, --force, --disabled\n" +
-		"       quote values containing spaces, e.g. --header \"Authorization: Bearer <token>\"")
+		"       quote values containing spaces, e.g. --header \"Authorization: Bearer <token>\"\n" +
+		"       put options before `--`; every token after `--` is the stdio command and its args")
 }
 
 // parseMCPAddCommand parses "/mcp add" arguments (Codex style) into a server
@@ -11215,7 +11223,10 @@ func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
 	disabled := false
 
 	needValue := func(i int, flag string) (string, int, error) {
-		if i+1 >= len(args) {
+		// Reject a flag-looking next token (e.g. `--url --bearer-env x`) so a missing
+		// value surfaces as "requires a value" instead of silently consuming the
+		// following flag and failing downstream with a confusing message.
+		if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
 			return "", i, fmt.Errorf("%s requires a value", flag)
 		}
 		return args[i+1], i + 1, nil

@@ -399,7 +399,11 @@ func (c SkillCatalog) EnabledCount() int {
 func (c SkillCatalog) SelectableCount() int {
 	count := 0
 	for _, skill := range c.items {
-		if !skill.Enabled {
+		// A disable-model-invocation skill is hidden from the model catalog
+		// (CatalogPrompt skips it), so it is not selectable on demand by the model;
+		// excluding it keeps SelectableCount in sync with the catalog and avoids
+		// triggering an empty catalog build.
+		if !skill.Enabled && !skill.DisableModelInvocation {
 			count++
 		}
 	}
