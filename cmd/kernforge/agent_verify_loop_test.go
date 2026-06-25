@@ -10509,6 +10509,81 @@ func TestSessionAllowsReviewRepairContinuationForMutableContinuation(t *testing.
 	}
 }
 
+// TestSessionAllowsReviewRepairContinuationHonorsEditPermissionMode locks the fix
+// for the plan->full handoff: a request first issued in plan mode keeps a read-only
+// contract and never lands a mutation, so the prior request-only gate logic kept a
+// read-only boundary even after the user switched to an edit-capable mode and asked
+// to proceed -- dead-ending the repair with a false "read-only action boundary"
+// stop. INV-1 makes the permission mode the single authority for edits, so edit/full
+// must allow the review->repair continuation; plan / legacy-default keep the prior
+// request-based behavior.
+func TestSessionAllowsReviewRepairContinuationHonorsEditPermissionMode(t *testing.T) {
+	root := t.TempDir()
+	// A genuine read-only analysis request: under the request-only logic this blocks
+	// repair continuation (see
+	// TestReviewerGateUnavailableReadOnlyAnswerDoesNotOfferRepairContinuation).
+	readOnlyRequest := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+
+	mk := func(mode string) *Session {
+		s := NewSession(root, "scripted", "main-model", "", mode)
+		contract := buildAcceptanceContract(readOnlyRequest, TurnIntentReviewCode, true, false, false)
+		s.AcceptanceContract = &contract
+		s.AddMessage(Message{Role: "user", Text: readOnlyRequest})
+		// The user switched modes and asked to proceed in a later turn.
+		s.AddMessage(Message{Role: "user", Text: "진행해줘"})
+		return s
+	}
+
+	// Precondition: non-edit modes keep the read-only block (the fix must not relax
+	// these).
+	for _, mode := range []string{"plan", "default"} {
+		if sessionAllowsReviewRepairContinuation(mk(mode)) {
+			t.Fatalf("mode %q: a read-only request must NOT allow repair continuation", mode)
+		}
+	}
+	// The fix: an edit-capable mode is the single authority and allows continuation.
+	for _, mode := range []string{"edit", "full", "acceptEdits", "bypassPermissions"} {
+		if !sessionAllowsReviewRepairContinuation(mk(mode)) {
+			t.Fatalf("mode %q: an edit-capable permission mode must allow review->repair continuation (INV-1)", mode)
+		}
+	}
+}
+
+// TestPreWriteNonConvergenceReplyHonorsFullModeForReadOnlyRequest is the
+// user-visible counterpart: in full mode the non-convergence stop reply must offer a
+// keep-repairing decision instead of the "read-only action boundary" refusal, even
+// when the original request classifies read-only. This reproduces the reported
+// plan->full handoff where the repair dead-ended after the user switched to full.
+func TestPreWriteNonConvergenceReplyHonorsFullModeForReadOnlyRequest(t *testing.T) {
+	root := t.TempDir()
+	readOnlyRequest := "TavernKernel이 다른 Global Anti-Cheat 대비 부족한 기능들을 정리해서 알려줘."
+	session := NewSession(root, "scripted", "main-model", "", "full")
+	contract := buildAcceptanceContract(readOnlyRequest, TurnIntentReviewCode, true, false, false)
+	session.AcceptanceContract = &contract
+	session.AddMessage(Message{Role: "user", Text: readOnlyRequest})
+	session.AddMessage(Message{Role: "user", Text: "진행해줘"})
+	session.LastReviewRun = &ReviewRun{
+		ID:        "prewrite-full-mode-readonly-origin",
+		Trigger:   "pre_write",
+		Objective: readOnlyRequest,
+		Gate: GateDecision{
+			Verdict:          reviewVerdictNeedsRevision,
+			BlockingFindings: []string{"RF-001"},
+		},
+		Findings: []ReviewFinding{
+			{ID: "RF-001", Severity: reviewSeverityMedium, Category: "correctness", Title: "Needs a fix", RequiredFix: "Fix it.", BlocksGate: true},
+		},
+	}
+
+	reply := formatPreWriteReviewRepairNonConvergenceReply(Config{AutoLocale: boolPtr(false)}, session, 3, 3)
+	if strings.Contains(reply, "read-only action boundary") || strings.Contains(reply, "읽기 전용") {
+		t.Fatalf("full mode must not render a read-only boundary stop, got %q", reply)
+	}
+	if !strings.Contains(reply, "keep repairing") {
+		t.Fatalf("full mode stop must offer a keep-repairing decision, got %q", reply)
+	}
+}
+
 func TestAgentContinuesReviewerGateRepairOnlyOnY(t *testing.T) {
 	root := t.TempDir()
 	session := NewSession(root, "scripted", "main-model", "", "default")

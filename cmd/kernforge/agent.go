@@ -6437,9 +6437,41 @@ func recordPendingReviewRepairConfirmationWithMode(session *Session, mode string
 	session.UpdatedAt = time.Now()
 }
 
+// sessionPermissionModeGrantsEdits reports whether the session's active permission
+// mode is an explicitly edit-capable tier (edit/full). It mirrors
+// (*Agent).editPermissionGranted but reads the mode persisted on the session, so
+// gate logic that only has a *Session can honor INV-1 (the permission mode is the
+// single authority for whether edits are allowed). The session mode is kept in sync
+// with the workspace permission manager on every mode change and profile reload
+// (see main.go), and NewSession seeds it. plan / legacy-default / workspace / empty
+// resolve to a non-edit tier and return false.
+func sessionPermissionModeGrantsEdits(session *Session) bool {
+	if session == nil {
+		return false
+	}
+	switch ParseMode(session.PermissionMode) {
+	case ModeAcceptEdits, ModeBypass:
+		return true
+	default:
+		return false
+	}
+}
+
 func sessionAllowsReviewRepairContinuation(session *Session) bool {
 	if session == nil {
 		return false
+	}
+	// INV-1: an explicitly edit-capable permission mode (edit/full) is the single
+	// authority for whether edits are allowed. This gate is only ever reached on an
+	// edit-triggered turn -- the model called a write tool, which ran the pre-write
+	// review / reviewer gate -- so in edit/full the review->repair continuation must
+	// be allowed regardless of how the request text classifies. Without this, a
+	// request first issued in plan mode (read-only contract, no mutation landed yet)
+	// keeps a read-only boundary after the user switches to full and asks to proceed,
+	// and the repair dead-ends with a false "read-only action boundary" stop. plan /
+	// legacy-default fall through to the prior request-based behavior below.
+	if sessionPermissionModeGrantsEdits(session) {
+		return true
 	}
 	request := strings.TrimSpace(baseUserQueryText(sessionEffectiveUserRequestText(session)))
 	if request != "" {
