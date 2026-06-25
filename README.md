@@ -1182,6 +1182,44 @@ Minimal user config example:
 }
 ```
 
+#### Connecting and troubleshooting a remote (streamable_http) MCP server
+
+Register a remote MCP server and it connects immediately:
+
+```text
+/mcp add <name> --transport http <url> --header "Authorization: Bearer <token>"
+```
+
+Check status with `/mcp`. On success it shows `tools=N resources=N prompts=N`, `auth=bearer_token`, `url=...` and the tools are exposed as `mcp__<name>__*`. On failure the `error=` field gives the cause.
+
+**`context deadline exceeded`** (most common): this is a network-reachability failure, not an MCP protocol error -- the TCP/HTTP response timed out. Check, in order:
+
+1. **Server is listening externally** -- on the server host, `netstat -ano | findstr :<port>` should show `0.0.0.0:<port>` or the real IP. If it only shows `127.0.0.1`, it is loopback-only and unreachable from outside (rebind to the network interface and restart).
+2. **Client-to-server TCP reachability** -- from the kernforge host, `Test-NetConnection <server-ip> -Port <port>`. `TcpTestSucceeded: False` means a firewall/routing problem (ICMP ping being blocked is irrelevant -- look only at TCP).
+3. **HTTP level** -- send `initialize` yourself and confirm `HTTP 200` with a `serverInfo`:
+
+   ```bash
+   curl -sS -m 10 -X POST "<url>" \
+     -H "Authorization: Bearer <token>" \
+     -H "Content-Type: application/json" \
+     -H "Accept: application/json, text/event-stream" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"diag","version":"0"}}}'
+   ```
+
+In a VM lab (VMware NAT, etc.) the most common cause is the **guest OS inbound firewall**. Even when host and guest share a subnet (e.g. host VMnet8 `192.168.x.1`, guest `192.168.x.N`), a guest firewall blocking the port lets ARP (L2) answer while TCP fails. Open it on the guest, **scoped to the client IP only**:
+
+```powershell
+New-NetFirewallRule -DisplayName "mcp-<port>" -Direction Inbound -Protocol TCP -LocalPort <port> -RemoteAddress <client-ip> -Action Allow
+```
+
+Other `error=` patterns: **`401`/auth errors** mean a bearer-token mismatch (check the `--header` value); **`404`** means a wrong URL path (e.g. a missing `/mcp`).
+
+After fixing the network/firewall, reconnect without re-registering: `/reload`, or `/mcp disable <name>` then `/mcp enable <name>`.
+
+For a server with dozens of tools, set `"defer_tool_schemas": true` on its config entry to expose just the tool list up front and fetch each InputSchema on demand, saving context.
+
+**Security**: the bearer token is stored in plaintext in `~/.kernforge/config.json`. For a privileged remote endpoint (kernel R/W, write-enabled), scope the firewall to the client IP and do not rely on the token as the only barrier. Snapshot the target environment (VM, etc.) before write sessions.
+
 ## Interactive REPL
 
 ### Basic Usage
