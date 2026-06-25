@@ -8116,7 +8116,7 @@ func (rt *runtimeState) handleCommand(cmd Command) (bool, error) {
 			}
 		}
 	case "mcp":
-		if fields := strings.Fields(strings.TrimSpace(cmd.Args)); len(fields) > 0 {
+		if fields := tokenizeCommandArgs(cmd.Args); len(fields) > 0 {
 			if err := rt.handleMCPSubcommand(fields); err != nil {
 				return false, err
 			}
@@ -11144,9 +11144,12 @@ type mcpAddCommandRequest struct {
 }
 
 func errMCPAddUsage() error {
-	return fmt.Errorf("usage: /mcp add <name> -- <command> [args...]             (stdio)\n" +
-		"       /mcp add <name> --url <url> [--bearer-env VAR] [--header K=V]  (remote)\n" +
-		"       options: --env K=V (stdio), --cwd DIR (stdio), --cap NAME, --user|--workspace, --force, --disabled")
+	return fmt.Errorf("usage: /mcp add <name> -- <command> [args...]                  (stdio)\n" +
+		"       /mcp add <name> --transport http <url> [--header \"K: V\"]    (remote)\n" +
+		"       /mcp add <name> <command|url> [args...]                       (transport inferred)\n" +
+		"       options: --transport stdio|http|sse, --url <url>, --header \"Name: Value\",\n" +
+		"                --bearer-env VAR, --env K=V, --cwd DIR, --cap NAME, --user|--workspace, --force, --disabled\n" +
+		"       quote values containing spaces, e.g. --header \"Authorization: Bearer <token>\"")
 }
 
 // parseMCPAddCommand parses "/mcp add" arguments (Codex style) into a server
@@ -11155,12 +11158,55 @@ func errMCPAddUsage() error {
 // be present. The result is validated with the same rules the config loader applies
 // (validateMCPServerConfigRoundTrip). Pure function so parsing/validation is
 // unit-testable without a runtime.
+// tokenizeCommandArgs splits a command argument string into tokens, honoring
+// single and double quotes so a quoted value containing spaces (e.g. a header
+// value "Authorization: Bearer abc") stays a single token. Quotes are removed.
+// There is no backslash escaping -- quote the whole value instead.
+func tokenizeCommandArgs(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	inToken := false
+	var quote rune
+	for _, r := range s {
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '"' || r == '\'':
+			quote = r
+			inToken = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if inToken {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				inToken = false
+			}
+		default:
+			cur.WriteRune(r)
+			inToken = true
+		}
+	}
+	if inToken || quote != 0 {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
+}
+
+func looksLikeMCPURL(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
 func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
 	req := mcpAddCommandRequest{ScopeUser: true}
-	name := ""
+	var positional []string
 	command := ""
 	var commandArgs []string
 	urlStr := ""
+	transportHint := ""
 	bearerEnv := ""
 	cwdStr := ""
 	headers := map[string]string{}
@@ -11174,12 +11220,26 @@ func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
 		}
 		return args[i+1], i + 1, nil
 	}
-	putKV := func(flag, raw string, dst map[string]string) error {
+	putEnv := func(raw string) error {
 		eq := strings.IndexByte(raw, '=')
 		if eq <= 0 {
-			return fmt.Errorf("%s expects KEY=VALUE, got %q", flag, raw)
+			return fmt.Errorf("--env expects KEY=VALUE, got %q", raw)
 		}
-		dst[strings.TrimSpace(raw[:eq])] = raw[eq+1:]
+		env[strings.TrimSpace(raw[:eq])] = raw[eq+1:]
+		return nil
+	}
+	// HTTP headers use the standard "Name: Value"; "Name=Value" is also accepted.
+	// The first ':' or '=' separates the name from the value.
+	putHeader := func(raw string) error {
+		sep := strings.IndexAny(raw, ":=")
+		if sep <= 0 {
+			return fmt.Errorf("--header expects \"Name: Value\", got %q", raw)
+		}
+		key := strings.TrimSpace(raw[:sep])
+		if key == "" {
+			return fmt.Errorf("--header expects \"Name: Value\", got %q", raw)
+		}
+		headers[key] = strings.TrimSpace(raw[sep+1:])
 		return nil
 	}
 
@@ -11196,21 +11256,23 @@ func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
 		}
 		var err error
 		switch tok {
+		case "--transport":
+			transportHint, i, err = needValue(i, "--transport")
 		case "--url":
 			urlStr, i, err = needValue(i, "--url")
 		case "--bearer-env", "--bearer-token-env":
 			bearerEnv, i, err = needValue(i, "--bearer-env")
 		case "--cwd":
 			cwdStr, i, err = needValue(i, "--cwd")
-		case "--header":
+		case "--header", "-H":
 			var raw string
 			if raw, i, err = needValue(i, "--header"); err == nil {
-				err = putKV("--header", raw, headers)
+				err = putHeader(raw)
 			}
-		case "--env":
+		case "--env", "-e":
 			var raw string
 			if raw, i, err = needValue(i, "--env"); err == nil {
-				err = putKV("--env", raw, env)
+				err = putEnv(raw)
 			}
 		case "--cap", "--capability":
 			var raw string
@@ -11229,30 +11291,70 @@ func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
 			if strings.HasPrefix(tok, "-") {
 				return req, fmt.Errorf("unknown option %q", tok)
 			}
-			if name != "" {
-				return req, fmt.Errorf("unexpected argument %q; put a stdio command after `--`", tok)
-			}
-			name = tok
+			positional = append(positional, tok)
 		}
 		if err != nil {
 			return req, err
 		}
 	}
 
-	name = strings.TrimSpace(name)
+	name := ""
+	if len(positional) > 0 {
+		name = strings.TrimSpace(positional[0])
+		positional = positional[1:]
+	}
 	if name == "" {
 		return req, errMCPAddUsage()
 	}
+
+	// Resolve the transport. An explicit `-- <command>` or --url flag fixes it;
+	// otherwise interpret the remaining positional args using --transport (or a
+	// URL-looking first token). This accepts the Claude-style
+	// "add [--transport http] <name> <url|command> [args...]" form alongside the
+	// older "-- <command>" / "--url <url>" forms.
+	transportHint = strings.ToLower(strings.TrimSpace(transportHint))
+	isRemoteHint := transportHint == "http" || transportHint == "sse" ||
+		transportHint == "streamable_http" || transportHint == "streamable-http"
+	isStdioHint := transportHint == "stdio"
+	if transportHint != "" && !isRemoteHint && !isStdioHint {
+		return req, fmt.Errorf("unknown --transport %q; use stdio, http, or sse", transportHint)
+	}
+
+	switch {
+	case command != "" || urlStr != "":
+		if len(positional) > 0 {
+			return req, fmt.Errorf("unexpected argument %q", positional[0])
+		}
+	case len(positional) > 0:
+		first := positional[0]
+		if isRemoteHint || (!isStdioHint && looksLikeMCPURL(first)) {
+			urlStr = first
+			if len(positional) > 1 {
+				return req, fmt.Errorf("unexpected argument %q after the URL", positional[1])
+			}
+		} else {
+			command = first
+			commandArgs = append(commandArgs, positional[1:]...)
+		}
+	}
+
+	if isRemoteHint && strings.TrimSpace(urlStr) == "" {
+		return req, fmt.Errorf("--transport %s needs a URL (e.g. /mcp add <name> --transport %s <url>)", transportHint, transportHint)
+	}
+	if isStdioHint && strings.TrimSpace(command) == "" {
+		return req, fmt.Errorf("--transport stdio needs a command (e.g. /mcp add <name> -- <command> [args...])")
+	}
+
 	hasCommand := strings.TrimSpace(command) != ""
 	hasURL := strings.TrimSpace(urlStr) != ""
 	if hasCommand == hasURL {
-		return req, fmt.Errorf("specify exactly one transport: a stdio command after `--`, or --url <url> for a remote server")
+		return req, fmt.Errorf("specify exactly one transport: a stdio command (after `--` or as <name> <command>), or a URL (--url <url> or --transport http <url>)")
 	}
 
 	server := MCPServerConfig{Name: name}
 	if hasCommand {
 		if bearerEnv != "" || len(headers) > 0 {
-			return req, fmt.Errorf("--bearer-env/--header are only valid with --url (remote)")
+			return req, fmt.Errorf("--bearer-env/--header are only valid for a remote (http) server")
 		}
 		server.Command = command
 		if len(commandArgs) > 0 {

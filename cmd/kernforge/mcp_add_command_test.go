@@ -194,3 +194,69 @@ func TestLoadConfigFileMCPServersMissingFile(t *testing.T) {
 		t.Fatalf("missing file must yield no servers, got %#v", servers)
 	}
 }
+
+// TestParseMCPAddCommandTransportHTTPWithHeader reproduces the reported failure:
+// the Claude-style "--transport http <name> <url> --header \"Authorization: Bearer
+// ...\"" form must parse into a remote server with the header intact (the value is
+// already one token here, as the quote-aware tokenizer would produce).
+func TestParseMCPAddCommandTransportHTTPWithHeader(t *testing.T) {
+	req, err := parseMCPAddCommand([]string{
+		"--transport", "http", "knlivedbg", "http://192.168.44.129:8765/mcp",
+		"--header", "Authorization: Bearer 95ab6f21beecf2a6",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Server.Name != "knlivedbg" {
+		t.Fatalf("name=%q", req.Server.Name)
+	}
+	if req.Server.URL != "http://192.168.44.129:8765/mcp" {
+		t.Fatalf("url=%q", req.Server.URL)
+	}
+	if got := req.Server.HTTPHeaders["Authorization"]; got != "Bearer 95ab6f21beecf2a6" {
+		t.Fatalf("Authorization header=%q (headers=%#v)", got, req.Server.HTTPHeaders)
+	}
+	if mcpServerTransport(req.Server) != "streamable_http" {
+		t.Fatalf("transport=%q", mcpServerTransport(req.Server))
+	}
+}
+
+func TestParseMCPAddCommandInfersTransport(t *testing.T) {
+	// A URL positional with no flags resolves to a remote server.
+	req, err := parseMCPAddCommand([]string{"api", "https://mcp.example.com/sse"})
+	if err != nil || req.Server.URL != "https://mcp.example.com/sse" {
+		t.Fatalf("url positional: err=%v url=%q", err, req.Server.URL)
+	}
+	// A non-URL positional resolves to a stdio command (Claude style, no `--`).
+	req, err = parseMCPAddCommand([]string{"local", "node", "server.js"})
+	if err != nil || req.Server.Command != "node" || len(req.Server.Args) != 1 || req.Server.Args[0] != "server.js" {
+		t.Fatalf("command positional: err=%v cmd=%q args=%#v", err, req.Server.Command, req.Server.Args)
+	}
+}
+
+func TestParseMCPAddCommandTransportStdioAndErrors(t *testing.T) {
+	req, err := parseMCPAddCommand([]string{"s", "--transport", "stdio", "--", "node", "x.js"})
+	if err != nil || req.Server.Command != "node" {
+		t.Fatalf("stdio transport: err=%v cmd=%q", err, req.Server.Command)
+	}
+	if _, err := parseMCPAddCommand([]string{"s", "--transport", "http"}); err == nil {
+		t.Fatalf("--transport http without a URL must error")
+	}
+	if _, err := parseMCPAddCommand([]string{"s", "--transport", "carrier-pigeon", "--", "node"}); err == nil {
+		t.Fatalf("unknown --transport value must error")
+	}
+}
+
+func TestTokenizeCommandArgs(t *testing.T) {
+	got := tokenizeCommandArgs(`add --transport http knlivedbg http://x:8765/mcp --header "Authorization: Bearer abc def"`)
+	want := []string{"add", "--transport", "http", "knlivedbg", "http://x:8765/mcp", "--header", "Authorization: Bearer abc def"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tokenize mismatch:\n got=%#v\nwant=%#v", got, want)
+	}
+	if got := tokenizeCommandArgs(`a 'b c' d`); !reflect.DeepEqual(got, []string{"a", "b c", "d"}) {
+		t.Fatalf("single-quote tokenize: %#v", got)
+	}
+	if got := tokenizeCommandArgs("   "); len(got) != 0 {
+		t.Fatalf("whitespace-only must yield no tokens, got %#v", got)
+	}
+}

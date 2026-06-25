@@ -1110,7 +1110,7 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 ```text
 /mcp                                                         서버/도구 상태 보기
 /mcp add <name> -- <command> [args...]                       stdio 서버 등록
-/mcp add <name> --url <url> [--bearer-env VAR] [--header K=V] 원격(streamable_http) 서버 등록
+/mcp add <name> --transport http <url> [--header "K: V"]     원격(http) 서버 등록
 /mcp remove <name> [--user|--workspace]                      서버 제거
 /mcp enable <name> | /mcp disable <name>                     서버 활성/비활성
 /mcp auth <name>                                             OAuth 서버 로그인
@@ -1120,7 +1120,13 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 /prompt <server:name> {"arg":"value"}
 ```
 
-`/mcp add`는 config 파일을 직접 편집하지 않고 서버를 등록합니다. 기본적으로 사용자 전역 설정(`~/.kernforge/config.json`)에 기록하고 즉시 연결하므로 `/reload`가 필요 없습니다. 이 저장소에만 등록하려면 `--workspace`, 같은 이름을 덮어쓰려면 `--force`, 비활성 상태로 추가하려면 `--disabled`를 붙입니다. stdio 서버에는 `-- ` 뒤에 실행 명령을 두고 `--env K=V`/`--cwd DIR`을, 원격 서버에는 `--url`과 `--bearer-env VAR`/`--header K=V`를 사용합니다(transport는 둘 중 하나만). `remove`/`enable`/`disable`도 같은 `--user`/`--workspace` 스코프 플래그를 받습니다.
+`/mcp add`는 config 파일을 직접 편집하지 않고 서버를 등록합니다. 기본적으로 사용자 전역 설정(`~/.kernforge/config.json`)에 기록하고 즉시 연결하므로 `/reload`가 필요 없습니다. 이 저장소에만 등록하려면 `--workspace`, 같은 이름을 덮어쓰려면 `--force`, 비활성 상태로 추가하려면 `--disabled`를 붙입니다. transport는 `--transport stdio|http|sse`로 지정하거나, `-- ` 뒤의 실행 명령(stdio) 또는 `http(s)://` URL(원격)로 자동 추론됩니다. stdio 서버에는 `--env K=V`/`--cwd DIR`을, 원격 서버에는 `--header "Name: Value"`/`--bearer-env VAR`을 사용합니다. 공백이 포함된 값은 따옴표로 감싸세요. `remove`/`enable`/`disable`도 같은 `--user`/`--workspace` 스코프 플래그를 받습니다.
+
+예시(원격, Bearer 토큰):
+
+```text
+/mcp add knlivedbg --transport http http://192.168.44.129:8765/mcp --header "Authorization: Bearer <token>"
+```
 
 멘션 예시:
 

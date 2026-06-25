@@ -1131,7 +1131,7 @@ Useful commands:
 ```text
 /mcp                                                         show server/tool status
 /mcp add <name> -- <command> [args...]                       register a stdio server
-/mcp add <name> --url <url> [--bearer-env VAR] [--header K=V] register a remote (streamable_http) server
+/mcp add <name> --transport http <url> [--header "K: V"]     register a remote (http) server
 /mcp remove <name> [--user|--workspace]                      remove a server
 /mcp enable <name> | /mcp disable <name>                     enable/disable a server
 /mcp auth <name>                                             log in to an OAuth server
@@ -1141,7 +1141,13 @@ Useful commands:
 /prompt <server:name> {"arg":"value"}
 ```
 
-`/mcp add` registers a server without hand-editing the config file. By default it writes to user config (`~/.kernforge/config.json`) and connects immediately, so no `/reload` is needed. Use `--workspace` to scope it to this repository, `--force` to overwrite a server of the same name, and `--disabled` to add it without connecting. For a stdio server put the launch command after `-- ` and use `--env K=V`/`--cwd DIR`; for a remote server use `--url` with `--bearer-env VAR`/`--header K=V` (exactly one transport). `remove`/`enable`/`disable` take the same `--user`/`--workspace` scope flags.
+`/mcp add` registers a server without hand-editing the config file. By default it writes to user config (`~/.kernforge/config.json`) and connects immediately, so no `/reload` is needed. Use `--workspace` to scope it to this repository, `--force` to overwrite a server of the same name, and `--disabled` to add it without connecting. Pick the transport with `--transport stdio|http|sse`, or let it be inferred from a `-- <command>` (stdio) or an `http(s)://` URL (remote). Use `--env K=V`/`--cwd DIR` for stdio and `--header "Name: Value"`/`--bearer-env VAR` for remote. Quote any value containing spaces. `remove`/`enable`/`disable` take the same `--user`/`--workspace` scope flags.
+
+Example (remote with a bearer token):
+
+```text
+/mcp add knlivedbg --transport http http://192.168.44.129:8765/mcp --header "Authorization: Bearer <token>"
+```
 
 Mention syntax:
 
