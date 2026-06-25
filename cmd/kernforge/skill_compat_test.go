@@ -132,3 +132,27 @@ func TestSelectableCountExcludesDisableModelInvocation(t *testing.T) {
 		t.Fatalf("SelectableCount must exclude enabled and disable-model-invocation skills (only 'a' is model-selectable), got %d", got)
 	}
 }
+
+// TestInjectPromptContextExactNameNoPrefixCollision locks the $name prefix-collision
+// fix: a $foo skill must not rewrite or activate from an unrelated $foobar token.
+func TestInjectPromptContextExactNameNoPrefixCollision(t *testing.T) {
+	catalog := newTestSkillCatalog(
+		Skill{Name: "foo", Path: "/s/foo/SKILL.md", Content: "foo-body", UserInvocable: true},
+	)
+	// Only skill "foo" exists; "$foobar" must be left intact and not activate "foo".
+	out := catalog.InjectPromptContext("run $foobar now")
+	if !strings.Contains(out, "$foobar") {
+		t.Fatalf("$foobar must be left intact when only skill 'foo' exists, got %q", out)
+	}
+	if strings.Contains(out, "foo-body") {
+		t.Fatalf("unknown $foobar must not activate skill 'foo', got %q", out)
+	}
+	// "$foo" alone still resolves: token replaced with the skill name, body injected.
+	out = catalog.InjectPromptContext("run $foo now")
+	if strings.Contains(out, "$foo") {
+		t.Fatalf("$foo token must be replaced with the skill name, got %q", out)
+	}
+	if !strings.Contains(out, "foo-body") {
+		t.Fatalf("$foo must activate skill 'foo', got %q", out)
+	}
+}

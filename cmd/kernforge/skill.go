@@ -456,32 +456,32 @@ func (c SkillCatalog) DefaultPrompt() string {
 }
 
 func (c SkillCatalog) InjectPromptContext(input string) string {
-	matches := explicitSkillPattern.FindAllStringSubmatch(input, -1)
-	if len(matches) == 0 {
+	if !explicitSkillPattern.MatchString(input) {
 		return input
 	}
 	var sections []string
 	seen := map[string]bool{}
-	for _, match := range matches {
-		name := match[1]
+	// Replace each $name token exactly via the pattern, NOT strings.ReplaceAll:
+	// ReplaceAll("$foo", ...) would also rewrite the "$foo" prefix inside an
+	// unrelated "$foobar" token. ReplaceAllStringFunc evaluates each matched token
+	// independently, so $foo and $foobar never collide.
+	input = explicitSkillPattern.ReplaceAllStringFunc(input, func(token string) string {
+		name := strings.TrimPrefix(token, "$")
 		skill, ok := c.Lookup(name)
 		if !ok {
-			continue
+			return token
 		}
-		input = strings.ReplaceAll(input, "$"+name, skill.Name)
 		key := normalizeSkillName(skill.Name)
-		if seen[key] || skill.Enabled {
-			continue
+		// A $name mention activates a non-enabled, user-invocable skill once.
+		// enabled skills are already injected in full; user-invocable:false skills
+		// are model-only and are not reachable by a user $name mention (Claude Code
+		// hides them from the user menu).
+		if !seen[key] && !skill.Enabled && skill.UserInvocable {
+			seen[key] = true
+			sections = append(sections, renderSkillPromptSection(skill))
 		}
-		// user-invocable:false skills cannot be triggered by a $name mention
-		// (Claude Code hides them from the user menu); the model still reaches them
-		// via the catalog / load_skill.
-		if !skill.UserInvocable {
-			continue
-		}
-		seen[key] = true
-		sections = append(sections, renderSkillPromptSection(skill))
-	}
+		return skill.Name
+	})
 	if len(sections) == 0 {
 		return input
 	}
