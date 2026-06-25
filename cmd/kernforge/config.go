@@ -2224,7 +2224,15 @@ func preserveExistingReviewRoleModels(cfg *Config, existing Config) {
 }
 
 func SaveWorkspaceConfigOverrides(cwd string, overrides map[string]any) error {
-	path := workspaceConfigPath(cwd)
+	return saveConfigFileOverrides(workspaceConfigPath(cwd), overrides)
+}
+
+// saveConfigFileOverrides merges the given top-level keys into the JSON config
+// file at path, preserving every other key already present (a nil value deletes
+// its key). Unlike SaveUserConfig it never writes the in-memory merged Config, so
+// it cannot leak a workspace-merged field (e.g. mcp_servers) into the file being
+// written -- the caller decides exactly which keys to touch.
+func saveConfigFileOverrides(path string, overrides map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -2253,6 +2261,36 @@ func SaveWorkspaceConfigOverrides(cwd string, overrides map[string]any) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o644)
+}
+
+// loadConfigFileMCPServers reads ONLY the mcp_servers array from the raw config
+// file at path (not the in-memory merged Config), so an add/remove can edit the
+// exact file the user targeted without inheriting servers merged from another
+// layer. A missing or empty file yields no servers.
+func loadConfigFileMCPServers(path string) ([]MCPServerConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var partial struct {
+		MCPServers []MCPServerConfig `json:"mcp_servers"`
+	}
+	if err := json.Unmarshal(data, &partial); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return partial.MCPServers, nil
+}
+
+// saveConfigFileMCPServers writes servers into the mcp_servers key of the config
+// file at path, leaving every other key untouched.
+func saveConfigFileMCPServers(path string, servers []MCPServerConfig) error {
+	return saveConfigFileOverrides(path, map[string]any{"mcp_servers": servers})
 }
 
 func normalizeProfileBaseURL(provider, baseURL string) string {

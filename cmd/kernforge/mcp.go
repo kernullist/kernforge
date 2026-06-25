@@ -695,6 +695,80 @@ func mcpServerTransport(cfg MCPServerConfig) string {
 	return "stdio"
 }
 
+// validateMCPServerConfigRoundTrip runs the same transport/field validation the
+// config loader applies, by marshalling the candidate and unmarshalling it back
+// (UnmarshalJSON calls validateRawMCPServerConfig). This keeps "/mcp add" rejecting
+// the exact same invalid combinations -- command+url together, oauth on stdio, args
+// on streamable_http, etc. -- as a hand-edited config file, with no duplicated rules.
+func validateMCPServerConfigRoundTrip(server MCPServerConfig) error {
+	data, err := json.Marshal(server)
+	if err != nil {
+		return err
+	}
+	var normalized MCPServerConfig
+	return json.Unmarshal(data, &normalized)
+}
+
+// replaceOrAppendMCPServer returns servers with server inserted, replacing the
+// first entry whose derived name matches (case-insensitive) or appending when none
+// matches. Used so "/mcp add --force" overwrites in place instead of duplicating.
+func replaceOrAppendMCPServer(servers []MCPServerConfig, server MCPServerConfig) []MCPServerConfig {
+	name := strings.TrimSpace(deriveMCPServerName(server))
+	out := make([]MCPServerConfig, 0, len(servers)+1)
+	replaced := false
+	for _, existing := range servers {
+		if !replaced && name != "" && strings.EqualFold(strings.TrimSpace(deriveMCPServerName(existing)), name) {
+			out = append(out, server)
+			replaced = true
+			continue
+		}
+		out = append(out, existing)
+	}
+	if !replaced {
+		out = append(out, server)
+	}
+	return out
+}
+
+// removeMCPServerByName drops every entry whose derived name matches name and
+// reports whether anything was removed.
+func removeMCPServerByName(servers []MCPServerConfig, name string) ([]MCPServerConfig, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return servers, false
+	}
+	out := make([]MCPServerConfig, 0, len(servers))
+	removed := false
+	for _, existing := range servers {
+		if strings.EqualFold(strings.TrimSpace(deriveMCPServerName(existing)), name) {
+			removed = true
+			continue
+		}
+		out = append(out, existing)
+	}
+	return out, removed
+}
+
+// setMCPServerDisabledByName flips the disabled flag on every entry whose derived
+// name matches name and reports whether a matching server was found.
+func setMCPServerDisabledByName(servers []MCPServerConfig, name string, disabled bool) ([]MCPServerConfig, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return servers, false
+	}
+	out := make([]MCPServerConfig, len(servers))
+	copy(out, servers)
+	found := false
+	for i := range out {
+		if strings.EqualFold(strings.TrimSpace(deriveMCPServerName(out[i])), name) {
+			out[i].Disabled = disabled
+			out[i].DisabledSet = true
+			found = true
+		}
+	}
+	return out, found
+}
+
 func resolveMCPServerCwd(ws Workspace, cfg MCPServerConfig) string {
 	if strings.TrimSpace(cfg.URL) != "" {
 		return ""

@@ -1129,12 +1129,19 @@ Kernforge supports stdio-based MCP servers and exposes their tools, resources, a
 Useful commands:
 
 ```text
-/mcp
+/mcp                                                         show server/tool status
+/mcp add <name> -- <command> [args...]                       register a stdio server
+/mcp add <name> --url <url> [--bearer-env VAR] [--header K=V] register a remote (streamable_http) server
+/mcp remove <name> [--user|--workspace]                      remove a server
+/mcp enable <name> | /mcp disable <name>                     enable/disable a server
+/mcp auth <name>                                             log in to an OAuth server
 /resources
 /resource <server:uri-or-name>
 /prompts
 /prompt <server:name> {"arg":"value"}
 ```
+
+`/mcp add` registers a server without hand-editing the config file. By default it writes to user config (`~/.kernforge/config.json`) and connects immediately, so no `/reload` is needed. Use `--workspace` to scope it to this repository, `--force` to overwrite a server of the same name, and `--disabled` to add it without connecting. For a stdio server put the launch command after `-- ` and use `--env K=V`/`--cwd DIR`; for a remote server use `--url` with `--bearer-env VAR`/`--header K=V` (exactly one transport). `remove`/`enable`/`disable` take the same `--user`/`--workspace` scope flags.
 
 Mention syntax:
 

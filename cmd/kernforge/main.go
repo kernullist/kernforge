@@ -10906,6 +10906,14 @@ func (rt *runtimeState) reloadExtensions() {
 	if rt.agent != nil {
 		rt.agent.Skills = rt.skills
 	}
+	rt.reconnectMCPServers()
+}
+
+// reconnectMCPServers tears down the live MCP manager and rebuilds it from the
+// current rt.cfg.MCPServers, then re-points the agent at the new manager and
+// rebuilt tool registry. Shared by config reload and the /mcp add|remove|enable|
+// disable commands so a server change takes effect immediately, without a /reload.
+func (rt *runtimeState) reconnectMCPServers() {
 	if rt.mcp != nil {
 		rt.mcp.Close()
 	}
@@ -11070,8 +11078,16 @@ func (rt *runtimeState) handleMCPSubcommand(fields []string) error {
 			serverName = strings.TrimSpace(strings.Join(fields[1:], " "))
 		}
 		return rt.handleMCPAuthCommand(serverName)
+	case "add":
+		return rt.handleMCPAddCommand(fields[1:])
+	case "remove", "rm", "delete":
+		return rt.handleMCPRemoveCommand(fields[1:])
+	case "disable":
+		return rt.handleMCPSetDisabledCommand(fields[1:], true, "disable")
+	case "enable":
+		return rt.handleMCPSetDisabledCommand(fields[1:], false, "enable")
 	default:
-		return fmt.Errorf("unknown /mcp subcommand %q; usage: /mcp [auth <server>]", subcommand)
+		return fmt.Errorf("unknown /mcp subcommand %q; usage: /mcp [add|remove|enable|disable|auth] ...", subcommand)
 	}
 }
 
@@ -11119,6 +11135,307 @@ func (rt *runtimeState) handleMCPAuthCommand(serverName string) error {
 	}
 	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Authorized MCP server %q; reload or reconnect to attach the token.", serverName)))
 	return nil
+}
+
+type mcpAddCommandRequest struct {
+	Server    MCPServerConfig
+	ScopeUser bool
+	Force     bool
+}
+
+func errMCPAddUsage() error {
+	return fmt.Errorf("usage: /mcp add <name> -- <command> [args...]             (stdio)\n" +
+		"       /mcp add <name> --url <url> [--bearer-env VAR] [--header K=V]  (remote)\n" +
+		"       options: --env K=V (stdio), --cwd DIR (stdio), --cap NAME, --user|--workspace, --force, --disabled")
+}
+
+// parseMCPAddCommand parses "/mcp add" arguments (Codex style) into a server
+// config plus the target scope. Everything after `--` is the stdio command and its
+// args; --url selects a remote (streamable_http) server. Exactly one transport must
+// be present. The result is validated with the same rules the config loader applies
+// (validateMCPServerConfigRoundTrip). Pure function so parsing/validation is
+// unit-testable without a runtime.
+func parseMCPAddCommand(args []string) (mcpAddCommandRequest, error) {
+	req := mcpAddCommandRequest{ScopeUser: true}
+	name := ""
+	command := ""
+	var commandArgs []string
+	urlStr := ""
+	bearerEnv := ""
+	cwdStr := ""
+	headers := map[string]string{}
+	env := map[string]string{}
+	var caps []string
+	disabled := false
+
+	needValue := func(i int, flag string) (string, int, error) {
+		if i+1 >= len(args) {
+			return "", i, fmt.Errorf("%s requires a value", flag)
+		}
+		return args[i+1], i + 1, nil
+	}
+	putKV := func(flag, raw string, dst map[string]string) error {
+		eq := strings.IndexByte(raw, '=')
+		if eq <= 0 {
+			return fmt.Errorf("%s expects KEY=VALUE, got %q", flag, raw)
+		}
+		dst[strings.TrimSpace(raw[:eq])] = raw[eq+1:]
+		return nil
+	}
+
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		if tok == "--" {
+			rest := args[i+1:]
+			if len(rest) == 0 {
+				return req, fmt.Errorf("`--` must be followed by the command to run")
+			}
+			command = rest[0]
+			commandArgs = append([]string(nil), rest[1:]...)
+			break
+		}
+		var err error
+		switch tok {
+		case "--url":
+			urlStr, i, err = needValue(i, "--url")
+		case "--bearer-env", "--bearer-token-env":
+			bearerEnv, i, err = needValue(i, "--bearer-env")
+		case "--cwd":
+			cwdStr, i, err = needValue(i, "--cwd")
+		case "--header":
+			var raw string
+			if raw, i, err = needValue(i, "--header"); err == nil {
+				err = putKV("--header", raw, headers)
+			}
+		case "--env":
+			var raw string
+			if raw, i, err = needValue(i, "--env"); err == nil {
+				err = putKV("--env", raw, env)
+			}
+		case "--cap", "--capability":
+			var raw string
+			if raw, i, err = needValue(i, tok); err == nil {
+				caps = append(caps, raw)
+			}
+		case "--user":
+			req.ScopeUser = true
+		case "--workspace":
+			req.ScopeUser = false
+		case "--force":
+			req.Force = true
+		case "--disabled":
+			disabled = true
+		default:
+			if strings.HasPrefix(tok, "-") {
+				return req, fmt.Errorf("unknown option %q", tok)
+			}
+			if name != "" {
+				return req, fmt.Errorf("unexpected argument %q; put a stdio command after `--`", tok)
+			}
+			name = tok
+		}
+		if err != nil {
+			return req, err
+		}
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return req, errMCPAddUsage()
+	}
+	hasCommand := strings.TrimSpace(command) != ""
+	hasURL := strings.TrimSpace(urlStr) != ""
+	if hasCommand == hasURL {
+		return req, fmt.Errorf("specify exactly one transport: a stdio command after `--`, or --url <url> for a remote server")
+	}
+
+	server := MCPServerConfig{Name: name}
+	if hasCommand {
+		if bearerEnv != "" || len(headers) > 0 {
+			return req, fmt.Errorf("--bearer-env/--header are only valid with --url (remote)")
+		}
+		server.Command = command
+		if len(commandArgs) > 0 {
+			server.Args = commandArgs
+		}
+		if len(env) > 0 {
+			server.Env = env
+		}
+		if cwdStr != "" {
+			server.Cwd = cwdStr
+		}
+	} else {
+		if len(env) > 0 {
+			return req, fmt.Errorf("--env is only valid for a stdio command; use --header for a remote server")
+		}
+		if cwdStr != "" {
+			return req, fmt.Errorf("--cwd is only valid for a stdio command")
+		}
+		server.URL = strings.TrimSpace(urlStr)
+		if bearerEnv != "" {
+			server.BearerTokenEnvVar = bearerEnv
+		}
+		if len(headers) > 0 {
+			server.HTTPHeaders = headers
+		}
+	}
+	if len(caps) > 0 {
+		server.Capabilities = caps
+	}
+	if disabled {
+		server.Disabled = true
+		server.DisabledSet = true
+	}
+	if err := validateMCPServerConfigRoundTrip(server); err != nil {
+		return req, err
+	}
+	req.Server = server
+	return req, nil
+}
+
+func (rt *runtimeState) mcpConfigScopePath(scopeUser bool) (string, string) {
+	if scopeUser {
+		return userConfigPath(), "user config (~/.kernforge/config.json)"
+	}
+	return workspaceConfigPath(rt.workspace.BaseRoot), "workspace config (.kernforge/config.json)"
+}
+
+// parseMCPServerScopedName parses "<name> [--user|--workspace]" used by /mcp
+// remove|enable|disable.
+func parseMCPServerScopedName(args []string, verb string) (string, bool, error) {
+	name := ""
+	scopeUser := true
+	for _, tok := range args {
+		switch tok {
+		case "--user":
+			scopeUser = true
+		case "--workspace":
+			scopeUser = false
+		default:
+			if strings.HasPrefix(tok, "-") {
+				return "", scopeUser, fmt.Errorf("unknown option %q", tok)
+			}
+			if name != "" {
+				return "", scopeUser, fmt.Errorf("usage: /mcp %s <name> [--user|--workspace]", verb)
+			}
+			name = tok
+		}
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", scopeUser, fmt.Errorf("usage: /mcp %s <name> [--user|--workspace]", verb)
+	}
+	return name, scopeUser, nil
+}
+
+func (rt *runtimeState) handleMCPAddCommand(args []string) error {
+	req, err := parseMCPAddCommand(args)
+	if err != nil {
+		return err
+	}
+	name := strings.TrimSpace(deriveMCPServerName(req.Server))
+	if name == "" {
+		return errMCPAddUsage()
+	}
+	path, scopeLabel := rt.mcpConfigScopePath(req.ScopeUser)
+
+	existing, err := loadConfigFileMCPServers(path)
+	if err != nil {
+		return err
+	}
+	for _, s := range existing {
+		if strings.EqualFold(strings.TrimSpace(deriveMCPServerName(s)), name) {
+			if !req.Force {
+				return fmt.Errorf("MCP server %q already exists in %s; pass --force to overwrite", name, scopeLabel)
+			}
+			break
+		}
+	}
+
+	if err := saveConfigFileMCPServers(path, replaceOrAppendMCPServer(existing, req.Server)); err != nil {
+		return err
+	}
+	rt.cfg.MCPServers = replaceOrAppendMCPServer(rt.cfg.MCPServers, req.Server)
+	rt.reconnectMCPServers()
+
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Added MCP server %q (%s) to %s.", name, mcpServerTransport(req.Server), scopeLabel)))
+	if req.Server.Disabled {
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("Server %q is disabled; run `/mcp enable %s` to connect it.", name, name)))
+		return nil
+	}
+	rt.reportMCPServerConnection(name)
+	return nil
+}
+
+func (rt *runtimeState) handleMCPRemoveCommand(args []string) error {
+	name, scopeUser, err := parseMCPServerScopedName(args, "remove")
+	if err != nil {
+		return err
+	}
+	path, scopeLabel := rt.mcpConfigScopePath(scopeUser)
+	existing, err := loadConfigFileMCPServers(path)
+	if err != nil {
+		return err
+	}
+	updated, removed := removeMCPServerByName(existing, name)
+	if !removed {
+		return fmt.Errorf("no MCP server named %q in %s", name, scopeLabel)
+	}
+	if err := saveConfigFileMCPServers(path, updated); err != nil {
+		return err
+	}
+	rt.cfg.MCPServers, _ = removeMCPServerByName(rt.cfg.MCPServers, name)
+	rt.reconnectMCPServers()
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("Removed MCP server %q from %s.", name, scopeLabel)))
+	return nil
+}
+
+func (rt *runtimeState) handleMCPSetDisabledCommand(args []string, disabled bool, verb string) error {
+	name, scopeUser, err := parseMCPServerScopedName(args, verb)
+	if err != nil {
+		return err
+	}
+	path, scopeLabel := rt.mcpConfigScopePath(scopeUser)
+	existing, err := loadConfigFileMCPServers(path)
+	if err != nil {
+		return err
+	}
+	updated, found := setMCPServerDisabledByName(existing, name, disabled)
+	if !found {
+		return fmt.Errorf("no MCP server named %q in %s", name, scopeLabel)
+	}
+	if err := saveConfigFileMCPServers(path, updated); err != nil {
+		return err
+	}
+	rt.cfg.MCPServers, _ = setMCPServerDisabledByName(rt.cfg.MCPServers, name, disabled)
+	rt.reconnectMCPServers()
+	verbPast := "Enabled"
+	if disabled {
+		verbPast = "Disabled"
+	}
+	fmt.Fprintln(rt.writer, rt.ui.successLine(fmt.Sprintf("%s MCP server %q in %s.", verbPast, name, scopeLabel)))
+	if !disabled {
+		rt.reportMCPServerConnection(name)
+	}
+	return nil
+}
+
+// reportMCPServerConnection prints the post-reconnect outcome for a single server:
+// its live tool/resource/prompt counts on success, or the connection error so the
+// user is not left guessing whether the new entry actually attached.
+func (rt *runtimeState) reportMCPServerConnection(name string) {
+	for _, status := range rt.mcpStatus() {
+		if !strings.EqualFold(strings.TrimSpace(status.Name), strings.TrimSpace(name)) {
+			continue
+		}
+		if strings.TrimSpace(status.Error) != "" {
+			fmt.Fprintln(rt.writer, rt.ui.warnLine(fmt.Sprintf("Server %q is configured but did not connect: %s", name, strings.TrimSpace(status.Error))))
+			return
+		}
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(fmt.Sprintf("Connected %q: %d tools, %d resources, %d prompts (exposed as mcp__%s__*).", name, status.ToolCount, status.ResourceCount, status.PromptCount, sanitizeMCPName(name))))
+		return
+	}
+	fmt.Fprintln(rt.writer, rt.ui.infoLine("Run /mcp to view server status."))
 }
 
 func (rt *runtimeState) mcpToolCount() int {

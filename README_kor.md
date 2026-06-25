@@ -1108,12 +1108,19 @@ Kernforge는 stdio 기반 MCP 서버를 연결하고, 해당 서버의 tool, res
 관련 명령:
 
 ```text
-/mcp
+/mcp                                                         서버/도구 상태 보기
+/mcp add <name> -- <command> [args...]                       stdio 서버 등록
+/mcp add <name> --url <url> [--bearer-env VAR] [--header K=V] 원격(streamable_http) 서버 등록
+/mcp remove <name> [--user|--workspace]                      서버 제거
+/mcp enable <name> | /mcp disable <name>                     서버 활성/비활성
+/mcp auth <name>                                             OAuth 서버 로그인
 /resources
 /resource <server:uri-or-name>
 /prompts
 /prompt <server:name> {"arg":"value"}
 ```
+
+`/mcp add`는 config 파일을 직접 편집하지 않고 서버를 등록합니다. 기본적으로 사용자 전역 설정(`~/.kernforge/config.json`)에 기록하고 즉시 연결하므로 `/reload`가 필요 없습니다. 이 저장소에만 등록하려면 `--workspace`, 같은 이름을 덮어쓰려면 `--force`, 비활성 상태로 추가하려면 `--disabled`를 붙입니다. stdio 서버에는 `-- ` 뒤에 실행 명령을 두고 `--env K=V`/`--cwd DIR`을, 원격 서버에는 `--url`과 `--bearer-env VAR`/`--header K=V`를 사용합니다(transport는 둘 중 하나만). `remove`/`enable`/`disable`도 같은 `--user`/`--workspace` 스코프 플래그를 받습니다.
 
 멘션 예시:
 
