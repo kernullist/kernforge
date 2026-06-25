@@ -10767,7 +10767,7 @@ func (a *Agent) systemPrompt() string {
 			return a.Skills.CatalogPrompt()
 		}); catalog != "" {
 			b.WriteString("\nAvailable local skills (select by relevance to the request; call the load_skill tool with the skill name to pull its full instructions, or the user can type $name):\n")
-			b.WriteString(compactPromptSection(catalog, 1600))
+			b.WriteString(compactPromptSection(catalog, 6000))
 			b.WriteString("\n")
 		}
 	}

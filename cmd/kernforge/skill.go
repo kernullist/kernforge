@@ -5,16 +5,19 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
 type Skill struct {
-	Name         string
-	Path         string
-	Summary      string
-	Content      string
-	AllowedTools []string
-	Enabled      bool
+	Name                   string
+	Path                   string
+	Summary                string
+	Content                string
+	AllowedTools           []string
+	Enabled                bool
+	DisableModelInvocation bool
+	UserInvocable          bool
 }
 
 type SkillCatalog struct {
@@ -32,11 +35,12 @@ func LoadSkills(cwd string, extraPaths, enabledNames []string) (SkillCatalog, []
 	order := []string{}
 	itemsByName := map[string]Skill{}
 	for _, file := range files {
-		skill, err := loadSkillFile(file)
+		skill, skillWarns, err := loadSkillFile(file)
 		if err != nil {
 			warnings = append(warnings, fmt.Sprintf("skill %s: %v", file, err))
 			continue
 		}
+		warnings = append(warnings, skillWarns...)
 		key := normalizeSkillName(skill.Name)
 		if key == "" {
 			warnings = append(warnings, fmt.Sprintf("skill %s: missing name", file))
@@ -140,10 +144,10 @@ func collectSkillFiles(paths []string) ([]string, []string) {
 	return files, warnings
 }
 
-func loadSkillFile(path string) (Skill, error) {
+func loadSkillFile(path string) (Skill, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Skill{}, err
+		return Skill{}, nil, err
 	}
 	front, body := parseSkillFrontmatter(string(data))
 	content := strings.TrimSpace(body)
@@ -154,20 +158,69 @@ func loadSkillFile(path string) (Skill, error) {
 	}
 
 	summary := strings.TrimSpace(front["description"])
+	// Claude Code appends when_to_use to the description as extra trigger
+	// guidance; fold it in so the model sees the full "when to use" text rather
+	// than dropping it.
+	if when := strings.TrimSpace(front["when_to_use"]); when != "" {
+		if summary == "" {
+			summary = when
+		} else {
+			summary = summary + " " + when
+		}
+	}
 	if summary == "" {
 		summary = summarizeSkillContent(content)
 	} else {
 		summary = clampSkillSummary(summary)
 	}
 
-	skill := Skill{
-		Name:         name,
-		Path:         path,
-		Summary:      summary,
-		Content:      content,
-		AllowedTools: parseSkillToolList(front["allowed-tools"]),
+	var warnings []string
+	for key, label := range skillUnsupportedFrontmatterFields {
+		if strings.TrimSpace(front[key]) != "" {
+			warnings = append(warnings, fmt.Sprintf("skill %s: frontmatter %q (%s) is not supported by kernforge and is ignored", path, key, label))
+		}
 	}
-	return skill, nil
+	sort.Strings(warnings)
+
+	skill := Skill{
+		Name:                   name,
+		Path:                   path,
+		Summary:                summary,
+		Content:                content,
+		AllowedTools:           parseSkillToolList(front["allowed-tools"]),
+		DisableModelInvocation: parseSkillBool(front["disable-model-invocation"], false),
+		UserInvocable:          parseSkillBool(front["user-invocable"], true),
+	}
+	return skill, warnings, nil
+}
+
+// skillUnsupportedFrontmatterFields lists SKILL.md frontmatter keys that other
+// agents (Claude Code) act on but kernforge does not implement. They are
+// parsed-but-ignored; loadSkillFile warns for each so an imported skill's
+// unsupported behavior is visible instead of being silently dropped.
+var skillUnsupportedFrontmatterFields = map[string]string{
+	"model":            "per-skill model override",
+	"effort":           "per-skill effort override",
+	"context":          "forked/isolated context",
+	"agent":            "subagent type for a forked context",
+	"paths":            "path-glob auto-trigger",
+	"hooks":            "skill lifecycle hooks",
+	"disallowed-tools": "tool denylist",
+	"shell":            "shell selection for command blocks",
+	"arguments":        "named argument substitution",
+}
+
+// parseSkillBool reads a YAML-ish boolean scalar, returning def when the value is
+// absent or unrecognized.
+func parseSkillBool(value string, def bool) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "true", "yes", "on", "1":
+		return true
+	case "false", "no", "off", "0":
+		return false
+	default:
+		return def
+	}
 }
 
 // parseSkillFrontmatter splits an optional leading YAML frontmatter block
@@ -276,10 +329,16 @@ func parseSkillToolList(value string) []string {
 	return tools
 }
 
+// clampSkillSummary bounds the description/when_to_use text used for trigger
+// selection. The cap matches Claude Code's ~1536-char description budget so a
+// skill's "when to use" guidance is not truncated (the old 280 cap cut off the
+// trigger keywords longer anti-cheat skills rely on). Measured in runes so a
+// multibyte (e.g. Korean) description is never split mid-character.
 func clampSkillSummary(summary string) string {
 	summary = strings.TrimSpace(summary)
-	if len(summary) > 280 {
-		summary = strings.TrimSpace(summary[:280]) + "..."
+	runes := []rune(summary)
+	if len(runes) > 1536 {
+		summary = strings.TrimSpace(string(runes[:1536])) + "..."
 	}
 	return summary
 }
@@ -362,6 +421,12 @@ func (c SkillCatalog) CatalogPrompt() string {
 	}
 	var lines []string
 	for _, skill := range c.items {
+		// disable-model-invocation skills are user-only (Claude Code hides them
+		// from the model's auto-trigger list), so keep them out of the catalog the
+		// model selects from. The user can still reach them with $name.
+		if skill.DisableModelInvocation {
+			continue
+		}
 		summary := skill.Summary
 		if summary == "" {
 			summary = "No summary available."
@@ -404,6 +469,12 @@ func (c SkillCatalog) InjectPromptContext(input string) string {
 		if seen[key] || skill.Enabled {
 			continue
 		}
+		// user-invocable:false skills cannot be triggered by a $name mention
+		// (Claude Code hides them from the user menu); the model still reaches them
+		// via the catalog / load_skill.
+		if !skill.UserInvocable {
+			continue
+		}
 		seen[key] = true
 		sections = append(sections, renderSkillPromptSection(skill))
 	}
@@ -415,22 +486,26 @@ func (c SkillCatalog) InjectPromptContext(input string) string {
 
 func renderSkillPromptSection(skill Skill) string {
 	header := fmt.Sprintf("### %s\nSource: %s", skill.Name, skill.Path)
+	if dir := filepath.Dir(skill.Path); strings.TrimSpace(dir) != "" && dir != "." {
+		header += fmt.Sprintf("\nBundled files: any supporting files this skill references (scripts, templates, docs) live in its directory %s; read them with read_file. Instruction paths are relative to that directory.", dir)
+	}
 	if note := skillAllowedToolsNote(skill); note != "" {
 		header += "\n" + note
 	}
 	return header + "\n" + skill.Content
 }
 
-// skillAllowedToolsNote renders the skill's allowed-tools constraint as an
-// explicit instruction line. The architecture treats skills as injected
-// instructions rather than a persistent active mode, so there is no turn-level
-// gate to hard-disable other tools; surfacing the scope to the model is the
-// enforcement lever. Returns "" when the skill declares no tool scope.
+// skillAllowedToolsNote surfaces the skill's allowed-tools as a soft preference,
+// matching Claude Code's semantics where allowed-tools is pre-approval (the
+// skill's expected tools) rather than a hard denylist of everything else. The
+// stateless injection model has no turn-level gate, and Claude Code does not hard
+// restrict either, so this is phrased as guidance. Returns "" when the skill
+// declares no tool scope.
 func skillAllowedToolsNote(skill Skill) string {
 	if len(skill.AllowedTools) == 0 {
 		return ""
 	}
-	return "Tool scope (allowed-tools): while carrying out the steps this skill governs, restrict yourself to these tools plus read-only inspection: " + strings.Join(skill.AllowedTools, ", ") + ". Do not reach for other mutating tools for those steps."
+	return "Preferred tools (allowed-tools): this skill's steps are expected to use " + strings.Join(skill.AllowedTools, ", ") + ". Treat these as the pre-approved tools for the skill and prefer them; reach for another tool only when the task genuinely needs it. This is guidance, not a hard restriction."
 }
 
 func InitSkillTemplate(name string) string {

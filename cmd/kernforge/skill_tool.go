@@ -77,6 +77,14 @@ func (t LoadSkillTool) ExecuteDetailed(ctx context.Context, input any) (ToolExec
 			Meta:        map[string]any{"success": false},
 		}, nil
 	}
+	if skill.DisableModelInvocation {
+		msg := fmt.Sprintf("Skill %q is user-invocable only (disable-model-invocation); the model cannot load it. The user can run it with $%s.", skill.Name, skill.Name)
+		return ToolExecutionResult{
+			DisplayText: msg,
+			ModelText:   "load_skill error: " + msg,
+			Meta:        map[string]any{"success": false},
+		}, nil
+	}
 	body := renderSkillPromptSection(skill)
 	return ToolExecutionResult{
 		DisplayText: fmt.Sprintf("Loaded skill %q (%d chars).", skill.Name, len(skill.Content)),

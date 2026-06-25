@@ -60,11 +60,14 @@ func TestLoadSkillToolSurfacesAllowedTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result.ModelText, "Tool scope (allowed-tools):") {
-		t.Fatalf("expected allowed-tools scope note, got %q", result.ModelText)
+	if !strings.Contains(result.ModelText, "Preferred tools (allowed-tools):") {
+		t.Fatalf("expected allowed-tools preference note, got %q", result.ModelText)
 	}
 	if !strings.Contains(result.ModelText, "read_file, grep") {
 		t.Fatalf("expected the declared tools listed, got %q", result.ModelText)
+	}
+	if !strings.Contains(result.ModelText, "not a hard restriction") {
+		t.Fatalf("allowed-tools must read as a soft preference (Claude Code semantics), got %q", result.ModelText)
 	}
 }
 
