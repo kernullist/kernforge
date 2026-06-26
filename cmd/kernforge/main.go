@@ -743,6 +743,7 @@ func buildRegistry(ws Workspace, mcp *MCPManager, skills SkillCatalog) *ToolRegi
 		NewWebSearchTool(ws),
 		NewLSPNavigationTool(ws),
 		NewReviewSecondOpinionTool(ws),
+		NewAskUserTool(ws),
 	}
 	if goalToolsAvailable(ws) {
 		items = append(items,
@@ -934,6 +935,110 @@ func (rt *runtimeState) promptContinueReviewRepair(message string) (bool, error)
 		return false, err
 	}
 	return confirmed, nil
+}
+
+// promptUserChoice renders a structured question (optional header, numbered
+// options with descriptions, input hint) and reads the user's selection. It
+// mirrors confirm()'s interactive-line plumbing but parses an option number / a
+// comma list / a custom answer instead of y/n. A non-interactive session returns
+// Canceled so the ask_user tool reports "unavailable" and the model proceeds with
+// a default.
+func (rt *runtimeState) promptUserChoice(q UserQuestion) (UserQuestionResult, error) {
+	if rt == nil || !rt.interactive {
+		return UserQuestionResult{Canceled: true}, nil
+	}
+	if header := strings.TrimSpace(q.Header); header != "" {
+		rt.printAssistant("[" + header + "] " + strings.TrimSpace(q.Question))
+	} else {
+		rt.printAssistant(strings.TrimSpace(q.Question))
+	}
+	for i, opt := range q.Options {
+		line := fmt.Sprintf("  %d) %s", i+1, opt.Label)
+		if d := strings.TrimSpace(opt.Description); d != "" {
+			line += " - " + d
+		}
+		fmt.Fprintln(rt.writer, rt.ui.infoLine(line))
+	}
+	hint := "Enter the option number"
+	if q.Multiple {
+		hint += " (comma-separated for more than one)"
+	}
+	if q.AllowCustom {
+		hint += ", or type a custom answer"
+	}
+	var (
+		result UserQuestionResult
+		err    error
+	)
+	rt.withRequestCancelSuspended(func() {
+		result, err = rt.readUserChoice(q, hint+":")
+	})
+	return result, err
+}
+
+func (rt *runtimeState) readUserChoice(q UserQuestion, prompt string) (UserQuestionResult, error) {
+	var result UserQuestionResult
+	err := rt.withPinnedPrompt(func() error {
+		for {
+			answer, usedInteractive, lineErr := rt.readInteractiveLine(prompt+" ", "", nil, true)
+			if !usedInteractive {
+				fmt.Fprint(rt.writer, prompt+" ")
+				if rt.reader == nil {
+					return ErrPromptCanceled
+				}
+				var readErr error
+				answer, readErr = rt.reader.ReadString('\n')
+				if readErr != nil {
+					return readErr
+				}
+			} else if lineErr != nil {
+				if errors.Is(lineErr, ErrPromptCanceled) {
+					result.Canceled = true
+					return nil
+				}
+				return lineErr
+			}
+			parsed, ok := parseUserChoiceAnswer(q, strings.TrimSpace(answer))
+			if !ok {
+				fmt.Fprintln(rt.writer, rt.ui.warnLine("Please enter a valid option number (comma-separated for multiple, or a custom answer when allowed)."))
+				continue
+			}
+			result = parsed
+			return nil
+		}
+	})
+	return result, err
+}
+
+// parseUserChoiceAnswer interprets a raw answer as 1-based option number(s) or, when
+// permitted, a free-text custom answer. Multiple numbers are only accepted when the
+// question allows it.
+func parseUserChoiceAnswer(q UserQuestion, answer string) (UserQuestionResult, bool) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return UserQuestionResult{}, false
+	}
+	parts := strings.Split(answer, ",")
+	selected := make([]string, 0, len(parts))
+	allNumbers := true
+	for _, p := range parts {
+		n, convErr := strconv.Atoi(strings.TrimSpace(p))
+		if convErr != nil || n < 1 || n > len(q.Options) {
+			allNumbers = false
+			break
+		}
+		selected = append(selected, q.Options[n-1].Label)
+	}
+	if allNumbers && len(selected) > 0 {
+		if !q.Multiple && len(selected) > 1 {
+			return UserQuestionResult{}, false
+		}
+		return UserQuestionResult{Selected: selected}, true
+	}
+	if q.AllowCustom {
+		return UserQuestionResult{Custom: answer}, true
+	}
+	return UserQuestionResult{}, false
 }
 
 // promptUsePriorReviewArtifacts asks the user, once per session, whether the

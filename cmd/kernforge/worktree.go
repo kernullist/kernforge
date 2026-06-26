@@ -256,6 +256,7 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 	rt.workspace.VerificationToolPaths = buildVerificationToolPaths(rt.cfg)
 	rt.workspace.PrepareEditAtRoot = rt.prepareEditAtRoot
 	rt.workspace.ReviewEdit = rt.reviewProposedEdit
+	rt.workspace.PromptUserChoice = rt.promptUserChoice
 	rt.workspace.ResolveEditTarget = rt.resolveEditTarget
 	rt.workspace.ResolveShellRoot = rt.resolveShellRoot
 	rt.workspace.GoalSession = rt.session

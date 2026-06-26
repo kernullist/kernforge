@@ -1460,6 +1460,7 @@ type Workspace struct {
 	CurrentSelection      func() *ViewerSelection
 	PreviewEdit           func(EditPreview) (bool, error)
 	ConfirmVerification   func(VerificationPlan) (bool, error)
+	PromptUserChoice      func(UserQuestion) (UserQuestionResult, error)
 	UpdatePlan            func([]PlanItem)
 	GetPlan               func() []PlanItem
 	RunHook               func(context.Context, HookEvent, HookPayload) (HookVerdict, error)
