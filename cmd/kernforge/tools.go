@@ -4852,6 +4852,52 @@ func (t ReplaceInFileTool) Definition() ToolDefinition {
 	}
 }
 
+// resolveReplaceTarget finds the text in content that a replace_in_file search
+// refers to. It tries an exact match first; on failure it falls back to the same
+// whitespace-tolerant line ladder apply_patch uses (trailing-space, then full
+// per-line trim), accepting only a unique block so a replacement never lands at
+// the wrong place. Returns the text to replace (the search itself for an exact
+// match, or the file's actual span for a fuzzy one) and its occurrence count.
+func resolveReplaceTarget(content, search string) (string, int) {
+	if search == "" {
+		return search, 0
+	}
+	if count := strings.Count(content, search); count > 0 {
+		return search, count
+	}
+	if span, ok := fuzzyReplaceTarget(content, search); ok {
+		return span, strings.Count(content, span)
+	}
+	return search, 0
+}
+
+// fuzzyReplaceTarget returns the file's actual text for a search whose whitespace
+// drifted, reusing apply_patch's per-line matchers. It escalates leniency only as
+// needed and accepts a match only when exactly one block matches, so it never
+// guesses a location. Blank or whitespace-only searches are refused.
+func fuzzyReplaceTarget(content, search string) (string, bool) {
+	searchLines := strings.Split(strings.TrimRight(search, "\n"), "\n")
+	if len(searchLines) == 0 || (len(searchLines) == 1 && strings.TrimSpace(searchLines[0]) == "") {
+		return "", false
+	}
+	contentLines := strings.Split(content, "\n")
+	if len(searchLines) > len(contentLines) {
+		return "", false
+	}
+	for _, eq := range []func(string, string) bool{patchLinesEqualTrailing, patchLinesEqualTrimmed} {
+		matches := findChunkFuzzyMatchesAtOrAfter(contentLines, searchLines, 0, eq)
+		if len(matches) == 1 {
+			start := matches[0]
+			return strings.Join(contentLines[start:start+len(searchLines)], "\n"), true
+		}
+		if len(matches) > 1 {
+			// Ambiguous at this leniency; do not loosen further and risk the wrong spot.
+			return "", false
+		}
+	}
+	return "", false
+}
+
 func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, error) {
 	args, err := requireToolInputObject(input, t.Definition().Name)
 	if err != nil {
@@ -4879,7 +4925,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	search := stringValue(args, "search")
 	replace := stringValue(args, "replace")
 	content := string(data)
-	count := strings.Count(content, search)
+	matchText, count := resolveReplaceTarget(content, search)
 	if count == 0 {
 		return "", fmt.Errorf("%w: search text not found in %s", ErrEditTargetMismatch, path)
 	}
@@ -4889,9 +4935,9 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	}
 	var updated string
 	if all {
-		updated = strings.ReplaceAll(content, search, replace)
+		updated = strings.ReplaceAll(content, matchText, replace)
 	} else {
-		updated = strings.Replace(content, search, replace, 1)
+		updated = strings.Replace(content, matchText, replace, 1)
 	}
 	if suspiciousReplacePayload(path, search, replace, content, updated) {
 		return "", fmt.Errorf("%w: replace_in_file replacement looks like a malformed serialized payload instead of real code; use apply_patch or provide the exact replacement text", ErrInvalidEditPayload)
@@ -5040,7 +5086,7 @@ func replaceInFileMutationPreview(ws Workspace, args map[string]any) (plannedTex
 	}
 	before := string(data)
 	search := stringValue(args, "search")
-	count := strings.Count(before, search)
+	matchText, count := resolveReplaceTarget(before, search)
 	if count == 0 {
 		return plannedTextFileEdit{
 			AbsolutePath:  route.AbsolutePath,
@@ -5067,9 +5113,9 @@ func replaceInFileMutationPreview(ws Workspace, args map[string]any) (plannedTex
 	replace := stringValue(args, "replace")
 	after := ""
 	if all {
-		after = strings.ReplaceAll(before, search, replace)
+		after = strings.ReplaceAll(before, matchText, replace)
 	} else {
-		after = strings.Replace(before, search, replace, 1)
+		after = strings.Replace(before, matchText, replace, 1)
 		count = 1
 	}
 	displayPath := route.DisplayPath()
