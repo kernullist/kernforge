@@ -276,6 +276,7 @@ type Config struct {
 	AutoCheckpointEdits         *bool                         `json:"auto_checkpoint_edits,omitempty"`
 	AutoVerify                  *bool                         `json:"auto_verify,omitempty"`
 	AutoLocale                  *bool                         `json:"auto_locale,omitempty"`
+	FormatOnWrite               *bool                         `json:"format_on_write,omitempty"`
 	FuzzFuncOutputLanguage      string                        `json:"fuzz_func_output_language,omitempty"`
 	HooksEnabled                *bool                         `json:"hooks_enabled,omitempty"`
 	HookPresets                 []string                      `json:"hook_presets,omitempty"`
@@ -518,6 +519,7 @@ func DefaultConfig(cwd string) Config {
 		AutoCheckpointEdits:    boolPtr(false),
 		AutoVerify:             boolPtr(true),
 		AutoLocale:             boolPtr(true),
+		FormatOnWrite:          boolPtr(true),
 		FuzzFuncOutputLanguage: "english",
 		HooksEnabled:           boolPtr(true),
 		HooksFailClosed:        boolPtr(false),
@@ -1583,6 +1585,10 @@ func mergeConfig(dst *Config, src Config) {
 	if src.AutoLocale != nil {
 		value := *src.AutoLocale
 		dst.AutoLocale = &value
+	}
+	if src.FormatOnWrite != nil {
+		value := *src.FormatOnWrite
+		dst.FormatOnWrite = &value
 	}
 	if strings.TrimSpace(src.FuzzFuncOutputLanguage) != "" {
 		dst.FuzzFuncOutputLanguage = strings.TrimSpace(src.FuzzFuncOutputLanguage)
@@ -2827,6 +2833,15 @@ func configReadCacheEntries(cfg Config) int {
 		return cfg.ReadCacheEntries
 	}
 	return defaultReadCacheEntries
+}
+
+// configFormatOnWrite reports whether the agent auto-formats files after a write.
+// Default on; set "format_on_write": false (or the per-write meta gate) to disable.
+func configFormatOnWrite(cfg Config) bool {
+	if cfg.FormatOnWrite == nil {
+		return true
+	}
+	return *cfg.FormatOnWrite
 }
 
 func configAutoLocale(cfg Config) bool {

@@ -1314,6 +1314,55 @@ func (a *Agent) spillToolOutput(text string) (string, error) {
 	return path, nil
 }
 
+type fileFormatter struct {
+	exts []string
+	cmd  string
+	args []string
+}
+
+// fileFormatters maps a file extension to an in-place formatter command. Only a
+// formatter found on PATH runs; selection is by extension, first match wins.
+var fileFormatters = []fileFormatter{
+	{exts: []string{".go"}, cmd: "gofmt", args: []string{"-w"}},
+	{exts: []string{".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}, cmd: "clang-format", args: []string{"-i"}},
+	{exts: []string{".rs"}, cmd: "rustfmt", args: nil},
+	{exts: []string{".py"}, cmd: "ruff", args: []string{"format"}},
+	{exts: []string{".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".scss", ".html", ".md", ".yaml", ".yml"}, cmd: "prettier", args: []string{"--write"}},
+	{exts: []string{".zig"}, cmd: "zig", args: []string{"fmt"}},
+}
+
+// formatWrittenFile runs an installed formatter for path's extension in place when
+// FormatOnWrite is enabled. Best-effort: a disabled gate, a missing formatter
+// binary, or a formatter failure are all ignored so a successful write never turns
+// into a failure. Mirrors OpenCode's auto-format-on-write.
+func (ws Workspace) formatWrittenFile(ctx context.Context, path string) {
+	if !ws.FormatOnWrite {
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == "" {
+		return
+	}
+	for _, f := range fileFormatters {
+		matched := false
+		for _, e := range f.exts {
+			if e == ext {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		bin, err := exec.LookPath(f.cmd)
+		if err != nil {
+			return
+		}
+		_, _ = runCommand(ctx, filepath.Dir(path), bin, append(append([]string(nil), f.args...), path)...)
+		return
+	}
+}
+
 func mergeToolMetaMaps(base map[string]any, extra map[string]any) map[string]any {
 	merged := cloneMetaMap(base)
 	for key, value := range extra {
@@ -1395,6 +1444,7 @@ func countListedEntries(text string) int {
 type Workspace struct {
 	BaseRoot              string
 	Root                  string
+	FormatOnWrite         bool
 	Shell                 string
 	ShellTimeout          time.Duration
 	ReadHintSpans         int
@@ -4569,6 +4619,7 @@ func (t WriteFileTool) Execute(ctx context.Context, input any) (string, error) {
 		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 			return "", err
 		}
+		t.ws.formatWrittenFile(ctx, path)
 		t.ws.Progress("Saved " + displayPath + ".")
 	}
 	t.ws.Progress("Running post-edit hooks for " + displayPath + "...")
@@ -4886,6 +4937,7 @@ func (t ReplaceInFileTool) Execute(ctx context.Context, input any) (string, erro
 	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
+	t.ws.formatWrittenFile(ctx, path)
 	t.ws.Progress("Saved " + displayPath + ".")
 	t.ws.Progress("Running post-edit hooks for " + displayPath + "...")
 	if _, err := t.ws.Hook(ctx, HookPostEdit, HookPayload{

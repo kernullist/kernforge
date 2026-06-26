@@ -249,6 +249,7 @@ func (rt *runtimeState) syncWorkspaceFromSession() {
 	rt.workspace.BaseRoot = baseRoot
 	rt.workspace.Root = activeRoot
 	rt.workspace.Shell = rt.cfg.Shell
+	rt.workspace.FormatOnWrite = configFormatOnWrite(rt.cfg)
 	rt.workspace.ShellTimeout = configShellTimeout(rt.cfg)
 	rt.workspace.ReadHintSpans = configReadHintSpans(rt.cfg)
 	rt.workspace.ReadCacheEntries = configReadCacheEntries(rt.cfg)
