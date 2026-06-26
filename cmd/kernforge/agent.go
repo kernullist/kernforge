@@ -2799,7 +2799,11 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 				return "", err
 			}
 			if err != nil && errors.Is(err, ErrWriteDenied) {
-				toolMsg.Text = "CANCELED: user declined write approval. No files were changed, and no filesystem permission issue was detected."
+				declineMsg := "CANCELED: user declined write approval. No files were changed, and no filesystem permission issue was detected."
+				if fb := a.consumeDeclineFeedback(); fb != "" {
+					declineMsg += " User feedback to act on: " + fb
+				}
+				toolMsg.Text = declineMsg
 				a.setToolExecutionResult(toolMsgIndex, toolMsg)
 				a.setRemainingToolCallsNotExecuted(resp.Message.ToolCalls, toolMsgIndexes, callIndex+1, "NOT_EXECUTED: an earlier write approval was declined before this tool could run.")
 				if saveErr := a.Store.Save(a.Session); saveErr != nil {
@@ -10058,6 +10062,15 @@ func (a *Agent) mcpTurnMetadataForToolCall(turnStartedAt time.Time) map[string]a
 		return nil
 	}
 	return metadata
+}
+
+// consumeDeclineFeedback returns any reason or corrective instruction the user
+// left when declining a permission prompt, clearing it so it is relayed only once.
+func (a *Agent) consumeDeclineFeedback() string {
+	if a == nil || a.Workspace.Perms == nil {
+		return ""
+	}
+	return a.Workspace.Perms.ConsumeDeclineFeedback()
 }
 
 func (a *Agent) activePermissionModeSnapshot() string {

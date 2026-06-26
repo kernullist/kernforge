@@ -401,6 +401,7 @@ func run(args []string) error {
 	userInputRequests := NewUserInputRequestTracker()
 	rt.perms = NewPermissionManager(ParseMode(sess.PermissionMode), rt.confirm)
 	rt.perms.SetUserInputRequestTracker(userInputRequests)
+	rt.perms.SetDeclineFeedbackHook(rt.captureDeclineFeedback)
 	// permission_sandbox-4: install optional config-driven shell/read/edit rules.
 	// Invalid rules are non-fatal so a bad entry never blocks startup; the manager
 	// keeps its default prompt behavior when no valid rules are present.
@@ -3467,6 +3468,24 @@ func isShellPatternAnswer(answer string) bool {
 	default:
 		return false
 	}
+}
+
+// captureDeclineFeedback prompts for an optional reason or corrective instruction
+// right after the user declines a permission prompt, so the model can adjust its
+// next step instead of guessing why the action was rejected. Empty input (Enter)
+// skips it and preserves the plain "declined" behavior.
+func (rt *runtimeState) captureDeclineFeedback(action Action, detail string) string {
+	if rt == nil {
+		return ""
+	}
+	prompt := localizedText(rt.cfg,
+		"Optional: reason or correction to send to the model (Enter to skip)",
+		"선택: 모델에 전달할 거부 사유 또는 교정 지시 (Enter=생략)")
+	fb, err := rt.promptValueAllowEmpty(prompt, "")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(fb)
 }
 
 // rememberShellPatternApproval prompts for a command pattern and registers it for

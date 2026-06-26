@@ -4815,6 +4815,14 @@ type PermissionManager struct {
 	// networkRules maps a network-target regular expression to allow|ask|deny,
 	// consulted for ActionNetwork. Empty means "no rule" (prompt as usual).
 	networkRules []shellCommandRule
+	// declineFeedbackHook, when set, is invoked after the user declines an
+	// interactive prompt so they can leave a one-line reason or corrective
+	// instruction to relay to the model. nil preserves the prior behavior exactly.
+	declineFeedbackHook func(action Action, detail string) string
+	// declineFeedback holds the text captured at the most recent decline until a
+	// caller consumes it. An approval clears it so a stale reason never attaches to
+	// an unrelated action.
+	declineFeedback string
 }
 
 func ParseMode(value string) Mode {
@@ -5000,7 +5008,38 @@ func (m *PermissionManager) Allow(action Action, detail string) (bool, error) {
 		m.userInputRequests.MarkRequested()
 	}
 	allowed, err := m.prompt(question)
+	if err == nil && m.declineFeedbackHook != nil {
+		if allowed {
+			// An approval invalidates any feedback left by an earlier decline so a
+			// stale reason can never attach to an unrelated, later-approved action.
+			m.declineFeedback = ""
+		} else {
+			m.declineFeedback = strings.TrimSpace(m.declineFeedbackHook(action, detail))
+		}
+	}
 	return allowed, err
+}
+
+// SetDeclineFeedbackHook installs an optional callback invoked when the user
+// declines an interactive prompt. Its returned text (a reason or corrective
+// instruction) is surfaced back to the model by the caller. Passing nil disables
+// feedback capture and restores the original prompt-only behavior.
+func (m *PermissionManager) SetDeclineFeedbackHook(hook func(action Action, detail string) string) {
+	if m == nil {
+		return
+	}
+	m.declineFeedbackHook = hook
+}
+
+// ConsumeDeclineFeedback returns the feedback captured at the most recent decline
+// and clears it, so each decline is reported to the model at most once.
+func (m *PermissionManager) ConsumeDeclineFeedback() string {
+	if m == nil {
+		return ""
+	}
+	fb := m.declineFeedback
+	m.declineFeedback = ""
+	return fb
 }
 
 // allowWithoutPrompt preserves the historical action-only entry point used by
