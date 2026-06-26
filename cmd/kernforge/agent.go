@@ -3208,7 +3208,7 @@ func (a *Agent) completeLoop(ctx context.Context, readOnlyAnalysis bool, explici
 							ArgumentsPreview: summarizeToolArgumentsPreview(call.Arguments),
 						})
 					}
-				} else if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
+				} else if summary := summarizeToolCompletionWithMeta(a.Config, call, result.DisplayText, result.Meta); summary != "" {
 					a.emitProgressEvent(ProgressEvent{
 						Kind:             progressKindToolCompleted,
 						Message:          summary,
@@ -7692,6 +7692,56 @@ func summarizeToolCompletion(cfg Config, call ToolCall, out string) string {
 	}
 }
 
+// countUnifiedDiffLines counts added/removed content lines in a unified diff,
+// ignoring the +++/--- file headers.
+func countUnifiedDiffLines(diff string) (added, removed int) {
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+			continue
+		case strings.HasPrefix(line, "+"):
+			added++
+		case strings.HasPrefix(line, "-"):
+			removed++
+		}
+	}
+	return added, removed
+}
+
+// summarizeEditToolCompletion produces the one-line "edited X (+N -M)" summary for
+// an edit tool, mirroring how read_file/grep report a result count. It returns ""
+// when nothing changed on disk so the diff preview stays the source of truth.
+func summarizeEditToolCompletion(cfg Config, meta map[string]any) string {
+	paths := toolMetaStringSlice(meta, "changed_paths")
+	if len(paths) == 0 {
+		return ""
+	}
+	label := strings.TrimSpace(paths[0])
+	if label == "" {
+		label = localizedText(cfg, "file", "파일")
+	}
+	if len(paths) > 1 {
+		label = fmt.Sprintf(localizedText(cfg, "%s (+%d more file(s))", "%s (외 %d개 파일)"), label, len(paths)-1)
+	}
+	added, removed := countUnifiedDiffLines(toolMetaString(meta, "unified_diff"))
+	if added > 0 || removed > 0 {
+		return fmt.Sprintf(localizedText(cfg, "edited %s (+%d -%d)", "%s 수정 (+%d -%d)"), label, added, removed)
+	}
+	return fmt.Sprintf(localizedText(cfg, "edited %s.", "%s 수정 완료."), label)
+}
+
+// summarizeToolCompletionWithMeta is the meta-aware entry point: edit tools get the
+// "edited X (+N -M)" summary from their change metadata; every other tool keeps the
+// existing output-based summary.
+func summarizeToolCompletionWithMeta(cfg Config, call ToolCall, out string, meta map[string]any) string {
+	if isEditTool(strings.TrimSpace(call.Name)) {
+		if summary := summarizeEditToolCompletion(cfg, meta); summary != "" {
+			return summary
+		}
+	}
+	return summarizeToolCompletion(cfg, call, out)
+}
+
 func summarizeToolFailure(cfg Config, call ToolCall, err error) string {
 	name := strings.TrimSpace(call.Name)
 	if name == "" || err == nil {
@@ -9550,7 +9600,7 @@ func (a *Agent) executeParallelToolCallBatch(ctx context.Context, calls []ToolCa
 			}
 		} else {
 			outcome.hadSuccess = true
-			if summary := summarizeToolCompletion(a.Config, call, result.DisplayText); summary != "" {
+			if summary := summarizeToolCompletionWithMeta(a.Config, call, result.DisplayText, result.Meta); summary != "" {
 				a.emitProgressEvent(ProgressEvent{
 					Kind:             progressKindToolCompleted,
 					Message:          summary,
