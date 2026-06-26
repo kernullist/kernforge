@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -192,7 +193,45 @@ func (m WorktreeManager) Remove(ctx context.Context, baseRoot string, worktree S
 	if err != nil {
 		return err
 	}
-	_, err = runGitCommand(ctx, repoRoot, "worktree", "remove", worktree.Root)
+	// Stop the per-worktree fsmonitor daemon first: on Windows it keeps file
+	// handles open, so `worktree remove` and directory deletion fail with sharing
+	// violations. Best-effort -- the daemon may not be running.
+	_, _ = runGitHelperCommand(ctx, worktree.Root, "fsmonitor--daemon", "stop")
+	// --force tolerates leftover untracked/locked files that a plain remove rejects;
+	// uncommitted tracked changes were already refused above.
+	if _, err := runGitCommand(ctx, repoRoot, "worktree", "remove", "--force", worktree.Root); err == nil {
+		return nil
+	}
+	// Fallback: a lingering handle (fsmonitor, antivirus, an open editor) may still
+	// hold the directory -- common on Windows. Delete it ourselves with retry, then
+	// prune the now-stale worktree registration so `git worktree list` stays clean.
+	if rmErr := removeDirWithRetry(worktree.Root); rmErr != nil {
+		return fmt.Errorf("git worktree remove failed and manual cleanup could not delete %s: %w", worktree.Root, rmErr)
+	}
+	if _, err := runGitCommand(ctx, repoRoot, "worktree", "prune"); err != nil {
+		return fmt.Errorf("removed the worktree directory but `git worktree prune` failed: %w", err)
+	}
+	return nil
+}
+
+// removeDirWithRetry deletes dir, retrying on Windows where a lingering file
+// handle (git fsmonitor, antivirus, an open editor) can briefly hold a sharing
+// lock that makes a single RemoveAll fail. A missing directory is success.
+func removeDirWithRetry(dir string) error {
+	attempts, delay := 5, 50*time.Millisecond
+	if runtime.GOOS == "windows" {
+		attempts, delay = 50, 100*time.Millisecond
+	}
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+		if _, statErr := os.Stat(dir); os.IsNotExist(statErr) {
+			return nil
+		}
+		time.Sleep(delay)
+	}
 	return err
 }
 
